@@ -71,17 +71,25 @@ struct CatalogSnapshotCreator: Sendable {
             throw CatalogSnapshotError.snapshotCollision
         }
 
-        var destinationQueue: DatabaseQueue?
+        var tempDirectoryCreated = false
+        var destinationQueueCreated = false
         var destinationClosed = false
+        var destinationQueue: DatabaseQueue?
         do {
             try fileManager.createDirectory(at: tempDirectoryURL, withIntermediateDirectories: true)
+            tempDirectoryCreated = true
             let destinationDatabaseURL = tempDirectoryURL.appendingPathComponent(CatalogSnapshotConstants.databaseFilename)
+
+            if let destinationQueueOpenFailureHook = dependencies.destinationQueueOpenFailureHook {
+                try destinationQueueOpenFailureHook()
+            }
 
             var destinationConfig = Configuration()
             destinationConfig.prepareDatabase { db in
                 try db.execute(sql: "PRAGMA foreign_keys = ON")
             }
             let queue = try DatabaseQueue(path: destinationDatabaseURL.path, configuration: destinationConfig)
+            destinationQueueCreated = true
             destinationQueue = queue
 
             do {
@@ -97,6 +105,7 @@ struct CatalogSnapshotCreator: Sendable {
             let appliedMigrations: [String]
             do {
                 try dependencies.destinationPreCloseHook?(queue, destinationDatabaseURL)
+                try dependencies.quickCheckFailureHook?(queue)
                 appliedMigrations = try queue.read { db -> [String] in
                     try CatalogDatabase.performQuickCheck(on: db)
                     let migrations = try CatalogDatabase.readAppliedMigrationIDs(from: db)
@@ -110,15 +119,12 @@ struct CatalogSnapshotCreator: Sendable {
                 throw CatalogSnapshotError.integrityCheckFailed
             }
 
-            if let destinationCloseHandler = dependencies.destinationCloseHandler {
-                try destinationCloseHandler(queue)
-            } else {
-                try CatalogDatabase.closeQueue(queue)
-                try CatalogDatabaseSidecarHelpers.removeSidecarsIfPresent(at: destinationDatabaseURL)
-                try CatalogDatabaseSidecarHelpers.requireNoSidecars(at: destinationDatabaseURL)
-            }
+            try dependencies.destinationCloseFailureHook?()
+            try CatalogDatabase.closeQueue(queue)
             destinationClosed = true
             destinationQueue = nil
+            try CatalogDatabaseSidecarHelpers.removeSidecarsIfPresent(at: destinationDatabaseURL)
+            try CatalogDatabaseSidecarHelpers.requireNoSidecars(at: destinationDatabaseURL)
 
             let databaseBytes: Int64
             do {
@@ -130,9 +136,12 @@ struct CatalogSnapshotCreator: Sendable {
                 throw CatalogSnapshotError.invalidDatabaseBytes
             }
 
+            try dependencies.hashFailureHook?()
             let databaseSHA256: String
             do {
                 databaseSHA256 = try CatalogSnapshotHashing.sha256Hex(of: destinationDatabaseURL)
+            } catch let error as CatalogSnapshotError {
+                throw error
             } catch {
                 throw CatalogSnapshotError.invalidDatabaseChecksum
             }
@@ -149,7 +158,12 @@ struct CatalogSnapshotCreator: Sendable {
             )
             try CatalogSnapshotManifestValidator.validate(manifest, expectedSnapshotID: snapshotIDString)
 
-            let manifestData = try CatalogSnapshotManifestCodec.encode(manifest)
+            let manifestData: Data
+            do {
+                manifestData = try CatalogSnapshotManifestCodec.encode(manifest)
+            } catch {
+                throw CatalogSnapshotError.manifestWriteFailed
+            }
             let manifestURL = tempDirectoryURL.appendingPathComponent(CatalogSnapshotConstants.manifestFilename)
 
             if let manifestDataWriter = dependencies.manifestDataWriter {
@@ -162,7 +176,12 @@ struct CatalogSnapshotCreator: Sendable {
                 }
             }
 
-            let decodedManifest = try CatalogSnapshotManifestCodec.decode(from: Data(contentsOf: manifestURL))
+            let decodedManifest: CatalogSnapshotManifest
+            do {
+                decodedManifest = try CatalogSnapshotManifestCodec.decode(from: Data(contentsOf: manifestURL))
+            } catch {
+                throw CatalogSnapshotError.manifestWriteFailed
+            }
             try CatalogSnapshotManifestValidator.validate(decodedManifest, expectedSnapshotID: snapshotIDString)
             guard decodedManifest.databaseBytes == databaseBytes,
                   decodedManifest.databaseSHA256 == databaseSHA256 else {
@@ -184,11 +203,12 @@ struct CatalogSnapshotCreator: Sendable {
         } catch let error as CatalogSnapshotError where error == .closeFailed {
             throw error
         } catch {
-            if let destinationQueue, !destinationClosed {
+            if destinationQueueCreated, !destinationClosed, let destinationQueue {
                 try CatalogDatabase.closeQueue(destinationQueue)
                 destinationClosed = true
             }
-            if destinationClosed, fileManager.fileExists(atPath: tempDirectoryURL.path) {
+            if tempDirectoryCreated, destinationClosed || !destinationQueueCreated,
+               fileManager.fileExists(atPath: tempDirectoryURL.path) {
                 try? fileManager.removeItem(at: tempDirectoryURL)
             }
             throw error

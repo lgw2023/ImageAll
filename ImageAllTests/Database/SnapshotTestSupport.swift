@@ -218,6 +218,21 @@ enum SnapshotTestSupport {
         }
     }
 
+    static func corruptDestinationQuickCheck(at databaseURL: URL) throws {
+        let queue = try DatabaseQueue(path: databaseURL.path)
+        try queue.write { db in
+            try db.execute(sql: "PRAGMA writable_schema = ON")
+            try db.execute(sql: "UPDATE sqlite_schema SET rootpage = 0 WHERE name = 'job'")
+        }
+        try queue.close()
+        let verify = try DatabaseQueue(path: databaseURL.path)
+        let results = try verify.read { db in
+            try String.fetchAll(db, sql: "PRAGMA quick_check")
+        }
+        try verify.close()
+        XCTAssertNotEqual(results, ["ok"])
+    }
+
     static func factCountsReadOnly(at databaseURL: URL) throws -> FactCounts {
         try CatalogDatabase.withReadonlyQueue(at: databaseURL) { db in
             FactCounts(
@@ -237,17 +252,20 @@ final class FaultInjectingCatalogDatabaseFileReplacer: CatalogDatabaseFileReplac
     let underlying: any CatalogDatabaseFileReplacing
     var failInitialReplacement: Bool
     var failRollbackReplacement: Bool
+    var deleteRetainedBackupAfterFirstReplace: Bool
     private let lock = NSLock()
-    private var replacementCallCount = 0
+    private(set) var replacementCallCount = 0
 
     init(
         underlying: any CatalogDatabaseFileReplacing = FoundationCatalogDatabaseFileReplacer(),
         failInitialReplacement: Bool = false,
-        failRollbackReplacement: Bool = false
+        failRollbackReplacement: Bool = false,
+        deleteRetainedBackupAfterFirstReplace: Bool = false
     ) {
         self.underlying = underlying
         self.failInitialReplacement = failInitialReplacement
         self.failRollbackReplacement = failRollbackReplacement
+        self.deleteRetainedBackupAfterFirstReplace = deleteRetainedBackupAfterFirstReplace
     }
 
     func replaceItem(
@@ -268,28 +286,42 @@ final class FaultInjectingCatalogDatabaseFileReplacer: CatalogDatabaseFileReplac
             throw CatalogSnapshotError.rollbackReplacementFailed
         }
 
-        return try underlying.replaceItem(
+        let resultingURL = try underlying.replaceItem(
             at: originalItemURL,
             withItemAt: newItemURL,
             backupItemName: backupItemName,
             options: options
         )
+
+        if deleteRetainedBackupAfterFirstReplace && callCount == 1 {
+            let retainedBackupURL = originalItemURL.deletingLastPathComponent()
+                .appendingPathComponent(backupItemName)
+            try? FileManager.default.removeItem(at: retainedBackupURL)
+        }
+
+        return resultingURL
     }
 }
 
 struct FaultInjectingCatalogPostReplaceValidator: CatalogPostReplaceValidator {
     var shouldFail: Bool
+    var shouldFailWithCloseFailed: Bool
     let underlying: any CatalogPostReplaceValidator
 
     init(
-        shouldFail: Bool,
+        shouldFail: Bool = false,
+        shouldFailWithCloseFailed: Bool = false,
         underlying: any CatalogPostReplaceValidator = DefaultCatalogPostReplaceValidator()
     ) {
         self.shouldFail = shouldFail
+        self.shouldFailWithCloseFailed = shouldFailWithCloseFailed
         self.underlying = underlying
     }
 
     func validateDatabase(at url: URL) throws {
+        if shouldFailWithCloseFailed {
+            throw CatalogSnapshotError.closeFailed
+        }
         if shouldFail {
             throw CatalogSnapshotError.postReplaceValidationFailed
         }

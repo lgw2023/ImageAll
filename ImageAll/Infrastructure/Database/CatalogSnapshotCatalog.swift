@@ -59,8 +59,18 @@ enum CatalogSnapshotCatalog {
         try validateRegularFile(at: manifestURL, fileManager: fileManager)
         try CatalogDatabaseSidecarHelpers.requireNoSidecars(at: databaseURL, fileManager: fileManager)
 
-        let manifestData = try Data(contentsOf: manifestURL)
-        let manifest = try CatalogSnapshotManifestCodec.decode(from: manifestData)
+        let manifestData: Data
+        do {
+            manifestData = try Data(contentsOf: manifestURL)
+        } catch {
+            throw CatalogSnapshotError.invalidManifest
+        }
+        let manifest: CatalogSnapshotManifest
+        do {
+            manifest = try CatalogSnapshotManifestCodec.decode(from: manifestData)
+        } catch {
+            throw CatalogSnapshotError.invalidManifest
+        }
         try CatalogSnapshotManifestValidator.validate(manifest, expectedSnapshotID: snapshotID)
 
         let bytes = try CatalogSnapshotHashing.fileSize(of: databaseURL)
@@ -86,7 +96,12 @@ enum CatalogSnapshotCatalog {
             throw CatalogSnapshotError.invalidManifest
         }
 
-        let values = try url.resourceValues(forKeys: [.isSymbolicLinkKey, .isRegularFileKey])
+        let values: URLResourceValues
+        do {
+            values = try url.resourceValues(forKeys: [.isSymbolicLinkKey, .isRegularFileKey])
+        } catch {
+            throw CatalogSnapshotError.invalidManifest
+        }
         if values.isSymbolicLink == true {
             throw CatalogSnapshotError.invalidManifest
         }

@@ -257,6 +257,36 @@ final class CatalogSnapshotRestoreTests: XCTestCase {
 
         XCTAssertEqual(try SnapshotTestSupport.factCounts(at: result.restoredDatabaseURL).sources, 1)
     }
+
+    func testSameVolumeCheckerThrowMapsToDifferentVolume() throws {
+        let root = try SnapshotTestSupport.makeTempRoot(testCase: self)
+        let liveURL = SnapshotTestSupport.liveDatabaseURL(in: root)
+        let database = try SnapshotTestSupport.openLiveDatabase(at: liveURL)
+        let backups = SnapshotTestSupport.backupsDirectoryURL(in: root)
+        let descriptor = try SnapshotTestSupport.writePublishedSnapshot(
+            in: backups,
+            snapshotID: UUID(),
+            sourceDatabase: database
+        )
+        try database.checkpointAndCloseForReplacement()
+        let beforeBytes = try SnapshotTestSupport.databaseBytes(at: liveURL)
+
+        XCTAssertThrowsError(
+            try CatalogDatabaseRestoreCoordinator().restoreSnapshot(
+                snapshotDirectoryURL: descriptor.directoryURL,
+                liveDatabaseURL: liveURL,
+                operationID: UUID(),
+                dependencies: .init(sameVolumeChecker: { _, _ in
+                    struct Probe: Error {}
+                    throw Probe()
+                })
+            )
+        ) { error in
+            XCTAssertEqual(error as? CatalogSnapshotError, .differentVolume)
+        }
+
+        XCTAssertEqual(try SnapshotTestSupport.databaseBytes(at: liveURL), beforeBytes)
+    }
 }
 
 private final class VolumeCheckCapture: @unchecked Sendable {

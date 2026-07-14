@@ -3,7 +3,13 @@ import Foundation
 
 enum CatalogSnapshotHashing {
     static func sha256Hex(of fileURL: URL) throws -> String {
-        let handle = try FileHandle(forReadingFrom: fileURL)
+        let handle: FileHandle
+        do {
+            handle = try FileHandle(forReadingFrom: fileURL)
+        } catch {
+            throw CatalogSnapshotError.invalidDatabaseChecksum
+        }
+
         var hasher = SHA256()
         var readFailed = false
 
@@ -34,7 +40,12 @@ enum CatalogSnapshotHashing {
     }
 
     static func fileSize(of fileURL: URL) throws -> Int64 {
-        let attributes = try FileManager.default.attributesOfItem(atPath: fileURL.path)
+        let attributes: [FileAttributeKey: Any]
+        do {
+            attributes = try FileManager.default.attributesOfItem(atPath: fileURL.path)
+        } catch {
+            throw CatalogSnapshotError.invalidDatabaseBytes
+        }
         guard let size = attributes[.size] as? NSNumber else {
             throw CatalogSnapshotError.invalidDatabaseBytes
         }

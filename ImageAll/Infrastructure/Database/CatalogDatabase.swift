@@ -119,23 +119,18 @@ struct CatalogDatabase: Sendable {
             try queue.read { db in
                 try performQuickCheck(on: db)
             }
-            try closeQueue(queue)
-            closed = true
-            try CatalogDatabaseSidecarHelpers.removeSidecarsIfPresent(at: url)
-            try CatalogDatabaseSidecarHelpers.requireNoSidecars(at: url)
         } catch let error as CatalogSnapshotError where error == .closeFailed {
             throw error
         } catch let error as CatalogSnapshotError {
-            if !closed {
-                try closeQueue(queue)
-            }
+            try closeQueueOnce(queue, closed: &closed)
             throw error
         } catch {
-            if !closed {
-                try closeQueue(queue)
-            }
+            try closeQueueOnce(queue, closed: &closed)
             throw CatalogSnapshotError.sidecarConvergenceFailed
         }
+        try closeQueueOnce(queue, closed: &closed)
+        try CatalogDatabaseSidecarHelpers.removeSidecarsIfPresent(at: url)
+        try CatalogDatabaseSidecarHelpers.requireNoSidecars(at: url)
     }
 
     static func performTruncateCheckpoint(_ db: Database) throws {
@@ -174,6 +169,12 @@ struct CatalogDatabase: Sendable {
         } catch {
             throw CatalogSnapshotError.closeFailed
         }
+    }
+
+    private static func closeQueueOnce(_ queue: DatabaseQueue, closed: inout Bool) throws {
+        guard !closed else { return }
+        try closeQueue(queue)
+        closed = true
     }
 
     static func readAppliedMigrationIDs(from db: Database) throws -> [String] {
@@ -228,32 +229,26 @@ struct CatalogDatabase: Sendable {
             throw CatalogSnapshotError.integrityCheckFailed
         }
         var closed = false
+        let value: T
         do {
-            let value = try queue.read { db in
+            value = try queue.read { db in
                 try body(db)
             }
-            try closeQueue(queue)
-            closed = true
-            return value
         } catch let error as CatalogDatabaseError {
-            if !closed {
-                try closeQueue(queue)
-            }
+            try closeQueueOnce(queue, closed: &closed)
             if case let .futureSchema(applied, unknown) = error {
                 throw CatalogSnapshotError.futureMigrationHistory(applied: applied, unknown: unknown)
             }
             throw CatalogSnapshotError.integrityCheckFailed
         } catch let error as CatalogSnapshotError {
-            if !closed {
-                try closeQueue(queue)
-            }
+            try closeQueueOnce(queue, closed: &closed)
             throw error
         } catch {
-            if !closed {
-                try closeQueue(queue)
-            }
+            try closeQueueOnce(queue, closed: &closed)
             throw CatalogSnapshotError.integrityCheckFailed
         }
+        try closeQueueOnce(queue, closed: &closed)
+        return value
     }
 
     static func prepareWorkCopyForReplacement(
@@ -302,29 +297,22 @@ struct CatalogDatabase: Sendable {
             }
 
             try convergeToDeleteJournalOnQueue(queue, recheckQuickCheck: true)
-            try closeQueue(queue)
-            closed = true
-            try CatalogDatabaseSidecarHelpers.removeSidecarsIfPresent(at: url)
-            try CatalogDatabaseSidecarHelpers.requireNoSidecars(at: url)
         } catch let error as CatalogDatabaseError {
-            if !closed {
-                try closeQueue(queue)
-            }
+            try closeQueueOnce(queue, closed: &closed)
             if case let .futureSchema(applied, unknown) = error {
                 throw CatalogSnapshotError.futureMigrationHistory(applied: applied, unknown: unknown)
             }
             throw CatalogSnapshotError.candidatePreparationFailed
         } catch let error as CatalogSnapshotError {
-            if !closed {
-                try closeQueue(queue)
-            }
+            try closeQueueOnce(queue, closed: &closed)
             throw error
         } catch {
-            if !closed {
-                try closeQueue(queue)
-            }
+            try closeQueueOnce(queue, closed: &closed)
             throw CatalogSnapshotError.candidatePreparationFailed
         }
+        try closeQueueOnce(queue, closed: &closed)
+        try CatalogDatabaseSidecarHelpers.removeSidecarsIfPresent(at: url)
+        try CatalogDatabaseSidecarHelpers.requireNoSidecars(at: url)
     }
 
     static func validateAndCloseReplacedDatabase(at url: URL) throws {
@@ -352,25 +340,32 @@ struct CatalogDatabase: Sendable {
                 }
             }
             try convergeToDeleteJournalOnQueue(queue, recheckQuickCheck: true)
-            try closeQueue(queue)
-            closed = true
-            try CatalogDatabaseSidecarHelpers.removeSidecarsIfPresent(at: url)
-            try CatalogDatabaseSidecarHelpers.requireNoSidecars(at: url)
+        } catch let error as CatalogSnapshotError where error == .closeFailed {
+            throw error
         } catch let error as CatalogDatabaseError {
-            if !closed {
-                try closeQueue(queue)
+            do {
+                try closeQueueOnce(queue, closed: &closed)
+            } catch let closeError as CatalogSnapshotError where closeError == .closeFailed {
+                throw closeError
             }
             throw CatalogSnapshotError.postReplaceValidationFailed
         } catch let error as CatalogSnapshotError {
-            if !closed {
-                try closeQueue(queue)
+            do {
+                try closeQueueOnce(queue, closed: &closed)
+            } catch let closeError as CatalogSnapshotError where closeError == .closeFailed {
+                throw closeError
             }
             throw CatalogSnapshotError.postReplaceValidationFailed
         } catch {
-            if !closed {
-                try closeQueue(queue)
+            do {
+                try closeQueueOnce(queue, closed: &closed)
+            } catch let closeError as CatalogSnapshotError where closeError == .closeFailed {
+                throw closeError
             }
             throw CatalogSnapshotError.postReplaceValidationFailed
         }
+        try closeQueueOnce(queue, closed: &closed)
+        try CatalogDatabaseSidecarHelpers.removeSidecarsIfPresent(at: url)
+        try CatalogDatabaseSidecarHelpers.requireNoSidecars(at: url)
     }
 }

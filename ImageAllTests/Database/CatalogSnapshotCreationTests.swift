@@ -120,6 +120,7 @@ final class CatalogSnapshotCreationTests: XCTestCase {
         let root = try SnapshotTestSupport.makeTempRoot(testCase: self)
         let liveURL = SnapshotTestSupport.liveDatabaseURL(in: root)
         let database = try SnapshotTestSupport.openLiveDatabase(at: liveURL)
+        _ = try SnapshotTestSupport.seedRepresentativeFacts(in: database)
         let backups = SnapshotTestSupport.backupsDirectoryURL(in: root)
         let snapshotID = UUID()
 
@@ -130,10 +131,8 @@ final class CatalogSnapshotCreationTests: XCTestCase {
                 appVersion: SnapshotTestSupport.appVersion,
                 backupsDirectoryURL: backups,
                 dependencies: .init(
-                    destinationPreCloseHook: { queue, _ in
-                        try queue.writeWithoutTransaction { db in
-                            try db.execute(sql: "DELETE FROM sqlite_master WHERE type = 'table' AND name = 'job'")
-                        }
+                    destinationPreCloseHook: { _, databaseURL in
+                        try SnapshotTestSupport.corruptDestinationQuickCheck(at: databaseURL)
                     }
                 )
             )
@@ -161,7 +160,7 @@ final class CatalogSnapshotCreationTests: XCTestCase {
                 appVersion: SnapshotTestSupport.appVersion,
                 backupsDirectoryURL: backups,
                 dependencies: .init(
-                    destinationCloseHandler: { _ in
+                    destinationCloseFailureHook: {
                         throw CatalogSnapshotError.closeFailed
                     }
                 )
@@ -234,6 +233,68 @@ final class CatalogSnapshotCreationTests: XCTestCase {
         XCTAssertTrue(try CatalogSnapshotCatalog.discoverPublishedSnapshots(in: backups).isEmpty)
     }
 
+    func testHashFailureDuringCreationCleansTempAndLeavesLiveFactsUnchanged() throws {
+        let root = try SnapshotTestSupport.makeTempRoot(testCase: self)
+        let liveURL = SnapshotTestSupport.liveDatabaseURL(in: root)
+        let database = try SnapshotTestSupport.openLiveDatabase(at: liveURL)
+        _ = try SnapshotTestSupport.seedRepresentativeFacts(in: database)
+        let beforeCounts = try SnapshotTestSupport.factCounts(in: database)
+        let backups = SnapshotTestSupport.backupsDirectoryURL(in: root)
+        let snapshotID = UUID()
+
+        XCTAssertThrowsError(
+            try CatalogSnapshotCreator(sourceDatabase: database).createManualSnapshot(
+                snapshotID: snapshotID,
+                createdAtMs: SnapshotTestSupport.createdAtMs,
+                appVersion: SnapshotTestSupport.appVersion,
+                backupsDirectoryURL: backups,
+                dependencies: .init(
+                    hashFailureHook: {
+                        throw CatalogSnapshotError.invalidDatabaseChecksum
+                    }
+                )
+            )
+        ) { error in
+            XCTAssertEqual(error as? CatalogSnapshotError, .invalidDatabaseChecksum)
+        }
+
+        let finalURL = backups.appendingPathComponent(snapshotID.uuidString.lowercased(), isDirectory: true)
+        let tempURL = backups.appendingPathComponent("\(snapshotID.uuidString.lowercased()).tmp", isDirectory: true)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: finalURL.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: tempURL.path))
+        XCTAssertEqual(try SnapshotTestSupport.factCounts(in: database), beforeCounts)
+    }
+
+    func testDestinationQueueOpenFailureCleansTempDirectory() throws {
+        let root = try SnapshotTestSupport.makeTempRoot(testCase: self)
+        let liveURL = SnapshotTestSupport.liveDatabaseURL(in: root)
+        let database = try SnapshotTestSupport.openLiveDatabase(at: liveURL)
+        let backups = SnapshotTestSupport.backupsDirectoryURL(in: root)
+        let snapshotID = UUID()
+        let snapshotIDString = snapshotID.uuidString.lowercased()
+
+        XCTAssertThrowsError(
+            try CatalogSnapshotCreator(sourceDatabase: database).createManualSnapshot(
+                snapshotID: snapshotID,
+                createdAtMs: SnapshotTestSupport.createdAtMs,
+                appVersion: SnapshotTestSupport.appVersion,
+                backupsDirectoryURL: backups,
+                dependencies: .init(
+                    destinationQueueOpenFailureHook: {
+                        throw CatalogSnapshotError.backupFailed
+                    }
+                )
+            )
+        ) { error in
+            XCTAssertEqual(error as? CatalogSnapshotError, .backupFailed)
+        }
+
+        let tempURL = backups.appendingPathComponent("\(snapshotIDString).tmp", isDirectory: true)
+        let finalURL = backups.appendingPathComponent(snapshotIDString, isDirectory: true)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: tempURL.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: finalURL.path))
+    }
+
     func testConcurrentWriteDuringBackupStepsProducesConsistentSnapshot() throws {
         let root = try SnapshotTestSupport.makeTempRoot(testCase: self)
         let liveURL = SnapshotTestSupport.liveDatabaseURL(in: root)
@@ -282,7 +343,7 @@ final class CatalogSnapshotCreationTests: XCTestCase {
         let backups = SnapshotTestSupport.backupsDirectoryURL(in: root)
         let snapshotID = UUID()
         let creator = CatalogSnapshotCreator(sourceDatabase: database)
-        var snapshotError: Error?
+        let snapshotErrorBox = ErrorBox()
 
         let work = DispatchWorkItem {
             do {
@@ -301,7 +362,7 @@ final class CatalogSnapshotCreationTests: XCTestCase {
                     )
                 )
             } catch {
-                snapshotError = error
+                snapshotErrorBox.store(error)
             }
         }
         DispatchQueue.global().async(execute: work)
@@ -372,7 +433,7 @@ final class CatalogSnapshotCreationTests: XCTestCase {
         gate.allowBackupToContinue()
 
         work.wait()
-        if let snapshotError {
+        if let snapshotError = snapshotErrorBox.storedError {
             XCTFail("Snapshot failed: \(snapshotError)")
             return
         }
@@ -418,6 +479,7 @@ final class CatalogSnapshotCheckpointTests: XCTestCase {
 
         let readStarted = DispatchSemaphore(value: 0)
         let releaseRead = DispatchSemaphore(value: 0)
+        let readFinished = DispatchSemaphore(value: 0)
         let readErrorBox = ErrorBox()
 
         DispatchQueue.global().async {
@@ -430,6 +492,7 @@ final class CatalogSnapshotCheckpointTests: XCTestCase {
             } catch {
                 readErrorBox.store(error)
             }
+            readFinished.signal()
         }
 
         readStarted.wait()
@@ -446,7 +509,7 @@ final class CatalogSnapshotCheckpointTests: XCTestCase {
         try CatalogDatabase.closeQueue(challenger)
 
         releaseRead.signal()
-        Thread.sleep(forTimeInterval: 0.05)
+        readFinished.wait()
         if let capturedReadError = readErrorBox.storedError {
             throw capturedReadError
         }

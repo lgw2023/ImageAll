@@ -44,7 +44,10 @@ struct CatalogSnapshotCreationDependencies {
     var pagesPerStep: CInt
     var backupProgressHook: (@Sendable (DatabaseBackupProgress) throws -> Void)?
     var destinationPreCloseHook: (@Sendable (DatabaseQueue, URL) throws -> Void)?
-    var destinationCloseHandler: (@Sendable (DatabaseQueue) throws -> Void)?
+    var destinationCloseFailureHook: (@Sendable () throws -> Void)?
+    var destinationQueueOpenFailureHook: (@Sendable () throws -> Void)?
+    var quickCheckFailureHook: (@Sendable (DatabaseQueue) throws -> Void)?
+    var hashFailureHook: (@Sendable () throws -> Void)?
     var manifestDataWriter: (@Sendable (Data, URL) throws -> Void)?
     var publicationFailureHook: (@Sendable () throws -> Void)?
 
@@ -53,7 +56,10 @@ struct CatalogSnapshotCreationDependencies {
         pagesPerStep: CInt = -1,
         backupProgressHook: (@Sendable (DatabaseBackupProgress) throws -> Void)? = nil,
         destinationPreCloseHook: (@Sendable (DatabaseQueue, URL) throws -> Void)? = nil,
-        destinationCloseHandler: (@Sendable (DatabaseQueue) throws -> Void)? = nil,
+        destinationCloseFailureHook: (@Sendable () throws -> Void)? = nil,
+        destinationQueueOpenFailureHook: (@Sendable () throws -> Void)? = nil,
+        quickCheckFailureHook: (@Sendable (DatabaseQueue) throws -> Void)? = nil,
+        hashFailureHook: (@Sendable () throws -> Void)? = nil,
         manifestDataWriter: (@Sendable (Data, URL) throws -> Void)? = nil,
         publicationFailureHook: (@Sendable () throws -> Void)? = nil
     ) {
@@ -61,7 +67,10 @@ struct CatalogSnapshotCreationDependencies {
         self.pagesPerStep = pagesPerStep
         self.backupProgressHook = backupProgressHook
         self.destinationPreCloseHook = destinationPreCloseHook
-        self.destinationCloseHandler = destinationCloseHandler
+        self.destinationCloseFailureHook = destinationCloseFailureHook
+        self.destinationQueueOpenFailureHook = destinationQueueOpenFailureHook
+        self.quickCheckFailureHook = quickCheckFailureHook
+        self.hashFailureHook = hashFailureHook
         self.manifestDataWriter = manifestDataWriter
         self.publicationFailureHook = publicationFailureHook
     }

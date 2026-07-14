@@ -67,7 +67,13 @@ struct CatalogDatabaseRestoreCoordinator: Sendable {
                 runMigration: needsMigration
             )
 
-            guard try dependencies.sameVolumeChecker(workDatabaseURL, liveDatabaseURL) else {
+            do {
+                guard try dependencies.sameVolumeChecker(workDatabaseURL, liveDatabaseURL) else {
+                    throw CatalogSnapshotError.differentVolume
+                }
+            } catch let error as CatalogSnapshotError {
+                throw error
+            } catch {
                 throw CatalogSnapshotError.differentVolume
             }
 
@@ -90,13 +96,17 @@ struct CatalogDatabaseRestoreCoordinator: Sendable {
             }
 
             let preRestoreBackupItemURL = liveDatabaseDirectoryURL.appendingPathComponent(preRestoreBackupName)
-            try verifyRetainedBackupItem(at: preRestoreBackupItemURL, fileManager: fileManager)
+            do {
+                try verifyRetainedBackupItem(at: preRestoreBackupItemURL, fileManager: fileManager)
+            } catch {
+                throw CatalogSnapshotError.manualInterventionRequired
+            }
 
             do {
                 try dependencies.postReplaceValidator.validateDatabase(at: resultingURL)
                 try CatalogDatabaseSidecarHelpers.requireNoSidecars(at: resultingURL, fileManager: fileManager)
-            } catch let error as CatalogSnapshotError where error == .manualInterventionRequired {
-                throw error
+            } catch let error as CatalogSnapshotError where error == .closeFailed {
+                throw CatalogSnapshotError.manualInterventionRequired
             } catch {
                 do {
                     _ = try performRollbackAfterPostReplaceFailure(
@@ -138,12 +148,21 @@ struct CatalogDatabaseRestoreCoordinator: Sendable {
     private func verifyRetainedBackupItem(at url: URL, fileManager: FileManager) throws {
         var isDirectory: ObjCBool = false
         guard fileManager.fileExists(atPath: url.path, isDirectory: &isDirectory), !isDirectory.boolValue else {
-            throw CatalogSnapshotError.initialReplacementFailed
+            throw CatalogSnapshotError.manualInterventionRequired
         }
-        let values = try url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
+        let values: URLResourceValues
+        do {
+            values = try url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
+        } catch {
+            throw CatalogSnapshotError.manualInterventionRequired
+        }
         guard values.isSymbolicLink != true, values.isRegularFile == true else {
-            throw CatalogSnapshotError.initialReplacementFailed
+            throw CatalogSnapshotError.manualInterventionRequired
         }
+    }
+
+    private func verifyQuarantineBackupItem(at url: URL, fileManager: FileManager) throws {
+        try verifyRetainedBackupItem(at: url, fileManager: fileManager)
     }
 
     private func performRollbackAfterPostReplaceFailure(
@@ -155,35 +174,47 @@ struct CatalogDatabaseRestoreCoordinator: Sendable {
     ) throws -> CatalogDatabaseRestoreRollbackResult {
         let liveDatabaseDirectoryURL = liveDatabaseURL.deletingLastPathComponent()
 
-        try CatalogDatabaseSidecarHelpers.removeSidecarsIfPresent(at: liveDatabaseURL, fileManager: fileManager)
+        do {
+            try CatalogDatabaseSidecarHelpers.removeSidecarsIfPresent(at: liveDatabaseURL, fileManager: fileManager)
+        } catch {
+            throw CatalogSnapshotError.manualInterventionRequired
+        }
 
         let quarantineBackupName = "ImageAll.sqlite.quarantine-\(operationIDString)"
 
+        let restoredURL: URL
         do {
-            let restoredURL = try fileReplacer.replaceItem(
+            restoredURL = try fileReplacer.replaceItem(
                 at: liveDatabaseURL,
                 withItemAt: preRestoreBackupItemURL,
                 backupItemName: quarantineBackupName,
                 options: [.withoutDeletingBackupItem]
             )
-
-            do {
-                try CatalogDatabase.withReadonlyQueue(at: restoredURL) { db in
-                    try CatalogDatabase.performQuickCheck(on: db)
-                }
-            } catch {
-                // Best-effort post-rollback verification; rollback success must not be downgraded.
-            }
-
-            let quarantineBackupItemURL = liveDatabaseDirectoryURL.appendingPathComponent(quarantineBackupName)
-            return CatalogDatabaseRestoreRollbackResult(
-                restoredDatabaseURL: restoredURL,
-                quarantineBackupItemURL: quarantineBackupItemURL
-            )
-        } catch let error as CatalogSnapshotError {
-            throw error
         } catch {
             throw CatalogSnapshotError.rollbackReplacementFailed
         }
+
+        let quarantineBackupItemURL = liveDatabaseDirectoryURL.appendingPathComponent(quarantineBackupName)
+
+        do {
+            try verifyQuarantineBackupItem(at: quarantineBackupItemURL, fileManager: fileManager)
+            try CatalogDatabaseSidecarHelpers.requireNoSidecars(at: restoredURL, fileManager: fileManager)
+            try CatalogDatabaseSidecarHelpers.requireNoSidecars(at: quarantineBackupItemURL, fileManager: fileManager)
+        } catch {
+            throw CatalogSnapshotError.manualInterventionRequired
+        }
+
+        do {
+            try CatalogDatabase.withReadonlyQueue(at: restoredURL) { db in
+                try CatalogDatabase.performQuickCheck(on: db)
+            }
+        } catch {
+            // Best-effort post-rollback verification; rollback success must not be downgraded.
+        }
+
+        return CatalogDatabaseRestoreRollbackResult(
+            restoredDatabaseURL: restoredURL,
+            quarantineBackupItemURL: quarantineBackupItemURL
+        )
     }
 }

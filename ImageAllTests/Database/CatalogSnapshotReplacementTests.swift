@@ -197,4 +197,88 @@ final class CatalogSnapshotReplacementTests: XCTestCase {
         try database.checkpointAndCloseForReplacement()
         XCTAssertFalse(CatalogDatabaseSidecarHelpers.hasSidecars(at: liveURL))
     }
+
+    func testMissingRetainedBackupAfterSuccessfulReplaceReturnsManualIntervention() throws {
+        let root = try SnapshotTestSupport.makeTempRoot(testCase: self)
+        let liveURL = SnapshotTestSupport.liveDatabaseURL(in: root)
+        let database = try SnapshotTestSupport.openLiveDatabase(at: liveURL)
+        _ = try SnapshotTestSupport.seedRepresentativeFacts(in: database)
+
+        let backups = SnapshotTestSupport.backupsDirectoryURL(in: root)
+        let descriptor = try SnapshotTestSupport.writePublishedSnapshot(
+            in: backups,
+            snapshotID: UUID(),
+            sourceDatabase: database
+        )
+        try database.checkpointAndCloseForReplacement()
+
+        let operationID = UUID()
+        let operationIDString = operationID.uuidString.lowercased()
+        let fileReplacer = FaultInjectingCatalogDatabaseFileReplacer(
+            deleteRetainedBackupAfterFirstReplace: true
+        )
+
+        XCTAssertThrowsError(
+            try CatalogDatabaseRestoreCoordinator().restoreSnapshot(
+                snapshotDirectoryURL: descriptor.directoryURL,
+                liveDatabaseURL: liveURL,
+                operationID: operationID,
+                dependencies: .init(fileReplacer: fileReplacer)
+            )
+        ) { error in
+            XCTAssertEqual(error as? CatalogSnapshotError, .manualInterventionRequired)
+        }
+
+        XCTAssertEqual(fileReplacer.replacementCallCount, 1)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: liveURL.path))
+
+        let preRestoreBackupURL = liveURL.deletingLastPathComponent()
+            .appendingPathComponent("ImageAll.sqlite.pre-restore-\(operationIDString)")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: preRestoreBackupURL.path))
+    }
+
+    func testPostReplaceCloseFailureReturnsManualInterventionWithoutRollback() throws {
+        let root = try SnapshotTestSupport.makeTempRoot(testCase: self)
+        let liveURL = SnapshotTestSupport.liveDatabaseURL(in: root)
+        let database = try SnapshotTestSupport.openLiveDatabase(at: liveURL)
+        _ = try SnapshotTestSupport.seedRepresentativeFacts(in: database)
+
+        let backups = SnapshotTestSupport.backupsDirectoryURL(in: root)
+        let descriptor = try SnapshotTestSupport.writePublishedSnapshot(
+            in: backups,
+            snapshotID: UUID(),
+            sourceDatabase: database
+        )
+        try database.checkpointAndCloseForReplacement()
+
+        let operationID = UUID()
+        let operationIDString = operationID.uuidString.lowercased()
+        let fileReplacer = FaultInjectingCatalogDatabaseFileReplacer()
+
+        XCTAssertThrowsError(
+            try CatalogDatabaseRestoreCoordinator().restoreSnapshot(
+                snapshotDirectoryURL: descriptor.directoryURL,
+                liveDatabaseURL: liveURL,
+                operationID: operationID,
+                dependencies: .init(
+                    fileReplacer: fileReplacer,
+                    postReplaceValidator: FaultInjectingCatalogPostReplaceValidator(
+                        shouldFailWithCloseFailed: true
+                    )
+                )
+            )
+        ) { error in
+            XCTAssertEqual(error as? CatalogSnapshotError, .manualInterventionRequired)
+        }
+
+        XCTAssertEqual(fileReplacer.replacementCallCount, 1)
+
+        let preRestoreBackupURL = liveURL.deletingLastPathComponent()
+            .appendingPathComponent("ImageAll.sqlite.pre-restore-\(operationIDString)")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: preRestoreBackupURL.path))
+
+        let quarantineURL = liveURL.deletingLastPathComponent()
+            .appendingPathComponent("ImageAll.sqlite.quarantine-\(operationIDString)")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: quarantineURL.path))
+    }
 }
