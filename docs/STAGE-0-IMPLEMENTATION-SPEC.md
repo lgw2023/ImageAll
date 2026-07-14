@@ -1,6 +1,6 @@
 # ImageAll 阶段 0 实施规格
 
-> 状态：In implementation v0.5（Gate 0 与切片 1–4 已通过，切片 5 待实施）<br>
+> 状态：In implementation v0.6（Gate 0 与切片 1–5 已通过，切片 6 待实施）<br>
 > 日期：2026-07-14<br>
 > 上位文档：[ARCHITECTURE.md](./ARCHITECTURE.md)<br>
 > 目标读者：负责首轮实现和评审的 macOS 工程师
@@ -21,18 +21,18 @@
 
 ## 2. 当前实施基线
 
-2026-07-14 完成 Gate 0、切片 1–4 及其复审修正后的实施基线：
+2026-07-14 完成 Gate 0、切片 1–5 及其复审修正后的实施基线：
 
 | 项目 | 当前状态 | 对阶段 0 的影响 |
 |---|---|---|
 | 系统 | macOS 26.5.1，Apple Silicon | 首个本机验证环境已建立；Intel 仍未验证 |
 | 工具链 | Xcode 26.6、Swift 6.3.3、macOS SDK 26.5 | Debug build 与测试已独立复核通过 |
 | 工程配置 | macOS 15.0、Swift 6 language mode、本地 ad-hoc 签名、App Sandbox | Gate 0 与切片 1 基线已冻结 |
-| 版本控制 | 本地 `main`；切片 4 已批准实现为 `e207180`，后续协作文档截至 `576f154`，工作区干净 | 后续切片必须在已批准历史上独立提交 |
-| 已实现范围 | SwiftUI 空壳、Composition Root、纯 Domain 规则、GRDB v001 与最小 Catalog Repository、持久化 Job 状态机 | 尚未实现快照/恢复、AppPaths、进程锁和正式启动集成 |
-| 自动化基线 | 177 项测试通过，Debug build 通过 | 切片 5 必须保持全部既有测试无回归 |
+| 版本控制 | 本地 `main`；切片 5 已批准实现截至 `562f778`，工作区干净 | 后续切片必须在已批准历史上独立提交 |
+| 已实现范围 | SwiftUI 空壳、Composition Root、纯 Domain 规则、GRDB v001 与最小 Catalog Repository、持久化 Job 状态机、目录库快照与安全恢复 | 尚未实现 AppPaths、进程锁和正式启动集成 |
+| 自动化基线 | 224 项测试通过，Debug build 通过 | 切片 6 必须保持全部既有测试无回归 |
 
-Gate 0 与切片 1–4 已由 Codex 复审通过。后续实现不得重新解释 `foundationReady`，也不得在切片 6 启动集成获批前声称目录库或任务调度已经就绪。
+Gate 0 与切片 1–5 已由 Codex 复审通过。后续实现不得重新解释 `foundationReady`，也不得在切片 6 启动集成获批前声称目录库或任务调度已经就绪。
 
 ## 3. 阶段边界与暂定决策
 

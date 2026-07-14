@@ -24,6 +24,10 @@ alwaysApply: true
 6. **契约核对**：与当次任务明确指定的权威 handoff / 规格文件相关的关键决策与反例测试
 7. **Git 边界**：commit 消息摘要、是否 push、已知限制或偏离
 8. **请求 Codex 重点审查**：3–5 条具体审查点
+9. **任务留档与提交归属**：对应的 `docs/cursor-cli-tasks/*.md` 路径，以及
+   `git show -s --format='%an <%ae>%n%s%n%(trailers)' HEAD` 输出；Cursor 交付 commit
+   必须显示 `Cursor Agent <cursoragent@cursor.com>`、`feat(cursor):`/`fix(cursor):`
+   主题前缀和 `Agent-Role: implementation`
 
 ## 格式要求
 
@@ -32,6 +36,8 @@ alwaysApply: true
 - 当次任务指定的 handoff 有回传清单时，按其条目覆盖，不遗漏；不得自行猜测其他 handoff 文件
 - 若任务要求可观察运行行为，按交接单提供运行证据；受阻交付不得伪造成功证据或 commit
 - 停止位置写清楚（例如：「未进入切片 4，等待 Codex 复审」）
+- 不得把 Codex 的交接单/架构文档与 Cursor 实现放入同一 commit，不得用
+  `Co-authored-by` 模糊主作者归属
 
 ## 示例结尾
 

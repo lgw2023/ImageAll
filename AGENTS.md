@@ -41,6 +41,22 @@ agent -p --model composer-2.5-fast --force --sandbox disabled --trust \
 
 调用记录至少保留实际模型、Cursor session ID、开工与交付 commit、测试总数、构建结果和最终工作区状态。
 
+### Cursor CLI 任务留档
+
+- 每个新的阶段、切片或独立交接任务在调用 Cursor 前，Codex 必须在
+  `docs/cursor-cli-tasks/` 创建一份独立 Markdown 记录。文件名使用
+  `YYYY-MM-DD-<task-id>.md`，同一交接单的返修继续追加到原记录，不另建一份“新任务”。
+- 记录必须包含：任务状态、权威交接单、上一批准基线、开工 HEAD 的确定规则、完整可复制的 CLI 命令、完整任务正文、禁止事项和停止位置。包含记录本身的 Codex commit 会改变 HEAD，因此调用前版本允许用 `<LAUNCH_HEAD>` 占位；调用时必须把它替换为当时 `git rev-parse HEAD` 的精确值，调用后再补充该值、`system/init.model`、Cursor session ID、交付 commit、测试/构建证据、Codex 评审结论和最终工作区状态。
+- CLI 输出可能很大，不把完整 `stream-json` 写入仓库；只保存上述可复现字段和必要的失败/验收摘要。任务正文不得依赖聊天历史补全，也不得记录 API key、token 或其他凭据。
+- 新任务的记录与交接单必须先形成 Codex 文档提交，Cursor 才能以该提交为开工基线。窄范围返修可以先在同一记录追加“待执行”条目，再续接原 session；返修完成后的结果由 Codex 在复审时补记。
+
+### Git 提交归属
+
+- Codex 只提交产品、架构、规格、交接单和协作记录，不提交可执行实现。Codex 提交使用临时 author identity `Codex <codex@openai.com>`、主题前缀 `docs(codex):`，并带 trailer `Agent-Role: product-architecture`。
+- Cursor 只提交当次交接单授权的实现、测试和必要工程引用。Cursor 提交使用临时 author identity `Cursor Agent <cursoragent@cursor.com>`、主题前缀 `feat(cursor):` 或 `fix(cursor):`，并带 trailer `Agent-Role: implementation`。
+- 单个 commit 不得混合 Codex 文档工作与 Cursor 实现工作。不得通过 `Co-authored-by` 把实际主作者归属混在一起；复审关系记录在 Cursor 任务留档中，不改变 commit author。
+- 两种 identity 都通过单次 `git -c user.name=... -c user.email=... commit` 设置，不修改仓库或用户的持久 Git 配置。Cursor 的交接材料必须回传 `git show -s --format='%an <%ae>%n%s%n%(trailers)' HEAD` 作为归属证据。
+
 ## 工作方式
 
 1. 实施前明确假设、歧义和取舍；重要产品选择不得静默决定。
