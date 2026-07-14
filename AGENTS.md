@@ -19,12 +19,32 @@ Codex 不负责具体实现：
 
 架构文档可以包含数据契约、状态图、表结构和非可执行伪代码，但应避免提供可直接替代生产实现的大段代码。
 
+## Cursor CLI 直接实施工作流
+
+Cursor 是本项目的实现开发者。Codex 可以在项目目录直接调用本机 Cursor CLI 下发已批准的实施或修正任务，用户不再承担 Codex 与 Cursor 之间的常规信息转发。
+
+- Cursor CLI 只能使用模型 `composer-2.5-fast`（显示名 `Composer 2.5 Fast`）。每次调用必须显式传入 `--model composer-2.5-fast`，不得使用 `auto`、其他模型、Cursor 子代理或 MCP 代替；`stream-json` 的 `system/init.model` 必须作为实际模型证据。
+- 本项目允许 Cursor 对仓库、构建工具、测试和 Git 使用高执行权限。标准非交互调用使用 `--force --sandbox disabled --trust`；正常构建所需的系统临时目录、DerivedData 和依赖缓存允许使用。该授权不覆盖下文的真实照片保护规则，也不构成 push、改写 Git 历史或处理其他项目外用户数据的授权。
+- Codex 负责先给出范围、权威规格/交接单的准确路径、契约、测试矩阵、停止位置和验收门；Cursor 负责实现、运行测试与构建、创建窄范围本地 commit，并输出 `.cursor/rules/codex-review-handoff.mdc` 规定的复审材料。只有任务要求可观察运行行为时才需要额外运行证据，具体形式由当次交接单定义。
+- Cursor 交付后由 Codex 独立检查 diff、测试证据和架构边界。未通过时，Codex 直接续接同一 Cursor 会话或创建新的限定任务；只有产品决策、新的外部授权或不可逆操作才需要用户介入。
+- 开工前必须检查 `HEAD`、分支与工作区。遇到来源不明或前序未提交改动时，先识别并保留，不得擅自 `reset`、`checkout`、`stash`、`clean` 或覆盖；同一任务的中断草稿可以在说明假设后续做。若无法确认所有权且改动与本任务范围重叠，必须停止修改并向 Codex 报告。
+- 默认只提交到本地当前分支，不 push、不 amend、不 squash、不改写已批准 migration。任何例外必须由项目所有者明确授权。
+
+推荐的可审计调用基线是：
+
+```text
+agent -p --model composer-2.5-fast --force --sandbox disabled --trust \
+  --output-format stream-json --workspace /Volumes/SSD1/ImageAll <任务说明>
+```
+
+调用记录至少保留实际模型、Cursor session ID、开工与交付 commit、测试总数、构建结果和最终工作区状态。
+
 ## 工作方式
 
 1. 实施前明确假设、歧义和取舍；重要产品选择不得静默决定。
 2. 只设计当前阶段需要的最小能力，不提前加入推测性功能。
 3. 修改现有文档时只处理本任务涉及的内容，保留无关内容。
-4. 每个阶段都要定义可验证的成功标准，并要求实现者提供构建、测试和运行证据。
+4. 每个阶段都要定义可验证的成功标准，并要求实现者提供构建、测试，以及当次交接单要求的运行证据。
 5. 发现架构与实现不一致时，先记录差异和影响，再决定修改架构还是实现。
 
 ## 本机真实测试数据安全
