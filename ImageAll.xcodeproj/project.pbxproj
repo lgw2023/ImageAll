@@ -36,6 +36,15 @@
 		CC0000010000000000000103 /* V001CreateCatalogCoreMigration.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC0001010000000000000003 /* V001CreateCatalogCoreMigration.swift */; };
 		CC0000010000000000000104 /* CatalogDatabase.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC0001010000000000000004 /* CatalogDatabase.swift */; };
 		CC0000010000000000000105 /* CatalogRepository.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC0001010000000000000005 /* CatalogRepository.swift */; };
+		CC0000010000000000000106 /* CatalogSnapshotConstants.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC000101000000000000000D /* CatalogSnapshotConstants.swift */; };
+		CC0000010000000000000107 /* CatalogSnapshotError.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC000101000000000000000E /* CatalogSnapshotError.swift */; };
+		CC0000010000000000000108 /* CatalogSnapshotManifest.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC000101000000000000000F /* CatalogSnapshotManifest.swift */; };
+		CC0000010000000000000109 /* CatalogDatabaseSidecarHelpers.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC0001010000000000000010 /* CatalogDatabaseSidecarHelpers.swift */; };
+		CC000001000000000000010A /* CatalogSnapshotHashing.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC0001010000000000000011 /* CatalogSnapshotHashing.swift */; };
+		CC000001000000000000010B /* CatalogSnapshotSeams.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC0001010000000000000012 /* CatalogSnapshotSeams.swift */; };
+		CC000001000000000000010C /* CatalogSnapshotCatalog.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC0001010000000000000013 /* CatalogSnapshotCatalog.swift */; };
+		CC000001000000000000010D /* CatalogSnapshotCreator.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC0001010000000000000014 /* CatalogSnapshotCreator.swift */; };
+		CC000001000000000000010E /* CatalogDatabaseRestoreCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC0001010000000000000015 /* CatalogDatabaseRestoreCoordinator.swift */; };
 		CC0000010000000000000201 /* DatabaseTestSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC0001010000000000000006 /* DatabaseTestSupport.swift */; };
 		CC0000010000000000000202 /* CatalogDatabaseConnectionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC0001010000000000000007 /* CatalogDatabaseConnectionTests.swift */; };
 		CC0000010000000000000203 /* CatalogMigrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC0001010000000000000008 /* CatalogMigrationTests.swift */; };
@@ -43,6 +52,11 @@
 		CC0000010000000000000205 /* CatalogConstraintTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC000101000000000000000A /* CatalogConstraintTests.swift */; };
 		CC0000010000000000000206 /* CatalogRepositoryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC000101000000000000000B /* CatalogRepositoryTests.swift */; };
 		CC0000010000000000000207 /* CatalogSchemaExpectations.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC000101000000000000000C /* CatalogSchemaExpectations.swift */; };
+		CC0000010000000000000208 /* SnapshotTestSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC0001010000000000000016 /* SnapshotTestSupport.swift */; };
+		CC0000010000000000000209 /* CatalogSnapshotManifestTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC0001010000000000000017 /* CatalogSnapshotManifestTests.swift */; };
+		CC000001000000000000020A /* CatalogSnapshotCreationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC0001010000000000000018 /* CatalogSnapshotCreationTests.swift */; };
+		CC000001000000000000020B /* CatalogSnapshotRestoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC0001010000000000000019 /* CatalogSnapshotRestoreTests.swift */; };
+		CC000001000000000000020C /* CatalogSnapshotReplacementTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC000101000000000000001A /* CatalogSnapshotReplacementTests.swift */; };
 		DD0000010000000000000001 /* JobTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD0001010000000000000001 /* JobTypes.swift */; };
 		DD0000010000000000000002 /* JobClock.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD0001010000000000000002 /* JobClock.swift */; };
 		DD0000010000000000000003 /* RetryPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD0001010000000000000003 /* RetryPolicy.swift */; };
@@ -107,6 +121,15 @@
 		CC0001010000000000000003 /* V001CreateCatalogCoreMigration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = V001CreateCatalogCoreMigration.swift; sourceTree = "<group>"; };
 		CC0001010000000000000004 /* CatalogDatabase.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CatalogDatabase.swift; sourceTree = "<group>"; };
 		CC0001010000000000000005 /* CatalogRepository.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CatalogRepository.swift; sourceTree = "<group>"; };
+		CC000101000000000000000D /* CatalogSnapshotConstants.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CatalogSnapshotConstants.swift; sourceTree = "<group>"; };
+		CC000101000000000000000E /* CatalogSnapshotError.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CatalogSnapshotError.swift; sourceTree = "<group>"; };
+		CC000101000000000000000F /* CatalogSnapshotManifest.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CatalogSnapshotManifest.swift; sourceTree = "<group>"; };
+		CC0001010000000000000010 /* CatalogDatabaseSidecarHelpers.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CatalogDatabaseSidecarHelpers.swift; sourceTree = "<group>"; };
+		CC0001010000000000000011 /* CatalogSnapshotHashing.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CatalogSnapshotHashing.swift; sourceTree = "<group>"; };
+		CC0001010000000000000012 /* CatalogSnapshotSeams.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CatalogSnapshotSeams.swift; sourceTree = "<group>"; };
+		CC0001010000000000000013 /* CatalogSnapshotCatalog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CatalogSnapshotCatalog.swift; sourceTree = "<group>"; };
+		CC0001010000000000000014 /* CatalogSnapshotCreator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CatalogSnapshotCreator.swift; sourceTree = "<group>"; };
+		CC0001010000000000000015 /* CatalogDatabaseRestoreCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CatalogDatabaseRestoreCoordinator.swift; sourceTree = "<group>"; };
 		CC0001010000000000000006 /* DatabaseTestSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DatabaseTestSupport.swift; sourceTree = "<group>"; };
 		CC0001010000000000000007 /* CatalogDatabaseConnectionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CatalogDatabaseConnectionTests.swift; sourceTree = "<group>"; };
 		CC0001010000000000000008 /* CatalogMigrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CatalogMigrationTests.swift; sourceTree = "<group>"; };
@@ -114,6 +137,11 @@
 		CC000101000000000000000A /* CatalogConstraintTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CatalogConstraintTests.swift; sourceTree = "<group>"; };
 		CC000101000000000000000B /* CatalogRepositoryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CatalogRepositoryTests.swift; sourceTree = "<group>"; };
 		CC000101000000000000000C /* CatalogSchemaExpectations.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CatalogSchemaExpectations.swift; sourceTree = "<group>"; };
+		CC0001010000000000000016 /* SnapshotTestSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SnapshotTestSupport.swift; sourceTree = "<group>"; };
+		CC0001010000000000000017 /* CatalogSnapshotManifestTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CatalogSnapshotManifestTests.swift; sourceTree = "<group>"; };
+		CC0001010000000000000018 /* CatalogSnapshotCreationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CatalogSnapshotCreationTests.swift; sourceTree = "<group>"; };
+		CC0001010000000000000019 /* CatalogSnapshotRestoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CatalogSnapshotRestoreTests.swift; sourceTree = "<group>"; };
+		CC000101000000000000001A /* CatalogSnapshotReplacementTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CatalogSnapshotReplacementTests.swift; sourceTree = "<group>"; };
 		DD0001010000000000000001 /* JobTypes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JobTypes.swift; sourceTree = "<group>"; };
 		DD0001010000000000000002 /* JobClock.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JobClock.swift; sourceTree = "<group>"; };
 		DD0001010000000000000003 /* RetryPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RetryPolicy.swift; sourceTree = "<group>"; };
@@ -291,7 +319,12 @@
 				CC0001010000000000000009 /* CatalogSchemaTests.swift */,
 				CC000101000000000000000A /* CatalogConstraintTests.swift */,
 				CC000101000000000000000B /* CatalogRepositoryTests.swift */,
-				CC000101000000000000000C /* CatalogSchemaExpectations.swift */
+				CC000101000000000000000C /* CatalogSchemaExpectations.swift */,
+				CC0001010000000000000016 /* SnapshotTestSupport.swift */,
+				CC0001010000000000000017 /* CatalogSnapshotManifestTests.swift */,
+				CC0001010000000000000018 /* CatalogSnapshotCreationTests.swift */,
+				CC0001010000000000000019 /* CatalogSnapshotRestoreTests.swift */,
+				CC000101000000000000001A /* CatalogSnapshotReplacementTests.swift */
 			);
 			path = Database;
 			sourceTree = "<group>";
@@ -303,7 +336,16 @@
 				CC0001010000000000000002 /* CatalogMigrationIDs.swift */,
 				CC0001010000000000000003 /* V001CreateCatalogCoreMigration.swift */,
 				CC0001010000000000000004 /* CatalogDatabase.swift */,
-				CC0001010000000000000005 /* CatalogRepository.swift */
+				CC0001010000000000000005 /* CatalogRepository.swift */,
+				CC000101000000000000000D /* CatalogSnapshotConstants.swift */,
+				CC000101000000000000000E /* CatalogSnapshotError.swift */,
+				CC000101000000000000000F /* CatalogSnapshotManifest.swift */,
+				CC0001010000000000000010 /* CatalogDatabaseSidecarHelpers.swift */,
+				CC0001010000000000000011 /* CatalogSnapshotHashing.swift */,
+				CC0001010000000000000012 /* CatalogSnapshotSeams.swift */,
+				CC0001010000000000000013 /* CatalogSnapshotCatalog.swift */,
+				CC0001010000000000000014 /* CatalogSnapshotCreator.swift */,
+				CC0001010000000000000015 /* CatalogDatabaseRestoreCoordinator.swift */
 			);
 			path = Database;
 			sourceTree = "<group>";
@@ -479,6 +521,15 @@
 				CC0000010000000000000103 /* V001CreateCatalogCoreMigration.swift in Sources */,
 				CC0000010000000000000104 /* CatalogDatabase.swift in Sources */,
 				CC0000010000000000000105 /* CatalogRepository.swift in Sources */,
+				CC0000010000000000000106 /* CatalogSnapshotConstants.swift in Sources */,
+				CC0000010000000000000107 /* CatalogSnapshotError.swift in Sources */,
+				CC0000010000000000000108 /* CatalogSnapshotManifest.swift in Sources */,
+				CC0000010000000000000109 /* CatalogDatabaseSidecarHelpers.swift in Sources */,
+				CC000001000000000000010A /* CatalogSnapshotHashing.swift in Sources */,
+				CC000001000000000000010B /* CatalogSnapshotSeams.swift in Sources */,
+				CC000001000000000000010C /* CatalogSnapshotCatalog.swift in Sources */,
+				CC000001000000000000010D /* CatalogSnapshotCreator.swift in Sources */,
+				CC000001000000000000010E /* CatalogDatabaseRestoreCoordinator.swift in Sources */,
 				DD0000010000000000000001 /* JobTypes.swift in Sources */,
 				DD0000010000000000000002 /* JobClock.swift in Sources */,
 				DD0000010000000000000003 /* RetryPolicy.swift in Sources */,
@@ -506,6 +557,11 @@
 				CC0000010000000000000205 /* CatalogConstraintTests.swift in Sources */,
 				CC0000010000000000000206 /* CatalogRepositoryTests.swift in Sources */,
 				CC0000010000000000000207 /* CatalogSchemaExpectations.swift in Sources */,
+				CC0000010000000000000208 /* SnapshotTestSupport.swift in Sources */,
+				CC0000010000000000000209 /* CatalogSnapshotManifestTests.swift in Sources */,
+				CC000001000000000000020A /* CatalogSnapshotCreationTests.swift in Sources */,
+				CC000001000000000000020B /* CatalogSnapshotRestoreTests.swift in Sources */,
+				CC000001000000000000020C /* CatalogSnapshotReplacementTests.swift in Sources */,
 				DD0000010000000000000101 /* JobTestSupport.swift in Sources */,
 				DD0000010000000000000102 /* JobModelsTests.swift in Sources */,
 				DD0000010000000000000103 /* JobEnqueueTests.swift in Sources */,
