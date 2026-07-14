@@ -42,6 +42,7 @@
 		CC0000010000000000000204 /* CatalogSchemaTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC0001010000000000000009 /* CatalogSchemaTests.swift */; };
 		CC0000010000000000000205 /* CatalogConstraintTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC000101000000000000000A /* CatalogConstraintTests.swift */; };
 		CC0000010000000000000206 /* CatalogRepositoryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC000101000000000000000B /* CatalogRepositoryTests.swift */; };
+		CC0000010000000000000207 /* CatalogSchemaExpectations.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC000101000000000000000C /* CatalogSchemaExpectations.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -91,6 +92,7 @@
 		CC0001010000000000000009 /* CatalogSchemaTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CatalogSchemaTests.swift; sourceTree = "<group>"; };
 		CC000101000000000000000A /* CatalogConstraintTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CatalogConstraintTests.swift; sourceTree = "<group>"; };
 		CC000101000000000000000B /* CatalogRepositoryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CatalogRepositoryTests.swift; sourceTree = "<group>"; };
+		CC000101000000000000000C /* CatalogSchemaExpectations.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CatalogSchemaExpectations.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -243,7 +245,8 @@
 				CC0001010000000000000008 /* CatalogMigrationTests.swift */,
 				CC0001010000000000000009 /* CatalogSchemaTests.swift */,
 				CC000101000000000000000A /* CatalogConstraintTests.swift */,
-				CC000101000000000000000B /* CatalogRepositoryTests.swift */
+				CC000101000000000000000B /* CatalogRepositoryTests.swift */,
+				CC000101000000000000000C /* CatalogSchemaExpectations.swift */
 			);
 			path = Database;
 			sourceTree = "<group>";
@@ -407,6 +410,7 @@
 				CC0000010000000000000204 /* CatalogSchemaTests.swift in Sources */,
 				CC0000010000000000000205 /* CatalogConstraintTests.swift in Sources */,
 				CC0000010000000000000206 /* CatalogRepositoryTests.swift in Sources */,
+				CC0000010000000000000207 /* CatalogSchemaExpectations.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

@@ -110,8 +110,10 @@ final class CatalogMigrationTests: XCTestCase {
         XCTAssertTrue(dump.contains("journal_mode=wal"))
         XCTAssertTrue(dump.contains("foreign_keys=1"))
         XCTAssertTrue(dump.contains("quick_check=ok"))
+        XCTAssertTrue(dump.contains("table:source"))
         XCTAssertTrue(dump.contains("CREATE TABLE source"))
-        XCTAssertTrue(dump.contains("CREATE UNIQUE INDEX asset_current_file_locator_uq"))
+        XCTAssertTrue(dump.contains("index:asset_current_file_locator_uq"))
+        XCTAssertTrue(dump.contains("<null>"))
     }
 }
 

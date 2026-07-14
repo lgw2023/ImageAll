@@ -109,16 +109,30 @@ enum DatabaseTestSupport {
         }
     }
 
-    static func schemaDump(_ db: Database) throws -> String {
-        let ddl = try fetchStrings(
+    struct SchemaObject: Equatable {
+        let type: String
+        let name: String
+        let sql: String?
+    }
+
+    static func schemaObjects(_ db: Database) throws -> [SchemaObject] {
+        try Row.fetchAll(
             db,
             sql: """
-            SELECT sql FROM sqlite_schema
-            WHERE sql IS NOT NULL
+            SELECT type, name, sql FROM sqlite_schema
+            WHERE name NOT LIKE 'sqlite_stat%'
             ORDER BY type, name
             """
-        ).joined(separator: ";\n\n")
+        ).map { row in
+            SchemaObject(
+                type: row["type"] as String,
+                name: row["name"] as String,
+                sql: row["sql"] as String?
+            )
+        }
+    }
 
+    static func schemaDump(_ db: Database) throws -> String {
         let journalMode = try String.fetchOne(db, sql: "PRAGMA journal_mode") ?? ""
         let foreignKeys = try Int.fetchOne(db, sql: "PRAGMA foreign_keys") ?? 0
         let quickCheck = try fetchStrings(db, sql: "PRAGMA quick_check").joined(separator: ", ")
@@ -127,14 +141,21 @@ enum DatabaseTestSupport {
             sql: "SELECT identifier FROM grdb_migrations ORDER BY identifier"
         ).joined(separator: ", ")
 
-        return """
-        applied_migrations=\(migrations)
-        journal_mode=\(journalMode)
-        foreign_keys=\(foreignKeys)
-        quick_check=\(quickCheck)
+        var lines = [
+            "applied_migrations=\(migrations)",
+            "journal_mode=\(journalMode)",
+            "foreign_keys=\(foreignKeys)",
+            "quick_check=\(quickCheck)",
+            "",
+        ]
 
-        \(ddl);
-        """
+        for object in try schemaObjects(db) {
+            lines.append("\(object.type):\(object.name)")
+            lines.append(object.sql ?? "<null>")
+            lines.append("")
+        }
+
+        return lines.joined(separator: "\n")
     }
 
     static func makeFolderSourceWithFileAsset(
