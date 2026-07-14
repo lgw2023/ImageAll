@@ -1,7 +1,15 @@
 import Foundation
 
 struct CompositionRoot {
-    func makeStartupPresentation() -> StartupPresentation {
-        StartupPresentation(productName: "ImageAll", foundationReady: true)
+    @MainActor
+    func makeStartupModel() -> CatalogStartupModel {
+        CatalogStartupModel(dependencies: Self.makeProductionDependencies())
+    }
+
+    static func makeProductionDependencies() -> CatalogBootstrapDependencies {
+        CatalogBootstrapDependencies(
+            pathsResolver: FoundationAppPathsResolver(),
+            appVersionProvider: { BundleAppVersionProvider().currentVersion() }
+        )
     }
 }

@@ -2,15 +2,15 @@ import SwiftUI
 
 @main
 struct ImageAllApp: App {
-    private let startupPresentation: StartupPresentation
+    @StateObject private var startupModel: CatalogStartupModel
 
     init() {
-        startupPresentation = CompositionRoot().makeStartupPresentation()
+        _startupModel = StateObject(wrappedValue: CompositionRoot().makeStartupModel())
     }
 
     var body: some Scene {
         WindowGroup {
-            RootView(presentation: startupPresentation)
+            RootView(presentation: startupModel.presentation)
         }
     }
 }
