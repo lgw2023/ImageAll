@@ -29,6 +29,19 @@
 		BB000001000000000000000F /* TagDecisionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB000101000000000000000F /* TagDecisionTests.swift */; };
 		BB0000010000000000000010 /* SourceAssetRulesTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0001010000000000000010 /* SourceAssetRulesTests.swift */; };
 		BB0000010000000000000011 /* DomainErrorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0001010000000000000011 /* DomainErrorTests.swift */; };
+		CC0000010000000000000003 /* GRDB in Frameworks */ = {isa = PBXBuildFile; productRef = CC0000020000000000000001 /* GRDB */; };
+		CC0000010000000000000004 /* GRDB in Frameworks */ = {isa = PBXBuildFile; productRef = CC0000020000000000000001 /* GRDB */; };
+		CC0000010000000000000101 /* CatalogDatabaseError.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC0001010000000000000001 /* CatalogDatabaseError.swift */; };
+		CC0000010000000000000102 /* CatalogMigrationIDs.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC0001010000000000000002 /* CatalogMigrationIDs.swift */; };
+		CC0000010000000000000103 /* V001CreateCatalogCoreMigration.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC0001010000000000000003 /* V001CreateCatalogCoreMigration.swift */; };
+		CC0000010000000000000104 /* CatalogDatabase.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC0001010000000000000004 /* CatalogDatabase.swift */; };
+		CC0000010000000000000105 /* CatalogRepository.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC0001010000000000000005 /* CatalogRepository.swift */; };
+		CC0000010000000000000201 /* DatabaseTestSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC0001010000000000000006 /* DatabaseTestSupport.swift */; };
+		CC0000010000000000000202 /* CatalogDatabaseConnectionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC0001010000000000000007 /* CatalogDatabaseConnectionTests.swift */; };
+		CC0000010000000000000203 /* CatalogMigrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC0001010000000000000008 /* CatalogMigrationTests.swift */; };
+		CC0000010000000000000204 /* CatalogSchemaTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC0001010000000000000009 /* CatalogSchemaTests.swift */; };
+		CC0000010000000000000205 /* CatalogConstraintTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC000101000000000000000A /* CatalogConstraintTests.swift */; };
+		CC0000010000000000000206 /* CatalogRepositoryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC000101000000000000000B /* CatalogRepositoryTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -67,6 +80,17 @@
 		BB000101000000000000000F /* TagDecisionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TagDecisionTests.swift; sourceTree = "<group>"; };
 		BB0001010000000000000010 /* SourceAssetRulesTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SourceAssetRulesTests.swift; sourceTree = "<group>"; };
 		BB0001010000000000000011 /* DomainErrorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DomainErrorTests.swift; sourceTree = "<group>"; };
+		CC0001010000000000000001 /* CatalogDatabaseError.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CatalogDatabaseError.swift; sourceTree = "<group>"; };
+		CC0001010000000000000002 /* CatalogMigrationIDs.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CatalogMigrationIDs.swift; sourceTree = "<group>"; };
+		CC0001010000000000000003 /* V001CreateCatalogCoreMigration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = V001CreateCatalogCoreMigration.swift; sourceTree = "<group>"; };
+		CC0001010000000000000004 /* CatalogDatabase.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CatalogDatabase.swift; sourceTree = "<group>"; };
+		CC0001010000000000000005 /* CatalogRepository.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CatalogRepository.swift; sourceTree = "<group>"; };
+		CC0001010000000000000006 /* DatabaseTestSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DatabaseTestSupport.swift; sourceTree = "<group>"; };
+		CC0001010000000000000007 /* CatalogDatabaseConnectionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CatalogDatabaseConnectionTests.swift; sourceTree = "<group>"; };
+		CC0001010000000000000008 /* CatalogMigrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CatalogMigrationTests.swift; sourceTree = "<group>"; };
+		CC0001010000000000000009 /* CatalogSchemaTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CatalogSchemaTests.swift; sourceTree = "<group>"; };
+		CC000101000000000000000A /* CatalogConstraintTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CatalogConstraintTests.swift; sourceTree = "<group>"; };
+		CC000101000000000000000B /* CatalogRepositoryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CatalogRepositoryTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -74,6 +98,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				CC0000010000000000000003 /* GRDB in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -81,6 +106,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				CC0000010000000000000004 /* GRDB in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -102,6 +128,7 @@
 				AA0006010000000000000005 /* App */,
 				AA0006010000000000000006 /* Application */,
 				BB0006010000000000000001 /* Domain */,
+				CC0006010000000000000001 /* Infrastructure */,
 				AA0001010000000000000006 /* ImageAll.entitlements */,
 			);
 			path = ImageAll;
@@ -112,6 +139,7 @@
 			children = (
 				AA0001010000000000000005 /* CompositionRootTests.swift */,
 				BB0006010000000000000004 /* Domain */,
+				CC0006010000000000000002 /* Database */,
 			);
 			path = ImageAllTests;
 			sourceTree = "<group>";
@@ -198,6 +226,40 @@
 			path = Domain;
 			sourceTree = "<group>";
 		};
+
+		CC0006010000000000000001 /* Infrastructure */ = {
+			isa = PBXGroup;
+			children = (
+				CC0006010000000000000003 /* Database */,
+			);
+			path = Infrastructure;
+			sourceTree = "<group>";
+		};
+		CC0006010000000000000002 /* Database */ = {
+			isa = PBXGroup;
+			children = (
+				CC0001010000000000000006 /* DatabaseTestSupport.swift */,
+				CC0001010000000000000007 /* CatalogDatabaseConnectionTests.swift */,
+				CC0001010000000000000008 /* CatalogMigrationTests.swift */,
+				CC0001010000000000000009 /* CatalogSchemaTests.swift */,
+				CC000101000000000000000A /* CatalogConstraintTests.swift */,
+				CC000101000000000000000B /* CatalogRepositoryTests.swift */
+			);
+			path = Database;
+			sourceTree = "<group>";
+		};
+		CC0006010000000000000003 /* Database */ = {
+			isa = PBXGroup;
+			children = (
+				CC0001010000000000000001 /* CatalogDatabaseError.swift */,
+				CC0001010000000000000002 /* CatalogMigrationIDs.swift */,
+				CC0001010000000000000003 /* V001CreateCatalogCoreMigration.swift */,
+				CC0001010000000000000004 /* CatalogDatabase.swift */,
+				CC0001010000000000000005 /* CatalogRepository.swift */
+			);
+			path = Database;
+			sourceTree = "<group>";
+		};
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
@@ -214,6 +276,9 @@
 			dependencies = (
 			);
 			name = ImageAll;
+			packageProductDependencies = (
+				CC0000020000000000000001 /* GRDB */,
+			);
 			productName = ImageAll;
 			productReference = AA0001010000000000000007 /* ImageAll.app */;
 			productType = "com.apple.product-type.application";
@@ -232,6 +297,9 @@
 				AA000A010000000000000001 /* PBXTargetDependency */,
 			);
 			name = ImageAllTests;
+			packageProductDependencies = (
+				CC0000020000000000000001 /* GRDB */,
+			);
 			productName = ImageAllTests;
 			productReference = AA0001010000000000000008 /* ImageAllTests.xctest */;
 			productType = "com.apple.product-type.bundle.unit-test";
@@ -267,6 +335,9 @@
 			productRefGroup = AA0006010000000000000004 /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
+			packageReferences = (
+				CC0000030000000000000001 /* XCRemoteSwiftPackageReference "GRDB" */,
+			);
 			targets = (
 				AA0004010000000000000001 /* ImageAll */,
 				AA0004010000000000000002 /* ImageAllTests */,
@@ -313,6 +384,11 @@
 				BB000001000000000000000B /* AssetRevisionRules.swift in Sources */,
 				BB000001000000000000000C /* ScanGenerationRules.swift in Sources */,
 				BB000001000000000000000D /* LocatorIdentityRules.swift in Sources */,
+				CC0000010000000000000101 /* CatalogDatabaseError.swift in Sources */,
+				CC0000010000000000000102 /* CatalogMigrationIDs.swift in Sources */,
+				CC0000010000000000000103 /* V001CreateCatalogCoreMigration.swift in Sources */,
+				CC0000010000000000000104 /* CatalogDatabase.swift in Sources */,
+				CC0000010000000000000105 /* CatalogRepository.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -325,6 +401,12 @@
 				BB000001000000000000000F /* TagDecisionTests.swift in Sources */,
 				BB0000010000000000000010 /* SourceAssetRulesTests.swift in Sources */,
 				BB0000010000000000000011 /* DomainErrorTests.swift in Sources */,
+				CC0000010000000000000201 /* DatabaseTestSupport.swift in Sources */,
+				CC0000010000000000000202 /* CatalogDatabaseConnectionTests.swift in Sources */,
+				CC0000010000000000000203 /* CatalogMigrationTests.swift in Sources */,
+				CC0000010000000000000204 /* CatalogSchemaTests.swift in Sources */,
+				CC0000010000000000000205 /* CatalogConstraintTests.swift in Sources */,
+				CC0000010000000000000206 /* CatalogRepositoryTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -582,6 +664,25 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		CC0000030000000000000001 /* XCRemoteSwiftPackageReference "GRDB" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/groue/GRDB.swift.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 7.11.1;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		CC0000020000000000000001 /* GRDB */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = CC0000030000000000000001 /* XCRemoteSwiftPackageReference "GRDB" */;
+			productName = GRDB;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = AA0003010000000000000001 /* Project object */;
 }
