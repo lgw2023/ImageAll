@@ -338,7 +338,16 @@ struct CatalogBootstrapCoordinator: Sendable {
         }
         try readonlyDatabase.pool.close()
 
-        try dependencies.checkpointAndCloseFormalDatabase(paths.catalogDatabaseURL)
+        do {
+            try dependencies.checkpointAndCloseFormalDatabase(paths.catalogDatabaseURL)
+        } catch let error as CatalogSnapshotError {
+            switch error {
+            case .checkpointFailed, .closeFailed, .sidecarConvergenceFailed:
+                throw CatalogSnapshotError.replacementPreconditionNotMet
+            default:
+                throw error
+            }
+        }
 
         let operationID = dependencies.operationIDProvider()
         let restoreDependencies = CatalogDatabaseRestoreDependencies(

@@ -29,7 +29,16 @@ final class CatalogBootstrapFailureTests: XCTestCase {
         let paths = try StartupTestSupport.resolvedPaths(root: root)
         try StartupTestSupport.seedLegacyDatabaseWithMigrationConflict(at: paths.catalogDatabaseURL)
 
-        let dependencies = StartupTestSupport.makeDependencies(root: root)
+        let fileReplacer = FaultInjectingCatalogDatabaseFileReplacer()
+        let finalOpenCounter = FormalDatabaseOpenCounter()
+        let dependencies = StartupTestSupport.makeDependencies(
+            root: root,
+            fileReplacer: fileReplacer,
+            openCurrentSchema: { url in
+                finalOpenCounter.increment()
+                return try CatalogDatabase.openCurrentSchema(at: url)
+            }
+        )
         let result = CatalogBootstrapCoordinator(dependencies: dependencies).bootstrap()
         guard case let .unavailable(reason) = result else {
             return XCTFail("Expected unavailable")
@@ -40,6 +49,48 @@ final class CatalogBootstrapFailureTests: XCTestCase {
             try StartupTestSupport.readLegacySentinelPayload(at: paths.catalogDatabaseURL),
             LegacyStartupTestSupport.sentinelPayload
         )
+        XCTAssertEqual(fileReplacer.replacementCallCount, 0)
+        XCTAssertEqual(finalOpenCounter.count, 0)
+    }
+
+    func testPostSnapshotCheckpointFailureDoesNotReplaceOrOpen() throws {
+        let checkpointErrors: [CatalogSnapshotError] = [
+            .checkpointFailed,
+            .closeFailed,
+            .sidecarConvergenceFailed,
+        ]
+
+        for checkpointError in checkpointErrors {
+            let root = try StartupTestSupport.makeTempRoot(testCase: self)
+            let paths = try StartupTestSupport.resolvedPaths(root: root)
+            try StartupTestSupport.seedLegacyDatabaseWithSentinel(at: paths.catalogDatabaseURL)
+
+            let fileReplacer = FaultInjectingCatalogDatabaseFileReplacer()
+            let finalOpenCounter = FormalDatabaseOpenCounter()
+            let dependencies = StartupTestSupport.makeDependencies(
+                root: root,
+                fileReplacer: fileReplacer,
+                checkpointAndCloseFormalDatabase: { _ in
+                    throw checkpointError
+                },
+                openCurrentSchema: { url in
+                    finalOpenCounter.increment()
+                    return try CatalogDatabase.openCurrentSchema(at: url)
+                }
+            )
+            let result = CatalogBootstrapCoordinator(dependencies: dependencies).bootstrap()
+            guard case let .unavailable(reason) = result else {
+                return XCTFail("Expected unavailable for \(checkpointError)")
+            }
+            XCTAssertEqual(reason, .publicationFailed, "Unexpected reason for \(checkpointError)")
+            XCTAssertEqual(try SnapshotTestSupport.readMigrationIDs(at: paths.catalogDatabaseURL), [])
+            XCTAssertEqual(
+                try StartupTestSupport.readLegacySentinelPayload(at: paths.catalogDatabaseURL),
+                LegacyStartupTestSupport.sentinelPayload
+            )
+            XCTAssertEqual(fileReplacer.replacementCallCount, 0, "Replacement invoked for \(checkpointError)")
+            XCTAssertEqual(finalOpenCounter.count, 0, "Final open invoked for \(checkpointError)")
+        }
     }
 
     func testInitialReplacementFailureKeepsOriginalFacts() throws {
