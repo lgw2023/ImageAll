@@ -89,6 +89,40 @@ final class TagNameTests: XCTestCase {
         XCTAssertEqual(parts.displayName, "Work\t  Reference")
     }
 
+    func testDisplayNameDoesNotApplyNFC() {
+        let decomposed = "\u{3000}Cafe\u{0301}\u{3000}"
+        let result = TagNameNormalizer.validateAndNormalize(decomposed)
+        guard case let .success(parts) = result else {
+            return XCTFail("Expected successful normalization for decomposed display name input")
+        }
+
+        let expectedScalars = Array("Cafe\u{0301}".unicodeScalars.map(\.value))
+        let actualScalars = Array(parts.displayName.unicodeScalars.map(\.value))
+        XCTAssertEqual(actualScalars, expectedScalars)
+        XCTAssertTrue(parts.displayName.unicodeScalars.contains(where: { $0.value == 0x0301 }))
+        XCTAssertFalse(parts.displayName.unicodeScalars.contains(where: { $0.value == 0x00E9 }))
+    }
+
+    func testWhitespaceTrimAndFoldOperateOnUnicodeScalars() {
+        let internalWhitespace = "\u{0009}\u{00A0}\u{2003}\u{3000}"
+        assertNormalizedName("Hello\(internalWhitespace)World", expected: "hello world")
+
+        let edgeWhitespace = "\u{000B}\u{00A0}\u{2000}"
+        let result = TagNameNormalizer.validateAndNormalize("\(edgeWhitespace)Scalar\(edgeWhitespace)")
+        guard case let .success(parts) = result else {
+            return XCTFail("Expected successful normalization for scalar whitespace boundaries")
+        }
+        XCTAssertEqual(parts.displayName, "Scalar")
+        XCTAssertEqual(parts.normalizedName, "scalar")
+    }
+
+    func testWhitespaceTrimRemovesOnlyLeadingWhitespaceScalars() {
+        let input = "\u{2000}\u{0308}Cafe"
+        let trimmed = TagNameNormalizer.trimUnicodeWhiteSpace(input)
+        XCTAssertEqual(trimmed, "\u{0308}Cafe")
+        XCTAssertFalse(trimmed.unicodeScalars.contains(where: { $0.value == 0x2000 }))
+    }
+
     private func assertNormalizedName(_ input: String, expected: String, file: StaticString = #filePath, line: UInt = #line) {
         let result = TagNameNormalizer.validateAndNormalize(input)
         guard case let .success(parts) = result else {
