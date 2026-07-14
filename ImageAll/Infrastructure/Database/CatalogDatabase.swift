@@ -7,6 +7,13 @@ struct CatalogDatabase: Sendable {
     static func makeMigrator() -> DatabaseMigrator {
         var migrator = DatabaseMigrator()
         V001CreateCatalogCoreMigration.register(on: &migrator)
+        V002AddStage1CatalogQuerySupportMigration.register(on: &migrator)
+        return migrator
+    }
+
+    static func makeV001OnlyMigrator() -> DatabaseMigrator {
+        var migrator = DatabaseMigrator()
+        V001CreateCatalogCoreMigration.register(on: &migrator)
         return migrator
     }
 

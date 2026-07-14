@@ -8,17 +8,22 @@ extension XCTestCase {
         file: StaticString = #filePath,
         line: UInt = #line
     ) throws -> URL {
-        let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("ImageAllTests-\(UUID().uuidString)", isDirectory: true)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        addTeardownBlock {
-            try? FileManager.default.removeItem(at: directory)
-        }
-        return directory.appendingPathComponent("catalog.sqlite")
+        try DatabaseTestSupport.makeTempDatabaseURL(addTeardown: { [weak self] block in
+            self?.addTeardownBlock(block)
+        })
     }
 }
 
 enum DatabaseTestSupport {
+    static func makeTempDatabaseURL(addTeardown: ((@escaping () -> Void) -> Void)? = nil) throws -> URL {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ImageAllTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        addTeardown? {
+            try? FileManager.default.removeItem(at: directory)
+        }
+        return directory.appendingPathComponent("catalog.sqlite")
+    }
     static let timestampMs: Int64 = 1_700_000_000_000
 
     static func folderBookmark() -> Data {

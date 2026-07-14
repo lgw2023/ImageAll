@@ -27,6 +27,21 @@ enum CatalogSchemaExpectations {
         let keyColumns: [IndexKeyColumnExpectation]
         let unique: Bool
         let partialPredicateFragments: [String]
+        let ddlKeyFragments: [String]
+
+        init(
+            name: String,
+            keyColumns: [IndexKeyColumnExpectation],
+            unique: Bool,
+            partialPredicateFragments: [String],
+            ddlKeyFragments: [String] = []
+        ) {
+            self.name = name
+            self.keyColumns = keyColumns
+            self.unique = unique
+            self.partialPredicateFragments = partialPredicateFragments
+            self.ddlKeyFragments = ddlKeyFragments
+        }
     }
 
     static let infrastructureTables = ["grdb_migrations"]
@@ -44,9 +59,15 @@ enum CatalogSchemaExpectations {
 
     static let businessIndexes = [
         "asset_current_file_locator_uq",
+        "asset_current_file_name_idx",
         "asset_current_photos_locator_uq",
+        "asset_current_source_time_idx",
+        "asset_current_time_idx",
+        "asset_generation_missing_idx",
         "asset_source_availability_idx",
         "decision_tag_idx",
+        "file_fingerprint_resource_id_idx",
+        "file_fingerprint_sha256_idx",
         "job_active_coalescing_uq",
         "job_queue_idx",
         "tag_normalized_name_uq",
@@ -82,6 +103,7 @@ enum CatalogSchemaExpectations {
             .init(name: "availability", type: "TEXT", notNull: true, defaultValue: "'available'", primaryKeyOrder: 0),
             .init(name: "record_created_at_ms", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
             .init(name: "record_updated_at_ms", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "file_name", type: "TEXT", notNull: false, defaultValue: nil, primaryKeyOrder: 0),
         ],
         "file_fingerprint": [
             .init(name: "asset_id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 1),
@@ -152,10 +174,16 @@ enum CatalogSchemaExpectations {
 
     static let indexTableByName: [String: String] = [
         "asset_current_file_locator_uq": "asset",
+        "asset_current_file_name_idx": "asset",
         "asset_current_photos_locator_uq": "asset",
+        "asset_current_source_time_idx": "asset",
+        "asset_current_time_idx": "asset",
+        "asset_generation_missing_idx": "asset",
         "asset_source_availability_idx": "asset",
         "tag_normalized_name_uq": "tag",
         "decision_tag_idx": "asset_tag_decision",
+        "file_fingerprint_resource_id_idx": "file_fingerprint",
+        "file_fingerprint_sha256_idx": "file_fingerprint",
         "job_queue_idx": "job",
         "job_active_coalescing_uq": "job",
     ]
@@ -231,6 +259,75 @@ enum CatalogSchemaExpectations {
                 "'paused'",
                 "'retryableFailed'",
             ]
+        ),
+        .init(
+            name: "asset_current_time_idx",
+            keyColumns: [
+                .init(name: "id", descending: false, collation: "BINARY"),
+            ],
+            unique: false,
+            partialPredicateFragments: ["locator_state = 'current'"],
+            ddlKeyFragments: [
+                "CASE WHEN media_created_at_ms IS NOT NULL OR media_modified_at_ms IS NOT NULL THEN 0 ELSE 1 END",
+                "coalesce(media_created_at_ms, media_modified_at_ms)",
+            ]
+        ),
+        .init(
+            name: "asset_current_source_time_idx",
+            keyColumns: [
+                .init(name: "source_id", descending: false, collation: "BINARY"),
+                .init(name: "id", descending: false, collation: "BINARY"),
+            ],
+            unique: false,
+            partialPredicateFragments: ["locator_state = 'current'"],
+            ddlKeyFragments: [
+                "CASE WHEN media_created_at_ms IS NOT NULL OR media_modified_at_ms IS NOT NULL THEN 0 ELSE 1 END",
+                "coalesce(media_created_at_ms, media_modified_at_ms)",
+            ]
+        ),
+        .init(
+            name: "asset_current_file_name_idx",
+            keyColumns: [
+                .init(name: "file_name", descending: false, collation: "NOCASE"),
+                .init(name: "id", descending: false, collation: "BINARY"),
+            ],
+            unique: false,
+            partialPredicateFragments: [
+                "locator_kind = 'file'",
+                "locator_state = 'current'",
+                "file_name IS NOT NULL",
+            ]
+        ),
+        .init(
+            name: "asset_generation_missing_idx",
+            keyColumns: [
+                .init(name: "source_id", descending: false, collation: "BINARY"),
+                .init(name: "last_seen_generation", descending: false, collation: "BINARY"),
+                .init(name: "id", descending: false, collation: "BINARY"),
+            ],
+            unique: false,
+            partialPredicateFragments: [
+                "locator_kind = 'file'",
+                "locator_state = 'current'",
+            ]
+        ),
+        .init(
+            name: "file_fingerprint_resource_id_idx",
+            keyColumns: [
+                .init(name: "resource_id", descending: false, collation: "BINARY"),
+                .init(name: "asset_id", descending: false, collation: "BINARY"),
+            ],
+            unique: false,
+            partialPredicateFragments: ["resource_id IS NOT NULL"]
+        ),
+        .init(
+            name: "file_fingerprint_sha256_idx",
+            keyColumns: [
+                .init(name: "sha256", descending: false, collation: "BINARY"),
+                .init(name: "asset_id", descending: false, collation: "BINARY"),
+            ],
+            unique: false,
+            partialPredicateFragments: ["sha256 IS NOT NULL"]
         ),
     ]
 }

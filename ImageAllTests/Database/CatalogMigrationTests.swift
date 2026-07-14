@@ -9,7 +9,7 @@ final class CatalogMigrationTests: XCTestCase {
 
         XCTAssertEqual(
             try database.appliedMigrationIDs(),
-            [CatalogMigrationID.v001CreateCatalogCore]
+            CatalogMigrationID.knownOrdered
         )
     }
 
@@ -29,7 +29,7 @@ final class CatalogMigrationTests: XCTestCase {
         let second = try CatalogDatabase.open(at: url)
         XCTAssertEqual(
             try second.appliedMigrationIDs(),
-            [CatalogMigrationID.v001CreateCatalogCore]
+            CatalogMigrationID.knownOrdered
         )
 
         let count = try second.pool.read { db in
@@ -106,7 +106,7 @@ final class CatalogMigrationTests: XCTestCase {
             try DatabaseTestSupport.schemaDump(db)
         }
 
-        XCTAssertTrue(dump.contains("applied_migrations=v001_create_catalog_core"))
+        XCTAssertTrue(dump.contains("applied_migrations=v001_create_catalog_core, v002_add_stage_1_catalog_query_support"))
         XCTAssertTrue(dump.contains("journal_mode=wal"))
         XCTAssertTrue(dump.contains("foreign_keys=1"))
         XCTAssertTrue(dump.contains("quick_check=ok"))

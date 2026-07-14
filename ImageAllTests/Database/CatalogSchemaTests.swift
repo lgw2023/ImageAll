@@ -156,26 +156,54 @@ final class CatalogSchemaTests: XCTestCase {
                     "Index \(expected.name) partial flag"
                 )
 
-                let keyEntries = try DatabaseTestSupport.indexKeyEntries(db, index: expected.name)
-                XCTAssertEqual(
-                    keyEntries.count,
-                    expected.keyColumns.count,
-                    "Key entry count for \(expected.name)"
-                )
-
-                let sortedKeyEntries = keyEntries.sorted { $0.seqno < $1.seqno }
-                for (actualKey, expectedKey) in zip(sortedKeyEntries, expected.keyColumns) {
-                    XCTAssertEqual(actualKey.name, expectedKey.name, "\(expected.name) key column order")
-                    XCTAssertEqual(actualKey.desc, expectedKey.descending, "\(expected.name).\(expectedKey.name) DESC flag")
-                    XCTAssertEqual(actualKey.coll, expectedKey.collation, "\(expected.name).\(expectedKey.name) collation")
-                }
-
                 let ddl = try String.fetchOne(
                     db,
                     sql: "SELECT sql FROM sqlite_schema WHERE type = 'index' AND name = ?",
                     arguments: [expected.name]
                 )
                 XCTAssertNotNil(ddl, "Index DDL must exist for \(expected.name)")
+
+                let xinfo = try DatabaseTestSupport.indexXInfo(db, index: expected.name).filter(\.key)
+                XCTAssertEqual(
+                    xinfo.count,
+                    expected.keyColumns.count + expected.ddlKeyFragments.count,
+                    "Key entry count for \(expected.name)"
+                )
+
+                if expected.ddlKeyFragments.isEmpty {
+                    let keyEntries = try DatabaseTestSupport.indexKeyEntries(db, index: expected.name)
+                    XCTAssertEqual(
+                        keyEntries.count,
+                        expected.keyColumns.count,
+                        "Named key entry count for \(expected.name)"
+                    )
+                    let sortedKeyEntries = keyEntries.sorted { $0.seqno < $1.seqno }
+                    for (actualKey, expectedKey) in zip(sortedKeyEntries, expected.keyColumns) {
+                        XCTAssertEqual(actualKey.name, expectedKey.name, "\(expected.name) key column order")
+                        XCTAssertEqual(actualKey.desc, expectedKey.descending, "\(expected.name).\(expectedKey.name) DESC flag")
+                        XCTAssertEqual(actualKey.coll, expectedKey.collation, "\(expected.name).\(expectedKey.name) collation")
+                    }
+                } else {
+                    let namedEntries = xinfo.filter { $0.name != nil }
+                    let sortedNamedEntries = namedEntries.sorted { $0.seqno < $1.seqno }
+                    for (actualKey, expectedKey) in zip(sortedNamedEntries, expected.keyColumns) {
+                        guard let name = actualKey.name else {
+                            return XCTFail("Expected named key for \(expected.name)")
+                        }
+                        XCTAssertEqual(name, expectedKey.name, "\(expected.name) key column order")
+                        XCTAssertEqual(actualKey.desc, expectedKey.descending, "\(expected.name).\(expectedKey.name) DESC flag")
+                        XCTAssertEqual(actualKey.coll ?? "BINARY", expectedKey.collation, "\(expected.name).\(expectedKey.name) collation")
+                    }
+                    XCTAssertEqual(
+                        xinfo.filter { $0.name == nil }.count,
+                        expected.ddlKeyFragments.count,
+                        "Expression key count for \(expected.name)"
+                    )
+                    for fragment in expected.ddlKeyFragments {
+                        XCTAssertTrue(ddl?.contains(fragment) == true, "\(expected.name) must contain \(fragment)")
+                    }
+                }
+
                 for fragment in expected.partialPredicateFragments {
                     XCTAssertTrue(ddl?.contains(fragment) == true, "\(expected.name) must contain \(fragment)")
                 }
@@ -191,7 +219,7 @@ final class CatalogSchemaTests: XCTestCase {
             try DatabaseTestSupport.schemaDump(db)
         }
 
-        XCTAssertTrue(dump.contains("applied_migrations=v001_create_catalog_core"))
+        XCTAssertTrue(dump.contains("applied_migrations=v001_create_catalog_core, v002_add_stage_1_catalog_query_support"))
         XCTAssertTrue(dump.contains("journal_mode=wal"))
         XCTAssertTrue(dump.contains("foreign_keys=1"))
         XCTAssertTrue(dump.contains("quick_check=ok"))
