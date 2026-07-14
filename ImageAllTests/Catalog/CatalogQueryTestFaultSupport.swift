@@ -7,8 +7,10 @@ enum CatalogQueryTestFaultSupport {
         case none = 0
         case failDecisionWrites = 1
         case failAfter500DecisionWrites = 2
-        case failRestoreAfterFirstWrite = 3
+        case failRestoreAfterThreeWrites = 3
     }
+
+    private static let restoreFailAfterWriteCount = 3
 
     static func installFaultInfrastructure(on db: Database) throws {
         try db.execute(sql: """
@@ -34,6 +36,30 @@ enum CatalogQueryTestFaultSupport {
             """)
         try db.execute(sql: "DELETE FROM test_restore_write_count")
         try db.execute(sql: "INSERT INTO test_restore_write_count (count) VALUES (0)")
+
+        try db.execute(sql: """
+            CREATE TABLE IF NOT EXISTS test_restore_delete_count (
+                count INTEGER NOT NULL DEFAULT 0
+            ) STRICT
+            """)
+        try db.execute(sql: "DELETE FROM test_restore_delete_count")
+        try db.execute(sql: "INSERT INTO test_restore_delete_count (count) VALUES (0)")
+
+        try db.execute(sql: """
+            CREATE TABLE IF NOT EXISTS test_restore_insert_count (
+                count INTEGER NOT NULL DEFAULT 0
+            ) STRICT
+            """)
+        try db.execute(sql: "DELETE FROM test_restore_insert_count")
+        try db.execute(sql: "INSERT INTO test_restore_insert_count (count) VALUES (0)")
+
+        try db.execute(sql: """
+            CREATE TABLE IF NOT EXISTS test_restore_update_count (
+                count INTEGER NOT NULL DEFAULT 0
+            ) STRICT
+            """)
+        try db.execute(sql: "DELETE FROM test_restore_update_count")
+        try db.execute(sql: "INSERT INTO test_restore_update_count (count) VALUES (0)")
 
         try db.execute(sql: "DROP TRIGGER IF EXISTS test_fail_decision_insert")
         try db.execute(sql: """
@@ -73,6 +99,7 @@ enum CatalogQueryTestFaultSupport {
             WHEN (SELECT mode FROM test_fault_control) = 3
             BEGIN
                 UPDATE test_restore_write_count SET count = count + 1;
+                UPDATE test_restore_delete_count SET count = count + 1;
             END
             """)
 
@@ -83,28 +110,7 @@ enum CatalogQueryTestFaultSupport {
             WHEN (SELECT mode FROM test_fault_control) = 3
             BEGIN
                 UPDATE test_restore_write_count SET count = count + 1;
-            END
-            """)
-
-        try db.execute(sql: "DROP TRIGGER IF EXISTS test_fail_restore_after_first")
-        try db.execute(sql: """
-            CREATE TRIGGER test_fail_restore_after_first
-            BEFORE INSERT ON asset_tag_decision
-            WHEN (SELECT mode FROM test_fault_control) = 3
-              AND (SELECT count FROM test_restore_write_count) >= 1
-            BEGIN
-                SELECT RAISE(ABORT, 'test_fail_restore_after_first');
-            END
-            """)
-
-        try db.execute(sql: "DROP TRIGGER IF EXISTS test_fail_restore_delete_after_first")
-        try db.execute(sql: """
-            CREATE TRIGGER test_fail_restore_delete_after_first
-            BEFORE DELETE ON asset_tag_decision
-            WHEN (SELECT mode FROM test_fault_control) = 3
-              AND (SELECT count FROM test_restore_write_count) >= 1
-            BEGIN
-                SELECT RAISE(ABORT, 'test_fail_restore_delete_after_first');
+                UPDATE test_restore_insert_count SET count = count + 1;
             END
             """)
 
@@ -115,17 +121,40 @@ enum CatalogQueryTestFaultSupport {
             WHEN (SELECT mode FROM test_fault_control) = 3
             BEGIN
                 UPDATE test_restore_write_count SET count = count + 1;
+                UPDATE test_restore_update_count SET count = count + 1;
             END
             """)
 
-        try db.execute(sql: "DROP TRIGGER IF EXISTS test_fail_restore_update_after_first")
+        try db.execute(sql: "DROP TRIGGER IF EXISTS test_fail_restore_delete_after_threshold")
         try db.execute(sql: """
-            CREATE TRIGGER test_fail_restore_update_after_first
+            CREATE TRIGGER test_fail_restore_delete_after_threshold
+            BEFORE DELETE ON asset_tag_decision
+            WHEN (SELECT mode FROM test_fault_control) = 3
+              AND (SELECT count FROM test_restore_write_count) >= \(restoreFailAfterWriteCount)
+            BEGIN
+                SELECT RAISE(ABORT, 'test_fail_restore_delete_after_threshold');
+            END
+            """)
+
+        try db.execute(sql: "DROP TRIGGER IF EXISTS test_fail_restore_insert_after_threshold")
+        try db.execute(sql: """
+            CREATE TRIGGER test_fail_restore_insert_after_threshold
+            BEFORE INSERT ON asset_tag_decision
+            WHEN (SELECT mode FROM test_fault_control) = 3
+              AND (SELECT count FROM test_restore_write_count) >= \(restoreFailAfterWriteCount)
+            BEGIN
+                SELECT RAISE(ABORT, 'test_fail_restore_insert_after_threshold');
+            END
+            """)
+
+        try db.execute(sql: "DROP TRIGGER IF EXISTS test_fail_restore_update_after_threshold")
+        try db.execute(sql: """
+            CREATE TRIGGER test_fail_restore_update_after_threshold
             BEFORE UPDATE ON asset_tag_decision
             WHEN (SELECT mode FROM test_fault_control) = 3
-              AND (SELECT count FROM test_restore_write_count) >= 1
+              AND (SELECT count FROM test_restore_write_count) >= \(restoreFailAfterWriteCount)
             BEGIN
-                SELECT RAISE(ABORT, 'test_fail_restore_update_after_first');
+                SELECT RAISE(ABORT, 'test_fail_restore_update_after_threshold');
             END
             """)
     }
@@ -135,8 +164,57 @@ enum CatalogQueryTestFaultSupport {
         if mode == .failAfter500DecisionWrites {
             try db.execute(sql: "UPDATE test_decision_write_count SET count = 0")
         }
-        if mode == .failRestoreAfterFirstWrite {
+        if mode == .failRestoreAfterThreeWrites {
             try db.execute(sql: "UPDATE test_restore_write_count SET count = 0")
+            try db.execute(sql: "UPDATE test_restore_delete_count SET count = 0")
+            try db.execute(sql: "UPDATE test_restore_insert_count SET count = 0")
+            try db.execute(sql: "UPDATE test_restore_update_count SET count = 0")
         }
     }
+
+    static func installUnrelatedTagUniqueIndex(on db: Database) throws {
+        try db.execute(sql: """
+            CREATE UNIQUE INDEX IF NOT EXISTS test_tag_created_at_ms_uq ON tag(created_at_ms)
+            """)
+    }
+
+    static func restoreWriteCounts(on db: Database) throws -> (total: Int, deletes: Int, inserts: Int, updates: Int) {
+        let total = try Int.fetchOne(db, sql: "SELECT count FROM test_restore_write_count") ?? 0
+        let deletes = try Int.fetchOne(db, sql: "SELECT count FROM test_restore_delete_count") ?? 0
+        let inserts = try Int.fetchOne(db, sql: "SELECT count FROM test_restore_insert_count") ?? 0
+        let updates = try Int.fetchOne(db, sql: "SELECT count FROM test_restore_update_count") ?? 0
+        return (total, deletes, inserts, updates)
+    }
+}
+
+/// Records `asset_tag_decision` writes during a restore attempt. Counters live in Swift memory
+/// and remain available after the production transaction rolls back.
+final class RestoreDecisionWriteRecorder: TransactionObserver {
+    private(set) var deletes = 0
+    private(set) var inserts = 0
+    private(set) var updates = 0
+
+    func observes(eventsOfKind eventKind: DatabaseEventKind) -> Bool {
+        switch eventKind {
+        case .insert(let tableName), .delete(let tableName):
+            return tableName == "asset_tag_decision"
+        case .update(let tableName, _):
+            return tableName == "asset_tag_decision"
+        }
+    }
+
+    func databaseDidChange(with event: DatabaseEvent) {
+        switch event.kind {
+        case .insert:
+            inserts += 1
+        case .update:
+            updates += 1
+        case .delete:
+            deletes += 1
+        }
+    }
+
+    func databaseDidCommit(_ db: Database) {}
+
+    func databaseDidRollback(_ db: Database) {}
 }

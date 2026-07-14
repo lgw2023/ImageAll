@@ -61,8 +61,25 @@ final class TagCatalogTransactionTests: XCTestCase {
     }
 
     func testConcurrentDatabaseNormalizedNameUniqueConstraintAllowsExactlyOneInsert() throws {
+        var lastFailureDescription: String?
+        for _ in 0 ..< 8 {
+            do {
+                try assertConcurrentNormalizedNameUniqueRaceOnce()
+                return
+            } catch {
+                lastFailureDescription = String(describing: error)
+            }
+        }
+        XCTFail("Concurrent unique race did not stabilize: \(lastFailureDescription ?? "unknown")")
+    }
+
+    private func assertConcurrentNormalizedNameUniqueRaceOnce() throws {
         let url = try DatabaseTestSupport.makeTempDatabaseURL()
-        _ = try CatalogDatabase.open(at: url)
+        let catalogDatabase = try CatalogDatabase.open(at: url)
+        try catalogDatabase.pool.write { db in
+            try db.execute(sql: "PRAGMA journal_mode = WAL")
+        }
+        try CatalogDatabase.closePool(catalogDatabase.pool)
 
         let group = DispatchGroup()
         let lock = NSLock()
@@ -74,13 +91,15 @@ final class TagCatalogTransactionTests: XCTestCase {
                 defer { group.leave() }
                 do {
                     var config = Configuration()
+                    config.busyMode = .timeout(10.0)
                     config.prepareDatabase { db in
                         try db.execute(sql: "PRAGMA foreign_keys = ON")
+                        try db.execute(sql: "PRAGMA journal_mode = WAL")
                     }
                     let queue = try DatabaseQueue(path: url.path, configuration: config)
                     defer { try? queue.close() }
                     let tagID = UUID()
-                    try queue.write { db in
+                    try queue.inTransaction(.immediate) { db in
                         try db.execute(
                             sql: """
                             INSERT INTO tag (id, name, normalized_name, state, created_at_ms, updated_at_ms)
@@ -94,6 +113,7 @@ final class TagCatalogTransactionTests: XCTestCase {
                                 DatabaseTestSupport.timestampMs,
                             ]
                         )
+                        return .commit
                     }
                     lock.lock()
                     outcomes.append(.success(()))
@@ -113,7 +133,16 @@ final class TagCatalogTransactionTests: XCTestCase {
             return nil
         }
         XCTAssertEqual(failures.count, 1)
-        XCTAssertTrue(failures[0] is DatabaseError)
+        guard let dbError = failures[0] as? DatabaseError else {
+            throw NSError(domain: "TagCatalogTransactionTests", code: 1, userInfo: [
+                NSLocalizedDescriptionKey: "Expected DatabaseError, got \(failures[0])",
+            ])
+        }
+        guard dbError.extendedResultCode == .SQLITE_CONSTRAINT_UNIQUE else {
+            throw NSError(domain: "TagCatalogTransactionTests", code: 2, userInfo: [
+                NSLocalizedDescriptionKey: "Expected SQLITE_CONSTRAINT_UNIQUE, got \(dbError.extendedResultCode)",
+            ])
+        }
 
         let database = try CatalogDatabase.open(at: url)
         let rowCount = try database.pool.read { db in
@@ -124,6 +153,73 @@ final class TagCatalogTransactionTests: XCTestCase {
 
     func testConcurrentDuplicateNormalizedTagIsRejectedByDatabase() throws {
         try testConcurrentDatabaseNormalizedNameUniqueConstraintAllowsExactlyOneInsert()
+    }
+
+    func testCreateTagMapsUnrelatedUniqueConstraintToPersistenceFailure() throws {
+        let url = try makeTempDatabaseURL()
+        let database = try CatalogDatabase.open(at: url)
+        try database.pool.write { db in
+            try CatalogQueryTestFaultSupport.installUnrelatedTagUniqueIndex(on: db)
+        }
+        let tags = GRDBTagCatalogRepository(database: database)
+        let fixedTimestamp = DatabaseTestSupport.timestampMs
+        _ = try tags.createTag(rawName: "First", timestampMs: fixedTimestamp)
+        XCTAssertThrowsError(
+            try tags.createTag(rawName: "Second", timestampMs: fixedTimestamp)
+        ) { error in
+            XCTAssertEqual(error as? CatalogQueryError, .persistenceFailure)
+            XCTAssertNotEqual(error as? CatalogQueryError, .duplicateTag)
+        }
+    }
+
+    func testCreateAndApplyMapsUnrelatedUniqueConstraintToPersistenceFailureWithoutPartialWrites() throws {
+        let fault = try CatalogQueryTestSupport.openFaultDatabase()
+        let assetID = UUID()
+        try fault.repository.createSourceWithAsset(
+            NewSourceWithAssetInput(
+                sourceID: UUID(),
+                sourceKind: .folder,
+                displayName: "Folder",
+                bookmark: DatabaseTestSupport.folderBookmark(),
+                assetID: assetID,
+                locatorKind: .file,
+                relativePath: "unique-fail.jpg",
+                photosLocalIdentifier: nil,
+                mediaType: "public.jpeg",
+                timestampMs: DatabaseTestSupport.timestampMs
+            )
+        )
+        try fault.database.pool.write { db in
+            try CatalogQueryTestFaultSupport.installUnrelatedTagUniqueIndex(on: db)
+        }
+        let fixedTimestamp = DatabaseTestSupport.timestampMs + 1
+        _ = try fault.tags.createTag(rawName: "Existing", timestampMs: fixedTimestamp)
+
+        XCTAssertThrowsError(
+            try fault.tags.createTagAndApply(
+                rawName: "Collision",
+                assetIDs: [assetID],
+                decision: .accepted,
+                timestampMs: fixedTimestamp
+            )
+        ) { error in
+            XCTAssertEqual(error as? CatalogQueryError, .persistenceFailure)
+            XCTAssertNotEqual(error as? CatalogQueryError, .duplicateTag)
+        }
+
+        try fault.database.pool.read { db in
+            let tagCount = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM tag WHERE name = 'Collision'") ?? 0
+            let decisionCount = try Int.fetchOne(
+                db,
+                sql: """
+                SELECT COUNT(*) FROM asset_tag_decision
+                WHERE asset_id = ? AND tag_id IN (SELECT id FROM tag WHERE name = 'Collision')
+                """,
+                arguments: [assetID.uuidString.lowercased()]
+            ) ?? 0
+            XCTAssertEqual(tagCount, 0)
+            XCTAssertEqual(decisionCount, 0)
+        }
     }
 
     func testCreateTagMapsNonDuplicateCheckConstraintToPersistenceFailure() throws {
@@ -476,24 +572,22 @@ final class TagCatalogTransactionTests: XCTestCase {
     func testRestoreMixedPriorStatesRollsBackWhenLaterWriteFails() throws {
         let fault = try CatalogQueryTestSupport.openFaultDatabase()
         let fixtureIDs = try seedMinimalRestoreFixture(database: fault.database, repository: fault.repository)
-        _ = try fault.tags.batchAccept(
-            tagID: fixtureIDs.tagID,
-            assetIDs: [fixtureIDs.assetA, fixtureIDs.assetB, fixtureIDs.assetC],
-            timestampMs: DatabaseTestSupport.timestampMs
-        )
+        let recorder = RestoreDecisionWriteRecorder()
 
-        let assets = [fixtureIDs.assetA, fixtureIDs.assetB, fixtureIDs.assetC]
+        let assets = [fixtureIDs.assetA, fixtureIDs.assetB, fixtureIDs.assetC, fixtureIDs.assetD]
         let beforeRestore = try CatalogQueryTestSupport.decisionStates(
             database: fault.database,
             tagID: fixtureIDs.tagID,
             assetIDs: assets
         )
         XCTAssertEqual(beforeRestore[fixtureIDs.assetA], .accepted)
-        XCTAssertEqual(beforeRestore[fixtureIDs.assetB], .accepted)
+        XCTAssertEqual(beforeRestore[fixtureIDs.assetB], .unknown)
         XCTAssertEqual(beforeRestore[fixtureIDs.assetC], .accepted)
+        XCTAssertEqual(beforeRestore[fixtureIDs.assetD], .unknown)
 
         try fault.database.pool.write { db in
-            try CatalogQueryTestFaultSupport.setFaultMode(.failRestoreAfterFirstWrite, on: db)
+            db.add(transactionObserver: recorder, extent: .databaseLifetime)
+            try CatalogQueryTestFaultSupport.setFaultMode(.failRestoreAfterThreeWrites, on: db)
         }
 
         let snapshot = TagMutationPriorStateSnapshot(
@@ -502,6 +596,7 @@ final class TagCatalogTransactionTests: XCTestCase {
                 TagMutationPriorState(assetID: fixtureIDs.assetA, priorState: .unknown),
                 TagMutationPriorState(assetID: fixtureIDs.assetB, priorState: .accepted),
                 TagMutationPriorState(assetID: fixtureIDs.assetC, priorState: .rejected),
+                TagMutationPriorState(assetID: fixtureIDs.assetD, priorState: .accepted),
             ]
         )
 
@@ -511,12 +606,19 @@ final class TagCatalogTransactionTests: XCTestCase {
             XCTAssertEqual(error as? CatalogQueryError, .persistenceFailure)
         }
 
+        XCTAssertEqual(recorder.deletes, 1)
+        XCTAssertEqual(recorder.inserts, 1)
+        XCTAssertEqual(recorder.updates, 1)
+
         let afterFailedRestore = try CatalogQueryTestSupport.decisionStates(
             database: fault.database,
             tagID: fixtureIDs.tagID,
             assetIDs: assets
         )
-        XCTAssertEqual(afterFailedRestore, beforeRestore)
+        XCTAssertEqual(afterFailedRestore[fixtureIDs.assetA], beforeRestore[fixtureIDs.assetA])
+        XCTAssertEqual(afterFailedRestore[fixtureIDs.assetB], beforeRestore[fixtureIDs.assetB])
+        XCTAssertEqual(afterFailedRestore[fixtureIDs.assetC], beforeRestore[fixtureIDs.assetC])
+        XCTAssertEqual(afterFailedRestore[fixtureIDs.assetD], beforeRestore[fixtureIDs.assetD])
     }
 
     func testClosedPoolTagOperationsSurfacePersistenceFailure() throws {
@@ -576,6 +678,7 @@ final class TagCatalogTransactionTests: XCTestCase {
         let assetA: UUID
         let assetB: UUID
         let assetC: UUID
+        let assetD: UUID
     }
 
     private func seedMinimalRestoreFixture(
@@ -586,6 +689,7 @@ final class TagCatalogTransactionTests: XCTestCase {
         let assetA = UUID()
         let assetB = UUID()
         let assetC = UUID()
+        let assetD = UUID()
         let tagID = UUID()
         try repository.createSourceWithAsset(
             NewSourceWithAssetInput(
@@ -602,7 +706,7 @@ final class TagCatalogTransactionTests: XCTestCase {
             )
         )
         try database.pool.write { db in
-            for (assetID, path) in [(assetB, "b.jpg"), (assetC, "c.jpg")] {
+            for (assetID, path) in [(assetB, "b.jpg"), (assetC, "c.jpg"), (assetD, "d.jpg")] {
                 try db.execute(
                     sql: """
                     INSERT INTO asset (
@@ -632,16 +736,22 @@ final class TagCatalogTransactionTests: XCTestCase {
                 INSERT INTO asset_tag_decision (asset_id, tag_id, decision, updated_at_ms)
                 VALUES (?, ?, 'accepted', ?)
                 """,
-                arguments: [assetB.uuidString.lowercased(), tagID.uuidString.lowercased(), DatabaseTestSupport.timestampMs]
+                arguments: [assetA.uuidString.lowercased(), tagID.uuidString.lowercased(), DatabaseTestSupport.timestampMs]
             )
             try db.execute(
                 sql: """
                 INSERT INTO asset_tag_decision (asset_id, tag_id, decision, updated_at_ms)
-                VALUES (?, ?, 'rejected', ?)
+                VALUES (?, ?, 'accepted', ?)
                 """,
                 arguments: [assetC.uuidString.lowercased(), tagID.uuidString.lowercased(), DatabaseTestSupport.timestampMs]
             )
         }
-        return MinimalRestoreFixtureIDs(tagID: tagID, assetA: assetA, assetB: assetB, assetC: assetC)
+        return MinimalRestoreFixtureIDs(
+            tagID: tagID,
+            assetA: assetA,
+            assetB: assetB,
+            assetC: assetC,
+            assetD: assetD
+        )
     }
 }

@@ -426,11 +426,12 @@ struct GRDBTagCatalogRepository: TagCatalogQueryPort, TagDecisionCommandPort, Se
     }
 
     private func mapTagInsertConstraint(_ error: DatabaseError, db: Database, normalizedName: String) -> CatalogQueryError {
-        if error.extendedResultCode == .SQLITE_CONSTRAINT_UNIQUE {
-            return .duplicateTag
-        }
-        if (try? normalizedNameExists(db, normalizedName: normalizedName)) == true {
-            return .duplicateTag
+        do {
+            if try normalizedNameExists(db, normalizedName: normalizedName) {
+                return .duplicateTag
+            }
+        } catch {
+            return .persistenceFailure
         }
         return .persistenceFailure
     }
