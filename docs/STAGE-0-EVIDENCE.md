@@ -1,8 +1,8 @@
 # ImageAll 阶段 0 验收证据
 
-> 状态：Completed  
-> 验收日期：2026-07-15  
-> 批准实现：`main@892f4e29e1ebf492c1540c5a29d9c54abc05a78f`  
+> 状态：Completed<br>
+> 验收日期：2026-07-15<br>
+> 批准实现：`main@892f4e29e1ebf492c1540c5a29d9c54abc05a78f`<br>
 > 规格：[STAGE-0-IMPLEMENTATION-SPEC.md](./STAGE-0-IMPLEMENTATION-SPEC.md)
 
 ## 1. 验收结论
