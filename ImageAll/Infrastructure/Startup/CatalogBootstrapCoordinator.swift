@@ -1,4 +1,13 @@
 import Foundation
+import GRDB
+
+enum CatalogBlockingWorkEntry: String, Sendable {
+    case pathsEnsure
+    case inspect
+    case prepare
+    case finalOpen
+    case recovery
+}
 
 enum CatalogBootstrapStageMarker: Equatable, Sendable {
     case paths
@@ -10,6 +19,7 @@ enum CatalogBootstrapStageMarker: Equatable, Sendable {
     case ready
 }
 
+/// NSLock serializes append/read; safe to share across bootstrap threads.
 final class CatalogBootstrapCallLog: @unchecked Sendable {
     private let lock = NSLock()
     private var stages: [CatalogBootstrapStageMarker] = []
@@ -44,7 +54,7 @@ enum CatalogBootstrapResult: Sendable {
     case unavailable(CatalogUnavailableReason)
 }
 
-struct CatalogRuntimeToken: @unchecked Sendable {
+final class CatalogRuntimeToken: Sendable {
     let runtime: CatalogRuntime
 
     init(runtime: CatalogRuntime) {
@@ -56,10 +66,9 @@ struct CatalogRuntimeToken: @unchecked Sendable {
     }
 }
 
-struct CatalogBootstrapDependencies: @unchecked Sendable {
+struct CatalogBootstrapDependencies: Sendable {
     var pathsResolver: AppPathsResolving
     var processLock: CatalogProcessLocking
-    var fileManager: FileManager
     var fileReplacer: any CatalogDatabaseFileReplacing
     var postReplaceValidator: any CatalogPostReplaceValidator
     var capacityChecker: CatalogCapacityChecker
@@ -72,11 +81,15 @@ struct CatalogBootstrapDependencies: @unchecked Sendable {
     var callLog: CatalogBootstrapCallLog?
     var recoveryFailureHook: (@Sendable () throws -> Void)?
     var onStage: (@Sendable (CatalogStartupStage) -> Void)?
+    var blockingWorkProbe: (@Sendable (CatalogBlockingWorkEntry) -> Void)?
+    var openCurrentSchema: @Sendable (URL) throws -> CatalogDatabase
+    var createCandidateDatabase: @Sendable (URL) throws -> Void
+    var snapshotFailureHook: (@Sendable () throws -> Void)?
+    var restoreBeforeWorkCopyHook: (@Sendable () throws -> Void)?
 
     init(
         pathsResolver: AppPathsResolving,
         processLock: CatalogProcessLocking = DarwinCatalogProcessLock(),
-        fileManager: FileManager = .default,
         fileReplacer: any CatalogDatabaseFileReplacing = FoundationCatalogDatabaseFileReplacer(),
         postReplaceValidator: any CatalogPostReplaceValidator = DefaultCatalogPostReplaceValidator(),
         capacityChecker: CatalogCapacityChecker = CatalogCapacityChecker(),
@@ -88,11 +101,19 @@ struct CatalogBootstrapDependencies: @unchecked Sendable {
         retryPolicy: RetryPolicy = ExponentialBackoffRetryPolicy(),
         callLog: CatalogBootstrapCallLog? = nil,
         recoveryFailureHook: (@Sendable () throws -> Void)? = nil,
-        onStage: (@Sendable (CatalogStartupStage) -> Void)? = nil
+        onStage: (@Sendable (CatalogStartupStage) -> Void)? = nil,
+        blockingWorkProbe: (@Sendable (CatalogBlockingWorkEntry) -> Void)? = nil,
+        openCurrentSchema: @escaping @Sendable (URL) throws -> CatalogDatabase = {
+            try CatalogDatabase.openCurrentSchema(at: $0)
+        },
+        createCandidateDatabase: @escaping @Sendable (URL) throws -> Void = {
+            try CatalogDatabase.createCandidateDatabase(at: $0)
+        },
+        snapshotFailureHook: (@Sendable () throws -> Void)? = nil,
+        restoreBeforeWorkCopyHook: (@Sendable () throws -> Void)? = nil
     ) {
         self.pathsResolver = pathsResolver
         self.processLock = processLock
-        self.fileManager = fileManager
         self.fileReplacer = fileReplacer
         self.postReplaceValidator = postReplaceValidator
         self.capacityChecker = capacityChecker
@@ -105,6 +126,11 @@ struct CatalogBootstrapDependencies: @unchecked Sendable {
         self.callLog = callLog
         self.recoveryFailureHook = recoveryFailureHook
         self.onStage = onStage
+        self.blockingWorkProbe = blockingWorkProbe
+        self.openCurrentSchema = openCurrentSchema
+        self.createCandidateDatabase = createCandidateDatabase
+        self.snapshotFailureHook = snapshotFailureHook
+        self.restoreBeforeWorkCopyHook = restoreBeforeWorkCopyHook
     }
 }
 
@@ -124,6 +150,7 @@ struct CatalogBootstrapCoordinator: Sendable {
         let paths: AppPaths
         do {
             paths = try dependencies.pathsResolver.resolve()
+            dependencies.blockingWorkProbe?(.pathsEnsure)
             try dependencies.pathsResolver.ensureRequiredDirectories(for: paths)
             dependencies.callLog?.record(.paths)
             dependencies.onStage?(.paths)
@@ -149,10 +176,8 @@ struct CatalogBootstrapCoordinator: Sendable {
 
         let inspection: FormalDatabaseInspection
         do {
-            inspection = try CatalogDatabase.inspectFormalDatabase(
-                at: paths.catalogDatabaseURL,
-                fileManager: dependencies.fileManager
-            )
+            dependencies.blockingWorkProbe?(.inspect)
+            inspection = try CatalogDatabase.inspectFormalDatabase(at: paths.catalogDatabaseURL)
             dependencies.callLog?.record(.inspect)
             dependencies.onStage?(.catalog)
         } catch {
@@ -160,12 +185,13 @@ struct CatalogBootstrapCoordinator: Sendable {
         }
 
         do {
+            dependencies.blockingWorkProbe?(.prepare)
             switch inspection {
             case .missing:
                 try createAndPublishNewDatabase(at: paths)
             case .currentSchema:
                 break
-            case let .knownOldPrefix:
+            case .knownOldPrefix:
                 try migrateOldSchemaDatabase(at: paths)
             case .unsupportedSchema:
                 return .unavailable(.schemaUnsupported)
@@ -188,7 +214,8 @@ struct CatalogBootstrapCoordinator: Sendable {
 
         let database: CatalogDatabase
         do {
-            database = try CatalogDatabase.openCurrentSchema(at: paths.catalogDatabaseURL)
+            dependencies.blockingWorkProbe?(.finalOpen)
+            database = try dependencies.openCurrentSchema(paths.catalogDatabaseURL)
             openedDatabase = database
             dependencies.callLog?.record(.finalOpen)
         } catch let error as CatalogDatabaseError {
@@ -207,6 +234,7 @@ struct CatalogBootstrapCoordinator: Sendable {
         )
 
         do {
+            dependencies.blockingWorkProbe?(.recovery)
             dependencies.onStage?(.recovery)
             if let recoveryFailureHook = dependencies.recoveryFailureHook {
                 try recoveryFailureHook()
@@ -240,21 +268,22 @@ struct CatalogBootstrapCoordinator: Sendable {
     }
 
     private func createAndPublishNewDatabase(at paths: AppPaths) throws {
+        let fileManager = FileManager.default
         let operationID = dependencies.operationIDProvider().uuidString.lowercased()
         let candidateURL = paths.catalogDirectory.appendingPathComponent(
             "ImageAll.candidate-\(operationID).sqlite"
         )
 
         do {
-            try CatalogDatabase.createCandidateDatabase(at: candidateURL)
+            try dependencies.createCandidateDatabase(candidateURL)
             try CatalogDatabase.publishCandidateDatabase(
                 candidateURL: candidateURL,
                 formalURL: paths.catalogDatabaseURL,
-                fileManager: dependencies.fileManager
+                fileManager: fileManager
             )
         } catch {
-            if dependencies.fileManager.fileExists(atPath: candidateURL.path) {
-                try? dependencies.fileManager.removeItem(at: candidateURL)
+            if fileManager.fileExists(atPath: candidateURL.path) {
+                try? fileManager.removeItem(at: candidateURL)
             }
             throw error
         }
@@ -272,95 +301,40 @@ struct CatalogBootstrapCoordinator: Sendable {
         )
         let snapshotCreator = CatalogSnapshotCreator(sourceDatabase: readonlyDatabase)
         let snapshotID = dependencies.snapshotIDProvider()
+        var snapshotDependencies = CatalogSnapshotCreationDependencies()
+        if let snapshotFailureHook = dependencies.snapshotFailureHook {
+            snapshotDependencies.quickCheckFailureHook = { _ in try snapshotFailureHook() }
+        }
         let descriptor: CatalogSnapshotDescriptor
         do {
             descriptor = try snapshotCreator.createPreMigrationSnapshot(
                 snapshotID: snapshotID,
                 createdAtMs: dependencies.createdAtMsProvider(),
                 appVersion: dependencies.appVersionProvider(),
-                backupsDirectoryURL: paths.backupsDirectory
+                backupsDirectoryURL: paths.backupsDirectory,
+                dependencies: snapshotDependencies
             )
         } catch {
             try? readonlyDatabase.pool.close()
-            throw CatalogSnapshotError.backupFailed
+            throw error
         }
         try readonlyDatabase.pool.close()
 
+        try CatalogDatabaseSidecarHelpers.removeSidecarsIfPresent(at: paths.catalogDatabaseURL)
+
         let operationID = dependencies.operationIDProvider()
-        let operationIDString = operationID.uuidString.lowercased()
-        let workDirectoryURL = paths.catalogDirectory.appendingPathComponent(
-            ".migrate-\(operationIDString).tmp",
-            isDirectory: true
-        )
-        let workDatabaseURL = workDirectoryURL.appendingPathComponent(
-            CatalogSnapshotConstants.databaseFilename
+        let restoreDependencies = CatalogDatabaseRestoreDependencies(
+            fileReplacer: dependencies.fileReplacer,
+            postReplaceValidator: dependencies.postReplaceValidator,
+            beforeWorkCopyPreparationHook: dependencies.restoreBeforeWorkCopyHook
         )
 
-        var workDirectoryCreated = false
-        var replacementInvoked = false
-        defer {
-            if !replacementInvoked, workDirectoryCreated,
-               dependencies.fileManager.fileExists(atPath: workDirectoryURL.path) {
-                try? dependencies.fileManager.removeItem(at: workDirectoryURL)
-            }
-        }
-
-        if dependencies.fileManager.fileExists(atPath: workDirectoryURL.path) {
-            throw CatalogSnapshotError.candidatePreparationFailed
-        }
-
-        try dependencies.fileManager.createDirectory(
-            at: workDirectoryURL,
-            withIntermediateDirectories: true
+        _ = try CatalogDatabaseRestoreCoordinator().restoreSnapshot(
+            snapshotDirectoryURL: descriptor.directoryURL,
+            liveDatabaseURL: paths.catalogDatabaseURL,
+            operationID: operationID,
+            dependencies: restoreDependencies
         )
-        workDirectoryCreated = true
-
-        let snapshotDatabaseURL = descriptor.directoryURL.appendingPathComponent(
-            CatalogSnapshotConstants.databaseFilename
-        )
-        try dependencies.fileManager.copyItem(at: snapshotDatabaseURL, to: workDatabaseURL)
-
-        let needsMigration = descriptor.manifest.appliedMigrations != CatalogMigrationID.knownOrdered
-        try CatalogDatabase.prepareWorkCopyForReplacement(
-            at: workDatabaseURL,
-            expectedManifestMigrations: descriptor.manifest.appliedMigrations,
-            runMigration: needsMigration
-        )
-
-        guard try CatalogDatabaseSidecarHelpers.isSameVolume(workDatabaseURL, paths.catalogDatabaseURL) else {
-            throw CatalogSnapshotError.differentVolume
-        }
-
-        let liveDatabase = try CatalogDatabase.openWithoutMigration(at: paths.catalogDatabaseURL)
-        try liveDatabase.checkpointAndCloseForReplacement()
-
-        let backupName = "ImageAll.sqlite.pre-migration-\(operationIDString)"
-        replacementInvoked = true
-        let resultingURL: URL
-        do {
-            resultingURL = try dependencies.fileReplacer.replaceItem(
-                at: paths.catalogDatabaseURL,
-                withItemAt: workDatabaseURL,
-                backupItemName: backupName,
-                options: [.withoutDeletingBackupItem]
-            )
-        } catch {
-            throw CatalogSnapshotError.initialReplacementFailed
-        }
-
-        do {
-            try dependencies.postReplaceValidator.validateDatabase(at: resultingURL)
-            try CatalogDatabaseSidecarHelpers.requireNoSidecars(
-                at: resultingURL,
-                fileManager: dependencies.fileManager
-            )
-        } catch {
-            throw CatalogSnapshotError.postReplaceValidationFailed
-        }
-
-        if dependencies.fileManager.fileExists(atPath: workDirectoryURL.path) {
-            try? dependencies.fileManager.removeItem(at: workDirectoryURL)
-        }
     }
 
     private func mapMigrationFailure(_ error: Error) -> CatalogBootstrapResult {

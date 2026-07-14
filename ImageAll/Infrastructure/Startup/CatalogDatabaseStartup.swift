@@ -73,21 +73,23 @@ extension CatalogDatabase {
         }
 
         let pool = try DatabasePool(path: url.path, configuration: config)
-        let database = CatalogDatabase(pool: pool)
-
-        try pool.read { db in
-            guard try Int.fetchOne(db, sql: "PRAGMA foreign_keys") == 1 else {
-                throw CatalogDatabaseError.integrityCheckFailed
+        do {
+            try pool.read { db in
+                guard try Int.fetchOne(db, sql: "PRAGMA foreign_keys") == 1 else {
+                    throw CatalogDatabaseError.integrityCheckFailed
+                }
+                try performQuickCheck(on: db)
+                try validateAppliedMigrations(db)
+                let applied = try readAppliedMigrationIDs(from: db)
+                guard applied == CatalogMigrationID.knownOrdered else {
+                    throw CatalogDatabaseError.integrityCheckFailed
+                }
             }
-            try performQuickCheck(on: db)
-            try validateAppliedMigrations(db)
-            let applied = try readAppliedMigrationIDs(from: db)
-            guard applied == CatalogMigrationID.knownOrdered else {
-                throw CatalogDatabaseError.integrityCheckFailed
-            }
+            return CatalogDatabase(pool: pool)
+        } catch {
+            try? pool.close()
+            throw error
         }
-
-        return database
     }
 
     static func createCandidateDatabase(at candidateURL: URL) throws {

@@ -25,6 +25,9 @@
 		EE0000010000000000000103 /* CatalogProcessLockTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE0001010000000000000103 /* CatalogProcessLockTests.swift */; };
 		EE0000010000000000000104 /* CatalogBootstrapTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE0001010000000000000104 /* CatalogBootstrapTests.swift */; };
 		EE0000010000000000000105 /* CatalogStartupPresentationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE0001010000000000000105 /* CatalogStartupPresentationTests.swift */; };
+		EE0000010000000000000106 /* CatalogCapacityRequirementTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE0001010000000000000106 /* CatalogCapacityRequirementTests.swift */; };
+		EE0000010000000000000107 /* CatalogDatabaseStartupTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE0001010000000000000107 /* CatalogDatabaseStartupTests.swift */; };
+		EE0000010000000000000108 /* CatalogBootstrapFailureTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE0001010000000000000108 /* CatalogBootstrapFailureTests.swift */; };
 		BB0000010000000000000001 /* DomainError.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0001010000000000000001 /* DomainError.swift */; };
 		BB0000010000000000000002 /* CatalogVocabulary.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0001010000000000000002 /* CatalogVocabulary.swift */; };
 		BB0000010000000000000003 /* Source.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0001010000000000000003 /* Source.swift */; };
@@ -123,6 +126,9 @@
 		EE0001010000000000000103 /* CatalogProcessLockTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CatalogProcessLockTests.swift; sourceTree = "<group>"; };
 		EE0001010000000000000104 /* CatalogBootstrapTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CatalogBootstrapTests.swift; sourceTree = "<group>"; };
 		EE0001010000000000000105 /* CatalogStartupPresentationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CatalogStartupPresentationTests.swift; sourceTree = "<group>"; };
+		EE0001010000000000000106 /* CatalogCapacityRequirementTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CatalogCapacityRequirementTests.swift; sourceTree = "<group>"; };
+		EE0001010000000000000107 /* CatalogDatabaseStartupTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CatalogDatabaseStartupTests.swift; sourceTree = "<group>"; };
+		EE0001010000000000000108 /* CatalogBootstrapFailureTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CatalogBootstrapFailureTests.swift; sourceTree = "<group>"; };
 		AA0001010000000000000006 /* ImageAll.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = ImageAll.entitlements; sourceTree = "<group>"; };
 		AA0001010000000000000007 /* ImageAll.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ImageAll.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		AA0001010000000000000008 /* ImageAllTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ImageAllTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -292,6 +298,9 @@
 				EE0001010000000000000103 /* CatalogProcessLockTests.swift */,
 				EE0001010000000000000104 /* CatalogBootstrapTests.swift */,
 				EE0001010000000000000105 /* CatalogStartupPresentationTests.swift */,
+				EE0001010000000000000106 /* CatalogCapacityRequirementTests.swift */,
+				EE0001010000000000000107 /* CatalogDatabaseStartupTests.swift */,
+				EE0001010000000000000108 /* CatalogBootstrapFailureTests.swift */,
 			);
 			path = Startup;
 			sourceTree = "<group>";
@@ -641,6 +650,9 @@
 				EE0000010000000000000103 /* CatalogProcessLockTests.swift in Sources */,
 				EE0000010000000000000104 /* CatalogBootstrapTests.swift in Sources */,
 				EE0000010000000000000105 /* CatalogStartupPresentationTests.swift in Sources */,
+				EE0000010000000000000106 /* CatalogCapacityRequirementTests.swift in Sources */,
+				EE0000010000000000000107 /* CatalogDatabaseStartupTests.swift in Sources */,
+				EE0000010000000000000108 /* CatalogBootstrapFailureTests.swift in Sources */,
 				BB000001000000000000000E /* TagNameTests.swift in Sources */,
 				BB000001000000000000000F /* TagDecisionTests.swift in Sources */,
 				BB0000010000000000000010 /* SourceAssetRulesTests.swift in Sources */,

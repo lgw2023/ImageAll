@@ -1,17 +1,11 @@
 import Foundation
 import Darwin
 
-struct DarwinCatalogProcessLock: CatalogProcessLocking, @unchecked Sendable {
-    let fileManager: FileManager
-
-    init(fileManager: FileManager = .default) {
-        self.fileManager = fileManager
-    }
-
+struct DarwinCatalogProcessLock: CatalogProcessLocking {
     func tryAcquire(at lockFileURL: URL) throws -> CatalogProcessLockAcquireResult {
         let runtimeDirectory = lockFileURL.deletingLastPathComponent()
         do {
-            try fileManager.createDirectory(at: runtimeDirectory, withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(at: runtimeDirectory, withIntermediateDirectories: true)
         } catch {
             throw CatalogProcessLockError.ioFailure
         }
@@ -32,8 +26,9 @@ struct DarwinCatalogProcessLock: CatalogProcessLocking, @unchecked Sendable {
             return .acquired(token)
         }
 
+        let savedErrno = errno
         close(fd)
-        if errno == EWOULDBLOCK {
+        if savedErrno == EWOULDBLOCK {
             return .alreadyRunning
         }
         throw CatalogProcessLockError.ioFailure

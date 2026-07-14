@@ -155,7 +155,7 @@ final class CatalogBootstrapTests: XCTestCase {
         let migrations = try SnapshotTestSupport.readMigrationIDs(at: paths.catalogDatabaseURL)
         XCTAssertEqual(migrations, CatalogMigrationID.knownOrdered)
 
-        let backupName = "ImageAll.sqlite.pre-migration-\(operationID.uuidString.lowercased())"
+        let backupName = "ImageAll.sqlite.pre-restore-\(operationID.uuidString.lowercased())"
         let backupURL = paths.catalogDirectory.appendingPathComponent(backupName)
         XCTAssertTrue(FileManager.default.fileExists(atPath: backupURL.path))
         XCTAssertEqual(try SnapshotTestSupport.readMigrationIDs(at: backupURL), [])

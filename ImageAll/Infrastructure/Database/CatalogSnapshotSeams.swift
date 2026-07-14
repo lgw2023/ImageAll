@@ -81,6 +81,7 @@ struct CatalogDatabaseRestoreDependencies {
     var fileReplacer: any CatalogDatabaseFileReplacing
     var postReplaceValidator: any CatalogPostReplaceValidator
     var sameVolumeChecker: @Sendable (URL, URL) throws -> Bool
+    var beforeWorkCopyPreparationHook: (@Sendable () throws -> Void)?
 
     init(
         fileManager: FileManager = .default,
@@ -88,11 +89,13 @@ struct CatalogDatabaseRestoreDependencies {
         postReplaceValidator: any CatalogPostReplaceValidator = DefaultCatalogPostReplaceValidator(),
         sameVolumeChecker: @escaping @Sendable (URL, URL) throws -> Bool = { lhs, rhs in
             try CatalogDatabaseSidecarHelpers.isSameVolume(lhs, rhs)
-        }
+        },
+        beforeWorkCopyPreparationHook: (@Sendable () throws -> Void)? = nil
     ) {
         self.fileManager = fileManager
         self.fileReplacer = fileReplacer
         self.postReplaceValidator = postReplaceValidator
         self.sameVolumeChecker = sameVolumeChecker
+        self.beforeWorkCopyPreparationHook = beforeWorkCopyPreparationHook
     }
 }

@@ -42,6 +42,28 @@ final class CatalogStartupPresentationTests: XCTestCase {
         XCTAssertFalse(token.contains("v999"))
     }
 
+    func testStartupModelBootstrapBlockingWorkDoesNotRunOnMainThread() async throws {
+        let root = try StartupTestSupport.makeTempRoot(testCase: self)
+        let probe = MainThreadProbe()
+        let dependencies = StartupTestSupport.makeDependencies(
+            root: root,
+            blockingWorkProbe: { _ in
+                probe.markIfMainThread()
+            }
+        )
+        let model = CatalogStartupModel(dependencies: dependencies)
+
+        let ready = await waitUntil(timeoutSeconds: 5) {
+            if case .catalogReady = model.presentation.catalogState {
+                return true
+            }
+            return false
+        }
+        XCTAssertTrue(ready)
+        XCTAssertFalse(probe.sawMainThread)
+        try model.closeForTesting()
+    }
+
     private func waitUntil(timeoutSeconds: TimeInterval, condition: @escaping () -> Bool) async -> Bool {
         let deadline = Date().addingTimeInterval(timeoutSeconds)
         while Date() < deadline {
@@ -55,32 +77,6 @@ final class CatalogStartupPresentationTests: XCTestCase {
 }
 
 final class CatalogStartupConcurrencyTests: XCTestCase {
-    func testBootstrapWorkDoesNotRunOnMainThread() throws {
-        let root = try StartupTestSupport.makeTempRoot(testCase: self)
-        let probe = MainThreadProbe()
-        var dependencies = StartupTestSupport.makeDependencies(root: root)
-        dependencies.onStage = { _ in
-            probe.markIfMainThread()
-        }
-
-        let expectation = expectation(description: "bootstrap")
-        var bootstrapResult: CatalogBootstrapResult?
-        DispatchQueue.global(qos: .userInitiated).async {
-            bootstrapResult = CatalogBootstrapCoordinator(dependencies: dependencies).bootstrap()
-            expectation.fulfill()
-        }
-        wait(for: [expectation], timeout: 10)
-
-        guard case let .ready(token) = bootstrapResult else {
-            return XCTFail("Expected ready")
-        }
-        defer {
-            try? token.close()
-        }
-
-        XCTAssertFalse(probe.sawMainThread)
-    }
-
     func testCapacityCheckRunsOffMainThread() throws {
         let root = try StartupTestSupport.makeTempRoot(testCase: self)
         let paths = try StartupTestSupport.resolvedPaths(root: root)

@@ -1,12 +1,6 @@
 import Foundation
 
-struct FoundationAppPathsResolver: AppPathsResolving, @unchecked Sendable {
-    let fileManager: FileManager
-
-    init(fileManager: FileManager = .default) {
-        self.fileManager = fileManager
-    }
-
+struct FoundationAppPathsResolver: AppPathsResolving {
     func resolve() throws -> AppPaths {
         let applicationSupportDirectory = try resolveDirectory(
             for: .applicationSupportDirectory,
@@ -56,7 +50,7 @@ struct FoundationAppPathsResolver: AppPathsResolving, @unchecked Sendable {
         create: Bool
     ) throws -> URL {
         do {
-            let base = try fileManager.url(
+            let base = try FileManager.default.url(
                 for: searchPath,
                 in: .userDomainMask,
                 appropriateFor: nil,
@@ -69,6 +63,7 @@ struct FoundationAppPathsResolver: AppPathsResolving, @unchecked Sendable {
     }
 
     private func ensureDirectory(at url: URL) throws {
+        let fileManager = FileManager.default
         var isDirectory: ObjCBool = false
         if fileManager.fileExists(atPath: url.path, isDirectory: &isDirectory) {
             guard isDirectory.boolValue else {
@@ -94,13 +89,11 @@ struct FoundationAppPathsResolver: AppPathsResolving, @unchecked Sendable {
     }
 }
 
-struct TemporaryAppPathsResolver: AppPathsResolving, @unchecked Sendable {
+struct TemporaryAppPathsResolver: AppPathsResolving {
     let rootURL: URL
-    let fileManager: FileManager
 
-    init(rootURL: URL, fileManager: FileManager = .default) {
+    init(rootURL: URL) {
         self.rootURL = rootURL
-        self.fileManager = fileManager
     }
 
     func resolve() throws -> AppPaths {
@@ -129,7 +122,6 @@ struct TemporaryAppPathsResolver: AppPathsResolving, @unchecked Sendable {
     }
 
     func ensureRequiredDirectories(for paths: AppPaths) throws {
-        let resolver = FoundationAppPathsResolver(fileManager: fileManager)
-        try resolver.ensureRequiredDirectories(for: paths)
+        try FoundationAppPathsResolver().ensureRequiredDirectories(for: paths)
     }
 }

@@ -29,6 +29,11 @@ enum StartupTestSupport {
         fileReplacer: (any CatalogDatabaseFileReplacing)? = nil,
         postReplaceValidator: (any CatalogPostReplaceValidator)? = nil,
         recoveryFailureHook: (@Sendable () throws -> Void)? = nil,
+        snapshotFailureHook: (@Sendable () throws -> Void)? = nil,
+        restoreBeforeWorkCopyHook: (@Sendable () throws -> Void)? = nil,
+        blockingWorkProbe: (@Sendable (CatalogBlockingWorkEntry) -> Void)? = nil,
+        openCurrentSchema: (@Sendable (URL) throws -> CatalogDatabase)? = nil,
+        createCandidateDatabase: (@Sendable (URL) throws -> Void)? = nil,
         operationID: UUID = UUID()
     ) -> CatalogBootstrapDependencies {
         var capacityChecker = CatalogCapacityChecker()
@@ -49,7 +54,12 @@ enum StartupTestSupport {
             clock: FixedJobClock(nowMs: JobTestSupport.baseTimeMs),
             retryPolicy: FixedDelayRetryPolicy(delayMs: JobTestSupport.retryDelayMs),
             callLog: callLog,
-            recoveryFailureHook: recoveryFailureHook
+            recoveryFailureHook: recoveryFailureHook,
+            blockingWorkProbe: blockingWorkProbe,
+            openCurrentSchema: openCurrentSchema ?? { try CatalogDatabase.openCurrentSchema(at: $0) },
+            createCandidateDatabase: createCandidateDatabase ?? { try CatalogDatabase.createCandidateDatabase(at: $0) },
+            snapshotFailureHook: snapshotFailureHook,
+            restoreBeforeWorkCopyHook: restoreBeforeWorkCopyHook
         )
     }
 

@@ -9,22 +9,16 @@ struct CatalogCapacityRequirement {
     static let minimumFootprintBytes: UInt64 = 1024 * 1024
 
     static func requiredAdditionalBytes(sourceFootprint: UInt64) -> UInt64? {
-        let doubled = sourceFootprint.multipliedReportingOverflow(by: 2)
+        let scaledFootprint = max(sourceFootprint, minimumFootprintBytes)
+        let doubled = scaledFootprint.multipliedReportingOverflow(by: 2)
         guard !doubled.overflow else { return nil }
-        let scaled = max(doubled.partialValue, minimumFootprintBytes)
-        let total = scaled.addingReportingOverflow(minimumMarginBytes)
+        let total = doubled.partialValue.addingReportingOverflow(minimumMarginBytes)
         guard !total.overflow else { return nil }
         return total.partialValue
     }
 }
 
-struct FoundationCatalogCapacityProvider: CatalogCapacityProviding, @unchecked Sendable {
-    let fileManager: FileManager
-
-    init(fileManager: FileManager = .default) {
-        self.fileManager = fileManager
-    }
-
+struct FoundationCatalogCapacityProvider: CatalogCapacityProviding {
     func availableBytes(for url: URL) throws -> UInt64? {
         let keys: Set<URLResourceKey> = [
             .volumeAvailableCapacityForImportantUsageKey,
@@ -48,19 +42,15 @@ enum CatalogCapacityError: Error, Equatable, Sendable {
     case insufficientSpace(requiredBytes: UInt64)
 }
 
-struct CatalogCapacityChecker: @unchecked Sendable {
+struct CatalogCapacityChecker: Sendable {
     let provider: CatalogCapacityProviding
-    let fileManager: FileManager
 
-    init(
-        provider: CatalogCapacityProviding = FoundationCatalogCapacityProvider(),
-        fileManager: FileManager = .default
-    ) {
+    init(provider: CatalogCapacityProviding = FoundationCatalogCapacityProvider()) {
         self.provider = provider
-        self.fileManager = fileManager
     }
 
     func databaseFootprintBytes(at databaseURL: URL) throws -> UInt64 {
+        let fileManager = FileManager.default
         var total: UInt64 = 0
         let urls = [databaseURL] + CatalogDatabaseSidecarHelpers.sidecarURLs(for: databaseURL)
         for url in urls {

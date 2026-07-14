@@ -9,6 +9,7 @@ enum CatalogProcessLockError: Error, Equatable, Sendable {
     case ioFailure
 }
 
+/// NSLock serializes one-time release; fd ownership lives in releaseHandler only.
 final class CatalogProcessLockToken: @unchecked Sendable {
     private let releaseHandler: @Sendable () -> Void
     private let lock = NSLock()
