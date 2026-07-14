@@ -120,6 +120,49 @@ enum DatabaseTestSupport {
         }
     }
 
+    static func schemaIndexOwners(_ db: Database) throws -> [String: String] {
+        var owners: [String: String] = [:]
+        let rows = try Row.fetchAll(
+            db,
+            sql: """
+            SELECT name, tbl_name FROM sqlite_schema
+            WHERE type = 'index' AND name NOT LIKE 'sqlite_stat%'
+            ORDER BY name
+            """
+        )
+        for row in rows {
+            owners[row["name"] as String] = row["tbl_name"] as String
+        }
+        return owners
+    }
+
+    static func indexKeyEntries(_ db: Database, index: String) throws -> [(seqno: Int, name: String, desc: Bool, coll: String)] {
+        let rows = try indexXInfo(db, index: index).filter(\.key)
+        return try rows.map { row in
+            guard let name = row.name else {
+                throw IndexKeyValidationError.unnamedKeyEntry(index: index, seqno: row.seqno)
+            }
+            guard let coll = row.coll else {
+                throw IndexKeyValidationError.missingCollation(index: index, column: name)
+            }
+            return (seqno: row.seqno, name: name, desc: row.desc, coll: coll)
+        }
+    }
+
+    enum IndexKeyValidationError: Error, CustomStringConvertible {
+        case unnamedKeyEntry(index: String, seqno: Int)
+        case missingCollation(index: String, column: String)
+
+        var description: String {
+            switch self {
+            case let .unnamedKeyEntry(index, seqno):
+                return "Index \(index) key entry at seqno \(seqno) has no column name"
+            case let .missingCollation(index, column):
+                return "Index \(index).\(column) has no collation in index_xinfo"
+            }
+        }
+    }
+
     struct SchemaObject: Equatable {
         let type: String
         let name: String

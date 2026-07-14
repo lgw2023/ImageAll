@@ -25,22 +25,49 @@ final class CatalogSchemaTests: XCTestCase {
         let database = try CatalogDatabase.open(at: url)
 
         try database.pool.read { db in
-            let tables = try DatabaseTestSupport.tableNames(db)
-            XCTAssertEqual(Set(tables), Set(CatalogSchemaExpectations.businessTables))
-
-            let allIndexes = try DatabaseTestSupport.fetchStrings(
-                db,
-                sql: "SELECT name FROM sqlite_schema WHERE type = 'index' ORDER BY name"
+            let objects = try DatabaseTestSupport.schemaObjects(db)
+            let objectTypes = Set(objects.map(\.type))
+            XCTAssertEqual(
+                objectTypes,
+                Set(CatalogSchemaExpectations.allowedSchemaObjectTypes),
+                "Schema must contain only tables and indexes, found: \(objectTypes)"
             )
-            let businessIndexes = Set(CatalogSchemaExpectations.businessIndexes)
-            let autoIndexes = allIndexes.filter { $0.hasPrefix("sqlite_autoindex_") }
-            let namedIndexes = allIndexes.filter { !$0.hasPrefix("sqlite_autoindex_") }
+            XCTAssertFalse(objects.contains { $0.type == "trigger" })
+            XCTAssertFalse(objects.contains { $0.type == "view" })
+
+            let tables = objects.filter { $0.type == "table" }.map(\.name).sorted()
+            let expectedTables = (
+                CatalogSchemaExpectations.businessTables + CatalogSchemaExpectations.infrastructureTables
+            ).sorted()
+            XCTAssertEqual(tables, expectedTables)
+
+            let businessTableSet = Set(CatalogSchemaExpectations.businessTables)
+            XCTAssertEqual(Set(try DatabaseTestSupport.tableNames(db)), businessTableSet)
+
+            let indexOwners = try DatabaseTestSupport.schemaIndexOwners(db)
+            let allIndexNames = indexOwners.keys.sorted()
+            let namedIndexes = allIndexNames.filter { !$0.hasPrefix("sqlite_autoindex_") }
+            let autoIndexes = allIndexNames.filter { $0.hasPrefix("sqlite_autoindex_") }
+
             XCTAssertEqual(
                 Set(namedIndexes),
-                businessIndexes,
+                Set(CatalogSchemaExpectations.businessIndexes),
                 "Unexpected named indexes: \(namedIndexes)"
             )
             XCTAssertFalse(autoIndexes.isEmpty, "SQLite auto indexes must be present for PRIMARY KEY constraints")
+
+            let allowedAutoIndexTables = Set(
+                CatalogSchemaExpectations.businessTables + CatalogSchemaExpectations.infrastructureTables
+            )
+            for autoIndex in autoIndexes {
+                guard let owner = indexOwners[autoIndex] else {
+                    return XCTFail("Missing owner for \(autoIndex)")
+                }
+                XCTAssertTrue(
+                    allowedAutoIndexTables.contains(owner),
+                    "Auto index \(autoIndex) must belong to a known table, got \(owner)"
+                )
+            }
         }
     }
 
@@ -129,18 +156,18 @@ final class CatalogSchemaTests: XCTestCase {
                     "Index \(expected.name) partial flag"
                 )
 
-                let columns = try DatabaseTestSupport.indexXInfo(db, index: expected.name)
-                let keyColumns = columns.filter(\.key).compactMap(\.name)
-                XCTAssertEqual(keyColumns, expected.columns, "Index columns for \(expected.name)")
+                let keyEntries = try DatabaseTestSupport.indexKeyEntries(db, index: expected.name)
+                XCTAssertEqual(
+                    keyEntries.count,
+                    expected.keyColumns.count,
+                    "Key entry count for \(expected.name)"
+                )
 
-                for (column, collation) in expected.collationByColumn {
-                    let entry = columns.first { $0.name == column }
-                    XCTAssertEqual(entry?.coll, collation, "Collation for \(expected.name).\(column)")
-                }
-
-                for column in expected.descendingColumns {
-                    let entry = columns.first { $0.name == column }
-                    XCTAssertEqual(entry?.desc, true, "\(expected.name).\(column) must be DESC")
+                let sortedKeyEntries = keyEntries.sorted { $0.seqno < $1.seqno }
+                for (actualKey, expectedKey) in zip(sortedKeyEntries, expected.keyColumns) {
+                    XCTAssertEqual(actualKey.name, expectedKey.name, "\(expected.name) key column order")
+                    XCTAssertEqual(actualKey.desc, expectedKey.descending, "\(expected.name).\(expectedKey.name) DESC flag")
+                    XCTAssertEqual(actualKey.coll, expectedKey.collation, "\(expected.name).\(expectedKey.name) collation")
                 }
 
                 let ddl = try String.fetchOne(

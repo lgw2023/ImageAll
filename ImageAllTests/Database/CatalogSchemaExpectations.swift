@@ -16,14 +16,22 @@ enum CatalogSchemaExpectations {
         let onDelete: String
     }
 
+    struct IndexKeyColumnExpectation: Equatable {
+        let name: String
+        let descending: Bool
+        let collation: String
+    }
+
     struct IndexExpectation: Equatable {
         let name: String
-        let columns: [String]
+        let keyColumns: [IndexKeyColumnExpectation]
         let unique: Bool
-        let descendingColumns: Set<String>
-        let collationByColumn: [String: String]
         let partialPredicateFragments: [String]
     }
+
+    static let infrastructureTables = ["grdb_migrations"]
+
+    static let allowedSchemaObjectTypes = ["index", "table"]
 
     static let businessTables = [
         "asset",
@@ -155,58 +163,67 @@ enum CatalogSchemaExpectations {
     static let indexes: [IndexExpectation] = [
         .init(
             name: "asset_current_file_locator_uq",
-            columns: ["source_id", "relative_path"],
+            keyColumns: [
+                .init(name: "source_id", descending: false, collation: "BINARY"),
+                .init(name: "relative_path", descending: false, collation: "BINARY"),
+            ],
             unique: true,
-            descendingColumns: [],
-            collationByColumn: [:],
             partialPredicateFragments: ["locator_kind = 'file'", "locator_state = 'current'"]
         ),
         .init(
             name: "asset_current_photos_locator_uq",
-            columns: ["source_id", "photos_local_identifier"],
+            keyColumns: [
+                .init(name: "source_id", descending: false, collation: "BINARY"),
+                .init(name: "photos_local_identifier", descending: false, collation: "BINARY"),
+            ],
             unique: true,
-            descendingColumns: [],
-            collationByColumn: [:],
             partialPredicateFragments: ["locator_kind = 'photos'", "locator_state = 'current'"]
         ),
         .init(
             name: "asset_source_availability_idx",
-            columns: ["source_id", "availability", "id"],
+            keyColumns: [
+                .init(name: "source_id", descending: false, collation: "BINARY"),
+                .init(name: "availability", descending: false, collation: "BINARY"),
+                .init(name: "id", descending: false, collation: "BINARY"),
+            ],
             unique: false,
-            descendingColumns: [],
-            collationByColumn: [:],
             partialPredicateFragments: []
         ),
         .init(
             name: "tag_normalized_name_uq",
-            columns: ["normalized_name"],
+            keyColumns: [
+                .init(name: "normalized_name", descending: false, collation: "BINARY"),
+            ],
             unique: true,
-            descendingColumns: [],
-            collationByColumn: ["normalized_name": "BINARY"],
             partialPredicateFragments: []
         ),
         .init(
             name: "decision_tag_idx",
-            columns: ["tag_id", "decision", "asset_id"],
+            keyColumns: [
+                .init(name: "tag_id", descending: false, collation: "BINARY"),
+                .init(name: "decision", descending: false, collation: "BINARY"),
+                .init(name: "asset_id", descending: false, collation: "BINARY"),
+            ],
             unique: false,
-            descendingColumns: [],
-            collationByColumn: [:],
             partialPredicateFragments: []
         ),
         .init(
             name: "job_queue_idx",
-            columns: ["state", "priority", "not_before_ms", "id"],
+            keyColumns: [
+                .init(name: "state", descending: false, collation: "BINARY"),
+                .init(name: "priority", descending: true, collation: "BINARY"),
+                .init(name: "not_before_ms", descending: false, collation: "BINARY"),
+                .init(name: "id", descending: false, collation: "BINARY"),
+            ],
             unique: false,
-            descendingColumns: ["priority"],
-            collationByColumn: [:],
             partialPredicateFragments: []
         ),
         .init(
             name: "job_active_coalescing_uq",
-            columns: ["coalescing_key"],
+            keyColumns: [
+                .init(name: "coalescing_key", descending: false, collation: "BINARY"),
+            ],
             unique: true,
-            descendingColumns: [],
-            collationByColumn: [:],
             partialPredicateFragments: [
                 "coalescing_key IS NOT NULL",
                 "'pending'",

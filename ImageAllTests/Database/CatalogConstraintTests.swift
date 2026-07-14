@@ -225,6 +225,28 @@ final class CatalogConstraintTests: XCTestCase {
         })
     }
 
+    func testTagArchivedStatePersists() throws {
+        let url = try makeTempDatabaseURL()
+        let database = try CatalogDatabase.open(at: url)
+        let tagID = DatabaseTestSupport.lowercaseUUIDString()
+        let timestamp = DatabaseTestSupport.timestampMs
+
+        try database.pool.write { db in
+            try db.execute(
+                sql: """
+                INSERT INTO tag (id, name, normalized_name, state, created_at_ms, updated_at_ms)
+                VALUES (?, 'Archive', 'archive', 'archived', ?, ?)
+                """,
+                arguments: [tagID, timestamp, timestamp]
+            )
+        }
+
+        let persistedState = try database.pool.read { db in
+            try String.fetchOne(db, sql: "SELECT state FROM tag WHERE id = ?", arguments: [tagID])
+        }
+        XCTAssertEqual(persistedState, "archived")
+    }
+
     func testTagDecisionRejectsUnknownDecision() throws {
         let url = try makeTempDatabaseURL()
         let database = try CatalogDatabase.open(at: url)
@@ -414,7 +436,7 @@ final class CatalogConstraintTests: XCTestCase {
         })
     }
 
-    func testFingerprintBlobColumnsRejectTextStorageClass() throws {
+    func testFingerprintResourceIDRejectsTextStorageClass() throws {
         let url = try makeTempDatabaseURL()
         let database = try CatalogDatabase.open(at: url)
         let repository = CatalogRepository(database: database)
@@ -426,7 +448,26 @@ final class CatalogConstraintTests: XCTestCase {
                 sql: """
                 INSERT INTO file_fingerprint (
                     asset_id, size_bytes, modified_at_ns, resource_id, sha256
-                ) VALUES (?, 1, 1, 'text-not-blob', ?)
+                ) VALUES (?, 1, 1, 'text-not-blob', NULL)
+                """,
+                arguments: [assetID.uuidString.lowercased()]
+            )
+        })
+    }
+
+    func testFingerprintSha256RejectsTextStorageClass() throws {
+        let url = try makeTempDatabaseURL()
+        let database = try CatalogDatabase.open(at: url)
+        let repository = CatalogRepository(database: database)
+        let assetID = UUID()
+        try DatabaseTestSupport.makeFolderSourceWithFileAsset(repository: repository, assetID: assetID)
+
+        XCTAssertThrowsError(try database.pool.write { db in
+            try db.execute(
+                sql: """
+                INSERT INTO file_fingerprint (
+                    asset_id, size_bytes, modified_at_ns, resource_id, sha256
+                ) VALUES (?, 1, 1, NULL, ?)
                 """,
                 arguments: [assetID.uuidString.lowercased(), String(repeating: "a", count: 32)]
             )
@@ -933,6 +974,56 @@ final class CatalogConstraintTests: XCTestCase {
                 ]
             )
         }
+    }
+
+    func testRunningJobPauseControlRequestPersists() throws {
+        let url = try makeTempDatabaseURL()
+        let database = try CatalogDatabase.open(at: url)
+        let jobID = DatabaseTestSupport.lowercaseUUIDString()
+        let timestamp = DatabaseTestSupport.timestampMs
+
+        try database.pool.write { db in
+            try db.execute(
+                sql: """
+                INSERT INTO job (
+                    id, kind, payload_version, payload, state, control_request,
+                    max_attempts, not_before_ms, lease_owner, lease_expires_at_ms,
+                    created_at_ms, updated_at_ms
+                ) VALUES (?, 'scan', 1, ?, 'running', 'pause', 3, ?, 'worker-1', ?, ?, ?)
+                """,
+                arguments: [jobID, Data([0x01]), timestamp, timestamp + 60_000, timestamp, timestamp]
+            )
+        }
+
+        let persisted = try database.pool.read { db in
+            try String.fetchOne(db, sql: "SELECT control_request FROM job WHERE id = ?", arguments: [jobID])
+        }
+        XCTAssertEqual(persisted, "pause")
+    }
+
+    func testRunningJobCancelControlRequestPersists() throws {
+        let url = try makeTempDatabaseURL()
+        let database = try CatalogDatabase.open(at: url)
+        let jobID = DatabaseTestSupport.lowercaseUUIDString()
+        let timestamp = DatabaseTestSupport.timestampMs
+
+        try database.pool.write { db in
+            try db.execute(
+                sql: """
+                INSERT INTO job (
+                    id, kind, payload_version, payload, state, control_request,
+                    max_attempts, not_before_ms, lease_owner, lease_expires_at_ms,
+                    created_at_ms, updated_at_ms
+                ) VALUES (?, 'scan', 1, ?, 'running', 'cancel', 3, ?, 'worker-1', ?, ?, ?)
+                """,
+                arguments: [jobID, Data([0x01]), timestamp, timestamp + 60_000, timestamp, timestamp]
+            )
+        }
+
+        let persisted = try database.pool.read { db in
+            try String.fetchOne(db, sql: "SELECT control_request FROM job WHERE id = ?", arguments: [jobID])
+        }
+        XCTAssertEqual(persisted, "cancel")
     }
 
     func testJobPendingRejectsLeaseFields() throws {
