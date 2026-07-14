@@ -10,26 +10,13 @@ protocol JobQueue: Sendable {
     func recoverInterruptedRunningJobs() throws
 }
 
-protocol JobBusinessBatchQueue: Sendable {
-    func commitSimulatedBusinessBatch(_ input: SimulatedBusinessWriteInput) throws -> JobRecordSnapshot
-}
-
 struct JobExecutionCoordinator: Sendable {
     let queue: JobQueue
     let registry: JobHandlerRegistry
-    let retryPolicy: RetryPolicy
-    let clock: JobClock
 
-    init(
-        queue: JobQueue,
-        registry: JobHandlerRegistry,
-        retryPolicy: RetryPolicy,
-        clock: JobClock
-    ) {
+    init(queue: JobQueue, registry: JobHandlerRegistry) {
         self.queue = queue
         self.registry = registry
-        self.retryPolicy = retryPolicy
-        self.clock = clock
     }
 
     func claimAndExecuteOnce(_ input: ClaimNextInput) throws -> JobExecutionResult? {
@@ -47,20 +34,21 @@ struct JobExecutionCoordinator: Sendable {
             switch validationError {
             case .unknownJobKind:
                 errorCode = .unknownJobKind
-            case let .unsupportedPayloadVersion:
+            case .unsupportedPayloadVersion:
                 errorCode = .unsupportedPayloadVersion
-            case let .unsupportedCheckpointVersion:
+            case .unsupportedCheckpointVersion:
                 errorCode = .unsupportedCheckpointVersion
             default:
                 throw validationError
             }
 
+            let persisted = try queue.fetchJob(id: lease.jobID)
             let snapshot = try queue.submitSafeBatch(
                 SafeBatchCommitInput(
                     lease: lease,
                     outcome: .nonRetryableFailure(code: errorCode),
-                    checkpoint: lease.checkpoint,
-                    progress: JobProgress(completed: 0, total: nil)
+                    checkpoint: persisted.checkpoint,
+                    progress: persisted.progress
                 )
             )
             return JobExecutionResult(lease: lease, snapshot: snapshot, handlerInvoked: false)
@@ -70,7 +58,7 @@ struct JobExecutionCoordinator: Sendable {
             throw JobQueueError.unknownJobKind(lease.kind)
         }
 
-        let execution = try handler.execute(
+        let execution = handler.execute(
             payloadVersion: lease.payloadVersion,
             payload: lease.payload,
             checkpoint: lease.checkpoint

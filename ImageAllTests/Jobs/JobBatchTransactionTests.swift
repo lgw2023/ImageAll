@@ -3,7 +3,7 @@ import XCTest
 @testable import ImageAll
 
 final class JobBatchTransactionTests: XCTestCase {
-    func testSimulatedBusinessWriteCheckpointAndProgressCommitTogether() throws {
+    func testSourceDirtyEpochBatchCommitsCheckpointAndProgressTogether() throws {
         let url = try makeTempDatabaseURL()
         let database = try CatalogDatabase.open(at: url)
         let repository = CatalogRepository(database: database)
@@ -15,11 +15,11 @@ final class JobBatchTransactionTests: XCTestCase {
         _ = try JobTestSupport.enqueueDefault(queue: queue, id: jobID, sourceID: sourceID)
         let lease = try XCTUnwrap(try JobTestSupport.claimDefault(queue: queue))
 
-        let snapshot = try queue.commitSimulatedBusinessBatch(
-            SimulatedBusinessWriteInput(
+        let snapshot = try queue.commitSourceDirtyEpochBatch(
+            sourceID: sourceID,
+            dirtyEpochDelta: 2,
+            batch: SafeBatchCommitInput(
                 lease: lease,
-                sourceID: sourceID,
-                dirtyEpochDelta: 2,
                 outcome: .continue,
                 checkpoint: JobTestSupport.testCheckpoint,
                 progress: JobProgress(completed: 3, total: 10)
@@ -36,7 +36,7 @@ final class JobBatchTransactionTests: XCTestCase {
         XCTAssertEqual(dirtyEpoch, 2)
     }
 
-    func testBusinessWriteFailureRollsBackJobAndSource() throws {
+    func testBusinessClosureFailureRollsBackJobAndSource() throws {
         let url = try makeTempDatabaseURL()
         let database = try CatalogDatabase.open(at: url)
         let repository = CatalogRepository(database: database)
@@ -52,33 +52,36 @@ final class JobBatchTransactionTests: XCTestCase {
             try JobTestSupport.fetchRowSnapshot(db, jobID: jobID)
         }
         let sourceBaseline = try database.pool.read { db in
-            try Int.fetchOne(db, sql: "SELECT dirty_epoch FROM source WHERE id = ?", arguments: [sourceID.uuidString.lowercased()])
+            try JobTestSupport.fetchSourceRowSnapshot(db, sourceID: sourceID)
         }
 
         struct InjectedFailure: Error {}
 
         XCTAssertThrowsError(
-            try queue.commitSimulatedBusinessBatchWithFaultInjection(
-                SimulatedBusinessWriteInput(
+            try queue.commitLeaseProtectedBatch(
+                input: SafeBatchCommitInput(
                     lease: lease,
-                    sourceID: sourceID,
-                    dirtyEpochDelta: 5,
                     outcome: .continue,
                     checkpoint: JobTestSupport.testCheckpoint,
                     progress: JobProgress(completed: 1, total: 2)
-                ),
-                afterSourceUpdate: { throw InjectedFailure() }
-            )
+                )
+            ) { db in
+                try db.execute(
+                    sql: """
+                    UPDATE source SET dirty_epoch = dirty_epoch + 5, updated_at_ms = ?
+                    WHERE id = ?
+                    """,
+                    arguments: [JobTestSupport.baseTimeMs, sourceID.uuidString.lowercased()]
+                )
+                throw InjectedFailure()
+            }
         )
 
         try assertRowUnchanged(database: database, jobID: jobID, baseline: try XCTUnwrap(jobBaseline))
-        let dirtyEpoch = try database.pool.read { db in
-            try Int.fetchOne(db, sql: "SELECT dirty_epoch FROM source WHERE id = ?", arguments: [sourceID.uuidString.lowercased()])
-        }
-        XCTAssertEqual(dirtyEpoch, sourceBaseline)
+        try assertSourceRowUnchanged(database: database, sourceID: sourceID, baseline: try XCTUnwrap(sourceBaseline))
     }
 
-    func testInvalidJobProgressRollsBackSourceWrite() throws {
+    func testInvalidJobProgressAfterSourceUpdateRollsBackBoth() throws {
         let url = try makeTempDatabaseURL()
         let database = try CatalogDatabase.open(at: url)
         let repository = CatalogRepository(database: database)
@@ -90,31 +93,88 @@ final class JobBatchTransactionTests: XCTestCase {
         _ = try JobTestSupport.enqueueDefault(queue: queue, id: jobID, sourceID: sourceID)
         let lease = try XCTUnwrap(try JobTestSupport.claimDefault(queue: queue))
 
+        let jobBaseline = try database.pool.read { db in
+            try JobTestSupport.fetchRowSnapshot(db, jobID: jobID)
+        }
         let sourceBaseline = try database.pool.read { db in
-            try Int.fetchOne(db, sql: "SELECT dirty_epoch FROM source WHERE id = ?", arguments: [sourceID.uuidString.lowercased()])
+            try JobTestSupport.fetchSourceRowSnapshot(db, sourceID: sourceID)
         }
 
         XCTAssertThrowsError(
-            try queue.submitSafeBatchWithForcedInvalidProgress(
-                SafeBatchCommitInput(
-                    lease: lease,
-                    outcome: .continue,
-                    checkpoint: JobTestSupport.testCheckpoint,
-                    progress: JobProgress(completed: 1, total: 2)
-                ),
-                forcedProgressCompleted: 10,
-                forcedProgressTotal: 5
+            try queue.performLeaseProtectedWork(lease: lease) { db in
+                try db.execute(
+                    sql: """
+                    UPDATE source SET dirty_epoch = dirty_epoch + 3, updated_at_ms = ?
+                    WHERE id = ?
+                    """,
+                    arguments: [JobTestSupport.baseTimeMs, sourceID.uuidString.lowercased()]
+                )
+                try db.execute(
+                    sql: """
+                    UPDATE job SET progress_completed = 10, progress_total = 5, updated_at_ms = ?
+                    WHERE id = ? AND state = 'running'
+                    """,
+                    arguments: [JobTestSupport.baseTimeMs, jobID.uuidString.lowercased()]
+                )
+            }
+        )
+
+        try assertRowUnchanged(database: database, jobID: jobID, baseline: try XCTUnwrap(jobBaseline))
+        try assertSourceRowUnchanged(database: database, sourceID: sourceID, baseline: try XCTUnwrap(sourceBaseline))
+    }
+
+    func testProgressRegressionRejectedBeforeBusinessClosureRuns() throws {
+        let url = try makeTempDatabaseURL()
+        let database = try CatalogDatabase.open(at: url)
+        let repository = CatalogRepository(database: database)
+        let sourceID = UUID()
+        try DatabaseTestSupport.makeFolderSourceWithFileAsset(repository: repository, sourceID: sourceID)
+
+        let queue = JobTestSupport.makeQueue(database: database)
+        let jobID = UUID()
+        _ = try JobTestSupport.enqueueDefault(queue: queue, id: jobID, sourceID: sourceID)
+        let lease = try XCTUnwrap(try JobTestSupport.claimDefault(queue: queue))
+
+        _ = try queue.commitSourceDirtyEpochBatch(
+            sourceID: sourceID,
+            dirtyEpochDelta: 1,
+            batch: SafeBatchCommitInput(
+                lease: lease,
+                outcome: .continue,
+                checkpoint: JobTestSupport.testCheckpoint,
+                progress: JobProgress(completed: 5, total: 10)
             )
         )
 
-        let dirtyEpoch = try database.pool.read { db in
-            try Int.fetchOne(db, sql: "SELECT dirty_epoch FROM source WHERE id = ?", arguments: [sourceID.uuidString.lowercased()])
+        let jobBaseline = try database.pool.read { db in
+            try JobTestSupport.fetchRowSnapshot(db, jobID: jobID)
         }
-        XCTAssertEqual(dirtyEpoch, sourceBaseline)
+        let sourceBaseline = try database.pool.read { db in
+            try JobTestSupport.fetchSourceRowSnapshot(db, sourceID: sourceID)
+        }
+        let workTracker = JobTestSupport.BusinessWorkTracker()
 
-        let snapshot = try queue.fetchJob(id: jobID)
-        XCTAssertEqual(snapshot.state, .running)
-        XCTAssertNil(snapshot.checkpoint)
+        XCTAssertThrowsError(
+            try queue.commitLeaseProtectedBatch(
+                input: SafeBatchCommitInput(
+                    lease: lease,
+                    outcome: .continue,
+                    checkpoint: JobTestSupport.testCheckpoint,
+                    progress: JobProgress(completed: 3, total: 10)
+                )
+            ) { _ in
+                workTracker.markExecuted()
+            }
+        ) { error in
+            XCTAssertEqual(
+                error as? JobQueueError,
+                .invalidProgress(reason: "progress_completed must not regress")
+            )
+        }
+
+        XCTAssertFalse(workTracker.executed)
+        try assertRowUnchanged(database: database, jobID: jobID, baseline: try XCTUnwrap(jobBaseline))
+        try assertSourceRowUnchanged(database: database, sourceID: sourceID, baseline: try XCTUnwrap(sourceBaseline))
     }
 
     func testStaleLeaseDoesNotExecuteBusinessBatch() throws {
@@ -140,11 +200,11 @@ final class JobBatchTransactionTests: XCTestCase {
         )
 
         XCTAssertThrowsError(
-            try queue.commitSimulatedBusinessBatch(
-                SimulatedBusinessWriteInput(
+            try queue.commitSourceDirtyEpochBatch(
+                sourceID: sourceID,
+                dirtyEpochDelta: 1,
+                batch: SafeBatchCommitInput(
                     lease: staleLease,
-                    sourceID: sourceID,
-                    dirtyEpochDelta: 1,
                     outcome: .continue,
                     checkpoint: JobTestSupport.testCheckpoint,
                     progress: JobProgress(completed: 1, total: 2)

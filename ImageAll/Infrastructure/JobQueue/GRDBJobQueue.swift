@@ -1,7 +1,7 @@
 import Foundation
 import GRDB
 
-struct GRDBJobQueue: JobQueue, JobBusinessBatchQueue, Sendable {
+struct GRDBJobQueue: JobQueue, Sendable {
     let database: CatalogDatabase
     let clock: JobClock
     let retryPolicy: RetryPolicy
@@ -105,6 +105,9 @@ struct GRDBJobQueue: JobQueue, JobBusinessBatchQueue, Sendable {
         }
 
         let nowMs = clock.nowMs
+        guard nowMs <= Int64.max - input.leaseDurationMs else {
+            throw JobQueueError.invalidClaimInput(reason: "lease expiry overflow")
+        }
         let leaseExpiresAtMs = nowMs + input.leaseDurationMs
 
         return try database.pool.write { db in
@@ -201,12 +204,34 @@ struct GRDBJobQueue: JobQueue, JobBusinessBatchQueue, Sendable {
     }
 
     func submitSafeBatch(_ input: SafeBatchCommitInput) throws -> JobRecordSnapshot {
-        try JobPersistenceMapping.validateProgress(input.progress)
+        try commitLeaseProtectedBatch(input: input) { _ in }
+    }
 
-        let nowMs = clock.nowMs
+    func commitSourceDirtyEpochBatch(
+        sourceID: UUID,
+        dirtyEpochDelta: Int,
+        batch: SafeBatchCommitInput
+    ) throws -> JobRecordSnapshot {
+        try commitLeaseProtectedBatch(input: batch) { db in
+            let sourceExists = try Int.fetchOne(
+                db,
+                sql: "SELECT 1 FROM source WHERE id = ?",
+                arguments: [sourceID.uuidString.lowercased()]
+            )
+            guard sourceExists == 1 else {
+                throw JobQueueError.referenceNotFound
+            }
 
-        return try database.pool.write { db in
-            try submitSafeBatchInTransaction(db: db, input: input, nowMs: nowMs)
+            let nowMs = self.clock.nowMs
+            try db.execute(
+                sql: """
+                UPDATE source SET
+                    dirty_epoch = dirty_epoch + ?,
+                    updated_at_ms = ?
+                WHERE id = ?
+                """,
+                arguments: [dirtyEpochDelta, nowMs, sourceID.uuidString.lowercased()]
+            )
         }
     }
 
@@ -313,96 +338,12 @@ struct GRDBJobQueue: JobQueue, JobBusinessBatchQueue, Sendable {
         }
     }
 
-    func commitSimulatedBusinessBatch(_ input: SimulatedBusinessWriteInput) throws -> JobRecordSnapshot {
-        try JobPersistenceMapping.validateProgress(input.progress)
-
-        let nowMs = clock.nowMs
-
-        return try database.pool.write { db in
-            try validateLease(db: db, lease: input.lease)
-
-            let sourceExists = try Int.fetchOne(
-                db,
-                sql: "SELECT 1 FROM source WHERE id = ?",
-                arguments: [input.sourceID.uuidString.lowercased()]
-            )
-            guard sourceExists == 1 else {
-                throw JobQueueError.referenceNotFound
-            }
-
-            try db.execute(
-                sql: """
-                UPDATE source SET
-                    dirty_epoch = dirty_epoch + ?,
-                    updated_at_ms = ?
-                WHERE id = ?
-                """,
-                arguments: [input.dirtyEpochDelta, nowMs, input.sourceID.uuidString.lowercased()]
-            )
-
-            return try submitSafeBatchInTransaction(
-                db: db,
-                input: SafeBatchCommitInput(
-                    lease: input.lease,
-                    outcome: input.outcome,
-                    checkpoint: input.checkpoint,
-                    progress: input.progress
-                ),
-                nowMs: nowMs
-            )
-        }
-    }
-
-    func commitSimulatedBusinessBatchWithFaultInjection(
-        _ input: SimulatedBusinessWriteInput,
-        afterSourceUpdate: () throws -> Void
+    func commitLeaseProtectedBatch(
+        input: SafeBatchCommitInput,
+        businessWork: (Database) throws -> Void
     ) throws -> JobRecordSnapshot {
         try JobPersistenceMapping.validateProgress(input.progress)
 
-        let nowMs = clock.nowMs
-
-        return try database.pool.write { db in
-            try validateLease(db: db, lease: input.lease)
-
-            let sourceExists = try Int.fetchOne(
-                db,
-                sql: "SELECT 1 FROM source WHERE id = ?",
-                arguments: [input.sourceID.uuidString.lowercased()]
-            )
-            guard sourceExists == 1 else {
-                throw JobQueueError.referenceNotFound
-            }
-
-            try db.execute(
-                sql: """
-                UPDATE source SET
-                    dirty_epoch = dirty_epoch + ?,
-                    updated_at_ms = ?
-                WHERE id = ?
-                """,
-                arguments: [input.dirtyEpochDelta, nowMs, input.sourceID.uuidString.lowercased()]
-            )
-
-            try afterSourceUpdate()
-
-            return try submitSafeBatchInTransaction(
-                db: db,
-                input: SafeBatchCommitInput(
-                    lease: input.lease,
-                    outcome: input.outcome,
-                    checkpoint: input.checkpoint,
-                    progress: input.progress
-                ),
-                nowMs: nowMs
-            )
-        }
-    }
-
-    func submitSafeBatchWithForcedInvalidProgress(
-        _ input: SafeBatchCommitInput,
-        forcedProgressCompleted: Int,
-        forcedProgressTotal: Int?
-    ) throws -> JobRecordSnapshot {
         let nowMs = clock.nowMs
 
         return try database.pool.write { db in
@@ -411,7 +352,7 @@ struct GRDBJobQueue: JobQueue, JobBusinessBatchQueue, Sendable {
             guard let row = try Row.fetchOne(
                 db,
                 sql: """
-                SELECT control_request FROM job
+                SELECT * FROM job
                 WHERE id = ? AND state = 'running'
                     AND lease_owner = ? AND attempts = ?
                 """,
@@ -424,50 +365,20 @@ struct GRDBJobQueue: JobQueue, JobBusinessBatchQueue, Sendable {
                 throw JobQueueError.staleLease(input.lease.jobID)
             }
 
-            let controlRaw: String = row["control_request"]
-            let control = try JobPersistenceMapping.controlRequest(from: controlRaw)
-            let resolved = resolveSafeBoundaryOutcome(
-                control: control,
-                handlerOutcome: input.outcome,
-                attempts: input.lease.attempts,
-                maxAttempts: try fetchMaxAttempts(db: db, jobID: input.lease.jobID)
-            )
+            let persisted = try JobPersistenceMapping.snapshot(from: row)
+            try JobPersistenceMapping.validateProgressMonotonic(input.progress, persisted: persisted.progress)
+            try businessWork(db)
+            return try submitSafeBatchInTransaction(db: db, input: input, nowMs: nowMs)
+        }
+    }
 
-            switch resolved {
-            case .continueRunning:
-                try db.execute(
-                    sql: """
-                    UPDATE job SET
-                        checkpoint_version = ?,
-                        checkpoint = ?,
-                        progress_completed = ?,
-                        progress_total = ?,
-                        last_error_code = NULL,
-                        last_error_message = NULL,
-                        control_request = 'none',
-                        updated_at_ms = ?
-                    WHERE id = ? AND state = 'running'
-                        AND lease_owner = ? AND attempts = ?
-                    """,
-                    arguments: [
-                        input.checkpoint?.version,
-                        input.checkpoint?.data,
-                        forcedProgressCompleted,
-                        forcedProgressTotal,
-                        nowMs,
-                        input.lease.jobID.uuidString.lowercased(),
-                        input.lease.leaseOwner,
-                        input.lease.attempts,
-                    ]
-                )
-            default:
-                break
-            }
-
-            guard let updated = try JobRowReader.fetchSnapshot(db, jobID: input.lease.jobID) else {
-                throw JobQueueError.jobNotFound(input.lease.jobID)
-            }
-            return updated
+    func performLeaseProtectedWork(
+        lease: JobLeaseToken,
+        work: (Database) throws -> Void
+    ) throws {
+        try database.pool.write { db in
+            try validateLease(db: db, lease: lease)
+            try work(db)
         }
     }
 }
@@ -516,11 +427,7 @@ private extension GRDBJobQueue {
             guard db.changesCount == 1 else {
                 throw JobQueueError.invalidTransition(currentState: snapshot.state, operation: "pause")
             }
-        case .paused:
-            return
-        case .retryableFailed:
-            throw JobQueueError.invalidTransition(currentState: snapshot.state, operation: "pause")
-        case .completed, .terminalFailed, .cancelled:
+        case .paused, .retryableFailed, .completed, .terminalFailed, .cancelled:
             throw JobQueueError.invalidTransition(currentState: snapshot.state, operation: "pause")
         }
     }
@@ -592,8 +499,6 @@ private extension GRDBJobQueue {
         input: SafeBatchCommitInput,
         nowMs: Int64
     ) throws -> JobRecordSnapshot {
-        try validateLease(db: db, lease: input.lease)
-
         guard let row = try Row.fetchOne(
             db,
             sql: """
@@ -690,17 +595,6 @@ private extension GRDBJobQueue {
         guard leaseOwner == lease.leaseOwner, attempts == lease.attempts else {
             throw JobQueueError.staleLease(lease.jobID)
         }
-    }
-
-    func fetchMaxAttempts(db: Database, jobID: UUID) throws -> Int {
-        guard let maxAttempts: Int = try Int.fetchOne(
-            db,
-            sql: "SELECT max_attempts FROM job WHERE id = ?",
-            arguments: [jobID.uuidString.lowercased()]
-        ) else {
-            throw JobQueueError.jobNotFound(jobID)
-        }
-        return maxAttempts
     }
 
     func resolveSafeBoundaryOutcome(

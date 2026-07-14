@@ -111,6 +111,22 @@ final class JobClaimTests: XCTestCase {
         }
     }
 
+    func testClaimLeaseExpiryOverflowRejected() throws {
+        let url = try makeTempDatabaseURL()
+        let database = try CatalogDatabase.open(at: url)
+        let queue = JobTestSupport.makeQueue(database: database, nowMs: Int64.max - 5)
+        _ = try JobTestSupport.enqueueDefault(queue: queue)
+
+        XCTAssertThrowsError(
+            try queue.claimNext(ClaimNextInput(owner: "worker", leaseDurationMs: 10))
+        ) { error in
+            XCTAssertEqual(
+                error as? JobQueueError,
+                .invalidClaimInput(reason: "lease expiry overflow")
+            )
+        }
+    }
+
     func testNoRunnableJobReturnsNilNotError() throws {
         let url = try makeTempDatabaseURL()
         let database = try CatalogDatabase.open(at: url)

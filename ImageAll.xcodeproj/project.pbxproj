@@ -61,6 +61,7 @@
 		DD0000010000000000000108 /* JobBatchTransactionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD0001010000000000000108 /* JobBatchTransactionTests.swift */; };
 		DD0000010000000000000109 /* JobRetryRecoveryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD0001010000000000000109 /* JobRetryRecoveryTests.swift */; };
 		DD000001000000000000010A /* JobRegistryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD000101000000000000010A /* JobRegistryTests.swift */; };
+		DD000001000000000000010B /* JobTestDoubles.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD000101000000000000010B /* JobTestDoubles.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -129,6 +130,7 @@
 		DD0001010000000000000108 /* JobBatchTransactionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JobBatchTransactionTests.swift; sourceTree = "<group>"; };
 		DD0001010000000000000109 /* JobRetryRecoveryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JobRetryRecoveryTests.swift; sourceTree = "<group>"; };
 		DD000101000000000000010A /* JobRegistryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JobRegistryTests.swift; sourceTree = "<group>"; };
+		DD000101000000000000010B /* JobTestDoubles.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JobTestDoubles.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -319,6 +321,7 @@
 			isa = PBXGroup;
 			children = (
 				DD0001010000000000000101 /* JobTestSupport.swift */,
+				DD000101000000000000010B /* JobTestDoubles.swift */,
 				DD0001010000000000000102 /* JobModelsTests.swift */,
 				DD0001010000000000000103 /* JobEnqueueTests.swift */,
 				DD0001010000000000000104 /* JobClaimTests.swift */,
@@ -507,6 +510,7 @@
 				DD0000010000000000000108 /* JobBatchTransactionTests.swift in Sources */,
 				DD0000010000000000000109 /* JobRetryRecoveryTests.swift in Sources */,
 				DD000001000000000000010A /* JobRegistryTests.swift in Sources */,
+				DD000001000000000000010B /* JobTestDoubles.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

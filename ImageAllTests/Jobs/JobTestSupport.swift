@@ -19,6 +19,14 @@ enum JobTestSupport {
         }
     }
 
+    final class BusinessWorkTracker: @unchecked Sendable {
+        private(set) var executed = false
+
+        func markExecuted() {
+            executed = true
+        }
+    }
+
     static func makeQueue(
         database: CatalogDatabase,
         nowMs: Int64 = baseTimeMs,
@@ -37,9 +45,7 @@ enum JobTestSupport {
     ) -> JobExecutionCoordinator {
         JobExecutionCoordinator(
             queue: queue,
-            registry: InMemoryJobHandlerRegistry(handlers: handlers),
-            retryPolicy: FixedDelayRetryPolicy(delayMs: retryDelayMs),
-            clock: queue.clock
+            registry: InMemoryJobHandlerRegistry(handlers: handlers)
         )
     }
 
@@ -86,6 +92,20 @@ enum JobTestSupport {
         try JobRowReader.fetchRowSnapshot(db, jobID: jobID)
     }
 
+    static func fetchSourceRowSnapshot(
+        _ db: Database,
+        sourceID: UUID
+    ) throws -> JobRowSnapshot? {
+        guard let row = try Row.fetchOne(
+            db,
+            sql: "SELECT * FROM source WHERE id = ?",
+            arguments: [sourceID.uuidString.lowercased()]
+        ) else {
+            return nil
+        }
+        return JobRowSnapshot(row: row)
+    }
+
     static func insertRunningJobForRecovery(
         database: CatalogDatabase,
         id: UUID = UUID(),
@@ -119,6 +139,68 @@ enum JobTestSupport {
             )
         }
     }
+
+    static func prepareJobInState(
+        queue: GRDBJobQueue,
+        database: CatalogDatabase,
+        state: JobState,
+        jobID: UUID = UUID(),
+        maxAttempts: Int = 3
+    ) throws -> UUID {
+        switch state {
+        case .pending:
+            _ = try enqueueDefault(queue: queue, id: jobID, maxAttempts: maxAttempts)
+        case .running:
+            _ = try enqueueDefault(queue: queue, id: jobID, maxAttempts: maxAttempts)
+            _ = try XCTUnwrap(try claimDefault(queue: queue))
+        case .paused:
+            _ = try enqueueDefault(queue: queue, id: jobID, maxAttempts: maxAttempts)
+            _ = try queue.applyStateCommand(JobStateCommand(jobID: jobID, operation: .pause))
+        case .retryableFailed:
+            _ = try enqueueDefault(queue: queue, id: jobID, maxAttempts: maxAttempts)
+            let lease = try XCTUnwrap(try claimDefault(queue: queue))
+            _ = try queue.submitSafeBatch(
+                SafeBatchCommitInput(
+                    lease: lease,
+                    outcome: .retryableFailure(code: .interrupted),
+                    checkpoint: nil,
+                    progress: JobProgress(completed: 0, total: nil)
+                )
+            )
+        case .completed, .terminalFailed, .cancelled:
+            _ = try enqueueDefault(queue: queue, id: jobID, maxAttempts: maxAttempts)
+            let lease = try XCTUnwrap(try claimDefault(queue: queue))
+            let outcome: JobHandlerOutcome
+            switch state {
+            case .completed:
+                outcome = .completed
+            case .terminalFailed:
+                outcome = .nonRetryableFailure(code: .interrupted)
+            case .cancelled:
+                _ = try queue.applyStateCommand(JobStateCommand(jobID: jobID, operation: .cancel))
+                _ = try queue.submitSafeBatch(
+                    SafeBatchCommitInput(
+                        lease: lease,
+                        outcome: .continue,
+                        checkpoint: nil,
+                        progress: JobProgress(completed: 0, total: nil)
+                    )
+                )
+                return jobID
+            default:
+                outcome = .completed
+            }
+            _ = try queue.submitSafeBatch(
+                SafeBatchCommitInput(
+                    lease: lease,
+                    outcome: outcome,
+                    checkpoint: nil,
+                    progress: JobProgress(completed: 1, total: 1)
+                )
+            )
+        }
+        return jobID
+    }
 }
 
 extension XCTestCase {
@@ -131,6 +213,19 @@ extension XCTestCase {
     ) throws {
         let current = try database.pool.read { db in
             try JobTestSupport.fetchRowSnapshot(db, jobID: jobID)
+        }
+        XCTAssertEqual(current, baseline, file: file, line: line)
+    }
+
+    func assertSourceRowUnchanged(
+        database: CatalogDatabase,
+        sourceID: UUID,
+        baseline: JobRowSnapshot,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) throws {
+        let current = try database.pool.read { db in
+            try JobTestSupport.fetchSourceRowSnapshot(db, sourceID: sourceID)
         }
         XCTAssertEqual(current, baseline, file: file, line: line)
     }

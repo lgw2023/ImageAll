@@ -16,9 +16,15 @@ enum JobPersistenceMapping {
         return request
     }
 
-    static func safeErrorCode(from raw: String?) -> JobSafeErrorCode? {
+    static func safeErrorCode(from raw: String?) throws -> JobSafeErrorCode? {
         guard let raw else { return nil }
-        return JobSafeErrorCode(rawValue: raw)
+        return try JobSafeErrorCode(persisted: raw)
+    }
+
+    static func validateProgressMonotonic(_ proposed: JobProgress, persisted: JobProgress) throws {
+        guard proposed.completed >= persisted.completed else {
+            throw JobQueueError.invalidProgress(reason: "progress_completed must not regress")
+        }
     }
 
     static func upgradedControl(
@@ -80,10 +86,7 @@ enum JobPersistenceMapping {
         }
 
         let lastErrorRaw: String? = row["last_error_code"]
-        let lastErrorCode = safeErrorCode(from: lastErrorRaw)
-        if let lastErrorRaw, lastErrorCode == nil {
-            throw JobQueueError.unknownPersistedRawValue(field: "last_error_code", value: lastErrorRaw)
-        }
+        let lastErrorCode = try safeErrorCode(from: lastErrorRaw)
 
         return JobRecordSnapshot(
             id: id,

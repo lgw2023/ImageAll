@@ -34,12 +34,37 @@ enum JobControlRequest: String, Sendable, Equatable, CaseIterable {
     case cancel
 }
 
-enum JobSafeErrorCode: String, Sendable, Equatable {
-    case interrupted
-    case attemptsExhausted
-    case unknownJobKind
-    case unsupportedPayloadVersion
-    case unsupportedCheckpointVersion
+struct JobSafeErrorCode: Sendable, Equatable, Hashable {
+    let rawValue: String
+
+    static let interrupted = JobSafeErrorCode(validated: "interrupted")
+    static let attemptsExhausted = JobSafeErrorCode(validated: "attemptsExhausted")
+    static let unknownJobKind = JobSafeErrorCode(validated: "unknownJobKind")
+    static let unsupportedPayloadVersion = JobSafeErrorCode(validated: "unsupportedPayloadVersion")
+    static let unsupportedCheckpointVersion = JobSafeErrorCode(validated: "unsupportedCheckpointVersion")
+
+    init(validated rawValue: String) {
+        self.rawValue = rawValue
+    }
+
+    init(persisted rawValue: String) throws {
+        guard Self.isSafePersistedCode(rawValue) else {
+            throw JobQueueError.unknownPersistedRawValue(field: "last_error_code", value: rawValue)
+        }
+        self.rawValue = rawValue
+    }
+
+    static func isSafePersistedCode(_ rawValue: String) -> Bool {
+        guard !rawValue.isEmpty, rawValue.count <= 64 else {
+            return false
+        }
+        guard let first = rawValue.first, first.isLetter else {
+            return false
+        }
+        return rawValue.allSatisfy { character in
+            character.isLetter || character.isNumber
+        }
+    }
 }
 
 enum JobHandlerOutcome: Sendable, Equatable {
@@ -129,15 +154,6 @@ struct JobStateCommand: Sendable, Equatable {
 
 struct SafeBatchCommitInput: Sendable, Equatable {
     let lease: JobLeaseToken
-    let outcome: JobHandlerOutcome
-    let checkpoint: JobCheckpoint?
-    let progress: JobProgress
-}
-
-struct SimulatedBusinessWriteInput: Sendable, Equatable {
-    let lease: JobLeaseToken
-    let sourceID: UUID
-    let dirtyEpochDelta: Int
     let outcome: JobHandlerOutcome
     let checkpoint: JobCheckpoint?
     let progress: JobProgress
