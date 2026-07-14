@@ -1,12 +1,14 @@
 # ImageAll 阶段 0 / 切片 4 Cursor 实施交接单
 
-> 状态：Ready for implementation
+> 状态：Approved / closed
 > 日期：2026-07-14
 > 实施者：Cursor CLI（仅 `Composer 2.5 Fast`）
 > 产品与架构评审：Codex
 > 已批准功能基线：`main@332c2a1`
 > Cursor 开工基线：包含本交接单、由 Codex 调用任务明确给出的最新本地 `main` HEAD
 > 本轮范围：持久化 Job 状态机、原子 claim、控制请求、checkpoint 事务、重试与崩溃恢复；不包含真实调度锁、快照恢复或启动集成
+
+> 复审结果：切片 4 已由 Codex 独立复审通过；批准实现 commit 为 `e207180`，177 项测试与 Debug build 通过。该交接对应的 Cursor 会话已退役，后续任务不得恢复。
 
 ## 1. 交接结论
 
