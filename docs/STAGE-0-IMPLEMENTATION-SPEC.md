@@ -1,6 +1,6 @@
 # ImageAll 阶段 0 实施规格
 
-> 状态：Ready for implementation v0.1（设计完成，代码尚未实现）<br>
+> 状态：In implementation v0.2（Gate 0 与切片 1 已通过，切片 2 待实施）<br>
 > 日期：2026-07-14<br>
 > 上位文档：[ARCHITECTURE.md](./ARCHITECTURE.md)<br>
 > 目标读者：负责首轮实现和评审的 macOS 工程师
@@ -19,19 +19,19 @@
 
 阶段 0 的核心结果不是“生成了一个 Xcode 工程”，而是后续阶段可以在不改变事实数据语义和任务恢复语义的前提下继续开发。
 
-## 2. 当前实施前状态
+## 2. 当前实施基线
 
-2026-07-14 在当前开发机完成的只读检查：
+2026-07-14 完成 Gate 0、切片 1 及 Swift 6 语言模式修正后的复审基线：
 
 | 项目 | 当前状态 | 对阶段 0 的影响 |
 |---|---|---|
-| 系统 | macOS 26.5.1，Apple Silicon | 可作为首个本机验证环境 |
-| Swift | Apple Swift 6.3.2 | 命令行编译器存在，但不能代替完整 Xcode 验证 App target |
-| Xcode | 当前只选择 Command Line Tools，`xcodebuild` 不可用 | 实现开始前必须安装并选择完整 Xcode |
-| 版本控制 | `/Volumes/SSD1/ImageAll` 不是 Git 仓库 | 写入第一行实现代码前必须建立可审查的版本历史 |
-| 项目内容 | 只有架构文档 | 没有需要兼容的既有代码或数据库 |
+| 系统 | macOS 26.5.1，Apple Silicon | 首个本机验证环境已建立；Intel 仍未验证 |
+| 工具链 | Xcode 26.6、Swift 6.3.3、macOS SDK 26.5 | Debug build 与测试已独立复核通过 |
+| 工程配置 | macOS 15.0、Swift 6 language mode、本地 ad-hoc 签名、App Sandbox | Gate 0 与切片 1 基线已冻结 |
+| 版本控制 | 本地 `main`，基线截至 `01fbed6`，工作区干净 | 后续切片必须在已批准历史上独立提交 |
+| 已实现范围 | SwiftUI 空壳、Composition Root、`foundationReady` 展示状态 | 尚未引入 Domain、GRDB、Job 或恢复能力 |
 
-Gate 0 必须满足：`xcodebuild -version` 成功、开发者记录实际 Xcode/Swift/SDK 版本、仓库能显示干净基线。架构工作可以继续，但这三个条件未满足前不得声称工程已验证。
+Gate 0 与切片 1 已由 Codex 复审通过。后续实现不得重新解释 `foundationReady`，也不得在相应切片获批前声称目录库或任务调度已经就绪。
 
 ## 3. 阶段边界与暂定决策
 
@@ -474,7 +474,7 @@ Stage 0 测试只需要验证手动快照、迁移前快照入口和恢复；“
 - `docs/STAGE-0-EVIDENCE.md` 记录工具链版本、构建命令、测试命令、结果摘要、schema dump、已知限制和对应 commit；
 - 总架构中的阶段 0 状态和任何受影响 ADR 已同步更新。
 
-当前状态仍是：**规格已完成，实施未开始**。
+当前状态是：**实施中；Gate 0 与切片 1 已通过，切片 2 待实施，阶段 0 尚未完成**。
 
 ## 11. 需要项目所有者确认但不阻塞规格的事项
 
