@@ -40,14 +40,19 @@ final class CatalogMigrationTests: XCTestCase {
 
     func testUnknownFutureMigrationIsRejected() throws {
         let url = try makeTempDatabaseURL()
-        _ = try CatalogDatabase.open(at: url)
-
         var config = Configuration()
         config.prepareDatabase { db in
             try db.execute(sql: "PRAGMA foreign_keys = ON")
         }
-        let pool = try DatabasePool(path: url.path, configuration: config)
-        try pool.write { db in
+        let seedPool = try DatabasePool(path: url.path, configuration: config)
+        try seedPool.write { db in
+            try db.execute(
+                sql: """
+                CREATE TABLE grdb_migrations (
+                    identifier TEXT NOT NULL PRIMARY KEY
+                )
+                """
+            )
             try db.execute(
                 sql: "INSERT INTO grdb_migrations (identifier) VALUES (?)",
                 arguments: ["v999_future_migration"]
@@ -58,8 +63,15 @@ final class CatalogMigrationTests: XCTestCase {
             guard case let CatalogDatabaseError.futureSchema(applied, unknown) = error else {
                 return XCTFail("Expected futureSchema, got \(error)")
             }
-            XCTAssertTrue(applied.contains("v999_future_migration"))
+            XCTAssertEqual(applied, ["v999_future_migration"])
             XCTAssertEqual(unknown, ["v999_future_migration"])
+        }
+
+        try seedPool.read { db in
+            let applied = try String.fetchAll(db, sql: "SELECT identifier FROM grdb_migrations ORDER BY identifier")
+            XCTAssertEqual(applied, ["v999_future_migration"])
+            let tables = try DatabaseTestSupport.tableNames(db)
+            XCTAssertEqual(tables, [], "v001 must not be applied when future migration is present")
         }
     }
 

@@ -96,7 +96,9 @@ final class CatalogRepositoryTests: XCTestCase {
                     timestampMs: DatabaseTestSupport.timestampMs
                 )
             )
-        )
+        ) { error in
+            XCTAssertEqual(error as? CatalogRepositoryError, .sourceLocatorKindMismatch)
+        }
 
         let sourceCount = try database.pool.read { db in
             try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM source") ?? 0
@@ -105,6 +107,39 @@ final class CatalogRepositoryTests: XCTestCase {
             try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM asset") ?? 0
         }
         XCTAssertEqual(sourceCount, 0)
+        XCTAssertEqual(assetCount, 0)
+    }
+
+    func testMultiStepWriteRollsBackWhenAssetSQLFails() throws {
+        let url = try makeTempDatabaseURL()
+        let database = try CatalogDatabase.open(at: url)
+        let repository = CatalogRepository(database: database)
+        let sourceID = UUID()
+
+        XCTAssertThrowsError(
+            try repository.createSourceWithAsset(
+                NewSourceWithAssetInput(
+                    sourceID: sourceID,
+                    sourceKind: .folder,
+                    displayName: "Folder",
+                    bookmark: DatabaseTestSupport.folderBookmark(),
+                    assetID: UUID(),
+                    locatorKind: .file,
+                    relativePath: nil,
+                    photosLocalIdentifier: nil,
+                    mediaType: "public.jpeg",
+                    timestampMs: DatabaseTestSupport.timestampMs
+                )
+            )
+        )
+
+        let sourceCount = try database.pool.read { db in
+            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM source WHERE id = ?", arguments: [sourceID.uuidString.lowercased()]) ?? 0
+        }
+        let assetCount = try database.pool.read { db in
+            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM asset") ?? 0
+        }
+        XCTAssertEqual(sourceCount, 0, "Source insert must roll back when Asset SQL fails")
         XCTAssertEqual(assetCount, 0)
     }
 

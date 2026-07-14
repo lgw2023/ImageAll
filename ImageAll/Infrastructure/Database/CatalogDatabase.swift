@@ -24,8 +24,13 @@ struct CatalogDatabase: Sendable {
     }
 
     func migrate() throws {
+        try pool.write { db in
+            try Self.validateAppliedMigrations(db)
+        }
+
         let migrator = Self.makeMigrator()
         try migrator.migrate(pool)
+
         try pool.write { db in
             try Self.validateAppliedMigrations(db)
         }
@@ -41,6 +46,10 @@ struct CatalogDatabase: Sendable {
     }
 
     static func validateAppliedMigrations(_ db: Database) throws {
+        guard try db.tableExists("grdb_migrations") else {
+            return
+        }
+
         let applied = try String.fetchAll(
             db,
             sql: "SELECT identifier FROM grdb_migrations ORDER BY identifier"

@@ -58,12 +58,55 @@ enum DatabaseTestSupport {
     }
 
     static func isStrictTable(_ db: Database, table: String) throws -> Bool {
+        let rows = try Row.fetchAll(db, sql: "PRAGMA table_list(\(table.quoteDatabaseIdentifier()))")
+        guard let row = rows.first else {
+            return false
+        }
+        if let strict = row["strict"] as? Int {
+            return strict == 1
+        }
         let sql = try String.fetchOne(
             db,
             sql: "SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = ?",
             arguments: [table]
         )
         return sql?.localizedCaseInsensitiveContains("STRICT") == true
+    }
+
+    static func tableInfo(_ db: Database, table: String) throws -> [(name: String, type: String, notNull: Bool, defaultValue: String?, pk: Int)] {
+        try Row.fetchAll(db, sql: "PRAGMA table_info(\(table.quoteDatabaseIdentifier()))").map { row in
+            (
+                name: row["name"] as String,
+                type: row["type"] as String,
+                notNull: (row["notnull"] as Int) == 1,
+                defaultValue: row["dflt_value"] as String?,
+                pk: row["pk"] as Int
+            )
+        }
+    }
+
+    static func foreignKeyList(_ db: Database, table: String) throws -> [(from: String, toTable: String, to: String, onDelete: String)] {
+        try Row.fetchAll(db, sql: "PRAGMA foreign_key_list(\(table.quoteDatabaseIdentifier()))").map { row in
+            (
+                from: row["from"] as String,
+                toTable: row["table"] as String,
+                to: row["to"] as String,
+                onDelete: row["on_delete"] as String
+            )
+        }
+    }
+
+    static func indexXInfo(_ db: Database, index: String) throws -> [(seqno: Int, cid: Int, name: String?, desc: Bool, coll: String?, key: Bool)] {
+        try Row.fetchAll(db, sql: "PRAGMA index_xinfo(\(index.quoteDatabaseIdentifier()))").map { row in
+            (
+                seqno: row["seqno"] as Int,
+                cid: row["cid"] as Int,
+                name: row["name"] as String?,
+                desc: (row["desc"] as Int) == 1,
+                coll: row["coll"] as String?,
+                key: (row["key"] as Int) == 1
+            )
+        }
     }
 
     static func schemaDump(_ db: Database) throws -> String {
