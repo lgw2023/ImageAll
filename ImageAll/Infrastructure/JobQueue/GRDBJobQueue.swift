@@ -318,7 +318,7 @@ struct GRDBJobQueue: JobQueue, Sendable {
 
         let nowMs = clock.nowMs
 
-        return try runLeaseProtectedTransaction(input: input, nowMs: nowMs) { db in
+        return try runLeaseProtectedTransaction(lease: input.lease) { db in
             let persisted = try persistedRunningSnapshot(db: db, lease: input.lease)
             try JobPersistenceMapping.validateProgressMonotonic(input.progress, persisted: persisted.progress)
             try businessWork(db)
@@ -326,23 +326,12 @@ struct GRDBJobQueue: JobQueue, Sendable {
         }
     }
 
-    func performLeaseProtectedWork(
+    func runLeaseProtectedTransaction<T>(
         lease: JobLeaseToken,
-        work: (Database) throws -> Void
-    ) throws {
+        body: (Database) throws -> T
+    ) throws -> T {
         try database.pool.write { db in
             try validateLease(db: db, lease: lease)
-            try work(db)
-        }
-    }
-
-    func runLeaseProtectedTransaction(
-        input: SafeBatchCommitInput,
-        nowMs: Int64,
-        body: (Database) throws -> JobRecordSnapshot
-    ) throws -> JobRecordSnapshot {
-        try database.pool.write { db in
-            try validateLease(db: db, lease: input.lease)
             return try body(db)
         }
     }

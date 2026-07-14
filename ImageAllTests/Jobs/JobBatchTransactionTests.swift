@@ -95,7 +95,7 @@ final class JobBatchTransactionTests: XCTestCase {
         }
 
         XCTAssertThrowsError(
-            try queue.performLeaseProtectedWork(lease: lease) { db in
+            try queue.runLeaseProtectedTransaction(lease: lease) { db in
                 try JobTestSupport.incrementSourceDirtyEpoch(db, sourceID: sourceID, delta: 3)
                 try db.execute(
                     sql: """
