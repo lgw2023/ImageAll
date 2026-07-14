@@ -61,16 +61,7 @@ final class TagCatalogTransactionTests: XCTestCase {
     }
 
     func testConcurrentDatabaseNormalizedNameUniqueConstraintAllowsExactlyOneInsert() throws {
-        var lastFailureDescription: String?
-        for _ in 0 ..< 8 {
-            do {
-                try assertConcurrentNormalizedNameUniqueRaceOnce()
-                return
-            } catch {
-                lastFailureDescription = String(describing: error)
-            }
-        }
-        XCTFail("Concurrent unique race did not stabilize: \(lastFailureDescription ?? "unknown")")
+        try assertConcurrentNormalizedNameUniqueRaceOnce()
     }
 
     private func assertConcurrentNormalizedNameUniqueRaceOnce() throws {
@@ -127,22 +118,21 @@ final class TagCatalogTransactionTests: XCTestCase {
         }
         group.wait()
 
-        XCTAssertEqual(outcomes.filter { if case .success = $0 { return true }; return false }.count, 1)
+        let successCount = outcomes.filter { if case .success = $0 { return true }; return false }.count
         let failures = outcomes.compactMap { result -> Error? in
             if case let .failure(error) = result { return error }
             return nil
         }
-        XCTAssertEqual(failures.count, 1)
-        guard let dbError = failures[0] as? DatabaseError else {
-            throw NSError(domain: "TagCatalogTransactionTests", code: 1, userInfo: [
-                NSLocalizedDescriptionKey: "Expected DatabaseError, got \(failures[0])",
-            ])
+
+        XCTAssertEqual(successCount, 1, "Expected exactly one successful insert")
+        XCTAssertEqual(failures.count, 1, "Expected exactly one failed insert")
+        guard let failure = failures.first else { return }
+
+        guard let dbError = failure as? DatabaseError else {
+            XCTFail("Expected DatabaseError, got \(failure)")
+            return
         }
-        guard dbError.extendedResultCode == .SQLITE_CONSTRAINT_UNIQUE else {
-            throw NSError(domain: "TagCatalogTransactionTests", code: 2, userInfo: [
-                NSLocalizedDescriptionKey: "Expected SQLITE_CONSTRAINT_UNIQUE, got \(dbError.extendedResultCode)",
-            ])
-        }
+        XCTAssertEqual(dbError.extendedResultCode, .SQLITE_CONSTRAINT_UNIQUE)
 
         let database = try CatalogDatabase.open(at: url)
         let rowCount = try database.pool.read { db in
@@ -152,7 +142,7 @@ final class TagCatalogTransactionTests: XCTestCase {
     }
 
     func testConcurrentDuplicateNormalizedTagIsRejectedByDatabase() throws {
-        try testConcurrentDatabaseNormalizedNameUniqueConstraintAllowsExactlyOneInsert()
+        try assertConcurrentNormalizedNameUniqueRaceOnce()
     }
 
     func testCreateTagMapsUnrelatedUniqueConstraintToPersistenceFailure() throws {
@@ -583,7 +573,7 @@ final class TagCatalogTransactionTests: XCTestCase {
         XCTAssertEqual(beforeRestore[fixtureIDs.assetA], .accepted)
         XCTAssertEqual(beforeRestore[fixtureIDs.assetB], .unknown)
         XCTAssertEqual(beforeRestore[fixtureIDs.assetC], .accepted)
-        XCTAssertEqual(beforeRestore[fixtureIDs.assetD], .unknown)
+        XCTAssertEqual(beforeRestore[fixtureIDs.assetD], .rejected)
 
         try fault.database.pool.write { db in
             db.add(transactionObserver: recorder, extent: .databaseLifetime)
@@ -744,6 +734,13 @@ final class TagCatalogTransactionTests: XCTestCase {
                 VALUES (?, ?, 'accepted', ?)
                 """,
                 arguments: [assetC.uuidString.lowercased(), tagID.uuidString.lowercased(), DatabaseTestSupport.timestampMs]
+            )
+            try db.execute(
+                sql: """
+                INSERT INTO asset_tag_decision (asset_id, tag_id, decision, updated_at_ms)
+                VALUES (?, ?, 'rejected', ?)
+                """,
+                arguments: [assetD.uuidString.lowercased(), tagID.uuidString.lowercased(), DatabaseTestSupport.timestampMs]
             )
         }
         return MinimalRestoreFixtureIDs(

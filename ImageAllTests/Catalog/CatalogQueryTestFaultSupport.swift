@@ -37,30 +37,6 @@ enum CatalogQueryTestFaultSupport {
         try db.execute(sql: "DELETE FROM test_restore_write_count")
         try db.execute(sql: "INSERT INTO test_restore_write_count (count) VALUES (0)")
 
-        try db.execute(sql: """
-            CREATE TABLE IF NOT EXISTS test_restore_delete_count (
-                count INTEGER NOT NULL DEFAULT 0
-            ) STRICT
-            """)
-        try db.execute(sql: "DELETE FROM test_restore_delete_count")
-        try db.execute(sql: "INSERT INTO test_restore_delete_count (count) VALUES (0)")
-
-        try db.execute(sql: """
-            CREATE TABLE IF NOT EXISTS test_restore_insert_count (
-                count INTEGER NOT NULL DEFAULT 0
-            ) STRICT
-            """)
-        try db.execute(sql: "DELETE FROM test_restore_insert_count")
-        try db.execute(sql: "INSERT INTO test_restore_insert_count (count) VALUES (0)")
-
-        try db.execute(sql: """
-            CREATE TABLE IF NOT EXISTS test_restore_update_count (
-                count INTEGER NOT NULL DEFAULT 0
-            ) STRICT
-            """)
-        try db.execute(sql: "DELETE FROM test_restore_update_count")
-        try db.execute(sql: "INSERT INTO test_restore_update_count (count) VALUES (0)")
-
         try db.execute(sql: "DROP TRIGGER IF EXISTS test_fail_decision_insert")
         try db.execute(sql: """
             CREATE TRIGGER test_fail_decision_insert
@@ -99,7 +75,6 @@ enum CatalogQueryTestFaultSupport {
             WHEN (SELECT mode FROM test_fault_control) = 3
             BEGIN
                 UPDATE test_restore_write_count SET count = count + 1;
-                UPDATE test_restore_delete_count SET count = count + 1;
             END
             """)
 
@@ -110,7 +85,6 @@ enum CatalogQueryTestFaultSupport {
             WHEN (SELECT mode FROM test_fault_control) = 3
             BEGIN
                 UPDATE test_restore_write_count SET count = count + 1;
-                UPDATE test_restore_insert_count SET count = count + 1;
             END
             """)
 
@@ -121,7 +95,6 @@ enum CatalogQueryTestFaultSupport {
             WHEN (SELECT mode FROM test_fault_control) = 3
             BEGIN
                 UPDATE test_restore_write_count SET count = count + 1;
-                UPDATE test_restore_update_count SET count = count + 1;
             END
             """)
 
@@ -166,9 +139,6 @@ enum CatalogQueryTestFaultSupport {
         }
         if mode == .failRestoreAfterThreeWrites {
             try db.execute(sql: "UPDATE test_restore_write_count SET count = 0")
-            try db.execute(sql: "UPDATE test_restore_delete_count SET count = 0")
-            try db.execute(sql: "UPDATE test_restore_insert_count SET count = 0")
-            try db.execute(sql: "UPDATE test_restore_update_count SET count = 0")
         }
     }
 
@@ -176,14 +146,6 @@ enum CatalogQueryTestFaultSupport {
         try db.execute(sql: """
             CREATE UNIQUE INDEX IF NOT EXISTS test_tag_created_at_ms_uq ON tag(created_at_ms)
             """)
-    }
-
-    static func restoreWriteCounts(on db: Database) throws -> (total: Int, deletes: Int, inserts: Int, updates: Int) {
-        let total = try Int.fetchOne(db, sql: "SELECT count FROM test_restore_write_count") ?? 0
-        let deletes = try Int.fetchOne(db, sql: "SELECT count FROM test_restore_delete_count") ?? 0
-        let inserts = try Int.fetchOne(db, sql: "SELECT count FROM test_restore_insert_count") ?? 0
-        let updates = try Int.fetchOne(db, sql: "SELECT count FROM test_restore_update_count") ?? 0
-        return (total, deletes, inserts, updates)
     }
 }
 
