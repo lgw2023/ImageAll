@@ -14,4 +14,5 @@ enum JobQueueError: Error, Equatable, Sendable {
     case unsupportedPayloadVersion(kind: String, version: Int)
     case unsupportedCheckpointVersion(kind: String, version: Int)
     case invalidProgress(reason: String)
+    case invalidSafeErrorCode(rawValue: String)
 }

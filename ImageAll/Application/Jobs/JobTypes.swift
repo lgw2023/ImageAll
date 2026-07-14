@@ -37,13 +37,20 @@ enum JobControlRequest: String, Sendable, Equatable, CaseIterable {
 struct JobSafeErrorCode: Sendable, Equatable, Hashable {
     let rawValue: String
 
-    static let interrupted = JobSafeErrorCode(validated: "interrupted")
-    static let attemptsExhausted = JobSafeErrorCode(validated: "attemptsExhausted")
-    static let unknownJobKind = JobSafeErrorCode(validated: "unknownJobKind")
-    static let unsupportedPayloadVersion = JobSafeErrorCode(validated: "unsupportedPayloadVersion")
-    static let unsupportedCheckpointVersion = JobSafeErrorCode(validated: "unsupportedCheckpointVersion")
+    static let interrupted = JobSafeErrorCode(unchecked: "interrupted")
+    static let attemptsExhausted = JobSafeErrorCode(unchecked: "attemptsExhausted")
+    static let unknownJobKind = JobSafeErrorCode(unchecked: "unknownJobKind")
+    static let unsupportedPayloadVersion = JobSafeErrorCode(unchecked: "unsupportedPayloadVersion")
+    static let unsupportedCheckpointVersion = JobSafeErrorCode(unchecked: "unsupportedCheckpointVersion")
 
-    init(validated rawValue: String) {
+    private init(unchecked rawValue: String) {
+        self.rawValue = rawValue
+    }
+
+    init(_ rawValue: String) throws {
+        guard Self.isSafePersistedCode(rawValue) else {
+            throw JobQueueError.invalidSafeErrorCode(rawValue: rawValue)
+        }
         self.rawValue = rawValue
     }
 

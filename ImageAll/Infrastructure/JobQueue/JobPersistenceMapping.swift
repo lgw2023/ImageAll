@@ -137,24 +137,6 @@ enum JobPersistenceMapping {
     }
 }
 
-struct JobRowSnapshot: Equatable, Sendable {
-    let columns: [String: String?]
-
-    init(row: Row) {
-        var values: [String: String?] = [:]
-        for column in row.columnNames {
-            if row[column] == nil {
-                values[column] = nil
-            } else if let data = row[column] as? Data {
-                values[column] = data.base64EncodedString()
-            } else {
-                values[column] = String(describing: row[column]!)
-            }
-        }
-        self.columns = values
-    }
-}
-
 enum JobRowReader {
     static func fetchSnapshot(_ db: Database, jobID: UUID) throws -> JobRecordSnapshot? {
         guard let row = try Row.fetchOne(
@@ -165,16 +147,5 @@ enum JobRowReader {
             return nil
         }
         return try JobPersistenceMapping.snapshot(from: row)
-    }
-
-    static func fetchRowSnapshot(_ db: Database, jobID: UUID) throws -> JobRowSnapshot? {
-        guard let row = try Row.fetchOne(
-            db,
-            sql: "SELECT * FROM job WHERE id = ?",
-            arguments: [jobID.uuidString.lowercased()]
-        ) else {
-            return nil
-        }
-        return JobRowSnapshot(row: row)
     }
 }

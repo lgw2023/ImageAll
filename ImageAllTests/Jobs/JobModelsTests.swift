@@ -89,7 +89,7 @@ final class JobModelsTests: XCTestCase {
         let url = try makeTempDatabaseURL()
         let database = try CatalogDatabase.open(at: url)
         let queue = JobTestSupport.makeQueue(database: database)
-        let customCode = JobSafeErrorCode(validated: "scanTimeout")
+        let customCode = try JobSafeErrorCode("scanTimeout")
         let jobID = UUID()
         _ = try JobTestSupport.enqueueDefault(queue: queue, id: jobID)
         let lease = try XCTUnwrap(try JobTestSupport.claimDefault(queue: queue))
@@ -105,6 +105,68 @@ final class JobModelsTests: XCTestCase {
 
         let snapshot = try queue.fetchJob(id: jobID)
         XCTAssertEqual(snapshot.lastErrorCode, customCode)
+    }
+
+    func testEmptySafeErrorCodeRejected() {
+        XCTAssertThrowsError(try JobSafeErrorCode("")) { error in
+            XCTAssertEqual(error as? JobQueueError, .invalidSafeErrorCode(rawValue: ""))
+        }
+    }
+
+    func testInvalidSafeErrorCodePatternsRejected() {
+        let invalidCodes = ["1bad", "bad-code", String(repeating: "a", count: 65)]
+        for code in invalidCodes {
+            XCTAssertThrowsError(try JobSafeErrorCode(code)) { error in
+                XCTAssertEqual(error as? JobQueueError, .invalidSafeErrorCode(rawValue: code))
+            }
+        }
+    }
+
+    func testPersistedSafeErrorCodeUsesSameValidation() {
+        XCTAssertThrowsError(try JobSafeErrorCode(persisted: "")) { error in
+            XCTAssertEqual(
+                error as? JobQueueError,
+                .unknownPersistedRawValue(field: "last_error_code", value: "")
+            )
+        }
+        XCTAssertThrowsError(try JobSafeErrorCode(persisted: "bad-code")) { error in
+            XCTAssertEqual(
+                error as? JobQueueError,
+                .unknownPersistedRawValue(field: "last_error_code", value: "bad-code")
+            )
+        }
+    }
+
+    func testUnknownPersistedSafeErrorCodeFromDatabaseIsStructuredError() throws {
+        let url = try makeTempDatabaseURL()
+        let database = try CatalogDatabase.open(at: url)
+        let queue = JobTestSupport.makeQueue(database: database)
+        let jobID = UUID()
+        _ = try JobTestSupport.enqueueDefault(queue: queue, id: jobID)
+        let lease = try XCTUnwrap(try JobTestSupport.claimDefault(queue: queue))
+
+        _ = try queue.submitSafeBatch(
+            SafeBatchCommitInput(
+                lease: lease,
+                outcome: .retryableFailure(code: .interrupted),
+                checkpoint: nil,
+                progress: JobProgress(completed: 0, total: nil)
+            )
+        )
+
+        try database.pool.write { db in
+            try db.execute(
+                sql: "UPDATE job SET last_error_code = 'bad-code' WHERE id = ?",
+                arguments: [jobID.uuidString.lowercased()]
+            )
+        }
+
+        XCTAssertThrowsError(try queue.fetchJob(id: jobID)) { error in
+            XCTAssertEqual(
+                error as? JobQueueError,
+                .unknownPersistedRawValue(field: "last_error_code", value: "bad-code")
+            )
+        }
     }
 
     func testInvalidProgressRejectedBeforePersistence() {

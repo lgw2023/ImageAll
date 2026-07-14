@@ -89,7 +89,14 @@ enum JobTestSupport {
         _ db: Database,
         jobID: UUID
     ) throws -> JobRowSnapshot? {
-        try JobRowReader.fetchRowSnapshot(db, jobID: jobID)
+        guard let row = try Row.fetchOne(
+            db,
+            sql: "SELECT * FROM job WHERE id = ?",
+            arguments: [jobID.uuidString.lowercased()]
+        ) else {
+            return nil
+        }
+        return JobRowSnapshot(row: row)
     }
 
     static func fetchSourceRowSnapshot(
@@ -111,7 +118,9 @@ enum JobTestSupport {
         id: UUID = UUID(),
         control: JobControlRequest = .none,
         attempts: Int = 1,
-        maxAttempts: Int = 3
+        maxAttempts: Int = 3,
+        checkpoint: JobCheckpoint? = nil,
+        progress: JobProgress = JobProgress(completed: 0, total: nil)
     ) throws {
         let nowMs = baseTimeMs
         try database.pool.write { db in
@@ -120,9 +129,11 @@ enum JobTestSupport {
                 INSERT INTO job (
                     id, kind, payload_version, payload, state, control_request,
                     priority, attempts, max_attempts, not_before_ms,
-                    lease_owner, lease_expires_at_ms, progress_completed,
+                    lease_owner, lease_expires_at_ms,
+                    checkpoint_version, checkpoint,
+                    progress_completed, progress_total,
                     created_at_ms, updated_at_ms
-                ) VALUES (?, ?, 1, ?, 'running', ?, 0, ?, ?, ?, 'stale-worker', ?, 0, ?, ?)
+                ) VALUES (?, ?, 1, ?, 'running', ?, 0, ?, ?, ?, 'stale-worker', ?, ?, ?, ?, ?, ?, ?)
                 """,
                 arguments: [
                     id.uuidString.lowercased(),
@@ -133,11 +144,30 @@ enum JobTestSupport {
                     maxAttempts,
                     nowMs,
                     nowMs + leaseDurationMs,
+                    checkpoint?.version,
+                    checkpoint?.data,
+                    progress.completed,
+                    progress.total,
                     nowMs,
                     nowMs,
                 ]
             )
         }
+    }
+
+    static func incrementSourceDirtyEpoch(
+        _ db: Database,
+        sourceID: UUID,
+        delta: Int,
+        nowMs: Int64 = baseTimeMs
+    ) throws {
+        try db.execute(
+            sql: """
+            UPDATE source SET dirty_epoch = dirty_epoch + ?, updated_at_ms = ?
+            WHERE id = ?
+            """,
+            arguments: [delta, nowMs, sourceID.uuidString.lowercased()]
+        )
     }
 
     static func prepareJobInState(

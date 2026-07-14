@@ -126,6 +126,29 @@ final class JobRetryRecoveryTests: XCTestCase {
         try assertRowUnchanged(database: database, jobID: jobID, baseline: try XCTUnwrap(afterFirst))
     }
 
+    func testRecoveryPreservesExistingCheckpointAndProgress() throws {
+        let url = try makeTempDatabaseURL()
+        let database = try CatalogDatabase.open(at: url)
+        let queue = JobTestSupport.makeQueue(database: database)
+        let jobID = UUID()
+        let checkpoint = JobTestSupport.testCheckpoint
+        let progress = JobProgress(completed: 4, total: 9)
+        try JobTestSupport.insertRunningJobForRecovery(
+            database: database,
+            id: jobID,
+            control: .pause,
+            checkpoint: checkpoint,
+            progress: progress
+        )
+
+        try queue.recoverInterruptedRunningJobs()
+
+        let snapshot = try queue.fetchJob(id: jobID)
+        XCTAssertEqual(snapshot.state, .paused)
+        XCTAssertEqual(snapshot.checkpoint, checkpoint)
+        XCTAssertEqual(snapshot.progress, progress)
+    }
+
     func testRecoveryFailureRollsBackAllRunningRows() throws {
         let url = try makeTempDatabaseURL()
         let database = try CatalogDatabase.open(at: url)

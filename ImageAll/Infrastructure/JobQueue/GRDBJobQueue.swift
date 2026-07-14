@@ -207,34 +207,6 @@ struct GRDBJobQueue: JobQueue, Sendable {
         try commitLeaseProtectedBatch(input: input) { _ in }
     }
 
-    func commitSourceDirtyEpochBatch(
-        sourceID: UUID,
-        dirtyEpochDelta: Int,
-        batch: SafeBatchCommitInput
-    ) throws -> JobRecordSnapshot {
-        try commitLeaseProtectedBatch(input: batch) { db in
-            let sourceExists = try Int.fetchOne(
-                db,
-                sql: "SELECT 1 FROM source WHERE id = ?",
-                arguments: [sourceID.uuidString.lowercased()]
-            )
-            guard sourceExists == 1 else {
-                throw JobQueueError.referenceNotFound
-            }
-
-            let nowMs = self.clock.nowMs
-            try db.execute(
-                sql: """
-                UPDATE source SET
-                    dirty_epoch = dirty_epoch + ?,
-                    updated_at_ms = ?
-                WHERE id = ?
-                """,
-                arguments: [dirtyEpochDelta, nowMs, sourceID.uuidString.lowercased()]
-            )
-        }
-    }
-
     func settleRetryableJobs() throws {
         let nowMs = clock.nowMs
 
@@ -346,26 +318,8 @@ struct GRDBJobQueue: JobQueue, Sendable {
 
         let nowMs = clock.nowMs
 
-        return try database.pool.write { db in
-            try validateLease(db: db, lease: input.lease)
-
-            guard let row = try Row.fetchOne(
-                db,
-                sql: """
-                SELECT * FROM job
-                WHERE id = ? AND state = 'running'
-                    AND lease_owner = ? AND attempts = ?
-                """,
-                arguments: [
-                    input.lease.jobID.uuidString.lowercased(),
-                    input.lease.leaseOwner,
-                    input.lease.attempts,
-                ]
-            ) else {
-                throw JobQueueError.staleLease(input.lease.jobID)
-            }
-
-            let persisted = try JobPersistenceMapping.snapshot(from: row)
+        return try runLeaseProtectedTransaction(input: input, nowMs: nowMs) { db in
+            let persisted = try persistedRunningSnapshot(db: db, lease: input.lease)
             try JobPersistenceMapping.validateProgressMonotonic(input.progress, persisted: persisted.progress)
             try businessWork(db)
             return try submitSafeBatchInTransaction(db: db, input: input, nowMs: nowMs)
@@ -379,6 +333,17 @@ struct GRDBJobQueue: JobQueue, Sendable {
         try database.pool.write { db in
             try validateLease(db: db, lease: lease)
             try work(db)
+        }
+    }
+
+    func runLeaseProtectedTransaction(
+        input: SafeBatchCommitInput,
+        nowMs: Int64,
+        body: (Database) throws -> JobRecordSnapshot
+    ) throws -> JobRecordSnapshot {
+        try database.pool.write { db in
+            try validateLease(db: db, lease: input.lease)
+            return try body(db)
         }
     }
 }
@@ -552,7 +517,7 @@ private extension GRDBJobQueue {
                 ]
             )
         case let .leaveRunning(state, errorCode, notBeforeMs):
-            try updateJobLeavingRunning(
+            try updateJobLeavingRunningWithBatchFields(
                 db: db,
                 jobID: input.lease.jobID,
                 state: state,
@@ -678,6 +643,76 @@ private extension GRDBJobQueue {
         }
     }
 
+    func persistedRunningSnapshot(db: Database, lease: JobLeaseToken) throws -> JobRecordSnapshot {
+        guard let row = try Row.fetchOne(
+            db,
+            sql: """
+            SELECT * FROM job
+            WHERE id = ? AND state = 'running'
+                AND lease_owner = ? AND attempts = ?
+            """,
+            arguments: [
+                lease.jobID.uuidString.lowercased(),
+                lease.leaseOwner,
+                lease.attempts,
+            ]
+        ) else {
+            throw JobQueueError.staleLease(lease.jobID)
+        }
+        return try JobPersistenceMapping.snapshot(from: row)
+    }
+
+    func updateJobLeavingRunningWithBatchFields(
+        db: Database,
+        jobID: UUID,
+        state: JobState,
+        notBeforeMs: Int64,
+        errorCode: JobSafeErrorCode?,
+        clearErrors: Bool,
+        checkpoint: JobCheckpoint?,
+        progress: JobProgress,
+        nowMs: Int64,
+        expectedLeaseOwner: String,
+        expectedAttempts: Int
+    ) throws {
+        try db.execute(
+            sql: """
+            UPDATE job SET
+                state = ?,
+                not_before_ms = ?,
+                last_error_code = ?,
+                last_error_message = NULL,
+                lease_owner = NULL,
+                lease_expires_at_ms = NULL,
+                control_request = 'none',
+                checkpoint_version = ?,
+                checkpoint = ?,
+                progress_completed = ?,
+                progress_total = ?,
+                updated_at_ms = ?
+            WHERE id = ? AND state = 'running'
+                AND lease_owner = ? AND attempts = ?
+            """,
+            arguments: [
+                state.rawValue,
+                notBeforeMs,
+                clearErrors ? nil : errorCode?.rawValue,
+                checkpoint?.version,
+                checkpoint?.data,
+                progress.completed,
+                progress.total,
+                nowMs,
+                jobID.uuidString.lowercased(),
+                expectedLeaseOwner,
+                expectedAttempts,
+            ]
+        )
+
+        guard db.changesCount == 1 else {
+            throw JobQueueError.staleLease(jobID)
+        }
+    }
+
     func updateJobLeavingRunning(
         db: Database,
         jobID: UUID,
@@ -685,8 +720,6 @@ private extension GRDBJobQueue {
         notBeforeMs: Int64,
         errorCode: JobSafeErrorCode?,
         clearErrors: Bool,
-        checkpoint: JobCheckpoint? = nil,
-        progress: JobProgress? = nil,
         nowMs: Int64,
         expectedLeaseOwner: String? = nil,
         expectedAttempts: Int? = nil
@@ -708,17 +741,6 @@ private extension GRDBJobQueue {
             clearErrors ? nil : errorCode?.rawValue,
             nowMs,
         ]
-
-        if let checkpoint {
-            sql += ", checkpoint_version = ?, checkpoint = ?"
-            arguments.append(checkpoint.version)
-            arguments.append(checkpoint.data)
-        }
-        if let progress {
-            sql += ", progress_completed = ?, progress_total = ?"
-            arguments.append(progress.completed)
-            arguments.append(progress.total)
-        }
 
         sql += " WHERE id = ? AND state = 'running'"
         arguments.append(jobID.uuidString.lowercased())

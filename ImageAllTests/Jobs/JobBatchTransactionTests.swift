@@ -15,16 +15,16 @@ final class JobBatchTransactionTests: XCTestCase {
         _ = try JobTestSupport.enqueueDefault(queue: queue, id: jobID, sourceID: sourceID)
         let lease = try XCTUnwrap(try JobTestSupport.claimDefault(queue: queue))
 
-        let snapshot = try queue.commitSourceDirtyEpochBatch(
-            sourceID: sourceID,
-            dirtyEpochDelta: 2,
-            batch: SafeBatchCommitInput(
+        let snapshot = try queue.commitLeaseProtectedBatch(
+            input: SafeBatchCommitInput(
                 lease: lease,
                 outcome: .continue,
                 checkpoint: JobTestSupport.testCheckpoint,
                 progress: JobProgress(completed: 3, total: 10)
             )
-        )
+        ) { db in
+            try JobTestSupport.incrementSourceDirtyEpoch(db, sourceID: sourceID, delta: 2)
+        }
 
         XCTAssertEqual(snapshot.state, .running)
         XCTAssertEqual(snapshot.checkpoint, JobTestSupport.testCheckpoint)
@@ -66,13 +66,7 @@ final class JobBatchTransactionTests: XCTestCase {
                     progress: JobProgress(completed: 1, total: 2)
                 )
             ) { db in
-                try db.execute(
-                    sql: """
-                    UPDATE source SET dirty_epoch = dirty_epoch + 5, updated_at_ms = ?
-                    WHERE id = ?
-                    """,
-                    arguments: [JobTestSupport.baseTimeMs, sourceID.uuidString.lowercased()]
-                )
+                try JobTestSupport.incrementSourceDirtyEpoch(db, sourceID: sourceID, delta: 5)
                 throw InjectedFailure()
             }
         )
@@ -102,13 +96,7 @@ final class JobBatchTransactionTests: XCTestCase {
 
         XCTAssertThrowsError(
             try queue.performLeaseProtectedWork(lease: lease) { db in
-                try db.execute(
-                    sql: """
-                    UPDATE source SET dirty_epoch = dirty_epoch + 3, updated_at_ms = ?
-                    WHERE id = ?
-                    """,
-                    arguments: [JobTestSupport.baseTimeMs, sourceID.uuidString.lowercased()]
-                )
+                try JobTestSupport.incrementSourceDirtyEpoch(db, sourceID: sourceID, delta: 3)
                 try db.execute(
                     sql: """
                     UPDATE job SET progress_completed = 10, progress_total = 5, updated_at_ms = ?
@@ -135,16 +123,16 @@ final class JobBatchTransactionTests: XCTestCase {
         _ = try JobTestSupport.enqueueDefault(queue: queue, id: jobID, sourceID: sourceID)
         let lease = try XCTUnwrap(try JobTestSupport.claimDefault(queue: queue))
 
-        _ = try queue.commitSourceDirtyEpochBatch(
-            sourceID: sourceID,
-            dirtyEpochDelta: 1,
-            batch: SafeBatchCommitInput(
+        _ = try queue.commitLeaseProtectedBatch(
+            input: SafeBatchCommitInput(
                 lease: lease,
                 outcome: .continue,
                 checkpoint: JobTestSupport.testCheckpoint,
                 progress: JobProgress(completed: 5, total: 10)
             )
-        )
+        ) { db in
+            try JobTestSupport.incrementSourceDirtyEpoch(db, sourceID: sourceID, delta: 1)
+        }
 
         let jobBaseline = try database.pool.read { db in
             try JobTestSupport.fetchRowSnapshot(db, jobID: jobID)
@@ -200,16 +188,16 @@ final class JobBatchTransactionTests: XCTestCase {
         )
 
         XCTAssertThrowsError(
-            try queue.commitSourceDirtyEpochBatch(
-                sourceID: sourceID,
-                dirtyEpochDelta: 1,
-                batch: SafeBatchCommitInput(
+            try queue.commitLeaseProtectedBatch(
+                input: SafeBatchCommitInput(
                     lease: staleLease,
                     outcome: .continue,
                     checkpoint: JobTestSupport.testCheckpoint,
                     progress: JobProgress(completed: 1, total: 2)
                 )
-            )
+            ) { db in
+                try JobTestSupport.incrementSourceDirtyEpoch(db, sourceID: sourceID, delta: 1)
+            }
         ) { error in
             XCTAssertEqual(error as? JobQueueError, .staleLease(jobID))
         }

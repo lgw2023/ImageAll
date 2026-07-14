@@ -12,7 +12,7 @@ final class JobSafeBoundaryTests: XCTestCase {
     }
 
     func testSafeBoundaryFullDecisionMatrix() throws {
-        let customCode = JobSafeErrorCode(validated: "scanTimeout")
+        let customCode = try JobSafeErrorCode("scanTimeout")
         let cases: [SafeBoundaryCase] = [
             SafeBoundaryCase(control: .cancel, outcome: .continue, maxAttempts: 3, expectedState: .cancelled, expectedError: nil, keepsLease: false),
             SafeBoundaryCase(control: .cancel, outcome: .completed, maxAttempts: 3, expectedState: .cancelled, expectedError: nil, keepsLease: false),
