@@ -96,6 +96,17 @@ enum DatabaseTestSupport {
         }
     }
 
+    static func indexList(_ db: Database, table: String) throws -> [(seq: Int, name: String, unique: Bool, partial: Bool)] {
+        try Row.fetchAll(db, sql: "PRAGMA index_list(\(table.quoteDatabaseIdentifier()))").map { row in
+            (
+                seq: row["seq"] as Int,
+                name: row["name"] as String,
+                unique: (row["unique"] as Int) == 1,
+                partial: (row["partial"] as Int) == 1
+            )
+        }
+    }
+
     static func indexXInfo(_ db: Database, index: String) throws -> [(seqno: Int, cid: Int, name: String?, desc: Bool, coll: String?, key: Bool)] {
         try Row.fetchAll(db, sql: "PRAGMA index_xinfo(\(index.quoteDatabaseIdentifier()))").map { row in
             (

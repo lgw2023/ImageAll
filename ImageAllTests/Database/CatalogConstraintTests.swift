@@ -55,7 +55,11 @@ final class CatalogConstraintTests: XCTestCase {
         let url = try makeTempDatabaseURL()
         let database = try CatalogDatabase.open(at: url)
 
-        for malformedID in ["not-a-uuid", "0123456789abcdef0123456789abcdef"] {
+        for malformedID in [
+            "not-a-uuid",
+            "0123456789abcdef0123456789abcdef",
+            "01234567-89ab-cdef-ghij-012345678901",
+        ] {
             XCTAssertThrowsError(try database.pool.write { db in
                 try db.execute(
                     sql: """
@@ -355,6 +359,40 @@ final class CatalogConstraintTests: XCTestCase {
         })
     }
 
+    func testAssetRejectsZeroHeight() throws {
+        let url = try makeTempDatabaseURL()
+        let database = try CatalogDatabase.open(at: url)
+        let repository = CatalogRepository(database: database)
+        let assetID = UUID()
+        try DatabaseTestSupport.makeFolderSourceWithFileAsset(repository: repository, assetID: assetID)
+
+        XCTAssertThrowsError(try database.pool.write { db in
+            try db.execute(
+                sql: "UPDATE asset SET height = 0 WHERE id = ?",
+                arguments: [assetID.uuidString.lowercased()]
+            )
+        })
+    }
+
+    func testAssetRejectsNegativeLastSeenGeneration() throws {
+        let url = try makeTempDatabaseURL()
+        let database = try CatalogDatabase.open(at: url)
+        let repository = CatalogRepository(database: database)
+        let assetID = UUID()
+        try DatabaseTestSupport.makeFolderSourceWithFileAsset(repository: repository, assetID: assetID)
+
+        XCTAssertThrowsError(try database.pool.write { db in
+            try db.execute(
+                sql: "UPDATE asset SET last_seen_generation = -1 WHERE id = ?",
+                arguments: [assetID.uuidString.lowercased()]
+            )
+        })
+    }
+
+    func testSourceRejectsNegativeDirtyEpoch() throws {
+        try assertSourceInsertRejected(dirtyEpoch: -1)
+    }
+
     func testSourceBookmarkRejectsTextStorageClass() throws {
         let url = try makeTempDatabaseURL()
         let database = try CatalogDatabase.open(at: url)
@@ -413,6 +451,130 @@ final class CatalogConstraintTests: XCTestCase {
         })
     }
 
+    func testJobCheckpointRejectsTextStorageClass() throws {
+        let url = try makeTempDatabaseURL()
+        let database = try CatalogDatabase.open(at: url)
+        let jobID = DatabaseTestSupport.lowercaseUUIDString()
+        let timestamp = DatabaseTestSupport.timestampMs
+
+        try database.pool.write { db in
+            try db.execute(
+                sql: """
+                INSERT INTO job (
+                    id, kind, payload_version, payload, state, control_request,
+                    max_attempts, not_before_ms, created_at_ms, updated_at_ms
+                ) VALUES (?, 'scan', 1, ?, 'pending', 'none', 1, ?, ?, ?)
+                """,
+                arguments: [jobID, Data([0x01]), timestamp, timestamp, timestamp]
+            )
+        }
+
+        XCTAssertThrowsError(try database.pool.write { db in
+            try db.execute(
+                sql: """
+                UPDATE job
+                SET checkpoint_version = 1, checkpoint = ?
+                WHERE id = ?
+                """,
+                arguments: [String(repeating: "a", count: 32), jobID]
+            )
+        })
+    }
+
+    func testJobRejectsPayloadVersionZero() throws {
+        try assertJobInsertRejected(payloadVersion: 0)
+    }
+
+    func testJobRejectsMaxAttemptsZero() throws {
+        try assertJobInsertRejected(maxAttempts: 0)
+    }
+
+    func testJobRejectsNegativeAttempts() throws {
+        let url = try makeTempDatabaseURL()
+        let database = try CatalogDatabase.open(at: url)
+        let jobID = DatabaseTestSupport.lowercaseUUIDString()
+        let timestamp = DatabaseTestSupport.timestampMs
+
+        try database.pool.write { db in
+            try db.execute(
+                sql: """
+                INSERT INTO job (
+                    id, kind, payload_version, payload, state, control_request,
+                    max_attempts, attempts, not_before_ms, created_at_ms, updated_at_ms
+                ) VALUES (?, 'scan', 1, ?, 'pending', 'none', 3, 0, ?, ?, ?)
+                """,
+                arguments: [jobID, Data([0x01]), timestamp, timestamp, timestamp]
+            )
+        }
+
+        XCTAssertThrowsError(try database.pool.write { db in
+            try db.execute(
+                sql: "UPDATE job SET attempts = -1 WHERE id = ?",
+                arguments: [jobID]
+            )
+        })
+    }
+
+    func testJobRejectsCheckpointWithoutVersion() throws {
+        let url = try makeTempDatabaseURL()
+        let database = try CatalogDatabase.open(at: url)
+        let jobID = DatabaseTestSupport.lowercaseUUIDString()
+        let timestamp = DatabaseTestSupport.timestampMs
+
+        try database.pool.write { db in
+            try db.execute(
+                sql: """
+                INSERT INTO job (
+                    id, kind, payload_version, payload, state, control_request,
+                    max_attempts, not_before_ms, created_at_ms, updated_at_ms
+                ) VALUES (?, 'scan', 1, ?, 'pending', 'none', 1, ?, ?, ?)
+                """,
+                arguments: [jobID, Data([0x01]), timestamp, timestamp, timestamp]
+            )
+        }
+
+        XCTAssertThrowsError(try database.pool.write { db in
+            try db.execute(
+                sql: "UPDATE job SET checkpoint = ? WHERE id = ?",
+                arguments: [Data([0x02]), jobID]
+            )
+        })
+    }
+
+    func testJobRejectsNegativeProgressCompleted() throws {
+        let url = try makeTempDatabaseURL()
+        let database = try CatalogDatabase.open(at: url)
+        let jobID = DatabaseTestSupport.lowercaseUUIDString()
+        let timestamp = DatabaseTestSupport.timestampMs
+
+        try database.pool.write { db in
+            try db.execute(
+                sql: """
+                INSERT INTO job (
+                    id, kind, payload_version, payload, state, control_request,
+                    max_attempts, not_before_ms, created_at_ms, updated_at_ms
+                ) VALUES (?, 'scan', 1, ?, 'pending', 'none', 1, ?, ?, ?)
+                """,
+                arguments: [jobID, Data([0x01]), timestamp, timestamp, timestamp]
+            )
+        }
+
+        XCTAssertThrowsError(try database.pool.write { db in
+            try db.execute(
+                sql: "UPDATE job SET progress_completed = -1 WHERE id = ?",
+                arguments: [jobID]
+            )
+        })
+    }
+
+    func testJobRejectsNegativeScanGeneration() throws {
+        try assertJobInsertRejected(scanGeneration: -1)
+    }
+
+    func testJobRejectsNegativeStartedDirtyEpoch() throws {
+        try assertJobInsertRejected(startedDirtyEpoch: -1)
+    }
+
     // MARK: - Locator uniqueness
 
     func testTagNormalizedNameIsBinaryUnique() throws {
@@ -421,13 +583,27 @@ final class CatalogConstraintTests: XCTestCase {
         let tagID = DatabaseTestSupport.lowercaseUUIDString()
         let duplicateID = DatabaseTestSupport.lowercaseUUIDString()
 
+        guard case let .success(familyParts) = TagNameNormalizer.validateAndNormalize("Family") else {
+            return XCTFail("Family must normalize successfully")
+        }
+        guard case let .success(familyUpperParts) = TagNameNormalizer.validateAndNormalize("FAMILY") else {
+            return XCTFail("FAMILY must normalize successfully")
+        }
+        XCTAssertEqual(familyParts.normalizedName, familyUpperParts.normalizedName)
+
         try database.pool.write { db in
             try db.execute(
                 sql: """
                 INSERT INTO tag (id, name, normalized_name, state, created_at_ms, updated_at_ms)
-                VALUES (?, 'Family', 'family', 'active', ?, ?)
+                VALUES (?, ?, ?, 'active', ?, ?)
                 """,
-                arguments: [tagID, DatabaseTestSupport.timestampMs, DatabaseTestSupport.timestampMs]
+                arguments: [
+                    tagID,
+                    familyParts.displayName,
+                    familyParts.normalizedName,
+                    DatabaseTestSupport.timestampMs,
+                    DatabaseTestSupport.timestampMs,
+                ]
             )
         }
 
@@ -435,20 +611,35 @@ final class CatalogConstraintTests: XCTestCase {
             try db.execute(
                 sql: """
                 INSERT INTO tag (id, name, normalized_name, state, created_at_ms, updated_at_ms)
-                VALUES (?, 'FAMILY', 'family', 'active', ?, ?)
+                VALUES (?, ?, ?, 'active', ?, ?)
                 """,
-                arguments: [duplicateID, DatabaseTestSupport.timestampMs, DatabaseTestSupport.timestampMs]
+                arguments: [
+                    duplicateID,
+                    familyUpperParts.displayName,
+                    familyUpperParts.normalizedName,
+                    DatabaseTestSupport.timestampMs,
+                    DatabaseTestSupport.timestampMs,
+                ]
             )
         })
 
+        guard case let .success(cafeParts) = TagNameNormalizer.validateAndNormalize("Café") else {
+            return XCTFail("Café must normalize successfully")
+        }
         let cafeID = DatabaseTestSupport.lowercaseUUIDString()
         try database.pool.write { db in
             try db.execute(
                 sql: """
                 INSERT INTO tag (id, name, normalized_name, state, created_at_ms, updated_at_ms)
-                VALUES (?, 'Café', 'café', 'active', ?, ?)
+                VALUES (?, ?, ?, 'active', ?, ?)
                 """,
-                arguments: [cafeID, DatabaseTestSupport.timestampMs, DatabaseTestSupport.timestampMs]
+                arguments: [
+                    cafeID,
+                    cafeParts.displayName,
+                    cafeParts.normalizedName,
+                    DatabaseTestSupport.timestampMs,
+                    DatabaseTestSupport.timestampMs,
+                ]
             )
         }
     }
@@ -852,6 +1043,58 @@ final class CatalogConstraintTests: XCTestCase {
         })
     }
 
+    func testJobActiveCoalescingKeyBlocksPausedAndRetryableFailedStates() throws {
+        let url = try makeTempDatabaseURL()
+        let database = try CatalogDatabase.open(at: url)
+        let pendingJobID = DatabaseTestSupport.lowercaseUUIDString()
+        let pausedJobID = DatabaseTestSupport.lowercaseUUIDString()
+        let retryableJobID = DatabaseTestSupport.lowercaseUUIDString()
+        let timestamp = DatabaseTestSupport.timestampMs
+
+        try database.pool.write { db in
+            try db.execute(
+                sql: """
+                INSERT INTO job (
+                    id, kind, payload_version, payload, coalescing_key, state, control_request,
+                    max_attempts, not_before_ms, created_at_ms, updated_at_ms
+                ) VALUES (?, 'scan', 1, ?, 'shared-key', 'pending', 'none', 3, ?, ?, ?)
+                """,
+                arguments: [pendingJobID, Data([0x01]), timestamp, timestamp, timestamp]
+            )
+        }
+
+        XCTAssertThrowsError(try database.pool.write { db in
+            try db.execute(
+                sql: """
+                INSERT INTO job (
+                    id, kind, payload_version, payload, coalescing_key, state, control_request,
+                    max_attempts, not_before_ms, created_at_ms, updated_at_ms
+                ) VALUES (?, 'scan', 1, ?, 'shared-key', 'paused', 'none', 3, ?, ?, ?)
+                """,
+                arguments: [pausedJobID, Data([0x02]), timestamp, timestamp, timestamp]
+            )
+        })
+
+        try database.pool.write { db in
+            try db.execute(
+                sql: "UPDATE job SET state = 'retryableFailed' WHERE id = ?",
+                arguments: [pendingJobID]
+            )
+        }
+
+        XCTAssertThrowsError(try database.pool.write { db in
+            try db.execute(
+                sql: """
+                INSERT INTO job (
+                    id, kind, payload_version, payload, coalescing_key, state, control_request,
+                    max_attempts, not_before_ms, created_at_ms, updated_at_ms
+                ) VALUES (?, 'scan', 1, ?, 'shared-key', 'retryableFailed', 'none', 3, ?, ?, ?)
+                """,
+                arguments: [retryableJobID, Data([0x03]), timestamp, timestamp, timestamp]
+            )
+        })
+    }
+
     func testJobActiveCoalescingKeyConflictAndTerminalReuse() throws {
         let url = try makeTempDatabaseURL()
         let database = try CatalogDatabase.open(at: url)
@@ -1047,7 +1290,8 @@ private extension CatalogConstraintTests {
     func assertSourceInsertRejected(
         kind: String = "folder",
         state: String = "active",
-        scanGeneration: Int = 0
+        scanGeneration: Int = 0,
+        dirtyEpoch: Int = 0
     ) throws {
         let url = try makeTempDatabaseURL()
         let database = try CatalogDatabase.open(at: url)
@@ -1058,13 +1302,14 @@ private extension CatalogConstraintTests {
                 INSERT INTO source (
                     id, kind, display_name, bookmark, scan_generation, dirty_epoch,
                     state, created_at_ms, updated_at_ms
-                ) VALUES (?, ?, 'Name', ?, ?, 0, ?, ?, ?)
+                ) VALUES (?, ?, 'Name', ?, ?, ?, ?, ?, ?)
                 """,
                 arguments: [
                     DatabaseTestSupport.lowercaseUUIDString(),
                     kind,
                     kind == "photos" ? nil : DatabaseTestSupport.folderBookmark(),
                     scanGeneration,
+                    dirtyEpoch,
                     state,
                     DatabaseTestSupport.timestampMs,
                     DatabaseTestSupport.timestampMs,
@@ -1105,7 +1350,11 @@ private extension CatalogConstraintTests {
 
     func assertJobInsertRejected(
         state: String = "pending",
-        controlRequest: String = "none"
+        controlRequest: String = "none",
+        payloadVersion: Int = 1,
+        maxAttempts: Int = 1,
+        scanGeneration: Int? = nil,
+        startedDirtyEpoch: Int? = nil
     ) throws {
         let url = try makeTempDatabaseURL()
         let database = try CatalogDatabase.open(at: url)
@@ -1116,14 +1365,19 @@ private extension CatalogConstraintTests {
                 sql: """
                 INSERT INTO job (
                     id, kind, payload_version, payload, state, control_request,
-                    max_attempts, not_before_ms, created_at_ms, updated_at_ms
-                ) VALUES (?, 'scan', 1, ?, ?, ?, 1, ?, ?, ?)
+                    max_attempts, scan_generation, started_dirty_epoch,
+                    not_before_ms, created_at_ms, updated_at_ms
+                ) VALUES (?, 'scan', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 arguments: [
                     DatabaseTestSupport.lowercaseUUIDString(),
+                    payloadVersion,
                     Data([0x01]),
                     state,
                     controlRequest,
+                    maxAttempts,
+                    scanGeneration,
+                    startedDirtyEpoch,
                     timestamp,
                     timestamp,
                     timestamp,

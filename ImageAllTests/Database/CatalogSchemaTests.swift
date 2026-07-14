@@ -53,10 +53,12 @@ final class CatalogSchemaTests: XCTestCase {
                 let actualColumns = try DatabaseTestSupport.tableInfo(db, table: table)
                 XCTAssertEqual(actualColumns.count, expectedColumns.count, "Column count mismatch for \(table)")
 
-                for expected in expectedColumns {
-                    guard let actual = actualColumns.first(where: { $0.name == expected.name }) else {
-                        return XCTFail("Missing column \(expected.name) on \(table)")
-                    }
+                let actualNames = actualColumns.map(\.name)
+                let expectedNames = expectedColumns.map(\.name)
+                XCTAssertEqual(actualNames, expectedNames, "Column order mismatch for \(table)")
+
+                for (expected, actual) in zip(expectedColumns, actualColumns) {
+                    XCTAssertEqual(actual.name, expected.name, "\(table) column name")
                     XCTAssertEqual(actual.type, expected.type, "\(table).\(expected.name) type")
                     XCTAssertEqual(actual.notNull, expected.notNull, "\(table).\(expected.name) NOT NULL")
                     XCTAssertEqual(actual.defaultValue, expected.defaultValue, "\(table).\(expected.name) default")
@@ -95,9 +97,37 @@ final class CatalogSchemaTests: XCTestCase {
         let database = try CatalogDatabase.open(at: url)
 
         try database.pool.read { db in
-            let indexNames = try DatabaseTestSupport.indexNames(db)
+            var indexListByName: [String: (table: String, unique: Bool, partial: Bool)] = [:]
+            for table in CatalogSchemaExpectations.businessTables {
+                for entry in try DatabaseTestSupport.indexList(db, table: table) {
+                    guard !entry.name.hasPrefix("sqlite_autoindex_") else {
+                        continue
+                    }
+                    indexListByName[entry.name] = (table: table, unique: entry.unique, partial: entry.partial)
+                }
+            }
+
+            XCTAssertEqual(
+                Set(indexListByName.keys),
+                Set(CatalogSchemaExpectations.businessIndexes),
+                "Named business indexes must match spec exactly"
+            )
+
             for expected in CatalogSchemaExpectations.indexes {
-                XCTAssertTrue(indexNames.contains(expected.name), "Missing index \(expected.name)")
+                guard let listEntry = indexListByName[expected.name] else {
+                    return XCTFail("Missing index \(expected.name) in PRAGMA index_list")
+                }
+                XCTAssertEqual(
+                    listEntry.table,
+                    CatalogSchemaExpectations.indexTableByName[expected.name],
+                    "Index \(expected.name) table ownership"
+                )
+                XCTAssertEqual(listEntry.unique, expected.unique, "Index \(expected.name) unique flag")
+                XCTAssertEqual(
+                    listEntry.partial,
+                    !expected.partialPredicateFragments.isEmpty,
+                    "Index \(expected.name) partial flag"
+                )
 
                 let columns = try DatabaseTestSupport.indexXInfo(db, index: expected.name)
                 let keyColumns = columns.filter(\.key).compactMap(\.name)

@@ -125,12 +125,14 @@ enum CatalogSchemaExpectations {
     ]
 
     static let foreignKeysByTable: [String: [ForeignKeyExpectation]] = [
+        "source": [],
         "asset": [
             .init(from: "source_id", toTable: "source", to: "id", onDelete: "RESTRICT"),
         ],
         "file_fingerprint": [
             .init(from: "asset_id", toTable: "asset", to: "id", onDelete: "CASCADE"),
         ],
+        "tag": [],
         "asset_tag_decision": [
             .init(from: "asset_id", toTable: "asset", to: "id", onDelete: "RESTRICT"),
             .init(from: "tag_id", toTable: "tag", to: "id", onDelete: "RESTRICT"),
@@ -138,6 +140,16 @@ enum CatalogSchemaExpectations {
         "job": [
             .init(from: "source_id", toTable: "source", to: "id", onDelete: "SET NULL"),
         ],
+    ]
+
+    static let indexTableByName: [String: String] = [
+        "asset_current_file_locator_uq": "asset",
+        "asset_current_photos_locator_uq": "asset",
+        "asset_source_availability_idx": "asset",
+        "tag_normalized_name_uq": "tag",
+        "decision_tag_idx": "asset_tag_decision",
+        "job_queue_idx": "job",
+        "job_active_coalescing_uq": "job",
     ]
 
     static let indexes: [IndexExpectation] = [
