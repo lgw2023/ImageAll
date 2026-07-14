@@ -1,0 +1,137 @@
+import Foundation
+import GRDB
+import XCTest
+@testable import ImageAll
+
+enum JobTestSupport {
+    static let baseTimeMs: Int64 = 1_700_000_000_000
+    static let leaseDurationMs: Int64 = 60_000
+    static let retryDelayMs: Int64 = 5_000
+    static let testKind = "test.fake"
+    static let testPayload = Data("payload".utf8)
+    static let testCheckpoint = JobCheckpoint(version: 1, data: Data("checkpoint".utf8))
+
+    final class HandlerCallTracker: @unchecked Sendable {
+        private(set) var called = false
+
+        func markCalled() {
+            called = true
+        }
+    }
+
+    static func makeQueue(
+        database: CatalogDatabase,
+        nowMs: Int64 = baseTimeMs,
+        retryDelayMs: Int64 = retryDelayMs
+    ) -> GRDBJobQueue {
+        GRDBJobQueue(
+            database: database,
+            clock: FixedJobClock(nowMs: nowMs),
+            retryPolicy: FixedDelayRetryPolicy(delayMs: retryDelayMs)
+        )
+    }
+
+    static func makeCoordinator(
+        queue: GRDBJobQueue,
+        handlers: [any JobHandler] = []
+    ) -> JobExecutionCoordinator {
+        JobExecutionCoordinator(
+            queue: queue,
+            registry: InMemoryJobHandlerRegistry(handlers: handlers),
+            retryPolicy: FixedDelayRetryPolicy(delayMs: retryDelayMs),
+            clock: queue.clock
+        )
+    }
+
+    static func enqueueDefault(
+        queue: GRDBJobQueue,
+        id: UUID = UUID(),
+        kind: String = testKind,
+        payloadVersion: Int = 1,
+        payload: Data = testPayload,
+        sourceID: UUID? = nil,
+        coalescingKey: String? = nil,
+        priority: Int = 0,
+        maxAttempts: Int = 3,
+        notBeforeMs: Int64 = baseTimeMs
+    ) throws -> JobRecordSnapshot {
+        try queue.enqueue(
+            EnqueueJobCommand(
+                id: id,
+                kind: kind,
+                payloadVersion: payloadVersion,
+                payload: payload,
+                sourceID: sourceID,
+                coalescingKey: coalescingKey,
+                priority: priority,
+                maxAttempts: maxAttempts,
+                notBeforeMs: notBeforeMs
+            )
+        )
+    }
+
+    static func claimDefault(
+        queue: GRDBJobQueue,
+        owner: String = "worker-1"
+    ) throws -> JobLeaseToken? {
+        try queue.claimNext(
+            ClaimNextInput(owner: owner, leaseDurationMs: leaseDurationMs)
+        )
+    }
+
+    static func fetchRowSnapshot(
+        _ db: Database,
+        jobID: UUID
+    ) throws -> JobRowSnapshot? {
+        try JobRowReader.fetchRowSnapshot(db, jobID: jobID)
+    }
+
+    static func insertRunningJobForRecovery(
+        database: CatalogDatabase,
+        id: UUID = UUID(),
+        control: JobControlRequest = .none,
+        attempts: Int = 1,
+        maxAttempts: Int = 3
+    ) throws {
+        let nowMs = baseTimeMs
+        try database.pool.write { db in
+            try db.execute(
+                sql: """
+                INSERT INTO job (
+                    id, kind, payload_version, payload, state, control_request,
+                    priority, attempts, max_attempts, not_before_ms,
+                    lease_owner, lease_expires_at_ms, progress_completed,
+                    created_at_ms, updated_at_ms
+                ) VALUES (?, ?, 1, ?, 'running', ?, 0, ?, ?, ?, 'stale-worker', ?, 0, ?, ?)
+                """,
+                arguments: [
+                    id.uuidString.lowercased(),
+                    testKind,
+                    testPayload,
+                    control.rawValue,
+                    attempts,
+                    maxAttempts,
+                    nowMs,
+                    nowMs + leaseDurationMs,
+                    nowMs,
+                    nowMs,
+                ]
+            )
+        }
+    }
+}
+
+extension XCTestCase {
+    func assertRowUnchanged(
+        database: CatalogDatabase,
+        jobID: UUID,
+        baseline: JobRowSnapshot,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) throws {
+        let current = try database.pool.read { db in
+            try JobTestSupport.fetchRowSnapshot(db, jobID: jobID)
+        }
+        XCTAssertEqual(current, baseline, file: file, line: line)
+    }
+}
