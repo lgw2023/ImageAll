@@ -331,6 +331,63 @@ final class CatalogSnapshotCreationTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: tempURL.path))
     }
 
+    func testMaliciousCloseFailedFromOpenPreparationMapsToBackupFailedAndCleansTemp() throws {
+        try assertMaliciousCloseFailedMapsToPhaseErrorAndCleansTemp(
+            expectedError: .backupFailed,
+            dependencies: .init(
+                destinationQueueOpenPreparationHook: { _ in
+                    throw CatalogSnapshotError.closeFailed
+                }
+            )
+        )
+    }
+
+    func testMaliciousCloseFailedFromBackupProgressMapsToBackupFailedAndCleansTemp() throws {
+        try assertMaliciousCloseFailedMapsToPhaseErrorAndCleansTemp(
+            expectedError: .backupFailed,
+            dependencies: .init(
+                pagesPerStep: 1,
+                backupProgressHook: { progress in
+                    guard !progress.isCompleted else { return }
+                    throw CatalogSnapshotError.closeFailed
+                }
+            )
+        )
+    }
+
+    func testMaliciousCloseFailedFromPreCloseMapsToIntegrityCheckFailedAndCleansTemp() throws {
+        try assertMaliciousCloseFailedMapsToPhaseErrorAndCleansTemp(
+            expectedError: .integrityCheckFailed,
+            dependencies: .init(
+                destinationPreCloseHook: { _, _ in
+                    throw CatalogSnapshotError.closeFailed
+                }
+            )
+        )
+    }
+
+    func testMaliciousCloseFailedFromHashHookMapsToInvalidDatabaseChecksumAndCleansTemp() throws {
+        try assertMaliciousCloseFailedMapsToPhaseErrorAndCleansTemp(
+            expectedError: .invalidDatabaseChecksum,
+            dependencies: .init(
+                hashFailureHook: {
+                    throw CatalogSnapshotError.closeFailed
+                }
+            )
+        )
+    }
+
+    func testMaliciousCloseFailedFromManifestWriterMapsToManifestWriteFailedAndCleansTemp() throws {
+        try assertMaliciousCloseFailedMapsToPhaseErrorAndCleansTemp(
+            expectedError: .manifestWriteFailed,
+            dependencies: .init(
+                manifestDataWriter: { _, _ in
+                    throw CatalogSnapshotError.closeFailed
+                }
+            )
+        )
+    }
+
     func testConcurrentWriteDuringBackupStepsProducesConsistentSnapshot() throws {
         let root = try SnapshotTestSupport.makeTempRoot(testCase: self)
         let liveURL = SnapshotTestSupport.liveDatabaseURL(in: root)
@@ -492,6 +549,47 @@ final class CatalogSnapshotCreationTests: XCTestCase {
             XCTAssertEqual(includedConcurrent.tags, 1)
             XCTAssertEqual(includedConcurrent.decisions, 1)
         }
+    }
+}
+
+private extension CatalogSnapshotCreationTests {
+    func assertMaliciousCloseFailedMapsToPhaseErrorAndCleansTemp(
+        expectedError: CatalogSnapshotError,
+        dependencies: CatalogSnapshotCreationDependencies,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) throws {
+        let root = try SnapshotTestSupport.makeTempRoot(testCase: self)
+        let liveURL = SnapshotTestSupport.liveDatabaseURL(in: root)
+        let database = try SnapshotTestSupport.openLiveDatabase(at: liveURL)
+        let backups = SnapshotTestSupport.backupsDirectoryURL(in: root)
+        let snapshotID = UUID()
+        let snapshotIDString = snapshotID.uuidString.lowercased()
+
+        var thrownError: Error?
+        do {
+            try CatalogSnapshotCreator(sourceDatabase: database).createManualSnapshot(
+                snapshotID: snapshotID,
+                createdAtMs: SnapshotTestSupport.createdAtMs,
+                appVersion: SnapshotTestSupport.appVersion,
+                backupsDirectoryURL: backups,
+                dependencies: dependencies
+            )
+        } catch {
+            thrownError = error
+        }
+
+        guard let thrownError else {
+            XCTFail("Expected error", file: file, line: line)
+            return
+        }
+        XCTAssertEqual(thrownError as? CatalogSnapshotError, expectedError, file: file, line: line)
+        XCTAssertNotEqual(thrownError as? CatalogSnapshotError, .closeFailed, file: file, line: line)
+
+        let finalURL = backups.appendingPathComponent(snapshotIDString, isDirectory: true)
+        let tempURL = backups.appendingPathComponent("\(snapshotIDString).tmp", isDirectory: true)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: finalURL.path), file: file, line: line)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: tempURL.path), file: file, line: line)
     }
 }
 

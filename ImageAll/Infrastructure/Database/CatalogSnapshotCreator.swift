@@ -86,10 +86,8 @@ struct CatalogSnapshotCreator: Sendable {
 
             do {
                 try dependencies.destinationQueueOpenPreparationHook?(destinationDatabaseURL)
-            } catch let error as CatalogSnapshotError {
-                throw error
             } catch {
-                throw CatalogSnapshotError.backupFailed
+                throw Self.mapOpenPreparationError(error)
             }
 
             var destinationConfig = Configuration()
@@ -109,14 +107,12 @@ struct CatalogSnapshotCreator: Sendable {
                 try sourceDatabase.pool.backup(to: queue, pagesPerStep: dependencies.pagesPerStep) { progress in
                     do {
                         try dependencies.backupProgressHook?(progress)
-                    } catch let error as CatalogSnapshotError {
-                        throw error
                     } catch {
-                        throw CatalogSnapshotError.backupFailed
+                        throw Self.mapBackupProgressError(error)
                     }
                 }
             } catch let error as CatalogSnapshotError {
-                throw error
+                throw Self.mapBackupOperationError(error)
             } catch {
                 throw CatalogSnapshotError.backupFailed
             }
@@ -125,17 +121,13 @@ struct CatalogSnapshotCreator: Sendable {
             do {
                 do {
                     try dependencies.destinationPreCloseHook?(queue, destinationDatabaseURL)
-                } catch let error as CatalogSnapshotError {
-                    throw error
                 } catch {
-                    throw CatalogSnapshotError.integrityCheckFailed
+                    throw Self.mapIntegritySeamError(error)
                 }
                 do {
                     try dependencies.quickCheckFailureHook?(queue)
-                } catch let error as CatalogSnapshotError {
-                    throw error
                 } catch {
-                    throw CatalogSnapshotError.integrityCheckFailed
+                    throw Self.mapIntegritySeamError(error)
                 }
                 appliedMigrations = try queue.read { db -> [String] in
                     try CatalogDatabase.performQuickCheck(on: db)
@@ -152,12 +144,8 @@ struct CatalogSnapshotCreator: Sendable {
 
             do {
                 try dependencies.destinationCloseFailureHook?()
-            } catch let error as CatalogSnapshotError where error == .closeFailed {
-                throw error
-            } catch is CatalogSnapshotError {
-                throw CatalogSnapshotError.closeFailed
             } catch {
-                throw CatalogSnapshotError.closeFailed
+                throw Self.mapCloseFailureHookError(error)
             }
             try CatalogDatabase.closeQueue(queue)
             destinationClosed = true
@@ -179,10 +167,8 @@ struct CatalogSnapshotCreator: Sendable {
 
             do {
                 try dependencies.hashFailureHook?()
-            } catch let error as CatalogSnapshotError {
-                throw error
             } catch {
-                throw CatalogSnapshotError.invalidDatabaseChecksum
+                throw Self.mapHashSeamError(error)
             }
             let databaseSHA256: String
             do {
@@ -216,10 +202,8 @@ struct CatalogSnapshotCreator: Sendable {
             if let manifestDataWriter = dependencies.manifestDataWriter {
                 do {
                     try manifestDataWriter(manifestData, manifestURL)
-                } catch let error as CatalogSnapshotError {
-                    throw error
                 } catch {
-                    throw CatalogSnapshotError.manifestWriteFailed
+                    throw Self.mapManifestWriterError(error)
                 }
             } else {
                 do {
@@ -243,12 +227,8 @@ struct CatalogSnapshotCreator: Sendable {
 
             do {
                 try dependencies.publicationFailureHook?()
-            } catch let error as CatalogSnapshotError where error == .publicationFailed {
-                throw error
-            } catch is CatalogSnapshotError {
-                throw CatalogSnapshotError.publicationFailed
             } catch {
-                throw CatalogSnapshotError.publicationFailed
+                throw Self.mapPublicationHookError(error)
             }
             do {
                 try fileManager.moveItem(at: tempDirectoryURL, to: finalDirectoryURL)
@@ -292,5 +272,48 @@ struct CatalogSnapshotCreator: Sendable {
             }
             throw CatalogSnapshotError.backupFailed
         }
+    }
+}
+
+private extension CatalogSnapshotCreator {
+    static func mapOpenPreparationError(_: Error) -> CatalogSnapshotError {
+        .backupFailed
+    }
+
+    static func mapBackupProgressError(_ error: Error) -> CatalogSnapshotError {
+        if let error = error as? CatalogSnapshotError, error == .backupAborted {
+            return error
+        }
+        return .backupFailed
+    }
+
+    static func mapBackupOperationError(_ error: CatalogSnapshotError) -> CatalogSnapshotError {
+        if error == .backupAborted {
+            return error
+        }
+        return .backupFailed
+    }
+
+    static func mapIntegritySeamError(_: Error) -> CatalogSnapshotError {
+        .integrityCheckFailed
+    }
+
+    static func mapHashSeamError(_: Error) -> CatalogSnapshotError {
+        .invalidDatabaseChecksum
+    }
+
+    static func mapManifestWriterError(_: Error) -> CatalogSnapshotError {
+        .manifestWriteFailed
+    }
+
+    static func mapPublicationHookError(_: Error) -> CatalogSnapshotError {
+        .publicationFailed
+    }
+
+    static func mapCloseFailureHookError(_ error: Error) -> CatalogSnapshotError {
+        if let error = error as? CatalogSnapshotError, error == .closeFailed {
+            return error
+        }
+        return .closeFailed
     }
 }
