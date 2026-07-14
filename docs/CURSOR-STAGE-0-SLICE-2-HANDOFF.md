@@ -1,6 +1,6 @@
 # ImageAll Cursor 实施交接单：阶段 0 / 切片 2
 
-> 状态：Ready for handoff<br>
+> 状态：Approved（实现 `fa10b5a`，复审修正 `80ef5cf`）<br>
 > 日期：2026-07-14<br>
 > 实施者：Cursor<br>
 > 产品与架构评审：Codex<br>

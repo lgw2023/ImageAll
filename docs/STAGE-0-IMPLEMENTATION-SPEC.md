@@ -1,6 +1,6 @@
 # ImageAll 阶段 0 实施规格
 
-> 状态：In implementation v0.2（Gate 0 与切片 1 已通过，切片 2 待实施）<br>
+> 状态：In implementation v0.3（Gate 0 与切片 1–2 已通过，切片 3 待实施）<br>
 > 日期：2026-07-14<br>
 > 上位文档：[ARCHITECTURE.md](./ARCHITECTURE.md)<br>
 > 目标读者：负责首轮实现和评审的 macOS 工程师
@@ -21,17 +21,17 @@
 
 ## 2. 当前实施基线
 
-2026-07-14 完成 Gate 0、切片 1 及 Swift 6 语言模式修正后的复审基线：
+2026-07-14 完成 Gate 0、切片 1–2 及切片 2 复审修正后的实施基线：
 
 | 项目 | 当前状态 | 对阶段 0 的影响 |
 |---|---|---|
 | 系统 | macOS 26.5.1，Apple Silicon | 首个本机验证环境已建立；Intel 仍未验证 |
 | 工具链 | Xcode 26.6、Swift 6.3.3、macOS SDK 26.5 | Debug build 与测试已独立复核通过 |
 | 工程配置 | macOS 15.0、Swift 6 language mode、本地 ad-hoc 签名、App Sandbox | Gate 0 与切片 1 基线已冻结 |
-| 版本控制 | 本地 `main`，基线截至 `01fbed6`，工作区干净 | 后续切片必须在已批准历史上独立提交 |
-| 已实现范围 | SwiftUI 空壳、Composition Root、`foundationReady` 展示状态 | 尚未引入 Domain、GRDB、Job 或恢复能力 |
+| 版本控制 | 本地 `main`，实现基线截至 `80ef5cf`，工作区干净 | 后续切片必须在已批准历史上独立提交 |
+| 已实现范围 | SwiftUI 空壳、Composition Root、`foundationReady` 展示状态、纯 Domain 规则 | 尚未引入 GRDB、Job 或恢复能力 |
 
-Gate 0 与切片 1 已由 Codex 复审通过。后续实现不得重新解释 `foundationReady`，也不得在相应切片获批前声称目录库或任务调度已经就绪。
+Gate 0 与切片 1–2 已由 Codex 复审通过。后续实现不得重新解释 `foundationReady`，也不得在相应切片获批前声称目录库或任务调度已经就绪。
 
 ## 3. 阶段边界与暂定决策
 
@@ -47,7 +47,7 @@ Gate 0 与切片 1 已由 Codex 复审通过。后续实现不得重新解释 `f
 
 阶段 0 暂以 macOS 15.0、Apple Silicon 为开发基线。这是为了让工程可以开工，不是最终兼容性承诺；进入阶段 1 前必须决定是否支持 Intel，以及是否把最低版本调整到 macOS 14 或其他版本。分发方式暂用本地开发签名，Developer ID 与 Mac App Store 的选择不阻塞阶段 0。
 
-截至本规格核验时，GRDB 官方仓库列出的最新版本为 7.8.0，要求 Swift 6 / Xcode 16 或更新版本。实现应使用 7.x 的明确语义版本范围并提交解析后的精确锁定结果，不依赖分支或浮动的 `main`。
+截至 2026-07-14，[GRDB 官方 release](https://github.com/groue/GRDB.swift/releases/tag/v7.11.1) 最新版本为 7.11.1；GRDB 7.9 起要求 Swift 6.1 / Xcode 16.3 或更新版本，当前工具链满足要求。实现使用 `7.11.1..<8.0.0` 的明确语义版本范围并提交 Xcode 解析后的精确锁定结果，不依赖分支或浮动的 `main`。
 
 ### 3.2 目录与依赖边界
 
@@ -205,6 +205,7 @@ PRIMARY KEY 为 `(asset_id, tag_id)`。
 
 通用存储规则：
 
+- 六张业务表使用 SQLite `STRICT` table，使声明的 TEXT / INTEGER / BLOB 类型在写入时生效；GRDB 自己维护的 migration 表不受本项目控制；
 - UUID 以小写 `8-4-4-4-12` 规范文本保存；
 - 业务时间统一为 UTC Unix epoch milliseconds；
 - 文件 mtime 单独保留可获得的最高稳定精度，不与业务时间字段混用；
@@ -441,7 +442,7 @@ Stage 0 测试只需要验证手动快照、迁移前快照入口和恢复；“
 - 测试能检查实际 schema，而不只 mock repository；
 - schema 版本高于当前应用时明确拒绝打开。
 - 两个 locator partial unique index 分别拒绝重复的 current file/photos locator，同时允许任意数量 historical 记录；
-- `file_fingerprint` Repository 拒绝 Photos Asset，未知 job kind/version 只能产生结构化 terminal failure。
+- `file_fingerprint` Repository 拒绝 Photos Asset。
 
 ### 9.4 任务
 
@@ -452,6 +453,7 @@ Stage 0 测试只需要验证手动快照、迁移前快照入口和恢复；“
 - 遗留 running Job 按 attempts 恢复或终止；
 - pause/cancel 不回滚已经提交的批次；
 - pause 后到达的 cancel 必须获胜；带已持久化 pause/cancel 请求的 running Job 崩溃后分别恢复为 paused/cancelled；
+- 未知 job kind 或不支持的 payload/checkpoint version 只能产生结构化 terminal failure；
 - 第二进程持锁期间不能打开正式目录库、claim 或恢复 Job；持锁进程退出或被终止后，另一进程才能取得锁并安全恢复。
 
 ### 9.5 快照与恢复
@@ -474,7 +476,7 @@ Stage 0 测试只需要验证手动快照、迁移前快照入口和恢复；“
 - `docs/STAGE-0-EVIDENCE.md` 记录工具链版本、构建命令、测试命令、结果摘要、schema dump、已知限制和对应 commit；
 - 总架构中的阶段 0 状态和任何受影响 ADR 已同步更新。
 
-当前状态是：**实施中；Gate 0 与切片 1 已通过，切片 2 待实施，阶段 0 尚未完成**。
+当前状态是：**实施中；Gate 0 与切片 1–2 已通过，切片 3 待实施，阶段 0 尚未完成**。
 
 ## 11. 需要项目所有者确认但不阻塞规格的事项
 
@@ -491,4 +493,5 @@ Stage 0 测试只需要验证手动快照、迁移前快照入口和恢复；“
 - [Apple: Configuring the macOS App Sandbox](https://developer.apple.com/documentation/xcode/configuring-the-macos-app-sandbox)
 - [Apple: Accessing files from the macOS App Sandbox](https://developer.apple.com/documentation/security/accessing-files-from-the-macos-app-sandbox)
 - [GRDB.swift](https://github.com/groue/GRDB.swift)
+- [SQLite: STRICT Tables](https://www.sqlite.org/stricttables.html)
 - [SQLite: Online Backup API](https://www.sqlite.org/backup.html)
