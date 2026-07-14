@@ -57,6 +57,7 @@
 		CC000001000000000000020A /* CatalogSnapshotCreationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC0001010000000000000018 /* CatalogSnapshotCreationTests.swift */; };
 		CC000001000000000000020B /* CatalogSnapshotRestoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC0001010000000000000019 /* CatalogSnapshotRestoreTests.swift */; };
 		CC000001000000000000020C /* CatalogSnapshotReplacementTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC000101000000000000001A /* CatalogSnapshotReplacementTests.swift */; };
+		CC000001000000000000020D /* CatalogSnapshotHashingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC000101000000000000001B /* CatalogSnapshotHashingTests.swift */; };
 		DD0000010000000000000001 /* JobTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD0001010000000000000001 /* JobTypes.swift */; };
 		DD0000010000000000000002 /* JobClock.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD0001010000000000000002 /* JobClock.swift */; };
 		DD0000010000000000000003 /* RetryPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD0001010000000000000003 /* RetryPolicy.swift */; };
@@ -142,6 +143,7 @@
 		CC0001010000000000000018 /* CatalogSnapshotCreationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CatalogSnapshotCreationTests.swift; sourceTree = "<group>"; };
 		CC0001010000000000000019 /* CatalogSnapshotRestoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CatalogSnapshotRestoreTests.swift; sourceTree = "<group>"; };
 		CC000101000000000000001A /* CatalogSnapshotReplacementTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CatalogSnapshotReplacementTests.swift; sourceTree = "<group>"; };
+		CC000101000000000000001B /* CatalogSnapshotHashingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CatalogSnapshotHashingTests.swift; sourceTree = "<group>"; };
 		DD0001010000000000000001 /* JobTypes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JobTypes.swift; sourceTree = "<group>"; };
 		DD0001010000000000000002 /* JobClock.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JobClock.swift; sourceTree = "<group>"; };
 		DD0001010000000000000003 /* RetryPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RetryPolicy.swift; sourceTree = "<group>"; };
@@ -324,7 +326,8 @@
 				CC0001010000000000000017 /* CatalogSnapshotManifestTests.swift */,
 				CC0001010000000000000018 /* CatalogSnapshotCreationTests.swift */,
 				CC0001010000000000000019 /* CatalogSnapshotRestoreTests.swift */,
-				CC000101000000000000001A /* CatalogSnapshotReplacementTests.swift */
+				CC000101000000000000001A /* CatalogSnapshotReplacementTests.swift */,
+				CC000101000000000000001B /* CatalogSnapshotHashingTests.swift */,
 			);
 			path = Database;
 			sourceTree = "<group>";
@@ -562,6 +565,7 @@
 				CC000001000000000000020A /* CatalogSnapshotCreationTests.swift in Sources */,
 				CC000001000000000000020B /* CatalogSnapshotRestoreTests.swift in Sources */,
 				CC000001000000000000020C /* CatalogSnapshotReplacementTests.swift in Sources */,
+				CC000001000000000000020D /* CatalogSnapshotHashingTests.swift in Sources */,
 				DD0000010000000000000101 /* JobTestSupport.swift in Sources */,
 				DD0000010000000000000102 /* JobModelsTests.swift in Sources */,
 				DD0000010000000000000103 /* JobEnqueueTests.swift in Sources */,

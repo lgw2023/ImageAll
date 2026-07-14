@@ -280,19 +280,55 @@ final class CatalogSnapshotCreationTests: XCTestCase {
                 appVersion: SnapshotTestSupport.appVersion,
                 backupsDirectoryURL: backups,
                 dependencies: .init(
-                    destinationQueueOpenFailureHook: {
-                        throw CatalogSnapshotError.backupFailed
+                    destinationQueueOpenPreparationHook: { databaseURL in
+                        try FileManager.default.createDirectory(
+                            at: databaseURL,
+                            withIntermediateDirectories: true
+                        )
                     }
                 )
             )
         ) { error in
             XCTAssertEqual(error as? CatalogSnapshotError, .backupFailed)
+            XCTAssertFalse(error is DatabaseError)
         }
 
         let tempURL = backups.appendingPathComponent("\(snapshotIDString).tmp", isDirectory: true)
         let finalURL = backups.appendingPathComponent(snapshotIDString, isDirectory: true)
         XCTAssertFalse(FileManager.default.fileExists(atPath: tempURL.path))
         XCTAssertFalse(FileManager.default.fileExists(atPath: finalURL.path))
+    }
+
+    func testCloseSeamArbitraryErrorMapsToCloseFailedAndRetainsTemp() throws {
+        struct Probe: Error {}
+
+        let root = try SnapshotTestSupport.makeTempRoot(testCase: self)
+        let liveURL = SnapshotTestSupport.liveDatabaseURL(in: root)
+        let database = try SnapshotTestSupport.openLiveDatabase(at: liveURL)
+        let backups = SnapshotTestSupport.backupsDirectoryURL(in: root)
+        let snapshotID = UUID()
+
+        XCTAssertThrowsError(
+            try CatalogSnapshotCreator(sourceDatabase: database).createManualSnapshot(
+                snapshotID: snapshotID,
+                createdAtMs: SnapshotTestSupport.createdAtMs,
+                appVersion: SnapshotTestSupport.appVersion,
+                backupsDirectoryURL: backups,
+                dependencies: .init(
+                    destinationCloseFailureHook: {
+                        throw Probe()
+                    }
+                )
+            )
+        ) { error in
+            XCTAssertEqual(error as? CatalogSnapshotError, .closeFailed)
+            XCTAssertFalse(error is Probe)
+        }
+
+        let finalURL = backups.appendingPathComponent(snapshotID.uuidString.lowercased(), isDirectory: true)
+        let tempURL = backups.appendingPathComponent("\(snapshotID.uuidString.lowercased()).tmp", isDirectory: true)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: finalURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: tempURL.path))
     }
 
     func testConcurrentWriteDuringBackupStepsProducesConsistentSnapshot() throws {
@@ -433,7 +469,7 @@ final class CatalogSnapshotCreationTests: XCTestCase {
         gate.allowBackupToContinue()
 
         work.wait()
-        if let snapshotError = snapshotErrorBox.storedError {
+        if let snapshotError = snapshotErrorBox.readStoredError() {
             XCTFail("Snapshot failed: \(snapshotError)")
             return
         }
@@ -510,7 +546,7 @@ final class CatalogSnapshotCheckpointTests: XCTestCase {
 
         releaseRead.signal()
         readFinished.wait()
-        if let capturedReadError = readErrorBox.storedError {
+        if let capturedReadError = readErrorBox.readStoredError() {
             throw capturedReadError
         }
 
@@ -523,11 +559,17 @@ final class CatalogSnapshotCheckpointTests: XCTestCase {
 
 private final class ErrorBox: @unchecked Sendable {
     private let lock = NSLock()
-    private(set) var storedError: (any Error)?
+    private var storedError: (any Error)?
 
     func store(_ error: any Error) {
         lock.lock()
         storedError = error
         lock.unlock()
+    }
+
+    func readStoredError() -> (any Error)? {
+        lock.lock()
+        defer { lock.unlock() }
+        return storedError
     }
 }

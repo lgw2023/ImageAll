@@ -45,7 +45,7 @@ struct CatalogSnapshotCreationDependencies {
     var backupProgressHook: (@Sendable (DatabaseBackupProgress) throws -> Void)?
     var destinationPreCloseHook: (@Sendable (DatabaseQueue, URL) throws -> Void)?
     var destinationCloseFailureHook: (@Sendable () throws -> Void)?
-    var destinationQueueOpenFailureHook: (@Sendable () throws -> Void)?
+    var destinationQueueOpenPreparationHook: (@Sendable (URL) throws -> Void)?
     var quickCheckFailureHook: (@Sendable (DatabaseQueue) throws -> Void)?
     var hashFailureHook: (@Sendable () throws -> Void)?
     var manifestDataWriter: (@Sendable (Data, URL) throws -> Void)?
@@ -57,7 +57,7 @@ struct CatalogSnapshotCreationDependencies {
         backupProgressHook: (@Sendable (DatabaseBackupProgress) throws -> Void)? = nil,
         destinationPreCloseHook: (@Sendable (DatabaseQueue, URL) throws -> Void)? = nil,
         destinationCloseFailureHook: (@Sendable () throws -> Void)? = nil,
-        destinationQueueOpenFailureHook: (@Sendable () throws -> Void)? = nil,
+        destinationQueueOpenPreparationHook: (@Sendable (URL) throws -> Void)? = nil,
         quickCheckFailureHook: (@Sendable (DatabaseQueue) throws -> Void)? = nil,
         hashFailureHook: (@Sendable () throws -> Void)? = nil,
         manifestDataWriter: (@Sendable (Data, URL) throws -> Void)? = nil,
@@ -68,7 +68,7 @@ struct CatalogSnapshotCreationDependencies {
         self.backupProgressHook = backupProgressHook
         self.destinationPreCloseHook = destinationPreCloseHook
         self.destinationCloseFailureHook = destinationCloseFailureHook
-        self.destinationQueueOpenFailureHook = destinationQueueOpenFailureHook
+        self.destinationQueueOpenPreparationHook = destinationQueueOpenPreparationHook
         self.quickCheckFailureHook = quickCheckFailureHook
         self.hashFailureHook = hashFailureHook
         self.manifestDataWriter = manifestDataWriter

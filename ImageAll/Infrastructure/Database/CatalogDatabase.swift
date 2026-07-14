@@ -119,8 +119,6 @@ struct CatalogDatabase: Sendable {
             try queue.read { db in
                 try performQuickCheck(on: db)
             }
-        } catch let error as CatalogSnapshotError where error == .closeFailed {
-            throw error
         } catch let error as CatalogSnapshotError {
             try closeQueueOnce(queue, closed: &closed)
             throw error
@@ -340,28 +338,14 @@ struct CatalogDatabase: Sendable {
                 }
             }
             try convergeToDeleteJournalOnQueue(queue, recheckQuickCheck: true)
-        } catch let error as CatalogSnapshotError where error == .closeFailed {
-            throw error
         } catch let error as CatalogDatabaseError {
-            do {
-                try closeQueueOnce(queue, closed: &closed)
-            } catch let closeError as CatalogSnapshotError where closeError == .closeFailed {
-                throw closeError
-            }
+            try closeQueueOnce(queue, closed: &closed)
             throw CatalogSnapshotError.postReplaceValidationFailed
-        } catch let error as CatalogSnapshotError {
-            do {
-                try closeQueueOnce(queue, closed: &closed)
-            } catch let closeError as CatalogSnapshotError where closeError == .closeFailed {
-                throw closeError
-            }
+        } catch is CatalogSnapshotError {
+            try closeQueueOnce(queue, closed: &closed)
             throw CatalogSnapshotError.postReplaceValidationFailed
         } catch {
-            do {
-                try closeQueueOnce(queue, closed: &closed)
-            } catch let closeError as CatalogSnapshotError where closeError == .closeFailed {
-                throw closeError
-            }
+            try closeQueueOnce(queue, closed: &closed)
             throw CatalogSnapshotError.postReplaceValidationFailed
         }
         try closeQueueOnce(queue, closed: &closed)

@@ -21,8 +21,12 @@ enum CatalogDatabaseSidecarHelpers {
         at databaseURL: URL,
         fileManager: FileManager = .default
     ) throws {
-        for sidecarURL in sidecarURLs(for: databaseURL) where fileManager.fileExists(atPath: sidecarURL.path) {
-            try fileManager.removeItem(at: sidecarURL)
+        do {
+            for sidecarURL in sidecarURLs(for: databaseURL) where fileManager.fileExists(atPath: sidecarURL.path) {
+                try fileManager.removeItem(at: sidecarURL)
+            }
+        } catch {
+            throw CatalogSnapshotError.sidecarConvergenceFailed
         }
     }
 
