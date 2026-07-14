@@ -12,6 +12,23 @@
 		AA0000010000000000000003 /* CompositionRoot.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0001010000000000000003 /* CompositionRoot.swift */; };
 		AA0000010000000000000004 /* StartupPresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0001010000000000000004 /* StartupPresentation.swift */; };
 		AA0000010000000000000005 /* CompositionRootTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0001010000000000000005 /* CompositionRootTests.swift */; };
+		BB0000010000000000000001 /* DomainError.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0001010000000000000001 /* DomainError.swift */; };
+		BB0000010000000000000002 /* CatalogVocabulary.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0001010000000000000002 /* CatalogVocabulary.swift */; };
+		BB0000010000000000000003 /* Source.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0001010000000000000003 /* Source.swift */; };
+		BB0000010000000000000004 /* Asset.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0001010000000000000004 /* Asset.swift */; };
+		BB0000010000000000000005 /* Tag.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0001010000000000000005 /* Tag.swift */; };
+		BB0000010000000000000006 /* LocatorIdentity.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0001010000000000000006 /* LocatorIdentity.swift */; };
+		BB0000010000000000000007 /* TagNameNormalizer.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0001010000000000000007 /* TagNameNormalizer.swift */; };
+		BB0000010000000000000008 /* TagCatalogRules.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0001010000000000000008 /* TagCatalogRules.swift */; };
+		BB0000010000000000000009 /* TagDecisionRules.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0001010000000000000009 /* TagDecisionRules.swift */; };
+		BB000001000000000000000A /* SourceRules.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB000101000000000000000A /* SourceRules.swift */; };
+		BB000001000000000000000B /* AssetRevisionRules.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB000101000000000000000B /* AssetRevisionRules.swift */; };
+		BB000001000000000000000C /* ScanGenerationRules.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB000101000000000000000C /* ScanGenerationRules.swift */; };
+		BB000001000000000000000D /* LocatorIdentityRules.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB000101000000000000000D /* LocatorIdentityRules.swift */; };
+		BB000001000000000000000E /* TagNameTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB000101000000000000000E /* TagNameTests.swift */; };
+		BB000001000000000000000F /* TagDecisionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB000101000000000000000F /* TagDecisionTests.swift */; };
+		BB0000010000000000000010 /* SourceAssetRulesTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0001010000000000000010 /* SourceAssetRulesTests.swift */; };
+		BB0000010000000000000011 /* DomainErrorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0001010000000000000011 /* DomainErrorTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -33,6 +50,23 @@
 		AA0001010000000000000006 /* ImageAll.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = ImageAll.entitlements; sourceTree = "<group>"; };
 		AA0001010000000000000007 /* ImageAll.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ImageAll.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		AA0001010000000000000008 /* ImageAllTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ImageAllTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		BB0001010000000000000001 /* DomainError.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DomainError.swift; sourceTree = "<group>"; };
+		BB0001010000000000000002 /* CatalogVocabulary.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CatalogVocabulary.swift; sourceTree = "<group>"; };
+		BB0001010000000000000003 /* Source.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Source.swift; sourceTree = "<group>"; };
+		BB0001010000000000000004 /* Asset.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Asset.swift; sourceTree = "<group>"; };
+		BB0001010000000000000005 /* Tag.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Tag.swift; sourceTree = "<group>"; };
+		BB0001010000000000000006 /* LocatorIdentity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocatorIdentity.swift; sourceTree = "<group>"; };
+		BB0001010000000000000007 /* TagNameNormalizer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TagNameNormalizer.swift; sourceTree = "<group>"; };
+		BB0001010000000000000008 /* TagCatalogRules.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TagCatalogRules.swift; sourceTree = "<group>"; };
+		BB0001010000000000000009 /* TagDecisionRules.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TagDecisionRules.swift; sourceTree = "<group>"; };
+		BB000101000000000000000A /* SourceRules.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SourceRules.swift; sourceTree = "<group>"; };
+		BB000101000000000000000B /* AssetRevisionRules.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AssetRevisionRules.swift; sourceTree = "<group>"; };
+		BB000101000000000000000C /* ScanGenerationRules.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScanGenerationRules.swift; sourceTree = "<group>"; };
+		BB000101000000000000000D /* LocatorIdentityRules.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocatorIdentityRules.swift; sourceTree = "<group>"; };
+		BB000101000000000000000E /* TagNameTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TagNameTests.swift; sourceTree = "<group>"; };
+		BB000101000000000000000F /* TagDecisionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TagDecisionTests.swift; sourceTree = "<group>"; };
+		BB0001010000000000000010 /* SourceAssetRulesTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SourceAssetRulesTests.swift; sourceTree = "<group>"; };
+		BB0001010000000000000011 /* DomainErrorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DomainErrorTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -67,6 +101,7 @@
 			children = (
 				AA0006010000000000000005 /* App */,
 				AA0006010000000000000006 /* Application */,
+				BB0006010000000000000001 /* Domain */,
 				AA0001010000000000000006 /* ImageAll.entitlements */,
 			);
 			path = ImageAll;
@@ -76,6 +111,7 @@
 			isa = PBXGroup;
 			children = (
 				AA0001010000000000000005 /* CompositionRootTests.swift */,
+				BB0006010000000000000004 /* Domain */,
 			);
 			path = ImageAllTests;
 			sourceTree = "<group>";
@@ -113,6 +149,53 @@
 				AA0001010000000000000003 /* CompositionRoot.swift */,
 			);
 			path = CompositionRoot;
+			sourceTree = "<group>";
+		};
+		BB0006010000000000000001 /* Domain */ = {
+			isa = PBXGroup;
+			children = (
+				BB0006010000000000000002 /* Models */,
+				BB0006010000000000000003 /* Rules */,
+			);
+			path = Domain;
+			sourceTree = "<group>";
+		};
+		BB0006010000000000000002 /* Models */ = {
+			isa = PBXGroup;
+			children = (
+				BB0001010000000000000001 /* DomainError.swift */,
+				BB0001010000000000000002 /* CatalogVocabulary.swift */,
+				BB0001010000000000000003 /* Source.swift */,
+				BB0001010000000000000004 /* Asset.swift */,
+				BB0001010000000000000005 /* Tag.swift */,
+				BB0001010000000000000006 /* LocatorIdentity.swift */,
+			);
+			path = Models;
+			sourceTree = "<group>";
+		};
+		BB0006010000000000000003 /* Rules */ = {
+			isa = PBXGroup;
+			children = (
+				BB0001010000000000000007 /* TagNameNormalizer.swift */,
+				BB0001010000000000000008 /* TagCatalogRules.swift */,
+				BB0001010000000000000009 /* TagDecisionRules.swift */,
+				BB000101000000000000000A /* SourceRules.swift */,
+				BB000101000000000000000B /* AssetRevisionRules.swift */,
+				BB000101000000000000000C /* ScanGenerationRules.swift */,
+				BB000101000000000000000D /* LocatorIdentityRules.swift */,
+			);
+			path = Rules;
+			sourceTree = "<group>";
+		};
+		BB0006010000000000000004 /* Domain */ = {
+			isa = PBXGroup;
+			children = (
+				BB000101000000000000000E /* TagNameTests.swift */,
+				BB000101000000000000000F /* TagDecisionTests.swift */,
+				BB0001010000000000000010 /* SourceAssetRulesTests.swift */,
+				BB0001010000000000000011 /* DomainErrorTests.swift */,
+			);
+			path = Domain;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -217,6 +300,19 @@
 				AA0000010000000000000002 /* RootView.swift in Sources */,
 				AA0000010000000000000003 /* CompositionRoot.swift in Sources */,
 				AA0000010000000000000004 /* StartupPresentation.swift in Sources */,
+				BB0000010000000000000001 /* DomainError.swift in Sources */,
+				BB0000010000000000000002 /* CatalogVocabulary.swift in Sources */,
+				BB0000010000000000000003 /* Source.swift in Sources */,
+				BB0000010000000000000004 /* Asset.swift in Sources */,
+				BB0000010000000000000005 /* Tag.swift in Sources */,
+				BB0000010000000000000006 /* LocatorIdentity.swift in Sources */,
+				BB0000010000000000000007 /* TagNameNormalizer.swift in Sources */,
+				BB0000010000000000000008 /* TagCatalogRules.swift in Sources */,
+				BB0000010000000000000009 /* TagDecisionRules.swift in Sources */,
+				BB000001000000000000000A /* SourceRules.swift in Sources */,
+				BB000001000000000000000B /* AssetRevisionRules.swift in Sources */,
+				BB000001000000000000000C /* ScanGenerationRules.swift in Sources */,
+				BB000001000000000000000D /* LocatorIdentityRules.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -225,6 +321,10 @@
 			buildActionMask = 2147483647;
 			files = (
 				AA0000010000000000000005 /* CompositionRootTests.swift in Sources */,
+				BB000001000000000000000E /* TagNameTests.swift in Sources */,
+				BB000001000000000000000F /* TagDecisionTests.swift in Sources */,
+				BB0000010000000000000010 /* SourceAssetRulesTests.swift in Sources */,
+				BB0000010000000000000011 /* DomainErrorTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
