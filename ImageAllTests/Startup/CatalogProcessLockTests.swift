@@ -52,6 +52,16 @@ final class CatalogProcessLockTests: XCTestCase {
             XCTAssertEqual(error as? CatalogProcessLockError, .ioFailure)
         }
     }
+
+    func testAbandonKeepingLockHeldDoesNotInvokeReleaseHandler() {
+        let releaseRecorder = LockReleaseRecorder()
+        let token = CatalogProcessLockToken {
+            releaseRecorder.recordRelease()
+        }
+        token.abandonKeepingLockHeld()
+        token.release()
+        XCTAssertEqual(releaseRecorder.releaseCount, 0)
+    }
 }
 
 extension CatalogProcessLockAcquireResult: Equatable {

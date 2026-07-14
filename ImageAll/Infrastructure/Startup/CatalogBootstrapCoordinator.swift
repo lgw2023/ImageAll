@@ -85,7 +85,9 @@ struct CatalogBootstrapDependencies: Sendable {
     var openCurrentSchema: @Sendable (URL) throws -> CatalogDatabase
     var createCandidateDatabase: @Sendable (URL) throws -> Void
     var snapshotFailureHook: (@Sendable () throws -> Void)?
-    var restoreBeforeWorkCopyHook: (@Sendable () throws -> Void)?
+    var checkpointAndCloseFormalDatabase: @Sendable (URL) throws -> Void
+    var closeDatabasePool: @Sendable (DatabasePool) throws -> Void
+    var onLockReleased: (@Sendable () -> Void)?
 
     init(
         pathsResolver: AppPathsResolving,
@@ -110,7 +112,14 @@ struct CatalogBootstrapDependencies: Sendable {
             try CatalogDatabase.createCandidateDatabase(at: $0)
         },
         snapshotFailureHook: (@Sendable () throws -> Void)? = nil,
-        restoreBeforeWorkCopyHook: (@Sendable () throws -> Void)? = nil
+        checkpointAndCloseFormalDatabase: @escaping @Sendable (URL) throws -> Void = { url in
+            let database = try CatalogDatabase.openWithoutMigration(at: url)
+            try database.checkpointAndCloseForReplacement()
+        },
+        closeDatabasePool: @escaping @Sendable (DatabasePool) throws -> Void = { pool in
+            try pool.close()
+        },
+        onLockReleased: (@Sendable () -> Void)? = nil
     ) {
         self.pathsResolver = pathsResolver
         self.processLock = processLock
@@ -130,7 +139,9 @@ struct CatalogBootstrapDependencies: Sendable {
         self.openCurrentSchema = openCurrentSchema
         self.createCandidateDatabase = createCandidateDatabase
         self.snapshotFailureHook = snapshotFailureHook
-        self.restoreBeforeWorkCopyHook = restoreBeforeWorkCopyHook
+        self.checkpointAndCloseFormalDatabase = checkpointAndCloseFormalDatabase
+        self.closeDatabasePool = closeDatabasePool
+        self.onLockReleased = onLockReleased
     }
 }
 
@@ -140,10 +151,12 @@ struct CatalogBootstrapCoordinator: Sendable {
     func bootstrap() -> CatalogBootstrapResult {
         var lockToken: CatalogProcessLockToken?
         var openedDatabase: CatalogDatabase?
+        var suppressDeferLockRelease = false
 
         defer {
-            if openedDatabase == nil, let lockToken {
+            if openedDatabase == nil, let lockToken, !suppressDeferLockRelease {
                 lockToken.release()
+                dependencies.onLockReleased?()
             }
         }
 
@@ -243,12 +256,17 @@ struct CatalogBootstrapCoordinator: Sendable {
             dependencies.callLog?.record(.recover)
         } catch {
             do {
-                try database.pool.close()
+                try dependencies.closeDatabasePool(database.pool)
             } catch {
-                // Best-effort close before releasing lock.
+                suppressDeferLockRelease = true
+                lockToken?.abandonKeepingLockHeld()
+                lockToken = nil
+                openedDatabase = nil
+                return .unavailable(.recoveryFailed)
             }
             openedDatabase = nil
             lockToken?.release()
+            dependencies.onLockReleased?()
             lockToken = nil
             return .unavailable(.recoveryFailed)
         }
@@ -320,13 +338,12 @@ struct CatalogBootstrapCoordinator: Sendable {
         }
         try readonlyDatabase.pool.close()
 
-        try CatalogDatabaseSidecarHelpers.removeSidecarsIfPresent(at: paths.catalogDatabaseURL)
+        try dependencies.checkpointAndCloseFormalDatabase(paths.catalogDatabaseURL)
 
         let operationID = dependencies.operationIDProvider()
         let restoreDependencies = CatalogDatabaseRestoreDependencies(
             fileReplacer: dependencies.fileReplacer,
-            postReplaceValidator: dependencies.postReplaceValidator,
-            beforeWorkCopyPreparationHook: dependencies.restoreBeforeWorkCopyHook
+            postReplaceValidator: dependencies.postReplaceValidator
         )
 
         _ = try CatalogDatabaseRestoreCoordinator().restoreSnapshot(
@@ -344,7 +361,8 @@ struct CatalogBootstrapCoordinator: Sendable {
                 return .unavailable(.snapshotFailed)
             case .initialReplacementFailed, .postReplaceValidationFailed,
                  .candidatePreparationFailed, .manualInterventionRequired,
-                 .postReplaceValidationFailedWithSuccessfulRollback:
+                 .postReplaceValidationFailedWithSuccessfulRollback,
+                 .checkpointFailed, .sidecarConvergenceFailed, .replacementPreconditionNotMet:
                 return .unavailable(.publicationFailed)
             default:
                 return .unavailable(.migrationFailed)

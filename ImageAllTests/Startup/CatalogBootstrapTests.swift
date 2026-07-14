@@ -137,7 +137,7 @@ final class CatalogBootstrapTests: XCTestCase {
     func testOldSchemaMigratesFromWorkCopyAndPreservesOriginalAsBackup() throws {
         let root = try StartupTestSupport.makeTempRoot(testCase: self)
         let paths = try StartupTestSupport.resolvedPaths(root: root)
-        try StartupTestSupport.seedEmptySQLite(at: paths.catalogDatabaseURL)
+        try StartupTestSupport.seedLegacyDatabaseWithSentinel(at: paths.catalogDatabaseURL)
 
         let operationID = UUID()
         let dependencies = StartupTestSupport.makeDependencies(
@@ -154,11 +154,19 @@ final class CatalogBootstrapTests: XCTestCase {
 
         let migrations = try SnapshotTestSupport.readMigrationIDs(at: paths.catalogDatabaseURL)
         XCTAssertEqual(migrations, CatalogMigrationID.knownOrdered)
+        XCTAssertEqual(
+            try StartupTestSupport.readLegacySentinelPayload(at: paths.catalogDatabaseURL),
+            LegacyStartupTestSupport.sentinelPayload
+        )
 
         let backupName = "ImageAll.sqlite.pre-restore-\(operationID.uuidString.lowercased())"
         let backupURL = paths.catalogDirectory.appendingPathComponent(backupName)
         XCTAssertTrue(FileManager.default.fileExists(atPath: backupURL.path))
         XCTAssertEqual(try SnapshotTestSupport.readMigrationIDs(at: backupURL), [])
+        XCTAssertEqual(
+            try StartupTestSupport.readLegacySentinelPayload(at: backupURL),
+            LegacyStartupTestSupport.sentinelPayload
+        )
         XCTAssertFalse(
             try FileManager.default.contentsOfDirectory(atPath: paths.backupsDirectory.path).isEmpty
         )
@@ -204,10 +212,14 @@ final class CatalogBootstrapTests: XCTestCase {
         _ = try StartupTestSupport.seedCurrentSchemaDatabase(at: paths.catalogDatabaseURL)
         try StartupTestSupport.insertInterruptedRunningJob(at: paths.catalogDatabaseURL)
 
+        let lockReleaseRecorder = LockReleaseRecorder()
         let dependencies = StartupTestSupport.makeDependencies(
             root: root,
             recoveryFailureHook: {
                 throw JobQueueError.invalidClaimInput(reason: "forced recovery failure")
+            },
+            onLockReleased: {
+                lockReleaseRecorder.recordRelease()
             }
         )
         let result = CatalogBootstrapCoordinator(dependencies: dependencies).bootstrap()
@@ -215,6 +227,7 @@ final class CatalogBootstrapTests: XCTestCase {
             return XCTFail("Expected recovery failure")
         }
         XCTAssertEqual(reason, .recoveryFailed)
+        XCTAssertEqual(lockReleaseRecorder.releaseCount, 1)
 
         let second = try DarwinCatalogProcessLock().tryAcquire(at: paths.catalogLockFileURL)
         guard case let .acquired(token) = second else {

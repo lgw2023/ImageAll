@@ -61,7 +61,6 @@ struct CatalogDatabaseRestoreCoordinator: Sendable {
             }
 
             let needsMigration = descriptor.manifest.appliedMigrations != CatalogMigrationID.knownOrdered
-            try dependencies.beforeWorkCopyPreparationHook?()
             try CatalogDatabase.prepareWorkCopyForReplacement(
                 at: workDatabaseURL,
                 expectedManifestMigrations: descriptor.manifest.appliedMigrations,

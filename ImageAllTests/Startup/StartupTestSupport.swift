@@ -30,7 +30,9 @@ enum StartupTestSupport {
         postReplaceValidator: (any CatalogPostReplaceValidator)? = nil,
         recoveryFailureHook: (@Sendable () throws -> Void)? = nil,
         snapshotFailureHook: (@Sendable () throws -> Void)? = nil,
-        restoreBeforeWorkCopyHook: (@Sendable () throws -> Void)? = nil,
+        checkpointAndCloseFormalDatabase: (@Sendable (URL) throws -> Void)? = nil,
+        closeDatabasePool: (@Sendable (DatabasePool) throws -> Void)? = nil,
+        onLockReleased: (@Sendable () -> Void)? = nil,
         blockingWorkProbe: (@Sendable (CatalogBlockingWorkEntry) -> Void)? = nil,
         openCurrentSchema: (@Sendable (URL) throws -> CatalogDatabase)? = nil,
         createCandidateDatabase: (@Sendable (URL) throws -> Void)? = nil,
@@ -59,7 +61,12 @@ enum StartupTestSupport {
             openCurrentSchema: openCurrentSchema ?? { try CatalogDatabase.openCurrentSchema(at: $0) },
             createCandidateDatabase: createCandidateDatabase ?? { try CatalogDatabase.createCandidateDatabase(at: $0) },
             snapshotFailureHook: snapshotFailureHook,
-            restoreBeforeWorkCopyHook: restoreBeforeWorkCopyHook
+            checkpointAndCloseFormalDatabase: checkpointAndCloseFormalDatabase ?? { url in
+                let database = try CatalogDatabase.openWithoutMigration(at: url)
+                try database.checkpointAndCloseForReplacement()
+            },
+            closeDatabasePool: closeDatabasePool ?? { try $0.close() },
+            onLockReleased: onLockReleased
         )
     }
 
@@ -73,6 +80,18 @@ enum StartupTestSupport {
 
     static func seedEmptySQLite(at url: URL) throws {
         try SnapshotTestSupport.createEmptySQLite(at: url)
+    }
+
+    static func seedLegacyDatabaseWithSentinel(at url: URL) throws {
+        try LegacyStartupTestSupport.seedLegacyDatabaseWithSentinel(at: url)
+    }
+
+    static func seedLegacyDatabaseWithMigrationConflict(at url: URL) throws {
+        try LegacyStartupTestSupport.seedLegacyDatabaseWithMigrationConflict(at: url)
+    }
+
+    static func readLegacySentinelPayload(at url: URL) throws -> String? {
+        try LegacyStartupTestSupport.readSentinelPayload(at: url)
     }
 
     static func seedFutureSchemaDatabase(at url: URL) throws {
@@ -193,5 +212,116 @@ final class MainThreadProbe: @unchecked Sendable {
         if Thread.isMainThread {
             sawMainThread = true
         }
+    }
+}
+
+enum LegacyStartupTestSupport {
+    static let sentinelTable = "_startup_legacy_sentinel"
+    static let sentinelFactID = "sentinel-1"
+    static let sentinelPayload = "legacy-fact-v1"
+
+    static func seedLegacyDatabaseWithSentinel(at url: URL) throws {
+        try SnapshotTestSupport.createEmptySQLite(at: url)
+        let queue = try DatabaseQueue(path: url.path)
+        defer {
+            try? queue.close()
+        }
+        try queue.write { db in
+            try db.execute(
+                sql: """
+                CREATE TABLE _startup_legacy_sentinel (
+                    fact_id TEXT NOT NULL PRIMARY KEY,
+                    payload TEXT NOT NULL
+                ) STRICT
+                """
+            )
+            try db.execute(
+                sql: """
+                INSERT INTO _startup_legacy_sentinel (fact_id, payload)
+                VALUES (?, ?)
+                """,
+                arguments: [sentinelFactID, sentinelPayload]
+            )
+        }
+    }
+
+    static func seedLegacyDatabaseWithMigrationConflict(at url: URL) throws {
+        try seedLegacyDatabaseWithSentinel(at: url)
+        let queue = try DatabaseQueue(path: url.path)
+        defer {
+            try? queue.close()
+        }
+        try queue.write { db in
+            try db.execute(
+                sql: """
+                CREATE TABLE source (
+                    id INTEGER NOT NULL PRIMARY KEY
+                ) STRICT
+                """
+            )
+        }
+    }
+
+    static func readSentinelPayload(at url: URL) throws -> String? {
+        try CatalogDatabase.withReadonlyQueue(at: url) { db in
+            guard try db.tableExists(sentinelTable) else {
+                return nil
+            }
+            return try String.fetchOne(
+                db,
+                sql: "SELECT payload FROM _startup_legacy_sentinel WHERE fact_id = ?",
+                arguments: [sentinelFactID]
+            )
+        }
+    }
+}
+
+final class RecoveryCleanupRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private(set) var events: [String] = []
+
+    func record(_ event: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        events.append(event)
+    }
+
+    func snapshot() -> [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return events
+    }
+}
+
+final class FormalCheckpointCloseRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private(set) var callCount = 0
+
+    func recordCall() {
+        lock.lock()
+        defer { lock.unlock() }
+        callCount += 1
+    }
+}
+
+final class SidecarStateRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private(set) var postCheckpointHasSidecars: Bool?
+
+    func recordPostCheckpoint(hasSidecars: Bool) {
+        lock.lock()
+        defer { lock.unlock() }
+        postCheckpointHasSidecars = hasSidecars
+    }
+}
+
+final class LockReleaseRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private(set) var releaseCount = 0
+
+    func recordRelease() {
+        lock.lock()
+        defer { lock.unlock() }
+        releaseCount += 1
     }
 }
