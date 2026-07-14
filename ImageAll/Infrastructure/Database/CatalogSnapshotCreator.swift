@@ -57,7 +57,11 @@ struct CatalogSnapshotCreator: Sendable {
         }
 
         let fileManager = dependencies.fileManager
-        try fileManager.createDirectory(at: backupsDirectoryURL, withIntermediateDirectories: true)
+        do {
+            try fileManager.createDirectory(at: backupsDirectoryURL, withIntermediateDirectories: true)
+        } catch {
+            throw CatalogSnapshotError.backupFailed
+        }
 
         let tempDirectoryURL = backupsDirectoryURL.appendingPathComponent("\(snapshotIDString).tmp", isDirectory: true)
         let finalDirectoryURL = backupsDirectoryURL.appendingPathComponent(snapshotIDString, isDirectory: true)
@@ -68,6 +72,7 @@ struct CatalogSnapshotCreator: Sendable {
         }
 
         var destinationQueue: DatabaseQueue?
+        var destinationClosed = false
         do {
             try fileManager.createDirectory(at: tempDirectoryURL, withIntermediateDirectories: true)
             let destinationDatabaseURL = tempDirectoryURL.appendingPathComponent(CatalogSnapshotConstants.databaseFilename)
@@ -75,52 +80,62 @@ struct CatalogSnapshotCreator: Sendable {
             var destinationConfig = Configuration()
             destinationConfig.prepareDatabase { db in
                 try db.execute(sql: "PRAGMA foreign_keys = ON")
-                try db.execute(sql: "PRAGMA journal_mode = DELETE")
             }
             let queue = try DatabaseQueue(path: destinationDatabaseURL.path, configuration: destinationConfig)
             destinationQueue = queue
 
-            if dependencies.abortOnlineBackupImmediately {
-                throw CatalogSnapshotError.backupAborted
-            }
-
-            var completedSteps = 0
-            try sourceDatabase.pool.backup(to: queue, pagesPerStep: dependencies.pagesPerStep) { progress in
-                try dependencies.backupProgressHook?(progress)
-                if let abortAfterSteps = dependencies.backupAbortAfterSteps,
-                   !progress.isCompleted {
-                    completedSteps += 1
-                    if completedSteps >= abortAfterSteps {
-                        throw CatalogSnapshotError.backupAborted
-                    }
+            do {
+                try sourceDatabase.pool.backup(to: queue, pagesPerStep: dependencies.pagesPerStep) { progress in
+                    try dependencies.backupProgressHook?(progress)
                 }
+            } catch let error as CatalogSnapshotError {
+                throw error
+            } catch {
+                throw CatalogSnapshotError.backupFailed
             }
 
-            let appliedMigrations = try queue.read { db -> [String] in
-                try CatalogDatabase.performQuickCheck(on: db)
-                let migrations = try CatalogDatabase.readAppliedMigrationIDs(from: db)
-                try CatalogSnapshotManifestValidator.validateMigrationPrefix(migrations)
-                return migrations
+            let appliedMigrations: [String]
+            do {
+                try dependencies.destinationPreCloseHook?(queue, destinationDatabaseURL)
+                appliedMigrations = try queue.read { db -> [String] in
+                    try CatalogDatabase.performQuickCheck(on: db)
+                    let migrations = try CatalogDatabase.readAppliedMigrationIDs(from: db)
+                    try CatalogSnapshotManifestValidator.validateMigrationPrefix(migrations)
+                    return migrations
+                }
+                try CatalogDatabase.convergeToDeleteJournalOnQueue(queue, recheckQuickCheck: true)
+            } catch let error as CatalogSnapshotError {
+                throw error
+            } catch {
+                throw CatalogSnapshotError.integrityCheckFailed
             }
 
-            try queue.writeWithoutTransaction { db in
-                try CatalogDatabase.performTruncateCheckpoint(db)
+            if let destinationCloseHandler = dependencies.destinationCloseHandler {
+                try destinationCloseHandler(queue)
+            } else {
+                try CatalogDatabase.closeQueue(queue)
+                try CatalogDatabaseSidecarHelpers.removeSidecarsIfPresent(at: destinationDatabaseURL)
+                try CatalogDatabaseSidecarHelpers.requireNoSidecars(at: destinationDatabaseURL)
             }
-            try queue.close()
+            destinationClosed = true
             destinationQueue = nil
 
-            try CatalogDatabaseSidecarHelpers.removeSidecarsIfPresent(
-                at: destinationDatabaseURL,
-                fileManager: fileManager
-            )
-            try CatalogDatabaseSidecarHelpers.requireNoSidecars(at: destinationDatabaseURL, fileManager: fileManager)
-
-            let databaseBytes = try CatalogSnapshotHashing.fileSize(of: destinationDatabaseURL)
+            let databaseBytes: Int64
+            do {
+                databaseBytes = try CatalogSnapshotHashing.fileSize(of: destinationDatabaseURL)
+            } catch {
+                throw CatalogSnapshotError.invalidDatabaseBytes
+            }
             guard databaseBytes > 0 else {
                 throw CatalogSnapshotError.invalidDatabaseBytes
             }
 
-            let databaseSHA256 = try CatalogSnapshotHashing.sha256Hex(of: destinationDatabaseURL)
+            let databaseSHA256: String
+            do {
+                databaseSHA256 = try CatalogSnapshotHashing.sha256Hex(of: destinationDatabaseURL)
+            } catch {
+                throw CatalogSnapshotError.invalidDatabaseChecksum
+            }
 
             let manifest = CatalogSnapshotManifest(
                 formatVersion: CatalogSnapshotConstants.manifestFormatVersion,
@@ -134,13 +149,18 @@ struct CatalogSnapshotCreator: Sendable {
             )
             try CatalogSnapshotManifestValidator.validate(manifest, expectedSnapshotID: snapshotIDString)
 
-            if dependencies.failManifestWrite {
-                throw CatalogSnapshotError.manifestWriteFailed
-            }
-
             let manifestData = try CatalogSnapshotManifestCodec.encode(manifest)
             let manifestURL = tempDirectoryURL.appendingPathComponent(CatalogSnapshotConstants.manifestFilename)
-            try manifestData.write(to: manifestURL, options: .atomic)
+
+            if let manifestDataWriter = dependencies.manifestDataWriter {
+                try manifestDataWriter(manifestData, manifestURL)
+            } else {
+                do {
+                    try manifestData.write(to: manifestURL, options: .atomic)
+                } catch {
+                    throw CatalogSnapshotError.manifestWriteFailed
+                }
+            }
 
             let decodedManifest = try CatalogSnapshotManifestCodec.decode(from: Data(contentsOf: manifestURL))
             try CatalogSnapshotManifestValidator.validate(decodedManifest, expectedSnapshotID: snapshotIDString)
@@ -149,21 +169,26 @@ struct CatalogSnapshotCreator: Sendable {
                 throw CatalogSnapshotError.manifestWriteFailed
             }
 
-            if dependencies.failPublicationRename {
+            try dependencies.publicationFailureHook?()
+            do {
+                try fileManager.moveItem(at: tempDirectoryURL, to: finalDirectoryURL)
+            } catch {
                 throw CatalogSnapshotError.publicationFailed
             }
 
-            try fileManager.moveItem(at: tempDirectoryURL, to: finalDirectoryURL)
-
-            return try CatalogSnapshotCatalog.validatePublishedSnapshotDirectory(
-                finalDirectoryURL,
-                fileManager: fileManager
+            return CatalogSnapshotDescriptor(
+                snapshotID: snapshotIDString,
+                directoryURL: finalDirectoryURL,
+                manifest: decodedManifest
             )
+        } catch let error as CatalogSnapshotError where error == .closeFailed {
+            throw error
         } catch {
-            if let destinationQueue {
-                try? destinationQueue.close()
+            if let destinationQueue, !destinationClosed {
+                try CatalogDatabase.closeQueue(destinationQueue)
+                destinationClosed = true
             }
-            if fileManager.fileExists(atPath: tempDirectoryURL.path) {
+            if destinationClosed, fileManager.fileExists(atPath: tempDirectoryURL.path) {
                 try? fileManager.removeItem(at: tempDirectoryURL)
             }
             throw error

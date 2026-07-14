@@ -57,7 +57,9 @@ final class CatalogSnapshotReplacementTests: XCTestCase {
                 snapshotDirectoryURL: descriptor.directoryURL,
                 liveDatabaseURL: liveURL,
                 operationID: UUID(),
-                dependencies: .init(failInitialReplacement: true)
+                dependencies: .init(
+                    fileReplacer: FaultInjectingCatalogDatabaseFileReplacer(failInitialReplacement: true)
+                )
             )
         ) { error in
             XCTAssertEqual(error as? CatalogSnapshotError, .initialReplacementFailed)
@@ -89,7 +91,9 @@ final class CatalogSnapshotReplacementTests: XCTestCase {
                 snapshotDirectoryURL: descriptor.directoryURL,
                 liveDatabaseURL: liveURL,
                 operationID: operationID,
-                dependencies: .init(failPostReplaceValidation: true)
+                dependencies: .init(
+                    postReplaceValidator: FaultInjectingCatalogPostReplaceValidator(shouldFail: true)
+                )
             )
         ) { error in
             XCTAssertEqual(error as? CatalogSnapshotError, .postReplaceValidationFailedWithSuccessfulRollback)
@@ -104,7 +108,7 @@ final class CatalogSnapshotReplacementTests: XCTestCase {
         XCTAssertFalse(CatalogDatabaseSidecarHelpers.hasSidecars(at: quarantineURL))
     }
 
-    func testRollbackReplacementFailureReturnsManualIntervention() throws {
+    func testRollbackReplacementFailureReturnsManualInterventionAndPreservesArtifacts() throws {
         let root = try SnapshotTestSupport.makeTempRoot(testCase: self)
         let liveURL = SnapshotTestSupport.liveDatabaseURL(in: root)
         let database = try SnapshotTestSupport.openLiveDatabase(at: liveURL)
@@ -118,19 +122,69 @@ final class CatalogSnapshotReplacementTests: XCTestCase {
         )
         try database.checkpointAndCloseForReplacement()
 
+        let operationID = UUID()
+        let operationIDString = operationID.uuidString.lowercased()
+        let workDirectoryURL = liveURL.deletingLastPathComponent()
+            .appendingPathComponent(".restore-\(operationIDString).tmp", isDirectory: true)
+
         XCTAssertThrowsError(
             try CatalogDatabaseRestoreCoordinator().restoreSnapshot(
                 snapshotDirectoryURL: descriptor.directoryURL,
                 liveDatabaseURL: liveURL,
-                operationID: UUID(),
+                operationID: operationID,
                 dependencies: .init(
-                    failPostReplaceValidation: true,
-                    failRollbackReplacement: true
+                    fileReplacer: FaultInjectingCatalogDatabaseFileReplacer(
+                        failInitialReplacement: false,
+                        failRollbackReplacement: true
+                    ),
+                    postReplaceValidator: FaultInjectingCatalogPostReplaceValidator(shouldFail: true)
                 )
             )
         ) { error in
             XCTAssertEqual(error as? CatalogSnapshotError, .manualInterventionRequired)
         }
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: workDirectoryURL.path))
+
+        let preRestoreBackupURL = liveURL.deletingLastPathComponent()
+            .appendingPathComponent("ImageAll.sqlite.pre-restore-\(operationIDString)")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: preRestoreBackupURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: liveURL.path))
+    }
+
+    func testReplacementFailureAfterInvokedDoesNotDeleteWorkDirectory() throws {
+        let root = try SnapshotTestSupport.makeTempRoot(testCase: self)
+        let liveURL = SnapshotTestSupport.liveDatabaseURL(in: root)
+        let database = try SnapshotTestSupport.openLiveDatabase(at: liveURL)
+        _ = try SnapshotTestSupport.seedRepresentativeFacts(in: database)
+
+        let backups = SnapshotTestSupport.backupsDirectoryURL(in: root)
+        let descriptor = try SnapshotTestSupport.writePublishedSnapshot(
+            in: backups,
+            snapshotID: UUID(),
+            sourceDatabase: database
+        )
+        try database.checkpointAndCloseForReplacement()
+
+        let operationID = UUID()
+        let operationIDString = operationID.uuidString.lowercased()
+        let workDirectoryURL = liveURL.deletingLastPathComponent()
+            .appendingPathComponent(".restore-\(operationIDString).tmp", isDirectory: true)
+
+        XCTAssertThrowsError(
+            try CatalogDatabaseRestoreCoordinator().restoreSnapshot(
+                snapshotDirectoryURL: descriptor.directoryURL,
+                liveDatabaseURL: liveURL,
+                operationID: operationID,
+                dependencies: .init(
+                    fileReplacer: FaultInjectingCatalogDatabaseFileReplacer(failInitialReplacement: true)
+                )
+            )
+        ) { error in
+            XCTAssertEqual(error as? CatalogSnapshotError, .initialReplacementFailed)
+        }
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: workDirectoryURL.path))
     }
 
     func testCheckpointAndCloseRemovesLiveSidecars() throws {

@@ -35,7 +35,7 @@ final class CatalogSnapshotRestoreTests: XCTestCase {
         XCTAssertEqual(try SnapshotTestSupport.factCounts(at: result.preRestoreBackupItemURL), beforeCounts)
     }
 
-    func testEmptyPrefixSnapshotUpgradesOnlyOnWorkCopy() throws {
+    func testEmptyPrefixSnapshotUpgradesOnlyOnWorkCopyAndLeavesPublishedSnapshotImmutable() throws {
         let root = try SnapshotTestSupport.makeTempRoot(testCase: self)
         let backups = SnapshotTestSupport.backupsDirectoryURL(in: root)
         let emptyURL = root.appendingPathComponent("empty/ImageAll.sqlite")
@@ -46,6 +46,8 @@ final class CatalogSnapshotRestoreTests: XCTestCase {
         try FileManager.default.createDirectory(at: emptyDir, withIntermediateDirectories: true)
         let snapshotDB = emptyDir.appendingPathComponent(CatalogSnapshotConstants.databaseFilename)
         try FileManager.default.copyItem(at: emptyURL, to: snapshotDB)
+        let beforeSnapshotBytes = try SnapshotTestSupport.databaseBytes(at: snapshotDB)
+        let beforeSnapshotSHA = try SnapshotTestSupport.sha256Hex(at: snapshotDB)
         let bytes = try CatalogSnapshotHashing.fileSize(of: snapshotDB)
         let sha = try CatalogSnapshotHashing.sha256Hex(of: snapshotDB)
         let manifest = SnapshotTestSupport.makeManifest(
@@ -73,6 +75,11 @@ final class CatalogSnapshotRestoreTests: XCTestCase {
         XCTAssertEqual(try restored.appliedMigrationIDs(), CatalogMigrationID.knownOrdered)
         let snapshotMigrations = try SnapshotTestSupport.readMigrationIDs(at: snapshotDB)
         XCTAssertTrue(snapshotMigrations.isEmpty)
+
+        XCTAssertEqual(try SnapshotTestSupport.databaseBytes(at: snapshotDB), beforeSnapshotBytes)
+        XCTAssertEqual(try SnapshotTestSupport.sha256Hex(at: snapshotDB), beforeSnapshotSHA)
+        XCTAssertFalse(CatalogDatabaseSidecarHelpers.hasSidecars(at: snapshotDB))
+        XCTAssertFalse(CatalogDatabaseSidecarHelpers.hasSidecars(at: emptyDir.appendingPathComponent(CatalogSnapshotConstants.manifestFilename)))
     }
 
     func testFutureMigrationSnapshotIsRejectedBeforeReplacement() throws {
@@ -95,7 +102,7 @@ final class CatalogSnapshotRestoreTests: XCTestCase {
             try db.execute(
                 sql: "INSERT INTO grdb_migrations (identifier) VALUES ('v002_future')")
         }
-        try pool.close()
+        try CatalogDatabase.closePool(pool)
         try CatalogDatabaseSidecarHelpers.removeSidecarsIfPresent(at: snapshotDB)
 
         let bytes = try CatalogSnapshotHashing.fileSize(of: snapshotDB)
@@ -164,7 +171,7 @@ final class CatalogSnapshotRestoreTests: XCTestCase {
         }
     }
 
-    func testCheckpointCloseFailurePreventsReplacement() throws {
+    func testLiveSidecarPreconditionFailurePreventsReplacement() throws {
         let root = try SnapshotTestSupport.makeTempRoot(testCase: self)
         let liveURL = SnapshotTestSupport.liveDatabaseURL(in: root)
         let database = try SnapshotTestSupport.openLiveDatabase(at: liveURL)
@@ -184,14 +191,14 @@ final class CatalogSnapshotRestoreTests: XCTestCase {
                 operationID: UUID()
             )
         ) { error in
-            XCTAssertEqual(error as? CatalogSnapshotError, .sidecarConvergenceFailed)
+            XCTAssertEqual(error as? CatalogSnapshotError, .replacementPreconditionNotMet)
         }
 
         XCTAssertEqual(try SnapshotTestSupport.databaseBytes(at: liveURL), beforeBytes)
         _ = database
     }
 
-    func testDifferentVolumeCandidateIsRejected() throws {
+    func testDifferentVolumeWorkCandidateIsRejected() throws {
         let root = try SnapshotTestSupport.makeTempRoot(testCase: self)
         let liveURL = SnapshotTestSupport.liveDatabaseURL(in: root)
         let database = try SnapshotTestSupport.openLiveDatabase(at: liveURL)
@@ -203,15 +210,64 @@ final class CatalogSnapshotRestoreTests: XCTestCase {
         )
         try database.checkpointAndCloseForReplacement()
 
+        let volumeCheckCapture = VolumeCheckCapture()
+
         XCTAssertThrowsError(
             try CatalogDatabaseRestoreCoordinator().restoreSnapshot(
                 snapshotDirectoryURL: descriptor.directoryURL,
                 liveDatabaseURL: liveURL,
                 operationID: UUID(),
-                dependencies: .init(sameVolumeChecker: { _, _ in false })
+                dependencies: .init(sameVolumeChecker: { candidate, live in
+                    volumeCheckCapture.record(candidate: candidate, live: live)
+                    return false
+                })
             )
         ) { error in
             XCTAssertEqual(error as? CatalogSnapshotError, .differentVolume)
         }
+
+        XCTAssertEqual(volumeCheckCapture.live, liveURL)
+        XCTAssertEqual(volumeCheckCapture.candidate?.lastPathComponent, CatalogSnapshotConstants.databaseFilename)
+        XCTAssertTrue(volumeCheckCapture.candidate?.path.contains(".restore-") == true)
+        XCTAssertNotEqual(volumeCheckCapture.candidate?.deletingLastPathComponent().path, descriptor.directoryURL.path)
+    }
+
+    func testSnapshotOnDifferentVolumeFromLiveCanRestoreWhenWorkCandidateIsSameVolume() throws {
+        let liveRoot = try SnapshotTestSupport.makeTempRoot(testCase: self)
+        let snapshotRoot = try SnapshotTestSupport.makeTempRoot(testCase: self)
+
+        let liveURL = SnapshotTestSupport.liveDatabaseURL(in: liveRoot)
+        let liveDatabase = try SnapshotTestSupport.openLiveDatabase(at: liveURL)
+        _ = try SnapshotTestSupport.seedRepresentativeFacts(in: liveDatabase)
+
+        let snapshotBackups = SnapshotTestSupport.backupsDirectoryURL(in: snapshotRoot)
+        let descriptor = try SnapshotTestSupport.writePublishedSnapshot(
+            in: snapshotBackups,
+            snapshotID: UUID(),
+            sourceDatabase: liveDatabase
+        )
+
+        try liveDatabase.checkpointAndCloseForReplacement()
+
+        let result = try CatalogDatabaseRestoreCoordinator().restoreSnapshot(
+            snapshotDirectoryURL: descriptor.directoryURL,
+            liveDatabaseURL: liveURL,
+            operationID: UUID()
+        )
+
+        XCTAssertEqual(try SnapshotTestSupport.factCounts(at: result.restoredDatabaseURL).sources, 1)
+    }
+}
+
+private final class VolumeCheckCapture: @unchecked Sendable {
+    private let lock = NSLock()
+    private(set) var candidate: URL?
+    private(set) var live: URL?
+
+    func record(candidate: URL, live: URL) {
+        lock.lock()
+        self.candidate = candidate
+        self.live = live
+        lock.unlock()
     }
 }

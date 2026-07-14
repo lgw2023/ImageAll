@@ -20,7 +20,6 @@ struct CatalogDatabaseRestoreCoordinator: Sendable {
     ) throws -> CatalogDatabaseRestoreSuccess {
         let fileManager = dependencies.fileManager
         let operationIDString = operationID.uuidString.lowercased()
-        let effectiveDependencies = dependenciesWithFaultInjection(dependencies)
 
         let descriptor = try CatalogSnapshotCatalog.validatePublishedSnapshotDirectory(
             snapshotDirectoryURL,
@@ -35,63 +34,69 @@ struct CatalogDatabaseRestoreCoordinator: Sendable {
         )
         let workDatabaseURL = workDirectoryURL.appendingPathComponent(CatalogSnapshotConstants.databaseFilename)
 
-        guard try effectiveDependencies.sameVolumeChecker(snapshotDatabaseURL, liveDatabaseURL) else {
-            throw CatalogSnapshotError.differentVolume
+        do {
+            try CatalogDatabaseSidecarHelpers.requireNoSidecars(at: liveDatabaseURL, fileManager: fileManager)
+        } catch {
+            throw CatalogSnapshotError.replacementPreconditionNotMet
         }
 
-        try CatalogDatabaseSidecarHelpers.requireNoSidecars(at: liveDatabaseURL, fileManager: fileManager)
-
         var workDirectoryCreated = false
+        var replacementInvoked = false
         do {
             if fileManager.fileExists(atPath: workDirectoryURL.path) {
                 throw CatalogSnapshotError.candidatePreparationFailed
             }
 
-            try fileManager.createDirectory(at: workDirectoryURL, withIntermediateDirectories: true)
+            do {
+                try fileManager.createDirectory(at: workDirectoryURL, withIntermediateDirectories: true)
+            } catch {
+                throw CatalogSnapshotError.candidatePreparationFailed
+            }
             workDirectoryCreated = true
-            try fileManager.copyItem(at: snapshotDatabaseURL, to: workDatabaseURL)
 
             do {
-                try CatalogDatabase.validateClosedDatabase(
-                    at: workDatabaseURL,
-                    requireCurrentSchema: descriptor.manifest.appliedMigrations == CatalogMigrationID.knownOrdered
-                )
-            } catch let error as CatalogDatabaseError {
-                if case let .futureSchema(applied, unknown) = error {
-                    throw CatalogSnapshotError.futureMigrationHistory(applied: applied, unknown: unknown)
-                }
-                throw CatalogSnapshotError.candidatePreparationFailed
+                try fileManager.copyItem(at: snapshotDatabaseURL, to: workDatabaseURL)
             } catch {
                 throw CatalogSnapshotError.candidatePreparationFailed
             }
 
-            let workMigrations = try readMigrationHistory(at: workDatabaseURL)
-            try CatalogSnapshotManifestValidator.validateMigrationHistoryMatchesDatabase(
-                manifestMigrations: descriptor.manifest.appliedMigrations,
-                databaseMigrations: workMigrations
+            let needsMigration = descriptor.manifest.appliedMigrations != CatalogMigrationID.knownOrdered
+            try CatalogDatabase.prepareWorkCopyForReplacement(
+                at: workDatabaseURL,
+                expectedManifestMigrations: descriptor.manifest.appliedMigrations,
+                runMigration: needsMigration
             )
 
-            if workMigrations != CatalogMigrationID.knownOrdered {
-                try CatalogDatabase.migrateWorkCopy(at: workDatabaseURL)
+            guard try dependencies.sameVolumeChecker(workDatabaseURL, liveDatabaseURL) else {
+                throw CatalogSnapshotError.differentVolume
             }
 
-            try CatalogDatabase.checkpointCloseAndRequireNoSidecars(at: workDatabaseURL)
-
             let preRestoreBackupName = "ImageAll.sqlite.pre-restore-\(operationIDString)"
-            let fileReplacer = makeFileReplacer(dependencies: effectiveDependencies)
+            let fileReplacer = dependencies.fileReplacer
 
-            let resultingURL = try fileReplacer.replaceItem(
-                at: liveDatabaseURL,
-                withItemAt: workDatabaseURL,
-                backupItemName: preRestoreBackupName,
-                options: [.withoutDeletingBackupItem]
-            )
+            replacementInvoked = true
+            let resultingURL: URL
+            do {
+                resultingURL = try fileReplacer.replaceItem(
+                    at: liveDatabaseURL,
+                    withItemAt: workDatabaseURL,
+                    backupItemName: preRestoreBackupName,
+                    options: [.withoutDeletingBackupItem]
+                )
+            } catch let error as CatalogSnapshotError {
+                throw error
+            } catch {
+                throw CatalogSnapshotError.initialReplacementFailed
+            }
 
             let preRestoreBackupItemURL = liveDatabaseDirectoryURL.appendingPathComponent(preRestoreBackupName)
+            try verifyRetainedBackupItem(at: preRestoreBackupItemURL, fileManager: fileManager)
 
             do {
-                try effectiveDependencies.postReplaceValidator.validateDatabase(at: resultingURL)
+                try dependencies.postReplaceValidator.validateDatabase(at: resultingURL)
                 try CatalogDatabaseSidecarHelpers.requireNoSidecars(at: resultingURL, fileManager: fileManager)
+            } catch let error as CatalogSnapshotError where error == .manualInterventionRequired {
+                throw error
             } catch {
                 do {
                     _ = try performRollbackAfterPostReplaceFailure(
@@ -102,56 +107,42 @@ struct CatalogDatabaseRestoreCoordinator: Sendable {
                         fileReplacer: fileReplacer
                     )
                     throw CatalogSnapshotError.postReplaceValidationFailedWithSuccessfulRollback
-                } catch let rollbackError as CatalogSnapshotError where rollbackError == .manualInterventionRequired {
+                } catch let rollbackError as CatalogSnapshotError
+                    where rollbackError == .manualInterventionRequired {
                     throw rollbackError
-                } catch let rollbackError as CatalogSnapshotError where rollbackError == .rollbackReplacementFailed {
+                } catch let rollbackError as CatalogSnapshotError
+                    where rollbackError == .rollbackReplacementFailed {
                     throw CatalogSnapshotError.manualInterventionRequired
+                } catch let rollbackError as CatalogSnapshotError
+                    where rollbackError == .postReplaceValidationFailedWithSuccessfulRollback {
+                    throw rollbackError
                 }
             }
 
-            try? fileManager.removeItem(at: workDirectoryURL)
+            if fileManager.fileExists(atPath: workDirectoryURL.path) {
+                try? fileManager.removeItem(at: workDirectoryURL)
+            }
 
             return CatalogDatabaseRestoreSuccess(
                 restoredDatabaseURL: resultingURL,
                 preRestoreBackupItemURL: preRestoreBackupItemURL
             )
         } catch {
-            if workDirectoryCreated, fileManager.fileExists(atPath: workDirectoryURL.path) {
+            if !replacementInvoked, workDirectoryCreated, fileManager.fileExists(atPath: workDirectoryURL.path) {
                 try? fileManager.removeItem(at: workDirectoryURL)
             }
             throw error
         }
     }
 
-    private func dependenciesWithFaultInjection(
-        _ dependencies: CatalogDatabaseRestoreDependencies
-    ) -> CatalogDatabaseRestoreDependencies {
-        var effective = dependencies
-        if dependencies.failPostReplaceValidation {
-            effective.postReplaceValidator = FaultInjectingCatalogPostReplaceValidator(shouldFail: true)
+    private func verifyRetainedBackupItem(at url: URL, fileManager: FileManager) throws {
+        var isDirectory: ObjCBool = false
+        guard fileManager.fileExists(atPath: url.path, isDirectory: &isDirectory), !isDirectory.boolValue else {
+            throw CatalogSnapshotError.initialReplacementFailed
         }
-        return effective
-    }
-
-    private func makeFileReplacer(dependencies: CatalogDatabaseRestoreDependencies) -> any CatalogDatabaseFileReplacing {
-        if dependencies.failInitialReplacement || dependencies.failRollbackReplacement {
-            return FaultInjectingCatalogDatabaseFileReplacer(
-                underlying: dependencies.fileReplacer,
-                failInitialReplacement: dependencies.failInitialReplacement,
-                failRollbackReplacement: dependencies.failRollbackReplacement
-            )
-        }
-        return dependencies.fileReplacer
-    }
-
-    private func readMigrationHistory(at databaseURL: URL) throws -> [String] {
-        var config = Configuration()
-        let pool = try DatabasePool(path: databaseURL.path, configuration: config)
-        defer {
-            try? pool.close()
-        }
-        return try pool.read { db in
-            try CatalogDatabase.readAppliedMigrationIDs(from: db)
+        let values = try url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
+        guard values.isSymbolicLink != true, values.isRegularFile == true else {
+            throw CatalogSnapshotError.initialReplacementFailed
         }
     }
 
@@ -176,16 +167,23 @@ struct CatalogDatabaseRestoreCoordinator: Sendable {
                 options: [.withoutDeletingBackupItem]
             )
 
-            try? CatalogDatabase.validateClosedDatabase(at: restoredURL, requireCurrentSchema: false)
+            do {
+                try CatalogDatabase.withReadonlyQueue(at: restoredURL) { db in
+                    try CatalogDatabase.performQuickCheck(on: db)
+                }
+            } catch {
+                // Best-effort post-rollback verification; rollback success must not be downgraded.
+            }
 
+            let quarantineBackupItemURL = liveDatabaseDirectoryURL.appendingPathComponent(quarantineBackupName)
             return CatalogDatabaseRestoreRollbackResult(
                 restoredDatabaseURL: restoredURL,
-                quarantineBackupItemURL: liveDatabaseDirectoryURL.appendingPathComponent(quarantineBackupName)
+                quarantineBackupItemURL: quarantineBackupItemURL
             )
-        } catch let error as CatalogSnapshotError where error == .rollbackReplacementFailed {
-            throw CatalogSnapshotError.manualInterventionRequired
+        } catch let error as CatalogSnapshotError {
+            throw error
         } catch {
-            throw CatalogSnapshotError.manualInterventionRequired
+            throw CatalogSnapshotError.rollbackReplacementFailed
         }
     }
 }

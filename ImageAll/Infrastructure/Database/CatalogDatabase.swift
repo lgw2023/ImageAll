@@ -96,16 +96,84 @@ struct CatalogDatabase: Sendable {
         try pool.barrierWriteWithoutTransaction { db in
             try performTruncateCheckpoint(db)
         }
-        try pool.close()
-        try CatalogDatabaseSidecarHelpers.removeSidecarsIfPresent(at: databaseURL)
-        try CatalogDatabaseSidecarHelpers.requireNoSidecars(at: databaseURL)
+        try closePool(pool)
+        try convergeClosedDatabaseFileToDelete(at: databaseURL)
+    }
+
+    static func convergeClosedDatabaseFileToDelete(at url: URL) throws {
+        var config = Configuration()
+        config.prepareDatabase { db in
+            try db.execute(sql: "PRAGMA foreign_keys = ON")
+        }
+        let queue: DatabaseQueue
+        do {
+            queue = try DatabaseQueue(path: url.path, configuration: config)
+        } catch {
+            throw CatalogSnapshotError.sidecarConvergenceFailed
+        }
+        var closed = false
+        do {
+            try queue.writeWithoutTransaction { db in
+                try requireDeleteJournalMode(db, setDelete: true)
+            }
+            try queue.read { db in
+                try performQuickCheck(on: db)
+            }
+            try closeQueue(queue)
+            closed = true
+            try CatalogDatabaseSidecarHelpers.removeSidecarsIfPresent(at: url)
+            try CatalogDatabaseSidecarHelpers.requireNoSidecars(at: url)
+        } catch let error as CatalogSnapshotError where error == .closeFailed {
+            throw error
+        } catch let error as CatalogSnapshotError {
+            if !closed {
+                try closeQueue(queue)
+            }
+            throw error
+        } catch {
+            if !closed {
+                try closeQueue(queue)
+            }
+            throw CatalogSnapshotError.sidecarConvergenceFailed
+        }
     }
 
     static func performTruncateCheckpoint(_ db: Database) throws {
-        guard let row = try Row.fetchOne(db, sql: "PRAGMA wal_checkpoint(TRUNCATE)") else {
+        do {
+            let result = try db.checkpoint(.truncate)
+            if result.walFrameCount < 0 {
+                return
+            }
+            guard result.walFrameCount == result.checkpointedFrameCount else {
+                throw CatalogSnapshotError.checkpointFailed
+            }
+            guard result.walFrameCount == 0 else {
+                throw CatalogSnapshotError.checkpointFailed
+            }
+        } catch let error as CatalogSnapshotError {
+            throw error
+        } catch let error as DatabaseError
+            where error.resultCode == .SQLITE_BUSY || error.resultCode == .SQLITE_LOCKED {
+            throw CatalogSnapshotError.checkpointFailed
+        } catch is DatabaseError {
             throw CatalogSnapshotError.checkpointFailed
         }
-        _ = row
+    }
+
+    static func closePool(_ pool: DatabasePool) throws {
+        do {
+            try pool.close()
+        } catch {
+            throw CatalogSnapshotError.closeFailed
+        }
+    }
+
+    static func closeQueue(_ queue: DatabaseQueue) throws {
+        do {
+            try queue.close()
+        } catch {
+            throw CatalogSnapshotError.closeFailed
+        }
     }
 
     static func readAppliedMigrationIDs(from db: Database) throws -> [String] {
@@ -122,63 +190,187 @@ struct CatalogDatabase: Sendable {
         }
     }
 
-    static func validateClosedDatabase(at url: URL, requireCurrentSchema: Bool) throws {
+    static func requireDeleteJournalMode(_ db: Database, setDelete: Bool) throws {
+        let mode: String
+        do {
+            if setDelete {
+                mode = try String.fetchOne(db, sql: "PRAGMA journal_mode = DELETE") ?? ""
+            } else {
+                mode = try String.fetchOne(db, sql: "PRAGMA journal_mode") ?? ""
+            }
+        } catch is DatabaseError {
+            throw CatalogSnapshotError.sidecarConvergenceFailed
+        }
+        guard mode.lowercased() == "delete" else {
+            throw CatalogSnapshotError.sidecarConvergenceFailed
+        }
+    }
+
+    static func convergeToDeleteJournalOnQueue(_ queue: DatabaseQueue, recheckQuickCheck: Bool) throws {
+        try queue.writeWithoutTransaction { db in
+            try performTruncateCheckpoint(db)
+            try requireDeleteJournalMode(db, setDelete: true)
+        }
+        if recheckQuickCheck {
+            try queue.read { db in
+                try performQuickCheck(on: db)
+            }
+        }
+    }
+
+    static func withReadonlyQueue<T>(at url: URL, _ body: (Database) throws -> T) throws -> T {
+        var config = Configuration()
+        config.readonly = true
+        let queue: DatabaseQueue
+        do {
+            queue = try DatabaseQueue(path: url.path, configuration: config)
+        } catch {
+            throw CatalogSnapshotError.integrityCheckFailed
+        }
+        var closed = false
+        do {
+            let value = try queue.read { db in
+                try body(db)
+            }
+            try closeQueue(queue)
+            closed = true
+            return value
+        } catch let error as CatalogDatabaseError {
+            if !closed {
+                try closeQueue(queue)
+            }
+            if case let .futureSchema(applied, unknown) = error {
+                throw CatalogSnapshotError.futureMigrationHistory(applied: applied, unknown: unknown)
+            }
+            throw CatalogSnapshotError.integrityCheckFailed
+        } catch let error as CatalogSnapshotError {
+            if !closed {
+                try closeQueue(queue)
+            }
+            throw error
+        } catch {
+            if !closed {
+                try closeQueue(queue)
+            }
+            throw CatalogSnapshotError.integrityCheckFailed
+        }
+    }
+
+    static func prepareWorkCopyForReplacement(
+        at url: URL,
+        expectedManifestMigrations: [String],
+        runMigration: Bool
+    ) throws {
         var config = Configuration()
         config.prepareDatabase { db in
             try db.execute(sql: "PRAGMA foreign_keys = ON")
         }
+        let queue: DatabaseQueue
+        do {
+            queue = try DatabaseQueue(path: url.path, configuration: config)
+        } catch {
+            throw CatalogSnapshotError.candidatePreparationFailed
+        }
+        var closed = false
+        do {
+            let initialMigrations = try queue.read { db -> [String] in
+                try performQuickCheck(on: db)
+                try validateAppliedMigrations(db)
+                return try readAppliedMigrationIDs(from: db)
+            }
 
-        let pool = try DatabasePool(path: url.path, configuration: config)
-        try pool.read { db in
-            try performQuickCheck(on: db)
-            try validateAppliedMigrations(db)
-            if requireCurrentSchema {
+            try CatalogSnapshotManifestValidator.validateMigrationHistoryMatchesDatabase(
+                manifestMigrations: expectedManifestMigrations,
+                databaseMigrations: initialMigrations
+            )
+
+            if runMigration {
+                let migrator = makeMigrator()
+                try migrator.migrate(queue)
+            }
+
+            try queue.read { db in
+                try performQuickCheck(on: db)
+                try validateAppliedMigrations(db)
                 let applied = try readAppliedMigrationIDs(from: db)
                 guard applied == CatalogMigrationID.knownOrdered else {
                     throw CatalogSnapshotError.invalidMigrationHistory
                 }
+                guard try Int.fetchOne(db, sql: "PRAGMA foreign_keys") == 1 else {
+                    throw CatalogSnapshotError.integrityCheckFailed
+                }
             }
-            guard try Int.fetchOne(db, sql: "PRAGMA foreign_keys") == 1 else {
-                throw CatalogSnapshotError.integrityCheckFailed
+
+            try convergeToDeleteJournalOnQueue(queue, recheckQuickCheck: true)
+            try closeQueue(queue)
+            closed = true
+            try CatalogDatabaseSidecarHelpers.removeSidecarsIfPresent(at: url)
+            try CatalogDatabaseSidecarHelpers.requireNoSidecars(at: url)
+        } catch let error as CatalogDatabaseError {
+            if !closed {
+                try closeQueue(queue)
             }
+            if case let .futureSchema(applied, unknown) = error {
+                throw CatalogSnapshotError.futureMigrationHistory(applied: applied, unknown: unknown)
+            }
+            throw CatalogSnapshotError.candidatePreparationFailed
+        } catch let error as CatalogSnapshotError {
+            if !closed {
+                try closeQueue(queue)
+            }
+            throw error
+        } catch {
+            if !closed {
+                try closeQueue(queue)
+            }
+            throw CatalogSnapshotError.candidatePreparationFailed
         }
-        try pool.close()
-        try CatalogDatabaseSidecarHelpers.removeSidecarsIfPresent(at: url)
-        try CatalogDatabaseSidecarHelpers.requireNoSidecars(at: url)
     }
 
-    static func migrateWorkCopy(at url: URL) throws {
+    static func validateAndCloseReplacedDatabase(at url: URL) throws {
         var config = Configuration()
         config.prepareDatabase { db in
             try db.execute(sql: "PRAGMA foreign_keys = ON")
         }
-
-        let pool = try DatabasePool(path: url.path, configuration: config)
-        defer {
-            try? pool.close()
+        let queue: DatabaseQueue
+        do {
+            queue = try DatabaseQueue(path: url.path, configuration: config)
+        } catch {
+            throw CatalogSnapshotError.postReplaceValidationFailed
         }
-
-        let migrator = makeMigrator()
-        try migrator.migrate(pool)
-
-        try pool.read { db in
-            try performQuickCheck(on: db)
-            try validateAppliedMigrations(db)
-            let applied = try readAppliedMigrationIDs(from: db)
-            guard applied == CatalogMigrationID.knownOrdered else {
-                throw CatalogSnapshotError.invalidMigrationHistory
+        var closed = false
+        do {
+            try queue.read { db in
+                guard try Int.fetchOne(db, sql: "PRAGMA foreign_keys") == 1 else {
+                    throw CatalogSnapshotError.postReplaceValidationFailed
+                }
+                try performQuickCheck(on: db)
+                try validateAppliedMigrations(db)
+                let applied = try readAppliedMigrationIDs(from: db)
+                guard applied == CatalogMigrationID.knownOrdered else {
+                    throw CatalogSnapshotError.postReplaceValidationFailed
+                }
             }
+            try convergeToDeleteJournalOnQueue(queue, recheckQuickCheck: true)
+            try closeQueue(queue)
+            closed = true
+            try CatalogDatabaseSidecarHelpers.removeSidecarsIfPresent(at: url)
+            try CatalogDatabaseSidecarHelpers.requireNoSidecars(at: url)
+        } catch let error as CatalogDatabaseError {
+            if !closed {
+                try closeQueue(queue)
+            }
+            throw CatalogSnapshotError.postReplaceValidationFailed
+        } catch let error as CatalogSnapshotError {
+            if !closed {
+                try closeQueue(queue)
+            }
+            throw CatalogSnapshotError.postReplaceValidationFailed
+        } catch {
+            if !closed {
+                try closeQueue(queue)
+            }
+            throw CatalogSnapshotError.postReplaceValidationFailed
         }
-    }
-
-    static func checkpointCloseAndRequireNoSidecars(at url: URL) throws {
-        var config = Configuration()
-        let pool = try DatabasePool(path: url.path, configuration: config)
-        try pool.barrierWriteWithoutTransaction { db in
-            try performTruncateCheckpoint(db)
-        }
-        try pool.close()
-        try CatalogDatabaseSidecarHelpers.removeSidecarsIfPresent(at: url)
-        try CatalogDatabaseSidecarHelpers.requireNoSidecars(at: url)
     }
 }

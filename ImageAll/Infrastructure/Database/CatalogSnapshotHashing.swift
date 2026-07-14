@@ -4,17 +4,30 @@ import Foundation
 enum CatalogSnapshotHashing {
     static func sha256Hex(of fileURL: URL) throws -> String {
         let handle = try FileHandle(forReadingFrom: fileURL)
-        defer {
-            try? handle.close()
-        }
-
         var hasher = SHA256()
+        var readFailed = false
+
         while true {
-            let chunk = try handle.read(upToCount: 65_536) ?? Data()
-            if chunk.isEmpty {
+            do {
+                let chunk = try handle.read(upToCount: 65_536) ?? Data()
+                if chunk.isEmpty {
+                    break
+                }
+                hasher.update(data: chunk)
+            } catch {
+                readFailed = true
                 break
             }
-            hasher.update(data: chunk)
+        }
+
+        do {
+            try handle.close()
+        } catch {
+            throw CatalogSnapshotError.invalidDatabaseChecksum
+        }
+
+        if readFailed {
+            throw CatalogSnapshotError.invalidDatabaseChecksum
         }
 
         return hasher.finalize().map { String(format: "%02x", $0) }.joined()

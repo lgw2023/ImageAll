@@ -187,9 +187,39 @@ enum SnapshotTestSupport {
     }
 
     static func factCounts(at databaseURL: URL) throws -> FactCounts {
-        var config = Configuration()
-        let pool = try DatabasePool(path: databaseURL.path, configuration: config)
-        let counts = try pool.read { db in
+        try factCountsReadOnly(at: databaseURL)
+    }
+
+    static func readMigrationIDs(at databaseURL: URL) throws -> [String] {
+        try CatalogDatabase.withReadonlyQueue(at: databaseURL) { db in
+            try CatalogDatabase.readAppliedMigrationIDs(from: db)
+        }
+    }
+
+    static func databaseBytes(at url: URL) throws -> Data {
+        try Data(contentsOf: url)
+    }
+
+    static func sha256Hex(at url: URL) throws -> String {
+        try CatalogSnapshotHashing.sha256Hex(of: url)
+    }
+
+    static func readJournalMode(at databaseURL: URL) throws -> String {
+        try CatalogDatabase.withReadonlyQueue(at: databaseURL) { db in
+            try String.fetchOne(db, sql: "PRAGMA journal_mode") ?? ""
+        }
+    }
+
+    static func validatePublishedSnapshotReadOnly(at databaseURL: URL) throws {
+        try CatalogDatabase.withReadonlyQueue(at: databaseURL) { db in
+            try CatalogDatabase.performQuickCheck(on: db)
+            let migrations = try CatalogDatabase.readAppliedMigrationIDs(from: db)
+            try CatalogSnapshotManifestValidator.validateMigrationPrefix(migrations)
+        }
+    }
+
+    static func factCountsReadOnly(at databaseURL: URL) throws -> FactCounts {
+        try CatalogDatabase.withReadonlyQueue(at: databaseURL) { db in
             FactCounts(
                 sources: try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM source") ?? 0,
                 assets: try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM asset") ?? 0,
@@ -198,23 +228,71 @@ enum SnapshotTestSupport {
                 jobs: try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM job") ?? 0
             )
         }
-        try pool.close()
-        try? CatalogDatabaseSidecarHelpers.removeSidecarsIfPresent(at: databaseURL)
-        return counts
+    }
+}
+
+// MARK: - Test-only fault injection (ImageAllTests only)
+
+final class FaultInjectingCatalogDatabaseFileReplacer: CatalogDatabaseFileReplacing, @unchecked Sendable {
+    let underlying: any CatalogDatabaseFileReplacing
+    var failInitialReplacement: Bool
+    var failRollbackReplacement: Bool
+    private let lock = NSLock()
+    private var replacementCallCount = 0
+
+    init(
+        underlying: any CatalogDatabaseFileReplacing = FoundationCatalogDatabaseFileReplacer(),
+        failInitialReplacement: Bool = false,
+        failRollbackReplacement: Bool = false
+    ) {
+        self.underlying = underlying
+        self.failInitialReplacement = failInitialReplacement
+        self.failRollbackReplacement = failRollbackReplacement
     }
 
-    static func readMigrationIDs(at databaseURL: URL) throws -> [String] {
-        var config = Configuration()
-        let pool = try DatabasePool(path: databaseURL.path, configuration: config)
-        defer {
-            try? pool.close()
+    func replaceItem(
+        at originalItemURL: URL,
+        withItemAt newItemURL: URL,
+        backupItemName: String,
+        options: FileManager.ItemReplacementOptions
+    ) throws -> URL {
+        lock.lock()
+        replacementCallCount += 1
+        let callCount = replacementCallCount
+        lock.unlock()
+
+        if failInitialReplacement && callCount == 1 {
+            throw CatalogSnapshotError.initialReplacementFailed
         }
-        return try pool.read { db in
-            try CatalogDatabase.readAppliedMigrationIDs(from: db)
+        if failRollbackReplacement && callCount == 2 {
+            throw CatalogSnapshotError.rollbackReplacementFailed
         }
+
+        return try underlying.replaceItem(
+            at: originalItemURL,
+            withItemAt: newItemURL,
+            backupItemName: backupItemName,
+            options: options
+        )
+    }
+}
+
+struct FaultInjectingCatalogPostReplaceValidator: CatalogPostReplaceValidator {
+    var shouldFail: Bool
+    let underlying: any CatalogPostReplaceValidator
+
+    init(
+        shouldFail: Bool,
+        underlying: any CatalogPostReplaceValidator = DefaultCatalogPostReplaceValidator()
+    ) {
+        self.shouldFail = shouldFail
+        self.underlying = underlying
     }
 
-    static func databaseBytes(at url: URL) throws -> Data {
-        try Data(contentsOf: url)
+    func validateDatabase(at url: URL) throws {
+        if shouldFail {
+            throw CatalogSnapshotError.postReplaceValidationFailed
+        }
+        try underlying.validateDatabase(at: url)
     }
 }

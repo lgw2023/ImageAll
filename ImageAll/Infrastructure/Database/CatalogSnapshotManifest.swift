@@ -30,8 +30,14 @@ enum CatalogSnapshotManifestCodec {
     }
 
     static func decode(from data: Data) throws -> CatalogSnapshotManifest {
-        let decoder = JSONDecoder()
-        return try decoder.decode(CatalogSnapshotManifest.self, from: data)
+        do {
+            let decoder = JSONDecoder()
+            return try decoder.decode(CatalogSnapshotManifest.self, from: data)
+        } catch is DecodingError {
+            throw CatalogSnapshotError.invalidManifest
+        } catch {
+            throw CatalogSnapshotError.invalidManifest
+        }
     }
 }
 

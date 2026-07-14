@@ -86,8 +86,11 @@ enum CatalogSnapshotCatalog {
             throw CatalogSnapshotError.invalidManifest
         }
 
-        let values = try url.resourceValues(forKeys: [.isSymbolicLinkKey])
+        let values = try url.resourceValues(forKeys: [.isSymbolicLinkKey, .isRegularFileKey])
         if values.isSymbolicLink == true {
+            throw CatalogSnapshotError.invalidManifest
+        }
+        guard values.isRegularFile == true else {
             throw CatalogSnapshotError.invalidManifest
         }
     }

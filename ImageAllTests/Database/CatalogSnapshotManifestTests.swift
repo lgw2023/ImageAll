@@ -50,7 +50,9 @@ final class CatalogSnapshotManifestTests: XCTestCase {
     }
 
     func testMalformedJSONIsRejected() {
-        XCTAssertThrowsError(try CatalogSnapshotManifestCodec.decode(from: Data("{".utf8)))
+        XCTAssertThrowsError(try CatalogSnapshotManifestCodec.decode(from: Data("{".utf8))) { error in
+            XCTAssertEqual(error as? CatalogSnapshotError, .invalidManifest)
+        }
     }
 
     func testNonCanonicalUUIDIsRejected() {
