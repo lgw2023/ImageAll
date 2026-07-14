@@ -22,6 +22,10 @@ enum CatalogQueryTestSupport {
         let assetNocaseUpper: UUID
         let assetLiteralWildcard: UUID
         let assetLiteralBackslash: UUID
+        let assetDecoyWildcard: UUID
+        let assetDecoyUnderscore: UUID
+        let assetDecoyBackslash: UUID
+        let assetSourceB: UUID
         let tagFamily: UUID
         let tagWork: UUID
         let tagArchived: UUID
@@ -80,6 +84,10 @@ enum CatalogQueryTestSupport {
         let assetNocaseUpper = UUID(uuidString: "20000000-0000-4000-8000-00000000000B")!
         let assetLiteralWildcard = UUID(uuidString: "20000000-0000-4000-8000-00000000000C")!
         let assetLiteralBackslash = UUID(uuidString: "20000000-0000-4000-8000-00000000000D")!
+        let assetDecoyWildcard = UUID(uuidString: "20000000-0000-4000-8000-00000000000F")!
+        let assetDecoyUnderscore = UUID(uuidString: "20000000-0000-4000-8000-000000000010")!
+        let assetDecoyBackslash = UUID(uuidString: "20000000-0000-4000-8000-000000000011")!
+        let assetSourceB = UUID(uuidString: "20000000-0000-4000-8000-00000000000E")!
         let tagFamily = UUID(uuidString: "30000000-0000-4000-8000-000000000001")!
         let tagWork = UUID(uuidString: "30000000-0000-4000-8000-000000000002")!
         let tagArchived = UUID(uuidString: "30000000-0000-4000-8000-000000000003")!
@@ -217,6 +225,39 @@ enum CatalogQueryTestSupport {
                 modifiedMs: nil,
                 availability: "available"
             )
+            try insertAsset(
+                db,
+                assetID: assetDecoyWildcard,
+                sourceID: sourceA,
+                relativePath: "2024/beach/100ABcomplete.jpg",
+                fileName: "100ABcomplete.jpg",
+                mediaType: "public.jpeg",
+                createdMs: 1_619_000_000_000,
+                modifiedMs: nil,
+                availability: "available"
+            )
+            try insertAsset(
+                db,
+                assetID: assetDecoyUnderscore,
+                sourceID: sourceA,
+                relativePath: "2024/beach/imgX002.jpg",
+                fileName: "imgX002.jpg",
+                mediaType: "public.jpeg",
+                createdMs: 1_618_000_000_000,
+                modifiedMs: nil,
+                availability: "available"
+            )
+            try insertAsset(
+                db,
+                assetID: assetDecoyBackslash,
+                sourceID: sourceA,
+                relativePath: "2024/beach/weirdXsegment.jpg",
+                fileName: "weirdXsegment.jpg",
+                mediaType: "public.jpeg",
+                createdMs: 1_617_000_000_000,
+                modifiedMs: nil,
+                availability: "available"
+            )
             try db.execute(
                 sql: """
                 UPDATE asset
@@ -241,7 +282,7 @@ enum CatalogQueryTestSupport {
             )
             try insertAsset(
                 db,
-                assetID: UUID(uuidString: "20000000-0000-4000-8000-00000000000E")!,
+                assetID: assetSourceB,
                 sourceID: sourceB,
                 relativePath: "projects/alpha.png",
                 fileName: "alpha.png",
@@ -360,10 +401,41 @@ enum CatalogQueryTestSupport {
             assetNocaseUpper: assetNocaseUpper,
             assetLiteralWildcard: assetLiteralWildcard,
             assetLiteralBackslash: assetLiteralBackslash,
+            assetDecoyWildcard: assetDecoyWildcard,
+            assetDecoyUnderscore: assetDecoyUnderscore,
+            assetDecoyBackslash: assetDecoyBackslash,
+            assetSourceB: assetSourceB,
             tagFamily: tagFamily,
             tagWork: tagWork,
             tagArchived: tagArchived
         )
+    }
+
+    static func decisionStates(
+        database: CatalogDatabase,
+        tagID: UUID,
+        assetIDs: [UUID]
+    ) throws -> [UUID: TagDecisionQueryState] {
+        try database.pool.read { db in
+            var states: [UUID: TagDecisionQueryState] = [:]
+            for assetID in assetIDs {
+                states[assetID] = .unknown
+            }
+            for assetID in assetIDs {
+                let decision: String? = try String.fetchOne(
+                    db,
+                    sql: """
+                    SELECT decision FROM asset_tag_decision
+                    WHERE asset_id = ? AND tag_id = ?
+                    """,
+                    arguments: [assetID.uuidString.lowercased(), tagID.uuidString.lowercased()]
+                )
+                if let decision {
+                    states[assetID] = decision == "accepted" ? .accepted : .rejected
+                }
+            }
+            return states
+        }
     }
 
     static func openV001OnlyDatabase(at url: URL) throws -> CatalogDatabase {

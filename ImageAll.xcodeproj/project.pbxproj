@@ -111,6 +111,7 @@
 		FF000001000000000000000E /* TagCatalogTransactionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF000101000000000000000E /* TagCatalogTransactionTests.swift */; };
 		FF000001000000000000000F /* CatalogQueryErrorMapping.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF000101000000000000000F /* CatalogQueryErrorMapping.swift */; };
 		FF0000010000000000000010 /* CatalogQueryTestFaultSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0001010000000000000010 /* CatalogQueryTestFaultSupport.swift */; };
+		FF0000010000000000000011 /* CatalogQuerySortExpectations.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0001010000000000000011 /* CatalogQuerySortExpectations.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -229,6 +230,7 @@
 		FF000101000000000000000E /* TagCatalogTransactionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TagCatalogTransactionTests.swift; sourceTree = "<group>"; };
 		FF000101000000000000000F /* CatalogQueryErrorMapping.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CatalogQueryErrorMapping.swift; sourceTree = "<group>"; };
 		FF0001010000000000000010 /* CatalogQueryTestFaultSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CatalogQueryTestFaultSupport.swift; sourceTree = "<group>"; };
+		FF0001010000000000000011 /* CatalogQuerySortExpectations.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CatalogQuerySortExpectations.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -290,6 +292,7 @@
 			children = (
 				FF000101000000000000000B /* CatalogQueryTestSupport.swift */,
 				FF0001010000000000000010 /* CatalogQueryTestFaultSupport.swift */,
+				FF0001010000000000000011 /* CatalogQuerySortExpectations.swift */,
 				FF000101000000000000000C /* V002MigrationTests.swift */,
 				FF000101000000000000000D /* AssetCatalogQueryTests.swift */,
 				FF000101000000000000000E /* TagCatalogTransactionTests.swift */,
@@ -771,6 +774,7 @@
 				FF000001000000000000000D /* AssetCatalogQueryTests.swift in Sources */,
 				FF000001000000000000000E /* TagCatalogTransactionTests.swift in Sources */,
 				FF0000010000000000000010 /* CatalogQueryTestFaultSupport.swift in Sources */,
+				FF0000010000000000000011 /* CatalogQuerySortExpectations.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

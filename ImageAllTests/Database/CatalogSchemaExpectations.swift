@@ -34,21 +34,30 @@ enum CatalogSchemaExpectations {
         let unique: Bool
         let partialPredicateSQL: String
         let orderedKeyEntries: [IndexKeyEntryExpectation]?
+        let keyListSQL: String?
 
         init(
             name: String,
             keyColumns: [IndexKeyColumnExpectation],
             unique: Bool,
             partialPredicateSQL: String = "",
-            orderedKeyEntries: [IndexKeyEntryExpectation]? = nil
+            orderedKeyEntries: [IndexKeyEntryExpectation]? = nil,
+            keyListSQL: String? = nil
         ) {
             self.name = name
             self.keyColumns = keyColumns
             self.unique = unique
             self.partialPredicateSQL = partialPredicateSQL
             self.orderedKeyEntries = orderedKeyEntries
+            self.keyListSQL = keyListSQL
         }
     }
+
+    static let assetCurrentTimeEmptyMarkerExpression = """
+        (CASE WHEN media_created_at_ms IS NOT NULL OR media_modified_at_ms IS NOT NULL THEN 0 ELSE 1 END)
+        """
+
+    static let assetCoalescedMediaTimeExpression = "coalesce(media_created_at_ms, media_modified_at_ms)"
 
     static let infrastructureTables = ["grdb_migrations"]
 
@@ -269,7 +278,10 @@ enum CatalogSchemaExpectations {
                 .init(name: nil, descending: false, collation: "BINARY"),
                 .init(name: nil, descending: false, collation: "BINARY"),
                 .init(name: "id", descending: false, collation: "BINARY"),
-            ]
+            ],
+            keyListSQL: """
+                \(assetCurrentTimeEmptyMarkerExpression), \(assetCoalescedMediaTimeExpression), id
+                """
         ),
         .init(
             name: "asset_current_source_time_idx",
@@ -284,7 +296,10 @@ enum CatalogSchemaExpectations {
                 .init(name: nil, descending: false, collation: "BINARY"),
                 .init(name: nil, descending: false, collation: "BINARY"),
                 .init(name: "id", descending: false, collation: "BINARY"),
-            ]
+            ],
+            keyListSQL: """
+                source_id, \(assetCurrentTimeEmptyMarkerExpression), \(assetCoalescedMediaTimeExpression), id
+                """
         ),
         .init(
             name: "asset_current_file_name_idx",

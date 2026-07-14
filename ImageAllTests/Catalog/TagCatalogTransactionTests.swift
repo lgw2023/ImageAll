@@ -48,6 +48,10 @@ final class TagCatalogTransactionTests: XCTestCase {
     }
 
     func testDuplicateNormalizedTagIsRejected() throws {
+        try testRepositoryDuplicateTagReturnsStructuredError()
+    }
+
+    func testRepositoryDuplicateTagReturnsStructuredError() throws {
         let fixture = try CatalogQueryTestSupport.openQueryDatabase()
         XCTAssertThrowsError(
             try fixture.tags.createTag(rawName: "FAMILY", timestampMs: DatabaseTestSupport.timestampMs)
@@ -56,30 +60,93 @@ final class TagCatalogTransactionTests: XCTestCase {
         }
     }
 
-    func testConcurrentDuplicateNormalizedTagIsRejectedByDatabase() throws {
-        let fixture = try CatalogQueryTestSupport.openQueryDatabase()
+    func testConcurrentDatabaseNormalizedNameUniqueConstraintAllowsExactlyOneInsert() throws {
+        let url = try DatabaseTestSupport.makeTempDatabaseURL()
+        _ = try CatalogDatabase.open(at: url)
+
         let group = DispatchGroup()
-        let queue = DispatchQueue(label: "tag-duplicate-race", attributes: .concurrent)
-        var outcomes: [CatalogQueryError?] = Array(repeating: nil, count: 2)
+        let lock = NSLock()
+        var outcomes: [Result<Void, Error>] = []
 
         for index in 0..<2 {
-            queue.async(group: group) {
+            group.enter()
+            DispatchQueue.global().async {
+                defer { group.leave() }
                 do {
-                    _ = try fixture.tags.createTag(rawName: "RaceTag", timestampMs: DatabaseTestSupport.timestampMs)
-                    outcomes[index] = nil
-                } catch let error as CatalogQueryError {
-                    outcomes[index] = error
+                    var config = Configuration()
+                    config.prepareDatabase { db in
+                        try db.execute(sql: "PRAGMA foreign_keys = ON")
+                    }
+                    let queue = try DatabaseQueue(path: url.path, configuration: config)
+                    defer { try? queue.close() }
+                    let tagID = UUID()
+                    try queue.write { db in
+                        try db.execute(
+                            sql: """
+                            INSERT INTO tag (id, name, normalized_name, state, created_at_ms, updated_at_ms)
+                            VALUES (?, ?, ?, 'active', ?, ?)
+                            """,
+                            arguments: [
+                                tagID.uuidString.lowercased(),
+                                "Race \(index)",
+                                "racetag",
+                                DatabaseTestSupport.timestampMs,
+                                DatabaseTestSupport.timestampMs,
+                            ]
+                        )
+                    }
+                    lock.lock()
+                    outcomes.append(.success(()))
+                    lock.unlock()
                 } catch {
-                    outcomes[index] = .persistenceFailure
+                    lock.lock()
+                    outcomes.append(.failure(error))
+                    lock.unlock()
                 }
             }
         }
         group.wait()
 
-        let duplicateCount = outcomes.compactMap { $0 }.filter { $0 == .duplicateTag }.count
-        let successCount = outcomes.filter { $0 == nil }.count
-        XCTAssertEqual(successCount, 1)
-        XCTAssertEqual(duplicateCount, 1)
+        XCTAssertEqual(outcomes.filter { if case .success = $0 { return true }; return false }.count, 1)
+        let failures = outcomes.compactMap { result -> Error? in
+            if case let .failure(error) = result { return error }
+            return nil
+        }
+        XCTAssertEqual(failures.count, 1)
+        XCTAssertTrue(failures[0] is DatabaseError)
+
+        let database = try CatalogDatabase.open(at: url)
+        let rowCount = try database.pool.read { db in
+            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM tag WHERE normalized_name = 'racetag'") ?? 0
+        }
+        XCTAssertEqual(rowCount, 1)
+    }
+
+    func testConcurrentDuplicateNormalizedTagIsRejectedByDatabase() throws {
+        try testConcurrentDatabaseNormalizedNameUniqueConstraintAllowsExactlyOneInsert()
+    }
+
+    func testCreateTagMapsNonDuplicateCheckConstraintToPersistenceFailure() throws {
+        let url = try makeTempDatabaseURL()
+        let database = try CatalogDatabase.open(at: url)
+        try database.pool.write { db in
+            try db.execute(sql: """
+                CREATE TRIGGER test_tag_insert_check_fail
+                BEFORE INSERT ON tag
+                WHEN NEW.normalized_name = 'triggerfailtag'
+                BEGIN
+                    SELECT RAISE(ABORT, 'CHECK constraint failed: state');
+                END
+                """)
+        }
+        let tags = GRDBTagCatalogRepository(database: database)
+        XCTAssertThrowsError(
+            try tags.createTag(rawName: "TriggerFailTag", timestampMs: DatabaseTestSupport.timestampMs)
+        ) { error in
+            XCTAssertEqual(error as? CatalogQueryError, .persistenceFailure)
+            XCTAssertNotEqual(error as? CatalogQueryError, .duplicateTag)
+            XCTAssertFalse(String(describing: error).contains("TriggerFailTag"))
+        }
     }
 
     func testBatchAcceptRejectAndClearReturnPriorStates() throws {
@@ -415,14 +482,15 @@ final class TagCatalogTransactionTests: XCTestCase {
             timestampMs: DatabaseTestSupport.timestampMs
         )
 
-        let beforeRestore = try fault.database.pool.read { db in
-            try Int.fetchOne(
-                db,
-                sql: "SELECT COUNT(*) FROM asset_tag_decision WHERE tag_id = ?",
-                arguments: [fixtureIDs.tagID.uuidString.lowercased()]
-            ) ?? 0
-        }
-        XCTAssertEqual(beforeRestore, 3)
+        let assets = [fixtureIDs.assetA, fixtureIDs.assetB, fixtureIDs.assetC]
+        let beforeRestore = try CatalogQueryTestSupport.decisionStates(
+            database: fault.database,
+            tagID: fixtureIDs.tagID,
+            assetIDs: assets
+        )
+        XCTAssertEqual(beforeRestore[fixtureIDs.assetA], .accepted)
+        XCTAssertEqual(beforeRestore[fixtureIDs.assetB], .accepted)
+        XCTAssertEqual(beforeRestore[fixtureIDs.assetC], .accepted)
 
         try fault.database.pool.write { db in
             try CatalogQueryTestFaultSupport.setFaultMode(.failRestoreAfterFirstWrite, on: db)
@@ -432,8 +500,8 @@ final class TagCatalogTransactionTests: XCTestCase {
             tagID: fixtureIDs.tagID,
             priorStates: [
                 TagMutationPriorState(assetID: fixtureIDs.assetA, priorState: .unknown),
-                TagMutationPriorState(assetID: fixtureIDs.assetB, priorState: .unknown),
-                TagMutationPriorState(assetID: fixtureIDs.assetC, priorState: .unknown),
+                TagMutationPriorState(assetID: fixtureIDs.assetB, priorState: .accepted),
+                TagMutationPriorState(assetID: fixtureIDs.assetC, priorState: .rejected),
             ]
         )
 
@@ -443,13 +511,11 @@ final class TagCatalogTransactionTests: XCTestCase {
             XCTAssertEqual(error as? CatalogQueryError, .persistenceFailure)
         }
 
-        let afterFailedRestore = try fault.database.pool.read { db in
-            try Int.fetchOne(
-                db,
-                sql: "SELECT COUNT(*) FROM asset_tag_decision WHERE tag_id = ?",
-                arguments: [fixtureIDs.tagID.uuidString.lowercased()]
-            ) ?? 0
-        }
+        let afterFailedRestore = try CatalogQueryTestSupport.decisionStates(
+            database: fault.database,
+            tagID: fixtureIDs.tagID,
+            assetIDs: assets
+        )
         XCTAssertEqual(afterFailedRestore, beforeRestore)
     }
 
@@ -466,6 +532,42 @@ final class TagCatalogTransactionTests: XCTestCase {
             let description = String(describing: error)
             XCTAssertFalse(description.contains("INSERT"))
             XCTAssertFalse(description.contains("Closed"))
+        }
+    }
+
+    func testClosedPoolRestoreSurfacesPersistenceFailure() throws {
+        let url = try makeTempDatabaseURL()
+        let database = try CatalogDatabase.open(at: url)
+        let tags = GRDBTagCatalogRepository(database: database)
+        let tag = try tags.createTag(rawName: "RestoreClosed", timestampMs: DatabaseTestSupport.timestampMs)
+        let assetID = UUID()
+        try CatalogRepository(database: database).createSourceWithAsset(
+            NewSourceWithAssetInput(
+                sourceID: UUID(),
+                sourceKind: .folder,
+                displayName: "Folder",
+                bookmark: DatabaseTestSupport.folderBookmark(),
+                assetID: assetID,
+                locatorKind: .file,
+                relativePath: "closed.jpg",
+                photosLocalIdentifier: nil,
+                mediaType: "public.jpeg",
+                timestampMs: DatabaseTestSupport.timestampMs
+            )
+        )
+        let snapshot = TagMutationPriorStateSnapshot(
+            tagID: tag.id,
+            priorStates: [TagMutationPriorState(assetID: assetID, priorState: .unknown)]
+        )
+        try CatalogDatabase.closePool(database.pool)
+
+        XCTAssertThrowsError(
+            try tags.restorePriorStates(snapshot, timestampMs: DatabaseTestSupport.timestampMs)
+        ) { error in
+            XCTAssertEqual(error as? CatalogQueryError, .persistenceFailure)
+            let description = String(describing: error)
+            XCTAssertFalse(description.contains("DELETE"))
+            XCTAssertFalse(description.contains("closed.jpg"))
         }
     }
 

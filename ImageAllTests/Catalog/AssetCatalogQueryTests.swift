@@ -162,39 +162,99 @@ final class AssetCatalogQueryTests: XCTestCase {
 
     func testSearchMatchesFourFieldsAndEscapesWildcards() throws {
         let fixture = try CatalogQueryTestSupport.openQueryDatabase()
+        let ids = fixture.ids
 
         let byFileName = try fixture.query.fetchAssetPage(
-            AssetPageRequest(filter: AssetPageFilter(searchText: "img_002"), sort: .newest, cursor: nil, limit: 50)
+            AssetPageRequest(filter: AssetPageFilter(searchText: "img_002"), sort: .newest, cursor: nil, limit: 200)
         )
-        XCTAssertEqual(byFileName.items.map(\.assetID), [fixture.ids.assetMiddle])
+        XCTAssertEqual(byFileName.items.map(\.assetID), [ids.assetMiddle])
 
         let byPath = try fixture.query.fetchAssetPage(
-            AssetPageRequest(filter: AssetPageFilter(searchText: "2024/beach"), sort: .newest, cursor: nil, limit: 50)
+            AssetPageRequest(filter: AssetPageFilter(searchText: "2024/beach"), sort: .fileNameAscending, cursor: nil, limit: 200)
         )
-        XCTAssertTrue(byPath.items.contains { $0.assetID == fixture.ids.assetNewest })
+        XCTAssertEqual(
+            Set(byPath.items.map(\.assetID)),
+            Set([
+                ids.assetNewest, ids.assetMiddle, ids.assetOldest, ids.assetNoTime,
+                ids.assetDuplicateTimeA, ids.assetDuplicateTimeB, ids.assetNocaseLower, ids.assetNocaseUpper,
+                ids.assetLiteralWildcard, ids.assetLiteralBackslash, ids.assetDecoyWildcard,
+                ids.assetDecoyUnderscore, ids.assetDecoyBackslash,
+            ])
+        )
 
         let bySource = try fixture.query.fetchAssetPage(
-            AssetPageRequest(filter: AssetPageFilter(searchText: "vacation"), sort: .newest, cursor: nil, limit: 50)
+            AssetPageRequest(filter: AssetPageFilter(searchText: "vacation"), sort: .newest, cursor: nil, limit: 200)
         )
-        XCTAssertTrue(bySource.items.contains { $0.sourceID == fixture.ids.sourceA })
+        XCTAssertEqual(
+            Set(bySource.items.map(\.assetID)),
+            Set([
+                ids.assetNewest, ids.assetMiddle, ids.assetOldest, ids.assetNoTime,
+                ids.assetDuplicateTimeA, ids.assetDuplicateTimeB, ids.assetNocaseLower, ids.assetNocaseUpper,
+                ids.assetLiteralWildcard, ids.assetLiteralBackslash, ids.assetDecoyWildcard,
+                ids.assetDecoyUnderscore, ids.assetDecoyBackslash,
+            ])
+        )
 
         let byTag = try fixture.query.fetchAssetPage(
-            AssetPageRequest(filter: AssetPageFilter(searchText: "Family"), sort: .newest, cursor: nil, limit: 50)
+            AssetPageRequest(filter: AssetPageFilter(searchText: "Family"), sort: .newest, cursor: nil, limit: 200)
         )
-        XCTAssertEqual(byTag.items.map(\.assetID).sorted { $0.uuidString < $1.uuidString }, [
-            fixture.ids.assetMiddle,
-            fixture.ids.assetNewest,
-        ].sorted { $0.uuidString < $1.uuidString })
+        XCTAssertEqual(byTag.items.map(\.assetID), [ids.assetNewest, ids.assetMiddle])
 
         let literalPercentUnderscore = try fixture.query.fetchAssetPage(
-            AssetPageRequest(filter: AssetPageFilter(searchText: "100%_complete"), sort: .newest, cursor: nil, limit: 50)
+            AssetPageRequest(filter: AssetPageFilter(searchText: "100%_complete"), sort: .newest, cursor: nil, limit: 200)
         )
-        XCTAssertEqual(literalPercentUnderscore.items.map(\.assetID), [fixture.ids.assetLiteralWildcard])
+        XCTAssertEqual(literalPercentUnderscore.items.map(\.assetID), [ids.assetLiteralWildcard])
+
+        let literalUnderscore = try fixture.query.fetchAssetPage(
+            AssetPageRequest(filter: AssetPageFilter(searchText: "img_002"), sort: .newest, cursor: nil, limit: 200)
+        )
+        XCTAssertEqual(literalUnderscore.items.map(\.assetID), [ids.assetMiddle])
 
         let literalBackslash = try fixture.query.fetchAssetPage(
-            AssetPageRequest(filter: AssetPageFilter(searchText: "weird\\segment"), sort: .newest, cursor: nil, limit: 50)
+            AssetPageRequest(filter: AssetPageFilter(searchText: "weird\\segment"), sort: .newest, cursor: nil, limit: 200)
         )
-        XCTAssertEqual(literalBackslash.items.map(\.assetID), [fixture.ids.assetLiteralBackslash])
+        XCTAssertEqual(literalBackslash.items.map(\.assetID), [ids.assetLiteralBackslash])
+    }
+
+    func testMultiFamilyFilterCombinationHasUniquePositiveAndNegativeHits() throws {
+        let fixture = try CatalogQueryTestSupport.openQueryDatabase()
+        let positive = try fixture.query.fetchAssetPage(
+            AssetPageRequest(
+                filter: AssetPageFilter(
+                    sourceIDs: [fixture.ids.sourceA],
+                    tagDecisionFilters: [
+                        TagDecisionFilter(tagID: fixture.ids.tagFamily, decision: .accepted),
+                    ],
+                    tagMatchMode: .all,
+                    availabilities: [.available],
+                    mediaTypes: ["public.png"],
+                    searchText: "img_002"
+                ),
+                sort: .newest,
+                cursor: nil,
+                limit: 50
+            )
+        )
+        XCTAssertEqual(positive.items.map(\.assetID), [fixture.ids.assetMiddle])
+
+        let negative = try fixture.query.fetchAssetPage(
+            AssetPageRequest(
+                filter: AssetPageFilter(
+                    sourceIDs: [fixture.ids.sourceA],
+                    tagDecisionFilters: [
+                        TagDecisionFilter(tagID: fixture.ids.tagFamily, decision: .accepted),
+                    ],
+                    tagMatchMode: .all,
+                    availabilities: [.available],
+                    mediaTypes: ["public.jpeg"],
+                    searchText: "img_002"
+                ),
+                sort: .newest,
+                cursor: nil,
+                limit: 50
+            )
+        )
+        XCTAssertTrue(negative.items.isEmpty)
     }
 
     func testSearchInjectionDoesNotExpandResults() throws {
@@ -225,47 +285,22 @@ final class AssetCatalogQueryTests: XCTestCase {
         XCTAssertEqual(whitespace.items.map(\.assetID), unfiltered.items.map(\.assetID))
     }
 
-    func testNewestOldestAndFileNameSortOrdersAreStable() throws {
+    func testNewestOldestAndFileNameSortOrdersMatchIndependentExpectations() throws {
         let fixture = try CatalogQueryTestSupport.openQueryDatabase()
 
-        let newest = try fixture.query.fetchAssetPage(
-            AssetPageRequest(filter: AssetPageFilter(), sort: .newest, cursor: nil, limit: 200)
-        )
-        XCTAssertEqual(newest.items.first?.assetID, fixture.ids.assetNewest)
-        XCTAssertEqual(newest.items.last?.assetID, fixture.ids.assetNoTime)
-
-        let duplicateIDs = newest.items
-            .filter { $0.assetID == fixture.ids.assetDuplicateTimeA || $0.assetID == fixture.ids.assetDuplicateTimeB }
-            .map(\.assetID)
-        XCTAssertEqual(
-            duplicateIDs,
-            [fixture.ids.assetDuplicateTimeA, fixture.ids.assetDuplicateTimeB].sorted { $0.uuidString > $1.uuidString }
-        )
-
-        let oldest = try fixture.query.fetchAssetPage(
-            AssetPageRequest(filter: AssetPageFilter(), sort: .oldest, cursor: nil, limit: 200)
-        )
-        XCTAssertEqual(oldest.items.first?.assetID, fixture.ids.assetOldest)
-
-        let byName = try fixture.query.fetchAssetPage(
-            AssetPageRequest(filter: AssetPageFilter(), sort: .fileNameAscending, cursor: nil, limit: 200)
-        )
-        let names = byName.items.compactMap(\.fileName)
-        XCTAssertEqual(names, names.sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending })
-
-        let nocaseIndexA = byName.items.firstIndex { $0.assetID == fixture.ids.assetNocaseLower }
-        let nocaseIndexB = byName.items.firstIndex { $0.assetID == fixture.ids.assetNocaseUpper }
-        guard let nocaseIndexA, let nocaseIndexB else {
-            return XCTFail("Expected NOCASE collision assets")
-        }
-        if fixture.ids.assetNocaseLower.uuidString < fixture.ids.assetNocaseUpper.uuidString {
-            XCTAssertLessThan(nocaseIndexA, nocaseIndexB)
-        } else {
-            XCTAssertLessThan(nocaseIndexB, nocaseIndexA)
+        for sort in [AssetPageSort.newest, .oldest, .fileNameAscending] {
+            let page = try fixture.query.fetchAssetPage(
+                AssetPageRequest(filter: AssetPageFilter(), sort: sort, cursor: nil, limit: 200)
+            )
+            XCTAssertEqual(
+                page.items.map(\.assetID),
+                CatalogQuerySortExpectations.expectedOrder(for: sort),
+                "Full fetch mismatch for \(sort)"
+            )
         }
     }
 
-    func testAllSortModesPaginateIdenticallyToFullFetch() throws {
+    func testAllSortModesPaginateIdenticallyToIndependentExpectations() throws {
         let fixture = try CatalogQueryTestSupport.openQueryDatabase()
         for sort in [AssetPageSort.newest, .oldest, .fileNameAscending] {
             var seen: [UUID] = []
@@ -281,15 +316,20 @@ final class AssetCatalogQueryTests: XCTestCase {
                 cursor = page.nextCursor
             } while cursor != nil
 
-            let full = try fixture.query.fetchAssetPage(
-                AssetPageRequest(filter: AssetPageFilter(), sort: sort, cursor: nil, limit: 200)
+            XCTAssertEqual(
+                seen,
+                CatalogQuerySortExpectations.expectedOrder(for: sort),
+                "Pagination mismatch for \(sort)"
             )
-            XCTAssertEqual(seen, full.items.map(\.assetID), "Pagination mismatch for \(sort)")
         }
     }
 
+    func testNewestOldestAndFileNameSortOrdersAreStable() throws {
+        try testNewestOldestAndFileNameSortOrdersMatchIndependentExpectations()
+    }
+
     func testKeysetPaginationTraversesFullSetWithoutDuplicatesOrGaps() throws {
-        try testAllSortModesPaginateIdenticallyToFullFetch()
+        try testAllSortModesPaginateIdenticallyToIndependentExpectations()
     }
 
     func testPaginationSurvivesInsertBeforeCursor() throws {

@@ -115,7 +115,7 @@ struct GRDBTagCatalogRepository: TagCatalogQueryPort, TagDecisionCommandPort, Se
                         ]
                     )
                 } catch let error as DatabaseError where error.resultCode == .SQLITE_CONSTRAINT {
-                    throw CatalogQueryError.duplicateTag
+                    throw mapTagInsertConstraint(error, db: db, normalizedName: tag.normalizedName)
                 } catch {
                     throw CatalogQueryError.persistenceFailure
                 }
@@ -198,7 +198,7 @@ struct GRDBTagCatalogRepository: TagCatalogQueryPort, TagDecisionCommandPort, Se
                         ]
                     )
                 } catch let error as DatabaseError where error.resultCode == .SQLITE_CONSTRAINT {
-                    throw CatalogQueryError.duplicateTag
+                    throw mapTagInsertConstraint(error, db: db, normalizedName: tag.normalizedName)
                 } catch {
                     throw CatalogQueryError.persistenceFailure
                 }
@@ -423,6 +423,25 @@ struct GRDBTagCatalogRepository: TagCatalogQueryPort, TagDecisionCommandPort, Se
         return assetIDs.map { assetID in
             TagMutationPriorState(assetID: assetID, priorState: priorByAsset[assetID] ?? .unknown)
         }
+    }
+
+    private func mapTagInsertConstraint(_ error: DatabaseError, db: Database, normalizedName: String) -> CatalogQueryError {
+        if error.extendedResultCode == .SQLITE_CONSTRAINT_UNIQUE {
+            return .duplicateTag
+        }
+        if (try? normalizedNameExists(db, normalizedName: normalizedName)) == true {
+            return .duplicateTag
+        }
+        return .persistenceFailure
+    }
+
+    private func normalizedNameExists(_ db: Database, normalizedName: String) throws -> Bool {
+        let count = try Int.fetchOne(
+            db,
+            sql: "SELECT COUNT(*) FROM tag WHERE normalized_name = ?",
+            arguments: [normalizedName]
+        ) ?? 0
+        return count > 0
     }
 
     private func mapDomainError(_ error: DomainError) -> CatalogQueryError {

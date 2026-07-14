@@ -71,6 +71,38 @@ enum DatabaseTestSupport {
         return normalizeSQL(String(ddl[range.upperBound...]))
     }
 
+    static func normalizedIndexKeyList(from ddl: String?) -> String? {
+        guard let ddl else { return nil }
+        guard let onRange = ddl.range(of: " ON ", options: [.caseInsensitive]) else {
+            return nil
+        }
+        let afterOn = ddl[onRange.upperBound...]
+        guard let openParen = afterOn.firstIndex(of: "(") else {
+            return nil
+        }
+        var depth = 0
+        var closeParen: String.Index?
+        var index = openParen
+        while index < afterOn.endIndex {
+            let character = afterOn[index]
+            if character == "(" {
+                depth += 1
+            } else if character == ")" {
+                depth -= 1
+                if depth == 0 {
+                    closeParen = index
+                    break
+                }
+            }
+            index = afterOn.index(after: index)
+        }
+        guard let closeParen else {
+            return nil
+        }
+        let keyList = afterOn[afterOn.index(after: openParen) ..< closeParen]
+        return normalizeSQL(String(keyList))
+    }
+
     static func indexNames(_ db: Database) throws -> [String] {
         try fetchStrings(
             db,

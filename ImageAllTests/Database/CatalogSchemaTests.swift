@@ -178,6 +178,14 @@ final class CatalogSchemaTests: XCTestCase {
                         XCTAssertEqual(actual.desc, expectedEntry.descending, "\(expected.name) DESC at seq \(actual.seqno)")
                         XCTAssertEqual(actual.coll, expectedEntry.collation, "\(expected.name) collation at seq \(actual.seqno)")
                     }
+                    if let expectedKeyListSQL = expected.keyListSQL {
+                        let actualKeyListSQL = DatabaseTestSupport.normalizedIndexKeyList(from: ddl)
+                        XCTAssertEqual(
+                            actualKeyListSQL,
+                            DatabaseTestSupport.normalizeSQL(expectedKeyListSQL),
+                            "Key list SQL for \(expected.name)"
+                        )
+                    }
                 } else {
                     let keyEntries = try DatabaseTestSupport.indexKeyEntries(db, index: expected.name)
                     XCTAssertEqual(

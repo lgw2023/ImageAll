@@ -107,6 +107,27 @@ enum CatalogQueryTestFaultSupport {
                 SELECT RAISE(ABORT, 'test_fail_restore_delete_after_first');
             END
             """)
+
+        try db.execute(sql: "DROP TRIGGER IF EXISTS test_count_restore_update")
+        try db.execute(sql: """
+            CREATE TRIGGER test_count_restore_update
+            AFTER UPDATE ON asset_tag_decision
+            WHEN (SELECT mode FROM test_fault_control) = 3
+            BEGIN
+                UPDATE test_restore_write_count SET count = count + 1;
+            END
+            """)
+
+        try db.execute(sql: "DROP TRIGGER IF EXISTS test_fail_restore_update_after_first")
+        try db.execute(sql: """
+            CREATE TRIGGER test_fail_restore_update_after_first
+            BEFORE UPDATE ON asset_tag_decision
+            WHEN (SELECT mode FROM test_fault_control) = 3
+              AND (SELECT count FROM test_restore_write_count) >= 1
+            BEGIN
+                SELECT RAISE(ABORT, 'test_fail_restore_update_after_first');
+            END
+            """)
     }
 
     static func setFaultMode(_ mode: FaultMode, on db: Database) throws {
