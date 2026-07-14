@@ -613,6 +613,8 @@ pending → running → completed
 
 PhotoKit 与权限测试不能只依赖 mock；发布前必须在真实 macOS 用户会话中执行一套人工回归。
 
+项目所有者提供的个人照片档案只能作为额外的人工只读 smoke 来源，不能替代可丢弃 fixture 或专用测试 Photos Library。自动化测试不得依赖真实档案；故障注入、删除、移动、权限修改和图库修复只能针对专用测试数据。当前本机受保护来源及授权边界见 [`LOCAL-TEST-DATA-SAFETY.md`](./LOCAL-TEST-DATA-SAFETY.md)。
+
 ## 18. MVP 交付阶段
 
 ### 阶段 0：工程与目录库

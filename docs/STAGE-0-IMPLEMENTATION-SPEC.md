@@ -90,7 +90,8 @@ Domain                  → Swift 标准库 / Foundation 值类型
 - 事实库：Application Support 下的 `Catalog/ImageAll.sqlite`；
 - 同机操作快照：Application Support 下的 `Backups/`；
 - 可重建文件：Caches 下的对应应用目录；
-- 测试：每个测试使用独立临时目录，不能接触真实用户容器。
+- 测试：每个测试使用独立临时目录，不能接触真实用户容器或
+  [`LOCAL-TEST-DATA-SAFETY.md`](./LOCAL-TEST-DATA-SAFETY.md) 定义的受保护真实照片来源。
 
 具体容器根路径由系统 API 解析。正式 bundle identifier 不是本地创建工程的 Gate 0；未确认时使用明确的本地开发 identifier。它必须在切片 1 完成和首个共享基线提交前确认，临时 identifier 不得进入该基线。
 

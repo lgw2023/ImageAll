@@ -97,6 +97,7 @@ ImageAll.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved
 - Composition Root 数据库组装、启动状态、`CatalogReady` / `CatalogUnavailable` UI；
 - Job claim、lease、状态转换、控制请求、checkpoint、恢复、handler registry 或未知版本终止逻辑；
 - 文件夹扫描、PhotoKit、bookmark 获取、缩略图、特征、预测或产品界面；
+- 访问 `/Volumes/HDD2/Photos Library.photoslibrary` 或 `/Volumes/HDD2` 顶层年份文件夹；这些是未来阶段可用于人工只读验证的受保护真实数据，不是本切片 fixture，完整约束见 [`LOCAL-TEST-DATA-SAFETY.md`](./LOCAL-TEST-DATA-SAFETY.md)；
 - schema 规格外的表、索引、触发器、视图、FTS 或测试专用生产表；
 - 新 target、scheme、entitlement、build script、UI Test 或额外 module。
 
@@ -284,7 +285,7 @@ partial unique 反例必须证明：
 
 红灯证据可以保存在实施报告附带的终端日志中，不要求为每个红灯创建 commit，也不要求把故意错误的中间代码留在最终历史。最终仍只交付一个切片 3 实现 commit。
 
-每个数据库测试使用独立临时目录和独立数据库文件，不访问真实用户容器，不依赖测试顺序。测试只清理自己创建的临时目录。
+每个数据库测试使用独立临时目录和独立数据库文件，不访问真实用户容器或受保护真实照片来源，不依赖测试顺序。测试只清理自己创建的临时目录。
 
 ## 8. 最低测试矩阵
 
