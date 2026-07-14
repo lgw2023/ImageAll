@@ -7,11 +7,21 @@ enum CatalogQueryTestSupport {
     struct FixtureIDs: Sendable {
         let sourceA: UUID
         let sourceB: UUID
+        let sourceC: UUID
+        let sourceD: UUID
         let assetNewest: UUID
         let assetMiddle: UUID
         let assetOldest: UUID
         let assetNoTime: UUID
         let assetHistorical: UUID
+        let assetActive: UUID
+        let assetAuthRequired: UUID
+        let assetDuplicateTimeA: UUID
+        let assetDuplicateTimeB: UUID
+        let assetNocaseLower: UUID
+        let assetNocaseUpper: UUID
+        let assetLiteralWildcard: UUID
+        let assetLiteralBackslash: UUID
         let tagFamily: UUID
         let tagWork: UUID
         let tagArchived: UUID
@@ -33,6 +43,21 @@ enum CatalogQueryTestSupport {
         return (database, query, tags, repository, ids)
     }
 
+    static func openFaultDatabase() throws -> (
+        database: CatalogDatabase,
+        tags: GRDBTagCatalogRepository,
+        repository: CatalogRepository
+    ) {
+        let url = try DatabaseTestSupport.makeTempDatabaseURL()
+        let database = try CatalogDatabase.open(at: url)
+        try database.pool.write { db in
+            try CatalogQueryTestFaultSupport.installFaultInfrastructure(on: db)
+        }
+        let repository = CatalogRepository(database: database)
+        let tags = GRDBTagCatalogRepository(database: database)
+        return (database, tags, repository)
+    }
+
     @discardableResult
     static func seedCatalogFixture(
         database: CatalogDatabase,
@@ -40,11 +65,21 @@ enum CatalogQueryTestSupport {
     ) throws -> FixtureIDs {
         let sourceA = UUID(uuidString: "10000000-0000-4000-8000-000000000001")!
         let sourceB = UUID(uuidString: "10000000-0000-4000-8000-000000000002")!
+        let sourceC = UUID(uuidString: "10000000-0000-4000-8000-000000000003")!
+        let sourceD = UUID(uuidString: "10000000-0000-4000-8000-000000000004")!
         let assetNewest = UUID(uuidString: "20000000-0000-4000-8000-000000000001")!
         let assetMiddle = UUID(uuidString: "20000000-0000-4000-8000-000000000002")!
         let assetOldest = UUID(uuidString: "20000000-0000-4000-8000-000000000003")!
         let assetNoTime = UUID(uuidString: "20000000-0000-4000-8000-000000000004")!
         let assetHistorical = UUID(uuidString: "20000000-0000-4000-8000-000000000005")!
+        let assetActive = UUID(uuidString: "20000000-0000-4000-8000-000000000006")!
+        let assetAuthRequired = UUID(uuidString: "20000000-0000-4000-8000-000000000007")!
+        let assetDuplicateTimeA = UUID(uuidString: "20000000-0000-4000-8000-000000000008")!
+        let assetDuplicateTimeB = UUID(uuidString: "20000000-0000-4000-8000-000000000009")!
+        let assetNocaseLower = UUID(uuidString: "20000000-0000-4000-8000-00000000000A")!
+        let assetNocaseUpper = UUID(uuidString: "20000000-0000-4000-8000-00000000000B")!
+        let assetLiteralWildcard = UUID(uuidString: "20000000-0000-4000-8000-00000000000C")!
+        let assetLiteralBackslash = UUID(uuidString: "20000000-0000-4000-8000-00000000000D")!
         let tagFamily = UUID(uuidString: "30000000-0000-4000-8000-000000000001")!
         let tagWork = UUID(uuidString: "30000000-0000-4000-8000-000000000002")!
         let tagArchived = UUID(uuidString: "30000000-0000-4000-8000-000000000003")!
@@ -116,6 +151,72 @@ enum CatalogQueryTestSupport {
                 availability: "available",
                 locatorState: "historical"
             )
+            try insertAsset(
+                db,
+                assetID: assetDuplicateTimeA,
+                sourceID: sourceA,
+                relativePath: "2024/beach/dup-a.jpg",
+                fileName: "dup-a.jpg",
+                mediaType: "public.jpeg",
+                createdMs: 1_650_000_000_000,
+                modifiedMs: nil,
+                availability: "available"
+            )
+            try insertAsset(
+                db,
+                assetID: assetDuplicateTimeB,
+                sourceID: sourceA,
+                relativePath: "2024/beach/dup-b.jpg",
+                fileName: "dup-b.jpg",
+                mediaType: "public.jpeg",
+                createdMs: 1_650_000_000_000,
+                modifiedMs: nil,
+                availability: "available"
+            )
+            try insertAsset(
+                db,
+                assetID: assetNocaseLower,
+                sourceID: sourceA,
+                relativePath: "2024/beach/cover-a.jpg",
+                fileName: "AlbumCover.jpg",
+                mediaType: "public.jpeg",
+                createdMs: 1_640_000_000_000,
+                modifiedMs: nil,
+                availability: "available"
+            )
+            try insertAsset(
+                db,
+                assetID: assetNocaseUpper,
+                sourceID: sourceA,
+                relativePath: "2024/beach/cover-b.jpg",
+                fileName: "albumcover.jpg",
+                mediaType: "public.jpeg",
+                createdMs: 1_640_000_000_001,
+                modifiedMs: nil,
+                availability: "available"
+            )
+            try insertAsset(
+                db,
+                assetID: assetLiteralWildcard,
+                sourceID: sourceA,
+                relativePath: "2024/beach/100%_complete.jpg",
+                fileName: "100%_complete.jpg",
+                mediaType: "public.jpeg",
+                createdMs: 1_630_000_000_000,
+                modifiedMs: nil,
+                availability: "available"
+            )
+            try insertAsset(
+                db,
+                assetID: assetLiteralBackslash,
+                sourceID: sourceA,
+                relativePath: "2024/beach/weird\\segment.jpg",
+                fileName: "weird\\segment.jpg",
+                mediaType: "public.jpeg",
+                createdMs: 1_620_000_000_000,
+                modifiedMs: nil,
+                availability: "available"
+            )
             try db.execute(
                 sql: """
                 UPDATE asset
@@ -140,7 +241,7 @@ enum CatalogQueryTestSupport {
             )
             try insertAsset(
                 db,
-                assetID: UUID(uuidString: "20000000-0000-4000-8000-000000000006")!,
+                assetID: UUID(uuidString: "20000000-0000-4000-8000-00000000000E")!,
                 sourceID: sourceB,
                 relativePath: "projects/alpha.png",
                 fileName: "alpha.png",
@@ -148,6 +249,57 @@ enum CatalogQueryTestSupport {
                 createdMs: 1_650_000_000_000,
                 modifiedMs: nil,
                 availability: "available"
+            )
+            try db.execute(
+                sql: """
+                INSERT INTO source (
+                    id, kind, display_name, bookmark, scan_generation, dirty_epoch,
+                    state, created_at_ms, updated_at_ms
+                ) VALUES (?, 'folder', 'Active Library', ?, 0, 0, 'active', ?, ?)
+                """,
+                arguments: [
+                    sourceC.uuidString.lowercased(),
+                    DatabaseTestSupport.folderBookmark(),
+                    DatabaseTestSupport.timestampMs,
+                    DatabaseTestSupport.timestampMs,
+                ]
+            )
+            try insertAsset(
+                db,
+                assetID: assetActive,
+                sourceID: sourceC,
+                relativePath: "live/photo.jpg",
+                fileName: "photo.jpg",
+                mediaType: "public.jpeg",
+                createdMs: 1_610_000_000_000,
+                modifiedMs: nil,
+                availability: "available"
+            )
+            try db.execute(
+                sql: """
+                INSERT INTO source (
+                    id, kind, display_name, bookmark, scan_generation, dirty_epoch,
+                    state, created_at_ms, updated_at_ms
+                ) VALUES (?, 'photos', 'Needs Auth', NULL, 0, 0, 'authorizationRequired', ?, ?)
+                """,
+                arguments: [
+                    sourceD.uuidString.lowercased(),
+                    DatabaseTestSupport.timestampMs,
+                    DatabaseTestSupport.timestampMs,
+                ]
+            )
+            try insertAsset(
+                db,
+                assetID: assetAuthRequired,
+                sourceID: sourceD,
+                relativePath: nil,
+                fileName: nil,
+                mediaType: "public.heic",
+                createdMs: 1_605_000_000_000,
+                modifiedMs: nil,
+                availability: "available",
+                locatorKind: "photos",
+                photosLocalIdentifier: "AUTH-LOCAL-ID"
             )
             try db.execute(
                 sql: """
@@ -193,11 +345,21 @@ enum CatalogQueryTestSupport {
         return FixtureIDs(
             sourceA: sourceA,
             sourceB: sourceB,
+            sourceC: sourceC,
+            sourceD: sourceD,
             assetNewest: assetNewest,
             assetMiddle: assetMiddle,
             assetOldest: assetOldest,
             assetNoTime: assetNoTime,
             assetHistorical: assetHistorical,
+            assetActive: assetActive,
+            assetAuthRequired: assetAuthRequired,
+            assetDuplicateTimeA: assetDuplicateTimeA,
+            assetDuplicateTimeB: assetDuplicateTimeB,
+            assetNocaseLower: assetNocaseLower,
+            assetNocaseUpper: assetNocaseUpper,
+            assetLiteralWildcard: assetLiteralWildcard,
+            assetLiteralBackslash: assetLiteralBackslash,
             tagFamily: tagFamily,
             tagWork: tagWork,
             tagArchived: tagArchived
@@ -211,7 +373,7 @@ enum CatalogQueryTestSupport {
         }
         let pool = try DatabasePool(path: url.path, configuration: config)
         let database = CatalogDatabase(pool: pool)
-        let migrator = CatalogDatabase.makeV001OnlyMigrator()
+        let migrator = DatabaseTestSupport.makeV001OnlyMigrator()
         try migrator.migrate(pool)
         return database
     }
@@ -220,13 +382,15 @@ enum CatalogQueryTestSupport {
         _ db: Database,
         assetID: UUID,
         sourceID: UUID,
-        relativePath: String,
+        relativePath: String?,
         fileName: String?,
         mediaType: String,
         createdMs: Int64?,
         modifiedMs: Int64?,
         availability: String,
-        locatorState: String = "current"
+        locatorState: String = "current",
+        locatorKind: String = "file",
+        photosLocalIdentifier: String? = nil
     ) throws {
         try db.execute(
             sql: """
@@ -234,12 +398,14 @@ enum CatalogQueryTestSupport {
                 id, source_id, locator_kind, relative_path, photos_local_identifier,
                 locator_state, media_type, media_created_at_ms, media_modified_at_ms,
                 file_name, content_revision, availability, record_created_at_ms, record_updated_at_ms
-            ) VALUES (?, ?, 'file', ?, NULL, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
             """,
             arguments: [
                 assetID.uuidString.lowercased(),
                 sourceID.uuidString.lowercased(),
+                locatorKind,
                 relativePath,
+                photosLocalIdentifier,
                 locatorState,
                 mediaType,
                 createdMs,

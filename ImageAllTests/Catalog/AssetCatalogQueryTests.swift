@@ -28,27 +28,49 @@ final class AssetCatalogQueryTests: XCTestCase {
         XCTAssertFalse(page.items.contains { $0.assetID == fixture.ids.assetHistorical })
     }
 
-    func testDisabledAndUnavailableSourcesStillReturnCurrentAssets() throws {
+    func testAllSourceStatesReturnCurrentAssets() throws {
         let fixture = try CatalogQueryTestSupport.openQueryDatabase()
         let page = try fixture.query.fetchAssetPage(
-            AssetPageRequest(filter: AssetPageFilter(), sort: .newest, cursor: nil, limit: 50)
+            AssetPageRequest(filter: AssetPageFilter(), sort: .newest, cursor: nil, limit: 200)
         )
         XCTAssertTrue(page.items.contains { $0.sourceID == fixture.ids.sourceA && $0.sourceState == .disabled })
         XCTAssertTrue(page.items.contains { $0.sourceID == fixture.ids.sourceB && $0.sourceState == .unavailable })
+        XCTAssertTrue(page.items.contains { $0.sourceID == fixture.ids.sourceC && $0.sourceState == .active })
+        XCTAssertTrue(page.items.contains { $0.sourceID == fixture.ids.sourceD && $0.sourceState == .authorizationRequired })
     }
 
-    func testSourceFilterUsesORSemantics() throws {
+    func testDisabledAndUnavailableSourcesStillReturnCurrentAssets() throws {
+        try testAllSourceStatesReturnCurrentAssets()
+    }
+
+    func testSourceFilterUsesORSemanticsAndExcludesUnselectedSources() throws {
         let fixture = try CatalogQueryTestSupport.openQueryDatabase()
-        let page = try fixture.query.fetchAssetPage(
+        let both = try fixture.query.fetchAssetPage(
             AssetPageRequest(
                 filter: AssetPageFilter(sourceIDs: [fixture.ids.sourceA, fixture.ids.sourceB]),
                 sort: .newest,
                 cursor: nil,
-                limit: 50
+                limit: 200
             )
         )
-        XCTAssertTrue(page.items.allSatisfy { $0.sourceID == fixture.ids.sourceA || $0.sourceID == fixture.ids.sourceB })
-        XCTAssertGreaterThan(page.items.count, 1)
+        XCTAssertTrue(both.items.allSatisfy { $0.sourceID == fixture.ids.sourceA || $0.sourceID == fixture.ids.sourceB })
+        XCTAssertTrue(both.items.contains { $0.sourceID == fixture.ids.sourceA })
+        XCTAssertTrue(both.items.contains { $0.sourceID == fixture.ids.sourceB })
+
+        let onlyA = try fixture.query.fetchAssetPage(
+            AssetPageRequest(
+                filter: AssetPageFilter(sourceIDs: [fixture.ids.sourceA]),
+                sort: .newest,
+                cursor: nil,
+                limit: 200
+            )
+        )
+        XCTAssertTrue(onlyA.items.allSatisfy { $0.sourceID == fixture.ids.sourceA })
+        XCTAssertFalse(onlyA.items.contains { $0.sourceID == fixture.ids.sourceB })
+    }
+
+    func testSourceFilterUsesORSemantics() throws {
+        try testSourceFilterUsesORSemanticsAndExcludesUnselectedSources()
     }
 
     func testAvailabilityAndMediaTypeFilters() throws {
@@ -144,70 +166,176 @@ final class AssetCatalogQueryTests: XCTestCase {
         let byFileName = try fixture.query.fetchAssetPage(
             AssetPageRequest(filter: AssetPageFilter(searchText: "img_002"), sort: .newest, cursor: nil, limit: 50)
         )
-        XCTAssertEqual(byFileName.items.count, 1)
-        XCTAssertEqual(byFileName.items[0].assetID, fixture.ids.assetMiddle)
+        XCTAssertEqual(byFileName.items.map(\.assetID), [fixture.ids.assetMiddle])
 
         let byPath = try fixture.query.fetchAssetPage(
             AssetPageRequest(filter: AssetPageFilter(searchText: "2024/beach"), sort: .newest, cursor: nil, limit: 50)
         )
-        XCTAssertFalse(byPath.items.isEmpty)
+        XCTAssertTrue(byPath.items.contains { $0.assetID == fixture.ids.assetNewest })
 
         let bySource = try fixture.query.fetchAssetPage(
             AssetPageRequest(filter: AssetPageFilter(searchText: "vacation"), sort: .newest, cursor: nil, limit: 50)
         )
-        XCTAssertFalse(bySource.items.isEmpty)
+        XCTAssertTrue(bySource.items.contains { $0.sourceID == fixture.ids.sourceA })
 
         let byTag = try fixture.query.fetchAssetPage(
             AssetPageRequest(filter: AssetPageFilter(searchText: "Family"), sort: .newest, cursor: nil, limit: 50)
         )
-        XCTAssertFalse(byTag.items.isEmpty)
+        XCTAssertEqual(byTag.items.map(\.assetID).sorted { $0.uuidString < $1.uuidString }, [
+            fixture.ids.assetMiddle,
+            fixture.ids.assetNewest,
+        ].sorted { $0.uuidString < $1.uuidString })
 
-        let literal = try fixture.query.fetchAssetPage(
+        let literalPercentUnderscore = try fixture.query.fetchAssetPage(
             AssetPageRequest(filter: AssetPageFilter(searchText: "100%_complete"), sort: .newest, cursor: nil, limit: 50)
         )
-        XCTAssertTrue(literal.items.isEmpty)
+        XCTAssertEqual(literalPercentUnderscore.items.map(\.assetID), [fixture.ids.assetLiteralWildcard])
+
+        let literalBackslash = try fixture.query.fetchAssetPage(
+            AssetPageRequest(filter: AssetPageFilter(searchText: "weird\\segment"), sort: .newest, cursor: nil, limit: 50)
+        )
+        XCTAssertEqual(literalBackslash.items.map(\.assetID), [fixture.ids.assetLiteralBackslash])
+    }
+
+    func testSearchInjectionDoesNotExpandResults() throws {
+        let fixture = try CatalogQueryTestSupport.openQueryDatabase()
+        let baseline = try fixture.query.fetchAssetPage(
+            AssetPageRequest(filter: AssetPageFilter(searchText: "no-such-term"), sort: .newest, cursor: nil, limit: 200)
+        )
+        let injection = try fixture.query.fetchAssetPage(
+            AssetPageRequest(filter: AssetPageFilter(searchText: "' OR '1'='1"), sort: .newest, cursor: nil, limit: 200)
+        )
+        XCTAssertTrue(baseline.items.isEmpty)
+        XCTAssertTrue(injection.items.isEmpty)
+    }
+
+    func testWhitespaceOnlySearchMatchesUnfiltered() throws {
+        let fixture = try CatalogQueryTestSupport.openQueryDatabase()
+        let unfiltered = try fixture.query.fetchAssetPage(
+            AssetPageRequest(filter: AssetPageFilter(), sort: .newest, cursor: nil, limit: 200)
+        )
+        let whitespace = try fixture.query.fetchAssetPage(
+            AssetPageRequest(
+                filter: AssetPageFilter(searchText: "\u{2003}\u{3000}\u{00A0}"),
+                sort: .newest,
+                cursor: nil,
+                limit: 200
+            )
+        )
+        XCTAssertEqual(whitespace.items.map(\.assetID), unfiltered.items.map(\.assetID))
     }
 
     func testNewestOldestAndFileNameSortOrdersAreStable() throws {
         let fixture = try CatalogQueryTestSupport.openQueryDatabase()
 
         let newest = try fixture.query.fetchAssetPage(
-            AssetPageRequest(filter: AssetPageFilter(), sort: .newest, cursor: nil, limit: 50)
+            AssetPageRequest(filter: AssetPageFilter(), sort: .newest, cursor: nil, limit: 200)
         )
         XCTAssertEqual(newest.items.first?.assetID, fixture.ids.assetNewest)
         XCTAssertEqual(newest.items.last?.assetID, fixture.ids.assetNoTime)
 
+        let duplicateIDs = newest.items
+            .filter { $0.assetID == fixture.ids.assetDuplicateTimeA || $0.assetID == fixture.ids.assetDuplicateTimeB }
+            .map(\.assetID)
+        XCTAssertEqual(
+            duplicateIDs,
+            [fixture.ids.assetDuplicateTimeA, fixture.ids.assetDuplicateTimeB].sorted { $0.uuidString > $1.uuidString }
+        )
+
         let oldest = try fixture.query.fetchAssetPage(
-            AssetPageRequest(filter: AssetPageFilter(), sort: .oldest, cursor: nil, limit: 50)
+            AssetPageRequest(filter: AssetPageFilter(), sort: .oldest, cursor: nil, limit: 200)
         )
         XCTAssertEqual(oldest.items.first?.assetID, fixture.ids.assetOldest)
 
         let byName = try fixture.query.fetchAssetPage(
-            AssetPageRequest(filter: AssetPageFilter(), sort: .fileNameAscending, cursor: nil, limit: 50)
+            AssetPageRequest(filter: AssetPageFilter(), sort: .fileNameAscending, cursor: nil, limit: 200)
         )
         let names = byName.items.compactMap(\.fileName)
         XCTAssertEqual(names, names.sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending })
+
+        let nocaseIndexA = byName.items.firstIndex { $0.assetID == fixture.ids.assetNocaseLower }
+        let nocaseIndexB = byName.items.firstIndex { $0.assetID == fixture.ids.assetNocaseUpper }
+        guard let nocaseIndexA, let nocaseIndexB else {
+            return XCTFail("Expected NOCASE collision assets")
+        }
+        if fixture.ids.assetNocaseLower.uuidString < fixture.ids.assetNocaseUpper.uuidString {
+            XCTAssertLessThan(nocaseIndexA, nocaseIndexB)
+        } else {
+            XCTAssertLessThan(nocaseIndexB, nocaseIndexA)
+        }
+    }
+
+    func testAllSortModesPaginateIdenticallyToFullFetch() throws {
+        let fixture = try CatalogQueryTestSupport.openQueryDatabase()
+        for sort in [AssetPageSort.newest, .oldest, .fileNameAscending] {
+            var seen: [UUID] = []
+            var cursor: AssetPageCursor?
+            repeat {
+                let page = try fixture.query.fetchAssetPage(
+                    AssetPageRequest(filter: AssetPageFilter(), sort: sort, cursor: cursor, limit: 2)
+                )
+                for item in page.items {
+                    XCTAssertFalse(seen.contains(item.assetID), "Duplicate at sort \(sort)")
+                    seen.append(item.assetID)
+                }
+                cursor = page.nextCursor
+            } while cursor != nil
+
+            let full = try fixture.query.fetchAssetPage(
+                AssetPageRequest(filter: AssetPageFilter(), sort: sort, cursor: nil, limit: 200)
+            )
+            XCTAssertEqual(seen, full.items.map(\.assetID), "Pagination mismatch for \(sort)")
+        }
     }
 
     func testKeysetPaginationTraversesFullSetWithoutDuplicatesOrGaps() throws {
+        try testAllSortModesPaginateIdenticallyToFullFetch()
+    }
+
+    func testPaginationSurvivesInsertBeforeCursor() throws {
         let fixture = try CatalogQueryTestSupport.openQueryDatabase()
-        var seen: [UUID] = []
-        var cursor: AssetPageCursor?
-        repeat {
+        let firstPage = try fixture.query.fetchAssetPage(
+            AssetPageRequest(filter: AssetPageFilter(), sort: .newest, cursor: nil, limit: 2)
+        )
+        guard let cursor = firstPage.nextCursor else {
+            return XCTFail("Expected cursor")
+        }
+
+        let inserted = UUID()
+        try fixture.database.pool.write { db in
+            try db.execute(
+                sql: """
+                INSERT INTO asset (
+                    id, source_id, locator_kind, relative_path, photos_local_identifier,
+                    locator_state, media_type, media_created_at_ms, media_modified_at_ms,
+                    file_name, content_revision, availability, record_created_at_ms, record_updated_at_ms
+                ) VALUES (?, ?, 'file', ?, NULL, 'current', 'public.jpeg', ?, ?, 'inserted.jpg', 1, 'available', ?, ?)
+                """,
+                arguments: [
+                    inserted.uuidString.lowercased(),
+                    fixture.ids.sourceA.uuidString.lowercased(),
+                    "2024/beach/inserted.jpg",
+                    1_800_000_000_000,
+                    1_800_000_000_000,
+                    DatabaseTestSupport.timestampMs,
+                    DatabaseTestSupport.timestampMs,
+                ]
+            )
+        }
+
+        var seen = firstPage.items.map(\.assetID)
+        var nextCursor: AssetPageCursor? = cursor
+        while let current = nextCursor {
             let page = try fixture.query.fetchAssetPage(
-                AssetPageRequest(filter: AssetPageFilter(), sort: .newest, cursor: cursor, limit: 2)
+                AssetPageRequest(filter: AssetPageFilter(), sort: .newest, cursor: current, limit: 2)
             )
             for item in page.items {
                 XCTAssertFalse(seen.contains(item.assetID))
                 seen.append(item.assetID)
             }
-            cursor = page.nextCursor
-        } while cursor != nil
-
-        let full = try fixture.query.fetchAssetPage(
-            AssetPageRequest(filter: AssetPageFilter(), sort: .newest, cursor: nil, limit: 50)
-        )
-        XCTAssertEqual(seen, full.items.map(\.assetID))
+            nextCursor = page.nextCursor
+        }
+        XCTAssertFalse(seen.contains(inserted))
     }
 
     func testCursorSortMismatchIsRejected() throws {
@@ -254,5 +382,24 @@ final class AssetCatalogQueryTests: XCTestCase {
         XCTAssertEqual(family?.decision, .accepted)
         let work = detail.tags.first { $0.tagID == fixture.ids.tagWork }
         XCTAssertEqual(work?.decision, .rejected)
+    }
+
+    func testClosedPoolQuerySurfacesPersistenceFailure() throws {
+        let url = try makeTempDatabaseURL()
+        let database = try CatalogDatabase.open(at: url)
+        _ = try CatalogQueryTestSupport.seedCatalogFixture(database: database, repository: CatalogRepository(database: database))
+        let query = GRDBAssetCatalogQueryRepository(database: database)
+        try CatalogDatabase.closePool(database.pool)
+
+        XCTAssertThrowsError(
+            try query.fetchAssetPage(
+                AssetPageRequest(filter: AssetPageFilter(searchText: "secret-path"), sort: .newest, cursor: nil, limit: 10)
+            )
+        ) { error in
+            XCTAssertEqual(error as? CatalogQueryError, .persistenceFailure)
+            let description = String(describing: error)
+            XCTAssertFalse(description.contains("SELECT"))
+            XCTAssertFalse(description.contains("secret-path"))
+        }
     }
 }

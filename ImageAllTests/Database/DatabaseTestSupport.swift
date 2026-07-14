@@ -15,6 +15,12 @@ extension XCTestCase {
 }
 
 enum DatabaseTestSupport {
+    static func makeV001OnlyMigrator() -> DatabaseMigrator {
+        var migrator = DatabaseMigrator()
+        V001CreateCatalogCoreMigration.register(on: &migrator)
+        return migrator
+    }
+
     static func makeTempDatabaseURL(addTeardown: ((@escaping () -> Void) -> Void)? = nil) throws -> URL {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("ImageAllTests-\(UUID().uuidString)", isDirectory: true)
@@ -49,6 +55,20 @@ enum DatabaseTestSupport {
             ORDER BY name
             """
         )
+    }
+
+    static func normalizeSQL(_ sql: String) -> String {
+        sql
+            .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    static func normalizedPartialPredicate(from ddl: String?) -> String? {
+        guard let ddl else { return nil }
+        guard let range = ddl.range(of: "where", options: [.caseInsensitive]) else {
+            return nil
+        }
+        return normalizeSQL(String(ddl[range.upperBound...]))
     }
 
     static func indexNames(_ db: Database) throws -> [String] {

@@ -109,6 +109,8 @@
 		FF000001000000000000000C /* V002MigrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF000101000000000000000C /* V002MigrationTests.swift */; };
 		FF000001000000000000000D /* AssetCatalogQueryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF000101000000000000000D /* AssetCatalogQueryTests.swift */; };
 		FF000001000000000000000E /* TagCatalogTransactionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF000101000000000000000E /* TagCatalogTransactionTests.swift */; };
+		FF000001000000000000000F /* CatalogQueryErrorMapping.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF000101000000000000000F /* CatalogQueryErrorMapping.swift */; };
+		FF0000010000000000000010 /* CatalogQueryTestFaultSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0001010000000000000010 /* CatalogQueryTestFaultSupport.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -225,6 +227,8 @@
 		FF000101000000000000000C /* V002MigrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = V002MigrationTests.swift; sourceTree = "<group>"; };
 		FF000101000000000000000D /* AssetCatalogQueryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AssetCatalogQueryTests.swift; sourceTree = "<group>"; };
 		FF000101000000000000000E /* TagCatalogTransactionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TagCatalogTransactionTests.swift; sourceTree = "<group>"; };
+		FF000101000000000000000F /* CatalogQueryErrorMapping.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CatalogQueryErrorMapping.swift; sourceTree = "<group>"; };
+		FF0001010000000000000010 /* CatalogQueryTestFaultSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CatalogQueryTestFaultSupport.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -285,6 +289,7 @@
 			isa = PBXGroup;
 			children = (
 				FF000101000000000000000B /* CatalogQueryTestSupport.swift */,
+				FF0001010000000000000010 /* CatalogQueryTestFaultSupport.swift */,
 				FF000101000000000000000C /* V002MigrationTests.swift */,
 				FF000101000000000000000D /* AssetCatalogQueryTests.swift */,
 				FF000101000000000000000E /* TagCatalogTransactionTests.swift */,
@@ -433,6 +438,7 @@
 			isa = PBXGroup;
 			children = (
 				FF0001010000000000000007 /* CatalogQuerySQLHelpers.swift */,
+				FF000101000000000000000F /* CatalogQueryErrorMapping.swift */,
 				FF0001010000000000000008 /* GRDBAssetCatalogQueryRepository.swift */,
 				FF0001010000000000000009 /* GRDBTagCatalogRepository.swift */,
 			);
@@ -713,6 +719,7 @@
 				FF0000010000000000000008 /* GRDBAssetCatalogQueryRepository.swift in Sources */,
 				FF0000010000000000000009 /* GRDBTagCatalogRepository.swift in Sources */,
 				FF000001000000000000000A /* V002AddStage1CatalogQuerySupportMigration.swift in Sources */,
+				FF000001000000000000000F /* CatalogQueryErrorMapping.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -763,6 +770,7 @@
 				FF000001000000000000000C /* V002MigrationTests.swift in Sources */,
 				FF000001000000000000000D /* AssetCatalogQueryTests.swift in Sources */,
 				FF000001000000000000000E /* TagCatalogTransactionTests.swift in Sources */,
+				FF0000010000000000000010 /* CatalogQueryTestFaultSupport.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

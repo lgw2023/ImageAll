@@ -11,12 +11,6 @@ struct CatalogDatabase: Sendable {
         return migrator
     }
 
-    static func makeV001OnlyMigrator() -> DatabaseMigrator {
-        var migrator = DatabaseMigrator()
-        V001CreateCatalogCoreMigration.register(on: &migrator)
-        return migrator
-    }
-
     static func open(at url: URL) throws -> CatalogDatabase {
         var config = Configuration()
         config.prepareDatabase { db in

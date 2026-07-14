@@ -22,25 +22,31 @@ enum CatalogSchemaExpectations {
         let collation: String
     }
 
+    struct IndexKeyEntryExpectation: Equatable {
+        let name: String?
+        let descending: Bool
+        let collation: String?
+    }
+
     struct IndexExpectation: Equatable {
         let name: String
         let keyColumns: [IndexKeyColumnExpectation]
         let unique: Bool
-        let partialPredicateFragments: [String]
-        let ddlKeyFragments: [String]
+        let partialPredicateSQL: String
+        let orderedKeyEntries: [IndexKeyEntryExpectation]?
 
         init(
             name: String,
             keyColumns: [IndexKeyColumnExpectation],
             unique: Bool,
-            partialPredicateFragments: [String],
-            ddlKeyFragments: [String] = []
+            partialPredicateSQL: String = "",
+            orderedKeyEntries: [IndexKeyEntryExpectation]? = nil
         ) {
             self.name = name
             self.keyColumns = keyColumns
             self.unique = unique
-            self.partialPredicateFragments = partialPredicateFragments
-            self.ddlKeyFragments = ddlKeyFragments
+            self.partialPredicateSQL = partialPredicateSQL
+            self.orderedKeyEntries = orderedKeyEntries
         }
     }
 
@@ -196,7 +202,7 @@ enum CatalogSchemaExpectations {
                 .init(name: "relative_path", descending: false, collation: "BINARY"),
             ],
             unique: true,
-            partialPredicateFragments: ["locator_kind = 'file'", "locator_state = 'current'"]
+            partialPredicateSQL: "locator_kind = 'file' AND locator_state = 'current'"
         ),
         .init(
             name: "asset_current_photos_locator_uq",
@@ -205,7 +211,7 @@ enum CatalogSchemaExpectations {
                 .init(name: "photos_local_identifier", descending: false, collation: "BINARY"),
             ],
             unique: true,
-            partialPredicateFragments: ["locator_kind = 'photos'", "locator_state = 'current'"]
+            partialPredicateSQL: "locator_kind = 'photos' AND locator_state = 'current'"
         ),
         .init(
             name: "asset_source_availability_idx",
@@ -214,16 +220,14 @@ enum CatalogSchemaExpectations {
                 .init(name: "availability", descending: false, collation: "BINARY"),
                 .init(name: "id", descending: false, collation: "BINARY"),
             ],
-            unique: false,
-            partialPredicateFragments: []
+            unique: false
         ),
         .init(
             name: "tag_normalized_name_uq",
             keyColumns: [
                 .init(name: "normalized_name", descending: false, collation: "BINARY"),
             ],
-            unique: true,
-            partialPredicateFragments: []
+            unique: true
         ),
         .init(
             name: "decision_tag_idx",
@@ -232,8 +236,7 @@ enum CatalogSchemaExpectations {
                 .init(name: "decision", descending: false, collation: "BINARY"),
                 .init(name: "asset_id", descending: false, collation: "BINARY"),
             ],
-            unique: false,
-            partialPredicateFragments: []
+            unique: false
         ),
         .init(
             name: "job_queue_idx",
@@ -243,8 +246,7 @@ enum CatalogSchemaExpectations {
                 .init(name: "not_before_ms", descending: false, collation: "BINARY"),
                 .init(name: "id", descending: false, collation: "BINARY"),
             ],
-            unique: false,
-            partialPredicateFragments: []
+            unique: false
         ),
         .init(
             name: "job_active_coalescing_uq",
@@ -252,13 +254,9 @@ enum CatalogSchemaExpectations {
                 .init(name: "coalescing_key", descending: false, collation: "BINARY"),
             ],
             unique: true,
-            partialPredicateFragments: [
-                "coalescing_key IS NOT NULL",
-                "'pending'",
-                "'running'",
-                "'paused'",
-                "'retryableFailed'",
-            ]
+            partialPredicateSQL: """
+                coalescing_key IS NOT NULL AND state IN ('pending', 'running', 'paused', 'retryableFailed')
+                """
         ),
         .init(
             name: "asset_current_time_idx",
@@ -266,10 +264,11 @@ enum CatalogSchemaExpectations {
                 .init(name: "id", descending: false, collation: "BINARY"),
             ],
             unique: false,
-            partialPredicateFragments: ["locator_state = 'current'"],
-            ddlKeyFragments: [
-                "CASE WHEN media_created_at_ms IS NOT NULL OR media_modified_at_ms IS NOT NULL THEN 0 ELSE 1 END",
-                "coalesce(media_created_at_ms, media_modified_at_ms)",
+            partialPredicateSQL: "locator_state = 'current'",
+            orderedKeyEntries: [
+                .init(name: nil, descending: false, collation: "BINARY"),
+                .init(name: nil, descending: false, collation: "BINARY"),
+                .init(name: "id", descending: false, collation: "BINARY"),
             ]
         ),
         .init(
@@ -279,10 +278,12 @@ enum CatalogSchemaExpectations {
                 .init(name: "id", descending: false, collation: "BINARY"),
             ],
             unique: false,
-            partialPredicateFragments: ["locator_state = 'current'"],
-            ddlKeyFragments: [
-                "CASE WHEN media_created_at_ms IS NOT NULL OR media_modified_at_ms IS NOT NULL THEN 0 ELSE 1 END",
-                "coalesce(media_created_at_ms, media_modified_at_ms)",
+            partialPredicateSQL: "locator_state = 'current'",
+            orderedKeyEntries: [
+                .init(name: "source_id", descending: false, collation: "BINARY"),
+                .init(name: nil, descending: false, collation: "BINARY"),
+                .init(name: nil, descending: false, collation: "BINARY"),
+                .init(name: "id", descending: false, collation: "BINARY"),
             ]
         ),
         .init(
@@ -292,11 +293,9 @@ enum CatalogSchemaExpectations {
                 .init(name: "id", descending: false, collation: "BINARY"),
             ],
             unique: false,
-            partialPredicateFragments: [
-                "locator_kind = 'file'",
-                "locator_state = 'current'",
-                "file_name IS NOT NULL",
-            ]
+            partialPredicateSQL: """
+                locator_kind = 'file' AND locator_state = 'current' AND file_name IS NOT NULL
+                """
         ),
         .init(
             name: "asset_generation_missing_idx",
@@ -306,10 +305,7 @@ enum CatalogSchemaExpectations {
                 .init(name: "id", descending: false, collation: "BINARY"),
             ],
             unique: false,
-            partialPredicateFragments: [
-                "locator_kind = 'file'",
-                "locator_state = 'current'",
-            ]
+            partialPredicateSQL: "locator_kind = 'file' AND locator_state = 'current'"
         ),
         .init(
             name: "file_fingerprint_resource_id_idx",
@@ -318,7 +314,7 @@ enum CatalogSchemaExpectations {
                 .init(name: "asset_id", descending: false, collation: "BINARY"),
             ],
             unique: false,
-            partialPredicateFragments: ["resource_id IS NOT NULL"]
+            partialPredicateSQL: "resource_id IS NOT NULL"
         ),
         .init(
             name: "file_fingerprint_sha256_idx",
@@ -327,7 +323,7 @@ enum CatalogSchemaExpectations {
                 .init(name: "asset_id", descending: false, collation: "BINARY"),
             ],
             unique: false,
-            partialPredicateFragments: ["sha256 IS NOT NULL"]
+            partialPredicateSQL: "sha256 IS NOT NULL"
         ),
     ]
 }

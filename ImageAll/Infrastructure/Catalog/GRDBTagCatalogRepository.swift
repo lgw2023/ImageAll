@@ -5,28 +5,30 @@ struct GRDBTagCatalogRepository: TagCatalogQueryPort, TagDecisionCommandPort, Se
     let database: CatalogDatabase
 
     func listTags(includeArchived: Bool) throws -> [TagListItem] {
-        try database.pool.read { db in
-            let sql: String
-            if includeArchived {
-                sql = """
-                SELECT id, name, state
-                FROM tag
-                ORDER BY normalized_name COLLATE BINARY, id
-                """
-            } else {
-                sql = """
-                SELECT id, name, state
-                FROM tag
-                WHERE state = 'active'
-                ORDER BY normalized_name COLLATE BINARY, id
-                """
-            }
-            return try Row.fetchAll(db, sql: sql).map { row in
-                TagListItem(
-                    id: UUID(uuidString: row["id"])!,
-                    displayName: row["name"],
-                    state: TagState(rawValue: row["state"]) ?? .active
-                )
+        try CatalogQueryErrorMapping.perform {
+            try database.pool.read { db in
+                let sql: String
+                if includeArchived {
+                    sql = """
+                    SELECT id, name, state
+                    FROM tag
+                    ORDER BY normalized_name COLLATE BINARY, id
+                    """
+                } else {
+                    sql = """
+                    SELECT id, name, state
+                    FROM tag
+                    WHERE state = 'active'
+                    ORDER BY normalized_name COLLATE BINARY, id
+                    """
+                }
+                return try Row.fetchAll(db, sql: sql).map { row in
+                    TagListItem(
+                        id: UUID(uuidString: row["id"])!,
+                        displayName: row["name"],
+                        state: TagState(rawValue: row["state"]) ?? .active
+                    )
+                }
             }
         }
     }
@@ -43,78 +45,82 @@ struct GRDBTagCatalogRepository: TagCatalogQueryPort, TagDecisionCommandPort, Se
             throw CatalogQueryError.emptySelection
         }
 
-        return try database.pool.read { db in
-            try validateAssetsExist(db, assetIDs: uniqueAssetIDs)
+        return try CatalogQueryErrorMapping.perform {
+            try database.pool.read { db in
+                try validateAssetsExist(db, assetIDs: uniqueAssetIDs)
 
-            var aggregates: [TagSelectionAggregate] = []
-            for tagID in tagIDs {
-                let placeholders = Array(repeating: "?", count: uniqueAssetIDs.count).joined(separator: ", ")
-                var arguments = StatementArguments()
-                arguments += [CatalogQuerySQLHelpers.lowercaseUUID(tagID)]
-                for assetID in uniqueAssetIDs {
-                    arguments += [CatalogQuerySQLHelpers.lowercaseUUID(assetID)]
-                }
+                var aggregates: [TagSelectionAggregate] = []
+                for tagID in tagIDs {
+                    let placeholders = Array(repeating: "?", count: uniqueAssetIDs.count).joined(separator: ", ")
+                    var arguments = StatementArguments()
+                    arguments += [CatalogQuerySQLHelpers.lowercaseUUID(tagID)]
+                    for assetID in uniqueAssetIDs {
+                        arguments += [CatalogQuerySQLHelpers.lowercaseUUID(assetID)]
+                    }
 
-                let row = try Row.fetchOne(
-                    db,
-                    sql: """
-                    SELECT
-                        SUM(CASE WHEN d.decision = 'accepted' THEN 1 ELSE 0 END) AS accepted_count,
-                        SUM(CASE WHEN d.decision = 'rejected' THEN 1 ELSE 0 END) AS rejected_count
-                    FROM asset_tag_decision d
-                    WHERE d.tag_id = ?
-                        AND d.asset_id IN (\(placeholders))
-                    """,
-                    arguments: arguments
-                )
-
-                let accepted = Int(row?["accepted_count"] ?? 0)
-                let rejected = Int(row?["rejected_count"] ?? 0)
-                let unknown = uniqueAssetIDs.count - accepted - rejected
-                aggregates.append(
-                    TagSelectionAggregate(
-                        tagID: tagID,
-                        acceptedCount: accepted,
-                        rejectedCount: rejected,
-                        unknownCount: unknown
+                    let row = try Row.fetchOne(
+                        db,
+                        sql: """
+                        SELECT
+                            SUM(CASE WHEN d.decision = 'accepted' THEN 1 ELSE 0 END) AS accepted_count,
+                            SUM(CASE WHEN d.decision = 'rejected' THEN 1 ELSE 0 END) AS rejected_count
+                        FROM asset_tag_decision d
+                        WHERE d.tag_id = ?
+                            AND d.asset_id IN (\(placeholders))
+                        """,
+                        arguments: arguments
                     )
-                )
+
+                    let accepted = Int(row?["accepted_count"] ?? 0)
+                    let rejected = Int(row?["rejected_count"] ?? 0)
+                    let unknown = uniqueAssetIDs.count - accepted - rejected
+                    aggregates.append(
+                        TagSelectionAggregate(
+                            tagID: tagID,
+                            acceptedCount: accepted,
+                            rejectedCount: rejected,
+                            unknownCount: unknown
+                        )
+                    )
+                }
+                return aggregates
             }
-            return aggregates
         }
     }
 
     func createTag(rawName: String, timestampMs: Int64) throws -> Tag {
-        try database.pool.write { db in
-            let existing = try fetchExistingTags(db)
-            let tag: Tag
-            switch TagCatalogRules.createTag(rawName: rawName, existingTags: existing) {
-            case let .success(created):
-                tag = created
-            case let .failure(error):
-                throw mapDomainError(error)
-            }
+        try CatalogQueryErrorMapping.perform {
+            try database.pool.write { db in
+                let existing = try fetchExistingTags(db)
+                let tag: Tag
+                switch TagCatalogRules.createTag(rawName: rawName, existingTags: existing) {
+                case let .success(created):
+                    tag = created
+                case let .failure(error):
+                    throw mapDomainError(error)
+                }
 
-            do {
-                try db.execute(
-                    sql: """
-                    INSERT INTO tag (id, name, normalized_name, state, created_at_ms, updated_at_ms)
-                    VALUES (?, ?, ?, 'active', ?, ?)
-                    """,
-                    arguments: [
-                        CatalogQuerySQLHelpers.lowercaseUUID(tag.id),
-                        tag.displayName,
-                        tag.normalizedName,
-                        timestampMs,
-                        timestampMs,
-                    ]
-                )
-            } catch let error as DatabaseError where error.resultCode == .SQLITE_CONSTRAINT {
-                throw CatalogQueryError.duplicateTag
-            } catch {
-                throw CatalogQueryError.persistenceFailure
+                do {
+                    try db.execute(
+                        sql: """
+                        INSERT INTO tag (id, name, normalized_name, state, created_at_ms, updated_at_ms)
+                        VALUES (?, ?, ?, 'active', ?, ?)
+                        """,
+                        arguments: [
+                            CatalogQuerySQLHelpers.lowercaseUUID(tag.id),
+                            tag.displayName,
+                            tag.normalizedName,
+                            timestampMs,
+                            timestampMs,
+                        ]
+                    )
+                } catch let error as DatabaseError where error.resultCode == .SQLITE_CONSTRAINT {
+                    throw CatalogQueryError.duplicateTag
+                } catch {
+                    throw CatalogQueryError.persistenceFailure
+                }
+                return tag
             }
-            return tag
         }
     }
 
@@ -128,22 +134,22 @@ struct GRDBTagCatalogRepository: TagCatalogQueryPort, TagDecisionCommandPort, Se
 
     func batchClear(tagID: UUID, assetIDs: [UUID], timestampMs: Int64) throws -> TagMutationResult {
         let uniqueAssetIDs = try validatedUniqueAssetIDs(assetIDs)
-        return try database.pool.write { db in
-            let tagState = try fetchTagState(db, tagID: tagID)
-            guard tagState == .active else {
-                throw CatalogQueryError.archivedTag
-            }
-            try validateAssetsExist(db, assetIDs: uniqueAssetIDs)
-
-            let priorStates = try fetchPriorStates(db, tagID: tagID, assetIDs: uniqueAssetIDs)
-            for chunk in uniqueAssetIDs.chunked(size: CatalogQuerySQLHelpers.sqliteBindChunkSize) {
-                let placeholders = Array(repeating: "?", count: chunk.count).joined(separator: ", ")
-                var arguments = StatementArguments()
-                arguments += [CatalogQuerySQLHelpers.lowercaseUUID(tagID)]
-                for assetID in chunk {
-                    arguments += [CatalogQuerySQLHelpers.lowercaseUUID(assetID)]
+        return try CatalogQueryErrorMapping.perform {
+            try database.pool.write { db in
+                let tagState = try fetchTagState(db, tagID: tagID)
+                guard tagState == .active else {
+                    throw CatalogQueryError.archivedTag
                 }
-                do {
+                try validateAssetsExist(db, assetIDs: uniqueAssetIDs)
+
+                let priorStates = try fetchPriorStates(db, tagID: tagID, assetIDs: uniqueAssetIDs)
+                for chunk in uniqueAssetIDs.chunked(size: CatalogQuerySQLHelpers.sqliteBindChunkSize) {
+                    let placeholders = Array(repeating: "?", count: chunk.count).joined(separator: ", ")
+                    var arguments = StatementArguments()
+                    arguments += [CatalogQuerySQLHelpers.lowercaseUUID(tagID)]
+                    for assetID in chunk {
+                        arguments += [CatalogQuerySQLHelpers.lowercaseUUID(assetID)]
+                    }
                     try db.execute(
                         sql: """
                         DELETE FROM asset_tag_decision
@@ -151,11 +157,9 @@ struct GRDBTagCatalogRepository: TagCatalogQueryPort, TagDecisionCommandPort, Se
                         """,
                         arguments: arguments
                     )
-                } catch {
-                    throw CatalogQueryError.persistenceFailure
                 }
+                return TagMutationResult(priorStates: priorStates)
             }
-            return TagMutationResult(priorStates: priorStates)
         }
     }
 
@@ -164,49 +168,56 @@ struct GRDBTagCatalogRepository: TagCatalogQueryPort, TagDecisionCommandPort, Se
         assetIDs: [UUID],
         decision: PersistableTagDecision,
         timestampMs: Int64
-    ) throws -> TagMutationResult {
+    ) throws -> TagCreateAndApplyResult {
         let uniqueAssetIDs = try validatedUniqueAssetIDs(assetIDs)
-        return try database.pool.write { db in
-            let existing = try fetchExistingTags(db)
-            let tag: Tag
-            switch TagCatalogRules.createTag(rawName: rawName, existingTags: existing) {
-            case let .success(created):
-                tag = created
-            case let .failure(error):
-                throw mapDomainError(error)
-            }
+        return try CatalogQueryErrorMapping.perform {
+            try database.pool.write { db in
+                let existing = try fetchExistingTags(db)
+                let tag: Tag
+                switch TagCatalogRules.createTag(rawName: rawName, existingTags: existing) {
+                case let .success(created):
+                    tag = created
+                case let .failure(error):
+                    throw mapDomainError(error)
+                }
 
-            try validateAssetsExist(db, assetIDs: uniqueAssetIDs)
+                try validateAssetsExist(db, assetIDs: uniqueAssetIDs)
 
-            do {
-                try db.execute(
-                    sql: """
-                    INSERT INTO tag (id, name, normalized_name, state, created_at_ms, updated_at_ms)
-                    VALUES (?, ?, ?, 'active', ?, ?)
-                    """,
-                    arguments: [
-                        CatalogQuerySQLHelpers.lowercaseUUID(tag.id),
-                        tag.displayName,
-                        tag.normalizedName,
-                        timestampMs,
-                        timestampMs,
-                    ]
+                do {
+                    try db.execute(
+                        sql: """
+                        INSERT INTO tag (id, name, normalized_name, state, created_at_ms, updated_at_ms)
+                        VALUES (?, ?, ?, 'active', ?, ?)
+                        """,
+                        arguments: [
+                            CatalogQuerySQLHelpers.lowercaseUUID(tag.id),
+                            tag.displayName,
+                            tag.normalizedName,
+                            timestampMs,
+                            timestampMs,
+                        ]
+                    )
+                } catch let error as DatabaseError where error.resultCode == .SQLITE_CONSTRAINT {
+                    throw CatalogQueryError.duplicateTag
+                } catch {
+                    throw CatalogQueryError.persistenceFailure
+                }
+
+                let priorStates = try fetchPriorStates(db, tagID: tag.id, assetIDs: uniqueAssetIDs)
+                try writeDecisionChunks(
+                    db,
+                    tagID: tag.id,
+                    assetIDs: uniqueAssetIDs,
+                    decision: decision,
+                    timestampMs: timestampMs
                 )
-            } catch let error as DatabaseError where error.resultCode == .SQLITE_CONSTRAINT {
-                throw CatalogQueryError.duplicateTag
-            } catch {
-                throw CatalogQueryError.persistenceFailure
+                return TagCreateAndApplyResult(
+                    tagID: tag.id,
+                    displayName: tag.displayName,
+                    normalizedName: tag.normalizedName,
+                    priorStates: priorStates
+                )
             }
-
-            let priorStates = try fetchPriorStates(db, tagID: tag.id, assetIDs: uniqueAssetIDs)
-            try writeDecisionChunks(
-                db,
-                tagID: tag.id,
-                assetIDs: uniqueAssetIDs,
-                decision: decision,
-                timestampMs: timestampMs
-            )
-            return TagMutationResult(priorStates: priorStates)
         }
     }
 
@@ -220,44 +231,46 @@ struct GRDBTagCatalogRepository: TagCatalogQueryPort, TagDecisionCommandPort, Se
             throw CatalogQueryError.selectionTooLarge
         }
 
-        try database.pool.write { db in
-            let tagState = try fetchTagState(db, tagID: snapshot.tagID)
-            guard tagState == .active else {
-                throw CatalogQueryError.archivedTag
-            }
-            try validateAssetsExist(db, assetIDs: uniqueAssetIDs)
+        try CatalogQueryErrorMapping.perform {
+            try database.pool.write { db in
+                let tagState = try fetchTagState(db, tagID: snapshot.tagID)
+                guard tagState == .active else {
+                    throw CatalogQueryError.archivedTag
+                }
+                try validateAssetsExist(db, assetIDs: uniqueAssetIDs)
 
-            for chunk in snapshot.priorStates.chunked(size: CatalogQuerySQLHelpers.sqliteBindChunkSize) {
-                for prior in chunk {
-                    switch prior.priorState {
-                    case .unknown:
-                        try db.execute(
-                            sql: """
-                            DELETE FROM asset_tag_decision
-                            WHERE asset_id = ? AND tag_id = ?
-                            """,
-                            arguments: [
-                                CatalogQuerySQLHelpers.lowercaseUUID(prior.assetID),
-                                CatalogQuerySQLHelpers.lowercaseUUID(snapshot.tagID),
-                            ]
-                        )
-                    case .accepted, .rejected:
-                        let decision = prior.priorState == .accepted ? "accepted" : "rejected"
-                        try db.execute(
-                            sql: """
-                            INSERT INTO asset_tag_decision (asset_id, tag_id, decision, updated_at_ms)
-                            VALUES (?, ?, ?, ?)
-                            ON CONFLICT(asset_id, tag_id) DO UPDATE SET
-                                decision = excluded.decision,
-                                updated_at_ms = excluded.updated_at_ms
-                            """,
-                            arguments: [
-                                CatalogQuerySQLHelpers.lowercaseUUID(prior.assetID),
-                                CatalogQuerySQLHelpers.lowercaseUUID(snapshot.tagID),
-                                decision,
-                                timestampMs,
-                            ]
-                        )
+                for chunk in snapshot.priorStates.chunked(size: CatalogQuerySQLHelpers.sqliteBindChunkSize) {
+                    for prior in chunk {
+                        switch prior.priorState {
+                        case .unknown:
+                            try db.execute(
+                                sql: """
+                                DELETE FROM asset_tag_decision
+                                WHERE asset_id = ? AND tag_id = ?
+                                """,
+                                arguments: [
+                                    CatalogQuerySQLHelpers.lowercaseUUID(prior.assetID),
+                                    CatalogQuerySQLHelpers.lowercaseUUID(snapshot.tagID),
+                                ]
+                            )
+                        case .accepted, .rejected:
+                            let decision = prior.priorState == .accepted ? "accepted" : "rejected"
+                            try db.execute(
+                                sql: """
+                                INSERT INTO asset_tag_decision (asset_id, tag_id, decision, updated_at_ms)
+                                VALUES (?, ?, ?, ?)
+                                ON CONFLICT(asset_id, tag_id) DO UPDATE SET
+                                    decision = excluded.decision,
+                                    updated_at_ms = excluded.updated_at_ms
+                                """,
+                                arguments: [
+                                    CatalogQuerySQLHelpers.lowercaseUUID(prior.assetID),
+                                    CatalogQuerySQLHelpers.lowercaseUUID(snapshot.tagID),
+                                    decision,
+                                    timestampMs,
+                                ]
+                            )
+                        }
                     }
                 }
             }
@@ -271,22 +284,24 @@ struct GRDBTagCatalogRepository: TagCatalogQueryPort, TagDecisionCommandPort, Se
         timestampMs: Int64
     ) throws -> TagMutationResult {
         let uniqueAssetIDs = try validatedUniqueAssetIDs(assetIDs)
-        return try database.pool.write { db in
-            let tagState = try fetchTagState(db, tagID: tagID)
-            guard tagState == .active else {
-                throw CatalogQueryError.archivedTag
-            }
-            try validateAssetsExist(db, assetIDs: uniqueAssetIDs)
+        return try CatalogQueryErrorMapping.perform {
+            try database.pool.write { db in
+                let tagState = try fetchTagState(db, tagID: tagID)
+                guard tagState == .active else {
+                    throw CatalogQueryError.archivedTag
+                }
+                try validateAssetsExist(db, assetIDs: uniqueAssetIDs)
 
-            let priorStates = try fetchPriorStates(db, tagID: tagID, assetIDs: uniqueAssetIDs)
-            try writeDecisionChunks(
-                db,
-                tagID: tagID,
-                assetIDs: uniqueAssetIDs,
-                decision: decision,
-                timestampMs: timestampMs
-            )
-            return TagMutationResult(priorStates: priorStates)
+                let priorStates = try fetchPriorStates(db, tagID: tagID, assetIDs: uniqueAssetIDs)
+                try writeDecisionChunks(
+                    db,
+                    tagID: tagID,
+                    assetIDs: uniqueAssetIDs,
+                    decision: decision,
+                    timestampMs: timestampMs
+                )
+                return TagMutationResult(priorStates: priorStates)
+            }
         }
     }
 
@@ -299,25 +314,21 @@ struct GRDBTagCatalogRepository: TagCatalogQueryPort, TagDecisionCommandPort, Se
     ) throws {
         for chunk in assetIDs.chunked(size: CatalogQuerySQLHelpers.sqliteBindChunkSize) {
             for assetID in chunk {
-                do {
-                    try db.execute(
-                        sql: """
-                        INSERT INTO asset_tag_decision (asset_id, tag_id, decision, updated_at_ms)
-                        VALUES (?, ?, ?, ?)
-                        ON CONFLICT(asset_id, tag_id) DO UPDATE SET
-                            decision = excluded.decision,
-                            updated_at_ms = excluded.updated_at_ms
-                        """,
-                        arguments: [
-                            CatalogQuerySQLHelpers.lowercaseUUID(assetID),
-                            CatalogQuerySQLHelpers.lowercaseUUID(tagID),
-                            decision.rawValue,
-                            timestampMs,
-                        ]
-                    )
-                } catch {
-                    throw CatalogQueryError.persistenceFailure
-                }
+                try db.execute(
+                    sql: """
+                    INSERT INTO asset_tag_decision (asset_id, tag_id, decision, updated_at_ms)
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT(asset_id, tag_id) DO UPDATE SET
+                        decision = excluded.decision,
+                        updated_at_ms = excluded.updated_at_ms
+                    """,
+                    arguments: [
+                        CatalogQuerySQLHelpers.lowercaseUUID(assetID),
+                        CatalogQuerySQLHelpers.lowercaseUUID(tagID),
+                        decision.rawValue,
+                        timestampMs,
+                    ]
+                )
             }
         }
     }

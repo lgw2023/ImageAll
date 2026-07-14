@@ -10,6 +10,6 @@ protocol TagDecisionCommandPort: Sendable {
         assetIDs: [UUID],
         decision: PersistableTagDecision,
         timestampMs: Int64
-    ) throws -> TagMutationResult
+    ) throws -> TagCreateAndApplyResult
     func restorePriorStates(_ snapshot: TagMutationPriorStateSnapshot, timestampMs: Int64) throws
 }

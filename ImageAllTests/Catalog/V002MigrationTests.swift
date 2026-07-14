@@ -124,6 +124,19 @@ final class V002MigrationTests: XCTestCase {
             }
             XCTAssertTrue(didThrow, "Expected rejection for \(invalid.debugDescription)")
         }
+
+        var rejectedNUL = false
+        do {
+            try database.pool.write { db in
+                try db.execute(
+                    sql: "UPDATE asset SET file_name = 'nul' || char(0) || 'byte' WHERE id = ?",
+                    arguments: [assetID]
+                )
+            }
+        } catch {
+            rejectedNUL = true
+        }
+        XCTAssertTrue(rejectedNUL, "Expected rejection for embedded NUL byte in file_name")
     }
 
     func testSixV002IndexesExistViaIntrospection() throws {
@@ -190,10 +203,10 @@ final class V002MigrationTests: XCTestCase {
             try db.execute(sql: "PRAGMA foreign_keys = ON")
         }
         let pool = try DatabasePool(path: url.path, configuration: config)
-        let v001Migrator = CatalogDatabase.makeV001OnlyMigrator()
+        let v001Migrator = DatabaseTestSupport.makeV001OnlyMigrator()
         try v001Migrator.migrate(pool)
 
-        var failingMigrator = CatalogDatabase.makeV001OnlyMigrator()
+        var failingMigrator = DatabaseTestSupport.makeV001OnlyMigrator()
         failingMigrator.registerMigration("v002_test_fail") { db in
             try db.execute(sql: "CREATE TABLE v002_fail_marker (id INTEGER PRIMARY KEY) STRICT")
             throw TestMigrationFailure.intentional

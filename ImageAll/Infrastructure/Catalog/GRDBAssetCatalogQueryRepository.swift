@@ -12,7 +12,8 @@ struct GRDBAssetCatalogQueryRepository: AssetCatalogQueryPort, Sendable {
             throw CatalogQueryError.cursorSortMismatch
         }
 
-        return try database.pool.read { db in
+        return try CatalogQueryErrorMapping.perform {
+            try database.pool.read { db in
             var arguments = StatementArguments()
             let whereClause = try buildWhereClause(filter: request.filter, arguments: &arguments)
             let orderClause = orderClause(for: request.sort)
@@ -95,11 +96,13 @@ struct GRDBAssetCatalogQueryRepository: AssetCatalogQueryPort, Sendable {
             arguments += [request.limit]
             let rows = try Row.fetchAll(db, sql: sql, arguments: arguments)
             return try makePageResult(rows: rows, sort: request.sort, limit: request.limit)
+            }
         }
     }
 
     func fetchInspectorDetail(assetID: UUID) throws -> AssetInspectorDetail {
-        try database.pool.read { db in
+        try CatalogQueryErrorMapping.perform {
+            try database.pool.read { db in
             guard let row = try Row.fetchOne(
                 db,
                 sql: """
@@ -195,6 +198,7 @@ struct GRDBAssetCatalogQueryRepository: AssetCatalogQueryPort, Sendable {
                 fingerprintModifiedAtNs: row["fingerprint_modified_at_ns"],
                 tags: tags
             )
+            }
         }
     }
 

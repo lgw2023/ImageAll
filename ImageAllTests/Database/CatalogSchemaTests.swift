@@ -152,7 +152,7 @@ final class CatalogSchemaTests: XCTestCase {
                 XCTAssertEqual(listEntry.unique, expected.unique, "Index \(expected.name) unique flag")
                 XCTAssertEqual(
                     listEntry.partial,
-                    !expected.partialPredicateFragments.isEmpty,
+                    !expected.partialPredicateSQL.isEmpty,
                     "Index \(expected.name) partial flag"
                 )
 
@@ -163,14 +163,22 @@ final class CatalogSchemaTests: XCTestCase {
                 )
                 XCTAssertNotNil(ddl, "Index DDL must exist for \(expected.name)")
 
-                let xinfo = try DatabaseTestSupport.indexXInfo(db, index: expected.name).filter(\.key)
-                XCTAssertEqual(
-                    xinfo.count,
-                    expected.keyColumns.count + expected.ddlKeyFragments.count,
-                    "Key entry count for \(expected.name)"
-                )
+                if !expected.partialPredicateSQL.isEmpty {
+                    let actualPredicate = DatabaseTestSupport.normalizedPartialPredicate(from: ddl)
+                    let expectedPredicate = DatabaseTestSupport.normalizeSQL(expected.partialPredicateSQL)
+                    XCTAssertEqual(actualPredicate, expectedPredicate, "Partial predicate for \(expected.name)")
+                }
 
-                if expected.ddlKeyFragments.isEmpty {
+                if let orderedKeyEntries = expected.orderedKeyEntries {
+                    let xinfo = try DatabaseTestSupport.indexXInfo(db, index: expected.name).filter(\.key)
+                    XCTAssertEqual(xinfo.count, orderedKeyEntries.count, "Key entry count for \(expected.name)")
+                    let sorted = xinfo.sorted { $0.seqno < $1.seqno }
+                    for (actual, expectedEntry) in zip(sorted, orderedKeyEntries) {
+                        XCTAssertEqual(actual.name, expectedEntry.name, "\(expected.name) key name at seq \(actual.seqno)")
+                        XCTAssertEqual(actual.desc, expectedEntry.descending, "\(expected.name) DESC at seq \(actual.seqno)")
+                        XCTAssertEqual(actual.coll, expectedEntry.collation, "\(expected.name) collation at seq \(actual.seqno)")
+                    }
+                } else {
                     let keyEntries = try DatabaseTestSupport.indexKeyEntries(db, index: expected.name)
                     XCTAssertEqual(
                         keyEntries.count,
@@ -183,29 +191,6 @@ final class CatalogSchemaTests: XCTestCase {
                         XCTAssertEqual(actualKey.desc, expectedKey.descending, "\(expected.name).\(expectedKey.name) DESC flag")
                         XCTAssertEqual(actualKey.coll, expectedKey.collation, "\(expected.name).\(expectedKey.name) collation")
                     }
-                } else {
-                    let namedEntries = xinfo.filter { $0.name != nil }
-                    let sortedNamedEntries = namedEntries.sorted { $0.seqno < $1.seqno }
-                    for (actualKey, expectedKey) in zip(sortedNamedEntries, expected.keyColumns) {
-                        guard let name = actualKey.name else {
-                            return XCTFail("Expected named key for \(expected.name)")
-                        }
-                        XCTAssertEqual(name, expectedKey.name, "\(expected.name) key column order")
-                        XCTAssertEqual(actualKey.desc, expectedKey.descending, "\(expected.name).\(expectedKey.name) DESC flag")
-                        XCTAssertEqual(actualKey.coll ?? "BINARY", expectedKey.collation, "\(expected.name).\(expectedKey.name) collation")
-                    }
-                    XCTAssertEqual(
-                        xinfo.filter { $0.name == nil }.count,
-                        expected.ddlKeyFragments.count,
-                        "Expression key count for \(expected.name)"
-                    )
-                    for fragment in expected.ddlKeyFragments {
-                        XCTAssertTrue(ddl?.contains(fragment) == true, "\(expected.name) must contain \(fragment)")
-                    }
-                }
-
-                for fragment in expected.partialPredicateFragments {
-                    XCTAssertTrue(ddl?.contains(fragment) == true, "\(expected.name) must contain \(fragment)")
                 }
             }
         }
