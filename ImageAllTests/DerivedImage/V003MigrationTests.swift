@@ -80,9 +80,12 @@ final class V003MigrationTests: XCTestCase {
         try CatalogDatabase.closePool(v002Pool)
 
         let v003URL = try makeTempDatabaseURL()
-        let v003Database = try CatalogDatabase.open(at: v003URL)
-        let v003Tables = try v003Database.pool.read { try DatabaseTestSupport.tableNames($0) }
-        let v003Indexes = try v003Database.pool.read { try DatabaseTestSupport.indexNames($0) }
+        let v003Pool = try openV002OnlyPool(at: v003URL)
+        var v003Migrator = DatabaseTestSupport.makeV002OnlyMigrator()
+        V003AddDerivedImageCacheMigration.register(on: &v003Migrator)
+        try v003Migrator.migrate(v003Pool)
+        let v003Tables = try v003Pool.read { try DatabaseTestSupport.tableNames($0) }
+        let v003Indexes = try v003Pool.read { try DatabaseTestSupport.indexNames($0) }
 
         let addedTables = Set(v003Tables).subtracting(v002Tables)
         XCTAssertEqual(addedTables, ["derived_image_cache_entry"])
@@ -93,7 +96,7 @@ final class V003MigrationTests: XCTestCase {
             ["derived_image_cache_key_uq", "derived_image_cache_lru_idx"]
         )
 
-        try v003Database.pool.read { db in
+        try v003Pool.read { db in
             XCTAssertTrue(try DatabaseTestSupport.isStrictTable(db, table: "derived_image_cache_entry"))
             let triggers = try Int.fetchOne(
                 db,
@@ -487,7 +490,10 @@ final class V003MigrationTests: XCTestCase {
 
         let fullURL = try makeTempDatabaseURL()
         let full = try CatalogDatabase.open(at: fullURL)
-        for table in CatalogSchemaExpectations.businessTables where table != "derived_image_cache_entry" {
+        let laterTables = Set(["feature", "tag_model_revision", "tag_model_sample", "tag_model", "prediction"])
+        for table in CatalogSchemaExpectations.businessTables
+            where table != "derived_image_cache_entry" && !laterTables.contains(table)
+        {
             let baselineSQL = try v002Pool.read { db in
                 try String.fetchOne(db, sql: "SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = ?", arguments: [table])
             }

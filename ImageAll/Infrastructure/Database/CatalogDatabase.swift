@@ -9,6 +9,7 @@ struct CatalogDatabase: Sendable {
         V001CreateCatalogCoreMigration.register(on: &migrator)
         V002AddStage1CatalogQuerySupportMigration.register(on: &migrator)
         V003AddDerivedImageCacheMigration.register(on: &migrator)
+        V004AddPersonalizationMigration.register(on: &migrator)
         return migrator
     }
 

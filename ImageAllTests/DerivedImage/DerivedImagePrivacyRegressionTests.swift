@@ -21,11 +21,12 @@ final class DerivedImagePrivacyRegressionTests: XCTestCase {
         XCTAssertEqual(mapped["NSPrivacyAccessedAPICategoryDiskSpace"], ["E174.1"])
     }
 
-    func testCatalogMigrationIDOrderingIncludesV003() {
+    func testCatalogMigrationIDOrderingIncludesV004() {
         XCTAssertEqual(CatalogMigrationID.knownOrdered, [
             CatalogMigrationID.v001CreateCatalogCore,
             CatalogMigrationID.v002AddStage1CatalogQuerySupport,
             CatalogMigrationID.v003AddDerivedImageCache,
+            CatalogMigrationID.v004AddPersonalization,
         ])
     }
 

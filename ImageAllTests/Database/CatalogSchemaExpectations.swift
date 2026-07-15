@@ -67,10 +67,15 @@ enum CatalogSchemaExpectations {
         "asset",
         "asset_tag_decision",
         "derived_image_cache_entry",
+        "feature",
         "file_fingerprint",
         "job",
+        "prediction",
         "source",
         "tag",
+        "tag_model",
+        "tag_model_revision",
+        "tag_model_sample",
     ]
 
     static let businessIndexes = [
@@ -84,10 +89,13 @@ enum CatalogSchemaExpectations {
         "decision_tag_idx",
         "derived_image_cache_key_uq",
         "derived_image_cache_lru_idx",
+        "feature_cache_key_uq",
         "file_fingerprint_resource_id_idx",
         "file_fingerprint_sha256_idx",
         "job_active_coalescing_uq",
         "job_queue_idx",
+        "prediction_review_rank_idx",
+        "tag_model_sample_feature_idx",
         "tag_normalized_name_uq",
     ]
 
@@ -184,6 +192,57 @@ enum CatalogSchemaExpectations {
             .init(name: "created_at_ms", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
             .init(name: "last_accessed_at_ms", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
         ],
+        "feature": [
+            .init(name: "asset_id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 1),
+            .init(name: "provider", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 2),
+            .init(name: "request_revision", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 3),
+            .init(name: "preprocessing_revision", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 4),
+            .init(name: "content_revision", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 5),
+            .init(name: "element_type", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "element_count", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "byte_count", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "vector_sha256", type: "BLOB", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "cache_key", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "created_at_ms", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+        ],
+        "tag_model_revision": [
+            .init(name: "tag_id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 1),
+            .init(name: "revision", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 2),
+            .init(name: "provider", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "request_revision", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "preprocessing_revision", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "threshold", type: "REAL", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "positive_count", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "negative_count", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "neighbor_count", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "sample_budget_per_role", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "created_at_ms", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+        ],
+        "tag_model_sample": [
+            .init(name: "tag_id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 1),
+            .init(name: "model_revision", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 2),
+            .init(name: "asset_id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 3),
+            .init(name: "content_revision", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "role", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "rank", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "provider", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "request_revision", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "preprocessing_revision", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+        ],
+        "tag_model": [
+            .init(name: "tag_id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 1),
+            .init(name: "current_revision", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "updated_at_ms", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+        ],
+        "prediction": [
+            .init(name: "asset_id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 1),
+            .init(name: "tag_id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 2),
+            .init(name: "content_revision", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 3),
+            .init(name: "model_revision", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 4),
+            .init(name: "score", type: "REAL", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "state", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "created_at_ms", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+        ],
     ]
 
     static let foreignKeysByTable: [String: [ForeignKeyExpectation]] = [
@@ -192,6 +251,9 @@ enum CatalogSchemaExpectations {
             .init(from: "source_id", toTable: "source", to: "id", onDelete: "RESTRICT"),
         ],
         "derived_image_cache_entry": [
+            .init(from: "asset_id", toTable: "asset", to: "id", onDelete: "CASCADE"),
+        ],
+        "feature": [
             .init(from: "asset_id", toTable: "asset", to: "id", onDelete: "CASCADE"),
         ],
         "file_fingerprint": [
@@ -204,6 +266,29 @@ enum CatalogSchemaExpectations {
         ],
         "job": [
             .init(from: "source_id", toTable: "source", to: "id", onDelete: "SET NULL"),
+        ],
+        "tag_model_revision": [
+            .init(from: "tag_id", toTable: "tag", to: "id", onDelete: "CASCADE"),
+        ],
+        "tag_model_sample": [
+            .init(from: "tag_id", toTable: "tag_model_revision", to: "tag_id", onDelete: "CASCADE"),
+            .init(from: "model_revision", toTable: "tag_model_revision", to: "revision", onDelete: "CASCADE"),
+            .init(from: "asset_id", toTable: "asset", to: "id", onDelete: "CASCADE"),
+            .init(from: "asset_id", toTable: "feature", to: "asset_id", onDelete: "CASCADE"),
+            .init(from: "provider", toTable: "feature", to: "provider", onDelete: "CASCADE"),
+            .init(from: "request_revision", toTable: "feature", to: "request_revision", onDelete: "CASCADE"),
+            .init(from: "preprocessing_revision", toTable: "feature", to: "preprocessing_revision", onDelete: "CASCADE"),
+            .init(from: "content_revision", toTable: "feature", to: "content_revision", onDelete: "CASCADE"),
+        ],
+        "tag_model": [
+            .init(from: "tag_id", toTable: "tag", to: "id", onDelete: "CASCADE"),
+            .init(from: "tag_id", toTable: "tag_model_revision", to: "tag_id", onDelete: "RESTRICT"),
+            .init(from: "current_revision", toTable: "tag_model_revision", to: "revision", onDelete: "RESTRICT"),
+        ],
+        "prediction": [
+            .init(from: "asset_id", toTable: "asset", to: "id", onDelete: "CASCADE"),
+            .init(from: "tag_id", toTable: "tag_model_revision", to: "tag_id", onDelete: "CASCADE"),
+            .init(from: "model_revision", toTable: "tag_model_revision", to: "revision", onDelete: "CASCADE"),
         ],
     ]
 
@@ -219,10 +304,13 @@ enum CatalogSchemaExpectations {
         "decision_tag_idx": "asset_tag_decision",
         "derived_image_cache_key_uq": "derived_image_cache_entry",
         "derived_image_cache_lru_idx": "derived_image_cache_entry",
+        "feature_cache_key_uq": "feature",
         "file_fingerprint_resource_id_idx": "file_fingerprint",
         "file_fingerprint_sha256_idx": "file_fingerprint",
         "job_queue_idx": "job",
         "job_active_coalescing_uq": "job",
+        "prediction_review_rank_idx": "prediction",
+        "tag_model_sample_feature_idx": "tag_model_sample",
     ]
 
     static let indexes: [IndexExpectation] = [
@@ -377,6 +465,34 @@ enum CatalogSchemaExpectations {
             keyColumns: [
                 .init(name: "last_accessed_at_ms", descending: false, collation: "BINARY"),
                 .init(name: "id", descending: false, collation: "BINARY"),
+            ],
+            unique: false
+        ),
+        .init(
+            name: "feature_cache_key_uq",
+            keyColumns: [
+                .init(name: "cache_key", descending: false, collation: "BINARY"),
+            ],
+            unique: true
+        ),
+        .init(
+            name: "tag_model_sample_feature_idx",
+            keyColumns: [
+                .init(name: "asset_id", descending: false, collation: "BINARY"),
+                .init(name: "provider", descending: false, collation: "BINARY"),
+                .init(name: "request_revision", descending: false, collation: "BINARY"),
+                .init(name: "preprocessing_revision", descending: false, collation: "BINARY"),
+                .init(name: "content_revision", descending: false, collation: "BINARY"),
+            ],
+            unique: false
+        ),
+        .init(
+            name: "prediction_review_rank_idx",
+            keyColumns: [
+                .init(name: "tag_id", descending: false, collation: "BINARY"),
+                .init(name: "state", descending: false, collation: "BINARY"),
+                .init(name: "score", descending: true, collation: "BINARY"),
+                .init(name: "asset_id", descending: false, collation: "BINARY"),
             ],
             unique: false
         ),

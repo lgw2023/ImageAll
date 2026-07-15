@@ -189,6 +189,10 @@
 		JJ0000010000000000000001 /* LibraryWorkspacePort.swift in Sources */ = {isa = PBXBuildFile; fileRef = JJ0001010000000000000001 /* LibraryWorkspacePort.swift */; };
 		JJ0000010000000000000002 /* LibraryWorkspace.swift in Sources */ = {isa = PBXBuildFile; fileRef = JJ0001010000000000000002 /* LibraryWorkspace.swift */; };
 		JJ0000010000000000000003 /* ProductionLibraryWorkspaceService.swift in Sources */ = {isa = PBXBuildFile; fileRef = JJ0001010000000000000003 /* ProductionLibraryWorkspaceService.swift */; };
+		KK0000010000000000000101 /* PersonalizationPersistenceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = KK0001010000000000000101 /* PersonalizationPersistenceTests.swift */; };
+		KK0000010000000000000001 /* V004AddPersonalizationMigration.swift in Sources */ = {isa = PBXBuildFile; fileRef = KK0001010000000000000001 /* V004AddPersonalizationMigration.swift */; };
+		KK0000010000000000000002 /* PersonalizationCatalogPort.swift in Sources */ = {isa = PBXBuildFile; fileRef = KK0001010000000000000002 /* PersonalizationCatalogPort.swift */; };
+		KK0000010000000000000003 /* GRDBPersonalizationRepository.swift in Sources */ = {isa = PBXBuildFile; fileRef = KK0001010000000000000003 /* GRDBPersonalizationRepository.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -385,6 +389,10 @@
 		JJ0001010000000000000001 /* LibraryWorkspacePort.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryWorkspacePort.swift; sourceTree = "<group>"; };
 		JJ0001010000000000000002 /* LibraryWorkspace.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryWorkspace.swift; sourceTree = "<group>"; };
 		JJ0001010000000000000003 /* ProductionLibraryWorkspaceService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProductionLibraryWorkspaceService.swift; sourceTree = "<group>"; };
+		KK0001010000000000000101 /* PersonalizationPersistenceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersonalizationPersistenceTests.swift; sourceTree = "<group>"; };
+		KK0001010000000000000001 /* V004AddPersonalizationMigration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = V004AddPersonalizationMigration.swift; sourceTree = "<group>"; };
+		KK0001010000000000000002 /* PersonalizationCatalogPort.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersonalizationCatalogPort.swift; sourceTree = "<group>"; };
+		KK0001010000000000000003 /* GRDBPersonalizationRepository.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GRDBPersonalizationRepository.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -433,6 +441,7 @@
 			isa = PBXGroup;
 			children = (
 				JJ0001010000000000000101 /* LibraryWorkspaceModelTests.swift */,
+				KK0006010000000000000003 /* Personalization */,
 				AA0006010000000000000008 /* Startup */,
 				HH0006010000000000000003 /* Authorization */,
 				RR0006010000000000000003 /* Reconcile */,
@@ -444,6 +453,14 @@
 				DD0006010000000000000002 /* Jobs */,
 			);
 			path = ImageAllTests;
+			sourceTree = "<group>";
+		};
+		KK0006010000000000000003 /* Personalization */ = {
+			isa = PBXGroup;
+			children = (
+				KK0001010000000000000101 /* PersonalizationPersistenceTests.swift */,
+			);
+			path = Personalization;
 			sourceTree = "<group>";
 		};
 		FF0006010000000000000003 /* Catalog */ = {
@@ -482,6 +499,7 @@
 		AA0006010000000000000006 /* Application */ = {
 			isa = PBXGroup;
 			children = (
+				KK0006010000000000000001 /* Personalization */,
 				HH0006010000000000000001 /* Authorization */,
 			II0006010000000000000001 /* DerivedImage */,
 				FF0006010000000000000001 /* Catalog */,
@@ -490,6 +508,14 @@
 				RR0006010000000000000001 /* Reconcile */,
 			);
 			path = Application;
+			sourceTree = "<group>";
+		};
+		KK0006010000000000000001 /* Personalization */ = {
+			isa = PBXGroup;
+			children = (
+				KK0001010000000000000002 /* PersonalizationCatalogPort.swift */,
+			);
+			path = Personalization;
 			sourceTree = "<group>";
 		};
 		FF0006010000000000000001 /* Catalog */ = {
@@ -592,6 +618,7 @@
 		CC0006010000000000000001 /* Infrastructure */ = {
 			isa = PBXGroup;
 			children = (
+				KK0006010000000000000002 /* Personalization */,
 				HH0006010000000000000002 /* Authorization */,
 				FF0006010000000000000002 /* Catalog */,
 				EE0006010000000000000002 /* Paths */,
@@ -603,6 +630,14 @@
 				II0006010000000000000002 /* DerivedImage */,
 			);
 			path = Infrastructure;
+			sourceTree = "<group>";
+		};
+		KK0006010000000000000002 /* Personalization */ = {
+			isa = PBXGroup;
+			children = (
+				KK0001010000000000000003 /* GRDBPersonalizationRepository.swift */,
+			);
+			path = Personalization;
 			sourceTree = "<group>";
 		};
 		FF0006010000000000000002 /* Catalog */ = {
@@ -670,7 +705,8 @@
 				CC0001010000000000000002 /* CatalogMigrationIDs.swift */,
 				CC0001010000000000000003 /* V001CreateCatalogCoreMigration.swift */,
 				FF000101000000000000000A /* V002AddStage1CatalogQuerySupportMigration.swift */,
-			II0001010000000000000001 /* V003AddDerivedImageCacheMigration.swift */,
+				II0001010000000000000001 /* V003AddDerivedImageCacheMigration.swift */,
+				KK0001010000000000000001 /* V004AddPersonalizationMigration.swift */,
 				CC0001010000000000000004 /* CatalogDatabase.swift */,
 				CC0001010000000000000005 /* CatalogRepository.swift */,
 				CC000101000000000000000D /* CatalogSnapshotConstants.swift */,
@@ -969,6 +1005,8 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				KK0000010000000000000002 /* PersonalizationCatalogPort.swift in Sources */,
+				KK0000010000000000000003 /* GRDBPersonalizationRepository.swift in Sources */,
 				AA0000010000000000000001 /* ImageAllApp.swift in Sources */,
 				AA0000010000000000000002 /* RootView.swift in Sources */,
 				JJ0000010000000000000002 /* LibraryWorkspace.swift in Sources */,
@@ -1054,6 +1092,7 @@
 			RR0000010000000000000009 /* FolderReconcileHandler.swift in Sources */,
 			RR0000010000000000000012 /* FolderInfrastructurePorts.swift in Sources */,
 				II0000010000000000000001 /* V003AddDerivedImageCacheMigration.swift in Sources */,
+				KK0000010000000000000001 /* V004AddPersonalizationMigration.swift in Sources */,
 				II0000010000000000000002 /* DerivedImageTypes.swift in Sources */,
 				II0000010000000000000003 /* DerivedImageErrors.swift in Sources */,
 				II0000010000000000000004 /* DerivedImageCachePort.swift in Sources */,
@@ -1073,6 +1112,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				KK0000010000000000000101 /* PersonalizationPersistenceTests.swift in Sources */,
 				JJ0000010000000000000101 /* LibraryWorkspaceModelTests.swift in Sources */,
 				AA0000010000000000000005 /* CompositionRootTests.swift in Sources */,
 				EE0000010000000000000101 /* StartupTestSupport.swift in Sources */,

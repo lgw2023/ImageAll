@@ -1,0 +1,172 @@
+import GRDB
+import XCTest
+@testable import ImageAll
+
+final class PersonalizationPersistenceTests: XCTestCase {
+    func testFreshCatalogCreatesPersonalizationTables() throws {
+        let database = try CatalogDatabase.open(at: DatabaseTestSupport.makeTempDatabaseURL())
+
+        let tables = try database.pool.read { db in
+            try DatabaseTestSupport.tableNames(db)
+        }
+
+        XCTAssertTrue(tables.contains("feature"))
+        XCTAssertTrue(tables.contains("tag_model_revision"))
+        XCTAssertTrue(tables.contains("tag_model_sample"))
+        XCTAssertTrue(tables.contains("tag_model"))
+        XCTAssertTrue(tables.contains("prediction"))
+    }
+
+    func testV003CatalogFactsSurviveV004Upgrade() throws {
+        let url = try DatabaseTestSupport.makeTempDatabaseURL()
+        var config = Configuration()
+        config.prepareDatabase { db in try db.execute(sql: "PRAGMA foreign_keys = ON") }
+        let pool = try DatabasePool(path: url.path, configuration: config)
+        var migrator = DatabaseTestSupport.makeV002OnlyMigrator()
+        V003AddDerivedImageCacheMigration.register(on: &migrator)
+        try migrator.migrate(pool)
+
+        let sourceID = UUID()
+        let assetID = UUID()
+        try pool.write { db in
+            try db.execute(
+                sql: """
+                INSERT INTO source (
+                    id, kind, display_name, bookmark, scan_generation, dirty_epoch,
+                    state, created_at_ms, updated_at_ms
+                ) VALUES (?, 'folder', 'v003 sentinel', ?, 0, 0, 'active', 1, 1)
+                """,
+                arguments: [sourceID.uuidString.lowercased(), DatabaseTestSupport.folderBookmark()]
+            )
+            try db.execute(
+                sql: """
+                INSERT INTO asset (
+                    id, source_id, locator_kind, relative_path, locator_state,
+                    media_type, content_revision, availability,
+                    record_created_at_ms, record_updated_at_ms, file_name
+                ) VALUES (?, ?, 'file', 'sentinel.jpg', 'current', 'public.jpeg', 1, 'available', 1, 1, 'sentinel.jpg')
+                """,
+                arguments: [assetID.uuidString.lowercased(), sourceID.uuidString.lowercased()]
+            )
+        }
+        try CatalogDatabase.closePool(pool)
+
+        let upgraded = try CatalogDatabase.open(at: url)
+        try upgraded.pool.read { db in
+            XCTAssertEqual(try String.fetchOne(db, sql: "SELECT display_name FROM source WHERE id = ?", arguments: [sourceID.uuidString.lowercased()]), "v003 sentinel")
+            XCTAssertEqual(try String.fetchOne(db, sql: "SELECT relative_path FROM asset WHERE id = ?", arguments: [assetID.uuidString.lowercased()]), "sentinel.jpg")
+            XCTAssertTrue(try db.tableExists("feature"))
+        }
+    }
+
+    func testModelPublicationAndPredictionsKeepManualDecisionAuthoritative() throws {
+        let fixture = try CatalogQueryTestSupport.openQueryDatabase()
+        let catalog = GRDBPersonalizationRepository(database: fixture.database)
+        let positive = fixture.ids.assetNewest
+        let negative = fixture.ids.assetOldest
+        let candidate = fixture.ids.assetDuplicateTimeA
+
+        _ = try fixture.tags.batchReject(
+            tagID: fixture.ids.tagFamily,
+            assetIDs: [negative],
+            timestampMs: DatabaseTestSupport.timestampMs
+        )
+
+        for (assetID, cacheKey) in [
+            (positive, "objects/20/positive.fprint"),
+            (negative, "objects/20/negative.fprint"),
+            (candidate, "objects/20/candidate.fprint"),
+        ] {
+            try catalog.registerFeature(
+                FeatureRegistration(
+                    identity: FeatureIdentity(assetID: assetID, contentRevision: 1),
+                    elementCount: 4,
+                    byteCount: 16,
+                    vectorSHA256: Data(repeating: UInt8(cacheKey.count), count: 32),
+                    cacheKey: cacheKey,
+                    createdAtMs: DatabaseTestSupport.timestampMs
+                )
+            )
+        }
+
+        let revision = ModelRevisionRegistration(
+            tagID: fixture.ids.tagFamily,
+            revision: 1,
+            threshold: 0,
+            neighborCount: 1,
+            sampleBudgetPerRole: 12,
+            samples: [
+                ModelSampleRegistration(identity: FeatureIdentity(assetID: positive, contentRevision: 1), role: .positive, rank: 0),
+                ModelSampleRegistration(identity: FeatureIdentity(assetID: negative, contentRevision: 1), role: .negative, rank: 0),
+            ],
+            createdAtMs: DatabaseTestSupport.timestampMs
+        )
+        try catalog.publishModelRevision(revision)
+
+        try catalog.replacePredictions(
+            tagID: fixture.ids.tagFamily,
+            modelRevision: 1,
+            candidateAssetIDs: [candidate],
+            predictions: [
+                PredictionRegistration(assetID: candidate, contentRevision: 1, score: 0.4),
+            ],
+            createdAtMs: DatabaseTestSupport.timestampMs
+        )
+        XCTAssertEqual(try catalog.pendingPredictions(tagID: fixture.ids.tagFamily, limit: 10).map(\.assetID), [candidate])
+
+        _ = try fixture.tags.batchAccept(
+            tagID: fixture.ids.tagFamily,
+            assetIDs: [candidate],
+            timestampMs: DatabaseTestSupport.timestampMs + 1
+        )
+        XCTAssertEqual(try catalog.pendingPredictions(tagID: fixture.ids.tagFamily, limit: 10), [])
+    }
+
+    func testFailedModelPublicationLeavesNoPartialRevision() throws {
+        let fixture = try CatalogQueryTestSupport.openQueryDatabase()
+        let catalog = GRDBPersonalizationRepository(database: fixture.database)
+        let positive = fixture.ids.assetNewest
+        let negative = fixture.ids.assetOldest
+
+        _ = try fixture.tags.batchReject(
+            tagID: fixture.ids.tagFamily,
+            assetIDs: [negative],
+            timestampMs: DatabaseTestSupport.timestampMs
+        )
+        try catalog.registerFeature(
+            FeatureRegistration(
+                identity: FeatureIdentity(assetID: positive, contentRevision: 1),
+                elementCount: 4,
+                byteCount: 16,
+                vectorSHA256: Data(repeating: 1, count: 32),
+                cacheKey: "objects/20/positive-only.fprint",
+                createdAtMs: DatabaseTestSupport.timestampMs
+            )
+        )
+
+        XCTAssertThrowsError(
+            try catalog.publishModelRevision(
+                ModelRevisionRegistration(
+                    tagID: fixture.ids.tagFamily,
+                    revision: 1,
+                    threshold: 0,
+                    neighborCount: 1,
+                    sampleBudgetPerRole: 12,
+                    samples: [
+                        ModelSampleRegistration(identity: FeatureIdentity(assetID: positive, contentRevision: 1), role: .positive, rank: 0),
+                        ModelSampleRegistration(identity: FeatureIdentity(assetID: negative, contentRevision: 1), role: .negative, rank: 0),
+                    ],
+                    createdAtMs: DatabaseTestSupport.timestampMs
+                )
+            )
+        ) { error in
+            XCTAssertEqual(error as? PersonalizationCatalogError, .missingFeature)
+        }
+
+        try fixture.database.pool.read { db in
+            XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM tag_model_revision") ?? -1, 0)
+            XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM tag_model_sample") ?? -1, 0)
+            XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM tag_model") ?? -1, 0)
+        }
+    }
+}
