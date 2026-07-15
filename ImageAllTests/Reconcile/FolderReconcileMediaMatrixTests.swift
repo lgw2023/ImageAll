@@ -145,28 +145,67 @@ final class FolderReconcileMediaMatrixTests: XCTestCase {
             offsetTimeOriginal: "-05:00"
         ))
         let noneData = try XCTUnwrap(FolderReconcileTestSupport.minimalExifJPEGData(dateTimeOriginal: "2020:01:02 03:04:05"))
-        let cases: [(String, Data)] = [
-            ("z.jpg", zData),
-            ("plus.jpg", plusData),
-            ("minus.jpg", minusData),
-            ("none.jpg", noneData),
+        let expectedUTCPlusZero: Int64 = 1_577_934_245_000
+        let expectedUTCPlusEight: Int64 = 1_577_905_445_000
+        let expectedUTCMinusFive: Int64 = 1_577_952_245_000
+        let cases: [(String, Data, Int64?)] = [
+            ("z.jpg", zData, expectedUTCPlusZero),
+            ("plus.jpg", plusData, expectedUTCPlusEight),
+            ("minus.jpg", minusData, expectedUTCMinusFive),
+            ("none.jpg", noneData, nil),
         ]
-        for (name, data) in cases {
+        var parsedEpochs: [Int64] = []
+        for (name, data, expectedMs) in cases {
             let file = try fixture.writeFile(root: root, relativePath: name, contents: data)
             guard case let .available(metadata) = FolderReconcileTestSupport.classifyMedia(at: file, fileName: name) else {
                 return XCTFail("\(name) must be available")
             }
-            switch name {
-            case "z.jpg":
-                XCTAssertNotNil(metadata.mediaCreatedAtMs)
-            case "plus.jpg", "minus.jpg":
-                XCTAssertNotNil(metadata.mediaCreatedAtMs)
-            case "none.jpg":
-                XCTAssertNil(metadata.mediaCreatedAtMs)
-            default:
-                XCTFail("unexpected case")
+            XCTAssertEqual(metadata.mediaCreatedAtMs, expectedMs, "\(name) EXIF UTC epoch")
+            if let ms = metadata.mediaCreatedAtMs {
+                parsedEpochs.append(ms)
             }
         }
+        XCTAssertEqual(Set(parsedEpochs).count, 3, "offset variants must yield distinct UTC epochs")
+    }
+
+    func testCorruptAllowedFormatPersistsUnreadableViaHandler() throws {
+        let fixture = FolderReconcileTestSupport.TempFixtureRoot()
+        defer { fixture.cleanup() }
+        let root = try fixture.makeRoot(label: "corrupt")
+        let corrupt = Data([0xFF, 0xD8, 0xFF, 0x00])
+        try fixture.writeFile(root: root, relativePath: "bad.jpg", contents: corrupt)
+        let url = try makeTempDatabaseURL()
+        let database = try CatalogDatabase.open(at: url)
+        let queue = FolderReconcileTestSupport.makeQueue(database: database)
+        let sourceID = UUID()
+        let bookmark = root.path.data(using: .utf8)!
+        try FolderReconcileTestSupport.seedActiveFolderSource(database: database, sourceID: sourceID, bookmark: bookmark)
+        _ = try FolderReconcileTestSupport.enqueueReconcileJob(queue: queue, sourceID: sourceID)
+        let (handler, _) = FolderReconcileTestSupport.makeHandler(database: database, root: root, bookmark: bookmark)
+        let coordinator = FolderReconcileTestSupport.makeCoordinator(queue: queue, handler: handler)
+        _ = try XCTUnwrap(try coordinator.claimAndExecuteOnce(ClaimNextInput(owner: "w", leaseDurationMs: 1000)))
+        let first = try FolderReconcileTestSupport.fetchAssetRows(database: database, sourceID: sourceID)
+        XCTAssertEqual(first.count, 1)
+        XCTAssertEqual(first[0].availability, "unreadable")
+        XCTAssertNotNil(first[0].sizeBytes)
+        XCTAssertNotNil(first[0].modifiedAtNs)
+        XCTAssertNotNil(first[0].resourceID)
+        XCTAssertNil(first[0].sha256)
+        let dimensions = try database.pool.read { db in
+            try Row.fetchOne(db, sql: "SELECT width, height FROM asset WHERE id = ?", arguments: [first[0].id])
+        }
+        XCTAssertNil(dimensions?["width"])
+        XCTAssertNil(dimensions?["height"])
+        _ = try FolderReconcileTestSupport.enqueueReconcileJob(queue: queue, sourceID: sourceID, jobID: UUID())
+        _ = try XCTUnwrap(try coordinator.claimAndExecuteOnce(ClaimNextInput(owner: "w2", leaseDurationMs: 1000)))
+        let second = try FolderReconcileTestSupport.fetchAssetRows(database: database, sourceID: sourceID)
+        XCTAssertEqual(second.count, 1)
+        XCTAssertEqual(second[0].id, first[0].id)
+        XCTAssertEqual(second[0].availability, "unreadable")
+        XCTAssertEqual(second[0].sizeBytes, first[0].sizeBytes)
+        XCTAssertEqual(second[0].modifiedAtNs, first[0].modifiedAtNs)
+        XCTAssertEqual(second[0].resourceID, first[0].resourceID)
+        XCTAssertEqual(second[0].contentRevision, first[0].contentRevision)
     }
 
     func testDatabaseSHA256RemainsNullAfterScan() throws {
@@ -226,7 +265,7 @@ final class FolderReconcileMediaMatrixTests: XCTestCase {
         try FolderReconcileTestSupport.seedActiveFolderSource(database: database, sourceID: sourceID, bookmark: bookmark)
         _ = try FolderReconcileTestSupport.enqueueReconcileJob(queue: queue, sourceID: sourceID)
         let reader = FailingFileResourceReader(failSizeFor: fileURL)
-        let (handler, _) = FolderReconcileTestSupport.makeHandler(
+        let (handler, port) = FolderReconcileTestSupport.makeHandler(
             database: database,
             root: root,
             bookmark: bookmark,
@@ -236,6 +275,8 @@ final class FolderReconcileMediaMatrixTests: XCTestCase {
         let result = try XCTUnwrap(try coordinator.claimAndExecuteOnce(ClaimNextInput(owner: "w", leaseDurationMs: 1000)))
         XCTAssertEqual(result.snapshot.state, .retryableFailed)
         XCTAssertEqual(result.snapshot.lastErrorCode, .folderEnumerationIncomplete)
+        XCTAssertEqual(port.scopeStartCount, 1)
+        XCTAssertEqual(port.scopeStopCount, 1)
         let count = try database.pool.read { db in
             try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM asset")
         }

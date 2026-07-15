@@ -105,6 +105,54 @@ final class FolderReconcileEnumerationMatrixTests: XCTestCase {
         XCTAssertFalse(spy.committedBatchSizes.isEmpty)
         XCTAssertTrue(spy.committedBatchSizes.allSatisfy { $0 <= config.assetBatchLimit })
         XCTAssertTrue(spy.committedBatchSizes.contains(0), "ignored-only work-unit boundaries must flush empty batches")
+        var enumeratedSeries = [try XCTUnwrap(spy.beginEnumeratedEntries)]
+        enumeratedSeries.append(contentsOf: spy.committedEnumeratedEntries)
+        for index in 1 ..< enumeratedSeries.count {
+            let increment = enumeratedSeries[index] - enumeratedSeries[index - 1]
+            XCTAssertLessThanOrEqual(
+                increment,
+                config.workUnitLimit,
+                "enumerated increment at boundary \(index) was \(increment)"
+            )
+        }
+    }
+
+    func testAliasFileIgnoredViaEnumerationResourceReaderSeam() throws {
+        let fixture = FolderReconcileTestSupport.TempFixtureRoot()
+        defer { fixture.cleanup() }
+        let root = try fixture.makeRoot(label: "alias")
+        _ = try fixture.writeFile(root: root, relativePath: "visible.png", contents: FolderReconcileTestSupport.minimalPNGData())
+        let aliasURL = try fixture.writeFile(root: root, relativePath: "alias.png", contents: FolderReconcileTestSupport.minimalPNGData())
+        let reader = AliasMarkingEnumerationResourceReader(aliasURL: aliasURL)
+        let session = FolderDirectoryEnumerator(
+            rootURL: root,
+            resourceReader: reader
+        ).makeSession()
+        var paths: [String] = []
+        while let entry = try session.nextEntry() {
+            if case let .candidateFile(path, _) = entry { paths.append(path) }
+        }
+        XCTAssertEqual(paths, ["visible.png"])
+
+        let url = try makeTempDatabaseURL()
+        let database = try CatalogDatabase.open(at: url)
+        let queue = FolderReconcileTestSupport.makeQueue(database: database)
+        let sourceID = UUID()
+        let bookmark = root.path.data(using: .utf8)!
+        try FolderReconcileTestSupport.seedActiveFolderSource(database: database, sourceID: sourceID, bookmark: bookmark)
+        _ = try FolderReconcileTestSupport.enqueueReconcileJob(queue: queue, sourceID: sourceID)
+        let (handler, _) = FolderReconcileTestSupport.makeHandler(
+            database: database,
+            root: root,
+            bookmark: bookmark,
+            enumerationResourceReader: reader
+        )
+        let coordinator = FolderReconcileTestSupport.makeCoordinator(queue: queue, handler: handler)
+        _ = try XCTUnwrap(try coordinator.claimAndExecuteOnce(ClaimNextInput(owner: "w", leaseDurationMs: 1000)))
+        let stored = try database.pool.read { db in
+            try String.fetchAll(db, sql: "SELECT relative_path FROM asset WHERE locator_state = 'current' ORDER BY relative_path")
+        }
+        XCTAssertEqual(stored, ["visible.png"])
     }
 
     func testRootInvalidationDuringScanMarksIncompleteWithPairedScope() throws {
@@ -130,7 +178,12 @@ final class FolderReconcileEnumerationMatrixTests: XCTestCase {
         let result = try XCTUnwrap(try coordinator.claimAndExecuteOnce(ClaimNextInput(owner: "w", leaseDurationMs: 1000)))
         XCTAssertEqual(result.snapshot.state, .retryableFailed)
         XCTAssertEqual(result.snapshot.lastErrorCode, .folderEnumerationIncomplete)
-        XCTAssertEqual(port.scopeStartCount, port.scopeStopCount)
+        XCTAssertEqual(port.scopeStartCount, 1)
+        XCTAssertEqual(port.scopeStopCount, 1)
+        let missingCount = try database.pool.read { db in
+            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM asset WHERE availability = 'missing'")
+        }
+        XCTAssertEqual(missingCount, 0)
     }
 
     func testEnumerationResourceFailureMarksIncompleteWithPairedScope() throws {
@@ -153,9 +206,15 @@ final class FolderReconcileEnumerationMatrixTests: XCTestCase {
             enumerationResourceReader: reader
         )
         let coordinator = FolderReconcileTestSupport.makeCoordinator(queue: queue, handler: handler)
-        _ = try XCTUnwrap(try coordinator.claimAndExecuteOnce(ClaimNextInput(owner: "w", leaseDurationMs: 1000)))
-        XCTAssertEqual(port.scopeStartCount, port.scopeStopCount)
-        XCTAssertGreaterThan(port.scopeStartCount, 0)
+        let result = try XCTUnwrap(try coordinator.claimAndExecuteOnce(ClaimNextInput(owner: "w", leaseDurationMs: 1000)))
+        XCTAssertEqual(result.snapshot.state, .retryableFailed)
+        XCTAssertEqual(result.snapshot.lastErrorCode, .folderEnumerationIncomplete)
+        XCTAssertEqual(port.scopeStartCount, 1)
+        XCTAssertEqual(port.scopeStopCount, 1)
+        let missingCount = try database.pool.read { db in
+            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM asset WHERE availability = 'missing'")
+        }
+        XCTAssertEqual(missingCount, 0)
     }
 }
 

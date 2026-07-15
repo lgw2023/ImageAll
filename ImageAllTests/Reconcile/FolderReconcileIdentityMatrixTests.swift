@@ -218,6 +218,82 @@ final class FolderReconcileIdentityMatrixTests: XCTestCase {
         XCTAssertNotNil(rows[0].resourceID)
     }
 
+    func testPriorResourceIDToNilSamePathMarksUnreadableConflict() throws {
+        let fixture = FolderReconcileTestSupport.TempFixtureRoot()
+        defer { fixture.cleanup() }
+        let root = try fixture.makeRoot(label: "id-nil")
+        try fixture.writeFile(root: root, relativePath: "a.png", contents: FolderReconcileTestSupport.minimalPNGData())
+        let (database, sourceID, coordinator, queue) = try makeScanHarness(fixture: fixture, label: "id-nil", root: root)
+        _ = try runOnce(coordinator: coordinator)
+        let first = try FolderReconcileTestSupport.fetchAssetRows(database: database, sourceID: sourceID)
+        XCTAssertEqual(first.count, 1)
+        XCTAssertNotNil(first[0].resourceID)
+        _ = try FolderReconcileTestSupport.enqueueReconcileJob(queue: queue, sourceID: sourceID, jobID: UUID())
+        let (handler2, _) = FolderReconcileTestSupport.makeHandler(
+            database: database,
+            root: root,
+            bookmark: root.path.data(using: .utf8)!,
+            fileResourceReader: NilResourceIDFileResourceReader()
+        )
+        let coordinator2 = FolderReconcileTestSupport.makeCoordinator(queue: queue, handler: handler2)
+        let result = try XCTUnwrap(try coordinator2.claimAndExecuteOnce(ClaimNextInput(owner: "w2", leaseDurationMs: 1000)))
+        let decoded = try FolderReconcileCheckpointCodec.decode(XCTUnwrap(result.snapshot.checkpoint?.data))
+        XCTAssertEqual(decoded.identityConflicts, 1)
+        let after = try FolderReconcileTestSupport.fetchAssetRows(database: database, sourceID: sourceID)
+        XCTAssertEqual(after.filter { $0.locatorState == "current" }.count, 1)
+        let current = after.first { $0.locatorState == "current" }!
+        XCTAssertEqual(current.id, first[0].id)
+        XCTAssertEqual(current.relativePath, first[0].relativePath)
+        XCTAssertEqual(current.contentRevision, first[0].contentRevision)
+        XCTAssertEqual(current.sizeBytes, first[0].sizeBytes)
+        XCTAssertEqual(current.modifiedAtNs, first[0].modifiedAtNs)
+        XCTAssertEqual(current.resourceID, first[0].resourceID)
+        XCTAssertEqual(current.availability, "unreadable")
+        XCTAssertEqual(current.lastSeenGeneration, 2)
+    }
+
+    func testPriorNilResourceIDToIDSamePathMarksUnreadableConflict() throws {
+        let fixture = FolderReconcileTestSupport.TempFixtureRoot()
+        defer { fixture.cleanup() }
+        let root = try fixture.makeRoot(label: "nil-id")
+        try fixture.writeFile(root: root, relativePath: "a.png", contents: FolderReconcileTestSupport.minimalPNGData())
+        let url = try makeTempDatabaseURL()
+        let database = try CatalogDatabase.open(at: url)
+        let queue = FolderReconcileTestSupport.makeQueue(database: database)
+        let sourceID = UUID()
+        let bookmark = root.path.data(using: .utf8)!
+        try FolderReconcileTestSupport.seedActiveFolderSource(database: database, sourceID: sourceID, bookmark: bookmark)
+        _ = try FolderReconcileTestSupport.enqueueReconcileJob(queue: queue, sourceID: sourceID)
+        let (handler1, _) = FolderReconcileTestSupport.makeHandler(
+            database: database,
+            root: root,
+            bookmark: bookmark,
+            fileResourceReader: NilResourceIDFileResourceReader()
+        )
+        let coordinator1 = FolderReconcileTestSupport.makeCoordinator(queue: queue, handler: handler1)
+        _ = try runOnce(coordinator: coordinator1)
+        let first = try FolderReconcileTestSupport.fetchAssetRows(database: database, sourceID: sourceID)
+        XCTAssertEqual(first.count, 1)
+        XCTAssertNil(first[0].resourceID)
+        _ = try FolderReconcileTestSupport.enqueueReconcileJob(queue: queue, sourceID: sourceID, jobID: UUID())
+        let (handler2, _) = FolderReconcileTestSupport.makeHandler(database: database, root: root, bookmark: bookmark)
+        let coordinator2 = FolderReconcileTestSupport.makeCoordinator(queue: queue, handler: handler2)
+        let result = try XCTUnwrap(try coordinator2.claimAndExecuteOnce(ClaimNextInput(owner: "w2", leaseDurationMs: 1000)))
+        let decoded = try FolderReconcileCheckpointCodec.decode(XCTUnwrap(result.snapshot.checkpoint?.data))
+        XCTAssertEqual(decoded.identityConflicts, 1)
+        let after = try FolderReconcileTestSupport.fetchAssetRows(database: database, sourceID: sourceID)
+        XCTAssertEqual(after.filter { $0.locatorState == "current" }.count, 1)
+        let current = after.first { $0.locatorState == "current" }!
+        XCTAssertEqual(current.id, first[0].id)
+        XCTAssertEqual(current.relativePath, first[0].relativePath)
+        XCTAssertEqual(current.contentRevision, first[0].contentRevision)
+        XCTAssertEqual(current.sizeBytes, first[0].sizeBytes)
+        XCTAssertEqual(current.modifiedAtNs, first[0].modifiedAtNs)
+        XCTAssertNil(current.resourceID)
+        XCTAssertEqual(current.availability, "unreadable")
+        XCTAssertEqual(current.lastSeenGeneration, 2)
+    }
+
     func testDuplicateObservationBatchViaCoordinatorIsIdempotent() throws {
         let fixture = FolderReconcileTestSupport.TempFixtureRoot()
         defer { fixture.cleanup() }

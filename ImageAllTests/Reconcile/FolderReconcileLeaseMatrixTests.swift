@@ -168,7 +168,7 @@ final class FolderReconcileLeaseMatrixTests: XCTestCase {
             )
         )
         let afterFirst = try ReconcileDatabaseFactCapture.capture(database: database, jobID: jobID, sourceID: sourceID)
-        XCTAssertEqual(afterFirst.pendingSuccessorCount, 1)
+        XCTAssertEqual(afterFirst.jobs.filter { $0.state == "pending" }.count, 1)
         XCTAssertThrowsError(
             try repository.completeGeneration(
                 FolderCompleteGenerationInput(

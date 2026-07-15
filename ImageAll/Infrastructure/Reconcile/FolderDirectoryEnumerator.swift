@@ -105,7 +105,8 @@ final class FolderDirectoryEnumerationSession: @unchecked Sendable {
                 hadDirectoryError = true
                 continue
             }
-            if values.isSymbolicLink == true || values.isAliasFile == true {
+            let isAlias = resourceReader.isAliasFile(for: item) ?? (values.isAliasFile == true)
+            if values.isSymbolicLink == true || isAlias {
                 return .ignored
             }
 

@@ -44,6 +44,11 @@ struct FoundationFolderFileResourceReader: FolderFileResourceReading, Sendable {
 /// Enumeration-time resource reads for directory entries.
 protocol FolderEnumerationResourceReading: Sendable {
     func resourceValues(for url: URL, keys: Set<URLResourceKey>) throws -> URLResourceValues
+    func isAliasFile(for url: URL) -> Bool?
+}
+
+extension FolderEnumerationResourceReading {
+    func isAliasFile(for url: URL) -> Bool? { nil }
 }
 
 struct FoundationEnumerationResourceReader: FolderEnumerationResourceReading, Sendable {
