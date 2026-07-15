@@ -20,11 +20,67 @@ enum LibraryWorkspaceSafeError: String, Equatable, Sendable {
     case catalogFailed
 }
 
+enum LibraryWorkspaceNotice: Equatable, Sendable {
+    case selectionHiddenByFilter
+    case invalidTagName
+    case duplicateTag
+    case tagMutationFailed
+}
+
+enum LibraryTagDecisionAction: Equatable, Sendable {
+    case accept
+    case reject
+    case clear
+
+    var decision: TagDecisionQueryState {
+        switch self {
+        case .accept: .accepted
+        case .reject: .rejected
+        case .clear: .unknown
+        }
+    }
+}
+
+struct LibraryInspectorTagPresentation: Identifiable, Equatable, Sendable {
+    let id: UUID
+    let displayName: String
+    let decision: LibraryInspectorTagDecisionState
+}
+
+enum LibraryInspectorTagDecisionState: Equatable, Sendable {
+    case unknown
+    case accepted
+    case rejected
+    case mixed
+
+    init(_ state: TagDecisionQueryState) {
+        switch state {
+        case .unknown: self = .unknown
+        case .accepted: self = .accepted
+        case .rejected: self = .rejected
+        }
+    }
+}
+
 protocol LibraryWorkspacePort: Sendable {
     func fetchSources() throws -> [LibrarySourceSummary]
     func connectFolder() async throws -> ConnectFolderOutcome
     func enqueueReconcile(sourceIDs: [UUID]) throws
     func runPendingReconcileJobs() throws
-    func fetchAssetPage(sourceID: UUID?, cursor: AssetPageCursor?) throws -> AssetPageResult
+    func fetchAssetPage(filter: AssetPageFilter, cursor: AssetPageCursor?) throws -> AssetPageResult
     func loadThumbnail(assetID: UUID) async throws -> Data
+    func loadPreview(assetID: UUID) async throws -> Data
+    func listTags() throws -> [TagListItem]
+    func fetchInspectorDetail(assetID: UUID) throws -> AssetInspectorDetail
+    func selectionAggregate(tagIDs: [UUID], assetIDs: [UUID]) throws -> [TagSelectionAggregate]
+    func mutateTag(
+        tagID: UUID,
+        assetIDs: [UUID],
+        action: LibraryTagDecisionAction
+    ) throws -> TagMutationPriorStateSnapshot
+    func restoreTagMutation(_ snapshot: TagMutationPriorStateSnapshot) throws
+    func createTagAndAccept(
+        rawName: String,
+        assetIDs: [UUID]
+    ) throws -> TagCreateAndApplyResult
 }

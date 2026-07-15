@@ -81,8 +81,8 @@ struct AssetGridItemProjection: Sendable, Equatable {
     let height: Int?
     let availability: AssetAvailability
     let contentRevision: Int
-    let acceptedTagCount: Int
-    let rejectedTagCount: Int
+    var acceptedTagCount: Int
+    var rejectedTagCount: Int
 }
 
 struct AssetPageResult: Sendable, Equatable {

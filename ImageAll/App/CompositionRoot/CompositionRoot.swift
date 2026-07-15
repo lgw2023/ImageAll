@@ -59,6 +59,7 @@ struct CompositionRoot {
             queue: runtime.jobQueue,
             executionCoordinator: executionCoordinator,
             query: GRDBAssetCatalogQueryRepository(database: runtime.database),
+            tags: GRDBTagCatalogRepository(database: runtime.database),
             derivedImages: derivedImages,
             clock: clock
         )

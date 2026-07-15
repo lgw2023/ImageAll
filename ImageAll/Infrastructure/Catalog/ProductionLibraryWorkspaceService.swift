@@ -10,6 +10,7 @@ struct ProductionLibraryWorkspaceService: LibraryWorkspacePort, Sendable {
     let queue: GRDBJobQueue
     let executionCoordinator: JobExecutionCoordinator
     let query: GRDBAssetCatalogQueryRepository
+    let tags: GRDBTagCatalogRepository
     let derivedImages: any DerivedImageCachePort
     let clock: any JobClock
 
@@ -49,10 +50,10 @@ struct ProductionLibraryWorkspaceService: LibraryWorkspacePort, Sendable {
         }
     }
 
-    func fetchAssetPage(sourceID: UUID?, cursor: AssetPageCursor?) throws -> AssetPageResult {
+    func fetchAssetPage(filter: AssetPageFilter, cursor: AssetPageCursor?) throws -> AssetPageResult {
         try query.fetchAssetPage(
             AssetPageRequest(
-                filter: AssetPageFilter(sourceIDs: sourceID.map { [$0] } ?? []),
+                filter: filter,
                 sort: .newest,
                 cursor: cursor,
                 limit: 100
@@ -64,6 +65,57 @@ struct ProductionLibraryWorkspaceService: LibraryWorkspacePort, Sendable {
         try await derivedImages.loadOrGenerate(
             DerivedImageRequest(assetID: assetID, variant: .gridRegular)
         ).encodedBytes
+    }
+
+    func loadPreview(assetID: UUID) async throws -> Data {
+        try await derivedImages.loadOrGenerate(
+            DerivedImageRequest(assetID: assetID, variant: .preview)
+        ).encodedBytes
+    }
+
+    func listTags() throws -> [TagListItem] {
+        try tags.listTags(includeArchived: false)
+    }
+
+    func fetchInspectorDetail(assetID: UUID) throws -> AssetInspectorDetail {
+        try query.fetchInspectorDetail(assetID: assetID)
+    }
+
+    func selectionAggregate(tagIDs: [UUID], assetIDs: [UUID]) throws -> [TagSelectionAggregate] {
+        try tags.selectionAggregate(tagIDs: tagIDs, assetIDs: assetIDs)
+    }
+
+    func mutateTag(
+        tagID: UUID,
+        assetIDs: [UUID],
+        action: LibraryTagDecisionAction
+    ) throws -> TagMutationPriorStateSnapshot {
+        let result: TagMutationResult
+        switch action {
+        case .accept:
+            result = try tags.batchAccept(tagID: tagID, assetIDs: assetIDs, timestampMs: clock.nowMs)
+        case .reject:
+            result = try tags.batchReject(tagID: tagID, assetIDs: assetIDs, timestampMs: clock.nowMs)
+        case .clear:
+            result = try tags.batchClear(tagID: tagID, assetIDs: assetIDs, timestampMs: clock.nowMs)
+        }
+        return TagMutationPriorStateSnapshot(tagID: tagID, priorStates: result.priorStates)
+    }
+
+    func restoreTagMutation(_ snapshot: TagMutationPriorStateSnapshot) throws {
+        try tags.restorePriorStates(snapshot, timestampMs: clock.nowMs)
+    }
+
+    func createTagAndAccept(
+        rawName: String,
+        assetIDs: [UUID]
+    ) throws -> TagCreateAndApplyResult {
+        try tags.createTagAndApply(
+            rawName: rawName,
+            assetIDs: assetIDs,
+            decision: .accepted,
+            timestampMs: clock.nowMs
+        )
     }
 }
 
