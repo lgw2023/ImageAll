@@ -1,10 +1,10 @@
 # ImageAll 阶段 1 实施规格
 
-> 状态：Implementation in progress；切片 1～3 已通过，切片 4 已获实施授权<br>
+> 状态：Implementation in progress；切片 1～4 已通过；自 2026-07-15 起按端到端优先计划重排后续工作<br>
 > 日期：2026-07-15<br>
 > 产品批准：`UI-001`～`UI-011`、macOS 15+ / Apple Silicon only、静态格式允许清单、本地自用签名<br>
 > 已批准实现基线：阶段 0 `main@892f4e29e1ebf492c1540c5a29d9c54abc05a78f`<br>
-> 当前批准实现：切片 3 `main@bfa0cf0bcedd58ffbdc19dc163a065589f7aeb0d`；Codex 验收记录 `main@bd87fc5e91b110d62dda8c1706b8ce573ad48d72`<br>
+> 当前批准实现：切片 4 `main@fb2519084999cef9ee4be7ae278ed68393c8769d`；Codex 验收记录 `main@457c4fd5d237259a2fa5a1fa731b2225c459930a`<br>
 > 当前阶段输入：[`STAGE-1-BACKEND-ARCHITECTURE.md`](./STAGE-1-BACKEND-ARCHITECTURE.md) 与 [`STAGE-1-PRODUCT-UI-SPEC.md`](./STAGE-1-PRODUCT-UI-SPEC.md)<br>
 > 实施者：Cursor CLI，仅 `Composer 2.5 Fast`；每个新切片使用全新 session
 
@@ -74,6 +74,9 @@ Infrastructure adapters (GRDB / Foundation / Image I/O / FSEvents)
 - `last_error_message` 只保存安全摘要，错误分类使用封闭 safe code。
 
 ## 3. 阶段 1 切片顺序
+
+切片 1～4 保持原批准含义。项目所有者随后要求优先形成可运行 App，非阻塞的 watcher、活动控制和完备验证允许延后；切片 5 起改按
+[`STAGE-1-ACCELERATED-DELIVERY.md`](./STAGE-1-ACCELERATED-DELIVERY.md) 执行。下表原切片 5～8 作为历史规划保留，不再是当前实施顺序。
 
 | 切片 | 唯一目标 | 停止位置 |
 |---|---|---|
@@ -322,6 +325,8 @@ Undo 是阶段 1 的会话级单级能力：成功批量命令返回每个 Asset
 cache key 至少包含 asset ID、content revision、representation version、variant。生成前后 fingerprint 变化必须丢弃临时文件。配额为 20 GiB，磁盘安全余量为 `max(5 GiB, 目标卷容量 5%)`；只清理 ImageAll Caches 内经规范路径验证的派生文件。cache-entry schema 由切片 4 的 v003 交接单精确定义。
 
 ### 5.4 切片 5：FSEvents 与活动
+
+> 延后：不阻塞首个“连接—扫描—浏览”产品闭环，转入加速计划技术债。
 
 - watcher 先建立，再启动 reconcile；每次 App 启动都排一次 reconcile；
 - FSEvents 只推进 dirty epoch 和合并 Job，不直接写 Asset；
