@@ -571,37 +571,81 @@ enum FolderAuthorizationTestSupport {
         }
     }
 
-    struct JobRowSnapshot: Equatable {
-        let state: String
-        let controlRequest: String
-        let leaseOwner: String?
-        let leaseExpiresAtMs: Int64?
-        let lastErrorCode: String?
-        let lastErrorMessage: String?
-    }
-
     static func fetchJobSnapshot(_ database: CatalogDatabase, jobID: UUID) throws -> JobRowSnapshot? {
         try database.pool.read { db in
-            guard let row = try Row.fetchOne(
-                db,
-                sql: """
-                SELECT state, control_request, lease_owner, lease_expires_at_ms,
-                       last_error_code, last_error_message
-                FROM job WHERE id = ?
-                """,
-                arguments: [jobID.uuidString.lowercased()]
-            ) else {
-                return nil
-            }
-            return JobRowSnapshot(
-                state: row["state"],
-                controlRequest: row["control_request"],
-                leaseOwner: row["lease_owner"],
-                leaseExpiresAtMs: row["lease_expires_at_ms"],
-                lastErrorCode: row["last_error_code"],
-                lastErrorMessage: row["last_error_message"]
-            )
+            try JobTestSupport.fetchRowSnapshot(db, jobID: jobID)
         }
+    }
+
+    static func fetchSourceRowSnapshot(_ database: CatalogDatabase, sourceID: UUID) throws -> JobRowSnapshot? {
+        try database.pool.read { db in
+            try JobTestSupport.fetchSourceRowSnapshot(db, sourceID: sourceID)
+        }
+    }
+
+    static func assertJobRow(
+        _ actual: JobRowSnapshot,
+        expectedChanges: [String: String?],
+        unchangedFrom before: JobRowSnapshot,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        let allColumns = Set(before.columns.keys).union(actual.columns.keys).sorted()
+        XCTAssertEqual(allColumns, allColumns, file: file, line: line)
+        for column in allColumns {
+            let expected: String?
+            switch expectedChanges[column] {
+            case nil:
+                expected = before.columns[column] ?? nil
+            case let .some(value):
+                expected = value
+            }
+            let actualValue = actual.columns[column] ?? nil
+            XCTAssertEqual(actualValue, expected, "column \(column)", file: file, line: line)
+        }
+    }
+
+    static func assertJobRowConvergedToCancelled(
+        actual: JobRowSnapshot,
+        before: JobRowSnapshot,
+        updatedAtMs: Int64,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        assertJobRow(
+            actual,
+            expectedChanges: [
+                "state": JobState.cancelled.rawValue,
+                "control_request": JobControlRequest.none.rawValue,
+                "lease_owner": nil,
+                "lease_expires_at_ms": nil,
+                "last_error_code": nil,
+                "last_error_message": nil,
+                "updated_at_ms": String(updatedAtMs),
+            ],
+            unchangedFrom: before,
+            file: file,
+            line: line
+        )
+    }
+
+    static func assertJobRowConvergedToRunningCancel(
+        actual: JobRowSnapshot,
+        before: JobRowSnapshot,
+        updatedAtMs: Int64,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        assertJobRow(
+            actual,
+            expectedChanges: [
+                "control_request": JobControlRequest.cancel.rawValue,
+                "updated_at_ms": String(updatedAtMs),
+            ],
+            unchangedFrom: before,
+            file: file,
+            line: line
+        )
     }
 
     static func sourceCount(_ database: CatalogDatabase) throws -> Int {

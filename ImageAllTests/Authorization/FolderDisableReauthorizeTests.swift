@@ -290,38 +290,66 @@ final class FolderDisableReauthorizeTests: XCTestCase {
             )
         }
 
+        let pendingBefore = try FolderAuthorizationTestSupport.fetchJobSnapshot(database, jobID: pendingID)!
+        let pausedBefore = try FolderAuthorizationTestSupport.fetchJobSnapshot(database, jobID: pausedID)!
+        let retryableFailedBefore = try FolderAuthorizationTestSupport.fetchJobSnapshot(database, jobID: retryableFailedID)!
+        let runningNoneBefore = try FolderAuthorizationTestSupport.fetchJobSnapshot(database, jobID: runningNoneID)!
+        let runningPauseBefore = try FolderAuthorizationTestSupport.fetchJobSnapshot(database, jobID: runningPauseID)!
         let terminalBefore = try FolderAuthorizationTestSupport.fetchJobSnapshot(database, jobID: terminalID)!
         let otherBefore = try FolderAuthorizationTestSupport.fetchJobSnapshot(database, jobID: otherKindID)!
+        let sourceBefore = try FolderAuthorizationTestSupport.fetchSourceRowSnapshot(database, sourceID: sourceID)!
 
+        let disableNowMs = FolderAuthorizationTestSupport.baseTimeMs
         let picker = FolderAuthorizationTestSupport.FakeDirectoryPicker()
         let (coordinator, _, _, _) = FolderAuthorizationTestSupport.makeCoordinator(
             database: database,
-            picker: picker
+            picker: picker,
+            nowMs: disableNowMs
         )
         _ = try await coordinator.disableFolderSource(sourceID: sourceID)
 
-        XCTAssertEqual(try FolderAuthorizationTestSupport.fetchSourceState(database, sourceID: sourceID), .disabled)
+        FolderAuthorizationTestSupport.assertJobRow(
+            try XCTUnwrap(try FolderAuthorizationTestSupport.fetchSourceRowSnapshot(database, sourceID: sourceID)),
+            expectedChanges: [
+                "state": SourceState.disabled.rawValue,
+                "updated_at_ms": String(disableNowMs),
+            ],
+            unchangedFrom: sourceBefore
+        )
 
-        for cancelledID in [pendingID, pausedID, retryableFailedID] {
-            let snapshot = try FolderAuthorizationTestSupport.fetchJobSnapshot(database, jobID: cancelledID)!
-            XCTAssertEqual(snapshot.state, JobState.cancelled.rawValue)
-            XCTAssertEqual(snapshot.controlRequest, JobControlRequest.none.rawValue)
-            XCTAssertNil(snapshot.leaseOwner)
-            XCTAssertNil(snapshot.leaseExpiresAtMs)
-            XCTAssertNil(snapshot.lastErrorCode)
-            XCTAssertNil(snapshot.lastErrorMessage)
+        for (jobID, before) in [
+            (pendingID, pendingBefore),
+            (pausedID, pausedBefore),
+            (retryableFailedID, retryableFailedBefore),
+        ] {
+            let actual = try XCTUnwrap(try FolderAuthorizationTestSupport.fetchJobSnapshot(database, jobID: jobID))
+            FolderAuthorizationTestSupport.assertJobRowConvergedToCancelled(
+                actual: actual,
+                before: before,
+                updatedAtMs: disableNowMs
+            )
         }
 
-        for runningID in [runningNoneID, runningPauseID] {
-            let snapshot = try FolderAuthorizationTestSupport.fetchJobSnapshot(database, jobID: runningID)!
-            XCTAssertEqual(snapshot.state, JobState.running.rawValue)
-            XCTAssertEqual(snapshot.controlRequest, JobControlRequest.cancel.rawValue)
-            XCTAssertNotNil(snapshot.leaseOwner)
-            XCTAssertNotNil(snapshot.leaseExpiresAtMs)
+        for (jobID, before) in [
+            (runningNoneID, runningNoneBefore),
+            (runningPauseID, runningPauseBefore),
+        ] {
+            let actual = try XCTUnwrap(try FolderAuthorizationTestSupport.fetchJobSnapshot(database, jobID: jobID))
+            FolderAuthorizationTestSupport.assertJobRowConvergedToRunningCancel(
+                actual: actual,
+                before: before,
+                updatedAtMs: disableNowMs
+            )
         }
 
-        XCTAssertEqual(try FolderAuthorizationTestSupport.fetchJobSnapshot(database, jobID: terminalID), terminalBefore)
-        XCTAssertEqual(try FolderAuthorizationTestSupport.fetchJobSnapshot(database, jobID: otherKindID), otherBefore)
+        XCTAssertEqual(
+            try FolderAuthorizationTestSupport.fetchJobSnapshot(database, jobID: terminalID),
+            terminalBefore
+        )
+        XCTAssertEqual(
+            try FolderAuthorizationTestSupport.fetchJobSnapshot(database, jobID: otherKindID),
+            otherBefore
+        )
     }
 
     func testDisableJobConvergenceFailureRollsBackSourceAndJobs() async throws {
@@ -384,6 +412,7 @@ final class FolderDisableReauthorizeTests: XCTestCase {
             )
         }
 
+        let sourceBefore = try FolderAuthorizationTestSupport.fetchSourceRowSnapshot(database, sourceID: sourceID)!
         let pendingBefore = try FolderAuthorizationTestSupport.fetchJobSnapshot(database, jobID: pendingID)!
         let runningBefore = try FolderAuthorizationTestSupport.fetchJobSnapshot(database, jobID: runningID)!
 
@@ -400,7 +429,10 @@ final class FolderDisableReauthorizeTests: XCTestCase {
             XCTAssertEqual(error as? FolderAuthorizationError, .persistenceFailure)
         }
 
-        XCTAssertEqual(try FolderAuthorizationTestSupport.fetchSourceState(database, sourceID: sourceID), .active)
+        XCTAssertEqual(
+            try FolderAuthorizationTestSupport.fetchSourceRowSnapshot(database, sourceID: sourceID),
+            sourceBefore
+        )
         XCTAssertEqual(try FolderAuthorizationTestSupport.fetchJobSnapshot(database, jobID: pendingID), pendingBefore)
         XCTAssertEqual(try FolderAuthorizationTestSupport.fetchJobSnapshot(database, jobID: runningID), runningBefore)
     }

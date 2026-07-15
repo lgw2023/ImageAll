@@ -340,20 +340,28 @@ final class FolderAuthorizationReviewGapTests: XCTestCase {
 
         let sourceID = UUID(uuidString: "1f1f1f1f-1f1f-1f1f-1f1f-1f1f1f1f1f1f")!
         let root = try registry.makeRoot(label: "reauth-fault")
-        let bookmark = try FoundationSecurityScopedBookmarkAdapter().createReadOnlyBookmark(for: root)
+        let bookmarkPort = FolderAuthorizationTestSupport.MappingBookmarkPort()
+        bookmarkPort.issueDistinctBookmarksOnCreate = true
+        let oldBookmark = bookmarkPort.register(url: root, token: Data([0x01, 0x02, 0x03]))
+        let insertNowMs = FolderAuthorizationTestSupport.baseTimeMs - 5_000
         try FolderAuthorizationTestSupport.insertFolderSource(
             database: database,
             sourceID: sourceID,
-            bookmark: bookmark,
-            state: .authorizationRequired
+            displayName: "Before Display",
+            bookmark: oldBookmark,
+            state: .authorizationRequired,
+            nowMs: insertNowMs
         )
-        let beforeBookmark = try FolderAuthorizationTestSupport.fetchSourceBookmark(database, sourceID: sourceID)
+        let sourceBefore = try FolderAuthorizationTestSupport.fetchSourceRowSnapshot(database, sourceID: sourceID)!
 
         let picker = FolderAuthorizationTestSupport.FakeDirectoryPicker()
         picker.configuredResponses = [root]
+        let reauthorizeNowMs = FolderAuthorizationTestSupport.baseTimeMs
         let (coordinator, _, _, _) = FolderAuthorizationTestSupport.makeCoordinator(
             database: database,
             picker: picker,
+            bookmarkPort: bookmarkPort,
+            nowMs: reauthorizeNowMs,
             ids: [UUID()]
         )
 
@@ -364,8 +372,14 @@ final class FolderAuthorizationReviewGapTests: XCTestCase {
             XCTAssertEqual(error as? FolderAuthorizationError, .persistenceFailure)
         }
 
-        XCTAssertEqual(try FolderAuthorizationTestSupport.fetchSourceBookmark(database, sourceID: sourceID), beforeBookmark)
-        XCTAssertEqual(try FolderAuthorizationTestSupport.fetchSourceState(database, sourceID: sourceID), .authorizationRequired)
+        let distinctBookmarksForRoot = bookmarkPort.urlByBookmark.filter { $0.value == root }.map(\.key)
+        XCTAssertTrue(distinctBookmarksForRoot.contains(oldBookmark))
+        XCTAssertTrue(distinctBookmarksForRoot.contains { $0 != oldBookmark })
+
+        XCTAssertEqual(
+            try FolderAuthorizationTestSupport.fetchSourceRowSnapshot(database, sourceID: sourceID),
+            sourceBefore
+        )
         XCTAssertEqual(try FolderAuthorizationTestSupport.jobCount(database), 0)
     }
 
@@ -468,13 +482,15 @@ final class FolderAuthorizationReviewGapTests: XCTestCase {
         }
     }
 
-    // §4.5 access state contract
-    func testOfflineResolvePersistsUnavailableWithoutScopeAccess() throws {
+    private func assertOfflineResolvePersistsUnavailable(
+        label: String,
+        sourceID: UUID,
+        assetID: UUID,
+        tagID: UUID,
+        resolveError: Error
+    ) throws {
         let database = try FolderAuthorizationTestSupport.makeDatabase()
-        let sourceID = UUID(uuidString: "24242424-2424-2424-2424-242424242424")!
-        let assetID = UUID(uuidString: "25252525-2525-2525-2525-252525252525")!
-        let tagID = UUID(uuidString: "26262626-2626-2626-2626-262626262626")!
-        let root = try registry.makeRoot(label: "offline")
+        let root = try registry.makeRoot(label: "offline-\(label)")
         let bookmarkPort = FolderAuthorizationTestSupport.MappingBookmarkPort()
         let bookmark = bookmarkPort.register(url: root)
         try FolderAuthorizationTestSupport.insertFolderSource(
@@ -490,7 +506,7 @@ final class FolderAuthorizationReviewGapTests: XCTestCase {
             tagID: tagID
         )
         let before = try FolderAuthorizationTestSupport.assetGraphCounts(database, sourceID: sourceID)
-        bookmarkPort.resolveError = NSError(domain: NSCocoaErrorDomain, code: NSFileNoSuchFileError, userInfo: nil)
+        bookmarkPort.resolveError = resolveError
 
         let picker = FolderAuthorizationTestSupport.FakeDirectoryPicker()
         let (coordinator, _, _, port) = FolderAuthorizationTestSupport.makeCoordinator(
@@ -506,17 +522,42 @@ final class FolderAuthorizationReviewGapTests: XCTestCase {
                 closureExecuted = true
                 return ""
             }
-            XCTFail("Expected authorizationUnavailable")
+            XCTFail("Expected authorizationUnavailable for \(label)")
         } catch {
             XCTAssertEqual(error as? FolderAuthorizationError, .authorizationUnavailable)
         }
 
-        XCTAssertFalse(closureExecuted)
-        XCTAssertEqual(tracking.startCount, 0)
-        XCTAssertEqual(tracking.stopCount, 0)
-        XCTAssertEqual(try FolderAuthorizationTestSupport.fetchSourceState(database, sourceID: sourceID), .unavailable)
+        XCTAssertFalse(closureExecuted, label)
+        XCTAssertEqual(tracking.startCount, 0, label)
+        XCTAssertEqual(tracking.stopCount, 0, label)
+        XCTAssertEqual(
+            try FolderAuthorizationTestSupport.fetchSourceState(database, sourceID: sourceID),
+            .unavailable,
+            label
+        )
         let after = try FolderAuthorizationTestSupport.assetGraphCounts(database, sourceID: sourceID)
         assertAssetGraphUnchanged(before, after)
+    }
+
+    // §4.5 / §4.8 access state contract
+    func testOfflineCocoaNoSuchFileResolvePersistsUnavailableWithoutScopeAccess() throws {
+        try assertOfflineResolvePersistsUnavailable(
+            label: "cocoa-no-such-file",
+            sourceID: UUID(uuidString: "24242424-2424-2424-2424-242424242424")!,
+            assetID: UUID(uuidString: "25252525-2525-2525-2525-252525252525")!,
+            tagID: UUID(uuidString: "26262626-2626-2626-2626-262626262626")!,
+            resolveError: NSError(domain: NSCocoaErrorDomain, code: NSFileNoSuchFileError, userInfo: nil)
+        )
+    }
+
+    func testOfflinePosixENOENTResolvePersistsUnavailableWithoutScopeAccess() throws {
+        try assertOfflineResolvePersistsUnavailable(
+            label: "posix-enoent",
+            sourceID: UUID(uuidString: "34343434-3434-3434-3434-343434343434")!,
+            assetID: UUID(uuidString: "35353535-3535-3535-3535-353535353535")!,
+            tagID: UUID(uuidString: "36363636-3636-3636-3636-363636363636")!,
+            resolveError: NSError(domain: NSPOSIXErrorDomain, code: Int(ENOENT), userInfo: nil)
+        )
     }
 
     func testScopeStartFailurePersistsAuthorizationRequiredWithoutStop() throws {
@@ -672,16 +713,18 @@ final class FolderAuthorizationReviewGapTests: XCTestCase {
     func testReauthorizeRepositoryRejectsWhenStateChangesBeforeTransactionalUpdate() throws {
         let database = try FolderAuthorizationTestSupport.makeDatabase()
         let sourceID = UUID(uuidString: "2d2d2d2d-2d2d-2d2d-2d2d-2d2d2d2d2d2d")!
-        let root = try registry.makeRoot(label: "reauth-race")
-        let bookmark = try FoundationSecurityScopedBookmarkAdapter().createReadOnlyBookmark(for: root)
+        let oldBookmark = Data([0x0A, 0x0B, 0x0C])
+        let newBookmark = Data([0xDE, 0xAD, 0xBE, 0xEF])
+        XCTAssertNotEqual(oldBookmark, newBookmark)
+        let insertNowMs = FolderAuthorizationTestSupport.baseTimeMs - 3_000
         try FolderAuthorizationTestSupport.insertFolderSource(
             database: database,
             sourceID: sourceID,
-            displayName: "Before",
-            bookmark: bookmark,
-            state: .authorizationRequired
+            displayName: "Before Display",
+            bookmark: oldBookmark,
+            state: .authorizationRequired,
+            nowMs: insertNowMs
         )
-        let beforeBookmark = try FolderAuthorizationTestSupport.fetchSourceBookmark(database, sourceID: sourceID)
 
         try database.pool.write { db in
             try db.execute(
@@ -689,22 +732,33 @@ final class FolderAuthorizationReviewGapTests: XCTestCase {
                 arguments: [sourceID.uuidString.lowercased()]
             )
         }
+        let sourceBeforeReauthorizeAttempt = try FolderAuthorizationTestSupport.fetchSourceRowSnapshot(
+            database,
+            sourceID: sourceID
+        )!
 
         let repository = GRDBFolderSourceAuthorizationRepository(database: database)
+        let attemptedNowMs = FolderAuthorizationTestSupport.baseTimeMs + 9_000
+        XCTAssertNotEqual(String(attemptedNowMs), sourceBeforeReauthorizeAttempt.columns["updated_at_ms"] ?? "")
+        XCTAssertNotEqual("After Display", sourceBeforeReauthorizeAttempt.columns["display_name"] ?? "")
+        XCTAssertNotEqual(newBookmark.base64EncodedString(), sourceBeforeReauthorizeAttempt.columns["bookmark"] ?? "")
+
         XCTAssertThrowsError(
             try repository.reauthorizeFolder(
                 sourceID: sourceID,
-                displayName: "After",
-                bookmark: bookmark,
+                displayName: "After Display",
+                bookmark: newBookmark,
                 jobID: UUID(),
-                nowMs: FolderAuthorizationTestSupport.baseTimeMs
+                nowMs: attemptedNowMs
             )
         ) { error in
             XCTAssertEqual(error as? FolderAuthorizationError, .invalidSourceState)
         }
 
-        XCTAssertEqual(try FolderAuthorizationTestSupport.fetchSourceState(database, sourceID: sourceID), .disabled)
-        XCTAssertEqual(try FolderAuthorizationTestSupport.fetchSourceBookmark(database, sourceID: sourceID), beforeBookmark)
+        XCTAssertEqual(
+            try FolderAuthorizationTestSupport.fetchSourceRowSnapshot(database, sourceID: sourceID),
+            sourceBeforeReauthorizeAttempt
+        )
         XCTAssertEqual(try FolderAuthorizationTestSupport.jobCount(database), 0)
     }
 
