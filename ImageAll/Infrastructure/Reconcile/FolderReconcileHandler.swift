@@ -85,6 +85,10 @@ struct FolderReconcileSourceAccessService: Sendable {
         return try perform(resolved.url)
     }
 
+    func validateRootContinuity(at url: URL) -> FolderRootValidationOutcome {
+        rootValidator.validateRoot(at: url)
+    }
+
     private func refreshStaleBookmarkInCurrentScope(sourceID: UUID, resolvedURL: URL) throws {
         let newBookmark: Data
         do {
@@ -125,6 +129,7 @@ enum FolderReconcileHandlerError: Error, Equatable {
 struct FolderReconcileHandler: LeaseBoundJobHandler {
     let rootAccess: FolderReconcileSourceAccessService
     let enumerationConfig: FolderEnumerationConfig
+    let mediaResourceInjection: FolderMediaResourceValueInjection
 
     var kind: String { FolderReconcileJobFactory.kind }
     var supportedPayloadVersions: Set<Int> { [FolderReconcileJobFactory.payloadVersion] }
@@ -132,10 +137,12 @@ struct FolderReconcileHandler: LeaseBoundJobHandler {
 
     init(
         rootAccess: FolderReconcileSourceAccessService,
-        enumerationConfig: FolderEnumerationConfig = .productionDefault
+        enumerationConfig: FolderEnumerationConfig = .productionDefault,
+        mediaResourceInjection: FolderMediaResourceValueInjection = .none
     ) {
         self.rootAccess = rootAccess
         self.enumerationConfig = enumerationConfig
+        self.mediaResourceInjection = mediaResourceInjection
     }
 
     func execute(
@@ -264,7 +271,7 @@ struct FolderReconcileHandler: LeaseBoundJobHandler {
 
         var currentCheckpoint = begin.checkpoint
         var pendingObservations: [FolderReconcileAssetObservation] = []
-        let classifier = FolderMediaClassifier()
+        let classifier = FolderMediaClassifier(resourceInjection: mediaResourceInjection)
 
         do {
             try rootAccess.withActiveSourceRootURL(sourceID: sourceID) { rootURL in
@@ -281,14 +288,16 @@ struct FolderReconcileHandler: LeaseBoundJobHandler {
                     case let .candidateFile(relativePath, fileName):
                         currentCheckpoint = incrementCandidate(currentCheckpoint)
                         let fileURL = rootURL.appendingPathComponent(relativePath)
-                        switch classifier.classify(fileURL: fileURL, fileName: fileName) {
+                        switch classifier.classify(fileURL: fileURL, fileName: fileName, relativePath: relativePath) {
                         case .ignored:
                             currentCheckpoint = incrementIgnored(currentCheckpoint)
                         case let .available(metadata):
-                            let (observation, conflicts) = try resolveAvailableObservation(
+                            try requireProvenFingerprint(metadata)
+                            let (observation, conflicts) = try resolveClassifiedObservation(
                                 rootURL: rootURL,
                                 relativePath: relativePath,
                                 fileName: fileName,
+                                availability: .available,
                                 metadata: metadata,
                                 batchPort: context.reconcileBatch,
                                 sourceID: sourceID,
@@ -298,20 +307,34 @@ struct FolderReconcileHandler: LeaseBoundJobHandler {
                             pendingObservations.append(observation)
                             currentCheckpoint = incrementCommitted(currentCheckpoint)
                         case let .unsupported(metadata):
-                            pendingObservations.append(makeObservation(
+                            try requireProvenFingerprint(metadata)
+                            let (observation, conflicts) = try resolveClassifiedObservation(
+                                rootURL: rootURL,
                                 relativePath: relativePath,
                                 fileName: fileName,
                                 availability: .unsupported,
-                                metadata: metadata
-                            ))
+                                metadata: metadata,
+                                batchPort: context.reconcileBatch,
+                                sourceID: sourceID,
+                                generation: begin.generation
+                            )
+                            currentCheckpoint = addIdentityConflicts(currentCheckpoint, by: conflicts)
+                            pendingObservations.append(observation)
                             currentCheckpoint = incrementCommitted(currentCheckpoint, unsupported: true)
                         case let .unreadable(metadata):
-                            pendingObservations.append(makeObservation(
+                            try requireProvenFingerprint(metadata)
+                            let (observation, conflicts) = try resolveClassifiedObservation(
+                                rootURL: rootURL,
                                 relativePath: relativePath,
                                 fileName: fileName,
                                 availability: .unreadable,
-                                metadata: metadata
-                            ))
+                                metadata: metadata,
+                                batchPort: context.reconcileBatch,
+                                sourceID: sourceID,
+                                generation: begin.generation
+                            )
+                            currentCheckpoint = addIdentityConflicts(currentCheckpoint, by: conflicts)
+                            pendingObservations.append(observation)
                             currentCheckpoint = incrementCommitted(currentCheckpoint, unreadable: true)
                         }
                     }
@@ -336,6 +359,10 @@ struct FolderReconcileHandler: LeaseBoundJobHandler {
                     throw FolderReconcileTraversalFailure.incomplete
                 }
 
+                guard case .valid = rootAccess.validateRootContinuity(at: rootURL) else {
+                    throw FolderReconcileTraversalFailure.incomplete
+                }
+
                 currentCheckpoint = try flushBatch(
                     lease: lease,
                     sourceID: sourceID,
@@ -344,6 +371,21 @@ struct FolderReconcileHandler: LeaseBoundJobHandler {
                     checkpoint: currentCheckpoint,
                     observations: &pendingObservations,
                     context: context
+                )
+
+                guard case .valid = rootAccess.validateRootContinuity(at: rootURL) else {
+                    throw FolderReconcileTraversalFailure.incomplete
+                }
+
+                _ = try context.reconcileBatch.completeGeneration(
+                    FolderCompleteGenerationInput(
+                        lease: lease,
+                        sourceID: sourceID,
+                        generation: begin.generation,
+                        startedDirtyEpoch: begin.startedDirtyEpoch,
+                        checkpoint: currentCheckpoint,
+                        leaseDurationMs: context.leaseDurationMs
+                    )
                 )
             }
         } catch FolderReconcileTraversalFailure.unsafeRelativePath {
@@ -380,17 +422,6 @@ struct FolderReconcileHandler: LeaseBoundJobHandler {
             )
         }
 
-        _ = try context.reconcileBatch.completeGeneration(
-            FolderCompleteGenerationInput(
-                lease: lease,
-                sourceID: sourceID,
-                generation: begin.generation,
-                startedDirtyEpoch: begin.startedDirtyEpoch,
-                checkpoint: currentCheckpoint,
-                leaseDurationMs: context.leaseDurationMs
-            )
-        )
-
         let finalProgress = max(persisted.progressCompleted, currentCheckpoint.candidateFiles)
         return JobHandlerExecutionResult(
             outcome: .completed,
@@ -400,10 +431,17 @@ struct FolderReconcileHandler: LeaseBoundJobHandler {
         )
     }
 
-    private func resolveAvailableObservation(
+    private func requireProvenFingerprint(_ metadata: FolderMediaMetadata) throws {
+        guard metadata.hasProvenFingerprint else {
+            throw FolderReconcileTraversalFailure.incomplete
+        }
+    }
+
+    private func resolveClassifiedObservation(
         rootURL: URL,
         relativePath: String,
         fileName: String,
+        availability: AssetAvailability,
         metadata: FolderMediaMetadata,
         batchPort: any FolderReconcileBatchPort,
         sourceID: UUID,
@@ -416,7 +454,7 @@ struct FolderReconcileHandler: LeaseBoundJobHandler {
             return (makeObservation(
                 relativePath: relativePath,
                 fileName: fileName,
-                availability: .available,
+                availability: availability,
                 metadata: metadata,
                 movePathProbe: nil
             ), 0)
@@ -434,11 +472,14 @@ struct FolderReconcileHandler: LeaseBoundJobHandler {
         } else if let candidate = candidates.first {
             probe = probeOldPath(
                 rootURL: rootURL,
-                candidateRelativePath: candidate.relativePath,
+                candidate: candidate,
                 resourceID: resourceID
             )
-            if probe == .oldPathSameResourceID || probe == .oldPathProbeError {
+            switch probe {
+            case .oldPathSameResourceID, .oldPathProbeError, .multipleCandidates:
                 conflicts = 1
+            default:
+                break
             }
         } else {
             probe = .noCandidate
@@ -447,7 +488,7 @@ struct FolderReconcileHandler: LeaseBoundJobHandler {
         return (makeObservation(
             relativePath: relativePath,
             fileName: fileName,
-            availability: .available,
+            availability: availability,
             metadata: metadata,
             movePathProbe: probe
         ), conflicts)
@@ -455,20 +496,25 @@ struct FolderReconcileHandler: LeaseBoundJobHandler {
 
     private func probeOldPath(
         rootURL: URL,
-        candidateRelativePath: String,
+        candidate: FolderMoveCandidate,
         resourceID: Data
     ) -> FolderMovePathProbe {
-        let oldPathURL = rootURL.appendingPathComponent(candidateRelativePath)
+        let binding = FolderMoveCandidateBinding(
+            assetID: candidate.assetID,
+            oldRelativePath: candidate.relativePath,
+            resourceID: resourceID
+        )
+        let oldPathURL = rootURL.appendingPathComponent(candidate.relativePath)
         guard FileManager.default.fileExists(atPath: oldPathURL.path) else {
-            return .oldPathMissing
+            return .reconnectCandidate(binding)
         }
         guard let oldResourceID = FolderFileResourceProbe.resourceIdentifier(at: oldPathURL) else {
-            return .oldPathProbeError
+            return .oldPathProbeError(binding: binding)
         }
         if oldResourceID == resourceID {
-            return .oldPathSameResourceID
+            return .oldPathSameResourceID(binding)
         }
-        return .oldPathDifferentResourceID
+        return .oldPathDifferentResourceID(binding)
     }
 
     @discardableResult

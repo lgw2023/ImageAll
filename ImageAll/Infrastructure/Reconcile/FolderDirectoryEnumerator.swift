@@ -214,44 +214,4 @@ struct FolderDirectoryEnumerator {
     func makeSession() -> FolderDirectoryEnumerationSession {
         FolderDirectoryEnumerationSession(rootURL: rootURL, config: config, fileManager: fileManager)
     }
-
-    func classifyItemURLForTesting(_ item: URL) -> FolderEnumerationEntryKind? {
-        makeSession().classifyItemURLForTesting(item)
-    }
-}
-
-extension FolderDirectoryEnumerationSession {
-    func classifyItemURLForTesting(_ item: URL) -> FolderEnumerationEntryKind? {
-        if item.lastPathComponent.lowercased().hasSuffix(".photoslibrary") {
-            return .ignored
-        }
-        let relativePath = makeRelativePath(for: item)
-        guard let relativePath else {
-            if isStrictRootBoundaryViolation(for: item) {
-                return .unsafeRelativePath
-            }
-            return .ignored
-        }
-        switch RelativePathRules.validate(relativePath) {
-        case .failure:
-            return .unsafeRelativePath
-        case .success:
-            break
-        }
-        if isPhotosLibraryComponent(relativePath) {
-            return .ignored
-        }
-        guard let values = try? item.resourceValues(forKeys: Set(keys)) else {
-            hadDirectoryError = true
-            return nil
-        }
-        if values.isSymbolicLink == true || values.isAliasFile == true { return .ignored }
-        if values.isPackage == true { return .ignored }
-        if values.isDirectory == true { return .ignored }
-        guard values.isRegularFile == true else { return .ignored }
-        guard let fileName = RelativePathRules.fileName(from: relativePath) else {
-            return .unsafeRelativePath
-        }
-        return .candidateFile(relativePath: relativePath, fileName: fileName)
-    }
 }

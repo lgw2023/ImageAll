@@ -351,13 +351,12 @@ final class FolderReconcileAcceptanceMatrixTests: XCTestCase {
         XCTAssertEqual(missing, 0)
     }
 
-    func testStrictRootBoundaryUnsafeRelativePath() throws {
-        let fixture = FolderReconcileTestSupport.TempFixtureRoot()
-        defer { fixture.cleanup() }
-        let root = try fixture.makeRoot(label: "boundary")
-        let enumerator = FolderDirectoryEnumerator(rootURL: root)
-        let evil = URL(fileURLWithPath: root.path + "X/evil.png")
-        XCTAssertEqual(enumerator.classifyItemURLForTesting(evil), .unsafeRelativePath)
+    func testStrictRootBoundaryRejectsInvalidRelativeComponents() {
+        XCTAssertEqual(RelativePathRules.validate(""), .failure(.empty))
+        XCTAssertEqual(RelativePathRules.validate("."), .failure(.invalidComponent))
+        XCTAssertEqual(RelativePathRules.validate(".."), .failure(.invalidComponent))
+        XCTAssertEqual(RelativePathRules.validate("a/../b"), .failure(.invalidComponent))
+        XCTAssertEqual(RelativePathRules.validate("/abs"), .failure(.absolute))
     }
 
     // MARK: - 5.3.10 Fault triggers

@@ -14,12 +14,37 @@ struct FolderMediaMetadata: Equatable, Sendable {
     let width: Int?
     let height: Int?
     let mediaCreatedAtMs: Int64?
-    let sizeBytes: Int64
-    let modifiedAtNs: Int64
+    let sizeBytes: Int64?
+    let modifiedAtNs: Int64?
     let resourceID: Data?
+
+    var hasProvenFingerprint: Bool {
+        sizeBytes != nil && modifiedAtNs != nil
+    }
+}
+
+struct FolderMediaResourceValueInjection: Sendable, Equatable {
+    let failSizeRelativePaths: Set<String>
+    let failMtimeRelativePaths: Set<String>
+
+    static let none = FolderMediaResourceValueInjection(failSizeRelativePaths: [], failMtimeRelativePaths: [])
+
+    func shouldFailSize(relativePath: String) -> Bool {
+        failSizeRelativePaths.contains(relativePath)
+    }
+
+    func shouldFailMtime(relativePath: String) -> Bool {
+        failMtimeRelativePaths.contains(relativePath)
+    }
 }
 
 struct FolderMediaClassifier: Sendable {
+    private let resourceInjection: FolderMediaResourceValueInjection
+
+    init(resourceInjection: FolderMediaResourceValueInjection = .none) {
+        self.resourceInjection = resourceInjection
+    }
+
     private static let allowedTypes: Set<String> = [
         UTType.jpeg.identifier,
         UTType.png.identifier,
@@ -29,7 +54,8 @@ struct FolderMediaClassifier: Sendable {
         UTType.webP.identifier,
     ]
 
-    func classify(fileURL: URL, fileName: String) -> FolderMediaClassification {
+    func classify(fileURL: URL, fileName: String, relativePath: String? = nil) -> FolderMediaClassification {
+        let rel = relativePath ?? fileName
         let ext = (fileName as NSString).pathExtension
         guard let declaredType = UTType(filenameExtension: ext), declaredType.conforms(to: .image) else {
             return .ignored
@@ -43,8 +69,8 @@ struct FolderMediaClassifier: Sendable {
                     width: nil,
                     height: nil,
                     mediaCreatedAtMs: nil,
-                    sizeBytes: fileSizeBytes(fileURL),
-                    modifiedAtNs: modifiedAtNs(fileURL),
+                    sizeBytes: fileSizeBytes(fileURL, relativePath: rel),
+                    modifiedAtNs: modifiedAtNs(fileURL, relativePath: rel),
                     resourceID: resourceIdentifier(fileURL)
                 )
             )
@@ -59,8 +85,8 @@ struct FolderMediaClassifier: Sendable {
                     width: nil,
                     height: nil,
                     mediaCreatedAtMs: nil,
-                    sizeBytes: fileSizeBytes(fileURL),
-                    modifiedAtNs: modifiedAtNs(fileURL),
+                    sizeBytes: fileSizeBytes(fileURL, relativePath: rel),
+                    modifiedAtNs: modifiedAtNs(fileURL, relativePath: rel),
                     resourceID: resourceIdentifier(fileURL)
                 )
             )
@@ -71,7 +97,8 @@ struct FolderMediaClassifier: Sendable {
                     fileURL: fileURL,
                     mediaType: actualType,
                     source: source,
-                    index: 0
+                    index: 0,
+                    relativePath: rel
                 )
             )
         }
@@ -82,7 +109,8 @@ struct FolderMediaClassifier: Sendable {
                     fileURL: fileURL,
                     mediaType: actualType,
                     source: source,
-                    index: 0
+                    index: 0,
+                    relativePath: rel
                 )
             )
         }
@@ -93,7 +121,8 @@ struct FolderMediaClassifier: Sendable {
                     fileURL: fileURL,
                     mediaType: actualType,
                     source: source,
-                    index: 0
+                    index: 0,
+                    relativePath: rel
                 )
             )
         }
@@ -103,7 +132,8 @@ struct FolderMediaClassifier: Sendable {
             mediaType: actualType,
             source: source,
             index: 0,
-            allowNilDimensions: false
+            allowNilDimensions: false,
+            relativePath: rel
         ), metadata.width != nil, metadata.height != nil
         else {
             return .unreadable(
@@ -112,8 +142,8 @@ struct FolderMediaClassifier: Sendable {
                     width: nil,
                     height: nil,
                     mediaCreatedAtMs: mediaCreatedAtMs(source: source, index: 0),
-                    sizeBytes: fileSizeBytes(fileURL),
-                    modifiedAtNs: modifiedAtNs(fileURL),
+                    sizeBytes: fileSizeBytes(fileURL, relativePath: rel),
+                    modifiedAtNs: modifiedAtNs(fileURL, relativePath: rel),
                     resourceID: resourceIdentifier(fileURL)
                 )
             )
@@ -143,21 +173,23 @@ struct FolderMediaClassifier: Sendable {
         fileURL: URL,
         mediaType: String,
         source: CGImageSource,
-        index: Int
+        index: Int,
+        relativePath: String
     ) -> FolderMediaMetadata {
         makeMetadata(
             fileURL: fileURL,
             mediaType: mediaType,
             source: source,
             index: index,
-            allowNilDimensions: true
+            allowNilDimensions: true,
+            relativePath: relativePath
         ) ?? FolderMediaMetadata(
             mediaType: mediaType,
             width: nil,
             height: nil,
             mediaCreatedAtMs: mediaCreatedAtMs(source: source, index: index),
-            sizeBytes: fileSizeBytes(fileURL),
-            modifiedAtNs: modifiedAtNs(fileURL),
+            sizeBytes: fileSizeBytes(fileURL, relativePath: relativePath),
+            modifiedAtNs: modifiedAtNs(fileURL, relativePath: relativePath),
             resourceID: resourceIdentifier(fileURL)
         )
     }
@@ -167,7 +199,8 @@ struct FolderMediaClassifier: Sendable {
         mediaType: String,
         source: CGImageSource,
         index: Int,
-        allowNilDimensions: Bool
+        allowNilDimensions: Bool,
+        relativePath: String
     ) -> FolderMediaMetadata? {
         let dimensions = logicalDimensions(source: source, index: index)
         if !allowNilDimensions, dimensions.width == nil || dimensions.height == nil {
@@ -178,8 +211,8 @@ struct FolderMediaClassifier: Sendable {
             width: dimensions.width,
             height: dimensions.height,
             mediaCreatedAtMs: mediaCreatedAtMs(source: source, index: index),
-            sizeBytes: fileSizeBytes(fileURL),
-            modifiedAtNs: modifiedAtNs(fileURL),
+            sizeBytes: fileSizeBytes(fileURL, relativePath: relativePath),
+            modifiedAtNs: modifiedAtNs(fileURL, relativePath: relativePath),
             resourceID: resourceIdentifier(fileURL)
         )
     }
@@ -233,15 +266,26 @@ struct FolderMediaClassifier: Sendable {
         return Int64(date.timeIntervalSince1970 * 1000)
     }
 
-    private func fileSizeBytes(_ url: URL) -> Int64 {
-        let values = try? url.resourceValues(forKeys: [.fileSizeKey])
-        return Int64(values?.fileSize ?? 0)
+    private func fileSizeBytes(_ url: URL, relativePath: String) -> Int64? {
+        if resourceInjection.shouldFailSize(relativePath: relativePath) {
+            return nil
+        }
+        guard let values = try? url.resourceValues(forKeys: [.fileSizeKey]),
+              let size = values.fileSize
+        else {
+            return nil
+        }
+        return Int64(size)
     }
 
-    private func modifiedAtNs(_ url: URL) -> Int64 {
-        let values = try? url.resourceValues(forKeys: [.contentModificationDateKey])
-        guard let date = values?.contentModificationDate else {
-            return 0
+    private func modifiedAtNs(_ url: URL, relativePath: String) -> Int64? {
+        if resourceInjection.shouldFailMtime(relativePath: relativePath) {
+            return nil
+        }
+        guard let values = try? url.resourceValues(forKeys: [.contentModificationDateKey]),
+              let date = values.contentModificationDate
+        else {
+            return nil
         }
         return Int64(date.timeIntervalSince1970 * 1_000_000_000)
     }

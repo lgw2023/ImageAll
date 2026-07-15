@@ -84,27 +84,29 @@ final class FolderMediaClassificationTests: XCTestCase {
         guard let data = FolderReconcileTestSupport.minimalHEICData() else {
             return XCTFail("host must encode minimal HEIC fixture")
         }
+        XCTAssertEqual(FolderReconcileTestSupport.imageIOActualType(for: data), UTType.heic.identifier)
         let fixture = FolderReconcileTestSupport.TempFixtureRoot()
         defer { fixture.cleanup() }
         let root = try fixture.makeRoot(label: "heic")
         let file = try fixture.writeFile(root: root, relativePath: "x.heic", contents: data)
-        guard case .available = FolderMediaClassifier().classify(fileURL: file, fileName: "x.heic") else {
+        guard case let .available(metadata) = FolderMediaClassifier().classify(fileURL: file, fileName: "x.heic") else {
             return XCTFail("heic must be available")
         }
+        XCTAssertEqual(metadata.mediaType, UTType.heic.identifier)
     }
 
-    func testHEIFAvailableSeparateFromHEIC() throws {
-        guard let data = FolderReconcileTestSupport.minimalHEIFData() else {
-            return XCTFail("host must encode minimal HEIF fixture")
-        }
+    func testHEIFAvailableFromStaticFixtureSeparateFromHEIC() throws {
+        let data = FolderReconcileTestSupport.minimalHEIFData()
+        XCTAssertEqual(FolderReconcileTestSupport.imageIOActualType(for: data), UTType.heif.identifier)
         let fixture = FolderReconcileTestSupport.TempFixtureRoot()
         defer { fixture.cleanup() }
         let root = try fixture.makeRoot(label: "heif")
         let file = try fixture.writeFile(root: root, relativePath: "x.heif", contents: data)
         guard case let .available(metadata) = FolderMediaClassifier().classify(fileURL: file, fileName: "x.heif") else {
-            return XCTFail("heif must be available as separate extension")
+            return XCTFail("heif must be available from static fixture")
         }
-        XCTAssertTrue(metadata.mediaType == UTType.heif.identifier || metadata.mediaType == UTType.heic.identifier)
+        XCTAssertEqual(metadata.mediaType, UTType.heif.identifier)
+        XCTAssertNotEqual(metadata.mediaType, UTType.heic.identifier)
     }
 
     func testGIFUnsupported() throws {

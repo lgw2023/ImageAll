@@ -63,8 +63,8 @@ struct FolderReconcileAssetObservation: Equatable, Sendable {
     let height: Int?
     let mediaCreatedAtMs: Int64?
     let availability: AssetAvailability
-    let sizeBytes: Int64
-    let modifiedAtNs: Int64
+    let sizeBytes: Int64?
+    let modifiedAtNs: Int64?
     let resourceID: Data?
     let movePathProbe: FolderMovePathProbe?
 }

@@ -179,11 +179,16 @@ enum FolderReconcileTestSupport {
         root: URL,
         bookmark: Data,
         enumerationConfig: FolderEnumerationConfig = .productionDefault,
+        mediaResourceInjection: FolderMediaResourceValueInjection = .none,
         clock: FixedJobClock? = nil
     ) -> (FolderReconcileHandler, TestBookmarkPort) {
         let bookmarkPort = TestBookmarkPort(rootByBookmark: [bookmark: root])
         let access = makeSourceAccess(database: database, bookmarkPort: bookmarkPort, clock: clock)
-        let handler = FolderReconcileHandler(rootAccess: access, enumerationConfig: enumerationConfig)
+        let handler = FolderReconcileHandler(
+            rootAccess: access,
+            enumerationConfig: enumerationConfig,
+            mediaResourceInjection: mediaResourceInjection
+        )
         return (handler, bookmarkPort)
     }
 
@@ -303,16 +308,18 @@ enum FolderReconcileTestSupport {
         return nil
     }
 
-    static func minimalHEIFData() -> Data? {
-        if #available(macOS 10.13, *) {
-            if let heif = minimalEncodedImageData(uti: UTType.heif.identifier) {
-                return heif
-            }
-            // When the host cannot encode HEIF, verify the .heif read path with HEIC-compatible bytes.
-            return minimalHEICData()
-        }
-        return nil
+    static func minimalHEIFData() -> Data {
+        minimalStaticHEIFData
     }
+
+    static func minimalBMPData() -> Data? {
+        minimalEncodedImageData(uti: UTType.bmp.identifier)
+    }
+
+    /// Source: https://github.com/mathiasbynens/small/blob/master/heif.heif (MIT), ftyp major/compatible brand patched `heic`→`heif` so host ImageIO reports `public.heif` (not `public.heic`). Verified: `CGImageSourceGetType` == `public.heif`, count == 1.
+    static let minimalStaticHEIFData = Data([
+        0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70, 0x68, 0x65, 0x69, 0x66, 0x00, 0x00, 0x00, 0x00, 0x6d, 0x69, 0x66, 0x31, 0x68, 0x65, 0x69, 0x66, 0x00, 0x00, 0x01, 0x2a, 0x6d, 0x65, 0x74, 0x61, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x21, 0x68, 0x64, 0x6c, 0x72, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x70, 0x69, 0x63, 0x74, 0x00, 0x5c, 0x00, 0x63, 0x00, 0x31, 0x00, 0x35, 0x00, 0x78, 0x00, 0x32, 0x00, 0x00, 0x00, 0x00, 0x0e, 0x70, 0x69, 0x74, 0x6d, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x22, 0x69, 0x6c, 0x6f, 0x63, 0x00, 0x00, 0x00, 0x00, 0x44, 0x40, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x01, 0x4a, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x38, 0x00, 0x00, 0x00, 0x23, 0x69, 0x69, 0x6e, 0x66, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x15, 0x69, 0x6e, 0x66, 0x65, 0x02, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x68, 0x76, 0x63, 0x31, 0x00, 0x00, 0x00, 0x00, 0xaa, 0x69, 0x70, 0x72, 0x70, 0x00, 0x00, 0x00, 0x8d, 0x69, 0x70, 0x63, 0x6f, 0x00, 0x00, 0x00, 0x71, 0x68, 0x76, 0x63, 0x43, 0x01, 0x04, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff, 0xf0, 0x00, 0xfc, 0xfd, 0xf8, 0xf8, 0x00, 0x00, 0x0f, 0x03, 0x20, 0x00, 0x01, 0x00, 0x17, 0x40, 0x01, 0x0c, 0x01, 0xff, 0xff, 0x04, 0x08, 0x00, 0x00, 0x03, 0x00, 0x9f, 0xa8, 0x00, 0x00, 0x03, 0x00, 0x00, 0xff, 0xba, 0x02, 0x40, 0x21, 0x00, 0x01, 0x00, 0x26, 0x42, 0x01, 0x01, 0x04, 0x08, 0x00, 0x00, 0x03, 0x00, 0x9f, 0xa8, 0x00, 0x00, 0x03, 0x00, 0x00, 0xff, 0xa0, 0x20, 0x81, 0x05, 0x96, 0xea, 0x49, 0x28, 0xae, 0x01, 0x00, 0x00, 0x03, 0x00, 0x01, 0x00, 0x00, 0x03, 0x00, 0x01, 0x08, 0x22, 0x00, 0x01, 0x00, 0x06, 0x44, 0x01, 0xc1, 0x71, 0x89, 0x12, 0x00, 0x00, 0x00, 0x14, 0x69, 0x73, 0x70, 0x65, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x40, 0x00, 0x00, 0x00, 0x40, 0x00, 0x00, 0x00, 0x15, 0x69, 0x70, 0x6d, 0x61, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x01, 0x02, 0x81, 0x02, 0x00, 0x00, 0x00, 0x40, 0x6d, 0x64, 0x61, 0x74, 0x00, 0x00, 0x00, 0x34, 0x28, 0x01, 0xaf, 0x05, 0xb8, 0x14, 0x83, 0xea, 0x23, 0x40, 0x1f, 0xf7, 0x5f, 0xee, 0x7f, 0xb5, 0xfd, 0x6f, 0xce, 0xfc, 0xef, 0xce, 0xfc, 0xef, 0xcf, 0x7c, 0xf7, 0xcf, 0x7c, 0xf7, 0xcf, 0x7c, 0xf7, 0xcf, 0x7c, 0xf7, 0xfe, 0x14, 0x11, 0x33, 0x09, 0x65, 0x03, 0x5e, 0xda, 0x72, 0xb4, 0xe9, 0xc5, 0x20, 0xd6, 0xc0,
+    ])
 
     static func minimalEncodedImageData(uti: String) -> Data? {
         let width = 2
@@ -343,6 +350,122 @@ enum FolderReconcileTestSupport {
         return data as Data
     }
 
+    static func imageIOActualType(for data: Data) -> String? {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil) else {
+            return nil
+        }
+        return CGImageSourceGetType(source) as String?
+    }
+
+    static func minimalOrientedJPEGData(orientation: Int) -> Data? {
+        guard let base = minimalEncodedImageData(uti: UTType.jpeg.identifier) else {
+            return nil
+        }
+        guard let source = CGImageSourceCreateWithData(base as CFData, nil),
+              let image = CGImageSourceCreateImageAtIndex(source, 0, nil)
+        else {
+            return nil
+        }
+        let out = NSMutableData()
+        guard let dest = CGImageDestinationCreateWithData(out, UTType.jpeg.identifier as CFString, 1, nil) else {
+            return nil
+        }
+        let props = [kCGImagePropertyOrientation: orientation] as CFDictionary
+        CGImageDestinationAddImage(dest, image, props)
+        guard CGImageDestinationFinalize(dest) else {
+            return nil
+        }
+        return out as Data
+    }
+
+    static func minimalMultiFrameTIFFData() -> Data? {
+        guard let frame = minimalEncodedImageData(uti: UTType.tiff.identifier),
+              let source = CGImageSourceCreateWithData(frame as CFData, nil),
+              let image = CGImageSourceCreateImageAtIndex(source, 0, nil)
+        else {
+            return nil
+        }
+        let out = NSMutableData()
+        guard let dest = CGImageDestinationCreateWithData(out, UTType.tiff.identifier as CFString, 2, nil) else {
+            return nil
+        }
+        CGImageDestinationAddImage(dest, image, nil)
+        CGImageDestinationAddImage(dest, image, nil)
+        guard CGImageDestinationFinalize(dest) else {
+            return nil
+        }
+        return out as Data
+    }
+
+    struct AssetRow: Equatable {
+        let id: String
+        let relativePath: String
+        let locatorState: String
+        let availability: String
+        let contentRevision: Int
+        let lastSeenGeneration: Int?
+        let sizeBytes: Int64?
+        let modifiedAtNs: Int64?
+        let resourceID: Data?
+        let sha256: Data?
+        let tagCount: Int
+    }
+
+    static func fetchAssetRows(database: CatalogDatabase, sourceID: UUID) throws -> [AssetRow] {
+        try database.pool.read { db in
+            let rows = try Row.fetchAll(
+                db,
+                sql: """
+                SELECT a.id, a.relative_path, a.locator_state, a.availability, a.content_revision,
+                       a.last_seen_generation, f.size_bytes, f.modified_at_ns, f.resource_id, f.sha256,
+                       (SELECT COUNT(*) FROM asset_tag_decision d
+                        WHERE d.asset_id = a.id AND d.decision = 'accepted') AS tag_count
+                FROM asset a
+                LEFT JOIN file_fingerprint f ON f.asset_id = a.id
+                WHERE a.source_id = ?
+                ORDER BY a.relative_path, a.locator_state
+                """,
+                arguments: [sourceID.uuidString.lowercased()]
+            )
+            return rows.map { row in
+                AssetRow(
+                    id: row["id"],
+                    relativePath: row["relative_path"],
+                    locatorState: row["locator_state"],
+                    availability: row["availability"],
+                    contentRevision: row["content_revision"],
+                    lastSeenGeneration: row["last_seen_generation"],
+                    sizeBytes: row["size_bytes"],
+                    modifiedAtNs: row["modified_at_ns"],
+                    resourceID: row["resource_id"],
+                    sha256: row["sha256"],
+                    tagCount: row["tag_count"]
+                )
+            }
+        }
+    }
+
+    static func seedActiveTag(database: CatalogDatabase, assetID: String, label: String) throws {
+        let tagID = UUID().uuidString.lowercased()
+        let normalized = label.lowercased()
+        try database.pool.write { db in
+            try db.execute(
+                sql: """
+                INSERT INTO tag (id, name, normalized_name, state, created_at_ms, updated_at_ms)
+                VALUES (?, ?, ?, 'active', ?, ?)
+                """,
+                arguments: [tagID, label, normalized, baseTimeMs, baseTimeMs]
+            )
+            try db.execute(
+                sql: """
+                INSERT INTO asset_tag_decision (asset_id, tag_id, decision, updated_at_ms)
+                VALUES (?, ?, 'accepted', ?)
+                """,
+                arguments: [assetID, tagID, baseTimeMs]
+            )
+        }
+    }
+
     static func imageIOCanEncode(_ uti: String) -> Bool {
         minimalEncodedImageData(uti: uti) != nil
     }
@@ -359,6 +482,7 @@ enum FolderReconcileTestFaults {
         case failFinalSuccessor = 6
         case failFingerprintInsert = 7
         case failBatchLeaseRenew = 8
+        case failBatchProgress = 9
     }
 
     static func install(on database: CatalogDatabase) throws {
@@ -436,6 +560,15 @@ enum FolderReconcileTestFaults {
                 WHEN (SELECT mode FROM reconcile_fault_control) = 8
                   AND NEW.state = 'running'
                 BEGIN SELECT RAISE(ABORT, 'reconcile_fail_batch_lease_renew'); END
+                """)
+
+            try db.execute(sql: "DROP TRIGGER IF EXISTS reconcile_fail_batch_progress")
+            try db.execute(sql: """
+                CREATE TRIGGER reconcile_fail_batch_progress
+                BEFORE UPDATE OF progress_completed ON job
+                WHEN (SELECT mode FROM reconcile_fault_control) = 9
+                  AND NEW.state = 'running'
+                BEGIN SELECT RAISE(ABORT, 'reconcile_fail_batch_progress'); END
                 """)
         }
     }

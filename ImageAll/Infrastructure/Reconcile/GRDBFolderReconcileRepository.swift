@@ -489,6 +489,9 @@ struct GRDBFolderReconcileRepository: FolderReconcileBatchPort, Sendable {
         else {
             throw FolderReconcileRepositoryError.invalidObservation
         }
+        guard observation.sizeBytes != nil, observation.modifiedAtNs != nil else {
+            throw FolderReconcileRepositoryError.invalidObservation
+        }
     }
 
     @discardableResult
@@ -511,14 +514,12 @@ struct GRDBFolderReconcileRepository: FolderReconcileBatchPort, Sendable {
             )
         }
 
-        if observation.availability == .available,
-           let relocateAssetID = try resolveMoveReconnectInTransaction(
-               db: db,
-               sourceID: sourceID,
-               generation: generation,
-               observation: observation
-           )
-        {
+        if let relocateAssetID = try resolveMoveReconnectInTransaction(
+            db: db,
+            sourceID: sourceID,
+            generation: generation,
+            observation: observation
+        ) {
             try relocateAsset(
                 db: db,
                 sourceID: sourceID,
@@ -530,10 +531,7 @@ struct GRDBFolderReconcileRepository: FolderReconcileBatchPort, Sendable {
             return 0
         }
 
-        if observation.availability == .available,
-           let probe = observation.movePathProbe,
-           probe == .multipleCandidates || probe == .oldPathSameResourceID || probe == .oldPathProbeError
-        {
+        if let probe = observation.movePathProbe, probeIndicatesConflict(probe) {
             try insertNewAsset(
                 db: db,
                 sourceID: sourceIDString,
@@ -647,7 +645,8 @@ struct GRDBFolderReconcileRepository: FolderReconcileBatchPort, Sendable {
         guard let row = try Row.fetchOne(
             db,
             sql: """
-            SELECT a.id AS asset_id, a.source_id, a.availability, a.content_revision,
+            SELECT a.id AS asset_id, a.source_id, a.relative_path, a.locator_state, a.availability,
+                   a.content_revision, a.last_seen_generation,
                    f.size_bytes, f.modified_at_ns, f.resource_id
             FROM asset a
             LEFT JOIN file_fingerprint f ON f.asset_id = a.id
@@ -752,18 +751,58 @@ struct GRDBFolderReconcileRepository: FolderReconcileBatchPort, Sendable {
         )
     }
 
+    private func probeIndicatesConflict(_ probe: FolderMovePathProbe) -> Bool {
+        switch probe {
+        case .multipleCandidates, .oldPathSameResourceID, .oldPathProbeError:
+            return true
+        default:
+            return false
+        }
+    }
+
     private func resolveMoveReconnectInTransaction(
         db: Database,
         sourceID: UUID,
         generation: Int,
         observation: FolderReconcileAssetObservation
     ) throws -> UUID? {
-        guard let resourceID = observation.resourceID else {
+        guard let resourceID = observation.resourceID,
+              let sizeBytes = observation.sizeBytes,
+              let modifiedAtNs = observation.modifiedAtNs
+        else {
             return nil
         }
-        guard let probe = observation.movePathProbe,
-              probe == .oldPathMissing || probe == .oldPathDifferentResourceID
+        guard let probe = observation.movePathProbe else {
+            return nil
+        }
+        let binding: FolderMoveCandidateBinding
+        switch probe {
+        case let .reconnectCandidate(candidateBinding):
+            binding = candidateBinding
+        default:
+            return nil
+        }
+        guard binding.resourceID == resourceID else {
+            return nil
+        }
+
+        guard let existing = try fetchAssetByID(db: db, assetID: binding.assetID) else {
+            return nil
+        }
+        let sourceIDString = sourceID.uuidString.lowercased()
+        guard existing.sourceID == sourceIDString,
+              existing.relativePath == binding.oldRelativePath,
+              existing.resourceID == binding.resourceID,
+              existing.locatorState == AssetLocatorState.current.rawValue,
+              existing.lastSeenGeneration == nil || existing.lastSeenGeneration! < generation
         else {
+            return nil
+        }
+        if let currentAtNewPath = try fetchCurrentAsset(
+            db: db,
+            sourceID: sourceID,
+            relativePath: observation.relativePath
+        ) {
             return nil
         }
 
@@ -773,15 +812,17 @@ struct GRDBFolderReconcileRepository: FolderReconcileBatchPort, Sendable {
             resourceID: resourceID,
             excludingGeneration: generation
         )
-        guard candidates.count == 1, let candidate = candidates.first else {
-            return nil
-        }
-        guard candidate.sourceID == sourceID.uuidString.lowercased(),
-              candidate.lastSeenGeneration == nil || candidate.lastSeenGeneration! < generation
+        guard candidates.count == 1,
+              let candidate = candidates.first,
+              candidate.assetID == binding.assetID,
+              candidate.relativePath == binding.oldRelativePath
         else {
             return nil
         }
-        return candidate.assetID
+
+        _ = sizeBytes
+        _ = modifiedAtNs
+        return binding.assetID
     }
 
     private func fetchMoveCandidatesInTransaction(
@@ -887,7 +928,8 @@ struct GRDBFolderReconcileRepository: FolderReconcileBatchPort, Sendable {
         guard let row = try Row.fetchOne(
             db,
             sql: """
-            SELECT a.id AS asset_id, a.source_id, a.availability, a.content_revision,
+            SELECT a.id AS asset_id, a.source_id, a.relative_path, a.locator_state, a.availability,
+                   a.content_revision, a.last_seen_generation,
                    f.size_bytes, f.modified_at_ns, f.resource_id
             FROM asset a
             LEFT JOIN file_fingerprint f ON f.asset_id = a.id
@@ -927,8 +969,8 @@ struct GRDBFolderReconcileRepository: FolderReconcileBatchPort, Sendable {
             """,
             arguments: [
                 assetID.uuidString.lowercased(),
-                observation.sizeBytes,
-                observation.modifiedAtNs,
+                observation.sizeBytes!,
+                observation.modifiedAtNs!,
                 observation.resourceID,
             ]
         )
@@ -976,8 +1018,11 @@ struct GRDBFolderReconcileRepository: FolderReconcileBatchPort, Sendable {
 private struct ExistingAssetRecord {
     let assetID: UUID
     let sourceID: String
+    let relativePath: String
+    let locatorState: String
     let availability: String
     let contentRevision: Int
+    let lastSeenGeneration: Int?
     let sizeBytes: Int64
     let modifiedAtNs: Int64
     let resourceID: Data?
@@ -985,8 +1030,11 @@ private struct ExistingAssetRecord {
     init(row: Row) {
         assetID = UUID(uuidString: row["asset_id"])!
         sourceID = row["source_id"]
+        relativePath = row["relative_path"]
+        locatorState = row["locator_state"]
         availability = row["availability"]
         contentRevision = row["content_revision"]
+        lastSeenGeneration = row["last_seen_generation"]
         sizeBytes = row["size_bytes"] ?? 0
         modifiedAtNs = row["modified_at_ns"] ?? 0
         resourceID = row["resource_id"]
@@ -995,16 +1043,22 @@ private struct ExistingAssetRecord {
     init(
         assetID: UUID,
         sourceID: String,
+        relativePath: String,
+        locatorState: String,
         availability: String,
         contentRevision: Int,
+        lastSeenGeneration: Int?,
         sizeBytes: Int64,
         modifiedAtNs: Int64,
         resourceID: Data?
     ) {
         self.assetID = assetID
         self.sourceID = sourceID
+        self.relativePath = relativePath
+        self.locatorState = locatorState
         self.availability = availability
         self.contentRevision = contentRevision
+        self.lastSeenGeneration = lastSeenGeneration
         self.sizeBytes = sizeBytes
         self.modifiedAtNs = modifiedAtNs
         self.resourceID = resourceID
