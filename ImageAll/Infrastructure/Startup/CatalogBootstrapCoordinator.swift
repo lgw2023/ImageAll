@@ -38,6 +38,7 @@ final class CatalogBootstrapCallLog: @unchecked Sendable {
 }
 
 struct CatalogRuntime: Sendable {
+    let paths: AppPaths
     let database: CatalogDatabase
     let lockToken: CatalogProcessLockToken
     let jobQueue: GRDBJobQueue
@@ -277,6 +278,7 @@ struct CatalogBootstrapCoordinator: Sendable {
 
         dependencies.callLog?.record(.ready)
         let runtime = CatalogRuntime(
+            paths: paths,
             database: database,
             lockToken: lockToken,
             jobQueue: jobQueue

@@ -185,6 +185,10 @@
 		II000001000000000000010B /* DerivedImageOperationExclusivityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = II000101000000000000010B /* DerivedImageOperationExclusivityTests.swift */; };
 		II000001000000000000010C /* DerivedImageFinalRevalidationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = II000101000000000000010C /* DerivedImageFinalRevalidationTests.swift */; };
 		II000001000000000000010D /* DerivedImageCacheHitAndConcurrencyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = II000101000000000000010D /* DerivedImageCacheHitAndConcurrencyTests.swift */; };
+		JJ0000010000000000000101 /* LibraryWorkspaceModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = JJ0001010000000000000101 /* LibraryWorkspaceModelTests.swift */; };
+		JJ0000010000000000000001 /* LibraryWorkspacePort.swift in Sources */ = {isa = PBXBuildFile; fileRef = JJ0001010000000000000001 /* LibraryWorkspacePort.swift */; };
+		JJ0000010000000000000002 /* LibraryWorkspace.swift in Sources */ = {isa = PBXBuildFile; fileRef = JJ0001010000000000000002 /* LibraryWorkspace.swift */; };
+		JJ0000010000000000000003 /* ProductionLibraryWorkspaceService.swift in Sources */ = {isa = PBXBuildFile; fileRef = JJ0001010000000000000003 /* ProductionLibraryWorkspaceService.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -377,6 +381,10 @@
 		II000101000000000000010B /* DerivedImageOperationExclusivityTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DerivedImageOperationExclusivityTests.swift; sourceTree = "<group>"; };
 		II000101000000000000010C /* DerivedImageFinalRevalidationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DerivedImageFinalRevalidationTests.swift; sourceTree = "<group>"; };
 		II000101000000000000010D /* DerivedImageCacheHitAndConcurrencyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DerivedImageCacheHitAndConcurrencyTests.swift; sourceTree = "<group>"; };
+		JJ0001010000000000000101 /* LibraryWorkspaceModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryWorkspaceModelTests.swift; sourceTree = "<group>"; };
+		JJ0001010000000000000001 /* LibraryWorkspacePort.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryWorkspacePort.swift; sourceTree = "<group>"; };
+		JJ0001010000000000000002 /* LibraryWorkspace.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryWorkspace.swift; sourceTree = "<group>"; };
+		JJ0001010000000000000003 /* ProductionLibraryWorkspaceService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProductionLibraryWorkspaceService.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -424,6 +432,7 @@
 		AA0006010000000000000003 /* ImageAllTests */ = {
 			isa = PBXGroup;
 			children = (
+				JJ0001010000000000000101 /* LibraryWorkspaceModelTests.swift */,
 				AA0006010000000000000008 /* Startup */,
 				HH0006010000000000000003 /* Authorization */,
 				RR0006010000000000000003 /* Reconcile */,
@@ -464,6 +473,7 @@
 			children = (
 				AA0001010000000000000001 /* ImageAllApp.swift */,
 				AA0001010000000000000002 /* RootView.swift */,
+				JJ0001010000000000000002 /* LibraryWorkspace.swift */,
 				AA0006010000000000000007 /* CompositionRoot */,
 			);
 			path = App;
@@ -487,6 +497,7 @@
 			children = (
 				FF0001010000000000000001 /* AssetCatalogTypes.swift */,
 				FF0001010000000000000002 /* AssetCatalogQueryPort.swift */,
+				JJ0001010000000000000001 /* LibraryWorkspacePort.swift */,
 				FF0001010000000000000003 /* TagCatalogTypes.swift */,
 				FF0001010000000000000004 /* TagCatalogQueryPort.swift */,
 				FF0001010000000000000005 /* TagDecisionCommandPort.swift */,
@@ -597,6 +608,7 @@
 		FF0006010000000000000002 /* Catalog */ = {
 			isa = PBXGroup;
 			children = (
+				JJ0001010000000000000003 /* ProductionLibraryWorkspaceService.swift */,
 				FF0001010000000000000007 /* CatalogQuerySQLHelpers.swift */,
 				FF000101000000000000000F /* CatalogQueryErrorMapping.swift */,
 				FF0001010000000000000008 /* GRDBAssetCatalogQueryRepository.swift */,
@@ -959,6 +971,7 @@
 			files = (
 				AA0000010000000000000001 /* ImageAllApp.swift in Sources */,
 				AA0000010000000000000002 /* RootView.swift in Sources */,
+				JJ0000010000000000000002 /* LibraryWorkspace.swift in Sources */,
 				AA0000010000000000000003 /* CompositionRoot.swift in Sources */,
 				AA0000010000000000000006 /* CatalogStartupModel.swift in Sources */,
 				AA0000010000000000000004 /* CatalogStartupState.swift in Sources */,
@@ -1006,6 +1019,7 @@
 				DD0000010000000000000008 /* GRDBJobQueue.swift in Sources */,
 				FF0000010000000000000001 /* AssetCatalogTypes.swift in Sources */,
 				FF0000010000000000000002 /* AssetCatalogQueryPort.swift in Sources */,
+				JJ0000010000000000000001 /* LibraryWorkspacePort.swift in Sources */,
 				FF0000010000000000000003 /* TagCatalogTypes.swift in Sources */,
 				FF0000010000000000000004 /* TagCatalogQueryPort.swift in Sources */,
 				FF0000010000000000000005 /* TagDecisionCommandPort.swift in Sources */,
@@ -1015,6 +1029,7 @@
 				FF0000010000000000000009 /* GRDBTagCatalogRepository.swift in Sources */,
 				FF000001000000000000000A /* V002AddStage1CatalogQuerySupportMigration.swift in Sources */,
 				FF000001000000000000000F /* CatalogQueryErrorMapping.swift in Sources */,
+				JJ0000010000000000000003 /* ProductionLibraryWorkspaceService.swift in Sources */,
 				HH0000010000000000000001 /* FolderAuthorizationTypes.swift in Sources */,
 				HH0000010000000000000002 /* FolderAuthorizationErrors.swift in Sources */,
 				HH0000010000000000000003 /* FolderAuthorizationCommandPort.swift in Sources */,
@@ -1058,6 +1073,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				JJ0000010000000000000101 /* LibraryWorkspaceModelTests.swift in Sources */,
 				AA0000010000000000000005 /* CompositionRootTests.swift in Sources */,
 				EE0000010000000000000101 /* StartupTestSupport.swift in Sources */,
 				EE0000010000000000000102 /* AppPathsTests.swift in Sources */,

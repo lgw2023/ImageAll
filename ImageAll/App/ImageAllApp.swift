@@ -10,7 +10,10 @@ struct ImageAllApp: App {
 
     var body: some Scene {
         WindowGroup {
-            RootView(presentation: startupModel.presentation)
+            RootView(
+                presentation: startupModel.presentation,
+                workspaceModel: startupModel.workspaceModel
+            )
         }
     }
 }

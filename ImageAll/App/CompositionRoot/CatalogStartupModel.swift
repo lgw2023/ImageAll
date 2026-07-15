@@ -4,11 +4,17 @@ import os
 @MainActor
 final class CatalogStartupModel: ObservableObject {
     @Published private(set) var presentation: StartupPresentation
+    @Published private(set) var workspaceModel: LibraryWorkspaceModel?
 
     private var runtimeToken: CatalogRuntimeToken?
+    private let workspaceFactory: @MainActor (CatalogRuntimeToken) -> LibraryWorkspaceModel?
     private let logger = Logger(subsystem: "com.imageall.app", category: "CatalogStartup")
 
-    init(dependencies: CatalogBootstrapDependencies) {
+    init(
+        dependencies: CatalogBootstrapDependencies,
+        workspaceFactory: @escaping @MainActor (CatalogRuntimeToken) -> LibraryWorkspaceModel? = { _ in nil }
+    ) {
+        self.workspaceFactory = workspaceFactory
         presentation = StartupPresentation(
             productName: "ImageAll",
             foundationReady: true,
@@ -58,6 +64,7 @@ final class CatalogStartupModel: ObservableObject {
         switch result {
         case let .ready(token):
             runtimeToken = token
+            workspaceModel = workspaceFactory(token)
             presentation = StartupPresentation(
                 productName: presentation.productName,
                 foundationReady: true,
