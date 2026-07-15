@@ -39,6 +39,35 @@ struct FeatureRegistration: Equatable, Sendable {
     let createdAtMs: Int64
 }
 
+enum FeatureVectorOrigin: Equatable, Sendable {
+    case generated
+    case cacheHit
+}
+
+struct FeatureVectorPayload: Equatable, Sendable {
+    let identity: FeatureIdentity
+    let elementCount: Int
+    let vectorData: Data
+    let vectorSHA256: Data
+    let origin: FeatureVectorOrigin
+}
+
+enum FeaturePrintError: Error, Equatable, Sendable {
+    case assetNotFound
+    case assetIneligible
+    case authorizationRequired
+    case sourceUnavailable
+    case sourceChanged
+    case decodeFailed
+    case generationFailed
+    case cacheUnsafePath
+    case cachePersistenceFailed
+}
+
+protocol FeatureVectorLoading: Sendable {
+    func loadOrGenerate(assetID: UUID) async throws -> FeatureVectorPayload
+}
+
 enum ModelSampleRole: String, Equatable, Sendable {
     case positive
     case negative
@@ -86,6 +115,7 @@ enum PersonalizationCatalogError: Error, Equatable, Sendable {
 
 protocol PersonalizationCatalogPort: Sendable {
     func registerFeature(_ registration: FeatureRegistration) throws
+    func featureRegistration(identity: FeatureIdentity) throws -> FeatureRegistration?
     func publishModelRevision(_ registration: ModelRevisionRegistration) throws
     func replacePredictions(
         tagID: UUID,

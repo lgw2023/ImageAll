@@ -69,6 +69,44 @@ struct GRDBPersonalizationRepository: PersonalizationCatalogPort, Sendable {
         }
     }
 
+    func featureRegistration(identity: FeatureIdentity) throws -> FeatureRegistration? {
+        do {
+            return try database.pool.read { db in
+                guard let row = try Row.fetchOne(
+                    db,
+                    sql: """
+                    SELECT element_count, byte_count, vector_sha256, cache_key, created_at_ms
+                    FROM feature
+                    WHERE asset_id = ?
+                        AND provider = ?
+                        AND request_revision = ?
+                        AND preprocessing_revision = ?
+                        AND content_revision = ?
+                    """,
+                    arguments: [
+                        Self.uuid(identity.assetID),
+                        identity.provider,
+                        identity.requestRevision,
+                        identity.preprocessingRevision,
+                        identity.contentRevision,
+                    ]
+                ) else {
+                    return nil
+                }
+                return FeatureRegistration(
+                    identity: identity,
+                    elementCount: row["element_count"],
+                    byteCount: row["byte_count"],
+                    vectorSHA256: row["vector_sha256"],
+                    cacheKey: row["cache_key"],
+                    createdAtMs: row["created_at_ms"]
+                )
+            }
+        } catch {
+            throw PersonalizationCatalogError.persistenceFailure
+        }
+    }
+
     func publishModelRevision(_ registration: ModelRevisionRegistration) throws {
         let positives = registration.samples.filter { $0.role == .positive }
         let negatives = registration.samples.filter { $0.role == .negative }

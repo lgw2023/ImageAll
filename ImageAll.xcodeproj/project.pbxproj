@@ -193,6 +193,8 @@
 		KK0000010000000000000001 /* V004AddPersonalizationMigration.swift in Sources */ = {isa = PBXBuildFile; fileRef = KK0001010000000000000001 /* V004AddPersonalizationMigration.swift */; };
 		KK0000010000000000000002 /* PersonalizationCatalogPort.swift in Sources */ = {isa = PBXBuildFile; fileRef = KK0001010000000000000002 /* PersonalizationCatalogPort.swift */; };
 		KK0000010000000000000003 /* GRDBPersonalizationRepository.swift in Sources */ = {isa = PBXBuildFile; fileRef = KK0001010000000000000003 /* GRDBPersonalizationRepository.swift */; };
+		LL0000010000000000000101 /* FeaturePrintCacheTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = LL0001010000000000000101 /* FeaturePrintCacheTests.swift */; };
+		LL0000010000000000000001 /* FeaturePrintCacheService.swift in Sources */ = {isa = PBXBuildFile; fileRef = LL0001010000000000000001 /* FeaturePrintCacheService.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -393,6 +395,8 @@
 		KK0001010000000000000001 /* V004AddPersonalizationMigration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = V004AddPersonalizationMigration.swift; sourceTree = "<group>"; };
 		KK0001010000000000000002 /* PersonalizationCatalogPort.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersonalizationCatalogPort.swift; sourceTree = "<group>"; };
 		KK0001010000000000000003 /* GRDBPersonalizationRepository.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GRDBPersonalizationRepository.swift; sourceTree = "<group>"; };
+		LL0001010000000000000101 /* FeaturePrintCacheTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FeaturePrintCacheTests.swift; sourceTree = "<group>"; };
+		LL0001010000000000000001 /* FeaturePrintCacheService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FeaturePrintCacheService.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -458,6 +462,7 @@
 		KK0006010000000000000003 /* Personalization */ = {
 			isa = PBXGroup;
 			children = (
+				LL0001010000000000000101 /* FeaturePrintCacheTests.swift */,
 				KK0001010000000000000101 /* PersonalizationPersistenceTests.swift */,
 			);
 			path = Personalization;
@@ -635,6 +640,7 @@
 		KK0006010000000000000002 /* Personalization */ = {
 			isa = PBXGroup;
 			children = (
+				LL0001010000000000000001 /* FeaturePrintCacheService.swift */,
 				KK0001010000000000000003 /* GRDBPersonalizationRepository.swift */,
 			);
 			path = Personalization;
@@ -1006,6 +1012,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				KK0000010000000000000002 /* PersonalizationCatalogPort.swift in Sources */,
+				LL0000010000000000000001 /* FeaturePrintCacheService.swift in Sources */,
 				KK0000010000000000000003 /* GRDBPersonalizationRepository.swift in Sources */,
 				AA0000010000000000000001 /* ImageAllApp.swift in Sources */,
 				AA0000010000000000000002 /* RootView.swift in Sources */,
@@ -1112,6 +1119,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				LL0000010000000000000101 /* FeaturePrintCacheTests.swift in Sources */,
 				KK0000010000000000000101 /* PersonalizationPersistenceTests.swift in Sources */,
 				JJ0000010000000000000101 /* LibraryWorkspaceModelTests.swift in Sources */,
 				AA0000010000000000000005 /* CompositionRootTests.swift in Sources */,
