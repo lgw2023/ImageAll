@@ -2,6 +2,46 @@ import XCTest
 @testable import ImageAll
 
 final class FolderReconcileContractTests: XCTestCase {
+    func testStrictJSONAcceptsDeserializedIntegerOne() throws {
+        let sourceID = UUID()
+        let payload: [String: Any] = [
+            "contract_version": 1,
+            "source_id": sourceID.uuidString.lowercased(),
+        ]
+        let data = try JSONSerialization.data(withJSONObject: payload)
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        XCTAssertEqual(StrictJSONValidation.exactContractVersion(object["contract_version"]), 1)
+        let result = FolderReconcilePayloadValidation.validate(
+            payloadVersion: 1,
+            payload: data,
+            jobSourceID: sourceID
+        )
+        XCTAssertEqual(result, .success(FolderReconcilePayloadValidation.ValidPayload(sourceID: sourceID, contractVersion: 1)))
+    }
+
+    func testStrictJSONRejectsBooleanContractVersion() {
+        XCTAssertNil(StrictJSONValidation.nonNegativeInteger(true))
+        let payload = Data("{\"contract_version\":true,\"source_id\":\"\(UUID().uuidString.lowercased())\"}".utf8)
+        let result = FolderReconcilePayloadValidation.validate(payloadVersion: 1, payload: payload, jobSourceID: UUID())
+        XCTAssertEqual(result, .failure(.invalid(.folderPayloadInvalid)))
+    }
+
+    func testStrictJSONRejectsFloatingPointContractVersion() {
+        let payload = Data("{\"contract_version\":1.0,\"source_id\":\"\(UUID().uuidString.lowercased())\"}".utf8)
+        let result = FolderReconcilePayloadValidation.validate(payloadVersion: 1, payload: payload, jobSourceID: UUID())
+        XCTAssertEqual(result, .failure(.invalid(.folderPayloadInvalid)))
+    }
+
+    func testStrictJSONRejectsNegativeInteger() {
+        XCTAssertNil(StrictJSONValidation.nonNegativeInteger(NSNumber(value: -1)))
+    }
+
+    func testStrictJSONRejectsIntegerOverflow() throws {
+        let json = Data("{\"contract_version\": 92233720368547758070}".utf8)
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: json) as? [String: Any])
+        XCTAssertNil(StrictJSONValidation.nonNegativeInteger(object["contract_version"]))
+    }
+
     func testPayloadRejectsUppercaseUUID() {
         let uuid = UUID()
         let uppercase = uuid.uuidString.uppercased()

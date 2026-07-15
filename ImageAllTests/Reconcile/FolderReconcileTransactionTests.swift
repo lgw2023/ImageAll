@@ -28,26 +28,27 @@ final class FolderReconcileTransactionTests: XCTestCase {
         XCTAssertEqual(generation, 0)
     }
 
-    func testIncompleteGenerationNeverMarksMissing() throws {
+    func testEnumerationIncompleteLeavesNoMissingAssets() throws {
+        let fixture = FolderReconcileTestSupport.TempFixtureRoot()
+        defer { fixture.cleanup() }
+        let root = try fixture.makeRoot(label: "incomplete")
+        let locked = root.appendingPathComponent("locked", isDirectory: true)
+        try FileManager.default.createDirectory(at: locked, withIntermediateDirectories: true)
+        try fixture.writeFile(root: root, relativePath: "locked/hidden.png", contents: FolderReconcileTestSupport.minimalPNGData())
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: locked.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: locked.path) }
         let url = try makeTempDatabaseURL()
         let database = try CatalogDatabase.open(at: url)
         let queue = FolderReconcileTestSupport.makeQueue(database: database)
         let sourceID = UUID()
-        let fixture = FolderReconcileTestSupport.TempFixtureRoot()
-        defer { fixture.cleanup() }
-        let root = try fixture.makeRoot(label: "incomplete")
-        try fixture.writeFile(root: root, relativePath: "keep.png", contents: FolderReconcileTestSupport.minimalPNGData())
         let bookmark = root.path.data(using: .utf8)!
         try FolderReconcileTestSupport.seedActiveFolderSource(database: database, sourceID: sourceID, bookmark: bookmark)
         _ = try FolderReconcileTestSupport.enqueueReconcileJob(queue: queue, sourceID: sourceID)
-        let (handler, _) = FolderReconcileTestSupport.makeHandler(
-            database: database,
-            root: root,
-            bookmark: bookmark,
-            enumerationConfig: FolderEnumerationConfig(workUnitLimit: 1, assetBatchLimit: 1)
-        )
+        let (handler, _) = FolderReconcileTestSupport.makeHandler(database: database, root: root, bookmark: bookmark)
         let coordinator = FolderReconcileTestSupport.makeCoordinator(queue: queue, handler: handler)
-        _ = try XCTUnwrap(try coordinator.claimAndExecuteOnce(ClaimNextInput(owner: "w", leaseDurationMs: 1000)))
+        let result = try XCTUnwrap(try coordinator.claimAndExecuteOnce(ClaimNextInput(owner: "w", leaseDurationMs: 1000)))
+        XCTAssertEqual(result.snapshot.state, .retryableFailed)
+        XCTAssertEqual(result.snapshot.lastErrorCode, .folderEnumerationIncomplete)
         let missingCount = try database.pool.read { db in
             try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM asset WHERE availability = 'missing'")
         }
@@ -80,7 +81,7 @@ final class FolderReconcileTransactionTests: XCTestCase {
         let repository = GRDBFolderReconcileRepository(queue: expiredQueue)
         XCTAssertThrowsError(
             try repository.beginGeneration(
-                FolderBeginGenerationInput(lease: lease, sourceID: sourceID, leaseDurationMs: 1000)
+                FolderReconcileTestSupport.beginGenerationInput(lease: lease, sourceID: sourceID, leaseDurationMs: 1000)
             )
         ) { error in
             XCTAssertEqual(error as? JobQueueError, .expiredLease(lease.jobID))
@@ -103,7 +104,7 @@ final class FolderReconcileTransactionTests: XCTestCase {
         _ = try FolderReconcileTestSupport.enqueueReconcileJob(queue: queue, sourceID: sourceID, jobID: jobID)
         let lease = try XCTUnwrap(try queue.claimNext(ClaimNextInput(owner: "w", leaseDurationMs: 1000)))
         let begin = try repository.beginGeneration(
-            FolderBeginGenerationInput(lease: lease, sourceID: sourceID, leaseDurationMs: 1000)
+            FolderReconcileTestSupport.beginGenerationInput(lease: lease, sourceID: sourceID, leaseDurationMs: 1000)
         )
         try database.pool.write { db in
             try JobTestSupport.incrementSourceDirtyEpoch(db, sourceID: sourceID, delta: 1)
@@ -129,7 +130,7 @@ final class FolderReconcileTransactionTests: XCTestCase {
         let pending = try database.pool.read { db in
             try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM job WHERE source_id = ? AND state = 'pending'", arguments: [sourceID.uuidString.lowercased()])
         }
-        XCTAssertEqual(pending, 1)
+        XCTAssertEqual(pending, 1, "expected one pending successor, got \(pending ?? -1)")
         let completed = try database.pool.read { db in
             try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM job WHERE id = ? AND state = 'completed'", arguments: [jobID.uuidString.lowercased()])
         }
@@ -152,7 +153,7 @@ final class FolderReconcileTransactionTests: XCTestCase {
         _ = try FolderReconcileTestSupport.enqueueReconcileJob(queue: queue, sourceID: sourceID, jobID: jobID)
         let lease = try XCTUnwrap(try queue.claimNext(ClaimNextInput(owner: "w", leaseDurationMs: 1000)))
         let begin = try repository.beginGeneration(
-            FolderBeginGenerationInput(lease: lease, sourceID: sourceID, leaseDurationMs: 1000)
+            FolderReconcileTestSupport.beginGenerationInput(lease: lease, sourceID: sourceID, leaseDurationMs: 1000)
         )
         let checkpoint = FolderReconcileCheckpointV1(
             generation: begin.generation,
@@ -194,7 +195,7 @@ final class FolderReconcileTransactionTests: XCTestCase {
         _ = try FolderReconcileTestSupport.enqueueReconcileJob(queue: queue, sourceID: sourceID)
         let lease = try XCTUnwrap(try queue.claimNext(ClaimNextInput(owner: "w", leaseDurationMs: 1000)))
         let begin = try repository.beginGeneration(
-            FolderBeginGenerationInput(lease: lease, sourceID: sourceID, leaseDurationMs: 1000)
+            FolderReconcileTestSupport.beginGenerationInput(lease: lease, sourceID: sourceID, leaseDurationMs: 1000)
         )
         let observation = FolderReconcileAssetObservation(
             relativePath: "a.png",
@@ -207,7 +208,7 @@ final class FolderReconcileTransactionTests: XCTestCase {
             sizeBytes: 100,
             modifiedAtNs: 1,
             resourceID: nil,
-            reconnectAssetID: nil
+            movePathProbe: nil
         )
         XCTAssertThrowsError(
             try repository.commitAssetBatch(
@@ -245,7 +246,7 @@ final class FolderReconcileTransactionTests: XCTestCase {
         _ = try FolderReconcileTestSupport.enqueueReconcileJob(queue: queue, sourceID: sourceID)
         let lease = try XCTUnwrap(try queue.claimNext(ClaimNextInput(owner: "w", leaseDurationMs: 1000)))
         let begin = try repository.beginGeneration(
-            FolderBeginGenerationInput(lease: lease, sourceID: sourceID, leaseDurationMs: 1000)
+            FolderReconcileTestSupport.beginGenerationInput(lease: lease, sourceID: sourceID, leaseDurationMs: 1000)
         )
         try database.pool.write { db in
             try db.execute(
@@ -297,7 +298,7 @@ final class FolderReconcileTransactionTests: XCTestCase {
         _ = try FolderReconcileTestSupport.enqueueReconcileJob(queue: queue, sourceID: sourceID)
         let lease = try XCTUnwrap(try queue.claimNext(ClaimNextInput(owner: "w", leaseDurationMs: 1000)))
         let begin = try repository.beginGeneration(
-            FolderBeginGenerationInput(lease: lease, sourceID: sourceID, leaseDurationMs: 1000)
+            FolderReconcileTestSupport.beginGenerationInput(lease: lease, sourceID: sourceID, leaseDurationMs: 1000)
         )
         try database.pool.write { db in
             try JobTestSupport.incrementSourceDirtyEpoch(db, sourceID: sourceID, delta: 1)

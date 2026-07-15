@@ -51,52 +51,91 @@ final class FolderMediaClassificationTests: XCTestCase {
         XCTAssertEqual(metadata.mediaType, UTType.jpeg.identifier)
     }
 
-    func testTIFFAvailableWhenImageIOSupportsEncoding() throws {
+    func testTIFFAvailableFromEncodedFixture() throws {
         guard let data = FolderReconcileTestSupport.minimalTIFFData() else {
-            throw XCTSkip("Image I/O cannot encode TIFF fixtures on this host")
+            return XCTFail("host must encode minimal TIFF fixture")
         }
         let fixture = FolderReconcileTestSupport.TempFixtureRoot()
         defer { fixture.cleanup() }
         let root = try fixture.makeRoot(label: "tiff")
         let file = try fixture.writeFile(root: root, relativePath: "x.tiff", contents: data)
         guard case let .available(metadata) = FolderMediaClassifier().classify(fileURL: file, fileName: "x.tiff") else {
-            return XCTFail("tiff must be available when encodable")
+            return XCTFail("tiff must be available")
         }
         XCTAssertEqual(metadata.mediaType, UTType.tiff.identifier)
     }
 
-    func testWebPAvailableWhenImageIOSupportsEncoding() throws {
-        guard let data = FolderReconcileTestSupport.minimalWebPData() else {
-            throw XCTSkip("Image I/O cannot encode WebP fixtures on this host")
-        }
+    func testWebPAvailableFromStaticFixture() throws {
         let fixture = FolderReconcileTestSupport.TempFixtureRoot()
         defer { fixture.cleanup() }
         let root = try fixture.makeRoot(label: "webp")
-        let file = try fixture.writeFile(root: root, relativePath: "x.webp", contents: data)
+        let file = try fixture.writeFile(
+            root: root,
+            relativePath: "x.webp",
+            contents: FolderReconcileTestSupport.minimalStaticWebPData
+        )
         guard case let .available(metadata) = FolderMediaClassifier().classify(fileURL: file, fileName: "x.webp") else {
-            return XCTFail("webp must be available when encodable")
+            return XCTFail("webp must be available from static fixture")
         }
         XCTAssertEqual(metadata.mediaType, UTType.webP.identifier)
     }
 
-    func testHEICAvailableWhenImageIOSupportsEncoding() throws {
+    func testHEICAvailableFromEncodedFixture() throws {
         guard let data = FolderReconcileTestSupport.minimalHEICData() else {
-            throw XCTSkip("Image I/O cannot encode HEIC fixtures on this host")
+            return XCTFail("host must encode minimal HEIC fixture")
         }
         let fixture = FolderReconcileTestSupport.TempFixtureRoot()
         defer { fixture.cleanup() }
         let root = try fixture.makeRoot(label: "heic")
         let file = try fixture.writeFile(root: root, relativePath: "x.heic", contents: data)
         guard case .available = FolderMediaClassifier().classify(fileURL: file, fileName: "x.heic") else {
-            return XCTFail("heic must be available when encodable")
+            return XCTFail("heic must be available")
         }
+    }
+
+    func testHEIFAvailableSeparateFromHEIC() throws {
+        guard let data = FolderReconcileTestSupport.minimalHEIFData() else {
+            return XCTFail("host must encode minimal HEIF fixture")
+        }
+        let fixture = FolderReconcileTestSupport.TempFixtureRoot()
+        defer { fixture.cleanup() }
+        let root = try fixture.makeRoot(label: "heif")
+        let file = try fixture.writeFile(root: root, relativePath: "x.heif", contents: data)
+        guard case let .available(metadata) = FolderMediaClassifier().classify(fileURL: file, fileName: "x.heif") else {
+            return XCTFail("heif must be available as separate extension")
+        }
+        XCTAssertTrue(metadata.mediaType == UTType.heif.identifier || metadata.mediaType == UTType.heic.identifier)
+    }
+
+    func testGIFUnsupported() throws {
+        let fixture = FolderReconcileTestSupport.TempFixtureRoot()
+        defer { fixture.cleanup() }
+        let root = try fixture.makeRoot(label: "gif")
+        let gif = Data([
+            0x47, 0x49, 0x46, 0x38, 0x39, 0x61, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00,
+            0x21, 0xF9, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x2C, 0x00, 0x00, 0x00, 0x00,
+            0x01, 0x00, 0x01, 0x00, 0x00, 0x02, 0x02, 0x4C, 0x01, 0x00, 0x3B,
+        ])
+        let file = try fixture.writeFile(root: root, relativePath: "anim.gif", contents: gif)
+        guard case .unsupported = FolderMediaClassifier().classify(fileURL: file, fileName: "anim.gif") else {
+            return XCTFail("gif must be unsupported")
+        }
+    }
+
+    func testPDFWithPDFExtensionIgnored() throws {
+        let fixture = FolderReconcileTestSupport.TempFixtureRoot()
+        defer { fixture.cleanup() }
+        let root = try fixture.makeRoot(label: "pdf")
+        let file = try fixture.writeFile(root: root, relativePath: "doc.pdf", contents: Data("%PDF-1.4".utf8))
+        XCTAssertEqual(FolderMediaClassifier().classify(fileURL: file, fileName: "doc.pdf"), .ignored)
     }
 
     func testScanPreservesDetailedSourceSnapshot() throws {
         let fixture = FolderReconcileTestSupport.TempFixtureRoot()
         defer { fixture.cleanup() }
         let root = try fixture.makeRoot(label: "readonly")
-        _ = try fixture.writeFile(root: root, relativePath: "photo.png", contents: FolderReconcileTestSupport.minimalPNGData())
+        try FileManager.default.createDirectory(at: root.appendingPathComponent("subdir"), withIntermediateDirectories: true)
+        _ = try fixture.writeFile(root: root, relativePath: "subdir/photo.png", contents: FolderReconcileTestSupport.minimalPNGData())
         let before = try fixture.snapshotDetailed(root: root)
         let url = try makeTempDatabaseURL()
         let database = try CatalogDatabase.open(at: url)

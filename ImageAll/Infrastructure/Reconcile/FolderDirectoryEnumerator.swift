@@ -1,8 +1,29 @@
 import Foundation
 
+struct FolderEnumerationErrorInjection: Sendable, Equatable {
+    let resourceValueFailureRelativePaths: Set<String>
+
+    static let none = FolderEnumerationErrorInjection(resourceValueFailureRelativePaths: [])
+
+    func shouldFailResourceValues(relativePath: String) -> Bool {
+        resourceValueFailureRelativePaths.contains(relativePath)
+    }
+}
+
 struct FolderEnumerationConfig: Sendable, Equatable {
     let workUnitLimit: Int
     let assetBatchLimit: Int
+    let errorInjection: FolderEnumerationErrorInjection
+
+    init(
+        workUnitLimit: Int,
+        assetBatchLimit: Int,
+        errorInjection: FolderEnumerationErrorInjection = .none
+    ) {
+        self.workUnitLimit = workUnitLimit
+        self.assetBatchLimit = assetBatchLimit
+        self.errorInjection = errorInjection
+    }
 
     static let productionDefault = FolderEnumerationConfig(workUnitLimit: 256, assetBatchLimit: 256)
 }
@@ -66,6 +87,10 @@ final class FolderDirectoryEnumerationSession: @unchecked Sendable {
 
             let relativePath = makeRelativePath(for: item)
             guard let relativePath else {
+                if isStrictRootBoundaryViolation(for: item) {
+                    aborted = true
+                    return .unsafeRelativePath
+                }
                 return .ignored
             }
 
@@ -82,20 +107,31 @@ final class FolderDirectoryEnumerationSession: @unchecked Sendable {
                 return .ignored
             }
 
-            let values = try? item.resourceValues(forKeys: Set(keys))
-            if values?.isSymbolicLink == true || values?.isAliasFile == true {
+            if config.errorInjection.shouldFailResourceValues(relativePath: relativePath) {
+                hadDirectoryError = true
+                continue
+            }
+
+            let values: URLResourceValues
+            do {
+                values = try item.resourceValues(forKeys: Set(keys))
+            } catch {
+                hadDirectoryError = true
+                continue
+            }
+            if values.isSymbolicLink == true || values.isAliasFile == true {
                 return .ignored
             }
 
-            if values?.isPackage == true {
+            if values.isPackage == true {
                 return .ignored
             }
 
-            if values?.isDirectory == true {
+            if values.isDirectory == true {
                 return .ignored
             }
 
-            guard values?.isRegularFile == true else {
+            guard values.isRegularFile == true else {
                 return .ignored
             }
 
@@ -131,19 +167,30 @@ final class FolderDirectoryEnumerationSession: @unchecked Sendable {
     }
 
     private func makeRelativePath(for url: URL) -> String? {
+        let rootComponents = rootURL.pathComponents
+        let itemComponents = url.standardizedFileURL.pathComponents
+        guard itemComponents.count > rootComponents.count else {
+            return nil
+        }
+        guard Array(itemComponents.prefix(rootComponents.count)) == rootComponents else {
+            return nil
+        }
+        let relative = itemComponents.dropFirst(rootComponents.count).joined(separator: "/")
+        guard !relative.isEmpty else {
+            return nil
+        }
+        return relative
+    }
+
+    private func isStrictRootBoundaryViolation(for url: URL) -> Bool {
         let rootPath = rootURL.path
         let itemPath = url.standardizedFileURL.path
-        guard itemPath.hasPrefix(rootPath) else {
-            return nil
+        guard itemPath.hasPrefix(rootPath), itemPath.count > rootPath.count else {
+            return false
         }
-        var suffix = String(itemPath.dropFirst(rootPath.count))
-        if suffix.hasPrefix("/") {
-            suffix.removeFirst()
-        }
-        guard !suffix.isEmpty else {
-            return nil
-        }
-        return suffix
+        let nextIndex = itemPath.index(itemPath.startIndex, offsetBy: rootPath.count)
+        let boundary = itemPath[nextIndex]
+        return boundary != "/"
     }
 
     private func isPhotosLibraryComponent(_ relativePath: String) -> Bool {
@@ -166,5 +213,45 @@ struct FolderDirectoryEnumerator {
 
     func makeSession() -> FolderDirectoryEnumerationSession {
         FolderDirectoryEnumerationSession(rootURL: rootURL, config: config, fileManager: fileManager)
+    }
+
+    func classifyItemURLForTesting(_ item: URL) -> FolderEnumerationEntryKind? {
+        makeSession().classifyItemURLForTesting(item)
+    }
+}
+
+extension FolderDirectoryEnumerationSession {
+    func classifyItemURLForTesting(_ item: URL) -> FolderEnumerationEntryKind? {
+        if item.lastPathComponent.lowercased().hasSuffix(".photoslibrary") {
+            return .ignored
+        }
+        let relativePath = makeRelativePath(for: item)
+        guard let relativePath else {
+            if isStrictRootBoundaryViolation(for: item) {
+                return .unsafeRelativePath
+            }
+            return .ignored
+        }
+        switch RelativePathRules.validate(relativePath) {
+        case .failure:
+            return .unsafeRelativePath
+        case .success:
+            break
+        }
+        if isPhotosLibraryComponent(relativePath) {
+            return .ignored
+        }
+        guard let values = try? item.resourceValues(forKeys: Set(keys)) else {
+            hadDirectoryError = true
+            return nil
+        }
+        if values.isSymbolicLink == true || values.isAliasFile == true { return .ignored }
+        if values.isPackage == true { return .ignored }
+        if values.isDirectory == true { return .ignored }
+        guard values.isRegularFile == true else { return .ignored }
+        guard let fileName = RelativePathRules.fileName(from: relativePath) else {
+            return .unsafeRelativePath
+        }
+        return .candidateFile(relativePath: relativePath, fileName: fileName)
     }
 }

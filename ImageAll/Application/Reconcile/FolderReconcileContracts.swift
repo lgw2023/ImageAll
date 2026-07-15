@@ -46,18 +46,15 @@ enum FolderReconcilePayloadValidation {
         }
 
         let allowedKeys: Set<String> = ["contract_version", "source_id"]
-        guard Set(object.keys) == allowedKeys else {
+        guard StrictJSONValidation.exactObjectKeys(object, allowed: allowedKeys) else {
             return .failure(.invalid(FolderReconcileSafeErrorCode.payloadInvalid))
         }
 
-        guard let contractVersion = object["contract_version"] as? Int,
-              contractVersion == FolderReconcileJobFactory.contractVersion
-        else {
+        guard StrictJSONValidation.exactContractVersion(object["contract_version"]) != nil else {
             return .failure(.invalid(FolderReconcileSafeErrorCode.payloadInvalid))
         }
 
-        guard let sourceIDString = object["source_id"] as? String,
-              sourceIDString == sourceIDString.lowercased(),
+        guard let sourceIDString = StrictJSONValidation.lowercaseCanonicalUUIDString(object["source_id"]),
               let sourceID = UUID(uuidString: sourceIDString)
         else {
             return .failure(.invalid(FolderReconcileSafeErrorCode.payloadInvalid))
@@ -67,7 +64,12 @@ enum FolderReconcilePayloadValidation {
             return .failure(.invalid(FolderReconcileSafeErrorCode.payloadInvalid))
         }
 
-        return .success(ValidPayload(sourceID: sourceID, contractVersion: contractVersion))
+        return .success(
+            ValidPayload(
+                sourceID: sourceID,
+                contractVersion: FolderReconcileJobFactory.contractVersion
+            )
+        )
     }
 }
 
@@ -95,22 +97,21 @@ enum FolderReconcileCheckpointCodec {
             "unreadable_assets",
             "identity_conflicts",
         ]
-        guard Set(object.keys) == allowedKeys else {
+        guard StrictJSONValidation.exactObjectKeys(object, allowed: allowedKeys) else {
             throw FolderReconcileCheckpointError.invalidShape
         }
 
-        guard let contractVersion = object["contract_version"] as? Int,
-              contractVersion == FolderReconcileCheckpointV1.contractVersionValue,
-              let generation = object["generation"] as? Int, generation > 0,
-              let startedDirtyEpoch = object["started_dirty_epoch"] as? Int, startedDirtyEpoch >= 0,
-              let attempt = object["attempt"] as? Int, attempt > 0,
-              let enumeratedEntries = object["enumerated_entries"] as? Int, enumeratedEntries >= 0,
-              let candidateFiles = object["candidate_files"] as? Int, candidateFiles >= 0,
-              let committedAssets = object["committed_assets"] as? Int, committedAssets >= 0,
-              let ignoredEntries = object["ignored_entries"] as? Int, ignoredEntries >= 0,
-              let unsupportedAssets = object["unsupported_assets"] as? Int, unsupportedAssets >= 0,
-              let unreadableAssets = object["unreadable_assets"] as? Int, unreadableAssets >= 0,
-              let identityConflicts = object["identity_conflicts"] as? Int, identityConflicts >= 0
+        guard StrictJSONValidation.exactCheckpointContractVersion(object["contract_version"]) != nil,
+              let generation = StrictJSONValidation.positiveInteger(object["generation"]),
+              let startedDirtyEpoch = StrictJSONValidation.nonNegativeInteger(object["started_dirty_epoch"]),
+              let attempt = StrictJSONValidation.positiveInteger(object["attempt"]),
+              let enumeratedEntries = StrictJSONValidation.nonNegativeInteger(object["enumerated_entries"]),
+              let candidateFiles = StrictJSONValidation.nonNegativeInteger(object["candidate_files"]),
+              let committedAssets = StrictJSONValidation.nonNegativeInteger(object["committed_assets"]),
+              let ignoredEntries = StrictJSONValidation.nonNegativeInteger(object["ignored_entries"]),
+              let unsupportedAssets = StrictJSONValidation.nonNegativeInteger(object["unsupported_assets"]),
+              let unreadableAssets = StrictJSONValidation.nonNegativeInteger(object["unreadable_assets"]),
+              let identityConflicts = StrictJSONValidation.nonNegativeInteger(object["identity_conflicts"])
         else {
             throw FolderReconcileCheckpointError.invalidShape
         }
@@ -127,6 +128,23 @@ enum FolderReconcileCheckpointCodec {
             unreadableAssets: unreadableAssets,
             identityConflicts: identityConflicts
         )
+    }
+
+    static func validateResumable(
+        _ checkpoint: FolderReconcileCheckpointV1,
+        scanGeneration: Int?,
+        startedDirtyEpoch: Int?,
+        currentAttempt: Int
+    ) -> Bool {
+        guard let scanGeneration, let startedDirtyEpoch else {
+            return false
+        }
+        guard checkpoint.generation == scanGeneration,
+              checkpoint.startedDirtyEpoch == startedDirtyEpoch
+        else {
+            return false
+        }
+        return checkpoint.attempt <= currentAttempt
     }
 
     static func validateAgainstJob(

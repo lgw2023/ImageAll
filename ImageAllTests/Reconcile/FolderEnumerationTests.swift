@@ -1,3 +1,4 @@
+import GRDB
 import XCTest
 @testable import ImageAll
 
@@ -98,6 +99,44 @@ final class FolderEnumerationTests: XCTestCase {
         }
         let decoded = try FolderReconcileCheckpointCodec.decode(XCTUnwrap(checkpointData))
         XCTAssertGreaterThanOrEqual(decoded.enumeratedEntries, 4)
+    }
+
+    func testHiddenFilesSkippedByEnumeration() throws {
+        let fixture = FolderReconcileTestSupport.TempFixtureRoot()
+        defer { fixture.cleanup() }
+        let root = try fixture.makeRoot(label: "hidden")
+        _ = try fixture.writeFile(root: root, relativePath: ".secret.png", contents: FolderReconcileTestSupport.minimalPNGData())
+        _ = try fixture.writeFile(root: root, relativePath: "visible.png", contents: FolderReconcileTestSupport.minimalPNGData())
+        let session = FolderDirectoryEnumerator(rootURL: root).makeSession()
+        var paths: [String] = []
+        while let entry = try session.nextEntry() {
+            if case let .candidateFile(relativePath, _) = entry {
+                paths.append(relativePath)
+            }
+        }
+        XCTAssertEqual(paths, ["visible.png"])
+    }
+
+    func testUnicodeRelativePathPreservedThroughHandler() throws {
+        let url = try makeTempDatabaseURL()
+        let database = try CatalogDatabase.open(at: url)
+        let queue = FolderReconcileTestSupport.makeQueue(database: database)
+        let sourceID = UUID()
+        let fixture = FolderReconcileTestSupport.TempFixtureRoot()
+        defer { fixture.cleanup() }
+        let root = try fixture.makeRoot(label: "unicode")
+        let relative = "日本語/写真.png"
+        try fixture.writeFile(root: root, relativePath: relative, contents: FolderReconcileTestSupport.minimalPNGData())
+        let bookmark = root.path.data(using: .utf8)!
+        try FolderReconcileTestSupport.seedActiveFolderSource(database: database, sourceID: sourceID, bookmark: bookmark)
+        _ = try FolderReconcileTestSupport.enqueueReconcileJob(queue: queue, sourceID: sourceID)
+        let (handler, _) = FolderReconcileTestSupport.makeHandler(database: database, root: root, bookmark: bookmark)
+        let coordinator = FolderReconcileTestSupport.makeCoordinator(queue: queue, handler: handler)
+        _ = try XCTUnwrap(try coordinator.claimAndExecuteOnce(ClaimNextInput(owner: "w", leaseDurationMs: 1000)))
+        let stored = try database.pool.read { db in
+            try String.fetchOne(db, sql: "SELECT relative_path FROM asset WHERE locator_state = 'current'")
+        }
+        XCTAssertEqual(stored, relative)
     }
 
     func testSymlinkAndPackageIgnored() throws {

@@ -35,11 +35,17 @@ struct FolderReconcileSourceAccessService: Sendable {
         do {
             resolved = try bookmarkPort.resolveBookmark(source.bookmark)
         } catch {
+            let observation = FolderAccessFailureClassifier.classifyBookmarkResolveFailure(error)
             try persistAccessObservation(
                 sourceID: source.id,
-                observation: FolderAccessFailureClassifier.classifyBookmarkResolveFailure(error)
+                observation: observation
             )
-            throw FolderReconcileHandlerError.authorizationRequired
+            switch observation {
+            case .offline:
+                throw FolderReconcileHandlerError.sourceUnavailable
+            case .authorizationRequired:
+                throw FolderReconcileHandlerError.authorizationRequired
+            }
         }
 
         onScopeStart?()
@@ -161,6 +167,8 @@ struct FolderReconcileHandler: LeaseBoundJobHandler {
             return try runReconcile(
                 lease: lease,
                 sourceID: valid.sourceID,
+                payloadVersion: payloadVersion,
+                payload: payload,
                 checkpoint: checkpoint,
                 persisted: persisted,
                 context: context
@@ -171,7 +179,7 @@ struct FolderReconcileHandler: LeaseBoundJobHandler {
                 FolderStopIncompleteInput(
                     lease: lease,
                     sourceID: persisted.sourceID ?? validSourceIDFromPayload(payload),
-                    checkpoint: makeEmptyCheckpoint(lease: lease, persisted: persisted),
+                    checkpoint: nil,
                     leaseDurationMs: context.leaseDurationMs,
                     errorCode: code,
                     outcome: outcome
@@ -189,6 +197,8 @@ struct FolderReconcileHandler: LeaseBoundJobHandler {
     private func runReconcile(
         lease: JobLeaseToken,
         sourceID: UUID,
+        payloadVersion: Int,
+        payload: Data,
         checkpoint: JobCheckpoint?,
         persisted: PersistedJobContext,
         context: JobLeaseExecutionContext
@@ -206,11 +216,11 @@ struct FolderReconcileHandler: LeaseBoundJobHandler {
         if let checkpoint {
             do {
                 let decoded = try FolderReconcileCheckpointCodec.decode(checkpoint.data)
-                guard FolderReconcileCheckpointCodec.validateAgainstJob(
+                guard FolderReconcileCheckpointCodec.validateResumable(
                     decoded,
                     scanGeneration: persisted.scanGeneration,
                     startedDirtyEpoch: persisted.startedDirtyEpoch,
-                    attempt: lease.attempts
+                    currentAttempt: lease.attempts
                 ) else {
                     return try failWithCode(
                         lease: lease,
@@ -237,6 +247,8 @@ struct FolderReconcileHandler: LeaseBoundJobHandler {
                 FolderBeginGenerationInput(
                     lease: lease,
                     sourceID: sourceID,
+                    payloadVersion: payloadVersion,
+                    payload: payload,
                     leaseDurationMs: context.leaseDurationMs
                 )
             )
@@ -273,7 +285,7 @@ struct FolderReconcileHandler: LeaseBoundJobHandler {
                         case .ignored:
                             currentCheckpoint = incrementIgnored(currentCheckpoint)
                         case let .available(metadata):
-                            let (observation, conflicts) = try resolveMoveReconnect(
+                            let (observation, conflicts) = try resolveAvailableObservation(
                                 rootURL: rootURL,
                                 relativePath: relativePath,
                                 fileName: fileName,
@@ -388,7 +400,7 @@ struct FolderReconcileHandler: LeaseBoundJobHandler {
         )
     }
 
-    private func resolveMoveReconnect(
+    private func resolveAvailableObservation(
         rootURL: URL,
         relativePath: String,
         fileName: String,
@@ -397,12 +409,16 @@ struct FolderReconcileHandler: LeaseBoundJobHandler {
         sourceID: UUID,
         generation: Int
     ) throws -> (FolderReconcileAssetObservation, Int) {
+        let probe: FolderMovePathProbe
+        var conflicts = 0
+
         guard let resourceID = metadata.resourceID else {
             return (makeObservation(
                 relativePath: relativePath,
                 fileName: fileName,
                 availability: .available,
-                metadata: metadata
+                metadata: metadata,
+                movePathProbe: nil
             ), 0)
         }
 
@@ -413,34 +429,19 @@ struct FolderReconcileHandler: LeaseBoundJobHandler {
         )
 
         if candidates.count > 1 {
-            return (makeObservation(
-                relativePath: relativePath,
-                fileName: fileName,
-                availability: .available,
-                metadata: metadata
-            ), 1)
-        }
-
-        guard let candidate = candidates.first else {
-            return (makeObservation(
-                relativePath: relativePath,
-                fileName: fileName,
-                availability: .available,
-                metadata: metadata
-            ), 0)
-        }
-
-        let oldPathURL = rootURL.appendingPathComponent(candidate.relativePath)
-        if FileManager.default.fileExists(atPath: oldPathURL.path) {
-            let oldResourceID = FolderFileResourceProbe.resourceIdentifier(at: oldPathURL)
-            if oldResourceID == resourceID {
-                return (makeObservation(
-                    relativePath: relativePath,
-                    fileName: fileName,
-                    availability: .available,
-                    metadata: metadata
-                ), 1)
+            probe = .multipleCandidates
+            conflicts = 1
+        } else if let candidate = candidates.first {
+            probe = probeOldPath(
+                rootURL: rootURL,
+                candidateRelativePath: candidate.relativePath,
+                resourceID: resourceID
+            )
+            if probe == .oldPathSameResourceID || probe == .oldPathProbeError {
+                conflicts = 1
             }
+        } else {
+            probe = .noCandidate
         }
 
         return (makeObservation(
@@ -448,8 +449,26 @@ struct FolderReconcileHandler: LeaseBoundJobHandler {
             fileName: fileName,
             availability: .available,
             metadata: metadata,
-            reconnectAssetID: candidate.assetID
-        ), 0)
+            movePathProbe: probe
+        ), conflicts)
+    }
+
+    private func probeOldPath(
+        rootURL: URL,
+        candidateRelativePath: String,
+        resourceID: Data
+    ) -> FolderMovePathProbe {
+        let oldPathURL = rootURL.appendingPathComponent(candidateRelativePath)
+        guard FileManager.default.fileExists(atPath: oldPathURL.path) else {
+            return .oldPathMissing
+        }
+        guard let oldResourceID = FolderFileResourceProbe.resourceIdentifier(at: oldPathURL) else {
+            return .oldPathProbeError
+        }
+        if oldResourceID == resourceID {
+            return .oldPathSameResourceID
+        }
+        return .oldPathDifferentResourceID
     }
 
     @discardableResult
@@ -509,7 +528,7 @@ struct FolderReconcileHandler: LeaseBoundJobHandler {
         fileName: String,
         availability: AssetAvailability,
         metadata: FolderMediaMetadata,
-        reconnectAssetID: UUID? = nil
+        movePathProbe: FolderMovePathProbe? = nil
     ) -> FolderReconcileAssetObservation {
         FolderReconcileAssetObservation(
             relativePath: relativePath,
@@ -522,7 +541,7 @@ struct FolderReconcileHandler: LeaseBoundJobHandler {
             sizeBytes: metadata.sizeBytes,
             modifiedAtNs: metadata.modifiedAtNs,
             resourceID: metadata.resourceID,
-            reconnectAssetID: reconnectAssetID
+            movePathProbe: movePathProbe
         )
     }
 
@@ -613,11 +632,18 @@ struct FolderReconcileHandler: LeaseBoundJobHandler {
         context: JobLeaseExecutionContext
     ) throws -> JobHandlerExecutionResult {
         let outcome = FolderReconcileSafeErrorSettlement.outcome(for: code)
+        let checkpoint = persisted.scanGeneration.map { generation in
+            FolderReconcileCheckpointV1(
+                generation: generation,
+                startedDirtyEpoch: persisted.startedDirtyEpoch ?? 0,
+                attempt: lease.attempts
+            )
+        }
         _ = try context.reconcileBatch.stopIncomplete(
             FolderStopIncompleteInput(
                 lease: lease,
                 sourceID: sourceID,
-                checkpoint: makeEmptyCheckpoint(lease: lease, persisted: persisted),
+                checkpoint: checkpoint,
                 leaseDurationMs: context.leaseDurationMs,
                 errorCode: code,
                 outcome: outcome
@@ -625,7 +651,7 @@ struct FolderReconcileHandler: LeaseBoundJobHandler {
         )
         return JobHandlerExecutionResult(
             outcome: outcome,
-            checkpoint: try? makeJobCheckpoint(makeEmptyCheckpoint(lease: lease, persisted: persisted)),
+            checkpoint: checkpoint.flatMap { try? makeJobCheckpoint($0) },
             progress: JobProgress(completed: persisted.progressCompleted, total: nil),
             settledByHandler: true
         )
@@ -633,14 +659,6 @@ struct FolderReconcileHandler: LeaseBoundJobHandler {
 
     private func makeJobCheckpoint(_ checkpoint: FolderReconcileCheckpointV1) throws -> JobCheckpoint {
         JobCheckpoint(version: 1, data: try FolderReconcileCheckpointCodec.encode(checkpoint))
-    }
-
-    private func makeEmptyCheckpoint(lease: JobLeaseToken, persisted: PersistedJobContext) -> FolderReconcileCheckpointV1 {
-        FolderReconcileCheckpointV1(
-            generation: persisted.scanGeneration ?? 1,
-            startedDirtyEpoch: persisted.startedDirtyEpoch ?? 0,
-            attempt: lease.attempts
-        )
     }
 
     private func resolvePersistedJob(

@@ -58,7 +58,8 @@ enum FolderReconcileTestSupport {
         }
 
         struct FileSnapshot: Equatable {
-            let bytes: Data
+            let bytes: Data?
+            let isDirectory: Bool
             let modificationDate: Date?
             let resourceID: Data?
         }
@@ -67,17 +68,21 @@ enum FolderReconcileTestSupport {
             var result: [String: FileSnapshot] = [:]
             guard let enumerator = FileManager.default.enumerator(
                 at: root,
-                includingPropertiesForKeys: [.contentModificationDateKey, .fileResourceIdentifierKey]
+                includingPropertiesForKeys: [
+                    .contentModificationDateKey,
+                    .fileResourceIdentifierKey,
+                    .isDirectoryKey,
+                ]
             ) else {
                 return result
             }
             for case let url as URL in enumerator {
                 let rel = String(url.path.dropFirst(root.path.count + 1))
-                var isDir: ObjCBool = false
-                guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir), !isDir.boolValue else {
-                    continue
-                }
-                let values = try url.resourceValues(forKeys: [.contentModificationDateKey, .fileResourceIdentifierKey])
+                let values = try url.resourceValues(forKeys: [
+                    .contentModificationDateKey,
+                    .fileResourceIdentifierKey,
+                    .isDirectoryKey,
+                ])
                 let resourceID: Data?
                 if let object = values.fileResourceIdentifier as? Data {
                     resourceID = object
@@ -86,8 +91,11 @@ enum FolderReconcileTestSupport {
                 } else {
                     resourceID = nil
                 }
+                let isDirectory = values.isDirectory == true
+                let bytes: Data? = isDirectory ? nil : try Data(contentsOf: url)
                 result[rel] = FileSnapshot(
-                    bytes: try Data(contentsOf: url),
+                    bytes: bytes,
+                    isDirectory: isDirectory,
                     modificationDate: values.contentModificationDate,
                     resourceID: resourceID
                 )
@@ -254,8 +262,38 @@ enum FolderReconcileTestSupport {
         minimalEncodedImageData(uti: UTType.tiff.identifier)
     }
 
-    static func minimalWebPData() -> Data? {
-        minimalEncodedImageData(uti: UTType.webP.identifier)
+    static func reconcilePayload(sourceID: UUID) -> Data {
+        let payload: [String: Any] = [
+            "contract_version": FolderReconcileJobFactory.contractVersion,
+            "source_id": sourceID.uuidString.lowercased(),
+        ]
+        return try! JSONSerialization.data(withJSONObject: payload)
+    }
+
+    static func beginGenerationInput(
+        lease: JobLeaseToken,
+        sourceID: UUID,
+        leaseDurationMs: Int64 = FolderReconcileTestSupport.leaseDurationMs
+    ) -> FolderBeginGenerationInput {
+        FolderBeginGenerationInput(
+            lease: lease,
+            sourceID: sourceID,
+            payloadVersion: FolderReconcileJobFactory.payloadVersion,
+            payload: reconcilePayload(sourceID: sourceID),
+            leaseDurationMs: leaseDurationMs
+        )
+    }
+
+    /// Auditable 1x1 lossy WebP fixture for decode verification when encoding is unavailable.
+    static let minimalStaticWebPData = Data([
+        0x52, 0x49, 0x46, 0x46, 0x24, 0x00, 0x00, 0x00, 0x57, 0x45, 0x42, 0x50,
+        0x56, 0x50, 0x38, 0x20, 0x18, 0x00, 0x00, 0x00, 0x30, 0x01, 0x00, 0x9d,
+        0x01, 0x2a, 0x01, 0x00, 0x01, 0x00, 0x02, 0x00, 0x34, 0x25, 0xa4, 0x00,
+        0x03, 0x70, 0x00, 0xfe, 0xfb, 0xfd, 0x50, 0x00,
+    ])
+
+    static func minimalWebPData() -> Data {
+        minimalStaticWebPData
     }
 
     static func minimalHEICData() -> Data? {
@@ -267,7 +305,11 @@ enum FolderReconcileTestSupport {
 
     static func minimalHEIFData() -> Data? {
         if #available(macOS 10.13, *) {
-            return minimalEncodedImageData(uti: UTType.heif.identifier)
+            if let heif = minimalEncodedImageData(uti: UTType.heif.identifier) {
+                return heif
+            }
+            // When the host cannot encode HEIF, verify the .heif read path with HEIC-compatible bytes.
+            return minimalHEICData()
         }
         return nil
     }
@@ -315,6 +357,8 @@ enum FolderReconcileTestFaults {
         case failFinalMissing = 4
         case failFinalCompletion = 5
         case failFinalSuccessor = 6
+        case failFingerprintInsert = 7
+        case failBatchLeaseRenew = 8
     }
 
     static func install(on database: CatalogDatabase) throws {
@@ -375,6 +419,23 @@ enum FolderReconcileTestFaults {
                 WHEN (SELECT mode FROM reconcile_fault_control) = 6
                   AND NEW.kind = 'folder.reconcile.v1'
                 BEGIN SELECT RAISE(ABORT, 'reconcile_fail_final_successor'); END
+                """)
+
+            try db.execute(sql: "DROP TRIGGER IF EXISTS reconcile_fail_fingerprint_insert")
+            try db.execute(sql: """
+                CREATE TRIGGER reconcile_fail_fingerprint_insert
+                BEFORE INSERT ON file_fingerprint
+                WHEN (SELECT mode FROM reconcile_fault_control) = 7
+                BEGIN SELECT RAISE(ABORT, 'reconcile_fail_fingerprint_insert'); END
+                """)
+
+            try db.execute(sql: "DROP TRIGGER IF EXISTS reconcile_fail_batch_lease_renew")
+            try db.execute(sql: """
+                CREATE TRIGGER reconcile_fail_batch_lease_renew
+                BEFORE UPDATE OF lease_expires_at_ms ON job
+                WHEN (SELECT mode FROM reconcile_fault_control) = 8
+                  AND NEW.state = 'running'
+                BEGIN SELECT RAISE(ABORT, 'reconcile_fail_batch_lease_renew'); END
                 """)
         }
     }

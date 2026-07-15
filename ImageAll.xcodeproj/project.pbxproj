@@ -140,6 +140,8 @@
 		RR0000010000000000000007 /* FolderMediaClassifier.swift in Sources */ = {isa = PBXBuildFile; fileRef = RR0001010000000000000007 /* FolderMediaClassifier.swift */; };
 		RR0000010000000000000008 /* GRDBFolderReconcileRepository.swift in Sources */ = {isa = PBXBuildFile; fileRef = RR0001010000000000000008 /* GRDBFolderReconcileRepository.swift */; };
 		RR0000010000000000000009 /* FolderReconcileHandler.swift in Sources */ = {isa = PBXBuildFile; fileRef = RR0001010000000000000009 /* FolderReconcileHandler.swift */; };
+		RR0000010000000000000010 /* StrictJSONValidation.swift in Sources */ = {isa = PBXBuildFile; fileRef = RR0001010000000000000010 /* StrictJSONValidation.swift */; };
+		RR0000010000000000000011 /* FolderMovePathProbe.swift in Sources */ = {isa = PBXBuildFile; fileRef = RR0001010000000000000011 /* FolderMovePathProbe.swift */; };
 		RR0000010000000000000101 /* FolderReconcileTestSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = RR0001010000000000000101 /* FolderReconcileTestSupport.swift */; };
 		RR0000010000000000000102 /* FolderReconcileContractTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = RR0001010000000000000102 /* FolderReconcileContractTests.swift */; };
 		RR0000010000000000000103 /* FolderEnumerationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = RR0001010000000000000103 /* FolderEnumerationTests.swift */; };
@@ -147,6 +149,7 @@
 		RR0000010000000000000105 /* FolderAssetIdentityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = RR0001010000000000000105 /* FolderAssetIdentityTests.swift */; };
 		RR0000010000000000000106 /* FolderReconcileTransactionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = RR0001010000000000000106 /* FolderReconcileTransactionTests.swift */; };
 		RR0000010000000000000107 /* FolderReconcilePrivacyRegressionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = RR0001010000000000000107 /* FolderReconcilePrivacyRegressionTests.swift */; };
+		RR0000010000000000000108 /* FolderReconcileAcceptanceMatrixTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = RR0001010000000000000108 /* FolderReconcileAcceptanceMatrixTests.swift */; };
 		RR0000010000000000000201 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = RR0001010000000000000201 /* PrivacyInfo.xcprivacy */; };
 /* End PBXBuildFile section */
 
@@ -295,6 +298,8 @@
 		RR0001010000000000000007 /* FolderMediaClassifier.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FolderMediaClassifier.swift; sourceTree = "<group>"; };
 		RR0001010000000000000008 /* GRDBFolderReconcileRepository.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GRDBFolderReconcileRepository.swift; sourceTree = "<group>"; };
 		RR0001010000000000000009 /* FolderReconcileHandler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FolderReconcileHandler.swift; sourceTree = "<group>"; };
+		RR0001010000000000000010 /* StrictJSONValidation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StrictJSONValidation.swift; sourceTree = "<group>"; };
+		RR0001010000000000000011 /* FolderMovePathProbe.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FolderMovePathProbe.swift; sourceTree = "<group>"; };
 		RR0001010000000000000101 /* FolderReconcileTestSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FolderReconcileTestSupport.swift; sourceTree = "<group>"; };
 		RR0001010000000000000102 /* FolderReconcileContractTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FolderReconcileContractTests.swift; sourceTree = "<group>"; };
 		RR0001010000000000000103 /* FolderEnumerationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FolderEnumerationTests.swift; sourceTree = "<group>"; };
@@ -302,6 +307,7 @@
 		RR0001010000000000000105 /* FolderAssetIdentityTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FolderAssetIdentityTests.swift; sourceTree = "<group>"; };
 		RR0001010000000000000106 /* FolderReconcileTransactionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FolderReconcileTransactionTests.swift; sourceTree = "<group>"; };
 		RR0001010000000000000107 /* FolderReconcilePrivacyRegressionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FolderReconcilePrivacyRegressionTests.swift; sourceTree = "<group>"; };
+		RR0001010000000000000108 /* FolderReconcileAcceptanceMatrixTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FolderReconcileAcceptanceMatrixTests.swift; sourceTree = "<group>"; };
 		RR0001010000000000000201 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -684,6 +690,8 @@
 				RR0001010000000000000001 /* FolderReconcileTypes.swift */,
 				RR0001010000000000000002 /* FolderReconcileBatchPort.swift */,
 				RR0001010000000000000003 /* FolderReconcileContracts.swift */,
+				RR0001010000000000000010 /* StrictJSONValidation.swift */,
+				RR0001010000000000000011 /* FolderMovePathProbe.swift */,
 			);
 			path = Reconcile;
 			sourceTree = "<group>";
@@ -710,6 +718,7 @@
 				RR0001010000000000000105 /* FolderAssetIdentityTests.swift */,
 				RR0001010000000000000106 /* FolderReconcileTransactionTests.swift */,
 				RR0001010000000000000107 /* FolderReconcilePrivacyRegressionTests.swift */,
+				RR0001010000000000000108 /* FolderReconcileAcceptanceMatrixTests.swift */,
 			);
 			path = Reconcile;
 			sourceTree = "<group>";
@@ -894,6 +903,8 @@
 			RR0000010000000000000001 /* FolderReconcileTypes.swift in Sources */,
 			RR0000010000000000000002 /* FolderReconcileBatchPort.swift in Sources */,
 			RR0000010000000000000003 /* FolderReconcileContracts.swift in Sources */,
+			RR0000010000000000000010 /* StrictJSONValidation.swift in Sources */,
+			RR0000010000000000000011 /* FolderMovePathProbe.swift in Sources */,
 			RR0000010000000000000004 /* JobLeaseContextProviding.swift in Sources */,
 			RR0000010000000000000005 /* GRDBJobLeaseContextProvider.swift in Sources */,
 			RR0000010000000000000006 /* FolderDirectoryEnumerator.swift in Sources */,
@@ -967,6 +978,7 @@
 			RR0000010000000000000105 /* FolderAssetIdentityTests.swift in Sources */,
 			RR0000010000000000000106 /* FolderReconcileTransactionTests.swift in Sources */,
 			RR0000010000000000000107 /* FolderReconcilePrivacyRegressionTests.swift in Sources */,
+			RR0000010000000000000108 /* FolderReconcileAcceptanceMatrixTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
