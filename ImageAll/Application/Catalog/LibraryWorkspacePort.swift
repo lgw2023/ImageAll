@@ -25,6 +25,7 @@ enum LibraryWorkspaceNotice: Equatable, Sendable {
     case invalidTagName
     case duplicateTag
     case tagMutationFailed
+    case sourceActionFailed
 }
 
 enum LibraryTagDecisionAction: Equatable, Sendable {
@@ -65,6 +66,8 @@ enum LibraryInspectorTagDecisionState: Equatable, Sendable {
 protocol LibraryWorkspacePort: Sendable {
     func fetchSources() throws -> [LibrarySourceSummary]
     func connectFolder() async throws -> ConnectFolderOutcome
+    func reauthorizeFolder(sourceID: UUID) async throws -> ReauthorizeFolderOutcome
+    func disableFolderSource(sourceID: UUID) async throws -> DisableFolderOutcome
     func enqueueReconcile(sourceIDs: [UUID]) throws
     func runPendingReconcileJobs() throws
     func fetchAssetPage(

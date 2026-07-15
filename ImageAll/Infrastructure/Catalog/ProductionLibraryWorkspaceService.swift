@@ -24,6 +24,14 @@ struct ProductionLibraryWorkspaceService: LibraryWorkspacePort, Sendable {
         try await authorization.connectFolder()
     }
 
+    func reauthorizeFolder(sourceID: UUID) async throws -> ReauthorizeFolderOutcome {
+        try await authorization.reauthorizeFolder(sourceID: sourceID)
+    }
+
+    func disableFolderSource(sourceID: UUID) async throws -> DisableFolderOutcome {
+        try await authorization.disableFolderSource(sourceID: sourceID)
+    }
+
     func enqueueReconcile(sourceIDs: [UUID]) throws {
         let requested = Set(sourceIDs)
         for source in try sourceRepository.fetchAllFolderSources()

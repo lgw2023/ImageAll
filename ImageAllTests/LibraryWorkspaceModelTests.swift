@@ -24,6 +24,70 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertEqual(service.reconcileRunCount, 1)
     }
 
+    func testReauthorizingSourceRestoresActiveStateAndRunsReconcile() async {
+        let sourceID = UUID()
+        let asset = Self.makeAsset(sourceID: sourceID)
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: sourceID,
+                displayName: "Fixture",
+                state: .authorizationRequired
+            ),
+            reconciledItems: [asset]
+        )
+        let model = LibraryWorkspaceModel(service: service)
+
+        await model.start()
+        await model.connectFolder()
+        XCTAssertEqual(model.sources.first?.state, .authorizationRequired)
+
+        await model.reauthorizeSource(sourceID)
+
+        XCTAssertEqual(model.sources.first?.state, .active)
+        XCTAssertEqual(model.items.map(\.assetID), [asset.assetID])
+        XCTAssertEqual(service.reauthorizeCallCount, 1)
+        XCTAssertEqual(service.reconcileRunCount, 2)
+    }
+
+    func testDisablingSourceKeepsCatalogItemsAndMarksSourceDisabled() async {
+        let sourceID = UUID()
+        let asset = Self.makeAsset(sourceID: sourceID)
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(id: sourceID, displayName: "Fixture", state: .active),
+            reconciledItems: [asset]
+        )
+        let model = LibraryWorkspaceModel(service: service)
+
+        await model.start()
+        await model.connectFolder()
+        await model.disableSource(sourceID)
+
+        XCTAssertEqual(model.sources.first?.state, .disabled)
+        XCTAssertEqual(model.items.map(\.assetID), [asset.assetID])
+        XCTAssertEqual(service.disableCallCount, 1)
+        XCTAssertEqual(service.reconcileRunCount, 1)
+    }
+
+    func testSourceActionFailureKeepsVisibleCatalogAndShowsNotice() async {
+        let sourceID = UUID()
+        let asset = Self.makeAsset(sourceID: sourceID)
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(id: sourceID, displayName: "Fixture", state: .active),
+            reconciledItems: [asset],
+            sourceMutationFails: true
+        )
+        let model = LibraryWorkspaceModel(service: service)
+
+        await model.start()
+        await model.connectFolder()
+        await model.disableSource(sourceID)
+
+        XCTAssertEqual(model.phase, .content)
+        XCTAssertEqual(model.sources.first?.state, .active)
+        XCTAssertEqual(model.items.map(\.assetID), [asset.assetID])
+        XCTAssertEqual(model.notice, .sourceActionFailed)
+    }
+
     func testScanFailureIsVisibleInsteadOfLookingLikeAnEmptyLibrary() async {
         let sourceID = UUID()
         let service = FakeLibraryWorkspaceService(
@@ -289,10 +353,13 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
     private var storedSources: [LibrarySourceSummary] = []
     private var storedItems: [AssetGridItemProjection] = []
     private var storedReconcileRunCount = 0
+    private var storedReauthorizeCallCount = 0
+    private var storedDisableCallCount = 0
     private var storedLastFilter = AssetPageFilter()
     private var storedLastSort: AssetPageSort = .newest
     private let scanFails: Bool
     private let tagMutationFails: Bool
+    private let sourceMutationFails: Bool
     private var storedTags: [TagListItem]
     private var decisions: [UUID: [UUID: TagDecisionQueryState]] = [:]
 
@@ -301,12 +368,14 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
         reconciledItems: [AssetGridItemProjection],
         scanFails: Bool = false,
         tags: [TagListItem] = [],
-        tagMutationFails: Bool = false
+        tagMutationFails: Bool = false,
+        sourceMutationFails: Bool = false
     ) {
         self.connectedSource = connectedSource
         self.reconciledItems = reconciledItems
         self.scanFails = scanFails
         self.tagMutationFails = tagMutationFails
+        self.sourceMutationFails = sourceMutationFails
         storedTags = tags
     }
 
@@ -316,6 +385,14 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
 
     var lastFilter: AssetPageFilter {
         lock.withLock { storedLastFilter }
+    }
+
+    var reauthorizeCallCount: Int {
+        lock.withLock { storedReauthorizeCallCount }
+    }
+
+    var disableCallCount: Int {
+        lock.withLock { storedDisableCallCount }
     }
 
     var lastSort: AssetPageSort {
@@ -329,6 +406,34 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
     func connectFolder() async throws -> ConnectFolderOutcome {
         lock.withLock { storedSources = [connectedSource] }
         return .connected(sourceID: connectedSource.id)
+    }
+
+    func reauthorizeFolder(sourceID: UUID) async throws -> ReauthorizeFolderOutcome {
+        if sourceMutationFails {
+            throw FakeWorkspaceError.sourceActionFailed
+        }
+        lock.withLock {
+            storedReauthorizeCallCount += 1
+            storedSources = storedSources.map {
+                guard $0.id == sourceID else { return $0 }
+                return LibrarySourceSummary(id: $0.id, displayName: $0.displayName, state: .active)
+            }
+        }
+        return .reauthorized(sourceID: sourceID)
+    }
+
+    func disableFolderSource(sourceID: UUID) async throws -> DisableFolderOutcome {
+        if sourceMutationFails {
+            throw FakeWorkspaceError.sourceActionFailed
+        }
+        lock.withLock {
+            storedDisableCallCount += 1
+            storedSources = storedSources.map {
+                guard $0.id == sourceID else { return $0 }
+                return LibrarySourceSummary(id: $0.id, displayName: $0.displayName, state: .disabled)
+            }
+        }
+        return .disabled(sourceID: sourceID)
     }
 
     func enqueueReconcile(sourceIDs: [UUID]) throws {}
@@ -483,4 +588,5 @@ private enum FakeWorkspaceError: Error {
     case scanFailed
     case notFound
     case tagMutationFailed
+    case sourceActionFailed
 }

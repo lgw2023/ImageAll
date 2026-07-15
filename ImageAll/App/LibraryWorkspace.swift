@@ -57,6 +57,13 @@ final class LibraryWorkspaceModel: ObservableObject {
         !selectedAvailabilities.isEmpty || !selectedMediaTypes.isEmpty
     }
 
+    var canRescan: Bool {
+        if let selectedSourceID {
+            return sources.first(where: { $0.id == selectedSourceID })?.state == .active
+        }
+        return sources.contains { $0.state == .active }
+    }
+
     func start() async {
         guard !started else { return }
         started = true
@@ -75,6 +82,42 @@ final class LibraryWorkspaceModel: ObservableObject {
             }
         } catch {
             phase = .failed(.connectionFailed)
+        }
+    }
+
+    func reauthorizeSource(_ sourceID: UUID) async {
+        guard !isBusy else { return }
+        let previousPhase = phase
+        notice = nil
+        do {
+            switch try await service.reauthorizeFolder(sourceID: sourceID) {
+            case .cancelled:
+                return
+            case .reauthorized:
+                break
+            }
+
+            let service = service
+            sources = try await Self.offMain { try service.fetchSources() }
+            phase = .scanning
+            try await Self.offMain { try service.runPendingReconcileJobs() }
+            await loadFirstPage()
+        } catch {
+            phase = previousPhase
+            notice = .sourceActionFailed
+        }
+    }
+
+    func disableSource(_ sourceID: UUID) async {
+        guard !isBusy else { return }
+        notice = nil
+        do {
+            _ = try await service.disableFolderSource(sourceID: sourceID)
+            let service = service
+            sources = try await Self.offMain { try service.fetchSources() }
+            await loadFirstPage()
+        } catch {
+            notice = .sourceActionFailed
         }
     }
 
@@ -590,6 +633,7 @@ struct LibraryWorkspaceView: View {
     @State private var selection: LibrarySidebarSelection? = .all
     @State private var searchText = ""
     @State private var newTagName = ""
+    @State private var sourcePendingDisable: LibrarySourceSummary?
     @FocusState private var newTagFieldFocused: Bool
     @FocusState private var contentFocused: Bool
 
@@ -661,13 +705,32 @@ struct LibraryWorkspaceView: View {
                 } label: {
                     Label("立即重扫", systemImage: "arrow.clockwise")
                 }
-                .disabled(model.isBusy || model.sources.isEmpty)
+                .disabled(model.isBusy || !model.canRescan)
             }
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
             if let notice = model.notice {
                 noticeBar(notice)
             }
+        }
+        .confirmationDialog(
+            sourcePendingDisable.map { "停用“\($0.displayName)”来源？" } ?? "停用来源？",
+            isPresented: Binding(
+                get: { sourcePendingDisable != nil },
+                set: { if !$0 { sourcePendingDisable = nil } }
+            ),
+            titleVisibility: .visible,
+            presenting: sourcePendingDisable
+        ) { source in
+            Button("停用来源", role: .destructive) {
+                sourcePendingDisable = nil
+                Task { await model.disableSource(source.id) }
+            }
+            Button("取消", role: .cancel) {
+                sourcePendingDisable = nil
+            }
+        } message: { _ in
+            Text("ImageAll 会停止该来源的扫描任务，但保留已索引的照片、人工标签和历史；原照片不会被修改。")
         }
         .task { await model.start() }
         .onChange(of: selection) { _, newValue in
@@ -700,7 +763,7 @@ struct LibraryWorkspaceView: View {
             }
             Section("来源") {
                 ForEach(model.sources) { source in
-                    Label(source.displayName, systemImage: sourceIcon(source.state))
+                    sourceRow(source)
                         .tag(LibrarySidebarSelection.source(source.id))
                 }
                 Button {
@@ -727,6 +790,49 @@ struct LibraryWorkspaceView: View {
         }
         .listStyle(.sidebar)
         .navigationTitle("ImageAll")
+    }
+
+    private func sourceRow(_ source: LibrarySourceSummary) -> some View {
+        HStack(spacing: 8) {
+            Label(source.displayName, systemImage: sourceIcon(source.state))
+                .lineLimit(1)
+            Spacer(minLength: 4)
+            if let status = sourceStatusText(source.state) {
+                Text(status)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .accessibilityElement(children: .combine)
+        .help(sourceHelpText(source.state))
+        .contextMenu {
+            Button("在图库中查看") {
+                selection = .source(source.id)
+            }
+            Button("立即重扫") {
+                selection = .source(source.id)
+                Task {
+                    await model.selectSource(source.id)
+                    await model.rescan()
+                }
+            }
+            .disabled(model.isBusy || source.state != .active)
+
+            Button("重新授权…") {
+                Task { await model.reauthorizeSource(source.id) }
+            }
+            .disabled(
+                model.isBusy ||
+                (source.state != .unavailable && source.state != .authorizationRequired)
+            )
+
+            Divider()
+
+            Button("停用来源", role: .destructive) {
+                sourcePendingDisable = source
+            }
+            .disabled(model.isBusy || source.state == .disabled)
+        }
     }
 
     @ViewBuilder
@@ -1154,6 +1260,7 @@ struct LibraryWorkspaceView: View {
         case .invalidTagName: "标签名称无效。"
         case .duplicateTag: "已有同名标签。"
         case .tagMutationFailed: "标签操作未保存，请重试。"
+        case .sourceActionFailed: "来源操作未完成。原照片没有被修改，请重试。"
         }
     }
 
@@ -1172,6 +1279,24 @@ struct LibraryWorkspaceView: View {
         case .unavailable: return "externaldrive.badge.exclamationmark"
         case .authorizationRequired: return "lock.trianglebadge.exclamationmark"
         case .disabled: return "pause.circle"
+        }
+    }
+
+    private func sourceStatusText(_ state: SourceState) -> String? {
+        switch state {
+        case .active: return nil
+        case .unavailable: return "离线"
+        case .authorizationRequired: return "需授权"
+        case .disabled: return "已停用"
+        }
+    }
+
+    private func sourceHelpText(_ state: SourceState) -> String {
+        switch state {
+        case .active: return "来源可用"
+        case .unavailable: return "来源当前离线"
+        case .authorizationRequired: return "需要重新授权此来源"
+        case .disabled: return "来源已停用，已索引照片和人工标签仍保留"
         }
     }
 
