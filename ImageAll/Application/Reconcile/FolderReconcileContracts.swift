@@ -9,6 +9,19 @@ enum FolderReconcileSafeErrorCode {
     static let unsafeRelativePath = JobSafeErrorCode.folderUnsafeRelativePath
 }
 
+enum FolderReconcileSafeErrorSettlement {
+    static func outcome(for code: JobSafeErrorCode) -> JobHandlerOutcome {
+        switch code {
+        case .folderSourceUnavailable, .folderEnumerationIncomplete:
+            return .retryableFailure(code: code)
+        case .folderPayloadInvalid, .folderCheckpointInvalid, .folderAuthorizationRequired, .folderUnsafeRelativePath:
+            return .nonRetryableFailure(code: code)
+        default:
+            return .nonRetryableFailure(code: code)
+        }
+    }
+}
+
 enum FolderReconcilePayloadValidation {
     struct ValidPayload: Equatable, Sendable {
         let sourceID: UUID
@@ -44,8 +57,8 @@ enum FolderReconcilePayloadValidation {
         }
 
         guard let sourceIDString = object["source_id"] as? String,
-              let sourceID = UUID(uuidString: sourceIDString),
-              sourceID.uuidString.lowercased() == sourceIDString.lowercased()
+              sourceIDString == sourceIDString.lowercased(),
+              let sourceID = UUID(uuidString: sourceIDString)
         else {
             return .failure(.invalid(FolderReconcileSafeErrorCode.payloadInvalid))
         }
@@ -119,13 +132,15 @@ enum FolderReconcileCheckpointCodec {
     static func validateAgainstJob(
         _ checkpoint: FolderReconcileCheckpointV1,
         scanGeneration: Int?,
-        startedDirtyEpoch: Int?
+        startedDirtyEpoch: Int?,
+        attempt: Int
     ) -> Bool {
         guard let scanGeneration, let startedDirtyEpoch else {
             return false
         }
         return checkpoint.generation == scanGeneration
             && checkpoint.startedDirtyEpoch == startedDirtyEpoch
+            && checkpoint.attempt == attempt
     }
 }
 

@@ -13,108 +13,121 @@ enum FolderEnumerationEntryKind: Equatable, Sendable {
     case unsafeRelativePath
 }
 
-struct FolderDirectoryEnumerator {
+final class FolderDirectoryEnumerationSession: @unchecked Sendable {
     private let rootURL: URL
     private let config: FolderEnumerationConfig
+    private let fileManager: FileManager
+    private let keys: [URLResourceKey] = [
+        .isDirectoryKey,
+        .isRegularFileKey,
+        .isSymbolicLinkKey,
+        .isAliasFileKey,
+        .isPackageKey,
+        .isHiddenKey,
+        .nameKey,
+    ]
 
-    init(rootURL: URL, config: FolderEnumerationConfig = .productionDefault, fileManager: FileManager = .default) {
+    private var enumerator: FileManager.DirectoryEnumerator?
+    private var hadDirectoryError = false
+    private var workUnitsSinceBoundary = 0
+    private var isExhausted = false
+    private var aborted = false
+
+    init(rootURL: URL, config: FolderEnumerationConfig, fileManager: FileManager = .default) {
         self.rootURL = rootURL.standardizedFileURL
         self.config = config
         self.fileManager = fileManager
     }
 
-    private let fileManager: FileManager
+    var directoryHadError: Bool { hadDirectoryError }
+    var isFinished: Bool { isExhausted || aborted }
 
-    func enumerate(
-        onEntry: (FolderEnumerationEntryKind) throws -> Void
-    ) throws -> (hadDirectoryError: Bool, finished: Bool) {
-        let keys: [URLResourceKey] = [
-            .isDirectoryKey,
-            .isRegularFileKey,
-            .isSymbolicLinkKey,
-            .isAliasFileKey,
-            .isPackageKey,
-            .isHiddenKey,
-            .nameKey,
-        ]
+    var needsBoundaryFlush: Bool {
+        workUnitsSinceBoundary >= config.workUnitLimit
+    }
 
-        var hadDirectoryError = false
-        guard let enumerator = fileManager.enumerator(
-            at: rootURL,
-            includingPropertiesForKeys: keys,
-            options: [.skipsHiddenFiles, .skipsPackageDescendants],
-            errorHandler: { _, _ in
-                hadDirectoryError = true
-                return true
-            }
-        ) else {
-            return (true, false)
+    func markBoundaryFlushed() {
+        workUnitsSinceBoundary = 0
+    }
+
+    func nextEntry() throws -> FolderEnumerationEntryKind? {
+        startIfNeeded()
+        guard !isExhausted, !aborted, let enumerator else {
+            return nil
         }
 
-        var workUnits = 0
-
         while let item = enumerator.nextObject() as? URL {
-            workUnits += 1
-            if workUnits > config.workUnitLimit {
-                return (hadDirectoryError, false)
-            }
+            workUnitsSinceBoundary += 1
 
             if item.lastPathComponent.lowercased().hasSuffix(".photoslibrary") {
                 enumerator.skipDescendants()
-                try onEntry(.ignored)
-                continue
+                return .ignored
             }
 
             let relativePath = makeRelativePath(for: item)
             guard let relativePath else {
-                try onEntry(.ignored)
-                continue
+                return .ignored
             }
 
             switch RelativePathRules.validate(relativePath) {
             case .failure:
-                try onEntry(.unsafeRelativePath)
-                return (hadDirectoryError, false)
+                aborted = true
+                return .unsafeRelativePath
             case .success:
                 break
             }
 
             if isPhotosLibraryComponent(relativePath) {
                 enumerator.skipDescendants()
-                try onEntry(.ignored)
-                continue
+                return .ignored
             }
 
             let values = try? item.resourceValues(forKeys: Set(keys))
             if values?.isSymbolicLink == true || values?.isAliasFile == true {
-                try onEntry(.ignored)
-                continue
+                return .ignored
             }
 
             if values?.isPackage == true {
-                try onEntry(.ignored)
-                continue
+                return .ignored
             }
 
             if values?.isDirectory == true {
-                try onEntry(.ignored)
-                continue
+                return .ignored
             }
 
             guard values?.isRegularFile == true else {
-                try onEntry(.ignored)
-                continue
+                return .ignored
             }
 
-            guard RelativePathRules.fileName(from: relativePath) != nil else {
-                try onEntry(.unsafeRelativePath)
-                return (hadDirectoryError, false)
+            guard let fileName = RelativePathRules.fileName(from: relativePath) else {
+                aborted = true
+                return .unsafeRelativePath
             }
 
-            try onEntry(.candidateFile(relativePath: relativePath, fileName: RelativePathRules.fileName(from: relativePath)!))
+            return .candidateFile(relativePath: relativePath, fileName: fileName)
         }
 
-        return (hadDirectoryError, true)
+        isExhausted = true
+        return nil
+    }
+
+    private func startIfNeeded() {
+        guard enumerator == nil else {
+            return
+        }
+        enumerator = fileManager.enumerator(
+            at: rootURL,
+            includingPropertiesForKeys: keys,
+            options: [.skipsHiddenFiles, .skipsPackageDescendants],
+            errorHandler: { _, _ in
+                self.hadDirectoryError = true
+                return true
+            }
+        )
+        if enumerator == nil {
+            hadDirectoryError = true
+            isExhausted = true
+        }
     }
 
     private func makeRelativePath(for url: URL) -> String? {
@@ -137,5 +150,21 @@ struct FolderDirectoryEnumerator {
         relativePath
             .split(separator: "/")
             .contains { $0.lowercased().hasSuffix(".photoslibrary") }
+    }
+}
+
+struct FolderDirectoryEnumerator {
+    private let rootURL: URL
+    private let config: FolderEnumerationConfig
+    private let fileManager: FileManager
+
+    init(rootURL: URL, config: FolderEnumerationConfig = .productionDefault, fileManager: FileManager = .default) {
+        self.rootURL = rootURL
+        self.config = config
+        self.fileManager = fileManager
+    }
+
+    func makeSession() -> FolderDirectoryEnumerationSession {
+        FolderDirectoryEnumerationSession(rootURL: rootURL, config: config, fileManager: fileManager)
     }
 }

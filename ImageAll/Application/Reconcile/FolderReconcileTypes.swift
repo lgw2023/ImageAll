@@ -66,6 +66,7 @@ struct FolderReconcileAssetObservation: Equatable, Sendable {
     let sizeBytes: Int64
     let modifiedAtNs: Int64
     let resourceID: Data?
+    let reconnectAssetID: UUID?
 }
 
 struct FolderBeginGenerationResult: Equatable, Sendable {
@@ -77,6 +78,7 @@ struct FolderBeginGenerationResult: Equatable, Sendable {
 struct FolderBatchCommitResult: Equatable, Sendable {
     let jobSnapshot: JobRecordSnapshot
     let checkpoint: FolderReconcileCheckpointV1
+    let identityConflictsAdded: Int
 }
 
 struct FolderCompleteGenerationResult: Equatable, Sendable {
@@ -117,4 +119,5 @@ struct FolderStopIncompleteInput: Sendable {
     let checkpoint: FolderReconcileCheckpointV1
     let leaseDurationMs: Int64
     let errorCode: JobSafeErrorCode
+    let outcome: JobHandlerOutcome
 }

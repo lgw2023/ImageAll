@@ -15,12 +15,7 @@ final class FolderAssetIdentityTests: XCTestCase {
         let bookmark = root.path.data(using: .utf8)!
         try FolderReconcileTestSupport.seedActiveFolderSource(database: database, sourceID: sourceID, bookmark: bookmark)
         _ = try FolderReconcileTestSupport.enqueueReconcileJob(queue: queue, sourceID: sourceID)
-        let handler = FolderReconcileHandler(
-            rootAccess: FolderReconcileRootAccessAdapter(
-                repository: GRDBFolderSourceAuthorizationRepository(database: database),
-                bookmarkPort: FolderReconcileTestSupport.TestBookmarkPort(rootByBookmark: [bookmark: root])
-            )
-        )
+        let (handler, _) = FolderReconcileTestSupport.makeHandler(database: database, root: root, bookmark: bookmark)
         let coordinator = FolderReconcileTestSupport.makeCoordinator(queue: queue, handler: handler)
         _ = try XCTUnwrap(try coordinator.claimAndExecuteOnce(ClaimNextInput(owner: "w", leaseDurationMs: 1000)))
 
@@ -46,12 +41,7 @@ final class FolderAssetIdentityTests: XCTestCase {
         let bookmark = root.path.data(using: .utf8)!
         try FolderReconcileTestSupport.seedActiveFolderSource(database: database, sourceID: sourceID, bookmark: bookmark)
         _ = try FolderReconcileTestSupport.enqueueReconcileJob(queue: queue, sourceID: sourceID)
-        let handler = FolderReconcileHandler(
-            rootAccess: FolderReconcileRootAccessAdapter(
-                repository: GRDBFolderSourceAuthorizationRepository(database: database),
-                bookmarkPort: FolderReconcileTestSupport.TestBookmarkPort(rootByBookmark: [bookmark: root])
-            )
-        )
+        let (handler, _) = FolderReconcileTestSupport.makeHandler(database: database, root: root, bookmark: bookmark)
         let coordinator = FolderReconcileTestSupport.makeCoordinator(queue: queue, handler: handler)
         _ = try XCTUnwrap(try coordinator.claimAndExecuteOnce(ClaimNextInput(owner: "w", leaseDurationMs: 1000)))
 

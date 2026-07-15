@@ -69,7 +69,6 @@ struct JobExecutionCoordinator: Sendable {
                 throw JobQueueError.invalidClaimInput(reason: "lease context provider required")
             }
             let context = leaseContextProvider.makeLeaseContext(
-                queue: queue,
                 leaseDurationMs: input.leaseDurationMs
             )
             let execution = try leaseHandler.execute(

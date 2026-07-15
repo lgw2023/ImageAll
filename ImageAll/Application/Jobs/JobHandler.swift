@@ -34,6 +34,7 @@ struct JobHandlerExecutionResult: Sendable, Equatable {
 struct JobLeaseExecutionContext: Sendable {
     let leaseDurationMs: Int64
     let reconcileBatch: any FolderReconcileBatchPort
+    let jobLookup: any FolderReconcileJobLookupPort
 }
 
 protocol LeaseBoundJobHandler: JobHandler {

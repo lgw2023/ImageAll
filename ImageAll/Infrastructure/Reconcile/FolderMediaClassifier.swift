@@ -52,6 +52,19 @@ struct FolderMediaClassifier: Sendable {
 
         let actualType = (CGImageSourceGetType(source) as String?) ?? candidateUTI
         let count = CGImageSourceGetCount(source)
+        if count == 0 {
+            return .unreadable(
+                FolderMediaMetadata(
+                    mediaType: actualType,
+                    width: nil,
+                    height: nil,
+                    mediaCreatedAtMs: nil,
+                    sizeBytes: fileSizeBytes(fileURL),
+                    modifiedAtNs: modifiedAtNs(fileURL),
+                    resourceID: resourceIdentifier(fileURL)
+                )
+            )
+        }
         guard count == 1 else {
             return .unsupported(
                 metadataOrFallback(

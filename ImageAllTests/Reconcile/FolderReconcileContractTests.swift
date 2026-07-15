@@ -2,6 +2,63 @@ import XCTest
 @testable import ImageAll
 
 final class FolderReconcileContractTests: XCTestCase {
+    func testPayloadRejectsUppercaseUUID() {
+        let uuid = UUID()
+        let uppercase = uuid.uuidString.uppercased()
+        let payload: [String: Any] = [
+            "contract_version": 1,
+            "source_id": uppercase,
+        ]
+        let data = try! JSONSerialization.data(withJSONObject: payload)
+        let result = FolderReconcilePayloadValidation.validate(
+            payloadVersion: 1,
+            payload: data,
+            jobSourceID: uuid
+        )
+        XCTAssertEqual(result, .failure(.invalid(FolderReconcileSafeErrorCode.payloadInvalid)))
+    }
+
+    func testPayloadRejectsSourceMismatch() {
+        let sourceID = UUID()
+        let payload: [String: Any] = [
+            "contract_version": 1,
+            "source_id": sourceID.uuidString.lowercased(),
+        ]
+        let data = try! JSONSerialization.data(withJSONObject: payload)
+        let result = FolderReconcilePayloadValidation.validate(
+            payloadVersion: 1,
+            payload: data,
+            jobSourceID: UUID()
+        )
+        XCTAssertEqual(result, .failure(.invalid(FolderReconcileSafeErrorCode.payloadInvalid)))
+    }
+
+    func testSafeErrorSettlementMapsAuthorizationToNonRetryable() {
+        let outcome = FolderReconcileSafeErrorSettlement.outcome(for: .folderAuthorizationRequired)
+        XCTAssertEqual(outcome, .nonRetryableFailure(code: .folderAuthorizationRequired))
+    }
+
+    func testSafeErrorSettlementMapsEnumerationIncompleteToRetryable() {
+        let outcome = FolderReconcileSafeErrorSettlement.outcome(for: .folderEnumerationIncomplete)
+        XCTAssertEqual(outcome, .retryableFailure(code: .folderEnumerationIncomplete))
+    }
+
+    func testCheckpointRejectsMismatchedAttempt() {
+        let checkpoint = FolderReconcileCheckpointV1(
+            generation: 1,
+            startedDirtyEpoch: 0,
+            attempt: 2
+        )
+        XCTAssertFalse(
+            FolderReconcileCheckpointCodec.validateAgainstJob(
+                checkpoint,
+                scanGeneration: 1,
+                startedDirtyEpoch: 0,
+                attempt: 1
+            )
+        )
+    }
+
     func testPayloadRejectsUnknownFieldBeforeDirectoryAccess() {
         let payload: [String: Any] = [
             "contract_version": 1,
@@ -40,11 +97,10 @@ final class FolderReconcileContractTests: XCTestCase {
         let jobID = UUID()
         _ = try FolderReconcileTestSupport.enqueueReconcileJob(queue: queue, sourceID: sourceID, jobID: jobID)
 
-        let handler = FolderReconcileHandler(
-            rootAccess: FolderReconcileRootAccessAdapter(
-                repository: GRDBFolderSourceAuthorizationRepository(database: database),
-                bookmarkPort: FolderReconcileTestSupport.TestBookmarkPort(rootByBookmark: [bookmark: root])
-            ),
+        let (handler, _) = FolderReconcileTestSupport.makeHandler(
+            database: database,
+            root: root,
+            bookmark: bookmark,
             enumerationConfig: FolderEnumerationConfig(workUnitLimit: 32, assetBatchLimit: 32)
         )
         let coordinator = FolderReconcileTestSupport.makeCoordinator(queue: queue, handler: handler)

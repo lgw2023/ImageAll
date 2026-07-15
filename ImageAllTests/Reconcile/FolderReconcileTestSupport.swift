@@ -57,6 +57,44 @@ enum FolderReconcileTestSupport {
             return result
         }
 
+        struct FileSnapshot: Equatable {
+            let bytes: Data
+            let modificationDate: Date?
+            let resourceID: Data?
+        }
+
+        func snapshotDetailed(root: URL) throws -> [String: FileSnapshot] {
+            var result: [String: FileSnapshot] = [:]
+            guard let enumerator = FileManager.default.enumerator(
+                at: root,
+                includingPropertiesForKeys: [.contentModificationDateKey, .fileResourceIdentifierKey]
+            ) else {
+                return result
+            }
+            for case let url as URL in enumerator {
+                let rel = String(url.path.dropFirst(root.path.count + 1))
+                var isDir: ObjCBool = false
+                guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir), !isDir.boolValue else {
+                    continue
+                }
+                let values = try url.resourceValues(forKeys: [.contentModificationDateKey, .fileResourceIdentifierKey])
+                let resourceID: Data?
+                if let object = values.fileResourceIdentifier as? Data {
+                    resourceID = object
+                } else if let number = values.fileResourceIdentifier as? NSNumber {
+                    resourceID = number.stringValue.data(using: .utf8)
+                } else {
+                    resourceID = nil
+                }
+                result[rel] = FileSnapshot(
+                    bytes: try Data(contentsOf: url),
+                    modificationDate: values.contentModificationDate,
+                    resourceID: resourceID
+                )
+            }
+            return result
+        }
+
         func cleanup() {
             for root in roots.reversed() {
                 try? FileManager.default.removeItem(at: root)
@@ -65,8 +103,14 @@ enum FolderReconcileTestSupport {
         }
     }
 
-    struct TestBookmarkPort: SecurityScopedBookmarkPort {
+    final class TestBookmarkPort: SecurityScopedBookmarkPort, @unchecked Sendable {
         let rootByBookmark: [Data: URL]
+        var scopeStartCount = 0
+        var scopeStopCount = 0
+
+        init(rootByBookmark: [Data: URL]) {
+            self.rootByBookmark = rootByBookmark
+        }
 
         func createReadOnlyBookmark(for url: URL) throws -> Data {
             url.path.data(using: .utf8) ?? Data()
@@ -79,15 +123,26 @@ enum FolderReconcileTestSupport {
             return BookmarkResolveResult(url: url, isStale: false)
         }
 
-        func startAccessing(_ url: URL) -> Bool { true }
-        func stopAccessing(_ url: URL) {}
+        func startAccessing(_ url: URL) -> Bool {
+            scopeStartCount += 1
+            return true
+        }
+
+        func stopAccessing(_ url: URL) {
+            scopeStopCount += 1
+        }
     }
 
-    static func makeQueue(database: CatalogDatabase, nowMs: Int64 = baseTimeMs) -> GRDBJobQueue {
-        GRDBJobQueue(
-            database: database,
-            clock: FixedJobClock(nowMs: nowMs),
-            retryPolicy: FixedDelayRetryPolicy(delayMs: 5_000)
+    static func makeSourceAccess(
+        database: CatalogDatabase,
+        bookmarkPort: TestBookmarkPort,
+        clock: FixedJobClock? = nil
+    ) -> FolderReconcileSourceAccessService {
+        FolderReconcileSourceAccessService(
+            repository: GRDBFolderSourceAuthorizationRepository(database: database),
+            bookmarkPort: bookmarkPort,
+            rootValidator: FolderRootValidator(),
+            clock: clock ?? FixedJobClock(nowMs: baseTimeMs)
         )
     }
 
@@ -99,8 +154,29 @@ enum FolderReconcileTestSupport {
         JobExecutionCoordinator(
             queue: queue,
             registry: InMemoryJobHandlerRegistry(handlers: [handler]),
-            leaseContextProvider: GRDBJobLeaseContextProvider()
+            leaseContextProvider: GRDBJobLeaseContextProvider(queue: queue)
         )
+    }
+
+    static func makeQueue(database: CatalogDatabase, nowMs: Int64 = baseTimeMs) -> GRDBJobQueue {
+        GRDBJobQueue(
+            database: database,
+            clock: FixedJobClock(nowMs: nowMs),
+            retryPolicy: FixedDelayRetryPolicy(delayMs: 5_000)
+        )
+    }
+
+    static func makeHandler(
+        database: CatalogDatabase,
+        root: URL,
+        bookmark: Data,
+        enumerationConfig: FolderEnumerationConfig = .productionDefault,
+        clock: FixedJobClock? = nil
+    ) -> (FolderReconcileHandler, TestBookmarkPort) {
+        let bookmarkPort = TestBookmarkPort(rootByBookmark: [bookmark: root])
+        let access = makeSourceAccess(database: database, bookmarkPort: bookmarkPort, clock: clock)
+        let handler = FolderReconcileHandler(rootAccess: access, enumerationConfig: enumerationConfig)
+        return (handler, bookmarkPort)
     }
 
     static func seedActiveFolderSource(
@@ -171,6 +247,32 @@ enum FolderReconcileTestSupport {
     }
 
     static func minimalJPEGData() -> Data {
+        return minimalEncodedImageData(uti: UTType.jpeg.identifier) ?? Data()
+    }
+
+    static func minimalTIFFData() -> Data? {
+        minimalEncodedImageData(uti: UTType.tiff.identifier)
+    }
+
+    static func minimalWebPData() -> Data? {
+        minimalEncodedImageData(uti: UTType.webP.identifier)
+    }
+
+    static func minimalHEICData() -> Data? {
+        if #available(macOS 10.13, *) {
+            return minimalEncodedImageData(uti: UTType.heic.identifier)
+        }
+        return nil
+    }
+
+    static func minimalHEIFData() -> Data? {
+        if #available(macOS 10.13, *) {
+            return minimalEncodedImageData(uti: UTType.heif.identifier)
+        }
+        return nil
+    }
+
+    static func minimalEncodedImageData(uti: String) -> Data? {
         let width = 2
         let height = 2
         var pixels = [UInt8](repeating: 0x80, count: width * height * 4)
@@ -189,12 +291,18 @@ enum FolderReconcileTestSupport {
             intent: .defaultIntent
         )!
         let data = NSMutableData()
-        guard let dest = CGImageDestinationCreateWithData(data, UTType.jpeg.identifier as CFString, 1, nil) else {
-            return Data()
+        guard let dest = CGImageDestinationCreateWithData(data, uti as CFString, 1, nil) else {
+            return nil
         }
         CGImageDestinationAddImage(dest, image, nil)
-        CGImageDestinationFinalize(dest)
+        guard CGImageDestinationFinalize(dest) else {
+            return nil
+        }
         return data as Data
+    }
+
+    static func imageIOCanEncode(_ uti: String) -> Bool {
+        minimalEncodedImageData(uti: uti) != nil
     }
 }
 

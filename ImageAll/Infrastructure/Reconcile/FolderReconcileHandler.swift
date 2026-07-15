@@ -1,14 +1,16 @@
 import Foundation
 
-struct FolderReconcileRootAccessAdapter: Sendable {
+struct FolderReconcileSourceAccessService: Sendable {
     let repository: GRDBFolderSourceAuthorizationRepository
     let bookmarkPort: any SecurityScopedBookmarkPort
+    let rootValidator: FolderRootValidator
+    let clock: any JobClock
+    var onScopeStart: (@Sendable () -> Void)?
+    var onScopeStop: (@Sendable () -> Void)?
 
     func withActiveSourceRootURL<T>(sourceID: UUID, perform: (URL) throws -> T) throws -> T {
         switch try repository.lookupSource(id: sourceID) {
-        case .notFound:
-            throw FolderReconcileHandlerError.sourceUnavailable
-        case .wrongKind:
+        case .notFound, .wrongKind:
             throw FolderReconcileHandlerError.sourceUnavailable
         case let .folder(record):
             switch record.state {
@@ -21,17 +23,90 @@ struct FolderReconcileRootAccessAdapter: Sendable {
             case .disabled:
                 throw FolderReconcileHandlerError.sourceUnavailable
             }
+            return try resolveAccess(source: record, perform: perform)
+        }
+    }
 
-            let resolved = try bookmarkPort.resolveBookmark(record.bookmark)
-            let started = bookmarkPort.startAccessing(resolved.url)
-            guard started else {
+    private func resolveAccess<T>(
+        source: StoredFolderSourceRecord,
+        perform: (URL) throws -> T
+    ) throws -> T {
+        let resolved: BookmarkResolveResult
+        do {
+            resolved = try bookmarkPort.resolveBookmark(source.bookmark)
+        } catch {
+            try persistAccessObservation(
+                sourceID: source.id,
+                observation: FolderAccessFailureClassifier.classifyBookmarkResolveFailure(error)
+            )
+            throw FolderReconcileHandlerError.authorizationRequired
+        }
+
+        onScopeStart?()
+        let started = bookmarkPort.startAccessing(resolved.url)
+        guard started else {
+            onScopeStop?()
+            try persistAccessObservation(
+                sourceID: source.id,
+                observation: FolderAccessFailureClassifier.classifyScopeStartFailure()
+            )
+            throw FolderReconcileHandlerError.authorizationRequired
+        }
+        defer {
+            bookmarkPort.stopAccessing(resolved.url)
+            onScopeStop?()
+        }
+
+        switch rootValidator.validateRoot(at: resolved.url) {
+        case .valid:
+            break
+        case .invalid:
+            try persistAccessObservation(
+                sourceID: source.id,
+                observation: FolderAccessFailureClassifier.classifyInvalidRoot()
+            )
+            throw FolderReconcileHandlerError.authorizationRequired
+        }
+
+        if resolved.isStale {
+            do {
+                try refreshStaleBookmarkInCurrentScope(sourceID: source.id, resolvedURL: resolved.url)
+            } catch {
                 throw FolderReconcileHandlerError.authorizationRequired
             }
-            defer {
-                bookmarkPort.stopAccessing(resolved.url)
-            }
-            return try perform(resolved.url)
         }
+
+        return try perform(resolved.url)
+    }
+
+    private func refreshStaleBookmarkInCurrentScope(sourceID: UUID, resolvedURL: URL) throws {
+        let newBookmark: Data
+        do {
+            newBookmark = try bookmarkPort.createReadOnlyBookmark(for: resolvedURL)
+        } catch {
+            try persistAccessObservation(sourceID: sourceID, observation: .authorizationRequired)
+            throw FolderReconcileHandlerError.authorizationRequired
+        }
+
+        try repository.replaceStaleBookmark(
+            sourceID: sourceID,
+            bookmark: newBookmark,
+            nowMs: clock.nowMs
+        )
+    }
+
+    private func persistAccessObservation(
+        sourceID: UUID,
+        observation: FolderAccessFailureObservation
+    ) throws {
+        let state: SourceState
+        switch observation {
+        case .offline:
+            state = .unavailable
+        case .authorizationRequired:
+            state = .authorizationRequired
+        }
+        try repository.updateSourceState(sourceID: sourceID, state: state, nowMs: clock.nowMs)
     }
 }
 
@@ -42,7 +117,7 @@ enum FolderReconcileHandlerError: Error, Equatable {
 }
 
 struct FolderReconcileHandler: LeaseBoundJobHandler {
-    let rootAccess: FolderReconcileRootAccessAdapter
+    let rootAccess: FolderReconcileSourceAccessService
     let enumerationConfig: FolderEnumerationConfig
 
     var kind: String { FolderReconcileJobFactory.kind }
@@ -50,7 +125,7 @@ struct FolderReconcileHandler: LeaseBoundJobHandler {
     var supportedCheckpointVersions: Set<Int> { [1] }
 
     init(
-        rootAccess: FolderReconcileRootAccessAdapter,
+        rootAccess: FolderReconcileSourceAccessService,
         enumerationConfig: FolderEnumerationConfig = .productionDefault
     ) {
         self.rootAccess = rootAccess
@@ -76,7 +151,7 @@ struct FolderReconcileHandler: LeaseBoundJobHandler {
         checkpoint: JobCheckpoint?,
         context: JobLeaseExecutionContext
     ) throws -> JobHandlerExecutionResult {
-        let persisted = try resolvePersistedJob(lease: lease, batchPort: context.reconcileBatch)
+        let persisted = try resolvePersistedJob(lease: lease, context: context)
         switch FolderReconcilePayloadValidation.validate(
             payloadVersion: payloadVersion,
             payload: payload,
@@ -91,19 +166,19 @@ struct FolderReconcileHandler: LeaseBoundJobHandler {
                 context: context
             )
         case let .failure(.invalid(code)):
-            if let sourceID = persisted.sourceID {
-                _ = try context.reconcileBatch.stopIncomplete(
-                    FolderStopIncompleteInput(
-                        lease: lease,
-                        sourceID: sourceID,
-                        checkpoint: makeEmptyCheckpoint(lease: lease, persisted: persisted),
-                        leaseDurationMs: context.leaseDurationMs,
-                        errorCode: code
-                    )
+            let outcome = FolderReconcileSafeErrorSettlement.outcome(for: code)
+            _ = try context.reconcileBatch.stopIncomplete(
+                FolderStopIncompleteInput(
+                    lease: lease,
+                    sourceID: persisted.sourceID ?? validSourceIDFromPayload(payload),
+                    checkpoint: makeEmptyCheckpoint(lease: lease, persisted: persisted),
+                    leaseDurationMs: context.leaseDurationMs,
+                    errorCode: code,
+                    outcome: outcome
                 )
-            }
+            )
             return JobHandlerExecutionResult(
-                outcome: .nonRetryableFailure(code: code),
+                outcome: outcome,
                 checkpoint: nil,
                 progress: JobProgress(completed: persisted.progressCompleted, total: nil),
                 settledByHandler: true
@@ -119,7 +194,7 @@ struct FolderReconcileHandler: LeaseBoundJobHandler {
         context: JobLeaseExecutionContext
     ) throws -> JobHandlerExecutionResult {
         if let checkpoint, checkpoint.version != 1 {
-            return try failNonRetryable(
+            return try failWithCode(
                 lease: lease,
                 sourceID: sourceID,
                 code: FolderReconcileSafeErrorCode.checkpointInvalid,
@@ -134,9 +209,10 @@ struct FolderReconcileHandler: LeaseBoundJobHandler {
                 guard FolderReconcileCheckpointCodec.validateAgainstJob(
                     decoded,
                     scanGeneration: persisted.scanGeneration,
-                    startedDirtyEpoch: persisted.startedDirtyEpoch
+                    startedDirtyEpoch: persisted.startedDirtyEpoch,
+                    attempt: lease.attempts
                 ) else {
-                    return try failNonRetryable(
+                    return try failWithCode(
                         lease: lease,
                         sourceID: sourceID,
                         code: FolderReconcileSafeErrorCode.checkpointInvalid,
@@ -145,7 +221,7 @@ struct FolderReconcileHandler: LeaseBoundJobHandler {
                     )
                 }
             } catch {
-                return try failNonRetryable(
+                return try failWithCode(
                     lease: lease,
                     sourceID: sourceID,
                     code: FolderReconcileSafeErrorCode.checkpointInvalid,
@@ -165,21 +241,13 @@ struct FolderReconcileHandler: LeaseBoundJobHandler {
                 )
             )
         } catch let error as FolderReconcileRepositoryError where error == .checkpointInvalid {
-            return try failNonRetryable(
+            return try failWithCode(
                 lease: lease,
                 sourceID: sourceID,
                 code: FolderReconcileSafeErrorCode.checkpointInvalid,
                 persisted: persisted,
                 context: context
             )
-        } catch let error as JobQueueError {
-            if case .staleLease = error {
-                throw error
-            }
-            if case .expiredLease = error {
-                throw error
-            }
-            throw error
         }
 
         var currentCheckpoint = begin.checkpoint
@@ -188,8 +256,9 @@ struct FolderReconcileHandler: LeaseBoundJobHandler {
 
         do {
             try rootAccess.withActiveSourceRootURL(sourceID: sourceID) { rootURL in
-                let enumerator = FolderDirectoryEnumerator(rootURL: rootURL, config: enumerationConfig)
-                let (hadDirectoryError, finished) = try enumerator.enumerate { entry in
+                let session = FolderDirectoryEnumerator(rootURL: rootURL, config: enumerationConfig).makeSession()
+
+                while let entry = try session.nextEntry() {
                     currentCheckpoint = incrementEnumerated(currentCheckpoint)
 
                     switch entry {
@@ -204,12 +273,17 @@ struct FolderReconcileHandler: LeaseBoundJobHandler {
                         case .ignored:
                             currentCheckpoint = incrementIgnored(currentCheckpoint)
                         case let .available(metadata):
-                            pendingObservations.append(makeObservation(
+                            let (observation, conflicts) = try resolveMoveReconnect(
+                                rootURL: rootURL,
                                 relativePath: relativePath,
                                 fileName: fileName,
-                                availability: .available,
-                                metadata: metadata
-                            ))
+                                metadata: metadata,
+                                batchPort: context.reconcileBatch,
+                                sourceID: sourceID,
+                                generation: begin.generation
+                            )
+                            currentCheckpoint = addIdentityConflicts(currentCheckpoint, by: conflicts)
+                            pendingObservations.append(observation)
                             currentCheckpoint = incrementCommitted(currentCheckpoint)
                         case let .unsupported(metadata):
                             pendingObservations.append(makeObservation(
@@ -231,72 +305,67 @@ struct FolderReconcileHandler: LeaseBoundJobHandler {
                     }
 
                     if pendingObservations.count >= enumerationConfig.assetBatchLimit
-                        || shouldFlushBoundary(currentCheckpoint)
+                        || session.needsBoundaryFlush
                     {
-                        try flushBatch(
+                        currentCheckpoint = try flushBatch(
                             lease: lease,
                             sourceID: sourceID,
                             generation: begin.generation,
                             startedDirtyEpoch: begin.startedDirtyEpoch,
-                            checkpoint: &currentCheckpoint,
+                            checkpoint: currentCheckpoint,
                             observations: &pendingObservations,
-                            context: context,
-                            force: true
+                            context: context
                         )
+                        session.markBoundaryFlushed()
                     }
                 }
 
-                if hadDirectoryError || !finished {
+                if session.directoryHadError {
                     throw FolderReconcileTraversalFailure.incomplete
                 }
 
-                try flushBatch(
+                currentCheckpoint = try flushBatch(
                     lease: lease,
                     sourceID: sourceID,
                     generation: begin.generation,
                     startedDirtyEpoch: begin.startedDirtyEpoch,
-                    checkpoint: &currentCheckpoint,
+                    checkpoint: currentCheckpoint,
                     observations: &pendingObservations,
-                    context: context,
-                    force: true
+                    context: context
                 )
             }
         } catch FolderReconcileTraversalFailure.unsafeRelativePath {
-            _ = try context.reconcileBatch.stopIncomplete(
-                FolderStopIncompleteInput(
-                    lease: lease,
-                    sourceID: sourceID,
-                    checkpoint: currentCheckpoint,
-                    leaseDurationMs: context.leaseDurationMs,
-                    errorCode: FolderReconcileSafeErrorCode.unsafeRelativePath
-                )
-            )
-            return settledRetryable(
+            return try settleIncomplete(
+                lease: lease,
+                sourceID: sourceID,
                 checkpoint: currentCheckpoint,
-                code: FolderReconcileSafeErrorCode.unsafeRelativePath
+                code: FolderReconcileSafeErrorCode.unsafeRelativePath,
+                context: context
             )
         } catch FolderReconcileHandlerError.authorizationRequired {
-            _ = try context.reconcileBatch.stopIncomplete(
-                FolderStopIncompleteInput(
-                    lease: lease,
-                    sourceID: sourceID,
-                    checkpoint: currentCheckpoint,
-                    leaseDurationMs: context.leaseDurationMs,
-                    errorCode: FolderReconcileSafeErrorCode.authorizationRequired
-                )
+            return try settleIncomplete(
+                lease: lease,
+                sourceID: sourceID,
+                checkpoint: currentCheckpoint,
+                code: FolderReconcileSafeErrorCode.authorizationRequired,
+                context: context
             )
-            return settledNonRetryable(code: FolderReconcileSafeErrorCode.authorizationRequired, checkpoint: currentCheckpoint)
-        } catch FolderReconcileHandlerError.sourceUnavailable, FolderReconcileTraversalFailure.incomplete {
-            _ = try context.reconcileBatch.stopIncomplete(
-                FolderStopIncompleteInput(
-                    lease: lease,
-                    sourceID: sourceID,
-                    checkpoint: currentCheckpoint,
-                    leaseDurationMs: context.leaseDurationMs,
-                    errorCode: FolderReconcileSafeErrorCode.enumerationIncomplete
-                )
+        } catch FolderReconcileHandlerError.sourceUnavailable {
+            return try settleIncomplete(
+                lease: lease,
+                sourceID: sourceID,
+                checkpoint: currentCheckpoint,
+                code: FolderReconcileSafeErrorCode.sourceUnavailable,
+                context: context
             )
-            return settledRetryable(checkpoint: currentCheckpoint, code: FolderReconcileSafeErrorCode.enumerationIncomplete)
+        } catch FolderReconcileTraversalFailure.incomplete {
+            return try settleIncomplete(
+                lease: lease,
+                sourceID: sourceID,
+                checkpoint: currentCheckpoint,
+                code: FolderReconcileSafeErrorCode.enumerationIncomplete,
+                context: context
+            )
         }
 
         _ = try context.reconcileBatch.completeGeneration(
@@ -310,28 +379,90 @@ struct FolderReconcileHandler: LeaseBoundJobHandler {
             )
         )
 
+        let finalProgress = max(persisted.progressCompleted, currentCheckpoint.candidateFiles)
         return JobHandlerExecutionResult(
             outcome: .completed,
             checkpoint: try makeJobCheckpoint(currentCheckpoint),
-            progress: JobProgress(completed: currentCheckpoint.candidateFiles, total: nil),
+            progress: JobProgress(completed: finalProgress, total: nil),
             settledByHandler: true
         )
     }
 
+    private func resolveMoveReconnect(
+        rootURL: URL,
+        relativePath: String,
+        fileName: String,
+        metadata: FolderMediaMetadata,
+        batchPort: any FolderReconcileBatchPort,
+        sourceID: UUID,
+        generation: Int
+    ) throws -> (FolderReconcileAssetObservation, Int) {
+        guard let resourceID = metadata.resourceID else {
+            return (makeObservation(
+                relativePath: relativePath,
+                fileName: fileName,
+                availability: .available,
+                metadata: metadata
+            ), 0)
+        }
+
+        let candidates = try batchPort.lookupMoveCandidates(
+            sourceID: sourceID,
+            resourceID: resourceID,
+            excludingGeneration: generation
+        )
+
+        if candidates.count > 1 {
+            return (makeObservation(
+                relativePath: relativePath,
+                fileName: fileName,
+                availability: .available,
+                metadata: metadata
+            ), 1)
+        }
+
+        guard let candidate = candidates.first else {
+            return (makeObservation(
+                relativePath: relativePath,
+                fileName: fileName,
+                availability: .available,
+                metadata: metadata
+            ), 0)
+        }
+
+        let oldPathURL = rootURL.appendingPathComponent(candidate.relativePath)
+        if FileManager.default.fileExists(atPath: oldPathURL.path) {
+            let oldResourceID = FolderFileResourceProbe.resourceIdentifier(at: oldPathURL)
+            if oldResourceID == resourceID {
+                return (makeObservation(
+                    relativePath: relativePath,
+                    fileName: fileName,
+                    availability: .available,
+                    metadata: metadata
+                ), 1)
+            }
+        }
+
+        return (makeObservation(
+            relativePath: relativePath,
+            fileName: fileName,
+            availability: .available,
+            metadata: metadata,
+            reconnectAssetID: candidate.assetID
+        ), 0)
+    }
+
+    @discardableResult
     private func flushBatch(
         lease: JobLeaseToken,
         sourceID: UUID,
         generation: Int,
         startedDirtyEpoch: Int,
-        checkpoint: inout FolderReconcileCheckpointV1,
+        checkpoint: FolderReconcileCheckpointV1,
         observations: inout [FolderReconcileAssetObservation],
-        context: JobLeaseExecutionContext,
-        force: Bool = false
-    ) throws {
-        guard force || !observations.isEmpty || shouldFlushBoundary(checkpoint) else {
-            return
-        }
-        _ = try context.reconcileBatch.commitAssetBatch(
+        context: JobLeaseExecutionContext
+    ) throws -> FolderReconcileCheckpointV1 {
+        let result = try context.reconcileBatch.commitAssetBatch(
             FolderAssetBatchInput(
                 lease: lease,
                 sourceID: sourceID,
@@ -344,18 +475,41 @@ struct FolderReconcileHandler: LeaseBoundJobHandler {
             )
         )
         observations.removeAll(keepingCapacity: true)
+        return addIdentityConflicts(checkpoint, by: result.identityConflictsAdded)
     }
 
-    private func shouldFlushBoundary(_ checkpoint: FolderReconcileCheckpointV1) -> Bool {
-        checkpoint.enumeratedEntries % enumerationConfig.workUnitLimit == 0
-            && checkpoint.enumeratedEntries > 0
+    private func settleIncomplete(
+        lease: JobLeaseToken,
+        sourceID: UUID,
+        checkpoint: FolderReconcileCheckpointV1,
+        code: JobSafeErrorCode,
+        context: JobLeaseExecutionContext
+    ) throws -> JobHandlerExecutionResult {
+        let outcome = FolderReconcileSafeErrorSettlement.outcome(for: code)
+        _ = try context.reconcileBatch.stopIncomplete(
+            FolderStopIncompleteInput(
+                lease: lease,
+                sourceID: sourceID,
+                checkpoint: checkpoint,
+                leaseDurationMs: context.leaseDurationMs,
+                errorCode: code,
+                outcome: outcome
+            )
+        )
+        return JobHandlerExecutionResult(
+            outcome: outcome,
+            checkpoint: try? makeJobCheckpoint(checkpoint),
+            progress: JobProgress(completed: checkpoint.candidateFiles, total: nil),
+            settledByHandler: true
+        )
     }
 
     private func makeObservation(
         relativePath: String,
         fileName: String,
         availability: AssetAvailability,
-        metadata: FolderMediaMetadata
+        metadata: FolderMediaMetadata,
+        reconnectAssetID: UUID? = nil
     ) -> FolderReconcileAssetObservation {
         FolderReconcileAssetObservation(
             relativePath: relativePath,
@@ -367,7 +521,23 @@ struct FolderReconcileHandler: LeaseBoundJobHandler {
             availability: availability,
             sizeBytes: metadata.sizeBytes,
             modifiedAtNs: metadata.modifiedAtNs,
-            resourceID: metadata.resourceID
+            resourceID: metadata.resourceID,
+            reconnectAssetID: reconnectAssetID
+        )
+    }
+
+    private func addIdentityConflicts(_ checkpoint: FolderReconcileCheckpointV1, by count: Int) -> FolderReconcileCheckpointV1 {
+        FolderReconcileCheckpointV1(
+            generation: checkpoint.generation,
+            startedDirtyEpoch: checkpoint.startedDirtyEpoch,
+            attempt: checkpoint.attempt,
+            enumeratedEntries: checkpoint.enumeratedEntries,
+            candidateFiles: checkpoint.candidateFiles,
+            committedAssets: checkpoint.committedAssets,
+            ignoredEntries: checkpoint.ignoredEntries,
+            unsupportedAssets: checkpoint.unsupportedAssets,
+            unreadableAssets: checkpoint.unreadableAssets,
+            identityConflicts: checkpoint.identityConflicts + count
         )
     }
 
@@ -435,39 +605,28 @@ struct FolderReconcileHandler: LeaseBoundJobHandler {
         )
     }
 
-    private func failNonRetryable(
+    private func failWithCode(
         lease: JobLeaseToken,
         sourceID: UUID,
         code: JobSafeErrorCode,
         persisted: PersistedJobContext,
         context: JobLeaseExecutionContext
     ) throws -> JobHandlerExecutionResult {
+        let outcome = FolderReconcileSafeErrorSettlement.outcome(for: code)
         _ = try context.reconcileBatch.stopIncomplete(
             FolderStopIncompleteInput(
                 lease: lease,
                 sourceID: sourceID,
                 checkpoint: makeEmptyCheckpoint(lease: lease, persisted: persisted),
                 leaseDurationMs: context.leaseDurationMs,
-                errorCode: code
+                errorCode: code,
+                outcome: outcome
             )
         )
-        return settledNonRetryable(code: code, checkpoint: makeEmptyCheckpoint(lease: lease, persisted: persisted))
-    }
-
-    private func settledNonRetryable(code: JobSafeErrorCode, checkpoint: FolderReconcileCheckpointV1) -> JobHandlerExecutionResult {
-        JobHandlerExecutionResult(
-            outcome: .nonRetryableFailure(code: code),
-            checkpoint: try? makeJobCheckpoint(checkpoint),
-            progress: JobProgress(completed: checkpoint.candidateFiles, total: nil),
-            settledByHandler: true
-        )
-    }
-
-    private func settledRetryable(checkpoint: FolderReconcileCheckpointV1, code: JobSafeErrorCode) -> JobHandlerExecutionResult {
-        JobHandlerExecutionResult(
-            outcome: .retryableFailure(code: code),
-            checkpoint: try? makeJobCheckpoint(checkpoint),
-            progress: JobProgress(completed: checkpoint.candidateFiles, total: nil),
+        return JobHandlerExecutionResult(
+            outcome: outcome,
+            checkpoint: try? makeJobCheckpoint(makeEmptyCheckpoint(lease: lease, persisted: persisted)),
+            progress: JobProgress(completed: persisted.progressCompleted, total: nil),
             settledByHandler: true
         )
     }
@@ -486,12 +645,41 @@ struct FolderReconcileHandler: LeaseBoundJobHandler {
 
     private func resolvePersistedJob(
         lease: JobLeaseToken,
-        batchPort: any FolderReconcileBatchPort
+        context: JobLeaseExecutionContext
     ) throws -> PersistedJobContext {
-        guard let repository = batchPort as? GRDBFolderReconcileRepository else {
-            return PersistedJobContext(sourceID: nil, scanGeneration: nil, startedDirtyEpoch: nil, progressCompleted: 0)
+        let job = try context.jobLookup.fetchJobContext(jobID: lease.jobID)
+        return PersistedJobContext(
+            sourceID: job.sourceID,
+            scanGeneration: job.scanGeneration,
+            startedDirtyEpoch: job.startedDirtyEpoch,
+            progressCompleted: job.progressCompleted
+        )
+    }
+
+    private func validSourceIDFromPayload(_ payload: Data) -> UUID {
+        guard let object = try? JSONSerialization.jsonObject(with: payload) as? [String: Any],
+              let sourceIDString = object["source_id"] as? String,
+              let sourceID = UUID(uuidString: sourceIDString)
+        else {
+            return UUID()
         }
-        return try repository.queue.fetchJob(id: lease.jobID).mapToPersisted()
+        return sourceID
+    }
+}
+
+enum FolderFileResourceProbe {
+    static func resourceIdentifier(at url: URL) -> Data? {
+        let values = try? url.resourceValues(forKeys: [.fileResourceIdentifierKey])
+        guard let object = values?.fileResourceIdentifier else {
+            return nil
+        }
+        if let data = object as? Data {
+            return data
+        }
+        if let number = object as? NSNumber {
+            return number.stringValue.data(using: .utf8)
+        }
+        return nil
     }
 }
 
@@ -505,15 +693,4 @@ private struct PersistedJobContext {
     let scanGeneration: Int?
     let startedDirtyEpoch: Int?
     let progressCompleted: Int
-}
-
-private extension JobRecordSnapshot {
-    func mapToPersisted() -> PersistedJobContext {
-        PersistedJobContext(
-            sourceID: sourceID,
-            scanGeneration: scanGeneration,
-            startedDirtyEpoch: startedDirtyEpoch,
-            progressCompleted: progress.completed
-        )
-    }
 }

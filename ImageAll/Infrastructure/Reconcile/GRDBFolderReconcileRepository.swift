@@ -4,9 +4,61 @@ import GRDB
 struct GRDBFolderReconcileRepository: FolderReconcileBatchPort, Sendable {
     let queue: GRDBJobQueue
 
+    func fetchJobContext(jobID: UUID) throws -> FolderReconcileJobContext {
+        let snapshot = try queue.fetchJob(id: jobID)
+        return FolderReconcileJobContext(
+            jobID: snapshot.id,
+            kind: snapshot.kind,
+            payloadVersion: snapshot.payloadVersion,
+            sourceID: snapshot.sourceID,
+            scanGeneration: snapshot.scanGeneration,
+            startedDirtyEpoch: snapshot.startedDirtyEpoch,
+            progressCompleted: snapshot.progress.completed
+        )
+    }
+
+    func lookupMoveCandidates(
+        sourceID: UUID,
+        resourceID: Data,
+        excludingGeneration: Int
+    ) throws -> [FolderMoveCandidate] {
+        try queue.database.pool.read { db in
+            let rows = try Row.fetchAll(
+                db,
+                sql: """
+                SELECT a.id, a.relative_path, f.size_bytes, f.modified_at_ns, f.resource_id
+                FROM asset a
+                JOIN file_fingerprint f ON f.asset_id = a.id
+                WHERE a.source_id = ?
+                    AND a.locator_kind = 'file'
+                    AND a.locator_state = 'current'
+                    AND f.resource_id = ?
+                    AND (a.last_seen_generation IS NULL OR a.last_seen_generation < ?)
+                """,
+                arguments: [
+                    sourceID.uuidString.lowercased(),
+                    resourceID,
+                    excludingGeneration,
+                ]
+            )
+            return rows.map { row in
+                FolderMoveCandidate(
+                    assetID: UUID(uuidString: row["id"])!,
+                    relativePath: row["relative_path"],
+                    sizeBytes: row["size_bytes"] ?? 0,
+                    modifiedAtNs: row["modified_at_ns"] ?? 0,
+                    resourceID: row["resource_id"]
+                )
+            }
+        }
+    }
+
     func beginGeneration(_ input: FolderBeginGenerationInput) throws -> FolderBeginGenerationResult {
         try queue.runLeaseProtectedTransaction(lease: input.lease) { db in
             let jobRow = try requireRunningJob(db: db, lease: input.lease)
+            try validateJobKindAndVersion(jobRow: jobRow)
+            try validateJobSourceConsistency(jobRow: jobRow, sourceID: input.sourceID)
+
             let sourceRow = try requireActiveFolderSource(db: db, sourceID: input.sourceID)
 
             let existingGeneration: Int? = jobRow["scan_generation"]
@@ -69,73 +121,90 @@ struct GRDBFolderReconcileRepository: FolderReconcileBatchPort, Sendable {
     }
 
     func commitAssetBatch(_ input: FolderAssetBatchInput) throws -> FolderBatchCommitResult {
+        var identityConflictsAdded = 0
+        let progress = try monotonicProgress(for: input)
         let snapshot = try queue.commitLeaseProtectedBatch(
             input: SafeBatchCommitInput(
                 lease: input.lease,
                 outcome: input.outcome,
                 checkpoint: try makeJobCheckpoint(input.checkpoint),
-                progress: JobProgress(completed: input.checkpoint.candidateFiles, total: nil),
+                progress: progress,
                 leaseDurationMs: input.leaseDurationMs
             )
         ) { db in
+            try validateBatchInput(db: db, input: input)
+            guard input.observations.count <= FolderEnumerationConfig.productionDefault.assetBatchLimit else {
+                throw FolderReconcileRepositoryError.batchLimitExceeded
+            }
             for observation in input.observations {
-                try upsertAssetObservation(
+                let added = try upsertAssetObservation(
                     db: db,
                     sourceID: input.sourceID,
                     generation: input.generation,
                     observation: observation,
                     nowMs: queue.clock.nowMs
                 )
+                identityConflictsAdded += added
             }
         }
-        return FolderBatchCommitResult(jobSnapshot: snapshot, checkpoint: input.checkpoint)
+        return FolderBatchCommitResult(
+            jobSnapshot: snapshot,
+            checkpoint: input.checkpoint,
+            identityConflictsAdded: identityConflictsAdded
+        )
     }
 
     func completeGeneration(_ input: FolderCompleteGenerationInput) throws -> FolderCompleteGenerationResult {
         var successorJobID: UUID?
         let nowMs = queue.clock.nowMs
+        let progress = try monotonicProgress(
+            lease: input.lease,
+            checkpoint: input.checkpoint
+        )
+        let jobCheckpoint = try makeJobCheckpoint(input.checkpoint)
+
         let snapshot = try queue.runLeaseProtectedTransaction(lease: input.lease) { db in
-            let control: String = try String.fetchOne(
-                db,
-                sql: "SELECT control_request FROM job WHERE id = ?",
-                arguments: [input.lease.jobID.uuidString.lowercased()]
-            ) ?? JobControlRequest.none.rawValue
-            guard control == JobControlRequest.none.rawValue else {
-                throw FolderReconcileRepositoryError.controlInterrupted
+            try validateCompleteInput(db: db, input: input)
+
+            let jobRow = try requireRunningJob(db: db, lease: input.lease)
+            let persistedSnapshot = try JobPersistenceMapping.snapshot(from: jobRow)
+            let control = persistedSnapshot.controlRequest
+
+            if control == .none {
+                try db.execute(
+                    sql: """
+                    UPDATE asset SET
+                        availability = 'missing',
+                        record_updated_at_ms = ?
+                    WHERE source_id = ?
+                        AND locator_kind = 'file'
+                        AND locator_state = 'current'
+                        AND (last_seen_generation IS NULL OR last_seen_generation < ?)
+                    """,
+                    arguments: [
+                        nowMs,
+                        input.sourceID.uuidString.lowercased(),
+                        input.generation,
+                    ]
+                )
             }
 
-            let sourceState: String = try String.fetchOne(
-                db,
-                sql: "SELECT state FROM source WHERE id = ?",
-                arguments: [input.sourceID.uuidString.lowercased()]
-            ) ?? ""
-            guard sourceState == SourceState.active.rawValue else {
-                throw FolderReconcileRepositoryError.sourceNotActive
+            let terminalState: JobState
+            switch control {
+            case .pause:
+                terminalState = .paused
+            case .cancel:
+                terminalState = .cancelled
+            case .none:
+                terminalState = .completed
             }
 
-            try db.execute(
-                sql: """
-                UPDATE asset SET
-                    availability = 'missing',
-                    record_updated_at_ms = ?
-                WHERE source_id = ?
-                    AND locator_kind = 'file'
-                    AND locator_state = 'current'
-                    AND (last_seen_generation IS NULL OR last_seen_generation < ?)
-                """,
-                arguments: [
-                    nowMs,
-                    input.sourceID.uuidString.lowercased(),
-                    input.generation,
-                ]
-            )
-
-            let checkpointData = try FolderReconcileCheckpointCodec.encode(input.checkpoint)
             try db.execute(
                 sql: """
                 UPDATE job SET
-                    state = 'completed',
-                    checkpoint_version = 1,
+                    state = ?,
+                    not_before_ms = ?,
+                    checkpoint_version = ?,
                     checkpoint = ?,
                     progress_completed = ?,
                     progress_total = NULL,
@@ -149,8 +218,11 @@ struct GRDBFolderReconcileRepository: FolderReconcileBatchPort, Sendable {
                     AND lease_owner = ? AND attempts = ?
                 """,
                 arguments: [
-                    checkpointData,
-                    input.checkpoint.candidateFiles,
+                    terminalState.rawValue,
+                    persistedSnapshot.notBeforeMs,
+                    jobCheckpoint.version,
+                    jobCheckpoint.data,
+                    progress.completed,
                     nowMs,
                     input.lease.jobID.uuidString.lowercased(),
                     input.lease.leaseOwner,
@@ -161,21 +233,23 @@ struct GRDBFolderReconcileRepository: FolderReconcileBatchPort, Sendable {
                 throw JobQueueError.staleLease(input.lease.jobID)
             }
 
-            let currentDirtyEpoch: Int = try Int.fetchOne(
-                db,
-                sql: "SELECT dirty_epoch FROM source WHERE id = ?",
-                arguments: [input.sourceID.uuidString.lowercased()]
-            ) ?? input.startedDirtyEpoch
+            if control == .none {
+                let currentDirtyEpoch: Int = try Int.fetchOne(
+                    db,
+                    sql: "SELECT dirty_epoch FROM source WHERE id = ?",
+                    arguments: [input.sourceID.uuidString.lowercased()]
+                ) ?? input.startedDirtyEpoch
 
-            if currentDirtyEpoch != input.startedDirtyEpoch {
-                let newJobID = UUID()
-                successorJobID = newJobID
-                let command = try FolderReconcileJobFactory.makeEnqueueCommand(
-                    jobID: newJobID,
-                    sourceID: input.sourceID,
-                    notBeforeMs: nowMs
-                )
-                try JobInsertInTransaction.insertPendingJob(db, command: command, nowMs: nowMs)
+                if currentDirtyEpoch != input.startedDirtyEpoch {
+                    let newJobID = UUID()
+                    successorJobID = newJobID
+                    let command = try FolderReconcileJobFactory.makeEnqueueCommand(
+                        jobID: newJobID,
+                        sourceID: input.sourceID,
+                        notBeforeMs: nowMs
+                    )
+                    try JobInsertInTransaction.insertPendingJob(db, command: command, nowMs: nowMs)
+                }
             }
 
             guard let updated = try JobRowReader.fetchSnapshot(db, jobID: input.lease.jobID) else {
@@ -192,52 +266,159 @@ struct GRDBFolderReconcileRepository: FolderReconcileBatchPort, Sendable {
     }
 
     func stopIncomplete(_ input: FolderStopIncompleteInput) throws -> FolderBatchCommitResult {
+        let progress = try monotonicProgress(
+            lease: input.lease,
+            checkpoint: input.checkpoint
+        )
         let snapshot = try queue.commitLeaseProtectedBatch(
             input: SafeBatchCommitInput(
                 lease: input.lease,
-                outcome: .retryableFailure(code: input.errorCode),
+                outcome: input.outcome,
                 checkpoint: try makeJobCheckpoint(input.checkpoint),
-                progress: JobProgress(completed: input.checkpoint.candidateFiles, total: nil),
+                progress: progress,
                 leaseDurationMs: input.leaseDurationMs
             )
         ) { _ in }
-        return FolderBatchCommitResult(jobSnapshot: snapshot, checkpoint: input.checkpoint)
+        return FolderBatchCommitResult(
+            jobSnapshot: snapshot,
+            checkpoint: input.checkpoint,
+            identityConflictsAdded: 0
+        )
     }
 
+    private func monotonicProgress(for input: FolderAssetBatchInput) throws -> JobProgress {
+        try monotonicProgress(lease: input.lease, checkpoint: input.checkpoint)
+    }
+
+    private func monotonicProgress(
+        lease: JobLeaseToken,
+        checkpoint: FolderReconcileCheckpointV1
+    ) throws -> JobProgress {
+        let persisted = try queue.fetchJob(id: lease.jobID)
+        let completed = max(persisted.progress.completed, checkpoint.candidateFiles)
+        return JobProgress(completed: completed, total: nil)
+    }
+
+    private func validateJobKindAndVersion(jobRow: Row) throws {
+        let kind: String = jobRow["kind"]
+        let payloadVersion: Int = jobRow["payload_version"]
+        guard kind == FolderReconcileJobFactory.kind else {
+            throw FolderReconcileRepositoryError.invalidJobKind
+        }
+        guard payloadVersion == FolderReconcileJobFactory.payloadVersion else {
+            throw FolderReconcileRepositoryError.invalidPayloadVersion
+        }
+    }
+
+    private func validateJobSourceConsistency(jobRow: Row, sourceID: UUID) throws {
+        guard let jobSourceIDString: String = jobRow["source_id"],
+              let jobSourceID = UUID(uuidString: jobSourceIDString),
+              jobSourceID == sourceID
+        else {
+            throw FolderReconcileRepositoryError.sourceMismatch
+        }
+    }
+
+    private func validateBatchInput(db: Database, input: FolderAssetBatchInput) throws {
+        let jobRow = try requireRunningJob(db: db, lease: input.lease)
+        try validateJobKindAndVersion(jobRow: jobRow)
+        try validateJobSourceConsistency(jobRow: jobRow, sourceID: input.sourceID)
+        try validateGenerationConsistency(
+            jobRow: jobRow,
+            generation: input.generation,
+            startedDirtyEpoch: input.startedDirtyEpoch,
+            attempt: input.lease.attempts,
+            checkpoint: input.checkpoint
+        )
+        for observation in input.observations {
+            try validateObservation(observation)
+        }
+    }
+
+    private func validateCompleteInput(db: Database, input: FolderCompleteGenerationInput) throws {
+        let jobRow = try requireRunningJob(db: db, lease: input.lease)
+        try validateJobKindAndVersion(jobRow: jobRow)
+        try validateJobSourceConsistency(jobRow: jobRow, sourceID: input.sourceID)
+        try validateGenerationConsistency(
+            jobRow: jobRow,
+            generation: input.generation,
+            startedDirtyEpoch: input.startedDirtyEpoch,
+            attempt: input.lease.attempts,
+            checkpoint: input.checkpoint
+        )
+
+        let sourceState: String = try String.fetchOne(
+            db,
+            sql: "SELECT state FROM source WHERE id = ?",
+            arguments: [input.sourceID.uuidString.lowercased()]
+        ) ?? ""
+        guard sourceState == SourceState.active.rawValue else {
+            throw FolderReconcileRepositoryError.sourceNotActive
+        }
+    }
+
+    private func validateGenerationConsistency(
+        jobRow: Row,
+        generation: Int,
+        startedDirtyEpoch: Int,
+        attempt: Int,
+        checkpoint: FolderReconcileCheckpointV1
+    ) throws {
+        let jobGeneration: Int? = jobRow["scan_generation"]
+        let jobEpoch: Int? = jobRow["started_dirty_epoch"]
+        guard jobGeneration == generation,
+              jobEpoch == startedDirtyEpoch,
+              checkpoint.generation == generation,
+              checkpoint.startedDirtyEpoch == startedDirtyEpoch,
+              checkpoint.attempt == attempt
+        else {
+            throw FolderReconcileRepositoryError.checkpointInvalid
+        }
+    }
+
+    private func validateObservation(_ observation: FolderReconcileAssetObservation) throws {
+        switch RelativePathRules.validate(observation.relativePath) {
+        case .success:
+            break
+        case .failure:
+            throw FolderReconcileRepositoryError.unsafeRelativePath
+        }
+        guard let fileName = RelativePathRules.fileName(from: observation.relativePath),
+              fileName == observation.fileName
+        else {
+            throw FolderReconcileRepositoryError.invalidObservation
+        }
+    }
+
+    @discardableResult
     private func upsertAssetObservation(
         db: Database,
         sourceID: UUID,
         generation: Int,
         observation: FolderReconcileAssetObservation,
         nowMs: Int64
-    ) throws {
+    ) throws -> Int {
         let sourceIDString = sourceID.uuidString.lowercased()
 
         if let existing = try fetchCurrentAsset(db: db, sourceID: sourceID, relativePath: observation.relativePath) {
-            try applySamePathUpdate(
+            return try applySamePathUpdate(
                 db: db,
                 existing: existing,
                 observation: observation,
                 generation: generation,
                 nowMs: nowMs
             )
-            return
         }
 
-        if let movedAssetID = try findMoveReconnectCandidate(
-            db: db,
-            sourceID: sourceID,
-            generation: generation,
-            observation: observation
-        ) {
+        if let reconnectAssetID = observation.reconnectAssetID {
             try relocateAsset(
                 db: db,
-                assetID: movedAssetID,
+                assetID: reconnectAssetID,
                 observation: observation,
                 generation: generation,
                 nowMs: nowMs
             )
-            return
+            return 0
         }
 
         try insertNewAsset(
@@ -247,15 +428,17 @@ struct GRDBFolderReconcileRepository: FolderReconcileBatchPort, Sendable {
             generation: generation,
             nowMs: nowMs
         )
+        return 0
     }
 
+    @discardableResult
     private func applySamePathUpdate(
         db: Database,
         existing: ExistingAssetRecord,
         observation: FolderReconcileAssetObservation,
         generation: Int,
         nowMs: Int64
-    ) throws {
+    ) throws -> Int {
         switch resolveSamePathIdentity(existing: existing, observation: observation) {
         case let .retain(revision):
             try updateRetainedAsset(
@@ -266,6 +449,7 @@ struct GRDBFolderReconcileRepository: FolderReconcileBatchPort, Sendable {
                 contentRevision: revision,
                 nowMs: nowMs
             )
+            return 0
         case let .replace(newAssetID):
             try markHistorical(db: db, assetID: existing.assetID, nowMs: nowMs)
             try insertNewAsset(
@@ -276,6 +460,7 @@ struct GRDBFolderReconcileRepository: FolderReconcileBatchPort, Sendable {
                 generation: generation,
                 nowMs: nowMs
             )
+            return 0
         case .conflict:
             try updateConflictAsset(
                 db: db,
@@ -283,6 +468,7 @@ struct GRDBFolderReconcileRepository: FolderReconcileBatchPort, Sendable {
                 generation: generation,
                 nowMs: nowMs
             )
+            return 1
         }
     }
 
@@ -350,53 +536,6 @@ struct GRDBFolderReconcileRepository: FolderReconcileBatchPort, Sendable {
             return nil
         }
         return ExistingAssetRecord(row: row)
-    }
-
-    private func findMoveReconnectCandidate(
-        db: Database,
-        sourceID: UUID,
-        generation: Int,
-        observation: FolderReconcileAssetObservation
-    ) throws -> UUID? {
-        guard let resourceID = observation.resourceID else {
-            return nil
-        }
-
-        let rows = try Row.fetchAll(
-            db,
-            sql: """
-            SELECT a.id, a.relative_path, f.resource_id
-            FROM asset a
-            JOIN file_fingerprint f ON f.asset_id = a.id
-            WHERE a.source_id = ?
-                AND a.locator_kind = 'file'
-                AND a.locator_state = 'current'
-                AND f.resource_id = ?
-            """,
-            arguments: [sourceID.uuidString.lowercased(), resourceID]
-        )
-
-        guard rows.count == 1, let row = rows.first else {
-            return nil
-        }
-
-        let assetID = UUID(uuidString: row["id"])!
-        let oldPath: String = row["relative_path"]
-
-        let seenThisGeneration = try Int.fetchOne(
-            db,
-            sql: """
-            SELECT COUNT(*) FROM asset
-            WHERE id = ? AND last_seen_generation = ?
-            """,
-            arguments: [assetID.uuidString.lowercased(), generation]
-        ) ?? 0
-        if seenThisGeneration > 0 {
-            return nil
-        }
-
-        _ = oldPath
-        return assetID
     }
 
     private func insertNewAsset(
@@ -497,23 +636,12 @@ struct GRDBFolderReconcileRepository: FolderReconcileBatchPort, Sendable {
         generation: Int,
         nowMs: Int64
     ) throws {
-        let revision = try Int.fetchOne(
-            db,
-            sql: "SELECT content_revision FROM asset WHERE id = ?",
-            arguments: [assetID.uuidString.lowercased()]
-        ) ?? 1
-        let newRevision = fingerprintChanged(
-            existing: ExistingAssetRecord(
-                assetID: assetID,
-                sourceID: "",
-                availability: observation.availability.rawValue,
-                contentRevision: revision,
-                sizeBytes: 0,
-                modifiedAtNs: 0,
-                resourceID: nil
-            ),
-            observation: observation
-        ) ? revision + 1 : revision
+        guard let existing = try fetchAssetByID(db: db, assetID: assetID) else {
+            throw FolderReconcileRepositoryError.assetNotFound
+        }
+        let newRevision = fingerprintChanged(existing: existing, observation: observation)
+            ? existing.contentRevision + 1
+            : existing.contentRevision
 
         try db.execute(
             sql: """
@@ -545,6 +673,23 @@ struct GRDBFolderReconcileRepository: FolderReconcileBatchPort, Sendable {
             ]
         )
         try upsertFingerprint(db: db, assetID: assetID, observation: observation)
+    }
+
+    private func fetchAssetByID(db: Database, assetID: UUID) throws -> ExistingAssetRecord? {
+        guard let row = try Row.fetchOne(
+            db,
+            sql: """
+            SELECT a.id AS asset_id, a.source_id, a.availability, a.content_revision,
+                   f.size_bytes, f.modified_at_ns, f.resource_id
+            FROM asset a
+            LEFT JOIN file_fingerprint f ON f.asset_id = a.id
+            WHERE a.id = ?
+            """,
+            arguments: [assetID.uuidString.lowercased()]
+        ) else {
+            return nil
+        }
+        return ExistingAssetRecord(row: row)
     }
 
     private func markHistorical(db: Database, assetID: UUID, nowMs: Int64) throws {
@@ -662,5 +807,11 @@ enum FolderReconcileRepositoryError: Error, Equatable {
     case checkpointInvalid
     case sourceNotFound
     case sourceNotActive
-    case controlInterrupted
+    case invalidJobKind
+    case invalidPayloadVersion
+    case sourceMismatch
+    case batchLimitExceeded
+    case unsafeRelativePath
+    case invalidObservation
+    case assetNotFound
 }
