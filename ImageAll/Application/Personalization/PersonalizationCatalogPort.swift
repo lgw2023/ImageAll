@@ -113,6 +113,24 @@ enum PersonalizationCatalogError: Error, Equatable, Sendable {
     case persistenceFailure
 }
 
+struct PersonalizedSuggestionResult: Equatable, Sendable {
+    let modelRevision: Int
+    let positiveSampleCount: Int
+    let negativeSampleCount: Int
+    let evaluatedCandidateCount: Int
+    let predictedCandidateCount: Int
+}
+
+enum PersonalizedSuggestionError: Error, Equatable, Sendable {
+    case invalidCandidates
+    case tagNotFound
+    case archivedTag
+    case insufficientSamples
+    case inconsistentFeatureDimensions
+    case invalidFeatureVector
+    case persistenceFailure
+}
+
 protocol PersonalizationCatalogPort: Sendable {
     func registerFeature(_ registration: FeatureRegistration) throws
     func featureRegistration(identity: FeatureIdentity) throws -> FeatureRegistration?
