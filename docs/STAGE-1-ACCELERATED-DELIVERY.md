@@ -1,9 +1,13 @@
 # ImageAll 阶段 1 加速交付计划
 
-> 状态：Slice A-B implemented；Slice B pending owner UX review  
-> 日期：2026-07-15  
+> 状态：Slice A-B implemented；Slice B pending owner UX review
+>
+> 日期：2026-07-15
+>
 > 设计基线：`main@a03d1296b4f7ffa22de369baebc89042ea94283f`
-> Slice A 实现：`main@0e7dd655f99a57730025355fde6bacdff564e0f4`  
+>
+> Slice A 实现：`main@0e7dd655f99a57730025355fde6bacdff564e0f4`
+>
 > Slice B 实现：`main@542c76b97a06b1ec9ea31418fadaa9e355ae7b03`
 
 ## 1. 决策
