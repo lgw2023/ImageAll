@@ -1,10 +1,10 @@
 # ImageAll 阶段 1 实施规格
 
-> 状态：Implementation in progress；切片 1～2 已通过，切片 3 已获实施授权<br>
+> 状态：Implementation in progress；切片 1～3 已通过，切片 4 已获实施授权<br>
 > 日期：2026-07-15<br>
 > 产品批准：`UI-001`～`UI-011`、macOS 15+ / Apple Silicon only、静态格式允许清单、本地自用签名<br>
 > 已批准实现基线：阶段 0 `main@892f4e29e1ebf492c1540c5a29d9c54abc05a78f`<br>
-> 当前批准实现：切片 2 `main@f050f4ee0480f4f967be86c5ebffb3a534a30a25`<br>
+> 当前批准实现：切片 3 `main@bfa0cf0bcedd58ffbdc19dc163a065589f7aeb0d`；Codex 验收记录 `main@bd87fc5e91b110d62dda8c1706b8ce573ad48d72`<br>
 > 当前阶段输入：[`STAGE-1-BACKEND-ARCHITECTURE.md`](./STAGE-1-BACKEND-ARCHITECTURE.md) 与 [`STAGE-1-PRODUCT-UI-SPEC.md`](./STAGE-1-PRODUCT-UI-SPEC.md)<br>
 > 实施者：Cursor CLI，仅 `Composer 2.5 Fast`；每个新切片使用全新 session
 
