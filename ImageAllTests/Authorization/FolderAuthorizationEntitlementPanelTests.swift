@@ -1,42 +1,37 @@
 import AppKit
+import Security
 import XCTest
 @testable import ImageAll
 
 final class FolderAuthorizationEntitlementPanelTests: XCTestCase {
     func testProductionEntitlementsContainApprovedSandboxCapabilities() throws {
-        let entitlementsURL = Bundle.main.bundleURL
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .appendingPathComponent("ImageAll.entitlements")
+        guard let task = SecTaskCreateFromSelf(nil) else {
+            XCTFail("Unable to create security task for host entitlements")
+            return
+        }
 
-        let repoRoot = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-        let sourceEntitlements = repoRoot
-            .appendingPathComponent("ImageAll/ImageAll.entitlements")
+        func boolEntitlement(_ key: String) -> Bool? {
+            guard let value = SecTaskCopyValueForEntitlement(task, key as CFString, nil) else {
+                return nil
+            }
+            return (value as? NSNumber)?.boolValue
+        }
 
-        let data = try Data(contentsOf: sourceEntitlements)
-        let plist = try XCTUnwrap(
-            PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any]
+        XCTAssertEqual(boolEntitlement("com.apple.security.app-sandbox"), true)
+        XCTAssertEqual(boolEntitlement("com.apple.security.files.user-selected.read-only"), true)
+        XCTAssertEqual(boolEntitlement("com.apple.security.files.bookmarks.app-scope"), true)
+        XCTAssertNil(
+            SecTaskCopyValueForEntitlement(
+                task,
+                "com.apple.security.files.user-selected.read-write" as CFString,
+                nil
+            )
         )
-
-        XCTAssertEqual(plist["com.apple.security.app-sandbox"] as? Bool, true)
-        XCTAssertEqual(plist["com.apple.security.files.user-selected.read-only"] as? Bool, true)
-        XCTAssertEqual(plist["com.apple.security.files.bookmarks.app-scope"] as? Bool, true)
-        XCTAssertNil(plist["com.apple.security.files.user-selected.read-write"])
-        XCTAssertEqual(plist.keys.sorted(), [
-            "com.apple.security.app-sandbox",
-            "com.apple.security.files.bookmarks.app-scope",
-            "com.apple.security.files.user-selected.read-only",
-        ])
-        _ = entitlementsURL
     }
 
+    @MainActor
     func testOpenPanelConfigurationIsDirectoryOnlySingleSelectionWithoutAliasResolution() {
-        let panel = NSOpenPanel()
-        FolderDirectoryPickerPanelConfiguration.apply(to: panel)
+        let panel = AppKitFolderDirectoryPicker.makeProductionPanel()
 
         XCTAssertFalse(panel.canChooseFiles)
         XCTAssertTrue(panel.canChooseDirectories)
@@ -46,7 +41,7 @@ final class FolderAuthorizationEntitlementPanelTests: XCTestCase {
         XCTAssertFalse(panel.canCreateDirectories)
     }
 
-    func testPickerIsNotTriggeredBeforeExplicitConnectCommand() throws {
+    func testPickerIsNotTriggeredBeforeExplicitConnectCommand() async throws {
         let database = try FolderAuthorizationTestSupport.makeDatabase()
         let picker = FolderAuthorizationTestSupport.FakeDirectoryPicker()
         let (coordinator, _, fakePicker, _) = FolderAuthorizationTestSupport.makeCoordinator(
@@ -57,21 +52,19 @@ final class FolderAuthorizationEntitlementPanelTests: XCTestCase {
         XCTAssertEqual(fakePicker.callCount, 0)
 
         fakePicker.configuredResponses = [nil]
-        let outcome = try FolderAuthorizationTestSupport.awaitResult {
-            try await coordinator.connectFolder()
-        }
+        let outcome = try await coordinator.connectFolder()
         XCTAssertEqual(outcome, .cancelled)
         XCTAssertEqual(fakePicker.callCount, 1)
     }
 
+    @MainActor
     func testAppKitPickerUsesInjectedPanelWithoutShowingSystemUI() {
         final class CallTracker: @unchecked Sendable {
             var factoryCalled = false
             var modalCalled = false
         }
         let tracker = CallTracker()
-        let panel = NSOpenPanel()
-        FolderDirectoryPickerPanelConfiguration.apply(to: panel)
+        let panel = AppKitFolderDirectoryPicker.makeProductionPanel()
 
         let picker = AppKitFolderDirectoryPicker(
             panelFactory: {

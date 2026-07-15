@@ -14,7 +14,7 @@ struct FolderAuthorizationCoordinator: FolderAuthorizationCommandPort {
     let dependencies: FolderAuthorizationDependencies
 
     func connectFolder() async throws -> ConnectFolderOutcome {
-        guard let selectedURL = dependencies.picker.pickDirectory() else {
+        guard let selectedURL = await pickDirectoryOnMainActor() else {
             return .cancelled
         }
         defer {
@@ -50,6 +50,8 @@ struct FolderAuthorizationCoordinator: FolderAuthorizationCommandPort {
                 jobID: jobID,
                 nowMs: nowMs
             )
+        } catch let error as FolderAuthorizationError {
+            throw error
         } catch {
             throw FolderAuthorizationError.persistenceFailure
         }
@@ -58,9 +60,7 @@ struct FolderAuthorizationCoordinator: FolderAuthorizationCommandPort {
     }
 
     func reauthorizeFolder(sourceID: UUID) async throws -> ReauthorizeFolderOutcome {
-        guard let existing = try dependencies.repository.fetchFolderSource(id: sourceID) else {
-            throw FolderAuthorizationError.sourceNotFound
-        }
+        let existing = try requireFolderSource(id: sourceID)
 
         switch existing.state {
         case .unavailable, .authorizationRequired:
@@ -69,7 +69,7 @@ struct FolderAuthorizationCoordinator: FolderAuthorizationCommandPort {
             throw FolderAuthorizationError.invalidSourceState
         }
 
-        guard let selectedURL = dependencies.picker.pickDirectory() else {
+        guard let selectedURL = await pickDirectoryOnMainActor() else {
             return .cancelled
         }
         defer {
@@ -115,6 +115,8 @@ struct FolderAuthorizationCoordinator: FolderAuthorizationCommandPort {
                 jobID: jobID,
                 nowMs: nowMs
             )
+        } catch let error as FolderAuthorizationError {
+            throw error
         } catch {
             throw FolderAuthorizationError.persistenceFailure
         }
@@ -123,13 +125,7 @@ struct FolderAuthorizationCoordinator: FolderAuthorizationCommandPort {
     }
 
     func disableFolderSource(sourceID: UUID) async throws -> DisableFolderOutcome {
-        guard let existing = try dependencies.repository.fetchFolderSource(id: sourceID) else {
-            throw FolderAuthorizationError.sourceNotFound
-        }
-
-        if existing.state == .disabled {
-            return .disabled(sourceID: sourceID)
-        }
+        _ = try requireFolderSource(id: sourceID)
 
         do {
             try dependencies.repository.disableFolderSource(
@@ -149,22 +145,18 @@ struct FolderAuthorizationCoordinator: FolderAuthorizationCommandPort {
         sourceID: UUID,
         perform: (URL) throws -> T
     ) throws -> T {
-        guard let source = try dependencies.repository.fetchFolderSource(id: sourceID) else {
-            throw FolderAuthorizationError.sourceNotFound
-        }
+        let source = try requireFolderSource(id: sourceID)
 
         switch source.state {
         case .disabled:
             throw FolderAuthorizationError.invalidSourceState
-        case .unavailable:
-            throw FolderAuthorizationError.authorizationUnavailable
-        case .authorizationRequired:
+        case .unavailable, .authorizationRequired:
             throw FolderAuthorizationError.authorizationUnavailable
         case .active:
             break
         }
 
-        return try resolveAccess(source: source, allowStaleRefresh: true, perform: perform)
+        return try resolveAccess(source: source, perform: perform)
     }
 
     func auditOverlapRoot(for source: StoredFolderSourceRecord) throws -> URL {
@@ -175,6 +167,22 @@ struct FolderAuthorizationCoordinator: FolderAuthorizationCommandPort {
         case same
         case different
         case indeterminate
+    }
+
+    @MainActor
+    private func pickDirectoryOnMainActor() async -> URL? {
+        dependencies.picker.pickDirectory()
+    }
+
+    private func requireFolderSource(id: UUID) throws -> StoredFolderSourceRecord {
+        switch try dependencies.repository.lookupSource(id: id) {
+        case .notFound:
+            throw FolderAuthorizationError.sourceNotFound
+        case .wrongKind:
+            throw FolderAuthorizationError.sourceKindMismatch
+        case let .folder(record):
+            return record
+        }
     }
 
     private func verifySameIdentity(
@@ -188,18 +196,21 @@ struct FolderAuthorizationCoordinator: FolderAuthorizationCommandPort {
             return .indeterminate
         }
 
-        return try SecurityScopedAccessRunner.withAccess(
-            bookmarkPort: dependencies.bookmarkPort,
-            url: resolved.url
-        ) { existingURL in
-            switch dependencies.relationshipChecker.relationship(between: newRoot, and: existingURL) {
-            case .same:
-                return .same
-            case .disjoint:
-                return .different
-            case .existingAncestor, .newAncestor, .indeterminate:
-                return .indeterminate
-            }
+        let started = dependencies.bookmarkPort.startAccessing(resolved.url)
+        guard started else {
+            return .indeterminate
+        }
+        defer {
+            dependencies.bookmarkPort.stopAccessing(resolved.url)
+        }
+
+        switch dependencies.relationshipChecker.relationship(between: newRoot, and: resolved.url) {
+        case .same:
+            return .same
+        case .disjoint:
+            return .different
+        case .existingAncestor, .newAncestor, .indeterminate:
+            return .indeterminate
         }
     }
 
@@ -238,51 +249,65 @@ struct FolderAuthorizationCoordinator: FolderAuthorizationCommandPort {
 
     private func resolveAccess<T>(
         source: StoredFolderSourceRecord,
-        allowStaleRefresh: Bool,
         perform: (URL) throws -> T
     ) throws -> T {
         let resolved: BookmarkResolveResult
         do {
             resolved = try dependencies.bookmarkPort.resolveBookmark(source.bookmark)
         } catch {
+            try persistAccessObservation(
+                sourceID: source.id,
+                observation: FolderAccessFailureClassifier.classifyBookmarkResolveFailure(error)
+            )
             throw FolderAuthorizationError.authorizationUnavailable
         }
 
-        return try SecurityScopedAccessRunner.withAccess(
-            bookmarkPort: dependencies.bookmarkPort,
-            url: resolved.url
-        ) { url in
-            switch dependencies.rootValidator.validateRoot(at: url) {
-            case .valid:
-                break
-            case .invalid:
-                throw FolderAuthorizationError.authorizationUnavailable
-            }
+        let started = dependencies.bookmarkPort.startAccessing(resolved.url)
+        guard started else {
+            try persistAccessObservation(
+                sourceID: source.id,
+                observation: FolderAccessFailureClassifier.classifyScopeStartFailure(for: resolved.url)
+            )
+            throw FolderAuthorizationError.authorizationUnavailable
+        }
+        defer {
+            dependencies.bookmarkPort.stopAccessing(resolved.url)
+        }
 
-            if allowStaleRefresh, resolved.isStale {
-                let refreshed = try refreshStaleBookmark(sourceID: source.id, resolvedURL: url)
-                return try SecurityScopedAccessRunner.withAccess(
-                    bookmarkPort: dependencies.bookmarkPort,
-                    url: refreshed
-                ) { refreshedURL in
-                    try perform(refreshedURL)
-                }
-            }
+        switch dependencies.rootValidator.validateRoot(at: resolved.url) {
+        case .valid:
+            break
+        case .invalid:
+            try persistAccessObservation(
+                sourceID: source.id,
+                observation: FolderAccessFailureClassifier.classifyInvalidRoot(at: resolved.url)
+            )
+            throw FolderAuthorizationError.authorizationUnavailable
+        }
 
-            return try perform(url)
+        if resolved.isStale {
+            do {
+                try refreshStaleBookmarkInCurrentScope(sourceID: source.id, resolvedURL: resolved.url)
+            } catch let error as FolderAuthorizationError {
+                throw error
+            } catch {
+                throw FolderAuthorizationError.persistenceFailure
+            }
+        }
+
+        do {
+            return try perform(resolved.url)
+        } catch {
+            throw error
         }
     }
 
-    private func refreshStaleBookmark(sourceID: UUID, resolvedURL: URL) throws -> URL {
+    private func refreshStaleBookmarkInCurrentScope(sourceID: UUID, resolvedURL: URL) throws {
         let newBookmark: Data
         do {
             newBookmark = try dependencies.bookmarkPort.createReadOnlyBookmark(for: resolvedURL)
         } catch {
-            try dependencies.repository.updateSourceState(
-                sourceID: sourceID,
-                state: .authorizationRequired,
-                nowMs: dependencies.clock.nowMs
-            )
+            try persistAccessObservation(sourceID: sourceID, observation: .authorizationRequired)
             throw FolderAuthorizationError.authorizationUnavailable
         }
 
@@ -292,11 +317,34 @@ struct FolderAuthorizationCoordinator: FolderAuthorizationCommandPort {
                 bookmark: newBookmark,
                 nowMs: dependencies.clock.nowMs
             )
+        } catch let error as FolderAuthorizationError {
+            throw error
         } catch {
             throw FolderAuthorizationError.persistenceFailure
         }
+    }
 
-        let refreshed = try dependencies.bookmarkPort.resolveBookmark(newBookmark)
-        return refreshed.url
+    private func persistAccessObservation(
+        sourceID: UUID,
+        observation: FolderAccessFailureObservation
+    ) throws {
+        let state: SourceState
+        switch observation {
+        case .offline:
+            state = .unavailable
+        case .authorizationRequired:
+            state = .authorizationRequired
+        }
+        do {
+            try dependencies.repository.updateSourceState(
+                sourceID: sourceID,
+                state: state,
+                nowMs: dependencies.clock.nowMs
+            )
+        } catch let error as FolderAuthorizationError {
+            throw error
+        } catch {
+            throw FolderAuthorizationError.persistenceFailure
+        }
     }
 }

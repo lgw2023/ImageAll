@@ -104,11 +104,11 @@ struct FolderRootValidator: Sendable {
         if snapshot.isAliasFile == true {
             return .invalid(.alias)
         }
-        if snapshot.isPackage == true {
-            return .invalid(.package)
-        }
         if snapshot.pathExtension.compare("photoslibrary", options: .caseInsensitive) == .orderedSame {
             return .invalid(.photosLibrary)
+        }
+        if snapshot.isPackage == true {
+            return .invalid(.package)
         }
         if snapshot.isDirectory != true {
             if snapshot.isDirectory == false {
@@ -116,7 +116,7 @@ struct FolderRootValidator: Sendable {
             }
             return .invalid(.notDirectory)
         }
-        if snapshot.isReadable == false {
+        if snapshot.isReadable != true {
             return .invalid(.unreadable)
         }
 
@@ -142,35 +142,93 @@ protocol FolderRootRelationshipChecking: Sendable {
 
 struct FoundationFolderRootRelationshipChecker: FolderRootRelationshipChecking {
     func relationship(between newRoot: URL, and existingRoot: URL) -> FolderRootRelationship {
-        let newPath = newRoot.standardizedFileURL.path
-        let existingPath = existingRoot.standardizedFileURL.path
-        if newPath == existingPath {
+        let newURL = newRoot.standardizedFileURL
+        let existingURL = existingRoot.standardizedFileURL
+
+        switch resourceIdentityRelationship(newURL, existingURL) {
+        case .same:
+            return .same
+        case .indeterminate:
+            return .indeterminate
+        case .different:
+            break
+        }
+
+        switch directoryContainment(directory: existingURL, item: newURL) {
+        case .contains:
+            return .existingAncestor
+        case .indeterminate:
+            return .indeterminate
+        case .notContained:
+            break
+        }
+
+        switch directoryContainment(directory: newURL, item: existingURL) {
+        case .contains:
+            return .newAncestor
+        case .indeterminate:
+            return .indeterminate
+        case .notContained:
+            break
+        }
+
+        switch resourceIdentityRelationship(newURL, existingURL) {
+        case .same:
+            return .same
+        case .different:
+            return .disjoint
+        case .indeterminate:
+            return .indeterminate
+        }
+    }
+
+    private enum ResourceIdentityRelationship {
+        case same
+        case different
+        case indeterminate
+    }
+
+    private enum DirectoryContainmentResult {
+        case contains
+        case notContained
+        case indeterminate
+    }
+
+    private func resourceIdentityRelationship(_ lhs: URL, _ rhs: URL) -> ResourceIdentityRelationship {
+        let leftID: (any NSObjectProtocol)?
+        let rightID: (any NSObjectProtocol)?
+        do {
+            leftID = try lhs.resourceValues(forKeys: [.fileResourceIdentifierKey]).fileResourceIdentifier
+            rightID = try rhs.resourceValues(forKeys: [.fileResourceIdentifierKey]).fileResourceIdentifier
+        } catch {
+            return .indeterminate
+        }
+        guard let leftID, let rightID else {
+            return .indeterminate
+        }
+        if leftID.isEqual(rightID) {
             return .same
         }
+        return .different
+    }
 
-        let newComponents = newRoot.standardizedFileURL.pathComponents
-        let existingComponents = existingRoot.standardizedFileURL.pathComponents
-        if existingComponents.count < newComponents.count {
-            let prefix = Array(newComponents.prefix(existingComponents.count))
-            if prefix == existingComponents {
-                return .existingAncestor
-            }
+    private func directoryContainment(directory: URL, item: URL) -> DirectoryContainmentResult {
+        var relationship: FileManager.URLRelationship = .other
+        do {
+            try FileManager.default.getRelationship(&relationship, ofDirectoryAt: directory, toItemAt: item)
+        } catch {
+            return .indeterminate
         }
-        if newComponents.count < existingComponents.count {
-            let prefix = Array(existingComponents.prefix(newComponents.count))
-            if prefix == newComponents {
-                return .newAncestor
-            }
+        switch relationship {
+        case .contains:
+            return .contains
+        case .same:
+            return .notContained
+        case .other:
+            return .notContained
+        @unknown default:
+            return .indeterminate
         }
-
-        if let newID = try? newRoot.resourceValues(forKeys: [.fileResourceIdentifierKey]).fileResourceIdentifier,
-           let existingID = try? existingRoot.resourceValues(forKeys: [.fileResourceIdentifierKey]).fileResourceIdentifier {
-            if newID.isEqual(existingID) {
-                return .same
-            }
-            return .disjoint
-        }
-        return .indeterminate
     }
 }
 

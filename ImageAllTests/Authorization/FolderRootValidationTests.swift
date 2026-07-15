@@ -16,6 +16,13 @@ final class FolderRootValidationTests: XCTestCase {
         super.tearDown()
     }
 
+    func testCleanupTargetsOnlyDeleteOwnedImageAllAuthTestRoots() throws {
+        _ = try registry.makeRoot(label: "audit")
+        _ = try registry.makeFile(label: "audit")
+        _ = try registry.makePackage(label: "audit")
+        registry.assertCleanupTargetsAreSafe()
+    }
+
     func testValidDirectoryRootAcceptsDisplayName() throws {
         let root = try registry.makeRoot(label: "valid")
         let reader = FolderAuthorizationTestSupport.FixedResourceReader()
@@ -33,7 +40,30 @@ final class FolderRootValidationTests: XCTestCase {
         XCTAssertEqual(validator.validateRoot(at: root), .valid(displayName: "Vacation"))
     }
 
-    func testRejectsFileSymlinkAliasPackageAndPhotosLibrary() throws {
+    func testRealFilesystemDirectoryAccepted() throws {
+        let root = try registry.makeRoot(label: "real-dir")
+        let validator = FolderRootValidator()
+        guard case let .valid(name) = validator.validateRoot(at: root) else {
+            return XCTFail("Expected valid directory")
+        }
+        XCTAssertFalse(name.isEmpty)
+    }
+
+    func testRealFilesystemRejectsFileSymlinkPackageAndPhotosLibrary() throws {
+        let validator = FolderRootValidator()
+        let file = try registry.makeFile(label: "real-file")
+        let directory = try registry.makeRoot(label: "symlink-target")
+        let symlink = try registry.makeSymlink(to: directory, label: "real-link")
+        let package = try registry.makePackage(label: "real-package")
+        let photos = try registry.makeFakePhotosLibrary(label: "real-photos")
+
+        XCTAssertEqual(validator.validateRoot(at: file), .invalid(.file))
+        XCTAssertEqual(validator.validateRoot(at: symlink), .invalid(.symbolicLink))
+        XCTAssertEqual(validator.validateRoot(at: package), .invalid(.package))
+        XCTAssertEqual(validator.validateRoot(at: photos), .invalid(.photosLibrary))
+    }
+
+    func testRejectsFileSymlinkAliasPackageAndPhotosLibraryViaSeam() throws {
         let reader = FolderAuthorizationTestSupport.FixedResourceReader()
         let validator = FolderRootValidator(resourceReader: reader)
 
@@ -82,7 +112,23 @@ final class FolderRootValidationTests: XCTestCase {
         XCTAssertEqual(validator.validateRoot(at: root), .invalid(.unreadable))
     }
 
-    func testCancelSelectionWritesNothing() throws {
+    func testIsReadableMustBeExplicitTrue() throws {
+        let root = try registry.makeRoot(label: "maybe-readable")
+        let reader = FolderAuthorizationTestSupport.FixedResourceReader()
+        reader.snapshots[root] = FolderRootResourceSnapshot(
+            isDirectory: true,
+            isSymbolicLink: false,
+            isAliasFile: false,
+            isPackage: false,
+            isReadable: nil,
+            localizedName: "Maybe",
+            pathExtension: ""
+        )
+        let validator = FolderRootValidator(resourceReader: reader)
+        XCTAssertEqual(validator.validateRoot(at: root), .invalid(.unreadable))
+    }
+
+    func testCancelSelectionWritesNothing() async throws {
         let database = try FolderAuthorizationTestSupport.makeDatabase()
         let picker = FolderAuthorizationTestSupport.FakeDirectoryPicker()
         let (coordinator, _, fakePicker, _) = FolderAuthorizationTestSupport.makeCoordinator(
@@ -95,16 +141,14 @@ final class FolderRootValidationTests: XCTestCase {
         let baselineSources = try FolderAuthorizationTestSupport.sourceCount(database)
         let baselineJobs = try FolderAuthorizationTestSupport.jobCount(database)
 
-        let outcome = try FolderAuthorizationTestSupport.awaitResult {
-            try await coordinator.connectFolder()
-        }
+        let outcome = try await coordinator.connectFolder()
         XCTAssertEqual(outcome, .cancelled)
         XCTAssertEqual(try FolderAuthorizationTestSupport.sourceCount(database), baselineSources)
         XCTAssertEqual(try FolderAuthorizationTestSupport.jobCount(database), baselineJobs)
         XCTAssertEqual(fakePicker.callCount, 1)
     }
 
-    func testSuccessfulSelectionReleasesImplicitScopeOnce() throws {
+    func testSuccessfulSelectionReleasesImplicitScopeOnce() async throws {
         let database = try FolderAuthorizationTestSupport.makeDatabase()
         let root = try registry.makeRoot(label: "implicit-stop")
         let picker = FolderAuthorizationTestSupport.FakeDirectoryPicker()
@@ -117,13 +161,11 @@ final class FolderRootValidationTests: XCTestCase {
         )
         picker.configuredResponses = [root]
 
-        _ = try FolderAuthorizationTestSupport.awaitResult {
-            try await coordinator.connectFolder()
-        }
+        _ = try await coordinator.connectFolder()
         XCTAssertEqual(bookmarkPort.stopCount, 1)
     }
 
-    func testInvalidRootAfterSelectionReleasesImplicitScopeWithoutWrites() throws {
+    func testInvalidRootAfterSelectionReleasesImplicitScopeWithoutWrites() async throws {
         let database = try FolderAuthorizationTestSupport.makeDatabase()
         let root = try registry.makeRoot(label: "invalid")
         let picker = FolderAuthorizationTestSupport.FakeDirectoryPicker()
@@ -142,9 +184,10 @@ final class FolderRootValidationTests: XCTestCase {
 
         picker.configuredResponses = [root]
 
-        XCTAssertThrowsError(try FolderAuthorizationTestSupport.awaitResult {
-            try await coordinator.connectFolder()
-        }) { error in
+        do {
+            _ = try await coordinator.connectFolder()
+            XCTFail("Expected invalidRoot")
+        } catch {
             XCTAssertEqual(error as? FolderAuthorizationError, .invalidRoot)
         }
         XCTAssertEqual(try FolderAuthorizationTestSupport.sourceCount(database), 0)

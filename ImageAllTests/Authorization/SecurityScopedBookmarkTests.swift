@@ -142,4 +142,86 @@ final class SecurityScopedBookmarkTests: XCTestCase {
         XCTAssertEqual(stored, bookmark)
         XCTAssertEqual(try FolderAuthorizationTestSupport.fetchSourceState(database, sourceID: sourceID), .authorizationRequired)
     }
+
+    func testStaleRefreshUsesSingleScopeWithoutSecondResolve() throws {
+        let database = try FolderAuthorizationTestSupport.makeDatabase()
+        let root = try registry.makeRoot(label: "stale-single-scope")
+        let bookmarkPort = FolderAuthorizationTestSupport.MappingBookmarkPort()
+        let bookmark = bookmarkPort.register(url: root)
+        let sourceID = UUID(uuidString: "cccccccc-cccd-dddd-eeee-000000000001")!
+        try FolderAuthorizationTestSupport.insertFolderSource(
+            database: database,
+            sourceID: sourceID,
+            bookmark: bookmark,
+            state: .active
+        )
+
+        bookmarkPort.staleOnResolve = true
+        bookmarkPort.issueDistinctBookmarksOnCreate = true
+
+        let repository = GRDBFolderSourceAuthorizationRepository(database: database)
+        let coordinator = FolderAuthorizationCoordinator(
+            dependencies: FolderAuthorizationDependencies(
+                repository: repository,
+                picker: FolderAuthorizationTestSupport.FakeDirectoryPicker(),
+                bookmarkPort: bookmarkPort,
+                rootValidator: FolderRootValidator(),
+                relationshipChecker: FoundationFolderRootRelationshipChecker(),
+                clock: FixedJobClock(nowMs: FolderAuthorizationTestSupport.baseTimeMs),
+                idGenerator: UUID.init
+            )
+        )
+
+        let value = try coordinator.accessFolderSource(sourceID: sourceID) { url in
+            url.lastPathComponent
+        }
+        XCTAssertEqual(value, root.lastPathComponent)
+        XCTAssertEqual(bookmarkPort.startCount, 1)
+        XCTAssertEqual(bookmarkPort.stopCount, 1)
+    }
+
+    func testStaleSQLReplaceFailureKeepsOldBlob() throws {
+        let database = try FolderAuthorizationTestSupport.makeDatabase()
+        try FolderAuthorizationTestSupport.AuthorizationDatabaseTestFaults
+            .installStaleBookmarkReplaceAbortTrigger(database)
+
+        let root = try registry.makeRoot(label: "stale-sql-fail")
+        let bookmarkPort = FolderAuthorizationTestSupport.MappingBookmarkPort()
+        let bookmark = bookmarkPort.register(url: root, token: Data("stale-old-bookmark-v1".utf8))
+        let sourceID = UUID(uuidString: "dddddddd-dddd-eeee-ffff-000000000002")!
+        try FolderAuthorizationTestSupport.insertFolderSource(
+            database: database,
+            sourceID: sourceID,
+            bookmark: bookmark,
+            state: .active
+        )
+
+        bookmarkPort.staleOnResolve = true
+        bookmarkPort.issueDistinctBookmarksOnCreate = true
+
+        let repository = GRDBFolderSourceAuthorizationRepository(database: database)
+        let coordinator = FolderAuthorizationCoordinator(
+            dependencies: FolderAuthorizationDependencies(
+                repository: repository,
+                picker: FolderAuthorizationTestSupport.FakeDirectoryPicker(),
+                bookmarkPort: bookmarkPort,
+                rootValidator: FolderRootValidator(),
+                relationshipChecker: FoundationFolderRootRelationshipChecker(),
+                clock: FixedJobClock(nowMs: FolderAuthorizationTestSupport.baseTimeMs),
+                idGenerator: UUID.init
+            )
+        )
+
+        do {
+            _ = try coordinator.accessFolderSource(sourceID: sourceID) { _ in "" }
+            XCTFail("Expected persistenceFailure")
+        } catch {
+            XCTAssertEqual(error as? FolderAuthorizationError, .persistenceFailure)
+        }
+
+        XCTAssertEqual(try FolderAuthorizationTestSupport.fetchSourceBookmark(database, sourceID: sourceID), bookmark)
+        XCTAssertEqual(try FolderAuthorizationTestSupport.fetchSourceState(database, sourceID: sourceID), .active)
+        XCTAssertEqual(bookmarkPort.startCount, 1)
+        XCTAssertEqual(bookmarkPort.stopCount, 1)
+    }
 }

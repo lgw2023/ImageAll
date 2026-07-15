@@ -17,7 +17,7 @@ final class FolderDisableReauthorizeTests: XCTestCase {
         super.tearDown()
     }
 
-    func testDisableIsIdempotentAndCancelsActiveReconcileJobs() throws {
+    func testDisableIsIdempotentAndCancelsActiveReconcileJobs() async throws {
         let database = try FolderAuthorizationTestSupport.makeDatabase()
         let sourceID = UUID(uuidString: "88888888-8888-8888-8888-888888888888")!
         let root = try registry.makeRoot(label: "disable")
@@ -30,8 +30,9 @@ final class FolderDisableReauthorizeTests: XCTestCase {
 
         let pendingID = UUID(uuidString: "99999999-9999-9999-9999-999999999999")!
         let runningID = UUID(uuidString: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")!
+        let pausedRunningID = UUID(uuidString: "abababab-abab-abab-abab-abababababab")!
         let nowMs = JobTestSupport.baseTimeMs
-        try database.pool.write { db in
+        try await database.pool.write { db in
             try db.execute(
                 sql: """
                 INSERT INTO job (
@@ -71,6 +72,26 @@ final class FolderDisableReauthorizeTests: XCTestCase {
                     nowMs,
                 ]
             )
+            try db.execute(
+                sql: """
+                INSERT INTO job (
+                    id, kind, payload_version, payload, source_id, coalescing_key,
+                    state, control_request, priority, attempts, max_attempts, not_before_ms,
+                    lease_owner, lease_expires_at_ms, progress_completed, created_at_ms, updated_at_ms
+                ) VALUES (?, ?, 1, ?, ?, ?, 'running', 'pause', 0, 1, 5, ?, 'worker', ?, 0, ?, ?)
+                """,
+                arguments: [
+                    pausedRunningID.uuidString.lowercased(),
+                    FolderReconcileJobFactory.kind,
+                    try FolderReconcileJobFactory.makePayload(sourceID: sourceID),
+                    sourceID.uuidString.lowercased(),
+                    "folder.reconcile.v1:paused-\(sourceID.uuidString.lowercased())",
+                    nowMs,
+                    nowMs + 60_000,
+                    nowMs,
+                    nowMs,
+                ]
+            )
         }
 
         let picker = FolderAuthorizationTestSupport.FakeDirectoryPicker()
@@ -79,32 +100,138 @@ final class FolderDisableReauthorizeTests: XCTestCase {
             picker: picker
         )
 
-        let first = try FolderAuthorizationTestSupport.awaitResult {
-            try await coordinator.disableFolderSource(sourceID: sourceID)
-        }
+        let first = try await coordinator.disableFolderSource(sourceID: sourceID)
         XCTAssertEqual(first, .disabled(sourceID: sourceID))
-        let second = try FolderAuthorizationTestSupport.awaitResult {
-            try await coordinator.disableFolderSource(sourceID: sourceID)
-        }
+        let second = try await coordinator.disableFolderSource(sourceID: sourceID)
         XCTAssertEqual(second, .disabled(sourceID: sourceID))
 
         XCTAssertEqual(try FolderAuthorizationTestSupport.fetchSourceState(database, sourceID: sourceID), .disabled)
-        let pendingState: String = try database.pool.read { db in
+        let pendingState: String = try await database.pool.read { db in
             try String.fetchOne(db, sql: "SELECT state FROM job WHERE id = ?", arguments: [pendingID.uuidString.lowercased()]) ?? ""
         }
         XCTAssertEqual(pendingState, JobState.cancelled.rawValue)
 
-        let runningControl: String = try database.pool.read { db in
-            try String.fetchOne(
-                db,
-                sql: "SELECT control_request FROM job WHERE id = ?",
-                arguments: [runningID.uuidString.lowercased()]
-            ) ?? ""
+        for runningJobID in [runningID, pausedRunningID] {
+            let runningControl: String = try await database.pool.read { db in
+                try String.fetchOne(
+                    db,
+                    sql: "SELECT control_request FROM job WHERE id = ?",
+                    arguments: [runningJobID.uuidString.lowercased()]
+                ) ?? ""
+            }
+            XCTAssertEqual(runningControl, JobControlRequest.cancel.rawValue)
         }
-        XCTAssertEqual(runningControl, JobControlRequest.cancel.rawValue)
     }
 
-    func testReauthorizeSameRootSucceedsAndReusesActiveJob() throws {
+    func testDisableOnAlreadyDisabledSourceStillConvergesActiveJobs() async throws {
+        let database = try FolderAuthorizationTestSupport.makeDatabase()
+        let sourceID = UUID(uuidString: "cdcdcdcd-cdcd-cdcd-cdcd-cdcdcdcdcdcd")!
+        let root = try registry.makeRoot(label: "already-disabled")
+        let bookmark = try FoundationSecurityScopedBookmarkAdapter().createReadOnlyBookmark(for: root)
+        try FolderAuthorizationTestSupport.insertFolderSource(
+            database: database,
+            sourceID: sourceID,
+            bookmark: bookmark,
+            state: .disabled
+        )
+
+        let pendingID = UUID(uuidString: "dededede-dede-dede-dede-dededededede")!
+        let nowMs = JobTestSupport.baseTimeMs
+        try await database.pool.write { db in
+            try db.execute(
+                sql: """
+                INSERT INTO job (
+                    id, kind, payload_version, payload, source_id, coalescing_key,
+                    state, control_request, priority, attempts, max_attempts, not_before_ms,
+                    progress_completed, created_at_ms, updated_at_ms
+                ) VALUES (?, ?, 1, ?, ?, ?, 'pending', 'none', 0, 0, 5, ?, 0, ?, ?)
+                """,
+                arguments: [
+                    pendingID.uuidString.lowercased(),
+                    FolderReconcileJobFactory.kind,
+                    try FolderReconcileJobFactory.makePayload(sourceID: sourceID),
+                    sourceID.uuidString.lowercased(),
+                    FolderReconcileJobFactory.coalescingKey(sourceID: sourceID),
+                    nowMs,
+                    nowMs,
+                    nowMs,
+                ]
+            )
+        }
+
+        let picker = FolderAuthorizationTestSupport.FakeDirectoryPicker()
+        let (coordinator, _, _, _) = FolderAuthorizationTestSupport.makeCoordinator(
+            database: database,
+            picker: picker
+        )
+
+        _ = try await coordinator.disableFolderSource(sourceID: sourceID)
+
+        let pendingState: String = try await database.pool.read { db in
+            try String.fetchOne(db, sql: "SELECT state FROM job WHERE id = ?", arguments: [pendingID.uuidString.lowercased()]) ?? ""
+        }
+        XCTAssertEqual(pendingState, JobState.cancelled.rawValue)
+    }
+
+    func testDisableJobConvergenceFailureRollsBackSourceAndJobs() async throws {
+        let database = try FolderAuthorizationTestSupport.makeDatabase()
+        try FolderAuthorizationTestSupport.AuthorizationDatabaseTestFaults
+            .installDisableJobConvergenceAbortTrigger(database)
+
+        let sourceID = UUID(uuidString: "efefefef-efef-efef-efef-efefefefefef")!
+        let root = try registry.makeRoot(label: "disable-fault")
+        let bookmark = try FoundationSecurityScopedBookmarkAdapter().createReadOnlyBookmark(for: root)
+        try FolderAuthorizationTestSupport.insertFolderSource(
+            database: database,
+            sourceID: sourceID,
+            bookmark: bookmark
+        )
+
+        let pendingID = UUID(uuidString: "fafafafa-fafa-fafa-fafa-fafafafafafa")!
+        let nowMs = JobTestSupport.baseTimeMs
+        try await database.pool.write { db in
+            try db.execute(
+                sql: """
+                INSERT INTO job (
+                    id, kind, payload_version, payload, source_id, coalescing_key,
+                    state, control_request, priority, attempts, max_attempts, not_before_ms,
+                    progress_completed, created_at_ms, updated_at_ms
+                ) VALUES (?, ?, 1, ?, ?, ?, 'pending', 'none', 0, 0, 5, ?, 0, ?, ?)
+                """,
+                arguments: [
+                    pendingID.uuidString.lowercased(),
+                    FolderReconcileJobFactory.kind,
+                    try FolderReconcileJobFactory.makePayload(sourceID: sourceID),
+                    sourceID.uuidString.lowercased(),
+                    FolderReconcileJobFactory.coalescingKey(sourceID: sourceID),
+                    nowMs,
+                    nowMs,
+                    nowMs,
+                ]
+            )
+        }
+
+        let picker = FolderAuthorizationTestSupport.FakeDirectoryPicker()
+        let (coordinator, _, _, _) = FolderAuthorizationTestSupport.makeCoordinator(
+            database: database,
+            picker: picker
+        )
+
+        do {
+            _ = try await coordinator.disableFolderSource(sourceID: sourceID)
+            XCTFail("Expected persistenceFailure")
+        } catch {
+            XCTAssertEqual(error as? FolderAuthorizationError, .persistenceFailure)
+        }
+
+        XCTAssertEqual(try FolderAuthorizationTestSupport.fetchSourceState(database, sourceID: sourceID), .active)
+        let pendingState: String = try await database.pool.read { db in
+            try String.fetchOne(db, sql: "SELECT state FROM job WHERE id = ?", arguments: [pendingID.uuidString.lowercased()]) ?? ""
+        }
+        XCTAssertEqual(pendingState, JobState.pending.rawValue)
+    }
+
+    func testReauthorizeSameRootSucceedsAndReusesActiveJob() async throws {
         let database = try FolderAuthorizationTestSupport.makeDatabase()
         let sourceID = UUID(uuidString: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")!
         let root = try registry.makeRoot(label: "reauth")
@@ -133,27 +260,15 @@ final class FolderDisableReauthorizeTests: XCTestCase {
             )
         )
 
-        let mappingBookmarkPort = FolderAuthorizationTestSupport.MappingBookmarkPort()
-        mappingBookmarkPort.register(url: root)
-        let storedBookmark = try FolderAuthorizationTestSupport.fetchSourceBookmark(database, sourceID: sourceID)!
-        mappingBookmarkPort.urlByBookmark[storedBookmark] = root
-
-        let checker = FolderAuthorizationTestSupport.FixedRelationshipChecker()
-        checker.relationships[FolderAuthorizationTestSupport.FixedRelationshipChecker.key(root, root)] = .same
-
         let picker = FolderAuthorizationTestSupport.FakeDirectoryPicker()
         picker.configuredResponses = [root]
         let (coordinator, _, _, _) = FolderAuthorizationTestSupport.makeCoordinator(
             database: database,
             picker: picker,
-            bookmarkPort: mappingBookmarkPort,
-            relationshipChecker: checker,
             ids: [UUID()]
         )
 
-        let outcome = try FolderAuthorizationTestSupport.awaitResult {
-            try await coordinator.reauthorizeFolder(sourceID: sourceID)
-        }
+        let outcome = try await coordinator.reauthorizeFolder(sourceID: sourceID)
         guard case let .reauthorized(reauthorizedID) = outcome else {
             return XCTFail("Expected reauthorized, got \(outcome)")
         }
@@ -163,7 +278,7 @@ final class FolderDisableReauthorizeTests: XCTestCase {
         XCTAssertEqual(try FolderAuthorizationTestSupport.jobCount(database), 1)
     }
 
-    func testReauthorizeRejectsActiveDisabledMismatchIndeterminateAndCancel() throws {
+    func testReauthorizeRejectsActiveDisabledMismatchIndeterminateAndCancel() async throws {
         let database = try FolderAuthorizationTestSupport.makeDatabase()
         let sourceID = UUID(uuidString: "dddddddd-dddd-dddd-dddd-dddddddddddd")!
         let root = try registry.makeRoot(label: "reject")
@@ -184,30 +299,26 @@ final class FolderDisableReauthorizeTests: XCTestCase {
         )
 
         do {
-            _ = try FolderAuthorizationTestSupport.awaitResult {
-                try await coordinator.reauthorizeFolder(sourceID: sourceID)
-            }
+            _ = try await coordinator.reauthorizeFolder(sourceID: sourceID)
             XCTFail("Expected invalid state")
         } catch {
             XCTAssertEqual(error as? FolderAuthorizationError, .invalidSourceState)
         }
 
-        try database.pool.write { db in
+        try await database.pool.write { db in
             try db.execute(
                 sql: "UPDATE source SET state = 'disabled' WHERE id = ?",
                 arguments: [sourceID.uuidString.lowercased()]
             )
         }
         do {
-            _ = try FolderAuthorizationTestSupport.awaitResult {
-                try await coordinator.reauthorizeFolder(sourceID: sourceID)
-            }
+            _ = try await coordinator.reauthorizeFolder(sourceID: sourceID)
             XCTFail("Expected invalid state")
         } catch {
             XCTAssertEqual(error as? FolderAuthorizationError, .invalidSourceState)
         }
 
-        try database.pool.write { db in
+        try await database.pool.write { db in
             try db.execute(
                 sql: "UPDATE source SET state = 'authorizationRequired' WHERE id = ?",
                 arguments: [sourceID.uuidString.lowercased()]
@@ -215,16 +326,12 @@ final class FolderDisableReauthorizeTests: XCTestCase {
         }
 
         picker.configuredResponses = [nil]
-        let cancelled = try FolderAuthorizationTestSupport.awaitResult {
-            try await coordinator.reauthorizeFolder(sourceID: sourceID)
-        }
+        let cancelled = try await coordinator.reauthorizeFolder(sourceID: sourceID)
         XCTAssertEqual(cancelled, .cancelled)
 
         picker.configuredResponses = [other]
         do {
-            _ = try FolderAuthorizationTestSupport.awaitResult {
-                try await coordinator.reauthorizeFolder(sourceID: sourceID)
-            }
+            _ = try await coordinator.reauthorizeFolder(sourceID: sourceID)
             XCTFail("Expected mismatch")
         } catch {
             XCTAssertEqual(error as? FolderAuthorizationError, .identityMismatch)

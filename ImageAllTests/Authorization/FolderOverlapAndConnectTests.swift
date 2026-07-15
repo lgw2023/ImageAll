@@ -17,7 +17,7 @@ final class FolderOverlapAndConnectTests: XCTestCase {
         super.tearDown()
     }
 
-    func testAtomicConnectCreatesExactlyOneSourceAndOneJobWithExactPayload() throws {
+    func testAtomicConnectCreatesExactlyOneSourceAndOneJobWithExactPayload() async throws {
         let database = try FolderAuthorizationTestSupport.makeDatabase()
         let root = try registry.makeRoot(label: "connect")
         let picker = FolderAuthorizationTestSupport.FakeDirectoryPicker()
@@ -30,9 +30,7 @@ final class FolderOverlapAndConnectTests: XCTestCase {
         )
 
         picker.configuredResponses = [root]
-        let outcome = try FolderAuthorizationTestSupport.awaitResult {
-            try await coordinator.connectFolder()
-        }
+        let outcome = try await coordinator.connectFolder()
         XCTAssertEqual(outcome, .connected(sourceID: sourceID))
         XCTAssertEqual(try FolderAuthorizationTestSupport.sourceCount(database), 1)
         XCTAssertEqual(try FolderAuthorizationTestSupport.jobCount(database), 1)
@@ -70,40 +68,66 @@ final class FolderOverlapAndConnectTests: XCTestCase {
         XCTAssertFalse(payloadText.contains("path"))
     }
 
-    func testOverlapSameAncestorAndDescendantRejectWithoutWrites() throws {
+    func testConnectJobInsertFailureRollsBackSourceAndJob() async throws {
+        let database = try FolderAuthorizationTestSupport.makeDatabase()
+        try FolderAuthorizationTestSupport.AuthorizationDatabaseTestFaults
+            .installConnectJobInsertAbortTrigger(database)
+
+        let root = try registry.makeRoot(label: "connect-fault")
+        let picker = FolderAuthorizationTestSupport.FakeDirectoryPicker()
+        let (coordinator, _, _, _) = FolderAuthorizationTestSupport.makeCoordinator(
+            database: database,
+            picker: picker,
+            ids: [UUID(), UUID()]
+        )
+        picker.configuredResponses = [root]
+
+        do {
+            _ = try await coordinator.connectFolder()
+            XCTFail("Expected persistenceFailure")
+        } catch {
+            XCTAssertEqual(error as? FolderAuthorizationError, .persistenceFailure)
+            FolderAuthorizationTestSupport.assertErrorDescriptionIsSanitized(error)
+        }
+        XCTAssertEqual(try FolderAuthorizationTestSupport.sourceCount(database), 0)
+        XCTAssertEqual(try FolderAuthorizationTestSupport.jobCount(database), 0)
+    }
+
+    func testFoundationRelationshipDetectsSameAncestorAndDescendantOverlap() throws {
+        let checker = FoundationFolderRootRelationshipChecker()
+        let parent = try registry.makeRoot(label: "parent")
+        let child = parent.appendingPathComponent("child", isDirectory: true)
+        try FileManager.default.createDirectory(at: child, withIntermediateDirectories: true)
+
+        XCTAssertEqual(checker.relationship(between: parent, and: parent), .same)
+        XCTAssertEqual(checker.relationship(between: child, and: parent), .existingAncestor)
+        XCTAssertEqual(checker.relationship(between: parent, and: child), .newAncestor)
+    }
+
+    func testOverlapSameAncestorAndDescendantRejectWithoutWrites() async throws {
         let database = try FolderAuthorizationTestSupport.makeDatabase()
         let parent = try registry.makeRoot(label: "parent")
         let child = parent.appendingPathComponent("child", isDirectory: true)
         try FileManager.default.createDirectory(at: child, withIntermediateDirectories: true)
 
         let existingID = UUID(uuidString: "33333333-3333-3333-3333-333333333333")!
-        let mappingBookmarkPort = FolderAuthorizationTestSupport.MappingBookmarkPort()
-        let existingBookmark = mappingBookmarkPort.register(url: parent)
+        let bookmarkPort = FoundationSecurityScopedBookmarkAdapter()
         try FolderAuthorizationTestSupport.insertFolderSource(
             database: database,
             sourceID: existingID,
-            bookmark: existingBookmark
+            bookmark: try bookmarkPort.createReadOnlyBookmark(for: parent)
         )
-
-        let checker = FolderAuthorizationTestSupport.FixedRelationshipChecker()
-        checker.relationships[FolderAuthorizationTestSupport.FixedRelationshipChecker.key(parent, parent)] = .same
-        checker.relationships[FolderAuthorizationTestSupport.FixedRelationshipChecker.key(child, parent)] = .existingAncestor
-        checker.relationships[FolderAuthorizationTestSupport.FixedRelationshipChecker.key(parent, child)] = .newAncestor
 
         let picker = FolderAuthorizationTestSupport.FakeDirectoryPicker()
         let (coordinator, _, _, _) = FolderAuthorizationTestSupport.makeCoordinator(
             database: database,
-            picker: picker,
-            bookmarkPort: mappingBookmarkPort,
-            relationshipChecker: checker
+            picker: picker
         )
 
         for candidate in [parent, child] {
             picker.configuredResponses = [candidate]
             do {
-                _ = try FolderAuthorizationTestSupport.awaitResult {
-                    try await coordinator.connectFolder()
-                }
+                _ = try await coordinator.connectFolder()
                 XCTFail("Expected overlap")
             } catch {
                 XCTAssertEqual(error as? FolderAuthorizationError, .sourceOverlap, "Unexpected error: \(error)")
@@ -113,7 +137,7 @@ final class FolderOverlapAndConnectTests: XCTestCase {
         XCTAssertEqual(try FolderAuthorizationTestSupport.jobCount(database), 0)
     }
 
-    func testDisjointRootsAcceptSecondSource() throws {
+    func testDisjointRootsAcceptSecondSource() async throws {
         let database = try FolderAuthorizationTestSupport.makeDatabase()
         let first = try registry.makeRoot(label: "first")
         let second = try registry.makeRoot(label: "second")
@@ -135,14 +159,12 @@ final class FolderOverlapAndConnectTests: XCTestCase {
         )
         picker.configuredResponses = [second]
 
-        let outcome = try FolderAuthorizationTestSupport.awaitResult {
-            try await coordinator.connectFolder()
-        }
+        let outcome = try await coordinator.connectFolder()
         XCTAssertEqual(outcome, .connected(sourceID: newID))
         XCTAssertEqual(try FolderAuthorizationTestSupport.sourceCount(database), 2)
     }
 
-    func testUnresolvableExistingBookmarkCausesOverlapIndeterminate() throws {
+    func testUnresolvableExistingBookmarkCausesOverlapIndeterminate() async throws {
         let database = try FolderAuthorizationTestSupport.makeDatabase()
         let existingID = UUID(uuidString: "77777777-7777-7777-7777-777777777777")!
         try FolderAuthorizationTestSupport.insertFolderSource(
@@ -163,9 +185,7 @@ final class FolderOverlapAndConnectTests: XCTestCase {
         picker.configuredResponses = [root]
 
         do {
-            _ = try FolderAuthorizationTestSupport.awaitResult {
-                try await coordinator.connectFolder()
-            }
+            _ = try await coordinator.connectFolder()
             XCTFail("Expected indeterminate overlap")
         } catch {
             XCTAssertEqual(error as? FolderAuthorizationError, .overlapIndeterminate)
