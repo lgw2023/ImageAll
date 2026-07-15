@@ -1,8 +1,22 @@
 import Foundation
 import GRDB
 
+struct DerivedImageCacheLookupContext: Equatable, Sendable {
+    let assetID: UUID
+    let contentRevision: Int
+}
+
 struct GRDBDerivedImageCacheRepository: Sendable {
     let database: CatalogDatabase
+    let faultInjector: any DerivedImageRepositoryFaultInjecting
+
+    init(
+        database: CatalogDatabase,
+        faultInjector: any DerivedImageRepositoryFaultInjecting = NoDerivedImageRepositoryFaultInjector()
+    ) {
+        self.database = database
+        self.faultInjector = faultInjector
+    }
 
     func assetExists(assetID: UUID) throws -> Bool {
         try database.pool.read { db in
@@ -14,58 +28,25 @@ struct GRDBDerivedImageCacheRepository: Sendable {
         }
     }
 
-    func fetchGenerationContext(assetID: UUID) throws -> DerivedImageAssetGenerationContext? {
+    func fetchCacheLookupContext(assetID: UUID) throws -> DerivedImageCacheLookupContext? {
         try database.pool.read { db in
             guard let row = try Row.fetchOne(
                 db,
-                sql: """
-                SELECT
-                    a.id AS asset_id,
-                    a.source_id,
-                    a.content_revision,
-                    a.relative_path,
-                    a.file_name,
-                    a.media_type,
-                    a.availability,
-                    a.locator_state,
-                    a.locator_kind,
-                    s.state AS source_state,
-                    s.kind AS source_kind,
-                    f.size_bytes,
-                    f.modified_at_ns,
-                    f.resource_id
-                FROM asset a
-                JOIN source s ON s.id = a.source_id
-                LEFT JOIN file_fingerprint f ON f.asset_id = a.id
-                WHERE a.id = ?
-                """,
+                sql: "SELECT id, content_revision FROM asset WHERE id = ?",
                 arguments: [assetID.uuidString.lowercased()]
             ) else {
                 return nil
             }
-            guard let relativePath: String = row["relative_path"],
-                  let fileName: String = row["file_name"],
-                  let sizeBytes: Int64 = row["size_bytes"],
-                  let modifiedAtNs: Int64 = row["modified_at_ns"]
-            else {
-                return nil
-            }
-            return DerivedImageAssetGenerationContext(
-                assetID: UUID(uuidString: row["asset_id"])!,
-                sourceID: UUID(uuidString: row["source_id"])!,
-                contentRevision: row["content_revision"],
-                relativePath: relativePath,
-                fileName: fileName,
-                mediaType: row["media_type"],
-                availability: row["availability"],
-                locatorState: row["locator_state"],
-                locatorKind: row["locator_kind"],
-                sourceState: row["source_state"],
-                sourceKind: row["source_kind"],
-                fingerprintSizeBytes: sizeBytes,
-                fingerprintModifiedAtNs: modifiedAtNs,
-                fingerprintResourceID: row["resource_id"]
+            return DerivedImageCacheLookupContext(
+                assetID: UUID(uuidString: row["id"])!,
+                contentRevision: row["content_revision"]
             )
+        }
+    }
+
+    func fetchGenerationContext(assetID: UUID) throws -> DerivedImageAssetGenerationContext? {
+        try database.pool.read { db in
+            try fetchGenerationContext(db: db, assetID: assetID)
         }
     }
 
@@ -156,20 +137,27 @@ struct GRDBDerivedImageCacheRepository: Sendable {
                 """,
                 arguments: [accessedAtMs, id.uuidString.lowercased()]
             )
+            if faultInjector.shouldFault(at: .lruTouch) {
+                throw DerivedImageError.derivedCachePersistenceFailed
+            }
         }
     }
 
     func publishEntryReplacingKey(
         entry: DerivedImageCacheEntryRow,
-        expected: DerivedImageAssetGenerationContext
+        expected: DerivedImageAssetGenerationContext,
+        replacementCandidateID: UUID? = nil
     ) throws -> PublishEntryOutcome {
         do {
             return try database.pool.write { db in
                 guard try revalidate(db: db, expected: expected) else {
                     return .sourceChanged
                 }
+                if faultInjector.shouldFault(at: .revalidation) {
+                    throw DerivedImageError.derivedCachePersistenceFailed
+                }
 
-                let existing = try fetchEntry(
+                let current = try fetchEntry(
                     db: db,
                     assetID: entry.assetID,
                     contentRevision: entry.contentRevision,
@@ -177,42 +165,30 @@ struct GRDBDerivedImageCacheRepository: Sendable {
                     variant: entry.variant
                 )
 
-                if let existing, existing.id != entry.id {
-                    return .lostRaceToExisting(winner: existing)
+                if let current {
+                    if current.id == entry.id {
+                        return .published(replacedEntry: nil)
+                    }
+                    if let candidateID = replacementCandidateID, current.id == candidateID {
+                        let replacedEntry = current
+                        try db.execute(
+                            sql: "DELETE FROM derived_image_cache_entry WHERE id = ?",
+                            arguments: [candidateID.uuidString.lowercased()]
+                        )
+                        if faultInjector.shouldFault(at: .insert) {
+                            throw DerivedImageError.derivedCachePersistenceFailed
+                        }
+                        try insertEntry(db: db, entry: entry)
+                        return .published(replacedEntry: replacedEntry)
+                    }
+                    return .lostRaceToExisting(winner: current)
                 }
 
-                if let existing {
-                    try db.execute(
-                        sql: "DELETE FROM derived_image_cache_entry WHERE id = ?",
-                        arguments: [existing.id.uuidString.lowercased()]
-                    )
+                try insertEntry(db: db, entry: entry)
+                if faultInjector.shouldFault(at: .insert) {
+                    throw DerivedImageError.derivedCachePersistenceFailed
                 }
-
-                try db.execute(
-                    sql: """
-                    INSERT INTO derived_image_cache_entry (
-                        id, asset_id, content_revision, representation_version, variant,
-                        storage_format, pixel_width, pixel_height, byte_size, encoded_sha256,
-                        created_at_ms, last_accessed_at_ms
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    arguments: [
-                        entry.id.uuidString.lowercased(),
-                        entry.assetID.uuidString.lowercased(),
-                        entry.contentRevision,
-                        entry.representationVersion,
-                        entry.variant.rawValue,
-                        entry.storageFormat.rawValue,
-                        entry.pixelWidth,
-                        entry.pixelHeight,
-                        entry.byteSize,
-                        entry.encodedSHA256,
-                        entry.createdAtMs,
-                        entry.lastAccessedAtMs,
-                    ]
-                )
-
-                return .published(replacedEntry: existing)
+                return .published(replacedEntry: nil)
             }
         } catch let error as DatabaseError where error.resultCode == .SQLITE_CONSTRAINT {
             if let winner = try fetchEntry(
@@ -232,6 +208,32 @@ struct GRDBDerivedImageCacheRepository: Sendable {
             return false
         }
         return current == expected
+    }
+
+    private func insertEntry(db: Database, entry: DerivedImageCacheEntryRow) throws {
+        try db.execute(
+            sql: """
+            INSERT INTO derived_image_cache_entry (
+                id, asset_id, content_revision, representation_version, variant,
+                storage_format, pixel_width, pixel_height, byte_size, encoded_sha256,
+                created_at_ms, last_accessed_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            arguments: [
+                entry.id.uuidString.lowercased(),
+                entry.assetID.uuidString.lowercased(),
+                entry.contentRevision,
+                entry.representationVersion,
+                entry.variant.rawValue,
+                entry.storageFormat.rawValue,
+                entry.pixelWidth,
+                entry.pixelHeight,
+                entry.byteSize,
+                entry.encodedSHA256,
+                entry.createdAtMs,
+                entry.lastAccessedAtMs,
+            ]
+        )
     }
 
     private func fetchGenerationContext(db: Database, assetID: UUID) throws -> DerivedImageAssetGenerationContext? {
@@ -318,16 +320,21 @@ extension DerivedImageAssetGenerationContext {
             && availability == AssetAvailability.available.rawValue
             && sourceKind == SourceKind.folder.rawValue
             && sourceState == SourceState.active.rawValue
+            && DerivedImageRenderer.supportedSourceMediaTypes.contains(mediaType)
             && RelativePathRules.validate(relativePath).isSuccess
             && RelativePathRules.fileName(from: relativePath) == fileName
             && fingerprintSizeBytes > 0
             && fingerprintModifiedAtNs >= 0
     }
 
-    func matches(_ opened: DerivedImageOpenedFingerprint) -> Bool {
+    func matchesHandleFacts(_ opened: DerivedImageOpenedFingerprint) -> Bool {
         opened.sizeBytes == fingerprintSizeBytes
             && opened.modifiedAtNs == fingerprintModifiedAtNs
             && opened.resourceID == fingerprintResourceID
+    }
+
+    func matches(_ opened: DerivedImageOpenedFingerprint) -> Bool {
+        matchesHandleFacts(opened)
     }
 }
 

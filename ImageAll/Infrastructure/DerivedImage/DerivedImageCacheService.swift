@@ -1,4 +1,6 @@
 import Foundation
+import ImageIO
+import os
 
 actor DerivedImageInFlightCoordinator {
     private var tasks: [DerivedImageCacheKey: Task<DerivedImagePayload, Error>] = [:]
@@ -26,20 +28,70 @@ actor DerivedImageInFlightCoordinator {
     }
 }
 
-actor DerivedImageMaintenanceGate {
-    private var running = false
+final class DerivedImageOperationGate: @unchecked Sendable {
+    private struct GateState {
+        var maintenanceRunning = false
+        var activeGenerations = 0
+        var protectedStagingNames: Set<String> = []
+    }
 
-    func withExclusive<T: Sendable>(_ body: @Sendable () async throws -> T) async throws -> T {
-        while running {
+    private let state = OSAllocatedUnfairLock(initialState: GateState())
+
+    func beginGeneration(stagingName: String) {
+        while true {
+            let blocked = state.withLock { gate -> Bool in
+                if gate.maintenanceRunning {
+                    return true
+                }
+                gate.activeGenerations += 1
+                gate.protectedStagingNames.insert(stagingName)
+                return false
+            }
+            if !blocked {
+                return
+            }
+            Thread.sleep(forTimeInterval: 0.001)
+        }
+    }
+
+    func endGeneration(stagingName: String) {
+        state.withLock { gate in
+            gate.protectedStagingNames.remove(stagingName)
+            gate.activeGenerations = max(0, gate.activeGenerations - 1)
+        }
+    }
+
+    func protectedStagingSnapshot() -> Set<String> {
+        state.withLock { $0.protectedStagingNames }
+    }
+
+    func withMaintenance<T: Sendable>(_ body: @Sendable () async throws -> T) async throws -> T {
+        while true {
+            let acquired = state.withLock { gate -> Bool in
+                if gate.activeGenerations == 0 && !gate.maintenanceRunning {
+                    gate.maintenanceRunning = true
+                    return true
+                }
+                return false
+            }
+            if acquired {
+                break
+            }
             try await Task.sleep(nanoseconds: 1_000_000)
         }
-        running = true
-        defer { running = false }
+        defer {
+            state.withLock { $0.maintenanceRunning = false }
+        }
         return try await body()
     }
 }
 
 final class DerivedImageCacheService: DerivedImageCachePort, @unchecked Sendable {
+    private enum HitValidationResult {
+        case valid(DerivedImagePayload)
+        case invalid(candidate: DerivedImageCacheEntryRow)
+    }
+
     private let database: CatalogDatabase
     private let repository: GRDBDerivedImageCacheRepository
     private let sourceAccess: FolderReconcileSourceAccessService
@@ -47,11 +99,12 @@ final class DerivedImageCacheService: DerivedImageCachePort, @unchecked Sendable
     private let renderer: DerivedImageRenderer
     private let volumeReader: any DerivedImageVolumeCapacityReading
     private let clock: any JobClock
-    private let cachesDirectory: URL
     private let store: DerivedImageCacheStore
     private let faultInjector: any DerivedImageCacheStoreFaultInjecting
+    private let finalPublishCheckpoint: any DerivedImageFinalPublishCheckpointing
+    private let maintenanceCheckpoint: any DerivedImageMaintenanceCheckpointing
     private let inFlight = DerivedImageInFlightCoordinator()
-    private let maintenanceGate = DerivedImageMaintenanceGate()
+    private let operationGate = DerivedImageOperationGate()
 
     init(
         database: CatalogDatabase,
@@ -61,25 +114,88 @@ final class DerivedImageCacheService: DerivedImageCachePort, @unchecked Sendable
         renderer: DerivedImageRenderer = DerivedImageRenderer(),
         volumeReader: any DerivedImageVolumeCapacityReading = FoundationDerivedImageVolumeCapacityReader(),
         clock: any JobClock = SystemJobClock(),
-        faultInjector: any DerivedImageCacheStoreFaultInjecting = NoDerivedImageCacheStoreFaultInjector()
+        faultInjector: any DerivedImageCacheStoreFaultInjecting = NoDerivedImageCacheStoreFaultInjector(),
+        repositoryFaultInjector: any DerivedImageRepositoryFaultInjecting = NoDerivedImageRepositoryFaultInjector(),
+        publishCheckpoint: any DerivedImagePublishCheckpointing = NoDerivedImagePublishCheckpoint(),
+        finalPublishCheckpoint: any DerivedImageFinalPublishCheckpointing = NoDerivedImageFinalPublishCheckpoint(),
+        maintenanceCheckpoint: any DerivedImageMaintenanceCheckpointing = NoDerivedImageMaintenanceCheckpoint()
     ) {
         self.database = database
-        self.repository = GRDBDerivedImageCacheRepository(database: database)
+        self.repository = GRDBDerivedImageCacheRepository(
+            database: database,
+            faultInjector: repositoryFaultInjector
+        )
         self.sourceAccess = sourceAccess
         self.sourceReader = sourceReader
         self.renderer = renderer
         self.volumeReader = volumeReader
         self.clock = clock
-        self.cachesDirectory = cachesDirectory
         self.faultInjector = faultInjector
-        let versionRoot = DerivedImageCachePathLayout.versionRoot(under: cachesDirectory)
-        self.store = DerivedImageCacheStore(versionRoot: versionRoot, faultInjector: faultInjector)
+        self.finalPublishCheckpoint = finalPublishCheckpoint
+        self.maintenanceCheckpoint = maintenanceCheckpoint
+        self.store = DerivedImageCacheStore(
+            cachesDirectory: cachesDirectory,
+            faultInjector: faultInjector,
+            publishCheckpoint: publishCheckpoint
+        )
     }
 
     func loadOrGenerate(_ request: DerivedImageRequest) async throws -> DerivedImagePayload {
-        if try repository.assetExists(assetID: request.assetID) == false {
-            throw DerivedImageError.derivedAssetNotFound
+        do {
+            if try repository.assetExists(assetID: request.assetID) == false {
+                throw DerivedImageError.derivedAssetNotFound
+            }
+            guard let lookup = try repository.fetchCacheLookupContext(assetID: request.assetID) else {
+                throw DerivedImageError.derivedAssetNotFound
+            }
+
+            let key = DerivedImageInFlightCoordinator.DerivedImageCacheKey(
+                assetID: request.assetID,
+                contentRevision: lookup.contentRevision,
+                representationVersion: DerivedImageRepresentationVersion.production,
+                variant: request.variant
+            )
+
+            return try await inFlight.run(key: key) { [self] in
+                try await self.loadOrGenerateInternal(request: request, lookup: lookup)
+            }
+        } catch let error as DerivedImageError {
+            throw error
+        } catch DerivedImageSecureIOError.unsafePath {
+            throw DerivedImageError.derivedCacheUnsafePath
+        } catch {
+            throw DerivedImageError.derivedCachePersistenceFailed
         }
+    }
+
+    func performMaintenance() async throws -> DerivedImageMaintenanceResult {
+        try await operationGate.withMaintenance {
+            try self.performMaintenanceInternal()
+        }
+    }
+
+    private func loadOrGenerateInternal(
+        request: DerivedImageRequest,
+        lookup: DerivedImageCacheLookupContext
+    ) async throws -> DerivedImagePayload {
+        let session = try store.ensureLayout()
+        defer { session.closeHandles() }
+
+        var replacementCandidate: DerivedImageCacheEntryRow?
+        if let entry = try repository.fetchEntry(
+            assetID: lookup.assetID,
+            contentRevision: lookup.contentRevision,
+            representationVersion: DerivedImageRepresentationVersion.production,
+            variant: request.variant
+        ) {
+            switch try validateHit(entry: entry, session: session) {
+            case let .valid(payload):
+                return payload
+            case let .invalid(candidate):
+                replacementCandidate = candidate
+            }
+        }
+
         guard let context = try repository.fetchGenerationContext(assetID: request.assetID) else {
             throw DerivedImageError.derivedAssetIneligible
         }
@@ -87,90 +203,77 @@ final class DerivedImageCacheService: DerivedImageCachePort, @unchecked Sendable
             throw DerivedImageError.derivedAssetIneligible
         }
 
-        let key = DerivedImageInFlightCoordinator.DerivedImageCacheKey(
-            assetID: request.assetID,
-            contentRevision: context.contentRevision,
-            representationVersion: DerivedImageRepresentationVersion.production,
-            variant: request.variant
+        return try await generateFresh(
+            request: request,
+            context: context,
+            session: session,
+            replacementCandidate: replacementCandidate
         )
-
-        return try await inFlight.run(key: key) { [self] in
-            try await self.loadOrGenerateInternal(request: request, context: context)
-        }
-    }
-
-    func performMaintenance() async throws -> DerivedImageMaintenanceResult {
-        try await maintenanceGate.withExclusive {
-            try self.performMaintenanceInternal()
-        }
-    }
-
-    private func loadOrGenerateInternal(
-        request: DerivedImageRequest,
-        context: DerivedImageAssetGenerationContext
-    ) async throws -> DerivedImagePayload {
-        try store.ensureLayout()
-
-        if let entry = try repository.fetchEntry(
-            assetID: context.assetID,
-            contentRevision: context.contentRevision,
-            representationVersion: DerivedImageRepresentationVersion.production,
-            variant: request.variant
-        ), let payload = try validateHit(entry: entry, context: context) {
-            return payload
-        }
-
-        return try await generateFresh(request: request, context: context)
     }
 
     private func validateHit(
         entry: DerivedImageCacheEntryRow,
-        context: DerivedImageAssetGenerationContext
-    ) throws -> DerivedImagePayload? {
-        guard let bytes = try store.readObjectBytes(entry: entry) else {
-            try repository.deleteEntry(id: entry.id)
-            store.removeInvalidEntryArtifacts(entry: entry)
-            return nil
+        session: DerivedImageAnchoredCacheSession
+    ) throws -> HitValidationResult {
+        guard let bytes = try store.readObjectBytes(entry: entry, session: session) else {
+            return .invalid(candidate: entry)
         }
         guard try renderer.validateStoredBytes(bytes, entry: entry) else {
-            try repository.deleteEntry(id: entry.id)
-            store.removeInvalidEntryArtifacts(entry: entry)
-            return nil
+            return .invalid(candidate: entry)
         }
         let nowMs = clock.nowMs
         try repository.touchEntry(id: entry.id, accessedAtMs: nowMs)
-        return DerivedImagePayload(
-            entryID: entry.id,
-            assetID: entry.assetID,
-            contentRevision: entry.contentRevision,
-            representationVersion: entry.representationVersion,
-            variant: entry.variant,
-            storageFormat: entry.storageFormat,
-            pixelWidth: entry.pixelWidth,
-            pixelHeight: entry.pixelHeight,
-            encodedBytes: bytes,
-            origin: .cacheHit
+        return .valid(
+            DerivedImagePayload(
+                entryID: entry.id,
+                assetID: entry.assetID,
+                contentRevision: entry.contentRevision,
+                representationVersion: entry.representationVersion,
+                variant: entry.variant,
+                storageFormat: entry.storageFormat,
+                pixelWidth: entry.pixelWidth,
+                pixelHeight: entry.pixelHeight,
+                encodedBytes: bytes,
+                origin: .cacheHit
+            )
         )
     }
 
     private func generateFresh(
         request: DerivedImageRequest,
-        context: DerivedImageAssetGenerationContext
+        context: DerivedImageAssetGenerationContext,
+        session: DerivedImageAnchoredCacheSession,
+        replacementCandidate: DerivedImageCacheEntryRow? = nil
     ) async throws -> DerivedImagePayload {
-        let incomingBytes: UInt64
-        let artifact: DerivedImageEncodedArtifact
-        let entryID = UUID()
+        let stagingName = DerivedImageCachePathLayout.stagingFileName()
+        operationGate.beginGeneration(stagingName: stagingName)
+        defer { operationGate.endGeneration(stagingName: stagingName) }
 
-        let generated: DerivedImageEncodedArtifact
+        let artifact: DerivedImageEncodedArtifact
         do {
-            generated = try sourceAccess.withActiveSourceRootURL(sourceID: context.sourceID) { rootURL in
+            artifact = try sourceAccess.withActiveSourceRootURL(sourceID: context.sourceID) { rootURL in
                 let initial = try self.sourceReader.readSourceBytes(rootURL: rootURL, relativePath: context.relativePath)
-                guard context.matches(initial.fingerprint) else {
+                guard context.matchesHandleFacts(initial.initialFingerprint) else {
+                    throw DerivedImageError.derivedSourceChanged
+                }
+                guard initial.preHandleFstat.sizeBytes == initial.postHandleFstat.sizeBytes,
+                      initial.preHandleFstat.modifiedAtNs == initial.postHandleFstat.modifiedAtNs,
+                      initial.initialFingerprint.resourceID == initial.postResourceID
+                else {
+                    throw DerivedImageError.derivedSourceChanged
+                }
+                if let source = CGImageSourceCreateWithData(initial.bytes as CFData, nil),
+                   let actualUTI = CGImageSourceGetType(source) as String?,
+                   actualUTI != context.mediaType
+                {
                     throw DerivedImageError.derivedSourceChanged
                 }
                 let rendered = try self.renderer.render(sourceBytes: initial.bytes, variant: request.variant)
-                let postOpen = try self.sourceReader.openedFingerprint(rootURL: rootURL, relativePath: context.relativePath)
-                guard context.matches(postOpen) else {
+                let reopened = try self.sourceReader.reopenedLocatorFingerprint(
+                    rootURL: rootURL,
+                    relativePath: context.relativePath
+                )
+                guard context.matches(reopened) else {
                     throw DerivedImageError.derivedSourceChanged
                 }
                 return rendered
@@ -182,33 +285,45 @@ final class DerivedImageCacheService: DerivedImageCachePort, @unchecked Sendable
             case .sourceUnavailable, .enumerationIncomplete:
                 throw DerivedImageError.derivedSourceUnavailable
             }
+        } catch DerivedImageSecureIOError.ioFailure {
+            throw DerivedImageError.derivedSourceUnavailable
+        } catch DerivedImageSecureIOError.unsafePath {
+            throw DerivedImageError.derivedSourceChanged
         } catch let error as DerivedImageError {
             throw error
+        } catch {
+            throw DerivedImageError.derivedCachePersistenceFailed
         }
 
-        artifact = generated
         guard artifact.byteSize > 0 else {
             throw DerivedImageError.derivedEncodeFailed
         }
-        guard let incoming = UInt64(exactly: artifact.byteSize) else {
+        guard let incomingBytes = UInt64(exactly: artifact.byteSize) else {
             throw DerivedImageError.derivedInsufficientSpace
         }
-        incomingBytes = incoming
-
         if incomingBytes > DerivedImageQuotaPolicy.publishedQuotaBytes {
             throw DerivedImageError.derivedInsufficientSpace
         }
 
-        try await evictIfNeeded(incomingBytes: incomingBytes)
+        try await evictIfNeeded(incomingBytes: incomingBytes, session: session)
 
         if faultInjector.shouldFault(at: .dbPublish) {
             throw DerivedImageError.derivedCachePersistenceFailed
         }
 
+        let entryID = UUID()
         _ = try store.publish(
             artifact: artifact,
             entryID: entryID,
-            format: artifact.storageFormat
+            format: artifact.storageFormat,
+            stagingName: stagingName,
+            session: session
+        )
+
+        finalPublishCheckpoint.blockAfterFinalObjectPublished(
+            entryID: entryID,
+            storageFormat: artifact.storageFormat,
+            stagingName: stagingName
         )
 
         let nowMs = clock.nowMs
@@ -227,21 +342,33 @@ final class DerivedImageCacheService: DerivedImageCachePort, @unchecked Sendable
             lastAccessedAtMs: nowMs
         )
 
-        let outcome = try repository.publishEntryReplacingKey(entry: entry, expected: context)
+        let outcome = try repository.publishEntryReplacingKey(
+            entry: entry,
+            expected: context,
+            replacementCandidateID: replacementCandidate?.id
+        )
         switch outcome {
         case .sourceChanged:
-            store.deleteObject(entryID: entryID, format: artifact.storageFormat)
+            try? store.deleteObjectDuringEviction(entryID: entryID, format: artifact.storageFormat, session: session)
             throw DerivedImageError.derivedSourceChanged
         case let .lostRaceToExisting(winner):
-            store.deleteObject(entryID: entryID, format: artifact.storageFormat)
-            guard let payload = try validateHit(entry: winner, context: context) else {
-                throw DerivedImageError.derivedCachePersistenceFailed
+            try? store.deleteObjectDuringEviction(entryID: entryID, format: artifact.storageFormat, session: session)
+            switch try validateHit(entry: winner, session: session) {
+            case let .valid(payload):
+                return payload
+            case let .invalid(candidate):
+                return try await generateFresh(
+                    request: request,
+                    context: context,
+                    session: session,
+                    replacementCandidate: candidate
+                )
             }
-            return payload
         case let .published(replacedEntry):
             if let replacedEntry {
-                if !faultInjector.shouldFault(at: .oldObjectDelete) {
-                    store.deleteObject(entryID: replacedEntry.id, format: replacedEntry.storageFormat)
+                let shouldFaultOldDelete = faultInjector.shouldFault(at: .oldObjectDelete)
+                if !shouldFaultOldDelete {
+                    try? session.deleteObject(entryID: replacedEntry.id, format: replacedEntry.storageFormat)
                 }
             }
             return DerivedImagePayload(
@@ -259,16 +386,15 @@ final class DerivedImageCacheService: DerivedImageCachePort, @unchecked Sendable
         }
     }
 
-    private func evictIfNeeded(incomingBytes: UInt64) async throws {
-        guard let facts = try volumeReader.volumeFacts(at: store.versionRoot) else {
-            throw DerivedImageError.derivedCapacityUnavailable
-        }
+    private func evictIfNeeded(incomingBytes: UInt64, session: DerivedImageAnchoredCacheSession) async throws {
+        let facts = try requireVolumeFacts(at: store.versionRoot)
         guard let reserve = DerivedImageQuotaPolicy.reserveBytes(totalVolumeBytes: facts.totalBytes) else {
             throw DerivedImageError.derivedCapacityUnavailable
         }
 
         var published = try repository.publishedByteTotal()
         var available = facts.availableBytes
+        var lastAvailableAfterSuccessfulDelete = available
 
         while true {
             let needsQuotaEviction: Bool
@@ -295,46 +421,95 @@ final class DerivedImageCacheService: DerivedImageCachePort, @unchecked Sendable
             }
 
             try repository.deleteEntry(id: victim.id)
-            store.deleteObject(entryID: victim.id, format: victim.storageFormat)
             if let victimBytes = UInt64(exactly: victim.byteSize),
                let reduced = DerivedImageQuotaPolicy.subtracting(published, victimBytes)
             {
                 published = reduced
             }
 
-            guard let refreshed = try volumeReader.volumeFacts(at: store.versionRoot) else {
+            let objectDeleted = (try? store.deleteObjectDuringEviction(
+                entryID: victim.id,
+                format: victim.storageFormat,
+                session: session
+            )) ?? false
+
+            if objectDeleted {
+                let refreshed = try requireVolumeFacts(at: store.versionRoot)
+                available = refreshed.availableBytes
+                lastAvailableAfterSuccessfulDelete = available
+            } else {
+                available = lastAvailableAfterSuccessfulDelete
+            }
+        }
+    }
+
+    private func requireVolumeFacts(at url: URL) throws -> DerivedImageVolumeFacts {
+        do {
+            guard let facts = try volumeReader.volumeFacts(at: url) else {
                 throw DerivedImageError.derivedCapacityUnavailable
             }
-            available = refreshed.availableBytes
+            return facts
+        } catch let error as DerivedImageError {
+            throw error
+        } catch {
+            throw DerivedImageError.derivedCapacityUnavailable
         }
     }
 
     private func performMaintenanceInternal() throws -> DerivedImageMaintenanceResult {
-        try store.ensureLayout()
+        do {
+            return try performMaintenanceInternalBody()
+        } catch let error as DerivedImageError {
+            throw error
+        } catch DerivedImageSecureIOError.unsafePath {
+            throw DerivedImageError.derivedCacheUnsafePath
+        } catch {
+            throw DerivedImageError.derivedCachePersistenceFailed
+        }
+    }
+
+    private func performMaintenanceInternalBody() throws -> DerivedImageMaintenanceResult {
+        maintenanceCheckpoint.blockWhileMaintenanceHeld()
+
+        let session = try store.ensureLayout()
+        defer { session.closeHandles() }
+
         var removedEntries = 0
         var removedObjects = 0
         var removedBytes: UInt64 = 0
         var unsafeObjects = 0
 
         let entries = try repository.allEntries()
-        let referenced = store.listReferencedObjectPaths(entries: entries)
-
+        var validEntries: [DerivedImageCacheEntryRow] = []
         for entry in entries {
-            guard let bytes = try store.readObjectBytes(entry: entry),
+            guard let bytes = try store.readObjectBytes(entry: entry, session: session),
                   try renderer.validateStoredBytes(bytes, entry: entry)
             else {
                 try repository.deleteEntry(id: entry.id)
-                store.removeInvalidEntryArtifacts(entry: entry)
+                if let deletedBytes = try store.removeInvalidEntryArtifacts(entry: entry, session: session) {
+                    removedObjects += 1
+                    removedBytes &+= deletedBytes
+                }
                 removedEntries += 1
                 continue
             }
+            validEntries.append(entry)
             _ = bytes
         }
 
-        let objectsRoot = DerivedImageCachePathLayout.objectsDirectory(under: store.versionRoot)
-        let stagingRoot = DerivedImageCachePathLayout.stagingDirectory(under: store.versionRoot)
-        removedObjects += try sweepUnreferenced(directory: objectsRoot, referenced: referenced, removedBytes: &removedBytes, unsafeObjects: &unsafeObjects)
-        removedObjects += try sweepStaging(stagingRoot: stagingRoot, removedBytes: &removedBytes, unsafeObjects: &unsafeObjects)
+        let referenced = store.listReferencedObjectPaths(entries: validEntries)
+        let protected = operationGate.protectedStagingSnapshot()
+        removedObjects += try session.sweepUnreferencedObjects(
+            referenced: referenced,
+            protectedStagingNames: protected,
+            removedBytes: &removedBytes,
+            unsafeObjects: &unsafeObjects
+        )
+        removedObjects += try session.sweepStaging(
+            excluding: protected,
+            removedBytes: &removedBytes,
+            unsafeObjects: &unsafeObjects
+        )
         return DerivedImageMaintenanceResult(
             removedEntries: removedEntries,
             removedObjects: removedObjects,
@@ -342,69 +517,17 @@ final class DerivedImageCacheService: DerivedImageCachePort, @unchecked Sendable
             unsafeObjects: unsafeObjects
         )
     }
+}
 
-    private func sweepUnreferenced(
-        directory: URL,
-        referenced: Set<String>,
-        removedBytes: inout UInt64,
-        unsafeObjects: inout Int
-    ) throws -> Int {
-        var removedCount = 0
-        guard let shardEnumerator = FileManager.default.enumerator(
-            at: directory,
-            includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey],
-            options: [.skipsHiddenFiles]
-        ) else {
-            return 0
+private extension DerivedImageCacheStore {
+    func deleteObjectDuringEviction(
+        entryID: UUID,
+        format: DerivedImageStorageFormat,
+        session: DerivedImageAnchoredCacheSession
+    ) throws -> Bool {
+        if faultInjector.shouldFault(at: .evictObjectDelete) {
+            throw DerivedImageError.derivedCachePersistenceFailed
         }
-        let versionRootPath = store.versionRoot.path
-        for case let url as URL in shardEnumerator {
-            if DerivedImageSecureIO.isSymlink(at: url) {
-                unsafeObjects += 1
-                continue
-            }
-            let rel = String(url.path.dropFirst(versionRootPath.count + 1))
-            guard rel.hasPrefix("\(DerivedImageCachePathLayout.objectsComponent)/") else {
-                unsafeObjects += 1
-                continue
-            }
-            var isDir: ObjCBool = false
-            guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir), !isDir.boolValue else {
-                continue
-            }
-            if referenced.contains(rel) {
-                continue
-            }
-            if let size = DerivedImageSecureIO.fileSize(at: url) {
-                removedBytes &+= UInt64(size)
-            }
-            DerivedImageSecureIO.removeIfPresent(at: url)
-            removedCount += 1
-        }
-        return removedCount
-    }
-
-    private func sweepStaging(
-        stagingRoot: URL,
-        removedBytes: inout UInt64,
-        unsafeObjects: inout Int
-    ) throws -> Int {
-        var removedCount = 0
-        guard let enumerator = FileManager.default.enumerator(at: stagingRoot, includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey]) else {
-            return 0
-        }
-        for case let url as URL in enumerator {
-            if DerivedImageSecureIO.isSymlink(at: url) {
-                unsafeObjects += 1
-                continue
-            }
-            guard DerivedImageSecureIO.isRegularFile(at: url) else { continue }
-            if let size = DerivedImageSecureIO.fileSize(at: url) {
-                removedBytes &+= UInt64(size)
-            }
-            DerivedImageSecureIO.removeIfPresent(at: url)
-            removedCount += 1
-        }
-        return removedCount
+        return try session.deleteObject(entryID: entryID, format: format)
     }
 }

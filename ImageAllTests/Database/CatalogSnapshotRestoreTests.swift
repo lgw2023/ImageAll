@@ -82,6 +82,95 @@ final class CatalogSnapshotRestoreTests: XCTestCase {
         XCTAssertFalse(CatalogDatabaseSidecarHelpers.hasSidecars(at: emptyDir.appendingPathComponent(CatalogSnapshotConstants.manifestFilename)))
     }
 
+    func testV002PrefixSnapshotUpgradesOnlyOnWorkCopyAndLeavesPublishedSnapshotImmutable() throws {
+        let root = try SnapshotTestSupport.makeTempRoot(testCase: self)
+        let v002SourceURL = root.appendingPathComponent("v002-source/ImageAll.sqlite")
+        try FileManager.default.createDirectory(
+            at: v002SourceURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+
+        var configuration = Configuration()
+        configuration.prepareDatabase { db in
+            try db.execute(sql: "PRAGMA foreign_keys = ON")
+        }
+        let v002Pool = try DatabasePool(path: v002SourceURL.path, configuration: configuration)
+        try DatabaseTestSupport.makeV002OnlyMigrator().migrate(v002Pool)
+        let v002Database = CatalogDatabase(pool: v002Pool)
+        let sentinel = try SnapshotTestSupport.seedRepresentativeFacts(in: v002Database)
+
+        let descriptor = try SnapshotTestSupport.writePublishedSnapshot(
+            in: SnapshotTestSupport.backupsDirectoryURL(in: root),
+            snapshotID: UUID(),
+            sourceDatabase: v002Database
+        )
+        XCTAssertEqual(
+            descriptor.manifest.appliedMigrations,
+            [
+                CatalogMigrationID.v001CreateCatalogCore,
+                CatalogMigrationID.v002AddStage1CatalogQuerySupport,
+            ]
+        )
+
+        let snapshotDatabaseURL = descriptor.directoryURL
+            .appendingPathComponent(CatalogSnapshotConstants.databaseFilename)
+        let snapshotManifestURL = descriptor.directoryURL
+            .appendingPathComponent(CatalogSnapshotConstants.manifestFilename)
+        let snapshotDatabaseBytesBefore = try Data(contentsOf: snapshotDatabaseURL)
+        let snapshotDatabaseHashBefore = try CatalogSnapshotHashing.sha256Hex(of: snapshotDatabaseURL)
+        let snapshotManifestBytesBefore = try Data(contentsOf: snapshotManifestURL)
+        let snapshotManifestHashBefore = try CatalogSnapshotHashing.sha256Hex(of: snapshotManifestURL)
+
+        try CatalogDatabase.closePool(v002Pool)
+
+        let liveURL = SnapshotTestSupport.liveDatabaseURL(in: root)
+        let liveDatabase = try SnapshotTestSupport.openLiveDatabase(at: liveURL)
+        _ = try SnapshotTestSupport.seedRepresentativeFacts(in: liveDatabase)
+        try liveDatabase.checkpointAndCloseForReplacement()
+
+        let result = try CatalogDatabaseRestoreCoordinator().restoreSnapshot(
+            snapshotDirectoryURL: descriptor.directoryURL,
+            liveDatabaseURL: liveURL,
+            operationID: UUID()
+        )
+
+        let restored = try CatalogDatabase.open(at: result.restoredDatabaseURL)
+        XCTAssertEqual(try restored.appliedMigrationIDs(), CatalogMigrationID.knownOrdered)
+        try restored.pool.read { db in
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT id FROM source"),
+                sentinel.sourceID.uuidString.lowercased()
+            )
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT id FROM asset"),
+                sentinel.assetID.uuidString.lowercased()
+            )
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT id FROM tag"),
+                sentinel.tagID.uuidString.lowercased()
+            )
+            XCTAssertEqual(
+                try String.fetchOne(db, sql: "SELECT id FROM job"),
+                sentinel.jobID.uuidString.lowercased()
+            )
+            XCTAssertTrue(try db.tableExists("derived_image_cache_entry"))
+        }
+
+        XCTAssertEqual(
+            try SnapshotTestSupport.readMigrationIDs(at: snapshotDatabaseURL),
+            [
+                CatalogMigrationID.v001CreateCatalogCore,
+                CatalogMigrationID.v002AddStage1CatalogQuerySupport,
+            ]
+        )
+        XCTAssertEqual(try Data(contentsOf: snapshotDatabaseURL), snapshotDatabaseBytesBefore)
+        XCTAssertEqual(try CatalogSnapshotHashing.sha256Hex(of: snapshotDatabaseURL), snapshotDatabaseHashBefore)
+        XCTAssertEqual(try Data(contentsOf: snapshotManifestURL), snapshotManifestBytesBefore)
+        XCTAssertEqual(try CatalogSnapshotHashing.sha256Hex(of: snapshotManifestURL), snapshotManifestHashBefore)
+        XCTAssertFalse(CatalogDatabaseSidecarHelpers.hasSidecars(at: snapshotDatabaseURL))
+        XCTAssertFalse(CatalogDatabaseSidecarHelpers.hasSidecars(at: snapshotManifestURL))
+    }
+
     func testFutureMigrationSnapshotIsRejectedBeforeReplacement() throws {
         let root = try SnapshotTestSupport.makeTempRoot(testCase: self)
         let backups = SnapshotTestSupport.backupsDirectoryURL(in: root)

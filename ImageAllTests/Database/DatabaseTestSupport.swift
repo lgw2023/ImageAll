@@ -21,6 +21,12 @@ enum DatabaseTestSupport {
         return migrator
     }
 
+    static func makeV002OnlyMigrator() -> DatabaseMigrator {
+        var migrator = makeV001OnlyMigrator()
+        V002AddStage1CatalogQuerySupportMigration.register(on: &migrator)
+        return migrator
+    }
+
     static func makeTempDatabaseURL(addTeardown: ((@escaping () -> Void) -> Void)? = nil) throws -> URL {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("ImageAllTests-\(UUID().uuidString)", isDirectory: true)

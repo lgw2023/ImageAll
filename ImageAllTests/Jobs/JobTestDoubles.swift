@@ -5,6 +5,27 @@ struct FixedJobClock: JobClock {
     let nowMs: Int64
 }
 
+final class MutableJobClock: JobClock, @unchecked Sendable {
+    private let lock = NSLock()
+    private var currentMs: Int64
+
+    init(nowMs: Int64) {
+        currentMs = nowMs
+    }
+
+    var nowMs: Int64 {
+        lock.lock()
+        defer { lock.unlock() }
+        return currentMs
+    }
+
+    func setNowMs(_ ms: Int64) {
+        lock.lock()
+        currentMs = ms
+        lock.unlock()
+    }
+}
+
 struct FixedDelayRetryPolicy: RetryPolicy {
     let delayMs: Int64
 

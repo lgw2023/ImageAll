@@ -5,7 +5,7 @@ import ImageIO
 import UniformTypeIdentifiers
 
 struct DerivedImageRenderer: Sendable {
-    private static let allowedTypes: Set<String> = [
+    static let supportedSourceMediaTypes: Set<String> = [
         UTType.jpeg.identifier,
         UTType.png.identifier,
         UTType.heic.identifier,
@@ -13,6 +13,8 @@ struct DerivedImageRenderer: Sendable {
         UTType.tiff.identifier,
         UTType.webP.identifier,
     ]
+
+    private static let allowedTypes: Set<String> = supportedSourceMediaTypes
 
     private static let jpegQuality: CGFloat = 0.85
     private static let sRGB = CGColorSpace(name: CGColorSpace.sRGB)!
@@ -246,8 +248,8 @@ struct DerivedImageRenderer: Sendable {
         default:
             return false
         }
-        for row in 0 ..< min(image.height, 64) {
-            for col in 0 ..< min(image.width, 64) {
+        for row in 0 ..< image.height {
+            for col in 0 ..< image.width {
                 let offset = row * image.bytesPerRow + col * bytesPerPixel + alphaIndex
                 guard offset < bytes.count else { continue }
                 if bytes[offset] < 255 {
