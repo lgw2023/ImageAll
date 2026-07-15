@@ -159,6 +159,26 @@
 		RR000001000000000000010E /* FolderReconcileReadonlyMatrixTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = RR000101000000000000010E /* FolderReconcileReadonlyMatrixTests.swift */; };
 		RR000001000000000000010F /* FolderReconcileTestSeams.swift in Sources */ = {isa = PBXBuildFile; fileRef = RR000101000000000000010F /* FolderReconcileTestSeams.swift */; };
 		RR0000010000000000000201 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = RR0001010000000000000201 /* PrivacyInfo.xcprivacy */; };
+		II0000010000000000000001 /* V003AddDerivedImageCacheMigration.swift in Sources */ = {isa = PBXBuildFile; fileRef = II0001010000000000000001 /* V003AddDerivedImageCacheMigration.swift */; };
+		II0000010000000000000002 /* DerivedImageTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = II0001010000000000000002 /* DerivedImageTypes.swift */; };
+		II0000010000000000000003 /* DerivedImageErrors.swift in Sources */ = {isa = PBXBuildFile; fileRef = II0001010000000000000003 /* DerivedImageErrors.swift */; };
+		II0000010000000000000004 /* DerivedImageCachePort.swift in Sources */ = {isa = PBXBuildFile; fileRef = II0001010000000000000004 /* DerivedImageCachePort.swift */; };
+		II0000010000000000000005 /* DerivedImageCachePathLayout.swift in Sources */ = {isa = PBXBuildFile; fileRef = II0001010000000000000005 /* DerivedImageCachePathLayout.swift */; };
+		II0000010000000000000006 /* DerivedImageSecureIO.swift in Sources */ = {isa = PBXBuildFile; fileRef = II0001010000000000000006 /* DerivedImageSecureIO.swift */; };
+		II0000010000000000000007 /* DerivedImageCacheModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = II0001010000000000000007 /* DerivedImageCacheModels.swift */; };
+		II0000010000000000000008 /* DerivedImageRenderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = II0001010000000000000008 /* DerivedImageRenderer.swift */; };
+		II0000010000000000000009 /* GRDBDerivedImageCacheRepository.swift in Sources */ = {isa = PBXBuildFile; fileRef = II0001010000000000000009 /* GRDBDerivedImageCacheRepository.swift */; };
+		II000001000000000000000A /* DerivedImageCacheStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = II000101000000000000000A /* DerivedImageCacheStore.swift */; };
+		II000001000000000000000B /* DerivedImageSourceReader.swift in Sources */ = {isa = PBXBuildFile; fileRef = II000101000000000000000B /* DerivedImageSourceReader.swift */; };
+		II000001000000000000000C /* DerivedImageCacheService.swift in Sources */ = {isa = PBXBuildFile; fileRef = II000101000000000000000C /* DerivedImageCacheService.swift */; };
+		II0000010000000000000101 /* DerivedImageTestSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = II0001010000000000000101 /* DerivedImageTestSupport.swift */; };
+		II0000010000000000000102 /* V003MigrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = II0001010000000000000102 /* V003MigrationTests.swift */; };
+		II0000010000000000000103 /* DerivedImageContractTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = II0001010000000000000103 /* DerivedImageContractTests.swift */; };
+		II0000010000000000000104 /* DerivedImageRenderingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = II0001010000000000000104 /* DerivedImageRenderingTests.swift */; };
+		II0000010000000000000105 /* DerivedImageFingerprintTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = II0001010000000000000105 /* DerivedImageFingerprintTests.swift */; };
+		II0000010000000000000106 /* DerivedImageFaultTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = II0001010000000000000106 /* DerivedImageFaultTests.swift */; };
+		II0000010000000000000107 /* DerivedImageQuotaTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = II0001010000000000000107 /* DerivedImageQuotaTests.swift */; };
+		II0000010000000000000108 /* DerivedImagePrivacyRegressionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = II0001010000000000000108 /* DerivedImagePrivacyRegressionTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -325,6 +345,26 @@
 		RR000101000000000000010E /* FolderReconcileReadonlyMatrixTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FolderReconcileReadonlyMatrixTests.swift; sourceTree = "<group>"; };
 		RR000101000000000000010F /* FolderReconcileTestSeams.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FolderReconcileTestSeams.swift; sourceTree = "<group>"; };
 		RR0001010000000000000201 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
+		II0001010000000000000001 /* V003AddDerivedImageCacheMigration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = V003AddDerivedImageCacheMigration.swift; sourceTree = "<group>"; };
+		II0001010000000000000002 /* DerivedImageTypes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DerivedImageTypes.swift; sourceTree = "<group>"; };
+		II0001010000000000000003 /* DerivedImageErrors.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DerivedImageErrors.swift; sourceTree = "<group>"; };
+		II0001010000000000000004 /* DerivedImageCachePort.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DerivedImageCachePort.swift; sourceTree = "<group>"; };
+		II0001010000000000000005 /* DerivedImageCachePathLayout.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DerivedImageCachePathLayout.swift; sourceTree = "<group>"; };
+		II0001010000000000000006 /* DerivedImageSecureIO.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DerivedImageSecureIO.swift; sourceTree = "<group>"; };
+		II0001010000000000000007 /* DerivedImageCacheModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DerivedImageCacheModels.swift; sourceTree = "<group>"; };
+		II0001010000000000000008 /* DerivedImageRenderer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DerivedImageRenderer.swift; sourceTree = "<group>"; };
+		II0001010000000000000009 /* GRDBDerivedImageCacheRepository.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GRDBDerivedImageCacheRepository.swift; sourceTree = "<group>"; };
+		II000101000000000000000A /* DerivedImageCacheStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DerivedImageCacheStore.swift; sourceTree = "<group>"; };
+		II000101000000000000000B /* DerivedImageSourceReader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DerivedImageSourceReader.swift; sourceTree = "<group>"; };
+		II000101000000000000000C /* DerivedImageCacheService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DerivedImageCacheService.swift; sourceTree = "<group>"; };
+		II0001010000000000000101 /* DerivedImageTestSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DerivedImageTestSupport.swift; sourceTree = "<group>"; };
+		II0001010000000000000102 /* V003MigrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = V003MigrationTests.swift; sourceTree = "<group>"; };
+		II0001010000000000000103 /* DerivedImageContractTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DerivedImageContractTests.swift; sourceTree = "<group>"; };
+		II0001010000000000000104 /* DerivedImageRenderingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DerivedImageRenderingTests.swift; sourceTree = "<group>"; };
+		II0001010000000000000105 /* DerivedImageFingerprintTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DerivedImageFingerprintTests.swift; sourceTree = "<group>"; };
+		II0001010000000000000106 /* DerivedImageFaultTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DerivedImageFaultTests.swift; sourceTree = "<group>"; };
+		II0001010000000000000107 /* DerivedImageQuotaTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DerivedImageQuotaTests.swift; sourceTree = "<group>"; };
+		II0001010000000000000108 /* DerivedImagePrivacyRegressionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DerivedImagePrivacyRegressionTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -375,6 +415,7 @@
 				AA0006010000000000000008 /* Startup */,
 				HH0006010000000000000003 /* Authorization */,
 				RR0006010000000000000003 /* Reconcile */,
+				II0006010000000000000003 /* DerivedImage */,
 				AA0001010000000000000005 /* CompositionRootTests.swift */,
 				BB0006010000000000000004 /* Domain */,
 				CC0006010000000000000002 /* Database */,
@@ -420,6 +461,7 @@
 			isa = PBXGroup;
 			children = (
 				HH0006010000000000000001 /* Authorization */,
+			II0006010000000000000001 /* DerivedImage */,
 				FF0006010000000000000001 /* Catalog */,
 				EE0006010000000000000001 /* Ports */,
 				DD0006010000000000000001 /* Jobs */,
@@ -535,6 +577,7 @@
 				CC0006010000000000000003 /* Database */,
 				DD0006010000000000000003 /* JobQueue */,
 				RR0006010000000000000002 /* Reconcile */,
+				II0006010000000000000002 /* DerivedImage */,
 			);
 			path = Infrastructure;
 			sourceTree = "<group>";
@@ -603,6 +646,7 @@
 				CC0001010000000000000002 /* CatalogMigrationIDs.swift */,
 				CC0001010000000000000003 /* V001CreateCatalogCoreMigration.swift */,
 				FF000101000000000000000A /* V002AddStage1CatalogQuerySupportMigration.swift */,
+			II0001010000000000000001 /* V003AddDerivedImageCacheMigration.swift */,
 				CC0001010000000000000004 /* CatalogDatabase.swift */,
 				CC0001010000000000000005 /* CatalogRepository.swift */,
 				CC000101000000000000000D /* CatalogSnapshotConstants.swift */,
@@ -745,6 +789,46 @@
 				RR000101000000000000010F /* FolderReconcileTestSeams.swift */,
 			);
 			path = Reconcile;
+			sourceTree = "<group>";
+		};
+		II0006010000000000000001 /* DerivedImage */ = {
+			isa = PBXGroup;
+			children = (
+				II0001010000000000000002 /* DerivedImageTypes.swift */,
+				II0001010000000000000003 /* DerivedImageErrors.swift */,
+				II0001010000000000000004 /* DerivedImageCachePort.swift */,
+			);
+			path = DerivedImage;
+			sourceTree = "<group>";
+		};
+		II0006010000000000000002 /* DerivedImage */ = {
+			isa = PBXGroup;
+			children = (
+				II0001010000000000000005 /* DerivedImageCachePathLayout.swift */,
+				II0001010000000000000006 /* DerivedImageSecureIO.swift */,
+				II0001010000000000000007 /* DerivedImageCacheModels.swift */,
+				II0001010000000000000008 /* DerivedImageRenderer.swift */,
+				II0001010000000000000009 /* GRDBDerivedImageCacheRepository.swift */,
+				II000101000000000000000A /* DerivedImageCacheStore.swift */,
+				II000101000000000000000B /* DerivedImageSourceReader.swift */,
+				II000101000000000000000C /* DerivedImageCacheService.swift */,
+			);
+			path = DerivedImage;
+			sourceTree = "<group>";
+		};
+		II0006010000000000000003 /* DerivedImage */ = {
+			isa = PBXGroup;
+			children = (
+				II0001010000000000000101 /* DerivedImageTestSupport.swift */,
+				II0001010000000000000102 /* V003MigrationTests.swift */,
+				II0001010000000000000103 /* DerivedImageContractTests.swift */,
+				II0001010000000000000104 /* DerivedImageRenderingTests.swift */,
+				II0001010000000000000105 /* DerivedImageFingerprintTests.swift */,
+				II0001010000000000000106 /* DerivedImageFaultTests.swift */,
+				II0001010000000000000107 /* DerivedImageQuotaTests.swift */,
+				II0001010000000000000108 /* DerivedImagePrivacyRegressionTests.swift */,
+			);
+			path = DerivedImage;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -936,6 +1020,18 @@
 			RR0000010000000000000008 /* GRDBFolderReconcileRepository.swift in Sources */,
 			RR0000010000000000000009 /* FolderReconcileHandler.swift in Sources */,
 			RR0000010000000000000012 /* FolderInfrastructurePorts.swift in Sources */,
+				II0000010000000000000001 /* V003AddDerivedImageCacheMigration.swift in Sources */,
+				II0000010000000000000002 /* DerivedImageTypes.swift in Sources */,
+				II0000010000000000000003 /* DerivedImageErrors.swift in Sources */,
+				II0000010000000000000004 /* DerivedImageCachePort.swift in Sources */,
+				II0000010000000000000005 /* DerivedImageCachePathLayout.swift in Sources */,
+				II0000010000000000000006 /* DerivedImageSecureIO.swift in Sources */,
+				II0000010000000000000007 /* DerivedImageCacheModels.swift in Sources */,
+				II0000010000000000000008 /* DerivedImageRenderer.swift in Sources */,
+				II0000010000000000000009 /* GRDBDerivedImageCacheRepository.swift in Sources */,
+				II000001000000000000000A /* DerivedImageCacheStore.swift in Sources */,
+				II000001000000000000000B /* DerivedImageSourceReader.swift in Sources */,
+				II000001000000000000000C /* DerivedImageCacheService.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -1011,6 +1107,14 @@
 			RR000001000000000000010D /* FolderReconcileStrictJSONMatrixTests.swift in Sources */,
 			RR000001000000000000010E /* FolderReconcileReadonlyMatrixTests.swift in Sources */,
 			RR000001000000000000010F /* FolderReconcileTestSeams.swift in Sources */,
+				II0000010000000000000101 /* DerivedImageTestSupport.swift in Sources */,
+				II0000010000000000000102 /* V003MigrationTests.swift in Sources */,
+				II0000010000000000000103 /* DerivedImageContractTests.swift in Sources */,
+				II0000010000000000000104 /* DerivedImageRenderingTests.swift in Sources */,
+				II0000010000000000000105 /* DerivedImageFingerprintTests.swift in Sources */,
+				II0000010000000000000106 /* DerivedImageFaultTests.swift in Sources */,
+				II0000010000000000000107 /* DerivedImageQuotaTests.swift in Sources */,
+				II0000010000000000000108 /* DerivedImagePrivacyRegressionTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

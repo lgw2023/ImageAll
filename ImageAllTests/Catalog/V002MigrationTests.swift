@@ -168,9 +168,10 @@ final class V002MigrationTests: XCTestCase {
     func testV001TableDDLRemainsUnchangedAfterV002Exists() throws {
         let v001URL = try makeTempDatabaseURL()
         let v001Only = try CatalogQueryTestSupport.openV001OnlyDatabase(at: v001URL)
+        let v001EraTables = CatalogSchemaExpectations.businessTables.filter { $0 != "derived_image_cache_entry" }
         let v001Dump = try v001Only.pool.read { db in
             try DatabaseTestSupport.schemaObjects(db)
-                .filter { $0.type == "table" && CatalogSchemaExpectations.businessTables.contains($0.name) }
+                .filter { $0.type == "table" && v001EraTables.contains($0.name) }
                 .map(\.sql)
         }
 
@@ -183,7 +184,7 @@ final class V002MigrationTests: XCTestCase {
                 .filter { CatalogSchemaExpectations.businessTables.contains($0.name) || $0.name == "grdb_migrations" }
         }
 
-        for table in CatalogSchemaExpectations.businessTables where table != "asset" {
+        for table in v001EraTables where table != "asset" {
             let v001SQL = try v001Only.pool.read { db in
                 try String.fetchOne(db, sql: "SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = ?", arguments: [table])
             }
@@ -193,7 +194,7 @@ final class V002MigrationTests: XCTestCase {
             XCTAssertEqual(currentSQL, v001SQL, "\(table) DDL must remain unchanged")
         }
         XCTAssertFalse(fullV001Tables.isEmpty)
-        XCTAssertEqual(v001Dump.count, CatalogSchemaExpectations.businessTables.count)
+        XCTAssertEqual(v001Dump.count, v001EraTables.count)
     }
 
     func testFailedV002MigrationRollsBack() throws {

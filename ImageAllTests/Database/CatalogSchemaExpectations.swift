@@ -66,6 +66,7 @@ enum CatalogSchemaExpectations {
     static let businessTables = [
         "asset",
         "asset_tag_decision",
+        "derived_image_cache_entry",
         "file_fingerprint",
         "job",
         "source",
@@ -81,6 +82,8 @@ enum CatalogSchemaExpectations {
         "asset_generation_missing_idx",
         "asset_source_availability_idx",
         "decision_tag_idx",
+        "derived_image_cache_key_uq",
+        "derived_image_cache_lru_idx",
         "file_fingerprint_resource_id_idx",
         "file_fingerprint_sha256_idx",
         "job_active_coalescing_uq",
@@ -167,12 +170,29 @@ enum CatalogSchemaExpectations {
             .init(name: "created_at_ms", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
             .init(name: "updated_at_ms", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
         ],
+        "derived_image_cache_entry": [
+            .init(name: "id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 1),
+            .init(name: "asset_id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "content_revision", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "representation_version", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "variant", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "storage_format", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "pixel_width", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "pixel_height", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "byte_size", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "encoded_sha256", type: "BLOB", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "created_at_ms", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "last_accessed_at_ms", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+        ],
     ]
 
     static let foreignKeysByTable: [String: [ForeignKeyExpectation]] = [
         "source": [],
         "asset": [
             .init(from: "source_id", toTable: "source", to: "id", onDelete: "RESTRICT"),
+        ],
+        "derived_image_cache_entry": [
+            .init(from: "asset_id", toTable: "asset", to: "id", onDelete: "CASCADE"),
         ],
         "file_fingerprint": [
             .init(from: "asset_id", toTable: "asset", to: "id", onDelete: "CASCADE"),
@@ -197,6 +217,8 @@ enum CatalogSchemaExpectations {
         "asset_source_availability_idx": "asset",
         "tag_normalized_name_uq": "tag",
         "decision_tag_idx": "asset_tag_decision",
+        "derived_image_cache_key_uq": "derived_image_cache_entry",
+        "derived_image_cache_lru_idx": "derived_image_cache_entry",
         "file_fingerprint_resource_id_idx": "file_fingerprint",
         "file_fingerprint_sha256_idx": "file_fingerprint",
         "job_queue_idx": "job",
@@ -339,6 +361,24 @@ enum CatalogSchemaExpectations {
             ],
             unique: false,
             partialPredicateSQL: "sha256 IS NOT NULL"
+        ),
+        .init(
+            name: "derived_image_cache_key_uq",
+            keyColumns: [
+                .init(name: "asset_id", descending: false, collation: "BINARY"),
+                .init(name: "content_revision", descending: false, collation: "BINARY"),
+                .init(name: "representation_version", descending: false, collation: "BINARY"),
+                .init(name: "variant", descending: false, collation: "BINARY"),
+            ],
+            unique: true
+        ),
+        .init(
+            name: "derived_image_cache_lru_idx",
+            keyColumns: [
+                .init(name: "last_accessed_at_ms", descending: false, collation: "BINARY"),
+                .init(name: "id", descending: false, collation: "BINARY"),
+            ],
+            unique: false
         ),
     ]
 }

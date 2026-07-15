@@ -8,6 +8,7 @@ struct CatalogDatabase: Sendable {
         var migrator = DatabaseMigrator()
         V001CreateCatalogCoreMigration.register(on: &migrator)
         V002AddStage1CatalogQuerySupportMigration.register(on: &migrator)
+        V003AddDerivedImageCacheMigration.register(on: &migrator)
         return migrator
     }
 

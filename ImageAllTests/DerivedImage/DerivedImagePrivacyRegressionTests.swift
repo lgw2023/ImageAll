@@ -1,8 +1,8 @@
 import XCTest
 @testable import ImageAll
 
-final class FolderReconcilePrivacyRegressionTests: XCTestCase {
-    func testBuiltAppPrivacyManifestOnlyDeclaresApprovedCategories() throws {
+final class DerivedImagePrivacyRegressionTests: XCTestCase {
+    func testBuiltAppPrivacyManifestDeclaresFileTimestampAndDiskSpace() throws {
         guard let manifestURL = Bundle.main.url(forResource: "PrivacyInfo", withExtension: "xcprivacy") else {
             XCTFail("built ImageAll.app must embed PrivacyInfo.xcprivacy in its resource bundle")
             return
@@ -27,5 +27,18 @@ final class FolderReconcilePrivacyRegressionTests: XCTestCase {
             CatalogMigrationID.v002AddStage1CatalogQuerySupport,
             CatalogMigrationID.v003AddDerivedImageCache,
         ])
+    }
+
+    func testSourceTreeUnchangedAfterGenerate() async throws {
+        let env = try DerivedImageTestSupport.TempEnvironment(label: "readonly")
+        defer { env.cleanup() }
+        _ = try env.seedAvailableAsset()
+        let fixture = FolderReconcileTestSupport.TempFixtureRoot()
+        defer { fixture.cleanup() }
+        let before = try fixture.snapshotDetailed(root: env.sourceRoot)
+        let (service, _) = env.makeService(volumeReader: DerivedImageTestSupport.GenerousVolumeReader(availableBytes: 50 * 1024 * 1024 * 1024, totalBytes: 100 * 1024 * 1024 * 1024))
+        _ = try await service.loadOrGenerate(DerivedImageRequest(assetID: env.assetID, variant: .gridSmall))
+        let after = try fixture.snapshotDetailed(root: env.sourceRoot)
+        XCTAssertEqual(before, after)
     }
 }
