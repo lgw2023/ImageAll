@@ -29,15 +29,6 @@ struct GRDBFolderSourceAuthorizationRepository: Sendable {
         }
     }
 
-    func fetchFolderSource(id: UUID) throws -> StoredFolderSourceRecord? {
-        switch try lookupSource(id: id) {
-        case .notFound, .wrongKind:
-            return nil
-        case let .folder(record):
-            return record
-        }
-    }
-
     func fetchAllFolderSources() throws -> [StoredFolderSourceRecord] {
         try mapPersistence {
             try database.pool.read { db in
@@ -48,7 +39,7 @@ struct GRDBFolderSourceAuthorizationRepository: Sendable {
                     WHERE kind = 'folder'
                     ORDER BY id ASC
                     """
-                ).compactMap { row in
+                ).map { row in
                     try storedFolderSource(from: row)
                 }
             }
@@ -168,8 +159,10 @@ struct GRDBFolderSourceAuthorizationRepository: Sendable {
                     throw FolderAuthorizationError.sourceNotFound
                 case .wrongKind:
                     throw FolderAuthorizationError.sourceKindMismatch
-                case .folder:
-                    break
+                case let .folder(record):
+                    guard record.state == .unavailable || record.state == .authorizationRequired else {
+                        throw FolderAuthorizationError.invalidSourceState
+                    }
                 }
 
                 try db.execute(
@@ -179,7 +172,9 @@ struct GRDBFolderSourceAuthorizationRepository: Sendable {
                         bookmark = ?,
                         state = 'active',
                         updated_at_ms = ?
-                    WHERE id = ? AND kind = 'folder'
+                    WHERE id = ?
+                        AND kind = 'folder'
+                        AND state IN ('unavailable', 'authorizationRequired')
                     """,
                     arguments: [
                         displayName,
@@ -189,7 +184,7 @@ struct GRDBFolderSourceAuthorizationRepository: Sendable {
                     ]
                 )
                 guard db.changesCount == 1 else {
-                    throw FolderAuthorizationError.persistenceFailure
+                    throw FolderAuthorizationError.invalidSourceState
                 }
 
                 let coalescingKey = FolderReconcileJobFactory.coalescingKey(sourceID: sourceID)
@@ -274,23 +269,20 @@ struct GRDBFolderSourceAuthorizationRepository: Sendable {
         guard kind == SourceKind.folder.rawValue else {
             return .wrongKind
         }
-        guard let record = try storedFolderSource(from: row) else {
-            throw FolderAuthorizationError.persistenceFailure
-        }
-        return .folder(record)
+        return .folder(try storedFolderSource(from: row))
     }
 
-    private func storedFolderSource(from row: Row) throws -> StoredFolderSourceRecord? {
+    private func storedFolderSource(from row: Row) throws -> StoredFolderSourceRecord {
         let idString: String = row["id"]
         guard let id = UUID(uuidString: idString) else {
-            return nil
+            throw FolderAuthorizationError.persistenceFailure
         }
         let stateRaw: String = row["state"]
         guard let state = SourceState(rawValue: stateRaw) else {
-            return nil
+            throw FolderAuthorizationError.persistenceFailure
         }
         guard let bookmark: Data = row["bookmark"] else {
-            return nil
+            throw FolderAuthorizationError.persistenceFailure
         }
         return StoredFolderSourceRecord(
             id: id,

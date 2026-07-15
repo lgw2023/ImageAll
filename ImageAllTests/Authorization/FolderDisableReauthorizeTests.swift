@@ -173,10 +173,161 @@ final class FolderDisableReauthorizeTests: XCTestCase {
         XCTAssertEqual(pendingState, JobState.cancelled.rawValue)
     }
 
+    func testDisableConvergesFullJobKindAndStateMatrix() async throws {
+        let database = try FolderAuthorizationTestSupport.makeDatabase()
+        let sourceID = UUID(uuidString: "12121212-1212-1212-1212-121212121212")!
+        let root = try registry.makeRoot(label: "disable-matrix")
+        let bookmark = try FoundationSecurityScopedBookmarkAdapter().createReadOnlyBookmark(for: root)
+        try FolderAuthorizationTestSupport.insertFolderSource(
+            database: database,
+            sourceID: sourceID,
+            bookmark: bookmark
+        )
+
+        let pendingID = UUID(uuidString: "13131313-1313-1313-1313-131313131313")!
+        let pausedID = UUID(uuidString: "14141414-1414-1414-1414-141414141414")!
+        let retryableFailedID = UUID(uuidString: "15151515-1515-1515-1515-151515151516")!
+        let runningNoneID = UUID(uuidString: "16161616-1616-1616-1616-161616161617")!
+        let runningPauseID = UUID(uuidString: "17171717-1717-1717-1717-171717171718")!
+        let terminalID = UUID(uuidString: "18181818-1818-1818-1818-181818181819")!
+        let otherKindID = UUID(uuidString: "19191919-1919-1919-1919-19191919191a")!
+        let nowMs = JobTestSupport.baseTimeMs
+        let payload = try FolderReconcileJobFactory.makePayload(sourceID: sourceID)
+        let coalescingKey = FolderReconcileJobFactory.coalescingKey(sourceID: sourceID)
+
+        try await database.pool.write { db in
+            try db.execute(
+                sql: """
+                INSERT INTO job (
+                    id, kind, payload_version, payload, source_id, coalescing_key,
+                    state, control_request, priority, attempts, max_attempts, not_before_ms,
+                    progress_completed, created_at_ms, updated_at_ms
+                ) VALUES (?, ?, 1, ?, ?, ?, 'pending', 'none', 0, 0, 5, ?, 0, ?, ?)
+                """,
+                arguments: [
+                    pendingID.uuidString.lowercased(), FolderReconcileJobFactory.kind, payload,
+                    sourceID.uuidString.lowercased(), coalescingKey, nowMs, nowMs, nowMs,
+                ]
+            )
+            try db.execute(
+                sql: """
+                INSERT INTO job (
+                    id, kind, payload_version, payload, source_id, coalescing_key,
+                    state, control_request, priority, attempts, max_attempts, not_before_ms,
+                    progress_completed, created_at_ms, updated_at_ms
+                ) VALUES (?, ?, 1, ?, ?, ?, 'paused', 'none', 0, 1, 5, ?, 0, ?, ?)
+                """,
+                arguments: [
+                    pausedID.uuidString.lowercased(), FolderReconcileJobFactory.kind, payload,
+                    sourceID.uuidString.lowercased(), "\(coalescingKey):paused", nowMs, nowMs, nowMs,
+                ]
+            )
+            try db.execute(
+                sql: """
+                INSERT INTO job (
+                    id, kind, payload_version, payload, source_id, coalescing_key,
+                    state, control_request, priority, attempts, max_attempts, not_before_ms,
+                    last_error_code, last_error_message, progress_completed, created_at_ms, updated_at_ms
+                ) VALUES (?, ?, 1, ?, ?, ?, 'retryableFailed', 'none', 0, 2, 5, ?, 'interrupted', 'retry me', 0, ?, ?)
+                """,
+                arguments: [
+                    retryableFailedID.uuidString.lowercased(), FolderReconcileJobFactory.kind, payload,
+                    sourceID.uuidString.lowercased(), "\(coalescingKey):retry", nowMs, nowMs, nowMs,
+                ]
+            )
+            try db.execute(
+                sql: """
+                INSERT INTO job (
+                    id, kind, payload_version, payload, source_id, coalescing_key,
+                    state, control_request, priority, attempts, max_attempts, not_before_ms,
+                    lease_owner, lease_expires_at_ms, progress_completed, created_at_ms, updated_at_ms
+                ) VALUES (?, ?, 1, ?, ?, ?, 'running', 'none', 0, 1, 5, ?, 'worker-a', ?, 0, ?, ?)
+                """,
+                arguments: [
+                    runningNoneID.uuidString.lowercased(), FolderReconcileJobFactory.kind, payload,
+                    sourceID.uuidString.lowercased(), "\(coalescingKey):running-none", nowMs, nowMs + 60_000, nowMs, nowMs,
+                ]
+            )
+            try db.execute(
+                sql: """
+                INSERT INTO job (
+                    id, kind, payload_version, payload, source_id, coalescing_key,
+                    state, control_request, priority, attempts, max_attempts, not_before_ms,
+                    lease_owner, lease_expires_at_ms, progress_completed, created_at_ms, updated_at_ms
+                ) VALUES (?, ?, 1, ?, ?, ?, 'running', 'pause', 0, 1, 5, ?, 'worker-b', ?, 0, ?, ?)
+                """,
+                arguments: [
+                    runningPauseID.uuidString.lowercased(), FolderReconcileJobFactory.kind, payload,
+                    sourceID.uuidString.lowercased(), "\(coalescingKey):running-pause", nowMs, nowMs + 60_000, nowMs, nowMs,
+                ]
+            )
+            try db.execute(
+                sql: """
+                INSERT INTO job (
+                    id, kind, payload_version, payload, source_id, coalescing_key,
+                    state, control_request, priority, attempts, max_attempts, not_before_ms,
+                    progress_completed, created_at_ms, updated_at_ms
+                ) VALUES (?, ?, 1, ?, ?, ?, 'completed', 'none', 0, 1, 5, ?, 10, ?, ?)
+                """,
+                arguments: [
+                    terminalID.uuidString.lowercased(), FolderReconcileJobFactory.kind, payload,
+                    sourceID.uuidString.lowercased(), "\(coalescingKey):terminal", nowMs, nowMs, nowMs,
+                ]
+            )
+            try db.execute(
+                sql: """
+                INSERT INTO job (
+                    id, kind, payload_version, payload, source_id, coalescing_key,
+                    state, control_request, priority, attempts, max_attempts, not_before_ms,
+                    progress_completed, created_at_ms, updated_at_ms
+                ) VALUES (?, 'other.job.v1', 1, ?, ?, ?, 'pending', 'none', 0, 0, 5, ?, 0, ?, ?)
+                """,
+                arguments: [
+                    otherKindID.uuidString.lowercased(), payload,
+                    sourceID.uuidString.lowercased(), "other.job.v1:\(sourceID.uuidString.lowercased())",
+                    nowMs, nowMs, nowMs,
+                ]
+            )
+        }
+
+        let terminalBefore = try FolderAuthorizationTestSupport.fetchJobSnapshot(database, jobID: terminalID)!
+        let otherBefore = try FolderAuthorizationTestSupport.fetchJobSnapshot(database, jobID: otherKindID)!
+
+        let picker = FolderAuthorizationTestSupport.FakeDirectoryPicker()
+        let (coordinator, _, _, _) = FolderAuthorizationTestSupport.makeCoordinator(
+            database: database,
+            picker: picker
+        )
+        _ = try await coordinator.disableFolderSource(sourceID: sourceID)
+
+        XCTAssertEqual(try FolderAuthorizationTestSupport.fetchSourceState(database, sourceID: sourceID), .disabled)
+
+        for cancelledID in [pendingID, pausedID, retryableFailedID] {
+            let snapshot = try FolderAuthorizationTestSupport.fetchJobSnapshot(database, jobID: cancelledID)!
+            XCTAssertEqual(snapshot.state, JobState.cancelled.rawValue)
+            XCTAssertEqual(snapshot.controlRequest, JobControlRequest.none.rawValue)
+            XCTAssertNil(snapshot.leaseOwner)
+            XCTAssertNil(snapshot.leaseExpiresAtMs)
+            XCTAssertNil(snapshot.lastErrorCode)
+            XCTAssertNil(snapshot.lastErrorMessage)
+        }
+
+        for runningID in [runningNoneID, runningPauseID] {
+            let snapshot = try FolderAuthorizationTestSupport.fetchJobSnapshot(database, jobID: runningID)!
+            XCTAssertEqual(snapshot.state, JobState.running.rawValue)
+            XCTAssertEqual(snapshot.controlRequest, JobControlRequest.cancel.rawValue)
+            XCTAssertNotNil(snapshot.leaseOwner)
+            XCTAssertNotNil(snapshot.leaseExpiresAtMs)
+        }
+
+        XCTAssertEqual(try FolderAuthorizationTestSupport.fetchJobSnapshot(database, jobID: terminalID), terminalBefore)
+        XCTAssertEqual(try FolderAuthorizationTestSupport.fetchJobSnapshot(database, jobID: otherKindID), otherBefore)
+    }
+
     func testDisableJobConvergenceFailureRollsBackSourceAndJobs() async throws {
         let database = try FolderAuthorizationTestSupport.makeDatabase()
         try FolderAuthorizationTestSupport.AuthorizationDatabaseTestFaults
-            .installDisableJobConvergenceAbortTrigger(database)
+            .installDisableLateJobConvergenceAbortTrigger(database)
 
         let sourceID = UUID(uuidString: "efefefef-efef-efef-efef-efefefefefef")!
         let root = try registry.makeRoot(label: "disable-fault")
@@ -188,7 +339,9 @@ final class FolderDisableReauthorizeTests: XCTestCase {
         )
 
         let pendingID = UUID(uuidString: "fafafafa-fafa-fafa-fafa-fafafafafafa")!
+        let runningID = UUID(uuidString: "fbfbfbfb-fbfb-fbfb-fbfb-fbfbfbfbfbfb")!
         let nowMs = JobTestSupport.baseTimeMs
+        let payload = try FolderReconcileJobFactory.makePayload(sourceID: sourceID)
         try await database.pool.write { db in
             try db.execute(
                 sql: """
@@ -201,7 +354,7 @@ final class FolderDisableReauthorizeTests: XCTestCase {
                 arguments: [
                     pendingID.uuidString.lowercased(),
                     FolderReconcileJobFactory.kind,
-                    try FolderReconcileJobFactory.makePayload(sourceID: sourceID),
+                    payload,
                     sourceID.uuidString.lowercased(),
                     FolderReconcileJobFactory.coalescingKey(sourceID: sourceID),
                     nowMs,
@@ -209,7 +362,30 @@ final class FolderDisableReauthorizeTests: XCTestCase {
                     nowMs,
                 ]
             )
+            try db.execute(
+                sql: """
+                INSERT INTO job (
+                    id, kind, payload_version, payload, source_id, coalescing_key,
+                    state, control_request, priority, attempts, max_attempts, not_before_ms,
+                    lease_owner, lease_expires_at_ms, progress_completed, created_at_ms, updated_at_ms
+                ) VALUES (?, ?, 1, ?, ?, ?, 'running', 'none', 0, 1, 5, ?, 'worker', ?, 0, ?, ?)
+                """,
+                arguments: [
+                    runningID.uuidString.lowercased(),
+                    FolderReconcileJobFactory.kind,
+                    payload,
+                    sourceID.uuidString.lowercased(),
+                    "folder.reconcile.v1:fault-\(sourceID.uuidString.lowercased())",
+                    nowMs,
+                    nowMs + 60_000,
+                    nowMs,
+                    nowMs,
+                ]
+            )
         }
+
+        let pendingBefore = try FolderAuthorizationTestSupport.fetchJobSnapshot(database, jobID: pendingID)!
+        let runningBefore = try FolderAuthorizationTestSupport.fetchJobSnapshot(database, jobID: runningID)!
 
         let picker = FolderAuthorizationTestSupport.FakeDirectoryPicker()
         let (coordinator, _, _, _) = FolderAuthorizationTestSupport.makeCoordinator(
@@ -225,10 +401,8 @@ final class FolderDisableReauthorizeTests: XCTestCase {
         }
 
         XCTAssertEqual(try FolderAuthorizationTestSupport.fetchSourceState(database, sourceID: sourceID), .active)
-        let pendingState: String = try await database.pool.read { db in
-            try String.fetchOne(db, sql: "SELECT state FROM job WHERE id = ?", arguments: [pendingID.uuidString.lowercased()]) ?? ""
-        }
-        XCTAssertEqual(pendingState, JobState.pending.rawValue)
+        XCTAssertEqual(try FolderAuthorizationTestSupport.fetchJobSnapshot(database, jobID: pendingID), pendingBefore)
+        XCTAssertEqual(try FolderAuthorizationTestSupport.fetchJobSnapshot(database, jobID: runningID), runningBefore)
     }
 
     func testReauthorizeSameRootSucceedsAndReusesActiveJob() async throws {

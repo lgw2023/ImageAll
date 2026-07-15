@@ -14,9 +14,42 @@ enum SecurityScopedBookmarkOptions {
     ]
 }
 
-enum BookmarkResolveFailureCategory: Equatable, Sendable {
-    case unavailable
+enum FolderAccessFailureObservation: Equatable, Sendable {
+    case offline
     case authorizationRequired
+}
+
+enum FolderAccessFailureClassifier {
+    static func classifyBookmarkResolveFailure(_ error: Error) -> FolderAccessFailureObservation {
+        if isLikelyOffline(error) {
+            return .offline
+        }
+        return .authorizationRequired
+    }
+
+    static func classifyScopeStartFailure() -> FolderAccessFailureObservation {
+        .authorizationRequired
+    }
+
+    static func classifyInvalidRoot() -> FolderAccessFailureObservation {
+        .authorizationRequired
+    }
+
+    private static func isLikelyOffline(_ error: Error) -> Bool {
+        let nsError = error as NSError
+        if nsError.domain == NSCocoaErrorDomain {
+            switch nsError.code {
+            case NSFileReadNoSuchFileError, NSFileNoSuchFileError:
+                return true
+            default:
+                break
+            }
+        }
+        if nsError.domain == NSPOSIXErrorDomain, nsError.code == ENOENT {
+            return true
+        }
+        return false
+    }
 }
 
 struct BookmarkResolveResult: Equatable, Sendable {

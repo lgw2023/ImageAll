@@ -129,7 +129,6 @@
 		HH0000010000000000000105 /* FolderOverlapAndConnectTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = HH0001010000000000000105 /* FolderOverlapAndConnectTests.swift */; };
 		HH0000010000000000000106 /* FolderDisableReauthorizeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = HH0001010000000000000106 /* FolderDisableReauthorizeTests.swift */; };
 		HH0000010000000000000107 /* FolderAuthorizationArchitectureTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = HH0001010000000000000107 /* FolderAuthorizationArchitectureTests.swift */; };
-		HH000001000000000000000B /* FolderAuthorizationErrorMapping.swift in Sources */ = {isa = PBXBuildFile; fileRef = HH000101000000000000000B /* FolderAuthorizationErrorMapping.swift */; };
 		HH0000010000000000000108 /* FolderAuthorizationReviewGapTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = HH0001010000000000000108 /* FolderAuthorizationReviewGapTests.swift */; };
 /* End PBXBuildFile section */
 
@@ -267,7 +266,6 @@
 		HH0001010000000000000105 /* FolderOverlapAndConnectTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FolderOverlapAndConnectTests.swift; sourceTree = "<group>"; };
 		HH0001010000000000000106 /* FolderDisableReauthorizeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FolderDisableReauthorizeTests.swift; sourceTree = "<group>"; };
 		HH0001010000000000000107 /* FolderAuthorizationArchitectureTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FolderAuthorizationArchitectureTests.swift; sourceTree = "<group>"; };
-		HH000101000000000000000B /* FolderAuthorizationErrorMapping.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FolderAuthorizationErrorMapping.swift; sourceTree = "<group>"; };
 		HH0001010000000000000108 /* FolderAuthorizationReviewGapTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FolderAuthorizationReviewGapTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -616,7 +614,6 @@
 				HH0001010000000000000004 /* FolderDirectoryPickerPort.swift */,
 				HH0001010000000000000005 /* AppKitFolderDirectoryPicker.swift */,
 				HH0001010000000000000006 /* FolderAuthorizationPlatformAdapters.swift */,
-				HH000101000000000000000B /* FolderAuthorizationErrorMapping.swift */,
 				HH0001010000000000000007 /* FolderReconcileJobFactory.swift */,
 				HH0001010000000000000008 /* GRDBFolderSourceAuthorizationRepository.swift */,
 				HH0001010000000000000009 /* FolderAuthorizationCoordinator.swift */,
@@ -810,7 +807,6 @@
 				HH0000010000000000000004 /* FolderDirectoryPickerPort.swift in Sources */,
 				HH0000010000000000000005 /* AppKitFolderDirectoryPicker.swift in Sources */,
 				HH0000010000000000000006 /* FolderAuthorizationPlatformAdapters.swift in Sources */,
-				HH000001000000000000000B /* FolderAuthorizationErrorMapping.swift in Sources */,
 				HH0000010000000000000007 /* FolderReconcileJobFactory.swift in Sources */,
 				HH0000010000000000000008 /* GRDBFolderSourceAuthorizationRepository.swift in Sources */,
 				HH0000010000000000000009 /* FolderAuthorizationCoordinator.swift in Sources */,

@@ -138,13 +138,13 @@ enum FolderAuthorizationTestSupport {
             }
         }
 
-        static func installDisableJobConvergenceAbortTrigger(_ database: CatalogDatabase) throws {
+        static func installDisableLateJobConvergenceAbortTrigger(_ database: CatalogDatabase) throws {
             try database.pool.write { db in
                 try db.execute(
                     sql: """
-                    CREATE TRIGGER auth_test_fail_disable_job_updates
-                    AFTER UPDATE OF state ON source
-                    WHEN NEW.state = 'disabled' AND OLD.state != 'disabled'
+                    CREATE TRIGGER auth_test_fail_disable_late_running_update
+                    AFTER UPDATE OF control_request ON job
+                    WHEN NEW.control_request = 'cancel'
                     BEGIN
                         SELECT RAISE(ABORT, 'CHECK constraint failed: state');
                     END
@@ -153,20 +153,8 @@ enum FolderAuthorizationTestSupport {
             }
         }
 
-        static func installReauthorizeJobConvergenceAbortTrigger(_ database: CatalogDatabase) throws {
-            try database.pool.write { db in
-                try db.execute(
-                    sql: """
-                    CREATE TRIGGER auth_test_fail_reauthorize_job_updates
-                    AFTER UPDATE OF state ON source
-                    WHEN NEW.state = 'active'
-                        AND OLD.state IN ('unavailable', 'authorizationRequired')
-                    BEGIN
-                        SELECT RAISE(ABORT, 'CHECK constraint failed: state');
-                    END
-                    """
-                )
-            }
+        static func installReauthorizeJobInsertAbortTrigger(_ database: CatalogDatabase) throws {
+            try installConnectJobInsertAbortTrigger(database)
         }
 
         static func installStaleBookmarkReplaceAbortTrigger(_ database: CatalogDatabase) throws {
@@ -243,6 +231,7 @@ enum FolderAuthorizationTestSupport {
         var forceStartResult: Bool = true
         var createBookmarkFailure = false
         var resolveFailure = false
+        var resolveError: Error?
         var staleOnResolve = false
         var issueDistinctBookmarksOnCreate = false
         private var createGeneration = 0
@@ -271,6 +260,9 @@ enum FolderAuthorizationTestSupport {
         }
 
         func resolveBookmark(_ bookmark: Data) throws -> BookmarkResolveResult {
+            if let resolveError {
+                throw resolveError
+            }
             if resolveFailure {
                 throw NSError(domain: "test", code: 2)
             }
@@ -281,11 +273,8 @@ enum FolderAuthorizationTestSupport {
         }
 
         func startAccessing(_ url: URL) -> Bool {
-            if forceStartResult {
-                startCount += 1
-                return true
-            }
-            return false
+            startCount += 1
+            return forceStartResult
         }
 
         func stopAccessing(_ url: URL) {
@@ -300,6 +289,7 @@ enum FolderAuthorizationTestSupport {
         var forceStartResult: Bool?
         var createBookmarkFailure = false
         var resolveFailure = false
+        var resolveError: Error?
         var resolveResults: [BookmarkResolveResult] = []
         private var underlyingStartedURL: URL?
 
@@ -315,6 +305,9 @@ enum FolderAuthorizationTestSupport {
         }
 
         func resolveBookmark(_ bookmark: Data) throws -> BookmarkResolveResult {
+            if let resolveError {
+                throw resolveError
+            }
             if resolveFailure {
                 throw NSError(domain: "test", code: 2)
             }
@@ -445,6 +438,34 @@ enum FolderAuthorizationTestSupport {
         return (coordinator, repository, picker, bookmarkPort)
     }
 
+    static func insertUndecodableFolderSource(
+        database: CatalogDatabase,
+        sourceID: UUID,
+        nowMs: Int64 = baseTimeMs
+    ) throws {
+        try database.pool.write { db in
+            try db.execute(
+                sql: """
+                INSERT INTO source (
+                    id, kind, display_name, bookmark, scan_generation, dirty_epoch,
+                    state, created_at_ms, updated_at_ms
+                ) VALUES (?, 'folder', 'Corrupt', X'0102', 0, 0, 'active', ?, ?)
+                """,
+                arguments: [
+                    sourceID.uuidString.lowercased(),
+                    nowMs,
+                    nowMs,
+                ]
+            )
+            try db.execute(sql: "PRAGMA ignore_check_constraints = ON")
+            try db.execute(
+                sql: "UPDATE source SET bookmark = NULL WHERE id = ?",
+                arguments: [sourceID.uuidString.lowercased()]
+            )
+            try db.execute(sql: "PRAGMA ignore_check_constraints = OFF")
+        }
+    }
+
     static func insertFolderSource(
         database: CatalogDatabase,
         sourceID: UUID,
@@ -546,6 +567,39 @@ enum FolderAuthorizationTestSupport {
                     tagID.uuidString.lowercased(),
                     nowMs,
                 ]
+            )
+        }
+    }
+
+    struct JobRowSnapshot: Equatable {
+        let state: String
+        let controlRequest: String
+        let leaseOwner: String?
+        let leaseExpiresAtMs: Int64?
+        let lastErrorCode: String?
+        let lastErrorMessage: String?
+    }
+
+    static func fetchJobSnapshot(_ database: CatalogDatabase, jobID: UUID) throws -> JobRowSnapshot? {
+        try database.pool.read { db in
+            guard let row = try Row.fetchOne(
+                db,
+                sql: """
+                SELECT state, control_request, lease_owner, lease_expires_at_ms,
+                       last_error_code, last_error_message
+                FROM job WHERE id = ?
+                """,
+                arguments: [jobID.uuidString.lowercased()]
+            ) else {
+                return nil
+            }
+            return JobRowSnapshot(
+                state: row["state"],
+                controlRequest: row["control_request"],
+                leaseOwner: row["lease_owner"],
+                leaseExpiresAtMs: row["lease_expires_at_ms"],
+                lastErrorCode: row["last_error_code"],
+                lastErrorMessage: row["last_error_message"]
             )
         }
     }

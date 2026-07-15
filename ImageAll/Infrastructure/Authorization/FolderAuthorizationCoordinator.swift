@@ -159,10 +159,6 @@ struct FolderAuthorizationCoordinator: FolderAuthorizationCommandPort {
         return try resolveAccess(source: source, perform: perform)
     }
 
-    func auditOverlapRoot(for source: StoredFolderSourceRecord) throws -> URL {
-        try resolveURLForOverlapAudit(source: source)
-    }
-
     private enum IdentityVerificationResult {
         case same
         case different
@@ -266,7 +262,7 @@ struct FolderAuthorizationCoordinator: FolderAuthorizationCommandPort {
         guard started else {
             try persistAccessObservation(
                 sourceID: source.id,
-                observation: FolderAccessFailureClassifier.classifyScopeStartFailure(for: resolved.url)
+                observation: FolderAccessFailureClassifier.classifyScopeStartFailure()
             )
             throw FolderAuthorizationError.authorizationUnavailable
         }
@@ -280,7 +276,7 @@ struct FolderAuthorizationCoordinator: FolderAuthorizationCommandPort {
         case .invalid:
             try persistAccessObservation(
                 sourceID: source.id,
-                observation: FolderAccessFailureClassifier.classifyInvalidRoot(at: resolved.url)
+                observation: FolderAccessFailureClassifier.classifyInvalidRoot()
             )
             throw FolderAuthorizationError.authorizationUnavailable
         }

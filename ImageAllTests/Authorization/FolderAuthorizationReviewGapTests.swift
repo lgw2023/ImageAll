@@ -17,6 +17,18 @@ final class FolderAuthorizationReviewGapTests: XCTestCase {
         super.tearDown()
     }
 
+    private func assertAssetGraphUnchanged(
+        _ before: (assets: Int, fingerprints: Int, tags: Int, decisions: Int),
+        _ after: (assets: Int, fingerprints: Int, tags: Int, decisions: Int),
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        XCTAssertEqual(after.assets, before.assets, file: file, line: line)
+        XCTAssertEqual(after.fingerprints, before.fingerprints, file: file, line: line)
+        XCTAssertEqual(after.tags, before.tags, file: file, line: line)
+        XCTAssertEqual(after.decisions, before.decisions, file: file, line: line)
+    }
+
     // 1. AppKit / actor boundary
     @MainActor
     func testFakeDirectoryPickerRunsOnMainActor() async throws {
@@ -324,7 +336,7 @@ final class FolderAuthorizationReviewGapTests: XCTestCase {
     func testReauthorizeJobConvergenceFailureRollsBackBookmarkStateAndJobs() async throws {
         let database = try FolderAuthorizationTestSupport.makeDatabase()
         try FolderAuthorizationTestSupport.AuthorizationDatabaseTestFaults
-            .installReauthorizeJobConvergenceAbortTrigger(database)
+            .installReauthorizeJobInsertAbortTrigger(database)
 
         let sourceID = UUID(uuidString: "1f1f1f1f-1f1f-1f1f-1f1f-1f1f1f1f1f1f")!
         let root = try registry.makeRoot(label: "reauth-fault")
@@ -454,5 +466,272 @@ final class FolderAuthorizationReviewGapTests: XCTestCase {
             XCTAssertEqual(after.tags, before.tags)
             XCTAssertEqual(after.decisions, before.decisions)
         }
+    }
+
+    // §4.5 access state contract
+    func testOfflineResolvePersistsUnavailableWithoutScopeAccess() throws {
+        let database = try FolderAuthorizationTestSupport.makeDatabase()
+        let sourceID = UUID(uuidString: "24242424-2424-2424-2424-242424242424")!
+        let assetID = UUID(uuidString: "25252525-2525-2525-2525-252525252525")!
+        let tagID = UUID(uuidString: "26262626-2626-2626-2626-262626262626")!
+        let root = try registry.makeRoot(label: "offline")
+        let bookmarkPort = FolderAuthorizationTestSupport.MappingBookmarkPort()
+        let bookmark = bookmarkPort.register(url: root)
+        try FolderAuthorizationTestSupport.insertFolderSource(
+            database: database,
+            sourceID: sourceID,
+            bookmark: bookmark,
+            state: .active
+        )
+        try FolderAuthorizationTestSupport.insertFolderAssetGraph(
+            database: database,
+            sourceID: sourceID,
+            assetID: assetID,
+            tagID: tagID
+        )
+        let before = try FolderAuthorizationTestSupport.assetGraphCounts(database, sourceID: sourceID)
+        bookmarkPort.resolveError = NSError(domain: NSCocoaErrorDomain, code: NSFileNoSuchFileError, userInfo: nil)
+
+        let picker = FolderAuthorizationTestSupport.FakeDirectoryPicker()
+        let (coordinator, _, _, port) = FolderAuthorizationTestSupport.makeCoordinator(
+            database: database,
+            picker: picker,
+            bookmarkPort: bookmarkPort
+        )
+        let tracking = port as! FolderAuthorizationTestSupport.MappingBookmarkPort
+        var closureExecuted = false
+
+        do {
+            _ = try coordinator.accessFolderSource(sourceID: sourceID) { _ in
+                closureExecuted = true
+                return ""
+            }
+            XCTFail("Expected authorizationUnavailable")
+        } catch {
+            XCTAssertEqual(error as? FolderAuthorizationError, .authorizationUnavailable)
+        }
+
+        XCTAssertFalse(closureExecuted)
+        XCTAssertEqual(tracking.startCount, 0)
+        XCTAssertEqual(tracking.stopCount, 0)
+        XCTAssertEqual(try FolderAuthorizationTestSupport.fetchSourceState(database, sourceID: sourceID), .unavailable)
+        let after = try FolderAuthorizationTestSupport.assetGraphCounts(database, sourceID: sourceID)
+        assertAssetGraphUnchanged(before, after)
+    }
+
+    func testScopeStartFailurePersistsAuthorizationRequiredWithoutStop() throws {
+        let database = try FolderAuthorizationTestSupport.makeDatabase()
+        let sourceID = UUID(uuidString: "27272727-2727-2727-2727-272727272727")!
+        let assetID = UUID(uuidString: "28282828-2828-2828-2828-282828282828")!
+        let tagID = UUID(uuidString: "29292929-2929-2929-2929-292929292929")!
+        let root = try registry.makeRoot(label: "scope-false")
+        let bookmarkPort = FolderAuthorizationTestSupport.MappingBookmarkPort()
+        let bookmark = bookmarkPort.register(url: root)
+        bookmarkPort.forceStartResult = false
+        try FolderAuthorizationTestSupport.insertFolderSource(
+            database: database,
+            sourceID: sourceID,
+            bookmark: bookmark,
+            state: .active
+        )
+        try FolderAuthorizationTestSupport.insertFolderAssetGraph(
+            database: database,
+            sourceID: sourceID,
+            assetID: assetID,
+            tagID: tagID
+        )
+        let before = try FolderAuthorizationTestSupport.assetGraphCounts(database, sourceID: sourceID)
+
+        let picker = FolderAuthorizationTestSupport.FakeDirectoryPicker()
+        let (coordinator, _, _, port) = FolderAuthorizationTestSupport.makeCoordinator(
+            database: database,
+            picker: picker,
+            bookmarkPort: bookmarkPort
+        )
+        let tracking = port as! FolderAuthorizationTestSupport.MappingBookmarkPort
+        var closureExecuted = false
+
+        do {
+            _ = try coordinator.accessFolderSource(sourceID: sourceID) { _ in
+                closureExecuted = true
+                return ""
+            }
+            XCTFail("Expected authorizationUnavailable")
+        } catch {
+            XCTAssertEqual(error as? FolderAuthorizationError, .authorizationUnavailable)
+        }
+
+        XCTAssertFalse(closureExecuted)
+        XCTAssertEqual(tracking.startCount, 1)
+        XCTAssertEqual(tracking.stopCount, 0)
+        XCTAssertEqual(try FolderAuthorizationTestSupport.fetchSourceState(database, sourceID: sourceID), .authorizationRequired)
+        let after = try FolderAuthorizationTestSupport.assetGraphCounts(database, sourceID: sourceID)
+        assertAssetGraphUnchanged(before, after)
+    }
+
+    func testInvalidRootAfterScopeStartPersistsAuthorizationRequiredAndStopsScope() throws {
+        let database = try FolderAuthorizationTestSupport.makeDatabase()
+        let sourceID = UUID(uuidString: "2a2a2a2a-2a2a-2a2a-2a2a-2a2a2a2a2a2a")!
+        let assetID = UUID(uuidString: "2b2b2b2b-2b2b-2b2b-2b2b-2b2b2b2b2b2b")!
+        let tagID = UUID(uuidString: "2c2c2c2c-2c2c-2c2c-2c2c-2c2c2c2c2c2c")!
+        let root = try registry.makeFile(label: "not-a-directory")
+        let bookmarkPort = FolderAuthorizationTestSupport.MappingBookmarkPort()
+        let bookmark = bookmarkPort.register(url: root)
+        bookmarkPort.forceStartResult = true
+        let reader = FolderAuthorizationTestSupport.FixedResourceReader()
+        reader.snapshots[root] = FolderRootResourceSnapshot(
+            isDirectory: false,
+            isSymbolicLink: false,
+            isAliasFile: false,
+            isPackage: false,
+            isReadable: true,
+            localizedName: "fixture",
+            pathExtension: "txt"
+        )
+        try FolderAuthorizationTestSupport.insertFolderSource(
+            database: database,
+            sourceID: sourceID,
+            bookmark: bookmark,
+            state: .active
+        )
+        try FolderAuthorizationTestSupport.insertFolderAssetGraph(
+            database: database,
+            sourceID: sourceID,
+            assetID: assetID,
+            tagID: tagID
+        )
+        let before = try FolderAuthorizationTestSupport.assetGraphCounts(database, sourceID: sourceID)
+
+        let picker = FolderAuthorizationTestSupport.FakeDirectoryPicker()
+        let (coordinator, _, _, port) = FolderAuthorizationTestSupport.makeCoordinator(
+            database: database,
+            picker: picker,
+            bookmarkPort: bookmarkPort,
+            resourceReader: reader
+        )
+        let tracking = port as! FolderAuthorizationTestSupport.MappingBookmarkPort
+        var closureExecuted = false
+
+        do {
+            _ = try coordinator.accessFolderSource(sourceID: sourceID) { _ in
+                closureExecuted = true
+                return ""
+            }
+            XCTFail("Expected authorizationUnavailable")
+        } catch {
+            XCTAssertEqual(error as? FolderAuthorizationError, .authorizationUnavailable)
+        }
+
+        XCTAssertFalse(closureExecuted)
+        XCTAssertEqual(tracking.startCount, 1)
+        XCTAssertEqual(tracking.stopCount, 1)
+        XCTAssertEqual(try FolderAuthorizationTestSupport.fetchSourceState(database, sourceID: sourceID), .authorizationRequired)
+        let after = try FolderAuthorizationTestSupport.assetGraphCounts(database, sourceID: sourceID)
+        assertAssetGraphUnchanged(before, after)
+    }
+
+    func testFetchAllFolderSourcesCorruptFolderRowSurfacesPersistenceFailure() throws {
+        let database = try FolderAuthorizationTestSupport.makeDatabase()
+        let corruptID = UUID(uuidString: "30303030-3030-3030-3030-303030303030")!
+        try FolderAuthorizationTestSupport.insertUndecodableFolderSource(
+            database: database,
+            sourceID: corruptID
+        )
+
+        let repository = GRDBFolderSourceAuthorizationRepository(database: database)
+        XCTAssertThrowsError(try repository.fetchAllFolderSources()) { error in
+            XCTAssertEqual(error as? FolderAuthorizationError, .persistenceFailure)
+        }
+    }
+
+    func testConnectRejectsWhenExistingFolderRowIsCorrupt() async throws {
+        let database = try FolderAuthorizationTestSupport.makeDatabase()
+        let corruptID = UUID(uuidString: "31313131-3131-3131-3131-313131313131")!
+        try FolderAuthorizationTestSupport.insertUndecodableFolderSource(
+            database: database,
+            sourceID: corruptID
+        )
+
+        let root = try registry.makeRoot(label: "connect-corrupt-overlap")
+        let picker = FolderAuthorizationTestSupport.FakeDirectoryPicker()
+        picker.configuredResponses = [root]
+        let (coordinator, _, _, _) = FolderAuthorizationTestSupport.makeCoordinator(
+            database: database,
+            picker: picker
+        )
+
+        do {
+            _ = try await coordinator.connectFolder()
+            XCTFail("Expected persistenceFailure")
+        } catch {
+            XCTAssertEqual(error as? FolderAuthorizationError, .persistenceFailure)
+        }
+        XCTAssertEqual(try FolderAuthorizationTestSupport.sourceCount(database), 1)
+    }
+
+    func testReauthorizeRepositoryRejectsWhenStateChangesBeforeTransactionalUpdate() throws {
+        let database = try FolderAuthorizationTestSupport.makeDatabase()
+        let sourceID = UUID(uuidString: "2d2d2d2d-2d2d-2d2d-2d2d-2d2d2d2d2d2d")!
+        let root = try registry.makeRoot(label: "reauth-race")
+        let bookmark = try FoundationSecurityScopedBookmarkAdapter().createReadOnlyBookmark(for: root)
+        try FolderAuthorizationTestSupport.insertFolderSource(
+            database: database,
+            sourceID: sourceID,
+            displayName: "Before",
+            bookmark: bookmark,
+            state: .authorizationRequired
+        )
+        let beforeBookmark = try FolderAuthorizationTestSupport.fetchSourceBookmark(database, sourceID: sourceID)
+
+        try database.pool.write { db in
+            try db.execute(
+                sql: "UPDATE source SET state = 'disabled' WHERE id = ?",
+                arguments: [sourceID.uuidString.lowercased()]
+            )
+        }
+
+        let repository = GRDBFolderSourceAuthorizationRepository(database: database)
+        XCTAssertThrowsError(
+            try repository.reauthorizeFolder(
+                sourceID: sourceID,
+                displayName: "After",
+                bookmark: bookmark,
+                jobID: UUID(),
+                nowMs: FolderAuthorizationTestSupport.baseTimeMs
+            )
+        ) { error in
+            XCTAssertEqual(error as? FolderAuthorizationError, .invalidSourceState)
+        }
+
+        XCTAssertEqual(try FolderAuthorizationTestSupport.fetchSourceState(database, sourceID: sourceID), .disabled)
+        XCTAssertEqual(try FolderAuthorizationTestSupport.fetchSourceBookmark(database, sourceID: sourceID), beforeBookmark)
+        XCTAssertEqual(try FolderAuthorizationTestSupport.jobCount(database), 0)
+    }
+
+    func testReauthorizeRepositoryRejectsNonReauthorizableState() throws {
+        let database = try FolderAuthorizationTestSupport.makeDatabase()
+        let sourceID = UUID(uuidString: "2e2e2e2e-2e2e-2e2e-2e2e-2e2e2e2e2e2e")!
+        let root = try registry.makeRoot(label: "reauth-repo-guard")
+        let bookmark = try FoundationSecurityScopedBookmarkAdapter().createReadOnlyBookmark(for: root)
+        try FolderAuthorizationTestSupport.insertFolderSource(
+            database: database,
+            sourceID: sourceID,
+            bookmark: bookmark,
+            state: .disabled
+        )
+
+        let repository = GRDBFolderSourceAuthorizationRepository(database: database)
+        XCTAssertThrowsError(
+            try repository.reauthorizeFolder(
+                sourceID: sourceID,
+                displayName: "After",
+                bookmark: bookmark,
+                jobID: UUID(),
+                nowMs: FolderAuthorizationTestSupport.baseTimeMs
+            )
+        ) { error in
+            XCTAssertEqual(error as? FolderAuthorizationError, .invalidSourceState)
+        }
+        XCTAssertEqual(try FolderAuthorizationTestSupport.fetchSourceState(database, sourceID: sourceID), .disabled)
     }
 }
