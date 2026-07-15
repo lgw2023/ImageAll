@@ -112,6 +112,23 @@
 		FF000001000000000000000F /* CatalogQueryErrorMapping.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF000101000000000000000F /* CatalogQueryErrorMapping.swift */; };
 		FF0000010000000000000010 /* CatalogQueryTestFaultSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0001010000000000000010 /* CatalogQueryTestFaultSupport.swift */; };
 		FF0000010000000000000011 /* CatalogQuerySortExpectations.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0001010000000000000011 /* CatalogQuerySortExpectations.swift */; };
+		HH0000010000000000000001 /* FolderAuthorizationTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = HH0001010000000000000001 /* FolderAuthorizationTypes.swift */; };
+		HH0000010000000000000002 /* FolderAuthorizationErrors.swift in Sources */ = {isa = PBXBuildFile; fileRef = HH0001010000000000000002 /* FolderAuthorizationErrors.swift */; };
+		HH0000010000000000000003 /* FolderAuthorizationCommandPort.swift in Sources */ = {isa = PBXBuildFile; fileRef = HH0001010000000000000003 /* FolderAuthorizationCommandPort.swift */; };
+		HH0000010000000000000004 /* FolderDirectoryPickerPort.swift in Sources */ = {isa = PBXBuildFile; fileRef = HH0001010000000000000004 /* FolderDirectoryPickerPort.swift */; };
+		HH0000010000000000000005 /* AppKitFolderDirectoryPicker.swift in Sources */ = {isa = PBXBuildFile; fileRef = HH0001010000000000000005 /* AppKitFolderDirectoryPicker.swift */; };
+		HH0000010000000000000006 /* FolderAuthorizationPlatformAdapters.swift in Sources */ = {isa = PBXBuildFile; fileRef = HH0001010000000000000006 /* FolderAuthorizationPlatformAdapters.swift */; };
+		HH0000010000000000000007 /* FolderReconcileJobFactory.swift in Sources */ = {isa = PBXBuildFile; fileRef = HH0001010000000000000007 /* FolderReconcileJobFactory.swift */; };
+		HH0000010000000000000008 /* GRDBFolderSourceAuthorizationRepository.swift in Sources */ = {isa = PBXBuildFile; fileRef = HH0001010000000000000008 /* GRDBFolderSourceAuthorizationRepository.swift */; };
+		HH0000010000000000000009 /* FolderAuthorizationCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = HH0001010000000000000009 /* FolderAuthorizationCoordinator.swift */; };
+		HH000001000000000000000A /* JobInsertInTransaction.swift in Sources */ = {isa = PBXBuildFile; fileRef = HH000101000000000000000A /* JobInsertInTransaction.swift */; };
+		HH0000010000000000000101 /* FolderAuthorizationTestSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = HH0001010000000000000101 /* FolderAuthorizationTestSupport.swift */; };
+		HH0000010000000000000102 /* FolderAuthorizationEntitlementPanelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = HH0001010000000000000102 /* FolderAuthorizationEntitlementPanelTests.swift */; };
+		HH0000010000000000000103 /* FolderRootValidationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = HH0001010000000000000103 /* FolderRootValidationTests.swift */; };
+		HH0000010000000000000104 /* SecurityScopedBookmarkTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = HH0001010000000000000104 /* SecurityScopedBookmarkTests.swift */; };
+		HH0000010000000000000105 /* FolderOverlapAndConnectTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = HH0001010000000000000105 /* FolderOverlapAndConnectTests.swift */; };
+		HH0000010000000000000106 /* FolderDisableReauthorizeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = HH0001010000000000000106 /* FolderDisableReauthorizeTests.swift */; };
+		HH0000010000000000000107 /* FolderAuthorizationArchitectureTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = HH0001010000000000000107 /* FolderAuthorizationArchitectureTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -231,6 +248,23 @@
 		FF000101000000000000000F /* CatalogQueryErrorMapping.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CatalogQueryErrorMapping.swift; sourceTree = "<group>"; };
 		FF0001010000000000000010 /* CatalogQueryTestFaultSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CatalogQueryTestFaultSupport.swift; sourceTree = "<group>"; };
 		FF0001010000000000000011 /* CatalogQuerySortExpectations.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CatalogQuerySortExpectations.swift; sourceTree = "<group>"; };
+		HH0001010000000000000001 /* FolderAuthorizationTypes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FolderAuthorizationTypes.swift; sourceTree = "<group>"; };
+		HH0001010000000000000002 /* FolderAuthorizationErrors.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FolderAuthorizationErrors.swift; sourceTree = "<group>"; };
+		HH0001010000000000000003 /* FolderAuthorizationCommandPort.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FolderAuthorizationCommandPort.swift; sourceTree = "<group>"; };
+		HH0001010000000000000004 /* FolderDirectoryPickerPort.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FolderDirectoryPickerPort.swift; sourceTree = "<group>"; };
+		HH0001010000000000000005 /* AppKitFolderDirectoryPicker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppKitFolderDirectoryPicker.swift; sourceTree = "<group>"; };
+		HH0001010000000000000006 /* FolderAuthorizationPlatformAdapters.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FolderAuthorizationPlatformAdapters.swift; sourceTree = "<group>"; };
+		HH0001010000000000000007 /* FolderReconcileJobFactory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FolderReconcileJobFactory.swift; sourceTree = "<group>"; };
+		HH0001010000000000000008 /* GRDBFolderSourceAuthorizationRepository.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GRDBFolderSourceAuthorizationRepository.swift; sourceTree = "<group>"; };
+		HH0001010000000000000009 /* FolderAuthorizationCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FolderAuthorizationCoordinator.swift; sourceTree = "<group>"; };
+		HH000101000000000000000A /* JobInsertInTransaction.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JobInsertInTransaction.swift; sourceTree = "<group>"; };
+		HH0001010000000000000101 /* FolderAuthorizationTestSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FolderAuthorizationTestSupport.swift; sourceTree = "<group>"; };
+		HH0001010000000000000102 /* FolderAuthorizationEntitlementPanelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FolderAuthorizationEntitlementPanelTests.swift; sourceTree = "<group>"; };
+		HH0001010000000000000103 /* FolderRootValidationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FolderRootValidationTests.swift; sourceTree = "<group>"; };
+		HH0001010000000000000104 /* SecurityScopedBookmarkTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SecurityScopedBookmarkTests.swift; sourceTree = "<group>"; };
+		HH0001010000000000000105 /* FolderOverlapAndConnectTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FolderOverlapAndConnectTests.swift; sourceTree = "<group>"; };
+		HH0001010000000000000106 /* FolderDisableReauthorizeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FolderDisableReauthorizeTests.swift; sourceTree = "<group>"; };
+		HH0001010000000000000107 /* FolderAuthorizationArchitectureTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FolderAuthorizationArchitectureTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -278,6 +312,7 @@
 			isa = PBXGroup;
 			children = (
 				AA0006010000000000000008 /* Startup */,
+				HH0006010000000000000003 /* Authorization */,
 				AA0001010000000000000005 /* CompositionRootTests.swift */,
 				BB0006010000000000000004 /* Domain */,
 				CC0006010000000000000002 /* Database */,
@@ -322,6 +357,7 @@
 		AA0006010000000000000006 /* Application */ = {
 			isa = PBXGroup;
 			children = (
+				HH0006010000000000000001 /* Authorization */,
 				FF0006010000000000000001 /* Catalog */,
 				EE0006010000000000000001 /* Ports */,
 				DD0006010000000000000001 /* Jobs */,
@@ -427,6 +463,7 @@
 		CC0006010000000000000001 /* Infrastructure */ = {
 			isa = PBXGroup;
 			children = (
+				HH0006010000000000000002 /* Authorization */,
 				FF0006010000000000000002 /* Catalog */,
 				EE0006010000000000000002 /* Paths */,
 				EE0006010000000000000003 /* ProcessLock */,
@@ -554,8 +591,46 @@
 			children = (
 				DD0001010000000000000007 /* JobPersistenceMapping.swift */,
 				DD0001010000000000000008 /* GRDBJobQueue.swift */,
+				HH000101000000000000000A /* JobInsertInTransaction.swift */,
 			);
 			path = JobQueue;
+			sourceTree = "<group>";
+		};
+		HH0006010000000000000001 /* Authorization */ = {
+			isa = PBXGroup;
+			children = (
+				HH0001010000000000000001 /* FolderAuthorizationTypes.swift */,
+				HH0001010000000000000002 /* FolderAuthorizationErrors.swift */,
+				HH0001010000000000000003 /* FolderAuthorizationCommandPort.swift */,
+			);
+			path = Authorization;
+			sourceTree = "<group>";
+		};
+		HH0006010000000000000002 /* Authorization */ = {
+			isa = PBXGroup;
+			children = (
+				HH0001010000000000000004 /* FolderDirectoryPickerPort.swift */,
+				HH0001010000000000000005 /* AppKitFolderDirectoryPicker.swift */,
+				HH0001010000000000000006 /* FolderAuthorizationPlatformAdapters.swift */,
+				HH0001010000000000000007 /* FolderReconcileJobFactory.swift */,
+				HH0001010000000000000008 /* GRDBFolderSourceAuthorizationRepository.swift */,
+				HH0001010000000000000009 /* FolderAuthorizationCoordinator.swift */,
+			);
+			path = Authorization;
+			sourceTree = "<group>";
+		};
+		HH0006010000000000000003 /* Authorization */ = {
+			isa = PBXGroup;
+			children = (
+				HH0001010000000000000101 /* FolderAuthorizationTestSupport.swift */,
+				HH0001010000000000000102 /* FolderAuthorizationEntitlementPanelTests.swift */,
+				HH0001010000000000000103 /* FolderRootValidationTests.swift */,
+				HH0001010000000000000104 /* SecurityScopedBookmarkTests.swift */,
+				HH0001010000000000000105 /* FolderOverlapAndConnectTests.swift */,
+				HH0001010000000000000106 /* FolderDisableReauthorizeTests.swift */,
+				HH0001010000000000000107 /* FolderAuthorizationArchitectureTests.swift */,
+			);
+			path = Authorization;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -723,6 +798,16 @@
 				FF0000010000000000000009 /* GRDBTagCatalogRepository.swift in Sources */,
 				FF000001000000000000000A /* V002AddStage1CatalogQuerySupportMigration.swift in Sources */,
 				FF000001000000000000000F /* CatalogQueryErrorMapping.swift in Sources */,
+				HH0000010000000000000001 /* FolderAuthorizationTypes.swift in Sources */,
+				HH0000010000000000000002 /* FolderAuthorizationErrors.swift in Sources */,
+				HH0000010000000000000003 /* FolderAuthorizationCommandPort.swift in Sources */,
+				HH0000010000000000000004 /* FolderDirectoryPickerPort.swift in Sources */,
+				HH0000010000000000000005 /* AppKitFolderDirectoryPicker.swift in Sources */,
+				HH0000010000000000000006 /* FolderAuthorizationPlatformAdapters.swift in Sources */,
+				HH0000010000000000000007 /* FolderReconcileJobFactory.swift in Sources */,
+				HH0000010000000000000008 /* GRDBFolderSourceAuthorizationRepository.swift in Sources */,
+				HH0000010000000000000009 /* FolderAuthorizationCoordinator.swift in Sources */,
+				HH000001000000000000000A /* JobInsertInTransaction.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -775,6 +860,13 @@
 				FF000001000000000000000E /* TagCatalogTransactionTests.swift in Sources */,
 				FF0000010000000000000010 /* CatalogQueryTestFaultSupport.swift in Sources */,
 				FF0000010000000000000011 /* CatalogQuerySortExpectations.swift in Sources */,
+				HH0000010000000000000101 /* FolderAuthorizationTestSupport.swift in Sources */,
+				HH0000010000000000000102 /* FolderAuthorizationEntitlementPanelTests.swift in Sources */,
+				HH0000010000000000000103 /* FolderRootValidationTests.swift in Sources */,
+				HH0000010000000000000104 /* SecurityScopedBookmarkTests.swift in Sources */,
+				HH0000010000000000000105 /* FolderOverlapAndConnectTests.swift in Sources */,
+				HH0000010000000000000106 /* FolderDisableReauthorizeTests.swift in Sources */,
+				HH0000010000000000000107 /* FolderAuthorizationArchitectureTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
