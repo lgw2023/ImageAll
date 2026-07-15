@@ -281,7 +281,8 @@ Apple 建议 replacement 文件位于目标同卷，`FileManager.replaceItemAt` 
 - 最终始终只有一行、一个被引用对象；额外完整对象只能是可维护的孤儿；
 - cache hit 必须安全读取推导对象，验证 regular/non-symlink、size、SHA-256、storage format、单图和像素尺寸；
 - 有效 hit 更新 `last_accessed_at_ms` 并返回 `origin = cacheHit`；
-- entry 缺文件或验证失败时，先从目录库移除无效 entry，再 best-effort 删除其对象，然后按当前 Asset key 重建；
+- entry 缺文件或验证失败时，将该行视为不可返回的 replacement candidate，但不得在生成前单独提交删除；按当前 Asset key 重建，并在最终 GRDB 写事务内重新验证 candidate 与目录事实后原子替换；
+- 若重建或最终事务失败，原无效 entry 可以暂时保留，但后续请求仍必须重新验证且绝不能把它当作有效 hit；新发布对象最多成为未引用孤儿。事务成功后，旧对象才 best-effort 安全删除；并发期间若另一份有效同 key entry 已获胜，则 loser 不覆盖 winner；
 - 损坏、缺失与孤儿清理不得改 Asset、Source、fingerprint、Tag 或 Job。
 
 ## 8. Fingerprint 与 revision 稳定性
