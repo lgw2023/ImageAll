@@ -1,6 +1,6 @@
 # ImageAll 阶段 1 实施规格
 
-> 状态：Implementation in progress；切片 1 已通过<br>
+> 状态：Implementation in progress；切片 1 已通过，切片 2 已获实施授权<br>
 > 日期：2026-07-15<br>
 > 产品批准：`UI-001`～`UI-011`、macOS 15+ / Apple Silicon only、静态格式允许清单、本地自用签名<br>
 > 已批准实现基线：阶段 0 `main@892f4e29e1ebf492c1540c5a29d9c54abc05a78f`<br>
@@ -285,11 +285,16 @@ Undo 是阶段 1 的会话级单级能力：成功批量命令返回每个 Asset
 
 - entitlement 只新增 `user-selected.read-only` 与 app-scope bookmark；
 - 用户动作前不弹系统选择器；
+- 本切片只交付授权引擎与 AppKit 单目录选择器适配；现有 SwiftUI 默认不变，批准的“连接文件夹…”入口到切片 6 才接入；
 - 根必须是可读目录且非 symlink、alias、package、`.photoslibrary`；
 - 相同、祖先、后代 Source 均拒绝；无法证明不重叠时保守失败；
 - bookmark、Source、初始 `folder.reconcile.v1` Job 单事务发布；
 - scope start/stop 所有路径严格配对；stale bookmark 只有新 bookmark 成功后替换；
+- 停用 Source 与其 reconcile Job 控制原子更新；重新授权只有自动证明同一根时沿用原 `source_id`；
 - 停用/失权/离线保留 Asset、locator 和人工标签。
+
+切片 2 的精确端口、Job payload、AppKit 配置、重授权身份、失败回滚与测试矩阵以
+[`CURSOR-STAGE-1-SLICE-2-HANDOFF.md`](./CURSOR-STAGE-1-SLICE-2-HANDOFF.md) 为准。
 
 ### 5.2 切片 3：对账
 
