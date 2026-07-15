@@ -1,6 +1,6 @@
 # ImageAll 阶段 1 加速交付计划
 
-> 状态：Slice A-E implemented；Slice B 低空间显示问题已修复
+> 状态：Slice A-F implemented；Slice B 低空间显示问题已修复
 >
 > 日期：2026-07-16
 >
@@ -15,6 +15,8 @@
 > Slice D 实现：`main@7f083f19e895bca272025e71d5772c40e1b050bd`
 >
 > Slice E 实现：`main@fa670a7a14ee0958028f25058d169e395617dc47`
+>
+> Slice F 实现：`main@fe21362269c955abf224201f1ba1bbc132cebab7`
 
 ## 1. 决策
 
@@ -35,6 +37,7 @@
 → 用 Space 进入单图查看并用方向键连续浏览
 → 按可用状态、静态图片格式筛选，并切换稳定排序
 → 从来源行重扫、重新授权或安全停用来源
+→ 从标签行重命名或归档标签，同时保留人工决定历史
 ```
 
 ## 2. 加速切片 A：连接、扫描、浏览
@@ -70,7 +73,7 @@
 
 ## 4. 明确延期
 
-Slice E 完成后仍明确延期：
+Slice F 完成后仍明确延期：
 
 - FSEvents watcher、dirty trigger 与自动增量重扫；
 - Activity 工作区、任务列表、暂停、取消、重试；
@@ -96,7 +99,7 @@ Slice E 完成后仍明确延期：
 
 ## 6. 停止位置
 
-切片 B 停止于“浏览—选择—人工标签—搜索筛选”闭环；项目所有者实际体验反馈后，切片 C 已补齐单图查看与键盘浏览，切片 D 已补齐状态、格式和排序控件。FSEvents、活动中心和扩展验证继续延期；后续纵切片优先进入来源生命周期界面或其他直接用户主路径，不默认回补 watcher/活动能力。
+切片 B 停止于“浏览—选择—人工标签—搜索筛选”闭环；项目所有者实际体验反馈后，切片 C 已补齐单图查看与键盘浏览，切片 D 已补齐状态、格式和排序控件，切片 E 已补齐来源生命周期，切片 F 已补齐标签重命名与归档。FSEvents、活动中心和扩展验证继续延期；后续纵切片继续优先直接用户主路径，不默认回补 watcher/活动能力。
 
 ## 7. 切片 A 验收记录
 
@@ -180,3 +183,17 @@ Slice E 完成后仍明确延期：
 - 本机 Downloads 来源完成只读运行验收：上下文菜单、状态相关 enablement、停用确认/取消及来源级重扫均可观察；没有执行停用，没有修改、删除或移动来源文件；
 - 未访问 `/Volumes/HDD2`，未新增 schema、entitlement、privacy manifest 或依赖，未 push；
 - 实现提交：`fa670a7a14ee0958028f25058d169e395617dc47`（`Agent-Role: implementation`）。
+
+## 13. 加速切片 F：标签重命名与归档
+
+2026-07-16 已完成并通过：
+
+- 标签名称继续复用 `TagNameNormalizer` 与 `TagCatalogRules`，显示名/规范名语义没有在 Infrastructure 或 SwiftUI 复制；重命名保持 Tag ID，并由数据库 BINARY unique 继续提供并发最终防线；
+- 归档只把 Tag 从 `active` 变为 `archived`，不删除 `asset_tag_decision`；active 目录、Sidebar 和 Inspector 不再显示归档标签，显式包含 archived 的查询仍能读取历史；
+- Sidebar 标签行使用原生上下文菜单提供“在图库中查看”“重命名…”和“归档标签”；归档前确认文案明确保留人工确认、拒绝与历史，没有永久删除入口；
+- 当前按被归档标签筛选时，Workspace 清除该 Tag filter 并安全返回可见图库；成功重命名/归档使旧的一次性标签 Undo 失效，失败保留当前呈现并显示安全摘要；
+- TDD 红灯：`/tmp/ImageAll-tag-rename-red.xcresult`、`/tmp/ImageAll-tag-archive-red.log`、`/tmp/ImageAll-tag-workspace-rename-red.log`；仓储与 Workspace 新增主路径/失败路径测试通过；
+- `TagNameTests`、`TagCatalogTransactionTests` 与 `LibraryWorkspaceModelTests` 相关回归 57/57：`/tmp/ImageAll-tag-lifecycle-regression.xcresult`；arm64 Debug build 成功；
+- 本机 Downloads 目录库完成只读启动验收；因当前目录库没有 active Tag，没有为了展示菜单而创建临时标签或修改应用元数据；
+- 未访问 `/Volumes/HDD2`，未修改、删除或移动 Downloads 来源文件，未新增 schema、entitlement、privacy manifest 或依赖，未 push；
+- 实现提交：`fe21362269c955abf224201f1ba1bbc132cebab7`（`Agent-Role: implementation`）。
