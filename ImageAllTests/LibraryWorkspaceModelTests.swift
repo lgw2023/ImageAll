@@ -156,6 +156,39 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertEqual(model.inspectorTags.first?.decision, .unknown)
     }
 
+    func testSinglePhotoModeMovesPrimarySelectionAndReturnsToGrid() async {
+        let sourceID = UUID()
+        let first = Self.makeAsset(sourceID: sourceID, fileName: "first.jpg")
+        let second = Self.makeAsset(sourceID: sourceID, fileName: "second.jpg")
+        let third = Self.makeAsset(sourceID: sourceID, fileName: "third.jpg")
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(id: sourceID, displayName: "Fixture", state: .active),
+            reconciledItems: [first, second, third]
+        )
+        let model = LibraryWorkspaceModel(service: service)
+
+        await model.start()
+        await model.connectFolder()
+        await model.selectAsset(second.assetID)
+
+        model.toggleSinglePhotoView()
+        XCTAssertTrue(model.isSinglePhotoPresented)
+        XCTAssertEqual(model.primarySelectedAssetID, second.assetID)
+
+        await model.movePrimarySelection(by: 1)
+        XCTAssertTrue(model.isSinglePhotoPresented)
+        XCTAssertEqual(model.selectedAssetIDs, [third.assetID])
+        XCTAssertEqual(model.inspectorDetail?.assetID, third.assetID)
+
+        await model.movePrimarySelection(by: -1)
+        XCTAssertEqual(model.selectedAssetIDs, [second.assetID])
+        XCTAssertEqual(model.inspectorDetail?.assetID, second.assetID)
+
+        model.closeSinglePhotoView()
+        XCTAssertFalse(model.isSinglePhotoPresented)
+        XCTAssertEqual(model.selectedAssetIDs, [second.assetID])
+    }
+
     private static func makeAsset(
         sourceID: UUID,
         fileName: String = "sample.jpg"

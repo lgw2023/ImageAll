@@ -13,6 +13,7 @@ final class LibraryWorkspaceModel: ObservableObject {
     @Published private(set) var sources: [LibrarySourceSummary] = []
     @Published private(set) var items: [AssetGridItemProjection] = []
     @Published private(set) var selectedAssetIDs: Set<UUID> = []
+    @Published private(set) var isSinglePhotoPresented = false
     @Published private(set) var inspectorDetail: AssetInspectorDetail?
     @Published private(set) var inspectorTags: [LibraryInspectorTagPresentation] = []
     @Published private(set) var tags: [TagListItem] = []
@@ -41,6 +42,11 @@ final class LibraryWorkspaceModel: ObservableObject {
 
     var canUndoTagMutation: Bool {
         lastTagMutation != nil
+    }
+
+    var primarySelectedAssetID: UUID? {
+        guard selectedAssetIDs.count == 1 else { return nil }
+        return selectedAssetIDs.first
     }
 
     func start() async {
@@ -142,7 +148,34 @@ final class LibraryWorkspaceModel: ObservableObject {
             selectedAssetIDs = [assetID]
             selectionAnchorID = assetID
         }
+        if selectedAssetIDs.count != 1 {
+            isSinglePhotoPresented = false
+        }
         await refreshInspector()
+    }
+
+    func toggleSinglePhotoView() {
+        guard primarySelectedAssetID != nil else { return }
+        isSinglePhotoPresented.toggle()
+    }
+
+    func closeSinglePhotoView() {
+        isSinglePhotoPresented = false
+    }
+
+    func movePrimarySelection(by offset: Int) async {
+        guard offset != 0, let currentID = primarySelectedAssetID else { return }
+
+        if offset > 0, currentID == items.last?.assetID {
+            await loadMoreIfNeeded(currentAssetID: currentID)
+        }
+
+        guard let currentIndex = items.firstIndex(where: { $0.assetID == currentID }) else {
+            return
+        }
+        let targetIndex = min(max(currentIndex + offset, 0), items.count - 1)
+        guard targetIndex != currentIndex else { return }
+        await selectAsset(items[targetIndex].assetID)
     }
 
     func applyTagDecision(tagID: UUID, action: LibraryTagDecisionAction) async {
@@ -249,6 +282,7 @@ final class LibraryWorkspaceModel: ObservableObject {
             let visibleIDs = Set(page.items.map(\.assetID))
             selectedAssetIDs.formIntersection(visibleIDs)
             if selectedAssetIDs.isEmpty {
+                isSinglePhotoPresented = false
                 inspectorDetail = nil
                 inspectorTags = []
                 if hadSelection {
@@ -477,6 +511,7 @@ struct LibraryWorkspaceView: View {
     @State private var searchText = ""
     @State private var newTagName = ""
     @FocusState private var newTagFieldFocused: Bool
+    @FocusState private var contentFocused: Bool
 
     var body: some View {
         NavigationSplitView {
@@ -485,6 +520,25 @@ struct LibraryWorkspaceView: View {
         } content: {
             content
                 .navigationTitle("全部照片")
+                .focusable()
+                .focused($contentFocused)
+                .focusEffectDisabled()
+                .onKeyPress(.space) {
+                    guard model.primarySelectedAssetID != nil else { return .ignored }
+                    model.toggleSinglePhotoView()
+                    return .handled
+                }
+                .onKeyPress(.escape) {
+                    guard model.isSinglePhotoPresented else { return .ignored }
+                    model.closeSinglePhotoView()
+                    return .handled
+                }
+                .onKeyPress(keys: [.leftArrow, .rightArrow]) { keyPress in
+                    guard model.primarySelectedAssetID != nil else { return .ignored }
+                    let offset = keyPress.key == .leftArrow ? -1 : 1
+                    Task { await model.movePrimarySelection(by: offset) }
+                    return .handled
+                }
         } detail: {
             inspector
                 .navigationSplitViewColumnWidth(min: 240, ideal: 300, max: 380)
@@ -626,7 +680,15 @@ struct LibraryWorkspaceView: View {
                     }
                 }
             } else {
-                assetGrid
+                if model.isSinglePhotoPresented,
+                   let assetID = model.primarySelectedAssetID,
+                   let item = model.items.first(where: { $0.assetID == assetID })
+                {
+                    SinglePhotoView(item: item, model: model)
+                        .onAppear { contentFocused = true }
+                } else {
+                    assetGrid
+                }
             }
         case let .failed(error):
             ContentUnavailableView {
@@ -654,6 +716,7 @@ struct LibraryWorkspaceView: View {
                         model: model,
                         isSelected: model.selectedAssetIDs.contains(item.assetID)
                     ) {
+                        contentFocused = true
                         let flags = NSEvent.modifierFlags.intersection(.deviceIndependentFlagsMask)
                         Task {
                             await model.selectAsset(
@@ -671,6 +734,7 @@ struct LibraryWorkspaceView: View {
             .padding(12)
         }
         .background(Color(nsColor: .windowBackgroundColor))
+        .onAppear { contentFocused = true }
     }
 
     private var inspector: some View {
@@ -937,6 +1001,49 @@ struct LibraryWorkspaceView: View {
         case .connectionFailed: return "无法连接文件夹"
         case .scanFailed: return "扫描未完成"
         case .catalogFailed: return "无法读取图库"
+        }
+    }
+}
+
+private struct SinglePhotoView: View {
+    let item: AssetGridItemProjection
+    @ObservedObject var model: LibraryWorkspaceModel
+    @State private var image: NSImage?
+
+    var body: some View {
+        ZStack {
+            Color(nsColor: .windowBackgroundColor)
+            if let image {
+                Image(nsImage: image)
+                    .resizable()
+                    .scaledToFit()
+                    .padding(24)
+            } else {
+                Image(systemName: placeholderIcon)
+                    .font(.system(size: 48))
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .accessibilityIdentifier("singlePhotoView")
+        .accessibilityLabel(item.fileName ?? "照片")
+        .task(id: item.assetID) {
+            image = nil
+            guard item.availability == .available,
+                  let data = await model.previewData(assetID: item.assetID)
+            else {
+                return
+            }
+            image = NSImage(data: data)
+        }
+    }
+
+    private var placeholderIcon: String {
+        switch item.availability {
+        case .available: return "photo"
+        case .missing: return "questionmark.folder"
+        case .unreadable: return "exclamationmark.triangle"
+        case .unsupported: return "nosign"
         }
     }
 }
