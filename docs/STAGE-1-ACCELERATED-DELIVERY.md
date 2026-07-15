@@ -1,9 +1,10 @@
 # ImageAll 阶段 1 加速交付计划
 
-> 状态：Slice A implemented and approved
+> 状态：Slice A-B implemented；Slice B pending owner UX review  
 > 日期：2026-07-15  
 > 设计基线：`main@a03d1296b4f7ffa22de369baebc89042ea94283f`
-> 实现：`main@0e7dd655f99a57730025355fde6bacdff564e0f4`
+> Slice A 实现：`main@0e7dd655f99a57730025355fde6bacdff564e0f4`  
+> Slice B 实现：`main@542c76b97a06b1ec9ea31418fadaa9e355ae7b03`
 
 ## 1. 决策
 
@@ -19,6 +20,8 @@
 → 已入库照片进入分页网格
 → 按需生成并显示 gridRegular 缩略图
 → 用户可手动刷新来源
+→ 选择照片并在 Inspector 作出人工标签决定
+→ 用本地搜索、来源、标签决定和无标签条件缩小结果
 ```
 
 ## 2. 加速切片 A：连接、扫描、浏览
@@ -35,20 +38,38 @@
 
 首版不要求扫描过程中逐批刷新 UI；一次 reconcile 完成后展示结果即可。该体验缺口记录为技术债，避免为实时投影引入额外调度层。
 
-## 3. 明确延期
+## 3. 加速切片 B：Inspector 人工标签与基础搜索筛选
 
-以下内容不进入加速切片 A：
+本切片实现：
+
+- 三栏 `NavigationSplitView`，右栏 Inspector 在没有选择时显示明确空状态；
+- 单击、`Command` 多选和 `Shift` 范围选择，筛选后不可见选择明确清除；
+- 单选 Inspector 使用 `preview` 派生图并显示文件名、来源、相对位置、格式、尺寸、大小和可用状态；
+- 单选/多选的人工标签 `accepted`、`rejected`、`unknown` 与 mixed 聚合；
+- 对全部所选资产执行确认、拒绝、清除决定；清除不等于拒绝；
+- 在 Inspector 内创建标签并原子确认应用到当前选择；
+- 一次成功标签事务的 Undo；失败事务不进入或覆盖 Undo 历史；
+- 本地搜索提交，复用既有文件名、相对路径、标签名和来源名搜索语义；
+- 来源、无标签、具体标签的已确认/已拒绝筛选，以及多标签明确 ALL/ANY；
+- 网格的人工作出决定数量提示和安全的非模态失败摘要。
+
+本切片不新增 schema、entitlement、privacy manifest 或依赖；SwiftUI 只消费 Application 层工作区状态，GRDB 仍限定在 Infrastructure。
+
+## 4. 明确延期
+
+Slice B 完成后仍明确延期：
 
 - FSEvents watcher、dirty trigger 与自动增量重扫；
 - Activity 工作区、任务列表、暂停、取消、重试；
-- Inspector、标签、搜索、筛选、`Command-K`；
-- 多窗口状态同步、复杂选择语义、Space 单图查看；
+- `Command-K`、Space 单图查看、方向键移动主选择和多窗口状态同步；
+- 可用状态、文件格式筛选与排序切换界面；
+- Inspector 技术错误详情、标签操作前的独立影响数量确认；
 - 10,000/100,000 项性能基准、完整无障碍矩阵和所有故障注入；
 - 真实 `/Volumes/HDD2` 数据 smoke。
 
 这些项目进入阶段 1 技术债清单，后续按对实际使用价值的影响排序补回。延期不包括来源只读、bookmark 生命周期、目录边界、原子数据库写入、派生缓存路径安全和真实照片保护。
 
-## 4. 最小验证门
+## 5. 最小验证门
 
 为了加快交付，本切片只要求：
 
@@ -60,11 +81,11 @@
 
 不再为本切片新增重复 schema introspection、全量 fault matrix 或实现细节测试。若最小回归发现既有缺陷，只修复阻塞主路径的问题，其余记录后置。
 
-## 5. 停止位置
+## 6. 停止位置
 
-加速切片 A 完成后先进行可运行 App 评审。下一纵切片优先加入 Inspector 人工标签与基础搜索筛选；是否先补 watcher/活动能力，以首个闭环的实际使用反馈决定。
+切片 B 停止于“浏览—选择—人工标签—搜索筛选”闭环。FSEvents、活动中心和扩展验证继续延期；下一纵切片应先根据项目所有者对当前三栏工作台的实际体验反馈，在单图查看/键盘浏览、来源生命周期界面或其他直接用户主路径中择一，不默认回补 watcher/活动能力。
 
-## 6. 切片 A 验收记录
+## 7. 切片 A 验收记录
 
 2026-07-15 已完成并通过：
 
@@ -75,4 +96,19 @@
 - arm64 Debug build 成功；entitlement 与 privacy manifest 未改；
 - 自动化未访问 `/Volumes/HDD2`，未运行真实 App 容器 smoke，未 push。
 
-已知延期：扫描完成后才整体刷新网格；没有 FSEvents、活动中心、标签、搜索筛选、单图查看或真实数据 smoke。这些缺口不阻塞切片 A 的“连接—扫描—浏览”闭环。
+已知延期：扫描完成后才整体刷新网格；没有 FSEvents、活动中心、单图查看或真实数据 smoke。这些缺口不阻塞切片 A 的“连接—扫描—浏览”闭环。
+
+## 8. 切片 B 验收记录
+
+2026-07-15 已完成本地实现与验证，等待项目所有者实际 UX 评审：
+
+- Inspector 单选/多选标签三态、mixed、创建并确认、一次 Undo 与失败提示已接入；
+- 搜索、来源、无标签、具体标签 accepted/rejected 与多标签 ALL/ANY 已接入既有 keyset 查询；
+- 单选预览使用保留完整比例的 `preview` variant，网格继续使用 `gridRegular`；
+- TDD 红灯证据：`/tmp/ImageAll-inspector-red-1.xcresult`、`/tmp/ImageAll-filter-red.xcresult`、`/tmp/ImageAll-multitag-red.xcresult`、`/tmp/ImageAll-tagfailure-red.xcresult`；
+- Workspace、资产查询、标签事务、Composition Root 与派生图契约相关回归 61/61 通过：`/tmp/ImageAll-inspector-final.xcresult`；
+- arm64 Debug build 成功；实际签名 entitlement 未扩张；
+- 自动化未访问 `/Volumes/HDD2`，未运行真实 App 容器 smoke，未 push；
+- 本轮由临时授权下的 Codex implementation 完成，未启动 Cursor CLI 任务。
+
+已知延期：搜索在提交时执行，尚无输入 debounce；没有文件格式/可用状态筛选、排序控件、Space 单图模式、完整键盘导航、FSEvents、活动中心、扩展性能/无障碍验证或真实数据 smoke。
