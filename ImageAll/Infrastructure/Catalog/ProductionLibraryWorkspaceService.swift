@@ -50,11 +50,15 @@ struct ProductionLibraryWorkspaceService: LibraryWorkspacePort, Sendable {
         }
     }
 
-    func fetchAssetPage(filter: AssetPageFilter, cursor: AssetPageCursor?) throws -> AssetPageResult {
+    func fetchAssetPage(
+        filter: AssetPageFilter,
+        sort: AssetPageSort,
+        cursor: AssetPageCursor?
+    ) throws -> AssetPageResult {
         try query.fetchAssetPage(
             AssetPageRequest(
                 filter: filter,
-                sort: .newest,
+                sort: sort,
                 cursor: cursor,
                 limit: 100
             )

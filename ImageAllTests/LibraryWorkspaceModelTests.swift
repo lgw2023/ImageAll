@@ -189,9 +189,78 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertEqual(model.selectedAssetIDs, [second.assetID])
     }
 
+    func testAvailabilityFormatAndSortControlsReloadCatalogAndClearHiddenSelection() async {
+        let sourceID = UUID()
+        let availableJPEG = Self.makeAsset(
+            sourceID: sourceID,
+            fileName: "available.jpg",
+            mediaType: "public.jpeg",
+            availability: .available
+        )
+        let missingPNG = Self.makeAsset(
+            sourceID: sourceID,
+            fileName: "missing.png",
+            mediaType: "public.png",
+            availability: .missing
+        )
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(id: sourceID, displayName: "Fixture", state: .active),
+            reconciledItems: [availableJPEG, missingPNG]
+        )
+        let model = LibraryWorkspaceModel(service: service)
+
+        await model.start()
+        await model.connectFolder()
+        await model.selectAsset(availableJPEG.assetID)
+
+        await model.toggleAvailabilityFilter(.missing)
+        await model.toggleMediaTypeFilterGroup(["public.png"])
+        await model.setSort(.oldest)
+
+        XCTAssertEqual(model.selectedAvailabilities, [.missing])
+        XCTAssertEqual(model.selectedMediaTypes, ["public.png"])
+        XCTAssertEqual(model.sort, .oldest)
+        XCTAssertEqual(service.lastFilter.availabilities, [.missing])
+        XCTAssertEqual(service.lastFilter.mediaTypes, ["public.png"])
+        XCTAssertEqual(service.lastSort, .oldest)
+        XCTAssertEqual(model.items.map(\.assetID), [missingPNG.assetID])
+        XCTAssertTrue(model.selectedAssetIDs.isEmpty)
+        XCTAssertEqual(model.notice, .selectionHiddenByFilter)
+    }
+
+    func testClearingAssetPropertyFiltersRestoresAllFormatsAndStates() async {
+        let sourceID = UUID()
+        let availableJPEG = Self.makeAsset(sourceID: sourceID, fileName: "available.jpg")
+        let missingPNG = Self.makeAsset(
+            sourceID: sourceID,
+            fileName: "missing.png",
+            mediaType: "public.png",
+            availability: .missing
+        )
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(id: sourceID, displayName: "Fixture", state: .active),
+            reconciledItems: [availableJPEG, missingPNG]
+        )
+        let model = LibraryWorkspaceModel(service: service)
+
+        await model.start()
+        await model.connectFolder()
+        await model.toggleAvailabilityFilter(.missing)
+        await model.toggleMediaTypeFilterGroup(["public.png"])
+        XCTAssertEqual(model.items.map(\.assetID), [missingPNG.assetID])
+
+        await model.clearAssetPropertyFilters()
+
+        XCTAssertTrue(model.selectedAvailabilities.isEmpty)
+        XCTAssertTrue(model.selectedMediaTypes.isEmpty)
+        XCTAssertEqual(model.items.map(\.assetID), [availableJPEG.assetID, missingPNG.assetID])
+    }
+
     private static func makeAsset(
         sourceID: UUID,
-        fileName: String = "sample.jpg"
+        fileName: String = "sample.jpg",
+        mediaType: String = "public.jpeg",
+        availability: AssetAvailability = .available
     ) -> AssetGridItemProjection {
         AssetGridItemProjection(
             assetID: UUID(),
@@ -200,12 +269,12 @@ final class LibraryWorkspaceModelTests: XCTestCase {
             sourceState: .active,
             relativePath: fileName,
             fileName: fileName,
-            mediaType: "public.jpeg",
+            mediaType: mediaType,
             mediaCreatedAtMs: 1,
             mediaModifiedAtMs: 1,
             width: 32,
             height: 32,
-            availability: .available,
+            availability: availability,
             contentRevision: 1,
             acceptedTagCount: 0,
             rejectedTagCount: 0
@@ -221,6 +290,7 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
     private var storedItems: [AssetGridItemProjection] = []
     private var storedReconcileRunCount = 0
     private var storedLastFilter = AssetPageFilter()
+    private var storedLastSort: AssetPageSort = .newest
     private let scanFails: Bool
     private let tagMutationFails: Bool
     private var storedTags: [TagListItem]
@@ -248,6 +318,10 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
         lock.withLock { storedLastFilter }
     }
 
+    var lastSort: AssetPageSort {
+        lock.withLock { storedLastSort }
+    }
+
     func fetchSources() throws -> [LibrarySourceSummary] {
         lock.withLock { storedSources }
     }
@@ -269,11 +343,26 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
         }
     }
 
-    func fetchAssetPage(filter: AssetPageFilter, cursor: AssetPageCursor?) throws -> AssetPageResult {
+    func fetchAssetPage(
+        filter: AssetPageFilter,
+        sort: AssetPageSort,
+        cursor: AssetPageCursor?
+    ) throws -> AssetPageResult {
         lock.withLock {
             storedLastFilter = filter
+            storedLastSort = sort
             let search = filter.searchText?.lowercased()
             let filtered = storedItems.filter { item in
+                if !filter.availabilities.isEmpty,
+                   !filter.availabilities.contains(item.availability)
+                {
+                    return false
+                }
+                if !filter.mediaTypes.isEmpty,
+                   !filter.mediaTypes.contains(item.mediaType)
+                {
+                    return false
+                }
                 guard let search, !search.isEmpty else { return true }
                 return item.fileName?.lowercased().contains(search) == true
             }

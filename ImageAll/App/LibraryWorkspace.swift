@@ -1,6 +1,7 @@
 import AppKit
 import Foundation
 import SwiftUI
+import UniformTypeIdentifiers
 
 private struct LibraryTagUndoRecord {
     let snapshot: TagMutationPriorStateSnapshot
@@ -21,6 +22,9 @@ final class LibraryWorkspaceModel: ObservableObject {
     @Published private(set) var selectedTagFilterIDs: Set<UUID> = []
     @Published private(set) var tagMatchMode: TagMatchMode = .all
     @Published private(set) var tagPresence: TagPresenceFilter = .any
+    @Published private(set) var selectedAvailabilities: [AssetAvailability] = []
+    @Published private(set) var selectedMediaTypes: [String] = []
+    @Published private(set) var sort: AssetPageSort = .newest
     @Published private(set) var notice: LibraryWorkspaceNotice?
 
     private let service: any LibraryWorkspacePort
@@ -47,6 +51,10 @@ final class LibraryWorkspaceModel: ObservableObject {
     var primarySelectedAssetID: UUID? {
         guard selectedAssetIDs.count == 1 else { return nil }
         return selectedAssetIDs.first
+    }
+
+    var hasAssetPropertyFilters: Bool {
+        !selectedAvailabilities.isEmpty || !selectedMediaTypes.isEmpty
     }
 
     func start() async {
@@ -105,9 +113,10 @@ final class LibraryWorkspaceModel: ObservableObject {
 
         let service = service
         let filter = currentFilter
+        let sort = sort
         do {
             let page = try await Self.offMain {
-                try service.fetchAssetPage(filter: filter, cursor: cursor)
+                try service.fetchAssetPage(filter: filter, sort: sort, cursor: cursor)
             }
             items.append(contentsOf: page.items)
             nextCursor = page.nextCursor
@@ -272,9 +281,10 @@ final class LibraryWorkspaceModel: ObservableObject {
     private func loadFirstPage() async {
         let service = service
         let filter = currentFilter
+        let sort = sort
         do {
             let page = try await Self.offMain {
-                try service.fetchAssetPage(filter: filter, cursor: nil)
+                try service.fetchAssetPage(filter: filter, sort: sort, cursor: nil)
             }
             items = page.items
             nextCursor = page.nextCursor
@@ -326,6 +336,58 @@ final class LibraryWorkspaceModel: ObservableObject {
         await loadFirstPage()
     }
 
+    func toggleAvailabilityFilter(_ availability: AssetAvailability) async {
+        if let index = selectedAvailabilities.firstIndex(of: availability) {
+            selectedAvailabilities.remove(at: index)
+        } else {
+            selectedAvailabilities.append(availability)
+        }
+        await loadFirstPage()
+    }
+
+    func clearAvailabilityFilters() async {
+        guard !selectedAvailabilities.isEmpty else { return }
+        selectedAvailabilities = []
+        await loadFirstPage()
+    }
+
+    func toggleMediaTypeFilterGroup(_ mediaTypes: [String]) async {
+        let mediaTypes = mediaTypes.filter { !$0.isEmpty }
+        guard !mediaTypes.isEmpty else { return }
+
+        if mediaTypes.allSatisfy(selectedMediaTypes.contains) {
+            selectedMediaTypes.removeAll { mediaTypes.contains($0) }
+        } else {
+            for mediaType in mediaTypes where !selectedMediaTypes.contains(mediaType) {
+                selectedMediaTypes.append(mediaType)
+            }
+        }
+        await loadFirstPage()
+    }
+
+    func clearMediaTypeFilters() async {
+        guard !selectedMediaTypes.isEmpty else { return }
+        selectedMediaTypes = []
+        await loadFirstPage()
+    }
+
+    func clearAssetPropertyFilters() async {
+        guard hasAssetPropertyFilters else { return }
+        selectedAvailabilities = []
+        selectedMediaTypes = []
+        await loadFirstPage()
+    }
+
+    func isMediaTypeFilterGroupSelected(_ mediaTypes: [String]) -> Bool {
+        !mediaTypes.isEmpty && mediaTypes.allSatisfy(selectedMediaTypes.contains)
+    }
+
+    func setSort(_ newSort: AssetPageSort) async {
+        guard sort != newSort else { return }
+        sort = newSort
+        await loadFirstPage()
+    }
+
     func setTagDecisionFilter(
         tagID: UUID,
         decision: PersistableTagDecision?
@@ -361,6 +423,8 @@ final class LibraryWorkspaceModel: ObservableObject {
                     }
                 },
             tagMatchMode: tagMatchMode,
+            availabilities: selectedAvailabilities,
+            mediaTypes: selectedMediaTypes,
             tagPresence: tagPresence,
             searchText: searchText
         )
@@ -505,7 +569,23 @@ private enum LibrarySidebarSelection: Hashable {
     case tag(UUID)
 }
 
+private struct LibraryMediaFormatFilterOption {
+    let title: String
+    let mediaTypes: [String]
+}
+
 struct LibraryWorkspaceView: View {
+    private static let mediaFormatFilterOptions = [
+        LibraryMediaFormatFilterOption(title: "JPEG", mediaTypes: [UTType.jpeg.identifier]),
+        LibraryMediaFormatFilterOption(title: "PNG", mediaTypes: [UTType.png.identifier]),
+        LibraryMediaFormatFilterOption(
+            title: "HEIC / HEIF",
+            mediaTypes: [UTType.heic.identifier, UTType.heif.identifier]
+        ),
+        LibraryMediaFormatFilterOption(title: "TIFF", mediaTypes: [UTType.tiff.identifier]),
+        LibraryMediaFormatFilterOption(title: "WebP", mediaTypes: [UTType.webP.identifier]),
+    ]
+
     @ObservedObject var model: LibraryWorkspaceModel
     @State private var selection: LibrarySidebarSelection? = .all
     @State private var searchText = ""
@@ -560,6 +640,7 @@ struct LibraryWorkspaceView: View {
         .toolbar {
             ToolbarItemGroup {
                 filterMenu
+                sortMenu
 
                 Button {
                     Task { await model.undoLastTagMutation() }
@@ -670,13 +751,25 @@ struct LibraryWorkspaceView: View {
             }
         case .content:
             if model.items.isEmpty {
-                ContentUnavailableView {
-                    Label("没有支持的照片", systemImage: "photo")
-                } description: {
-                    Text("支持 JPEG、PNG、HEIC/HEIF、TIFF 和 WebP。")
-                } actions: {
-                    Button("立即重扫") {
-                        Task { await model.rescan() }
+                if model.hasAssetPropertyFilters {
+                    ContentUnavailableView {
+                        Label("没有符合筛选的照片", systemImage: "line.3.horizontal.decrease.circle")
+                    } description: {
+                        Text("请调整可用状态或文件格式筛选。")
+                    } actions: {
+                        Button("清除状态和格式筛选") {
+                            Task { await model.clearAssetPropertyFilters() }
+                        }
+                    }
+                } else {
+                    ContentUnavailableView {
+                        Label("没有支持的照片", systemImage: "photo")
+                    } description: {
+                        Text("支持 JPEG、PNG、HEIC/HEIF、TIFF 和 WebP。")
+                    } actions: {
+                        Button("立即重扫") {
+                            Task { await model.rescan() }
+                        }
                     }
                 }
             } else {
@@ -916,10 +1009,91 @@ struct LibraryWorkspaceView: View {
                     Label("任一标签（ANY）", systemImage: model.tagMatchMode == .any ? "checkmark" : "circle")
                 }
             }
+
+            Divider()
+            Menu("可用状态") {
+                Button {
+                    Task { await model.clearAvailabilityFilters() }
+                } label: {
+                    Label(
+                        "全部状态",
+                        systemImage: model.selectedAvailabilities.isEmpty ? "checkmark" : "circle"
+                    )
+                }
+                Divider()
+                availabilityFilterButton(.available, title: "可用")
+                availabilityFilterButton(.missing, title: "文件缺失")
+                availabilityFilterButton(.unreadable, title: "不可读取")
+                availabilityFilterButton(.unsupported, title: "格式不支持")
+            }
+            Menu("文件格式") {
+                Button {
+                    Task { await model.clearMediaTypeFilters() }
+                } label: {
+                    Label(
+                        "全部格式",
+                        systemImage: model.selectedMediaTypes.isEmpty ? "checkmark" : "circle"
+                    )
+                }
+                Divider()
+                ForEach(Self.mediaFormatFilterOptions, id: \.title) { option in
+                    Button {
+                        Task { await model.toggleMediaTypeFilterGroup(option.mediaTypes) }
+                    } label: {
+                        Label(
+                            option.title,
+                            systemImage: model.isMediaTypeFilterGroupSelected(option.mediaTypes)
+                                ? "checkmark"
+                                : "circle"
+                        )
+                    }
+                }
+            }
         } label: {
             Label(
                 activeFilterCount == 0 ? "筛选" : "筛选 \(activeFilterCount)",
                 systemImage: activeFilterCount == 0 ? "line.3.horizontal.decrease.circle" : "line.3.horizontal.decrease.circle.fill"
+            )
+        }
+    }
+
+    private var sortMenu: some View {
+        Menu {
+            sortButton(.newest, title: "最新优先")
+            sortButton(.oldest, title: "最早优先")
+            sortButton(.fileNameAscending, title: "文件名升序")
+        } label: {
+            Label(sortTitle(model.sort), systemImage: "arrow.up.arrow.down")
+        }
+        .help("更改照片排序")
+    }
+
+    private func sortButton(_ sort: AssetPageSort, title: String) -> some View {
+        Button {
+            Task { await model.setSort(sort) }
+        } label: {
+            Label(title, systemImage: model.sort == sort ? "checkmark" : "circle")
+        }
+    }
+
+    private func sortTitle(_ sort: AssetPageSort) -> String {
+        switch sort {
+        case .newest: "最新优先"
+        case .oldest: "最早优先"
+        case .fileNameAscending: "文件名升序"
+        }
+    }
+
+    private func availabilityFilterButton(
+        _ availability: AssetAvailability,
+        title: String
+    ) -> some View {
+        Button {
+            Task { await model.toggleAvailabilityFilter(availability) }
+        } label: {
+            Label(
+                title,
+                systemImage: model.selectedAvailabilities.contains(availability) ? "checkmark" : "circle"
             )
         }
     }
@@ -940,7 +1114,12 @@ struct LibraryWorkspaceView: View {
     }
 
     private var activeFilterCount: Int {
-        model.selectedTagFilterIDs.count + (model.tagPresence == .any ? 0 : 1)
+        model.selectedTagFilterIDs.count +
+        (model.tagPresence == .any ? 0 : 1) +
+        model.selectedAvailabilities.count +
+        Self.mediaFormatFilterOptions.filter {
+            model.isMediaTypeFilterGroupSelected($0.mediaTypes)
+        }.count
     }
 
     private func createTag() {

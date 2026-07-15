@@ -67,7 +67,11 @@ protocol LibraryWorkspacePort: Sendable {
     func connectFolder() async throws -> ConnectFolderOutcome
     func enqueueReconcile(sourceIDs: [UUID]) throws
     func runPendingReconcileJobs() throws
-    func fetchAssetPage(filter: AssetPageFilter, cursor: AssetPageCursor?) throws -> AssetPageResult
+    func fetchAssetPage(
+        filter: AssetPageFilter,
+        sort: AssetPageSort,
+        cursor: AssetPageCursor?
+    ) throws -> AssetPageResult
     func loadThumbnail(assetID: UUID) async throws -> Data
     func loadPreview(assetID: UUID) async throws -> Data
     func listTags() throws -> [TagListItem]
