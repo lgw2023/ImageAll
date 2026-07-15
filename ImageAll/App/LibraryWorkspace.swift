@@ -291,6 +291,47 @@ final class LibraryWorkspaceModel: ObservableObject {
         }
     }
 
+    func renameTag(_ tagID: UUID, to rawName: String) async -> Bool {
+        let service = service
+        do {
+            notice = nil
+            let renamed = try await Self.offMain {
+                try service.renameTag(tagID: tagID, rawName: rawName)
+            }
+            guard let index = tags.firstIndex(where: { $0.id == tagID }) else {
+                notice = .tagMutationFailed
+                return false
+            }
+            tags[index] = renamed
+            tags.sort { $0.displayName.localizedStandardCompare($1.displayName) == .orderedAscending }
+            lastTagMutation = nil
+            await loadFirstPage()
+            await refreshInspector()
+            return true
+        } catch {
+            notice = tagNotice(for: error)
+            return false
+        }
+    }
+
+    func archiveTag(_ tagID: UUID) async -> Bool {
+        let service = service
+        do {
+            notice = nil
+            try await Self.offMain { try service.archiveTag(tagID: tagID) }
+            tags.removeAll { $0.id == tagID }
+            selectedTagFilterDecisions.removeValue(forKey: tagID)
+            selectedTagFilterIDs.remove(tagID)
+            lastTagMutation = nil
+            await loadFirstPage()
+            await refreshInspector()
+            return true
+        } catch {
+            notice = tagNotice(for: error)
+            return false
+        }
+    }
+
     private func reload(runPendingJobs: Bool) async {
         phase = .loading
         let service = service
@@ -634,10 +675,13 @@ struct LibraryWorkspaceView: View {
     @State private var searchText = ""
     @State private var newTagName = ""
     @State private var sourcePendingDisable: LibrarySourceSummary?
+    @State private var tagPendingRename: TagListItem?
+    @State private var renamedTagName = ""
+    @State private var tagPendingArchive: TagListItem?
     @FocusState private var newTagFieldFocused: Bool
     @FocusState private var contentFocused: Bool
 
-    var body: some View {
+    private var workspaceWithSourceControls: some View {
         NavigationSplitView {
             sidebar
                 .navigationSplitViewColumnWidth(min: 180, ideal: 220, max: 300)
@@ -732,6 +776,62 @@ struct LibraryWorkspaceView: View {
         } message: { _ in
             Text("ImageAll 会停止该来源的扫描任务，但保留已索引的照片、人工标签和历史；原照片不会被修改。")
         }
+    }
+
+    var body: some View {
+        workspaceWithSourceControls
+        .alert(
+            "重命名标签",
+            isPresented: Binding(
+                get: { tagPendingRename != nil },
+                set: {
+                    if !$0 {
+                        tagPendingRename = nil
+                        renamedTagName = ""
+                    }
+                }
+            ),
+            presenting: tagPendingRename
+        ) { tag in
+            TextField("标签名称", text: $renamedTagName)
+            Button("重命名") {
+                let candidate = renamedTagName
+                tagPendingRename = nil
+                renamedTagName = ""
+                Task { _ = await model.renameTag(tag.id, to: candidate) }
+            }
+            .disabled(TagNameNormalizer.trimUnicodeWhiteSpace(renamedTagName).isEmpty)
+            Button("取消", role: .cancel) {
+                tagPendingRename = nil
+                renamedTagName = ""
+            }
+        } message: { tag in
+            Text("为“\(tag.displayName)”输入新名称。现有人工标签决定会保留。")
+        }
+        .confirmationDialog(
+            tagPendingArchive.map { "归档“\($0.displayName)”标签？" } ?? "归档标签？",
+            isPresented: Binding(
+                get: { tagPendingArchive != nil },
+                set: { if !$0 { tagPendingArchive = nil } }
+            ),
+            titleVisibility: .visible,
+            presenting: tagPendingArchive
+        ) { tag in
+            Button("归档标签", role: .destructive) {
+                let shouldReturnToAllPhotos = selection == .tag(tag.id)
+                tagPendingArchive = nil
+                Task {
+                    if await model.archiveTag(tag.id), shouldReturnToAllPhotos {
+                        selection = .all
+                    }
+                }
+            }
+            Button("取消", role: .cancel) {
+                tagPendingArchive = nil
+            }
+        } message: { _ in
+            Text("标签会从侧栏和编辑器隐藏，但已保存的人工确认、拒绝和历史都会保留。")
+        }
         .task { await model.start() }
         .onChange(of: selection) { _, newValue in
             Task {
@@ -776,7 +876,7 @@ struct LibraryWorkspaceView: View {
             }
             Section("标签") {
                 ForEach(model.tags, id: \.id) { tag in
-                    Label(tag.displayName, systemImage: "tag")
+                    tagRow(tag)
                         .tag(LibrarySidebarSelection.tag(tag.id))
                 }
                 Button {
@@ -790,6 +890,25 @@ struct LibraryWorkspaceView: View {
         }
         .listStyle(.sidebar)
         .navigationTitle("ImageAll")
+    }
+
+    private func tagRow(_ tag: TagListItem) -> some View {
+        Label(tag.displayName, systemImage: "tag")
+            .contextMenu {
+                Button("在图库中查看") {
+                    selection = .tag(tag.id)
+                }
+                Button("重命名…") {
+                    renamedTagName = tag.displayName
+                    tagPendingRename = tag
+                }
+
+                Divider()
+
+                Button("归档标签", role: .destructive) {
+                    tagPendingArchive = tag
+                }
+            }
     }
 
     private func sourceRow(_ source: LibrarySourceSummary) -> some View {

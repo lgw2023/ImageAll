@@ -198,6 +198,78 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertTrue(model.canUndoTagMutation)
     }
 
+    func testRenameTagRefreshesSidebarAndInspectorPresentation() async {
+        let sourceID = UUID()
+        let asset = Self.makeAsset(sourceID: sourceID)
+        let tag = TagListItem(id: UUID(), displayName: "Family", state: .active)
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(id: sourceID, displayName: "Fixture", state: .active),
+            reconciledItems: [asset],
+            tags: [tag]
+        )
+        let model = LibraryWorkspaceModel(service: service)
+
+        await model.start()
+        await model.connectFolder()
+        await model.selectAsset(asset.assetID)
+
+        let succeeded = await model.renameTag(tag.id, to: "Loved")
+
+        XCTAssertTrue(succeeded)
+        XCTAssertEqual(model.tags.map(\.displayName), ["Loved"])
+        XCTAssertEqual(model.inspectorTags.map(\.displayName), ["Loved"])
+    }
+
+    func testArchiveTagClearsItsFilterAndKeepsCatalogVisible() async {
+        let sourceID = UUID()
+        let asset = Self.makeAsset(sourceID: sourceID)
+        let tag = TagListItem(id: UUID(), displayName: "Family", state: .active)
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(id: sourceID, displayName: "Fixture", state: .active),
+            reconciledItems: [asset],
+            tags: [tag]
+        )
+        let model = LibraryWorkspaceModel(service: service)
+
+        await model.start()
+        await model.connectFolder()
+        await model.selectAsset(asset.assetID)
+        await model.showAcceptedTag(tag.id)
+
+        let succeeded = await model.archiveTag(tag.id)
+
+        XCTAssertTrue(succeeded)
+        XCTAssertTrue(model.tags.isEmpty)
+        XCTAssertTrue(model.selectedTagFilterIDs.isEmpty)
+        XCTAssertTrue(service.lastFilter.tagDecisionFilters.isEmpty)
+        XCTAssertEqual(model.items.map(\.assetID), [asset.assetID])
+        XCTAssertTrue(model.inspectorTags.isEmpty)
+    }
+
+    func testRenameTagFailureKeepsExistingPresentationAndShowsNotice() async {
+        let sourceID = UUID()
+        let asset = Self.makeAsset(sourceID: sourceID)
+        let tag = TagListItem(id: UUID(), displayName: "Family", state: .active)
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(id: sourceID, displayName: "Fixture", state: .active),
+            reconciledItems: [asset],
+            tags: [tag],
+            tagMutationFails: true
+        )
+        let model = LibraryWorkspaceModel(service: service)
+
+        await model.start()
+        await model.connectFolder()
+        await model.selectAsset(asset.assetID)
+
+        let succeeded = await model.renameTag(tag.id, to: "Loved")
+
+        XCTAssertFalse(succeeded)
+        XCTAssertEqual(model.tags.map(\.displayName), ["Family"])
+        XCTAssertEqual(model.inspectorTags.map(\.displayName), ["Family"])
+        XCTAssertEqual(model.notice, .tagMutationFailed)
+    }
+
     func testTagMutationFailureIsVisibleAndDoesNotCreateUndoHistory() async {
         let sourceID = UUID()
         let asset = Self.makeAsset(sourceID: sourceID)
@@ -580,6 +652,29 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
                 normalizedName: rawName.lowercased(),
                 priorStates: assetIDs.map { TagMutationPriorState(assetID: $0, priorState: .unknown) }
             )
+        }
+    }
+
+    func renameTag(tagID: UUID, rawName: String) throws -> TagListItem {
+        if tagMutationFails {
+            throw FakeWorkspaceError.tagMutationFailed
+        }
+        return try lock.withLock {
+            guard let index = storedTags.firstIndex(where: { $0.id == tagID }) else {
+                throw FakeWorkspaceError.notFound
+            }
+            let renamed = TagListItem(id: tagID, displayName: rawName, state: .active)
+            storedTags[index] = renamed
+            return renamed
+        }
+    }
+
+    func archiveTag(tagID: UUID) throws {
+        if tagMutationFails {
+            throw FakeWorkspaceError.tagMutationFailed
+        }
+        lock.withLock {
+            storedTags.removeAll { $0.id == tagID }
         }
     }
 }

@@ -137,6 +137,15 @@ struct ProductionLibraryWorkspaceService: LibraryWorkspacePort, Sendable {
             timestampMs: clock.nowMs
         )
     }
+
+    func renameTag(tagID: UUID, rawName: String) throws -> TagListItem {
+        let tag = try tags.renameTag(tagID: tagID, rawName: rawName, timestampMs: clock.nowMs)
+        return TagListItem(id: tag.id, displayName: tag.displayName, state: tag.state)
+    }
+
+    func archiveTag(tagID: UUID) throws {
+        _ = try tags.archiveTag(tagID: tagID, timestampMs: clock.nowMs)
+    }
 }
 
 struct SingleJobHandlerRegistry: JobHandlerRegistry, Sendable {

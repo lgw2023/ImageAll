@@ -124,6 +124,71 @@ struct GRDBTagCatalogRepository: TagCatalogQueryPort, TagDecisionCommandPort, Se
         }
     }
 
+    func renameTag(tagID: UUID, rawName: String, timestampMs: Int64) throws -> Tag {
+        try CatalogQueryErrorMapping.perform {
+            try database.pool.write { db in
+                let existing = try fetchExistingTags(db)
+                guard let current = existing.first(where: { $0.id == tagID }) else {
+                    throw CatalogQueryError.notFound
+                }
+
+                let renamed: Tag
+                switch TagCatalogRules.renameTag(current, rawName: rawName, existingTags: existing) {
+                case let .success(tag):
+                    renamed = tag
+                case let .failure(error):
+                    throw mapDomainError(error)
+                }
+
+                do {
+                    try db.execute(
+                        sql: """
+                        UPDATE tag
+                        SET name = ?, normalized_name = ?, updated_at_ms = ?
+                        WHERE id = ?
+                        """,
+                        arguments: [
+                            renamed.displayName,
+                            renamed.normalizedName,
+                            timestampMs,
+                            CatalogQuerySQLHelpers.lowercaseUUID(tagID),
+                        ]
+                    )
+                } catch let error as DatabaseError where error.resultCode == .SQLITE_CONSTRAINT {
+                    throw mapTagInsertConstraint(error, db: db, normalizedName: renamed.normalizedName)
+                } catch {
+                    throw CatalogQueryError.persistenceFailure
+                }
+                return renamed
+            }
+        }
+    }
+
+    func archiveTag(tagID: UUID, timestampMs: Int64) throws -> Tag {
+        try CatalogQueryErrorMapping.perform {
+            try database.pool.write { db in
+                let existing = try fetchExistingTags(db)
+                guard let current = existing.first(where: { $0.id == tagID }) else {
+                    throw CatalogQueryError.notFound
+                }
+
+                let archived: Tag
+                switch TagCatalogRules.archiveTag(current) {
+                case let .success(tag):
+                    archived = tag
+                case let .failure(error):
+                    throw mapDomainError(error)
+                }
+
+                try db.execute(
+                    sql: "UPDATE tag SET state = 'archived', updated_at_ms = ? WHERE id = ?",
+                    arguments: [timestampMs, CatalogQuerySQLHelpers.lowercaseUUID(tagID)]
+                )
+                return archived
+            }
+        }
+    }
+
     func batchAccept(tagID: UUID, assetIDs: [UUID], timestampMs: Int64) throws -> TagMutationResult {
         try applyBatchDecision(tagID: tagID, assetIDs: assetIDs, decision: .accepted, timestampMs: timestampMs)
     }

@@ -51,6 +51,62 @@ final class TagCatalogTransactionTests: XCTestCase {
         try testRepositoryDuplicateTagReturnsStructuredError()
     }
 
+    func testRenameTagUsesDomainNormalizationAndKeepsIdentity() throws {
+        let fixture = try CatalogQueryTestSupport.openQueryDatabase()
+
+        let renamed = try fixture.tags.renameTag(
+            tagID: fixture.ids.tagFamily,
+            rawName: "  Caf\u{65}\u{301}  ",
+            timestampMs: DatabaseTestSupport.timestampMs + 1
+        )
+
+        XCTAssertEqual(renamed.id, fixture.ids.tagFamily)
+        XCTAssertEqual(Array(renamed.displayName.unicodeScalars), Array("Cafe\u{301}".unicodeScalars))
+        XCTAssertEqual(renamed.normalizedName, "café")
+        XCTAssertEqual(renamed.state, .active)
+    }
+
+    func testRenameTagRejectsAnotherTagsNormalizedName() throws {
+        let fixture = try CatalogQueryTestSupport.openQueryDatabase()
+
+        XCTAssertThrowsError(
+            try fixture.tags.renameTag(
+                tagID: fixture.ids.tagWork,
+                rawName: "FAMILY",
+                timestampMs: DatabaseTestSupport.timestampMs + 1
+            )
+        ) { error in
+            XCTAssertEqual(error as? CatalogQueryError, .duplicateTag)
+        }
+
+        let active = try fixture.tags.listTags(includeArchived: false)
+        XCTAssertEqual(active.map(\.displayName), ["Family", "Work"])
+    }
+
+    func testArchiveTagHidesItFromActiveCatalogAndPreservesDecisionHistory() throws {
+        let fixture = try CatalogQueryTestSupport.openQueryDatabase()
+        let before = try fixture.query.fetchInspectorDetail(assetID: fixture.ids.assetNewest)
+        let priorDecision = before.tags.first { $0.tagID == fixture.ids.tagFamily }?.decision
+
+        try fixture.tags.archiveTag(
+            tagID: fixture.ids.tagFamily,
+            timestampMs: DatabaseTestSupport.timestampMs + 1
+        )
+
+        let active = try fixture.tags.listTags(includeArchived: false)
+        XCTAssertFalse(active.contains { $0.id == fixture.ids.tagFamily })
+
+        let archived = try XCTUnwrap(
+            fixture.tags.listTags(includeArchived: true).first { $0.id == fixture.ids.tagFamily }
+        )
+        XCTAssertEqual(archived.state, .archived)
+
+        let after = try fixture.query.fetchInspectorDetail(assetID: fixture.ids.assetNewest)
+        let preserved = try XCTUnwrap(after.tags.first { $0.tagID == fixture.ids.tagFamily })
+        XCTAssertEqual(preserved.decision, priorDecision)
+        XCTAssertEqual(preserved.tagState, .archived)
+    }
+
     func testRepositoryDuplicateTagReturnsStructuredError() throws {
         let fixture = try CatalogQueryTestSupport.openQueryDatabase()
         XCTAssertThrowsError(

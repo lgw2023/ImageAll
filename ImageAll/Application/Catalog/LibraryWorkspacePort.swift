@@ -90,4 +90,6 @@ protocol LibraryWorkspacePort: Sendable {
         rawName: String,
         assetIDs: [UUID]
     ) throws -> TagCreateAndApplyResult
+    func renameTag(tagID: UUID, rawName: String) throws -> TagListItem
+    func archiveTag(tagID: UUID) throws
 }
