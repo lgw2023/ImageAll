@@ -1,10 +1,10 @@
 # ImageAll 阶段 1 实施规格
 
-> 状态：Implementation in progress；切片 1 已通过，切片 2 已获实施授权<br>
+> 状态：Implementation in progress；切片 1～2 已通过，切片 3 已获实施授权<br>
 > 日期：2026-07-15<br>
 > 产品批准：`UI-001`～`UI-011`、macOS 15+ / Apple Silicon only、静态格式允许清单、本地自用签名<br>
 > 已批准实现基线：阶段 0 `main@892f4e29e1ebf492c1540c5a29d9c54abc05a78f`<br>
-> 当前批准实现：切片 1 `main@81c35e7444eed58695581b1947ee7f0ec3b9a254`<br>
+> 当前批准实现：切片 2 `main@f050f4ee0480f4f967be86c5ebffb3a534a30a25`<br>
 > 当前阶段输入：[`STAGE-1-BACKEND-ARCHITECTURE.md`](./STAGE-1-BACKEND-ARCHITECTURE.md) 与 [`STAGE-1-PRODUCT-UI-SPEC.md`](./STAGE-1-PRODUCT-UI-SPEC.md)<br>
 > 实施者：Cursor CLI，仅 `Composer 2.5 Fast`；每个新切片使用全新 session
 
@@ -305,6 +305,9 @@ Undo 是阶段 1 的会话级单级能力：成功批量命令返回每个 Asset
 - Asset/fingerprint/last seen 与 Job checkpoint/lease/progress 单事务；
 - 只有完整 generation 最终事务判 missing；dirty epoch 变化同事务排 successor；
 - 崩溃重跑同 generation 幂等；lease 过期不能继续写。
+
+切片 3 的精确 checkpoint、枚举批次、媒体分类、资产身份、lease 续租、generation 事务、隐私清单与测试矩阵以
+[`CURSOR-STAGE-1-SLICE-3-HANDOFF.md`](./CURSOR-STAGE-1-SLICE-3-HANDOFF.md) 为准。
 
 ### 5.3 切片 4：缩略图缓存
 
