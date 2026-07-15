@@ -1,8 +1,8 @@
 # ImageAll 阶段 1 加速交付计划
 
-> 状态：Slice A-D implemented；Slice B 低空间显示问题已修复
+> 状态：Slice A-E implemented；Slice B 低空间显示问题已修复
 >
-> 日期：2026-07-15
+> 日期：2026-07-16
 >
 > 设计基线：`main@a03d1296b4f7ffa22de369baebc89042ea94283f`
 >
@@ -13,6 +13,8 @@
 > Slice C 实现：`main@51ffafa31aaee98ae739ad353930f75fb340b3fd`
 >
 > Slice D 实现：`main@7f083f19e895bca272025e71d5772c40e1b050bd`
+>
+> Slice E 实现：`main@fa670a7a14ee0958028f25058d169e395617dc47`
 
 ## 1. 决策
 
@@ -32,6 +34,7 @@
 → 用本地搜索、来源、标签决定和无标签条件缩小结果
 → 用 Space 进入单图查看并用方向键连续浏览
 → 按可用状态、静态图片格式筛选，并切换稳定排序
+→ 从来源行重扫、重新授权或安全停用来源
 ```
 
 ## 2. 加速切片 A：连接、扫描、浏览
@@ -67,11 +70,12 @@
 
 ## 4. 明确延期
 
-Slice D 完成后仍明确延期：
+Slice E 完成后仍明确延期：
 
 - FSEvents watcher、dirty trigger 与自动增量重扫；
 - Activity 工作区、任务列表、暂停、取消、重试；
 - `Command-K` 和多窗口状态同步；
+- 来源信息面板，以及任务级暂停/继续控制；
 - Inspector 技术错误详情、标签操作前的独立影响数量确认；
 - 10,000/100,000 项性能基准、完整无障碍矩阵和所有故障注入；
 - 真实 `/Volumes/HDD2` 数据 smoke。
@@ -161,3 +165,18 @@ Slice D 完成后仍明确延期：
 - 本机已连接的 Downloads 来源完成只读运行验收：PNG 筛选、状态组合、三种排序和筛选清除均可观察，清除后恢复照片网格；
 - 未访问 `/Volumes/HDD2`，未修改、删除或移动 Downloads 来源文件，未新增 schema、entitlement、privacy manifest 或依赖，未 push；
 - 实现提交：`7f083f19e895bca272025e71d5772c40e1b050bd`（`Agent-Role: implementation`）。
+
+## 12. 加速切片 E：来源状态与生命周期控制
+
+2026-07-16 已完成并通过：
+
+- Workspace 端口接通既有 `reauthorizeFolder` 与 `disableFolderSource` 授权命令，没有复制 bookmark、路径或 GRDB 细节到 SwiftUI；
+- 来源行使用原生上下文菜单提供“在图库中查看”“立即重扫”“重新授权…”和“停用来源”；重新授权只在 `unavailable` / `authorizationRequired` 状态可用，重扫只在 `active` 状态可用；
+- 非 active 来源显示“离线”“需授权”或“已停用”文字及 SF Symbol，颜色不是唯一状态载体；
+- 停用前显示系统确认对话框，明确保留已索引照片、人工标签和历史，且不修改原照片；阶段 1 仍没有删除 Source 或目录事实的入口；
+- 重新授权成功后刷新 Source 并执行既有 reconcile Job；停用只刷新 Source/目录查询，不触发新扫描；失败保留当前图库并显示安全摘要；
+- TDD 红灯：`/tmp/ImageAll-source-reauthorize-red.xcresult`、`/tmp/ImageAll-source-disable-red.xcresult`、`/tmp/ImageAll-source-failure-red.xcresult`；新增三条主路径/失败路径测试通过；
+- `LibraryWorkspaceModelTests` 与 `FolderDisableReauthorizeTests` 窄范围回归 19/19：`/tmp/ImageAll-source-lifecycle-regression.xcresult`；arm64 Debug build 成功；
+- 本机 Downloads 来源完成只读运行验收：上下文菜单、状态相关 enablement、停用确认/取消及来源级重扫均可观察；没有执行停用，没有修改、删除或移动来源文件；
+- 未访问 `/Volumes/HDD2`，未新增 schema、entitlement、privacy manifest 或依赖，未 push；
+- 实现提交：`fa670a7a14ee0958028f25058d169e395617dc47`（`Agent-Role: implementation`）。
