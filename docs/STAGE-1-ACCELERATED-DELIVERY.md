@@ -1,8 +1,9 @@
 # ImageAll 阶段 1 加速交付计划
 
-> 状态：Approved for implementation  
+> 状态：Slice A implemented and approved  
 > 日期：2026-07-15  
-> 基线：`main@457c4fd5d237259a2fa5a1fa731b2225c459930a`
+> 设计基线：`main@a03d1296b4f7ffa22de369baebc89042ea94283f`  
+> 实现：`main@0e7dd655f99a57730025355fde6bacdff564e0f4`
 
 ## 1. 决策
 
@@ -62,3 +63,16 @@
 ## 5. 停止位置
 
 加速切片 A 完成后先进行可运行 App 评审。下一纵切片优先加入 Inspector 人工标签与基础搜索筛选；是否先补 watcher/活动能力，以首个闭环的实际使用反馈决定。
+
+## 6. 切片 A 验收记录
+
+2026-07-15 已完成并通过：
+
+- 启动 gate 成功后由 Composition Root 组装授权、reconcile Job、目录查询和派生图缓存；
+- 空库只读说明、用户触发的系统目录选择、来源侧栏、手动重扫、分页方形网格和按需 `gridRegular` 缩略图已接入；
+- TDD 红灯证据：`/tmp/ImageAll-accelerated-red.xcresult`；目标模型测试 2/2 通过；
+- 相关授权、对账、查询、派生图与 Composition Root 回归 62/62 通过：`/tmp/ImageAll-accelerated-related.xcresult`；
+- arm64 Debug build 成功；entitlement 与 privacy manifest 未改；
+- 自动化未访问 `/Volumes/HDD2`，未运行真实 App 容器 smoke，未 push。
+
+已知延期：扫描完成后才整体刷新网格；没有 FSEvents、活动中心、标签、搜索筛选、单图查看或真实数据 smoke。这些缺口不阻塞切片 A 的“连接—扫描—浏览”闭环。
