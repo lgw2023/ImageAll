@@ -10,6 +10,7 @@ actor DerivedImageInFlightCoordinator {
         let contentRevision: Int
         let representationVersion: Int
         let variant: DerivedImageVariant
+        let persistence: DerivedImagePersistence
     }
 
     func run(
@@ -153,7 +154,8 @@ final class DerivedImageCacheService: DerivedImageCachePort, @unchecked Sendable
                 assetID: request.assetID,
                 contentRevision: lookup.contentRevision,
                 representationVersion: DerivedImageRepresentationVersion.production,
-                variant: request.variant
+                variant: request.variant,
+                persistence: request.persistence
             )
 
             return try await inFlight.run(key: key) { [self] in
@@ -305,7 +307,24 @@ final class DerivedImageCacheService: DerivedImageCachePort, @unchecked Sendable
             throw DerivedImageError.derivedInsufficientSpace
         }
 
-        try await evictIfNeeded(incomingBytes: incomingBytes, session: session)
+        do {
+            try await evictIfNeeded(incomingBytes: incomingBytes, session: session)
+        } catch DerivedImageError.derivedInsufficientSpace
+            where request.persistence == .memoryFallbackAllowed
+        {
+            return DerivedImagePayload(
+                entryID: UUID(),
+                assetID: context.assetID,
+                contentRevision: context.contentRevision,
+                representationVersion: DerivedImageRepresentationVersion.production,
+                variant: request.variant,
+                storageFormat: artifact.storageFormat,
+                pixelWidth: artifact.pixelWidth,
+                pixelHeight: artifact.pixelHeight,
+                encodedBytes: artifact.bytes,
+                origin: .memoryOnly
+            )
+        }
 
         if faultInjector.shouldFault(at: .dbPublish) {
             throw DerivedImageError.derivedCachePersistenceFailed

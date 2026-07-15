@@ -63,13 +63,21 @@ struct ProductionLibraryWorkspaceService: LibraryWorkspacePort, Sendable {
 
     func loadThumbnail(assetID: UUID) async throws -> Data {
         try await derivedImages.loadOrGenerate(
-            DerivedImageRequest(assetID: assetID, variant: .gridRegular)
+            DerivedImageRequest(
+                assetID: assetID,
+                variant: .gridRegular,
+                persistence: .memoryFallbackAllowed
+            )
         ).encodedBytes
     }
 
     func loadPreview(assetID: UUID) async throws -> Data {
         try await derivedImages.loadOrGenerate(
-            DerivedImageRequest(assetID: assetID, variant: .preview)
+            DerivedImageRequest(
+                assetID: assetID,
+                variant: .preview,
+                persistence: .memoryFallbackAllowed
+            )
         ).encodedBytes
     }
 

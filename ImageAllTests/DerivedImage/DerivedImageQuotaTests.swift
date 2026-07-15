@@ -145,6 +145,35 @@ final class DerivedImageQuotaTests: XCTestCase {
         _ = fileURL
     }
 
+    func testInteractiveRequestFallsBackToMemoryWhenReserveCannotBeMet() async throws {
+        let env = try DerivedImageTestSupport.TempEnvironment(label: "reserve-memory-fallback")
+        defer { env.cleanup() }
+        _ = try env.seedAvailableAsset()
+        let artifact = try DerivedImageTestSupport.renderIncomingGridSmallArtifact()
+        let incoming = UInt64(artifact.byteSize)
+        let total = 100 * gib
+        let reserve = try XCTUnwrap(DerivedImageQuotaPolicy.reserveBytes(totalVolumeBytes: total))
+        let (service, bookmarkPort) = env.makeService(
+            volumeReader: DerivedImageTestSupport.GenerousVolumeReader(
+                availableBytes: reserve + incoming - 1,
+                totalBytes: total
+            )
+        )
+
+        let payload = try await service.loadOrGenerate(
+            DerivedImageRequest(
+                assetID: env.assetID,
+                variant: .gridSmall,
+                persistence: .memoryFallbackAllowed
+            )
+        )
+
+        XCTAssertEqual(payload.origin, .memoryOnly)
+        XCTAssertFalse(payload.encodedBytes.isEmpty)
+        try await DerivedImageTestSupport.assertZeroCacheArtifacts(env: env)
+        DerivedImageTestSupport.assertBookmarkPortScopeBalanced(bookmarkPort)
+    }
+
     // MARK: - 4. Low-space eviction requery
 
     func testEvictionRequeriesVolumeAfterObjectDeleteAndThenAdmits() async throws {
