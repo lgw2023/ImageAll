@@ -322,7 +322,7 @@ Undo 是阶段 1 的会话级单级能力：成功批量命令返回每个 Asset
 | `gridRegular` | 512×512 px，视觉居中 aspect-fill |
 | `preview` | 最大边 2048 px，保留比例 aspect-fit |
 
-cache key 至少包含 asset ID、content revision、representation version、variant。生成前后 fingerprint 变化必须丢弃临时文件。配额为 20 GiB，磁盘安全余量为 `max(5 GiB, 目标卷容量 5%)`；只清理 ImageAll Caches 内经规范路径验证的派生文件。cache-entry schema 由切片 4 的 v003 交接单精确定义。
+cache key 至少包含 asset ID、content revision、representation version、variant。生成前后 fingerprint 变化必须丢弃临时文件。配额为 20 GiB，磁盘安全余量为 `max(5 GiB, 目标卷容量 5%)`；只清理 ImageAll Caches 内经规范路径验证的派生文件。交互式网格/Inspector 请求可以显式选择“持久缓存优先、空间不足时仅内存返回”；该路径不得写 cache entry、object 或 staging，默认请求仍要求持久化并保持原空间不足合同。cache-entry schema 由切片 4 的 v003 交接单精确定义。
 
 ### 5.4 切片 5：FSEvents 与活动
 

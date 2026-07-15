@@ -116,3 +116,16 @@ Slice B 完成后仍明确延期：
 - 本轮由临时授权下的 Codex implementation 完成，未启动 Cursor CLI 任务。
 
 已知延期：搜索在提交时执行，尚无输入 debounce；没有文件格式/可用状态筛选、排序控件、Space 单图模式、完整键盘导航、FSEvents、活动中心、扩展性能/无障碍验证或真实数据 smoke。
+
+## 9. 低空间图片显示修复
+
+2026-07-15 根据项目所有者的实际运行反馈完成：
+
+- 根因是缓存卷可用空间低于既有 `max(5 GiB, 卷容量 5%)` 安全余量，所有派生图请求在发布前返回空间不足，而界面只显示统一占位图；
+- 网格与 Inspector 改为持久缓存优先、空间不足时仅内存返回；既有配额与安全余量不降低；
+- 内存降级继续执行来源授权、指纹、格式和渲染校验，不创建 cache entry、object 或 staging；默认后台请求仍保持空间不足合同；
+- TDD 红灯：`/tmp/imageall-low-space-red.xcresult`；配额套件 27/27：`/tmp/imageall-low-space-green.xcresult`；
+- 派生图合同、配额、Workspace、Composition Root、资产查询与标签事务相关回归 89/89：`/tmp/imageall-low-space-related.xcresult`；arm64 Debug build 成功；
+- 重启 Debug App 后，已连接的 Downloads 来源在网格和 Inspector 均实际显示图片；运行态仍为 0 cache entry、0 cache object、来源 active；
+- 未访问 `/Volumes/HDD2`，未修改来源照片，未扩张 entitlement、privacy manifest、schema 或依赖，未 push；
+- 实现提交：`098f467332686eefa726feddd77e6a1536e1d5b2`（`Agent-Role: implementation`）。
