@@ -1,28 +1,12 @@
 import Foundation
 
-struct FolderEnumerationErrorInjection: Sendable, Equatable {
-    let resourceValueFailureRelativePaths: Set<String>
-
-    static let none = FolderEnumerationErrorInjection(resourceValueFailureRelativePaths: [])
-
-    func shouldFailResourceValues(relativePath: String) -> Bool {
-        resourceValueFailureRelativePaths.contains(relativePath)
-    }
-}
-
 struct FolderEnumerationConfig: Sendable, Equatable {
     let workUnitLimit: Int
     let assetBatchLimit: Int
-    let errorInjection: FolderEnumerationErrorInjection
 
-    init(
-        workUnitLimit: Int,
-        assetBatchLimit: Int,
-        errorInjection: FolderEnumerationErrorInjection = .none
-    ) {
+    init(workUnitLimit: Int, assetBatchLimit: Int) {
         self.workUnitLimit = workUnitLimit
         self.assetBatchLimit = assetBatchLimit
-        self.errorInjection = errorInjection
     }
 
     static let productionDefault = FolderEnumerationConfig(workUnitLimit: 256, assetBatchLimit: 256)
@@ -38,6 +22,7 @@ final class FolderDirectoryEnumerationSession: @unchecked Sendable {
     private let rootURL: URL
     private let config: FolderEnumerationConfig
     private let fileManager: FileManager
+    private let resourceReader: any FolderEnumerationResourceReading
     private let keys: [URLResourceKey] = [
         .isDirectoryKey,
         .isRegularFileKey,
@@ -54,10 +39,16 @@ final class FolderDirectoryEnumerationSession: @unchecked Sendable {
     private var isExhausted = false
     private var aborted = false
 
-    init(rootURL: URL, config: FolderEnumerationConfig, fileManager: FileManager = .default) {
+    init(
+        rootURL: URL,
+        config: FolderEnumerationConfig,
+        fileManager: FileManager = .default,
+        resourceReader: any FolderEnumerationResourceReading = FoundationEnumerationResourceReader()
+    ) {
         self.rootURL = rootURL.standardizedFileURL
         self.config = config
         self.fileManager = fileManager
+        self.resourceReader = resourceReader
     }
 
     var directoryHadError: Bool { hadDirectoryError }
@@ -107,14 +98,9 @@ final class FolderDirectoryEnumerationSession: @unchecked Sendable {
                 return .ignored
             }
 
-            if config.errorInjection.shouldFailResourceValues(relativePath: relativePath) {
-                hadDirectoryError = true
-                continue
-            }
-
             let values: URLResourceValues
             do {
-                values = try item.resourceValues(forKeys: Set(keys))
+                values = try resourceReader.resourceValues(for: item, keys: Set(keys))
             } catch {
                 hadDirectoryError = true
                 continue
@@ -204,14 +190,26 @@ struct FolderDirectoryEnumerator {
     private let rootURL: URL
     private let config: FolderEnumerationConfig
     private let fileManager: FileManager
+    private let resourceReader: any FolderEnumerationResourceReading
 
-    init(rootURL: URL, config: FolderEnumerationConfig = .productionDefault, fileManager: FileManager = .default) {
+    init(
+        rootURL: URL,
+        config: FolderEnumerationConfig = .productionDefault,
+        fileManager: FileManager = .default,
+        resourceReader: any FolderEnumerationResourceReading = FoundationEnumerationResourceReader()
+    ) {
         self.rootURL = rootURL
         self.config = config
         self.fileManager = fileManager
+        self.resourceReader = resourceReader
     }
 
     func makeSession() -> FolderDirectoryEnumerationSession {
-        FolderDirectoryEnumerationSession(rootURL: rootURL, config: config, fileManager: fileManager)
+        FolderDirectoryEnumerationSession(
+            rootURL: rootURL,
+            config: config,
+            fileManager: fileManager,
+            resourceReader: resourceReader
+        )
     }
 }

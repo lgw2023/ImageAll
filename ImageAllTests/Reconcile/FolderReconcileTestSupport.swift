@@ -144,12 +144,13 @@ enum FolderReconcileTestSupport {
     static func makeSourceAccess(
         database: CatalogDatabase,
         bookmarkPort: TestBookmarkPort,
-        clock: FixedJobClock? = nil
+        clock: FixedJobClock? = nil,
+        rootValidator: FolderRootValidator = FolderRootValidator()
     ) -> FolderReconcileSourceAccessService {
         FolderReconcileSourceAccessService(
             repository: GRDBFolderSourceAuthorizationRepository(database: database),
             bookmarkPort: bookmarkPort,
-            rootValidator: FolderRootValidator(),
+            rootValidator: rootValidator,
             clock: clock ?? FixedJobClock(nowMs: baseTimeMs)
         )
     }
@@ -157,12 +158,12 @@ enum FolderReconcileTestSupport {
     static func makeCoordinator(
         queue: GRDBJobQueue,
         handler: FolderReconcileHandler,
-        leaseDurationMs: Int64 = FolderReconcileTestSupport.leaseDurationMs
+        leaseContextProvider: (any JobLeaseContextProviding)? = nil
     ) -> JobExecutionCoordinator {
         JobExecutionCoordinator(
             queue: queue,
             registry: InMemoryJobHandlerRegistry(handlers: [handler]),
-            leaseContextProvider: GRDBJobLeaseContextProvider(queue: queue)
+            leaseContextProvider: leaseContextProvider ?? GRDBJobLeaseContextProvider(queue: queue)
         )
     }
 
@@ -179,17 +180,34 @@ enum FolderReconcileTestSupport {
         root: URL,
         bookmark: Data,
         enumerationConfig: FolderEnumerationConfig = .productionDefault,
-        mediaResourceInjection: FolderMediaResourceValueInjection = .none,
+        fileResourceReader: (any FolderFileResourceReading)? = nil,
+        enumerationResourceReader: (any FolderEnumerationResourceReading)? = nil,
+        rootValidator: FolderRootValidator = FolderRootValidator(),
         clock: FixedJobClock? = nil
     ) -> (FolderReconcileHandler, TestBookmarkPort) {
         let bookmarkPort = TestBookmarkPort(rootByBookmark: [bookmark: root])
-        let access = makeSourceAccess(database: database, bookmarkPort: bookmarkPort, clock: clock)
+        let access = makeSourceAccess(
+            database: database,
+            bookmarkPort: bookmarkPort,
+            clock: clock,
+            rootValidator: rootValidator
+        )
         let handler = FolderReconcileHandler(
             rootAccess: access,
             enumerationConfig: enumerationConfig,
-            mediaResourceInjection: mediaResourceInjection
+            fileResourceReader: fileResourceReader ?? FoundationFolderFileResourceReader(),
+            enumerationResourceReader: enumerationResourceReader ?? FoundationEnumerationResourceReader()
         )
         return (handler, bookmarkPort)
+    }
+
+    static func bumpDirtyEpoch(database: CatalogDatabase, sourceID: UUID, to epoch: Int) throws {
+        try database.pool.write { db in
+            try db.execute(
+                sql: "UPDATE source SET dirty_epoch = ?, updated_at_ms = ? WHERE id = ?",
+                arguments: [epoch, baseTimeMs, sourceID.uuidString.lowercased()]
+            )
+        }
     }
 
     static func seedActiveFolderSource(
@@ -321,9 +339,7 @@ enum FolderReconcileTestSupport {
         0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70, 0x68, 0x65, 0x69, 0x66, 0x00, 0x00, 0x00, 0x00, 0x6d, 0x69, 0x66, 0x31, 0x68, 0x65, 0x69, 0x66, 0x00, 0x00, 0x01, 0x2a, 0x6d, 0x65, 0x74, 0x61, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x21, 0x68, 0x64, 0x6c, 0x72, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x70, 0x69, 0x63, 0x74, 0x00, 0x5c, 0x00, 0x63, 0x00, 0x31, 0x00, 0x35, 0x00, 0x78, 0x00, 0x32, 0x00, 0x00, 0x00, 0x00, 0x0e, 0x70, 0x69, 0x74, 0x6d, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x22, 0x69, 0x6c, 0x6f, 0x63, 0x00, 0x00, 0x00, 0x00, 0x44, 0x40, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x01, 0x4a, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x38, 0x00, 0x00, 0x00, 0x23, 0x69, 0x69, 0x6e, 0x66, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x15, 0x69, 0x6e, 0x66, 0x65, 0x02, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x68, 0x76, 0x63, 0x31, 0x00, 0x00, 0x00, 0x00, 0xaa, 0x69, 0x70, 0x72, 0x70, 0x00, 0x00, 0x00, 0x8d, 0x69, 0x70, 0x63, 0x6f, 0x00, 0x00, 0x00, 0x71, 0x68, 0x76, 0x63, 0x43, 0x01, 0x04, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff, 0xf0, 0x00, 0xfc, 0xfd, 0xf8, 0xf8, 0x00, 0x00, 0x0f, 0x03, 0x20, 0x00, 0x01, 0x00, 0x17, 0x40, 0x01, 0x0c, 0x01, 0xff, 0xff, 0x04, 0x08, 0x00, 0x00, 0x03, 0x00, 0x9f, 0xa8, 0x00, 0x00, 0x03, 0x00, 0x00, 0xff, 0xba, 0x02, 0x40, 0x21, 0x00, 0x01, 0x00, 0x26, 0x42, 0x01, 0x01, 0x04, 0x08, 0x00, 0x00, 0x03, 0x00, 0x9f, 0xa8, 0x00, 0x00, 0x03, 0x00, 0x00, 0xff, 0xa0, 0x20, 0x81, 0x05, 0x96, 0xea, 0x49, 0x28, 0xae, 0x01, 0x00, 0x00, 0x03, 0x00, 0x01, 0x00, 0x00, 0x03, 0x00, 0x01, 0x08, 0x22, 0x00, 0x01, 0x00, 0x06, 0x44, 0x01, 0xc1, 0x71, 0x89, 0x12, 0x00, 0x00, 0x00, 0x14, 0x69, 0x73, 0x70, 0x65, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x40, 0x00, 0x00, 0x00, 0x40, 0x00, 0x00, 0x00, 0x15, 0x69, 0x70, 0x6d, 0x61, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x01, 0x02, 0x81, 0x02, 0x00, 0x00, 0x00, 0x40, 0x6d, 0x64, 0x61, 0x74, 0x00, 0x00, 0x00, 0x34, 0x28, 0x01, 0xaf, 0x05, 0xb8, 0x14, 0x83, 0xea, 0x23, 0x40, 0x1f, 0xf7, 0x5f, 0xee, 0x7f, 0xb5, 0xfd, 0x6f, 0xce, 0xfc, 0xef, 0xce, 0xfc, 0xef, 0xcf, 0x7c, 0xf7, 0xcf, 0x7c, 0xf7, 0xcf, 0x7c, 0xf7, 0xcf, 0x7c, 0xf7, 0xfe, 0x14, 0x11, 0x33, 0x09, 0x65, 0x03, 0x5e, 0xda, 0x72, 0xb4, 0xe9, 0xc5, 0x20, 0xd6, 0xc0,
     ])
 
-    static func minimalEncodedImageData(uti: String) -> Data? {
-        let width = 2
-        let height = 2
+    static func minimalEncodedImageData(uti: String, width: Int = 2, height: Int = 2) -> Data? {
         var pixels = [UInt8](repeating: 0x80, count: width * height * 4)
         let provider = CGDataProvider(data: Data(pixels) as CFData)!
         let image = CGImage(
@@ -357,8 +373,8 @@ enum FolderReconcileTestSupport {
         return CGImageSourceGetType(source) as String?
     }
 
-    static func minimalOrientedJPEGData(orientation: Int) -> Data? {
-        guard let base = minimalEncodedImageData(uti: UTType.jpeg.identifier) else {
+    static func minimalOrientedJPEGData(orientation: Int, width: Int = 4, height: Int = 2) -> Data? {
+        guard let base = minimalEncodedImageData(uti: UTType.jpeg.identifier, width: width, height: height) else {
             return nil
         }
         guard let source = CGImageSourceCreateWithData(base as CFData, nil),
@@ -376,6 +392,52 @@ enum FolderReconcileTestSupport {
             return nil
         }
         return out as Data
+    }
+
+    static func minimalExifJPEGData(dateTimeOriginal: String, offsetTimeOriginal: String? = nil) -> Data? {
+        let width = 2
+        let height = 2
+        var pixels = [UInt8](repeating: 0x80, count: width * height * 4)
+        let provider = CGDataProvider(data: Data(pixels) as CFData)!
+        let image = CGImage(
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bitsPerPixel: 32,
+            bytesPerRow: width * 4,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
+            provider: provider,
+            decode: nil,
+            shouldInterpolate: false,
+            intent: .defaultIntent
+        )!
+        let out = NSMutableData()
+        guard let dest = CGImageDestinationCreateWithData(out, UTType.jpeg.identifier as CFString, 1, nil) else {
+            return nil
+        }
+        let exif: [CFString: Any]
+        if let offsetTimeOriginal {
+            exif = [
+                kCGImagePropertyExifDateTimeOriginal: dateTimeOriginal,
+                kCGImagePropertyExifOffsetTimeOriginal: offsetTimeOriginal,
+            ]
+        } else {
+            exif = [kCGImagePropertyExifDateTimeOriginal: dateTimeOriginal]
+        }
+        let props = [kCGImagePropertyExifDictionary: exif as CFDictionary] as CFDictionary
+        CGImageDestinationAddImage(dest, image, props)
+        guard CGImageDestinationFinalize(dest) else {
+            return nil
+        }
+        return out as Data
+    }
+
+    static func classifyMedia(at fileURL: URL, fileName: String, reader: (any FolderFileResourceReading)? = nil) -> FolderMediaClassification {
+        if let reader {
+            return FolderMediaClassifier(resourceReader: reader).classify(fileURL: fileURL, fileName: fileName)
+        }
+        return FolderMediaClassifier().classify(fileURL: fileURL, fileName: fileName)
     }
 
     static func minimalMultiFrameTIFFData() -> Data? {

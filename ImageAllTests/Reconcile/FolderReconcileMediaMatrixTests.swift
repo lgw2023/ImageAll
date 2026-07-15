@@ -4,7 +4,7 @@ import UniformTypeIdentifiers
 import XCTest
 @testable import ImageAll
 
-/// Handoff 10.3 media and metadata matrix.
+/// Handoff 10.3 media and metadata matrix — production classifier paths only.
 final class FolderReconcileMediaMatrixTests: XCTestCase {
     func testSixAllowedStaticFormatsAvailable() throws {
         let cases: [(String, String, Data)] = [
@@ -20,7 +20,7 @@ final class FolderReconcileMediaMatrixTests: XCTestCase {
         let root = try fixture.makeRoot(label: "six")
         for (name, _, data) in cases {
             let file = try fixture.writeFile(root: root, relativePath: name, contents: data)
-            guard case let .available(metadata) = FolderMediaClassifier().classify(fileURL: file, fileName: name) else {
+            guard case let .available(metadata) = FolderReconcileTestSupport.classifyMedia(at: file, fileName: name) else {
                 return XCTFail("\(name) must be available")
             }
             XCTAssertTrue(metadata.hasProvenFingerprint)
@@ -41,10 +41,10 @@ final class FolderReconcileMediaMatrixTests: XCTestCase {
         let bmp = try XCTUnwrap(FolderReconcileTestSupport.minimalBMPData())
         let gifFile = try fixture.writeFile(root: root, relativePath: "a.gif", contents: gif)
         let bmpFile = try fixture.writeFile(root: root, relativePath: "a.bmp", contents: bmp)
-        guard case .unsupported = FolderMediaClassifier().classify(fileURL: gifFile, fileName: "a.gif") else {
+        guard case .unsupported = FolderReconcileTestSupport.classifyMedia(at: gifFile, fileName: "a.gif") else {
             return XCTFail("gif unsupported")
         }
-        guard case .unsupported = FolderMediaClassifier().classify(fileURL: bmpFile, fileName: "a.bmp") else {
+        guard case .unsupported = FolderReconcileTestSupport.classifyMedia(at: bmpFile, fileName: "a.bmp") else {
             return XCTFail("bmp unsupported")
         }
     }
@@ -58,7 +58,7 @@ final class FolderReconcileMediaMatrixTests: XCTestCase {
         _ = try fixture.writeFile(root: root, relativePath: "n.txt", contents: Data("hello".utf8))
         for name in ["d.pdf", "v.mov", "n.txt"] {
             let file = root.appendingPathComponent(name)
-            XCTAssertEqual(FolderMediaClassifier().classify(fileURL: file, fileName: name), .ignored)
+            XCTAssertEqual(FolderReconcileTestSupport.classifyMedia(at: file, fileName: name), .ignored)
         }
     }
 
@@ -66,10 +66,31 @@ final class FolderReconcileMediaMatrixTests: XCTestCase {
         let fixture = FolderReconcileTestSupport.TempFixtureRoot()
         defer { fixture.cleanup() }
         let root = try fixture.makeRoot(label: "pseudo")
-        let jpegInTxt = try fixture.writeFile(root: root, relativePath: "photo.jpg.txt", contents: FolderReconcileTestSupport.minimalJPEGData())
-        XCTAssertEqual(FolderMediaClassifier().classify(fileURL: jpegInTxt, fileName: "photo.jpg.txt"), .ignored)
-        let pngInBin = try fixture.writeFile(root: root, relativePath: "x.bin", contents: FolderReconcileTestSupport.minimalPNGData())
-        XCTAssertEqual(FolderMediaClassifier().classify(fileURL: pngInBin, fileName: "x.bin"), .ignored)
+        let pngInJpg = try fixture.writeFile(
+            root: root,
+            relativePath: "photo.jpg",
+            contents: FolderReconcileTestSupport.minimalPNGData()
+        )
+        guard case let .available(metadata) = FolderReconcileTestSupport.classifyMedia(at: pngInJpg, fileName: "photo.jpg") else {
+            return XCTFail(".jpg with PNG bytes must be available via actual container")
+        }
+        XCTAssertEqual(metadata.mediaType, UTType.png.identifier)
+
+        let corruptJpg = try fixture.writeFile(
+            root: root,
+            relativePath: "bad.jpg",
+            contents: Data([0xFF, 0xD8, 0xFF, 0x00])
+        )
+        guard case .unreadable = FolderReconcileTestSupport.classifyMedia(at: corruptJpg, fileName: "bad.jpg") else {
+            return XCTFail("corrupt .jpg must be unreadable")
+        }
+
+        let jpegInTxt = try fixture.writeFile(
+            root: root,
+            relativePath: "photo.jpg.txt",
+            contents: FolderReconcileTestSupport.minimalJPEGData()
+        )
+        XCTAssertEqual(FolderReconcileTestSupport.classifyMedia(at: jpegInTxt, fileName: "photo.jpg.txt"), .ignored)
     }
 
     func testMultiFrameTIFFUnsupported() throws {
@@ -80,7 +101,7 @@ final class FolderReconcileMediaMatrixTests: XCTestCase {
         defer { fixture.cleanup() }
         let root = try fixture.makeRoot(label: "mtiff")
         let file = try fixture.writeFile(root: root, relativePath: "m.tiff", contents: data)
-        guard case .unsupported = FolderMediaClassifier().classify(fileURL: file, fileName: "m.tiff") else {
+        guard case .unsupported = FolderReconcileTestSupport.classifyMedia(at: file, fileName: "m.tiff") else {
             return XCTFail("multi-frame tiff must be unsupported")
         }
     }
@@ -94,26 +115,58 @@ final class FolderReconcileMediaMatrixTests: XCTestCase {
                 return XCTFail("host must encode oriented jpeg \(orientation)")
             }
             let file = try fixture.writeFile(root: root, relativePath: "o\(orientation).jpg", contents: data)
-            guard case let .available(metadata) = FolderMediaClassifier().classify(fileURL: file, fileName: "o\(orientation).jpg") else {
+            guard case let .available(metadata) = FolderReconcileTestSupport.classifyMedia(at: file, fileName: "o\(orientation).jpg") else {
                 return XCTFail("oriented jpeg must be available")
             }
-            XCTAssertNotNil(metadata.width)
-            XCTAssertNotNil(metadata.height)
             if (5 ... 8).contains(orientation) {
-                XCTAssertEqual(metadata.width, 2)
-                XCTAssertEqual(metadata.height, 2)
+                XCTAssertEqual(metadata.width, 2, "orientation \(orientation) swaps width")
+                XCTAssertEqual(metadata.height, 4, "orientation \(orientation) swaps height")
             } else {
-                XCTAssertEqual(metadata.width, 2)
-                XCTAssertEqual(metadata.height, 2)
+                XCTAssertEqual(metadata.width, 4, "orientation \(orientation) keeps width")
+                XCTAssertEqual(metadata.height, 2, "orientation \(orientation) keeps height")
             }
         }
     }
 
-    func testExifDateTimeOffsetParsing() throws {
-        XCTAssertNotNil(parseExif("2020:01:02 03:04:05Z"))
-        XCTAssertNotNil(parseExif("2020:01:02 03:04:05+0800"))
-        XCTAssertNotNil(parseExif("2020:01:02 03:04:05-0500"))
-        XCTAssertNil(parseExif("2020:01:02 03:04:05"))
+    func testExifDateTimeOffsetParsingViaClassifier() throws {
+        let fixture = FolderReconcileTestSupport.TempFixtureRoot()
+        defer { fixture.cleanup() }
+        let root = try fixture.makeRoot(label: "exif")
+        let zData = try XCTUnwrap(FolderReconcileTestSupport.minimalExifJPEGData(
+            dateTimeOriginal: "2020:01:02 03:04:05",
+            offsetTimeOriginal: "+00:00"
+        ))
+        let plusData = try XCTUnwrap(FolderReconcileTestSupport.minimalExifJPEGData(
+            dateTimeOriginal: "2020:01:02 03:04:05",
+            offsetTimeOriginal: "+08:00"
+        ))
+        let minusData = try XCTUnwrap(FolderReconcileTestSupport.minimalExifJPEGData(
+            dateTimeOriginal: "2020:01:02 03:04:05",
+            offsetTimeOriginal: "-05:00"
+        ))
+        let noneData = try XCTUnwrap(FolderReconcileTestSupport.minimalExifJPEGData(dateTimeOriginal: "2020:01:02 03:04:05"))
+        let cases: [(String, Data)] = [
+            ("z.jpg", zData),
+            ("plus.jpg", plusData),
+            ("minus.jpg", minusData),
+            ("none.jpg", noneData),
+        ]
+        for (name, data) in cases {
+            let file = try fixture.writeFile(root: root, relativePath: name, contents: data)
+            guard case let .available(metadata) = FolderReconcileTestSupport.classifyMedia(at: file, fileName: name) else {
+                return XCTFail("\(name) must be available")
+            }
+            switch name {
+            case "z.jpg":
+                XCTAssertNotNil(metadata.mediaCreatedAtMs)
+            case "plus.jpg", "minus.jpg":
+                XCTAssertNotNil(metadata.mediaCreatedAtMs)
+            case "none.jpg":
+                XCTAssertNil(metadata.mediaCreatedAtMs)
+            default:
+                XCTFail("unexpected case")
+            }
+        }
     }
 
     func testDatabaseSHA256RemainsNullAfterScan() throws {
@@ -146,17 +199,18 @@ final class FolderReconcileMediaMatrixTests: XCTestCase {
         defer { fixture.cleanup() }
         let root = try fixture.makeRoot(label: "rid")
         let rel = "folder/photo.png"
-        try fixture.writeFile(root: root, relativePath: rel, contents: FolderReconcileTestSupport.minimalPNGData())
+        let fileURL = try fixture.writeFile(root: root, relativePath: rel, contents: FolderReconcileTestSupport.minimalPNGData())
         let bookmark = root.path.data(using: .utf8)!
         try FolderReconcileTestSupport.seedActiveFolderSource(database: database, sourceID: sourceID, bookmark: bookmark)
         _ = try FolderReconcileTestSupport.enqueueReconcileJob(queue: queue, sourceID: sourceID)
         let (handler, _) = FolderReconcileTestSupport.makeHandler(database: database, root: root, bookmark: bookmark)
         let coordinator = FolderReconcileTestSupport.makeCoordinator(queue: queue, handler: handler)
         _ = try XCTUnwrap(try coordinator.claimAndExecuteOnce(ClaimNextInput(owner: "w", leaseDurationMs: 1000)))
-        let resourceID = try database.pool.read { db in
+        let resourceID = try XCTUnwrap(try database.pool.read { db in
             try Data.fetchOne(db, sql: "SELECT resource_id FROM file_fingerprint")
-        }
+        })
         XCTAssertNotEqual(resourceID, Data(rel.utf8))
+        XCTAssertNotEqual(resourceID, Data(fileURL.path.utf8))
     }
 
     func testResourceValueFailureMarksGenerationIncomplete() throws {
@@ -167,16 +221,16 @@ final class FolderReconcileMediaMatrixTests: XCTestCase {
         let fixture = FolderReconcileTestSupport.TempFixtureRoot()
         defer { fixture.cleanup() }
         let root = try fixture.makeRoot(label: "rv-fail")
-        try fixture.writeFile(root: root, relativePath: "a.png", contents: FolderReconcileTestSupport.minimalPNGData())
+        let fileURL = try fixture.writeFile(root: root, relativePath: "a.png", contents: FolderReconcileTestSupport.minimalPNGData())
         let bookmark = root.path.data(using: .utf8)!
         try FolderReconcileTestSupport.seedActiveFolderSource(database: database, sourceID: sourceID, bookmark: bookmark)
         _ = try FolderReconcileTestSupport.enqueueReconcileJob(queue: queue, sourceID: sourceID)
-        let injection = FolderMediaResourceValueInjection(failSizeRelativePaths: ["a.png"], failMtimeRelativePaths: [])
+        let reader = FailingFileResourceReader(failSizeFor: fileURL)
         let (handler, _) = FolderReconcileTestSupport.makeHandler(
             database: database,
             root: root,
             bookmark: bookmark,
-            mediaResourceInjection: injection
+            fileResourceReader: reader
         )
         let coordinator = FolderReconcileTestSupport.makeCoordinator(queue: queue, handler: handler)
         let result = try XCTUnwrap(try coordinator.claimAndExecuteOnce(ClaimNextInput(owner: "w", leaseDurationMs: 1000)))
@@ -186,24 +240,5 @@ final class FolderReconcileMediaMatrixTests: XCTestCase {
             try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM asset")
         }
         XCTAssertEqual(count, 0)
-    }
-
-    private func parseExif(_ value: String) -> Int64? {
-        let classifier = FolderMediaClassifier()
-        let mirror = Mirror(reflecting: classifier)
-        _ = mirror
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = TimeZone(secondsFromGMT: 0)
-        formatter.dateFormat = "yyyy:MM:dd HH:mm:ssZ"
-        if value.hasSuffix("Z") {
-            return formatter.date(from: String(value.dropLast()) + "+0000").map { Int64($0.timeIntervalSince1970 * 1000) }
-        }
-        if let range = value.range(of: #"([+-]\d{4})$"#, options: .regularExpression) {
-            let offset = String(value[range.lowerBound...])
-            let trimmed = String(value[..<range.lowerBound])
-            return formatter.date(from: trimmed + offset).map { Int64($0.timeIntervalSince1970 * 1000) }
-        }
-        return nil
     }
 }

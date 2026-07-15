@@ -46,9 +46,13 @@ final class FolderReconcileReadonlyMatrixTests: XCTestCase {
         let bookmark = root.path.data(using: .utf8)!
         try FolderReconcileTestSupport.seedActiveFolderSource(database: database, sourceID: sourceID, bookmark: bookmark)
         _ = try FolderReconcileTestSupport.enqueueReconcileJob(queue: queue, sourceID: sourceID)
-        let injection = FolderEnumerationErrorInjection(resourceValueFailureRelativePaths: ["a.png"])
-        let config = FolderEnumerationConfig(workUnitLimit: 256, assetBatchLimit: 256, errorInjection: injection)
-        let (handler, _) = FolderReconcileTestSupport.makeHandler(database: database, root: root, bookmark: bookmark, enumerationConfig: config)
+        let fileURL = root.appendingPathComponent("a.png")
+        let (handler, _) = FolderReconcileTestSupport.makeHandler(
+            database: database,
+            root: root,
+            bookmark: bookmark,
+            enumerationResourceReader: FailingEnumerationResourceReader(failFor: fileURL)
+        )
         let coordinator = FolderReconcileTestSupport.makeCoordinator(queue: queue, handler: handler)
         _ = try XCTUnwrap(try coordinator.claimAndExecuteOnce(ClaimNextInput(owner: "w", leaseDurationMs: 1000)))
         XCTAssertEqual(try fixture.snapshotDetailed(root: root), before)

@@ -140,6 +140,7 @@
 		RR0000010000000000000007 /* FolderMediaClassifier.swift in Sources */ = {isa = PBXBuildFile; fileRef = RR0001010000000000000007 /* FolderMediaClassifier.swift */; };
 		RR0000010000000000000008 /* GRDBFolderReconcileRepository.swift in Sources */ = {isa = PBXBuildFile; fileRef = RR0001010000000000000008 /* GRDBFolderReconcileRepository.swift */; };
 		RR0000010000000000000009 /* FolderReconcileHandler.swift in Sources */ = {isa = PBXBuildFile; fileRef = RR0001010000000000000009 /* FolderReconcileHandler.swift */; };
+		RR0000010000000000000012 /* FolderInfrastructurePorts.swift in Sources */ = {isa = PBXBuildFile; fileRef = RR0001010000000000000012 /* FolderInfrastructurePorts.swift */; };
 		RR0000010000000000000010 /* StrictJSONValidation.swift in Sources */ = {isa = PBXBuildFile; fileRef = RR0001010000000000000010 /* StrictJSONValidation.swift */; };
 		RR0000010000000000000011 /* FolderMovePathProbe.swift in Sources */ = {isa = PBXBuildFile; fileRef = RR0001010000000000000011 /* FolderMovePathProbe.swift */; };
 		RR0000010000000000000101 /* FolderReconcileTestSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = RR0001010000000000000101 /* FolderReconcileTestSupport.swift */; };
@@ -156,6 +157,7 @@
 		RR000001000000000000010C /* FolderReconcileLeaseMatrixTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = RR000101000000000000010C /* FolderReconcileLeaseMatrixTests.swift */; };
 		RR000001000000000000010D /* FolderReconcileStrictJSONMatrixTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = RR000101000000000000010D /* FolderReconcileStrictJSONMatrixTests.swift */; };
 		RR000001000000000000010E /* FolderReconcileReadonlyMatrixTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = RR000101000000000000010E /* FolderReconcileReadonlyMatrixTests.swift */; };
+		RR000001000000000000010F /* FolderReconcileTestSeams.swift in Sources */ = {isa = PBXBuildFile; fileRef = RR000101000000000000010F /* FolderReconcileTestSeams.swift */; };
 		RR0000010000000000000201 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = RR0001010000000000000201 /* PrivacyInfo.xcprivacy */; };
 /* End PBXBuildFile section */
 
@@ -304,6 +306,7 @@
 		RR0001010000000000000007 /* FolderMediaClassifier.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FolderMediaClassifier.swift; sourceTree = "<group>"; };
 		RR0001010000000000000008 /* GRDBFolderReconcileRepository.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GRDBFolderReconcileRepository.swift; sourceTree = "<group>"; };
 		RR0001010000000000000009 /* FolderReconcileHandler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FolderReconcileHandler.swift; sourceTree = "<group>"; };
+		RR0001010000000000000012 /* FolderInfrastructurePorts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FolderInfrastructurePorts.swift; sourceTree = "<group>"; };
 		RR0001010000000000000010 /* StrictJSONValidation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StrictJSONValidation.swift; sourceTree = "<group>"; };
 		RR0001010000000000000011 /* FolderMovePathProbe.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FolderMovePathProbe.swift; sourceTree = "<group>"; };
 		RR0001010000000000000101 /* FolderReconcileTestSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FolderReconcileTestSupport.swift; sourceTree = "<group>"; };
@@ -320,6 +323,7 @@
 		RR000101000000000000010C /* FolderReconcileLeaseMatrixTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FolderReconcileLeaseMatrixTests.swift; sourceTree = "<group>"; };
 		RR000101000000000000010D /* FolderReconcileStrictJSONMatrixTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FolderReconcileStrictJSONMatrixTests.swift; sourceTree = "<group>"; };
 		RR000101000000000000010E /* FolderReconcileReadonlyMatrixTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FolderReconcileReadonlyMatrixTests.swift; sourceTree = "<group>"; };
+		RR000101000000000000010F /* FolderReconcileTestSeams.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FolderReconcileTestSeams.swift; sourceTree = "<group>"; };
 		RR0001010000000000000201 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -716,6 +720,7 @@
 				RR0001010000000000000007 /* FolderMediaClassifier.swift */,
 				RR0001010000000000000008 /* GRDBFolderReconcileRepository.swift */,
 				RR0001010000000000000009 /* FolderReconcileHandler.swift */,
+				RR0001010000000000000012 /* FolderInfrastructurePorts.swift */,
 			);
 			path = Reconcile;
 			sourceTree = "<group>";
@@ -737,6 +742,7 @@
 				RR000101000000000000010C /* FolderReconcileLeaseMatrixTests.swift */,
 				RR000101000000000000010D /* FolderReconcileStrictJSONMatrixTests.swift */,
 				RR000101000000000000010E /* FolderReconcileReadonlyMatrixTests.swift */,
+				RR000101000000000000010F /* FolderReconcileTestSeams.swift */,
 			);
 			path = Reconcile;
 			sourceTree = "<group>";
@@ -929,6 +935,7 @@
 			RR0000010000000000000007 /* FolderMediaClassifier.swift in Sources */,
 			RR0000010000000000000008 /* GRDBFolderReconcileRepository.swift in Sources */,
 			RR0000010000000000000009 /* FolderReconcileHandler.swift in Sources */,
+			RR0000010000000000000012 /* FolderInfrastructurePorts.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -1003,6 +1010,7 @@
 			RR000001000000000000010C /* FolderReconcileLeaseMatrixTests.swift in Sources */,
 			RR000001000000000000010D /* FolderReconcileStrictJSONMatrixTests.swift in Sources */,
 			RR000001000000000000010E /* FolderReconcileReadonlyMatrixTests.swift in Sources */,
+			RR000001000000000000010F /* FolderReconcileTestSeams.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

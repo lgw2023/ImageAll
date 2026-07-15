@@ -303,15 +303,13 @@ final class FolderReconcileAcceptanceMatrixTests: XCTestCase {
         let bookmark = root.path.data(using: .utf8)!
         try FolderReconcileTestSupport.seedActiveFolderSource(database: database, sourceID: sourceID, bookmark: bookmark)
         _ = try FolderReconcileTestSupport.enqueueReconcileJob(queue: queue, sourceID: sourceID)
+        let badURL = root.appendingPathComponent("bad.png")
         let (handler, _) = FolderReconcileTestSupport.makeHandler(
             database: database,
             root: root,
             bookmark: bookmark,
-            enumerationConfig: FolderEnumerationConfig(
-                workUnitLimit: 32,
-                assetBatchLimit: 32,
-                errorInjection: FolderEnumerationErrorInjection(resourceValueFailureRelativePaths: ["bad.png"])
-            )
+            enumerationConfig: FolderEnumerationConfig(workUnitLimit: 32, assetBatchLimit: 32),
+            enumerationResourceReader: FailingEnumerationResourceReader(failFor: badURL)
         )
         let coordinator = FolderReconcileTestSupport.makeCoordinator(queue: queue, handler: handler)
         let result = try XCTUnwrap(try coordinator.claimAndExecuteOnce(ClaimNextInput(owner: "w", leaseDurationMs: 1000)))

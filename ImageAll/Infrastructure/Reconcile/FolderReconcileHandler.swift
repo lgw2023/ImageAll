@@ -129,7 +129,8 @@ enum FolderReconcileHandlerError: Error, Equatable {
 struct FolderReconcileHandler: LeaseBoundJobHandler {
     let rootAccess: FolderReconcileSourceAccessService
     let enumerationConfig: FolderEnumerationConfig
-    let mediaResourceInjection: FolderMediaResourceValueInjection
+    let fileResourceReader: any FolderFileResourceReading
+    let enumerationResourceReader: any FolderEnumerationResourceReading
 
     var kind: String { FolderReconcileJobFactory.kind }
     var supportedPayloadVersions: Set<Int> { [FolderReconcileJobFactory.payloadVersion] }
@@ -138,11 +139,13 @@ struct FolderReconcileHandler: LeaseBoundJobHandler {
     init(
         rootAccess: FolderReconcileSourceAccessService,
         enumerationConfig: FolderEnumerationConfig = .productionDefault,
-        mediaResourceInjection: FolderMediaResourceValueInjection = .none
+        fileResourceReader: any FolderFileResourceReading = FoundationFolderFileResourceReader(),
+        enumerationResourceReader: any FolderEnumerationResourceReading = FoundationEnumerationResourceReader()
     ) {
         self.rootAccess = rootAccess
         self.enumerationConfig = enumerationConfig
-        self.mediaResourceInjection = mediaResourceInjection
+        self.fileResourceReader = fileResourceReader
+        self.enumerationResourceReader = enumerationResourceReader
     }
 
     func execute(
@@ -271,11 +274,15 @@ struct FolderReconcileHandler: LeaseBoundJobHandler {
 
         var currentCheckpoint = begin.checkpoint
         var pendingObservations: [FolderReconcileAssetObservation] = []
-        let classifier = FolderMediaClassifier(resourceInjection: mediaResourceInjection)
+        let classifier = FolderMediaClassifier(resourceReader: fileResourceReader)
 
         do {
             try rootAccess.withActiveSourceRootURL(sourceID: sourceID) { rootURL in
-                let session = FolderDirectoryEnumerator(rootURL: rootURL, config: enumerationConfig).makeSession()
+                let session = FolderDirectoryEnumerator(
+                    rootURL: rootURL,
+                    config: enumerationConfig,
+                    resourceReader: enumerationResourceReader
+                ).makeSession()
 
                 while let entry = try session.nextEntry() {
                     currentCheckpoint = incrementEnumerated(currentCheckpoint)
@@ -342,7 +349,7 @@ struct FolderReconcileHandler: LeaseBoundJobHandler {
                     if pendingObservations.count >= enumerationConfig.assetBatchLimit
                         || session.needsBoundaryFlush
                     {
-                        currentCheckpoint = try flushBatch(
+                        let flushed = try flushBatch(
                             lease: lease,
                             sourceID: sourceID,
                             generation: begin.generation,
@@ -351,6 +358,10 @@ struct FolderReconcileHandler: LeaseBoundJobHandler {
                             observations: &pendingObservations,
                             context: context
                         )
+                        currentCheckpoint = flushed.checkpoint
+                        if flushed.jobSnapshot.state != .running {
+                            return
+                        }
                         session.markBoundaryFlushed()
                     }
                 }
@@ -363,7 +374,7 @@ struct FolderReconcileHandler: LeaseBoundJobHandler {
                     throw FolderReconcileTraversalFailure.incomplete
                 }
 
-                currentCheckpoint = try flushBatch(
+                let finalFlush = try flushBatch(
                     lease: lease,
                     sourceID: sourceID,
                     generation: begin.generation,
@@ -372,21 +383,24 @@ struct FolderReconcileHandler: LeaseBoundJobHandler {
                     observations: &pendingObservations,
                     context: context
                 )
+                currentCheckpoint = finalFlush.checkpoint
 
                 guard case .valid = rootAccess.validateRootContinuity(at: rootURL) else {
                     throw FolderReconcileTraversalFailure.incomplete
                 }
 
-                _ = try context.reconcileBatch.completeGeneration(
-                    FolderCompleteGenerationInput(
-                        lease: lease,
-                        sourceID: sourceID,
-                        generation: begin.generation,
-                        startedDirtyEpoch: begin.startedDirtyEpoch,
-                        checkpoint: currentCheckpoint,
-                        leaseDurationMs: context.leaseDurationMs
+                if finalFlush.jobSnapshot.state == .running {
+                    _ = try context.reconcileBatch.completeGeneration(
+                        FolderCompleteGenerationInput(
+                            lease: lease,
+                            sourceID: sourceID,
+                            generation: begin.generation,
+                            startedDirtyEpoch: begin.startedDirtyEpoch,
+                            checkpoint: currentCheckpoint,
+                            leaseDurationMs: context.leaseDurationMs
+                        )
                     )
-                )
+                }
             }
         } catch FolderReconcileTraversalFailure.unsafeRelativePath {
             return try settleIncomplete(
@@ -508,13 +522,18 @@ struct FolderReconcileHandler: LeaseBoundJobHandler {
         guard FileManager.default.fileExists(atPath: oldPathURL.path) else {
             return .reconnectCandidate(binding)
         }
-        guard let oldResourceID = FolderFileResourceProbe.resourceIdentifier(at: oldPathURL) else {
+        guard let oldResourceID = fileResourceReader.resourceIdentifier(for: oldPathURL) else {
             return .oldPathProbeError(binding: binding)
         }
         if oldResourceID == resourceID {
             return .oldPathSameResourceID(binding)
         }
         return .oldPathDifferentResourceID(binding)
+    }
+
+    private struct FlushBatchResult {
+        let checkpoint: FolderReconcileCheckpointV1
+        let jobSnapshot: JobRecordSnapshot
     }
 
     @discardableResult
@@ -526,7 +545,7 @@ struct FolderReconcileHandler: LeaseBoundJobHandler {
         checkpoint: FolderReconcileCheckpointV1,
         observations: inout [FolderReconcileAssetObservation],
         context: JobLeaseExecutionContext
-    ) throws -> FolderReconcileCheckpointV1 {
+    ) throws -> FlushBatchResult {
         let result = try context.reconcileBatch.commitAssetBatch(
             FolderAssetBatchInput(
                 lease: lease,
@@ -540,7 +559,10 @@ struct FolderReconcileHandler: LeaseBoundJobHandler {
             )
         )
         observations.removeAll(keepingCapacity: true)
-        return addIdentityConflicts(checkpoint, by: result.identityConflictsAdded)
+        return FlushBatchResult(
+            checkpoint: addIdentityConflicts(checkpoint, by: result.identityConflictsAdded),
+            jobSnapshot: result.jobSnapshot
+        )
     }
 
     private func settleIncomplete(
@@ -732,18 +754,8 @@ struct FolderReconcileHandler: LeaseBoundJobHandler {
 }
 
 enum FolderFileResourceProbe {
-    static func resourceIdentifier(at url: URL) -> Data? {
-        let values = try? url.resourceValues(forKeys: [.fileResourceIdentifierKey])
-        guard let object = values?.fileResourceIdentifier else {
-            return nil
-        }
-        if let data = object as? Data {
-            return data
-        }
-        if let number = object as? NSNumber {
-            return number.stringValue.data(using: .utf8)
-        }
-        return nil
+    static func resourceIdentifier(at url: URL, reader: any FolderFileResourceReading = FoundationFolderFileResourceReader()) -> Data? {
+        reader.resourceIdentifier(for: url)
     }
 }
 

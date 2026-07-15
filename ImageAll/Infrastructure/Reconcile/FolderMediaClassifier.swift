@@ -23,26 +23,11 @@ struct FolderMediaMetadata: Equatable, Sendable {
     }
 }
 
-struct FolderMediaResourceValueInjection: Sendable, Equatable {
-    let failSizeRelativePaths: Set<String>
-    let failMtimeRelativePaths: Set<String>
-
-    static let none = FolderMediaResourceValueInjection(failSizeRelativePaths: [], failMtimeRelativePaths: [])
-
-    func shouldFailSize(relativePath: String) -> Bool {
-        failSizeRelativePaths.contains(relativePath)
-    }
-
-    func shouldFailMtime(relativePath: String) -> Bool {
-        failMtimeRelativePaths.contains(relativePath)
-    }
-}
-
 struct FolderMediaClassifier: Sendable {
-    private let resourceInjection: FolderMediaResourceValueInjection
+    private let resourceReader: any FolderFileResourceReading
 
-    init(resourceInjection: FolderMediaResourceValueInjection = .none) {
-        self.resourceInjection = resourceInjection
+    init(resourceReader: any FolderFileResourceReading = FoundationFolderFileResourceReader()) {
+        self.resourceReader = resourceReader
     }
 
     private static let allowedTypes: Set<String> = [
@@ -239,7 +224,18 @@ struct FolderMediaClassifier: Sendable {
         else {
             return nil
         }
-        return parseUTCDateTime(dateString)
+        if dateString.hasSuffix("Z") {
+            return parseUTCDateTime(dateString)
+        }
+        if let range = dateString.range(of: #"([+-]\d{2}:?\d{2})$"#, options: .regularExpression) {
+            let offset = String(dateString[range.lowerBound...])
+            let trimmed = String(dateString[..<range.lowerBound])
+            return parseFixedOffset(trimmed + offset.replacingOccurrences(of: ":", with: ""))
+        }
+        if let offset = exif[kCGImagePropertyExifOffsetTimeOriginal] as? String {
+            return parseFixedOffset(dateString + offset.replacingOccurrences(of: ":", with: ""))
+        }
+        return nil
     }
 
     private func parseUTCDateTime(_ value: String) -> Int64? {
@@ -267,40 +263,16 @@ struct FolderMediaClassifier: Sendable {
     }
 
     private func fileSizeBytes(_ url: URL, relativePath: String) -> Int64? {
-        if resourceInjection.shouldFailSize(relativePath: relativePath) {
-            return nil
-        }
-        guard let values = try? url.resourceValues(forKeys: [.fileSizeKey]),
-              let size = values.fileSize
-        else {
-            return nil
-        }
-        return Int64(size)
+        _ = relativePath
+        return resourceReader.fileSizeBytes(for: url)
     }
 
     private func modifiedAtNs(_ url: URL, relativePath: String) -> Int64? {
-        if resourceInjection.shouldFailMtime(relativePath: relativePath) {
-            return nil
-        }
-        guard let values = try? url.resourceValues(forKeys: [.contentModificationDateKey]),
-              let date = values.contentModificationDate
-        else {
-            return nil
-        }
-        return Int64(date.timeIntervalSince1970 * 1_000_000_000)
+        _ = relativePath
+        return resourceReader.modifiedAtNs(for: url)
     }
 
     private func resourceIdentifier(_ url: URL) -> Data? {
-        let values = try? url.resourceValues(forKeys: [.fileResourceIdentifierKey])
-        guard let object = values?.fileResourceIdentifier else {
-            return nil
-        }
-        if let data = object as? Data {
-            return data
-        }
-        if let number = object as? NSNumber {
-            return number.stringValue.data(using: .utf8)
-        }
-        return nil
+        resourceReader.resourceIdentifier(for: url)
     }
 }
