@@ -1,6 +1,6 @@
 # ImageAll 阶段 1 加速交付计划
 
-> 状态：Slice A-C implemented；Slice B 低空间显示问题已修复
+> 状态：Slice A-D implemented；Slice B 低空间显示问题已修复
 >
 > 日期：2026-07-15
 >
@@ -11,6 +11,8 @@
 > Slice B 实现：`main@542c76b97a06b1ec9ea31418fadaa9e355ae7b03`
 >
 > Slice C 实现：`main@51ffafa31aaee98ae739ad353930f75fb340b3fd`
+>
+> Slice D 实现：`main@7f083f19e895bca272025e71d5772c40e1b050bd`
 
 ## 1. 决策
 
@@ -29,6 +31,7 @@
 → 选择照片并在 Inspector 作出人工标签决定
 → 用本地搜索、来源、标签决定和无标签条件缩小结果
 → 用 Space 进入单图查看并用方向键连续浏览
+→ 按可用状态、静态图片格式筛选，并切换稳定排序
 ```
 
 ## 2. 加速切片 A：连接、扫描、浏览
@@ -64,12 +67,11 @@
 
 ## 4. 明确延期
 
-Slice B 完成后仍明确延期：
+Slice D 完成后仍明确延期：
 
 - FSEvents watcher、dirty trigger 与自动增量重扫；
 - Activity 工作区、任务列表、暂停、取消、重试；
 - `Command-K` 和多窗口状态同步；
-- 可用状态、文件格式筛选与排序切换界面；
 - Inspector 技术错误详情、标签操作前的独立影响数量确认；
 - 10,000/100,000 项性能基准、完整无障碍矩阵和所有故障注入；
 - 真实 `/Volumes/HDD2` 数据 smoke。
@@ -90,7 +92,7 @@ Slice B 完成后仍明确延期：
 
 ## 6. 停止位置
 
-切片 B 停止于“浏览—选择—人工标签—搜索筛选”闭环；项目所有者实际体验反馈后，切片 C 已补齐单图查看与键盘浏览。FSEvents、活动中心和扩展验证继续延期；后续纵切片优先在来源生命周期界面、状态/格式/排序筛选或其他直接用户主路径中择一，不默认回补 watcher/活动能力。
+切片 B 停止于“浏览—选择—人工标签—搜索筛选”闭环；项目所有者实际体验反馈后，切片 C 已补齐单图查看与键盘浏览，切片 D 已补齐状态、格式和排序控件。FSEvents、活动中心和扩展验证继续延期；后续纵切片优先进入来源生命周期界面或其他直接用户主路径，不默认回补 watcher/活动能力。
 
 ## 7. 切片 A 验收记录
 
@@ -118,7 +120,7 @@ Slice B 完成后仍明确延期：
 - 自动化未访问 `/Volumes/HDD2`，未运行真实 App 容器 smoke，未 push；
 - 本轮由临时授权下的 Codex implementation 完成，未启动 Cursor CLI 任务。
 
-已知延期：搜索在提交时执行，尚无输入 debounce；没有文件格式/可用状态筛选、排序控件、完整网格空间导航、FSEvents、活动中心、扩展性能/无障碍验证或真实数据 smoke。Space 单图模式与左右连续浏览已在第 10 节补齐。
+已知延期：搜索在提交时执行，尚无输入 debounce；没有完整网格空间导航、FSEvents、活动中心或扩展性能/无障碍验证。Space 单图模式与左右连续浏览已在第 10 节补齐，文件格式、可用状态和排序控件已在第 11 节补齐。
 
 ## 9. 低空间图片显示修复
 
@@ -145,3 +147,17 @@ Slice B 完成后仍明确延期：
 - 本机已连接的只读 Downloads 来源完成运行验收：点击照片后 Space 进入 `singlePhotoView`，右方向键切换资产并同步 Inspector，Escape 返回网格；视觉复查移除了 Content 的系统焦点边框；
 - 未访问 `/Volumes/HDD2`，未修改来源照片，未新增 schema、entitlement、privacy manifest 或依赖，未 push；
 - 实现提交：`51ffafa31aaee98ae739ad353930f75fb340b3fd`（`Agent-Role: implementation`）。
+
+## 11. 加速切片 D：状态、格式与排序控件
+
+2026-07-15 已完成并通过：
+
+- 工具栏筛选菜单新增可用、文件缺失、不可读取和格式不支持四种目录状态；支持多状态组合与一键恢复全部状态；
+- 文件格式筛选覆盖 JPEG、PNG、HEIC/HEIF、TIFF 和 WebP，并复用既有 UTI 查询契约；
+- 独立排序菜单接入最新优先、最早优先和文件名升序，分页查询不再固定为 `newest`；
+- 状态或格式筛选没有结果时显示筛选语境及“清除状态和格式筛选”，不再误报为目录没有支持图片；
+- TDD 红灯：`/tmp/ImageAll-browse-controls-red.xcresult`、`/tmp/ImageAll-browse-clear-red.xcresult`；目标 `LibraryWorkspaceModelTests` 9/9 通过；
+- Workspace、Composition Root、资产查询、标签事务、派生图合同与配额相关回归 92/92：`/tmp/ImageAll-browse-controls-final.xcresult`；arm64 Debug build 成功；
+- 本机已连接的 Downloads 来源完成只读运行验收：PNG 筛选、状态组合、三种排序和筛选清除均可观察，清除后恢复照片网格；
+- 未访问 `/Volumes/HDD2`，未修改、删除或移动 Downloads 来源文件，未新增 schema、entitlement、privacy manifest 或依赖，未 push；
+- 实现提交：`7f083f19e895bca272025e71d5772c40e1b050bd`（`Agent-Role: implementation`）。
