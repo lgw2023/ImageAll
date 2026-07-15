@@ -1,5 +1,19 @@
 # ImageAll 项目协作约束
 
+## 临时实施职责（至 2026-08-13）
+
+项目所有者已确认 Cursor 本月额度耗尽，并明确授权 Codex 在额度于
+2026-08-13 刷新前直接完成代码、测试、构建和本地提交。本节在有效期内优先于下方
+“Codex 不负责具体实现”和“Cursor 是本项目的实现开发者”等常规分工；额度恢复后，
+除非项目所有者另有指示，自动恢复常规分工。
+
+- Codex 仍须先明确范围、契约、测试矩阵和停止位置，并按 TDD 做最小、可审计实现；
+- 现有真实照片保护、`user/` 保护、默认不 push、不改写历史等边界不变；
+- Codex 的实现提交使用 `Codex <codex@openai.com>`，主题前缀为
+  `feat(codex):` 或 `fix(codex):`，trailer 为 `Agent-Role: implementation`；
+- 文档提交继续使用 `docs(codex):` 和 `Agent-Role: product-architecture`；
+- 同一 commit 仍不得混合职责调整/架构文档与可执行实现。
+
 ## Codex 在本项目中的角色
 
 Codex 只承担产品经理和资深架构师职责：
