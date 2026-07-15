@@ -16,6 +16,34 @@ struct JobHandlerExecutionResult: Sendable, Equatable {
     let outcome: JobHandlerOutcome
     let checkpoint: JobCheckpoint?
     let progress: JobProgress
+    let settledByHandler: Bool
+
+    init(
+        outcome: JobHandlerOutcome,
+        checkpoint: JobCheckpoint?,
+        progress: JobProgress,
+        settledByHandler: Bool = false
+    ) {
+        self.outcome = outcome
+        self.checkpoint = checkpoint
+        self.progress = progress
+        self.settledByHandler = settledByHandler
+    }
+}
+
+struct JobLeaseExecutionContext: Sendable {
+    let leaseDurationMs: Int64
+    let reconcileBatch: any FolderReconcileBatchPort
+}
+
+protocol LeaseBoundJobHandler: JobHandler {
+    func execute(
+        lease: JobLeaseToken,
+        payloadVersion: Int,
+        payload: Data,
+        checkpoint: JobCheckpoint?,
+        context: JobLeaseExecutionContext
+    ) throws -> JobHandlerExecutionResult
 }
 
 protocol JobHandlerRegistry: Sendable {

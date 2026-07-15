@@ -42,6 +42,12 @@ struct JobSafeErrorCode: Sendable, Equatable, Hashable {
     static let unknownJobKind = JobSafeErrorCode(unchecked: "unknownJobKind")
     static let unsupportedPayloadVersion = JobSafeErrorCode(unchecked: "unsupportedPayloadVersion")
     static let unsupportedCheckpointVersion = JobSafeErrorCode(unchecked: "unsupportedCheckpointVersion")
+    static let folderPayloadInvalid = JobSafeErrorCode(unchecked: "folderPayloadInvalid")
+    static let folderCheckpointInvalid = JobSafeErrorCode(unchecked: "folderCheckpointInvalid")
+    static let folderAuthorizationRequired = JobSafeErrorCode(unchecked: "folderAuthorizationRequired")
+    static let folderSourceUnavailable = JobSafeErrorCode(unchecked: "folderSourceUnavailable")
+    static let folderEnumerationIncomplete = JobSafeErrorCode(unchecked: "folderEnumerationIncomplete")
+    static let folderUnsafeRelativePath = JobSafeErrorCode(unchecked: "folderUnsafeRelativePath")
 
     private init(unchecked rawValue: String) {
         self.rawValue = rawValue
@@ -164,4 +170,19 @@ struct SafeBatchCommitInput: Sendable, Equatable {
     let outcome: JobHandlerOutcome
     let checkpoint: JobCheckpoint?
     let progress: JobProgress
+    let leaseDurationMs: Int64?
+
+    init(
+        lease: JobLeaseToken,
+        outcome: JobHandlerOutcome,
+        checkpoint: JobCheckpoint?,
+        progress: JobProgress,
+        leaseDurationMs: Int64? = nil
+    ) {
+        self.lease = lease
+        self.outcome = outcome
+        self.checkpoint = checkpoint
+        self.progress = progress
+        self.leaseDurationMs = leaseDurationMs
+    }
 }

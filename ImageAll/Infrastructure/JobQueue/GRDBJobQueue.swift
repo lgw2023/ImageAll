@@ -422,6 +422,13 @@ private extension GRDBJobQueue {
 
         switch resolved {
         case .continueRunning:
+            var leaseExpiresAtMs: Int64?
+            if let leaseDurationMs = input.leaseDurationMs {
+                guard nowMs <= Int64.max - leaseDurationMs else {
+                    throw JobQueueError.invalidClaimInput(reason: "lease expiry overflow")
+                }
+                leaseExpiresAtMs = nowMs + leaseDurationMs
+            }
             try db.execute(
                 sql: """
                 UPDATE job SET
@@ -432,6 +439,7 @@ private extension GRDBJobQueue {
                     last_error_code = NULL,
                     last_error_message = NULL,
                     control_request = 'none',
+                    lease_expires_at_ms = COALESCE(?, lease_expires_at_ms),
                     updated_at_ms = ?
                 WHERE id = ? AND state = 'running'
                     AND lease_owner = ? AND attempts = ?
@@ -441,6 +449,7 @@ private extension GRDBJobQueue {
                     input.checkpoint?.data,
                     input.progress.completed,
                     input.progress.total,
+                    leaseExpiresAtMs,
                     nowMs,
                     input.lease.jobID.uuidString.lowercased(),
                     input.lease.leaseOwner,
@@ -473,7 +482,7 @@ private extension GRDBJobQueue {
         guard let row = try Row.fetchOne(
             db,
             sql: """
-            SELECT state, lease_owner, attempts FROM job WHERE id = ?
+            SELECT state, lease_owner, attempts, lease_expires_at_ms FROM job WHERE id = ?
             """,
             arguments: [lease.jobID.uuidString.lowercased()]
         ) else {
@@ -490,6 +499,12 @@ private extension GRDBJobQueue {
         let attempts: Int = row["attempts"]
         guard leaseOwner == lease.leaseOwner, attempts == lease.attempts else {
             throw JobQueueError.staleLease(lease.jobID)
+        }
+
+        let leaseExpiresAtMs: Int64? = row["lease_expires_at_ms"]
+        let nowMs = clock.nowMs
+        guard let leaseExpiresAtMs, nowMs < leaseExpiresAtMs else {
+            throw JobQueueError.expiredLease(lease.jobID)
         }
     }
 

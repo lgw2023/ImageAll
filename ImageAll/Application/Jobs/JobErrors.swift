@@ -9,6 +9,7 @@ enum JobQueueError: Error, Equatable, Sendable {
     case jobNotRunning(UUID)
     case jobNotClaimed(UUID)
     case staleLease(UUID)
+    case expiredLease(UUID)
     case unknownPersistedRawValue(field: String, value: String)
     case unknownJobKind(String)
     case unsupportedPayloadVersion(kind: String, version: Int)

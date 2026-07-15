@@ -13,10 +13,16 @@ protocol JobQueue: Sendable {
 struct JobExecutionCoordinator: Sendable {
     let queue: JobQueue
     let registry: JobHandlerRegistry
+    let leaseContextProvider: (any JobLeaseContextProviding)?
 
-    init(queue: JobQueue, registry: JobHandlerRegistry) {
+    init(
+        queue: JobQueue,
+        registry: JobHandlerRegistry,
+        leaseContextProvider: (any JobLeaseContextProviding)? = nil
+    ) {
         self.queue = queue
         self.registry = registry
+        self.leaseContextProvider = leaseContextProvider
     }
 
     func claimAndExecuteOnce(_ input: ClaimNextInput) throws -> JobExecutionResult? {
@@ -58,6 +64,37 @@ struct JobExecutionCoordinator: Sendable {
             throw JobQueueError.unknownJobKind(lease.kind)
         }
 
+        if let leaseHandler = handler as? any LeaseBoundJobHandler {
+            guard let leaseContextProvider else {
+                throw JobQueueError.invalidClaimInput(reason: "lease context provider required")
+            }
+            let context = leaseContextProvider.makeLeaseContext(
+                queue: queue,
+                leaseDurationMs: input.leaseDurationMs
+            )
+            let execution = try leaseHandler.execute(
+                lease: lease,
+                payloadVersion: lease.payloadVersion,
+                payload: lease.payload,
+                checkpoint: lease.checkpoint,
+                context: context
+            )
+            if execution.settledByHandler {
+                let snapshot = try queue.fetchJob(id: lease.jobID)
+                return JobExecutionResult(lease: lease, snapshot: snapshot, handlerInvoked: true)
+            }
+            let snapshot = try queue.submitSafeBatch(
+                SafeBatchCommitInput(
+                    lease: lease,
+                    outcome: execution.outcome,
+                    checkpoint: execution.checkpoint,
+                    progress: execution.progress,
+                    leaseDurationMs: input.leaseDurationMs
+                )
+            )
+            return JobExecutionResult(lease: lease, snapshot: snapshot, handlerInvoked: true)
+        }
+
         let execution = handler.execute(
             payloadVersion: lease.payloadVersion,
             payload: lease.payload,
@@ -69,7 +106,8 @@ struct JobExecutionCoordinator: Sendable {
                 lease: lease,
                 outcome: execution.outcome,
                 checkpoint: execution.checkpoint,
-                progress: execution.progress
+                progress: execution.progress,
+                leaseDurationMs: input.leaseDurationMs
             )
         )
         return JobExecutionResult(lease: lease, snapshot: snapshot, handlerInvoked: true)
