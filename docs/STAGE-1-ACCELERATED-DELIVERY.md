@@ -1,6 +1,6 @@
 # ImageAll 阶段 1 加速交付计划
 
-> 状态：Slice A-B implemented；Slice B pending owner UX review
+> 状态：Slice A-C implemented；Slice B 低空间显示问题已修复
 >
 > 日期：2026-07-15
 >
@@ -9,6 +9,8 @@
 > Slice A 实现：`main@0e7dd655f99a57730025355fde6bacdff564e0f4`
 >
 > Slice B 实现：`main@542c76b97a06b1ec9ea31418fadaa9e355ae7b03`
+>
+> Slice C 实现：`main@51ffafa31aaee98ae739ad353930f75fb340b3fd`
 
 ## 1. 决策
 
@@ -26,6 +28,7 @@
 → 用户可手动刷新来源
 → 选择照片并在 Inspector 作出人工标签决定
 → 用本地搜索、来源、标签决定和无标签条件缩小结果
+→ 用 Space 进入单图查看并用方向键连续浏览
 ```
 
 ## 2. 加速切片 A：连接、扫描、浏览
@@ -65,7 +68,7 @@ Slice B 完成后仍明确延期：
 
 - FSEvents watcher、dirty trigger 与自动增量重扫；
 - Activity 工作区、任务列表、暂停、取消、重试；
-- `Command-K`、Space 单图查看、方向键移动主选择和多窗口状态同步；
+- `Command-K` 和多窗口状态同步；
 - 可用状态、文件格式筛选与排序切换界面；
 - Inspector 技术错误详情、标签操作前的独立影响数量确认；
 - 10,000/100,000 项性能基准、完整无障碍矩阵和所有故障注入；
@@ -87,7 +90,7 @@ Slice B 完成后仍明确延期：
 
 ## 6. 停止位置
 
-切片 B 停止于“浏览—选择—人工标签—搜索筛选”闭环。FSEvents、活动中心和扩展验证继续延期；下一纵切片应先根据项目所有者对当前三栏工作台的实际体验反馈，在单图查看/键盘浏览、来源生命周期界面或其他直接用户主路径中择一，不默认回补 watcher/活动能力。
+切片 B 停止于“浏览—选择—人工标签—搜索筛选”闭环；项目所有者实际体验反馈后，切片 C 已补齐单图查看与键盘浏览。FSEvents、活动中心和扩展验证继续延期；后续纵切片优先在来源生命周期界面、状态/格式/排序筛选或其他直接用户主路径中择一，不默认回补 watcher/活动能力。
 
 ## 7. 切片 A 验收记录
 
@@ -115,7 +118,7 @@ Slice B 完成后仍明确延期：
 - 自动化未访问 `/Volumes/HDD2`，未运行真实 App 容器 smoke，未 push；
 - 本轮由临时授权下的 Codex implementation 完成，未启动 Cursor CLI 任务。
 
-已知延期：搜索在提交时执行，尚无输入 debounce；没有文件格式/可用状态筛选、排序控件、Space 单图模式、完整键盘导航、FSEvents、活动中心、扩展性能/无障碍验证或真实数据 smoke。
+已知延期：搜索在提交时执行，尚无输入 debounce；没有文件格式/可用状态筛选、排序控件、完整网格空间导航、FSEvents、活动中心、扩展性能/无障碍验证或真实数据 smoke。Space 单图模式与左右连续浏览已在第 10 节补齐。
 
 ## 9. 低空间图片显示修复
 
@@ -129,3 +132,16 @@ Slice B 完成后仍明确延期：
 - 重启 Debug App 后，已连接的 Downloads 来源在网格和 Inspector 均实际显示图片；运行态仍为 0 cache entry、0 cache object、来源 active；
 - 未访问 `/Volumes/HDD2`，未修改来源照片，未扩张 entitlement、privacy manifest、schema 或依赖，未 push；
 - 实现提交：`098f467332686eefa726feddd77e6a1536e1d5b2`（`Agent-Role: implementation`）。
+
+## 10. 加速切片 C：单图查看与键盘浏览
+
+2026-07-15 已完成并通过：
+
+- 单选照片后，`Space` 在方形网格与 Content 单图 `aspect fit` 预览之间切换；多选或无选择时不进入单图模式；
+- 单图和网格内容取得键盘焦点后，左右方向键按当前稳定结果顺序移动单一主选择，选择、Inspector 和预览同步；向前越过已加载页末时复用既有 keyset 分页加载；
+- `Escape` 返回网格并保留当前选择；筛选隐藏当前选择时自动退出单图，避免无效预览残留；
+- TDD 红灯：`/tmp/ImageAll-single-photo-red.xcresult`；目标 `LibraryWorkspaceModelTests` 7/7：`/tmp/ImageAll-single-photo-green.xcresult`；
+- Workspace、Composition Root、资产查询、标签事务、派生图合同与配额相关回归 90/90：`/tmp/ImageAll-single-photo-related.xcresult`；arm64 Debug build 成功；
+- 本机已连接的只读 Downloads 来源完成运行验收：点击照片后 Space 进入 `singlePhotoView`，右方向键切换资产并同步 Inspector，Escape 返回网格；视觉复查移除了 Content 的系统焦点边框；
+- 未访问 `/Volumes/HDD2`，未修改来源照片，未新增 schema、entitlement、privacy manifest 或依赖，未 push；
+- 实现提交：`51ffafa31aaee98ae739ad353930f75fb340b3fd`（`Agent-Role: implementation`）。
