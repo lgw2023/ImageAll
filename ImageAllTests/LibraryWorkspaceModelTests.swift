@@ -119,7 +119,7 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertTrue(model.selectedSourceIsPhotos)
     }
 
-    func testCloudOnlyInspectorPreviewWaitsForExplicitDownloadAndPublishesProgress() async {
+    func testExplicitCloudPreviewDownloadPublishesProgressAndBecomesGridThumbnail() async {
         let sourceID = UUID()
         let asset = Self.makeAsset(sourceID: sourceID, fileName: "cloud.jpg")
         let downloaded = Data("downloaded-preview".utf8)
@@ -155,6 +155,11 @@ final class LibraryWorkspaceModelTests: XCTestCase {
             .downloaded(assetID: asset.assetID, data: downloaded),
             model: model
         )
+
+        let gridThumbnail = await model.thumbnailData(assetID: asset.assetID)
+
+        XCTAssertEqual(gridThumbnail, downloaded)
+        XCTAssertEqual(service.thumbnailLoadCallCount, 0)
         XCTAssertEqual(service.cloudPreviewDownloadCallCount, 1)
     }
 
@@ -970,6 +975,7 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
     private var storedHasStartedBlockedReconcile = false
     private var storedCloudPreviewDownloadCallCount = 0
     private var storedCloudPreviewCancellationCount = 0
+    private var storedThumbnailLoadCallCount = 0
     private var storedTags: [TagListItem]
     private var decisions: [UUID: [UUID: TagDecisionQueryState]] = [:]
 
@@ -1053,6 +1059,10 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
 
     var cloudPreviewCancellationCount: Int {
         lock.withLock { storedCloudPreviewCancellationCount }
+    }
+
+    var thumbnailLoadCallCount: Int {
+        lock.withLock { storedThumbnailLoadCallCount }
     }
 
     func fetchSources() throws -> [LibrarySourceSummary] {
@@ -1178,7 +1188,8 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
     }
 
     func loadThumbnail(assetID: UUID) async throws -> Data {
-        Data()
+        lock.withLock { storedThumbnailLoadCallCount += 1 }
+        return Data()
     }
 
     func loadPreview(assetID: UUID) async throws -> Data {

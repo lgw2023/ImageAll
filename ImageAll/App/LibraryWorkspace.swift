@@ -249,7 +249,12 @@ final class LibraryWorkspaceModel: ObservableObject {
     }
 
     func thumbnailData(assetID: UUID) async -> Data? {
-        try? await service.loadThumbnail(assetID: assetID)
+        if case let .downloaded(downloadedAssetID, data) = cloudPreviewState,
+           downloadedAssetID == assetID
+        {
+            return data
+        }
+        return try? await service.loadThumbnail(assetID: assetID)
     }
 
     func previewData(assetID: UUID) async -> Data? {
@@ -2302,7 +2307,7 @@ private struct AssetThumbnailView: View {
         .aspectRatio(1, contentMode: .fit)
         .contentShape(Rectangle())
         .onTapGesture(perform: onSelect)
-        .task(id: item.assetID) {
+        .task(id: thumbnailLoadID) {
             guard item.availability == .available,
                   let data = await model.thumbnailData(assetID: item.assetID)
             else {
@@ -2310,6 +2315,19 @@ private struct AssetThumbnailView: View {
             }
             image = NSImage(data: data)
         }
+    }
+
+    private var thumbnailLoadID: AssetThumbnailLoadID {
+        let usesDownloadedCloudPreview: Bool
+        if case let .downloaded(assetID, _) = model.cloudPreviewState {
+            usesDownloadedCloudPreview = assetID == item.assetID
+        } else {
+            usesDownloadedCloudPreview = false
+        }
+        return AssetThumbnailLoadID(
+            assetID: item.assetID,
+            usesDownloadedCloudPreview: usesDownloadedCloudPreview
+        )
     }
 
     private var placeholderIcon: String {
@@ -2320,6 +2338,11 @@ private struct AssetThumbnailView: View {
         case .unsupported: return "nosign"
         }
     }
+}
+
+private struct AssetThumbnailLoadID: Hashable {
+    let assetID: UUID
+    let usesDownloadedCloudPreview: Bool
 }
 
 private struct InspectorPreview: View {
