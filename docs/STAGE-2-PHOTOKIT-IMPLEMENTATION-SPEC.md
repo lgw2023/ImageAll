@@ -45,7 +45,8 @@ PhotoKit 访问；`.photoslibrary` package 永远不是文件系统输入。
 
 ### 2.3 媒体与 iCloud
 
-- 首版只纳入 `PHAssetMediaType.image` 中的静态图片；排除视频及 `photoLive` 资产；
+- 首版纳入 `PHAssetMediaType.image` 中的支持格式；Live Photo 只读取静态主图，
+  不读取或保存其视频伴随资源；视频资产仍排除；
 - 目录库保存 PhotoKit local identifier、原始文件名、UTI、像素尺寸、创建/修改时间；不保存原图；
 - 元数据枚举不触发内容下载；
 - 缩略图和预览请求固定 `isNetworkAccessAllowed = false`；本地不可取得时显示云端占位；
@@ -132,7 +133,7 @@ Feature Print 输入在后续 Slice 中接通，不能因此写入 Photos 来源
 1. 用户确认连接、授权成功后创建一个 active Photos 来源并入队一次 reconcile；再次连接复用同一来源；
 2. 授权拒绝不创建 active 来源，Workspace 呈现安全失败；
 3. 两批合成 Photo metadata 渐进入库，统一图库和 Photos 来源筛选均可查询；
-4. Live Photo / video 被排除，静态 JPEG/PNG/HEIC/TIFF/WebP 元数据保留；
+4. video 被排除；Live Photo 只纳入静态主图；静态 JPEG/PNG/HEIC/TIFF/WebP 元数据保留；
 5. 中断批次保留已提交项且不标记未见项 missing；完整 generation 才执行 missing 收敛；
 6. Photos 资产缩略图走 local-only provider，file 资产仍走既有 Derived Image 路径；cloud-only 返回占位且
    测试证明没有 network-enabled 请求；
