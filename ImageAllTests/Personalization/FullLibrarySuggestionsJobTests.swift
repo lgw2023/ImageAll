@@ -1,9 +1,315 @@
 import CryptoKit
+import CoreGraphics
 import GRDB
+import ImageIO
+import UniformTypeIdentifiers
 import XCTest
 @testable import ImageAll
 
 final class FullLibrarySuggestionsJobTests: XCTestCase {
+    func testPhotosSamplesCountTowardSuggestionReadiness() throws {
+        let fixture = try CatalogQueryTestSupport.openQueryDatabase()
+        let photosSourceID = UUID(uuidString: "22000000-0000-4000-8000-000000000001")!
+        let tagID = UUID(uuidString: "33000000-0000-4000-8000-000000000001")!
+        let assetIDs = (1 ... 4).map {
+            UUID(uuidString: String(format: "44000000-0000-4000-8000-%012X", $0))!
+        }
+        try fixture.database.pool.write { db in
+            try db.execute(
+                sql: """
+                INSERT INTO source (id, kind, display_name, bookmark, state, created_at_ms, updated_at_ms)
+                VALUES (?, 'photos', 'Apple Photos', NULL, 'active', ?, ?)
+                """,
+                arguments: [
+                    photosSourceID.uuidString.lowercased(),
+                    DatabaseTestSupport.timestampMs,
+                    DatabaseTestSupport.timestampMs,
+                ]
+            )
+            try db.execute(
+                sql: """
+                INSERT INTO tag (id, name, normalized_name, state, created_at_ms, updated_at_ms)
+                VALUES (?, 'Travel', 'travel', 'active', ?, ?)
+                """,
+                arguments: [
+                    tagID.uuidString.lowercased(),
+                    DatabaseTestSupport.timestampMs,
+                    DatabaseTestSupport.timestampMs,
+                ]
+            )
+            for (index, assetID) in assetIDs.enumerated() {
+                try db.execute(
+                    sql: """
+                    INSERT INTO asset (
+                        id, source_id, locator_kind, relative_path, photos_local_identifier,
+                        media_type, availability, record_created_at_ms, record_updated_at_ms, file_name
+                    ) VALUES (?, ?, 'photos', NULL, ?, 'public.jpeg', 'available', ?, ?, ?)
+                    """,
+                    arguments: [
+                        assetID.uuidString.lowercased(), photosSourceID.uuidString.lowercased(),
+                        "photos-local-\(index)", DatabaseTestSupport.timestampMs,
+                        DatabaseTestSupport.timestampMs, "photo-\(index).jpg",
+                    ]
+                )
+            }
+        }
+        try seedDecisions(
+            database: fixture.database,
+            tagID: tagID,
+            accepted: Array(assetIDs.prefix(2)),
+            rejected: Array(assetIDs.suffix(2))
+        )
+        let queue = JobTestSupport.makeQueue(database: fixture.database)
+        let handler = makeHandler(
+            database: fixture.database,
+            loader: StubSyncFeatureVectorLoader(database: fixture.database, vectors: [:]),
+            queue: queue
+        )
+        let service = PersonalizationReviewService(
+            database: fixture.database,
+            queue: queue,
+            executionCoordinator: makeCoordinator(database: fixture.database, handler: handler, queue: queue),
+            tags: fixture.tags,
+            clock: FixedJobClock(nowMs: DatabaseTestSupport.timestampMs)
+        )
+
+        let overview = try XCTUnwrap(service.tagOverviews().first(where: { $0.id == tagID }))
+        XCTAssertEqual(overview.acceptedSampleCount, 2)
+        XCTAssertEqual(overview.rejectedSampleCount, 2)
+        XCTAssertTrue(overview.canGenerate)
+    }
+
+    func testEnqueueFreezesActiveFolderAndPhotosSources() throws {
+        let fixture = try makeLargeLibraryFixture(assetCount: 4)
+        let photosSourceID = UUID(uuidString: "22000000-0000-4000-8000-000000000002")!
+        let activeFolderSourceIDs = try fixture.database.pool.read { db in
+            try String.fetchAll(
+                db,
+                sql: "SELECT id FROM source WHERE kind = 'folder' AND state = 'active'"
+            ).compactMap(UUID.init(uuidString:))
+        }
+        try fixture.database.pool.write { db in
+            try db.execute(
+                sql: """
+                INSERT INTO source (id, kind, display_name, bookmark, state, created_at_ms, updated_at_ms)
+                VALUES (?, 'photos', 'Apple Photos', NULL, 'active', ?, ?)
+                """,
+                arguments: [
+                    photosSourceID.uuidString.lowercased(),
+                    DatabaseTestSupport.timestampMs,
+                    DatabaseTestSupport.timestampMs,
+                ]
+            )
+        }
+        let handler = makeHandler(
+            database: fixture.database,
+            loader: fixture.loader,
+            queue: fixture.queue
+        )
+        let service = PersonalizationReviewService(
+            database: fixture.database,
+            queue: fixture.queue,
+            executionCoordinator: makeCoordinator(
+                database: fixture.database,
+                handler: handler,
+                queue: fixture.queue
+            ),
+            tags: fixture.tags,
+            clock: FixedJobClock(nowMs: fixture.cutoffMs)
+        )
+
+        let jobID = try service.enqueueFullLibrarySuggestions(tagID: fixture.tagID, mode: .generate)
+        let payload = try FullLibrarySuggestionsCodec.decodePayload(fixture.queue.fetchJob(id: jobID).payload)
+
+        XCTAssertEqual(Set(payload.sourceIDs), Set(activeFolderSourceIDs + [photosSourceID]))
+    }
+
+    func testFrozenAssetPaginationIncludesPhotosWithoutDuplicatesOrPostCutoffRows() throws {
+        let fixture = try makeLargeLibraryFixture(assetCount: 3)
+        let review = GRDBPersonalizationReviewRepository(database: fixture.database)
+        let photosSourceID = UUID(uuidString: "22000000-0000-4000-8000-000000000003")!
+        let eligiblePhotosIDs = (1 ... 3).map {
+            UUID(uuidString: String(format: "23000000-0000-4000-8000-%012X", $0))!
+        }
+        let postCutoffPhotoID = UUID(uuidString: "23000000-0000-4000-8000-000000000004")!
+        let folderIDs = try review.frozenAssetBatch(
+            sourceIDs: [fixture.sourceID],
+            catalogCutoffMs: fixture.cutoffMs,
+            afterAssetID: nil,
+            limit: 1_000
+        )
+        try fixture.database.pool.write { db in
+            try db.execute(
+                sql: """
+                INSERT INTO source (id, kind, display_name, bookmark, state, created_at_ms, updated_at_ms)
+                VALUES (?, 'photos', 'Apple Photos', NULL, 'active', ?, ?)
+                """,
+                arguments: [
+                    photosSourceID.uuidString.lowercased(),
+                    DatabaseTestSupport.timestampMs,
+                    DatabaseTestSupport.timestampMs,
+                ]
+            )
+            for assetID in eligiblePhotosIDs + [postCutoffPhotoID] {
+                let isPostCutoff = assetID == postCutoffPhotoID
+                let timestamp = isPostCutoff ? fixture.cutoffMs + 1 : fixture.cutoffMs
+                try db.execute(
+                    sql: """
+                    INSERT INTO asset (
+                        id, source_id, locator_kind, relative_path, photos_local_identifier,
+                        locator_state, media_type, file_name, content_revision, availability,
+                        record_created_at_ms, record_updated_at_ms
+                    ) VALUES (?, ?, 'photos', NULL, ?, 'current', 'public.jpeg', ?, 1, 'available', ?, ?)
+                    """,
+                    arguments: [
+                        assetID.uuidString.lowercased(), photosSourceID.uuidString.lowercased(),
+                        "photos-local-\(assetID.uuidString)", "photo.jpg", timestamp, timestamp,
+                    ]
+                )
+            }
+        }
+
+        var pagedIDs: [UUID] = []
+        var cursor: UUID?
+        while true {
+            let page = try review.frozenAssetBatch(
+                sourceIDs: [fixture.sourceID, photosSourceID],
+                catalogCutoffMs: fixture.cutoffMs,
+                afterAssetID: cursor,
+                limit: 2
+            )
+            guard !page.isEmpty else { break }
+            pagedIDs.append(contentsOf: page)
+            cursor = page.last
+        }
+
+        XCTAssertEqual(Set(pagedIDs), Set(folderIDs + eligiblePhotosIDs))
+        XCTAssertEqual(pagedIDs.count, Set(pagedIDs).count)
+        XCTAssertFalse(pagedIDs.contains(postCutoffPhotoID))
+        XCTAssertEqual(
+            try review.frozenAssetTotal(
+                sourceIDs: [fixture.sourceID, photosSourceID],
+                catalogCutoffMs: fixture.cutoffMs
+            ),
+            folderIDs.count + eligiblePhotosIDs.count
+        )
+    }
+
+    func testPhotosFeaturePrintPublishesCurrentRevisionAndReviewQueueItem() throws {
+        let fixture = try CatalogQueryTestSupport.openQueryDatabase()
+        let photosSourceID = UUID(uuidString: "27000000-0000-4000-8000-000000000001")!
+        let tagID = UUID(uuidString: "28000000-0000-4000-8000-000000000001")!
+        let assetIDs = (1 ... 8).map {
+            UUID(uuidString: String(format: "29000000-0000-4000-8000-%012X", $0))!
+        }
+        let cutoffMs = DatabaseTestSupport.timestampMs
+        try fixture.database.pool.write { db in
+            try db.execute(
+                sql: """
+                INSERT INTO source (id, kind, display_name, bookmark, state, created_at_ms, updated_at_ms)
+                VALUES (?, 'photos', 'Apple Photos', NULL, 'active', ?, ?)
+                """,
+                arguments: [
+                    photosSourceID.uuidString.lowercased(),
+                    DatabaseTestSupport.timestampMs,
+                    DatabaseTestSupport.timestampMs,
+                ]
+            )
+            try db.execute(
+                sql: """
+                INSERT INTO tag (id, name, normalized_name, state, created_at_ms, updated_at_ms)
+                VALUES (?, 'Photos Travel', 'photos travel', 'active', ?, ?)
+                """,
+                arguments: [
+                    tagID.uuidString.lowercased(),
+                    DatabaseTestSupport.timestampMs,
+                    DatabaseTestSupport.timestampMs,
+                ]
+            )
+            for (index, assetID) in assetIDs.enumerated() {
+                try db.execute(
+                    sql: """
+                    INSERT INTO asset (
+                        id, source_id, locator_kind, relative_path, photos_local_identifier,
+                        locator_state, media_type, file_name, content_revision, availability,
+                        record_created_at_ms, record_updated_at_ms
+                    ) VALUES (?, ?, 'photos', NULL, ?, 'current', 'public.jpeg', ?, 1, 'available', ?, ?)
+                    """,
+                    arguments: [
+                        assetID.uuidString.lowercased(), photosSourceID.uuidString.lowercased(),
+                        "photos-feature-\(index)", "photo-\(index).jpg",
+                        DatabaseTestSupport.timestampMs, DatabaseTestSupport.timestampMs,
+                    ]
+                )
+            }
+        }
+        try seedDecisions(
+            database: fixture.database,
+            tagID: tagID,
+            accepted: Array(assetIDs.prefix(2)),
+            rejected: Array(assetIDs.dropFirst(2).prefix(2))
+        )
+        let positiveImage = try XCTUnwrap(solidJPEG(red: 255, green: 0, blue: 0))
+        let negativeImage = try XCTUnwrap(solidJPEG(red: 0, green: 0, blue: 255))
+        let photos = JobPhotosFeaturePrintImagePort(images: [
+            "photos-feature-0": .success(positiveImage),
+            "photos-feature-1": .success(positiveImage),
+            "photos-feature-2": .success(negativeImage),
+            "photos-feature-3": .success(negativeImage),
+            "photos-feature-4": .success(positiveImage),
+            "photos-feature-5": .failure(.cloudOnly),
+            "photos-feature-6": .failure(.authorizationDenied),
+            "photos-feature-7": .success(Data([0x00, 0x01, 0x02])),
+        ])
+        let cachesDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ImageAll-\(#function)-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: cachesDirectory, withIntermediateDirectories: true)
+        defer {
+            if FileManager.default.fileExists(atPath: cachesDirectory.path) {
+                try? FileManager.default.removeItem(at: cachesDirectory)
+            }
+        }
+        let sourceAccess = FolderReconcileSourceAccessService(
+            repository: GRDBFolderSourceAuthorizationRepository(database: fixture.database),
+            bookmarkPort: FolderReconcileTestSupport.TestBookmarkPort(rootByBookmark: [:]),
+            rootValidator: FolderRootValidator(),
+            clock: FixedJobClock(nowMs: DatabaseTestSupport.timestampMs)
+        )
+        let featureLoader = FeaturePrintCacheService(
+            database: fixture.database,
+            cachesDirectory: cachesDirectory,
+            sourceAccess: sourceAccess,
+            photosImages: photos,
+            clock: FixedJobClock(nowMs: DatabaseTestSupport.timestampMs)
+        )
+        let queue = JobTestSupport.makeQueue(database: fixture.database, retryDelayMs: 0)
+        let handler = makeHandler(database: fixture.database, loader: featureLoader, queue: queue)
+        let coordinator = makeCoordinator(database: fixture.database, handler: handler, queue: queue)
+        let service = PersonalizationReviewService(
+            database: fixture.database,
+            queue: queue,
+            executionCoordinator: coordinator,
+            tags: fixture.tags,
+            clock: FixedJobClock(nowMs: cutoffMs)
+        )
+
+        let jobID = try service.enqueueFullLibrarySuggestions(tagID: tagID, mode: .generate)
+        drainPersonalizationJobs(coordinator: coordinator, maxSteps: 10, queue: queue)
+
+        let facts = try revisionFacts(database: fixture.database, tagID: tagID)
+        let reviewPage = try service.fetchReviewQueue(tagID: tagID, cursor: nil, limit: 10)
+        let job = try queue.fetchJob(id: jobID)
+        XCTAssertEqual(
+            job.state,
+            .completed,
+            "job=\(job); requested=\(photos.requestedLocalIdentifiers)"
+        )
+        XCTAssertEqual(facts.currentRevision, 1)
+        XCTAssertEqual(reviewPage.items.map(\.assetID), [assetIDs[4]])
+        XCTAssertGreaterThanOrEqual(facts.skippedCount, 3)
+        XCTAssertEqual(Set(photos.requestedLocalIdentifiers), Set((0 ... 7).map { "photos-feature-\($0)" }))
+    }
+
     func testScansMoreThanFiveHundredAssetsInSingleRevisionWithoutDuplicateCursor() throws {
         let fixture = try makeLargeLibraryFixture(assetCount: 520)
         let handler = makeHandler(database: fixture.database, loader: fixture.loader, queue: fixture.queue)
@@ -283,7 +589,10 @@ final class FullLibrarySuggestionsJobTests: XCTestCase {
 
     private func assertProjectionExcludesScoreField(_ value: Any) {
         let mirror = Mirror(reflecting: value)
-        XCTAssertFalse(mirror.children.contains { $0.label == "score" })
+        let labels = Set(mirror.children.compactMap(\.label))
+        XCTAssertTrue(
+            labels.isDisjoint(with: ["score", "path", "relativePath", "localIdentifier", "photosLocalIdentifier"])
+        )
     }
 
     func testProgressivePredictionsVisibleAfterFirstBatchOnly() throws {
@@ -661,6 +970,75 @@ final class FullLibrarySuggestionsJobTests: XCTestCase {
         XCTAssertTrue(try reviewService.runPendingSuggestionJobs(maxSteps: 1))
     }
 
+    func testPersonalizationDoesNotClaimWhilePhotosReconcileWaiting() throws {
+        let fixture = try makeLargeLibraryFixture(assetCount: 10)
+        let photosSourceID = UUID(uuidString: "2A000000-0000-4000-8000-000000000001")!
+        try fixture.database.pool.write { db in
+            try db.execute(
+                sql: """
+                INSERT INTO source (id, kind, display_name, bookmark, state, created_at_ms, updated_at_ms)
+                VALUES (?, 'photos', 'Apple Photos', NULL, 'active', ?, ?)
+                """,
+                arguments: [
+                    photosSourceID.uuidString.lowercased(),
+                    DatabaseTestSupport.timestampMs,
+                    DatabaseTestSupport.timestampMs,
+                ]
+            )
+        }
+        let fakeReconcile = FakeJobHandler(kind: PhotosReconcileJobFactory.kind) { _, _, _ in
+            JobHandlerExecutionResult(
+                outcome: .completed,
+                checkpoint: nil,
+                progress: JobProgress(completed: 1, total: 1)
+            )
+        }
+        let personalizationHandler = makeHandler(
+            database: fixture.database,
+            loader: fixture.loader,
+            queue: fixture.queue
+        )
+        let coordinator = JobExecutionCoordinator(
+            queue: fixture.queue,
+            registry: MultiJobHandlerRegistry(handlers: [fakeReconcile, personalizationHandler]),
+            leaseContextProvider: GRDBJobLeaseContextProvider(queue: fixture.queue)
+        )
+        let reviewService = PersonalizationReviewService(
+            database: fixture.database,
+            queue: fixture.queue,
+            executionCoordinator: coordinator,
+            tags: fixture.tags,
+            clock: FixedJobClock(nowMs: DatabaseTestSupport.timestampMs)
+        )
+        let photosJobID = UUID()
+        _ = try fixture.queue.enqueue(
+            try PhotosReconcileJobFactory.makeEnqueueCommand(
+                jobID: photosJobID,
+                sourceID: photosSourceID,
+                notBeforeMs: DatabaseTestSupport.timestampMs
+            )
+        )
+        _ = try enqueueJob(
+            queue: fixture.queue,
+            tagID: fixture.tagID,
+            sourceIDs: [fixture.sourceID],
+            cutoffMs: fixture.cutoffMs,
+            database: fixture.database
+        )
+
+        XCTAssertFalse(try reviewService.runPendingSuggestionJobs(maxSteps: 1))
+        XCTAssertEqual(try fixture.queue.fetchJob(id: photosJobID).state, .pending)
+
+        _ = try coordinator.claimAndExecuteOnce(
+            ClaimNextInput(
+                owner: "photos-worker",
+                leaseDurationMs: 60_000,
+                allowedKinds: [PhotosReconcileJobFactory.kind]
+            )
+        )
+        XCTAssertTrue(try reviewService.runPendingSuggestionJobs(maxSteps: 1))
+    }
+
     func testRunnerRefreshTicksWhileWorkerBlocked() async {
         let review = BlockingPersonalizationReviewPort(blockDuration: 0.6)
         let counter = RefreshCounter()
@@ -869,6 +1247,63 @@ private func seedDecisions(
             )
         }
     }
+}
+
+private final class JobPhotosFeaturePrintImagePort: PhotosFeaturePrintImagePort, @unchecked Sendable {
+    private let lock = NSLock()
+    private let images: [String: Result<Data, PhotosLibraryError>]
+    private var requested: [String] = []
+
+    init(images: [String: Result<Data, PhotosLibraryError>]) {
+        self.images = images
+    }
+
+    var requestedLocalIdentifiers: [String] {
+        lock.withLock { requested }
+    }
+
+    func requestLocalFeatureImage(localIdentifier: String) throws -> Data {
+        lock.withLock { requested.append(localIdentifier) }
+        guard let result = images[localIdentifier] else {
+            throw PhotosLibraryError.libraryUnavailable
+        }
+        return try result.get()
+    }
+}
+
+private func solidJPEG(red: UInt8, green: UInt8, blue: UInt8) -> Data? {
+    let width = 64
+    let height = 64
+    var pixels: [UInt8] = []
+    pixels.reserveCapacity(width * height * 4)
+    for _ in 0 ..< (width * height) {
+        pixels.append(contentsOf: [red, green, blue, 255])
+    }
+    guard let provider = CGDataProvider(data: Data(pixels) as CFData),
+          let image = CGImage(
+              width: width,
+              height: height,
+              bitsPerComponent: 8,
+              bitsPerPixel: 32,
+              bytesPerRow: width * 4,
+              space: CGColorSpaceCreateDeviceRGB(),
+              bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
+              provider: provider,
+              decode: nil,
+              shouldInterpolate: false,
+              intent: .defaultIntent
+          )
+    else { return nil }
+    let data = NSMutableData()
+    guard let destination = CGImageDestinationCreateWithData(
+        data,
+        UTType.jpeg.identifier as CFString,
+        1,
+        nil
+    ) else { return nil }
+    CGImageDestinationAddImage(destination, image, nil)
+    guard CGImageDestinationFinalize(destination) else { return nil }
+    return data as Data
 }
 
 private final class BatchScopedFailureLoader: SyncFeatureVectorLoading, @unchecked Sendable {

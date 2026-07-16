@@ -78,6 +78,95 @@ final class PersonalizedSuggestionServiceTests: XCTestCase {
         XCTAssertEqual(modelFacts.0, 2)
         XCTAssertEqual(modelFacts.1, 2)
     }
+
+    func testGeneratesSuggestionsFromPhotosSamplesAndCandidate() async throws {
+        let fixture = try CatalogQueryTestSupport.openQueryDatabase()
+        let sourceID = UUID(uuidString: "2B000000-0000-4000-8000-000000000001")!
+        let tagID = UUID(uuidString: "2C000000-0000-4000-8000-000000000001")!
+        let assetIDs = (1 ... 5).map {
+            UUID(uuidString: String(format: "2D000000-0000-4000-8000-%012X", $0))!
+        }
+        try await fixture.database.pool.write { db in
+            try db.execute(
+                sql: """
+                INSERT INTO source (id, kind, display_name, bookmark, state, created_at_ms, updated_at_ms)
+                VALUES (?, 'photos', 'Apple Photos', NULL, 'active', ?, ?)
+                """,
+                arguments: [
+                    sourceID.uuidString.lowercased(),
+                    DatabaseTestSupport.timestampMs,
+                    DatabaseTestSupport.timestampMs,
+                ]
+            )
+            try db.execute(
+                sql: """
+                INSERT INTO tag (id, name, normalized_name, state, created_at_ms, updated_at_ms)
+                VALUES (?, 'Photos', 'photos', 'active', ?, ?)
+                """,
+                arguments: [
+                    tagID.uuidString.lowercased(),
+                    DatabaseTestSupport.timestampMs,
+                    DatabaseTestSupport.timestampMs,
+                ]
+            )
+            for (index, assetID) in assetIDs.enumerated() {
+                try db.execute(
+                    sql: """
+                    INSERT INTO asset (
+                        id, source_id, locator_kind, relative_path, photos_local_identifier,
+                        locator_state, media_type, file_name, content_revision, availability,
+                        record_created_at_ms, record_updated_at_ms
+                    ) VALUES (?, ?, 'photos', NULL, ?, 'current', 'public.jpeg', ?, 1, 'available', ?, ?)
+                    """,
+                    arguments: [
+                        assetID.uuidString.lowercased(), sourceID.uuidString.lowercased(),
+                        "photos-service-\(index)", "photo-\(index).jpg",
+                        DatabaseTestSupport.timestampMs, DatabaseTestSupport.timestampMs,
+                    ]
+                )
+            }
+            for assetID in assetIDs.prefix(2) {
+                try db.execute(
+                    sql: "INSERT INTO asset_tag_decision VALUES (?, ?, 'accepted', ?)",
+                    arguments: [
+                        assetID.uuidString.lowercased(), tagID.uuidString.lowercased(),
+                        DatabaseTestSupport.timestampMs,
+                    ]
+                )
+            }
+            for assetID in assetIDs.dropFirst(2).prefix(2) {
+                try db.execute(
+                    sql: "INSERT INTO asset_tag_decision VALUES (?, ?, 'rejected', ?)",
+                    arguments: [
+                        assetID.uuidString.lowercased(), tagID.uuidString.lowercased(),
+                        DatabaseTestSupport.timestampMs,
+                    ]
+                )
+            }
+        }
+        let loader = StubFeatureVectorLoader(
+            database: fixture.database,
+            vectors: [
+                assetIDs[0]: [0, 0], assetIDs[1]: [0, 1],
+                assetIDs[2]: [10, 10], assetIDs[3]: [10, 9],
+                assetIDs[4]: [0, 0.5],
+            ]
+        )
+        let service = PersonalizedSuggestionService(
+            database: fixture.database,
+            featureLoader: loader,
+            clock: FixedJobClock(nowMs: DatabaseTestSupport.timestampMs)
+        )
+
+        let result = try await service.generateSuggestions(
+            tagID: tagID,
+            candidateAssetIDs: [assetIDs[4]]
+        )
+
+        XCTAssertEqual(result.positiveSampleCount, 2)
+        XCTAssertEqual(result.negativeSampleCount, 2)
+        XCTAssertEqual(result.predictedCandidateCount, 1)
+    }
 }
 
 private actor StubFeatureVectorLoader: FeatureVectorLoading {

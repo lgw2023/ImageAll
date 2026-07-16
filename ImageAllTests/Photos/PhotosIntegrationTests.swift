@@ -34,6 +34,9 @@ final class PhotosIntegrationTests: XCTestCase {
             )
         )
         XCTAssertFalse(PhotoKitPhotosLibraryAdapter.makeLocalOnlyImageRequestOptions().isNetworkAccessAllowed)
+        let featureOptions = PhotoKitPhotosLibraryAdapter.makeLocalOnlyFeaturePrintRequestOptions()
+        XCTAssertTrue(featureOptions.isSynchronous)
+        XCTAssertFalse(featureOptions.isNetworkAccessAllowed)
     }
 
     func testAuthorizedConnectionCreatesOnePhotosSourceAndOneActiveJob() async throws {

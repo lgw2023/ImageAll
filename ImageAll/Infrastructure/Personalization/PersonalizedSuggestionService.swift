@@ -170,11 +170,13 @@ final class PersonalizedSuggestionService: @unchecked Sendable {
                     JOIN source s ON s.id = a.source_id
                     WHERE d.tag_id = ?
                         AND d.decision IN ('accepted', 'rejected')
-                        AND a.locator_kind = 'file'
                         AND a.locator_state = 'current'
                         AND a.availability = 'available'
-                        AND s.kind = 'folder'
                         AND s.state = 'active'
+                        AND (
+                            (s.kind = 'folder' AND a.locator_kind = 'file')
+                            OR (s.kind = 'photos' AND a.locator_kind = 'photos')
+                        )
                 )
                 SELECT id, content_revision, decision
                 FROM ranked
@@ -230,11 +232,13 @@ final class PersonalizedSuggestionService: @unchecked Sendable {
                     FROM asset a
                     JOIN source s ON s.id = a.source_id
                     WHERE a.id = ?
-                        AND a.locator_kind = 'file'
                         AND a.locator_state = 'current'
                         AND a.availability = 'available'
-                        AND s.kind = 'folder'
                         AND s.state = 'active'
+                        AND (
+                            (s.kind = 'folder' AND a.locator_kind = 'file')
+                            OR (s.kind = 'photos' AND a.locator_kind = 'photos')
+                        )
                         AND NOT EXISTS (
                             SELECT 1 FROM asset_tag_decision d
                             WHERE d.asset_id = a.id AND d.tag_id = ?

@@ -52,6 +52,13 @@ struct FeatureVectorPayload: Equatable, Sendable {
     let origin: FeatureVectorOrigin
 }
 
+struct FeaturePrintInput: Sendable {
+    let identity: FeatureIdentity
+    let sourceBytes: Data
+    let expectedMediaType: String?
+    let validationToken: Data
+}
+
 enum FeaturePrintError: Error, Equatable, Sendable {
     case assetNotFound
     case assetIneligible
@@ -66,6 +73,12 @@ enum FeaturePrintError: Error, Equatable, Sendable {
 
 protocol FeatureVectorLoading: Sendable {
     func loadOrGenerate(assetID: UUID) async throws -> FeatureVectorPayload
+}
+
+protocol FeaturePrintInputLoading: Sendable {
+    func resolveIdentity(assetID: UUID) throws -> FeatureIdentity
+    func loadInput(assetID: UUID, expectedIdentity: FeatureIdentity) throws -> FeaturePrintInput
+    func isCurrent(_ input: FeaturePrintInput) throws -> Bool
 }
 
 enum ModelSampleRole: String, Equatable, Sendable {

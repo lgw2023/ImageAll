@@ -58,6 +58,7 @@ struct CompositionRoot {
             database: runtime.database,
             cachesDirectory: runtime.paths.cachesDirectory,
             sourceAccess: sourceAccess,
+            photosImages: photosAccess,
             clock: clock
         )
         let personalizationHandler = FullLibrarySuggestionsHandler(

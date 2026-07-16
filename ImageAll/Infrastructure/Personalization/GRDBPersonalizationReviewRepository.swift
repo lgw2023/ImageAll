@@ -66,11 +66,13 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                 JOIN asset a ON a.id = d.asset_id
                 JOIN source s ON s.id = a.source_id
                 WHERE d.tag_id = ? AND d.decision = 'accepted'
-                    AND a.locator_kind = 'file'
                     AND a.locator_state = 'current'
                     AND a.availability = 'available'
-                    AND s.kind = 'folder'
                     AND s.state = 'active'
+                    AND (
+                        (s.kind = 'folder' AND a.locator_kind = 'file')
+                        OR (s.kind = 'photos' AND a.locator_kind = 'photos')
+                    )
                 """,
                 arguments: [uuid(tagID)]
             ) ?? 0
@@ -82,11 +84,13 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                 JOIN asset a ON a.id = d.asset_id
                 JOIN source s ON s.id = a.source_id
                 WHERE d.tag_id = ? AND d.decision = 'rejected'
-                    AND a.locator_kind = 'file'
                     AND a.locator_state = 'current'
                     AND a.availability = 'available'
-                    AND s.kind = 'folder'
                     AND s.state = 'active'
+                    AND (
+                        (s.kind = 'folder' AND a.locator_kind = 'file')
+                        OR (s.kind = 'photos' AND a.locator_kind = 'photos')
+                    )
                 """,
                 arguments: [uuid(tagID)]
             ) ?? 0
@@ -126,11 +130,13 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                     JOIN source s ON s.id = a.source_id
                     WHERE d.tag_id = ?
                         AND d.decision IN ('accepted', 'rejected')
-                        AND a.locator_kind = 'file'
                         AND a.locator_state = 'current'
                         AND a.availability = 'available'
-                        AND s.kind = 'folder'
                         AND s.state = 'active'
+                        AND (
+                            (s.kind = 'folder' AND a.locator_kind = 'file')
+                            OR (s.kind = 'photos' AND a.locator_kind = 'photos')
+                        )
                 )
                 SELECT id, content_revision, decision
                 FROM ranked
@@ -180,9 +186,11 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                 FROM asset a
                 JOIN source s ON s.id = a.source_id
                 WHERE a.id = ?
-                    AND a.locator_kind = 'file'
                     AND a.locator_state = 'current'
-                    AND s.kind = 'folder'
+                    AND (
+                        (s.kind = 'folder' AND a.locator_kind = 'file')
+                        OR (s.kind = 'photos' AND a.locator_kind = 'photos')
+                    )
                 """,
                 arguments: [uuid(tagID), uuid(assetID)]
             ) else { return nil }
@@ -197,13 +205,13 @@ struct GRDBPersonalizationReviewRepository: Sendable {
         }
     }
 
-    func activeFolderSourceIDs() throws -> [UUID] {
+    func activePersonalizationSourceIDs() throws -> [UUID] {
         try database.pool.read { db in
             try String.fetchAll(
                 db,
                 sql: """
                 SELECT id FROM source
-                WHERE kind = 'folder' AND state = 'active'
+                WHERE kind IN ('folder', 'photos') AND state = 'active'
                 ORDER BY id ASC
                 """
             ).compactMap(UUID.init(uuidString:))
@@ -234,8 +242,10 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                 FROM asset a
                 JOIN source s ON s.id = a.source_id
                 WHERE s.id IN (\(placeholders))
-                    AND s.kind = 'folder'
-                    AND a.locator_kind = 'file'
+                    AND (
+                        (s.kind = 'folder' AND a.locator_kind = 'file')
+                        OR (s.kind = 'photos' AND a.locator_kind = 'photos')
+                    )
                     AND a.record_created_at_ms <= ?
                     \(afterClause)
                 ORDER BY a.id ASC
@@ -260,8 +270,10 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                 FROM asset a
                 JOIN source s ON s.id = a.source_id
                 WHERE s.id IN (\(placeholders))
-                    AND s.kind = 'folder'
-                    AND a.locator_kind = 'file'
+                    AND (
+                        (s.kind = 'folder' AND a.locator_kind = 'file')
+                        OR (s.kind = 'photos' AND a.locator_kind = 'photos')
+                    )
                     AND a.record_created_at_ms <= ?
                 """,
                 arguments: StatementArguments(sourceIDs.map { uuid($0) } + [catalogCutoffMs])
@@ -427,11 +439,13 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                     JOIN source s ON s.id = a.source_id
                     WHERE d.tag_id = ?
                         AND d.decision IN ('accepted', 'rejected')
-                        AND a.locator_kind = 'file'
                         AND a.locator_state = 'current'
                         AND a.availability = 'available'
-                        AND s.kind = 'folder'
                         AND s.state = 'active'
+                        AND (
+                            (s.kind = 'folder' AND a.locator_kind = 'file')
+                            OR (s.kind = 'photos' AND a.locator_kind = 'photos')
+                        )
                 )
                 SELECT id, content_revision, decision
                 FROM ranked
@@ -467,11 +481,13 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                 FROM asset a
                 JOIN source s ON s.id = a.source_id
                 WHERE a.id = ?
-                    AND a.locator_kind = 'file'
                     AND a.locator_state = 'current'
                     AND a.availability = 'available'
-                    AND s.kind = 'folder'
                     AND s.state = 'active'
+                    AND (
+                        (s.kind = 'folder' AND a.locator_kind = 'file')
+                        OR (s.kind = 'photos' AND a.locator_kind = 'photos')
+                    )
                     AND NOT EXISTS (
                         SELECT 1 FROM asset_tag_decision d
                         WHERE d.asset_id = a.id AND d.tag_id = ?

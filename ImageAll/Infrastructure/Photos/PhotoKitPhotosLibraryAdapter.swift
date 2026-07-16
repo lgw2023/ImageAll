@@ -2,7 +2,7 @@ import AppKit
 import Foundation
 import Photos
 
-final class PhotoKitPhotosLibraryAdapter: PhotosLibraryAccessPort, @unchecked Sendable {
+final class PhotoKitPhotosLibraryAdapter: PhotosLibraryAccessPort, PhotosFeaturePrintImagePort, @unchecked Sendable {
     private let imageManager = PHCachingImageManager()
     private static let supportedTypes: Set<String> = [
         "public.jpeg",
@@ -133,6 +133,36 @@ final class PhotoKitPhotosLibraryAdapter: PhotosLibraryAccessPort, @unchecked Se
         }
     }
 
+    func requestLocalFeatureImage(localIdentifier: String) throws -> Data {
+        guard authorizationState() == .authorized else {
+            throw PhotosLibraryError.authorizationDenied
+        }
+        let fetch = PHAsset.fetchAssets(withLocalIdentifiers: [localIdentifier], options: nil)
+        guard let asset = fetch.firstObject else {
+            throw PhotosLibraryError.libraryUnavailable
+        }
+
+        let result = SynchronousImageResult()
+        imageManager.requestImage(
+            for: asset,
+            targetSize: NSSize(width: 1_024, height: 1_024),
+            contentMode: .aspectFit,
+            options: Self.makeLocalOnlyFeaturePrintRequestOptions()
+        ) { image, info in
+            if let image, let data = image.tiffRepresentation {
+                result.set(.success(data))
+            } else if (info?[PHImageResultIsInCloudKey] as? Bool) == true {
+                result.set(.failure(PhotosLibraryError.cloudOnly))
+            } else {
+                result.set(.failure(PhotosLibraryError.libraryUnavailable))
+            }
+        }
+        guard let value = result.value else {
+            throw PhotosLibraryError.libraryUnavailable
+        }
+        return try value.get()
+    }
+
     private func mapAuthorization(_ status: PHAuthorizationStatus) -> PhotosAuthorizationState {
         switch status {
         case .authorized, .limited:
@@ -166,6 +196,15 @@ final class PhotoKitPhotosLibraryAdapter: PhotosLibraryAccessPort, @unchecked Se
         return options
     }
 
+    static func makeLocalOnlyFeaturePrintRequestOptions() -> PHImageRequestOptions {
+        let options = PHImageRequestOptions()
+        options.deliveryMode = .highQualityFormat
+        options.resizeMode = .fast
+        options.isSynchronous = true
+        options.isNetworkAccessAllowed = false
+        return options
+    }
+
     private func preferredStillResource(for asset: PHAsset) -> PHAssetResource? {
         let resources = PHAssetResource.assetResources(for: asset)
         return resources.first(where: { $0.type == .fullSizePhoto })
@@ -181,6 +220,22 @@ final class PhotoKitPhotosLibraryAdapter: PhotosLibraryAccessPort, @unchecked Se
 
     private func milliseconds(_ date: Date?) -> Int64? {
         date.map { Int64($0.timeIntervalSince1970 * 1_000) }
+    }
+}
+
+private final class SynchronousImageResult: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storedValue: Result<Data, Error>?
+
+    var value: Result<Data, Error>? {
+        lock.withLock { storedValue }
+    }
+
+    func set(_ value: Result<Data, Error>) {
+        lock.withLock {
+            guard storedValue == nil else { return }
+            storedValue = value
+        }
     }
 }
 

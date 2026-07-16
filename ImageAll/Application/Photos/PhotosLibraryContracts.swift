@@ -49,3 +49,7 @@ protocol PhotosLibraryAccessPort: Sendable {
         variant: PhotosImageVariant
     ) async throws -> Data
 }
+
+protocol PhotosFeaturePrintImagePort: Sendable {
+    func requestLocalFeatureImage(localIdentifier: String) throws -> Data
+}

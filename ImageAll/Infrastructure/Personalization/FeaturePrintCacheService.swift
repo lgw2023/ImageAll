@@ -1,6 +1,7 @@
 import CryptoKit
 import Darwin
 import Foundation
+import GRDB
 import ImageIO
 import Vision
 
@@ -11,11 +12,15 @@ private struct FeaturePrintArtifact: Sendable {
 }
 
 private struct VisionFeaturePrintGenerator: Sendable {
-    func generate(sourceBytes: Data, expectedMediaType: String) throws -> FeaturePrintArtifact {
+    func generate(sourceBytes: Data, expectedMediaType: String?) throws -> FeaturePrintArtifact {
         guard let source = CGImageSourceCreateWithData(sourceBytes as CFData, nil),
-              CGImageSourceGetCount(source) == 1,
-              CGImageSourceGetType(source) as String? == expectedMediaType
+              CGImageSourceGetCount(source) == 1
         else {
+            throw FeaturePrintError.decodeFailed
+        }
+        if let expectedMediaType,
+           CGImageSourceGetType(source) as String? != expectedMediaType
+        {
             throw FeaturePrintError.decodeFailed
         }
         let options: [CFString: Any] = [
@@ -47,6 +52,285 @@ private struct VisionFeaturePrintGenerator: Sendable {
             elementCount: observation.elementCount,
             sha256: Data(SHA256.hash(data: observation.data))
         )
+    }
+}
+
+private struct PhotosFeaturePrintGenerationContext: Equatable, Sendable {
+    let assetID: UUID
+    let sourceID: UUID
+    let contentRevision: Int
+    let localIdentifier: String
+    let mediaType: String
+    let availability: String
+    let locatorState: String
+    let locatorKind: String
+    let sourceState: String
+    let sourceKind: String
+    let recordUpdatedAtMs: Int64
+
+    var isEligibleForGeneration: Bool {
+        locatorKind == AssetLocatorKind.photos.rawValue
+            && locatorState == AssetLocatorState.current.rawValue
+            && availability == AssetAvailability.available.rawValue
+            && sourceKind == SourceKind.photos.rawValue
+            && sourceState == SourceState.active.rawValue
+            && !localIdentifier.isEmpty
+    }
+}
+
+struct LibraryFeaturePrintInputLoader: FeaturePrintInputLoading, Sendable {
+    let database: CatalogDatabase
+    let sourceAccess: FolderReconcileSourceAccessService
+    let photosImages: (any PhotosFeaturePrintImagePort)?
+    let sourceReader: DerivedImageSourceReader
+
+    private var assetRepository: GRDBDerivedImageCacheRepository {
+        GRDBDerivedImageCacheRepository(database: database)
+    }
+
+    init(
+        database: CatalogDatabase,
+        sourceAccess: FolderReconcileSourceAccessService,
+        photosImages: (any PhotosFeaturePrintImagePort)? = nil,
+        sourceReader: DerivedImageSourceReader = DerivedImageSourceReader()
+    ) {
+        self.database = database
+        self.sourceAccess = sourceAccess
+        self.photosImages = photosImages
+        self.sourceReader = sourceReader
+    }
+
+    func resolveIdentity(assetID: UUID) throws -> FeatureIdentity {
+        switch try sourceKinds(assetID: assetID) {
+        case nil:
+            throw FeaturePrintError.assetNotFound
+        case let .some((locatorKind, sourceKind))
+            where locatorKind == AssetLocatorKind.file.rawValue
+                && sourceKind == SourceKind.folder.rawValue:
+            guard let context = try assetRepository.fetchGenerationContext(assetID: assetID),
+                  context.isEligibleForGeneration
+            else {
+                throw FeaturePrintError.assetIneligible
+            }
+            return FeatureIdentity(assetID: assetID, contentRevision: context.contentRevision)
+        case let .some((locatorKind, sourceKind))
+            where locatorKind == AssetLocatorKind.photos.rawValue
+                && sourceKind == SourceKind.photos.rawValue:
+            guard photosImages != nil,
+                  let context = try fetchPhotosContext(assetID: assetID),
+                  context.isEligibleForGeneration
+            else {
+                throw FeaturePrintError.assetIneligible
+            }
+            return FeatureIdentity(assetID: assetID, contentRevision: context.contentRevision)
+        default:
+            throw FeaturePrintError.assetIneligible
+        }
+    }
+
+    func loadInput(assetID: UUID, expectedIdentity: FeatureIdentity) throws -> FeaturePrintInput {
+        switch try sourceKinds(assetID: assetID) {
+        case let .some((locatorKind, sourceKind))
+            where locatorKind == AssetLocatorKind.file.rawValue
+                && sourceKind == SourceKind.folder.rawValue:
+            return try loadFolderInput(assetID: assetID, expectedIdentity: expectedIdentity)
+        case let .some((locatorKind, sourceKind))
+            where locatorKind == AssetLocatorKind.photos.rawValue
+                && sourceKind == SourceKind.photos.rawValue:
+            return try loadPhotosInput(assetID: assetID, expectedIdentity: expectedIdentity)
+        case nil:
+            throw FeaturePrintError.assetNotFound
+        default:
+            throw FeaturePrintError.assetIneligible
+        }
+    }
+
+    func isCurrent(_ input: FeaturePrintInput) throws -> Bool {
+        guard let currentToken = try validationToken(
+            assetID: input.identity.assetID,
+            expectedIdentity: input.identity
+        ) else {
+            return false
+        }
+        return currentToken == input.validationToken
+    }
+
+    private func loadFolderInput(
+        assetID: UUID,
+        expectedIdentity: FeatureIdentity
+    ) throws -> FeaturePrintInput {
+        guard let context = try assetRepository.fetchGenerationContext(assetID: assetID),
+              context.isEligibleForGeneration,
+              FeatureIdentity(assetID: assetID, contentRevision: context.contentRevision) == expectedIdentity
+        else {
+            throw FeaturePrintError.sourceChanged
+        }
+        let bytes = try sourceAccess.withActiveSourceRootURL(sourceID: context.sourceID) { rootURL in
+            let initial = try sourceReader.readSourceBytes(rootURL: rootURL, relativePath: context.relativePath)
+            guard context.matchesHandleFacts(initial.initialFingerprint),
+                  initial.preHandleFstat.sizeBytes == initial.postHandleFstat.sizeBytes,
+                  initial.preHandleFstat.modifiedAtNs == initial.postHandleFstat.modifiedAtNs,
+                  initial.initialFingerprint.resourceID == initial.postResourceID
+            else {
+                throw FeaturePrintError.sourceChanged
+            }
+            return initial.bytes
+        }
+        return FeaturePrintInput(
+            identity: expectedIdentity,
+            sourceBytes: bytes,
+            expectedMediaType: context.mediaType,
+            validationToken: fileValidationToken(context)
+        )
+    }
+
+    private func loadPhotosInput(
+        assetID: UUID,
+        expectedIdentity: FeatureIdentity
+    ) throws -> FeaturePrintInput {
+        guard let photosImages,
+              let context = try fetchPhotosContext(assetID: assetID),
+              context.isEligibleForGeneration,
+              FeatureIdentity(assetID: assetID, contentRevision: context.contentRevision) == expectedIdentity
+        else {
+            throw FeaturePrintError.sourceChanged
+        }
+        let bytes: Data
+        do {
+            bytes = try photosImages.requestLocalFeatureImage(localIdentifier: context.localIdentifier)
+        } catch let error as PhotosLibraryError {
+            switch error {
+            case .authorizationDenied, .authorizationRestricted:
+                throw FeaturePrintError.authorizationRequired
+            case .libraryUnavailable, .cloudOnly, .persistenceFailure:
+                throw FeaturePrintError.sourceUnavailable
+            }
+        } catch {
+            throw FeaturePrintError.sourceUnavailable
+        }
+        guard try fetchPhotosContext(assetID: assetID) == context else {
+            throw FeaturePrintError.sourceChanged
+        }
+        return FeaturePrintInput(
+            identity: expectedIdentity,
+            sourceBytes: bytes,
+            expectedMediaType: nil,
+            validationToken: photosValidationToken(context)
+        )
+    }
+
+    private func validationToken(
+        assetID: UUID,
+        expectedIdentity: FeatureIdentity
+    ) throws -> Data? {
+        switch try sourceKinds(assetID: assetID) {
+        case let .some((locatorKind, sourceKind))
+            where locatorKind == AssetLocatorKind.file.rawValue
+                && sourceKind == SourceKind.folder.rawValue:
+            guard let context = try assetRepository.fetchGenerationContext(assetID: assetID),
+                  context.isEligibleForGeneration,
+                  FeatureIdentity(assetID: assetID, contentRevision: context.contentRevision) == expectedIdentity
+            else { return nil }
+            let sourceMatches = try sourceAccess.withActiveSourceRootURL(sourceID: context.sourceID) { rootURL in
+                let reopened = try sourceReader.reopenedLocatorFingerprint(
+                    rootURL: rootURL,
+                    relativePath: context.relativePath
+                )
+                return context.matches(reopened)
+            }
+            guard sourceMatches else { return nil }
+            return fileValidationToken(context)
+        case let .some((locatorKind, sourceKind))
+            where locatorKind == AssetLocatorKind.photos.rawValue
+                && sourceKind == SourceKind.photos.rawValue:
+            guard let context = try fetchPhotosContext(assetID: assetID),
+                  context.isEligibleForGeneration,
+                  FeatureIdentity(assetID: assetID, contentRevision: context.contentRevision) == expectedIdentity
+            else { return nil }
+            return photosValidationToken(context)
+        default:
+            return nil
+        }
+    }
+
+    private func sourceKinds(assetID: UUID) throws -> (locatorKind: String, sourceKind: String)? {
+        try database.pool.read { db in
+            guard let row = try Row.fetchOne(
+                db,
+                sql: """
+                SELECT a.locator_kind, s.kind AS source_kind
+                FROM asset a
+                JOIN source s ON s.id = a.source_id
+                WHERE a.id = ?
+                """,
+                arguments: [assetID.uuidString.lowercased()]
+            ) else { return nil }
+            return (row["locator_kind"], row["source_kind"])
+        }
+    }
+
+    private func fetchPhotosContext(assetID: UUID) throws -> PhotosFeaturePrintGenerationContext? {
+        try database.pool.read { db in
+            guard let row = try Row.fetchOne(
+                db,
+                sql: """
+                SELECT a.id, a.source_id, a.content_revision, a.photos_local_identifier,
+                    a.media_type, a.availability, a.locator_state, a.locator_kind,
+                    a.record_updated_at_ms, s.state AS source_state, s.kind AS source_kind
+                FROM asset a
+                JOIN source s ON s.id = a.source_id
+                WHERE a.id = ?
+                """,
+                arguments: [assetID.uuidString.lowercased()]
+            ),
+                let mappedAssetID = UUID(uuidString: row["id"]),
+                let sourceID = UUID(uuidString: row["source_id"]),
+                let localIdentifier: String = row["photos_local_identifier"]
+            else { return nil }
+            return PhotosFeaturePrintGenerationContext(
+                assetID: mappedAssetID,
+                sourceID: sourceID,
+                contentRevision: row["content_revision"],
+                localIdentifier: localIdentifier,
+                mediaType: row["media_type"],
+                availability: row["availability"],
+                locatorState: row["locator_state"],
+                locatorKind: row["locator_kind"],
+                sourceState: row["source_state"],
+                sourceKind: row["source_kind"],
+                recordUpdatedAtMs: row["record_updated_at_ms"]
+            )
+        }
+    }
+
+    private func fileValidationToken(_ context: DerivedImageAssetGenerationContext) -> Data {
+        validationToken(fields: [
+            context.assetID.uuidString.lowercased(), context.sourceID.uuidString.lowercased(),
+            String(context.contentRevision), context.relativePath, context.mediaType,
+            context.availability, context.locatorState, context.locatorKind,
+            context.sourceState, context.sourceKind, String(context.fingerprintSizeBytes),
+            String(context.fingerprintModifiedAtNs), context.fingerprintResourceID?.base64EncodedString() ?? "",
+        ])
+    }
+
+    private func photosValidationToken(_ context: PhotosFeaturePrintGenerationContext) -> Data {
+        validationToken(fields: [
+            context.assetID.uuidString.lowercased(), context.sourceID.uuidString.lowercased(),
+            String(context.contentRevision), context.localIdentifier, context.mediaType,
+            context.availability, context.locatorState, context.locatorKind,
+            context.sourceState, context.sourceKind, String(context.recordUpdatedAtMs),
+        ])
+    }
+
+    private func validationToken(fields: [String]) -> Data {
+        var canonical = Data()
+        for field in fields {
+            let bytes = Data(field.utf8)
+            var length = UInt64(bytes.count).bigEndian
+            withUnsafeBytes(of: &length) { canonical.append(contentsOf: $0) }
+            canonical.append(bytes)
+        }
+        return Data(SHA256.hash(data: canonical))
     }
 }
 
@@ -149,11 +433,8 @@ private struct FeaturePrintCacheStore: Sendable {
 }
 
 final class FeaturePrintCacheService: FeatureVectorLoading, SyncFeatureVectorLoading, @unchecked Sendable {
-    private let database: CatalogDatabase
     private let repository: GRDBPersonalizationRepository
-    private let assetRepository: GRDBDerivedImageCacheRepository
-    private let sourceAccess: FolderReconcileSourceAccessService
-    private let sourceReader: DerivedImageSourceReader
+    private let inputLoader: any FeaturePrintInputLoading
     private let generator = VisionFeaturePrintGenerator()
     private let store: FeaturePrintCacheStore
     private let clock: any JobClock
@@ -161,17 +442,34 @@ final class FeaturePrintCacheService: FeatureVectorLoading, SyncFeatureVectorLoa
     init(
         database: CatalogDatabase,
         cachesDirectory: URL,
+        inputLoader: any FeaturePrintInputLoading,
+        clock: any JobClock = SystemJobClock()
+    ) {
+        repository = GRDBPersonalizationRepository(database: database)
+        self.inputLoader = inputLoader
+        store = FeaturePrintCacheStore(cachesDirectory: cachesDirectory)
+        self.clock = clock
+    }
+
+    convenience init(
+        database: CatalogDatabase,
+        cachesDirectory: URL,
         sourceAccess: FolderReconcileSourceAccessService,
+        photosImages: (any PhotosFeaturePrintImagePort)? = nil,
         sourceReader: DerivedImageSourceReader = DerivedImageSourceReader(),
         clock: any JobClock = SystemJobClock()
     ) {
-        self.database = database
-        repository = GRDBPersonalizationRepository(database: database)
-        assetRepository = GRDBDerivedImageCacheRepository(database: database)
-        self.sourceAccess = sourceAccess
-        self.sourceReader = sourceReader
-        store = FeaturePrintCacheStore(cachesDirectory: cachesDirectory)
-        self.clock = clock
+        self.init(
+            database: database,
+            cachesDirectory: cachesDirectory,
+            inputLoader: LibraryFeaturePrintInputLoader(
+                database: database,
+                sourceAccess: sourceAccess,
+                photosImages: photosImages,
+                sourceReader: sourceReader
+            ),
+            clock: clock
+        )
     }
 
     func loadOrGenerate(assetID: UUID) async throws -> FeatureVectorPayload {
@@ -184,13 +482,7 @@ final class FeaturePrintCacheService: FeatureVectorLoading, SyncFeatureVectorLoa
 
     private func loadOrGenerateSyncThrowing(assetID: UUID) throws -> FeatureVectorPayload {
         do {
-            guard let context = try assetRepository.fetchGenerationContext(assetID: assetID) else {
-                throw FeaturePrintError.assetNotFound
-            }
-            guard context.isEligibleForGeneration else {
-                throw FeaturePrintError.assetIneligible
-            }
-            let identity = FeatureIdentity(assetID: assetID, contentRevision: context.contentRevision)
+            let identity = try inputLoader.resolveIdentity(assetID: assetID)
             if let registration = try repository.featureRegistration(identity: identity),
                let vectorData = try store.read(registration: registration)
             {
@@ -203,11 +495,12 @@ final class FeaturePrintCacheService: FeatureVectorLoading, SyncFeatureVectorLoa
                 )
             }
 
-            let artifact = try generate(context: context)
-            let isStillCurrent = try database.pool.read { db in
-                try assetRepository.revalidate(db: db, expected: context)
-            }
-            guard isStillCurrent else {
+            let input = try inputLoader.loadInput(assetID: assetID, expectedIdentity: identity)
+            let artifact = try generator.generate(
+                sourceBytes: input.sourceBytes,
+                expectedMediaType: input.expectedMediaType
+            )
+            guard try inputLoader.isCurrent(input) else {
                 throw FeaturePrintError.sourceChanged
             }
             let cacheKey = FeaturePrintCachePathLayout.cacheKey(identity: identity)
@@ -244,28 +537,4 @@ final class FeaturePrintCacheService: FeatureVectorLoading, SyncFeatureVectorLoa
         }
     }
 
-    private func generate(context: DerivedImageAssetGenerationContext) throws -> FeaturePrintArtifact {
-        try sourceAccess.withActiveSourceRootURL(sourceID: context.sourceID) { rootURL in
-            let initial = try sourceReader.readSourceBytes(rootURL: rootURL, relativePath: context.relativePath)
-            guard context.matchesHandleFacts(initial.initialFingerprint),
-                  initial.preHandleFstat.sizeBytes == initial.postHandleFstat.sizeBytes,
-                  initial.preHandleFstat.modifiedAtNs == initial.postHandleFstat.modifiedAtNs,
-                  initial.initialFingerprint.resourceID == initial.postResourceID
-            else {
-                throw FeaturePrintError.sourceChanged
-            }
-            let artifact = try generator.generate(
-                sourceBytes: initial.bytes,
-                expectedMediaType: context.mediaType
-            )
-            let reopened = try sourceReader.reopenedLocatorFingerprint(
-                rootURL: rootURL,
-                relativePath: context.relativePath
-            )
-            guard context.matches(reopened) else {
-                throw FeaturePrintError.sourceChanged
-            }
-            return artifact
-        }
-    }
 }
