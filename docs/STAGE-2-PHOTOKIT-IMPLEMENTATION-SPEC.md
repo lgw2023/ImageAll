@@ -33,6 +33,9 @@ PhotoKit 访问；`.photoslibrary` package 永远不是文件系统输入。
 - 选择该行只筛选此 Photos 来源；“全部照片”混合显示文件夹与 Photos 资产；
 - 一个 ImageAll 目录库最多维护一个当前 System Photo Library 来源；
 - 来源菜单使用“在图库中查看”“立即同步”“重新授权…”和“停用来源”；不提供删除照片或写回入口。
+- 已连接的 Photos 来源返回零项时，空状态必须明确说明 ImageAll 只能访问 System Photo Library；
+  不得把“当前在 Photos 中打开的其他图库”误报为格式不支持，并提醒更改 System Photo Library 可能影响
+  iCloud Photos，须由用户自行确认。
 
 ### 2.2 授权时机与说明
 
