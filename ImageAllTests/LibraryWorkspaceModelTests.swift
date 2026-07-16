@@ -60,6 +60,26 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertEqual(service.photosReconcileRunCount, 1)
     }
 
+    func testSelectedPhotosSourceIsExposedForEmptyStateGuidance() async {
+        let sourceID = UUID()
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: sourceID,
+                kind: .photos,
+                displayName: "Apple Photos",
+                state: .active
+            ),
+            reconciledItems: [],
+            startsConnected: true
+        )
+        let model = LibraryWorkspaceModel(service: service)
+
+        await model.start()
+        await model.selectSource(sourceID)
+
+        XCTAssertTrue(model.selectedSourceIsPhotos)
+    }
+
     func testConnectFolderRunsReconcileAndLoadsFirstPage() async {
         let sourceID = UUID()
         let asset = Self.makeAsset(sourceID: sourceID)

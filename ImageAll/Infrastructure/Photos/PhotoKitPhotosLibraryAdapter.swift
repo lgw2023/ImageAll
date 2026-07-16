@@ -130,11 +130,10 @@ final class PhotoKitPhotosLibraryAdapter: PhotosLibraryAccessPort, @unchecked Se
 
     static func isSupportedStaticImage(
         mediaType: PHAssetMediaType,
-        mediaSubtypes: PHAssetMediaSubtype,
+        mediaSubtypes _: PHAssetMediaSubtype,
         uniformTypeIdentifier: String
     ) -> Bool {
         mediaType == .image
-            && !mediaSubtypes.contains(.photoLive)
             && supportedTypes.contains(uniformTypeIdentifier.lowercased())
     }
 

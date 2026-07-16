@@ -78,6 +78,11 @@ final class LibraryWorkspaceModel: ObservableObject {
         !selectedAvailabilities.isEmpty || !selectedMediaTypes.isEmpty
     }
 
+    var selectedSourceIsPhotos: Bool {
+        guard let selectedSourceID else { return false }
+        return isPhotosSource(selectedSourceID)
+    }
+
     var canRescan: Bool {
         if let selectedSourceID {
             return sources.first(where: { $0.id == selectedSourceID })?.state == .active
@@ -1466,13 +1471,25 @@ struct LibraryWorkspaceView: View {
                         }
                     }
                 } else {
-                    ContentUnavailableView {
-                        Label("没有支持的照片", systemImage: "photo")
-                    } description: {
-                        Text("支持 JPEG、PNG、HEIC/HEIF、TIFF 和 WebP。")
-                    } actions: {
-                        Button("立即重扫") {
-                            Task { await model.rescan() }
+                    if model.selectedSourceIsPhotos {
+                        ContentUnavailableView {
+                            Label("系统照片图库中没有可访问的照片", systemImage: "photo.on.rectangle")
+                        } description: {
+                            Text("ImageAll 只能读取 Mac 的系统照片图库。如果 Photos 当前打开的是另一个图库，请先在 Photos > 设置 > 通用中确认系统照片图库。更改系统图库可能影响 iCloud Photos。")
+                        } actions: {
+                            Button("立即同步") {
+                                Task { await model.rescan() }
+                            }
+                        }
+                    } else {
+                        ContentUnavailableView {
+                            Label("没有支持的照片", systemImage: "photo")
+                        } description: {
+                            Text("支持 JPEG、PNG、HEIC/HEIF、TIFF 和 WebP。")
+                        } actions: {
+                            Button("立即重扫") {
+                                Task { await model.rescan() }
+                            }
                         }
                     }
                 }

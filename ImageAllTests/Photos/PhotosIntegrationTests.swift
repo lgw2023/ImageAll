@@ -5,7 +5,7 @@ import XCTest
 @testable import ImageAll
 
 final class PhotosIntegrationTests: XCTestCase {
-    func testPhotoKitPolicyExcludesVideoAndLivePhotoAndNeverEnablesNetwork() {
+    func testPhotoKitPolicyIncludesLivePhotoStillImageButExcludesVideoAndNetwork() {
         let supportedTypes = [
             "public.jpeg", "public.png", "public.heic", "public.heif",
             "public.tiff", "org.webmproject.webp",
@@ -26,7 +26,7 @@ final class PhotosIntegrationTests: XCTestCase {
                 uniformTypeIdentifier: "public.jpeg"
             )
         )
-        XCTAssertFalse(
+        XCTAssertTrue(
             PhotoKitPhotosLibraryAdapter.isSupportedStaticImage(
                 mediaType: .image,
                 mediaSubtypes: .photoLive,
