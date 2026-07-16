@@ -1055,7 +1055,7 @@ private final class FakeDownloadedPreviewCache: DownloadedPreviewCachePort, @unc
         self.cachedData = cachedData
     }
 
-    func loadDownloadedPreview(assetID _: UUID) async throws -> Data? {
+    func loadDownloadedPreview(assetID _: UUID) throws -> Data? {
         lock.withLock { storedData }
     }
 

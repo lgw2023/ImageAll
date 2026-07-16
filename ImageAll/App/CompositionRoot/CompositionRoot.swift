@@ -60,11 +60,18 @@ struct CompositionRoot {
             changeHistory: photosAccess,
             clock: clock
         )
+        let derivedImages = DerivedImageCacheService(
+            database: runtime.database,
+            cachesDirectory: runtime.paths.cachesDirectory,
+            sourceAccess: sourceAccess,
+            clock: clock
+        )
         let featurePrintService = FeaturePrintCacheService(
             database: runtime.database,
             cachesDirectory: runtime.paths.cachesDirectory,
             sourceAccess: sourceAccess,
             photosImages: photosAccess,
+            downloadedPreviews: derivedImages,
             clock: clock
         )
         let personalizationHandler = FullLibrarySuggestionsHandler(
@@ -79,12 +86,6 @@ struct CompositionRoot {
             queue: runtime.jobQueue,
             registry: MultiJobHandlerRegistry(handlers: [handler, photosHandler, personalizationHandler]),
             leaseContextProvider: GRDBJobLeaseContextProvider(queue: runtime.jobQueue)
-        )
-        let derivedImages = DerivedImageCacheService(
-            database: runtime.database,
-            cachesDirectory: runtime.paths.cachesDirectory,
-            sourceAccess: sourceAccess,
-            clock: clock
         )
         let assetImages = LibraryAssetImageLoader(
             database: runtime.database,

@@ -111,11 +111,11 @@ extension DerivedImageContractTests {
             sourceBytes: FolderReconcileTestSupport.minimalJPEGData()
         )
         XCTAssertFalse(stored.isEmpty)
-        let cached = try await service.loadDownloadedPreview(assetID: env.assetID)
+        let cached = try service.loadDownloadedPreview(assetID: env.assetID)
         XCTAssertEqual(cached, stored)
 
         let (reopenedService, _) = env.makeService(volumeReader: DerivedImageTestSupport.generousVolume)
-        let reopened = try await reopenedService.loadDownloadedPreview(assetID: env.assetID)
+        let reopened = try reopenedService.loadDownloadedPreview(assetID: env.assetID)
         XCTAssertEqual(reopened, stored)
 
         let row = try env.database.pool.read { db in
@@ -158,9 +158,9 @@ extension DerivedImageContractTests {
         clock.setNowMs(clock.nowMs + 1)
         let second = try await service.storeDownloadedPreview(assetID: secondAssetID, sourceBytes: sourceBytes)
 
-        let evicted = try await service.loadDownloadedPreview(assetID: env.assetID)
+        let evicted = try service.loadDownloadedPreview(assetID: env.assetID)
         XCTAssertNil(evicted)
-        let cachedSecond = try await service.loadDownloadedPreview(assetID: secondAssetID)
+        let cachedSecond = try service.loadDownloadedPreview(assetID: secondAssetID)
         XCTAssertEqual(cachedSecond, second)
         let cachedAssetIDs = try await env.database.pool.read { db in
             try String.fetchAll(

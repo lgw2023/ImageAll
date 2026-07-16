@@ -82,6 +82,7 @@ struct LibraryFeaturePrintInputLoader: FeaturePrintInputLoading, Sendable {
     let database: CatalogDatabase
     let sourceAccess: FolderReconcileSourceAccessService
     let photosImages: (any PhotosFeaturePrintImagePort)?
+    let downloadedPreviews: (any DownloadedPreviewCachePort)?
     let sourceReader: DerivedImageSourceReader
 
     private var assetRepository: GRDBDerivedImageCacheRepository {
@@ -92,11 +93,13 @@ struct LibraryFeaturePrintInputLoader: FeaturePrintInputLoading, Sendable {
         database: CatalogDatabase,
         sourceAccess: FolderReconcileSourceAccessService,
         photosImages: (any PhotosFeaturePrintImagePort)? = nil,
+        downloadedPreviews: (any DownloadedPreviewCachePort)? = nil,
         sourceReader: DerivedImageSourceReader = DerivedImageSourceReader()
     ) {
         self.database = database
         self.sourceAccess = sourceAccess
         self.photosImages = photosImages
+        self.downloadedPreviews = downloadedPreviews
         self.sourceReader = sourceReader
     }
 
@@ -197,7 +200,11 @@ struct LibraryFeaturePrintInputLoader: FeaturePrintInputLoading, Sendable {
         }
         let bytes: Data
         do {
-            bytes = try photosImages.requestLocalFeatureImage(localIdentifier: context.localIdentifier)
+            if let downloaded = try downloadedPreviews?.loadDownloadedPreview(assetID: assetID) {
+                bytes = downloaded
+            } else {
+                bytes = try photosImages.requestLocalFeatureImage(localIdentifier: context.localIdentifier)
+            }
         } catch let error as PhotosLibraryError {
             switch error {
             case .authorizationDenied, .authorizationRestricted:
@@ -456,6 +463,7 @@ final class FeaturePrintCacheService: FeatureVectorLoading, SyncFeatureVectorLoa
         cachesDirectory: URL,
         sourceAccess: FolderReconcileSourceAccessService,
         photosImages: (any PhotosFeaturePrintImagePort)? = nil,
+        downloadedPreviews: (any DownloadedPreviewCachePort)? = nil,
         sourceReader: DerivedImageSourceReader = DerivedImageSourceReader(),
         clock: any JobClock = SystemJobClock()
     ) {
@@ -466,6 +474,7 @@ final class FeaturePrintCacheService: FeatureVectorLoading, SyncFeatureVectorLoa
                 database: database,
                 sourceAccess: sourceAccess,
                 photosImages: photosImages,
+                downloadedPreviews: downloadedPreviews,
                 sourceReader: sourceReader
             ),
             clock: clock

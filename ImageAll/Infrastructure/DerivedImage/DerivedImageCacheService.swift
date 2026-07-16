@@ -173,7 +173,7 @@ final class DerivedImageCacheService: DerivedImageCachePort, DownloadedPreviewCa
         }
     }
 
-    func loadDownloadedPreview(assetID: UUID) async throws -> Data? {
+    func loadDownloadedPreview(assetID: UUID) throws -> Data? {
         do {
             guard let lookup = try repository.fetchCacheLookupContext(assetID: assetID) else {
                 return nil

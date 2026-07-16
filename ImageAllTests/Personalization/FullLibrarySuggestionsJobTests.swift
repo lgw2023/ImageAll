@@ -195,7 +195,7 @@ final class FullLibrarySuggestionsJobTests: XCTestCase {
         )
     }
 
-    func testPhotosFeaturePrintPublishesCurrentRevisionAndReviewQueueItem() throws {
+    func testDownloadedPhotosPreviewPublishesCurrentRevisionAndReviewQueueItemWithoutPhotoKitRead() async throws {
         let fixture = try CatalogQueryTestSupport.openQueryDatabase()
         let photosSourceID = UUID(uuidString: "27000000-0000-4000-8000-000000000001")!
         let tagID = UUID(uuidString: "28000000-0000-4000-8000-000000000001")!
@@ -203,7 +203,7 @@ final class FullLibrarySuggestionsJobTests: XCTestCase {
             UUID(uuidString: String(format: "29000000-0000-4000-8000-%012X", $0))!
         }
         let cutoffMs = DatabaseTestSupport.timestampMs
-        try fixture.database.pool.write { db in
+        try await fixture.database.pool.write { db in
             try db.execute(
                 sql: """
                 INSERT INTO source (id, kind, display_name, bookmark, state, created_at_ms, updated_at_ms)
@@ -261,12 +261,13 @@ final class FullLibrarySuggestionsJobTests: XCTestCase {
             "photos-feature-6": .failure(.authorizationDenied),
             "photos-feature-7": .success(Data([0x00, 0x01, 0x02])),
         ])
-        let cachesDirectory = FileManager.default.temporaryDirectory
+        let testRoot = FileManager.default.temporaryDirectory
             .appendingPathComponent("ImageAll-\(#function)-\(UUID().uuidString)", isDirectory: true)
+        let cachesDirectory = testRoot.appendingPathComponent("Caches/ImageAll", isDirectory: true)
         try FileManager.default.createDirectory(at: cachesDirectory, withIntermediateDirectories: true)
         defer {
-            if FileManager.default.fileExists(atPath: cachesDirectory.path) {
-                try? FileManager.default.removeItem(at: cachesDirectory)
+            if FileManager.default.fileExists(atPath: testRoot.path) {
+                try? FileManager.default.removeItem(at: testRoot)
             }
         }
         let sourceAccess = FolderReconcileSourceAccessService(
@@ -275,11 +276,26 @@ final class FullLibrarySuggestionsJobTests: XCTestCase {
             rootValidator: FolderRootValidator(),
             clock: FixedJobClock(nowMs: DatabaseTestSupport.timestampMs)
         )
+        let downloadedPreviews = DerivedImageCacheService(
+            database: fixture.database,
+            cachesDirectory: cachesDirectory,
+            sourceAccess: sourceAccess,
+            volumeReader: DerivedImageTestSupport.GenerousVolumeReader(
+                availableBytes: 50 * DerivedImageTestSupport.gib,
+                totalBytes: 100 * DerivedImageTestSupport.gib
+            ),
+            clock: FixedJobClock(nowMs: DatabaseTestSupport.timestampMs)
+        )
+        _ = try await downloadedPreviews.storeDownloadedPreview(
+            assetID: assetIDs[5],
+            sourceBytes: positiveImage
+        )
         let featureLoader = FeaturePrintCacheService(
             database: fixture.database,
             cachesDirectory: cachesDirectory,
             sourceAccess: sourceAccess,
             photosImages: photos,
+            downloadedPreviews: downloadedPreviews,
             clock: FixedJobClock(nowMs: DatabaseTestSupport.timestampMs)
         )
         let queue = JobTestSupport.makeQueue(database: fixture.database, retryDelayMs: 0)
@@ -305,9 +321,12 @@ final class FullLibrarySuggestionsJobTests: XCTestCase {
             "job=\(job); requested=\(photos.requestedLocalIdentifiers)"
         )
         XCTAssertEqual(facts.currentRevision, 1)
-        XCTAssertEqual(reviewPage.items.map(\.assetID), [assetIDs[4]])
-        XCTAssertGreaterThanOrEqual(facts.skippedCount, 3)
-        XCTAssertEqual(Set(photos.requestedLocalIdentifiers), Set((0 ... 7).map { "photos-feature-\($0)" }))
+        XCTAssertEqual(reviewPage.items.map(\.assetID), [assetIDs[4], assetIDs[5]])
+        XCTAssertGreaterThanOrEqual(facts.skippedCount, 2)
+        XCTAssertEqual(
+            Set(photos.requestedLocalIdentifiers),
+            Set((0 ... 7).filter { $0 != 5 }.map { "photos-feature-\($0)" })
+        )
     }
 
     func testScansMoreThanFiveHundredAssetsInSingleRevisionWithoutDuplicateCursor() throws {

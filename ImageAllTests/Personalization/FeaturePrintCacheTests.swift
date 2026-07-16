@@ -190,6 +190,82 @@ final class FeaturePrintCacheTests: XCTestCase {
         XCTAssertEqual(generated.vectorData, cached.vectorData)
         XCTAssertEqual(photos.requestedLocalIdentifiers, [localIdentifier])
     }
+
+    func testPhotosAssetUsesExplicitlyDownloadedPreviewWithoutReadingPhotoKitAgain() async throws {
+        let environment = try DerivedImageTestSupport.TempEnvironment(label: #function)
+        defer { environment.cleanup() }
+        let photosSourceID = UUID(uuidString: "25000000-0000-4000-8000-000000000002")!
+        let photosAssetID = UUID(uuidString: "26000000-0000-4000-8000-000000000002")!
+        let localIdentifier = "fake-cloud-only-photos-identifier"
+        try await environment.database.pool.write { db in
+            try db.execute(
+                sql: """
+                INSERT INTO source (id, kind, display_name, bookmark, state, created_at_ms, updated_at_ms)
+                VALUES (?, 'photos', 'Apple Photos', NULL, 'active', ?, ?)
+                """,
+                arguments: [
+                    photosSourceID.uuidString.lowercased(),
+                    FolderReconcileTestSupport.baseTimeMs,
+                    FolderReconcileTestSupport.baseTimeMs,
+                ]
+            )
+            try db.execute(
+                sql: """
+                INSERT INTO asset (
+                    id, source_id, locator_kind, relative_path, photos_local_identifier,
+                    locator_state, media_type, file_name, content_revision, availability,
+                    record_created_at_ms, record_updated_at_ms
+                ) VALUES (?, ?, 'photos', NULL, ?, 'current', 'public.jpeg', 'cloud-photo.jpg', 1, 'available', ?, ?)
+                """,
+                arguments: [
+                    photosAssetID.uuidString.lowercased(), photosSourceID.uuidString.lowercased(),
+                    localIdentifier, FolderReconcileTestSupport.baseTimeMs,
+                    FolderReconcileTestSupport.baseTimeMs,
+                ]
+            )
+        }
+        let sourceAccess = FolderReconcileSourceAccessService(
+            repository: GRDBFolderSourceAuthorizationRepository(database: environment.database),
+            bookmarkPort: FolderReconcileTestSupport.TestBookmarkPort(rootByBookmark: [:]),
+            rootValidator: FolderRootValidator(),
+            clock: FixedJobClock(nowMs: FolderReconcileTestSupport.baseTimeMs)
+        )
+        let downloadedPreviews = DerivedImageCacheService(
+            database: environment.database,
+            cachesDirectory: environment.cachesDirectory,
+            sourceAccess: sourceAccess,
+            volumeReader: DerivedImageTestSupport.GenerousVolumeReader(
+                availableBytes: 50 * DerivedImageTestSupport.gib,
+                totalBytes: 100 * DerivedImageTestSupport.gib
+            ),
+            clock: FixedJobClock(nowMs: FolderReconcileTestSupport.baseTimeMs)
+        )
+        _ = try await downloadedPreviews.storeDownloadedPreview(
+            assetID: photosAssetID,
+            sourceBytes: try XCTUnwrap(
+                FolderReconcileTestSupport.minimalEncodedImageData(
+                    uti: "public.jpeg",
+                    width: 64,
+                    height: 64
+                )
+            )
+        )
+        let photos = FakePhotosFeaturePrintImagePort(images: [:])
+        let service = FeaturePrintCacheService(
+            database: environment.database,
+            cachesDirectory: environment.cachesDirectory,
+            sourceAccess: sourceAccess,
+            photosImages: photos,
+            downloadedPreviews: downloadedPreviews,
+            clock: FixedJobClock(nowMs: FolderReconcileTestSupport.baseTimeMs)
+        )
+
+        let generated = try await service.loadOrGenerate(assetID: photosAssetID)
+
+        XCTAssertEqual(generated.origin, .generated)
+        XCTAssertGreaterThan(generated.elementCount, 0)
+        XCTAssertEqual(photos.requestedLocalIdentifiers, [])
+    }
 }
 
 private final class FakePhotosFeaturePrintImagePort: PhotosFeaturePrintImagePort, @unchecked Sendable {

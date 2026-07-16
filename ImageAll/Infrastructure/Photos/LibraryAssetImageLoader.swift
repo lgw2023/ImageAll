@@ -71,7 +71,7 @@ struct LibraryAssetImageLoader: Sendable {
             }
             if variant == .preview,
                let downloadedPreviews,
-               let cached = try await downloadedPreviews.loadDownloadedPreview(assetID: assetID)
+               let cached = try downloadedPreviews.loadDownloadedPreview(assetID: assetID)
             {
                 return cached
             }

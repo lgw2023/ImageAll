@@ -6,6 +6,6 @@ protocol DerivedImageCachePort: Sendable {
 }
 
 protocol DownloadedPreviewCachePort: Sendable {
-    func loadDownloadedPreview(assetID: UUID) async throws -> Data?
+    func loadDownloadedPreview(assetID: UUID) throws -> Data?
     func storeDownloadedPreview(assetID: UUID, sourceBytes: Data) async throws -> Data
 }
