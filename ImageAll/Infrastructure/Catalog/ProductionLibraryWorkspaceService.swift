@@ -7,22 +7,25 @@ enum ProductionLibraryWorkspaceError: Error {
 struct ProductionLibraryWorkspaceService: LibraryWorkspacePort, Sendable {
     let sourceRepository: GRDBFolderSourceAuthorizationRepository
     let authorization: any FolderAuthorizationCommandPort
+    let photosConnection: PhotosLibraryConnectionService
     let queue: GRDBJobQueue
     let executionCoordinator: JobExecutionCoordinator
     let query: GRDBAssetCatalogQueryRepository
     let tags: GRDBTagCatalogRepository
-    let derivedImages: any DerivedImageCachePort
+    let assetImages: LibraryAssetImageLoader
     let personalizationReview: PersonalizationReviewService
     let clock: any JobClock
 
     func fetchSources() throws -> [LibrarySourceSummary] {
-        try sourceRepository.fetchAllFolderSources().map {
-            LibrarySourceSummary(id: $0.id, displayName: $0.displayName, state: $0.state)
-        }
+        try photosConnection.fetchSources()
     }
 
     func connectFolder() async throws -> ConnectFolderOutcome {
         try await authorization.connectFolder()
+    }
+
+    func connectPhotos() async throws -> ConnectPhotosOutcome {
+        try await photosConnection.connect()
     }
 
     func reauthorizeFolder(sourceID: UUID) async throws -> ReauthorizeFolderOutcome {
@@ -30,7 +33,10 @@ struct ProductionLibraryWorkspaceService: LibraryWorkspacePort, Sendable {
     }
 
     func disableFolderSource(sourceID: UUID) async throws -> DisableFolderOutcome {
-        try await authorization.disableFolderSource(sourceID: sourceID)
+        if try photosConnection.fetchSources().first(where: { $0.id == sourceID })?.kind == .photos {
+            return try photosConnection.disable(sourceID: sourceID)
+        }
+        return try await authorization.disableFolderSource(sourceID: sourceID)
     }
 
     func enqueueReconcile(sourceIDs: [UUID]) throws {
@@ -45,6 +51,11 @@ struct ProductionLibraryWorkspaceService: LibraryWorkspacePort, Sendable {
             )
             _ = try queue.enqueue(command)
         }
+        for source in try photosConnection.fetchSources()
+            where source.kind == .photos && source.state == .active && requested.contains(source.id)
+        {
+            try photosConnection.enqueueReconcile(sourceID: source.id)
+        }
     }
 
     func runPendingReconcileJobs() throws {
@@ -52,6 +63,19 @@ struct ProductionLibraryWorkspaceService: LibraryWorkspacePort, Sendable {
             owner: "imageall-reconcile-\(UUID().uuidString.lowercased())",
             leaseDurationMs: 60_000,
             allowedKinds: [FolderReconcileJobFactory.kind]
+        )
+        while let result = try executionCoordinator.claimAndExecuteOnce(claim) {
+            guard result.snapshot.state == .completed else {
+                throw ProductionLibraryWorkspaceError.reconcileFailed
+            }
+        }
+    }
+
+    func runPendingPhotosReconcileJobs() throws {
+        let claim = ClaimNextInput(
+            owner: "imageall-photos-reconcile-\(UUID().uuidString.lowercased())",
+            leaseDurationMs: 60_000,
+            allowedKinds: [PhotosReconcileJobFactory.kind]
         )
         while let result = try executionCoordinator.claimAndExecuteOnce(claim) {
             guard result.snapshot.state == .completed else {
@@ -80,23 +104,11 @@ struct ProductionLibraryWorkspaceService: LibraryWorkspacePort, Sendable {
     }
 
     func loadThumbnail(assetID: UUID) async throws -> Data {
-        try await derivedImages.loadOrGenerate(
-            DerivedImageRequest(
-                assetID: assetID,
-                variant: .gridRegular,
-                persistence: .memoryFallbackAllowed
-            )
-        ).encodedBytes
+        try await assetImages.load(assetID: assetID, variant: .grid)
     }
 
     func loadPreview(assetID: UUID) async throws -> Data {
-        try await derivedImages.loadOrGenerate(
-            DerivedImageRequest(
-                assetID: assetID,
-                variant: .preview,
-                persistence: .memoryFallbackAllowed
-            )
-        ).encodedBytes
+        try await assetImages.load(assetID: assetID, variant: .preview)
     }
 
     func listTags() throws -> [TagListItem] {

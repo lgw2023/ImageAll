@@ -4,6 +4,32 @@ import XCTest
 
 @MainActor
 final class LibraryWorkspaceModelTests: XCTestCase {
+    func testConnectPhotosRunsPhotosReconcileAndLoadsUnifiedGrid() async {
+        let sourceID = UUID()
+        let asset = Self.makeAsset(sourceID: sourceID, fileName: "IMG_0001.HEIC")
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: sourceID,
+                kind: .photos,
+                displayName: "Apple Photos",
+                state: .active
+            ),
+            reconciledItems: [asset]
+        )
+        let model = LibraryWorkspaceModel(service: service)
+
+        await model.start()
+        XCTAssertEqual(model.phase, .empty)
+
+        await model.connectPhotos()
+
+        XCTAssertEqual(model.phase, .content)
+        XCTAssertEqual(model.sources.map(\.kind), [.photos])
+        XCTAssertEqual(model.items.map(\.assetID), [asset.assetID])
+        XCTAssertEqual(service.photosConnectCallCount, 1)
+        XCTAssertEqual(service.photosReconcileRunCount, 1)
+    }
+
     func testConnectFolderRunsReconcileAndLoadsFirstPage() async {
         let sourceID = UUID()
         let asset = Self.makeAsset(sourceID: sourceID)
@@ -619,6 +645,8 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
     private var storedSources: [LibrarySourceSummary] = []
     private var storedItems: [AssetGridItemProjection] = []
     private var storedReconcileRunCount = 0
+    private var storedPhotosConnectCallCount = 0
+    private var storedPhotosReconcileRunCount = 0
     private var storedReauthorizeCallCount = 0
     private var storedDisableCallCount = 0
     private var storedMutateTagCallCount = 0
@@ -650,6 +678,14 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
         lock.withLock { storedReconcileRunCount }
     }
 
+    var photosConnectCallCount: Int {
+        lock.withLock { storedPhotosConnectCallCount }
+    }
+
+    var photosReconcileRunCount: Int {
+        lock.withLock { storedPhotosReconcileRunCount }
+    }
+
     var lastFilter: AssetPageFilter {
         lock.withLock { storedLastFilter }
     }
@@ -676,6 +712,14 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
 
     func connectFolder() async throws -> ConnectFolderOutcome {
         lock.withLock { storedSources = [connectedSource] }
+        return .connected(sourceID: connectedSource.id)
+    }
+
+    func connectPhotos() async throws -> ConnectPhotosOutcome {
+        lock.withLock {
+            storedPhotosConnectCallCount += 1
+            storedSources = [connectedSource]
+        }
         return .connected(sourceID: connectedSource.id)
     }
 
@@ -715,6 +759,16 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
         }
         lock.withLock {
             storedReconcileRunCount += 1
+            storedItems = reconciledItems
+        }
+    }
+
+    func runPendingPhotosReconcileJobs() throws {
+        if scanFails {
+            throw FakeWorkspaceError.scanFailed
+        }
+        lock.withLock {
+            storedPhotosReconcileRunCount += 1
             storedItems = reconciledItems
         }
     }

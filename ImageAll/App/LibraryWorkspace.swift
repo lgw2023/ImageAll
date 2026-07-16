@@ -83,6 +83,10 @@ final class LibraryWorkspaceModel: ObservableObject {
         return sources.contains { $0.state == .active }
     }
 
+    func isPhotosSource(_ sourceID: UUID) -> Bool {
+        sources.first(where: { $0.id == sourceID })?.kind == .photos
+    }
+
     func start() async {
         guard !started else { return }
         started = true
@@ -104,11 +108,34 @@ final class LibraryWorkspaceModel: ObservableObject {
         }
     }
 
+    func connectPhotos() async {
+        guard !isBusy else { return }
+        phase = .scanning
+        do {
+            _ = try await service.connectPhotos()
+            let service = service
+            sources = try await Self.offMain { try service.fetchSources() }
+            try await Self.offMain { try service.runPendingPhotosReconcileJobs() }
+            await loadFirstPage()
+        } catch {
+            phase = .failed(.connectionFailed)
+        }
+    }
+
     func reauthorizeSource(_ sourceID: UUID) async {
         guard !isBusy else { return }
         let previousPhase = phase
         notice = nil
         do {
+            if sources.first(where: { $0.id == sourceID })?.kind == .photos {
+                _ = try await service.connectPhotos()
+                let service = service
+                sources = try await Self.offMain { try service.fetchSources() }
+                phase = .scanning
+                try await Self.offMain { try service.runPendingPhotosReconcileJobs() }
+                await loadFirstPage()
+                return
+            }
             switch try await service.reauthorizeFolder(sourceID: sourceID) {
             case .cancelled:
                 return
@@ -149,6 +176,7 @@ final class LibraryWorkspaceModel: ObservableObject {
             try await Self.offMain {
                 try service.enqueueReconcile(sourceIDs: sourceIDs)
                 try service.runPendingReconcileJobs()
+                try service.runPendingPhotosReconcileJobs()
             }
         } catch {
             phase = .failed(.scanFailed)
@@ -375,6 +403,7 @@ final class LibraryWorkspaceModel: ObservableObject {
             do {
                 try await Self.offMain {
                     try service.runPendingReconcileJobs()
+                    try service.runPendingPhotosReconcileJobs()
                 }
                 startPersonalizationRunnerIfNeeded()
             } catch {
@@ -1004,6 +1033,7 @@ struct LibraryWorkspaceView: View {
     @State private var tagPendingRename: TagListItem?
     @State private var renamedTagName = ""
     @State private var tagPendingArchive: TagListItem?
+    @State private var showPhotosConnectionExplanation = false
     @FocusState private var newTagFieldFocused: Bool
     @FocusState private var contentFocused: Bool
 
@@ -1129,6 +1159,18 @@ struct LibraryWorkspaceView: View {
         } message: { _ in
             Text("ImageAll 会停止该来源的扫描任务，但保留已索引的照片、人工标签和历史；原照片不会被修改。")
         }
+        .confirmationDialog(
+            "连接 Apple Photos？",
+            isPresented: $showPhotosConnectionExplanation,
+            titleVisibility: .visible
+        ) {
+            Button("继续并请求照片权限") {
+                Task { await model.connectPhotos() }
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("ImageAll 会只读访问静态照片和元数据，在自身容器保存索引、标签和缓存；不会修改、移动或删除 Apple Photos 中的照片。iCloud 原图不会自动下载。")
+        }
     }
 
     var body: some View {
@@ -1242,6 +1284,15 @@ struct LibraryWorkspaceView: View {
                 }
                 .buttonStyle(.plain)
                 .disabled(model.isBusy)
+                if !model.sources.contains(where: { $0.kind == .photos }) {
+                    Button {
+                        showPhotosConnectionExplanation = true
+                    } label: {
+                        Label("连接 Apple Photos…", systemImage: "photo.on.rectangle")
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(model.isBusy)
+                }
             }
             Section("标签") {
                 ForEach(model.tags, id: \.id) { tag in
@@ -1282,7 +1333,10 @@ struct LibraryWorkspaceView: View {
 
     private func sourceRow(_ source: LibrarySourceSummary) -> some View {
         HStack(spacing: 8) {
-            Label(source.displayName, systemImage: sourceIcon(source.state))
+            Label(
+                source.displayName,
+                systemImage: source.kind == .photos ? "photo.on.rectangle" : sourceIcon(source.state)
+            )
                 .lineLimit(1)
             Spacer(minLength: 4)
             if let status = sourceStatusText(source.state) {
@@ -1297,7 +1351,7 @@ struct LibraryWorkspaceView: View {
             Button("在图库中查看") {
                 selection = .source(source.id)
             }
-            Button("立即重扫") {
+            Button(source.kind == .photos ? "立即同步" : "立即重扫") {
                 selection = .source(source.id)
                 Task {
                     await model.selectSource(source.id)
@@ -1311,7 +1365,7 @@ struct LibraryWorkspaceView: View {
             }
             .disabled(
                 model.isBusy ||
-                (source.state != .unavailable && source.state != .authorizationRequired)
+                (source.kind == .folder && source.state != .unavailable && source.state != .authorizationRequired)
             )
 
             Divider()
@@ -1342,6 +1396,10 @@ struct LibraryWorkspaceView: View {
                     Task { await model.connectFolder() }
                 }
                 .buttonStyle(.borderedProminent)
+                Button("连接 Apple Photos…") {
+                    showPhotosConnectionExplanation = true
+                }
+                .buttonStyle(.bordered)
             }
         case .content:
             if case .overview = model.reviewMode {
@@ -1406,7 +1464,7 @@ struct LibraryWorkspaceView: View {
             ContentUnavailableView {
                 Label(errorTitle(error), systemImage: "exclamationmark.triangle")
             } description: {
-                Text("原照片没有被修改。请检查文件夹是否仍在线并重试。")
+                Text("原照片没有被修改。请检查来源是否仍可用、授权是否有效，然后重试。")
             } actions: {
                 Button("重试") {
                     Task { await model.rescan() }
@@ -1871,7 +1929,7 @@ struct LibraryWorkspaceView: View {
 
     private func errorTitle(_ error: LibraryWorkspaceSafeError) -> String {
         switch error {
-        case .connectionFailed: return "无法连接文件夹"
+        case .connectionFailed: return "无法连接照片来源"
         case .scanFailed: return "扫描未完成"
         case .catalogFailed: return "无法读取图库"
         }
@@ -1922,7 +1980,7 @@ private struct SinglePhotoView: View {
                     .scaledToFit()
                     .padding(24)
             } else {
-                Image(systemName: placeholderIcon)
+                Image(systemName: model.isPhotosSource(item.sourceID) ? "icloud.and.arrow.down" : placeholderIcon)
                     .font(.system(size: 48))
                     .foregroundStyle(.secondary)
             }
@@ -1968,7 +2026,7 @@ private struct AssetThumbnailView: View {
                         .scaledToFill()
                         .frame(width: proxy.size.width, height: proxy.size.height)
                 } else {
-                    Image(systemName: placeholderIcon)
+                    Image(systemName: model.isPhotosSource(item.sourceID) ? "icloud.and.arrow.down" : placeholderIcon)
                         .font(.title)
                         .foregroundStyle(.secondary)
                 }

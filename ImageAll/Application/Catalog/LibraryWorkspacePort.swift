@@ -2,8 +2,26 @@ import Foundation
 
 struct LibrarySourceSummary: Identifiable, Equatable, Sendable {
     let id: UUID
+    let kind: SourceKind
     let displayName: String
     let state: SourceState
+
+    init(
+        id: UUID,
+        kind: SourceKind = .folder,
+        displayName: String,
+        state: SourceState
+    ) {
+        self.id = id
+        self.kind = kind
+        self.displayName = displayName
+        self.state = state
+    }
+}
+
+enum ConnectPhotosOutcome: Equatable, Sendable {
+    case connected(sourceID: UUID)
+    case alreadyConnected(sourceID: UUID)
 }
 
 enum LibraryWorkspacePhase: Equatable, Sendable {
@@ -70,10 +88,12 @@ enum LibraryInspectorTagDecisionState: Equatable, Sendable {
 protocol LibraryWorkspacePort: Sendable {
     func fetchSources() throws -> [LibrarySourceSummary]
     func connectFolder() async throws -> ConnectFolderOutcome
+    func connectPhotos() async throws -> ConnectPhotosOutcome
     func reauthorizeFolder(sourceID: UUID) async throws -> ReauthorizeFolderOutcome
     func disableFolderSource(sourceID: UUID) async throws -> DisableFolderOutcome
     func enqueueReconcile(sourceIDs: [UUID]) throws
     func runPendingReconcileJobs() throws
+    func runPendingPhotosReconcileJobs() throws
     func runPendingPersonalizationJobs() throws
     func fetchAssetPage(
         filter: AssetPageFilter,

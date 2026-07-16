@@ -53,6 +53,11 @@ struct JobSafeErrorCode: Sendable, Equatable, Hashable {
     static let personalizationInsufficientSamples = JobSafeErrorCode(unchecked: "personalizationInsufficientSamples")
     static let personalizationTagArchived = JobSafeErrorCode(unchecked: "personalizationTagArchived")
     static let personalizationPersistenceFailure = JobSafeErrorCode(unchecked: "personalizationPersistenceFailure")
+    static let photosPayloadInvalid = JobSafeErrorCode(unchecked: "photosPayloadInvalid")
+    static let photosCheckpointInvalid = JobSafeErrorCode(unchecked: "photosCheckpointInvalid")
+    static let photosAuthorizationRequired = JobSafeErrorCode(unchecked: "photosAuthorizationRequired")
+    static let photosSourceUnavailable = JobSafeErrorCode(unchecked: "photosSourceUnavailable")
+    static let photosPersistenceFailure = JobSafeErrorCode(unchecked: "photosPersistenceFailure")
 
     private init(unchecked rawValue: String) {
         self.rawValue = rawValue

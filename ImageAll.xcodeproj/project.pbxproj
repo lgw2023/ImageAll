@@ -7,6 +7,12 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		OO0000010000000000000101 /* PhotosIntegrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = OO0001010000000000000101 /* PhotosIntegrationTests.swift */; };
+		OO0000010000000000000001 /* PhotosLibraryContracts.swift in Sources */ = {isa = PBXBuildFile; fileRef = OO0001010000000000000001 /* PhotosLibraryContracts.swift */; };
+		OO0000010000000000000002 /* PhotosLibraryConnectionService.swift in Sources */ = {isa = PBXBuildFile; fileRef = OO0001010000000000000002 /* PhotosLibraryConnectionService.swift */; };
+		OO0000010000000000000003 /* PhotosReconcileHandler.swift in Sources */ = {isa = PBXBuildFile; fileRef = OO0001010000000000000003 /* PhotosReconcileHandler.swift */; };
+		OO0000010000000000000004 /* PhotoKitPhotosLibraryAdapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = OO0001010000000000000004 /* PhotoKitPhotosLibraryAdapter.swift */; };
+		OO0000010000000000000005 /* LibraryAssetImageLoader.swift in Sources */ = {isa = PBXBuildFile; fileRef = OO0001010000000000000005 /* LibraryAssetImageLoader.swift */; };
 		AA0000010000000000000001 /* ImageAllApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0001010000000000000001 /* ImageAllApp.swift */; };
 		AA0000010000000000000002 /* RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0001010000000000000002 /* RootView.swift */; };
 		AA0000010000000000000003 /* CompositionRoot.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0001010000000000000003 /* CompositionRoot.swift */; };
@@ -220,6 +226,12 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		OO0001010000000000000101 /* PhotosIntegrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhotosIntegrationTests.swift; sourceTree = "<group>"; };
+		OO0001010000000000000001 /* PhotosLibraryContracts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhotosLibraryContracts.swift; sourceTree = "<group>"; };
+		OO0001010000000000000002 /* PhotosLibraryConnectionService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhotosLibraryConnectionService.swift; sourceTree = "<group>"; };
+		OO0001010000000000000003 /* PhotosReconcileHandler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhotosReconcileHandler.swift; sourceTree = "<group>"; };
+		OO0001010000000000000004 /* PhotoKitPhotosLibraryAdapter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhotoKitPhotosLibraryAdapter.swift; sourceTree = "<group>"; };
+		OO0001010000000000000005 /* LibraryAssetImageLoader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryAssetImageLoader.swift; sourceTree = "<group>"; };
 		AA0001010000000000000001 /* ImageAllApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImageAllApp.swift; sourceTree = "<group>"; };
 		AA0001010000000000000002 /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
 		AA0001010000000000000003 /* CompositionRoot.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CompositionRoot.swift; sourceTree = "<group>"; };
@@ -468,6 +480,7 @@
 		AA0006010000000000000003 /* ImageAllTests */ = {
 			isa = PBXGroup;
 			children = (
+				OO0006010000000000000003 /* Photos */,
 				JJ0001010000000000000101 /* LibraryWorkspaceModelTests.swift */,
 				KK0006010000000000000003 /* Personalization */,
 				AA0006010000000000000008 /* Startup */,
@@ -492,6 +505,33 @@
 				NN0001010000000000000101 /* FullLibrarySuggestionsJobTests.swift */,
 			);
 			path = Personalization;
+			sourceTree = "<group>";
+		};
+		OO0006010000000000000003 /* Photos */ = {
+			isa = PBXGroup;
+			children = (
+				OO0001010000000000000101 /* PhotosIntegrationTests.swift */,
+			);
+			path = Photos;
+			sourceTree = "<group>";
+		};
+		OO0006010000000000000001 /* Photos */ = {
+			isa = PBXGroup;
+			children = (
+				OO0001010000000000000001 /* PhotosLibraryContracts.swift */,
+			);
+			path = Photos;
+			sourceTree = "<group>";
+		};
+		OO0006010000000000000002 /* Photos */ = {
+			isa = PBXGroup;
+			children = (
+				OO0001010000000000000002 /* PhotosLibraryConnectionService.swift */,
+				OO0001010000000000000003 /* PhotosReconcileHandler.swift */,
+				OO0001010000000000000004 /* PhotoKitPhotosLibraryAdapter.swift */,
+				OO0001010000000000000005 /* LibraryAssetImageLoader.swift */,
+			);
+			path = Photos;
 			sourceTree = "<group>";
 		};
 		FF0006010000000000000003 /* Catalog */ = {
@@ -531,6 +571,7 @@
 		AA0006010000000000000006 /* Application */ = {
 			isa = PBXGroup;
 			children = (
+				OO0006010000000000000001 /* Photos */,
 				KK0006010000000000000001 /* Personalization */,
 				HH0006010000000000000001 /* Authorization */,
 			II0006010000000000000001 /* DerivedImage */,
@@ -652,6 +693,7 @@
 		CC0006010000000000000001 /* Infrastructure */ = {
 			isa = PBXGroup;
 			children = (
+				OO0006010000000000000002 /* Photos */,
 				KK0006010000000000000002 /* Personalization */,
 				HH0006010000000000000002 /* Authorization */,
 				FF0006010000000000000002 /* Catalog */,
@@ -1047,6 +1089,11 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				OO0000010000000000000001 /* PhotosLibraryContracts.swift in Sources */,
+				OO0000010000000000000002 /* PhotosLibraryConnectionService.swift in Sources */,
+				OO0000010000000000000003 /* PhotosReconcileHandler.swift in Sources */,
+				OO0000010000000000000004 /* PhotoKitPhotosLibraryAdapter.swift in Sources */,
+				OO0000010000000000000005 /* LibraryAssetImageLoader.swift in Sources */,
 				KK0000010000000000000002 /* PersonalizationCatalogPort.swift in Sources */,
 				MM0000010000000000000001 /* PersonalizedSuggestionService.swift in Sources */,
 				LL0000010000000000000001 /* FeaturePrintCacheService.swift in Sources */,
@@ -1165,6 +1212,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				OO0000010000000000000101 /* PhotosIntegrationTests.swift in Sources */,
 				MM0000010000000000000101 /* PersonalizedSuggestionServiceTests.swift in Sources */,
 				LL0000010000000000000101 /* FeaturePrintCacheTests.swift in Sources */,
 				KK0000010000000000000101 /* PersonalizationPersistenceTests.swift in Sources */,
@@ -1399,6 +1447,7 @@
 				INFOPLIST_KEY_CFBundleDisplayName = ImageAll;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.photography";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "读取照片并在本地建立自定义标签和建议；ImageAll 不会修改或删除您的照片。";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
@@ -1427,6 +1476,7 @@
 				INFOPLIST_KEY_CFBundleDisplayName = ImageAll;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.photography";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "读取照片并在本地建立自定义标签和建议；ImageAll 不会修改或删除您的照片。";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",

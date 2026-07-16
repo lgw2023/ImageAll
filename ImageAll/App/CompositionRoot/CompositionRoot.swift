@@ -42,6 +42,18 @@ struct CompositionRoot {
             clock: clock
         )
         let handler = FolderReconcileHandler(rootAccess: sourceAccess)
+        let photosAccess = PhotoKitPhotosLibraryAdapter()
+        let photosConnection = PhotosLibraryConnectionService(
+            database: runtime.database,
+            access: photosAccess,
+            clock: clock
+        )
+        let photosHandler = PhotosReconcileHandler(
+            database: runtime.database,
+            queue: runtime.jobQueue,
+            access: photosAccess,
+            clock: clock
+        )
         let featurePrintService = FeaturePrintCacheService(
             database: runtime.database,
             cachesDirectory: runtime.paths.cachesDirectory,
@@ -58,7 +70,7 @@ struct CompositionRoot {
         )
         let executionCoordinator = JobExecutionCoordinator(
             queue: runtime.jobQueue,
-            registry: MultiJobHandlerRegistry(handlers: [handler, personalizationHandler]),
+            registry: MultiJobHandlerRegistry(handlers: [handler, photosHandler, personalizationHandler]),
             leaseContextProvider: GRDBJobLeaseContextProvider(queue: runtime.jobQueue)
         )
         let derivedImages = DerivedImageCacheService(
@@ -66,6 +78,11 @@ struct CompositionRoot {
             cachesDirectory: runtime.paths.cachesDirectory,
             sourceAccess: sourceAccess,
             clock: clock
+        )
+        let assetImages = LibraryAssetImageLoader(
+            database: runtime.database,
+            fileImages: derivedImages,
+            photosImages: photosAccess
         )
         let personalizationReview = PersonalizationReviewService(
             database: runtime.database,
@@ -77,11 +94,12 @@ struct CompositionRoot {
         let service = ProductionLibraryWorkspaceService(
             sourceRepository: sourceRepository,
             authorization: authorization,
+            photosConnection: photosConnection,
             queue: runtime.jobQueue,
             executionCoordinator: executionCoordinator,
             query: GRDBAssetCatalogQueryRepository(database: runtime.database),
             tags: GRDBTagCatalogRepository(database: runtime.database),
-            derivedImages: derivedImages,
+            assetImages: assetImages,
             personalizationReview: personalizationReview,
             clock: clock
         )
