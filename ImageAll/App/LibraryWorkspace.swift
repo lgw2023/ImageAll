@@ -42,6 +42,7 @@ final class LibraryWorkspaceModel: ObservableObject {
     @Published fileprivate(set) var reviewNextCursor: ReviewQueueCursor?
     @Published var pendingSuggestionConfirmation: SuggestionEnqueueConfirmation?
     @Published private(set) var assetPendingSuggestions: [AssetPendingSuggestion] = []
+    @Published private(set) var cloudPreviewState: CloudPreviewPresentationState = .hidden
 
     fileprivate let review: any PersonalizationReviewPort
     private let service: any LibraryWorkspacePort
@@ -49,6 +50,8 @@ final class LibraryWorkspaceModel: ObservableObject {
     fileprivate var lastReviewMutation: ReviewMutationUndoRecord?
     private var personalizationRunnerTask: Task<Void, Never>?
     private var catalogReconcileTask: Task<Void, Never>?
+    private var cloudPreviewTask: Task<Void, Never>?
+    private var cloudPreviewRequestID: UUID?
     private var selectionAnchorID: UUID?
     private var selectedTagFilterDecisions: [UUID: PersistableTagDecision] = [:]
     private var selectedSourceID: UUID?
@@ -250,7 +253,78 @@ final class LibraryWorkspaceModel: ObservableObject {
     }
 
     func previewData(assetID: UUID) async -> Data? {
-        try? await service.loadPreview(assetID: assetID)
+        do {
+            let data = try await service.loadPreview(assetID: assetID)
+            if primarySelectedAssetID == assetID,
+               cloudPreviewState.assetID == assetID
+            {
+                cloudPreviewState = .hidden
+            }
+            return data
+        } catch PhotosLibraryError.cloudOnly {
+            if primarySelectedAssetID == assetID {
+                cloudPreviewState = .available(assetID: assetID)
+            }
+            return nil
+        } catch {
+            return nil
+        }
+    }
+
+    func downloadCloudPreview(assetID: UUID) {
+        guard primarySelectedAssetID == assetID else { return }
+        cancelCloudPreviewTask(resetToAvailable: false)
+        let requestID = UUID()
+        cloudPreviewRequestID = requestID
+        cloudPreviewState = .downloading(assetID: assetID, progress: 0)
+        let service = service
+        let model = self
+        cloudPreviewTask = Task {
+            do {
+                let data = try await service.downloadCloudPreview(assetID: assetID) { progress in
+                    Task { @MainActor in
+                        guard model.cloudPreviewRequestID == requestID,
+                              model.primarySelectedAssetID == assetID
+                        else {
+                            return
+                        }
+                        model.cloudPreviewState = .downloading(
+                            assetID: assetID,
+                            progress: min(max(progress, 0), 1)
+                        )
+                    }
+                }
+                try Task.checkCancellation()
+                guard model.cloudPreviewRequestID == requestID,
+                      model.primarySelectedAssetID == assetID
+                else {
+                    return
+                }
+                model.cloudPreviewState = .downloaded(assetID: assetID, data: data)
+                model.cloudPreviewRequestID = nil
+                model.cloudPreviewTask = nil
+            } catch is CancellationError {
+                guard model.cloudPreviewRequestID == requestID else { return }
+                model.cloudPreviewState = .available(assetID: assetID)
+                model.cloudPreviewRequestID = nil
+                model.cloudPreviewTask = nil
+            } catch {
+                guard model.cloudPreviewRequestID == requestID else { return }
+                model.cloudPreviewState = .failed(assetID: assetID)
+                model.cloudPreviewRequestID = nil
+                model.cloudPreviewTask = nil
+            }
+        }
+    }
+
+    func cancelCloudPreviewDownload(assetID: UUID) {
+        guard cloudPreviewState.assetID == assetID else { return }
+        cancelCloudPreviewTask(resetToAvailable: true)
+    }
+
+    func retryCloudPreviewDownload(assetID: UUID) {
+        guard cloudPreviewState == .failed(assetID: assetID) else { return }
+        downloadCloudPreview(assetID: assetID)
     }
 
     func selectAsset(
@@ -280,6 +354,7 @@ final class LibraryWorkspaceModel: ObservableObject {
         if selectedAssetIDs.count != 1 {
             isSinglePhotoPresented = false
         }
+        resetCloudPreviewIfSelectionChanged()
         await refreshInspector()
     }
 
@@ -507,6 +582,7 @@ final class LibraryWorkspaceModel: ObservableObject {
             let hadSelection = !selectedAssetIDs.isEmpty
             let visibleIDs = Set(page.items.map(\.assetID))
             selectedAssetIDs.formIntersection(visibleIDs)
+            resetCloudPreviewIfSelectionChanged()
             if selectedAssetIDs.isEmpty {
                 isSinglePhotoPresented = false
                 inspectorDetail = nil
@@ -716,6 +792,7 @@ final class LibraryWorkspaceModel: ObservableObject {
 
 
     private func refreshInspector() async {
+        resetCloudPreviewIfSelectionChanged()
         let assetIDs = Array(selectedAssetIDs)
         guard !assetIDs.isEmpty else {
             inspectorDetail = nil
@@ -782,6 +859,26 @@ final class LibraryWorkspaceModel: ObservableObject {
         _ operation: @escaping @Sendable () throws -> T
     ) async throws -> T {
         try await Task.detached(priority: .userInitiated, operation: operation).value
+    }
+
+    private func resetCloudPreviewIfSelectionChanged() {
+        guard cloudPreviewState.assetID != nil,
+              cloudPreviewState.assetID != primarySelectedAssetID
+        else {
+            return
+        }
+        cancelCloudPreviewTask(resetToAvailable: false)
+        cloudPreviewState = .hidden
+    }
+
+    private func cancelCloudPreviewTask(resetToAvailable: Bool) {
+        let assetID = cloudPreviewState.assetID
+        cloudPreviewRequestID = nil
+        cloudPreviewTask?.cancel()
+        cloudPreviewTask = nil
+        if resetToAvailable, let assetID {
+            cloudPreviewState = .available(assetID: assetID)
+        }
     }
 }
 
@@ -2233,22 +2330,77 @@ private struct InspectorPreview: View {
     var body: some View {
         ZStack {
             Color(nsColor: .controlBackgroundColor)
-            if let image {
-                Image(nsImage: image)
+            if let displayedImage {
+                Image(nsImage: displayedImage)
                     .resizable()
                     .scaledToFit()
             } else {
-                Image(systemName: "photo")
-                    .font(.largeTitle)
-                    .foregroundStyle(.secondary)
+                cloudPreviewControls
             }
         }
         .frame(maxWidth: .infinity)
         .aspectRatio(4 / 3, contentMode: .fit)
         .clipShape(RoundedRectangle(cornerRadius: 7))
         .task(id: assetID) {
+            image = nil
             guard let data = await model.previewData(assetID: assetID) else { return }
             image = NSImage(data: data)
+        }
+    }
+
+    private var displayedImage: NSImage? {
+        if case let .downloaded(downloadedAssetID, data) = model.cloudPreviewState,
+           downloadedAssetID == assetID
+        {
+            return NSImage(data: data)
+        }
+        return image
+    }
+
+    @ViewBuilder
+    private var cloudPreviewControls: some View {
+        switch model.cloudPreviewState {
+        case let .available(cloudAssetID) where cloudAssetID == assetID:
+            VStack(spacing: 10) {
+                Image(systemName: "icloud.and.arrow.down")
+                    .font(.largeTitle)
+                    .foregroundStyle(.secondary)
+                Text("此照片仅存储在 iCloud")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Button("从 iCloud 获取预览") {
+                    model.downloadCloudPreview(assetID: assetID)
+                }
+                .buttonStyle(.borderedProminent)
+            }
+        case let .downloading(cloudAssetID, progress) where cloudAssetID == assetID:
+            VStack(spacing: 10) {
+                ProgressView(value: progress)
+                    .frame(maxWidth: 180)
+                Text("正在从 iCloud 获取预览 · \(Int(progress * 100))%")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Button("取消") {
+                    model.cancelCloudPreviewDownload(assetID: assetID)
+                }
+            }
+        case let .failed(cloudAssetID) where cloudAssetID == assetID:
+            VStack(spacing: 10) {
+                Image(systemName: "exclamationmark.icloud")
+                    .font(.largeTitle)
+                    .foregroundStyle(.secondary)
+                Text("无法获取 iCloud 预览")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Button("重试") {
+                    model.retryCloudPreviewDownload(assetID: assetID)
+                }
+                .buttonStyle(.borderedProminent)
+            }
+        default:
+            Image(systemName: "photo")
+                .font(.largeTitle)
+                .foregroundStyle(.secondary)
         }
     }
 }

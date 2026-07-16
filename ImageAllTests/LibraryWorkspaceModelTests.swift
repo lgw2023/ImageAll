@@ -119,6 +119,117 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertTrue(model.selectedSourceIsPhotos)
     }
 
+    func testCloudOnlyInspectorPreviewWaitsForExplicitDownloadAndPublishesProgress() async {
+        let sourceID = UUID()
+        let asset = Self.makeAsset(sourceID: sourceID, fileName: "cloud.jpg")
+        let downloaded = Data("downloaded-preview".utf8)
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: sourceID,
+                kind: .photos,
+                displayName: "Apple Photos",
+                state: .active
+            ),
+            reconciledItems: [asset],
+            initialItems: [asset],
+            startsConnected: true,
+            previewError: .cloudOnly,
+            cloudPreviewData: downloaded,
+            cloudPreviewProgress: [0.4, 1.0]
+        )
+        let model = LibraryWorkspaceModel(service: service)
+        await model.start()
+        await model.selectAsset(asset.assetID)
+
+        let localPreview = await model.previewData(assetID: asset.assetID)
+        XCTAssertNil(localPreview)
+        XCTAssertEqual(model.cloudPreviewState, .available(assetID: asset.assetID))
+        XCTAssertEqual(service.cloudPreviewDownloadCallCount, 0)
+
+        model.downloadCloudPreview(assetID: asset.assetID)
+        await waitForCloudPreviewState(
+            .downloading(assetID: asset.assetID, progress: 0.4),
+            model: model
+        )
+        await waitForCloudPreviewState(
+            .downloaded(assetID: asset.assetID, data: downloaded),
+            model: model
+        )
+        XCTAssertEqual(service.cloudPreviewDownloadCallCount, 1)
+    }
+
+    func testCloudPreviewFailureCanRetryTheCurrentAsset() async {
+        let sourceID = UUID()
+        let asset = Self.makeAsset(sourceID: sourceID, fileName: "retry-cloud.jpg")
+        let downloaded = Data("retried-preview".utf8)
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: sourceID,
+                kind: .photos,
+                displayName: "Apple Photos",
+                state: .active
+            ),
+            reconciledItems: [asset],
+            initialItems: [asset],
+            startsConnected: true,
+            previewError: .cloudOnly,
+            cloudPreviewData: downloaded,
+            cloudPreviewProgress: [0.25],
+            cloudPreviewFailureCount: 1
+        )
+        let model = LibraryWorkspaceModel(service: service)
+        await model.start()
+        await model.selectAsset(asset.assetID)
+        _ = await model.previewData(assetID: asset.assetID)
+
+        model.downloadCloudPreview(assetID: asset.assetID)
+        await waitForCloudPreviewState(.failed(assetID: asset.assetID), model: model)
+
+        model.retryCloudPreviewDownload(assetID: asset.assetID)
+        await waitForCloudPreviewState(
+            .downloaded(assetID: asset.assetID, data: downloaded),
+            model: model
+        )
+        XCTAssertEqual(service.cloudPreviewDownloadCallCount, 2)
+    }
+
+    func testCloudPreviewDownloadCanBeCancelledWithoutChangingSelection() async {
+        let sourceID = UUID()
+        let asset = Self.makeAsset(sourceID: sourceID, fileName: "cancel-cloud.jpg")
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: sourceID,
+                kind: .photos,
+                displayName: "Apple Photos",
+                state: .active
+            ),
+            reconciledItems: [asset],
+            initialItems: [asset],
+            startsConnected: true,
+            previewError: .cloudOnly,
+            cloudPreviewData: Data("should-not-publish".utf8),
+            cloudPreviewProgress: [0.2, 0.6, 1.0]
+        )
+        let model = LibraryWorkspaceModel(service: service)
+        await model.start()
+        await model.selectAsset(asset.assetID)
+        _ = await model.previewData(assetID: asset.assetID)
+
+        model.downloadCloudPreview(assetID: asset.assetID)
+        await waitForCloudPreviewState(
+            .downloading(assetID: asset.assetID, progress: 0.2),
+            model: model
+        )
+        model.cancelCloudPreviewDownload(assetID: asset.assetID)
+        await waitForCloudPreviewState(.available(assetID: asset.assetID), model: model)
+        for _ in 0 ..< 10_000 where service.cloudPreviewCancellationCount == 0 {
+            await Task.yield()
+        }
+
+        XCTAssertEqual(model.primarySelectedAssetID, asset.assetID)
+        XCTAssertEqual(service.cloudPreviewCancellationCount, 1)
+    }
+
     func testConnectFolderRunsReconcileAndLoadsFirstPage() async {
         let sourceID = UUID()
         let asset = Self.makeAsset(sourceID: sourceID)
@@ -794,6 +905,17 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTFail("catalog items did not publish")
     }
 
+    private func waitForCloudPreviewState(
+        _ expected: CloudPreviewPresentationState,
+        model: LibraryWorkspaceModel
+    ) async {
+        for _ in 0 ..< 10_000 {
+            if model.cloudPreviewState == expected { return }
+            await Task.yield()
+        }
+        XCTFail("cloud preview state did not become \(expected)")
+    }
+
     private static func makeAsset(
         sourceID: UUID,
         fileName: String = "sample.jpg",
@@ -840,8 +962,14 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
     private let blocksReconcileRuns: Bool
     private let photosAuthorizationFails: Bool
     private let catalogReconcileProgress: CatalogReconcileProgress?
+    private let previewError: PhotosLibraryError?
+    private let cloudPreviewData: Data
+    private let cloudPreviewProgress: [Double]
+    private let cloudPreviewFailureCount: Int
     private let reconcileGate = DispatchSemaphore(value: 0)
     private var storedHasStartedBlockedReconcile = false
+    private var storedCloudPreviewDownloadCallCount = 0
+    private var storedCloudPreviewCancellationCount = 0
     private var storedTags: [TagListItem]
     private var decisions: [UUID: [UUID: TagDecisionQueryState]] = [:]
 
@@ -856,7 +984,11 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
         startsConnected: Bool = false,
         blocksReconcileRuns: Bool = false,
         photosAuthorizationFails: Bool = false,
-        catalogReconcileProgress: CatalogReconcileProgress? = nil
+        catalogReconcileProgress: CatalogReconcileProgress? = nil,
+        previewError: PhotosLibraryError? = nil,
+        cloudPreviewData: Data = Data(),
+        cloudPreviewProgress: [Double] = [],
+        cloudPreviewFailureCount: Int = 0
     ) {
         self.connectedSource = connectedSource
         self.reconciledItems = reconciledItems
@@ -866,6 +998,10 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
         self.blocksReconcileRuns = blocksReconcileRuns
         self.photosAuthorizationFails = photosAuthorizationFails
         self.catalogReconcileProgress = catalogReconcileProgress
+        self.previewError = previewError
+        self.cloudPreviewData = cloudPreviewData
+        self.cloudPreviewProgress = cloudPreviewProgress
+        self.cloudPreviewFailureCount = cloudPreviewFailureCount
         storedSources = startsConnected ? [connectedSource] : []
         storedItems = initialItems
         storedTags = tags
@@ -909,6 +1045,14 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
 
     var lastSort: AssetPageSort {
         lock.withLock { storedLastSort }
+    }
+
+    var cloudPreviewDownloadCallCount: Int {
+        lock.withLock { storedCloudPreviewDownloadCallCount }
+    }
+
+    var cloudPreviewCancellationCount: Int {
+        lock.withLock { storedCloudPreviewCancellationCount }
     }
 
     func fetchSources() throws -> [LibrarySourceSummary] {
@@ -1038,7 +1182,37 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
     }
 
     func loadPreview(assetID: UUID) async throws -> Data {
-        Data()
+        if let previewError {
+            throw previewError
+        }
+        return Data()
+    }
+
+    func downloadCloudPreview(
+        assetID: UUID,
+        onProgress: @escaping @Sendable (Double) -> Void
+    ) async throws -> Data {
+        let callCount = lock.withLock {
+            storedCloudPreviewDownloadCallCount += 1
+            return storedCloudPreviewDownloadCallCount
+        }
+        do {
+            for progress in cloudPreviewProgress {
+                try Task.checkCancellation()
+                onProgress(progress)
+                for _ in 0 ..< 100 {
+                    try Task.checkCancellation()
+                    await Task.yield()
+                }
+            }
+            if callCount <= cloudPreviewFailureCount {
+                throw FakeWorkspaceError.cloudPreviewFailed
+            }
+            return cloudPreviewData
+        } catch is CancellationError {
+            lock.withLock { storedCloudPreviewCancellationCount += 1 }
+            throw CancellationError()
+        }
     }
 
     func listTags() throws -> [TagListItem] {
@@ -1182,6 +1356,7 @@ private enum FakeWorkspaceError: Error {
     case notFound
     case tagMutationFailed
     case sourceActionFailed
+    case cloudPreviewFailed
 }
 
 private final class FakePersonalizationReviewPort: PersonalizationReviewPort, @unchecked Sendable {

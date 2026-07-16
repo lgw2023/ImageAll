@@ -55,6 +55,10 @@ enum DerivedImageQuotaPolicy {
     }
 }
 
+enum DownloadedPreviewCachePolicy {
+    static let publishedQuotaBytes: UInt64 = 512 * 1024 * 1024
+}
+
 struct DerivedImageCacheEntryRow: Equatable, Sendable {
     let id: UUID
     let assetID: UUID

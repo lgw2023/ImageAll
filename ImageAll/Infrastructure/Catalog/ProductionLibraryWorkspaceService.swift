@@ -148,6 +148,13 @@ struct ProductionLibraryWorkspaceService: LibraryWorkspacePort, Sendable {
         try await assetImages.load(assetID: assetID, variant: .preview)
     }
 
+    func downloadCloudPreview(
+        assetID: UUID,
+        onProgress: @escaping @Sendable (Double) -> Void
+    ) async throws -> Data {
+        try await assetImages.downloadCloudPreview(assetID: assetID, onProgress: onProgress)
+    }
+
     func listTags() throws -> [TagListItem] {
         try tags.listTags(includeArchived: false)
     }

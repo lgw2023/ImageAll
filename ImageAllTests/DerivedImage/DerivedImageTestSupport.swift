@@ -182,7 +182,8 @@ enum DerivedImageTestSupport {
             maintenanceCheckpoint: (any DerivedImageMaintenanceCheckpointing)? = nil,
             sourceReader: DerivedImageSourceReader? = nil,
             volumeReader: (any DerivedImageVolumeCapacityReading)? = nil,
-            clock: any JobClock = FixedJobClock(nowMs: FolderReconcileTestSupport.baseTimeMs)
+            clock: any JobClock = FixedJobClock(nowMs: FolderReconcileTestSupport.baseTimeMs),
+            downloadedPreviewQuotaBytes: UInt64 = DownloadedPreviewCachePolicy.publishedQuotaBytes
         ) -> (DerivedImageCacheService, FolderReconcileTestSupport.TestBookmarkPort) {
             let bookmarkPort = FolderReconcileTestSupport.TestBookmarkPort(rootByBookmark: [bookmark: sourceRoot])
             let access = FolderReconcileSourceAccessService(
@@ -202,7 +203,8 @@ enum DerivedImageTestSupport {
                 repositoryFaultInjector: repositoryFaultInjector,
                 publishCheckpoint: publishCheckpoint ?? NoDerivedImagePublishCheckpoint(),
                 finalPublishCheckpoint: finalPublishCheckpoint ?? NoDerivedImageFinalPublishCheckpoint(),
-                maintenanceCheckpoint: maintenanceCheckpoint ?? NoDerivedImageMaintenanceCheckpoint()
+                maintenanceCheckpoint: maintenanceCheckpoint ?? NoDerivedImageMaintenanceCheckpoint(),
+                downloadedPreviewQuotaBytes: downloadedPreviewQuotaBytes
             )
             return (service, bookmarkPort)
         }

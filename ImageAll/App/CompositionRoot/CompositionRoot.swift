@@ -89,7 +89,9 @@ struct CompositionRoot {
         let assetImages = LibraryAssetImageLoader(
             database: runtime.database,
             fileImages: derivedImages,
-            photosImages: photosAccess
+            photosImages: photosAccess,
+            cloudPreviews: photosAccess,
+            downloadedPreviews: derivedImages
         )
         let personalizationReview = PersonalizationReviewService(
             database: runtime.database,

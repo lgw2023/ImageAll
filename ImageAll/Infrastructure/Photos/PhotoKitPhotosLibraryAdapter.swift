@@ -3,7 +3,7 @@ import Foundation
 import Photos
 
 final class PhotoKitPhotosLibraryAdapter: NSObject, PhotosLibraryAccessPort, PhotosChangeHistoryPort,
-    PhotosChangeObserverPort, PhotosFeaturePrintImagePort, PHPhotoLibraryChangeObserver,
+    PhotosChangeObserverPort, PhotosCloudPreviewPort, PhotosFeaturePrintImagePort, PHPhotoLibraryChangeObserver,
     @unchecked Sendable
 {
     private let imageManager = PHCachingImageManager()
@@ -18,6 +18,7 @@ final class PhotoKitPhotosLibraryAdapter: NSObject, PhotosLibraryAccessPort, Pho
         "public.tiff",
         "org.webmproject.webp",
     ]
+    static let cloudPreviewTargetSize = NSSize(width: 2_048, height: 2_048)
 
     func authorizationState() -> PhotosAuthorizationState {
         mapAuthorization(PHPhotoLibrary.authorizationStatus(for: .readWrite))
@@ -216,6 +217,54 @@ final class PhotoKitPhotosLibraryAdapter: NSObject, PhotosLibraryAccessPort, Pho
         }
     }
 
+    func requestCloudPreview(
+        localIdentifier: String,
+        grant _: PhotosCloudDownloadGrant,
+        onProgress: @escaping @Sendable (Double) -> Void
+    ) async throws -> Data {
+        guard authorizationState() == .authorized else {
+            throw PhotosLibraryError.authorizationDenied
+        }
+        let fetch = PHAsset.fetchAssets(withLocalIdentifiers: [localIdentifier], options: nil)
+        guard let asset = fetch.firstObject else {
+            throw PhotosLibraryError.libraryUnavailable
+        }
+
+        let cancellation = PhotoKitImageRequestCancellation(manager: imageManager)
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                let completion = OneShotImageContinuation(continuation)
+                let requestID = imageManager.requestImage(
+                    for: asset,
+                    targetSize: Self.cloudPreviewTargetSize,
+                    contentMode: .aspectFit,
+                    options: Self.makeCloudPreviewRequestOptions(onProgress: onProgress)
+                ) { image, info in
+                    if (info?[PHImageResultIsDegradedKey] as? Bool) == true {
+                        return
+                    }
+                    if let image, let data = image.tiffRepresentation {
+                        onProgress(1.0)
+                        completion.resume(returning: data)
+                        return
+                    }
+                    if (info?[PHImageCancelledKey] as? Bool) == true {
+                        completion.resume(throwing: CancellationError())
+                        return
+                    }
+                    if let error = info?[PHImageErrorKey] as? Error {
+                        completion.resume(throwing: error)
+                        return
+                    }
+                    completion.resume(throwing: PhotosLibraryError.libraryUnavailable)
+                }
+                cancellation.install(requestID: requestID, completion: completion)
+            }
+        } onCancel: {
+            cancellation.cancel()
+        }
+    }
+
     func requestLocalFeatureImage(localIdentifier: String) throws -> Data {
         guard authorizationState() == .authorized else {
             throw PhotosLibraryError.authorizationDenied
@@ -285,6 +334,20 @@ final class PhotoKitPhotosLibraryAdapter: NSObject, PhotosLibraryAccessPort, Pho
         options.resizeMode = .fast
         options.isSynchronous = true
         options.isNetworkAccessAllowed = false
+        return options
+    }
+
+    static func makeCloudPreviewRequestOptions(
+        onProgress: @escaping @Sendable (Double) -> Void
+    ) -> PHImageRequestOptions {
+        let options = PHImageRequestOptions()
+        options.deliveryMode = .highQualityFormat
+        options.resizeMode = .fast
+        options.isSynchronous = false
+        options.isNetworkAccessAllowed = true
+        options.progressHandler = { progress, _, _, _ in
+            onProgress(min(max(progress, 0), 1))
+        }
         return options
     }
 
@@ -383,5 +446,44 @@ private final class OneShotImageContinuation: @unchecked Sendable {
             defer { continuation = nil }
             return continuation
         }
+    }
+}
+
+private final class PhotoKitImageRequestCancellation: @unchecked Sendable {
+    private struct State {
+        var requestID: PHImageRequestID?
+        var completion: OneShotImageContinuation?
+        var isCancelled = false
+    }
+
+    private let manager: PHImageManager
+    private let lock = NSLock()
+    private var state = State()
+
+    init(manager: PHImageManager) {
+        self.manager = manager
+    }
+
+    func install(requestID: PHImageRequestID, completion: OneShotImageContinuation) {
+        let shouldCancel = lock.withLock { () -> Bool in
+            state.requestID = requestID
+            state.completion = completion
+            return state.isCancelled
+        }
+        if shouldCancel {
+            manager.cancelImageRequest(requestID)
+            completion.resume(throwing: CancellationError())
+        }
+    }
+
+    func cancel() {
+        let current = lock.withLock { () -> (PHImageRequestID?, OneShotImageContinuation?) in
+            state.isCancelled = true
+            return (state.requestID, state.completion)
+        }
+        if let requestID = current.0 {
+            manager.cancelImageRequest(requestID)
+        }
+        current.1?.resume(throwing: CancellationError())
     }
 }

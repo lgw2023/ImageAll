@@ -59,6 +59,26 @@ enum LibraryWorkspaceNotice: Equatable, Sendable {
     case reviewMutationApplied(count: Int, tagName: String)
 }
 
+enum CloudPreviewPresentationState: Equatable, Sendable {
+    case hidden
+    case available(assetID: UUID)
+    case downloading(assetID: UUID, progress: Double)
+    case downloaded(assetID: UUID, data: Data)
+    case failed(assetID: UUID)
+
+    var assetID: UUID? {
+        switch self {
+        case .hidden:
+            nil
+        case let .available(assetID),
+             let .downloading(assetID, _),
+             let .downloaded(assetID, _),
+             let .failed(assetID):
+            assetID
+        }
+    }
+}
+
 enum LibraryTagDecisionAction: Equatable, Sendable {
     case accept
     case reject
@@ -112,6 +132,10 @@ protocol LibraryWorkspacePort: Sendable {
     ) throws -> AssetPageResult
     func loadThumbnail(assetID: UUID) async throws -> Data
     func loadPreview(assetID: UUID) async throws -> Data
+    func downloadCloudPreview(
+        assetID: UUID,
+        onProgress: @escaping @Sendable (Double) -> Void
+    ) async throws -> Data
     func listTags() throws -> [TagListItem]
     func fetchInspectorDetail(assetID: UUID) throws -> AssetInspectorDetail
     func selectionAggregate(tagIDs: [UUID], assetIDs: [UUID]) throws -> [TagSelectionAggregate]

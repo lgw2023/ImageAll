@@ -4,6 +4,11 @@ import GRDB
 struct DerivedImageCacheLookupContext: Equatable, Sendable {
     let assetID: UUID
     let contentRevision: Int
+    let locatorKind: String
+    let locatorState: String
+    let availability: String
+    let sourceKind: String
+    let sourceState: String
 }
 
 struct GRDBDerivedImageCacheRepository: Sendable {
@@ -30,17 +35,7 @@ struct GRDBDerivedImageCacheRepository: Sendable {
 
     func fetchCacheLookupContext(assetID: UUID) throws -> DerivedImageCacheLookupContext? {
         try database.pool.read { db in
-            guard let row = try Row.fetchOne(
-                db,
-                sql: "SELECT id, content_revision FROM asset WHERE id = ?",
-                arguments: [assetID.uuidString.lowercased()]
-            ) else {
-                return nil
-            }
-            return DerivedImageCacheLookupContext(
-                assetID: UUID(uuidString: row["id"])!,
-                contentRevision: row["content_revision"]
-            )
+            try fetchCacheLookupContext(db: db, assetID: assetID)
         }
     }
 
@@ -114,6 +109,40 @@ struct GRDBDerivedImageCacheRepository: Sendable {
         }
     }
 
+    func downloadedPreviewByteTotal() throws -> UInt64 {
+        try database.pool.read { db in
+            let total: Int64? = try Int64.fetchOne(
+                db,
+                sql: """
+                SELECT COALESCE(SUM(e.byte_size), 0)
+                FROM derived_image_cache_entry e
+                JOIN asset a ON a.id = e.asset_id
+                JOIN source s ON s.id = a.source_id
+                WHERE e.variant = 'preview' AND s.kind = 'photos'
+                """
+            )
+            guard let total, total >= 0 else { return 0 }
+            return UInt64(total)
+        }
+    }
+
+    func downloadedPreviewLRUEntries() throws -> [DerivedImageCacheEntryRow] {
+        try database.pool.read { db in
+            let rows = try Row.fetchAll(
+                db,
+                sql: """
+                SELECT e.*
+                FROM derived_image_cache_entry e
+                JOIN asset a ON a.id = e.asset_id
+                JOIN source s ON s.id = a.source_id
+                WHERE e.variant = 'preview' AND s.kind = 'photos'
+                ORDER BY e.last_accessed_at_ms ASC, e.id ASC
+                """
+            )
+            return try rows.map(mapEntry)
+        }
+    }
+
     func allEntries() throws -> [DerivedImageCacheEntryRow] {
         try lruEntries()
     }
@@ -147,6 +176,30 @@ struct GRDBDerivedImageCacheRepository: Sendable {
         entry: DerivedImageCacheEntryRow,
         expected: DerivedImageAssetGenerationContext,
         replacementCandidateID: UUID? = nil
+    ) throws -> PublishEntryOutcome {
+        try publishEntryReplacingKey(
+            entry: entry,
+            expected: .generation(expected),
+            replacementCandidateID: replacementCandidateID
+        )
+    }
+
+    func publishEntryReplacingKey(
+        entry: DerivedImageCacheEntryRow,
+        expected: DerivedImageCacheLookupContext,
+        replacementCandidateID: UUID? = nil
+    ) throws -> PublishEntryOutcome {
+        try publishEntryReplacingKey(
+            entry: entry,
+            expected: .lookup(expected),
+            replacementCandidateID: replacementCandidateID
+        )
+    }
+
+    private func publishEntryReplacingKey(
+        entry: DerivedImageCacheEntryRow,
+        expected: PublishExpectedAssetState,
+        replacementCandidateID: UUID?
     ) throws -> PublishEntryOutcome {
         do {
             return try database.pool.write { db in
@@ -208,6 +261,18 @@ struct GRDBDerivedImageCacheRepository: Sendable {
             return false
         }
         return current == expected
+    }
+
+    private func revalidate(db: Database, expected: PublishExpectedAssetState) throws -> Bool {
+        switch expected {
+        case let .generation(context):
+            return try revalidate(db: db, expected: context)
+        case let .lookup(context):
+            guard let current = try fetchCacheLookupContext(db: db, assetID: context.assetID) else {
+                return false
+            }
+            return current == context && current.isEligibleForDownloadedPreview
+        }
     }
 
     private func insertEntry(db: Database, entry: DerivedImageCacheEntryRow) throws {
@@ -289,6 +354,37 @@ struct GRDBDerivedImageCacheRepository: Sendable {
         )
     }
 
+    private func fetchCacheLookupContext(db: Database, assetID: UUID) throws -> DerivedImageCacheLookupContext? {
+        guard let row = try Row.fetchOne(
+            db,
+            sql: """
+            SELECT
+                a.id AS asset_id,
+                a.content_revision,
+                a.locator_kind,
+                a.locator_state,
+                a.availability,
+                s.kind AS source_kind,
+                s.state AS source_state
+            FROM asset a
+            JOIN source s ON s.id = a.source_id
+            WHERE a.id = ?
+            """,
+            arguments: [assetID.uuidString.lowercased()]
+        ) else {
+            return nil
+        }
+        return DerivedImageCacheLookupContext(
+            assetID: UUID(uuidString: row["asset_id"])!,
+            contentRevision: row["content_revision"],
+            locatorKind: row["locator_kind"],
+            locatorState: row["locator_state"],
+            availability: row["availability"],
+            sourceKind: row["source_kind"],
+            sourceState: row["source_state"]
+        )
+    }
+
     private func mapEntry(_ row: Row) throws -> DerivedImageCacheEntryRow {
         DerivedImageCacheEntryRow(
             id: UUID(uuidString: row["id"])!,
@@ -305,6 +401,11 @@ struct GRDBDerivedImageCacheRepository: Sendable {
             lastAccessedAtMs: row["last_accessed_at_ms"]
         )
     }
+}
+
+private enum PublishExpectedAssetState: Sendable {
+    case generation(DerivedImageAssetGenerationContext)
+    case lookup(DerivedImageCacheLookupContext)
 }
 
 enum PublishEntryOutcome: Equatable {
@@ -335,6 +436,16 @@ extension DerivedImageAssetGenerationContext {
 
     func matches(_ opened: DerivedImageOpenedFingerprint) -> Bool {
         matchesHandleFacts(opened)
+    }
+}
+
+extension DerivedImageCacheLookupContext {
+    var isEligibleForDownloadedPreview: Bool {
+        locatorKind == AssetLocatorKind.photos.rawValue
+            && locatorState == AssetLocatorState.current.rawValue
+            && availability == AssetAvailability.available.rawValue
+            && sourceKind == SourceKind.photos.rawValue
+            && sourceState == SourceState.active.rawValue
     }
 }
 

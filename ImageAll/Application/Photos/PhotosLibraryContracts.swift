@@ -34,6 +34,14 @@ struct PhotosPersistentChangeBatch: Equatable, Sendable {
     let changeToken: Data
 }
 
+struct PhotosCloudDownloadGrant: Equatable, Sendable {
+    private let scopeID: UUID
+
+    static func issue() -> PhotosCloudDownloadGrant {
+        PhotosCloudDownloadGrant(scopeID: UUID())
+    }
+}
+
 enum PhotosLibraryError: Error, Equatable, Sendable {
     case authorizationDenied
     case authorizationRestricted
@@ -67,6 +75,14 @@ protocol PhotosChangeHistoryPort: Sendable {
 
 protocol PhotosChangeObserverPort: Sendable {
     func startObservingChanges(_ onChange: @escaping @Sendable () -> Void)
+}
+
+protocol PhotosCloudPreviewPort: Sendable {
+    func requestCloudPreview(
+        localIdentifier: String,
+        grant: PhotosCloudDownloadGrant,
+        onProgress: @escaping @Sendable (Double) -> Void
+    ) async throws -> Data
 }
 
 protocol PhotosFeaturePrintImagePort: Sendable {

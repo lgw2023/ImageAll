@@ -87,7 +87,7 @@ final class DerivedImageOperationGate: @unchecked Sendable {
     }
 }
 
-final class DerivedImageCacheService: DerivedImageCachePort, @unchecked Sendable {
+final class DerivedImageCacheService: DerivedImageCachePort, DownloadedPreviewCachePort, @unchecked Sendable {
     private enum HitValidationResult {
         case valid(DerivedImagePayload)
         case invalid(candidate: DerivedImageCacheEntryRow)
@@ -104,6 +104,7 @@ final class DerivedImageCacheService: DerivedImageCachePort, @unchecked Sendable
     private let faultInjector: any DerivedImageCacheStoreFaultInjecting
     private let finalPublishCheckpoint: any DerivedImageFinalPublishCheckpointing
     private let maintenanceCheckpoint: any DerivedImageMaintenanceCheckpointing
+    private let downloadedPreviewQuotaBytes: UInt64
     private let inFlight = DerivedImageInFlightCoordinator()
     private let operationGate = DerivedImageOperationGate()
 
@@ -119,7 +120,8 @@ final class DerivedImageCacheService: DerivedImageCachePort, @unchecked Sendable
         repositoryFaultInjector: any DerivedImageRepositoryFaultInjecting = NoDerivedImageRepositoryFaultInjector(),
         publishCheckpoint: any DerivedImagePublishCheckpointing = NoDerivedImagePublishCheckpoint(),
         finalPublishCheckpoint: any DerivedImageFinalPublishCheckpointing = NoDerivedImageFinalPublishCheckpoint(),
-        maintenanceCheckpoint: any DerivedImageMaintenanceCheckpointing = NoDerivedImageMaintenanceCheckpoint()
+        maintenanceCheckpoint: any DerivedImageMaintenanceCheckpointing = NoDerivedImageMaintenanceCheckpoint(),
+        downloadedPreviewQuotaBytes: UInt64 = DownloadedPreviewCachePolicy.publishedQuotaBytes
     ) {
         self.database = database
         self.repository = GRDBDerivedImageCacheRepository(
@@ -134,6 +136,7 @@ final class DerivedImageCacheService: DerivedImageCachePort, @unchecked Sendable
         self.faultInjector = faultInjector
         self.finalPublishCheckpoint = finalPublishCheckpoint
         self.maintenanceCheckpoint = maintenanceCheckpoint
+        self.downloadedPreviewQuotaBytes = downloadedPreviewQuotaBytes
         self.store = DerivedImageCacheStore(
             cachesDirectory: cachesDirectory,
             faultInjector: faultInjector,
@@ -161,6 +164,63 @@ final class DerivedImageCacheService: DerivedImageCachePort, @unchecked Sendable
             return try await inFlight.run(key: key) { [self] in
                 try await self.loadOrGenerateInternal(request: request, lookup: lookup)
             }
+        } catch let error as DerivedImageError {
+            throw error
+        } catch DerivedImageSecureIOError.unsafePath {
+            throw DerivedImageError.derivedCacheUnsafePath
+        } catch {
+            throw DerivedImageError.derivedCachePersistenceFailed
+        }
+    }
+
+    func loadDownloadedPreview(assetID: UUID) async throws -> Data? {
+        do {
+            guard let lookup = try repository.fetchCacheLookupContext(assetID: assetID) else {
+                return nil
+            }
+            guard let entry = try repository.fetchEntry(
+                assetID: assetID,
+                contentRevision: lookup.contentRevision,
+                representationVersion: DerivedImageRepresentationVersion.production,
+                variant: .preview
+            ) else {
+                return nil
+            }
+            let session = try store.ensureLayout()
+            defer { session.closeHandles() }
+            switch try validateHit(entry: entry, session: session) {
+            case let .valid(payload):
+                return payload.encodedBytes
+            case let .invalid(candidate):
+                try repository.deleteEntry(id: candidate.id)
+                _ = try? store.deleteObjectDuringEviction(
+                    entryID: candidate.id,
+                    format: candidate.storageFormat,
+                    session: session
+                )
+                return nil
+            }
+        } catch let error as DerivedImageError {
+            throw error
+        } catch DerivedImageSecureIOError.unsafePath {
+            throw DerivedImageError.derivedCacheUnsafePath
+        } catch {
+            throw DerivedImageError.derivedCachePersistenceFailed
+        }
+    }
+
+    func storeDownloadedPreview(assetID: UUID, sourceBytes: Data) async throws -> Data {
+        do {
+            guard let lookup = try repository.fetchCacheLookupContext(assetID: assetID) else {
+                throw DerivedImageError.derivedAssetNotFound
+            }
+            guard lookup.isEligibleForDownloadedPreview else {
+                throw DerivedImageError.derivedAssetIneligible
+            }
+            return try await storeDownloadedPreviewInternal(
+                sourceBytes: sourceBytes,
+                lookup: lookup
+            )
         } catch let error as DerivedImageError {
             throw error
         } catch DerivedImageSecureIOError.unsafePath {
@@ -211,6 +271,136 @@ final class DerivedImageCacheService: DerivedImageCachePort, @unchecked Sendable
             session: session,
             replacementCandidate: replacementCandidate
         )
+    }
+
+    private func storeDownloadedPreviewInternal(
+        sourceBytes: Data,
+        lookup: DerivedImageCacheLookupContext
+    ) async throws -> Data {
+        let session = try store.ensureLayout()
+        defer { session.closeHandles() }
+
+        var replacementCandidate: DerivedImageCacheEntryRow?
+        if let entry = try repository.fetchEntry(
+            assetID: lookup.assetID,
+            contentRevision: lookup.contentRevision,
+            representationVersion: DerivedImageRepresentationVersion.production,
+            variant: .preview
+        ) {
+            switch try validateHit(entry: entry, session: session) {
+            case let .valid(payload):
+                return payload.encodedBytes
+            case let .invalid(candidate):
+                replacementCandidate = candidate
+            }
+        }
+
+        let artifact = try renderer.render(sourceBytes: sourceBytes, variant: .preview)
+        guard artifact.byteSize > 0 else {
+            throw DerivedImageError.derivedEncodeFailed
+        }
+        guard let incomingBytes = UInt64(exactly: artifact.byteSize) else {
+            return artifact.bytes
+        }
+        guard incomingBytes <= downloadedPreviewQuotaBytes else {
+            return artifact.bytes
+        }
+
+        do {
+            try evictDownloadedPreviewsIfNeeded(incomingBytes: incomingBytes, session: session)
+            try await evictIfNeeded(incomingBytes: incomingBytes, session: session)
+        } catch DerivedImageError.derivedInsufficientSpace {
+            return artifact.bytes
+        }
+
+        return try publishDownloadedPreview(
+            artifact: artifact,
+            lookup: lookup,
+            session: session,
+            replacementCandidate: replacementCandidate
+        )
+    }
+
+    private func publishDownloadedPreview(
+        artifact: DerivedImageEncodedArtifact,
+        lookup: DerivedImageCacheLookupContext,
+        session: DerivedImageAnchoredCacheSession,
+        replacementCandidate: DerivedImageCacheEntryRow?
+    ) throws -> Data {
+        let stagingName = DerivedImageCachePathLayout.stagingFileName()
+        operationGate.beginGeneration(stagingName: stagingName)
+        defer { operationGate.endGeneration(stagingName: stagingName) }
+
+        if faultInjector.shouldFault(at: .dbPublish) {
+            throw DerivedImageError.derivedCachePersistenceFailed
+        }
+        let entryID = UUID()
+        _ = try store.publish(
+            artifact: artifact,
+            entryID: entryID,
+            format: artifact.storageFormat,
+            stagingName: stagingName,
+            session: session
+        )
+        finalPublishCheckpoint.blockAfterFinalObjectPublished(
+            entryID: entryID,
+            storageFormat: artifact.storageFormat,
+            stagingName: stagingName
+        )
+
+        let nowMs = clock.nowMs
+        let entry = DerivedImageCacheEntryRow(
+            id: entryID,
+            assetID: lookup.assetID,
+            contentRevision: lookup.contentRevision,
+            representationVersion: DerivedImageRepresentationVersion.production,
+            variant: .preview,
+            storageFormat: artifact.storageFormat,
+            pixelWidth: artifact.pixelWidth,
+            pixelHeight: artifact.pixelHeight,
+            byteSize: artifact.byteSize,
+            encodedSHA256: artifact.sha256,
+            createdAtMs: nowMs,
+            lastAccessedAtMs: nowMs
+        )
+        let outcome = try repository.publishEntryReplacingKey(
+            entry: entry,
+            expected: lookup,
+            replacementCandidateID: replacementCandidate?.id
+        )
+        switch outcome {
+        case .sourceChanged:
+            _ = try? store.deleteObjectDuringEviction(
+                entryID: entryID,
+                format: artifact.storageFormat,
+                session: session
+            )
+            throw DerivedImageError.derivedSourceChanged
+        case let .lostRaceToExisting(winner):
+            _ = try? store.deleteObjectDuringEviction(
+                entryID: entryID,
+                format: artifact.storageFormat,
+                session: session
+            )
+            switch try validateHit(entry: winner, session: session) {
+            case let .valid(payload):
+                return payload.encodedBytes
+            case let .invalid(candidate):
+                return try publishDownloadedPreview(
+                    artifact: artifact,
+                    lookup: lookup,
+                    session: session,
+                    replacementCandidate: candidate
+                )
+            }
+        case let .published(replacedEntry):
+            if let replacedEntry,
+               !faultInjector.shouldFault(at: .oldObjectDelete)
+            {
+                _ = try? session.deleteObject(entryID: replacedEntry.id, format: replacedEntry.storageFormat)
+            }
+            return artifact.bytes
+        }
     }
 
     private func validateHit(
@@ -459,6 +649,35 @@ final class DerivedImageCacheService: DerivedImageCachePort, @unchecked Sendable
             } else {
                 available = lastAvailableAfterSuccessfulDelete
             }
+        }
+    }
+
+    private func evictDownloadedPreviewsIfNeeded(
+        incomingBytes: UInt64,
+        session: DerivedImageAnchoredCacheSession
+    ) throws {
+        var published = try repository.downloadedPreviewByteTotal()
+        while true {
+            guard let combined = DerivedImageQuotaPolicy.adding(published, incomingBytes) else {
+                throw DerivedImageError.derivedInsufficientSpace
+            }
+            if combined <= downloadedPreviewQuotaBytes {
+                return
+            }
+            guard let victim = try repository.downloadedPreviewLRUEntries().first else {
+                throw DerivedImageError.derivedInsufficientSpace
+            }
+            try repository.deleteEntry(id: victim.id)
+            if let victimBytes = UInt64(exactly: victim.byteSize),
+               let reduced = DerivedImageQuotaPolicy.subtracting(published, victimBytes)
+            {
+                published = reduced
+            }
+            _ = try? store.deleteObjectDuringEviction(
+                entryID: victim.id,
+                format: victim.storageFormat,
+                session: session
+            )
         }
     }
 

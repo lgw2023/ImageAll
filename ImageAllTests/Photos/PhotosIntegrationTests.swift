@@ -39,6 +39,16 @@ final class PhotosIntegrationTests: XCTestCase {
         XCTAssertFalse(featureOptions.isNetworkAccessAllowed)
     }
 
+    func testPhotoKitCloudPreviewPolicyOnlyEnablesNetworkForExplicit2048Request() {
+        let options = PhotoKitPhotosLibraryAdapter.makeCloudPreviewRequestOptions { _ in }
+
+        XCTAssertTrue(options.isNetworkAccessAllowed)
+        XCTAssertFalse(options.isSynchronous)
+        XCTAssertEqual(PhotoKitPhotosLibraryAdapter.cloudPreviewTargetSize, NSSize(width: 2_048, height: 2_048))
+        XCTAssertFalse(PhotoKitPhotosLibraryAdapter.makeLocalOnlyImageRequestOptions().isNetworkAccessAllowed)
+        XCTAssertFalse(PhotoKitPhotosLibraryAdapter.makeLocalOnlyFeaturePrintRequestOptions().isNetworkAccessAllowed)
+    }
+
     func testAuthorizedConnectionCreatesOnePhotosSourceAndOneActiveJob() async throws {
         let database = try FolderAuthorizationTestSupport.makeDatabase()
         let access = FakePhotosLibraryAccess(state: .authorized)
@@ -726,6 +736,72 @@ final class PhotosIntegrationTests: XCTestCase {
         XCTAssertEqual(files.requestedVariants, [.preview])
     }
 
+    func testExplicitCloudPreviewDownloadRequiresUserActionAndReusesDownloadedCache() async throws {
+        let database = try FolderAuthorizationTestSupport.makeDatabase()
+        let sourceID = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
+        let assetID = UUID(uuidString: "33333333-4444-5555-6666-777777777777")!
+        try await database.pool.write { db in
+            try db.execute(
+                sql: """
+                INSERT INTO source (id, kind, display_name, bookmark, state, created_at_ms, updated_at_ms)
+                VALUES (?, 'photos', 'Apple Photos', NULL, 'active', ?, ?)
+                """,
+                arguments: [
+                    sourceID.uuidString.lowercased(), DatabaseTestSupport.timestampMs,
+                    DatabaseTestSupport.timestampMs,
+                ]
+            )
+            try db.execute(
+                sql: """
+                INSERT INTO asset (
+                    id, source_id, locator_kind, relative_path, photos_local_identifier,
+                    media_type, availability, record_created_at_ms, record_updated_at_ms, file_name
+                ) VALUES (?, ?, 'photos', NULL, 'photos-cloud-only', 'public.jpeg', 'available', ?, ?, 'Cloud.jpg')
+                """,
+                arguments: [
+                    assetID.uuidString.lowercased(), sourceID.uuidString.lowercased(),
+                    DatabaseTestSupport.timestampMs, DatabaseTestSupport.timestampMs,
+                ]
+            )
+        }
+
+        let local = FakePhotosLibraryAccess(
+            state: .authorized,
+            localImageError: .cloudOnly
+        )
+        let cloud = FakePhotosCloudPreview(data: Data("cloud-source".utf8))
+        let cache = FakeDownloadedPreviewCache(cachedData: Data("cached-preview".utf8))
+        let loader = LibraryAssetImageLoader(
+            database: database,
+            fileImages: FakeDerivedImageCache(data: Data()),
+            photosImages: local,
+            cloudPreviews: cloud,
+            downloadedPreviews: cache
+        )
+
+        do {
+            _ = try await loader.load(assetID: assetID, variant: .preview)
+            XCTFail("Expected local-only request to report cloud-only")
+        } catch {
+            XCTAssertEqual(error as? PhotosLibraryError, .cloudOnly)
+        }
+        XCTAssertEqual(cloud.requestedLocalIdentifiers, [])
+
+        let progress = CloudPreviewProgressProbe()
+        let downloaded = try await loader.downloadCloudPreview(assetID: assetID) { value in
+            progress.append(value)
+        }
+        XCTAssertEqual(downloaded, Data("cached-preview".utf8))
+        XCTAssertEqual(progress.values, [0.25, 1.0])
+        XCTAssertEqual(cloud.requestedLocalIdentifiers, ["photos-cloud-only"])
+        XCTAssertEqual(cache.storedSourceBytes, [Data("cloud-source".utf8)])
+
+        let cached = try await loader.load(assetID: assetID, variant: .preview)
+        XCTAssertEqual(cached, downloaded)
+        XCTAssertEqual(local.requestedVariants, [.preview])
+        XCTAssertEqual(cloud.requestedLocalIdentifiers.count, 1)
+    }
+
     func testConcurrentFileImageLoadsAreBounded() async throws {
         let database = try FolderAuthorizationTestSupport.makeDatabase()
         let sourceID = UUID()
@@ -814,6 +890,7 @@ private final class FakePhotosLibraryAccess: PhotosLibraryAccessPort, PhotosChan
     private var storedBatches: [[PhotosAssetMetadata]]
     private var failAfterBatches = false
     private let localImageData: Data
+    private let localImageError: PhotosLibraryError?
     private var storedRequestedVariants: [PhotosImageVariant] = []
     private var storedEnumerationStartOffsets: [Int] = []
     private var storedPersistentChanges: [PhotosPersistentChangeBatch]
@@ -826,6 +903,7 @@ private final class FakePhotosLibraryAccess: PhotosLibraryAccessPort, PhotosChan
         state: PhotosAuthorizationState,
         batches: [[PhotosAssetMetadata]] = [],
         localImageData: Data = Data(),
+        localImageError: PhotosLibraryError? = nil,
         persistentChanges: [PhotosPersistentChangeBatch] = [],
         currentChangeToken: Data = Data("photos-current-token".utf8),
         invalidChangeTokens: Set<Data> = []
@@ -833,6 +911,7 @@ private final class FakePhotosLibraryAccess: PhotosLibraryAccessPort, PhotosChan
         self.state = state
         storedBatches = batches
         self.localImageData = localImageData
+        self.localImageError = localImageError
         storedPersistentChanges = persistentChanges
         storedCurrentChangeToken = currentChangeToken
         self.invalidChangeTokens = invalidChangeTokens
@@ -904,6 +983,7 @@ private final class FakePhotosLibraryAccess: PhotosLibraryAccessPort, PhotosChan
         variant: PhotosImageVariant
     ) async throws -> Data {
         lock.withLock { storedRequestedVariants.append(variant) }
+        if let localImageError { throw localImageError }
         return localImageData
     }
 
@@ -937,6 +1017,71 @@ private final class FakePhotosLibraryAccess: PhotosLibraryAccessPort, PhotosChan
 
     var requestedChangeTokens: [Data] {
         lock.withLock { storedRequestedChangeTokens }
+    }
+}
+
+private final class FakePhotosCloudPreview: PhotosCloudPreviewPort, @unchecked Sendable {
+    private let lock = NSLock()
+    private let data: Data
+    private var identifiers: [String] = []
+
+    init(data: Data) {
+        self.data = data
+    }
+
+    func requestCloudPreview(
+        localIdentifier: String,
+        grant _: PhotosCloudDownloadGrant,
+        onProgress: @escaping @Sendable (Double) -> Void
+    ) async throws -> Data {
+        lock.withLock { identifiers.append(localIdentifier) }
+        onProgress(0.25)
+        onProgress(1.0)
+        return data
+    }
+
+    var requestedLocalIdentifiers: [String] {
+        lock.withLock { identifiers }
+    }
+}
+
+private final class FakeDownloadedPreviewCache: DownloadedPreviewCachePort, @unchecked Sendable {
+    private let lock = NSLock()
+    private let cachedData: Data
+    private var storedData: Data?
+    private var sourceBytes: [Data] = []
+
+    init(cachedData: Data) {
+        self.cachedData = cachedData
+    }
+
+    func loadDownloadedPreview(assetID _: UUID) async throws -> Data? {
+        lock.withLock { storedData }
+    }
+
+    func storeDownloadedPreview(assetID _: UUID, sourceBytes: Data) async throws -> Data {
+        lock.withLock {
+            self.sourceBytes.append(sourceBytes)
+            storedData = cachedData
+        }
+        return cachedData
+    }
+
+    var storedSourceBytes: [Data] {
+        lock.withLock { sourceBytes }
+    }
+}
+
+private final class CloudPreviewProgressProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storedValues: [Double] = []
+
+    func append(_ value: Double) {
+        lock.withLock { storedValues.append(value) }
+    }
+
+    var values: [Double] {
+        lock.withLock { storedValues }
     }
 }
 
