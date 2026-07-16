@@ -148,7 +148,7 @@ private struct FeaturePrintCacheStore: Sendable {
     }
 }
 
-final class FeaturePrintCacheService: FeatureVectorLoading, @unchecked Sendable {
+final class FeaturePrintCacheService: FeatureVectorLoading, SyncFeatureVectorLoading, @unchecked Sendable {
     private let database: CatalogDatabase
     private let repository: GRDBPersonalizationRepository
     private let assetRepository: GRDBDerivedImageCacheRepository
@@ -175,6 +175,14 @@ final class FeaturePrintCacheService: FeatureVectorLoading, @unchecked Sendable 
     }
 
     func loadOrGenerate(assetID: UUID) async throws -> FeatureVectorPayload {
+        try loadOrGenerateSync(assetID: assetID)
+    }
+
+    func loadOrGenerateSync(assetID: UUID) throws -> FeatureVectorPayload {
+        try loadOrGenerateSyncThrowing(assetID: assetID)
+    }
+
+    private func loadOrGenerateSyncThrowing(assetID: UUID) throws -> FeatureVectorPayload {
         do {
             guard let context = try assetRepository.fetchGenerationContext(assetID: assetID) else {
                 throw FeaturePrintError.assetNotFound
@@ -196,7 +204,7 @@ final class FeaturePrintCacheService: FeatureVectorLoading, @unchecked Sendable 
             }
 
             let artifact = try generate(context: context)
-            let isStillCurrent = try await database.pool.read { db in
+            let isStillCurrent = try database.pool.read { db in
                 try assetRepository.revalidate(db: db, expected: context)
             }
             guard isStillCurrent else {

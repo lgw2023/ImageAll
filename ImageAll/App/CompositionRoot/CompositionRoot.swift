@@ -42,18 +42,17 @@ struct CompositionRoot {
             clock: clock
         )
         let handler = FolderReconcileHandler(rootAccess: sourceAccess)
+        let featurePrintService = FeaturePrintCacheService(
+            database: runtime.database,
+            cachesDirectory: runtime.paths.cachesDirectory,
+            sourceAccess: sourceAccess,
+            clock: clock
+        )
         let personalizationHandler = FullLibrarySuggestionsHandler(
             dependencies: FullLibrarySuggestionsHandlerDependencies(
                 database: runtime.database,
                 queue: runtime.jobQueue,
-                featureLoader: AsyncFeatureVectorBridge(
-                    loader: FeaturePrintCacheService(
-                        database: runtime.database,
-                        cachesDirectory: runtime.paths.cachesDirectory,
-                        sourceAccess: sourceAccess,
-                        clock: clock
-                    )
-                ),
+                featureLoader: featurePrintService,
                 clock: clock
             )
         )

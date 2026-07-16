@@ -12,7 +12,8 @@ final class FullLibrarySuggestionsJobTests: XCTestCase {
             queue: fixture.queue,
             tagID: fixture.tagID,
             sourceIDs: [fixture.sourceID],
-            cutoffMs: fixture.cutoffMs
+            cutoffMs: fixture.cutoffMs,
+            database: fixture.database
         )
         drainPersonalizationJobs(coordinator: coordinator, maxSteps: 20)
         let facts = try revisionFacts(database: fixture.database, tagID: fixture.tagID)
@@ -36,7 +37,8 @@ final class FullLibrarySuggestionsJobTests: XCTestCase {
             queue: fixture.queue,
             tagID: fixture.tagID,
             sourceIDs: [fixture.sourceID],
-            cutoffMs: fixture.cutoffMs
+            cutoffMs: fixture.cutoffMs,
+            database: fixture.database
         )
         _ = try coordinator.claimAndExecuteOnce(personalizationClaim())
         let facts = try revisionFacts(database: fixture.database, tagID: fixture.tagID)
@@ -53,7 +55,8 @@ final class FullLibrarySuggestionsJobTests: XCTestCase {
             queue: fixture.queue,
             tagID: fixture.tagID,
             sourceIDs: [fixture.sourceID],
-            cutoffMs: fixture.cutoffMs
+            cutoffMs: fixture.cutoffMs,
+            database: fixture.database
         )
         _ = try fixture.queue.applyStateCommand(JobStateCommand(jobID: job.id, operation: .pause))
         let paused = try fixture.queue.fetchJob(id: job.id)
@@ -75,7 +78,8 @@ final class FullLibrarySuggestionsJobTests: XCTestCase {
             queue: fixture.queue,
             tagID: fixture.tagID,
             sourceIDs: [fixture.sourceID],
-            cutoffMs: fixture.cutoffMs
+            cutoffMs: fixture.cutoffMs,
+            database: fixture.database
         )
         drainPersonalizationJobs(coordinator: coordinator, maxSteps: 2)
         let retainedCount = try pendingCount(database: fixture.database, tagID: fixture.tagID)
@@ -84,7 +88,8 @@ final class FullLibrarySuggestionsJobTests: XCTestCase {
             queue: fixture.queue,
             tagID: fixture.tagID,
             sourceIDs: [fixture.sourceID],
-            cutoffMs: fixture.cutoffMs + 1
+            cutoffMs: fixture.cutoffMs + 1,
+            database: fixture.database
         )
         _ = try fixture.queue.applyStateCommand(JobStateCommand(jobID: updateJob.id, operation: .cancel))
         _ = try coordinator.claimAndExecuteOnce(personalizationClaim())
@@ -144,13 +149,15 @@ final class FullLibrarySuggestionsJobTests: XCTestCase {
             queue: fixture.queue,
             tagID: fixture.tagID,
             sourceIDs: [fixture.sourceID],
-            cutoffMs: fixture.cutoffMs
+            cutoffMs: fixture.cutoffMs,
+            database: fixture.database
         )
         _ = try enqueueJob(
             queue: fixture.queue,
             tagID: secondTag,
             sourceIDs: [fixture.sourceID],
-            cutoffMs: fixture.cutoffMs
+            cutoffMs: fixture.cutoffMs,
+            database: fixture.database
         )
         let folderResult = try coordinator.claimAndExecuteOnce(
             ClaimNextInput(
@@ -203,7 +210,8 @@ final class FullLibrarySuggestionsJobTests: XCTestCase {
             queue: fixture.queue,
             tagID: fixture.tagID,
             sourceIDs: [fixture.sourceID],
-            cutoffMs: fixture.cutoffMs
+            cutoffMs: fixture.cutoffMs,
+            database: fixture.database
         )
         drainPersonalizationJobs(coordinator: coordinator, maxSteps: 5)
         let pending = try pendingAssetIDs(database: fixture.database, tagID: fixture.tagID)
@@ -218,7 +226,8 @@ final class FullLibrarySuggestionsJobTests: XCTestCase {
             queue: fixture.queue,
             tagID: fixture.tagID,
             sourceIDs: [fixture.sourceID],
-            cutoffMs: fixture.cutoffMs
+            cutoffMs: fixture.cutoffMs,
+            database: fixture.database
         )
         drainPersonalizationJobs(coordinator: coordinator, maxSteps: 5)
         let first = try XCTUnwrap(try pendingAssetIDs(database: fixture.database, tagID: fixture.tagID).first)
@@ -234,7 +243,8 @@ final class FullLibrarySuggestionsJobTests: XCTestCase {
             queue: fixture.queue,
             tagID: fixture.tagID,
             sourceIDs: [fixture.sourceID],
-            cutoffMs: fixture.cutoffMs
+            cutoffMs: fixture.cutoffMs,
+            database: fixture.database
         )
         drainPersonalizationJobs(coordinator: coordinator, maxSteps: 5)
         let review = PersonalizationReviewService(
@@ -251,6 +261,258 @@ final class FullLibrarySuggestionsJobTests: XCTestCase {
         XCTAssertFalse(mirror.children.contains { $0.label == "score" })
         let total = try review.totalPendingSuggestionCount()
         XCTAssertGreaterThan(total, 10)
+    }
+
+    func testProgressivePredictionsVisibleAfterFirstBatchOnly() throws {
+        let fixture = try makeLargeLibraryFixture(assetCount: 150)
+        var dependencies = makeHandlerDependencies(
+            database: fixture.database,
+            loader: fixture.loader,
+            queue: fixture.queue
+        )
+        let batchCounter = BatchCounter()
+        let capturedJobID = try enqueueJob(
+            queue: fixture.queue,
+            tagID: fixture.tagID,
+            sourceIDs: [fixture.sourceID],
+            cutoffMs: fixture.cutoffMs,
+            database: fixture.database
+        ).id
+        dependencies.beforeEachBatch = { _ in
+            if batchCounter.increment() == 2 {
+                _ = try? fixture.queue.applyStateCommand(
+                    JobStateCommand(jobID: capturedJobID, operation: .pause)
+                )
+            }
+        }
+        let handler = FullLibrarySuggestionsHandler(dependencies: dependencies)
+        let coordinator = makeCoordinator(database: fixture.database, handler: handler, queue: fixture.queue)
+        _ = try coordinator.claimAndExecuteOnce(personalizationClaim())
+        let partial = try pendingCount(database: fixture.database, tagID: fixture.tagID)
+        XCTAssertGreaterThan(partial, 0)
+        let paused = try fixture.queue.fetchJob(id: capturedJobID)
+        XCTAssertEqual(paused.state, .paused)
+        XCTAssertGreaterThan(paused.progress.completed, 0)
+        XCTAssertLessThan(paused.progress.completed, 150)
+    }
+
+    func testPauseAfterFirstBatchStopsWithPartialProgress() throws {
+        let fixture = try makeLargeLibraryFixture(assetCount: 150)
+        var dependencies = makeHandlerDependencies(
+            database: fixture.database,
+            loader: fixture.loader,
+            queue: fixture.queue
+        )
+        let batchCounter = BatchCounter()
+        let capturedJobID = try enqueueJob(
+            queue: fixture.queue,
+            tagID: fixture.tagID,
+            sourceIDs: [fixture.sourceID],
+            cutoffMs: fixture.cutoffMs,
+            database: fixture.database
+        ).id
+        dependencies.beforeEachBatch = { _ in
+            if batchCounter.increment() == 2 {
+                _ = try? fixture.queue.applyStateCommand(
+                    JobStateCommand(jobID: capturedJobID, operation: .pause)
+                )
+            }
+        }
+        let handler = FullLibrarySuggestionsHandler(dependencies: dependencies)
+        let coordinator = makeCoordinator(database: fixture.database, handler: handler, queue: fixture.queue)
+        _ = try coordinator.claimAndExecuteOnce(personalizationClaim())
+        let paused = try fixture.queue.fetchJob(id: capturedJobID)
+        XCTAssertEqual(paused.state, .paused)
+        XCTAssertGreaterThan(try pendingCount(database: fixture.database, tagID: fixture.tagID), 0)
+        XCTAssertGreaterThan(paused.progress.completed, 0)
+        XCTAssertLessThan(paused.progress.completed, 150)
+    }
+
+    func testCancelAfterFirstBatchRetainsPartialSuggestions() throws {
+        let fixture = try makeLargeLibraryFixture(assetCount: 120)
+        var dependencies = makeHandlerDependencies(
+            database: fixture.database,
+            loader: fixture.loader,
+            queue: fixture.queue
+        )
+        let batchCounter = BatchCounter()
+        let capturedJobID = try enqueueJob(
+            queue: fixture.queue,
+            tagID: fixture.tagID,
+            sourceIDs: [fixture.sourceID],
+            cutoffMs: fixture.cutoffMs,
+            database: fixture.database
+        ).id
+        dependencies.beforeEachBatch = { _ in
+            if batchCounter.increment() == 2 {
+                _ = try? fixture.queue.applyStateCommand(
+                    JobStateCommand(jobID: capturedJobID, operation: .cancel)
+                )
+            }
+        }
+        let handler = FullLibrarySuggestionsHandler(dependencies: dependencies)
+        let coordinator = makeCoordinator(database: fixture.database, handler: handler, queue: fixture.queue)
+        _ = try coordinator.claimAndExecuteOnce(personalizationClaim())
+        let retained = try pendingCount(database: fixture.database, tagID: fixture.tagID)
+        XCTAssertGreaterThan(retained, 0)
+    }
+
+    func testCacheUnsafePathFailureIsRetryableAndPreservesCheckpoint() throws {
+        let fixture = try makeLargeLibraryFixture(assetCount: 20)
+        let base = fixture.loader
+        let failingLoader = CacheFailureAfterSamplesLoader(base: base)
+        let handler = makeHandler(database: fixture.database, loader: failingLoader, queue: fixture.queue)
+        let coordinator = makeCoordinator(database: fixture.database, handler: handler, queue: fixture.queue)
+        let job = try enqueueJob(
+            queue: fixture.queue,
+            tagID: fixture.tagID,
+            sourceIDs: [fixture.sourceID],
+            cutoffMs: fixture.cutoffMs,
+            database: fixture.database
+        )
+        _ = try coordinator.claimAndExecuteOnce(personalizationClaim())
+        let snapshot = try fixture.queue.fetchJob(id: job.id)
+        XCTAssertEqual(snapshot.state, .retryableFailed)
+        XCTAssertNotNil(snapshot.checkpoint)
+    }
+
+    func testContentModifiedAfterCutoffIsExcludedFromScan() throws {
+        let fixture = try makeLargeLibraryFixture(assetCount: 12)
+        let modifiedAsset = try XCTUnwrap(
+            try fixture.database.pool.read { db in
+                try String.fetchOne(
+                    db,
+                    sql: """
+                    SELECT id FROM asset
+                    WHERE source_id = ? AND id LIKE '21000000-%'
+                    ORDER BY id ASC LIMIT 1
+                    """,
+                    arguments: [fixture.sourceID.uuidString.lowercased()]
+                )
+            }.flatMap(UUID.init(uuidString:))
+        )
+        try fixture.database.pool.write { db in
+            try db.execute(
+                sql: """
+                UPDATE asset SET record_updated_at_ms = ?, record_updated_at_ms = ?
+                WHERE id = ?
+                """,
+                arguments: [
+                    fixture.cutoffMs + 5_000,
+                    fixture.cutoffMs + 5_000,
+                    modifiedAsset.uuidString.lowercased(),
+                ]
+            )
+        }
+        let handler = makeHandler(database: fixture.database, loader: fixture.loader, queue: fixture.queue)
+        let coordinator = makeCoordinator(database: fixture.database, handler: handler, queue: fixture.queue)
+        _ = try enqueueJob(
+            queue: fixture.queue,
+            tagID: fixture.tagID,
+            sourceIDs: [fixture.sourceID],
+            cutoffMs: fixture.cutoffMs,
+            database: fixture.database
+        )
+        drainPersonalizationJobs(coordinator: coordinator, maxSteps: 5)
+        let pending = try pendingAssetIDs(database: fixture.database, tagID: fixture.tagID)
+        XCTAssertFalse(pending.contains(modifiedAsset))
+    }
+
+    func testPostEnqueueFeedbackDoesNotChangeFrozenSamples() throws {
+        let fixture = try makeLargeLibraryFixture(assetCount: 20)
+        let review = GRDBPersonalizationReviewRepository(database: fixture.database)
+        let samplesBefore = try review.fetchFrozenSampleIdentities(tagID: fixture.tagID)
+        let job = try enqueueJob(
+            queue: fixture.queue,
+            tagID: fixture.tagID,
+            sourceIDs: [fixture.sourceID],
+            cutoffMs: fixture.cutoffMs,
+            database: fixture.database
+        )
+        let newFeedbackAsset = try XCTUnwrap(
+            try fixture.database.pool.read { db in
+                try String.fetchOne(
+                    db,
+                    sql: """
+                    SELECT id FROM asset
+                    WHERE source_id = ? AND id LIKE '21000000-%'
+                    ORDER BY id DESC LIMIT 1
+                    """,
+                    arguments: [fixture.sourceID.uuidString.lowercased()]
+                )
+            }.flatMap(UUID.init(uuidString:))
+        )
+        try seedDecisions(
+            database: fixture.database,
+            tagID: fixture.tagID,
+            accepted: [newFeedbackAsset],
+            rejected: []
+        )
+        let handler = makeHandler(database: fixture.database, loader: fixture.loader, queue: fixture.queue)
+        let coordinator = makeCoordinator(database: fixture.database, handler: handler, queue: fixture.queue)
+        drainPersonalizationJobs(coordinator: coordinator, maxSteps: 5)
+        let payload = try fixture.database.pool.read { db -> FullLibrarySuggestionsPayload in
+            let row = try Row.fetchOne(db, sql: "SELECT payload FROM job WHERE id = ?", arguments: [job.id.uuidString.lowercased()])!
+            return try FullLibrarySuggestionsCodec.decodePayload(row["payload"])
+        }
+        XCTAssertEqual(payload.frozenPositiveSamples, samplesBefore.positives)
+        XCTAssertEqual(payload.frozenNegativeSamples, samplesBefore.negatives)
+    }
+
+    func testUpdateReplacesCurrentQueueAndPreservesManualDecisions() throws {
+        let fixture = try makeLargeLibraryFixture(assetCount: 30, preseedPredictions: 5)
+        let preseedPending = try pendingAssetIDs(database: fixture.database, tagID: fixture.tagID)
+        let decided = try XCTUnwrap(preseedPending.first)
+        _ = try fixture.tags.batchAccept(
+            tagID: fixture.tagID,
+            assetIDs: [decided],
+            timestampMs: DatabaseTestSupport.timestampMs + 50
+        )
+        let handler = makeHandler(database: fixture.database, loader: fixture.loader, queue: fixture.queue)
+        let coordinator = makeCoordinator(database: fixture.database, handler: handler, queue: fixture.queue)
+        _ = try enqueueJob(
+            queue: fixture.queue,
+            tagID: fixture.tagID,
+            sourceIDs: [fixture.sourceID],
+            cutoffMs: fixture.cutoffMs + 1,
+            database: fixture.database
+        )
+        drainPersonalizationJobs(coordinator: coordinator, maxSteps: 5)
+        let facts = try revisionFacts(database: fixture.database, tagID: fixture.tagID)
+        XCTAssertEqual(facts.currentRevision, 2)
+        XCTAssertFalse(try pendingAssetIDs(database: fixture.database, tagID: fixture.tagID).contains(decided))
+        let decision = try fixture.database.pool.read { db in
+            try String.fetchOne(
+                db,
+                sql: "SELECT decision FROM asset_tag_decision WHERE asset_id = ? AND tag_id = ?",
+                arguments: [decided.uuidString.lowercased(), fixture.tagID.uuidString.lowercased()]
+            )
+        }
+        XCTAssertEqual(decision, "accepted")
+    }
+
+    func testDisabledSourceAssetsAreSkippedNotDroppedFromProgress() throws {
+        let fixture = try makeLargeLibraryFixture(assetCount: 20)
+        let handler = makeHandler(database: fixture.database, loader: fixture.loader, queue: fixture.queue)
+        let coordinator = makeCoordinator(database: fixture.database, handler: handler, queue: fixture.queue)
+        _ = try enqueueJob(
+            queue: fixture.queue,
+            tagID: fixture.tagID,
+            sourceIDs: [fixture.sourceID],
+            cutoffMs: fixture.cutoffMs,
+            database: fixture.database
+        )
+        try fixture.database.pool.write { db in
+            try db.execute(
+                sql: "UPDATE source SET state = 'disabled' WHERE id = ?",
+                arguments: [fixture.sourceID.uuidString.lowercased()]
+            )
+        }
+        drainPersonalizationJobs(coordinator: coordinator, maxSteps: 3)
+        let facts = try revisionFacts(database: fixture.database, tagID: fixture.tagID)
+        XCTAssertEqual(facts.checkedCount, 20)
+        XCTAssertGreaterThan(facts.skippedCount, 0)
+        XCTAssertEqual(try pendingCount(database: fixture.database, tagID: fixture.tagID), 0)
     }
 }
 
@@ -426,6 +688,23 @@ private func seedDecisions(
     }
 }
 
+private final class CacheFailureAfterSamplesLoader: SyncFeatureVectorLoading, @unchecked Sendable {
+    let base: StubSyncFeatureVectorLoader
+    private var loadCount = 0
+
+    init(base: StubSyncFeatureVectorLoader) {
+        self.base = base
+    }
+
+    func loadOrGenerateSync(assetID: UUID) throws -> FeatureVectorPayload {
+        loadCount += 1
+        if loadCount > 7 {
+            throw FeaturePrintError.cacheUnsafePath
+        }
+        return try base.loadOrGenerateSync(assetID: assetID)
+    }
+}
+
 private struct StubSyncFeatureVectorLoader: SyncFeatureVectorLoading {
     let database: CatalogDatabase
     let vectors: [UUID: [Float]]
@@ -469,7 +748,7 @@ private struct StubSyncFeatureVectorLoader: SyncFeatureVectorLoading {
 
 private func makeHandlerDependencies(
     database: CatalogDatabase,
-    loader: StubSyncFeatureVectorLoader,
+    loader: any SyncFeatureVectorLoading,
     queue: GRDBJobQueue
 ) -> FullLibrarySuggestionsHandlerDependencies {
     FullLibrarySuggestionsHandlerDependencies(
@@ -482,7 +761,7 @@ private func makeHandlerDependencies(
 
 private func makeHandler(
     database: CatalogDatabase,
-    loader: StubSyncFeatureVectorLoader,
+    loader: any SyncFeatureVectorLoading,
     queue: GRDBJobQueue
 ) -> FullLibrarySuggestionsHandler {
     FullLibrarySuggestionsHandler(dependencies: makeHandlerDependencies(
@@ -490,6 +769,18 @@ private func makeHandler(
         loader: loader,
         queue: queue
     ))
+}
+
+private final class BatchCounter: @unchecked Sendable {
+    private var value = 0
+    private let lock = NSLock()
+
+    func increment() -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        value += 1
+        return value
+    }
 }
 
 private func makeCoordinator(
@@ -509,14 +800,21 @@ private func enqueueJob(
     queue: GRDBJobQueue,
     tagID: UUID,
     sourceIDs: [UUID],
-    cutoffMs: Int64
+    cutoffMs: Int64,
+    database: CatalogDatabase
 ) throws -> JobRecordSnapshot {
-    try queue.enqueue(
+    let review = GRDBPersonalizationReviewRepository(database: database)
+    let samples = try review.fetchFrozenSampleIdentities(tagID: tagID)
+    let modelRevision = try review.nextModelRevision(tagID: tagID)
+    return try queue.enqueue(
         try FullLibrarySuggestionsJobEnqueue.makeEnqueueCommand(
             jobID: UUID(),
             tagID: tagID,
             sourceIDs: sourceIDs,
             catalogCutoffMs: cutoffMs,
+            modelRevision: modelRevision,
+            frozenPositiveSamples: samples.positives,
+            frozenNegativeSamples: samples.negatives,
             notBeforeMs: DatabaseTestSupport.timestampMs
         )
     )
@@ -542,6 +840,7 @@ private struct RevisionFacts {
     let predictionCount: Int
     let positiveCandidateCount: Int
     let checkedCount: Int
+    let skippedCount: Int
 }
 
 private func revisionFacts(database: CatalogDatabase, tagID: UUID) throws -> RevisionFacts {
@@ -575,12 +874,28 @@ private func revisionFacts(database: CatalogDatabase, tagID: UUID) throws -> Rev
             """,
             arguments: [FullLibrarySuggestionsJobFactory.coalescingKey(tagID: tagID)]
         ) ?? 0
+        let skippedCount: Int
+        if let checkpointRow = try Row.fetchOne(
+            db,
+            sql: """
+            SELECT checkpoint FROM job
+            WHERE coalescing_key = ?
+            ORDER BY updated_at_ms DESC LIMIT 1
+            """,
+            arguments: [FullLibrarySuggestionsJobFactory.coalescingKey(tagID: tagID)]
+        ), let checkpointData: Data = checkpointRow["checkpoint"] {
+            let jobCheckpoint = JobCheckpoint(version: FullLibrarySuggestionsJobFactory.checkpointVersion, data: checkpointData)
+            skippedCount = (try? FullLibrarySuggestionsCodec.checkpoint(from: jobCheckpoint).skippedCount) ?? 0
+        } else {
+            skippedCount = 0
+        }
         return RevisionFacts(
             revisionCount: revisionCount,
             currentRevision: currentRevision,
             predictionCount: predictionCount,
             positiveCandidateCount: positiveCandidateCount,
-            checkedCount: checkedCount
+            checkedCount: checkedCount,
+            skippedCount: skippedCount
         )
     }
 }

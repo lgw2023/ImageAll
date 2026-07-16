@@ -94,6 +94,104 @@ struct GRDBPersonalizationReviewRepository: Sendable {
         }
     }
 
+    func tagHasCurrentModel(tagID: UUID) throws -> Bool {
+        try database.pool.read { db in
+            try Bool.fetchOne(
+                db,
+                sql: "SELECT EXISTS(SELECT 1 FROM tag_model WHERE tag_id = ?)",
+                arguments: [uuid(tagID)]
+            ) ?? false
+        }
+    }
+
+    func fetchFrozenSampleIdentities(tagID: UUID) throws -> (
+        positives: [FrozenSampleIdentity],
+        negatives: [FrozenSampleIdentity]
+    ) {
+        try database.pool.read { db in
+            let rows = try Row.fetchAll(
+                db,
+                sql: """
+                WITH ranked AS (
+                    SELECT
+                        a.id,
+                        a.content_revision,
+                        d.decision,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY d.decision
+                            ORDER BY d.updated_at_ms DESC, a.id ASC
+                        ) AS role_rank
+                    FROM asset_tag_decision d
+                    JOIN asset a ON a.id = d.asset_id
+                    JOIN source s ON s.id = a.source_id
+                    WHERE d.tag_id = ?
+                        AND d.decision IN ('accepted', 'rejected')
+                        AND a.locator_kind = 'file'
+                        AND a.locator_state = 'current'
+                        AND a.availability = 'available'
+                        AND s.kind = 'folder'
+                        AND s.state = 'active'
+                )
+                SELECT id, content_revision, decision
+                FROM ranked
+                WHERE role_rank <= 12
+                ORDER BY decision ASC, role_rank ASC
+                """,
+                arguments: [uuid(tagID)]
+            )
+            var positives: [FrozenSampleIdentity] = []
+            var negatives: [FrozenSampleIdentity] = []
+            for row in rows {
+                guard let assetID = UUID(uuidString: row["id"]) else { continue }
+                let identity = FrozenSampleIdentity(
+                    assetID: assetID,
+                    contentRevision: row["content_revision"]
+                )
+                if row["decision"] as String == "accepted" {
+                    positives.append(identity)
+                } else {
+                    negatives.append(identity)
+                }
+            }
+            return (positives, negatives)
+        }
+    }
+
+    struct FrozenAssetProcessingContext: Sendable {
+        let contentRevision: Int
+        let availability: String
+        let sourceState: String
+        let hasDecision: Bool
+    }
+
+    func frozenAssetProcessingContext(tagID: UUID, assetID: UUID) throws -> FrozenAssetProcessingContext? {
+        try database.pool.read { db in
+            guard let row = try Row.fetchOne(
+                db,
+                sql: """
+                SELECT a.content_revision, a.availability, s.state AS source_state,
+                    EXISTS(
+                        SELECT 1 FROM asset_tag_decision d
+                        WHERE d.asset_id = a.id AND d.tag_id = ?
+                    ) AS has_decision
+                FROM asset a
+                JOIN source s ON s.id = a.source_id
+                WHERE a.id = ?
+                    AND a.locator_kind = 'file'
+                    AND a.locator_state = 'current'
+                    AND s.kind = 'folder'
+                """,
+                arguments: [uuid(tagID), uuid(assetID)]
+            ) else { return nil }
+            return FrozenAssetProcessingContext(
+                contentRevision: row["content_revision"],
+                availability: row["availability"],
+                sourceState: row["source_state"],
+                hasDecision: row["has_decision"]
+            )
+        }
+    }
+
     func activeFolderSourceIDs() throws -> [UUID] {
         try database.pool.read { db in
             try String.fetchAll(
@@ -117,6 +215,7 @@ struct GRDBPersonalizationReviewRepository: Sendable {
         let placeholders = Array(repeating: "?", count: sourceIDs.count).joined(separator: ", ")
         var arguments: [DatabaseValueConvertible] = sourceIDs.map { uuid($0) }
         arguments.append(catalogCutoffMs)
+        arguments.append(catalogCutoffMs)
         var afterClause = ""
         if let afterAssetID {
             afterClause = "AND a.id > ?"
@@ -132,10 +231,10 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                 JOIN source s ON s.id = a.source_id
                 WHERE s.id IN (\(placeholders))
                     AND s.kind = 'folder'
-                    AND s.state = 'active'
                     AND a.locator_kind = 'file'
                     AND a.locator_state = 'current'
                     AND a.record_created_at_ms <= ?
+                    AND a.record_updated_at_ms <= ?
                     \(afterClause)
                 ORDER BY a.id ASC
                 LIMIT ?
@@ -160,12 +259,12 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                 JOIN source s ON s.id = a.source_id
                 WHERE s.id IN (\(placeholders))
                     AND s.kind = 'folder'
-                    AND s.state = 'active'
                     AND a.locator_kind = 'file'
                     AND a.locator_state = 'current'
                     AND a.record_created_at_ms <= ?
+                    AND a.record_updated_at_ms <= ?
                 """,
-                arguments: StatementArguments(sourceIDs.map { uuid($0) } + [catalogCutoffMs])
+                arguments: StatementArguments(sourceIDs.map { uuid($0) } + [catalogCutoffMs, catalogCutoffMs])
             ) ?? 0
         }
     }

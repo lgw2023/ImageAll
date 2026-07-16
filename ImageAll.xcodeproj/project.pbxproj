@@ -199,6 +199,7 @@
 		MM0000010000000000000001 /* PersonalizedSuggestionService.swift in Sources */ = {isa = PBXBuildFile; fileRef = MM0001010000000000000001 /* PersonalizedSuggestionService.swift */; };
 		NN0000010000000000000001 /* PersonalizationReviewPort.swift in Sources */ = {isa = PBXBuildFile; fileRef = NN0001010000000000000001 /* PersonalizationReviewPort.swift */; };
 		NN0000010000000000000002 /* FullLibrarySuggestionsContracts.swift in Sources */ = {isa = PBXBuildFile; fileRef = NN0001010000000000000002 /* FullLibrarySuggestionsContracts.swift */; };
+		NN000001000000000000000A /* PersonalizationSuggestionRunner.swift in Sources */ = {isa = PBXBuildFile; fileRef = NN000101000000000000000A /* PersonalizationSuggestionRunner.swift */; };
 		NN0000010000000000000003 /* PersonalizationReviewService.swift in Sources */ = {isa = PBXBuildFile; fileRef = NN0001010000000000000003 /* PersonalizationReviewService.swift */; };
 		NN0000010000000000000004 /* GRDBPersonalizationReviewRepository.swift in Sources */ = {isa = PBXBuildFile; fileRef = NN0001010000000000000004 /* GRDBPersonalizationReviewRepository.swift */; };
 		NN0000010000000000000005 /* FullLibrarySuggestionsHandler.swift in Sources */ = {isa = PBXBuildFile; fileRef = NN0001010000000000000005 /* FullLibrarySuggestionsHandler.swift */; };
@@ -412,6 +413,7 @@
 		MM0001010000000000000001 /* PersonalizedSuggestionService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersonalizedSuggestionService.swift; sourceTree = "<group>"; };
 		NN0001010000000000000001 /* PersonalizationReviewPort.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersonalizationReviewPort.swift; sourceTree = "<group>"; };
 		NN0001010000000000000002 /* FullLibrarySuggestionsContracts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FullLibrarySuggestionsContracts.swift; sourceTree = "<group>"; };
+		NN000101000000000000000A /* PersonalizationSuggestionRunner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersonalizationSuggestionRunner.swift; sourceTree = "<group>"; };
 		NN0001010000000000000003 /* PersonalizationReviewService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersonalizationReviewService.swift; sourceTree = "<group>"; };
 		NN0001010000000000000004 /* GRDBPersonalizationReviewRepository.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GRDBPersonalizationReviewRepository.swift; sourceTree = "<group>"; };
 		NN0001010000000000000005 /* FullLibrarySuggestionsHandler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FullLibrarySuggestionsHandler.swift; sourceTree = "<group>"; };
@@ -670,6 +672,7 @@
 				MM0001010000000000000001 /* PersonalizedSuggestionService.swift */,
 				LL0001010000000000000001 /* FeaturePrintCacheService.swift */,
 				KK0001010000000000000003 /* GRDBPersonalizationRepository.swift */,
+				NN000101000000000000000A /* PersonalizationSuggestionRunner.swift */,
 				NN0001010000000000000003 /* PersonalizationReviewService.swift */,
 				NN0001010000000000000004 /* GRDBPersonalizationReviewRepository.swift */,
 				NN0001010000000000000005 /* FullLibrarySuggestionsHandler.swift */,
@@ -1148,6 +1151,7 @@
 				II000001000000000000000C /* DerivedImageCacheService.swift in Sources */,
 				NN0000010000000000000001 /* PersonalizationReviewPort.swift in Sources */,
 				NN0000010000000000000002 /* FullLibrarySuggestionsContracts.swift in Sources */,
+				NN000001000000000000000A /* PersonalizationSuggestionRunner.swift in Sources */,
 				NN0000010000000000000003 /* PersonalizationReviewService.swift in Sources */,
 				NN0000010000000000000004 /* GRDBPersonalizationReviewRepository.swift in Sources */,
 				NN0000010000000000000005 /* FullLibrarySuggestionsHandler.swift in Sources */,

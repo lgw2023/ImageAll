@@ -38,12 +38,14 @@ final class LibraryWorkspaceModel: ObservableObject {
     @Published private(set) var reviewMode: ReviewWorkspaceMode?
     @Published private(set) var reviewQueueItems: [ReviewQueueItemProjection] = []
     @Published fileprivate(set) var reviewNextCursor: ReviewQueueCursor?
+    @Published var pendingSuggestionConfirmation: SuggestionEnqueueConfirmation?
     @Published private(set) var assetPendingSuggestions: [AssetPendingSuggestion] = []
 
     fileprivate let review: any PersonalizationReviewPort
     private let service: any LibraryWorkspacePort
     private var lastTagMutation: LibraryTagUndoRecord?
     fileprivate var lastReviewMutation: ReviewMutationUndoRecord?
+    private var personalizationRunnerTask: Task<Void, Never>?
     private var selectionAnchorID: UUID?
     private var selectedTagFilterDecisions: [UUID: PersistableTagDecision] = [:]
     private var selectedSourceID: UUID?
@@ -373,8 +375,8 @@ final class LibraryWorkspaceModel: ObservableObject {
             do {
                 try await Self.offMain {
                     try service.runPendingReconcileJobs()
-                    try service.runPendingPersonalizationJobs()
                 }
+                startPersonalizationRunnerIfNeeded()
             } catch {
                 phase = .failed(.scanFailed)
                 return
@@ -751,13 +753,30 @@ extension LibraryWorkspaceModel {
         } catch {}
     }
 
-    func enqueueSuggestions(tagID: UUID, mode: PersonalizationReviewEnqueueMode) async -> Bool {
+    func requestEnqueueSuggestions(
+        tagID: UUID,
+        displayName: String,
+        mode: PersonalizationReviewEnqueueMode,
+        sourceCount: Int
+    ) {
+        pendingSuggestionConfirmation = SuggestionEnqueueConfirmation(
+            tagID: tagID,
+            displayName: displayName,
+            mode: mode,
+            sourceCount: sourceCount
+        )
+    }
+
+    func confirmPendingSuggestionEnqueue() async -> Bool {
+        guard let pending = pendingSuggestionConfirmation else { return false }
+        pendingSuggestionConfirmation = nil
         let reviewPort = review
-        let workspace = service
         do {
             notice = nil
-            _ = try await Self.offMain { try reviewPort.enqueueFullLibrarySuggestions(tagID: tagID, mode: mode) }
-            try await Self.offMain { try workspace.runPendingPersonalizationJobs() }
+            _ = try await Self.offMain {
+                try reviewPort.enqueueFullLibrarySuggestions(tagID: pending.tagID, mode: pending.mode)
+            }
+            startPersonalizationRunnerIfNeeded()
             await refreshReviewState()
             return true
         } catch let error as PersonalizationReviewError {
@@ -769,6 +788,33 @@ extension LibraryWorkspaceModel {
         }
     }
 
+    func cancelPendingSuggestionEnqueue() {
+        pendingSuggestionConfirmation = nil
+    }
+
+    private func startPersonalizationRunnerIfNeeded() {
+        guard personalizationRunnerTask == nil else { return }
+        let reviewPort = review
+        personalizationRunnerTask = PersonalizationSuggestionRunner.startLoop(review: reviewPort) { [weak self] in
+            guard let self else { return }
+            await self.refreshReviewState()
+            if case let .tagQueue(tagID, _) = self.reviewMode {
+                await self.loadReviewQueueFirstPage(tagID: tagID)
+            }
+        }
+    }
+
+    func enqueueSuggestions(tagID: UUID, mode: PersonalizationReviewEnqueueMode) async -> Bool {
+        guard let overview = suggestionOverviews.first(where: { $0.id == tagID }) else { return false }
+        requestEnqueueSuggestions(
+            tagID: tagID,
+            displayName: overview.displayName,
+            mode: mode,
+            sourceCount: sources.filter { $0.state == .active }.count
+        )
+        return true
+    }
+
     func pauseSuggestionJob(_ jobID: UUID) async {
         let reviewPort = review
         try? await Self.offMain { try reviewPort.pauseSuggestionJob(jobID: jobID) }
@@ -777,9 +823,8 @@ extension LibraryWorkspaceModel {
 
     func resumeSuggestionJob(_ jobID: UUID) async {
         let reviewPort = review
-        let workspace = service
         try? await Self.offMain { try reviewPort.resumeSuggestionJob(jobID: jobID) }
-        try? await Self.offMain { try workspace.runPendingPersonalizationJobs() }
+        startPersonalizationRunnerIfNeeded()
         await refreshReviewState()
     }
 
@@ -945,6 +990,25 @@ struct LibraryWorkspaceView: View {
                 .navigationSplitViewColumnWidth(min: 240, ideal: 300, max: 380)
         }
         .frame(minWidth: 900, minHeight: 560)
+        .confirmationDialog(
+            suggestionConfirmationTitle(model.pendingSuggestionConfirmation),
+            isPresented: Binding(
+                get: { model.pendingSuggestionConfirmation != nil },
+                set: { if !$0 { model.cancelPendingSuggestionEnqueue() } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("开始") {
+                Task { _ = await model.confirmPendingSuggestionEnqueue() }
+            }
+            Button("取消", role: .cancel) {
+                model.cancelPendingSuggestionEnqueue()
+            }
+        } message: {
+            if let pending = model.pendingSuggestionConfirmation {
+                Text(suggestionConfirmationMessage(pending))
+            }
+        }
         .searchable(
             text: $searchText,
             placement: .toolbar,
@@ -1737,6 +1801,23 @@ struct LibraryWorkspaceView: View {
         case .unavailable: return "来源当前离线"
         case .authorizationRequired: return "需要重新授权此来源"
         case .disabled: return "来源已停用，已索引照片和人工标签仍保留"
+        }
+    }
+
+    private func suggestionConfirmationTitle(_ pending: SuggestionEnqueueConfirmation?) -> String {
+        guard let pending else { return "确认建议任务" }
+        switch pending.mode {
+        case .generate: return "生成“\(pending.displayName)”建议"
+        case .update: return "更新“\(pending.displayName)”建议"
+        }
+    }
+
+    private func suggestionConfirmationMessage(_ pending: SuggestionEnqueueConfirmation) -> String {
+        switch pending.mode {
+        case .generate:
+            return "将检查 \(pending.sourceCount) 个 active 文件夹来源中已入库的照片，并生成待审核建议。"
+        case .update:
+            return "将检查 \(pending.sourceCount) 个 active 文件夹来源中已入库的照片。未审核建议会在第一批新结果成功后刷新；人工标签不会改变。"
         }
     }
 

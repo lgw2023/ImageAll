@@ -7,6 +7,7 @@ struct FullLibrarySuggestionsHandlerDependencies: Sendable {
     let featureLoader: any SyncFeatureVectorLoading
     let clock: any JobClock
     var publishFailureInjector: (@Sendable () throws -> Void)?
+    var beforeEachBatch: (@Sendable (Int) -> Void)?
 }
 
 struct FullLibrarySuggestionsHandler: LeaseBoundJobHandler, Sendable {
@@ -21,7 +22,7 @@ struct FullLibrarySuggestionsHandler: LeaseBoundJobHandler, Sendable {
         payload: Data,
         checkpoint: JobCheckpoint?
     ) -> JobHandlerExecutionResult {
-        failure(.personalizationPersistenceFailure)
+        failure(.personalizationPersistenceFailure, checkpoint: checkpoint, progress: nil)
     }
 
     func execute(
@@ -41,21 +42,35 @@ struct FullLibrarySuggestionsHandler: LeaseBoundJobHandler, Sendable {
         } catch let error as FullLibrarySuggestionsCodecError {
             switch error {
             case .invalidPayload:
-                return failure(.personalizationPayloadInvalid)
+                return failure(.personalizationPayloadInvalid, checkpoint: checkpoint, progress: nil)
             case .invalidCheckpoint:
-                return failure(.personalizationCheckpointInvalid)
+                return failure(.personalizationCheckpointInvalid, checkpoint: checkpoint, progress: nil)
             }
         } catch let error as PersonalizationCatalogError {
             switch error {
             case .archivedTag:
-                return failure(.personalizationTagArchived)
+                return failure(.personalizationTagArchived, checkpoint: checkpoint, progress: nil)
             default:
-                return failure(.personalizationPersistenceFailure)
+                return retryableFailure(
+                    .personalizationPersistenceFailure,
+                    checkpoint: preservedRetryCheckpoint(from: checkpoint),
+                    progress: nil
+                )
             }
         } catch is PersonalizedSuggestionError {
-            return failure(.personalizationInsufficientSamples)
+            return failure(.personalizationInsufficientSamples, checkpoint: checkpoint, progress: nil)
+        } catch let error as FeaturePrintError where isRetryableFeatureError(error) {
+            return retryableFailure(
+                .personalizationPersistenceFailure,
+                checkpoint: preservedRetryCheckpoint(from: checkpoint),
+                progress: nil
+            )
         } catch {
-            return failure(.personalizationPersistenceFailure)
+            return retryableFailure(
+                .personalizationPersistenceFailure,
+                checkpoint: preservedRetryCheckpoint(from: checkpoint),
+                progress: nil
+            )
         }
     }
 
@@ -66,53 +81,29 @@ struct FullLibrarySuggestionsHandler: LeaseBoundJobHandler, Sendable {
         checkpoint: JobCheckpoint?
     ) throws -> JobHandlerExecutionResult {
         guard payloadVersion == FullLibrarySuggestionsJobFactory.payloadVersion else {
-            return failure(.personalizationPayloadInvalid)
+            return failure(.personalizationPayloadInvalid, checkpoint: checkpoint, progress: nil)
         }
         let decodedPayload = try FullLibrarySuggestionsCodec.decodePayload(payload)
         var state = try FullLibrarySuggestionsCodec.checkpoint(from: checkpoint)
         let review = GRDBPersonalizationReviewRepository(database: dependencies.database)
         let catalog = GRDBPersonalizationRepository(database: dependencies.database)
         var firstBatchPublished = state.firstBatchPublished
+        let modelRevision = decodedPayload.modelRevision
 
         guard try review.tagIsActive(decodedPayload.tagID) else {
-            return failure(.personalizationTagArchived)
-        }
-
-        if state.frozenPositiveAssetIDs.isEmpty, state.frozenNegativeAssetIDs.isEmpty {
-            let samples = try review.fetchFrozenSamples(tagID: decodedPayload.tagID)
-            guard samples.positives.count >= 2, samples.negatives.count >= 2 else {
-                return failure(.personalizationInsufficientSamples)
-            }
-            state = FullLibrarySuggestionsCheckpoint(
-                lastAssetID: state.lastAssetID,
-                firstBatchPublished: state.firstBatchPublished,
-                modelRevision: state.modelRevision,
-                checkedCount: state.checkedCount,
-                eligibleCount: state.eligibleCount,
-                suggestedCount: state.suggestedCount,
-                skippedCount: state.skippedCount,
-                frozenPositiveAssetIDs: samples.positives.map(\.assetID),
-                frozenNegativeAssetIDs: samples.negatives.map(\.assetID)
-            )
+            return failure(.personalizationTagArchived, checkpoint: checkpoint, progress: nil)
         }
 
         let total = try review.frozenAssetTotal(
             sourceIDs: decodedPayload.sourceIDs,
             catalogCutoffMs: decodedPayload.catalogCutoffMs
         )
-        let scoring = try prepareScoring(
-            tagID: decodedPayload.tagID,
-            checkpoint: state,
-            review: review
-        )
-        let modelRevision: Int
-        if let revision = state.modelRevision {
-            modelRevision = revision
-        } else {
-            modelRevision = try review.nextModelRevision(tagID: decodedPayload.tagID)
-        }
+        var batchNumber = 0
 
-        while true {
+        do {
+            let scoring = try prepareScoring(payload: decodedPayload)
+            while true {
+            dependencies.beforeEachBatch?(batchNumber)
             if try shouldStopForControl(jobID: lease.jobID) {
                 let jobCheckpoint = try FullLibrarySuggestionsCodec.jobCheckpoint(from: state)
                 return JobHandlerExecutionResult(
@@ -131,19 +122,23 @@ struct FullLibrarySuggestionsHandler: LeaseBoundJobHandler, Sendable {
             )
             if batch.isEmpty {
                 let jobCheckpoint = try FullLibrarySuggestionsCodec.jobCheckpoint(from: state)
-                _ = try dependencies.queue.commitLeaseProtectedBatch(
+                let progress = JobProgress(completed: state.checkedCount, total: total)
+                let snapshot = try dependencies.queue.commitLeaseProtectedBatch(
                     input: SafeBatchCommitInput(
                         lease: lease,
                         outcome: .completed,
                         checkpoint: jobCheckpoint,
-                        progress: JobProgress(completed: state.checkedCount, total: total),
+                        progress: progress,
                         leaseDurationMs: 60_000
                     )
                 ) { _ in }
+                if let stop = stopResultIfNeeded(snapshot: snapshot, checkpoint: jobCheckpoint, progress: progress) {
+                    return stop
+                }
                 return JobHandlerExecutionResult(
                     outcome: .completed,
                     checkpoint: jobCheckpoint,
-                    progress: JobProgress(completed: state.checkedCount, total: total),
+                    progress: progress,
                     settledByHandler: true
                 )
             }
@@ -154,128 +149,182 @@ struct FullLibrarySuggestionsHandler: LeaseBoundJobHandler, Sendable {
             var skippedDelta = 0
             var predictions: [PredictionRegistration] = []
             var batchAssetIDs: [UUID] = []
+            var lastCheckedAssetID = state.lastAssetID
 
             for assetID in batch {
                 checkedDelta += 1
-                if let candidate = try review.candidateRevision(tagID: decodedPayload.tagID, assetID: assetID) {
-                    eligibleDelta += 1
-                    batchAssetIDs.append(assetID)
-                    do {
-                        let feature = try dependencies.featureLoader.loadOrGenerateSync(assetID: assetID)
-                        guard feature.identity.contentRevision == candidate.contentRevision else {
-                            skippedDelta += 1
-                            continue
-                        }
-                        let values = try PersonalizedSuggestionScoringCore.decode(feature)
-                        guard values.count == scoring.dimension else {
-                            skippedDelta += 1
-                            continue
-                        }
-                        let score = PersonalizedSuggestionScoringCore.scoreCandidate(
-                            candidateValues: values,
-                            positiveSamples: scoring.positiveValues,
-                            negativeSamples: scoring.negativeValues,
-                            neighborCount: scoring.neighborCount
-                        )
-                        if score > 0 {
-                            predictions.append(
-                                PredictionRegistration(
-                                    assetID: assetID,
-                                    contentRevision: candidate.contentRevision,
-                                    score: score
-                                )
-                            )
-                            suggestedDelta += 1
-                        }
-                    } catch {
-                        skippedDelta += 1
-                    }
-                } else {
+                lastCheckedAssetID = assetID
+                guard let context = try review.frozenAssetProcessingContext(
+                    tagID: decodedPayload.tagID,
+                    assetID: assetID
+                ) else {
                     skippedDelta += 1
+                    continue
+                }
+                if context.hasDecision {
+                    skippedDelta += 1
+                    continue
+                }
+                if context.sourceState != SourceState.active.rawValue {
+                    skippedDelta += 1
+                    continue
+                }
+                if context.availability != AssetAvailability.available.rawValue {
+                    skippedDelta += 1
+                    continue
+                }
+
+                eligibleDelta += 1
+                batchAssetIDs.append(assetID)
+                do {
+                    let feature = try dependencies.featureLoader.loadOrGenerateSync(assetID: assetID)
+                    guard feature.identity.contentRevision == context.contentRevision else {
+                        skippedDelta += 1
+                        continue
+                    }
+                    let values = try PersonalizedSuggestionScoringCore.decode(feature)
+                    guard values.count == scoring.dimension else {
+                        skippedDelta += 1
+                        continue
+                    }
+                    let score = PersonalizedSuggestionScoringCore.scoreCandidate(
+                        candidateValues: values,
+                        positiveSamples: scoring.positiveValues,
+                        negativeSamples: scoring.negativeValues,
+                        neighborCount: scoring.neighborCount
+                    )
+                    if score > 0 {
+                        predictions.append(
+                            PredictionRegistration(
+                                assetID: assetID,
+                                contentRevision: context.contentRevision,
+                                score: score
+                            )
+                        )
+                        suggestedDelta += 1
+                    }
+                } catch let error as FeaturePrintError where isSkippableFeatureError(error) {
+                    skippedDelta += 1
+                } catch let error as FeaturePrintError where isRetryableFeatureError(error) {
+                    return try retryableFailureWithPartialBatch(
+                        state: state,
+                        firstBatchPublished: firstBatchPublished,
+                        modelRevision: modelRevision,
+                        lastCheckedAssetID: lastCheckedAssetID,
+                        checkedDelta: checkedDelta,
+                        eligibleDelta: eligibleDelta,
+                        suggestedDelta: suggestedDelta,
+                        skippedDelta: skippedDelta,
+                        total: total
+                    )
+                } catch let error as PersonalizationCatalogError {
+                    throw error
+                } catch {
+                    throw error
                 }
             }
 
-            state = FullLibrarySuggestionsCheckpoint(
+            var nextState = FullLibrarySuggestionsCheckpoint(
                 lastAssetID: batch.last,
                 firstBatchPublished: true,
                 modelRevision: modelRevision,
                 checkedCount: state.checkedCount + checkedDelta,
                 eligibleCount: state.eligibleCount + eligibleDelta,
                 suggestedCount: state.suggestedCount + suggestedDelta,
-                skippedCount: state.skippedCount + skippedDelta,
-                frozenPositiveAssetIDs: state.frozenPositiveAssetIDs,
-                frozenNegativeAssetIDs: state.frozenNegativeAssetIDs
+                skippedCount: state.skippedCount + skippedDelta
             )
-            let progress = JobProgress(completed: state.checkedCount, total: total)
-            let jobCheckpoint = try FullLibrarySuggestionsCodec.jobCheckpoint(from: state)
+            let progress = JobProgress(completed: nextState.checkedCount, total: total)
+            let jobCheckpoint = try FullLibrarySuggestionsCodec.jobCheckpoint(from: nextState)
             let createdAtMs = dependencies.clock.nowMs
-            let completed = state.checkedCount >= total
+            let completed = nextState.checkedCount >= total
 
-            if !firstBatchPublished {
-                _ = try dependencies.queue.commitLeaseProtectedBatch(
-                    input: SafeBatchCommitInput(
-                        lease: lease,
-                        outcome: completed ? .completed : .continue,
-                        checkpoint: jobCheckpoint,
-                        progress: progress,
-                        leaseDurationMs: 60_000
-                    )
-                ) { db in
-                    try dependencies.publishFailureInjector?()
-                    try catalog.publishModelRevision(
-                        ModelRevisionRegistration(
-                            tagID: decodedPayload.tagID,
-                            revision: modelRevision,
-                            threshold: 0,
-                            neighborCount: scoring.neighborCount,
-                            sampleBudgetPerRole: 12,
-                            samples: scoring.sampleRegistrations,
-                            createdAtMs: createdAtMs
-                        ),
-                        on: db
-                    )
-                    if !batchAssetIDs.isEmpty {
-                        try catalog.replacePredictions(
+            let snapshot: JobRecordSnapshot
+            do {
+                if !firstBatchPublished {
+                    snapshot = try dependencies.queue.commitLeaseProtectedBatch(
+                        input: SafeBatchCommitInput(
+                            lease: lease,
+                            outcome: completed ? .completed : .continue,
+                            checkpoint: jobCheckpoint,
+                            progress: progress,
+                            leaseDurationMs: 60_000
+                        )
+                    ) { db in
+                        try dependencies.publishFailureInjector?()
+                        try catalog.publishModelRevision(
+                            ModelRevisionRegistration(
+                                tagID: decodedPayload.tagID,
+                                revision: modelRevision,
+                                threshold: 0,
+                                neighborCount: scoring.neighborCount,
+                                sampleBudgetPerRole: 12,
+                                samples: scoring.sampleRegistrations,
+                                createdAtMs: createdAtMs
+                            ),
+                            on: db
+                        )
+                        if !batchAssetIDs.isEmpty {
+                            try catalog.replacePredictions(
+                                tagID: decodedPayload.tagID,
+                                modelRevision: modelRevision,
+                                candidateAssetIDs: batchAssetIDs,
+                                predictions: predictions,
+                                createdAtMs: createdAtMs,
+                                on: db
+                            )
+                        }
+                    }
+                    firstBatchPublished = true
+                } else if !predictions.isEmpty {
+                    snapshot = try dependencies.queue.commitLeaseProtectedBatch(
+                        input: SafeBatchCommitInput(
+                            lease: lease,
+                            outcome: completed ? .completed : .continue,
+                            checkpoint: jobCheckpoint,
+                            progress: progress,
+                            leaseDurationMs: 60_000
+                        )
+                    ) { db in
+                        try catalog.appendPredictions(
                             tagID: decodedPayload.tagID,
                             modelRevision: modelRevision,
-                            candidateAssetIDs: batchAssetIDs,
                             predictions: predictions,
                             createdAtMs: createdAtMs,
                             on: db
                         )
                     }
+                } else {
+                    snapshot = try dependencies.queue.commitLeaseProtectedBatch(
+                        input: SafeBatchCommitInput(
+                            lease: lease,
+                            outcome: completed ? .completed : .continue,
+                            checkpoint: jobCheckpoint,
+                            progress: progress,
+                            leaseDurationMs: 60_000
+                        )
+                    ) { _ in }
                 }
-                firstBatchPublished = true
-            } else if !predictions.isEmpty {
-                _ = try dependencies.queue.commitLeaseProtectedBatch(
-                    input: SafeBatchCommitInput(
-                        lease: lease,
-                        outcome: completed ? .completed : .continue,
-                        checkpoint: jobCheckpoint,
-                        progress: progress,
-                        leaseDurationMs: 60_000
-                    )
-                ) { db in
-                    try catalog.appendPredictions(
-                        tagID: decodedPayload.tagID,
-                        modelRevision: modelRevision,
-                        predictions: predictions,
-                        createdAtMs: createdAtMs,
-                        on: db
-                    )
-                }
-            } else {
-                _ = try dependencies.queue.commitLeaseProtectedBatch(
-                    input: SafeBatchCommitInput(
-                        lease: lease,
-                        outcome: completed ? .completed : .continue,
-                        checkpoint: jobCheckpoint,
-                        progress: progress,
-                        leaseDurationMs: 60_000
-                    )
-                ) { _ in }
+            } catch let error as FeaturePrintError where isRetryableFeatureError(error) {
+                let preservedCheckpoint = try FullLibrarySuggestionsCodec.jobCheckpoint(from: state)
+                return retryableFailure(
+                    .personalizationPersistenceFailure,
+                    checkpoint: preservedCheckpoint,
+                    progress: JobProgress(completed: state.checkedCount, total: total)
+                )
+            } catch is PersonalizationCatalogError {
+                let preservedCheckpoint = try FullLibrarySuggestionsCodec.jobCheckpoint(from: state)
+                return retryableFailure(
+                    .personalizationPersistenceFailure,
+                    checkpoint: preservedCheckpoint,
+                    progress: JobProgress(completed: state.checkedCount, total: total)
+                )
             }
 
+            state = nextState
+            batchNumber += 1
+            if let stop = stopResultIfNeeded(snapshot: snapshot, checkpoint: jobCheckpoint, progress: progress) {
+                return stop
+            }
             if completed {
                 return JobHandlerExecutionResult(
                     outcome: .completed,
@@ -284,7 +333,57 @@ struct FullLibrarySuggestionsHandler: LeaseBoundJobHandler, Sendable {
                     settledByHandler: true
                 )
             }
+            }
+        } catch let error as FeaturePrintError where isRetryableFeatureError(error) {
+            let preservedCheckpoint = try FullLibrarySuggestionsCodec.jobCheckpoint(from: state)
+            return retryableFailure(
+                .personalizationPersistenceFailure,
+                checkpoint: preservedCheckpoint,
+                progress: JobProgress(completed: state.checkedCount, total: total)
+            )
+        } catch is PersonalizationCatalogError {
+            let preservedCheckpoint = try FullLibrarySuggestionsCodec.jobCheckpoint(from: state)
+            return retryableFailure(
+                .personalizationPersistenceFailure,
+                checkpoint: preservedCheckpoint,
+                progress: JobProgress(completed: state.checkedCount, total: total)
+            )
         }
+    }
+
+    private func preservedRetryCheckpoint(from checkpoint: JobCheckpoint?) -> JobCheckpoint? {
+        if let checkpoint {
+            return checkpoint
+        }
+        return try? FullLibrarySuggestionsCodec.jobCheckpoint(from: .empty)
+    }
+
+    private func retryableFailureWithPartialBatch(
+        state: FullLibrarySuggestionsCheckpoint,
+        firstBatchPublished: Bool,
+        modelRevision: Int,
+        lastCheckedAssetID: UUID?,
+        checkedDelta: Int,
+        eligibleDelta: Int,
+        suggestedDelta: Int,
+        skippedDelta: Int,
+        total: Int
+    ) throws -> JobHandlerExecutionResult {
+        let partial = FullLibrarySuggestionsCheckpoint(
+            lastAssetID: lastCheckedAssetID,
+            firstBatchPublished: firstBatchPublished,
+            modelRevision: modelRevision,
+            checkedCount: state.checkedCount + checkedDelta,
+            eligibleCount: state.eligibleCount + eligibleDelta,
+            suggestedCount: state.suggestedCount + suggestedDelta,
+            skippedCount: state.skippedCount + skippedDelta
+        )
+        let preservedCheckpoint = try FullLibrarySuggestionsCodec.jobCheckpoint(from: partial)
+        return retryableFailure(
+            .personalizationPersistenceFailure,
+            checkpoint: preservedCheckpoint,
+            progress: JobProgress(completed: partial.checkedCount, total: total)
+        )
     }
 
     private struct ScoringContext {
@@ -295,35 +394,29 @@ struct FullLibrarySuggestionsHandler: LeaseBoundJobHandler, Sendable {
         let sampleRegistrations: [ModelSampleRegistration]
     }
 
-    private func prepareScoring(
-        tagID: UUID,
-        checkpoint: FullLibrarySuggestionsCheckpoint,
-        review: GRDBPersonalizationReviewRepository
-    ) throws -> ScoringContext {
+    private func prepareScoring(payload: FullLibrarySuggestionsPayload) throws -> ScoringContext {
         var loadedPositives: [PersonalizedSuggestionScoringCore.LoadedSample] = []
         var loadedNegatives: [PersonalizedSuggestionScoringCore.LoadedSample] = []
 
-        for assetID in checkpoint.frozenPositiveAssetIDs {
-            guard let revision = try sampleContentRevision(assetID: assetID) else { continue }
-            let feature = try dependencies.featureLoader.loadOrGenerateSync(assetID: assetID)
-            guard feature.identity.contentRevision == revision else { continue }
+        for sample in payload.frozenPositiveSamples {
+            let feature = try dependencies.featureLoader.loadOrGenerateSync(assetID: sample.assetID)
+            guard feature.identity.contentRevision == sample.contentRevision else { continue }
             loadedPositives.append(
                 PersonalizedSuggestionScoringCore.LoadedSample(
-                    assetID: assetID,
-                    contentRevision: revision,
+                    assetID: sample.assetID,
+                    contentRevision: sample.contentRevision,
                     role: .positive,
                     values: try PersonalizedSuggestionScoringCore.decode(feature)
                 )
             )
         }
-        for assetID in checkpoint.frozenNegativeAssetIDs {
-            guard let revision = try sampleContentRevision(assetID: assetID) else { continue }
-            let feature = try dependencies.featureLoader.loadOrGenerateSync(assetID: assetID)
-            guard feature.identity.contentRevision == revision else { continue }
+        for sample in payload.frozenNegativeSamples {
+            let feature = try dependencies.featureLoader.loadOrGenerateSync(assetID: sample.assetID)
+            guard feature.identity.contentRevision == sample.contentRevision else { continue }
             loadedNegatives.append(
                 PersonalizedSuggestionScoringCore.LoadedSample(
-                    assetID: assetID,
-                    contentRevision: revision,
+                    assetID: sample.assetID,
+                    contentRevision: sample.contentRevision,
                     role: .negative,
                     values: try PersonalizedSuggestionScoringCore.decode(feature)
                 )
@@ -352,26 +445,104 @@ struct FullLibrarySuggestionsHandler: LeaseBoundJobHandler, Sendable {
         )
     }
 
-    private func sampleContentRevision(assetID: UUID) throws -> Int? {
-        try dependencies.database.pool.read { db in
-            try Int.fetchOne(
-                db,
-                sql: "SELECT content_revision FROM asset WHERE id = ?",
-                arguments: [assetID.uuidString.lowercased()]
-            )
-        }
-    }
-
     private func shouldStopForControl(jobID: UUID) throws -> Bool {
         let snapshot = try dependencies.queue.fetchJob(id: jobID)
         return snapshot.controlRequest != .none
     }
 
-    private func failure(_ code: JobSafeErrorCode) -> JobHandlerExecutionResult {
+    private func stopResultIfNeeded(
+        snapshot: JobRecordSnapshot,
+        checkpoint: JobCheckpoint,
+        progress: JobProgress
+    ) -> JobHandlerExecutionResult? {
+        switch snapshot.state {
+        case .running:
+            return nil
+        case .paused:
+            return JobHandlerExecutionResult(
+                outcome: .continue,
+                checkpoint: checkpoint,
+                progress: progress,
+                settledByHandler: true
+            )
+        case .cancelled:
+            return JobHandlerExecutionResult(
+                outcome: .completed,
+                checkpoint: checkpoint,
+                progress: progress,
+                settledByHandler: true
+            )
+        case .completed:
+            return JobHandlerExecutionResult(
+                outcome: .completed,
+                checkpoint: checkpoint,
+                progress: progress,
+                settledByHandler: true
+            )
+        case .retryableFailed:
+            return JobHandlerExecutionResult(
+                outcome: .retryableFailure(code: snapshot.lastErrorCode ?? .personalizationPersistenceFailure),
+                checkpoint: checkpoint,
+                progress: progress,
+                settledByHandler: true
+            )
+        case .terminalFailed:
+            return JobHandlerExecutionResult(
+                outcome: .nonRetryableFailure(code: snapshot.lastErrorCode ?? .personalizationPersistenceFailure),
+                checkpoint: checkpoint,
+                progress: progress,
+                settledByHandler: true
+            )
+        case .pending:
+            return JobHandlerExecutionResult(
+                outcome: .continue,
+                checkpoint: checkpoint,
+                progress: progress,
+                settledByHandler: true
+            )
+        }
+    }
+
+    private func isSkippableFeatureError(_ error: FeaturePrintError) -> Bool {
+        switch error {
+        case .assetNotFound, .assetIneligible, .authorizationRequired, .sourceUnavailable,
+             .sourceChanged, .decodeFailed, .generationFailed:
+            return true
+        case .cacheUnsafePath, .cachePersistenceFailed:
+            return false
+        }
+    }
+
+    private func isRetryableFeatureError(_ error: FeaturePrintError) -> Bool {
+        switch error {
+        case .cacheUnsafePath, .cachePersistenceFailed:
+            return true
+        default:
+            return false
+        }
+    }
+
+    private func failure(
+        _ code: JobSafeErrorCode,
+        checkpoint: JobCheckpoint?,
+        progress: JobProgress?
+    ) -> JobHandlerExecutionResult {
         JobHandlerExecutionResult(
             outcome: .nonRetryableFailure(code: code),
-            checkpoint: nil,
-            progress: JobProgress(completed: 0, total: nil)
+            checkpoint: checkpoint,
+            progress: progress ?? JobProgress(completed: 0, total: nil)
+        )
+    }
+
+    private func retryableFailure(
+        _ code: JobSafeErrorCode,
+        checkpoint: JobCheckpoint?,
+        progress: JobProgress?
+    ) -> JobHandlerExecutionResult {
+        JobHandlerExecutionResult(
+            outcome: .retryableFailure(code: code),
+            checkpoint: checkpoint,
+            progress: progress ?? JobProgress(completed: 0, total: nil)
         )
     }
 }

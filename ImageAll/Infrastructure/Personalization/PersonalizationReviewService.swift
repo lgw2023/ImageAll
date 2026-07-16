@@ -23,10 +23,12 @@ struct PersonalizationReviewService: PersonalizationReviewPort, Sendable {
             let job = try review.activeSuggestionJob(tagID: tag.id)
             let status = mapTaskStatus(tag: tag, samples: samples, job: job)
             let checkpoint = try job.flatMap { try FullLibrarySuggestionsCodec.checkpoint(from: $0.checkpoint) }
+            let hasModel = try review.tagHasCurrentModel(tagID: tag.id)
             let missingPositive = max(0, 2 - samples.accepted)
             let missingNegative = max(0, 2 - samples.rejected)
-            let canGenerate = missingPositive == 0 && missingNegative == 0 && pending == 0 && job == nil
-            let canUpdate = missingPositive == 0 && missingNegative == 0 && pending > 0 && job == nil
+            let samplesReady = missingPositive == 0 && missingNegative == 0
+            let canGenerate = samplesReady && !hasModel && job == nil
+            let canUpdate = samplesReady && hasModel && job == nil
             return SuggestionTagOverview(
                 id: tag.id,
                 displayName: tag.displayName,
@@ -67,13 +69,13 @@ struct PersonalizationReviewService: PersonalizationReviewPort, Sendable {
         mode: PersonalizationReviewEnqueueMode
     ) throws -> UUID {
         _ = mode
-        let samples = try review.sampleCounts(tagID: tagID)
-        let missingPositive = max(0, 2 - samples.accepted)
-        let missingNegative = max(0, 2 - samples.rejected)
-        guard missingPositive == 0, missingNegative == 0 else {
+        let samples = try review.fetchFrozenSampleIdentities(tagID: tagID)
+        guard samples.positives.count >= 2, samples.negatives.count >= 2 else {
+            let accepted = samples.positives.count
+            let rejected = samples.negatives.count
             throw PersonalizationReviewError.insufficientSamples(
-                positiveMissing: missingPositive,
-                negativeMissing: missingNegative
+                positiveMissing: max(0, 2 - accepted),
+                negativeMissing: max(0, 2 - rejected)
             )
         }
         if let job = try review.activeSuggestionJob(tagID: tagID),
@@ -85,12 +87,16 @@ struct PersonalizationReviewService: PersonalizationReviewPort, Sendable {
         guard !sourceIDs.isEmpty else {
             throw PersonalizationReviewError.persistenceFailure
         }
+        let modelRevision = try review.nextModelRevision(tagID: tagID)
         let jobID = UUID()
         let command = try FullLibrarySuggestionsJobEnqueue.makeEnqueueCommand(
             jobID: jobID,
             tagID: tagID,
             sourceIDs: sourceIDs,
             catalogCutoffMs: clock.nowMs,
+            modelRevision: modelRevision,
+            frozenPositiveSamples: samples.positives,
+            frozenNegativeSamples: samples.negatives,
             notBeforeMs: clock.nowMs
         )
         do {
@@ -115,21 +121,24 @@ struct PersonalizationReviewService: PersonalizationReviewPort, Sendable {
         _ = try queue.applyStateCommand(JobStateCommand(jobID: jobID, operation: .cancel))
     }
 
-    func runPendingSuggestionJobs(maxSteps: Int? = nil) throws {
+    func runPendingSuggestionJobs(maxSteps: Int? = nil) throws -> Bool {
         let claim = ClaimNextInput(
-            owner: "imageall-personalization-\(UUID().uuidString.lowercased())",
+            owner: PersonalizationSuggestionRunner.claimOwner,
             leaseDurationMs: 60_000,
             allowedKinds: [FullLibrarySuggestionsJobFactory.kind]
         )
         var steps = 0
+        var didWork = false
         while true {
             if let maxSteps, steps >= maxSteps { break }
             guard let result = try executionCoordinator.claimAndExecuteOnce(claim) else { break }
+            didWork = true
             steps += 1
             if result.snapshot.state == .terminalFailed {
                 break
             }
         }
+        return didWork
     }
 
     private func mapTaskStatus(

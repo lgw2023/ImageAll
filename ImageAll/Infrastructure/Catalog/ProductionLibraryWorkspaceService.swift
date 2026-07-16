@@ -61,7 +61,7 @@ struct ProductionLibraryWorkspaceService: LibraryWorkspacePort, Sendable {
     }
 
     func runPendingPersonalizationJobs() throws {
-        try personalizationReview.runPendingSuggestionJobs(maxSteps: nil)
+        _ = try personalizationReview.runPendingSuggestionJobs(maxSteps: nil)
     }
 
     func fetchAssetPage(

@@ -75,6 +75,15 @@ enum PersonalizationReviewEnqueueMode: Equatable, Sendable {
     case update
 }
 
+struct SuggestionEnqueueConfirmation: Identifiable, Equatable, Sendable {
+    let tagID: UUID
+    let displayName: String
+    let mode: PersonalizationReviewEnqueueMode
+    let sourceCount: Int
+
+    var id: UUID { tagID }
+}
+
 protocol PersonalizationReviewPort: Sendable {
     func totalPendingSuggestionCount() throws -> Int
     func tagOverviews() throws -> [SuggestionTagOverview]
@@ -91,7 +100,7 @@ protocol PersonalizationReviewPort: Sendable {
     func pauseSuggestionJob(jobID: UUID) throws
     func resumeSuggestionJob(jobID: UUID) throws
     func cancelSuggestionJob(jobID: UUID) throws
-    func runPendingSuggestionJobs(maxSteps: Int?) throws
+    func runPendingSuggestionJobs(maxSteps: Int?) throws -> Bool
 }
 
 struct EmptyPersonalizationReviewPort: PersonalizationReviewPort, Sendable {
@@ -107,5 +116,5 @@ struct EmptyPersonalizationReviewPort: PersonalizationReviewPort, Sendable {
     func pauseSuggestionJob(jobID: UUID) throws {}
     func resumeSuggestionJob(jobID: UUID) throws {}
     func cancelSuggestionJob(jobID: UUID) throws {}
-    func runPendingSuggestionJobs(maxSteps: Int?) throws {}
+    func runPendingSuggestionJobs(maxSteps: Int? = nil) throws -> Bool { false }
 }

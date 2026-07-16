@@ -31,7 +31,7 @@ struct ReviewOverviewView: View {
                     Text(statusText(overview))
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                    if !overview.canGenerate {
+                    if overview.missingPositiveCount > 0 || overview.missingNegativeCount > 0 {
                         Text("还需确认 \(overview.missingPositiveCount) 张、标记不属于 \(overview.missingNegativeCount) 张")
                             .font(.caption)
                             .foregroundStyle(.orange)
@@ -39,12 +39,22 @@ struct ReviewOverviewView: View {
                     HStack {
                         if overview.canGenerate {
                             Button("生成建议") {
-                                Task { _ = await model.enqueueSuggestions(tagID: overview.id, mode: .generate) }
+                                model.requestEnqueueSuggestions(
+                                    tagID: overview.id,
+                                    displayName: overview.displayName,
+                                    mode: .generate,
+                                    sourceCount: model.sources.filter { $0.state == .active }.count
+                                )
                             }
                         }
                         if overview.canUpdate {
                             Button("更新建议") {
-                                Task { _ = await model.enqueueSuggestions(tagID: overview.id, mode: .update) }
+                                model.requestEnqueueSuggestions(
+                                    tagID: overview.id,
+                                    displayName: overview.displayName,
+                                    mode: .update,
+                                    sourceCount: model.sources.filter { $0.state == .active }.count
+                                )
                             }
                         }
                         if overview.canReview {

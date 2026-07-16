@@ -6,13 +6,19 @@ enum FullLibrarySuggestionsJobEnqueue {
         tagID: UUID,
         sourceIDs: [UUID],
         catalogCutoffMs: Int64,
+        modelRevision: Int,
+        frozenPositiveSamples: [FrozenSampleIdentity],
+        frozenNegativeSamples: [FrozenSampleIdentity],
         notBeforeMs: Int64
     ) throws -> EnqueueJobCommand {
         let payload = FullLibrarySuggestionsPayload(
             contractVersion: FullLibrarySuggestionsJobFactory.contractVersion,
             tagID: tagID,
             sourceIDs: sourceIDs.sorted { $0.uuidString.lowercased() < $1.uuidString.lowercased() },
-            catalogCutoffMs: catalogCutoffMs
+            catalogCutoffMs: catalogCutoffMs,
+            modelRevision: modelRevision,
+            frozenPositiveSamples: frozenPositiveSamples,
+            frozenNegativeSamples: frozenNegativeSamples
         )
         return EnqueueJobCommand(
             id: jobID,

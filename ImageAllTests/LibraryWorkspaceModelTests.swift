@@ -392,6 +392,146 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertEqual(model.items.map(\.assetID), [availableJPEG.assetID, missingPNG.assetID])
     }
 
+    func testBulkReviewAcceptanceUsesSingleMutationAndUndoRestoresAll() async {
+        let sourceID = UUID()
+        let tag = TagListItem(id: UUID(), displayName: "Family", state: .active)
+        let assets = (0 ..< 3).map { _ in Self.makeAsset(sourceID: sourceID) }
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(id: sourceID, displayName: "Fixture", state: .active),
+            reconciledItems: assets,
+            tags: [tag]
+        )
+        let review = FakePersonalizationReviewPort(
+            queueItems: assets.map {
+                ReviewQueueItemProjection(
+                    assetID: $0.assetID,
+                    fileName: $0.fileName,
+                    availability: $0.availability,
+                    acceptedTagCount: 0,
+                    rejectedTagCount: 0
+                )
+            }
+        )
+        let model = LibraryWorkspaceModel(service: service, review: review)
+
+        await model.enterReviewQueue(tagID: tag.id, displayName: tag.displayName)
+        await model.selectAsset(assets[0].assetID)
+        await model.selectAsset(assets[1].assetID, additive: true)
+        await model.selectAsset(assets[2].assetID, additive: true)
+        await model.applyReviewDecision(action: .accept)
+
+        XCTAssertEqual(service.mutateTagCallCount, 1)
+        XCTAssertTrue(model.canUndoReviewMutation)
+        await model.undoLastReviewMutation()
+        XCTAssertEqual(
+            try service.selectionAggregate(tagIDs: [tag.id], assetIDs: assets.map(\.assetID)).first?.unknownCount,
+            3
+        )
+    }
+
+    func testDeferReviewSelectionDoesNotWriteToDatabase() async {
+        let sourceID = UUID()
+        let tag = TagListItem(id: UUID(), displayName: "Family", state: .active)
+        let first = Self.makeAsset(sourceID: sourceID, fileName: "first.jpg")
+        let second = Self.makeAsset(sourceID: sourceID, fileName: "second.jpg")
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(id: sourceID, displayName: "Fixture", state: .active),
+            reconciledItems: [first, second],
+            tags: [tag]
+        )
+        let review = FakePersonalizationReviewPort(
+            queueItems: [
+                ReviewQueueItemProjection(
+                    assetID: first.assetID,
+                    fileName: first.fileName,
+                    availability: first.availability,
+                    acceptedTagCount: 0,
+                    rejectedTagCount: 0
+                ),
+                ReviewQueueItemProjection(
+                    assetID: second.assetID,
+                    fileName: second.fileName,
+                    availability: second.availability,
+                    acceptedTagCount: 0,
+                    rejectedTagCount: 0
+                ),
+            ]
+        )
+        let model = LibraryWorkspaceModel(service: service, review: review)
+
+        await model.enterReviewQueue(tagID: tag.id, displayName: tag.displayName)
+        await model.selectAsset(first.assetID)
+        model.deferReviewSelection()
+
+        XCTAssertEqual(service.mutateTagCallCount, 0)
+        XCTAssertEqual(model.reviewQueueItems.map(\.assetID).last, first.assetID)
+        XCTAssertEqual(model.selectedAssetIDs, [second.assetID])
+    }
+
+    func testApplyReviewDecisionIgnoredOutsideReviewQueue() async {
+        let sourceID = UUID()
+        let asset = Self.makeAsset(sourceID: sourceID)
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(id: sourceID, displayName: "Fixture", state: .active),
+            reconciledItems: [asset]
+        )
+        let model = LibraryWorkspaceModel(service: service, review: FakePersonalizationReviewPort())
+
+        await model.start()
+        await model.connectFolder()
+        await model.selectAsset(asset.assetID)
+        await model.applyReviewDecision(action: .accept)
+
+        XCTAssertEqual(service.mutateTagCallCount, 0)
+    }
+
+    func testConfirmSuggestionEnqueueReturnsWithoutDrainingJobs() async {
+        let sourceID = UUID()
+        let tag = TagListItem(id: UUID(), displayName: "Family", state: .active)
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(id: sourceID, displayName: "Fixture", state: .active),
+            reconciledItems: [Self.makeAsset(sourceID: sourceID)],
+            tags: [tag]
+        )
+        let review = FakePersonalizationReviewPort(
+            overviews: [
+                SuggestionTagOverview(
+                    id: tag.id,
+                    displayName: tag.displayName,
+                    acceptedSampleCount: 4,
+                    rejectedSampleCount: 4,
+                    pendingSuggestionCount: 0,
+                    taskStatus: .ready,
+                    checkedCount: 0,
+                    totalCount: nil,
+                    skippedCount: 0,
+                    missingPositiveCount: 0,
+                    missingNegativeCount: 0,
+                    canGenerate: true,
+                    canUpdate: false,
+                    canReview: false,
+                    canPause: false,
+                    canResume: false,
+                    canCancel: false,
+                    activeJobID: nil
+                ),
+            ],
+            blocksRunPendingJobs: true
+        )
+        let model = LibraryWorkspaceModel(service: service, review: review)
+
+        await model.start()
+        await model.connectFolder()
+        await model.refreshReviewState()
+        _ = await model.enqueueSuggestions(tagID: tag.id, mode: .generate)
+        let start = ContinuousClock.now
+        let confirmed = await model.confirmPendingSuggestionEnqueue()
+        let elapsed = start.duration(to: .now)
+        XCTAssertTrue(confirmed)
+        XCTAssertLessThan(elapsed, .seconds(1))
+        XCTAssertEqual(review.enqueueCallCount, 1)
+    }
+
     private static func makeAsset(
         sourceID: UUID,
         fileName: String = "sample.jpg",
@@ -427,6 +567,7 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
     private var storedReconcileRunCount = 0
     private var storedReauthorizeCallCount = 0
     private var storedDisableCallCount = 0
+    private var storedMutateTagCallCount = 0
     private var storedLastFilter = AssetPageFilter()
     private var storedLastSort: AssetPageSort = .newest
     private let scanFails: Bool
@@ -465,6 +606,10 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
 
     var disableCallCount: Int {
         lock.withLock { storedDisableCallCount }
+    }
+
+    var mutateTagCallCount: Int {
+        lock.withLock { storedMutateTagCallCount }
     }
 
     var lastSort: AssetPageSort {
@@ -619,6 +764,7 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
             throw FakeWorkspaceError.tagMutationFailed
         }
         return lock.withLock {
+            storedMutateTagCallCount += 1
             let priorStates = assetIDs.map {
                 TagMutationPriorState(assetID: $0, priorState: decisions[$0]?[tagID] ?? .unknown)
             }
@@ -686,4 +832,56 @@ private enum FakeWorkspaceError: Error {
     case notFound
     case tagMutationFailed
     case sourceActionFailed
+}
+
+private final class FakePersonalizationReviewPort: PersonalizationReviewPort, @unchecked Sendable {
+    private let lock = NSLock()
+    private var storedOverviews: [SuggestionTagOverview]
+    private var storedQueueItems: [ReviewQueueItemProjection]
+    let blocksRunPendingJobs: Bool
+    private(set) var enqueueCallCount = 0
+    private(set) var runPendingJobsCallCount = 0
+
+    init(
+        overviews: [SuggestionTagOverview] = [],
+        queueItems: [ReviewQueueItemProjection] = [],
+        blocksRunPendingJobs: Bool = false
+    ) {
+        storedOverviews = overviews
+        storedQueueItems = queueItems
+        self.blocksRunPendingJobs = blocksRunPendingJobs
+    }
+
+    func totalPendingSuggestionCount() throws -> Int {
+        lock.withLock { storedQueueItems.count }
+    }
+
+    func tagOverviews() throws -> [SuggestionTagOverview] {
+        lock.withLock { storedOverviews }
+    }
+
+    func fetchReviewQueue(tagID: UUID, cursor: ReviewQueueCursor?, limit: Int) throws -> ReviewQueuePage {
+        lock.withLock {
+            ReviewQueuePage(items: Array(storedQueueItems.prefix(limit)), nextCursor: nil)
+        }
+    }
+
+    func pendingSuggestionsForAsset(assetID: UUID) throws -> [AssetPendingSuggestion] { [] }
+
+    func enqueueFullLibrarySuggestions(tagID: UUID, mode: PersonalizationReviewEnqueueMode) throws -> UUID {
+        lock.withLock { enqueueCallCount += 1 }
+        return UUID()
+    }
+
+    func pauseSuggestionJob(jobID: UUID) throws {}
+    func resumeSuggestionJob(jobID: UUID) throws {}
+    func cancelSuggestionJob(jobID: UUID) throws {}
+
+    func runPendingSuggestionJobs(maxSteps: Int?) throws -> Bool {
+        lock.withLock { runPendingJobsCallCount += 1 }
+        if blocksRunPendingJobs {
+            Thread.sleep(forTimeInterval: 5)
+        }
+        return false
+    }
 }

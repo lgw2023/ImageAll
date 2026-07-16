@@ -14,11 +14,19 @@ enum FullLibrarySuggestionsJobFactory {
     }
 }
 
+struct FrozenSampleIdentity: Equatable, Sendable, Codable {
+    let assetID: UUID
+    let contentRevision: Int
+}
+
 struct FullLibrarySuggestionsPayload: Equatable, Sendable, Codable {
     let contractVersion: Int
     let tagID: UUID
     let sourceIDs: [UUID]
     let catalogCutoffMs: Int64
+    let modelRevision: Int
+    let frozenPositiveSamples: [FrozenSampleIdentity]
+    let frozenNegativeSamples: [FrozenSampleIdentity]
 }
 
 struct FullLibrarySuggestionsCheckpoint: Equatable, Sendable, Codable {
@@ -29,8 +37,6 @@ struct FullLibrarySuggestionsCheckpoint: Equatable, Sendable, Codable {
     let eligibleCount: Int
     let suggestedCount: Int
     let skippedCount: Int
-    let frozenPositiveAssetIDs: [UUID]
-    let frozenNegativeAssetIDs: [UUID]
 
     static let empty = FullLibrarySuggestionsCheckpoint(
         lastAssetID: nil,
@@ -39,9 +45,7 @@ struct FullLibrarySuggestionsCheckpoint: Equatable, Sendable, Codable {
         checkedCount: 0,
         eligibleCount: 0,
         suggestedCount: 0,
-        skippedCount: 0,
-        frozenPositiveAssetIDs: [],
-        frozenNegativeAssetIDs: []
+        skippedCount: 0
     )
 }
 
@@ -54,7 +58,10 @@ enum FullLibrarySuggestionsCodec {
         let payload = try JSONDecoder().decode(FullLibrarySuggestionsPayload.self, from: data)
         guard payload.contractVersion == FullLibrarySuggestionsJobFactory.contractVersion,
               !payload.sourceIDs.isEmpty,
-              payload.catalogCutoffMs >= 0
+              payload.catalogCutoffMs >= 0,
+              payload.modelRevision > 0,
+              payload.frozenPositiveSamples.count >= 2,
+              payload.frozenNegativeSamples.count >= 2
         else {
             throw FullLibrarySuggestionsCodecError.invalidPayload
         }
