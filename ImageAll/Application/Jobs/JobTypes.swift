@@ -112,6 +112,59 @@ struct JobProgress: Sendable, Equatable {
     }
 }
 
+enum JobActivityKind: Sendable, Equatable {
+    case folderReconcile
+    case photosReconcile
+    case personalizationSuggestions
+    case background
+
+    init(persistedKind: String) {
+        switch persistedKind {
+        case "folder.reconcile.v1":
+            self = .folderReconcile
+        case "photos.reconcile.v1":
+            self = .photosReconcile
+        case "personalization.fullLibrarySuggestions":
+            self = .personalizationSuggestions
+        default:
+            self = .background
+        }
+    }
+}
+
+enum JobActivityAction: Sendable, Equatable, Hashable {
+    case pause
+    case resume
+    case cancel
+}
+
+struct JobActivityItem: Identifiable, Sendable, Equatable {
+    let id: UUID
+    let kind: JobActivityKind
+    let state: JobState
+    let controlRequest: JobControlRequest
+    let progress: JobProgress
+
+    var availableActions: [JobActivityAction] {
+        switch state {
+        case .pending:
+            [.pause, .cancel]
+        case .running:
+            switch controlRequest {
+            case .none: [.pause, .cancel]
+            case .pause: [.cancel]
+            case .cancel: []
+            }
+        case .paused:
+            [.resume, .cancel]
+        case .retryableFailed:
+            [.cancel]
+        case .completed, .terminalFailed, .cancelled:
+            []
+        }
+    }
+}
+
 struct JobRecordSnapshot: Sendable, Equatable {
     let id: UUID
     let kind: String

@@ -137,6 +137,78 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertFalse(model.isClearingPreviewCache)
     }
 
+    func testJobActivityActionRefreshesRowsAfterSuccess() async {
+        let jobID = UUID()
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: UUID(),
+                displayName: "Fixture",
+                state: .active
+            ),
+            reconciledItems: [],
+            jobActivityItems: [
+                JobActivityItem(
+                    id: jobID,
+                    kind: .folderReconcile,
+                    state: .pending,
+                    controlRequest: .none,
+                    progress: JobProgress(completed: 2, total: 10)
+                ),
+            ]
+        )
+        let model = LibraryWorkspaceModel(service: service)
+        await model.refreshJobActivity()
+
+        await model.applyJobActivityAction(.pause, to: jobID)
+
+        XCTAssertEqual(service.jobActivityActionCallCount, 1)
+        XCTAssertGreaterThanOrEqual(service.jobActivityFetchCallCount, 2)
+        XCTAssertEqual(model.jobActivityItems.first?.state, .paused)
+        XCTAssertEqual(model.jobActivityItems.first?.availableActions, [.resume, .cancel])
+        XCTAssertFalse(model.isApplyingJobActivityAction(jobID))
+        XCTAssertNil(model.notice)
+    }
+
+    func testJobActivityActionFailureRequeriesCurrentFactsAndPublishesSafeNotice() async {
+        let jobID = UUID()
+        let completed = JobActivityItem(
+            id: jobID,
+            kind: .personalizationSuggestions,
+            state: .completed,
+            controlRequest: .none,
+            progress: JobProgress(completed: 10, total: 10)
+        )
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: UUID(),
+                displayName: "Fixture",
+                state: .active
+            ),
+            reconciledItems: [],
+            jobActivityItems: [
+                JobActivityItem(
+                    id: jobID,
+                    kind: .personalizationSuggestions,
+                    state: .running,
+                    controlRequest: .none,
+                    progress: JobProgress(completed: 9, total: 10)
+                ),
+            ],
+            jobActivityActionFails: true,
+            jobActivityItemsAfterFailedAction: [completed]
+        )
+        let model = LibraryWorkspaceModel(service: service)
+        await model.refreshJobActivity()
+
+        await model.applyJobActivityAction(.cancel, to: jobID)
+
+        XCTAssertEqual(service.jobActivityActionCallCount, 1)
+        XCTAssertGreaterThanOrEqual(service.jobActivityFetchCallCount, 2)
+        XCTAssertEqual(model.jobActivityItems, [completed])
+        XCTAssertEqual(model.notice, .jobActivityActionFailed)
+        XCTAssertFalse(model.isApplyingJobActivityAction(jobID))
+    }
+
     func testStartupShowsExistingCatalogBeforePendingReconcileFinishes() async {
         let sourceID = UUID()
         let asset = Self.makeAsset(sourceID: sourceID, fileName: "already-indexed.jpg")
@@ -1111,6 +1183,9 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
     private var storedThumbnailLoadCallCount = 0
     private var storedPortableExportCallCount = 0
     private var storedPreviewCacheClearCallCount = 0
+    private var storedJobActivityItems: [JobActivityItem]
+    private var storedJobActivityFetchCallCount = 0
+    private var storedJobActivityActionCallCount = 0
     private var storedTags: [TagListItem]
     private var decisions: [UUID: [UUID: TagDecisionQueryState]] = [:]
     private let exportParentURL: URL?
@@ -1119,6 +1194,8 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
     private var storedPreviewCacheUsage: DerivedImageCacheUsage
     private let previewCacheClearResult: DerivedImageCacheClearResult?
     private let previewCacheClearFails: Bool
+    private let jobActivityActionFails: Bool
+    private let jobActivityItemsAfterFailedAction: [JobActivityItem]?
 
     init(
         connectedSource: LibrarySourceSummary,
@@ -1141,7 +1218,10 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
         portableExportFails: Bool = false,
         previewCacheUsage: DerivedImageCacheUsage = .zero,
         previewCacheClearResult: DerivedImageCacheClearResult? = nil,
-        previewCacheClearFails: Bool = false
+        previewCacheClearFails: Bool = false,
+        jobActivityItems: [JobActivityItem] = [],
+        jobActivityActionFails: Bool = false,
+        jobActivityItemsAfterFailedAction: [JobActivityItem]? = nil
     ) {
         self.connectedSource = connectedSource
         self.reconciledItems = reconciledItems
@@ -1161,6 +1241,9 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
         storedPreviewCacheUsage = previewCacheUsage
         self.previewCacheClearResult = previewCacheClearResult
         self.previewCacheClearFails = previewCacheClearFails
+        storedJobActivityItems = jobActivityItems
+        self.jobActivityActionFails = jobActivityActionFails
+        self.jobActivityItemsAfterFailedAction = jobActivityItemsAfterFailedAction
         storedSources = startsConnected ? [connectedSource] : []
         storedItems = initialItems
         storedTags = tags
@@ -1226,6 +1309,14 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
         lock.withLock { storedPreviewCacheClearCallCount }
     }
 
+    var jobActivityFetchCallCount: Int {
+        lock.withLock { storedJobActivityFetchCallCount }
+    }
+
+    var jobActivityActionCallCount: Int {
+        lock.withLock { storedJobActivityActionCallCount }
+    }
+
     func fetchPreviewCacheUsage() throws -> DerivedImageCacheUsage {
         lock.withLock { storedPreviewCacheUsage }
     }
@@ -1241,6 +1332,55 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
             }
             storedPreviewCacheUsage = .zero
             return previewCacheClearResult
+        }
+    }
+
+    func fetchJobActivity() throws -> [JobActivityItem] {
+        lock.withLock {
+            storedJobActivityFetchCallCount += 1
+            return storedJobActivityItems
+        }
+    }
+
+    func applyJobActivityAction(_ action: JobActivityAction, jobID: UUID) throws {
+        try lock.withLock {
+            storedJobActivityActionCallCount += 1
+            if jobActivityActionFails {
+                if let jobActivityItemsAfterFailedAction {
+                    storedJobActivityItems = jobActivityItemsAfterFailedAction
+                }
+                throw FakeWorkspaceError.jobActivityActionFailed
+            }
+            guard let index = storedJobActivityItems.firstIndex(where: { $0.id == jobID }) else {
+                throw FakeWorkspaceError.notFound
+            }
+            let item = storedJobActivityItems[index]
+            guard item.availableActions.contains(action) else {
+                throw FakeWorkspaceError.jobActivityActionFailed
+            }
+            let nextState: JobState
+            let nextControl: JobControlRequest
+            switch (item.state, action) {
+            case (.pending, .pause):
+                (nextState, nextControl) = (.paused, .none)
+            case (.pending, .cancel), (.paused, .cancel), (.retryableFailed, .cancel):
+                (nextState, nextControl) = (.cancelled, .none)
+            case (.running, .pause):
+                (nextState, nextControl) = (.running, .pause)
+            case (.running, .cancel):
+                (nextState, nextControl) = (.running, .cancel)
+            case (.paused, .resume):
+                (nextState, nextControl) = (.pending, .none)
+            default:
+                throw FakeWorkspaceError.jobActivityActionFailed
+            }
+            storedJobActivityItems[index] = JobActivityItem(
+                id: item.id,
+                kind: item.kind,
+                state: nextState,
+                controlRequest: nextControl,
+                progress: item.progress
+            )
         }
     }
 
@@ -1567,6 +1707,7 @@ private enum FakeWorkspaceError: Error {
     case cloudPreviewFailed
     case portableExportFailed
     case previewCacheClearFailed
+    case jobActivityActionFailed
 }
 
 private final class FakePersonalizationReviewPort: PersonalizationReviewPort, @unchecked Sendable {

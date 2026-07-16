@@ -38,6 +38,42 @@ struct GRDBJobQueue: JobQueue, Sendable {
         }
     }
 
+    func fetchActivityItems() throws -> [JobActivityItem] {
+        try database.pool.read { db in
+            let rows = try Row.fetchAll(
+                db,
+                sql: """
+                SELECT id, kind, state, control_request, progress_completed, progress_total
+                FROM job
+                ORDER BY
+                    CASE
+                        WHEN state IN ('pending', 'running', 'paused', 'retryableFailed') THEN 0
+                        ELSE 1
+                    END ASC,
+                    updated_at_ms DESC,
+                    id ASC
+                LIMIT 100
+                """
+            )
+            return try rows.map { row in
+                let rawID: String = row["id"]
+                guard let id = UUID(uuidString: rawID) else {
+                    throw JobQueueError.unknownPersistedRawValue(field: "id", value: rawID)
+                }
+                return JobActivityItem(
+                    id: id,
+                    kind: JobActivityKind(persistedKind: row["kind"]),
+                    state: try JobPersistenceMapping.jobState(from: row["state"]),
+                    controlRequest: try JobPersistenceMapping.controlRequest(from: row["control_request"]),
+                    progress: JobProgress(
+                        completed: row["progress_completed"],
+                        total: row["progress_total"]
+                    )
+                )
+            }
+        }
+    }
+
     func claimNext(_ input: ClaimNextInput) throws -> JobLeaseToken? {
         guard !input.owner.isEmpty else {
             throw JobQueueError.invalidClaimInput(reason: "owner must be non-empty")

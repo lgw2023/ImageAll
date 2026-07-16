@@ -178,4 +178,135 @@ final class JobStateTransitionTests: XCTestCase {
             }
         }
     }
+
+    func testActivityProjectionUsesSafeKindsActiveFirstOrderingAndProgress() throws {
+        let database = try CatalogDatabase.open(at: makeTempDatabaseURL())
+        let queue = JobTestSupport.makeQueue(database: database)
+        let folderID = UUID()
+        let photosID = UUID()
+        let suggestionsID = UUID()
+        let unknownID = UUID()
+
+        _ = try JobTestSupport.enqueueDefault(
+            queue: queue,
+            id: folderID,
+            kind: "folder.reconcile.v1"
+        )
+        _ = try queue.applyStateCommand(JobStateCommand(jobID: folderID, operation: .pause))
+        _ = try JobTestSupport.enqueueDefault(
+            queue: queue,
+            id: photosID,
+            kind: "photos.reconcile.v1"
+        )
+        _ = try JobTestSupport.enqueueDefault(
+            queue: queue,
+            id: suggestionsID,
+            kind: "personalization.fullLibrarySuggestions"
+        )
+        _ = try XCTUnwrap(
+            try queue.claimNext(
+                ClaimNextInput(
+                    owner: "activity-worker",
+                    leaseDurationMs: JobTestSupport.leaseDurationMs,
+                    allowedKinds: ["personalization.fullLibrarySuggestions"]
+                )
+            )
+        )
+        _ = try queue.applyStateCommand(JobStateCommand(jobID: suggestionsID, operation: .pause))
+        _ = try JobTestSupport.enqueueDefault(queue: queue, id: unknownID, kind: "secret.internal.kind")
+        let unknownLease = try XCTUnwrap(
+            try queue.claimNext(
+                ClaimNextInput(
+                    owner: "terminal-worker",
+                    leaseDurationMs: JobTestSupport.leaseDurationMs,
+                    allowedKinds: ["secret.internal.kind"]
+                )
+            )
+        )
+        _ = try queue.submitSafeBatch(
+            SafeBatchCommitInput(
+                lease: unknownLease,
+                outcome: .completed,
+                checkpoint: nil,
+                progress: JobProgress(completed: 1, total: 1)
+            )
+        )
+
+        try database.pool.write { db in
+            try db.execute(
+                sql: "UPDATE job SET updated_at_ms = ?, progress_completed = ?, progress_total = ? WHERE id = ?",
+                arguments: [100, 2, 8, folderID.uuidString.lowercased()]
+            )
+            try db.execute(
+                sql: "UPDATE job SET updated_at_ms = ?, progress_completed = ?, progress_total = NULL WHERE id = ?",
+                arguments: [300, 4, photosID.uuidString.lowercased()]
+            )
+            try db.execute(
+                sql: "UPDATE job SET updated_at_ms = ?, progress_completed = ?, progress_total = ? WHERE id = ?",
+                arguments: [200, 6, 10, suggestionsID.uuidString.lowercased()]
+            )
+            try db.execute(
+                sql: "UPDATE job SET updated_at_ms = ? WHERE id = ?",
+                arguments: [1_000, unknownID.uuidString.lowercased()]
+            )
+        }
+
+        let items = try queue.fetchActivityItems()
+
+        XCTAssertEqual(items.map(\.id), [photosID, suggestionsID, folderID, unknownID])
+        XCTAssertEqual(items.map(\.kind), [.photosReconcile, .personalizationSuggestions, .folderReconcile, .background])
+        XCTAssertEqual(items[0].progress, JobProgress(completed: 4, total: nil))
+        XCTAssertEqual(items[1].progress, JobProgress(completed: 6, total: 10))
+        XCTAssertEqual(items[1].controlRequest, .pause)
+    }
+
+    func testActivityProjectionLimitsResultsToOneHundredNewestActiveJobs() throws {
+        let database = try CatalogDatabase.open(at: makeTempDatabaseURL())
+        let queue = JobTestSupport.makeQueue(database: database)
+        var jobs: [(id: UUID, updatedAtMs: Int64)] = []
+        for offset in 0 ..< 105 {
+            let id = UUID()
+            let updatedAtMs = Int64(offset)
+            _ = try JobTestSupport.enqueueDefault(queue: queue, id: id, kind: "test.\(offset)")
+            jobs.append((id, updatedAtMs))
+            try database.pool.write { db in
+                try db.execute(
+                    sql: "UPDATE job SET updated_at_ms = ? WHERE id = ?",
+                    arguments: [updatedAtMs, id.uuidString.lowercased()]
+                )
+            }
+        }
+
+        let items = try queue.fetchActivityItems()
+
+        XCTAssertEqual(items.count, 100)
+        XCTAssertEqual(items.first?.id, jobs.last?.id)
+        XCTAssertFalse(items.contains { $0.id == jobs.first?.id })
+        XCTAssertTrue(items.allSatisfy { $0.kind == .background })
+    }
+
+    func testActivityActionMatrixHonorsRunningControlPrecedence() {
+        let matrix: [(JobState, JobControlRequest, [JobActivityAction])] = [
+            (.pending, .none, [.pause, .cancel]),
+            (.running, .none, [.pause, .cancel]),
+            (.running, .pause, [.cancel]),
+            (.running, .cancel, []),
+            (.paused, .none, [.resume, .cancel]),
+            (.retryableFailed, .none, [.cancel]),
+            (.completed, .none, []),
+            (.terminalFailed, .none, []),
+            (.cancelled, .none, []),
+        ]
+
+        for (state, controlRequest, expected) in matrix {
+            let item = JobActivityItem(
+                id: UUID(),
+                kind: .background,
+                state: state,
+                controlRequest: controlRequest,
+                progress: JobProgress(completed: 0, total: nil)
+            )
+            XCTAssertEqual(item.availableActions, expected)
+        }
+    }
 }

@@ -46,6 +46,8 @@ final class LibraryWorkspaceModel: ObservableObject {
     @Published private(set) var isExportingPortableData = false
     @Published private(set) var previewCacheUsage = DerivedImageCacheUsage.zero
     @Published private(set) var isClearingPreviewCache = false
+    @Published private(set) var jobActivityItems: [JobActivityItem] = []
+    @Published private(set) var jobActivityActionInFlightIDs: Set<UUID> = []
 
     fileprivate let review: any PersonalizationReviewPort
     private let service: any LibraryWorkspacePort
@@ -168,6 +170,45 @@ final class LibraryWorkspaceModel: ObservableObject {
         } catch {
             notice = .previewCacheActionFailed
             await refreshPreviewCacheUsage()
+        }
+    }
+
+    func refreshJobActivity() async {
+        let service = service
+        do {
+            jobActivityItems = try await Self.offMain {
+                try service.fetchJobActivity()
+            }
+        } catch {
+            notice = .jobActivityActionFailed
+        }
+    }
+
+    func isApplyingJobActivityAction(_ jobID: UUID) -> Bool {
+        jobActivityActionInFlightIDs.contains(jobID)
+    }
+
+    func applyJobActivityAction(_ action: JobActivityAction, to jobID: UUID) async {
+        guard let item = jobActivityItems.first(where: { $0.id == jobID }),
+              item.availableActions.contains(action),
+              !jobActivityActionInFlightIDs.contains(jobID)
+        else {
+            return
+        }
+        jobActivityActionInFlightIDs.insert(jobID)
+        notice = nil
+        defer { jobActivityActionInFlightIDs.remove(jobID) }
+        let service = service
+        do {
+            jobActivityItems = try await Self.offMain {
+                try service.applyJobActivityAction(action, jobID: jobID)
+                return try service.fetchJobActivity()
+            }
+        } catch {
+            if let refreshed = try? await Self.offMain({ try service.fetchJobActivity() }) {
+                jobActivityItems = refreshed
+            }
+            notice = .jobActivityActionFailed
         }
     }
 
@@ -1277,6 +1318,7 @@ struct LibraryWorkspaceView: View {
     @State private var showPhotosConnectionExplanation = false
     @State private var showPreviewCachePanel = false
     @State private var showPreviewCacheClearConfirmation = false
+    @State private var showJobActivityPanel = false
     @FocusState private var newTagFieldFocused: Bool
     @FocusState private var contentFocused: Bool
 
@@ -1408,6 +1450,16 @@ struct LibraryWorkspaceView: View {
                 }
 
                 Button {
+                    showJobActivityPanel = true
+                    Task { await model.refreshJobActivity() }
+                } label: {
+                    Label("活动", systemImage: "clock.arrow.circlepath")
+                }
+                .popover(isPresented: $showJobActivityPanel) {
+                    jobActivityPanel
+                }
+
+                Button {
                     Task { await model.rescan() }
                 } label: {
                     Label("立即重扫", systemImage: "arrow.clockwise")
@@ -1484,6 +1536,112 @@ struct LibraryWorkspaceView: View {
             Button("取消", role: .cancel) {}
         } message: {
             Text("只会删除可重建的网格缩略图和单图预览；不会删除原照片、人工标签、Feature Print 或个性化模型。iCloud 预览之后需要再次手动获取。")
+        }
+    }
+
+    private var jobActivityPanel: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("活动")
+                    .font(.headline)
+                Spacer()
+                Button {
+                    Task { await model.refreshJobActivity() }
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                }
+                .buttonStyle(.borderless)
+                .help("刷新活动")
+            }
+
+            if model.jobActivityItems.isEmpty {
+                ContentUnavailableView(
+                    "暂无活动",
+                    systemImage: "clock",
+                    description: Text("同步和个性化任务会显示在这里。")
+                )
+                .frame(height: 150)
+            } else {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 0) {
+                        ForEach(model.jobActivityItems) { item in
+                            jobActivityRow(item)
+                            if item.id != model.jobActivityItems.last?.id {
+                                Divider()
+                            }
+                        }
+                    }
+                }
+                .frame(maxHeight: 420)
+            }
+        }
+        .padding()
+        .frame(width: 380)
+    }
+
+    private func jobActivityRow(_ item: JobActivityItem) -> some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(jobActivityTitle(item.kind))
+                    .font(.subheadline.weight(.semibold))
+                Spacer()
+                Text(jobActivityStateText(item))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Text(jobActivityProgressText(item.progress))
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.secondary)
+            if !item.availableActions.isEmpty {
+                HStack {
+                    ForEach(item.availableActions, id: \.self) { action in
+                        Button(jobActivityActionTitle(action), role: action == .cancel ? .destructive : nil) {
+                            Task { await model.applyJobActivityAction(action, to: item.id) }
+                        }
+                        .disabled(model.isApplyingJobActivityAction(item.id))
+                    }
+                }
+                .controlSize(.small)
+            }
+        }
+        .padding(.vertical, 10)
+    }
+
+    private func jobActivityTitle(_ kind: JobActivityKind) -> String {
+        switch kind {
+        case .folderReconcile: "文件夹同步"
+        case .photosReconcile: "Apple Photos 同步"
+        case .personalizationSuggestions: "个性化建议"
+        case .background: "后台任务"
+        }
+    }
+
+    private func jobActivityStateText(_ item: JobActivityItem) -> String {
+        switch (item.state, item.controlRequest) {
+        case (.running, .pause): "正在暂停"
+        case (.running, .cancel): "正在取消"
+        case (.pending, _): "等待中"
+        case (.running, _): "运行中"
+        case (.paused, _): "已暂停"
+        case (.retryableFailed, _): "等待重试"
+        case (.completed, _): "已完成"
+        case (.terminalFailed, _): "失败"
+        case (.cancelled, _): "已取消"
+        }
+    }
+
+    private func jobActivityProgressText(_ progress: JobProgress) -> String {
+        if let total = progress.total {
+            return "进度 \(progress.completed) / \(total)"
+        }
+        return "已处理 \(progress.completed)"
+    }
+
+    private func jobActivityActionTitle(_ action: JobActivityAction) -> String {
+        switch action {
+        case .pause: "暂停"
+        case .resume: "继续"
+        case .cancel: "取消"
         }
     }
 
@@ -2231,6 +2389,8 @@ struct LibraryWorkspaceView: View {
                 : "已清理 \(removedEntries) 个预览缓存条目。"
         case .previewCacheActionFailed:
             "预览缓存操作未完成。原照片、人工标签和个性化数据没有被修改。"
+        case .jobActivityActionFailed:
+            "任务操作未完成，已重新读取当前状态。请重试。"
         }
     }
 

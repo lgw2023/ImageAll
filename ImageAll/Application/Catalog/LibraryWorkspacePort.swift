@@ -61,6 +61,7 @@ enum LibraryWorkspaceNotice: Equatable, Sendable {
     case portableExportFailed
     case previewCacheCleared(removedEntries: Int, partialReclaim: Bool)
     case previewCacheActionFailed
+    case jobActivityActionFailed
 }
 
 enum CloudPreviewPresentationState: Equatable, Sendable {
@@ -123,6 +124,8 @@ protocol LibraryWorkspacePort: Sendable {
     func exportPortableUserData(to parentDirectoryURL: URL) throws -> PortableCatalogExportResult
     func fetchPreviewCacheUsage() throws -> DerivedImageCacheUsage
     func clearPreviewCache() async throws -> DerivedImageCacheClearResult
+    func fetchJobActivity() throws -> [JobActivityItem]
+    func applyJobActivityAction(_ action: JobActivityAction, jobID: UUID) throws
     func fetchSources() throws -> [LibrarySourceSummary]
     func connectFolder() async throws -> ConnectFolderOutcome
     func connectPhotos() async throws -> ConnectPhotosOutcome

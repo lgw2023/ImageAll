@@ -3,6 +3,7 @@ import Foundation
 protocol JobQueue: Sendable {
     func enqueue(_ command: EnqueueJobCommand) throws -> JobRecordSnapshot
     func fetchJob(id: UUID) throws -> JobRecordSnapshot
+    func fetchActivityItems() throws -> [JobActivityItem]
     func claimNext(_ input: ClaimNextInput) throws -> JobLeaseToken?
     func applyStateCommand(_ command: JobStateCommand) throws -> JobRecordSnapshot
     func submitSafeBatch(_ input: SafeBatchCommitInput) throws -> JobRecordSnapshot

@@ -46,6 +46,23 @@ struct ProductionLibraryWorkspaceService: LibraryWorkspacePort, Sendable {
         try await derivedImageCache.clearCache()
     }
 
+    func fetchJobActivity() throws -> [JobActivityItem] {
+        try queue.fetchActivityItems()
+    }
+
+    func applyJobActivityAction(_ action: JobActivityAction, jobID: UUID) throws {
+        let operation: JobStateCommand.Operation
+        switch action {
+        case .pause:
+            operation = .pause
+        case .resume:
+            operation = .resume(notBeforeMs: clock.nowMs)
+        case .cancel:
+            operation = .cancel
+        }
+        _ = try queue.applyStateCommand(JobStateCommand(jobID: jobID, operation: operation))
+    }
+
     func fetchSources() throws -> [LibrarySourceSummary] {
         try photosConnection.fetchSources()
     }
