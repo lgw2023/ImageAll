@@ -143,4 +143,10 @@ protocol PersonalizationCatalogPort: Sendable {
         createdAtMs: Int64
     ) throws
     func pendingPredictions(tagID: UUID, limit: Int) throws -> [PendingPrediction]
+    func appendPredictions(
+        tagID: UUID,
+        modelRevision: Int,
+        predictions: [PredictionRegistration],
+        createdAtMs: Int64
+    ) throws
 }

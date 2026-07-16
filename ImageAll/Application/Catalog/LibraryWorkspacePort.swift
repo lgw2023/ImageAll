@@ -26,6 +26,10 @@ enum LibraryWorkspaceNotice: Equatable, Sendable {
     case duplicateTag
     case tagMutationFailed
     case sourceActionFailed
+    case reviewActionFailed
+    case reviewJobConflict
+    case insufficientSuggestionSamples(positiveMissing: Int, negativeMissing: Int)
+    case reviewMutationApplied(count: Int, tagName: String)
 }
 
 enum LibraryTagDecisionAction: Equatable, Sendable {
@@ -70,6 +74,7 @@ protocol LibraryWorkspacePort: Sendable {
     func disableFolderSource(sourceID: UUID) async throws -> DisableFolderOutcome
     func enqueueReconcile(sourceIDs: [UUID]) throws
     func runPendingReconcileJobs() throws
+    func runPendingPersonalizationJobs() throws
     func fetchAssetPage(
         filter: AssetPageFilter,
         sort: AssetPageSort,

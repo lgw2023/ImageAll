@@ -53,6 +53,17 @@ struct GRDBJobQueue: JobQueue, Sendable {
         let leaseExpiresAtMs = nowMs + input.leaseDurationMs
 
         return try database.pool.write { db in
+            let kindFilterSQL: String
+            let kindArguments: [DatabaseValueConvertible]
+            if let allowedKinds = input.allowedKinds, !allowedKinds.isEmpty {
+                let placeholders = Array(repeating: "?", count: allowedKinds.count).joined(separator: ", ")
+                kindFilterSQL = "AND kind IN (\(placeholders))"
+                kindArguments = allowedKinds.sorted().map { $0 as DatabaseValueConvertible }
+            } else {
+                kindFilterSQL = ""
+                kindArguments = []
+            }
+
             guard let candidate = try Row.fetchOne(
                 db,
                 sql: """
@@ -60,10 +71,11 @@ struct GRDBJobQueue: JobQueue, Sendable {
                 WHERE state = 'pending'
                     AND not_before_ms <= ?
                     AND attempts < max_attempts
+                    \(kindFilterSQL)
                 ORDER BY priority DESC, not_before_ms ASC, id ASC
                 LIMIT 1
                 """,
-                arguments: [nowMs]
+                arguments: StatementArguments([nowMs] + kindArguments)
             ) else {
                 return nil
             }

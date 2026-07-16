@@ -520,6 +520,8 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
         }
     }
 
+    func runPendingPersonalizationJobs() throws {}
+
     func fetchAssetPage(
         filter: AssetPageFilter,
         sort: AssetPageSort,

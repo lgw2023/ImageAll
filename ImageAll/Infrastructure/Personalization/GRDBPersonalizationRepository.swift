@@ -108,6 +108,18 @@ struct GRDBPersonalizationRepository: PersonalizationCatalogPort, Sendable {
     }
 
     func publishModelRevision(_ registration: ModelRevisionRegistration) throws {
+        do {
+            try database.pool.write { db in
+                try publishModelRevision(registration, on: db)
+            }
+        } catch let error as PersonalizationCatalogError {
+            throw error
+        } catch {
+            throw PersonalizationCatalogError.persistenceFailure
+        }
+    }
+
+    func publishModelRevision(_ registration: ModelRevisionRegistration, on db: Database) throws {
         let positives = registration.samples.filter { $0.role == .positive }
         let negatives = registration.samples.filter { $0.role == .negative }
         guard registration.revision > 0,
@@ -132,91 +144,108 @@ struct GRDBPersonalizationRepository: PersonalizationCatalogPort, Sendable {
             throw PersonalizationCatalogError.invalidInput
         }
 
+        guard let tagState = try String.fetchOne(
+            db,
+            sql: "SELECT state FROM tag WHERE id = ?",
+            arguments: [Self.uuid(registration.tagID)]
+        ) else {
+            throw PersonalizationCatalogError.notFound
+        }
+        guard tagState == TagState.active.rawValue else {
+            throw PersonalizationCatalogError.archivedTag
+        }
+
+        if let current = try Int.fetchOne(
+            db,
+            sql: "SELECT current_revision FROM tag_model WHERE tag_id = ?",
+            arguments: [Self.uuid(registration.tagID)]
+        ), registration.revision <= current {
+            throw PersonalizationCatalogError.staleModelRevision
+        }
+
+        for sample in registration.samples {
+            guard try Self.sampleIsCurrentAndEligible(db, tagID: registration.tagID, sample: sample) else {
+                throw PersonalizationCatalogError.missingFeature
+            }
+        }
+
+        try db.execute(
+            sql: """
+            INSERT INTO tag_model_revision (
+                tag_id, revision, provider, request_revision, preprocessing_revision,
+                threshold, positive_count, negative_count, neighbor_count,
+                sample_budget_per_role, created_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            arguments: [
+                Self.uuid(registration.tagID),
+                registration.revision,
+                PersonalizationConstants.provider,
+                PersonalizationConstants.requestRevision,
+                PersonalizationConstants.preprocessingRevision,
+                registration.threshold,
+                positives.count,
+                negatives.count,
+                registration.neighborCount,
+                registration.sampleBudgetPerRole,
+                registration.createdAtMs,
+            ]
+        )
+
+        for sample in registration.samples {
+            try db.execute(
+                sql: """
+                INSERT INTO tag_model_sample (
+                    tag_id, model_revision, asset_id, content_revision, role, rank,
+                    provider, request_revision, preprocessing_revision
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                arguments: [
+                    Self.uuid(registration.tagID),
+                    registration.revision,
+                    Self.uuid(sample.identity.assetID),
+                    sample.identity.contentRevision,
+                    sample.role.rawValue,
+                    sample.rank,
+                    sample.identity.provider,
+                    sample.identity.requestRevision,
+                    sample.identity.preprocessingRevision,
+                ]
+            )
+        }
+
+        try db.execute(
+            sql: """
+            INSERT INTO tag_model (tag_id, current_revision, updated_at_ms)
+            VALUES (?, ?, ?)
+            ON CONFLICT(tag_id) DO UPDATE SET
+                current_revision = excluded.current_revision,
+                updated_at_ms = excluded.updated_at_ms
+            """,
+            arguments: [
+                Self.uuid(registration.tagID),
+                registration.revision,
+                registration.createdAtMs,
+            ]
+        )
+    }
+
+    func replacePredictions(
+        tagID: UUID,
+        modelRevision: Int,
+        candidateAssetIDs: [UUID],
+        predictions: [PredictionRegistration],
+        createdAtMs: Int64
+    ) throws {
         do {
             try database.pool.write { db in
-                guard let tagState = try String.fetchOne(
-                    db,
-                    sql: "SELECT state FROM tag WHERE id = ?",
-                    arguments: [Self.uuid(registration.tagID)]
-                ) else {
-                    throw PersonalizationCatalogError.notFound
-                }
-                guard tagState == TagState.active.rawValue else {
-                    throw PersonalizationCatalogError.archivedTag
-                }
-
-                if let current = try Int.fetchOne(
-                    db,
-                    sql: "SELECT current_revision FROM tag_model WHERE tag_id = ?",
-                    arguments: [Self.uuid(registration.tagID)]
-                ), registration.revision <= current {
-                    throw PersonalizationCatalogError.staleModelRevision
-                }
-
-                for sample in registration.samples {
-                    guard try Self.sampleIsCurrentAndEligible(db, tagID: registration.tagID, sample: sample) else {
-                        throw PersonalizationCatalogError.missingFeature
-                    }
-                }
-
-                try db.execute(
-                    sql: """
-                    INSERT INTO tag_model_revision (
-                        tag_id, revision, provider, request_revision, preprocessing_revision,
-                        threshold, positive_count, negative_count, neighbor_count,
-                        sample_budget_per_role, created_at_ms
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    arguments: [
-                        Self.uuid(registration.tagID),
-                        registration.revision,
-                        PersonalizationConstants.provider,
-                        PersonalizationConstants.requestRevision,
-                        PersonalizationConstants.preprocessingRevision,
-                        registration.threshold,
-                        positives.count,
-                        negatives.count,
-                        registration.neighborCount,
-                        registration.sampleBudgetPerRole,
-                        registration.createdAtMs,
-                    ]
-                )
-
-                for sample in registration.samples {
-                    try db.execute(
-                        sql: """
-                        INSERT INTO tag_model_sample (
-                            tag_id, model_revision, asset_id, content_revision, role, rank,
-                            provider, request_revision, preprocessing_revision
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        arguments: [
-                            Self.uuid(registration.tagID),
-                            registration.revision,
-                            Self.uuid(sample.identity.assetID),
-                            sample.identity.contentRevision,
-                            sample.role.rawValue,
-                            sample.rank,
-                            sample.identity.provider,
-                            sample.identity.requestRevision,
-                            sample.identity.preprocessingRevision,
-                        ]
-                    )
-                }
-
-                try db.execute(
-                    sql: """
-                    INSERT INTO tag_model (tag_id, current_revision, updated_at_ms)
-                    VALUES (?, ?, ?)
-                    ON CONFLICT(tag_id) DO UPDATE SET
-                        current_revision = excluded.current_revision,
-                        updated_at_ms = excluded.updated_at_ms
-                    """,
-                    arguments: [
-                        Self.uuid(registration.tagID),
-                        registration.revision,
-                        registration.createdAtMs,
-                    ]
+                try replacePredictions(
+                    tagID: tagID,
+                    modelRevision: modelRevision,
+                    candidateAssetIDs: candidateAssetIDs,
+                    predictions: predictions,
+                    createdAtMs: createdAtMs,
+                    on: db
                 )
             }
         } catch let error as PersonalizationCatalogError {
@@ -231,7 +260,8 @@ struct GRDBPersonalizationRepository: PersonalizationCatalogPort, Sendable {
         modelRevision: Int,
         candidateAssetIDs: [UUID],
         predictions: [PredictionRegistration],
-        createdAtMs: Int64
+        createdAtMs: Int64,
+        on db: Database
     ) throws {
         let uniqueCandidates = Array(Set(candidateAssetIDs))
         let candidateSet = Set(uniqueCandidates)
@@ -245,73 +275,65 @@ struct GRDBPersonalizationRepository: PersonalizationCatalogPort, Sendable {
             throw PersonalizationCatalogError.invalidInput
         }
 
-        do {
-            try database.pool.write { db in
-                guard let state = try String.fetchOne(
-                    db,
-                    sql: "SELECT state FROM tag WHERE id = ?",
-                    arguments: [Self.uuid(tagID)]
-                ) else {
-                    throw PersonalizationCatalogError.notFound
-                }
-                guard state == TagState.active.rawValue else {
-                    throw PersonalizationCatalogError.archivedTag
-                }
-                guard try Int.fetchOne(
-                    db,
-                    sql: "SELECT current_revision FROM tag_model WHERE tag_id = ?",
-                    arguments: [Self.uuid(tagID)]
-                ) == modelRevision else {
-                    throw PersonalizationCatalogError.staleModelRevision
-                }
+        guard let state = try String.fetchOne(
+            db,
+            sql: "SELECT state FROM tag WHERE id = ?",
+            arguments: [Self.uuid(tagID)]
+        ) else {
+            throw PersonalizationCatalogError.notFound
+        }
+        guard state == TagState.active.rawValue else {
+            throw PersonalizationCatalogError.archivedTag
+        }
+        guard try Int.fetchOne(
+            db,
+            sql: "SELECT current_revision FROM tag_model WHERE tag_id = ?",
+            arguments: [Self.uuid(tagID)]
+        ) == modelRevision else {
+            throw PersonalizationCatalogError.staleModelRevision
+        }
 
-                for assetID in uniqueCandidates {
-                    try db.execute(
-                        sql: "DELETE FROM prediction WHERE asset_id = ? AND tag_id = ? AND model_revision = ?",
-                        arguments: [Self.uuid(assetID), Self.uuid(tagID), modelRevision]
-                    )
-                }
+        for assetID in uniqueCandidates {
+            try db.execute(
+                sql: "DELETE FROM prediction WHERE asset_id = ? AND tag_id = ? AND model_revision = ?",
+                arguments: [Self.uuid(assetID), Self.uuid(tagID), modelRevision]
+            )
+        }
 
-                for prediction in predictions {
-                    guard let currentRevision = try Int.fetchOne(
-                        db,
-                        sql: "SELECT content_revision FROM asset WHERE id = ?",
-                        arguments: [Self.uuid(prediction.assetID)]
-                    ) else {
-                        throw PersonalizationCatalogError.notFound
-                    }
-                    guard currentRevision == prediction.contentRevision else {
-                        throw PersonalizationCatalogError.staleAssetRevision
-                    }
-                    let hasDecision = try Bool.fetchOne(
-                        db,
-                        sql: "SELECT EXISTS(SELECT 1 FROM asset_tag_decision WHERE asset_id = ? AND tag_id = ?)",
-                        arguments: [Self.uuid(prediction.assetID), Self.uuid(tagID)]
-                    ) ?? false
-                    guard !hasDecision else { continue }
-
-                    try db.execute(
-                        sql: """
-                        INSERT INTO prediction (
-                            asset_id, tag_id, content_revision, model_revision,
-                            score, state, created_at_ms
-                        ) VALUES (?, ?, ?, ?, ?, 'pendingReview', ?)
-                        """,
-                        arguments: [
-                            Self.uuid(prediction.assetID),
-                            Self.uuid(tagID),
-                            prediction.contentRevision,
-                            modelRevision,
-                            prediction.score,
-                            createdAtMs,
-                        ]
-                    )
-                }
+        for prediction in predictions {
+            guard let currentRevision = try Int.fetchOne(
+                db,
+                sql: "SELECT content_revision FROM asset WHERE id = ?",
+                arguments: [Self.uuid(prediction.assetID)]
+            ) else {
+                throw PersonalizationCatalogError.notFound
             }
-        } catch let error as PersonalizationCatalogError {
-            throw error
-        } catch {
-            throw PersonalizationCatalogError.persistenceFailure
+            guard currentRevision == prediction.contentRevision else {
+                throw PersonalizationCatalogError.staleAssetRevision
+            }
+            let hasDecision = try Bool.fetchOne(
+                db,
+                sql: "SELECT EXISTS(SELECT 1 FROM asset_tag_decision WHERE asset_id = ? AND tag_id = ?)",
+                arguments: [Self.uuid(prediction.assetID), Self.uuid(tagID)]
+            ) ?? false
+            guard !hasDecision else { continue }
+
+            try db.execute(
+                sql: """
+                INSERT INTO prediction (
+                    asset_id, tag_id, content_revision, model_revision,
+                    score, state, created_at_ms
+                ) VALUES (?, ?, ?, ?, ?, 'pendingReview', ?)
+                """,
+                arguments: [
+                    Self.uuid(prediction.assetID),
+                    Self.uuid(tagID),
+                    prediction.contentRevision,
+                    modelRevision,
+                    prediction.score,
+                    createdAtMs,
+                ]
+            )
         }
     }
 
@@ -359,6 +381,112 @@ struct GRDBPersonalizationRepository: PersonalizationCatalogPort, Sendable {
             }
         } catch {
             throw PersonalizationCatalogError.persistenceFailure
+        }
+    }
+
+    func appendPredictions(
+        tagID: UUID,
+        modelRevision: Int,
+        predictions: [PredictionRegistration],
+        createdAtMs: Int64
+    ) throws {
+        do {
+            try database.pool.write { db in
+                try appendPredictions(
+                    tagID: tagID,
+                    modelRevision: modelRevision,
+                    predictions: predictions,
+                    createdAtMs: createdAtMs,
+                    on: db
+                )
+            }
+        } catch let error as PersonalizationCatalogError {
+            throw error
+        } catch {
+            throw PersonalizationCatalogError.persistenceFailure
+        }
+    }
+
+    func appendPredictions(
+        tagID: UUID,
+        modelRevision: Int,
+        predictions: [PredictionRegistration],
+        createdAtMs: Int64,
+        on db: Database
+    ) throws {
+        guard modelRevision > 0,
+              createdAtMs >= 0,
+              Set(predictions.map(\.assetID)).count == predictions.count,
+              predictions.allSatisfy({ $0.contentRevision > 0 && $0.score.isFinite })
+        else {
+            throw PersonalizationCatalogError.invalidInput
+        }
+
+        guard let state = try String.fetchOne(
+            db,
+            sql: "SELECT state FROM tag WHERE id = ?",
+            arguments: [Self.uuid(tagID)]
+        ) else {
+            throw PersonalizationCatalogError.notFound
+        }
+        guard state == TagState.active.rawValue else {
+            throw PersonalizationCatalogError.archivedTag
+        }
+        guard try Int.fetchOne(
+            db,
+            sql: "SELECT current_revision FROM tag_model WHERE tag_id = ?",
+            arguments: [Self.uuid(tagID)]
+        ) == modelRevision else {
+            throw PersonalizationCatalogError.staleModelRevision
+        }
+
+        for prediction in predictions {
+            guard let currentRevision = try Int.fetchOne(
+                db,
+                sql: "SELECT content_revision FROM asset WHERE id = ?",
+                arguments: [Self.uuid(prediction.assetID)]
+            ) else {
+                continue
+            }
+            guard currentRevision == prediction.contentRevision else { continue }
+            let hasDecision = try Bool.fetchOne(
+                db,
+                sql: "SELECT EXISTS(SELECT 1 FROM asset_tag_decision WHERE asset_id = ? AND tag_id = ?)",
+                arguments: [Self.uuid(prediction.assetID), Self.uuid(tagID)]
+            ) ?? false
+            guard !hasDecision else { continue }
+            let exists = try Bool.fetchOne(
+                db,
+                sql: """
+                SELECT EXISTS(
+                    SELECT 1 FROM prediction
+                    WHERE asset_id = ? AND tag_id = ? AND model_revision = ?
+                )
+                """,
+                arguments: [
+                    Self.uuid(prediction.assetID),
+                    Self.uuid(tagID),
+                    modelRevision,
+                ]
+            ) ?? false
+            guard !exists else { continue }
+
+            try db.execute(
+                sql: """
+                INSERT INTO prediction (
+                    asset_id, tag_id, content_revision, model_revision,
+                    score, state, created_at_ms
+                ) VALUES (?, ?, ?, ?, ?, 'pendingReview', ?)
+                """,
+                arguments: [
+                    Self.uuid(prediction.assetID),
+                    Self.uuid(tagID),
+                    prediction.contentRevision,
+                    modelRevision,
+                    prediction.score,
+                    createdAtMs,
+                ]
+            )
         }
     }
 

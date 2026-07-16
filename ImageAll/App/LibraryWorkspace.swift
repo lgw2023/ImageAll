@@ -8,6 +8,13 @@ private struct LibraryTagUndoRecord {
     let appliedDecision: TagDecisionQueryState
 }
 
+private struct ReviewMutationUndoRecord {
+    let snapshot: TagMutationPriorStateSnapshot
+    let appliedDecision: TagDecisionQueryState
+    let tagDisplayName: String
+    let affectedCount: Int
+}
+
 @MainActor
 final class LibraryWorkspaceModel: ObservableObject {
     @Published private(set) var phase: LibraryWorkspacePhase = .loading
@@ -26,18 +33,28 @@ final class LibraryWorkspaceModel: ObservableObject {
     @Published private(set) var selectedMediaTypes: [String] = []
     @Published private(set) var sort: AssetPageSort = .newest
     @Published private(set) var notice: LibraryWorkspaceNotice?
+    @Published private(set) var pendingSuggestionTotal = 0
+    @Published private(set) var suggestionOverviews: [SuggestionTagOverview] = []
+    @Published private(set) var reviewMode: ReviewWorkspaceMode?
+    @Published private(set) var reviewQueueItems: [ReviewQueueItemProjection] = []
+    @Published fileprivate(set) var reviewNextCursor: ReviewQueueCursor?
+    @Published private(set) var assetPendingSuggestions: [AssetPendingSuggestion] = []
 
+    fileprivate let review: any PersonalizationReviewPort
     private let service: any LibraryWorkspacePort
     private var lastTagMutation: LibraryTagUndoRecord?
+    fileprivate var lastReviewMutation: ReviewMutationUndoRecord?
     private var selectionAnchorID: UUID?
     private var selectedTagFilterDecisions: [UUID: PersistableTagDecision] = [:]
     private var selectedSourceID: UUID?
     private var nextCursor: AssetPageCursor?
     private var started = false
     private var isLoadingMore = false
+    fileprivate var isLoadingMoreReviewQueue = false
 
-    init(service: any LibraryWorkspacePort) {
+    init(service: any LibraryWorkspacePort, review: any PersonalizationReviewPort = EmptyPersonalizationReviewPort()) {
         self.service = service
+        self.review = review
     }
 
     var isBusy: Bool {
@@ -245,6 +262,7 @@ final class LibraryWorkspaceModel: ObservableObject {
                 await loadFirstPage()
             }
             await refreshInspector()
+            await refreshReviewState()
         } catch {
             notice = tagNotice(for: error)
         }
@@ -353,13 +371,17 @@ final class LibraryWorkspaceModel: ObservableObject {
         if runPendingJobs {
             phase = .scanning
             do {
-                try await Self.offMain { try service.runPendingReconcileJobs() }
+                try await Self.offMain {
+                    try service.runPendingReconcileJobs()
+                    try service.runPendingPersonalizationJobs()
+                }
             } catch {
                 phase = .failed(.scanFailed)
                 return
             }
         }
         await loadFirstPage()
+        await refreshReviewState()
     }
 
     private func loadFirstPage() async {
@@ -592,6 +614,7 @@ final class LibraryWorkspaceModel: ObservableObject {
         }
 
         let service = service
+        let reviewPort = review
         let availableTags = tags
         do {
             if assetIDs.count == 1, let assetID = assetIDs.first {
@@ -608,6 +631,9 @@ final class LibraryWorkspaceModel: ObservableObject {
                             decision: LibraryInspectorTagDecisionState($0.decision)
                         )
                     }
+                assetPendingSuggestions = try await Self.offMain {
+                    try reviewPort.pendingSuggestionsForAsset(assetID: assetID)
+                }
             } else {
                 let aggregates = try await Self.offMain {
                     try service.selectionAggregate(tagIDs: availableTags.map(\.id), assetIDs: assetIDs)
@@ -646,9 +672,216 @@ final class LibraryWorkspaceModel: ObservableObject {
     }
 }
 
+extension LibraryWorkspaceModel {
+    var isReviewMode: Bool { reviewMode != nil }
+
+    var canUndoReviewMutation: Bool { lastReviewMutation != nil }
+
+    func refreshReviewState() async {
+        let reviewPort = review
+        do {
+            pendingSuggestionTotal = try await Self.offMain { try reviewPort.totalPendingSuggestionCount() }
+            suggestionOverviews = try await Self.offMain { try reviewPort.tagOverviews() }
+            if case let .tagQueue(tagID, _) = reviewMode {
+                await loadReviewQueueFirstPage(tagID: tagID)
+            }
+            if let assetID = primarySelectedAssetID, reviewMode == nil {
+                assetPendingSuggestions = try await Self.offMain {
+                    try reviewPort.pendingSuggestionsForAsset(assetID: assetID)
+                }
+            } else {
+                assetPendingSuggestions = []
+            }
+        } catch {
+            suggestionOverviews = []
+            pendingSuggestionTotal = 0
+        }
+    }
+
+    func enterReviewOverview() async {
+        reviewMode = .overview
+        selectedAssetIDs = []
+        isSinglePhotoPresented = false
+        await refreshReviewState()
+    }
+
+    func enterReviewQueue(tagID: UUID, displayName: String) async {
+        reviewMode = .tagQueue(tagID: tagID, displayName: displayName)
+        selectedAssetIDs = []
+        isSinglePhotoPresented = false
+        await loadReviewQueueFirstPage(tagID: tagID)
+    }
+
+    func exitReviewMode() async {
+        reviewMode = nil
+        reviewQueueItems = []
+        reviewNextCursor = nil
+        await loadFirstPage()
+        await refreshReviewState()
+    }
+
+    func loadReviewQueueFirstPage(tagID: UUID) async {
+        let reviewPort = review
+        do {
+            let page = try await Self.offMain {
+                try reviewPort.fetchReviewQueue(tagID: tagID, cursor: nil, limit: 100)
+            }
+            reviewQueueItems = page.items
+            reviewNextCursor = page.nextCursor
+        } catch {
+            reviewQueueItems = []
+            reviewNextCursor = nil
+        }
+    }
+
+    func loadMoreReviewQueueIfNeeded(currentAssetID: UUID, tagID: UUID) async {
+        guard currentAssetID == reviewQueueItems.last?.assetID,
+              let cursor = reviewNextCursor,
+              !isLoadingMoreReviewQueue
+        else { return }
+        isLoadingMoreReviewQueue = true
+        defer { isLoadingMoreReviewQueue = false }
+        let reviewPort = review
+        do {
+            let page = try await Self.offMain {
+                try reviewPort.fetchReviewQueue(tagID: tagID, cursor: cursor, limit: 100)
+            }
+            reviewQueueItems.append(contentsOf: page.items)
+            reviewNextCursor = page.nextCursor
+        } catch {}
+    }
+
+    func enqueueSuggestions(tagID: UUID, mode: PersonalizationReviewEnqueueMode) async -> Bool {
+        let reviewPort = review
+        let workspace = service
+        do {
+            notice = nil
+            _ = try await Self.offMain { try reviewPort.enqueueFullLibrarySuggestions(tagID: tagID, mode: mode) }
+            try await Self.offMain { try workspace.runPendingPersonalizationJobs() }
+            await refreshReviewState()
+            return true
+        } catch let error as PersonalizationReviewError {
+            notice = reviewNotice(for: error)
+            return false
+        } catch {
+            notice = .reviewActionFailed
+            return false
+        }
+    }
+
+    func pauseSuggestionJob(_ jobID: UUID) async {
+        let reviewPort = review
+        try? await Self.offMain { try reviewPort.pauseSuggestionJob(jobID: jobID) }
+        await refreshReviewState()
+    }
+
+    func resumeSuggestionJob(_ jobID: UUID) async {
+        let reviewPort = review
+        let workspace = service
+        try? await Self.offMain { try reviewPort.resumeSuggestionJob(jobID: jobID) }
+        try? await Self.offMain { try workspace.runPendingPersonalizationJobs() }
+        await refreshReviewState()
+    }
+
+    func cancelSuggestionJob(_ jobID: UUID) async {
+        let reviewPort = review
+        try? await Self.offMain { try reviewPort.cancelSuggestionJob(jobID: jobID) }
+        await refreshReviewState()
+    }
+
+    func applyReviewDecision(action: LibraryTagDecisionAction) async {
+        guard case let .tagQueue(tagID, displayName) = reviewMode else { return }
+        let assetIDs = Array(selectedAssetIDs)
+        guard !assetIDs.isEmpty else { return }
+        let workspace = service
+        do {
+            notice = nil
+            let snapshot = try await Self.offMain {
+                try workspace.mutateTag(tagID: tagID, assetIDs: assetIDs, action: action)
+            }
+            lastReviewMutation = ReviewMutationUndoRecord(
+                snapshot: snapshot,
+                appliedDecision: action.decision,
+                tagDisplayName: displayName,
+                affectedCount: assetIDs.count
+            )
+            notice = .reviewMutationApplied(count: assetIDs.count, tagName: displayName)
+            reviewQueueItems.removeAll { assetIDs.contains($0.assetID) }
+            if let next = reviewQueueItems.first {
+                selectedAssetIDs = [next.assetID]
+            } else {
+                selectedAssetIDs = []
+            }
+            await refreshReviewState()
+            await refreshInspector()
+        } catch {
+            notice = .tagMutationFailed
+        }
+    }
+
+    func deferReviewSelection() {
+        guard case .tagQueue = reviewMode,
+              !selectedAssetIDs.isEmpty,
+              !reviewQueueItems.isEmpty
+        else { return }
+        let selected = selectedAssetIDs
+        let unselected = reviewQueueItems.filter { !selected.contains($0.assetID) }
+        let selectedItems = reviewQueueItems.filter { selected.contains($0.assetID) }
+        reviewQueueItems = unselected + selectedItems
+        if let first = reviewQueueItems.first(where: { !selected.contains($0.assetID) }) ?? reviewQueueItems.first {
+            selectedAssetIDs = [first.assetID]
+        }
+    }
+
+    func undoLastReviewMutation() async {
+        guard let undo = lastReviewMutation else { return }
+        let workspace = service
+        do {
+            notice = nil
+            try await Self.offMain { try workspace.restoreTagMutation(undo.snapshot) }
+            lastReviewMutation = nil
+            if case let .tagQueue(tagID, _) = reviewMode {
+                await loadReviewQueueFirstPage(tagID: tagID)
+            }
+            await refreshReviewState()
+            await refreshInspector()
+        } catch {
+            notice = .tagMutationFailed
+        }
+    }
+
+    func applyInspectorSuggestion(tagID: UUID, action: LibraryTagDecisionAction) async {
+        guard let assetID = primarySelectedAssetID else { return }
+        let workspace = service
+        do {
+            notice = nil
+            _ = try await Self.offMain {
+                try workspace.mutateTag(tagID: tagID, assetIDs: [assetID], action: action)
+            }
+            assetPendingSuggestions.removeAll { $0.tagID == tagID }
+            await refreshInspector()
+            await refreshReviewState()
+        } catch {
+            notice = .tagMutationFailed
+        }
+    }
+
+    private func reviewNotice(for error: PersonalizationReviewError) -> LibraryWorkspaceNotice {
+        switch error {
+        case let .insufficientSamples(positive, negative):
+            .insufficientSuggestionSamples(positiveMissing: positive, negativeMissing: negative)
+        case .activeJobConflict:
+            .reviewJobConflict
+        default:
+            .reviewActionFailed
+        }
+    }
+}
+
 private enum LibrarySidebarSelection: Hashable {
     case all
     case untagged
+    case reviewSuggestions
     case source(UUID)
     case tag(UUID)
 }
@@ -736,6 +969,14 @@ struct LibraryWorkspaceView: View {
                     Label("撤销标签操作", systemImage: "arrow.uturn.backward")
                 }
                 .disabled(!model.canUndoTagMutation)
+
+                if model.canUndoReviewMutation {
+                    Button {
+                        Task { await model.undoLastReviewMutation() }
+                    } label: {
+                        Label("撤销审核操作", systemImage: "arrow.uturn.backward.circle")
+                    }
+                }
 
                 Button {
                     Task { await model.connectFolder() }
@@ -837,15 +1078,21 @@ struct LibraryWorkspaceView: View {
             Task {
                 switch newValue {
                 case .all, .none:
+                    await model.exitReviewMode()
                     await model.setTagPresence(.any)
                     await model.selectSource(nil)
                 case .untagged:
+                    await model.exitReviewMode()
                     await model.selectSource(nil)
                     await model.setTagPresence(.untagged)
+                case .reviewSuggestions:
+                    await model.enterReviewOverview()
                 case let .source(sourceID):
+                    await model.exitReviewMode()
                     await model.setTagPresence(.any)
                     await model.selectSource(sourceID)
                 case let .tag(tagID):
+                    await model.exitReviewMode()
                     await model.selectSource(nil)
                     await model.showAcceptedTag(tagID)
                 }
@@ -860,6 +1107,16 @@ struct LibraryWorkspaceView: View {
                     .tag(LibrarySidebarSelection.all)
                 Label("无标签", systemImage: "tag.slash")
                     .tag(LibrarySidebarSelection.untagged)
+                HStack {
+                    Label("待审核建议", systemImage: "sparkles")
+                    Spacer()
+                    if model.pendingSuggestionTotal > 0 {
+                        Text("\(model.pendingSuggestionTotal)")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .tag(LibrarySidebarSelection.reviewSuggestions)
             }
             Section("来源") {
                 ForEach(model.sources) { source in
@@ -975,7 +1232,32 @@ struct LibraryWorkspaceView: View {
                 .buttonStyle(.borderedProminent)
             }
         case .content:
-            if model.items.isEmpty {
+            if case .overview = model.reviewMode {
+                ReviewOverviewView(
+                    model: model,
+                    onOpenQueue: { tagID, name in
+                        Task { await model.enterReviewQueue(tagID: tagID, displayName: name) }
+                    },
+                    onBack: {
+                        selection = .all
+                    }
+                )
+            } else if case let .tagQueue(tagID, displayName) = model.reviewMode {
+                if model.isSinglePhotoPresented,
+                   let assetID = model.primarySelectedAssetID,
+                   let item = model.reviewQueueItems.first(where: { $0.assetID == assetID })
+                {
+                    SinglePhotoReviewView(item: item, model: model)
+                        .onAppear { contentFocused = true }
+                } else {
+                    ReviewQueueContentView(
+                        model: model,
+                        tagID: tagID,
+                        displayName: displayName,
+                        contentFocused: $contentFocused
+                    )
+                }
+            } else if model.items.isEmpty {
                 if model.hasAssetPropertyFilters {
                     ContentUnavailableView {
                         Label("没有符合筛选的照片", systemImage: "line.3.horizontal.decrease.circle")
@@ -1071,11 +1353,22 @@ struct LibraryWorkspaceView: View {
 
                         if let detail = model.inspectorDetail {
                             InspectorPreview(assetID: detail.assetID, model: model)
-                            metadata(detail)
+                            if model.reviewMode == nil {
+                                InspectorSuggestionSection(model: model)
+                            } else if case let .tagQueue(tagID, displayName) = model.reviewMode {
+                                reviewInspectorActions(tagID: tagID, displayName: displayName)
+                            }
+                        } else if !model.assetPendingSuggestions.isEmpty {
+                            InspectorSuggestionSection(model: model)
                         }
 
                         Divider()
                         tagEditor
+
+                        if let detail = model.inspectorDetail {
+                            Divider()
+                            metadata(detail)
+                        }
                     }
                     .padding(16)
                 }
@@ -1380,6 +1673,34 @@ struct LibraryWorkspaceView: View {
         case .duplicateTag: "已有同名标签。"
         case .tagMutationFailed: "标签操作未保存，请重试。"
         case .sourceActionFailed: "来源操作未完成。原照片没有被修改，请重试。"
+        case .reviewActionFailed: "建议任务操作未完成，请重试。"
+        case .reviewJobConflict: "该标签已有进行中的建议任务。"
+        case let .insufficientSuggestionSamples(positive, negative):
+            "还需确认 \(positive) 张、标记不属于 \(negative) 张。"
+        case let .reviewMutationApplied(count, tagName):
+            "已处理 \(count) 条“\(tagName)”建议"
+        }
+    }
+
+    private func reviewInspectorActions(tagID: UUID, displayName: String) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("AI 建议")
+                .font(.headline)
+            Text("当前标签：\(displayName)")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            HStack {
+                Button("确认属于 (P)") {
+                    Task { await model.applyReviewDecision(action: .accept) }
+                }
+                Button("不属于 (X)") {
+                    Task { await model.applyReviewDecision(action: .reject) }
+                }
+                Button("稍后 (U)") {
+                    model.deferReviewSelection()
+                }
+            }
+            .disabled(model.selectedAssetIDs.isEmpty)
         }
     }
 
@@ -1424,6 +1745,36 @@ struct LibraryWorkspaceView: View {
         case .connectionFailed: return "无法连接文件夹"
         case .scanFailed: return "扫描未完成"
         case .catalogFailed: return "无法读取图库"
+        }
+    }
+}
+
+private struct SinglePhotoReviewView: View {
+    let item: ReviewQueueItemProjection
+    @ObservedObject var model: LibraryWorkspaceModel
+    @State private var image: NSImage?
+
+    var body: some View {
+        ZStack {
+            Color(nsColor: .windowBackgroundColor)
+            if let image {
+                Image(nsImage: image)
+                    .resizable()
+                    .scaledToFit()
+                    .padding(24)
+            } else {
+                Image(systemName: "photo")
+                    .font(.system(size: 48))
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .task(id: item.assetID) {
+            image = nil
+            guard item.availability == .available,
+                  let data = await model.previewData(assetID: item.assetID)
+            else { return }
+            image = NSImage(data: data)
         }
     }
 }

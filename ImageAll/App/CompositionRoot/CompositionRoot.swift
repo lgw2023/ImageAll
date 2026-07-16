@@ -42,15 +42,37 @@ struct CompositionRoot {
             clock: clock
         )
         let handler = FolderReconcileHandler(rootAccess: sourceAccess)
+        let personalizationHandler = FullLibrarySuggestionsHandler(
+            dependencies: FullLibrarySuggestionsHandlerDependencies(
+                database: runtime.database,
+                queue: runtime.jobQueue,
+                featureLoader: AsyncFeatureVectorBridge(
+                    loader: FeaturePrintCacheService(
+                        database: runtime.database,
+                        cachesDirectory: runtime.paths.cachesDirectory,
+                        sourceAccess: sourceAccess,
+                        clock: clock
+                    )
+                ),
+                clock: clock
+            )
+        )
         let executionCoordinator = JobExecutionCoordinator(
             queue: runtime.jobQueue,
-            registry: SingleJobHandlerRegistry(registeredHandler: handler),
+            registry: MultiJobHandlerRegistry(handlers: [handler, personalizationHandler]),
             leaseContextProvider: GRDBJobLeaseContextProvider(queue: runtime.jobQueue)
         )
         let derivedImages = DerivedImageCacheService(
             database: runtime.database,
             cachesDirectory: runtime.paths.cachesDirectory,
             sourceAccess: sourceAccess,
+            clock: clock
+        )
+        let personalizationReview = PersonalizationReviewService(
+            database: runtime.database,
+            queue: runtime.jobQueue,
+            executionCoordinator: executionCoordinator,
+            tags: GRDBTagCatalogRepository(database: runtime.database),
             clock: clock
         )
         let service = ProductionLibraryWorkspaceService(
@@ -61,8 +83,9 @@ struct CompositionRoot {
             query: GRDBAssetCatalogQueryRepository(database: runtime.database),
             tags: GRDBTagCatalogRepository(database: runtime.database),
             derivedImages: derivedImages,
+            personalizationReview: personalizationReview,
             clock: clock
         )
-        return LibraryWorkspaceModel(service: service)
+        return LibraryWorkspaceModel(service: service, review: personalizationReview)
     }
 }

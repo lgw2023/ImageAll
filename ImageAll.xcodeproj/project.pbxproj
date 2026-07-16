@@ -197,6 +197,15 @@
 		LL0000010000000000000001 /* FeaturePrintCacheService.swift in Sources */ = {isa = PBXBuildFile; fileRef = LL0001010000000000000001 /* FeaturePrintCacheService.swift */; };
 		MM0000010000000000000101 /* PersonalizedSuggestionServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = MM0001010000000000000101 /* PersonalizedSuggestionServiceTests.swift */; };
 		MM0000010000000000000001 /* PersonalizedSuggestionService.swift in Sources */ = {isa = PBXBuildFile; fileRef = MM0001010000000000000001 /* PersonalizedSuggestionService.swift */; };
+		NN0000010000000000000001 /* PersonalizationReviewPort.swift in Sources */ = {isa = PBXBuildFile; fileRef = NN0001010000000000000001 /* PersonalizationReviewPort.swift */; };
+		NN0000010000000000000002 /* FullLibrarySuggestionsContracts.swift in Sources */ = {isa = PBXBuildFile; fileRef = NN0001010000000000000002 /* FullLibrarySuggestionsContracts.swift */; };
+		NN0000010000000000000003 /* PersonalizationReviewService.swift in Sources */ = {isa = PBXBuildFile; fileRef = NN0001010000000000000003 /* PersonalizationReviewService.swift */; };
+		NN0000010000000000000004 /* GRDBPersonalizationReviewRepository.swift in Sources */ = {isa = PBXBuildFile; fileRef = NN0001010000000000000004 /* GRDBPersonalizationReviewRepository.swift */; };
+		NN0000010000000000000005 /* FullLibrarySuggestionsHandler.swift in Sources */ = {isa = PBXBuildFile; fileRef = NN0001010000000000000005 /* FullLibrarySuggestionsHandler.swift */; };
+		NN0000010000000000000006 /* FullLibrarySuggestionsJobEnqueue.swift in Sources */ = {isa = PBXBuildFile; fileRef = NN0001010000000000000006 /* FullLibrarySuggestionsJobEnqueue.swift */; };
+		NN0000010000000000000007 /* PersonalizedSuggestionScoringCore.swift in Sources */ = {isa = PBXBuildFile; fileRef = NN0001010000000000000007 /* PersonalizedSuggestionScoringCore.swift */; };
+		NN0000010000000000000008 /* PersonalizationReviewUI.swift in Sources */ = {isa = PBXBuildFile; fileRef = NN0001010000000000000008 /* PersonalizationReviewUI.swift */; };
+		NN0000010000000000000101 /* FullLibrarySuggestionsJobTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = NN0001010000000000000101 /* FullLibrarySuggestionsJobTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -401,6 +410,15 @@
 		LL0001010000000000000001 /* FeaturePrintCacheService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FeaturePrintCacheService.swift; sourceTree = "<group>"; };
 		MM0001010000000000000101 /* PersonalizedSuggestionServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersonalizedSuggestionServiceTests.swift; sourceTree = "<group>"; };
 		MM0001010000000000000001 /* PersonalizedSuggestionService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersonalizedSuggestionService.swift; sourceTree = "<group>"; };
+		NN0001010000000000000001 /* PersonalizationReviewPort.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersonalizationReviewPort.swift; sourceTree = "<group>"; };
+		NN0001010000000000000002 /* FullLibrarySuggestionsContracts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FullLibrarySuggestionsContracts.swift; sourceTree = "<group>"; };
+		NN0001010000000000000003 /* PersonalizationReviewService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersonalizationReviewService.swift; sourceTree = "<group>"; };
+		NN0001010000000000000004 /* GRDBPersonalizationReviewRepository.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GRDBPersonalizationReviewRepository.swift; sourceTree = "<group>"; };
+		NN0001010000000000000005 /* FullLibrarySuggestionsHandler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FullLibrarySuggestionsHandler.swift; sourceTree = "<group>"; };
+		NN0001010000000000000006 /* FullLibrarySuggestionsJobEnqueue.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FullLibrarySuggestionsJobEnqueue.swift; sourceTree = "<group>"; };
+		NN0001010000000000000007 /* PersonalizedSuggestionScoringCore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersonalizedSuggestionScoringCore.swift; sourceTree = "<group>"; };
+		NN0001010000000000000008 /* PersonalizationReviewUI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersonalizationReviewUI.swift; sourceTree = "<group>"; };
+		NN0001010000000000000101 /* FullLibrarySuggestionsJobTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FullLibrarySuggestionsJobTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -469,6 +487,7 @@
 				MM0001010000000000000101 /* PersonalizedSuggestionServiceTests.swift */,
 				LL0001010000000000000101 /* FeaturePrintCacheTests.swift */,
 				KK0001010000000000000101 /* PersonalizationPersistenceTests.swift */,
+				NN0001010000000000000101 /* FullLibrarySuggestionsJobTests.swift */,
 			);
 			path = Personalization;
 			sourceTree = "<group>";
@@ -501,6 +520,7 @@
 				AA0001010000000000000001 /* ImageAllApp.swift */,
 				AA0001010000000000000002 /* RootView.swift */,
 				JJ0001010000000000000002 /* LibraryWorkspace.swift */,
+				NN0001010000000000000008 /* PersonalizationReviewUI.swift */,
 				AA0006010000000000000007 /* CompositionRoot */,
 			);
 			path = App;
@@ -524,6 +544,8 @@
 			isa = PBXGroup;
 			children = (
 				KK0001010000000000000002 /* PersonalizationCatalogPort.swift */,
+				NN0001010000000000000001 /* PersonalizationReviewPort.swift */,
+				NN0001010000000000000002 /* FullLibrarySuggestionsContracts.swift */,
 			);
 			path = Personalization;
 			sourceTree = "<group>";
@@ -648,6 +670,11 @@
 				MM0001010000000000000001 /* PersonalizedSuggestionService.swift */,
 				LL0001010000000000000001 /* FeaturePrintCacheService.swift */,
 				KK0001010000000000000003 /* GRDBPersonalizationRepository.swift */,
+				NN0001010000000000000003 /* PersonalizationReviewService.swift */,
+				NN0001010000000000000004 /* GRDBPersonalizationReviewRepository.swift */,
+				NN0001010000000000000005 /* FullLibrarySuggestionsHandler.swift */,
+				NN0001010000000000000006 /* FullLibrarySuggestionsJobEnqueue.swift */,
+				NN0001010000000000000007 /* PersonalizedSuggestionScoringCore.swift */,
 			);
 			path = Personalization;
 			sourceTree = "<group>";
@@ -1119,6 +1146,14 @@
 				II000001000000000000000B /* DerivedImageSourceReader.swift in Sources */,
 				II000001000000000000000D /* DerivedImageSourceFingerprintFacts.swift in Sources */,
 				II000001000000000000000C /* DerivedImageCacheService.swift in Sources */,
+				NN0000010000000000000001 /* PersonalizationReviewPort.swift in Sources */,
+				NN0000010000000000000002 /* FullLibrarySuggestionsContracts.swift in Sources */,
+				NN0000010000000000000003 /* PersonalizationReviewService.swift in Sources */,
+				NN0000010000000000000004 /* GRDBPersonalizationReviewRepository.swift in Sources */,
+				NN0000010000000000000005 /* FullLibrarySuggestionsHandler.swift in Sources */,
+				NN0000010000000000000006 /* FullLibrarySuggestionsJobEnqueue.swift in Sources */,
+				NN0000010000000000000007 /* PersonalizedSuggestionScoringCore.swift in Sources */,
+				NN0000010000000000000008 /* PersonalizationReviewUI.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -1129,6 +1164,7 @@
 				MM0000010000000000000101 /* PersonalizedSuggestionServiceTests.swift in Sources */,
 				LL0000010000000000000101 /* FeaturePrintCacheTests.swift in Sources */,
 				KK0000010000000000000101 /* PersonalizationPersistenceTests.swift in Sources */,
+				NN0000010000000000000101 /* FullLibrarySuggestionsJobTests.swift in Sources */,
 				JJ0000010000000000000101 /* LibraryWorkspaceModelTests.swift in Sources */,
 				AA0000010000000000000005 /* CompositionRootTests.swift in Sources */,
 				EE0000010000000000000101 /* StartupTestSupport.swift in Sources */,

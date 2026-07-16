@@ -48,6 +48,11 @@ struct JobSafeErrorCode: Sendable, Equatable, Hashable {
     static let folderSourceUnavailable = JobSafeErrorCode(unchecked: "folderSourceUnavailable")
     static let folderEnumerationIncomplete = JobSafeErrorCode(unchecked: "folderEnumerationIncomplete")
     static let folderUnsafeRelativePath = JobSafeErrorCode(unchecked: "folderUnsafeRelativePath")
+    static let personalizationPayloadInvalid = JobSafeErrorCode(unchecked: "personalizationPayloadInvalid")
+    static let personalizationCheckpointInvalid = JobSafeErrorCode(unchecked: "personalizationCheckpointInvalid")
+    static let personalizationInsufficientSamples = JobSafeErrorCode(unchecked: "personalizationInsufficientSamples")
+    static let personalizationTagArchived = JobSafeErrorCode(unchecked: "personalizationTagArchived")
+    static let personalizationPersistenceFailure = JobSafeErrorCode(unchecked: "personalizationPersistenceFailure")
 
     private init(unchecked rawValue: String) {
         self.rawValue = rawValue
@@ -152,6 +157,13 @@ struct EnqueueJobCommand: Sendable, Equatable {
 struct ClaimNextInput: Sendable, Equatable {
     let owner: String
     let leaseDurationMs: Int64
+    let allowedKinds: Set<String>?
+
+    init(owner: String, leaseDurationMs: Int64, allowedKinds: Set<String>? = nil) {
+        self.owner = owner
+        self.leaseDurationMs = leaseDurationMs
+        self.allowedKinds = allowedKinds
+    }
 }
 
 struct JobStateCommand: Sendable, Equatable {

@@ -12,6 +12,7 @@ struct ProductionLibraryWorkspaceService: LibraryWorkspacePort, Sendable {
     let query: GRDBAssetCatalogQueryRepository
     let tags: GRDBTagCatalogRepository
     let derivedImages: any DerivedImageCachePort
+    let personalizationReview: PersonalizationReviewService
     let clock: any JobClock
 
     func fetchSources() throws -> [LibrarySourceSummary] {
@@ -48,14 +49,19 @@ struct ProductionLibraryWorkspaceService: LibraryWorkspacePort, Sendable {
 
     func runPendingReconcileJobs() throws {
         let claim = ClaimNextInput(
-            owner: "imageall-app-\(UUID().uuidString.lowercased())",
-            leaseDurationMs: 60_000
+            owner: "imageall-reconcile-\(UUID().uuidString.lowercased())",
+            leaseDurationMs: 60_000,
+            allowedKinds: [FolderReconcileJobFactory.kind]
         )
         while let result = try executionCoordinator.claimAndExecuteOnce(claim) {
             guard result.snapshot.state == .completed else {
                 throw ProductionLibraryWorkspaceError.reconcileFailed
             }
         }
+    }
+
+    func runPendingPersonalizationJobs() throws {
+        try personalizationReview.runPendingSuggestionJobs(maxSteps: nil)
     }
 
     func fetchAssetPage(
@@ -145,13 +151,5 @@ struct ProductionLibraryWorkspaceService: LibraryWorkspacePort, Sendable {
 
     func archiveTag(tagID: UUID) throws {
         _ = try tags.archiveTag(tagID: tagID, timestampMs: clock.nowMs)
-    }
-}
-
-struct SingleJobHandlerRegistry: JobHandlerRegistry, Sendable {
-    let registeredHandler: any JobHandler
-
-    func handler(forKind kind: String) -> (any JobHandler)? {
-        registeredHandler.kind == kind ? registeredHandler : nil
     }
 }
