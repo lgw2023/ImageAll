@@ -461,6 +461,63 @@ final class PhotosIntegrationTests: XCTestCase {
         XCTAssertEqual(evidence.assets, 0)
     }
 
+    func testPhotoLibraryObserverStartupQueuesCatchUpWithoutFabricatingAChangeEvent() async throws {
+        let database = try FolderAuthorizationTestSupport.makeDatabase()
+        let access = FakePhotosLibraryAccess(state: .authorized)
+        let sourceID = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
+        let firstJobID = UUID(uuidString: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")!
+        let startupJobID = UUID(uuidString: "bbbbbbbb-cccc-dddd-eeee-ffffffffffff")!
+        let clock = FixedJobClock(nowMs: DatabaseTestSupport.timestampMs)
+        let connection = PhotosLibraryConnectionService(
+            database: database,
+            access: access,
+            clock: clock,
+            idGenerator: IDSequence([sourceID, firstJobID]).next
+        )
+        _ = try await connection.connect()
+
+        let queue = GRDBJobQueue(database: database, clock: clock, retryPolicy: FixedDelayRetryPolicy(delayMs: 1_000))
+        let handler = PhotosReconcileHandler(database: database, queue: queue, access: access, clock: clock)
+        let execution = JobExecutionCoordinator(
+            queue: queue,
+            registry: MultiJobHandlerRegistry(handlers: [handler]),
+            leaseContextProvider: GRDBJobLeaseContextProvider(queue: queue)
+        )
+        let claim = ClaimNextInput(
+            owner: "photos-startup-catch-up-test",
+            leaseDurationMs: 60_000,
+            allowedKinds: [PhotosReconcileJobFactory.kind]
+        )
+        XCTAssertEqual(try execution.claimAndExecuteOnce(claim)?.snapshot.state, .completed)
+
+        PhotosLibraryChangeObserverCoordinator(
+            observer: FakePhotosChangeObserver(),
+            database: database,
+            clock: clock,
+            idGenerator: IDSequence([startupJobID]).next
+        ).start()
+
+        let evidence = try await database.pool.read { db in
+            (
+                activeJobs: try Int.fetchOne(
+                    db,
+                    sql: """
+                    SELECT COUNT(*) FROM job
+                    WHERE kind = ? AND state IN ('pending', 'running', 'paused', 'retryableFailed')
+                    """,
+                    arguments: [PhotosReconcileJobFactory.kind]
+                ),
+                dirtyEpoch: try Int.fetchOne(
+                    db,
+                    sql: "SELECT dirty_epoch FROM source WHERE id = ?",
+                    arguments: [sourceID.uuidString.lowercased()]
+                )
+            )
+        }
+        XCTAssertEqual(evidence.activeJobs, 1)
+        XCTAssertEqual(evidence.dirtyEpoch, 0)
+    }
+
     func testPhotoLibraryChangeDuringReconcileQueuesOneFollowUpJob() async throws {
         let database = try FolderAuthorizationTestSupport.makeDatabase()
         let access = FakePhotosLibraryAccess(

@@ -106,6 +106,18 @@ struct PhotosLibraryChangeObserverCoordinator: Sendable {
                 try enqueuer.enqueueIfNeeded(sourceID: sourceID, db: db)
             }
         }
+        try? database.pool.write { db in
+            guard let sourceIDString = try String.fetchOne(
+                db,
+                sql: """
+                SELECT id FROM source
+                WHERE kind = 'photos' AND state = 'active'
+                ORDER BY created_at_ms, id LIMIT 1
+                """
+            ), let sourceID = UUID(uuidString: sourceIDString)
+            else { return }
+            try enqueuer.enqueueIfNeeded(sourceID: sourceID, db: db)
+        }
     }
 }
 
