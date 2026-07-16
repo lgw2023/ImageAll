@@ -15,7 +15,27 @@ struct ProductionLibraryWorkspaceService: LibraryWorkspacePort, Sendable {
     let tags: GRDBTagCatalogRepository
     let assetImages: LibraryAssetImageLoader
     let personalizationReview: PersonalizationReviewService
+    let portableExportDestinationPicker: any PortableExportDestinationPicking
+    let portableExporter: PortableCatalogExporter
+    let appVersion: String
     let clock: any JobClock
+
+    @MainActor
+    func choosePortableExportDirectory() -> URL? {
+        portableExportDestinationPicker.chooseParentDirectory()
+    }
+
+    func exportPortableUserData(to parentDirectoryURL: URL) throws -> PortableCatalogExportResult {
+        let createdAtMs = clock.nowMs
+        return try portableExporter.export(
+            PortableCatalogExportRequest(
+                parentDirectoryURL: parentDirectoryURL,
+                bundleName: PortableExportBundleNamer.bundleName(createdAtMs: createdAtMs),
+                createdAtMs: createdAtMs,
+                appVersion: appVersion
+            )
+        )
+    }
 
     func fetchSources() throws -> [LibrarySourceSummary] {
         try photosConnection.fetchSources()

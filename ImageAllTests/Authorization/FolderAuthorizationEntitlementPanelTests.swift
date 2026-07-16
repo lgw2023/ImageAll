@@ -18,12 +18,12 @@ final class FolderAuthorizationEntitlementPanelTests: XCTestCase {
         }
 
         XCTAssertEqual(boolEntitlement("com.apple.security.app-sandbox"), true)
-        XCTAssertEqual(boolEntitlement("com.apple.security.files.user-selected.read-only"), true)
+        XCTAssertEqual(boolEntitlement("com.apple.security.files.user-selected.read-write"), true)
         XCTAssertEqual(boolEntitlement("com.apple.security.files.bookmarks.app-scope"), true)
         XCTAssertNil(
             SecTaskCopyValueForEntitlement(
                 task,
-                "com.apple.security.files.user-selected.read-write" as CFString,
+                "com.apple.security.files.user-selected.read-only" as CFString,
                 nil
             )
         )

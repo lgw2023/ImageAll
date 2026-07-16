@@ -43,6 +43,7 @@ final class LibraryWorkspaceModel: ObservableObject {
     @Published var pendingSuggestionConfirmation: SuggestionEnqueueConfirmation?
     @Published private(set) var assetPendingSuggestions: [AssetPendingSuggestion] = []
     @Published private(set) var cloudPreviewState: CloudPreviewPresentationState = .hidden
+    @Published private(set) var isExportingPortableData = false
 
     fileprivate let review: any PersonalizationReviewPort
     private let service: any LibraryWorkspacePort
@@ -113,6 +114,27 @@ final class LibraryWorkspaceModel: ObservableObject {
         guard !started else { return }
         started = true
         await reload(runPendingJobs: true)
+    }
+
+    func exportPortableUserData() async {
+        guard !isExportingPortableData else { return }
+        notice = nil
+        guard let parentDirectoryURL = service.choosePortableExportDirectory() else { return }
+
+        isExportingPortableData = true
+        defer { isExportingPortableData = false }
+        let service = service
+        do {
+            let result = try await Self.offMain {
+                try service.exportPortableUserData(to: parentDirectoryURL)
+            }
+            notice = .portableExportCompleted(
+                bundleName: result.bundleURL.lastPathComponent,
+                recordCount: result.totalRecordCount
+            )
+        } catch {
+            notice = .portableExportFailed
+        }
     }
 
     func connectFolder() async {
@@ -1333,6 +1355,13 @@ struct LibraryWorkspaceView: View {
                 .disabled(model.isBusy)
 
                 Button {
+                    Task { await model.exportPortableUserData() }
+                } label: {
+                    Label("导出用户数据", systemImage: "square.and.arrow.up")
+                }
+                .disabled(model.isBusy || model.isExportingPortableData)
+
+                Button {
                     Task { await model.rescan() }
                 } label: {
                     Label("立即重扫", systemImage: "arrow.clockwise")
@@ -2068,7 +2097,7 @@ struct LibraryWorkspaceView: View {
 
     private func noticeBar(_ notice: LibraryWorkspaceNotice) -> some View {
         HStack(spacing: 10) {
-            Image(systemName: notice == .selectionHiddenByFilter ? "line.3.horizontal.decrease.circle" : "exclamationmark.triangle")
+            Image(systemName: noticeIcon(notice))
             Text(noticeText(notice))
                 .font(.caption)
             Spacer()
@@ -2079,6 +2108,17 @@ struct LibraryWorkspaceView: View {
         .padding(.vertical, 7)
         .background(.bar)
         .overlay(alignment: .top) { Divider() }
+    }
+
+    private func noticeIcon(_ notice: LibraryWorkspaceNotice) -> String {
+        switch notice {
+        case .selectionHiddenByFilter:
+            "line.3.horizontal.decrease.circle"
+        case .portableExportCompleted:
+            "checkmark.circle"
+        default:
+            "exclamationmark.triangle"
+        }
     }
 
     private func noticeText(_ notice: LibraryWorkspaceNotice) -> String {
@@ -2096,6 +2136,10 @@ struct LibraryWorkspaceView: View {
             "还需确认 \(positive) 张、标记不属于 \(negative) 张。"
         case let .reviewMutationApplied(count, tagName):
             "已处理 \(count) 条“\(tagName)”建议"
+        case let .portableExportCompleted(bundleName, recordCount):
+            "已导出 \(recordCount) 条记录到“\(bundleName)”。"
+        case .portableExportFailed:
+            "用户数据导出未完成，现有资料没有被修改。请重试。"
         }
     }
 

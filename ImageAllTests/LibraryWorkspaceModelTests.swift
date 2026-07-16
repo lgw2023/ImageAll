@@ -4,6 +4,78 @@ import XCTest
 
 @MainActor
 final class LibraryWorkspaceModelTests: XCTestCase {
+    func testPortableExportPublishesVisibleSuccessNotice() async {
+        let sourceID = UUID()
+        let parentURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ImageAll-Export-Parent", isDirectory: true)
+        let bundleURL = parentURL.appendingPathComponent("ImageAll-Export-20260717-010203Z")
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: sourceID,
+                displayName: "Fixture",
+                state: .active
+            ),
+            reconciledItems: [],
+            exportParentURL: parentURL,
+            portableExportResult: PortableCatalogExportResult(
+                bundleURL: bundleURL,
+                totalRecordCount: 12
+            )
+        )
+        let model = LibraryWorkspaceModel(service: service)
+
+        await model.exportPortableUserData()
+
+        XCTAssertEqual(service.portableExportCallCount, 1)
+        XCTAssertEqual(
+            model.notice,
+            .portableExportCompleted(
+                bundleName: "ImageAll-Export-20260717-010203Z",
+                recordCount: 12
+            )
+        )
+        XCTAssertFalse(model.isExportingPortableData)
+    }
+
+    func testPortableExportCancellationIsSilent() async {
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: UUID(),
+                displayName: "Fixture",
+                state: .active
+            ),
+            reconciledItems: []
+        )
+        let model = LibraryWorkspaceModel(service: service)
+
+        await model.exportPortableUserData()
+
+        XCTAssertEqual(service.portableExportCallCount, 0)
+        XCTAssertNil(model.notice)
+        XCTAssertFalse(model.isExportingPortableData)
+    }
+
+    func testPortableExportFailurePublishesSafeNotice() async {
+        let parentURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ImageAll-Export-Parent", isDirectory: true)
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: UUID(),
+                displayName: "Fixture",
+                state: .active
+            ),
+            reconciledItems: [],
+            exportParentURL: parentURL,
+            portableExportFails: true
+        )
+        let model = LibraryWorkspaceModel(service: service)
+
+        await model.exportPortableUserData()
+
+        XCTAssertEqual(model.notice, .portableExportFailed)
+        XCTAssertFalse(model.isExportingPortableData)
+    }
+
     func testStartupShowsExistingCatalogBeforePendingReconcileFinishes() async {
         let sourceID = UUID()
         let asset = Self.makeAsset(sourceID: sourceID, fileName: "already-indexed.jpg")
@@ -976,8 +1048,12 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
     private var storedCloudPreviewDownloadCallCount = 0
     private var storedCloudPreviewCancellationCount = 0
     private var storedThumbnailLoadCallCount = 0
+    private var storedPortableExportCallCount = 0
     private var storedTags: [TagListItem]
     private var decisions: [UUID: [UUID: TagDecisionQueryState]] = [:]
+    private let exportParentURL: URL?
+    private let portableExportResult: PortableCatalogExportResult?
+    private let portableExportFails: Bool
 
     init(
         connectedSource: LibrarySourceSummary,
@@ -994,7 +1070,10 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
         previewError: PhotosLibraryError? = nil,
         cloudPreviewData: Data = Data(),
         cloudPreviewProgress: [Double] = [],
-        cloudPreviewFailureCount: Int = 0
+        cloudPreviewFailureCount: Int = 0,
+        exportParentURL: URL? = nil,
+        portableExportResult: PortableCatalogExportResult? = nil,
+        portableExportFails: Bool = false
     ) {
         self.connectedSource = connectedSource
         self.reconciledItems = reconciledItems
@@ -1008,6 +1087,9 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
         self.cloudPreviewData = cloudPreviewData
         self.cloudPreviewProgress = cloudPreviewProgress
         self.cloudPreviewFailureCount = cloudPreviewFailureCount
+        self.exportParentURL = exportParentURL
+        self.portableExportResult = portableExportResult
+        self.portableExportFails = portableExportFails
         storedSources = startsConnected ? [connectedSource] : []
         storedItems = initialItems
         storedTags = tags
@@ -1063,6 +1145,28 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
 
     var thumbnailLoadCallCount: Int {
         lock.withLock { storedThumbnailLoadCallCount }
+    }
+
+    var portableExportCallCount: Int {
+        lock.withLock { storedPortableExportCallCount }
+    }
+
+    @MainActor
+    func choosePortableExportDirectory() -> URL? {
+        exportParentURL
+    }
+
+    func exportPortableUserData(to parentDirectoryURL: URL) throws -> PortableCatalogExportResult {
+        if portableExportFails {
+            throw FakeWorkspaceError.portableExportFailed
+        }
+        return try lock.withLock {
+            storedPortableExportCallCount += 1
+            guard let portableExportResult else {
+                throw FakeWorkspaceError.portableExportFailed
+            }
+            return portableExportResult
+        }
     }
 
     func fetchSources() throws -> [LibrarySourceSummary] {
@@ -1368,6 +1472,7 @@ private enum FakeWorkspaceError: Error {
     case tagMutationFailed
     case sourceActionFailed
     case cloudPreviewFailed
+    case portableExportFailed
 }
 
 private final class FakePersonalizationReviewPort: PersonalizationReviewPort, @unchecked Sendable {

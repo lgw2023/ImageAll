@@ -111,6 +111,9 @@ struct CompositionRoot {
             tags: GRDBTagCatalogRepository(database: runtime.database),
             assetImages: assetImages,
             personalizationReview: personalizationReview,
+            portableExportDestinationPicker: AppKitPortableExportDestinationPicker(),
+            portableExporter: PortableCatalogExporter(database: runtime.database),
+            appVersion: BundleAppVersionProvider().currentVersion(),
             clock: clock
         )
         photosObserver.start()

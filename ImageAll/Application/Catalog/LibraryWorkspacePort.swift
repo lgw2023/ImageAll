@@ -57,6 +57,8 @@ enum LibraryWorkspaceNotice: Equatable, Sendable {
     case reviewJobConflict
     case insufficientSuggestionSamples(positiveMissing: Int, negativeMissing: Int)
     case reviewMutationApplied(count: Int, tagName: String)
+    case portableExportCompleted(bundleName: String, recordCount: Int)
+    case portableExportFailed
 }
 
 enum CloudPreviewPresentationState: Equatable, Sendable {
@@ -115,6 +117,8 @@ enum LibraryInspectorTagDecisionState: Equatable, Sendable {
 }
 
 protocol LibraryWorkspacePort: Sendable {
+    @MainActor func choosePortableExportDirectory() -> URL?
+    func exportPortableUserData(to parentDirectoryURL: URL) throws -> PortableCatalogExportResult
     func fetchSources() throws -> [LibrarySourceSummary]
     func connectFolder() async throws -> ConnectFolderOutcome
     func connectPhotos() async throws -> ConnectPhotosOutcome

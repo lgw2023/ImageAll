@@ -166,6 +166,8 @@
 		RR000001000000000000010F /* FolderReconcileTestSeams.swift in Sources */ = {isa = PBXBuildFile; fileRef = RR000101000000000000010F /* FolderReconcileTestSeams.swift */; };
 		RR0000010000000000000201 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = RR0001010000000000000201 /* PrivacyInfo.xcprivacy */; };
 		II0000010000000000000001 /* V003AddDerivedImageCacheMigration.swift in Sources */ = {isa = PBXBuildFile; fileRef = II0001010000000000000001 /* V003AddDerivedImageCacheMigration.swift */; };
+		EX0000010000000000000101 /* PortableCatalogExportTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EX0001010000000000000101 /* PortableCatalogExportTests.swift */; };
+		EX0000010000000000000001 /* PortableCatalogExporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = EX0001010000000000000001 /* PortableCatalogExporter.swift */; };
 		II0000010000000000000002 /* DerivedImageTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = II0001010000000000000002 /* DerivedImageTypes.swift */; };
 		II0000010000000000000003 /* DerivedImageErrors.swift in Sources */ = {isa = PBXBuildFile; fileRef = II0001010000000000000003 /* DerivedImageErrors.swift */; };
 		II0000010000000000000004 /* DerivedImageCachePort.swift in Sources */ = {isa = PBXBuildFile; fileRef = II0001010000000000000004 /* DerivedImageCachePort.swift */; };
@@ -386,6 +388,8 @@
 		RR000101000000000000010F /* FolderReconcileTestSeams.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FolderReconcileTestSeams.swift; sourceTree = "<group>"; };
 		RR0001010000000000000201 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		II0001010000000000000001 /* V003AddDerivedImageCacheMigration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = V003AddDerivedImageCacheMigration.swift; sourceTree = "<group>"; };
+		EX0001010000000000000101 /* PortableCatalogExportTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Export/PortableCatalogExportTests.swift; sourceTree = "<group>"; };
+		EX0001010000000000000001 /* PortableCatalogExporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Export/PortableCatalogExporter.swift; sourceTree = "<group>"; };
 		II0001010000000000000002 /* DerivedImageTypes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DerivedImageTypes.swift; sourceTree = "<group>"; };
 		II0001010000000000000003 /* DerivedImageErrors.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DerivedImageErrors.swift; sourceTree = "<group>"; };
 		II0001010000000000000004 /* DerivedImageCachePort.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DerivedImageCachePort.swift; sourceTree = "<group>"; };
@@ -480,6 +484,7 @@
 		AA0006010000000000000003 /* ImageAllTests */ = {
 			isa = PBXGroup;
 			children = (
+				EX0001010000000000000101 /* PortableCatalogExportTests.swift */,
 				OO0006010000000000000003 /* Photos */,
 				JJ0001010000000000000101 /* LibraryWorkspaceModelTests.swift */,
 				KK0006010000000000000003 /* Personalization */,
@@ -693,6 +698,7 @@
 		CC0006010000000000000001 /* Infrastructure */ = {
 			isa = PBXGroup;
 			children = (
+				EX0001010000000000000001 /* PortableCatalogExporter.swift */,
 				OO0006010000000000000002 /* Photos */,
 				KK0006010000000000000002 /* Personalization */,
 				HH0006010000000000000002 /* Authorization */,
@@ -1127,6 +1133,7 @@
 				CC0000010000000000000101 /* CatalogDatabaseError.swift in Sources */,
 				CC0000010000000000000102 /* CatalogMigrationIDs.swift in Sources */,
 				CC0000010000000000000103 /* V001CreateCatalogCoreMigration.swift in Sources */,
+				EX0000010000000000000001 /* PortableCatalogExporter.swift in Sources */,
 				CC0000010000000000000104 /* CatalogDatabase.swift in Sources */,
 				CC0000010000000000000105 /* CatalogRepository.swift in Sources */,
 				CC0000010000000000000106 /* CatalogSnapshotConstants.swift in Sources */,
@@ -1212,6 +1219,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				EX0000010000000000000101 /* PortableCatalogExportTests.swift in Sources */,
 				OO0000010000000000000101 /* PhotosIntegrationTests.swift in Sources */,
 				MM0000010000000000000101 /* PersonalizedSuggestionServiceTests.swift in Sources */,
 				LL0000010000000000000101 /* FeaturePrintCacheTests.swift in Sources */,
