@@ -192,6 +192,335 @@ final class PhotosIntegrationTests: XCTestCase {
         XCTAssertEqual(Set(photosOnly.items.map(\.sourceID)), [sourceID])
     }
 
+    func testReconcileUsesPersistedChangeCursorForIncrementalAssetChanges() async throws {
+        let database = try FolderAuthorizationTestSupport.makeDatabase()
+        let first = metadata("photos-a", name: "A.HEIC", type: "public.heic")
+        let removed = metadata("photos-b", name: "B.PNG", type: "public.png")
+        let inserted = metadata("photos-c", name: "C.WEBP", type: "org.webmproject.webp")
+        let updated = metadata("photos-a", name: "A-UPDATED.HEIC", type: "public.heic")
+        let oldToken = Data("photos-token-1".utf8)
+        let newToken = Data("photos-token-2".utf8)
+        let access = FakePhotosLibraryAccess(
+            state: .authorized,
+            batches: [[first, removed]],
+            persistentChanges: [
+                PhotosPersistentChangeBatch(
+                    upsertedAssets: [updated, inserted],
+                    deletedLocalIdentifiers: [removed.localIdentifier],
+                    changeToken: newToken
+                ),
+            ]
+        )
+        let sourceID = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
+        let firstJobID = UUID(uuidString: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")!
+        let secondJobID = UUID(uuidString: "bbbbbbbb-cccc-dddd-eeee-ffffffffffff")!
+        let clock = FixedJobClock(nowMs: DatabaseTestSupport.timestampMs)
+        let connection = PhotosLibraryConnectionService(
+            database: database,
+            access: access,
+            clock: clock,
+            idGenerator: IDSequence([sourceID, firstJobID]).next
+        )
+        _ = try await connection.connect()
+
+        let queue = GRDBJobQueue(database: database, clock: clock, retryPolicy: FixedDelayRetryPolicy(delayMs: 1_000))
+        let fullScanHandler = PhotosReconcileHandler(database: database, queue: queue, access: access, clock: clock)
+        let fullScanCoordinator = JobExecutionCoordinator(
+            queue: queue,
+            registry: MultiJobHandlerRegistry(handlers: [fullScanHandler]),
+            leaseContextProvider: GRDBJobLeaseContextProvider(queue: queue)
+        )
+        let claim = ClaimNextInput(
+            owner: "photos-change-history-test",
+            leaseDurationMs: 60_000,
+            allowedKinds: [PhotosReconcileJobFactory.kind]
+        )
+        XCTAssertEqual(try fullScanCoordinator.claimAndExecuteOnce(claim)?.snapshot.state, .completed)
+        try await database.pool.write { db in
+            try db.execute(
+                sql: "UPDATE source SET sync_cursor = ? WHERE id = ?",
+                arguments: [oldToken, sourceID.uuidString.lowercased()]
+            )
+        }
+
+        _ = try queue.enqueue(
+            PhotosReconcileJobFactory.makeEnqueueCommand(
+                jobID: secondJobID,
+                sourceID: sourceID,
+                notBeforeMs: clock.nowMs
+            )
+        )
+        let incrementalHandler = PhotosReconcileHandler(
+            database: database,
+            queue: queue,
+            access: access,
+            changeHistory: access,
+            clock: clock
+        )
+        let incrementalCoordinator = JobExecutionCoordinator(
+            queue: queue,
+            registry: MultiJobHandlerRegistry(handlers: [incrementalHandler]),
+            leaseContextProvider: GRDBJobLeaseContextProvider(queue: queue)
+        )
+        XCTAssertEqual(try incrementalCoordinator.claimAndExecuteOnce(claim)?.snapshot.state, .completed)
+
+        let evidence = try await database.pool.read { db in
+            (
+                assets: try Row.fetchAll(
+                    db,
+                    sql: """
+                    SELECT photos_local_identifier, file_name, availability, content_revision
+                    FROM asset WHERE source_id = ? ORDER BY photos_local_identifier
+                    """,
+                    arguments: [sourceID.uuidString.lowercased()]
+                ),
+                cursor: try Data.fetchOne(
+                    db,
+                    sql: "SELECT sync_cursor FROM source WHERE id = ?",
+                    arguments: [sourceID.uuidString.lowercased()]
+                )
+            )
+        }
+        XCTAssertEqual(evidence.assets.count, 3)
+        let assetsByIdentifier = Dictionary(
+            uniqueKeysWithValues: evidence.assets.compactMap { row -> (String, Row)? in
+                guard let identifier: String = row["photos_local_identifier"] else { return nil }
+                return (identifier, row)
+            }
+        )
+        XCTAssertEqual(assetsByIdentifier["photos-a"]?["file_name"] as String?, "A-UPDATED.HEIC")
+        XCTAssertEqual(
+            assetsByIdentifier["photos-a"]?["availability"] as String?,
+            AssetAvailability.available.rawValue
+        )
+        XCTAssertEqual(assetsByIdentifier["photos-a"]?["content_revision"] as Int?, 2)
+        XCTAssertEqual(
+            assetsByIdentifier["photos-b"]?["availability"] as String?,
+            AssetAvailability.missing.rawValue
+        )
+        XCTAssertEqual(assetsByIdentifier["photos-c"]?["file_name"] as String?, "C.WEBP")
+        XCTAssertEqual(
+            assetsByIdentifier["photos-c"]?["availability"] as String?,
+            AssetAvailability.available.rawValue
+        )
+        XCTAssertEqual(evidence.cursor, newToken)
+        XCTAssertEqual(access.enumerationStartOffsets, [0])
+        XCTAssertEqual(access.requestedChangeTokens, [oldToken])
+    }
+
+    func testInvalidChangeCursorFallsBackToFullGenerationBeforeMarkingMissing() async throws {
+        let database = try FolderAuthorizationTestSupport.makeDatabase()
+        let retained = metadata("photos-a", name: "A.HEIC", type: "public.heic")
+        let removed = metadata("photos-b", name: "B.PNG", type: "public.png")
+        let changedDuringScan = metadata("photos-c", name: "C.WEBP", type: "org.webmproject.webp")
+        let invalidToken = Data("photos-expired-token".utf8)
+        let replacementToken = Data("photos-replacement-token".utf8)
+        let replayedToken = Data("photos-replayed-token".utf8)
+        let access = FakePhotosLibraryAccess(
+            state: .authorized,
+            batches: [[retained, removed]],
+            persistentChanges: [
+                PhotosPersistentChangeBatch(
+                    upsertedAssets: [changedDuringScan],
+                    deletedLocalIdentifiers: [],
+                    changeToken: replayedToken
+                ),
+            ],
+            currentChangeToken: replacementToken,
+            invalidChangeTokens: [invalidToken]
+        )
+        let sourceID = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
+        let firstJobID = UUID(uuidString: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")!
+        let secondJobID = UUID(uuidString: "bbbbbbbb-cccc-dddd-eeee-ffffffffffff")!
+        let clock = FixedJobClock(nowMs: DatabaseTestSupport.timestampMs)
+        let connection = PhotosLibraryConnectionService(
+            database: database,
+            access: access,
+            clock: clock,
+            idGenerator: IDSequence([sourceID, firstJobID]).next
+        )
+        _ = try await connection.connect()
+        let queue = GRDBJobQueue(database: database, clock: clock, retryPolicy: FixedDelayRetryPolicy(delayMs: 1_000))
+        let fullScanHandler = PhotosReconcileHandler(database: database, queue: queue, access: access, clock: clock)
+        let fullScanCoordinator = JobExecutionCoordinator(
+            queue: queue,
+            registry: MultiJobHandlerRegistry(handlers: [fullScanHandler]),
+            leaseContextProvider: GRDBJobLeaseContextProvider(queue: queue)
+        )
+        let claim = ClaimNextInput(
+            owner: "photos-invalid-token-test",
+            leaseDurationMs: 60_000,
+            allowedKinds: [PhotosReconcileJobFactory.kind]
+        )
+        XCTAssertEqual(try fullScanCoordinator.claimAndExecuteOnce(claim)?.snapshot.state, .completed)
+        try await database.pool.write { db in
+            try db.execute(
+                sql: "UPDATE source SET sync_cursor = ? WHERE id = ?",
+                arguments: [invalidToken, sourceID.uuidString.lowercased()]
+            )
+        }
+        access.configure(batches: [[retained]], failAfterBatches: false)
+        _ = try queue.enqueue(
+            PhotosReconcileJobFactory.makeEnqueueCommand(
+                jobID: secondJobID,
+                sourceID: sourceID,
+                notBeforeMs: clock.nowMs
+            )
+        )
+
+        let recoveryHandler = PhotosReconcileHandler(
+            database: database,
+            queue: queue,
+            access: access,
+            changeHistory: access,
+            clock: clock
+        )
+        let recoveryCoordinator = JobExecutionCoordinator(
+            queue: queue,
+            registry: MultiJobHandlerRegistry(handlers: [recoveryHandler]),
+            leaseContextProvider: GRDBJobLeaseContextProvider(queue: queue)
+        )
+        XCTAssertEqual(try recoveryCoordinator.claimAndExecuteOnce(claim)?.snapshot.state, .completed)
+
+        let evidence = try await database.pool.read { db in
+            (
+                availability: try String.fetchOne(
+                    db,
+                    sql: "SELECT availability FROM asset WHERE photos_local_identifier = 'photos-b'"
+                ),
+                cursor: try Data.fetchOne(
+                    db,
+                    sql: "SELECT sync_cursor FROM source WHERE id = ?",
+                    arguments: [sourceID.uuidString.lowercased()]
+                ),
+                replayedAssetCount: try Int.fetchOne(
+                    db,
+                    sql: "SELECT COUNT(*) FROM asset WHERE photos_local_identifier = 'photos-c'"
+                )
+            )
+        }
+        XCTAssertEqual(evidence.availability, AssetAvailability.missing.rawValue)
+        XCTAssertEqual(evidence.cursor, replayedToken)
+        XCTAssertEqual(evidence.replayedAssetCount, 1)
+        XCTAssertEqual(access.enumerationStartOffsets, [0, 0])
+        XCTAssertEqual(access.requestedChangeTokens, [invalidToken, replacementToken])
+    }
+
+    func testPhotoLibraryObserverOnlyCoalescesOneReconcileJob() async throws {
+        let database = try FolderAuthorizationTestSupport.makeDatabase()
+        let access = FakePhotosLibraryAccess(state: .authorized)
+        let sourceID = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
+        let firstJobID = UUID(uuidString: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")!
+        let observedJobID = UUID(uuidString: "bbbbbbbb-cccc-dddd-eeee-ffffffffffff")!
+        let clock = FixedJobClock(nowMs: DatabaseTestSupport.timestampMs)
+        let connection = PhotosLibraryConnectionService(
+            database: database,
+            access: access,
+            clock: clock,
+            idGenerator: IDSequence([sourceID, firstJobID]).next
+        )
+        _ = try await connection.connect()
+        let queue = GRDBJobQueue(database: database, clock: clock, retryPolicy: FixedDelayRetryPolicy(delayMs: 1_000))
+        let handler = PhotosReconcileHandler(database: database, queue: queue, access: access, clock: clock)
+        let coordinator = JobExecutionCoordinator(
+            queue: queue,
+            registry: MultiJobHandlerRegistry(handlers: [handler]),
+            leaseContextProvider: GRDBJobLeaseContextProvider(queue: queue)
+        )
+        let claim = ClaimNextInput(
+            owner: "photos-observer-test",
+            leaseDurationMs: 60_000,
+            allowedKinds: [PhotosReconcileJobFactory.kind]
+        )
+        XCTAssertEqual(try coordinator.claimAndExecuteOnce(claim)?.snapshot.state, .completed)
+
+        let observer = FakePhotosChangeObserver()
+        PhotosLibraryChangeObserverCoordinator(
+            observer: observer,
+            database: database,
+            clock: clock,
+            idGenerator: IDSequence([observedJobID]).next
+        ).start()
+        observer.emitChange()
+        observer.emitChange()
+
+        let evidence = try await database.pool.read { db in
+            (
+                activeJobs: try Int.fetchOne(
+                    db,
+                    sql: """
+                    SELECT COUNT(*) FROM job
+                    WHERE kind = ? AND state IN ('pending', 'running', 'paused', 'retryableFailed')
+                    """,
+                    arguments: [PhotosReconcileJobFactory.kind]
+                ),
+                assets: try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM asset")
+            )
+        }
+        XCTAssertEqual(evidence.activeJobs, 1)
+        XCTAssertEqual(evidence.assets, 0)
+    }
+
+    func testPhotoLibraryChangeDuringReconcileQueuesOneFollowUpJob() async throws {
+        let database = try FolderAuthorizationTestSupport.makeDatabase()
+        let access = FakePhotosLibraryAccess(
+            state: .authorized,
+            batches: [[metadata("photos-a", name: "A.HEIC", type: "public.heic")]]
+        )
+        let sourceID = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
+        let firstJobID = UUID(uuidString: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")!
+        let clock = FixedJobClock(nowMs: DatabaseTestSupport.timestampMs)
+        let connection = PhotosLibraryConnectionService(
+            database: database,
+            access: access,
+            clock: clock,
+            idGenerator: IDSequence([sourceID, firstJobID]).next
+        )
+        _ = try await connection.connect()
+
+        let observer = FakePhotosChangeObserver()
+        PhotosLibraryChangeObserverCoordinator(
+            observer: observer,
+            database: database,
+            clock: clock
+        ).start()
+        access.configureOnEnumerationStart { observer.emitChange() }
+
+        let queue = GRDBJobQueue(database: database, clock: clock, retryPolicy: FixedDelayRetryPolicy(delayMs: 1_000))
+        let handler = PhotosReconcileHandler(database: database, queue: queue, access: access, clock: clock)
+        let coordinator = JobExecutionCoordinator(
+            queue: queue,
+            registry: MultiJobHandlerRegistry(handlers: [handler]),
+            leaseContextProvider: GRDBJobLeaseContextProvider(queue: queue)
+        )
+        let claim = ClaimNextInput(
+            owner: "photos-observer-race-test",
+            leaseDurationMs: 60_000,
+            allowedKinds: [PhotosReconcileJobFactory.kind]
+        )
+        XCTAssertEqual(try coordinator.claimAndExecuteOnce(claim)?.snapshot.state, .completed)
+
+        let evidence = try await database.pool.read { db in
+            (
+                activeJobs: try Int.fetchOne(
+                    db,
+                    sql: """
+                    SELECT COUNT(*) FROM job
+                    WHERE kind = ? AND state IN ('pending', 'running', 'paused', 'retryableFailed')
+                    """,
+                    arguments: [PhotosReconcileJobFactory.kind]
+                ),
+                totalJobs: try Int.fetchOne(
+                    db,
+                    sql: "SELECT COUNT(*) FROM job WHERE kind = ?",
+                    arguments: [PhotosReconcileJobFactory.kind]
+                )
+            )
+        }
+        XCTAssertEqual(evidence.activeJobs, 1)
+        XCTAssertEqual(evidence.totalJobs, 2)
+    }
+
     func testInterruptedReconcileDoesNotMarkUnseenAssetsMissingUntilSuccessfulResume() async throws {
         let database = try FolderAuthorizationTestSupport.makeDatabase()
         let first = metadata("photos-a", name: "A.HEIC", type: "public.heic")
@@ -422,7 +751,7 @@ final class PhotosIntegrationTests: XCTestCase {
     }
 }
 
-private final class FakePhotosLibraryAccess: PhotosLibraryAccessPort, @unchecked Sendable {
+private final class FakePhotosLibraryAccess: PhotosLibraryAccessPort, PhotosChangeHistoryPort, @unchecked Sendable {
     let state: PhotosAuthorizationState
     private let lock = NSLock()
     private var storedBatches: [[PhotosAssetMetadata]]
@@ -430,15 +759,26 @@ private final class FakePhotosLibraryAccess: PhotosLibraryAccessPort, @unchecked
     private let localImageData: Data
     private var storedRequestedVariants: [PhotosImageVariant] = []
     private var storedEnumerationStartOffsets: [Int] = []
+    private var storedPersistentChanges: [PhotosPersistentChangeBatch]
+    private var storedRequestedChangeTokens: [Data] = []
+    private let storedCurrentChangeToken: Data
+    private let invalidChangeTokens: Set<Data>
+    private var onEnumerationStart: (@Sendable () -> Void)?
 
     init(
         state: PhotosAuthorizationState,
         batches: [[PhotosAssetMetadata]] = [],
-        localImageData: Data = Data()
+        localImageData: Data = Data(),
+        persistentChanges: [PhotosPersistentChangeBatch] = [],
+        currentChangeToken: Data = Data("photos-current-token".utf8),
+        invalidChangeTokens: Set<Data> = []
     ) {
         self.state = state
         storedBatches = batches
         self.localImageData = localImageData
+        storedPersistentChanges = persistentChanges
+        storedCurrentChangeToken = currentChangeToken
+        self.invalidChangeTokens = invalidChangeTokens
     }
 
     func authorizationState() -> PhotosAuthorizationState { state }
@@ -458,8 +798,11 @@ private final class FakePhotosLibraryAccess: PhotosLibraryAccessPort, @unchecked
         }
         let configuration = lock.withLock {
             storedEnumerationStartOffsets.append(startOffset)
-            return (storedBatches, failAfterBatches)
+            let callback = onEnumerationStart
+            onEnumerationStart = nil
+            return (storedBatches, failAfterBatches, callback)
         }
+        configuration.2?()
         let total = configuration.0.reduce(0) { $0 + $1.count }
         var completed = 0
         for batch in configuration.0 {
@@ -495,6 +838,10 @@ private final class FakePhotosLibraryAccess: PhotosLibraryAccessPort, @unchecked
             self.failAfterBatches = failAfterBatches
         }
     }
+
+    func configureOnEnumerationStart(_ callback: @escaping @Sendable () -> Void) {
+        lock.withLock { onEnumerationStart = callback }
+    }
     func requestLocalImage(
         localIdentifier: String,
         variant: PhotosImageVariant
@@ -503,12 +850,50 @@ private final class FakePhotosLibraryAccess: PhotosLibraryAccessPort, @unchecked
         return localImageData
     }
 
+    func currentChangeToken() throws -> Data {
+        storedCurrentChangeToken
+    }
+
+    func enumeratePersistentChanges(
+        since changeToken: Data,
+        onBatch: (PhotosPersistentChangeBatch) throws -> Void
+    ) throws {
+        let changes = lock.withLock {
+            storedRequestedChangeTokens.append(changeToken)
+            return storedPersistentChanges
+        }
+        if invalidChangeTokens.contains(changeToken) {
+            throw PhotosLibraryError.changeTokenInvalid
+        }
+        for change in changes {
+            try onBatch(change)
+        }
+    }
+
     var requestedVariants: [PhotosImageVariant] {
         lock.withLock { storedRequestedVariants }
     }
 
     var enumerationStartOffsets: [Int] {
         lock.withLock { storedEnumerationStartOffsets }
+    }
+
+    var requestedChangeTokens: [Data] {
+        lock.withLock { storedRequestedChangeTokens }
+    }
+}
+
+private final class FakePhotosChangeObserver: PhotosChangeObserverPort, @unchecked Sendable {
+    private let lock = NSLock()
+    private var onChange: (@Sendable () -> Void)?
+
+    func startObservingChanges(_ onChange: @escaping @Sendable () -> Void) {
+        lock.withLock { self.onChange = onChange }
+    }
+
+    func emitChange() {
+        let callback = lock.withLock { onChange }
+        callback?()
     }
 }
 

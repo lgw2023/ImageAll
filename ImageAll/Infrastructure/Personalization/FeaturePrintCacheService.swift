@@ -202,7 +202,7 @@ struct LibraryFeaturePrintInputLoader: FeaturePrintInputLoading, Sendable {
             switch error {
             case .authorizationDenied, .authorizationRestricted:
                 throw FeaturePrintError.authorizationRequired
-            case .libraryUnavailable, .cloudOnly, .persistenceFailure:
+            case .libraryUnavailable, .cloudOnly, .changeTokenInvalid, .persistenceFailure:
                 throw FeaturePrintError.sourceUnavailable
             }
         } catch {

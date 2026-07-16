@@ -48,10 +48,16 @@ struct CompositionRoot {
             access: photosAccess,
             clock: clock
         )
+        let photosObserver = PhotosLibraryChangeObserverCoordinator(
+            observer: photosAccess,
+            database: runtime.database,
+            clock: clock
+        )
         let photosHandler = PhotosReconcileHandler(
             database: runtime.database,
             queue: runtime.jobQueue,
             access: photosAccess,
+            changeHistory: photosAccess,
             clock: clock
         )
         let featurePrintService = FeaturePrintCacheService(
@@ -104,6 +110,7 @@ struct CompositionRoot {
             personalizationReview: personalizationReview,
             clock: clock
         )
+        photosObserver.start()
         return LibraryWorkspaceModel(service: service, review: personalizationReview)
     }
 }

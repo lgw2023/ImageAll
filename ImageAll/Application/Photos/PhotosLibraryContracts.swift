@@ -28,11 +28,18 @@ struct PhotosAssetEnumerationBatch: Equatable, Sendable {
     let totalCount: Int
 }
 
+struct PhotosPersistentChangeBatch: Equatable, Sendable {
+    let upsertedAssets: [PhotosAssetMetadata]
+    let deletedLocalIdentifiers: [String]
+    let changeToken: Data
+}
+
 enum PhotosLibraryError: Error, Equatable, Sendable {
     case authorizationDenied
     case authorizationRestricted
     case libraryUnavailable
     case cloudOnly
+    case changeTokenInvalid
     case persistenceFailure
 }
 
@@ -48,6 +55,18 @@ protocol PhotosLibraryAccessPort: Sendable {
         localIdentifier: String,
         variant: PhotosImageVariant
     ) async throws -> Data
+}
+
+protocol PhotosChangeHistoryPort: Sendable {
+    func currentChangeToken() throws -> Data
+    func enumeratePersistentChanges(
+        since changeToken: Data,
+        onBatch: (PhotosPersistentChangeBatch) throws -> Void
+    ) throws
+}
+
+protocol PhotosChangeObserverPort: Sendable {
+    func startObservingChanges(_ onChange: @escaping @Sendable () -> Void)
 }
 
 protocol PhotosFeaturePrintImagePort: Sendable {

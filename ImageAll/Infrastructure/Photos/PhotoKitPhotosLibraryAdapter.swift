@@ -2,8 +2,14 @@ import AppKit
 import Foundation
 import Photos
 
-final class PhotoKitPhotosLibraryAdapter: PhotosLibraryAccessPort, PhotosFeaturePrintImagePort, @unchecked Sendable {
+final class PhotoKitPhotosLibraryAdapter: NSObject, PhotosLibraryAccessPort, PhotosChangeHistoryPort,
+    PhotosChangeObserverPort, PhotosFeaturePrintImagePort, PHPhotoLibraryChangeObserver,
+    @unchecked Sendable
+{
     private let imageManager = PHCachingImageManager()
+    private let observerLock = NSLock()
+    private var onLibraryChange: (@Sendable () -> Void)?
+    private var isObservingChanges = false
     private static let supportedTypes: Set<String> = [
         "public.jpeg",
         "public.png",
@@ -56,25 +62,9 @@ final class PhotoKitPhotosLibraryAdapter: PhotosLibraryAccessPort, PhotosFeature
             var metadataBatch: [PhotosAssetMetadata] = []
             metadataBatch.reserveCapacity(fetchedAssets.count)
             for asset in fetchedAssets {
-                guard let resource = preferredStillResource(for: asset) else { continue }
-                let type = resource.uniformTypeIdentifier.lowercased()
-                guard Self.isSupportedStaticImage(
-                    mediaType: asset.mediaType,
-                    mediaSubtypes: asset.mediaSubtypes,
-                    uniformTypeIdentifier: type
-                ) else { continue }
-
-                metadataBatch.append(
-                    PhotosAssetMetadata(
-                        localIdentifier: asset.localIdentifier,
-                        fileName: safeFileName(resource.originalFilename),
-                        mediaType: type,
-                        width: asset.pixelWidth,
-                        height: asset.pixelHeight,
-                        createdAtMs: milliseconds(asset.creationDate),
-                        modifiedAtMs: milliseconds(asset.modificationDate)
-                    )
-                )
+                if let metadata = metadata(for: asset) {
+                    metadataBatch.append(metadata)
+                }
             }
             try onBatch(
                 PhotosAssetEnumerationBatch(
@@ -83,6 +73,99 @@ final class PhotoKitPhotosLibraryAdapter: PhotosLibraryAccessPort, PhotosFeature
                     totalCount: totalCount
                 )
             )
+        }
+    }
+
+    func currentChangeToken() throws -> Data {
+        guard authorizationState() == .authorized else {
+            throw PhotosLibraryError.authorizationDenied
+        }
+        guard PHPhotoLibrary.shared().unavailabilityReason == nil else {
+            throw PhotosLibraryError.libraryUnavailable
+        }
+        return try archiveChangeToken(PHPhotoLibrary.shared().currentChangeToken)
+    }
+
+    func enumeratePersistentChanges(
+        since changeToken: Data,
+        onBatch: (PhotosPersistentChangeBatch) throws -> Void
+    ) throws {
+        guard authorizationState() == .authorized else {
+            throw PhotosLibraryError.authorizationDenied
+        }
+        guard PHPhotoLibrary.shared().unavailabilityReason == nil else {
+            throw PhotosLibraryError.libraryUnavailable
+        }
+        let decodedToken: PHPersistentChangeToken
+        do {
+            guard let token = try NSKeyedUnarchiver.unarchivedObject(
+                ofClass: PHPersistentChangeToken.self,
+                from: changeToken
+            ) else {
+                throw PhotosLibraryError.changeTokenInvalid
+            }
+            decodedToken = token
+        } catch let error as PhotosLibraryError {
+            throw error
+        } catch {
+            throw PhotosLibraryError.changeTokenInvalid
+        }
+
+        let changes: PHPersistentChangeFetchResult
+        do {
+            changes = try PHPhotoLibrary.shared().fetchPersistentChanges(since: decodedToken)
+        } catch let error as PhotosLibraryError {
+            throw error
+        } catch {
+            throw PhotosLibraryError.changeTokenInvalid
+        }
+
+        do {
+            for change in changes {
+                let details = try change.changeDetails(for: .asset)
+                let changedIdentifiers = details.insertedLocalIdentifiers
+                    .union(details.updatedLocalIdentifiers)
+                let upsertedAssets = metadata(localIdentifiers: changedIdentifiers)
+                let resolvedIdentifiers = Set(upsertedAssets.map { $0.localIdentifier })
+                let deletedIdentifiers = details.deletedLocalIdentifiers
+                    .union(changedIdentifiers.subtracting(resolvedIdentifiers))
+                    .sorted()
+                try onBatch(
+                    PhotosPersistentChangeBatch(
+                        upsertedAssets: upsertedAssets,
+                        deletedLocalIdentifiers: deletedIdentifiers,
+                        changeToken: try archiveChangeToken(change.changeToken)
+                    )
+                )
+            }
+        } catch let error as PhotosLibraryError {
+            throw error
+        } catch {
+            throw PhotosLibraryError.changeTokenInvalid
+        }
+    }
+
+    func startObservingChanges(_ onChange: @escaping @Sendable () -> Void) {
+        let shouldRegister = observerLock.withLock {
+            onLibraryChange = onChange
+            guard !isObservingChanges else { return false }
+            isObservingChanges = true
+            return true
+        }
+        if shouldRegister {
+            PHPhotoLibrary.shared().register(self)
+        }
+    }
+
+    func photoLibraryDidChange(_: PHChange) {
+        let callback = observerLock.withLock { onLibraryChange }
+        callback?()
+    }
+
+    deinit {
+        let shouldUnregister = observerLock.withLock { isObservingChanges }
+        if shouldUnregister {
+            PHPhotoLibrary.shared().unregisterChangeObserver(self)
         }
     }
 
@@ -210,6 +293,46 @@ final class PhotoKitPhotosLibraryAdapter: PhotosLibraryAccessPort, PhotosFeature
         return resources.first(where: { $0.type == .fullSizePhoto })
             ?? resources.first(where: { $0.type == .photo })
             ?? resources.first(where: { $0.type == .alternatePhoto })
+    }
+
+    private func metadata(localIdentifiers: Set<String>) -> [PhotosAssetMetadata] {
+        guard !localIdentifiers.isEmpty else { return [] }
+        let result = PHAsset.fetchAssets(withLocalIdentifiers: localIdentifiers.sorted(), options: nil)
+        var assets: [PhotosAssetMetadata] = []
+        assets.reserveCapacity(result.count)
+        result.enumerateObjects { asset, _, _ in
+            if let metadata = self.metadata(for: asset) {
+                assets.append(metadata)
+            }
+        }
+        return assets.sorted { $0.localIdentifier < $1.localIdentifier }
+    }
+
+    private func metadata(for asset: PHAsset) -> PhotosAssetMetadata? {
+        guard let resource = preferredStillResource(for: asset) else { return nil }
+        let type = resource.uniformTypeIdentifier.lowercased()
+        guard Self.isSupportedStaticImage(
+            mediaType: asset.mediaType,
+            mediaSubtypes: asset.mediaSubtypes,
+            uniformTypeIdentifier: type
+        ) else { return nil }
+        return PhotosAssetMetadata(
+            localIdentifier: asset.localIdentifier,
+            fileName: safeFileName(resource.originalFilename),
+            mediaType: type,
+            width: asset.pixelWidth,
+            height: asset.pixelHeight,
+            createdAtMs: milliseconds(asset.creationDate),
+            modifiedAtMs: milliseconds(asset.modificationDate)
+        )
+    }
+
+    private func archiveChangeToken(_ token: PHPersistentChangeToken) throws -> Data {
+        do {
+            return try NSKeyedArchiver.archivedData(withRootObject: token, requiringSecureCoding: true)
+        } catch {
+            throw PhotosLibraryError.persistenceFailure
+        }
     }
 
     private func safeFileName(_ raw: String) -> String? {

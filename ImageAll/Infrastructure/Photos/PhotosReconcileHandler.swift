@@ -20,10 +20,16 @@ private struct PhotosReconcilePayload: Sendable {
 private struct PhotosReconcileCheckpoint: Codable, Sendable {
     let generation: Int
     let processedCount: Int
+    let frozenChangeToken: Data?
+    let replayChangeToken: Data?
+    let startedDirtyEpoch: Int?
 
     enum CodingKeys: String, CodingKey {
         case generation
         case processedCount = "processed_count"
+        case frozenChangeToken = "frozen_change_token"
+        case replayChangeToken = "replay_change_token"
+        case startedDirtyEpoch = "started_dirty_epoch"
     }
 
     var jobCheckpoint: JobCheckpoint {
@@ -43,6 +49,7 @@ struct PhotosReconcileHandler: LeaseBoundJobHandler, Sendable {
     let database: CatalogDatabase
     let queue: GRDBJobQueue
     let access: any PhotosLibraryAccessPort
+    let changeHistory: (any PhotosChangeHistoryPort)?
     let clock: any JobClock
     let batchSize: Int
     let idGenerator: @Sendable () -> UUID
@@ -55,6 +62,7 @@ struct PhotosReconcileHandler: LeaseBoundJobHandler, Sendable {
         database: CatalogDatabase,
         queue: GRDBJobQueue,
         access: any PhotosLibraryAccessPort,
+        changeHistory: (any PhotosChangeHistoryPort)? = nil,
         clock: any JobClock = SystemJobClock(),
         batchSize: Int = 200,
         idGenerator: @escaping @Sendable () -> UUID = { UUID() }
@@ -62,6 +70,7 @@ struct PhotosReconcileHandler: LeaseBoundJobHandler, Sendable {
         self.database = database
         self.queue = queue
         self.access = access
+        self.changeHistory = changeHistory
         self.clock = clock
         self.batchSize = batchSize
         self.idGenerator = idGenerator
@@ -91,10 +100,30 @@ struct PhotosReconcileHandler: LeaseBoundJobHandler, Sendable {
             }
             let decodedPayload = try PhotosReconcilePayload(data: payload)
             sourceID = decodedPayload.sourceID
+            if checkpoint == nil {
+                let sourceState = try persistedSourceSyncState(sourceID: decodedPayload.sourceID)
+                if let changeHistory, let changeToken = sourceState.changeToken {
+                    do {
+                        return try executeIncrementalChanges(
+                            lease: lease,
+                            sourceID: decodedPayload.sourceID,
+                            changeToken: changeToken,
+                            startedDirtyEpoch: sourceState.dirtyEpoch,
+                            changeHistory: changeHistory,
+                            leaseDurationMs: context.leaseDurationMs
+                        )
+                    } catch PhotosLibraryError.changeTokenInvalid {
+                        // The source cursor can no longer prove a continuous history.
+                        // A new full generation must complete before missing facts change.
+                    }
+                }
+            }
+            let frozenChangeToken = checkpoint == nil ? try changeHistory?.currentChangeToken() : nil
             var state = try beginOrResume(
                 lease: lease,
                 sourceID: decodedPayload.sourceID,
                 checkpoint: checkpoint,
+                frozenChangeToken: frozenChangeToken,
                 leaseDurationMs: context.leaseDurationMs
             )
             currentState = state
@@ -113,7 +142,10 @@ struct PhotosReconcileHandler: LeaseBoundJobHandler, Sendable {
                 }
                 let nextState = PhotosReconcileCheckpoint(
                     generation: state.generation,
-                    processedCount: batch.completedCount
+                    processedCount: batch.completedCount,
+                    frozenChangeToken: state.frozenChangeToken,
+                    replayChangeToken: state.replayChangeToken,
+                    startedDirtyEpoch: state.startedDirtyEpoch
                 )
                 let nextCheckpoint = try nextState.jobCheckpoint
                 _ = try queue.commitLeaseProtectedBatch(
@@ -142,7 +174,41 @@ struct PhotosReconcileHandler: LeaseBoundJobHandler, Sendable {
                 enumerationTotal = batch.totalCount
             }
 
+            if let changeHistory,
+               let replayStartToken = state.replayChangeToken ?? state.frozenChangeToken
+            {
+                try changeHistory.enumeratePersistentChanges(since: replayStartToken) { batch in
+                    let nextState = PhotosReconcileCheckpoint(
+                        generation: state.generation,
+                        processedCount: state.processedCount,
+                        frozenChangeToken: state.frozenChangeToken,
+                        replayChangeToken: batch.changeToken,
+                        startedDirtyEpoch: state.startedDirtyEpoch
+                    )
+                    _ = try queue.commitLeaseProtectedBatch(
+                        input: SafeBatchCommitInput(
+                            lease: lease,
+                            outcome: .continue,
+                            checkpoint: try nextState.jobCheckpoint,
+                            progress: JobProgress(completed: state.processedCount, total: enumerationTotal),
+                            leaseDurationMs: context.leaseDurationMs
+                        )
+                    ) { db in
+                        _ = try requireActiveGeneration(sourceID: decodedPayload.sourceID, db: db)
+                        try applyPersistentChange(
+                            batch,
+                            sourceID: decodedPayload.sourceID,
+                            generation: state.generation,
+                            db: db
+                        )
+                    }
+                    state = nextState
+                    currentState = nextState
+                }
+            }
+
             let finalCheckpoint = try state.jobCheckpoint
+            var needsFollowUp = false
             _ = try queue.commitLeaseProtectedBatch(
                 input: SafeBatchCommitInput(
                     lease: lease,
@@ -166,10 +232,32 @@ struct PhotosReconcileHandler: LeaseBoundJobHandler, Sendable {
                     """,
                     arguments: [clock.nowMs, decodedPayload.sourceID.uuidString.lowercased(), state.generation]
                 )
-                try db.execute(
-                    sql: "UPDATE source SET updated_at_ms = ? WHERE id = ?",
-                    arguments: [clock.nowMs, decodedPayload.sourceID.uuidString.lowercased()]
-                )
+                if let finalChangeToken = state.replayChangeToken ?? state.frozenChangeToken {
+                    try db.execute(
+                        sql: "UPDATE source SET sync_cursor = ?, updated_at_ms = ? WHERE id = ?",
+                        arguments: [
+                            finalChangeToken,
+                            clock.nowMs,
+                            decodedPayload.sourceID.uuidString.lowercased(),
+                        ]
+                    )
+                } else {
+                    try db.execute(
+                        sql: "UPDATE source SET updated_at_ms = ? WHERE id = ?",
+                        arguments: [clock.nowMs, decodedPayload.sourceID.uuidString.lowercased()]
+                    )
+                }
+                if let startedDirtyEpoch = state.startedDirtyEpoch {
+                    let currentDirtyEpoch = try Int.fetchOne(
+                        db,
+                        sql: "SELECT dirty_epoch FROM source WHERE id = ?",
+                        arguments: [decodedPayload.sourceID.uuidString.lowercased()]
+                    ) ?? startedDirtyEpoch
+                    needsFollowUp = currentDirtyEpoch > startedDirtyEpoch
+                }
+            }
+            if needsFollowUp {
+                enqueueFollowUpIfNeeded(sourceID: decodedPayload.sourceID)
             }
             return JobHandlerExecutionResult(
                 outcome: .completed,
@@ -214,10 +302,143 @@ struct PhotosReconcileHandler: LeaseBoundJobHandler, Sendable {
         }
     }
 
+    private func persistedSourceSyncState(sourceID: UUID) throws -> (changeToken: Data?, dirtyEpoch: Int) {
+        try database.pool.read { db in
+            guard let row = try Row.fetchOne(
+                db,
+                sql: "SELECT kind, state, sync_cursor, dirty_epoch FROM source WHERE id = ?",
+                arguments: [sourceID.uuidString.lowercased()]
+            ) else {
+                throw PhotosReconcileError.sourceUnavailable
+            }
+            let kind: String = row["kind"]
+            let state: String = row["state"]
+            guard kind == SourceKind.photos.rawValue, state == SourceState.active.rawValue else {
+                throw PhotosReconcileError.sourceUnavailable
+            }
+            return (row["sync_cursor"], row["dirty_epoch"])
+        }
+    }
+
+    private func executeIncrementalChanges(
+        lease: JobLeaseToken,
+        sourceID: UUID,
+        changeToken: Data,
+        startedDirtyEpoch: Int,
+        changeHistory: any PhotosChangeHistoryPort,
+        leaseDurationMs: Int64
+    ) throws -> JobHandlerExecutionResult {
+        var processedCount = 0
+        try changeHistory.enumeratePersistentChanges(since: changeToken) { batch in
+            processedCount += batch.upsertedAssets.count + batch.deletedLocalIdentifiers.count
+            _ = try queue.commitLeaseProtectedBatch(
+                input: SafeBatchCommitInput(
+                    lease: lease,
+                    outcome: .continue,
+                    checkpoint: nil,
+                    progress: JobProgress(completed: processedCount, total: nil),
+                    leaseDurationMs: leaseDurationMs
+                )
+            ) { db in
+                let generation = try requireActiveGeneration(sourceID: sourceID, db: db)
+                try applyPersistentChange(batch, sourceID: sourceID, generation: generation, db: db)
+                try db.execute(
+                    sql: "UPDATE source SET sync_cursor = ?, updated_at_ms = ? WHERE id = ?",
+                    arguments: [batch.changeToken, clock.nowMs, sourceID.uuidString.lowercased()]
+                )
+            }
+        }
+
+        var needsFollowUp = false
+        _ = try queue.commitLeaseProtectedBatch(
+            input: SafeBatchCommitInput(
+                lease: lease,
+                outcome: .completed,
+                checkpoint: nil,
+                progress: JobProgress(completed: processedCount, total: processedCount),
+                leaseDurationMs: leaseDurationMs
+            )
+        ) { db in
+            let currentDirtyEpoch = try Int.fetchOne(
+                db,
+                sql: "SELECT dirty_epoch FROM source WHERE id = ?",
+                arguments: [sourceID.uuidString.lowercased()]
+            ) ?? startedDirtyEpoch
+            needsFollowUp = currentDirtyEpoch > startedDirtyEpoch
+        }
+        if needsFollowUp {
+            enqueueFollowUpIfNeeded(sourceID: sourceID)
+        }
+        return JobHandlerExecutionResult(
+            outcome: .completed,
+            checkpoint: nil,
+            progress: JobProgress(completed: processedCount, total: processedCount),
+            settledByHandler: true
+        )
+    }
+
+    private func requireActiveGeneration(sourceID: UUID, db: Database) throws -> Int {
+        guard let row = try Row.fetchOne(
+            db,
+            sql: "SELECT state, scan_generation FROM source WHERE id = ? AND kind = 'photos'",
+            arguments: [sourceID.uuidString.lowercased()]
+        ) else {
+            throw PhotosReconcileError.sourceUnavailable
+        }
+        let sourceState: String = row["state"]
+        guard sourceState == SourceState.active.rawValue else {
+            throw PhotosReconcileError.sourceUnavailable
+        }
+        return row["scan_generation"]
+    }
+
+    private func applyPersistentChange(
+        _ batch: PhotosPersistentChangeBatch,
+        sourceID: UUID,
+        generation: Int,
+        db: Database
+    ) throws {
+        for metadata in batch.upsertedAssets {
+            try upsert(metadata, sourceID: sourceID, generation: generation, db: db)
+        }
+        guard !batch.deletedLocalIdentifiers.isEmpty else { return }
+
+        var arguments = StatementArguments()
+        arguments += [clock.nowMs, sourceID.uuidString.lowercased()]
+        for identifier in batch.deletedLocalIdentifiers {
+            arguments += [identifier]
+        }
+        try db.execute(
+            sql: """
+            UPDATE asset SET
+                availability = 'missing',
+                content_revision = content_revision + 1,
+                record_updated_at_ms = ?
+            WHERE source_id = ? AND locator_kind = 'photos'
+                AND locator_state = 'current'
+                AND photos_local_identifier IN (\(databaseQuestionMarks(batch.deletedLocalIdentifiers.count)))
+                AND availability != 'missing'
+            """,
+            arguments: arguments
+        )
+    }
+
+    private func databaseQuestionMarks(_ count: Int) -> String {
+        Array(repeating: "?", count: count).joined(separator: ", ")
+    }
+
+    private func enqueueFollowUpIfNeeded(sourceID: UUID) {
+        try? database.pool.write { db in
+            try PhotosReconcileJobEnqueuer(clock: clock, idGenerator: idGenerator)
+                .enqueueIfNeeded(sourceID: sourceID, db: db)
+        }
+    }
+
     private func beginOrResume(
         lease: JobLeaseToken,
         sourceID: UUID,
         checkpoint: JobCheckpoint?,
+        frozenChangeToken: Data?,
         leaseDurationMs: Int64
     ) throws -> PhotosReconcileCheckpoint {
         if let checkpoint {
@@ -257,7 +478,7 @@ struct PhotosReconcileHandler: LeaseBoundJobHandler, Sendable {
         ) { db in
             guard let row = try Row.fetchOne(
                 db,
-                sql: "SELECT kind, state, scan_generation FROM source WHERE id = ?",
+                sql: "SELECT kind, state, scan_generation, dirty_epoch FROM source WHERE id = ?",
                 arguments: [sourceID.uuidString.lowercased()]
             ) else {
                 throw PhotosReconcileError.sourceUnavailable
@@ -265,11 +486,18 @@ struct PhotosReconcileHandler: LeaseBoundJobHandler, Sendable {
             let kind: String = row["kind"]
             let sourceState: String = row["state"]
             let currentGeneration: Int = row["scan_generation"]
+            let startedDirtyEpoch: Int = row["dirty_epoch"]
             guard kind == SourceKind.photos.rawValue, sourceState == SourceState.active.rawValue else {
                 throw PhotosReconcileError.sourceUnavailable
             }
             let generation = currentGeneration + 1
-            initialState = PhotosReconcileCheckpoint(generation: generation, processedCount: 0)
+            initialState = PhotosReconcileCheckpoint(
+                generation: generation,
+                processedCount: 0,
+                frozenChangeToken: frozenChangeToken,
+                replayChangeToken: nil,
+                startedDirtyEpoch: startedDirtyEpoch
+            )
             try db.execute(
                 sql: "UPDATE source SET scan_generation = ?, updated_at_ms = ? WHERE id = ?",
                 arguments: [generation, clock.nowMs, sourceID.uuidString.lowercased()]

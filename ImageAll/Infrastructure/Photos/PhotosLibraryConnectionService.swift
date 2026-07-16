@@ -39,6 +39,76 @@ enum PhotosReconcileJobFactory {
     }
 }
 
+struct PhotosReconcileJobEnqueuer: Sendable {
+    let clock: any JobClock
+    let idGenerator: @Sendable () -> UUID
+
+    func enqueueIfNeeded(sourceID: UUID, db: Database) throws {
+        let activeJobExists = try Bool.fetchOne(
+            db,
+            sql: """
+            SELECT EXISTS(
+                SELECT 1 FROM job
+                WHERE coalescing_key = ?
+                    AND state IN ('pending', 'running', 'paused', 'retryableFailed')
+            )
+            """,
+            arguments: [PhotosReconcileJobFactory.coalescingKey(sourceID: sourceID)]
+        ) ?? false
+        guard !activeJobExists else { return }
+        let command = try PhotosReconcileJobFactory.makeEnqueueCommand(
+            jobID: idGenerator(),
+            sourceID: sourceID,
+            notBeforeMs: clock.nowMs
+        )
+        try JobInsertInTransaction.insertPendingJob(db, command: command, nowMs: clock.nowMs)
+    }
+}
+
+struct PhotosLibraryChangeObserverCoordinator: Sendable {
+    let observer: any PhotosChangeObserverPort
+    let database: CatalogDatabase
+    let clock: any JobClock
+    let idGenerator: @Sendable () -> UUID
+
+    init(
+        observer: any PhotosChangeObserverPort,
+        database: CatalogDatabase,
+        clock: any JobClock = SystemJobClock(),
+        idGenerator: @escaping @Sendable () -> UUID = { UUID() }
+    ) {
+        self.observer = observer
+        self.database = database
+        self.clock = clock
+        self.idGenerator = idGenerator
+    }
+
+    func start() {
+        let enqueuer = PhotosReconcileJobEnqueuer(clock: clock, idGenerator: idGenerator)
+        observer.startObservingChanges {
+            try? database.pool.write { db in
+                guard let sourceIDString = try String.fetchOne(
+                    db,
+                    sql: """
+                    SELECT id FROM source
+                    WHERE kind = 'photos' AND state = 'active'
+                    ORDER BY created_at_ms, id LIMIT 1
+                    """
+                ), let sourceID = UUID(uuidString: sourceIDString)
+                else { return }
+                try db.execute(
+                    sql: """
+                    UPDATE source SET dirty_epoch = dirty_epoch + 1, updated_at_ms = ?
+                    WHERE id = ? AND kind = 'photos' AND state = 'active'
+                    """,
+                    arguments: [clock.nowMs, sourceIDString]
+                )
+                try enqueuer.enqueueIfNeeded(sourceID: sourceID, db: db)
+            }
+        }
+    }
+}
+
 struct PhotosLibraryConnectionService: Sendable {
     let database: CatalogDatabase
     let access: any PhotosLibraryAccessPort
@@ -185,24 +255,8 @@ struct PhotosLibraryConnectionService: Sendable {
     }
 
     private func enqueueIfNeeded(sourceID: UUID, db: Database) throws {
-        let activeJobExists = try Bool.fetchOne(
-            db,
-            sql: """
-            SELECT EXISTS(
-                SELECT 1 FROM job
-                WHERE coalescing_key = ?
-                    AND state IN ('pending', 'running', 'paused', 'retryableFailed')
-            )
-            """,
-            arguments: [PhotosReconcileJobFactory.coalescingKey(sourceID: sourceID)]
-        ) ?? false
-        guard !activeJobExists else { return }
-        let command = try PhotosReconcileJobFactory.makeEnqueueCommand(
-            jobID: idGenerator(),
-            sourceID: sourceID,
-            notBeforeMs: clock.nowMs
-        )
-        try JobInsertInTransaction.insertPendingJob(db, command: command, nowMs: clock.nowMs)
+        try PhotosReconcileJobEnqueuer(clock: clock, idGenerator: idGenerator)
+            .enqueueIfNeeded(sourceID: sourceID, db: db)
     }
 
     private func markExistingSourceAuthorizationRequired() throws {
