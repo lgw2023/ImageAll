@@ -1,9 +1,9 @@
 # ImageAll 阶段 2：Apple Photos 接入实施规格
 
-> 状态：Approved；Slice A 待实施  
+> 状态：Slice A implemented and accepted；Slice B/C 待实施<br>
 > 日期：2026-07-16  
 > 产品决策：项目所有者已批准推荐方案  
-> 开工基线：以本规格文档提交后的 `main` HEAD 为准
+> Slice A 文档基线：`3cb8853`；实现提交：`4f1e1a5`
 
 ## 1. 目标与本阶段位置
 
@@ -164,3 +164,16 @@ Feature Print 输入在后续 Slice 中接通，不能因此写入 Photos 来源
 - [Apple: NSPhotoLibraryUsageDescription](https://developer.apple.com/documentation/bundleresources/information-property-list/nsphotolibraryusagedescription)
 - [Apple: Photos Library Entitlement](https://developer.apple.com/documentation/bundleresources/entitlements/com.apple.security.personal-information.photos-library)
 
+## 8. Slice A 验收记录
+
+2026-07-16 已完成并验收 Slice A：
+
+- `xcodebuild test -scheme ImageAll -destination 'platform=macOS'`：732/732 通过，无失败、无跳过；
+- `xcodebuild build -scheme ImageAll -configuration Debug -destination 'platform=macOS'`：Debug build 通过；
+- 构建产物包含批准的 `NSPhotoLibraryUsageDescription` 与 Photos Library entitlement；
+- 静态审计未发现 Photos 写入/删除 API、network-enabled 图片请求或生产/测试代码中的受保护真实路径；
+- 自动化只使用 fake PhotoKit port 与临时数据库，没有请求真实 Photos 权限、访问 `/Volumes/HDD2` 或产生源端写入；
+- `user/` 保持未跟踪，未 push。
+
+Slice A 的已知停止位置不变：persistent change history、权限/系统图库变化恢复和显式 iCloud 获取分别留给
+Slice B/C；发布前仍需由用户在专用或明确授权的 System Photo Library 上执行只读人工 smoke。
