@@ -251,6 +251,63 @@ final class PhotosIntegrationTests: XCTestCase {
         XCTAssertEqual(files.requestedVariants, [.preview])
     }
 
+    func testConcurrentFileImageLoadsAreBounded() async throws {
+        let database = try FolderAuthorizationTestSupport.makeDatabase()
+        let sourceID = UUID()
+        let assetIDs = (0 ..< 20).map { _ in UUID() }
+        try await database.pool.write { db in
+            try db.execute(
+                sql: """
+                INSERT INTO source (id, kind, display_name, bookmark, state, created_at_ms, updated_at_ms)
+                VALUES (?, 'folder', 'Fixture', ?, 'active', ?, ?)
+                """,
+                arguments: [
+                    sourceID.uuidString.lowercased(), Data([1]),
+                    DatabaseTestSupport.timestampMs, DatabaseTestSupport.timestampMs,
+                ]
+            )
+            for (index, assetID) in assetIDs.enumerated() {
+                try db.execute(
+                    sql: """
+                    INSERT INTO asset (
+                        id, source_id, locator_kind, relative_path, photos_local_identifier,
+                        media_type, availability, record_created_at_ms, record_updated_at_ms, file_name
+                    ) VALUES (?, ?, 'file', ?, NULL, 'public.jpeg', 'available', ?, ?, ?)
+                    """,
+                    arguments: [
+                        assetID.uuidString.lowercased(), sourceID.uuidString.lowercased(),
+                        "image-\(index).jpg", DatabaseTestSupport.timestampMs,
+                        DatabaseTestSupport.timestampMs, "image-\(index).jpg",
+                    ]
+                )
+            }
+        }
+        let probe = ConcurrentLoadProbe()
+        let files = ConcurrencyProbingFakeDerivedImageCache(probe: probe)
+        let loader = LibraryAssetImageLoader(
+            database: database,
+            fileImages: files,
+            photosImages: FakePhotosLibraryAccess(state: .authorized)
+        )
+
+        let loaded = try await withThrowingTaskGroup(of: Data.self) { group in
+            for assetID in assetIDs {
+                group.addTask {
+                    try await loader.load(assetID: assetID, variant: .grid)
+                }
+            }
+            var results: [Data] = []
+            for try await result in group {
+                results.append(result)
+            }
+            return results
+        }
+
+        XCTAssertEqual(loaded.count, assetIDs.count)
+        let peakConcurrentLoads = await probe.peakConcurrentLoads
+        XCTAssertLessThanOrEqual(peakConcurrentLoads, 4)
+    }
+
     private func availabilityByName(_ database: CatalogDatabase) async throws -> [String: AssetAvailability] {
         try await database.pool.read { db in
             let rows = try Row.fetchAll(db, sql: "SELECT file_name, availability FROM asset")
@@ -364,6 +421,56 @@ private final class FakeDerivedImageCache: DerivedImageCachePort, @unchecked Sen
 
     var requestedVariants: [DerivedImageVariant] {
         lock.withLock { variants }
+    }
+}
+
+private struct ConcurrencyProbingFakeDerivedImageCache: DerivedImageCachePort, Sendable {
+    let probe: ConcurrentLoadProbe
+
+    func loadOrGenerate(_ request: DerivedImageRequest) async throws -> DerivedImagePayload {
+        await probe.begin()
+        do {
+            try await Task.sleep(nanoseconds: 30_000_000)
+            await probe.end()
+            return DerivedImagePayload(
+                entryID: UUID(),
+                assetID: request.assetID,
+                contentRevision: 1,
+                representationVersion: DerivedImageRepresentationVersion.production,
+                variant: request.variant,
+                storageFormat: .jpeg,
+                pixelWidth: 1,
+                pixelHeight: 1,
+                encodedBytes: Data([1]),
+                origin: .cacheHit
+            )
+        } catch {
+            await probe.end()
+            throw error
+        }
+    }
+
+    func performMaintenance() async throws -> DerivedImageMaintenanceResult {
+        DerivedImageMaintenanceResult(
+            removedEntries: 0,
+            removedObjects: 0,
+            removedBytes: 0,
+            unsafeObjects: 0
+        )
+    }
+}
+
+private actor ConcurrentLoadProbe {
+    private var activeLoads = 0
+    private(set) var peakConcurrentLoads = 0
+
+    func begin() {
+        activeLoads += 1
+        peakConcurrentLoads = max(peakConcurrentLoads, activeLoads)
+    }
+
+    func end() {
+        activeLoads -= 1
     }
 }
 
