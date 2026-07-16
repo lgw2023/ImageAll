@@ -69,8 +69,7 @@ struct LibraryAssetImageLoader: Sendable {
             guard let identifier = locator.identifier else {
                 throw PhotosLibraryError.libraryUnavailable
             }
-            if variant == .preview,
-               let downloadedPreviews,
+            if let downloadedPreviews,
                let cached = try downloadedPreviews.loadDownloadedPreview(assetID: assetID)
             {
                 return cached

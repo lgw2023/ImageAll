@@ -736,7 +736,7 @@ final class PhotosIntegrationTests: XCTestCase {
         XCTAssertEqual(files.requestedVariants, [.preview])
     }
 
-    func testExplicitCloudPreviewDownloadRequiresUserActionAndReusesDownloadedCache() async throws {
+    func testExplicitCloudPreviewDownloadRequiresUserActionAndReusesDownloadedCacheForPreviewAndGrid() async throws {
         let database = try FolderAuthorizationTestSupport.makeDatabase()
         let sourceID = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
         let assetID = UUID(uuidString: "33333333-4444-5555-6666-777777777777")!
@@ -796,8 +796,10 @@ final class PhotosIntegrationTests: XCTestCase {
         XCTAssertEqual(cloud.requestedLocalIdentifiers, ["photos-cloud-only"])
         XCTAssertEqual(cache.storedSourceBytes, [Data("cloud-source".utf8)])
 
-        let cached = try await loader.load(assetID: assetID, variant: .preview)
-        XCTAssertEqual(cached, downloaded)
+        let cachedPreview = try await loader.load(assetID: assetID, variant: .preview)
+        let cachedGrid = try await loader.load(assetID: assetID, variant: .grid)
+        XCTAssertEqual(cachedPreview, downloaded)
+        XCTAssertEqual(cachedGrid, downloaded)
         XCTAssertEqual(local.requestedVariants, [.preview])
         XCTAssertEqual(cloud.requestedLocalIdentifiers.count, 1)
     }
