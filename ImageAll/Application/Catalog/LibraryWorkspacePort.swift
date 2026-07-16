@@ -45,6 +45,7 @@ enum LibraryWorkspaceNotice: Equatable, Sendable {
     case tagMutationFailed
     case sourceActionFailed
     case backgroundScanFailed
+    case photosAuthorizationRequired
     case reviewActionFailed
     case reviewJobConflict
     case insufficientSuggestionSamples(positiveMissing: Int, negativeMissing: Int)

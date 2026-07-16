@@ -83,12 +83,14 @@ struct PhotosReconcileHandler: LeaseBoundJobHandler, Sendable {
         context: JobLeaseExecutionContext
     ) throws -> JobHandlerExecutionResult {
         var currentState: PhotosReconcileCheckpoint?
+        var sourceID: UUID?
         let persistedCompleted = (try? queue.fetchJob(id: lease.jobID).progress.completed) ?? 0
         do {
             guard payloadVersion == PhotosReconcileJobFactory.payloadVersion else {
                 throw PhotosReconcileError.invalidPayload
             }
             let decodedPayload = try PhotosReconcilePayload(data: payload)
+            sourceID = decodedPayload.sourceID
             var state = try beginOrResume(
                 lease: lease,
                 sourceID: decodedPayload.sourceID,
@@ -174,6 +176,25 @@ struct PhotosReconcileHandler: LeaseBoundJobHandler, Sendable {
         } catch PhotosReconcileError.sourceUnavailable {
             return failure(.photosSourceUnavailable, checkpoint: checkpoint, completed: persistedCompleted)
         } catch PhotosLibraryError.authorizationDenied, PhotosLibraryError.authorizationRestricted {
+            do {
+                if let sourceID {
+                    try database.pool.write { db in
+                        try db.execute(
+                            sql: """
+                            UPDATE source SET state = 'authorizationRequired', updated_at_ms = ?
+                            WHERE id = ? AND kind = 'photos'
+                            """,
+                            arguments: [clock.nowMs, sourceID.uuidString.lowercased()]
+                        )
+                    }
+                }
+            } catch {
+                return retryableFailure(
+                    .photosPersistenceFailure,
+                    checkpoint: checkpoint,
+                    completed: persistedCompleted
+                )
+            }
             return failure(.photosAuthorizationRequired, checkpoint: checkpoint, completed: persistedCompleted)
         } catch {
             let recoveryCheckpoint = (try? currentState?.jobCheckpoint) ?? checkpoint

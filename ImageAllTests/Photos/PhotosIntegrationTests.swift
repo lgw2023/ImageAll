@@ -96,6 +96,47 @@ final class PhotosIntegrationTests: XCTestCase {
         XCTAssertEqual(counts.jobs, 0)
     }
 
+    func testAuthorizationFailureDuringReconcileMarksPhotosSourceForReauthorization() async throws {
+        let database = try FolderAuthorizationTestSupport.makeDatabase()
+        let sourceID = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
+        let jobID = UUID(uuidString: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")!
+        let clock = FixedJobClock(nowMs: DatabaseTestSupport.timestampMs)
+        let connection = PhotosLibraryConnectionService(
+            database: database,
+            access: FakePhotosLibraryAccess(state: .authorized),
+            clock: clock,
+            idGenerator: IDSequence([sourceID, jobID]).next
+        )
+        _ = try await connection.connect()
+
+        let queue = GRDBJobQueue(
+            database: database,
+            clock: clock,
+            retryPolicy: FixedDelayRetryPolicy(delayMs: 1_000)
+        )
+        let handler = PhotosReconcileHandler(
+            database: database,
+            queue: queue,
+            access: FakePhotosLibraryAccess(state: .denied),
+            clock: clock
+        )
+        let coordinator = JobExecutionCoordinator(
+            queue: queue,
+            registry: MultiJobHandlerRegistry(handlers: [handler]),
+            leaseContextProvider: GRDBJobLeaseContextProvider(queue: queue)
+        )
+
+        _ = try coordinator.claimAndExecuteOnce(
+            ClaimNextInput(
+                owner: "photos-authorization-test",
+                leaseDurationMs: 60_000,
+                allowedKinds: [PhotosReconcileJobFactory.kind]
+            )
+        )
+
+        XCTAssertEqual(try connection.fetchSources().first?.state, .authorizationRequired)
+    }
+
     func testReconcilePublishesTwoMetadataBatchesAndSourceFilteringFindsThem() async throws {
         let database = try FolderAuthorizationTestSupport.makeDatabase()
         let access = FakePhotosLibraryAccess(
@@ -357,6 +398,14 @@ private final class FakePhotosLibraryAccess: PhotosLibraryAccessPort, @unchecked
         batchSize: Int,
         onBatch: ([PhotosAssetMetadata]) throws -> Void
     ) throws {
+        switch state {
+        case .authorized:
+            break
+        case .restricted:
+            throw PhotosLibraryError.authorizationRestricted
+        case .notDetermined, .denied:
+            throw PhotosLibraryError.authorizationDenied
+        }
         let configuration = lock.withLock { (storedBatches, failAfterBatches) }
         for batch in configuration.0 {
             try onBatch(batch)

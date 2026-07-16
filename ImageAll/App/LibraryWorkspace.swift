@@ -83,6 +83,11 @@ final class LibraryWorkspaceModel: ObservableObject {
         return isPhotosSource(selectedSourceID)
     }
 
+    var selectedPhotosSourceNeedsAuthorization: Bool {
+        guard let selectedSourceID else { return false }
+        return sources.first(where: { $0.id == selectedSourceID })?.state == .authorizationRequired
+    }
+
     var canRescan: Bool {
         if let selectedSourceID {
             return sources.first(where: { $0.id == selectedSourceID })?.state == .active
@@ -117,6 +122,7 @@ final class LibraryWorkspaceModel: ObservableObject {
 
     func connectPhotos() async {
         guard !isBusy else { return }
+        notice = nil
         phase = .scanning
         do {
             _ = try await service.connectPhotos()
@@ -124,6 +130,13 @@ final class LibraryWorkspaceModel: ObservableObject {
             sources = try await Self.offMain { try service.fetchSources() }
             await loadFirstPage()
             startCatalogReconcileRunnerIfNeeded()
+        } catch PhotosLibraryError.authorizationDenied, PhotosLibraryError.authorizationRestricted {
+            let service = service
+            if let refreshed = try? await Self.offMain({ try service.fetchSources() }) {
+                sources = refreshed
+            }
+            phase = sources.isEmpty ? .empty : .content
+            notice = .photosAuthorizationRequired
         } catch {
             phase = .failed(.connectionFailed)
         }
@@ -174,6 +187,10 @@ final class LibraryWorkspaceModel: ObservableObject {
 
     func rescan() async {
         guard !isBusy, !sources.isEmpty else { return }
+        if let selectedSourceID, isPhotosSource(selectedSourceID) {
+            await connectPhotos()
+            return
+        }
         let service = service
         let sourceIDs = selectedSourceID.map { [$0] } ?? sources.map(\.id)
         do {
@@ -426,7 +443,13 @@ final class LibraryWorkspaceModel: ObservableObject {
                 await self.refreshReviewState()
                 self.startPersonalizationRunnerIfNeeded()
             } catch {
-                if self.items.isEmpty {
+                if let refreshed = try? await Self.offMain({ try service.fetchSources() }) {
+                    self.sources = refreshed
+                }
+                if self.sources.contains(where: { $0.kind == .photos && $0.state == .authorizationRequired }) {
+                    self.phase = .content
+                    self.notice = .photosAuthorizationRequired
+                } else if self.items.isEmpty {
                     self.phase = .failed(.scanFailed)
                 } else {
                     self.notice = .backgroundScanFailed
@@ -1472,13 +1495,28 @@ struct LibraryWorkspaceView: View {
                     }
                 } else {
                     if model.selectedSourceIsPhotos {
-                        ContentUnavailableView {
-                            Label("系统照片图库中没有可访问的照片", systemImage: "photo.on.rectangle")
-                        } description: {
-                            Text("ImageAll 只能读取 Mac 的系统照片图库。如果 Photos 当前打开的是另一个图库，请先在 Photos > 设置 > 通用中确认系统照片图库。更改系统图库可能影响 iCloud Photos。")
-                        } actions: {
-                            Button("立即同步") {
-                                Task { await model.rescan() }
+                        if model.selectedPhotosSourceNeedsAuthorization || model.notice == .photosAuthorizationRequired {
+                            ContentUnavailableView {
+                                Label("需要照片访问权限", systemImage: "lock.trianglebadge.exclamationmark")
+                            } description: {
+                                Text("请允许 ImageAll 访问照片。Debug App 重新构建后，macOS 可能要求再次授权。")
+                            } actions: {
+                                Button("重新检查并同步") {
+                                    Task { await model.connectPhotos() }
+                                }
+                                Button("打开照片权限设置…") {
+                                    openPhotosPrivacySettings()
+                                }
+                            }
+                        } else {
+                            ContentUnavailableView {
+                                Label("系统照片图库中没有可访问的照片", systemImage: "photo.on.rectangle")
+                            } description: {
+                                Text("ImageAll 只能读取 Mac 的系统照片图库。如果 Photos 当前打开的是另一个图库，请先在 Photos > 设置 > 通用中确认系统照片图库。更改系统图库可能影响 iCloud Photos。")
+                            } actions: {
+                                Button("立即同步") {
+                                    Task { await model.connectPhotos() }
+                                }
                             }
                         }
                     } else {
@@ -1888,6 +1926,7 @@ struct LibraryWorkspaceView: View {
         case .tagMutationFailed: "标签操作未保存，请重试。"
         case .sourceActionFailed: "来源操作未完成。原照片没有被修改，请重试。"
         case .backgroundScanFailed: "后台扫描未完成，已索引的照片仍可继续浏览。"
+        case .photosAuthorizationRequired: "ImageAll 当前没有照片访问权限。授权后请重新检查并同步。"
         case .reviewActionFailed: "建议任务操作未完成，请重试。"
         case .reviewJobConflict: "该标签已有进行中的建议任务。"
         case let .insufficientSuggestionSamples(positive, negative):
@@ -1978,6 +2017,13 @@ struct LibraryWorkspaceView: View {
         case .scanFailed: return "扫描未完成"
         case .catalogFailed: return "无法读取图库"
         }
+    }
+
+    private func openPhotosPrivacySettings() {
+        guard let url = URL(
+            string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Photos"
+        ) else { return }
+        NSWorkspace.shared.open(url)
     }
 }
 

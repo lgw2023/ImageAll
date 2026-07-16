@@ -101,6 +101,53 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertEqual(service.reconcileRunCount, 1)
     }
 
+    func testRescanSelectedPhotosSourceRevalidatesAuthorizationBeforeSync() async {
+        let sourceID = UUID()
+        let source = LibrarySourceSummary(
+            id: sourceID,
+            kind: .photos,
+            displayName: "Apple Photos",
+            state: .active
+        )
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: source,
+            reconciledItems: [],
+            startsConnected: true
+        )
+        let model = LibraryWorkspaceModel(service: service)
+
+        await model.start()
+        await waitForCatalogScanToFinish(model)
+        await model.selectSource(sourceID)
+        await model.rescan()
+        await waitForCatalogScanToFinish(model)
+
+        XCTAssertEqual(service.photosConnectCallCount, 1)
+    }
+
+    func testPhotosAuthorizationFailureRefreshesSourceAndShowsAuthorizationNotice() async {
+        let sourceID = UUID()
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: sourceID,
+                kind: .photos,
+                displayName: "Apple Photos",
+                state: .active
+            ),
+            reconciledItems: [],
+            startsConnected: true,
+            photosAuthorizationFails: true
+        )
+        let model = LibraryWorkspaceModel(service: service)
+
+        await model.start()
+        await waitForCatalogScanToFinish(model)
+
+        XCTAssertEqual(model.phase, .content)
+        XCTAssertEqual(model.sources.first?.state, .authorizationRequired)
+        XCTAssertEqual(model.notice, .photosAuthorizationRequired)
+    }
+
     func testReauthorizingSourceRestoresActiveStateAndRunsReconcile() async {
         let sourceID = UUID()
         let asset = Self.makeAsset(sourceID: sourceID)
@@ -733,6 +780,7 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
     private let tagMutationFails: Bool
     private let sourceMutationFails: Bool
     private let blocksReconcileRuns: Bool
+    private let photosAuthorizationFails: Bool
     private let reconcileGate = DispatchSemaphore(value: 0)
     private var storedHasStartedBlockedReconcile = false
     private var storedTags: [TagListItem]
@@ -747,7 +795,8 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
         sourceMutationFails: Bool = false,
         initialItems: [AssetGridItemProjection] = [],
         startsConnected: Bool = false,
-        blocksReconcileRuns: Bool = false
+        blocksReconcileRuns: Bool = false,
+        photosAuthorizationFails: Bool = false
     ) {
         self.connectedSource = connectedSource
         self.reconciledItems = reconciledItems
@@ -755,6 +804,7 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
         self.tagMutationFails = tagMutationFails
         self.sourceMutationFails = sourceMutationFails
         self.blocksReconcileRuns = blocksReconcileRuns
+        self.photosAuthorizationFails = photosAuthorizationFails
         storedSources = startsConnected ? [connectedSource] : []
         storedItems = initialItems
         storedTags = tags
@@ -862,6 +912,20 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
     }
 
     func runPendingPhotosReconcileJobs() throws {
+        if photosAuthorizationFails {
+            lock.withLock {
+                storedSources = storedSources.map {
+                    guard $0.kind == .photos else { return $0 }
+                    return LibrarySourceSummary(
+                        id: $0.id,
+                        kind: .photos,
+                        displayName: $0.displayName,
+                        state: .authorizationRequired
+                    )
+                }
+            }
+            throw PhotosLibraryError.authorizationDenied
+        }
         if scanFails {
             throw FakeWorkspaceError.scanFailed
         }

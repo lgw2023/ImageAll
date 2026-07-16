@@ -70,8 +70,10 @@ struct PhotosLibraryConnectionService: Sendable {
         case .authorized:
             break
         case .denied, .notDetermined:
+            try? markExistingSourceAuthorizationRequired()
             throw PhotosLibraryError.authorizationDenied
         case .restricted:
+            try? markExistingSourceAuthorizationRequired()
             throw PhotosLibraryError.authorizationRestricted
         }
 
@@ -201,5 +203,17 @@ struct PhotosLibraryConnectionService: Sendable {
             notBeforeMs: clock.nowMs
         )
         try JobInsertInTransaction.insertPendingJob(db, command: command, nowMs: clock.nowMs)
+    }
+
+    private func markExistingSourceAuthorizationRequired() throws {
+        try database.pool.write { db in
+            try db.execute(
+                sql: """
+                UPDATE source SET state = 'authorizationRequired', updated_at_ms = ?
+                WHERE kind = 'photos'
+                """,
+                arguments: [clock.nowMs]
+            )
+        }
     }
 }
