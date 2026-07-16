@@ -34,6 +34,7 @@ final class LibraryWorkspaceModel: ObservableObject {
     @Published private(set) var sort: AssetPageSort = .newest
     @Published private(set) var notice: LibraryWorkspaceNotice?
     @Published private(set) var pendingSuggestionTotal = 0
+    @Published private(set) var isCatalogScanning = false
     @Published private(set) var suggestionOverviews: [SuggestionTagOverview] = []
     @Published private(set) var reviewMode: ReviewWorkspaceMode?
     @Published private(set) var reviewQueueItems: [ReviewQueueItemProjection] = []
@@ -46,6 +47,7 @@ final class LibraryWorkspaceModel: ObservableObject {
     private var lastTagMutation: LibraryTagUndoRecord?
     fileprivate var lastReviewMutation: ReviewMutationUndoRecord?
     private var personalizationRunnerTask: Task<Void, Never>?
+    private var catalogReconcileTask: Task<Void, Never>?
     private var selectionAnchorID: UUID?
     private var selectedTagFilterDecisions: [UUID: PersistableTagDecision] = [:]
     private var selectedSourceID: UUID?
@@ -60,7 +62,7 @@ final class LibraryWorkspaceModel: ObservableObject {
     }
 
     var isBusy: Bool {
-        phase == .loading || phase == .scanning
+        phase == .loading || phase == .scanning || isCatalogScanning
     }
 
     var canUndoTagMutation: Bool {
@@ -115,8 +117,8 @@ final class LibraryWorkspaceModel: ObservableObject {
             _ = try await service.connectPhotos()
             let service = service
             sources = try await Self.offMain { try service.fetchSources() }
-            try await Self.offMain { try service.runPendingPhotosReconcileJobs() }
             await loadFirstPage()
+            startCatalogReconcileRunnerIfNeeded()
         } catch {
             phase = .failed(.connectionFailed)
         }
@@ -131,9 +133,8 @@ final class LibraryWorkspaceModel: ObservableObject {
                 _ = try await service.connectPhotos()
                 let service = service
                 sources = try await Self.offMain { try service.fetchSources() }
-                phase = .scanning
-                try await Self.offMain { try service.runPendingPhotosReconcileJobs() }
                 await loadFirstPage()
+                startCatalogReconcileRunnerIfNeeded()
                 return
             }
             switch try await service.reauthorizeFolder(sourceID: sourceID) {
@@ -145,9 +146,8 @@ final class LibraryWorkspaceModel: ObservableObject {
 
             let service = service
             sources = try await Self.offMain { try service.fetchSources() }
-            phase = .scanning
-            try await Self.offMain { try service.runPendingReconcileJobs() }
             await loadFirstPage()
+            startCatalogReconcileRunnerIfNeeded()
         } catch {
             phase = previousPhase
             notice = .sourceActionFailed
@@ -169,20 +169,21 @@ final class LibraryWorkspaceModel: ObservableObject {
 
     func rescan() async {
         guard !isBusy, !sources.isEmpty else { return }
-        phase = .scanning
         let service = service
         let sourceIDs = selectedSourceID.map { [$0] } ?? sources.map(\.id)
         do {
             try await Self.offMain {
                 try service.enqueueReconcile(sourceIDs: sourceIDs)
-                try service.runPendingReconcileJobs()
-                try service.runPendingPhotosReconcileJobs()
             }
         } catch {
-            phase = .failed(.scanFailed)
+            if items.isEmpty {
+                phase = .failed(.scanFailed)
+            } else {
+                notice = .backgroundScanFailed
+            }
             return
         }
-        await loadFirstPage()
+        startCatalogReconcileRunnerIfNeeded()
     }
 
     func selectSource(_ sourceID: UUID?) async {
@@ -398,21 +399,37 @@ final class LibraryWorkspaceModel: ObservableObject {
             return
         }
 
+        await loadFirstPage()
+        await refreshReviewState()
         if runPendingJobs {
-            phase = .scanning
+            startCatalogReconcileRunnerIfNeeded()
+        }
+    }
+
+    private func startCatalogReconcileRunnerIfNeeded() {
+        guard catalogReconcileTask == nil else { return }
+        isCatalogScanning = true
+        let service = service
+        catalogReconcileTask = Task { [weak self] in
+            guard let self else { return }
             do {
                 try await Self.offMain {
                     try service.runPendingReconcileJobs()
                     try service.runPendingPhotosReconcileJobs()
                 }
-                startPersonalizationRunnerIfNeeded()
+                await self.loadFirstPage()
+                await self.refreshReviewState()
+                self.startPersonalizationRunnerIfNeeded()
             } catch {
-                phase = .failed(.scanFailed)
-                return
+                if self.items.isEmpty {
+                    self.phase = .failed(.scanFailed)
+                } else {
+                    self.notice = .backgroundScanFailed
+                }
             }
+            self.isCatalogScanning = false
+            self.catalogReconcileTask = nil
         }
-        await loadFirstPage()
-        await refreshReviewState()
     }
 
     private func loadFirstPage() async {
@@ -1102,6 +1119,16 @@ struct LibraryWorkspaceView: View {
         }
         .toolbar {
             ToolbarItemGroup {
+                if model.isCatalogScanning {
+                    HStack(spacing: 6) {
+                        ProgressView()
+                            .controlSize(.small)
+                        Text("后台扫描中")
+                            .font(.caption)
+                    }
+                    .accessibilityElement(children: .combine)
+                }
+
                 filterMenu
                 sortMenu
 
@@ -1843,6 +1870,7 @@ struct LibraryWorkspaceView: View {
         case .duplicateTag: "已有同名标签。"
         case .tagMutationFailed: "标签操作未保存，请重试。"
         case .sourceActionFailed: "来源操作未完成。原照片没有被修改，请重试。"
+        case .backgroundScanFailed: "后台扫描未完成，已索引的照片仍可继续浏览。"
         case .reviewActionFailed: "建议任务操作未完成，请重试。"
         case .reviewJobConflict: "该标签已有进行中的建议任务。"
         case let .insufficientSuggestionSamples(positive, negative):

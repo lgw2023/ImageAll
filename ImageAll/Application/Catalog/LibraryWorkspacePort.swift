@@ -44,6 +44,7 @@ enum LibraryWorkspaceNotice: Equatable, Sendable {
     case duplicateTag
     case tagMutationFailed
     case sourceActionFailed
+    case backgroundScanFailed
     case reviewActionFailed
     case reviewJobConflict
     case insufficientSuggestionSamples(positiveMissing: Int, negativeMissing: Int)

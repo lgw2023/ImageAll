@@ -4,6 +4,35 @@ import XCTest
 
 @MainActor
 final class LibraryWorkspaceModelTests: XCTestCase {
+    func testStartupShowsExistingCatalogBeforePendingReconcileFinishes() async {
+        let sourceID = UUID()
+        let asset = Self.makeAsset(sourceID: sourceID, fileName: "already-indexed.jpg")
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: sourceID,
+                displayName: "Fixture",
+                state: .active
+            ),
+            reconciledItems: [asset],
+            initialItems: [asset],
+            startsConnected: true,
+            blocksReconcileRuns: true
+        )
+        let model = LibraryWorkspaceModel(service: service)
+
+        let startup = Task { await model.start() }
+        while !service.hasStartedBlockedReconcile {
+            await Task.yield()
+        }
+
+        XCTAssertEqual(model.phase, .content)
+        XCTAssertEqual(model.items.map(\.assetID), [asset.assetID])
+
+        service.releaseBlockedReconcile()
+        await startup.value
+        await waitForCatalogScanToFinish(model)
+    }
+
     func testConnectPhotosRunsPhotosReconcileAndLoadsUnifiedGrid() async {
         let sourceID = UUID()
         let asset = Self.makeAsset(sourceID: sourceID, fileName: "IMG_0001.HEIC")
@@ -22,6 +51,7 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertEqual(model.phase, .empty)
 
         await model.connectPhotos()
+        await waitForCatalogScanToFinish(model)
 
         XCTAssertEqual(model.phase, .content)
         XCTAssertEqual(model.sources.map(\.kind), [.photos])
@@ -43,6 +73,7 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertEqual(model.phase, .empty)
 
         await model.connectFolder()
+        await waitForCatalogScanToFinish(model)
 
         XCTAssertEqual(model.phase, .content)
         XCTAssertEqual(model.sources.map(\.id), [sourceID])
@@ -65,9 +96,11 @@ final class LibraryWorkspaceModelTests: XCTestCase {
 
         await model.start()
         await model.connectFolder()
+        await waitForCatalogScanToFinish(model)
         XCTAssertEqual(model.sources.first?.state, .authorizationRequired)
 
         await model.reauthorizeSource(sourceID)
+        await waitForCatalogScanToFinish(model)
 
         XCTAssertEqual(model.sources.first?.state, .active)
         XCTAssertEqual(model.items.map(\.assetID), [asset.assetID])
@@ -86,6 +119,7 @@ final class LibraryWorkspaceModelTests: XCTestCase {
 
         await model.start()
         await model.connectFolder()
+        await waitForCatalogScanToFinish(model)
         await model.disableSource(sourceID)
 
         XCTAssertEqual(model.sources.first?.state, .disabled)
@@ -106,6 +140,7 @@ final class LibraryWorkspaceModelTests: XCTestCase {
 
         await model.start()
         await model.connectFolder()
+        await waitForCatalogScanToFinish(model)
         await model.disableSource(sourceID)
 
         XCTAssertEqual(model.phase, .content)
@@ -125,6 +160,7 @@ final class LibraryWorkspaceModelTests: XCTestCase {
 
         await model.start()
         await model.connectFolder()
+        await waitForCatalogScanToFinish(model)
 
         XCTAssertEqual(model.phase, .failed(.scanFailed))
         XCTAssertEqual(model.sources.map(\.id), [sourceID])
@@ -143,6 +179,7 @@ final class LibraryWorkspaceModelTests: XCTestCase {
 
         await model.start()
         await model.connectFolder()
+        await waitForCatalogScanToFinish(model)
         await model.selectAsset(asset.assetID)
 
         XCTAssertEqual(model.inspectorTags.first?.decision, .unknown)
@@ -175,6 +212,7 @@ final class LibraryWorkspaceModelTests: XCTestCase {
 
         await model.start()
         await model.connectFolder()
+        await waitForCatalogScanToFinish(model)
         await model.selectAsset(first.assetID)
 
         await model.applySearchText("beach")
@@ -207,6 +245,7 @@ final class LibraryWorkspaceModelTests: XCTestCase {
 
         await model.start()
         await model.connectFolder()
+        await waitForCatalogScanToFinish(model)
         await model.selectAsset(first.assetID)
         await model.applyTagDecision(tagID: family.id, action: .accept)
         await model.selectAsset(second.assetID, additive: true)
@@ -237,6 +276,7 @@ final class LibraryWorkspaceModelTests: XCTestCase {
 
         await model.start()
         await model.connectFolder()
+        await waitForCatalogScanToFinish(model)
         await model.selectAsset(asset.assetID)
 
         let succeeded = await model.renameTag(tag.id, to: "Loved")
@@ -259,6 +299,7 @@ final class LibraryWorkspaceModelTests: XCTestCase {
 
         await model.start()
         await model.connectFolder()
+        await waitForCatalogScanToFinish(model)
         await model.selectAsset(asset.assetID)
         await model.showAcceptedTag(tag.id)
 
@@ -286,6 +327,7 @@ final class LibraryWorkspaceModelTests: XCTestCase {
 
         await model.start()
         await model.connectFolder()
+        await waitForCatalogScanToFinish(model)
         await model.selectAsset(asset.assetID)
 
         let succeeded = await model.renameTag(tag.id, to: "Loved")
@@ -310,6 +352,7 @@ final class LibraryWorkspaceModelTests: XCTestCase {
 
         await model.start()
         await model.connectFolder()
+        await waitForCatalogScanToFinish(model)
         await model.selectAsset(asset.assetID)
         await model.applyTagDecision(tagID: tag.id, action: .accept)
 
@@ -331,6 +374,7 @@ final class LibraryWorkspaceModelTests: XCTestCase {
 
         await model.start()
         await model.connectFolder()
+        await waitForCatalogScanToFinish(model)
         await model.selectAsset(second.assetID)
 
         model.toggleSinglePhotoView()
@@ -373,6 +417,7 @@ final class LibraryWorkspaceModelTests: XCTestCase {
 
         await model.start()
         await model.connectFolder()
+        await waitForCatalogScanToFinish(model)
         await model.selectAsset(availableJPEG.assetID)
 
         await model.toggleAvailabilityFilter(.missing)
@@ -407,6 +452,7 @@ final class LibraryWorkspaceModelTests: XCTestCase {
 
         await model.start()
         await model.connectFolder()
+        await waitForCatalogScanToFinish(model)
         await model.toggleAvailabilityFilter(.missing)
         await model.toggleMediaTypeFilterGroup(["public.png"])
         XCTAssertEqual(model.items.map(\.assetID), [missingPNG.assetID])
@@ -541,6 +587,7 @@ final class LibraryWorkspaceModelTests: XCTestCase {
 
         await model.start()
         await model.connectFolder()
+        await waitForCatalogScanToFinish(model)
         await model.selectAsset(first.assetID)
         XCTAssertEqual(model.assetPendingSuggestions.map(\.tagID), [tag.id])
 
@@ -559,6 +606,7 @@ final class LibraryWorkspaceModelTests: XCTestCase {
 
         await model.start()
         await model.connectFolder()
+        await waitForCatalogScanToFinish(model)
         await model.selectAsset(asset.assetID)
         await model.applyReviewDecision(action: .accept)
 
@@ -602,6 +650,7 @@ final class LibraryWorkspaceModelTests: XCTestCase {
 
         await model.start()
         await model.connectFolder()
+        await waitForCatalogScanToFinish(model)
         await model.refreshReviewState()
         _ = await model.enqueueSuggestions(tagID: tag.id, mode: .generate)
         let start = ContinuousClock.now
@@ -610,6 +659,14 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertTrue(confirmed)
         XCTAssertLessThan(elapsed, .seconds(1))
         XCTAssertEqual(review.enqueueCallCount, 1)
+    }
+
+    private func waitForCatalogScanToFinish(_ model: LibraryWorkspaceModel) async {
+        for _ in 0 ..< 10_000 {
+            if !model.isCatalogScanning { return }
+            await Task.yield()
+        }
+        XCTFail("catalog scan did not finish")
     }
 
     private static func makeAsset(
@@ -655,6 +712,9 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
     private let scanFails: Bool
     private let tagMutationFails: Bool
     private let sourceMutationFails: Bool
+    private let blocksReconcileRuns: Bool
+    private let reconcileGate = DispatchSemaphore(value: 0)
+    private var storedHasStartedBlockedReconcile = false
     private var storedTags: [TagListItem]
     private var decisions: [UUID: [UUID: TagDecisionQueryState]] = [:]
 
@@ -664,14 +724,28 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
         scanFails: Bool = false,
         tags: [TagListItem] = [],
         tagMutationFails: Bool = false,
-        sourceMutationFails: Bool = false
+        sourceMutationFails: Bool = false,
+        initialItems: [AssetGridItemProjection] = [],
+        startsConnected: Bool = false,
+        blocksReconcileRuns: Bool = false
     ) {
         self.connectedSource = connectedSource
         self.reconciledItems = reconciledItems
         self.scanFails = scanFails
         self.tagMutationFails = tagMutationFails
         self.sourceMutationFails = sourceMutationFails
+        self.blocksReconcileRuns = blocksReconcileRuns
+        storedSources = startsConnected ? [connectedSource] : []
+        storedItems = initialItems
         storedTags = tags
+    }
+
+    var hasStartedBlockedReconcile: Bool {
+        lock.withLock { storedHasStartedBlockedReconcile }
+    }
+
+    func releaseBlockedReconcile() {
+        reconcileGate.signal()
     }
 
     var reconcileRunCount: Int {
@@ -756,6 +830,10 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
     func runPendingReconcileJobs() throws {
         if scanFails {
             throw FakeWorkspaceError.scanFailed
+        }
+        if blocksReconcileRuns {
+            lock.withLock { storedHasStartedBlockedReconcile = true }
+            reconcileGate.wait()
         }
         lock.withLock {
             storedReconcileRunCount += 1
