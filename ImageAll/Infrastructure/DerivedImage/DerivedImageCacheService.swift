@@ -55,6 +55,26 @@ final class DerivedImageOperationGate: @unchecked Sendable {
         }
     }
 
+    func beginAccess() {
+        while true {
+            let blocked = state.withLock { gate -> Bool in
+                if gate.maintenanceRunning {
+                    return true
+                }
+                gate.activeGenerations += 1
+                return false
+            }
+            if !blocked { return }
+            Thread.sleep(forTimeInterval: 0.001)
+        }
+    }
+
+    func endAccess() {
+        state.withLock { gate in
+            gate.activeGenerations = max(0, gate.activeGenerations - 1)
+        }
+    }
+
     func endGeneration(stagingName: String) {
         state.withLock { gate in
             gate.protectedStagingNames.remove(stagingName)
@@ -145,6 +165,8 @@ final class DerivedImageCacheService: DerivedImageCachePort, DownloadedPreviewCa
     }
 
     func loadOrGenerate(_ request: DerivedImageRequest) async throws -> DerivedImagePayload {
+        operationGate.beginAccess()
+        defer { operationGate.endAccess() }
         do {
             if try repository.assetExists(assetID: request.assetID) == false {
                 throw DerivedImageError.derivedAssetNotFound
@@ -174,6 +196,8 @@ final class DerivedImageCacheService: DerivedImageCachePort, DownloadedPreviewCa
     }
 
     func loadDownloadedPreview(assetID: UUID) throws -> Data? {
+        operationGate.beginAccess()
+        defer { operationGate.endAccess() }
         do {
             guard let lookup = try repository.fetchCacheLookupContext(assetID: assetID) else {
                 return nil
@@ -210,6 +234,8 @@ final class DerivedImageCacheService: DerivedImageCachePort, DownloadedPreviewCa
     }
 
     func storeDownloadedPreview(assetID: UUID, sourceBytes: Data) async throws -> Data {
+        operationGate.beginAccess()
+        defer { operationGate.endAccess() }
         do {
             guard let lookup = try repository.fetchCacheLookupContext(assetID: assetID) else {
                 throw DerivedImageError.derivedAssetNotFound
@@ -233,6 +259,22 @@ final class DerivedImageCacheService: DerivedImageCachePort, DownloadedPreviewCa
     func performMaintenance() async throws -> DerivedImageMaintenanceResult {
         try await operationGate.withMaintenance {
             try self.performMaintenanceInternal()
+        }
+    }
+
+    func cacheUsage() throws -> DerivedImageCacheUsage {
+        do {
+            return try repository.registeredUsage()
+        } catch let error as DerivedImageError {
+            throw error
+        } catch {
+            throw DerivedImageError.derivedCachePersistenceFailed
+        }
+    }
+
+    func clearCache() async throws -> DerivedImageCacheClearResult {
+        try await operationGate.withMaintenance {
+            try self.clearCacheInternal()
         }
     }
 
@@ -697,6 +739,75 @@ final class DerivedImageCacheService: DerivedImageCachePort, DownloadedPreviewCa
     private func performMaintenanceInternal() throws -> DerivedImageMaintenanceResult {
         do {
             return try performMaintenanceInternalBody()
+        } catch let error as DerivedImageError {
+            throw error
+        } catch DerivedImageSecureIOError.unsafePath {
+            throw DerivedImageError.derivedCacheUnsafePath
+        } catch {
+            throw DerivedImageError.derivedCachePersistenceFailed
+        }
+    }
+
+    private func clearCacheInternal() throws -> DerivedImageCacheClearResult {
+        do {
+            maintenanceCheckpoint.blockWhileMaintenanceHeld()
+            let session = try store.ensureLayout()
+            defer { session.closeHandles() }
+            try session.preflightForClear()
+
+            let invalidated = try repository.invalidateAllEntries()
+            let entries = invalidated.entries
+
+            var removedObjects = 0
+            var removedBytes: UInt64 = 0
+            var partialReclaim = false
+            for entry in entries {
+                do {
+                    let byteSize = try session.objectByteSize(
+                        entryID: entry.id,
+                        format: entry.storageFormat
+                    ) ?? 0
+                    if try store.deleteObjectDuringEviction(
+                        entryID: entry.id,
+                        format: entry.storageFormat,
+                        session: session
+                    ) {
+                        removedObjects += 1
+                        removedBytes = DerivedImageQuotaPolicy.adding(removedBytes, byteSize)
+                            ?? UInt64.max
+                    }
+                } catch {
+                    partialReclaim = true
+                }
+            }
+
+            if !partialReclaim {
+                do {
+                    var unsafeObjects = 0
+                    removedObjects += try session.sweepUnreferencedObjects(
+                        referenced: [],
+                        protectedStagingNames: [],
+                        removedBytes: &removedBytes,
+                        unsafeObjects: &unsafeObjects
+                    )
+                    removedObjects += try session.sweepStaging(
+                        excluding: [],
+                        removedBytes: &removedBytes,
+                        unsafeObjects: &unsafeObjects
+                    )
+                    partialReclaim = unsafeObjects > 0
+                } catch {
+                    partialReclaim = true
+                }
+            }
+
+            return DerivedImageCacheClearResult(
+                removedEntries: entries.count,
+                registeredBytesInvalidated: invalidated.registeredBytes,
+                removedObjects: removedObjects,
+                removedBytes: removedBytes,
+                partialReclaim: partialReclaim
+            )
         } catch let error as DerivedImageError {
             throw error
         } catch DerivedImageSecureIOError.unsafePath {

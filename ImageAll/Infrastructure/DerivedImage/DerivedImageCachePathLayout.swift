@@ -44,6 +44,11 @@ enum DerivedImageCachePathLayout {
         UUID().uuidString.lowercased()
     }
 
+    static func isKnownStagingFileName(_ name: String) -> Bool {
+        guard let id = UUID(uuidString: name) else { return false }
+        return name == id.uuidString.lowercased()
+    }
+
     static func shardName(for entryID: UUID) -> String {
         String(entryID.uuidString.lowercased().replacingOccurrences(of: "-", with: "").prefix(2))
     }

@@ -528,7 +528,8 @@ enum DerivedImageTestSupport {
             let session = try store.ensureLayout()
             defer { session.closeHandles() }
             let name = DerivedImageCachePathLayout.stagingFileName()
-            _ = try session.writeStagingExclusive(name: name, bytes: bytes)
+            let fd = try session.writeStagingExclusive(name: name, bytes: bytes)
+            Darwin.close(fd)
             return name
         }
 
@@ -581,6 +582,7 @@ enum DerivedImageTestSupport {
             let resolvedAssetID = assetID ?? self.assetID
             let placeholderHash = Data(repeating: 0xAB, count: 32)
             let resolvedByteSize = byteSize ?? 1024
+            let pixelSize = variant == .gridRegular ? 512 : 256
             try await database.pool.write { db in
                 try db.execute(
                     sql: """
@@ -588,12 +590,14 @@ enum DerivedImageTestSupport {
                         id, asset_id, content_revision, representation_version, variant,
                         storage_format, pixel_width, pixel_height, byte_size, encoded_sha256,
                         created_at_ms, last_accessed_at_ms
-                    ) VALUES (?, ?, 1, 1, ?, 'jpeg', 256, 256, ?, ?, ?, ?)
+                    ) VALUES (?, ?, 1, 1, ?, 'jpeg', ?, ?, ?, ?, ?, ?)
                     """,
                     arguments: [
                         id.uuidString.lowercased(),
                         resolvedAssetID.uuidString.lowercased(),
                         variant.rawValue,
+                        pixelSize,
+                        pixelSize,
                         resolvedByteSize,
                         placeholderHash,
                         createdAtMs,

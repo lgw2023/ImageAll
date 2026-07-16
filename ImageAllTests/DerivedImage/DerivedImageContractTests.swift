@@ -4,6 +4,99 @@ import XCTest
 @testable import ImageAll
 
 final class DerivedImageContractTests: XCTestCase {
+    func testRegisteredCacheUsageAggregatesAllPreviewVariants() async throws {
+        let env = try DerivedImageTestSupport.TempEnvironment(label: "cache-usage")
+        defer { env.cleanup() }
+        _ = try env.seedAvailableAsset()
+        let (service, _) = env.makeService()
+        try await env.insertSyntheticCacheEntry(id: UUID(), variant: .gridSmall, byteSize: 100)
+        try await env.insertSyntheticCacheEntry(id: UUID(), variant: .gridRegular, byteSize: 200)
+        try await env.insertSyntheticCacheEntry(id: UUID(), variant: .preview, byteSize: 300)
+
+        let usage = try service.cacheUsage()
+
+        XCTAssertEqual(usage, DerivedImageCacheUsage(entryCount: 3, registeredBytes: 600))
+    }
+
+    func testClearInvalidatesPreviewCacheAndPreservesCatalogFacts() async throws {
+        let env = try DerivedImageTestSupport.TempEnvironment(label: "cache-clear")
+        defer { env.cleanup() }
+        _ = try env.seedAvailableAsset()
+        let (service, _) = env.makeService(volumeReader: DerivedImageTestSupport.generousVolume)
+        for variant in DerivedImageVariant.allCases {
+            _ = try await service.loadOrGenerate(
+                DerivedImageRequest(assetID: env.assetID, variant: variant)
+            )
+        }
+        _ = try env.plantLegalStagingOrphan(bytes: Data([0x01, 0x02]))
+        try await seedFactsThatCacheClearMustPreserve(in: env)
+        let preservedTables = [
+            "asset_tag_decision", "feature", "tag_model_revision", "tag_model_sample",
+            "tag_model", "prediction", "job",
+        ]
+        let before = try await rowCounts(preservedTables, in: env)
+
+        let result = try await service.clearCache()
+
+        XCTAssertEqual(result.removedEntries, 3)
+        XCTAssertGreaterThan(result.registeredBytesInvalidated, 0)
+        XCTAssertFalse(result.partialReclaim)
+        XCTAssertEqual(try service.cacheUsage(), .zero)
+        let artifacts = try await env.cacheArtifactCounts()
+        let after = try await rowCounts(preservedTables, in: env)
+        XCTAssertEqual(artifacts.objects, 0)
+        XCTAssertEqual(artifacts.stagingFiles, 0)
+        XCTAssertEqual(after, before)
+    }
+
+    func testClearRejectsObjectSymlinkBeforeInvalidatingEntries() async throws {
+        let env = try DerivedImageTestSupport.TempEnvironment(label: "cache-clear-symlink")
+        defer { env.cleanup() }
+        _ = try env.seedAvailableAsset()
+        let (service, _) = env.makeService(volumeReader: DerivedImageTestSupport.generousVolume)
+        _ = try await service.loadOrGenerate(
+            DerivedImageRequest(assetID: env.assetID, variant: .gridSmall)
+        )
+        let sentinelBytes = Data("outside-cache".utf8)
+        let sentinel = try env.plantExternalSentinel(bytes: sentinelBytes)
+        try env.plantObjectSymlinkInObjectsTree(linkTarget: sentinel, entryID: UUID())
+
+        do {
+            _ = try await service.clearCache()
+            XCTFail("expected unsafe path refusal")
+        } catch let error as DerivedImageError {
+            XCTAssertEqual(error, .derivedCacheUnsafePath)
+        }
+
+        XCTAssertEqual(try service.cacheUsage().entryCount, 1)
+        XCTAssertEqual(try Data(contentsOf: sentinel), sentinelBytes)
+    }
+
+    func testClearDeletionFailureInvalidatesEntriesAndReportsPartialReclaim() async throws {
+        let env = try DerivedImageTestSupport.TempEnvironment(label: "cache-clear-delete-fault")
+        defer { env.cleanup() }
+        _ = try env.seedAvailableAsset()
+        let (writer, _) = env.makeService(volumeReader: DerivedImageTestSupport.generousVolume)
+        _ = try await writer.loadOrGenerate(
+            DerivedImageRequest(assetID: env.assetID, variant: .gridSmall)
+        )
+        let fault = DerivedImageTestSupport.LoggingStoreFaultInjector(
+            faultPoint: .evictObjectDelete
+        )
+        let (service, _) = env.makeService(
+            faultInjector: fault,
+            volumeReader: DerivedImageTestSupport.generousVolume
+        )
+
+        let result = try await service.clearCache()
+
+        XCTAssertTrue(result.partialReclaim)
+        XCTAssertEqual(result.removedEntries, 1)
+        XCTAssertEqual(try service.cacheUsage(), .zero)
+        let artifacts = try await env.cacheArtifactCounts()
+        XCTAssertEqual(artifacts.objects, 1)
+    }
+
     func testClosedErrorRawValues() {
         XCTAssertEqual(DerivedImageError.derivedAssetNotFound.rawValue, "derivedAssetNotFound")
         XCTAssertEqual(DerivedImageError.derivedInsufficientSpace.rawValue, "derivedInsufficientSpace")
@@ -96,6 +189,75 @@ final class DerivedImageContractTests: XCTestCase {
         } catch {
             XCTFail("unexpected \(error)", file: file, line: line)
         }
+    }
+
+    private func rowCounts(
+        _ tables: [String],
+        in env: DerivedImageTestSupport.TempEnvironment
+    ) async throws -> [String: Int] {
+        try await env.database.pool.read { db in
+            try Dictionary(uniqueKeysWithValues: tables.map { table in
+                (table, try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM \(table)") ?? 0)
+            })
+        }
+    }
+
+    private func seedFactsThatCacheClearMustPreserve(
+        in env: DerivedImageTestSupport.TempEnvironment
+    ) async throws {
+        let tagID = UUID().uuidString.lowercased()
+        let assetID = env.assetID.uuidString.lowercased()
+        try await env.database.pool.write { db in
+            try db.execute(
+                sql: "INSERT INTO tag (id, name, normalized_name, state, created_at_ms, updated_at_ms) VALUES (?, 'Keep', 'keep', 'active', 1, 1)",
+                arguments: [tagID]
+            )
+            try db.execute(
+                sql: "INSERT INTO asset_tag_decision (asset_id, tag_id, decision, updated_at_ms) VALUES (?, ?, 'accepted', 1)",
+                arguments: [assetID, tagID]
+            )
+            try db.execute(
+                sql: """
+                INSERT INTO feature (
+                    asset_id, provider, request_revision, preprocessing_revision,
+                    content_revision, element_type, element_count, byte_count,
+                    vector_sha256, cache_key, created_at_ms
+                ) VALUES (?, 'vision-feature-print', 1, 1, 1, 'float32', 1, 4, ?, 'objects/aa/keep.fprint', 1)
+                """,
+                arguments: [assetID, Data(repeating: 0x11, count: 32)]
+            )
+            try db.execute(
+                sql: """
+                INSERT INTO tag_model_revision (
+                    tag_id, revision, provider, request_revision, preprocessing_revision,
+                    threshold, positive_count, negative_count, neighbor_count,
+                    sample_budget_per_role, created_at_ms
+                ) VALUES (?, 1, 'vision-feature-print', 1, 1, 0.5, 1, 1, 1, 1, 1)
+                """,
+                arguments: [tagID]
+            )
+            try db.execute(
+                sql: """
+                INSERT INTO tag_model_sample (
+                    tag_id, model_revision, asset_id, content_revision, role, rank,
+                    provider, request_revision, preprocessing_revision
+                ) VALUES (?, 1, ?, 1, 'positive', 0, 'vision-feature-print', 1, 1)
+                """,
+                arguments: [tagID, assetID]
+            )
+            try db.execute(
+                sql: "INSERT INTO tag_model (tag_id, current_revision, updated_at_ms) VALUES (?, 1, 1)",
+                arguments: [tagID]
+            )
+            try db.execute(
+                sql: "INSERT INTO prediction (asset_id, tag_id, content_revision, model_revision, score, state, created_at_ms) VALUES (?, ?, 1, 1, 0.75, 'pendingReview', 1)",
+                arguments: [assetID, tagID]
+            )
+        }
+        _ = try JobTestSupport.enqueueDefault(
+            queue: JobTestSupport.makeQueue(database: env.database),
+            sourceID: env.sourceID
+        )
     }
 }
 

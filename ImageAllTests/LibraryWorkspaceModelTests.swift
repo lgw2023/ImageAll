@@ -76,6 +76,67 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertFalse(model.isExportingPortableData)
     }
 
+    func testPreviewCacheClearRefreshesUsageAndPublishesSuccess() async {
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: UUID(),
+                displayName: "Fixture",
+                state: .active
+            ),
+            reconciledItems: [],
+            previewCacheUsage: DerivedImageCacheUsage(
+                entryCount: 2,
+                registeredBytes: 300
+            ),
+            previewCacheClearResult: DerivedImageCacheClearResult(
+                removedEntries: 2,
+                registeredBytesInvalidated: 300,
+                removedObjects: 2,
+                removedBytes: 300,
+                partialReclaim: false
+            )
+        )
+        let model = LibraryWorkspaceModel(service: service)
+
+        await model.refreshPreviewCacheUsage()
+        XCTAssertEqual(
+            model.previewCacheUsage,
+            DerivedImageCacheUsage(entryCount: 2, registeredBytes: 300)
+        )
+
+        await model.clearPreviewCache()
+
+        XCTAssertEqual(service.previewCacheClearCallCount, 1)
+        XCTAssertEqual(model.previewCacheUsage, .zero)
+        XCTAssertEqual(
+            model.notice,
+            .previewCacheCleared(removedEntries: 2, partialReclaim: false)
+        )
+        XCTAssertFalse(model.isClearingPreviewCache)
+    }
+
+    func testPreviewCacheClearFailureKeepsUsageAndPublishesSafeNotice() async {
+        let usage = DerivedImageCacheUsage(entryCount: 2, registeredBytes: 300)
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: UUID(),
+                displayName: "Fixture",
+                state: .active
+            ),
+            reconciledItems: [],
+            previewCacheUsage: usage,
+            previewCacheClearFails: true
+        )
+        let model = LibraryWorkspaceModel(service: service)
+        await model.refreshPreviewCacheUsage()
+
+        await model.clearPreviewCache()
+
+        XCTAssertEqual(model.previewCacheUsage, usage)
+        XCTAssertEqual(model.notice, .previewCacheActionFailed)
+        XCTAssertFalse(model.isClearingPreviewCache)
+    }
+
     func testStartupShowsExistingCatalogBeforePendingReconcileFinishes() async {
         let sourceID = UUID()
         let asset = Self.makeAsset(sourceID: sourceID, fileName: "already-indexed.jpg")
@@ -1049,11 +1110,15 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
     private var storedCloudPreviewCancellationCount = 0
     private var storedThumbnailLoadCallCount = 0
     private var storedPortableExportCallCount = 0
+    private var storedPreviewCacheClearCallCount = 0
     private var storedTags: [TagListItem]
     private var decisions: [UUID: [UUID: TagDecisionQueryState]] = [:]
     private let exportParentURL: URL?
     private let portableExportResult: PortableCatalogExportResult?
     private let portableExportFails: Bool
+    private var storedPreviewCacheUsage: DerivedImageCacheUsage
+    private let previewCacheClearResult: DerivedImageCacheClearResult?
+    private let previewCacheClearFails: Bool
 
     init(
         connectedSource: LibrarySourceSummary,
@@ -1073,7 +1138,10 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
         cloudPreviewFailureCount: Int = 0,
         exportParentURL: URL? = nil,
         portableExportResult: PortableCatalogExportResult? = nil,
-        portableExportFails: Bool = false
+        portableExportFails: Bool = false,
+        previewCacheUsage: DerivedImageCacheUsage = .zero,
+        previewCacheClearResult: DerivedImageCacheClearResult? = nil,
+        previewCacheClearFails: Bool = false
     ) {
         self.connectedSource = connectedSource
         self.reconciledItems = reconciledItems
@@ -1090,6 +1158,9 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
         self.exportParentURL = exportParentURL
         self.portableExportResult = portableExportResult
         self.portableExportFails = portableExportFails
+        storedPreviewCacheUsage = previewCacheUsage
+        self.previewCacheClearResult = previewCacheClearResult
+        self.previewCacheClearFails = previewCacheClearFails
         storedSources = startsConnected ? [connectedSource] : []
         storedItems = initialItems
         storedTags = tags
@@ -1149,6 +1220,28 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
 
     var portableExportCallCount: Int {
         lock.withLock { storedPortableExportCallCount }
+    }
+
+    var previewCacheClearCallCount: Int {
+        lock.withLock { storedPreviewCacheClearCallCount }
+    }
+
+    func fetchPreviewCacheUsage() throws -> DerivedImageCacheUsage {
+        lock.withLock { storedPreviewCacheUsage }
+    }
+
+    func clearPreviewCache() async throws -> DerivedImageCacheClearResult {
+        if previewCacheClearFails {
+            throw FakeWorkspaceError.previewCacheClearFailed
+        }
+        return try lock.withLock {
+            storedPreviewCacheClearCallCount += 1
+            guard let previewCacheClearResult else {
+                throw FakeWorkspaceError.previewCacheClearFailed
+            }
+            storedPreviewCacheUsage = .zero
+            return previewCacheClearResult
+        }
     }
 
     @MainActor
@@ -1473,6 +1566,7 @@ private enum FakeWorkspaceError: Error {
     case sourceActionFailed
     case cloudPreviewFailed
     case portableExportFailed
+    case previewCacheClearFailed
 }
 
 private final class FakePersonalizationReviewPort: PersonalizationReviewPort, @unchecked Sendable {

@@ -58,6 +58,21 @@ struct DerivedImageMaintenanceResult: Equatable, Sendable {
     let unsafeObjects: Int
 }
 
+struct DerivedImageCacheUsage: Equatable, Sendable {
+    let entryCount: Int
+    let registeredBytes: UInt64
+
+    static let zero = DerivedImageCacheUsage(entryCount: 0, registeredBytes: 0)
+}
+
+struct DerivedImageCacheClearResult: Equatable, Sendable {
+    let removedEntries: Int
+    let registeredBytesInvalidated: UInt64
+    let removedObjects: Int
+    let removedBytes: UInt64
+    let partialReclaim: Bool
+}
+
 enum DerivedImageRepresentationVersion {
     static let production = 1
 }

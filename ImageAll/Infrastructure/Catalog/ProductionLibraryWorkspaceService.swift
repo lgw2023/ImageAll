@@ -15,6 +15,7 @@ struct ProductionLibraryWorkspaceService: LibraryWorkspacePort, Sendable {
     let tags: GRDBTagCatalogRepository
     let assetImages: LibraryAssetImageLoader
     let personalizationReview: PersonalizationReviewService
+    let derivedImageCache: DerivedImageCacheService
     let portableExportDestinationPicker: any PortableExportDestinationPicking
     let portableExporter: PortableCatalogExporter
     let appVersion: String
@@ -35,6 +36,14 @@ struct ProductionLibraryWorkspaceService: LibraryWorkspacePort, Sendable {
                 appVersion: appVersion
             )
         )
+    }
+
+    func fetchPreviewCacheUsage() throws -> DerivedImageCacheUsage {
+        try derivedImageCache.cacheUsage()
+    }
+
+    func clearPreviewCache() async throws -> DerivedImageCacheClearResult {
+        try await derivedImageCache.clearCache()
     }
 
     func fetchSources() throws -> [LibrarySourceSummary] {

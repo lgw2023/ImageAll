@@ -96,6 +96,34 @@ struct GRDBDerivedImageCacheRepository: Sendable {
         }
     }
 
+    func registeredUsage() throws -> DerivedImageCacheUsage {
+        try database.pool.read { db in
+            let cursor = try Int64.fetchCursor(
+                db,
+                sql: "SELECT byte_size FROM derived_image_cache_entry ORDER BY id"
+            )
+            var entryCount = 0
+            var registeredBytes: UInt64 = 0
+            while let byteSize = try cursor.next() {
+                guard byteSize >= 0,
+                      entryCount < Int.max,
+                      let next = DerivedImageQuotaPolicy.adding(
+                          registeredBytes,
+                          UInt64(byteSize)
+                      )
+                else {
+                    throw DerivedImageError.derivedCachePersistenceFailed
+                }
+                entryCount += 1
+                registeredBytes = next
+            }
+            return DerivedImageCacheUsage(
+                entryCount: entryCount,
+                registeredBytes: registeredBytes
+            )
+        }
+    }
+
     func lruEntries() throws -> [DerivedImageCacheEntryRow] {
         try database.pool.read { db in
             let rows = try Row.fetchAll(
@@ -145,6 +173,28 @@ struct GRDBDerivedImageCacheRepository: Sendable {
 
     func allEntries() throws -> [DerivedImageCacheEntryRow] {
         try lruEntries()
+    }
+
+    func invalidateAllEntries() throws -> (
+        entries: [DerivedImageCacheEntryRow],
+        registeredBytes: UInt64
+    ) {
+        try database.pool.write { db in
+            let entries = try Row.fetchAll(
+                db,
+                sql: "SELECT * FROM derived_image_cache_entry ORDER BY id"
+            ).map(mapEntry)
+            let registeredBytes = try entries.reduce(UInt64(0)) { total, entry in
+                guard entry.byteSize >= 0,
+                      let next = DerivedImageQuotaPolicy.adding(total, UInt64(entry.byteSize))
+                else {
+                    throw DerivedImageError.derivedCachePersistenceFailed
+                }
+                return next
+            }
+            try db.execute(sql: "DELETE FROM derived_image_cache_entry")
+            return (entries, registeredBytes)
+        }
     }
 
     func deleteEntry(id: UUID) throws {

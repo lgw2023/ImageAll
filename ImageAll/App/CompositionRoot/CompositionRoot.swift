@@ -111,6 +111,7 @@ struct CompositionRoot {
             tags: GRDBTagCatalogRepository(database: runtime.database),
             assetImages: assetImages,
             personalizationReview: personalizationReview,
+            derivedImageCache: derivedImages,
             portableExportDestinationPicker: AppKitPortableExportDestinationPicker(),
             portableExporter: PortableCatalogExporter(database: runtime.database),
             appVersion: BundleAppVersionProvider().currentVersion(),

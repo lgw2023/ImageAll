@@ -1135,6 +1135,18 @@ private final class FakeDerivedImageCache: DerivedImageCachePort, @unchecked Sen
         )
     }
 
+    func cacheUsage() throws -> DerivedImageCacheUsage { .zero }
+
+    func clearCache() async throws -> DerivedImageCacheClearResult {
+        DerivedImageCacheClearResult(
+            removedEntries: 0,
+            registeredBytesInvalidated: 0,
+            removedObjects: 0,
+            removedBytes: 0,
+            partialReclaim: false
+        )
+    }
+
     var requestedVariants: [DerivedImageVariant] {
         lock.withLock { variants }
     }
@@ -1172,6 +1184,18 @@ private struct ConcurrencyProbingFakeDerivedImageCache: DerivedImageCachePort, S
             removedObjects: 0,
             removedBytes: 0,
             unsafeObjects: 0
+        )
+    }
+
+    func cacheUsage() throws -> DerivedImageCacheUsage { .zero }
+
+    func clearCache() async throws -> DerivedImageCacheClearResult {
+        DerivedImageCacheClearResult(
+            removedEntries: 0,
+            registeredBytesInvalidated: 0,
+            removedObjects: 0,
+            removedBytes: 0,
+            partialReclaim: false
         )
     }
 }

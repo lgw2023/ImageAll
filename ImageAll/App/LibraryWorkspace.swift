@@ -44,6 +44,8 @@ final class LibraryWorkspaceModel: ObservableObject {
     @Published private(set) var assetPendingSuggestions: [AssetPendingSuggestion] = []
     @Published private(set) var cloudPreviewState: CloudPreviewPresentationState = .hidden
     @Published private(set) var isExportingPortableData = false
+    @Published private(set) var previewCacheUsage = DerivedImageCacheUsage.zero
+    @Published private(set) var isClearingPreviewCache = false
 
     fileprivate let review: any PersonalizationReviewPort
     private let service: any LibraryWorkspacePort
@@ -134,6 +136,38 @@ final class LibraryWorkspaceModel: ObservableObject {
             )
         } catch {
             notice = .portableExportFailed
+        }
+    }
+
+    func refreshPreviewCacheUsage() async {
+        let service = service
+        do {
+            previewCacheUsage = try await Self.offMain {
+                try service.fetchPreviewCacheUsage()
+            }
+        } catch {
+            notice = .previewCacheActionFailed
+        }
+    }
+
+    func clearPreviewCache() async {
+        guard !isClearingPreviewCache else { return }
+        isClearingPreviewCache = true
+        notice = nil
+        defer { isClearingPreviewCache = false }
+        let service = service
+        do {
+            let result = try await service.clearPreviewCache()
+            previewCacheUsage = try await Self.offMain {
+                try service.fetchPreviewCacheUsage()
+            }
+            notice = .previewCacheCleared(
+                removedEntries: result.removedEntries,
+                partialReclaim: result.partialReclaim
+            )
+        } catch {
+            notice = .previewCacheActionFailed
+            await refreshPreviewCacheUsage()
         }
     }
 
@@ -1241,6 +1275,8 @@ struct LibraryWorkspaceView: View {
     @State private var renamedTagName = ""
     @State private var tagPendingArchive: TagListItem?
     @State private var showPhotosConnectionExplanation = false
+    @State private var showPreviewCachePanel = false
+    @State private var showPreviewCacheClearConfirmation = false
     @FocusState private var newTagFieldFocused: Bool
     @FocusState private var contentFocused: Bool
 
@@ -1362,6 +1398,16 @@ struct LibraryWorkspaceView: View {
                 .disabled(model.isBusy || model.isExportingPortableData)
 
                 Button {
+                    showPreviewCachePanel = true
+                    Task { await model.refreshPreviewCacheUsage() }
+                } label: {
+                    Label("预览缓存", systemImage: "internaldrive")
+                }
+                .popover(isPresented: $showPreviewCachePanel) {
+                    previewCachePanel
+                }
+
+                Button {
                     Task { await model.rescan() }
                 } label: {
                     Label("立即重扫", systemImage: "arrow.clockwise")
@@ -1405,6 +1451,45 @@ struct LibraryWorkspaceView: View {
         } message: {
             Text("ImageAll 会只读访问静态照片和元数据，在自身容器保存索引、标签和缓存；不会修改、移动或删除 Apple Photos 中的照片。iCloud 原图不会自动下载。")
         }
+    }
+
+    private var previewCachePanel: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("预览缓存")
+                .font(.headline)
+            LabeledContent("条目", value: "\(model.previewCacheUsage.entryCount)")
+            LabeledContent(
+                "已登记用量",
+                value: formattedByteCount(model.previewCacheUsage.registeredBytes)
+            )
+            Divider()
+            Button("清理预览缓存", role: .destructive) {
+                showPreviewCacheClearConfirmation = true
+            }
+            .disabled(
+                model.previewCacheUsage.entryCount == 0 || model.isClearingPreviewCache
+            )
+        }
+        .padding()
+        .frame(width: 280)
+        .confirmationDialog(
+            "清理预览缓存？",
+            isPresented: $showPreviewCacheClearConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("清理预览缓存", role: .destructive) {
+                showPreviewCachePanel = false
+                Task { await model.clearPreviewCache() }
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("只会删除可重建的网格缩略图和单图预览；不会删除原照片、人工标签、Feature Print 或个性化模型。iCloud 预览之后需要再次手动获取。")
+        }
+    }
+
+    private func formattedByteCount(_ bytes: UInt64) -> String {
+        guard let signedBytes = Int64(exactly: bytes) else { return "超过可显示范围" }
+        return ByteCountFormatter.string(fromByteCount: signedBytes, countStyle: .file)
     }
 
     var body: some View {
@@ -2114,7 +2199,7 @@ struct LibraryWorkspaceView: View {
         switch notice {
         case .selectionHiddenByFilter:
             "line.3.horizontal.decrease.circle"
-        case .portableExportCompleted:
+        case .portableExportCompleted, .previewCacheCleared:
             "checkmark.circle"
         default:
             "exclamationmark.triangle"
@@ -2140,6 +2225,12 @@ struct LibraryWorkspaceView: View {
             "已导出 \(recordCount) 条记录到“\(bundleName)”。"
         case .portableExportFailed:
             "用户数据导出未完成，现有资料没有被修改。请重试。"
+        case let .previewCacheCleared(removedEntries, partialReclaim):
+            partialReclaim
+                ? "已使 \(removedEntries) 个预览缓存条目失效，部分磁盘空间待后续回收。"
+                : "已清理 \(removedEntries) 个预览缓存条目。"
+        case .previewCacheActionFailed:
+            "预览缓存操作未完成。原照片、人工标签和个性化数据没有被修改。"
         }
     }
 

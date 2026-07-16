@@ -317,12 +317,12 @@ enum DerivedImageSecureIO {
     }
 
     static func listDirectoryEntryNames(directoryFD: Int32) throws -> [String] {
-        let duplicated = dup(directoryFD)
-        guard duplicated >= 0 else {
+        let independent = openat(directoryFD, ".", O_RDONLY | O_DIRECTORY | O_NOFOLLOW)
+        guard independent >= 0 else {
             throw DerivedImageSecureIOError.ioFailure
         }
-        guard let directory = fdopendir(duplicated) else {
-            Darwin.close(duplicated)
+        guard let directory = fdopendir(independent) else {
+            Darwin.close(independent)
             throw DerivedImageSecureIOError.ioFailure
         }
         var names: [String] = []
@@ -447,6 +447,61 @@ struct DerivedImageAnchoredCacheSession {
         Darwin.close(stagingFD)
         Darwin.close(objectsFD)
         Darwin.close(versionRootFD)
+    }
+
+    func preflightForClear() throws {
+        let versionEntries = Set(
+            try DerivedImageSecureIO.listDirectoryEntryNames(directoryFD: versionRootFD)
+        )
+        guard versionEntries == [
+            DerivedImageCachePathLayout.objectsComponent,
+            DerivedImageCachePathLayout.stagingComponent,
+        ] else {
+            throw DerivedImageSecureIOError.unsafePath
+        }
+
+        for shard in try DerivedImageSecureIO.listDirectoryEntryNames(directoryFD: objectsFD) {
+            guard DerivedImageCachePathLayout.isValidShardComponent(shard) else {
+                throw DerivedImageSecureIOError.unsafePath
+            }
+            let shardFacts = try DerivedImageSecureIO.fstatatEntry(
+                directoryFD: objectsFD,
+                name: shard,
+                follow: false
+            )
+            guard shardFacts.mode == S_IFDIR else {
+                throw DerivedImageSecureIOError.unsafePath
+            }
+            let shardFD = openat(objectsFD, shard, O_RDONLY | O_DIRECTORY | O_NOFOLLOW)
+            guard shardFD >= 0 else {
+                throw DerivedImageSecureIOError.unsafePath
+            }
+            defer { Darwin.close(shardFD) }
+            for objectName in try DerivedImageSecureIO.listDirectoryEntryNames(directoryFD: shardFD) {
+                let relativePath = "\(DerivedImageCachePathLayout.objectsComponent)/\(shard)/\(objectName)"
+                guard DerivedImageCachePathLayout.isKnownObjectRelativePath(relativePath),
+                      try DerivedImageSecureIO.fstatatEntry(
+                          directoryFD: shardFD,
+                          name: objectName,
+                          follow: false
+                      ).mode == S_IFREG
+                else {
+                    throw DerivedImageSecureIOError.unsafePath
+                }
+            }
+        }
+
+        for stagingName in try DerivedImageSecureIO.listDirectoryEntryNames(directoryFD: stagingFD) {
+            guard DerivedImageCachePathLayout.isKnownStagingFileName(stagingName),
+                  try DerivedImageSecureIO.fstatatEntry(
+                      directoryFD: stagingFD,
+                      name: stagingName,
+                      follow: false
+                  ).mode == S_IFREG
+            else {
+                throw DerivedImageSecureIOError.unsafePath
+            }
+        }
     }
 
     func createStagingExclusiveEmpty(name: String) throws -> Int32 {

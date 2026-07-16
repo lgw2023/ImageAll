@@ -2,6 +2,8 @@ import Foundation
 
 protocol DerivedImageCachePort: Sendable {
     func loadOrGenerate(_ request: DerivedImageRequest) async throws -> DerivedImagePayload
+    func cacheUsage() throws -> DerivedImageCacheUsage
+    func clearCache() async throws -> DerivedImageCacheClearResult
     func performMaintenance() async throws -> DerivedImageMaintenanceResult
 }
 
