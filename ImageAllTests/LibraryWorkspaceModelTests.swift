@@ -33,6 +33,45 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         await waitForCatalogScanToFinish(model)
     }
 
+    func testBackgroundScanPublishesProgressAndFirstBatchBeforeCompletion() async {
+        let sourceID = UUID()
+        let asset = Self.makeAsset(sourceID: sourceID, fileName: "first-photo.jpg")
+        let progress = CatalogReconcileProgress(
+            sourceKind: .photos,
+            sourceDisplayName: "Apple Photos",
+            completed: 200,
+            total: 9_480
+        )
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: sourceID,
+                kind: .photos,
+                displayName: "Apple Photos",
+                state: .active
+            ),
+            reconciledItems: [asset],
+            startsConnected: true,
+            blocksReconcileRuns: true,
+            catalogReconcileProgress: progress
+        )
+        let model = LibraryWorkspaceModel(
+            service: service,
+            catalogProgressRefreshInterval: .milliseconds(1)
+        )
+
+        await model.start()
+        while !service.hasStartedBlockedReconcile {
+            await Task.yield()
+        }
+        service.publishReconciledItems()
+        await waitForCatalogProgress(progress, model: model)
+        await waitForItems([asset.assetID], model: model)
+
+        XCTAssertTrue(model.isCatalogScanning)
+        service.releaseBlockedReconcile()
+        await waitForCatalogScanToFinish(model)
+    }
+
     func testConnectPhotosRunsPhotosReconcileAndLoadsUnifiedGrid() async {
         let sourceID = UUID()
         let asset = Self.makeAsset(sourceID: sourceID, fileName: "IMG_0001.HEIC")
@@ -736,6 +775,25 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTFail("catalog scan did not finish")
     }
 
+    private func waitForCatalogProgress(
+        _ progress: CatalogReconcileProgress,
+        model: LibraryWorkspaceModel
+    ) async {
+        for _ in 0 ..< 10_000 {
+            if model.catalogReconcileProgress == progress { return }
+            await Task.yield()
+        }
+        XCTFail("catalog progress did not publish")
+    }
+
+    private func waitForItems(_ assetIDs: [UUID], model: LibraryWorkspaceModel) async {
+        for _ in 0 ..< 10_000 {
+            if model.items.map(\.assetID) == assetIDs { return }
+            await Task.yield()
+        }
+        XCTFail("catalog items did not publish")
+    }
+
     private static func makeAsset(
         sourceID: UUID,
         fileName: String = "sample.jpg",
@@ -781,6 +839,7 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
     private let sourceMutationFails: Bool
     private let blocksReconcileRuns: Bool
     private let photosAuthorizationFails: Bool
+    private let catalogReconcileProgress: CatalogReconcileProgress?
     private let reconcileGate = DispatchSemaphore(value: 0)
     private var storedHasStartedBlockedReconcile = false
     private var storedTags: [TagListItem]
@@ -796,7 +855,8 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
         initialItems: [AssetGridItemProjection] = [],
         startsConnected: Bool = false,
         blocksReconcileRuns: Bool = false,
-        photosAuthorizationFails: Bool = false
+        photosAuthorizationFails: Bool = false,
+        catalogReconcileProgress: CatalogReconcileProgress? = nil
     ) {
         self.connectedSource = connectedSource
         self.reconciledItems = reconciledItems
@@ -805,6 +865,7 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
         self.sourceMutationFails = sourceMutationFails
         self.blocksReconcileRuns = blocksReconcileRuns
         self.photosAuthorizationFails = photosAuthorizationFails
+        self.catalogReconcileProgress = catalogReconcileProgress
         storedSources = startsConnected ? [connectedSource] : []
         storedItems = initialItems
         storedTags = tags
@@ -896,6 +957,14 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
     }
 
     func enqueueReconcile(sourceIDs: [UUID]) throws {}
+
+    func fetchCatalogReconcileProgress() throws -> CatalogReconcileProgress? {
+        catalogReconcileProgress
+    }
+
+    func publishReconciledItems() {
+        lock.withLock { storedItems = reconciledItems }
+    }
 
     func runPendingReconcileJobs() throws {
         if scanFails {

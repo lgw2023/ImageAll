@@ -19,6 +19,13 @@ struct LibrarySourceSummary: Identifiable, Equatable, Sendable {
     }
 }
 
+struct CatalogReconcileProgress: Equatable, Sendable {
+    let sourceKind: SourceKind
+    let sourceDisplayName: String?
+    let completed: Int
+    let total: Int?
+}
+
 enum ConnectPhotosOutcome: Equatable, Sendable {
     case connected(sourceID: UUID)
     case alreadyConnected(sourceID: UUID)
@@ -94,6 +101,7 @@ protocol LibraryWorkspacePort: Sendable {
     func reauthorizeFolder(sourceID: UUID) async throws -> ReauthorizeFolderOutcome
     func disableFolderSource(sourceID: UUID) async throws -> DisableFolderOutcome
     func enqueueReconcile(sourceIDs: [UUID]) throws
+    func fetchCatalogReconcileProgress() throws -> CatalogReconcileProgress?
     func runPendingReconcileJobs() throws
     func runPendingPhotosReconcileJobs() throws
     func runPendingPersonalizationJobs() throws

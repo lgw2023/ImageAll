@@ -23,8 +23,9 @@ final class PhotoKitPhotosLibraryAdapter: PhotosLibraryAccessPort, @unchecked Se
     }
 
     func enumerateStaticImages(
+        startingAt startOffset: Int,
         batchSize: Int,
-        onBatch: ([PhotosAssetMetadata]) throws -> Void
+        onBatch: (PhotosAssetEnumerationBatch) throws -> Void
     ) throws {
         guard authorizationState() == .authorized else {
             throw PhotosLibraryError.authorizationDenied
@@ -36,34 +37,53 @@ final class PhotoKitPhotosLibraryAdapter: PhotosLibraryAccessPort, @unchecked Se
             NSSortDescriptor(key: "creationDate", ascending: true),
         ]
         let result = PHAsset.fetchAssets(with: .image, options: options)
-        var batch: [PhotosAssetMetadata] = []
-        for index in 0 ..< result.count {
-            let asset = result.object(at: index)
-            guard let resource = preferredStillResource(for: asset) else { continue }
-            let type = resource.uniformTypeIdentifier.lowercased()
-            guard Self.isSupportedStaticImage(
-                mediaType: asset.mediaType,
-                mediaSubtypes: asset.mediaSubtypes,
-                uniformTypeIdentifier: type
-            ) else { continue }
-
-            batch.append(
-                PhotosAssetMetadata(
-                    localIdentifier: asset.localIdentifier,
-                    fileName: safeFileName(resource.originalFilename),
-                    mediaType: type,
-                    width: asset.pixelWidth,
-                    height: asset.pixelHeight,
-                    createdAtMs: milliseconds(asset.creationDate),
-                    modifiedAtMs: milliseconds(asset.modificationDate)
+        let totalCount = result.count
+        let effectiveStart = min(max(0, startOffset), totalCount)
+        guard effectiveStart < totalCount else {
+            try onBatch(
+                PhotosAssetEnumerationBatch(
+                    assets: [],
+                    completedCount: max(startOffset, totalCount),
+                    totalCount: max(startOffset, totalCount)
                 )
             )
-            if batch.count >= batchSize {
-                try onBatch(batch)
-                batch.removeAll(keepingCapacity: true)
-            }
+            return
         }
-        if !batch.isEmpty { try onBatch(batch) }
+
+        for batchStart in stride(from: effectiveStart, to: totalCount, by: batchSize) {
+            let batchEnd = min(batchStart + batchSize, totalCount)
+            let fetchedAssets = result.objects(at: IndexSet(integersIn: batchStart ..< batchEnd))
+            var metadataBatch: [PhotosAssetMetadata] = []
+            metadataBatch.reserveCapacity(fetchedAssets.count)
+            for asset in fetchedAssets {
+                guard let resource = preferredStillResource(for: asset) else { continue }
+                let type = resource.uniformTypeIdentifier.lowercased()
+                guard Self.isSupportedStaticImage(
+                    mediaType: asset.mediaType,
+                    mediaSubtypes: asset.mediaSubtypes,
+                    uniformTypeIdentifier: type
+                ) else { continue }
+
+                metadataBatch.append(
+                    PhotosAssetMetadata(
+                        localIdentifier: asset.localIdentifier,
+                        fileName: safeFileName(resource.originalFilename),
+                        mediaType: type,
+                        width: asset.pixelWidth,
+                        height: asset.pixelHeight,
+                        createdAtMs: milliseconds(asset.creationDate),
+                        modifiedAtMs: milliseconds(asset.modificationDate)
+                    )
+                )
+            }
+            try onBatch(
+                PhotosAssetEnumerationBatch(
+                    assets: metadataBatch,
+                    completedCount: batchEnd,
+                    totalCount: totalCount
+                )
+            )
+        }
     }
 
     func requestLocalImage(

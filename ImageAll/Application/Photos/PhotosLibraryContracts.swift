@@ -22,6 +22,12 @@ struct PhotosAssetMetadata: Equatable, Sendable {
     let modifiedAtMs: Int64?
 }
 
+struct PhotosAssetEnumerationBatch: Equatable, Sendable {
+    let assets: [PhotosAssetMetadata]
+    let completedCount: Int
+    let totalCount: Int
+}
+
 enum PhotosLibraryError: Error, Equatable, Sendable {
     case authorizationDenied
     case authorizationRestricted
@@ -34,8 +40,9 @@ protocol PhotosLibraryAccessPort: Sendable {
     func authorizationState() -> PhotosAuthorizationState
     func requestAuthorization() async -> PhotosAuthorizationState
     func enumerateStaticImages(
+        startingAt startOffset: Int,
         batchSize: Int,
-        onBatch: ([PhotosAssetMetadata]) throws -> Void
+        onBatch: (PhotosAssetEnumerationBatch) throws -> Void
     ) throws
     func requestLocalImage(
         localIdentifier: String,

@@ -245,6 +245,51 @@ final class PhotosIntegrationTests: XCTestCase {
         XCTAssertEqual(afterCompletion["B.PNG"], .missing)
     }
 
+    func testInterruptedReconcileResumesAtPersistedPhotoKitOffsetAndReportsTotal() async throws {
+        let database = try FolderAuthorizationTestSupport.makeDatabase()
+        let first = metadata("photos-a", name: "A.HEIC", type: "public.heic")
+        let second = metadata("photos-b", name: "B.PNG", type: "public.png")
+        let third = metadata("photos-c", name: "C.WEBP", type: "org.webmproject.webp")
+        let access = FakePhotosLibraryAccess(state: .authorized, batches: [[first]])
+        let sourceID = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
+        let clock = MutableJobClock(nowMs: DatabaseTestSupport.timestampMs)
+        let connection = PhotosLibraryConnectionService(
+            database: database,
+            access: access,
+            clock: clock,
+            idGenerator: IDSequence([
+                sourceID,
+                UUID(uuidString: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")!,
+            ]).next
+        )
+        _ = try await connection.connect()
+
+        let queue = GRDBJobQueue(database: database, clock: clock, retryPolicy: FixedDelayRetryPolicy(delayMs: 1_000))
+        let handler = PhotosReconcileHandler(database: database, queue: queue, access: access, clock: clock, batchSize: 1)
+        let coordinator = JobExecutionCoordinator(
+            queue: queue,
+            registry: MultiJobHandlerRegistry(handlers: [handler]),
+            leaseContextProvider: GRDBJobLeaseContextProvider(queue: queue)
+        )
+        let claim = ClaimNextInput(
+            owner: "photos-resume-test",
+            leaseDurationMs: 60_000,
+            allowedKinds: [PhotosReconcileJobFactory.kind]
+        )
+
+        access.configure(batches: [[first]], failAfterBatches: true)
+        XCTAssertEqual(try coordinator.claimAndExecuteOnce(claim)?.snapshot.state, .retryableFailed)
+
+        access.configure(batches: [[first], [second], [third]], failAfterBatches: false)
+        clock.setNowMs(clock.nowMs + 1_000)
+        try queue.settleRetryableJobs()
+        let resumed = try coordinator.claimAndExecuteOnce(claim)?.snapshot
+
+        XCTAssertEqual(access.enumerationStartOffsets, [0, 1])
+        XCTAssertEqual(resumed?.state, .completed)
+        XCTAssertEqual(resumed?.progress, JobProgress(completed: 3, total: 3))
+    }
+
     func testImageLoaderRoutesPhotosToLocalProviderAndFilesToDerivedCache() async throws {
         let database = try FolderAuthorizationTestSupport.makeDatabase()
         let photosSourceID = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
@@ -381,6 +426,7 @@ private final class FakePhotosLibraryAccess: PhotosLibraryAccessPort, @unchecked
     private var failAfterBatches = false
     private let localImageData: Data
     private var storedRequestedVariants: [PhotosImageVariant] = []
+    private var storedEnumerationStartOffsets: [Int] = []
 
     init(
         state: PhotosAuthorizationState,
@@ -395,8 +441,9 @@ private final class FakePhotosLibraryAccess: PhotosLibraryAccessPort, @unchecked
     func authorizationState() -> PhotosAuthorizationState { state }
     func requestAuthorization() async -> PhotosAuthorizationState { state }
     func enumerateStaticImages(
+        startingAt startOffset: Int,
         batchSize: Int,
-        onBatch: ([PhotosAssetMetadata]) throws -> Void
+        onBatch: (PhotosAssetEnumerationBatch) throws -> Void
     ) throws {
         switch state {
         case .authorized:
@@ -406,9 +453,33 @@ private final class FakePhotosLibraryAccess: PhotosLibraryAccessPort, @unchecked
         case .notDetermined, .denied:
             throw PhotosLibraryError.authorizationDenied
         }
-        let configuration = lock.withLock { (storedBatches, failAfterBatches) }
+        let configuration = lock.withLock {
+            storedEnumerationStartOffsets.append(startOffset)
+            return (storedBatches, failAfterBatches)
+        }
+        let total = configuration.0.reduce(0) { $0 + $1.count }
+        var completed = 0
         for batch in configuration.0 {
-            try onBatch(batch)
+            let batchStart = completed
+            completed += batch.count
+            guard completed > startOffset else { continue }
+            let unseenStart = max(0, startOffset - batchStart)
+            try onBatch(
+                PhotosAssetEnumerationBatch(
+                    assets: Array(batch.dropFirst(unseenStart)),
+                    completedCount: completed,
+                    totalCount: total
+                )
+            )
+        }
+        if total <= startOffset {
+            try onBatch(
+                PhotosAssetEnumerationBatch(
+                    assets: [],
+                    completedCount: total,
+                    totalCount: total
+                )
+            )
         }
         if configuration.1 {
             throw PhotosLibraryError.libraryUnavailable
@@ -431,6 +502,10 @@ private final class FakePhotosLibraryAccess: PhotosLibraryAccessPort, @unchecked
 
     var requestedVariants: [PhotosImageVariant] {
         lock.withLock { storedRequestedVariants }
+    }
+
+    var enumerationStartOffsets: [Int] {
+        lock.withLock { storedEnumerationStartOffsets }
     }
 }
 

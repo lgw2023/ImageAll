@@ -43,9 +43,8 @@ enum PersonalizationSuggestionRunner {
         Task {
             while !Task.isCancelled {
                 let didWork = await runOneStep(review: review, refresh: refresh)
-                if didWork {
-                    await refresh()
-                }
+                guard didWork else { return }
+                await refresh()
                 try? await Task.sleep(nanoseconds: refreshIntervalNs)
             }
         }

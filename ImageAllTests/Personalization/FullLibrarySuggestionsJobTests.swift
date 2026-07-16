@@ -687,6 +687,16 @@ final class FullLibrarySuggestionsJobTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(counter.value, 2)
         _ = await worker.value
     }
+
+    func testRunnerStopsPollingAfterIdleStep() async {
+        let review = IdlePersonalizationReviewPort()
+        let runner = await PersonalizationSuggestionRunner.startLoop(review: review) {}
+
+        try? await Task.sleep(nanoseconds: 700_000_000)
+        runner.cancel()
+
+        XCTAssertEqual(review.runCount, 1)
+    }
 }
 
 private struct LargeLibraryFixture {
@@ -923,6 +933,30 @@ private final class BlockingPersonalizationReviewPort: PersonalizationReviewPort
         }
         Thread.sleep(forTimeInterval: blockDuration)
         return true
+    }
+}
+
+private final class IdlePersonalizationReviewPort: PersonalizationReviewPort, @unchecked Sendable {
+    private let lock = NSLock()
+    private var storedRunCount = 0
+
+    var runCount: Int {
+        lock.withLock { storedRunCount }
+    }
+
+    func totalPendingSuggestionCount() throws -> Int { 0 }
+    func tagOverviews() throws -> [SuggestionTagOverview] { [] }
+    func fetchReviewQueue(tagID: UUID, cursor: ReviewQueueCursor?, limit: Int) throws -> ReviewQueuePage {
+        ReviewQueuePage(items: [], nextCursor: nil)
+    }
+    func pendingSuggestionsForAsset(assetID: UUID) throws -> [AssetPendingSuggestion] { [] }
+    func enqueueFullLibrarySuggestions(tagID: UUID, mode: PersonalizationReviewEnqueueMode) throws -> UUID { UUID() }
+    func pauseSuggestionJob(jobID: UUID) throws {}
+    func resumeSuggestionJob(jobID: UUID) throws {}
+    func cancelSuggestionJob(jobID: UUID) throws {}
+    func runPendingSuggestionJobs(maxSteps: Int?) throws -> Bool {
+        lock.withLock { storedRunCount += 1 }
+        return false
     }
 }
 

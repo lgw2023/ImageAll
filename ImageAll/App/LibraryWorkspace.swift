@@ -35,6 +35,7 @@ final class LibraryWorkspaceModel: ObservableObject {
     @Published private(set) var notice: LibraryWorkspaceNotice?
     @Published private(set) var pendingSuggestionTotal = 0
     @Published private(set) var isCatalogScanning = false
+    @Published private(set) var catalogReconcileProgress: CatalogReconcileProgress?
     @Published private(set) var suggestionOverviews: [SuggestionTagOverview] = []
     @Published private(set) var reviewMode: ReviewWorkspaceMode?
     @Published private(set) var reviewQueueItems: [ReviewQueueItemProjection] = []
@@ -55,10 +56,16 @@ final class LibraryWorkspaceModel: ObservableObject {
     private var started = false
     private var isLoadingMore = false
     fileprivate var isLoadingMoreReviewQueue = false
+    private let catalogProgressRefreshInterval: Duration
 
-    init(service: any LibraryWorkspacePort, review: any PersonalizationReviewPort = EmptyPersonalizationReviewPort()) {
+    init(
+        service: any LibraryWorkspacePort,
+        review: any PersonalizationReviewPort = EmptyPersonalizationReviewPort(),
+        catalogProgressRefreshInterval: Duration = .milliseconds(750)
+    ) {
         self.service = service
         self.review = review
+        self.catalogProgressRefreshInterval = catalogProgressRefreshInterval
     }
 
     var isBusy: Bool {
@@ -434,6 +441,9 @@ final class LibraryWorkspaceModel: ObservableObject {
         let service = service
         catalogReconcileTask = Task { [weak self] in
             guard let self else { return }
+            let progressMonitor = Task { [weak self] in
+                await self?.monitorCatalogReconcileProgress()
+            }
             do {
                 try await Self.offMain {
                     try service.runPendingReconcileJobs()
@@ -455,8 +465,32 @@ final class LibraryWorkspaceModel: ObservableObject {
                     self.notice = .backgroundScanFailed
                 }
             }
+            progressMonitor.cancel()
+            await progressMonitor.value
+            self.catalogReconcileProgress = nil
             self.isCatalogScanning = false
             self.catalogReconcileTask = nil
+        }
+    }
+
+    private func monitorCatalogReconcileProgress() async {
+        let service = service
+        var publishedFirstBatch = !items.isEmpty
+        while !Task.isCancelled {
+            if let progress = try? await Self.offMain({
+                try service.fetchCatalogReconcileProgress()
+            }) {
+                catalogReconcileProgress = progress
+                if !publishedFirstBatch, progress.completed > 0 {
+                    await loadFirstPage()
+                    publishedFirstBatch = !items.isEmpty
+                }
+            }
+            do {
+                try await Task.sleep(for: catalogProgressRefreshInterval)
+            } catch {
+                return
+            }
         }
     }
 
@@ -872,12 +906,16 @@ extension LibraryWorkspaceModel {
     private func startPersonalizationRunnerIfNeeded() {
         guard personalizationRunnerTask == nil else { return }
         let reviewPort = review
-        personalizationRunnerTask = PersonalizationSuggestionRunner.startLoop(review: reviewPort) { [weak self] in
+        let worker = PersonalizationSuggestionRunner.startLoop(review: reviewPort) { [weak self] in
             guard let self else { return }
             await self.refreshReviewState()
             if case let .tagQueue(tagID, _) = self.reviewMode {
                 await self.loadReviewQueueFirstPage(tagID: tagID)
             }
+        }
+        personalizationRunnerTask = Task { [weak self] in
+            await worker.value
+            self?.personalizationRunnerTask = nil
         }
     }
 
@@ -1149,12 +1187,22 @@ struct LibraryWorkspaceView: View {
             ToolbarItemGroup {
                 if model.isCatalogScanning {
                     HStack(spacing: 6) {
-                        ProgressView()
-                            .controlSize(.small)
-                        Text("后台扫描中")
+                        if let progress = model.catalogReconcileProgress,
+                           let total = progress.total,
+                           total > 0
+                        {
+                            ProgressView(value: Double(progress.completed), total: Double(total))
+                                .frame(width: 42)
+                                .controlSize(.small)
+                        } else {
+                            ProgressView()
+                                .controlSize(.small)
+                        }
+                        Text(catalogProgressTitle(model.catalogReconcileProgress))
                             .font(.caption)
                     }
                     .accessibilityElement(children: .combine)
+                    .accessibilityLabel(catalogProgressTitle(model.catalogReconcileProgress))
                 }
 
                 filterMenu
@@ -1852,6 +1900,19 @@ struct LibraryWorkspaceView: View {
         case .oldest: "最早优先"
         case .fileNameAscending: "文件名升序"
         }
+    }
+
+    private func catalogProgressTitle(_ progress: CatalogReconcileProgress?) -> String {
+        guard let progress else { return "正在准备扫描" }
+        let source = progress.sourceDisplayName
+            ?? (progress.sourceKind == .photos ? "Apple Photos" : "文件夹")
+        if let total = progress.total, total > 0 {
+            return "\(source) \(progress.completed.formatted()) / \(total.formatted())"
+        }
+        if progress.completed > 0 {
+            return "\(source) 已检查 \(progress.completed.formatted()) 张"
+        }
+        return "正在扫描 \(source)"
     }
 
     private func availabilityFilterButton(

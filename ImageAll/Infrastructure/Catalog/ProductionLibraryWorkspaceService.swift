@@ -1,4 +1,5 @@
 import Foundation
+import GRDB
 
 enum ProductionLibraryWorkspaceError: Error {
     case reconcileFailed
@@ -55,6 +56,42 @@ struct ProductionLibraryWorkspaceService: LibraryWorkspacePort, Sendable {
             where source.kind == .photos && source.state == .active && requested.contains(source.id)
         {
             try photosConnection.enqueueReconcile(sourceID: source.id)
+        }
+    }
+
+    func fetchCatalogReconcileProgress() throws -> CatalogReconcileProgress? {
+        try queue.database.pool.read { db in
+            guard let row = try Row.fetchOne(
+                db,
+                sql: """
+                SELECT job.kind, job.progress_completed, job.progress_total,
+                       source.display_name
+                FROM job
+                LEFT JOIN source ON source.id = job.source_id
+                WHERE job.kind IN (?, ?)
+                    AND job.state IN ('pending', 'running')
+                ORDER BY
+                    CASE job.state WHEN 'running' THEN 0 ELSE 1 END,
+                    CASE job.kind WHEN ? THEN 0 ELSE 1 END,
+                    job.priority DESC,
+                    job.created_at_ms ASC
+                LIMIT 1
+                """,
+                arguments: [
+                    FolderReconcileJobFactory.kind,
+                    PhotosReconcileJobFactory.kind,
+                    FolderReconcileJobFactory.kind,
+                ]
+            ) else {
+                return nil
+            }
+            let kind: String = row["kind"]
+            return CatalogReconcileProgress(
+                sourceKind: kind == PhotosReconcileJobFactory.kind ? .photos : .folder,
+                sourceDisplayName: row["display_name"],
+                completed: row["progress_completed"],
+                total: row["progress_total"]
+            )
         }
     }
 

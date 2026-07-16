@@ -98,18 +98,22 @@ struct PhotosReconcileHandler: LeaseBoundJobHandler, Sendable {
                 leaseDurationMs: context.leaseDurationMs
             )
             currentState = state
-            let resumeOffset = state.processedCount
-            var enumeratedCount = 0
+            var enumerationTotal = state.processedCount
 
-            try access.enumerateStaticImages(batchSize: batchSize) { batch in
-                let batchStart = enumeratedCount
-                enumeratedCount += batch.count
-                guard enumeratedCount > resumeOffset else { return }
-                let unseenStart = max(0, resumeOffset - batchStart)
-                let unseen = Array(batch.dropFirst(unseenStart))
+            // Legacy checkpoints counted supported assets, which is a safe lower-bound
+            // for the raw PhotoKit offset: upgrades may repeat work but never skip it.
+            try access.enumerateStaticImages(
+                startingAt: state.processedCount,
+                batchSize: batchSize
+            ) { batch in
+                guard batch.completedCount >= state.processedCount,
+                      batch.totalCount >= batch.completedCount
+                else {
+                    throw PhotosReconcileError.invalidCheckpoint
+                }
                 let nextState = PhotosReconcileCheckpoint(
                     generation: state.generation,
-                    processedCount: enumeratedCount
+                    processedCount: batch.completedCount
                 )
                 let nextCheckpoint = try nextState.jobCheckpoint
                 _ = try queue.commitLeaseProtectedBatch(
@@ -117,11 +121,14 @@ struct PhotosReconcileHandler: LeaseBoundJobHandler, Sendable {
                         lease: lease,
                         outcome: .continue,
                         checkpoint: nextCheckpoint,
-                        progress: JobProgress(completed: enumeratedCount, total: nil),
+                        progress: JobProgress(
+                            completed: batch.completedCount,
+                            total: batch.totalCount
+                        ),
                         leaseDurationMs: context.leaseDurationMs
                     )
                 ) { db in
-                    for metadata in unseen {
+                    for metadata in batch.assets {
                         try upsert(
                             metadata,
                             sourceID: decodedPayload.sourceID,
@@ -132,6 +139,7 @@ struct PhotosReconcileHandler: LeaseBoundJobHandler, Sendable {
                 }
                 state = nextState
                 currentState = nextState
+                enumerationTotal = batch.totalCount
             }
 
             let finalCheckpoint = try state.jobCheckpoint
@@ -140,7 +148,7 @@ struct PhotosReconcileHandler: LeaseBoundJobHandler, Sendable {
                     lease: lease,
                     outcome: .completed,
                     checkpoint: finalCheckpoint,
-                    progress: JobProgress(completed: state.processedCount, total: state.processedCount),
+                    progress: JobProgress(completed: state.processedCount, total: enumerationTotal),
                     leaseDurationMs: context.leaseDurationMs
                 )
             ) { db in
@@ -166,7 +174,7 @@ struct PhotosReconcileHandler: LeaseBoundJobHandler, Sendable {
             return JobHandlerExecutionResult(
                 outcome: .completed,
                 checkpoint: finalCheckpoint,
-                progress: JobProgress(completed: state.processedCount, total: state.processedCount),
+                progress: JobProgress(completed: state.processedCount, total: enumerationTotal),
                 settledByHandler: true
             )
         } catch PhotosReconcileError.invalidPayload {
