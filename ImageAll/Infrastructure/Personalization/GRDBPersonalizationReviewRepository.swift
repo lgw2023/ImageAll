@@ -161,6 +161,8 @@ struct GRDBPersonalizationReviewRepository: Sendable {
         let contentRevision: Int
         let availability: String
         let sourceState: String
+        let locatorState: String
+        let recordUpdatedAtMs: Int64
         let hasDecision: Bool
     }
 
@@ -169,7 +171,8 @@ struct GRDBPersonalizationReviewRepository: Sendable {
             guard let row = try Row.fetchOne(
                 db,
                 sql: """
-                SELECT a.content_revision, a.availability, s.state AS source_state,
+                SELECT a.content_revision, a.availability, a.locator_state, a.record_updated_at_ms,
+                    s.state AS source_state,
                     EXISTS(
                         SELECT 1 FROM asset_tag_decision d
                         WHERE d.asset_id = a.id AND d.tag_id = ?
@@ -187,6 +190,8 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                 contentRevision: row["content_revision"],
                 availability: row["availability"],
                 sourceState: row["source_state"],
+                locatorState: row["locator_state"],
+                recordUpdatedAtMs: row["record_updated_at_ms"],
                 hasDecision: row["has_decision"]
             )
         }
@@ -215,7 +220,6 @@ struct GRDBPersonalizationReviewRepository: Sendable {
         let placeholders = Array(repeating: "?", count: sourceIDs.count).joined(separator: ", ")
         var arguments: [DatabaseValueConvertible] = sourceIDs.map { uuid($0) }
         arguments.append(catalogCutoffMs)
-        arguments.append(catalogCutoffMs)
         var afterClause = ""
         if let afterAssetID {
             afterClause = "AND a.id > ?"
@@ -232,9 +236,7 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                 WHERE s.id IN (\(placeholders))
                     AND s.kind = 'folder'
                     AND a.locator_kind = 'file'
-                    AND a.locator_state = 'current'
                     AND a.record_created_at_ms <= ?
-                    AND a.record_updated_at_ms <= ?
                     \(afterClause)
                 ORDER BY a.id ASC
                 LIMIT ?
@@ -260,11 +262,9 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                 WHERE s.id IN (\(placeholders))
                     AND s.kind = 'folder'
                     AND a.locator_kind = 'file'
-                    AND a.locator_state = 'current'
                     AND a.record_created_at_ms <= ?
-                    AND a.record_updated_at_ms <= ?
                 """,
-                arguments: StatementArguments(sourceIDs.map { uuid($0) } + [catalogCutoffMs, catalogCutoffMs])
+                arguments: StatementArguments(sourceIDs.map { uuid($0) } + [catalogCutoffMs])
             ) ?? 0
         }
     }

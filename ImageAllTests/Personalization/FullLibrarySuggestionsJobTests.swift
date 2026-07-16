@@ -376,7 +376,7 @@ final class FullLibrarySuggestionsJobTests: XCTestCase {
         XCTAssertNotNil(snapshot.checkpoint)
     }
 
-    func testContentModifiedAfterCutoffIsExcludedFromScan() throws {
+    func testPostCutoffAssetModificationIncreasesCheckedAndSkippedWithoutPrediction() throws {
         let fixture = try makeLargeLibraryFixture(assetCount: 12)
         let modifiedAsset = try XCTUnwrap(
             try fixture.database.pool.read { db in
@@ -394,11 +394,10 @@ final class FullLibrarySuggestionsJobTests: XCTestCase {
         try fixture.database.pool.write { db in
             try db.execute(
                 sql: """
-                UPDATE asset SET record_updated_at_ms = ?, record_updated_at_ms = ?
+                UPDATE asset SET record_updated_at_ms = ?, content_revision = content_revision + 1
                 WHERE id = ?
                 """,
                 arguments: [
-                    fixture.cutoffMs + 5_000,
                     fixture.cutoffMs + 5_000,
                     modifiedAsset.uuidString.lowercased(),
                 ]
@@ -413,9 +412,12 @@ final class FullLibrarySuggestionsJobTests: XCTestCase {
             cutoffMs: fixture.cutoffMs,
             database: fixture.database
         )
-        drainPersonalizationJobs(coordinator: coordinator, maxSteps: 5)
+        drainPersonalizationJobs(coordinator: coordinator, maxSteps: 5, queue: fixture.queue)
+        let facts = try revisionFacts(database: fixture.database, tagID: fixture.tagID)
         let pending = try pendingAssetIDs(database: fixture.database, tagID: fixture.tagID)
         XCTAssertFalse(pending.contains(modifiedAsset))
+        XCTAssertEqual(facts.checkedCount, 12)
+        XCTAssertGreaterThanOrEqual(facts.skippedCount, 1)
     }
 
     func testPostEnqueueFeedbackDoesNotChangeFrozenSamples() throws {
@@ -513,6 +515,154 @@ final class FullLibrarySuggestionsJobTests: XCTestCase {
         XCTAssertEqual(facts.checkedCount, 20)
         XCTAssertGreaterThan(facts.skippedCount, 0)
         XCTAssertEqual(try pendingCount(database: fixture.database, tagID: fixture.tagID), 0)
+    }
+
+    func testRetryableFailureAfterFirstBatchPreservesCommittedCheckpointAndCompletesFully() throws {
+        let referenceFixture = try makeLargeLibraryFixture(assetCount: 120)
+        let referenceHandler = makeHandler(
+            database: referenceFixture.database,
+            loader: referenceFixture.loader,
+            queue: referenceFixture.queue
+        )
+        let referenceCoordinator = makeCoordinator(
+            database: referenceFixture.database,
+            handler: referenceHandler,
+            queue: referenceFixture.queue
+        )
+        _ = try enqueueJob(
+            queue: referenceFixture.queue,
+            tagID: referenceFixture.tagID,
+            sourceIDs: [referenceFixture.sourceID],
+            cutoffMs: referenceFixture.cutoffMs,
+            database: referenceFixture.database
+        )
+        drainPersonalizationJobs(
+            coordinator: referenceCoordinator,
+            maxSteps: 5,
+            queue: referenceFixture.queue
+        )
+        let referencePredictions = Set(
+            try pendingAssetIDs(database: referenceFixture.database, tagID: referenceFixture.tagID)
+        )
+
+        let fixture = try makeLargeLibraryFixture(assetCount: 120)
+        let failureLoader = BatchScopedFailureLoader(base: fixture.loader)
+        failureLoader.failOnBatch = 1
+        var failureDependencies = makeHandlerDependencies(
+            database: fixture.database,
+            loader: failureLoader,
+            queue: fixture.queue
+        )
+        failureDependencies.beforeEachBatch = { batchNumber in
+            failureLoader.activeBatch = batchNumber
+        }
+        let failureHandler = FullLibrarySuggestionsHandler(dependencies: failureDependencies)
+        let failureCoordinator = makeCoordinator(
+            database: fixture.database,
+            handler: failureHandler,
+            queue: fixture.queue
+        )
+        let failureJob = try enqueueJob(
+            queue: fixture.queue,
+            tagID: fixture.tagID,
+            sourceIDs: [fixture.sourceID],
+            cutoffMs: fixture.cutoffMs,
+            database: fixture.database
+        )
+        _ = try failureCoordinator.claimAndExecuteOnce(personalizationClaim())
+        let failedSnapshot = try fixture.queue.fetchJob(id: failureJob.id)
+        XCTAssertEqual(failedSnapshot.state, .retryableFailed)
+        let failedCheckpoint = try FullLibrarySuggestionsCodec.checkpoint(from: XCTUnwrap(failedSnapshot.checkpoint))
+        XCTAssertTrue(failedCheckpoint.firstBatchPublished)
+        XCTAssertEqual(failedCheckpoint.checkedCount, 100)
+
+        failureLoader.failOnBatch = nil
+        drainPersonalizationJobs(coordinator: failureCoordinator, maxSteps: 5, queue: fixture.queue)
+        let recoveredFacts = try revisionFacts(database: fixture.database, tagID: fixture.tagID)
+        XCTAssertEqual(recoveredFacts.checkedCount, 120)
+        let recoveredPredictions = Set(try pendingAssetIDs(database: fixture.database, tagID: fixture.tagID))
+        XCTAssertEqual(recoveredPredictions, referencePredictions)
+    }
+
+    func testPersonalizationDoesNotClaimWhileFolderReconcileWaiting() throws {
+        let fixture = try makeLargeLibraryFixture(assetCount: 10)
+        let fakeReconcile = FakeJobHandler(kind: FolderReconcileJobFactory.kind) { _, _, _ in
+            JobHandlerExecutionResult(
+                outcome: .completed,
+                checkpoint: nil,
+                progress: JobProgress(completed: 1, total: 1)
+            )
+        }
+        let personalizationHandler = makeHandler(
+            database: fixture.database,
+            loader: fixture.loader,
+            queue: fixture.queue
+        )
+        let coordinator = JobExecutionCoordinator(
+            queue: fixture.queue,
+            registry: MultiJobHandlerRegistry(handlers: [fakeReconcile, personalizationHandler]),
+            leaseContextProvider: GRDBJobLeaseContextProvider(queue: fixture.queue)
+        )
+        let reviewService = PersonalizationReviewService(
+            database: fixture.database,
+            queue: fixture.queue,
+            executionCoordinator: coordinator,
+            tags: fixture.tags,
+            clock: FixedJobClock(nowMs: DatabaseTestSupport.timestampMs)
+        )
+        let folderJobID = UUID()
+        _ = try fixture.queue.enqueue(
+            try FolderReconcileJobFactory.makeEnqueueCommand(
+                jobID: folderJobID,
+                sourceID: fixture.sourceID,
+                notBeforeMs: DatabaseTestSupport.timestampMs
+            )
+        )
+        _ = try enqueueJob(
+            queue: fixture.queue,
+            tagID: fixture.tagID,
+            sourceIDs: [fixture.sourceID],
+            cutoffMs: fixture.cutoffMs,
+            database: fixture.database
+        )
+        XCTAssertFalse(try reviewService.runPendingSuggestionJobs(maxSteps: 1))
+        XCTAssertEqual(try fixture.queue.fetchJob(id: folderJobID).state, .pending)
+
+        _ = try coordinator.claimAndExecuteOnce(
+            ClaimNextInput(
+                owner: "folder-worker",
+                leaseDurationMs: 60_000,
+                allowedKinds: [FolderReconcileJobFactory.kind]
+            )
+        )
+        XCTAssertTrue(try reviewService.runPendingSuggestionJobs(maxSteps: 1))
+    }
+
+    func testRunnerRefreshTicksWhileWorkerBlocked() async {
+        let review = BlockingPersonalizationReviewPort(blockDuration: 0.6)
+        let counter = RefreshCounter()
+        let worker = Task {
+            await PersonalizationSuggestionRunner.runOneStep(review: review) {
+                counter.bump()
+            }
+        }
+        for _ in 0 ..< 20 {
+            if review.activeWorkersCount > 0 { break }
+            try? await Task.sleep(nanoseconds: 25_000_000)
+        }
+        XCTAssertEqual(review.activeWorkersCount, 1)
+        let parallel = Task {
+            await PersonalizationSuggestionRunner.runOneStep(review: review, refresh: nil)
+        }
+        let parallelResult = await parallel.value
+        XCTAssertFalse(parallelResult)
+        XCTAssertEqual(review.peakConcurrentWorkers, 1)
+        for _ in 0 ..< 30 {
+            if counter.value >= 2 { break }
+            try? await Task.sleep(nanoseconds: 50_000_000)
+        }
+        XCTAssertGreaterThanOrEqual(counter.value, 2)
+        _ = await worker.value
     }
 }
 
@@ -644,7 +794,7 @@ private func makeLargeLibraryFixture(
             createdAtMs: DatabaseTestSupport.timestampMs
         )
     }
-    let queue = JobTestSupport.makeQueue(database: fixture.database)
+    let queue = JobTestSupport.makeQueue(database: fixture.database, retryDelayMs: 0)
     return LargeLibraryFixture(
         database: fixture.database,
         queue: queue,
@@ -685,6 +835,88 @@ private func seedDecisions(
                 arguments: [assetID.uuidString.lowercased(), tagID.uuidString.lowercased(), DatabaseTestSupport.timestampMs + 1]
             )
         }
+    }
+}
+
+private final class BatchScopedFailureLoader: SyncFeatureVectorLoading, @unchecked Sendable {
+    let base: StubSyncFeatureVectorLoader
+    private let lock = NSLock()
+    var activeBatch = -1
+    var failOnBatch: Int?
+
+    init(base: StubSyncFeatureVectorLoader) {
+        self.base = base
+    }
+
+    func loadOrGenerateSync(assetID: UUID) throws -> FeatureVectorPayload {
+        lock.lock()
+        let shouldFail = failOnBatch.map { activeBatch >= $0 } ?? false
+        lock.unlock()
+        if shouldFail {
+            throw FeaturePrintError.cacheUnsafePath
+        }
+        return try base.loadOrGenerateSync(assetID: assetID)
+    }
+}
+
+private final class BlockingPersonalizationReviewPort: PersonalizationReviewPort, @unchecked Sendable {
+    private let lock = NSLock()
+    private var activeWorkers = 0
+    private(set) var peakConcurrentWorkers = 0
+    let blockDuration: TimeInterval
+
+    init(blockDuration: TimeInterval) {
+        self.blockDuration = blockDuration
+    }
+
+    var activeWorkersCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return activeWorkers
+    }
+
+    func totalPendingSuggestionCount() throws -> Int { 0 }
+    func tagOverviews() throws -> [SuggestionTagOverview] { [] }
+    func fetchReviewQueue(tagID: UUID, cursor: ReviewQueueCursor?, limit: Int) throws -> ReviewQueuePage {
+        ReviewQueuePage(items: [], nextCursor: nil)
+    }
+    func pendingSuggestionsForAsset(assetID: UUID) throws -> [AssetPendingSuggestion] { [] }
+    func enqueueFullLibrarySuggestions(tagID: UUID, mode: PersonalizationReviewEnqueueMode) throws -> UUID {
+        UUID()
+    }
+    func pauseSuggestionJob(jobID: UUID) throws {}
+    func resumeSuggestionJob(jobID: UUID) throws {}
+    func cancelSuggestionJob(jobID: UUID) throws {}
+
+    func runPendingSuggestionJobs(maxSteps: Int?) throws -> Bool {
+        lock.lock()
+        activeWorkers += 1
+        peakConcurrentWorkers = max(peakConcurrentWorkers, activeWorkers)
+        lock.unlock()
+        defer {
+            lock.lock()
+            activeWorkers -= 1
+            lock.unlock()
+        }
+        Thread.sleep(forTimeInterval: blockDuration)
+        return true
+    }
+}
+
+private final class RefreshCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+
+    var value: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return count
+    }
+
+    func bump() {
+        lock.lock()
+        count += 1
+        lock.unlock()
     }
 }
 
@@ -828,8 +1060,15 @@ private func personalizationClaim() -> ClaimNextInput {
     )
 }
 
-private func drainPersonalizationJobs(coordinator: JobExecutionCoordinator, maxSteps: Int) {
+private func drainPersonalizationJobs(
+    coordinator: JobExecutionCoordinator,
+    maxSteps: Int,
+    queue: GRDBJobQueue? = nil
+) {
     for _ in 0 ..< maxSteps {
+        if let queue {
+            try? queue.settleRetryableJobs()
+        }
         guard (try? coordinator.claimAndExecuteOnce(personalizationClaim())) != nil else { break }
     }
 }

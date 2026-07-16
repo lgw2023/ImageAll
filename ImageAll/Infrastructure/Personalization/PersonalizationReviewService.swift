@@ -122,6 +122,10 @@ struct PersonalizationReviewService: PersonalizationReviewPort, Sendable {
     }
 
     func runPendingSuggestionJobs(maxSteps: Int? = nil) throws -> Bool {
+        try queue.settleRetryableJobs()
+        if try queue.hasBlockingFolderReconcileWork(nowMs: clock.nowMs) {
+            return false
+        }
         let claim = ClaimNextInput(
             owner: PersonalizationSuggestionRunner.claimOwner,
             leaseDurationMs: 60_000,
@@ -131,6 +135,7 @@ struct PersonalizationReviewService: PersonalizationReviewPort, Sendable {
         var didWork = false
         while true {
             if let maxSteps, steps >= maxSteps { break }
+            if try queue.hasBlockingFolderReconcileWork(nowMs: clock.nowMs) { break }
             guard let result = try executionCoordinator.claimAndExecuteOnce(claim) else { break }
             didWork = true
             steps += 1

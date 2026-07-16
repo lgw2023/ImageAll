@@ -161,6 +161,25 @@ struct GRDBJobQueue: JobQueue, Sendable {
         try commitLeaseProtectedBatch(input: input) { _ in }
     }
 
+    func hasBlockingFolderReconcileWork(nowMs: Int64) throws -> Bool {
+        try database.pool.read { db in
+            try Bool.fetchOne(
+                db,
+                sql: """
+                SELECT EXISTS(
+                    SELECT 1 FROM job
+                    WHERE kind = ?
+                        AND (
+                            state IN ('pending', 'running')
+                            OR (state = 'retryableFailed' AND not_before_ms <= ?)
+                        )
+                )
+                """,
+                arguments: [FolderReconcileJobFactory.kind, nowMs]
+            ) ?? false
+        }
+    }
+
     func settleRetryableJobs() throws {
         let nowMs = clock.nowMs
 

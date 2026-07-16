@@ -149,11 +149,10 @@ struct FullLibrarySuggestionsHandler: LeaseBoundJobHandler, Sendable {
             var skippedDelta = 0
             var predictions: [PredictionRegistration] = []
             var batchAssetIDs: [UUID] = []
-            var lastCheckedAssetID = state.lastAssetID
+            let catalogCutoffMs = decodedPayload.catalogCutoffMs
 
             for assetID in batch {
                 checkedDelta += 1
-                lastCheckedAssetID = assetID
                 guard let context = try review.frozenAssetProcessingContext(
                     tagID: decodedPayload.tagID,
                     assetID: assetID
@@ -162,6 +161,14 @@ struct FullLibrarySuggestionsHandler: LeaseBoundJobHandler, Sendable {
                     continue
                 }
                 if context.hasDecision {
+                    skippedDelta += 1
+                    continue
+                }
+                if context.recordUpdatedAtMs > catalogCutoffMs {
+                    skippedDelta += 1
+                    continue
+                }
+                if context.locatorState != AssetLocatorState.current.rawValue {
                     skippedDelta += 1
                     continue
                 }
@@ -206,17 +213,7 @@ struct FullLibrarySuggestionsHandler: LeaseBoundJobHandler, Sendable {
                 } catch let error as FeaturePrintError where isSkippableFeatureError(error) {
                     skippedDelta += 1
                 } catch let error as FeaturePrintError where isRetryableFeatureError(error) {
-                    return try retryableFailureWithPartialBatch(
-                        state: state,
-                        firstBatchPublished: firstBatchPublished,
-                        modelRevision: modelRevision,
-                        lastCheckedAssetID: lastCheckedAssetID,
-                        checkedDelta: checkedDelta,
-                        eligibleDelta: eligibleDelta,
-                        suggestedDelta: suggestedDelta,
-                        skippedDelta: skippedDelta,
-                        total: total
-                    )
+                    return try retryableFailureWithCommittedState(state: state, total: total)
                 } catch let error as PersonalizationCatalogError {
                     throw error
                 } catch {
@@ -335,19 +332,9 @@ struct FullLibrarySuggestionsHandler: LeaseBoundJobHandler, Sendable {
             }
             }
         } catch let error as FeaturePrintError where isRetryableFeatureError(error) {
-            let preservedCheckpoint = try FullLibrarySuggestionsCodec.jobCheckpoint(from: state)
-            return retryableFailure(
-                .personalizationPersistenceFailure,
-                checkpoint: preservedCheckpoint,
-                progress: JobProgress(completed: state.checkedCount, total: total)
-            )
+            return try retryableFailureWithCommittedState(state: state, total: total)
         } catch is PersonalizationCatalogError {
-            let preservedCheckpoint = try FullLibrarySuggestionsCodec.jobCheckpoint(from: state)
-            return retryableFailure(
-                .personalizationPersistenceFailure,
-                checkpoint: preservedCheckpoint,
-                progress: JobProgress(completed: state.checkedCount, total: total)
-            )
+            return try retryableFailureWithCommittedState(state: state, total: total)
         }
     }
 
@@ -358,31 +345,15 @@ struct FullLibrarySuggestionsHandler: LeaseBoundJobHandler, Sendable {
         return try? FullLibrarySuggestionsCodec.jobCheckpoint(from: .empty)
     }
 
-    private func retryableFailureWithPartialBatch(
+    private func retryableFailureWithCommittedState(
         state: FullLibrarySuggestionsCheckpoint,
-        firstBatchPublished: Bool,
-        modelRevision: Int,
-        lastCheckedAssetID: UUID?,
-        checkedDelta: Int,
-        eligibleDelta: Int,
-        suggestedDelta: Int,
-        skippedDelta: Int,
         total: Int
     ) throws -> JobHandlerExecutionResult {
-        let partial = FullLibrarySuggestionsCheckpoint(
-            lastAssetID: lastCheckedAssetID,
-            firstBatchPublished: firstBatchPublished,
-            modelRevision: modelRevision,
-            checkedCount: state.checkedCount + checkedDelta,
-            eligibleCount: state.eligibleCount + eligibleDelta,
-            suggestedCount: state.suggestedCount + suggestedDelta,
-            skippedCount: state.skippedCount + skippedDelta
-        )
-        let preservedCheckpoint = try FullLibrarySuggestionsCodec.jobCheckpoint(from: partial)
+        let preservedCheckpoint = try FullLibrarySuggestionsCodec.jobCheckpoint(from: state)
         return retryableFailure(
             .personalizationPersistenceFailure,
             checkpoint: preservedCheckpoint,
-            progress: JobProgress(completed: partial.checkedCount, total: total)
+            progress: JobProgress(completed: state.checkedCount, total: total)
         )
     }
 
