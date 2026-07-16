@@ -296,6 +296,9 @@ struct InspectorSuggestionSection: View {
                     .font(.caption)
                 }
             }
+            .onChange(of: model.primarySelectedAssetID) { _, _ in
+                expanded = false
+            }
         }
     }
 }

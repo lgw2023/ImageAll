@@ -302,15 +302,16 @@ struct GRDBPersonalizationReviewRepository: Sendable {
         """
         var arguments: [DatabaseValueConvertible] = [uuid(tagID)]
         if let cursor {
+            let boundary = try ReviewQueueCursorCodec.decodeBoundary(cursor)
             sql += """
              AND (
                 p.score < ?
                 OR (p.score = ? AND p.asset_id > ?)
              )
             """
-            arguments.append(cursor.score)
-            arguments.append(cursor.score)
-            arguments.append(uuid(cursor.assetID))
+            arguments.append(boundary.score)
+            arguments.append(boundary.score)
+            arguments.append(uuid(boundary.assetID))
         }
         sql += " ORDER BY p.score DESC, p.asset_id ASC LIMIT ?"
         arguments.append(limit + 1)
@@ -333,9 +334,10 @@ struct GRDBPersonalizationReviewRepository: Sendable {
             let nextCursor: ReviewQueueCursor?
             if rows.count > limit {
                 let boundary = rows[limit - 1]
-                nextCursor = ReviewQueueCursor(
+                let assetID = UUID(uuidString: boundary["asset_id"]) ?? items.last!.assetID
+                nextCursor = try ReviewQueueCursorCodec.encodeBoundary(
                     score: boundary["score"],
-                    assetID: UUID(uuidString: boundary["asset_id"]) ?? items.last!.assetID
+                    assetID: assetID
                 )
             } else {
                 nextCursor = nil
@@ -496,5 +498,30 @@ struct GRDBPersonalizationReviewRepository: Sendable {
 
     private func uuid(_ value: UUID) -> String {
         value.uuidString.lowercased()
+    }
+}
+
+enum ReviewQueueCursorCodec {
+    private struct BoundaryPayload: Codable {
+        let score: Double
+        let assetID: UUID
+    }
+
+    struct Boundary: Sendable {
+        let score: Double
+        let assetID: UUID
+    }
+
+    static func encodeBoundary(score: Double, assetID: UUID) throws -> ReviewQueueCursor {
+        ReviewQueueCursor(
+            token: try JSONEncoder().encode(
+                BoundaryPayload(score: score, assetID: assetID)
+            )
+        )
+    }
+
+    static func decodeBoundary(_ cursor: ReviewQueueCursor) throws -> Boundary {
+        let payload = try JSONDecoder().decode(BoundaryPayload.self, from: cursor.token)
+        return Boundary(score: payload.score, assetID: payload.assetID)
     }
 }

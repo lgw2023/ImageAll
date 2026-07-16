@@ -429,43 +429,97 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         )
     }
 
-    func testDeferReviewSelectionDoesNotWriteToDatabase() async {
+    func testDeferReviewSelectionAdvancesSelectionWithoutReorderingQueue() async {
         let sourceID = UUID()
         let tag = TagListItem(id: UUID(), displayName: "Family", state: .active)
         let first = Self.makeAsset(sourceID: sourceID, fileName: "first.jpg")
         let second = Self.makeAsset(sourceID: sourceID, fileName: "second.jpg")
+        let third = Self.makeAsset(sourceID: sourceID, fileName: "third.jpg")
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(id: sourceID, displayName: "Fixture", state: .active),
+            reconciledItems: [first, second, third],
+            tags: [tag]
+        )
+        let queueItems = [first, second, third].map {
+            ReviewQueueItemProjection(
+                assetID: $0.assetID,
+                fileName: $0.fileName,
+                availability: $0.availability,
+                acceptedTagCount: 0,
+                rejectedTagCount: 0
+            )
+        }
+        let review = FakePersonalizationReviewPort(queueItems: queueItems)
+        let model = LibraryWorkspaceModel(service: service, review: review)
+
+        await model.enterReviewQueue(tagID: tag.id, displayName: tag.displayName)
+        let originalOrder = model.reviewQueueItems.map(\.assetID)
+        await model.selectAsset(first.assetID)
+        model.deferReviewSelection()
+
+        XCTAssertEqual(service.mutateTagCallCount, 0)
+        XCTAssertEqual(model.reviewQueueItems.map(\.assetID), originalOrder)
+        XCTAssertEqual(model.selectedAssetIDs, [second.assetID])
+    }
+
+    func testReviewDecisionFromMiddleOfQueueSelectsNextOriginalItem() async {
+        let sourceID = UUID()
+        let tag = TagListItem(id: UUID(), displayName: "Family", state: .active)
+        let assets = (0 ..< 5).map { Self.makeAsset(sourceID: sourceID, fileName: "item-\($0).jpg") }
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(id: sourceID, displayName: "Fixture", state: .active),
+            reconciledItems: assets,
+            tags: [tag]
+        )
+        let review = FakePersonalizationReviewPort(
+            queueItems: assets.map {
+                ReviewQueueItemProjection(
+                    assetID: $0.assetID,
+                    fileName: $0.fileName,
+                    availability: $0.availability,
+                    acceptedTagCount: 0,
+                    rejectedTagCount: 0
+                )
+            }
+        )
+        review.decidedAssetIDsProvider = { [weak service] tagID in
+            service?.decidedAssetIDs(tagID: tagID) ?? []
+        }
+        let model = LibraryWorkspaceModel(service: service, review: review)
+
+        await model.enterReviewQueue(tagID: tag.id, displayName: tag.displayName)
+        let originalOrder = model.reviewQueueItems.map(\.assetID)
+        await model.selectAsset(assets[2].assetID)
+        await model.applyReviewDecision(action: .reject)
+
+        XCTAssertEqual(model.reviewQueueItems.map(\.assetID), originalOrder.filter { $0 != assets[2].assetID })
+        XCTAssertEqual(model.selectedAssetIDs, [assets[3].assetID])
+    }
+
+    func testInspectorClearsSuggestionsWhenMultiSelect() async {
+        let sourceID = UUID()
+        let first = Self.makeAsset(sourceID: sourceID, fileName: "first.jpg")
+        let second = Self.makeAsset(sourceID: sourceID, fileName: "second.jpg")
+        let tag = TagListItem(id: UUID(), displayName: "Family", state: .active)
         let service = FakeLibraryWorkspaceService(
             connectedSource: LibrarySourceSummary(id: sourceID, displayName: "Fixture", state: .active),
             reconciledItems: [first, second],
             tags: [tag]
         )
         let review = FakePersonalizationReviewPort(
-            queueItems: [
-                ReviewQueueItemProjection(
-                    assetID: first.assetID,
-                    fileName: first.fileName,
-                    availability: first.availability,
-                    acceptedTagCount: 0,
-                    rejectedTagCount: 0
-                ),
-                ReviewQueueItemProjection(
-                    assetID: second.assetID,
-                    fileName: second.fileName,
-                    availability: second.availability,
-                    acceptedTagCount: 0,
-                    rejectedTagCount: 0
-                ),
+            pendingByAsset: [
+                first.assetID: [AssetPendingSuggestion(tagID: tag.id, displayName: tag.displayName)],
             ]
         )
         let model = LibraryWorkspaceModel(service: service, review: review)
 
-        await model.enterReviewQueue(tagID: tag.id, displayName: tag.displayName)
+        await model.start()
+        await model.connectFolder()
         await model.selectAsset(first.assetID)
-        model.deferReviewSelection()
+        XCTAssertEqual(model.assetPendingSuggestions.map(\.tagID), [tag.id])
 
-        XCTAssertEqual(service.mutateTagCallCount, 0)
-        XCTAssertEqual(model.reviewQueueItems.map(\.assetID).last, first.assetID)
-        XCTAssertEqual(model.selectedAssetIDs, [second.assetID])
+        await model.selectAsset(second.assetID, additive: true)
+        XCTAssertTrue(model.assetPendingSuggestions.isEmpty)
     }
 
     func testApplyReviewDecisionIgnoredOutsideReviewQueue() async {
@@ -825,6 +879,17 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
             storedTags.removeAll { $0.id == tagID }
         }
     }
+
+    func decidedAssetIDs(tagID: UUID) -> Set<UUID> {
+        lock.withLock {
+            Set(
+                decisions.compactMap { assetID, tagStates in
+                    guard let state = tagStates[tagID], state != .unknown else { return nil }
+                    return assetID
+                }
+            )
+        }
+    }
 }
 
 private enum FakeWorkspaceError: Error {
@@ -838,6 +903,8 @@ private final class FakePersonalizationReviewPort: PersonalizationReviewPort, @u
     private let lock = NSLock()
     private var storedOverviews: [SuggestionTagOverview]
     private var storedQueueItems: [ReviewQueueItemProjection]
+    private var storedPendingByAsset: [UUID: [AssetPendingSuggestion]]
+    var decidedAssetIDsProvider: (@Sendable (UUID) -> Set<UUID>)?
     let blocksRunPendingJobs: Bool
     private(set) var enqueueCallCount = 0
     private(set) var runPendingJobsCallCount = 0
@@ -845,10 +912,12 @@ private final class FakePersonalizationReviewPort: PersonalizationReviewPort, @u
     init(
         overviews: [SuggestionTagOverview] = [],
         queueItems: [ReviewQueueItemProjection] = [],
+        pendingByAsset: [UUID: [AssetPendingSuggestion]] = [:],
         blocksRunPendingJobs: Bool = false
     ) {
         storedOverviews = overviews
         storedQueueItems = queueItems
+        storedPendingByAsset = pendingByAsset
         self.blocksRunPendingJobs = blocksRunPendingJobs
     }
 
@@ -862,11 +931,15 @@ private final class FakePersonalizationReviewPort: PersonalizationReviewPort, @u
 
     func fetchReviewQueue(tagID: UUID, cursor: ReviewQueueCursor?, limit: Int) throws -> ReviewQueuePage {
         lock.withLock {
-            ReviewQueuePage(items: Array(storedQueueItems.prefix(limit)), nextCursor: nil)
+            let excluded = decidedAssetIDsProvider?(tagID) ?? []
+            let visible = storedQueueItems.filter { !excluded.contains($0.assetID) }
+            return ReviewQueuePage(items: Array(visible.prefix(limit)), nextCursor: nil)
         }
     }
 
-    func pendingSuggestionsForAsset(assetID: UUID) throws -> [AssetPendingSuggestion] { [] }
+    func pendingSuggestionsForAsset(assetID: UUID) throws -> [AssetPendingSuggestion] {
+        lock.withLock { storedPendingByAsset[assetID] ?? [] }
+    }
 
     func enqueueFullLibrarySuggestions(tagID: UUID, mode: PersonalizationReviewEnqueueMode) throws -> UUID {
         lock.withLock { enqueueCallCount += 1 }

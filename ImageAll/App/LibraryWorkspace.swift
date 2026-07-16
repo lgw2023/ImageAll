@@ -612,6 +612,7 @@ final class LibraryWorkspaceModel: ObservableObject {
         guard !assetIDs.isEmpty else {
             inspectorDetail = nil
             inspectorTags = []
+            assetPendingSuggestions = []
             return
         }
 
@@ -642,6 +643,7 @@ final class LibraryWorkspaceModel: ObservableObject {
                 }
                 let aggregateByTagID = Dictionary(uniqueKeysWithValues: aggregates.map { ($0.tagID, $0) })
                 inspectorDetail = nil
+                assetPendingSuggestions = []
                 inspectorTags = availableTags.compactMap { tag in
                     guard let aggregate = aggregateByTagID[tag.id] else { return nil }
                     let decision: LibraryInspectorTagDecisionState
@@ -664,6 +666,7 @@ final class LibraryWorkspaceModel: ObservableObject {
         } catch {
             inspectorDetail = nil
             inspectorTags = []
+            assetPendingSuggestions = []
         }
     }
 
@@ -851,9 +854,15 @@ extension LibraryWorkspaceModel {
                 affectedCount: assetIDs.count
             )
             notice = .reviewMutationApplied(count: assetIDs.count, tagName: displayName)
-            reviewQueueItems.removeAll { assetIDs.contains($0.assetID) }
-            if let next = reviewQueueItems.first {
-                selectedAssetIDs = [next.assetID]
+            let queueBefore = reviewQueueItems
+            let selected = selectedAssetIDs
+            reviewQueueItems.removeAll { selected.contains($0.assetID) }
+            if let next = Self.nextReviewQueueSelection(
+                in: reviewQueueItems,
+                afterRemoving: selected,
+                from: queueBefore
+            ) {
+                selectedAssetIDs = [next]
             } else {
                 selectedAssetIDs = []
             }
@@ -870,12 +879,51 @@ extension LibraryWorkspaceModel {
               !reviewQueueItems.isEmpty
         else { return }
         let selected = selectedAssetIDs
-        let unselected = reviewQueueItems.filter { !selected.contains($0.assetID) }
-        let selectedItems = reviewQueueItems.filter { selected.contains($0.assetID) }
-        reviewQueueItems = unselected + selectedItems
-        if let first = reviewQueueItems.first(where: { !selected.contains($0.assetID) }) ?? reviewQueueItems.first {
-            selectedAssetIDs = [first.assetID]
+        if let next = Self.deferredReviewSelection(in: reviewQueueItems, selected: selected) {
+            selectedAssetIDs = next
         }
+    }
+
+    private static func deferredReviewSelection(
+        in queue: [ReviewQueueItemProjection],
+        selected: Set<UUID>
+    ) -> Set<UUID>? {
+        guard let lastSelectedIndex = queue.enumerated()
+            .filter({ selected.contains($0.element.assetID) })
+            .map(\.offset)
+            .max()
+        else { return nil }
+
+        if let next = queue.enumerated()
+            .first(where: { $0.offset > lastSelectedIndex && !selected.contains($0.element.assetID) }) {
+            return [next.element.assetID]
+        }
+        if let wrap = queue.enumerated()
+            .first(where: { !selected.contains($0.element.assetID) }) {
+            return [wrap.element.assetID]
+        }
+        return nil
+    }
+
+    private static func nextReviewQueueSelection(
+        in queue: [ReviewQueueItemProjection],
+        afterRemoving selected: Set<UUID>,
+        from original: [ReviewQueueItemProjection]
+    ) -> UUID? {
+        guard let lastSelectedIndex = original.enumerated()
+            .filter({ selected.contains($0.element.assetID) })
+            .map(\.offset)
+            .max()
+        else { return queue.first?.assetID }
+
+        if let next = original.enumerated()
+            .first(where: { $0.offset > lastSelectedIndex && !selected.contains($0.element.assetID) })?
+            .element.assetID,
+            queue.contains(where: { $0.assetID == next })
+        {
+            return next
+        }
+        return queue.first?.assetID
     }
 
     func undoLastReviewMutation() async {

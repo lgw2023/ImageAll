@@ -257,10 +257,33 @@ final class FullLibrarySuggestionsJobTests: XCTestCase {
         let page = try review.fetchReviewQueue(tagID: fixture.tagID, cursor: nil, limit: 10)
         XCTAssertEqual(page.items.count, 10)
         XCTAssertNotNil(page.nextCursor)
-        let mirror = Mirror(reflecting: page.items[0])
-        XCTAssertFalse(mirror.children.contains { $0.label == "score" })
+        assertProjectionExcludesScoreField(page.items[0])
+        if let cursor = page.nextCursor {
+            assertProjectionExcludesScoreField(cursor)
+            let cursorMirror = Mirror(reflecting: cursor)
+            XCTAssertTrue(cursorMirror.children.contains { $0.label == "token" })
+        }
+        let firstPageIDs = Set(page.items.map(\.assetID))
+        let secondPage = try review.fetchReviewQueue(
+            tagID: fixture.tagID,
+            cursor: page.nextCursor,
+            limit: 10
+        )
+        XCTAssertFalse(secondPage.items.isEmpty)
+        assertProjectionExcludesScoreField(secondPage.items[0])
+        let secondPageIDs = Set(secondPage.items.map(\.assetID))
+        XCTAssertTrue(firstPageIDs.isDisjoint(with: secondPageIDs))
+        XCTAssertEqual(
+            firstPageIDs.count + secondPageIDs.count,
+            firstPageIDs.union(secondPageIDs).count
+        )
         let total = try review.totalPendingSuggestionCount()
         XCTAssertGreaterThan(total, 10)
+    }
+
+    private func assertProjectionExcludesScoreField(_ value: Any) {
+        let mirror = Mirror(reflecting: value)
+        XCTAssertFalse(mirror.children.contains { $0.label == "score" })
     }
 
     func testProgressivePredictionsVisibleAfterFirstBatchOnly() throws {

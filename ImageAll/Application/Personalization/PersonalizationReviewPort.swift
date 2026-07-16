@@ -44,8 +44,7 @@ struct ReviewQueueItemProjection: Identifiable, Equatable, Sendable {
 }
 
 struct ReviewQueueCursor: Equatable, Sendable, Codable {
-    let score: Double
-    let assetID: UUID
+    let token: Data
 }
 
 struct ReviewQueuePage: Equatable, Sendable {
