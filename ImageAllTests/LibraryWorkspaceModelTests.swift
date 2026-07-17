@@ -387,6 +387,42 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertEqual(service.photosReconcileRunCount, 1)
     }
 
+    func testExplicitPhotosRebindKeepsHistoricalSourceAndRunsNewSourceReconcile() async {
+        let historicalSourceID = UUID()
+        let activeSourceID = UUID()
+        let activeAsset = Self.makeAsset(sourceID: activeSourceID, fileName: "Current.HEIC")
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: historicalSourceID,
+                kind: .photos,
+                displayName: "Apple Photos",
+                state: .unavailable
+            ),
+            reconciledItems: [activeAsset],
+            startsConnected: true,
+            reboundSource: LibrarySourceSummary(
+                id: activeSourceID,
+                kind: .photos,
+                displayName: "Apple Photos",
+                state: .active
+            )
+        )
+        let model = LibraryWorkspaceModel(service: service)
+        await model.start()
+        await waitForCatalogScanToFinish(model)
+        let reconcileRunsBeforeRebind = service.photosReconcileRunCount
+
+        await model.rebindPhotos(from: historicalSourceID)
+        await waitForCatalogScanToFinish(model)
+
+        XCTAssertEqual(model.sources.map(\.id), [historicalSourceID, activeSourceID])
+        XCTAssertEqual(model.sources.map(\.state), [.unavailable, .active])
+        XCTAssertEqual(model.items.map(\.assetID), [activeAsset.assetID])
+        XCTAssertEqual(service.photosRebindCallCount, 1)
+        XCTAssertEqual(service.photosConnectCallCount, 0)
+        XCTAssertEqual(service.photosReconcileRunCount, reconcileRunsBeforeRebind + 1)
+    }
+
     func testSelectedPhotosSourceIsExposedForEmptyStateGuidance() async {
         let sourceID = UUID()
         let service = FakeLibraryWorkspaceService(
@@ -1243,6 +1279,7 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
     private var storedItems: [AssetGridItemProjection] = []
     private var storedReconcileRunCount = 0
     private var storedPhotosConnectCallCount = 0
+    private var storedPhotosRebindCallCount = 0
     private var storedPhotosReconcileRunCount = 0
     private var storedReauthorizeCallCount = 0
     private var storedDisableCallCount = 0
@@ -1254,6 +1291,7 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
     private let sourceMutationFails: Bool
     private let blocksReconcileRuns: Bool
     private let photosAuthorizationFails: Bool
+    private let reboundSource: LibrarySourceSummary?
     private let catalogReconcileProgress: CatalogReconcileProgress?
     private let previewError: PhotosLibraryError?
     private let cloudPreviewData: Data
@@ -1293,6 +1331,7 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
         startsConnected: Bool = false,
         blocksReconcileRuns: Bool = false,
         photosAuthorizationFails: Bool = false,
+        reboundSource: LibrarySourceSummary? = nil,
         catalogReconcileProgress: CatalogReconcileProgress? = nil,
         previewError: PhotosLibraryError? = nil,
         cloudPreviewData: Data = Data(),
@@ -1316,6 +1355,7 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
         self.sourceMutationFails = sourceMutationFails
         self.blocksReconcileRuns = blocksReconcileRuns
         self.photosAuthorizationFails = photosAuthorizationFails
+        self.reboundSource = reboundSource
         self.catalogReconcileProgress = catalogReconcileProgress
         self.previewError = previewError
         self.cloudPreviewData = cloudPreviewData
@@ -1350,6 +1390,10 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
 
     var photosConnectCallCount: Int {
         lock.withLock { storedPhotosConnectCallCount }
+    }
+
+    var photosRebindCallCount: Int {
+        lock.withLock { storedPhotosRebindCallCount }
     }
 
     var photosReconcileRunCount: Int {
@@ -1519,6 +1563,21 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
             storedSources = [connectedSource]
         }
         return .connected(sourceID: connectedSource.id)
+    }
+
+    func rebindPhotos(unavailableSourceID: UUID) async throws -> RebindPhotosOutcome {
+        try lock.withLock {
+            guard let reboundSource,
+                  storedSources.contains(where: {
+                      $0.id == unavailableSourceID && $0.kind == .photos && $0.state == .unavailable
+                  })
+            else {
+                throw FakeWorkspaceError.sourceActionFailed
+            }
+            storedPhotosRebindCallCount += 1
+            storedSources.append(reboundSource)
+            return .rebound(previousSourceID: unavailableSourceID, sourceID: reboundSource.id)
+        }
     }
 
     func reauthorizeFolder(sourceID: UUID) async throws -> ReauthorizeFolderOutcome {

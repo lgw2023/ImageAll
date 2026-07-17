@@ -191,17 +191,20 @@ struct PhotosLibraryConnectionService: Sendable {
 
     func connect() async throws -> ConnectPhotosOutcome {
         do {
-            let hasUnavailableSource = try await database.pool.read { db in
+            let requiresExplicitRebind = try await database.pool.read { db in
                 try Bool.fetchOne(
                     db,
                     sql: """
                     SELECT EXISTS(
                         SELECT 1 FROM source WHERE kind = 'photos' AND state = 'unavailable'
                     )
+                    AND NOT EXISTS(
+                        SELECT 1 FROM source WHERE kind = 'photos' AND state != 'unavailable'
+                    )
                     """
                 ) ?? false
             }
-            guard !hasUnavailableSource else { throw PhotosLibraryError.libraryUnavailable }
+            guard !requiresExplicitRebind else { throw PhotosLibraryError.libraryUnavailable }
         } catch let error as PhotosLibraryError {
             throw error
         } catch {
@@ -231,15 +234,25 @@ struct PhotosLibraryConnectionService: Sendable {
             return try await database.pool.write { db in
                 let existingSource = try Row.fetchOne(
                     db,
-                    sql: "SELECT id, state FROM source WHERE kind = 'photos' ORDER BY created_at_ms, id LIMIT 1"
+                    sql: """
+                    SELECT id FROM source
+                    WHERE kind = 'photos' AND state != 'unavailable'
+                    ORDER BY
+                        CASE state
+                            WHEN 'active' THEN 0
+                            WHEN 'authorizationRequired' THEN 1
+                            ELSE 2
+                        END,
+                        created_at_ms DESC,
+                        id
+                    LIMIT 1
+                    """
                 )
                 let sourceID: UUID
                 let outcome: ConnectPhotosOutcome
                 if let existingSource {
                     let existingIDString: String = existingSource["id"]
-                    let existingState: String = existingSource["state"]
-                    guard existingState != SourceState.unavailable.rawValue,
-                          let existingID = UUID(uuidString: existingIDString)
+                    guard let existingID = UUID(uuidString: existingIDString)
                     else {
                         throw PhotosLibraryError.libraryUnavailable
                     }
@@ -250,6 +263,13 @@ struct PhotosLibraryConnectionService: Sendable {
                         arguments: [clock.nowMs, existingIDString]
                     )
                 } else {
+                    let photosSourceExists = try Bool.fetchOne(
+                        db,
+                        sql: "SELECT EXISTS(SELECT 1 FROM source WHERE kind = 'photos')"
+                    ) ?? false
+                    guard !photosSourceExists else {
+                        throw PhotosLibraryError.libraryUnavailable
+                    }
                     sourceID = idGenerator()
                     let sourceIDString = sourceID.uuidString.lowercased()
                     try db.execute(
@@ -266,6 +286,69 @@ struct PhotosLibraryConnectionService: Sendable {
 
                 try enqueueIfNeeded(sourceID: sourceID, db: db)
                 return outcome
+            }
+        } catch let error as PhotosLibraryError {
+            throw error
+        } catch {
+            throw PhotosLibraryError.persistenceFailure
+        }
+    }
+
+    func rebind(unavailableSourceID: UUID) async throws -> RebindPhotosOutcome {
+        let status: PhotosAuthorizationState
+        switch access.authorizationState() {
+        case .notDetermined:
+            status = await access.requestAuthorization()
+        case let current:
+            status = current
+        }
+
+        switch status {
+        case .authorized:
+            break
+        case .denied, .notDetermined:
+            throw PhotosLibraryError.authorizationDenied
+        case .restricted:
+            throw PhotosLibraryError.authorizationRestricted
+        }
+
+        do {
+            return try await database.pool.write { db in
+                let unavailableSourceIDString = unavailableSourceID.uuidString.lowercased()
+                let selectedSourceIsUnavailable = try Bool.fetchOne(
+                    db,
+                    sql: """
+                    SELECT EXISTS(
+                        SELECT 1 FROM source
+                        WHERE id = ? AND kind = 'photos' AND state = 'unavailable'
+                    )
+                    """,
+                    arguments: [unavailableSourceIDString]
+                ) ?? false
+                let activeSourceExists = try Bool.fetchOne(
+                    db,
+                    sql: """
+                    SELECT EXISTS(
+                        SELECT 1 FROM source WHERE kind = 'photos' AND state = 'active'
+                    )
+                    """
+                ) ?? false
+                guard selectedSourceIsUnavailable, !activeSourceExists else {
+                    throw PhotosLibraryError.libraryUnavailable
+                }
+
+                let sourceID = idGenerator()
+                try db.execute(
+                    sql: """
+                    INSERT INTO source (
+                        id, kind, display_name, bookmark, state,
+                        created_at_ms, updated_at_ms
+                    ) VALUES (?, 'photos', 'Apple Photos', NULL, 'active', ?, ?)
+                    """,
+                    arguments: [sourceID.uuidString.lowercased(), clock.nowMs, clock.nowMs]
+                )
+                try enqueueIfNeeded(sourceID: sourceID, db: db)
+                return .rebound(previousSourceID: unavailableSourceID, sourceID: sourceID)
             }
         } catch let error as PhotosLibraryError {
             throw error
@@ -351,7 +434,7 @@ struct PhotosLibraryConnectionService: Sendable {
             try db.execute(
                 sql: """
                 UPDATE source SET state = 'authorizationRequired', updated_at_ms = ?
-                WHERE kind = 'photos'
+                WHERE kind = 'photos' AND state = 'active'
                 """,
                 arguments: [clock.nowMs]
             )

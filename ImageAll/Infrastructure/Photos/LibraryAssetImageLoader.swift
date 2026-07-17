@@ -46,7 +46,8 @@ struct LibraryAssetImageLoader: Sendable {
             }
             let locator = try await locator(assetID: assetID)
             guard locator.kind == AssetLocatorKind.photos.rawValue,
-                  let identifier = locator.identifier
+                  let identifier = locator.identifier,
+                  locator.sourceState == SourceState.active.rawValue
             else {
                 throw PhotosLibraryError.libraryUnavailable
             }
@@ -83,6 +84,9 @@ struct LibraryAssetImageLoader: Sendable {
             {
                 return cached
             }
+            guard locator.sourceState == SourceState.active.rawValue else {
+                throw PhotosLibraryError.libraryUnavailable
+            }
             let sourceBytes = try await photosImages.requestLocalImage(
                 localIdentifier: identifier,
                 variant: variant
@@ -109,19 +113,23 @@ struct LibraryAssetImageLoader: Sendable {
         ).encodedBytes
     }
 
-    private func locator(assetID: UUID) async throws -> (kind: String, identifier: String?) {
+    private func locator(
+        assetID: UUID
+    ) async throws -> (kind: String, identifier: String?, sourceState: String) {
         try await database.pool.read { db in
             guard let row = try Row.fetchOne(
                 db,
                 sql: """
-                SELECT locator_kind, photos_local_identifier
-                FROM asset WHERE id = ? AND locator_state = 'current'
+                SELECT a.locator_kind, a.photos_local_identifier, s.state AS source_state
+                FROM asset a
+                JOIN source s ON s.id = a.source_id
+                WHERE a.id = ? AND a.locator_state = 'current'
                 """,
                 arguments: [assetID.uuidString.lowercased()]
             ) else {
                 throw PhotosLibraryError.libraryUnavailable
             }
-            return (row["locator_kind"], row["photos_local_identifier"])
+            return (row["locator_kind"], row["photos_local_identifier"], row["source_state"])
         }
     }
 }

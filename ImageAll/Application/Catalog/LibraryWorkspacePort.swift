@@ -31,6 +31,10 @@ enum ConnectPhotosOutcome: Equatable, Sendable {
     case alreadyConnected(sourceID: UUID)
 }
 
+enum RebindPhotosOutcome: Equatable, Sendable {
+    case rebound(previousSourceID: UUID, sourceID: UUID)
+}
+
 enum LibraryWorkspacePhase: Equatable, Sendable {
     case loading
     case empty
@@ -133,6 +137,7 @@ protocol LibraryWorkspacePort: Sendable {
     func fetchSources() throws -> [LibrarySourceSummary]
     func connectFolder() async throws -> ConnectFolderOutcome
     func connectPhotos() async throws -> ConnectPhotosOutcome
+    func rebindPhotos(unavailableSourceID: UUID) async throws -> RebindPhotosOutcome
     func reauthorizeFolder(sourceID: UUID) async throws -> ReauthorizeFolderOutcome
     func disableFolderSource(sourceID: UUID) async throws -> DisableFolderOutcome
     func enqueueReconcile(sourceIDs: [UUID]) throws

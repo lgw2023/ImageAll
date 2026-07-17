@@ -696,6 +696,324 @@ final class PhotosIntegrationTests: XCTestCase {
         XCTAssertEqual(evidence.activeJobs, 0)
     }
 
+    func testConnectRechecksUnavailableSourceAfterAuthorizationWait() async throws {
+        let database = try FolderAuthorizationTestSupport.makeDatabase()
+        let unavailableSourceID = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
+        let access = SuspendedPhotosAuthorizationAccess()
+        let service = PhotosLibraryConnectionService(
+            database: database,
+            access: access,
+            clock: FixedJobClock(nowMs: DatabaseTestSupport.timestampMs),
+            idGenerator: IDSequence([
+                UUID(uuidString: "22222222-3333-4444-5555-666666666666")!,
+                UUID(uuidString: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")!,
+            ]).next
+        )
+
+        let connection = Task { try await service.connect() }
+        for _ in 0 ..< 10_000 where !access.hasPendingRequest {
+            await Task.yield()
+        }
+        XCTAssertTrue(access.hasPendingRequest)
+        try await database.pool.write { db in
+            try db.execute(
+                sql: """
+                INSERT INTO source (
+                    id, kind, display_name, bookmark, state, created_at_ms, updated_at_ms
+                ) VALUES (?, 'photos', 'Apple Photos', NULL, 'unavailable', ?, ?)
+                """,
+                arguments: [
+                    unavailableSourceID.uuidString.lowercased(),
+                    DatabaseTestSupport.timestampMs,
+                    DatabaseTestSupport.timestampMs,
+                ]
+            )
+        }
+        access.resumeAuthorization(with: .authorized)
+
+        do {
+            _ = try await connection.value
+            XCTFail("Expected the transaction recheck to require explicit rebind")
+        } catch {
+            XCTAssertEqual(error as? PhotosLibraryError, .libraryUnavailable)
+        }
+
+        let evidence = try await database.pool.read { db in
+            (
+                photosSourceCount: try Int.fetchOne(
+                    db,
+                    sql: "SELECT COUNT(*) FROM source WHERE kind = 'photos'"
+                ),
+                activeSourceCount: try Int.fetchOne(
+                    db,
+                    sql: "SELECT COUNT(*) FROM source WHERE kind = 'photos' AND state = 'active'"
+                ),
+                jobCount: try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM job")
+            )
+        }
+        XCTAssertEqual(evidence.photosSourceCount, 1)
+        XCTAssertEqual(evidence.activeSourceCount, 0)
+        XCTAssertEqual(evidence.jobCount, 0)
+    }
+
+    func testExplicitRebindCreatesDistinctActiveSourceAndPreservesHistoricalFacts() async throws {
+        let database = try FolderAuthorizationTestSupport.makeDatabase()
+        let historicalSourceID = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
+        let historicalJobID = UUID(uuidString: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")!
+        let historicalAssetID = UUID(uuidString: "33333333-4444-5555-6666-777777777777")!
+        let tagID = UUID(uuidString: "44444444-5555-6666-7777-888888888888")!
+        let activeSourceID = UUID(uuidString: "22222222-3333-4444-5555-666666666666")!
+        let activeJobID = UUID(uuidString: "bbbbbbbb-cccc-dddd-eeee-ffffffffffff")!
+        let activeAssetID = UUID(uuidString: "55555555-6666-7777-8888-999999999999")!
+        let clock = FixedJobClock(nowMs: DatabaseTestSupport.timestampMs)
+        let connection = PhotosLibraryConnectionService(
+            database: database,
+            access: FakePhotosLibraryAccess(state: .authorized),
+            clock: clock,
+            idGenerator: IDSequence([
+                historicalSourceID,
+                historicalJobID,
+                activeSourceID,
+                activeJobID,
+            ]).next
+        )
+        _ = try await connection.connect()
+        try await database.pool.write { db in
+            try db.execute(
+                sql: """
+                INSERT INTO asset (
+                    id, source_id, locator_kind, relative_path, photos_local_identifier,
+                    media_type, availability, record_created_at_ms, record_updated_at_ms, file_name
+                ) VALUES (?, ?, 'photos', NULL, 'shared-local-identifier', 'public.jpeg',
+                          'available', ?, ?, 'Historical.jpg')
+                """,
+                arguments: [
+                    historicalAssetID.uuidString.lowercased(),
+                    historicalSourceID.uuidString.lowercased(),
+                    DatabaseTestSupport.timestampMs,
+                    DatabaseTestSupport.timestampMs,
+                ]
+            )
+            try db.execute(
+                sql: """
+                INSERT INTO tag (id, name, normalized_name, state, created_at_ms, updated_at_ms)
+                VALUES (?, 'Keep', 'keep', 'active', ?, ?)
+                """,
+                arguments: [
+                    tagID.uuidString.lowercased(),
+                    DatabaseTestSupport.timestampMs,
+                    DatabaseTestSupport.timestampMs,
+                ]
+            )
+            try db.execute(
+                sql: """
+                INSERT INTO asset_tag_decision (asset_id, tag_id, decision, updated_at_ms)
+                VALUES (?, ?, 'accepted', ?)
+                """,
+                arguments: [
+                    historicalAssetID.uuidString.lowercased(),
+                    tagID.uuidString.lowercased(),
+                    DatabaseTestSupport.timestampMs,
+                ]
+            )
+            try db.execute(
+                sql: "UPDATE source SET state = 'unavailable' WHERE id = ?",
+                arguments: [historicalSourceID.uuidString.lowercased()]
+            )
+            try db.execute(
+                sql: "UPDATE job SET state = 'cancelled' WHERE id = ?",
+                arguments: [historicalJobID.uuidString.lowercased()]
+            )
+        }
+
+        let outcome = try await connection.rebind(unavailableSourceID: historicalSourceID)
+        XCTAssertEqual(
+            outcome,
+            .rebound(previousSourceID: historicalSourceID, sourceID: activeSourceID)
+        )
+        do {
+            _ = try await connection.rebind(unavailableSourceID: historicalSourceID)
+            XCTFail("Expected the existing active Photos source to block a second rebind")
+        } catch {
+            XCTAssertEqual(error as? PhotosLibraryError, .libraryUnavailable)
+        }
+
+        try await database.pool.write { db in
+            try db.execute(
+                sql: """
+                INSERT INTO asset (
+                    id, source_id, locator_kind, relative_path, photos_local_identifier,
+                    media_type, availability, record_created_at_ms, record_updated_at_ms, file_name
+                ) VALUES (?, ?, 'photos', NULL, 'shared-local-identifier', 'public.jpeg',
+                          'available', ?, ?, 'Current.jpg')
+                """,
+                arguments: [
+                    activeAssetID.uuidString.lowercased(),
+                    activeSourceID.uuidString.lowercased(),
+                    DatabaseTestSupport.timestampMs,
+                    DatabaseTestSupport.timestampMs,
+                ]
+            )
+        }
+
+        let evidence = try await database.pool.read { db in
+            (
+                photosSourceCount: try Int.fetchOne(
+                    db,
+                    sql: "SELECT COUNT(*) FROM source WHERE kind = 'photos'"
+                ),
+                activeSourceCount: try Int.fetchOne(
+                    db,
+                    sql: "SELECT COUNT(*) FROM source WHERE kind = 'photos' AND state = 'active'"
+                ),
+                historicalState: try String.fetchOne(
+                    db,
+                    sql: "SELECT state FROM source WHERE id = ?",
+                    arguments: [historicalSourceID.uuidString.lowercased()]
+                ),
+                historicalAssetCount: try Int.fetchOne(
+                    db,
+                    sql: "SELECT COUNT(*) FROM asset WHERE id = ? AND source_id = ?",
+                    arguments: [
+                        historicalAssetID.uuidString.lowercased(),
+                        historicalSourceID.uuidString.lowercased(),
+                    ]
+                ),
+                historicalDecisionCount: try Int.fetchOne(
+                    db,
+                    sql: "SELECT COUNT(*) FROM asset_tag_decision WHERE asset_id = ? AND tag_id = ?",
+                    arguments: [
+                        historicalAssetID.uuidString.lowercased(),
+                        tagID.uuidString.lowercased(),
+                    ]
+                ),
+                sharedIdentifierCount: try Int.fetchOne(
+                    db,
+                    sql: "SELECT COUNT(*) FROM asset WHERE photos_local_identifier = 'shared-local-identifier'"
+                ),
+                newActiveJobCount: try Int.fetchOne(
+                    db,
+                    sql: """
+                    SELECT COUNT(*) FROM job
+                    WHERE id = ? AND source_id = ? AND state = 'pending'
+                    """,
+                    arguments: [
+                        activeJobID.uuidString.lowercased(),
+                        activeSourceID.uuidString.lowercased(),
+                    ]
+                )
+            )
+        }
+        XCTAssertEqual(evidence.photosSourceCount, 2)
+        XCTAssertEqual(evidence.activeSourceCount, 1)
+        XCTAssertEqual(evidence.historicalState, SourceState.unavailable.rawValue)
+        XCTAssertEqual(evidence.historicalAssetCount, 1)
+        XCTAssertEqual(evidence.historicalDecisionCount, 1)
+        XCTAssertEqual(evidence.sharedIdentifierCount, 2)
+        XCTAssertEqual(evidence.newActiveJobCount, 1)
+    }
+
+    func testConnectReusesCurrentActiveSourceWhenHistoricalUnavailableSourceExists() async throws {
+        let database = try FolderAuthorizationTestSupport.makeDatabase()
+        let historicalSourceID = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
+        let activeSourceID = UUID(uuidString: "22222222-3333-4444-5555-666666666666")!
+        try await database.pool.write { db in
+            try db.execute(
+                sql: """
+                INSERT INTO source (
+                    id, kind, display_name, bookmark, state, created_at_ms, updated_at_ms
+                ) VALUES (?, 'photos', 'Apple Photos', NULL, 'unavailable', ?, ?),
+                         (?, 'photos', 'Apple Photos', NULL, 'active', ?, ?)
+                """,
+                arguments: [
+                    historicalSourceID.uuidString.lowercased(),
+                    DatabaseTestSupport.timestampMs,
+                    DatabaseTestSupport.timestampMs,
+                    activeSourceID.uuidString.lowercased(),
+                    DatabaseTestSupport.timestampMs + 1,
+                    DatabaseTestSupport.timestampMs + 1,
+                ]
+            )
+        }
+        let service = PhotosLibraryConnectionService(
+            database: database,
+            access: FakePhotosLibraryAccess(state: .authorized),
+            clock: FixedJobClock(nowMs: DatabaseTestSupport.timestampMs + 2),
+            idGenerator: IDSequence([
+                UUID(uuidString: "bbbbbbbb-cccc-dddd-eeee-ffffffffffff")!,
+            ]).next
+        )
+
+        let outcome = try await service.connect()
+
+        XCTAssertEqual(outcome, .alreadyConnected(sourceID: activeSourceID))
+        let states = try await database.pool.read { db in
+            try Row.fetchAll(
+                db,
+                sql: "SELECT id, state FROM source WHERE kind = 'photos' ORDER BY created_at_ms"
+            )
+        }
+        XCTAssertEqual(states.map { $0["id"] as String }, [
+            historicalSourceID.uuidString.lowercased(),
+            activeSourceID.uuidString.lowercased(),
+        ])
+        XCTAssertEqual(states.map { $0["state"] as String }, [
+            SourceState.unavailable.rawValue,
+            SourceState.active.rawValue,
+        ])
+    }
+
+    func testAuthorizationFailureDoesNotRewriteHistoricalUnavailableSource() async throws {
+        let database = try FolderAuthorizationTestSupport.makeDatabase()
+        let historicalSourceID = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
+        let activeSourceID = UUID(uuidString: "22222222-3333-4444-5555-666666666666")!
+        try await database.pool.write { db in
+            try db.execute(
+                sql: """
+                INSERT INTO source (
+                    id, kind, display_name, bookmark, state, created_at_ms, updated_at_ms
+                ) VALUES (?, 'photos', 'Apple Photos', NULL, 'unavailable', ?, ?),
+                         (?, 'photos', 'Apple Photos', NULL, 'active', ?, ?)
+                """,
+                arguments: [
+                    historicalSourceID.uuidString.lowercased(),
+                    DatabaseTestSupport.timestampMs,
+                    DatabaseTestSupport.timestampMs,
+                    activeSourceID.uuidString.lowercased(),
+                    DatabaseTestSupport.timestampMs + 1,
+                    DatabaseTestSupport.timestampMs + 1,
+                ]
+            )
+        }
+        let service = PhotosLibraryConnectionService(
+            database: database,
+            access: FakePhotosLibraryAccess(state: .denied),
+            clock: FixedJobClock(nowMs: DatabaseTestSupport.timestampMs + 2)
+        )
+
+        do {
+            _ = try await service.connect()
+            XCTFail("Expected authorization denial")
+        } catch {
+            XCTAssertEqual(error as? PhotosLibraryError, .authorizationDenied)
+        }
+
+        let states = try await database.pool.read { db in
+            try Row.fetchAll(
+                db,
+                sql: "SELECT id, state FROM source WHERE kind = 'photos' ORDER BY created_at_ms"
+            )
+        }
+        XCTAssertEqual(states.map { $0["id"] as String }, [
+            historicalSourceID.uuidString.lowercased(),
+            activeSourceID.uuidString.lowercased(),
+        ])
+        XCTAssertEqual(states.map { $0["state"] as String }, [
+            SourceState.unavailable.rawValue,
+            SourceState.authorizationRequired.rawValue,
+        ])
+    }
+
     func testLibrarySwitchDuringFullReconcileCancelsWithoutPublishingAssetFacts() async throws {
         let database = try FolderAuthorizationTestSupport.makeDatabase()
         let newAsset = metadata("photos-new", name: "New.HEIC", type: "public.heic")
@@ -988,6 +1306,73 @@ final class PhotosIntegrationTests: XCTestCase {
         XCTAssertEqual(files.requestedVariants, [.preview])
     }
 
+    func testImageLoaderDoesNotResolveHistoricalIdentifierAgainstCurrentPhotosLibrary() async throws {
+        let database = try FolderAuthorizationTestSupport.makeDatabase()
+        let historicalSourceID = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
+        let activeSourceID = UUID(uuidString: "22222222-3333-4444-5555-666666666666")!
+        let historicalAssetID = UUID(uuidString: "33333333-4444-5555-6666-777777777777")!
+        let activeAssetID = UUID(uuidString: "44444444-5555-6666-7777-888888888888")!
+        try await database.pool.write { db in
+            try db.execute(
+                sql: """
+                INSERT INTO source (id, kind, display_name, bookmark, state, created_at_ms, updated_at_ms)
+                VALUES (?, 'photos', 'Apple Photos', NULL, 'unavailable', ?, ?),
+                       (?, 'photos', 'Apple Photos', NULL, 'active', ?, ?)
+                """,
+                arguments: [
+                    historicalSourceID.uuidString.lowercased(),
+                    DatabaseTestSupport.timestampMs,
+                    DatabaseTestSupport.timestampMs,
+                    activeSourceID.uuidString.lowercased(),
+                    DatabaseTestSupport.timestampMs + 1,
+                    DatabaseTestSupport.timestampMs + 1,
+                ]
+            )
+            try db.execute(
+                sql: """
+                INSERT INTO asset (
+                    id, source_id, locator_kind, relative_path, photos_local_identifier,
+                    media_type, availability, record_created_at_ms, record_updated_at_ms, file_name
+                ) VALUES (?, ?, 'photos', NULL, 'shared-local-identifier', 'public.jpeg',
+                          'available', ?, ?, 'Historical.jpg'),
+                         (?, ?, 'photos', NULL, 'shared-local-identifier', 'public.jpeg',
+                          'available', ?, ?, 'Current.jpg')
+                """,
+                arguments: [
+                    historicalAssetID.uuidString.lowercased(),
+                    historicalSourceID.uuidString.lowercased(),
+                    DatabaseTestSupport.timestampMs,
+                    DatabaseTestSupport.timestampMs,
+                    activeAssetID.uuidString.lowercased(),
+                    activeSourceID.uuidString.lowercased(),
+                    DatabaseTestSupport.timestampMs + 1,
+                    DatabaseTestSupport.timestampMs + 1,
+                ]
+            )
+        }
+        let photos = FakePhotosLibraryAccess(
+            state: .authorized,
+            localImageData: Data("current-library-photo".utf8)
+        )
+        let loader = LibraryAssetImageLoader(
+            database: database,
+            fileImages: FakeDerivedImageCache(data: Data()),
+            photosImages: photos
+        )
+
+        do {
+            _ = try await loader.load(assetID: historicalAssetID, variant: .preview)
+            XCTFail("Expected historical source to avoid resolving against the current library")
+        } catch {
+            XCTAssertEqual(error as? PhotosLibraryError, .libraryUnavailable)
+        }
+        XCTAssertEqual(photos.requestedVariants, [])
+
+        let activeData = try await loader.load(assetID: activeAssetID, variant: .preview)
+        XCTAssertEqual(activeData, Data("current-library-photo".utf8))
+        XCTAssertEqual(photos.requestedVariants, [.preview])
+    }
+
     func testImageLoaderPersistsLocalPhotosThumbnailAndReusesItAfterRecreation() async throws {
         let database = try FolderAuthorizationTestSupport.makeDatabase()
         let sourceID = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
@@ -1195,6 +1580,47 @@ final class PhotosIntegrationTests: XCTestCase {
             createdAtMs: DatabaseTestSupport.timestampMs,
             modifiedAtMs: DatabaseTestSupport.timestampMs
         )
+    }
+}
+
+private final class SuspendedPhotosAuthorizationAccess: PhotosLibraryAccessPort, @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<PhotosAuthorizationState, Never>?
+
+    var hasPendingRequest: Bool {
+        lock.withLock { continuation != nil }
+    }
+
+    func authorizationState() -> PhotosAuthorizationState { .notDetermined }
+
+    func requestAuthorization() async -> PhotosAuthorizationState {
+        await withCheckedContinuation { continuation in
+            lock.withLock { self.continuation = continuation }
+        }
+    }
+
+    func resumeAuthorization(with state: PhotosAuthorizationState) {
+        let pending = lock.withLock {
+            let pending = continuation
+            continuation = nil
+            return pending
+        }
+        pending?.resume(returning: state)
+    }
+
+    func enumerateStaticImages(
+        startingAt _: Int,
+        batchSize _: Int,
+        onBatch _: (PhotosAssetEnumerationBatch) throws -> Void
+    ) throws {
+        throw PhotosLibraryError.libraryUnavailable
+    }
+
+    func requestLocalImage(
+        localIdentifier _: String,
+        variant _: PhotosImageVariant
+    ) async throws -> Data {
+        throw PhotosLibraryError.libraryUnavailable
     }
 }
 

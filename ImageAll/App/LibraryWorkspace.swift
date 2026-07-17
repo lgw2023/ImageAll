@@ -108,6 +108,13 @@ final class LibraryWorkspaceModel: ObservableObject {
         return sources.first(where: { $0.id == selectedSourceID })?.state == .authorizationRequired
     }
 
+    var selectedUnavailablePhotosSource: LibrarySourceSummary? {
+        guard let selectedSourceID else { return nil }
+        return sources.first(where: {
+            $0.id == selectedSourceID && $0.kind == .photos && $0.state == .unavailable
+        })
+    }
+
     var canRescan: Bool {
         if let selectedSourceID {
             return sources.first(where: { $0.id == selectedSourceID })?.state == .active
@@ -264,6 +271,32 @@ final class LibraryWorkspaceModel: ObservableObject {
             notice = .photosAuthorizationRequired
         } catch {
             phase = .failed(.connectionFailed)
+        }
+    }
+
+    func rebindPhotos(from unavailableSourceID: UUID) async {
+        guard !isBusy,
+              sources.contains(where: {
+                  $0.id == unavailableSourceID && $0.kind == .photos && $0.state == .unavailable
+              })
+        else {
+            return
+        }
+        let previousPhase = phase
+        notice = nil
+        phase = .scanning
+        do {
+            _ = try await service.rebindPhotos(unavailableSourceID: unavailableSourceID)
+            let service = service
+            sources = try await Self.offMain { try service.fetchSources() }
+            await loadFirstPage()
+            startCatalogReconcileRunnerIfNeeded()
+        } catch PhotosLibraryError.authorizationDenied, PhotosLibraryError.authorizationRestricted {
+            phase = previousPhase
+            notice = .photosAuthorizationRequired
+        } catch {
+            phase = previousPhase
+            notice = .sourceActionFailed
         }
     }
 
@@ -1342,6 +1375,7 @@ struct LibraryWorkspaceView: View {
     @State private var searchText = ""
     @State private var newTagName = ""
     @State private var sourcePendingDisable: LibrarySourceSummary?
+    @State private var photosSourcePendingRebind: LibrarySourceSummary?
     @State private var tagPendingRename: TagListItem?
     @State private var renamedTagName = ""
     @State private var tagPendingArchive: TagListItem?
@@ -1520,6 +1554,25 @@ struct LibraryWorkspaceView: View {
             }
         } message: { _ in
             Text("ImageAll 会停止该来源的扫描任务，但保留已索引的照片、人工标签和历史；原照片不会被修改。")
+        }
+        .confirmationDialog(
+            "连接当前系统照片图库？",
+            isPresented: Binding(
+                get: { photosSourcePendingRebind != nil },
+                set: { if !$0 { photosSourcePendingRebind = nil } }
+            ),
+            titleVisibility: .visible,
+            presenting: photosSourcePendingRebind
+        ) { source in
+            Button("保留历史并连接") {
+                photosSourcePendingRebind = nil
+                Task { await model.rebindPhotos(from: source.id) }
+            }
+            Button("取消", role: .cancel) {
+                photosSourcePendingRebind = nil
+            }
+        } message: { _ in
+            Text("ImageAll 会保留旧图库的索引、人工标签和历史，并为当前系统照片图库创建一个新的来源。不会迁移或合并无法确认身份的照片，也不会修改 Apple Photos 中的原图。")
         }
         .confirmationDialog(
             "连接 Apple Photos？",
@@ -1846,7 +1899,10 @@ struct LibraryWorkspaceView: View {
             )
                 .lineLimit(1)
             Spacer(minLength: 4)
-            if let status = sourceStatusText(source.state) {
+            if let status = source.kind == .photos && source.state == .unavailable
+                ? "历史"
+                : sourceStatusText(source.state)
+            {
                 Text(status)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
@@ -1867,20 +1923,31 @@ struct LibraryWorkspaceView: View {
             }
             .disabled(model.isBusy || source.state != .active)
 
-            Button("重新授权…") {
-                Task { await model.reauthorizeSource(source.id) }
+            if source.kind == .photos && source.state == .unavailable {
+                Button("连接当前系统图库…") {
+                    photosSourcePendingRebind = source
+                }
+                .disabled(model.isBusy)
+            } else {
+                Button(source.kind == .photos && source.state == .disabled ? "重新启用…" : "重新授权…") {
+                    Task { await model.reauthorizeSource(source.id) }
+                }
+                .disabled(
+                    model.isBusy ||
+                    (source.kind == .folder && source.state != .unavailable && source.state != .authorizationRequired) ||
+                    (source.kind == .photos && source.state != .authorizationRequired && source.state != .disabled)
+                )
             }
-            .disabled(
-                model.isBusy ||
-                (source.kind == .folder && source.state != .unavailable && source.state != .authorizationRequired)
-            )
 
             Divider()
 
             Button("停用来源", role: .destructive) {
                 sourcePendingDisable = source
             }
-            .disabled(model.isBusy || source.state == .disabled)
+            .disabled(
+                model.isBusy || source.state == .disabled ||
+                (source.kind == .photos && source.state == .unavailable)
+            )
         }
     }
 
@@ -1947,7 +2014,17 @@ struct LibraryWorkspaceView: View {
                     }
                 } else {
                     if model.selectedSourceIsPhotos {
-                        if model.selectedPhotosSourceNeedsAuthorization || model.notice == .photosAuthorizationRequired {
+                        if let unavailableSource = model.selectedUnavailablePhotosSource {
+                            ContentUnavailableView {
+                                Label("系统照片图库已更换", systemImage: "photo.badge.exclamationmark")
+                            } description: {
+                                Text("旧来源的索引、人工标签和历史仍保留。确认后可为当前系统照片图库创建一个新的来源。")
+                            } actions: {
+                                Button("保留历史并连接当前图库…") {
+                                    photosSourcePendingRebind = unavailableSource
+                                }
+                            }
+                        } else if model.selectedPhotosSourceNeedsAuthorization || model.notice == .photosAuthorizationRequired {
                             ContentUnavailableView {
                                 Label("需要照片访问权限", systemImage: "lock.trianglebadge.exclamationmark")
                             } description: {

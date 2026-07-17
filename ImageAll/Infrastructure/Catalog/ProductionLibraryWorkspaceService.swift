@@ -91,6 +91,10 @@ struct ProductionLibraryWorkspaceService: LibraryWorkspacePort, Sendable {
         try await photosConnection.connect()
     }
 
+    func rebindPhotos(unavailableSourceID: UUID) async throws -> RebindPhotosOutcome {
+        try await photosConnection.rebind(unavailableSourceID: unavailableSourceID)
+    }
+
     func reauthorizeFolder(sourceID: UUID) async throws -> ReauthorizeFolderOutcome {
         let outcome = try await authorization.reauthorizeFolder(sourceID: sourceID)
         try folderSourceMonitor.synchronize()
