@@ -13,6 +13,8 @@ enum SuggestionTaskPresentation: String, Equatable, Sendable {
 }
 
 struct SuggestionTagOverview: Identifiable, Equatable, Sendable {
+    private static let recommendedSampleCountPerRole = 4
+
     let id: UUID
     let displayName: String
     let acceptedSampleCount: Int
@@ -31,6 +33,14 @@ struct SuggestionTagOverview: Identifiable, Equatable, Sendable {
     let canResume: Bool
     let canCancel: Bool
     let activeJobID: UUID?
+
+    var recommendedPositiveSampleGap: Int {
+        max(0, Self.recommendedSampleCountPerRole - acceptedSampleCount)
+    }
+
+    var recommendedNegativeSampleGap: Int {
+        max(0, Self.recommendedSampleCountPerRole - rejectedSampleCount)
+    }
 }
 
 struct ReviewQueueItemProjection: Identifiable, Equatable, Sendable {

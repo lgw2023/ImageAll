@@ -35,6 +35,12 @@ struct ReviewOverviewView: View {
                         Text("还需确认 \(overview.missingPositiveCount) 张、标记不属于 \(overview.missingNegativeCount) 张")
                             .font(.caption)
                             .foregroundStyle(.orange)
+                    } else if overview.recommendedPositiveSampleGap > 0
+                        || overview.recommendedNegativeSampleGap > 0
+                    {
+                        Text("样本已可用；建议正反样本各至少 4 张，并尽量覆盖不同内容（当前 \(overview.acceptedSampleCount)/\(overview.rejectedSampleCount)）")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     }
                     HStack {
                         if overview.canGenerate {

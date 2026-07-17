@@ -76,6 +76,8 @@ final class FullLibrarySuggestionsJobTests: XCTestCase {
         let overview = try XCTUnwrap(service.tagOverviews().first(where: { $0.id == tagID }))
         XCTAssertEqual(overview.acceptedSampleCount, 2)
         XCTAssertEqual(overview.rejectedSampleCount, 2)
+        XCTAssertEqual(overview.recommendedPositiveSampleGap, 2)
+        XCTAssertEqual(overview.recommendedNegativeSampleGap, 2)
         XCTAssertTrue(overview.canGenerate)
     }
 
