@@ -49,6 +49,44 @@ final class DerivedImageContractTests: XCTestCase {
         XCTAssertEqual(after, before)
     }
 
+    func testClearCacheConvergesTenThousandRegisteredObjectsWithinScaleGate() async throws {
+        let env = try DerivedImageTestSupport.TempEnvironment(label: "cache-clear-scale")
+        defer { env.cleanup() }
+        _ = try env.seedAvailableAsset()
+        let sourceBefore = try env.sourceTreeSnapshot()
+        let entryCount = 10_000
+        try await env.seedScaleCacheEntriesAndObjects(count: entryCount)
+        let (service, _) = env.makeService(volumeReader: DerivedImageTestSupport.generousVolume)
+        XCTAssertEqual(
+            try service.cacheUsage(),
+            DerivedImageCacheUsage(entryCount: entryCount, registeredBytes: UInt64(entryCount))
+        )
+
+        let startedAt = ContinuousClock.now
+        let result = try await service.clearCache()
+        let elapsed = ContinuousClock.now - startedAt
+
+        XCTAssertEqual(result.removedEntries, entryCount)
+        XCTAssertEqual(result.registeredBytesInvalidated, UInt64(entryCount))
+        XCTAssertEqual(result.removedObjects, entryCount)
+        XCTAssertEqual(result.removedBytes, UInt64(entryCount))
+        XCTAssertFalse(result.partialReclaim)
+        XCTAssertEqual(try service.cacheUsage(), .zero)
+        let artifacts = try await env.cacheArtifactCounts()
+        XCTAssertEqual(artifacts.entries, 0)
+        XCTAssertEqual(artifacts.objects, 0)
+        XCTAssertEqual(artifacts.stagingFiles, 0)
+        XCTAssertEqual(try env.sourceTreeSnapshot(), sourceBefore)
+        XCTAssertLessThan(elapsed, .seconds(15))
+
+        let attachment = XCTAttachment(
+            string: "entries=\(entryCount) clear_seconds=\(elapsed) removed_bytes=\(result.removedBytes)"
+        )
+        attachment.name = "ImageAll 10k cache clear baseline"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+
     func testClearRejectsObjectSymlinkBeforeInvalidatingEntries() async throws {
         let env = try DerivedImageTestSupport.TempEnvironment(label: "cache-clear-symlink")
         defer { env.cleanup() }

@@ -607,6 +607,63 @@ enum DerivedImageTestSupport {
             }
         }
 
+        func seedScaleCacheEntriesAndObjects(count: Int) async throws {
+            precondition(count > 0)
+            let objectBytes = Data([0xAB])
+            let objectHash = DerivedImageTestSupport.sha256Data(for: objectBytes)
+            try await database.pool.write { db in
+                try db.execute(
+                    sql: """
+                    WITH RECURSIVE synthetic_entry(entry_index) AS (
+                        SELECT 0
+                        UNION ALL
+                        SELECT entry_index + 1
+                        FROM synthetic_entry
+                        WHERE entry_index + 1 < ?
+                    )
+                    INSERT INTO derived_image_cache_entry (
+                        id, asset_id, content_revision, representation_version, variant,
+                        storage_format, pixel_width, pixel_height, byte_size, encoded_sha256,
+                        created_at_ms, last_accessed_at_ms
+                    )
+                    SELECT
+                        printf('40000000-0000-4000-8000-%012x', entry_index),
+                        ?,
+                        entry_index + 1,
+                        1,
+                        'gridSmall',
+                        'jpeg',
+                        256,
+                        256,
+                        1,
+                        ?,
+                        1_700_000_000_000 + entry_index,
+                        1_700_000_000_000 + entry_index
+                    FROM synthetic_entry
+                    """,
+                    arguments: [count, assetID.uuidString.lowercased(), objectHash]
+                )
+            }
+
+            let session = try DerivedImageCacheStore(cachesDirectory: cachesDirectory).ensureLayout()
+            session.closeHandles()
+            var createdShards = Set<String>()
+            for index in 0 ..< count {
+                let entryID = UUID(
+                    uuidString: String(format: "40000000-0000-4000-8000-%012x", index)
+                )!
+                let objectURL = finalObjectURL(entryID: entryID, format: .jpeg)
+                let shard = objectURL.deletingLastPathComponent()
+                if createdShards.insert(shard.lastPathComponent).inserted {
+                    try FileManager.default.createDirectory(
+                        at: shard,
+                        withIntermediateDirectories: true
+                    )
+                }
+                try objectBytes.write(to: objectURL)
+            }
+        }
+
         func deleteAssetCascadingCacheEntry(assetID: UUID? = nil) async throws {
             let resolvedAssetID = assetID ?? self.assetID
             try await database.pool.write { db in
