@@ -110,7 +110,12 @@ Feature 文件只保存 Vision observation 的原始 float32 data；数据库保
 - 每类代表样本最多 12；
 - 每类取最近最多 3 个样本的算术平均距离；
 - `score = negativeMeanDistance - positiveMeanDistance`；值越大越接近正例；
-- 首版写入条件为 `score > 0`；UI 接入前必须用三个真实标签再冻结阈值与强度分档。
+- 首版写入条件为 `score > 0`。
+
+2026-07-17 三个真实标签校准后，`2 + 2` 继续作为允许生成建议的硬门，概览另以非阻塞文案建议
+正反样本各至少 4 张并覆盖不同内容。`score > 0` 继续只作为原型候选写入条件；不同标签的分数区间
+不可直接比较，因此 UI 仍不显示 score、百分比或固定高/中/低分档。运行证据与混合质量结论见
+[`STAGE-3-REVIEW-QUEUE-IMPLEMENTATION-SPEC.md`](./STAGE-3-REVIEW-QUEUE-IMPLEMENTATION-SPEC.md) 第 8.1 节。
 
 样本从人工决定中按 `updated_at_ms DESC, asset_id ASC` 稳定选择，并把实际 Asset、
 content revision、role、rank 写入不可变 revision。发布前要求所有样本的当前 Feature 可用。

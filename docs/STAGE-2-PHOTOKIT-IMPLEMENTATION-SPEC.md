@@ -366,6 +366,8 @@ bundle 位于
   路径，也未读取仓库 `user/`；验收结束时 App 保持运行，让已确认的全库建议任务继续收敛。
 
 本记录关闭连接、只读元数据对账、本地图片输入、个性化样本、Feature Print、全库建议与 Review Queue
-可见结果组成的真实图库主路径门。System Photo Library 实际切换/显式重绑定，以及三类代表性标签的
-内容质量校准仍是发布前人工门；它们需要新的明确测试选择，不由本次 smoke 静默执行。批量云下载和后台
-自动获取 iCloud-only 内容继续留在 MVP 范围外。
+可见结果组成的真实图库主路径门。三类代表性标签随后已按新的明确测试选择完成运行校准，混合质量结论与
+停止位置见
+[`STAGE-3-REVIEW-QUEUE-IMPLEMENTATION-SPEC.md`](./STAGE-3-REVIEW-QUEUE-IMPLEMENTATION-SPEC.md) 第 8.1 节。
+System Photo Library 实际切换/显式重绑定仍是发布前人工门；批量云下载和后台自动获取 iCloud-only 内容
+继续留在 MVP 范围外。
