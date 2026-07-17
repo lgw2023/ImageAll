@@ -90,7 +90,12 @@ struct PortableExportManifest: Codable, Equatable, Sendable {
 }
 
 protocol PortableExportFaultInjecting: Sendable {
+    func beforeWritingFile(filename: String) throws
     func beforePublication() throws
+}
+
+extension PortableExportFaultInjecting {
+    func beforeWritingFile(filename _: String) throws {}
 }
 
 struct NoPortableExportFaultInjector: PortableExportFaultInjecting {
@@ -140,6 +145,11 @@ struct PortableCatalogExporter: Sendable {
                 try database.pool.read { db in
                     appliedMigrations = try CatalogDatabase.readAppliedMigrationIDs(from: db)
                     for spec in specs {
+                        do {
+                            try faultInjector.beforeWritingFile(filename: spec.filename)
+                        } catch {
+                            throw PortableCatalogExportError.writeFailed
+                        }
                         writtenCounts[spec.filename] = try write(spec, from: db, to: tempURL)
                     }
                 }

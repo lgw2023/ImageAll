@@ -162,6 +162,42 @@ final class PortableCatalogExportTests: XCTestCase {
         XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: exportParent.path), [])
     }
 
+    func testDataFileWriteFailureRemovesTemporaryBundleAndPublishesNothing() throws {
+        struct DataFileWriteFailure: PortableExportFaultInjecting {
+            func beforeWritingFile(filename: String) throws {
+                if filename == "assets.jsonl" {
+                    throw PortableCatalogExportError.writeFailed
+                }
+            }
+
+            func beforePublication() throws {}
+        }
+
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ImageAll-PortableExportWriteFault-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+        let database = try CatalogDatabase.open(at: root.appendingPathComponent("catalog.sqlite"))
+        let exportParent = root.appendingPathComponent("Exports", isDirectory: true)
+        try FileManager.default.createDirectory(at: exportParent, withIntermediateDirectories: true)
+
+        XCTAssertThrowsError(
+            try PortableCatalogExporter(database: database).export(
+                PortableCatalogExportRequest(
+                    parentDirectoryURL: exportParent,
+                    bundleName: "ImageAll-Export-20260717-010204Z",
+                    createdAtMs: 1_752_695_724_000,
+                    appVersion: "1.0-test"
+                ),
+                faultInjector: DataFileWriteFailure()
+            )
+        ) { error in
+            XCTAssertEqual(error as? PortableCatalogExportError, .writeFailed)
+        }
+
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: exportParent.path), [])
+    }
+
     private func jsonLines(at url: URL) throws -> [[String: Any]] {
         let data = try Data(contentsOf: url)
         return try data.split(separator: 0x0a).map { line in
