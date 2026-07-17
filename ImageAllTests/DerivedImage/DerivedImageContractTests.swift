@@ -544,6 +544,91 @@ final class DerivedImageContractTests: XCTestCase {
 }
 
 extension DerivedImageContractTests {
+    func testLocalPhotosThumbnailPersistsInDerivedCacheAcrossServiceRecreation() async throws {
+        let env = try DerivedImageTestSupport.TempEnvironment(label: "photos-local-thumbnail")
+        defer { env.cleanup() }
+        try await seedPhotosAsset(in: env)
+        let sourceBytes = FolderReconcileTestSupport.minimalJPEGData()
+        let (service, _) = env.makeService(volumeReader: DerivedImageTestSupport.generousVolume)
+
+        let stored = try await service.storePhotoThumbnail(
+            assetID: env.assetID,
+            sourceBytes: sourceBytes
+        )
+        XCTAssertFalse(stored.isEmpty)
+        XCTAssertEqual(try service.loadPhotoThumbnail(assetID: env.assetID), stored)
+
+        let (reopenedService, _) = env.makeService(
+            volumeReader: DerivedImageTestSupport.generousVolume
+        )
+        XCTAssertEqual(try reopenedService.loadPhotoThumbnail(assetID: env.assetID), stored)
+
+        let row = try env.database.pool.read { db in
+            try Row.fetchOne(
+                db,
+                sql: """
+                SELECT e.variant, e.pixel_width, e.pixel_height, s.kind AS source_kind
+                FROM derived_image_cache_entry e
+                JOIN asset a ON a.id = e.asset_id
+                JOIN source s ON s.id = a.source_id
+                WHERE e.asset_id = ?
+                """,
+                arguments: [env.assetID.uuidString.lowercased()]
+            )
+        }
+        XCTAssertEqual(row?["variant"] as String?, DerivedImageVariant.gridRegular.rawValue)
+        XCTAssertEqual(row?["pixel_width"] as Int?, 512)
+        XCTAssertEqual(row?["pixel_height"] as Int?, 512)
+        XCTAssertEqual(row?["source_kind"] as String?, SourceKind.photos.rawValue)
+    }
+
+    func testCorruptLocalPhotosThumbnailIsRejectedAndCanBeRebuilt() async throws {
+        let env = try DerivedImageTestSupport.TempEnvironment(label: "photos-local-thumbnail-corrupt")
+        defer { env.cleanup() }
+        try await seedPhotosAsset(in: env)
+        let sourceBytes = FolderReconcileTestSupport.minimalJPEGData()
+        let (service, _) = env.makeService(volumeReader: DerivedImageTestSupport.generousVolume)
+
+        _ = try await service.storePhotoThumbnail(
+            assetID: env.assetID,
+            sourceBytes: sourceBytes
+        )
+        let storedEntry = try await env.database.pool.read { db -> (UUID, DerivedImageStorageFormat)? in
+            guard let row = try Row.fetchOne(
+                db,
+                sql: """
+                SELECT id, storage_format
+                FROM derived_image_cache_entry
+                WHERE asset_id = ? AND variant = 'gridRegular'
+                """,
+                arguments: [env.assetID.uuidString.lowercased()]
+            ),
+                let id = UUID(uuidString: row["id"]),
+                let format = DerivedImageStorageFormat(rawValue: row["storage_format"])
+            else {
+                return nil
+            }
+            return (id, format)
+        }
+        let entry = try XCTUnwrap(storedEntry)
+        try env.tamperCacheObjectSameByteSize(entryID: entry.0, format: entry.1)
+
+        XCTAssertNil(try service.loadPhotoThumbnail(assetID: env.assetID))
+        let invalidated = try await env.cacheArtifactCounts()
+        XCTAssertEqual(invalidated.entries, 0)
+        XCTAssertEqual(invalidated.objects, 0)
+
+        let rebuilt = try await service.storePhotoThumbnail(
+            assetID: env.assetID,
+            sourceBytes: sourceBytes
+        )
+        XCTAssertEqual(try service.loadPhotoThumbnail(assetID: env.assetID), rebuilt)
+        let rebuiltCounts = try await env.cacheArtifactCounts()
+        XCTAssertEqual(rebuiltCounts.entries, 1)
+        XCTAssertEqual(rebuiltCounts.objects, 1)
+        XCTAssertEqual(rebuiltCounts.stagingFiles, 0)
+    }
+
     func testDownloadedPhotosPreviewPersistsInDerivedCacheAcrossServiceRecreation() async throws {
         let env = try DerivedImageTestSupport.TempEnvironment(label: "photos-downloaded-preview")
         defer { env.cleanup() }

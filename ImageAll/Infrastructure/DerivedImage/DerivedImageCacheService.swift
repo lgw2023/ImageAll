@@ -107,7 +107,9 @@ final class DerivedImageOperationGate: @unchecked Sendable {
     }
 }
 
-final class DerivedImageCacheService: DerivedImageCachePort, DownloadedPreviewCachePort, @unchecked Sendable {
+final class DerivedImageCacheService: DerivedImageCachePort, DownloadedPreviewCachePort,
+    PhotoThumbnailCachePort, @unchecked Sendable
+{
     private enum HitValidationResult {
         case valid(DerivedImagePayload)
         case invalid(candidate: DerivedImageCacheEntryRow)
@@ -196,6 +198,17 @@ final class DerivedImageCacheService: DerivedImageCachePort, DownloadedPreviewCa
     }
 
     func loadDownloadedPreview(assetID: UUID) throws -> Data? {
+        try loadCachedPhotoImage(assetID: assetID, variant: .preview)
+    }
+
+    func loadPhotoThumbnail(assetID: UUID) throws -> Data? {
+        try loadCachedPhotoImage(assetID: assetID, variant: .gridRegular)
+    }
+
+    private func loadCachedPhotoImage(
+        assetID: UUID,
+        variant: DerivedImageVariant
+    ) throws -> Data? {
         operationGate.beginAccess()
         defer { operationGate.endAccess() }
         do {
@@ -206,7 +219,7 @@ final class DerivedImageCacheService: DerivedImageCachePort, DownloadedPreviewCa
                 assetID: assetID,
                 contentRevision: lookup.contentRevision,
                 representationVersion: DerivedImageRepresentationVersion.production,
-                variant: .preview
+                variant: variant
             ) else {
                 return nil
             }
@@ -234,6 +247,29 @@ final class DerivedImageCacheService: DerivedImageCachePort, DownloadedPreviewCa
     }
 
     func storeDownloadedPreview(assetID: UUID, sourceBytes: Data) async throws -> Data {
+        try await storePhotoImage(
+            assetID: assetID,
+            sourceBytes: sourceBytes,
+            variant: .preview,
+            usesDownloadedPreviewQuota: true
+        )
+    }
+
+    func storePhotoThumbnail(assetID: UUID, sourceBytes: Data) async throws -> Data {
+        try await storePhotoImage(
+            assetID: assetID,
+            sourceBytes: sourceBytes,
+            variant: .gridRegular,
+            usesDownloadedPreviewQuota: false
+        )
+    }
+
+    private func storePhotoImage(
+        assetID: UUID,
+        sourceBytes: Data,
+        variant: DerivedImageVariant,
+        usesDownloadedPreviewQuota: Bool
+    ) async throws -> Data {
         operationGate.beginAccess()
         defer { operationGate.endAccess() }
         do {
@@ -243,9 +279,11 @@ final class DerivedImageCacheService: DerivedImageCachePort, DownloadedPreviewCa
             guard lookup.isEligibleForDownloadedPreview else {
                 throw DerivedImageError.derivedAssetIneligible
             }
-            return try await storeDownloadedPreviewInternal(
+            return try await storePhotoImageInternal(
                 sourceBytes: sourceBytes,
-                lookup: lookup
+                lookup: lookup,
+                variant: variant,
+                usesDownloadedPreviewQuota: usesDownloadedPreviewQuota
             )
         } catch let error as DerivedImageError {
             throw error
@@ -315,9 +353,11 @@ final class DerivedImageCacheService: DerivedImageCachePort, DownloadedPreviewCa
         )
     }
 
-    private func storeDownloadedPreviewInternal(
+    private func storePhotoImageInternal(
         sourceBytes: Data,
-        lookup: DerivedImageCacheLookupContext
+        lookup: DerivedImageCacheLookupContext,
+        variant: DerivedImageVariant,
+        usesDownloadedPreviewQuota: Bool
     ) async throws -> Data {
         let session = try store.ensureLayout()
         defer { session.closeHandles() }
@@ -327,7 +367,7 @@ final class DerivedImageCacheService: DerivedImageCachePort, DownloadedPreviewCa
             assetID: lookup.assetID,
             contentRevision: lookup.contentRevision,
             representationVersion: DerivedImageRepresentationVersion.production,
-            variant: .preview
+            variant: variant
         ) {
             switch try validateHit(entry: entry, session: session) {
             case let .valid(payload):
@@ -337,35 +377,39 @@ final class DerivedImageCacheService: DerivedImageCachePort, DownloadedPreviewCa
             }
         }
 
-        let artifact = try renderer.render(sourceBytes: sourceBytes, variant: .preview)
+        let artifact = try renderer.render(sourceBytes: sourceBytes, variant: variant)
         guard artifact.byteSize > 0 else {
             throw DerivedImageError.derivedEncodeFailed
         }
         guard let incomingBytes = UInt64(exactly: artifact.byteSize) else {
             return artifact.bytes
         }
-        guard incomingBytes <= downloadedPreviewQuotaBytes else {
+        guard !usesDownloadedPreviewQuota || incomingBytes <= downloadedPreviewQuotaBytes else {
             return artifact.bytes
         }
 
         do {
-            try evictDownloadedPreviewsIfNeeded(incomingBytes: incomingBytes, session: session)
+            if usesDownloadedPreviewQuota {
+                try evictDownloadedPreviewsIfNeeded(incomingBytes: incomingBytes, session: session)
+            }
             try await evictIfNeeded(incomingBytes: incomingBytes, session: session)
         } catch DerivedImageError.derivedInsufficientSpace {
             return artifact.bytes
         }
 
-        return try publishDownloadedPreview(
+        return try publishPhotoImage(
             artifact: artifact,
             lookup: lookup,
+            variant: variant,
             session: session,
             replacementCandidate: replacementCandidate
         )
     }
 
-    private func publishDownloadedPreview(
+    private func publishPhotoImage(
         artifact: DerivedImageEncodedArtifact,
         lookup: DerivedImageCacheLookupContext,
+        variant: DerivedImageVariant,
         session: DerivedImageAnchoredCacheSession,
         replacementCandidate: DerivedImageCacheEntryRow?
     ) throws -> Data {
@@ -396,7 +440,7 @@ final class DerivedImageCacheService: DerivedImageCachePort, DownloadedPreviewCa
             assetID: lookup.assetID,
             contentRevision: lookup.contentRevision,
             representationVersion: DerivedImageRepresentationVersion.production,
-            variant: .preview,
+            variant: variant,
             storageFormat: artifact.storageFormat,
             pixelWidth: artifact.pixelWidth,
             pixelHeight: artifact.pixelHeight,
@@ -428,9 +472,10 @@ final class DerivedImageCacheService: DerivedImageCachePort, DownloadedPreviewCa
             case let .valid(payload):
                 return payload.encodedBytes
             case let .invalid(candidate):
-                return try publishDownloadedPreview(
+                return try publishPhotoImage(
                     artifact: artifact,
                     lookup: lookup,
+                    variant: variant,
                     session: session,
                     replacementCandidate: candidate
                 )

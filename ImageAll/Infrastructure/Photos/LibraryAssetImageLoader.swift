@@ -7,6 +7,7 @@ struct LibraryAssetImageLoader: Sendable {
     let photosImages: any PhotosLibraryAccessPort
     let cloudPreviews: (any PhotosCloudPreviewPort)?
     let downloadedPreviews: (any DownloadedPreviewCachePort)?
+    let photoThumbnails: (any PhotoThumbnailCachePort)?
     private let loadCoordinator: LibraryAssetImageLoadCoordinator
 
     init(
@@ -15,6 +16,7 @@ struct LibraryAssetImageLoader: Sendable {
         photosImages: any PhotosLibraryAccessPort,
         cloudPreviews: (any PhotosCloudPreviewPort)? = nil,
         downloadedPreviews: (any DownloadedPreviewCachePort)? = nil,
+        photoThumbnails: (any PhotoThumbnailCachePort)? = nil,
         maximumConcurrentLoads: Int = 4
     ) {
         self.database = database
@@ -22,6 +24,7 @@ struct LibraryAssetImageLoader: Sendable {
         self.photosImages = photosImages
         self.cloudPreviews = cloudPreviews
         self.downloadedPreviews = downloadedPreviews
+        self.photoThumbnails = photoThumbnails
         loadCoordinator = LibraryAssetImageLoadCoordinator(
             maximumConcurrentLoads: maximumConcurrentLoads
         )
@@ -74,10 +77,23 @@ struct LibraryAssetImageLoader: Sendable {
             {
                 return cached
             }
-            return try await photosImages.requestLocalImage(
+            if variant == .grid,
+               let photoThumbnails,
+               let cached = try? photoThumbnails.loadPhotoThumbnail(assetID: assetID)
+            {
+                return cached
+            }
+            let sourceBytes = try await photosImages.requestLocalImage(
                 localIdentifier: identifier,
                 variant: variant
             )
+            if variant == .grid, let photoThumbnails {
+                return (try? await photoThumbnails.storePhotoThumbnail(
+                    assetID: assetID,
+                    sourceBytes: sourceBytes
+                )) ?? sourceBytes
+            }
+            return sourceBytes
         }
 
         let derivedVariant: DerivedImageVariant = switch variant {

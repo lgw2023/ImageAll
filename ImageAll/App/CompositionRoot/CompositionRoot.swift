@@ -103,7 +103,8 @@ struct CompositionRoot {
             fileImages: derivedImages,
             photosImages: photosAccess,
             cloudPreviews: photosAccess,
-            downloadedPreviews: derivedImages
+            downloadedPreviews: derivedImages,
+            photoThumbnails: derivedImages
         )
         let personalizationReview = PersonalizationReviewService(
             database: runtime.database,

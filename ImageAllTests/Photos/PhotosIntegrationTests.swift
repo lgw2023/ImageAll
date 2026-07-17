@@ -767,6 +767,66 @@ final class PhotosIntegrationTests: XCTestCase {
         XCTAssertEqual(files.requestedVariants, [.preview])
     }
 
+    func testImageLoaderPersistsLocalPhotosThumbnailAndReusesItAfterRecreation() async throws {
+        let database = try FolderAuthorizationTestSupport.makeDatabase()
+        let sourceID = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
+        let assetID = UUID(uuidString: "33333333-4444-5555-6666-777777777777")!
+        try await database.pool.write { db in
+            try db.execute(
+                sql: """
+                INSERT INTO source (id, kind, display_name, bookmark, state, created_at_ms, updated_at_ms)
+                VALUES (?, 'photos', 'Apple Photos', NULL, 'active', ?, ?)
+                """,
+                arguments: [
+                    sourceID.uuidString.lowercased(), DatabaseTestSupport.timestampMs,
+                    DatabaseTestSupport.timestampMs,
+                ]
+            )
+            try db.execute(
+                sql: """
+                INSERT INTO asset (
+                    id, source_id, locator_kind, relative_path, photos_local_identifier,
+                    media_type, availability, record_created_at_ms, record_updated_at_ms, file_name
+                ) VALUES (?, ?, 'photos', NULL, 'photos-local', 'public.jpeg', 'available', ?, ?, 'Photo.jpg')
+                """,
+                arguments: [
+                    assetID.uuidString.lowercased(), sourceID.uuidString.lowercased(),
+                    DatabaseTestSupport.timestampMs, DatabaseTestSupport.timestampMs,
+                ]
+            )
+        }
+
+        let localBytes = Data("local-photo".utf8)
+        let persistedBytes = Data("persisted-thumbnail".utf8)
+        let photos = FakePhotosLibraryAccess(state: .authorized, localImageData: localBytes)
+        let thumbnails = FakePhotoThumbnailCache(storedResult: persistedBytes)
+        let firstLoader = LibraryAssetImageLoader(
+            database: database,
+            fileImages: FakeDerivedImageCache(data: Data()),
+            photosImages: photos,
+            photoThumbnails: thumbnails
+        )
+
+        let firstResult = try await firstLoader.load(assetID: assetID, variant: .grid)
+        XCTAssertEqual(firstResult, persistedBytes)
+        XCTAssertEqual(photos.requestedVariants, [.grid])
+        XCTAssertEqual(thumbnails.storedSourceBytes, [localBytes])
+
+        let unavailablePhotos = FakePhotosLibraryAccess(
+            state: .authorized,
+            localImageError: .libraryUnavailable
+        )
+        let reopenedLoader = LibraryAssetImageLoader(
+            database: database,
+            fileImages: FakeDerivedImageCache(data: Data()),
+            photosImages: unavailablePhotos,
+            photoThumbnails: thumbnails
+        )
+        let reopenedResult = try await reopenedLoader.load(assetID: assetID, variant: .grid)
+        XCTAssertEqual(reopenedResult, persistedBytes)
+        XCTAssertEqual(unavailablePhotos.requestedVariants, [])
+    }
+
     func testExplicitCloudPreviewDownloadRequiresUserActionAndReusesDownloadedCacheForPreviewAndGrid() async throws {
         let database = try FolderAuthorizationTestSupport.makeDatabase()
         let sourceID = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
@@ -1102,6 +1162,33 @@ private final class FakeDownloadedPreviewCache: DownloadedPreviewCachePort, @unc
 
     var storedSourceBytes: [Data] {
         lock.withLock { sourceBytes }
+    }
+}
+
+private final class FakePhotoThumbnailCache: PhotoThumbnailCachePort, @unchecked Sendable {
+    private let lock = NSLock()
+    private let storedResult: Data
+    private var cachedData: Data?
+    private var storedSourceBytesValue: [Data] = []
+
+    init(storedResult: Data) {
+        self.storedResult = storedResult
+    }
+
+    func loadPhotoThumbnail(assetID _: UUID) throws -> Data? {
+        lock.withLock { cachedData }
+    }
+
+    func storePhotoThumbnail(assetID _: UUID, sourceBytes: Data) async throws -> Data {
+        lock.withLock {
+            storedSourceBytesValue.append(sourceBytes)
+            cachedData = storedResult
+        }
+        return storedResult
+    }
+
+    var storedSourceBytes: [Data] {
+        lock.withLock { storedSourceBytesValue }
     }
 }
 
