@@ -4,6 +4,10 @@ import XCTest
 @testable import ImageAll
 
 enum CatalogQueryTestSupport {
+    enum ScaleFixtureError: Error, Equatable {
+        case unsupportedExportAssetCount(String)
+    }
+
     struct FixtureIDs: Sendable {
         let sourceA: UUID
         let sourceB: UUID
@@ -149,6 +153,18 @@ enum CatalogQueryTestSupport {
 
     static func scaleSearchText(index: Int) -> String {
         String(format: "asset-%06d", index)
+    }
+
+    static func scaleExportAssetCount(environmentValue: String?) throws -> Int {
+        let value = environmentValue ?? "100000"
+        switch value {
+        case "100000":
+            return 100_000
+        case "1000000":
+            return 1_000_000
+        default:
+            throw ScaleFixtureError.unsupportedExportAssetCount(value)
+        }
     }
 
     static func scaleDatabaseFootprintBytes(at databaseURL: URL) throws -> Int64 {

@@ -77,8 +77,24 @@ final class PortableCatalogExportTests: XCTestCase {
         }
     }
 
-    func testExportsHundredThousandSyntheticAssetsWithVerifiedManifest() throws {
-        let assetCount = 100_000
+    func testScaleExportConfigurationAcceptsOnlySupportedCounts() throws {
+        XCTAssertEqual(try CatalogQueryTestSupport.scaleExportAssetCount(environmentValue: nil), 100_000)
+        XCTAssertEqual(try CatalogQueryTestSupport.scaleExportAssetCount(environmentValue: "100000"), 100_000)
+        XCTAssertEqual(try CatalogQueryTestSupport.scaleExportAssetCount(environmentValue: "1000000"), 1_000_000)
+        XCTAssertThrowsError(
+            try CatalogQueryTestSupport.scaleExportAssetCount(environmentValue: "10000")
+        ) { error in
+            XCTAssertEqual(
+                error as? CatalogQueryTestSupport.ScaleFixtureError,
+                .unsupportedExportAssetCount("10000")
+            )
+        }
+    }
+
+    func testExportsConfiguredSyntheticAssetsWithVerifiedManifest() throws {
+        let assetCount = try CatalogQueryTestSupport.scaleExportAssetCount(
+            environmentValue: ProcessInfo.processInfo.environment["IMAGEALL_SYNTHETIC_EXPORT_ASSET_COUNT"]
+        )
         let databaseURL = try makeTempDatabaseURL()
         let exportParent = databaseURL.deletingLastPathComponent().appendingPathComponent("Exports", isDirectory: true)
         try FileManager.default.createDirectory(at: exportParent, withIntermediateDirectories: true)
@@ -88,7 +104,7 @@ final class PortableCatalogExportTests: XCTestCase {
         let result = try PortableCatalogExporter(database: fixture.database).export(
             PortableCatalogExportRequest(
                 parentDirectoryURL: exportParent,
-                bundleName: "ImageAll-Export-Scale-100000",
+                bundleName: "ImageAll-Export-Scale-\(assetCount)",
                 createdAtMs: 1_752_700_000_000,
                 appVersion: "scale-test"
             )
@@ -102,13 +118,14 @@ final class PortableCatalogExportTests: XCTestCase {
         XCTAssertEqual(counts["decisions.jsonl"], CatalogQueryTestSupport.scaleDecisionCount(assetCount: assetCount))
         XCTAssertEqual(result.totalRecordCount, CatalogQueryTestSupport.scalePortableRecordCount(assetCount: assetCount))
         XCTAssertTrue(manifest.files.allSatisfy { $0.byteCount >= 0 && $0.sha256.count == 64 })
-        XCTAssertLessThan(elapsed, .seconds(10))
+        let threshold: Duration = assetCount == 100_000 ? .seconds(10) : .seconds(90)
+        XCTAssertLessThan(elapsed, threshold)
 
         let byteCount = manifest.files.reduce(Int64(0)) { $0 + $1.byteCount }
         let attachment = XCTAttachment(
             string: "assets=\(assetCount) export_seconds=\(elapsed) export_bytes=\(byteCount)"
         )
-        attachment.name = "ImageAll 100k synthetic export baseline"
+        attachment.name = "ImageAll \(assetCount) synthetic export baseline"
         attachment.lifetime = .keepAlways
         add(attachment)
     }
