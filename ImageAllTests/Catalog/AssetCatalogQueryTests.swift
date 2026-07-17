@@ -506,6 +506,129 @@ final class AssetCatalogQueryTests: XCTestCase {
         XCTAssertLessThan(ContinuousClock.now - startedAt, .seconds(2))
     }
 
+    func testTenThousandAndMillionSyntheticAssetsKeepQueryEnvelopeStable() throws {
+        for assetCount in [10_000, 1_000_000] {
+            let databaseURL = try makeTempDatabaseURL()
+            let fixture = try CatalogQueryTestSupport.openScaleDatabase(
+                at: databaseURL,
+                assetCount: assetCount
+            )
+            let lastIndex = assetCount - 1
+            let startedAt = ContinuousClock.now
+            var queryTimings: [String] = []
+
+            var queryStartedAt = ContinuousClock.now
+            let firstPage = try fixture.query.fetchAssetPage(
+                AssetPageRequest(filter: AssetPageFilter(), sort: .newest, cursor: nil, limit: 100)
+            )
+            queryTimings.append("newest_first=\(ContinuousClock.now - queryStartedAt)")
+            XCTAssertEqual(firstPage.items.count, 100)
+            XCTAssertEqual(
+                firstPage.items.map(\.assetID),
+                ((lastIndex - 99) ... lastIndex).reversed().map(CatalogQueryTestSupport.scaleAssetID)
+            )
+
+            queryStartedAt = ContinuousClock.now
+            let secondPage = try fixture.query.fetchAssetPage(
+                AssetPageRequest(
+                    filter: AssetPageFilter(),
+                    sort: .newest,
+                    cursor: try XCTUnwrap(firstPage.nextCursor),
+                    limit: 100
+                )
+            )
+            queryTimings.append("newest_second=\(ContinuousClock.now - queryStartedAt)")
+            XCTAssertEqual(secondPage.items.count, 100)
+            XCTAssertEqual(
+                secondPage.items.map(\.assetID),
+                ((lastIndex - 199) ... (lastIndex - 100)).reversed().map(CatalogQueryTestSupport.scaleAssetID)
+            )
+
+            let topFolderJPEG = lastIndex - (lastIndex % 6)
+            queryStartedAt = ContinuousClock.now
+            let sourceAndTypePage = try fixture.query.fetchAssetPage(
+                AssetPageRequest(
+                    filter: AssetPageFilter(
+                        sourceIDs: [fixture.folderSourceID],
+                        mediaTypes: ["public.jpeg"]
+                    ),
+                    sort: .newest,
+                    cursor: nil,
+                    limit: 5
+                )
+            )
+            queryTimings.append("source_media=\(ContinuousClock.now - queryStartedAt)")
+            XCTAssertEqual(
+                sourceAndTypePage.items.map(\.assetID),
+                stride(from: topFolderJPEG, through: topFolderJPEG - 24, by: -6)
+                    .map(CatalogQueryTestSupport.scaleAssetID)
+            )
+
+            let topAccepted = lastIndex - (lastIndex % 10)
+            queryStartedAt = ContinuousClock.now
+            let taggedPage = try fixture.query.fetchAssetPage(
+                AssetPageRequest(
+                    filter: AssetPageFilter(
+                        tagDecisionFilters: [
+                            TagDecisionFilter(tagID: fixture.acceptedTagID, decision: .accepted),
+                        ]
+                    ),
+                    sort: .newest,
+                    cursor: nil,
+                    limit: 5
+                )
+            )
+            queryTimings.append("tag=\(ContinuousClock.now - queryStartedAt)")
+            XCTAssertEqual(
+                taggedPage.items.map(\.assetID),
+                stride(from: topAccepted, through: topAccepted - 40, by: -10)
+                    .map(CatalogQueryTestSupport.scaleAssetID)
+            )
+
+            queryStartedAt = ContinuousClock.now
+            let fileNamePage = try fixture.query.fetchAssetPage(
+                AssetPageRequest(filter: AssetPageFilter(), sort: .fileNameAscending, cursor: nil, limit: 5)
+            )
+            queryTimings.append("file_name=\(ContinuousClock.now - queryStartedAt)")
+            XCTAssertEqual(
+                fileNamePage.items.map(\.assetID),
+                [0, 2, 4, 6, 8].map(CatalogQueryTestSupport.scaleAssetID)
+            )
+
+            let searchIndex = assetCount - 2
+            queryStartedAt = ContinuousClock.now
+            let searchPage = try fixture.query.fetchAssetPage(
+                AssetPageRequest(
+                    filter: AssetPageFilter(
+                        searchText: CatalogQueryTestSupport.scaleSearchText(index: searchIndex)
+                    ),
+                    sort: .newest,
+                    cursor: nil,
+                    limit: 5
+                )
+            )
+            queryTimings.append("search=\(ContinuousClock.now - queryStartedAt)")
+            XCTAssertEqual(searchPage.items.map(\.assetID), [CatalogQueryTestSupport.scaleAssetID(searchIndex)])
+
+            let elapsed = ContinuousClock.now - startedAt
+            let threshold: Duration = assetCount == 10_000 ? .seconds(1) : .seconds(5)
+            let databaseBytes = try CatalogQueryTestSupport.scaleDatabaseFootprintBytes(at: databaseURL)
+            let metrics = [
+                "assets=\(assetCount)",
+                "query_seconds=\(elapsed)",
+                "database_bytes=\(databaseBytes)",
+                queryTimings.joined(separator: " "),
+            ].joined(separator: " ")
+
+            let attachment = XCTAttachment(string: metrics)
+            attachment.name = "ImageAll \(assetCount) synthetic query baseline"
+            attachment.lifetime = .keepAlways
+            add(attachment)
+            XCTAssertLessThan(elapsed, threshold)
+            try CatalogDatabase.closePool(fixture.database.pool)
+        }
+    }
+
     func testClosedPoolQuerySurfacesPersistenceFailure() throws {
         let url = try makeTempDatabaseURL()
         let database = try CatalogDatabase.open(at: url)

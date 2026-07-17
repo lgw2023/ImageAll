@@ -81,8 +81,11 @@ enum CatalogSchemaExpectations {
     static let businessIndexes = [
         "asset_current_file_locator_uq",
         "asset_current_file_name_idx",
+        "asset_current_file_name_all_idx",
         "asset_current_photos_locator_uq",
+        "asset_current_source_media_time_desc_idx",
         "asset_current_source_time_idx",
+        "asset_current_time_desc_idx",
         "asset_current_time_idx",
         "asset_generation_missing_idx",
         "asset_source_availability_idx",
@@ -295,8 +298,11 @@ enum CatalogSchemaExpectations {
     static let indexTableByName: [String: String] = [
         "asset_current_file_locator_uq": "asset",
         "asset_current_file_name_idx": "asset",
+        "asset_current_file_name_all_idx": "asset",
         "asset_current_photos_locator_uq": "asset",
+        "asset_current_source_media_time_desc_idx": "asset",
         "asset_current_source_time_idx": "asset",
+        "asset_current_time_desc_idx": "asset",
         "asset_current_time_idx": "asset",
         "asset_generation_missing_idx": "asset",
         "asset_source_availability_idx": "asset",
@@ -394,6 +400,43 @@ enum CatalogSchemaExpectations {
                 """
         ),
         .init(
+            name: "asset_current_time_desc_idx",
+            keyColumns: [
+                .init(name: "id", descending: true, collation: "BINARY"),
+            ],
+            unique: false,
+            partialPredicateSQL: "locator_state = 'current'",
+            orderedKeyEntries: [
+                .init(name: nil, descending: false, collation: "BINARY"),
+                .init(name: nil, descending: true, collation: "BINARY"),
+                .init(name: "id", descending: true, collation: "BINARY"),
+            ],
+            keyListSQL: """
+                \(assetCurrentTimeEmptyMarkerExpression), \(assetCoalescedMediaTimeExpression) DESC, id DESC
+                """
+        ),
+        .init(
+            name: "asset_current_source_media_time_desc_idx",
+            keyColumns: [
+                .init(name: "source_id", descending: false, collation: "BINARY"),
+                .init(name: "media_type", descending: false, collation: "BINARY"),
+                .init(name: "id", descending: true, collation: "BINARY"),
+            ],
+            unique: false,
+            partialPredicateSQL: "locator_state = 'current'",
+            orderedKeyEntries: [
+                .init(name: "source_id", descending: false, collation: "BINARY"),
+                .init(name: "media_type", descending: false, collation: "BINARY"),
+                .init(name: nil, descending: false, collation: "BINARY"),
+                .init(name: nil, descending: true, collation: "BINARY"),
+                .init(name: "id", descending: true, collation: "BINARY"),
+            ],
+            keyListSQL: """
+                source_id, media_type, \(assetCurrentTimeEmptyMarkerExpression),
+                \(assetCoalescedMediaTimeExpression) DESC, id DESC
+                """
+        ),
+        .init(
             name: "asset_current_source_time_idx",
             keyColumns: [
                 .init(name: "source_id", descending: false, collation: "BINARY"),
@@ -420,6 +463,23 @@ enum CatalogSchemaExpectations {
             unique: false,
             partialPredicateSQL: """
                 locator_kind = 'file' AND locator_state = 'current' AND file_name IS NOT NULL
+                """
+        ),
+        .init(
+            name: "asset_current_file_name_all_idx",
+            keyColumns: [
+                .init(name: "file_name", descending: false, collation: "NOCASE"),
+                .init(name: "id", descending: false, collation: "BINARY"),
+            ],
+            unique: false,
+            partialPredicateSQL: "locator_state = 'current'",
+            orderedKeyEntries: [
+                .init(name: nil, descending: false, collation: "BINARY"),
+                .init(name: "file_name", descending: false, collation: "NOCASE"),
+                .init(name: "id", descending: false, collation: "BINARY"),
+            ],
+            keyListSQL: """
+                (CASE WHEN file_name IS NOT NULL THEN 0 ELSE 1 END), file_name COLLATE NOCASE, id
                 """
         ),
         .init(

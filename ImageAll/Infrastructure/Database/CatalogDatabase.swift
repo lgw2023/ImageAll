@@ -10,6 +10,7 @@ struct CatalogDatabase: Sendable {
         V002AddStage1CatalogQuerySupportMigration.register(on: &migrator)
         V003AddDerivedImageCacheMigration.register(on: &migrator)
         V004AddPersonalizationMigration.register(on: &migrator)
+        V005AddCatalogScaleIndexesMigration.register(on: &migrator)
         return migrator
     }
 
@@ -355,4 +356,45 @@ struct CatalogDatabase: Sendable {
         try CatalogDatabaseSidecarHelpers.removeSidecarsIfPresent(at: url)
         try CatalogDatabaseSidecarHelpers.requireNoSidecars(at: url)
     }
+}
+
+enum V005AddCatalogScaleIndexesMigration {
+    static func register(on migrator: inout DatabaseMigrator) {
+        migrator.registerMigration(CatalogMigrationID.v005AddCatalogScaleIndexes) { db in
+            for statement in indexStatements {
+                try db.execute(sql: statement)
+            }
+        }
+    }
+
+    private static let timeEmptyMarkerExpression =
+        V002AddStage1CatalogQuerySupportMigration.timeEmptyMarkerExpression
+    private static let coalescedMediaTimeExpression =
+        V002AddStage1CatalogQuerySupportMigration.coalescedMediaTimeExpression
+
+    private static let indexStatements = [
+        """
+        CREATE INDEX asset_current_time_desc_idx ON asset (
+            \(timeEmptyMarkerExpression),
+            \(coalescedMediaTimeExpression) DESC,
+            id DESC
+        ) WHERE locator_state = 'current'
+        """,
+        """
+        CREATE INDEX asset_current_source_media_time_desc_idx ON asset (
+            source_id,
+            media_type,
+            \(timeEmptyMarkerExpression),
+            \(coalescedMediaTimeExpression) DESC,
+            id DESC
+        ) WHERE locator_state = 'current'
+        """,
+        """
+        CREATE INDEX asset_current_file_name_all_idx ON asset (
+            (CASE WHEN file_name IS NOT NULL THEN 0 ELSE 1 END),
+            file_name COLLATE NOCASE,
+            id
+        ) WHERE locator_state = 'current'
+        """,
+    ]
 }

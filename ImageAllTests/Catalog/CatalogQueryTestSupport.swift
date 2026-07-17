@@ -147,6 +147,18 @@ enum CatalogQueryTestSupport {
         UUID(uuidString: String(format: "30000000-0000-4000-8000-%012x", index))!
     }
 
+    static func scaleSearchText(index: Int) -> String {
+        String(format: "asset-%06d", index)
+    }
+
+    static func scaleDatabaseFootprintBytes(at databaseURL: URL) throws -> Int64 {
+        try [databaseURL.path, databaseURL.path + "-wal", databaseURL.path + "-shm"].reduce(0) { total, path in
+            guard FileManager.default.fileExists(atPath: path) else { return total }
+            let attributes = try FileManager.default.attributesOfItem(atPath: path)
+            return total + ((attributes[.size] as? NSNumber)?.int64Value ?? 0)
+        }
+    }
+
     static func scaleDecisionCount(assetCount: Int) -> Int {
         (assetCount + 9) / 10
     }
