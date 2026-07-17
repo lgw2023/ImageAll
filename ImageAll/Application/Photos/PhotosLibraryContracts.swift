@@ -75,6 +75,7 @@ protocol PhotosChangeHistoryPort: Sendable {
 
 protocol PhotosChangeObserverPort: Sendable {
     func startObservingChanges(_ onChange: @escaping @Sendable () -> Void)
+    func stopObservingChanges()
 }
 
 protocol PhotosCloudPreviewPort: Sendable {

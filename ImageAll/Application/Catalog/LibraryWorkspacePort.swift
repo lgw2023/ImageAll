@@ -122,8 +122,8 @@ enum LibraryInspectorTagDecisionState: Equatable, Sendable {
 }
 
 protocol LibraryWorkspacePort: Sendable {
-    func startFolderSourceMonitoring(onChange: @escaping @Sendable () -> Void) throws
-    func stopFolderSourceMonitoring()
+    func startCatalogSourceMonitoring(onChange: @escaping @Sendable () -> Void) throws
+    func stopCatalogSourceMonitoring()
     @MainActor func choosePortableExportDirectory() -> URL?
     func exportPortableUserData(to parentDirectoryURL: URL) throws -> PortableCatalogExportResult
     func fetchPreviewCacheUsage() throws -> DerivedImageCacheUsage
@@ -169,6 +169,6 @@ protocol LibraryWorkspacePort: Sendable {
 }
 
 extension LibraryWorkspacePort {
-    func startFolderSourceMonitoring(onChange: @escaping @Sendable () -> Void) throws {}
-    func stopFolderSourceMonitoring() {}
+    func startCatalogSourceMonitoring(onChange: @escaping @Sendable () -> Void) throws {}
+    func stopCatalogSourceMonitoring() {}
 }

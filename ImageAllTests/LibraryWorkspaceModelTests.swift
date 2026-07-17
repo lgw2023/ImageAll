@@ -1404,11 +1404,11 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
         lock.withLock { storedJobActivityActionCallCount }
     }
 
-    func startFolderSourceMonitoring(onChange: @escaping @Sendable () -> Void) throws {
+    func startCatalogSourceMonitoring(onChange: @escaping @Sendable () -> Void) throws {
         lock.withLock { folderMonitoringCallback = onChange }
     }
 
-    func stopFolderSourceMonitoring() {
+    func stopCatalogSourceMonitoring() {
         lock.withLock { folderMonitoringCallback = nil }
     }
 

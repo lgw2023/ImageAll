@@ -78,7 +78,7 @@ final class LibraryWorkspaceModel: ObservableObject {
     }
 
     deinit {
-        service.stopFolderSourceMonitoring()
+        service.stopCatalogSourceMonitoring()
     }
 
     var isBusy: Bool {
@@ -123,7 +123,7 @@ final class LibraryWorkspaceModel: ObservableObject {
         guard !started else { return }
         started = true
         do {
-            try service.startFolderSourceMonitoring { [weak self] in
+            try service.startCatalogSourceMonitoring { [weak self] in
                 Task { @MainActor [weak self] in
                     self?.startCatalogReconcileRunnerIfNeeded()
                 }

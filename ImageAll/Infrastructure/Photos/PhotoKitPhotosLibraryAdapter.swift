@@ -163,11 +163,20 @@ final class PhotoKitPhotosLibraryAdapter: NSObject, PhotosLibraryAccessPort, Pho
         callback?()
     }
 
-    deinit {
-        let shouldUnregister = observerLock.withLock { isObservingChanges }
+    func stopObservingChanges() {
+        let shouldUnregister = observerLock.withLock {
+            onLibraryChange = nil
+            guard isObservingChanges else { return false }
+            isObservingChanges = false
+            return true
+        }
         if shouldUnregister {
             PHPhotoLibrary.shared().unregisterChangeObserver(self)
         }
+    }
+
+    deinit {
+        stopObservingChanges()
     }
 
     func requestLocalImage(

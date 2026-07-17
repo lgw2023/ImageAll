@@ -445,13 +445,19 @@ final class PhotosIntegrationTests: XCTestCase {
         XCTAssertEqual(try coordinator.claimAndExecuteOnce(claim)?.snapshot.state, .completed)
 
         let observer = FakePhotosChangeObserver()
-        PhotosLibraryChangeObserverCoordinator(
+        let notifications = PhotosObserverNotificationRecorder()
+        let changeCoordinator = PhotosLibraryChangeObserverCoordinator(
             observer: observer,
             database: database,
             clock: clock,
             idGenerator: IDSequence([observedJobID]).next
-        ).start()
+        )
+        changeCoordinator.start {
+            notifications.record()
+        }
         observer.emitChange()
+        observer.emitChange()
+        changeCoordinator.stop()
         observer.emitChange()
 
         let evidence = try await database.pool.read { db in
@@ -469,6 +475,7 @@ final class PhotosIntegrationTests: XCTestCase {
         }
         XCTAssertEqual(evidence.activeJobs, 1)
         XCTAssertEqual(evidence.assets, 0)
+        XCTAssertEqual(notifications.count, 3)
     }
 
     func testPhotoLibraryObserverStartupQueuesCatchUpWithoutFabricatingAChangeEvent() async throws {
@@ -526,6 +533,30 @@ final class PhotosIntegrationTests: XCTestCase {
         }
         XCTAssertEqual(evidence.activeJobs, 1)
         XCTAssertEqual(evidence.dirtyEpoch, 0)
+    }
+
+    func testPhotoLibraryObserverDoesNotNotifyWithoutActivePhotosSource() throws {
+        let database = try FolderAuthorizationTestSupport.makeDatabase()
+        let observer = FakePhotosChangeObserver()
+        let notifications = PhotosObserverNotificationRecorder()
+        PhotosLibraryChangeObserverCoordinator(
+            observer: observer,
+            database: database
+        ).start {
+            notifications.record()
+        }
+
+        observer.emitChange()
+
+        XCTAssertEqual(notifications.count, 0)
+        let jobCount = try database.pool.read { db in
+            try Int.fetchOne(
+                db,
+                sql: "SELECT COUNT(*) FROM job WHERE kind = ?",
+                arguments: [PhotosReconcileJobFactory.kind]
+            )
+        }
+        XCTAssertEqual(jobCount, 0)
     }
 
     func testPhotoLibraryChangeDuringReconcileQueuesOneFollowUpJob() async throws {
@@ -1095,9 +1126,26 @@ private final class FakePhotosChangeObserver: PhotosChangeObserverPort, @uncheck
         lock.withLock { self.onChange = onChange }
     }
 
+    func stopObservingChanges() {
+        lock.withLock { onChange = nil }
+    }
+
     func emitChange() {
         let callback = lock.withLock { onChange }
         callback?()
+    }
+}
+
+private final class PhotosObserverNotificationRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storedCount = 0
+
+    var count: Int {
+        lock.withLock { storedCount }
+    }
+
+    func record() {
+        lock.withLock { storedCount += 1 }
     }
 }
 

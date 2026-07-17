@@ -83,10 +83,10 @@ struct PhotosLibraryChangeObserverCoordinator: Sendable {
         self.idGenerator = idGenerator
     }
 
-    func start() {
+    func start(onChange: @escaping @Sendable () -> Void = {}) {
         let enqueuer = PhotosReconcileJobEnqueuer(clock: clock, idGenerator: idGenerator)
         observer.startObservingChanges {
-            try? database.pool.write { db in
+            let didRecordChange = (try? database.pool.write { db in
                 guard let sourceIDString = try String.fetchOne(
                     db,
                     sql: """
@@ -95,7 +95,7 @@ struct PhotosLibraryChangeObserverCoordinator: Sendable {
                     ORDER BY created_at_ms, id LIMIT 1
                     """
                 ), let sourceID = UUID(uuidString: sourceIDString)
-                else { return }
+                else { return false }
                 try db.execute(
                     sql: """
                     UPDATE source SET dirty_epoch = dirty_epoch + 1, updated_at_ms = ?
@@ -104,9 +104,11 @@ struct PhotosLibraryChangeObserverCoordinator: Sendable {
                     arguments: [clock.nowMs, sourceIDString]
                 )
                 try enqueuer.enqueueIfNeeded(sourceID: sourceID, db: db)
-            }
+                return true
+            }) == true
+            if didRecordChange { onChange() }
         }
-        try? database.pool.write { db in
+        let didQueueCatchUp = (try? database.pool.write { db in
             guard let sourceIDString = try String.fetchOne(
                 db,
                 sql: """
@@ -115,9 +117,15 @@ struct PhotosLibraryChangeObserverCoordinator: Sendable {
                 ORDER BY created_at_ms, id LIMIT 1
                 """
             ), let sourceID = UUID(uuidString: sourceIDString)
-            else { return }
+            else { return false }
             try enqueuer.enqueueIfNeeded(sourceID: sourceID, db: db)
-        }
+            return true
+        }) == true
+        if didQueueCatchUp { onChange() }
+    }
+
+    func stop() {
+        observer.stopObservingChanges()
     }
 }
 

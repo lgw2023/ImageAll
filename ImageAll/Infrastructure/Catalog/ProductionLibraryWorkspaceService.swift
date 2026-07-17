@@ -8,6 +8,7 @@ enum ProductionLibraryWorkspaceError: Error {
 struct ProductionLibraryWorkspaceService: LibraryWorkspacePort, Sendable {
     let sourceRepository: GRDBFolderSourceAuthorizationRepository
     let folderSourceMonitor: FolderSourceMonitoringCoordinator
+    let photosSourceMonitor: PhotosLibraryChangeObserverCoordinator
     let authorization: any FolderAuthorizationCommandPort
     let photosConnection: PhotosLibraryConnectionService
     let queue: GRDBJobQueue
@@ -23,12 +24,14 @@ struct ProductionLibraryWorkspaceService: LibraryWorkspacePort, Sendable {
     let appVersion: String
     let clock: any JobClock
 
-    func startFolderSourceMonitoring(onChange: @escaping @Sendable () -> Void) throws {
+    func startCatalogSourceMonitoring(onChange: @escaping @Sendable () -> Void) throws {
         try folderSourceMonitor.start(onChange: onChange)
+        photosSourceMonitor.start(onChange: onChange)
     }
 
-    func stopFolderSourceMonitoring() {
+    func stopCatalogSourceMonitoring() {
         folderSourceMonitor.stop()
+        photosSourceMonitor.stop()
     }
 
     @MainActor

@@ -115,6 +115,7 @@ struct CompositionRoot {
         let service = ProductionLibraryWorkspaceService(
             sourceRepository: sourceRepository,
             folderSourceMonitor: folderSourceMonitor,
+            photosSourceMonitor: photosObserver,
             authorization: authorization,
             photosConnection: photosConnection,
             queue: runtime.jobQueue,
@@ -134,7 +135,6 @@ struct CompositionRoot {
             appVersion: BundleAppVersionProvider().currentVersion(),
             clock: clock
         )
-        photosObserver.start()
         return LibraryWorkspaceModel(service: service, review: personalizationReview)
     }
 }
