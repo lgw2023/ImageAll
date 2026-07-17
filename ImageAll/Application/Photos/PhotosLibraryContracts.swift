@@ -78,6 +78,18 @@ protocol PhotosChangeObserverPort: Sendable {
     func stopObservingChanges()
 }
 
+enum PhotosLibraryUnavailabilityReason: Equatable, Sendable {
+    case systemLibrarySwitch
+    case other
+}
+
+protocol PhotosLibraryAvailabilityObserverPort: Sendable {
+    func startObservingAvailability(
+        _ onUnavailable: @escaping @Sendable (PhotosLibraryUnavailabilityReason) -> Void
+    )
+    func stopObservingAvailability()
+}
+
 protocol PhotosCloudPreviewPort: Sendable {
     func requestCloudPreview(
         localIdentifier: String,

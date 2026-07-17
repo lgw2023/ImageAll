@@ -61,6 +61,7 @@ struct CompositionRoot {
         )
         let photosObserver = PhotosLibraryChangeObserverCoordinator(
             observer: photosAccess,
+            availabilityObserver: photosAccess,
             database: runtime.database,
             clock: clock
         )

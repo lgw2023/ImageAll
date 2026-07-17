@@ -67,17 +67,20 @@ struct PhotosReconcileJobEnqueuer: Sendable {
 
 struct PhotosLibraryChangeObserverCoordinator: Sendable {
     let observer: any PhotosChangeObserverPort
+    let availabilityObserver: (any PhotosLibraryAvailabilityObserverPort)?
     let database: CatalogDatabase
     let clock: any JobClock
     let idGenerator: @Sendable () -> UUID
 
     init(
         observer: any PhotosChangeObserverPort,
+        availabilityObserver: (any PhotosLibraryAvailabilityObserverPort)? = nil,
         database: CatalogDatabase,
         clock: any JobClock = SystemJobClock(),
         idGenerator: @escaping @Sendable () -> UUID = { UUID() }
     ) {
         self.observer = observer
+        self.availabilityObserver = availabilityObserver
         self.database = database
         self.clock = clock
         self.idGenerator = idGenerator
@@ -122,10 +125,49 @@ struct PhotosLibraryChangeObserverCoordinator: Sendable {
             return true
         }) == true
         if didQueueCatchUp { onChange() }
+        availabilityObserver?.startObservingAvailability { _ in
+            let didSuspendSource = (try? database.pool.write { db in
+                guard let sourceID = try String.fetchOne(
+                    db,
+                    sql: """
+                    SELECT id FROM source
+                    WHERE kind = 'photos' AND state = 'active'
+                    ORDER BY created_at_ms, id LIMIT 1
+                    """
+                ) else { return false }
+                try db.execute(
+                    sql: """
+                    UPDATE source SET state = 'unavailable', updated_at_ms = ?
+                    WHERE id = ? AND kind = 'photos' AND state = 'active'
+                    """,
+                    arguments: [clock.nowMs, sourceID]
+                )
+                try db.execute(
+                    sql: """
+                    UPDATE job SET
+                        state = 'cancelled', control_request = 'none',
+                        lease_owner = NULL, lease_expires_at_ms = NULL, updated_at_ms = ?
+                    WHERE source_id = ? AND kind = ?
+                        AND state IN ('pending', 'paused', 'retryableFailed')
+                    """,
+                    arguments: [clock.nowMs, sourceID, PhotosReconcileJobFactory.kind]
+                )
+                try db.execute(
+                    sql: """
+                    UPDATE job SET control_request = 'cancel', updated_at_ms = ?
+                    WHERE source_id = ? AND kind = ? AND state = 'running'
+                    """,
+                    arguments: [clock.nowMs, sourceID, PhotosReconcileJobFactory.kind]
+                )
+                return true
+            }) == true
+            if didSuspendSource { onChange() }
+        }
     }
 
     func stop() {
         observer.stopObservingChanges()
+        availabilityObserver?.stopObservingAvailability()
     }
 }
 
@@ -148,6 +190,24 @@ struct PhotosLibraryConnectionService: Sendable {
     }
 
     func connect() async throws -> ConnectPhotosOutcome {
+        do {
+            let hasUnavailableSource = try await database.pool.read { db in
+                try Bool.fetchOne(
+                    db,
+                    sql: """
+                    SELECT EXISTS(
+                        SELECT 1 FROM source WHERE kind = 'photos' AND state = 'unavailable'
+                    )
+                    """
+                ) ?? false
+            }
+            guard !hasUnavailableSource else { throw PhotosLibraryError.libraryUnavailable }
+        } catch let error as PhotosLibraryError {
+            throw error
+        } catch {
+            throw PhotosLibraryError.persistenceFailure
+        }
+
         let status: PhotosAuthorizationState
         switch access.authorizationState() {
         case .notDetermined:
@@ -169,13 +229,20 @@ struct PhotosLibraryConnectionService: Sendable {
 
         do {
             return try await database.pool.write { db in
-                let existingIDString = try String.fetchOne(
+                let existingSource = try Row.fetchOne(
                     db,
-                    sql: "SELECT id FROM source WHERE kind = 'photos' ORDER BY created_at_ms, id LIMIT 1"
+                    sql: "SELECT id, state FROM source WHERE kind = 'photos' ORDER BY created_at_ms, id LIMIT 1"
                 )
                 let sourceID: UUID
                 let outcome: ConnectPhotosOutcome
-                if let existingIDString, let existingID = UUID(uuidString: existingIDString) {
+                if let existingSource {
+                    let existingIDString: String = existingSource["id"]
+                    let existingState: String = existingSource["state"]
+                    guard existingState != SourceState.unavailable.rawValue,
+                          let existingID = UUID(uuidString: existingIDString)
+                    else {
+                        throw PhotosLibraryError.libraryUnavailable
+                    }
                     sourceID = existingID
                     outcome = .alreadyConnected(sourceID: existingID)
                     try db.execute(

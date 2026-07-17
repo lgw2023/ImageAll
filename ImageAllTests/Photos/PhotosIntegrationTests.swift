@@ -559,6 +559,227 @@ final class PhotosIntegrationTests: XCTestCase {
         XCTAssertEqual(jobCount, 0)
     }
 
+    func testPhotoLibraryUnavailabilitySuspendsSourceWithoutChangingAssetFacts() async throws {
+        let database = try FolderAuthorizationTestSupport.makeDatabase()
+        let sourceID = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
+        let assetID = UUID(uuidString: "33333333-4444-5555-6666-777777777777")!
+        let clock = FixedJobClock(nowMs: DatabaseTestSupport.timestampMs)
+        let connection = PhotosLibraryConnectionService(
+            database: database,
+            access: FakePhotosLibraryAccess(state: .authorized),
+            clock: clock,
+            idGenerator: IDSequence([
+                sourceID,
+                UUID(uuidString: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")!,
+            ]).next
+        )
+        _ = try await connection.connect()
+        try await database.pool.write { db in
+            try db.execute(
+                sql: """
+                INSERT INTO asset (
+                    id, source_id, locator_kind, relative_path, photos_local_identifier,
+                    media_type, availability, record_created_at_ms, record_updated_at_ms, file_name
+                ) VALUES (?, ?, 'photos', NULL, 'photos-existing', 'public.jpeg', 'available', ?, ?, 'Existing.jpg')
+                """,
+                arguments: [
+                    assetID.uuidString.lowercased(), sourceID.uuidString.lowercased(),
+                    DatabaseTestSupport.timestampMs, DatabaseTestSupport.timestampMs,
+                ]
+            )
+        }
+
+        let changes = FakePhotosChangeObserver()
+        let availability = FakePhotosAvailabilityObserver()
+        let notifications = PhotosObserverNotificationRecorder()
+        let coordinator = PhotosLibraryChangeObserverCoordinator(
+            observer: changes,
+            availabilityObserver: availability,
+            database: database,
+            clock: clock
+        )
+        coordinator.start { notifications.record() }
+        let notificationsBeforeLoss = notifications.count
+
+        availability.emit(.systemLibrarySwitch)
+
+        let evidence = try await database.pool.read { db in
+            (
+                sourceState: try String.fetchOne(
+                    db,
+                    sql: "SELECT state FROM source WHERE id = ?",
+                    arguments: [sourceID.uuidString.lowercased()]
+                ),
+                assetAvailability: try String.fetchOne(
+                    db,
+                    sql: "SELECT availability FROM asset WHERE id = ?",
+                    arguments: [assetID.uuidString.lowercased()]
+                ),
+                activeJobs: try Int.fetchOne(
+                    db,
+                    sql: """
+                    SELECT COUNT(*) FROM job
+                    WHERE source_id = ? AND kind = ?
+                        AND state IN ('pending', 'running', 'paused', 'retryableFailed')
+                    """,
+                    arguments: [sourceID.uuidString.lowercased(), PhotosReconcileJobFactory.kind]
+                )
+            )
+        }
+        XCTAssertEqual(evidence.sourceState, SourceState.unavailable.rawValue)
+        XCTAssertEqual(evidence.assetAvailability, AssetAvailability.available.rawValue)
+        XCTAssertEqual(evidence.activeJobs, 0)
+        XCTAssertEqual(notifications.count, notificationsBeforeLoss + 1)
+    }
+
+    func testUnavailablePhotosSourceCannotBeSilentlyReactivatedByConnect() async throws {
+        let database = try FolderAuthorizationTestSupport.makeDatabase()
+        let sourceID = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
+        let clock = FixedJobClock(nowMs: DatabaseTestSupport.timestampMs)
+        let connection = PhotosLibraryConnectionService(
+            database: database,
+            access: FakePhotosLibraryAccess(state: .authorized),
+            clock: clock,
+            idGenerator: IDSequence([
+                sourceID,
+                UUID(uuidString: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")!,
+            ]).next
+        )
+        _ = try await connection.connect()
+        let availability = FakePhotosAvailabilityObserver()
+        PhotosLibraryChangeObserverCoordinator(
+            observer: FakePhotosChangeObserver(),
+            availabilityObserver: availability,
+            database: database,
+            clock: clock
+        ).start()
+        availability.emit(.systemLibrarySwitch)
+
+        do {
+            _ = try await connection.connect()
+            XCTFail("Expected unavailable source to require an explicit future rebind flow")
+        } catch {
+            XCTAssertEqual(error as? PhotosLibraryError, .libraryUnavailable)
+        }
+
+        let deniedConnection = PhotosLibraryConnectionService(
+            database: database,
+            access: FakePhotosLibraryAccess(state: .denied),
+            clock: clock
+        )
+        do {
+            _ = try await deniedConnection.connect()
+            XCTFail("Expected unavailable source state to take precedence over authorization changes")
+        } catch {
+            XCTAssertEqual(error as? PhotosLibraryError, .libraryUnavailable)
+        }
+
+        let evidence = try await database.pool.read { db in
+            (
+                sourceState: try String.fetchOne(
+                    db,
+                    sql: "SELECT state FROM source WHERE id = ?",
+                    arguments: [sourceID.uuidString.lowercased()]
+                ),
+                activeJobs: try Int.fetchOne(
+                    db,
+                    sql: """
+                    SELECT COUNT(*) FROM job
+                    WHERE source_id = ? AND kind = ?
+                        AND state IN ('pending', 'running', 'paused', 'retryableFailed')
+                    """,
+                    arguments: [sourceID.uuidString.lowercased(), PhotosReconcileJobFactory.kind]
+                )
+            )
+        }
+        XCTAssertEqual(evidence.sourceState, SourceState.unavailable.rawValue)
+        XCTAssertEqual(evidence.activeJobs, 0)
+    }
+
+    func testLibrarySwitchDuringFullReconcileCancelsWithoutPublishingAssetFacts() async throws {
+        let database = try FolderAuthorizationTestSupport.makeDatabase()
+        let newAsset = metadata("photos-new", name: "New.HEIC", type: "public.heic")
+        let access = FakePhotosLibraryAccess(state: .authorized, batches: [[newAsset]])
+        let sourceID = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
+        let existingAssetID = UUID(uuidString: "33333333-4444-5555-6666-777777777777")!
+        let clock = FixedJobClock(nowMs: DatabaseTestSupport.timestampMs)
+        let connection = PhotosLibraryConnectionService(
+            database: database,
+            access: access,
+            clock: clock,
+            idGenerator: IDSequence([
+                sourceID,
+                UUID(uuidString: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")!,
+            ]).next
+        )
+        _ = try await connection.connect()
+        try await database.pool.write { db in
+            try db.execute(
+                sql: """
+                INSERT INTO asset (
+                    id, source_id, locator_kind, relative_path, photos_local_identifier,
+                    media_type, availability, record_created_at_ms, record_updated_at_ms, file_name
+                ) VALUES (?, ?, 'photos', NULL, 'photos-existing', 'public.jpeg', 'available', ?, ?, 'Existing.jpg')
+                """,
+                arguments: [
+                    existingAssetID.uuidString.lowercased(), sourceID.uuidString.lowercased(),
+                    DatabaseTestSupport.timestampMs, DatabaseTestSupport.timestampMs,
+                ]
+            )
+        }
+
+        let availability = FakePhotosAvailabilityObserver()
+        PhotosLibraryChangeObserverCoordinator(
+            observer: FakePhotosChangeObserver(),
+            availabilityObserver: availability,
+            database: database,
+            clock: clock
+        ).start()
+        access.configureOnEnumerationStart { availability.emit(.systemLibrarySwitch) }
+
+        let queue = GRDBJobQueue(
+            database: database,
+            clock: clock,
+            retryPolicy: FixedDelayRetryPolicy(delayMs: 1_000)
+        )
+        let handler = PhotosReconcileHandler(database: database, queue: queue, access: access, clock: clock)
+        let execution = JobExecutionCoordinator(
+            queue: queue,
+            registry: MultiJobHandlerRegistry(handlers: [handler]),
+            leaseContextProvider: GRDBJobLeaseContextProvider(queue: queue)
+        )
+        let result = try execution.claimAndExecuteOnce(
+            ClaimNextInput(
+                owner: "photos-library-switch-test",
+                leaseDurationMs: 60_000,
+                allowedKinds: [PhotosReconcileJobFactory.kind]
+            )
+        )
+
+        let evidence = try await database.pool.read { db in
+            (
+                sourceState: try String.fetchOne(
+                    db,
+                    sql: "SELECT state FROM source WHERE id = ?",
+                    arguments: [sourceID.uuidString.lowercased()]
+                ),
+                existingAvailability: try String.fetchOne(
+                    db,
+                    sql: "SELECT availability FROM asset WHERE id = ?",
+                    arguments: [existingAssetID.uuidString.lowercased()]
+                ),
+                newAssetCount: try Int.fetchOne(
+                    db,
+                    sql: "SELECT COUNT(*) FROM asset WHERE photos_local_identifier = 'photos-new'"
+                )
+            )
+        }
+        XCTAssertEqual(result?.snapshot.state, .cancelled)
+        XCTAssertEqual(evidence.sourceState, SourceState.unavailable.rawValue)
+        XCTAssertEqual(evidence.existingAvailability, AssetAvailability.available.rawValue)
+        XCTAssertEqual(evidence.newAssetCount, 0)
+    }
+
     func testPhotoLibraryChangeDuringReconcileQueuesOneFollowUpJob() async throws {
         let database = try FolderAuthorizationTestSupport.makeDatabase()
         let access = FakePhotosLibraryAccess(
@@ -1220,6 +1441,28 @@ private final class FakePhotosChangeObserver: PhotosChangeObserverPort, @uncheck
     func emitChange() {
         let callback = lock.withLock { onChange }
         callback?()
+    }
+}
+
+private final class FakePhotosAvailabilityObserver: PhotosLibraryAvailabilityObserverPort,
+    @unchecked Sendable
+{
+    private let lock = NSLock()
+    private var onUnavailable: (@Sendable (PhotosLibraryUnavailabilityReason) -> Void)?
+
+    func startObservingAvailability(
+        _ onUnavailable: @escaping @Sendable (PhotosLibraryUnavailabilityReason) -> Void
+    ) {
+        lock.withLock { self.onUnavailable = onUnavailable }
+    }
+
+    func stopObservingAvailability() {
+        lock.withLock { onUnavailable = nil }
+    }
+
+    func emit(_ reason: PhotosLibraryUnavailabilityReason) {
+        let callback = lock.withLock { onUnavailable }
+        callback?(reason)
     }
 }
 

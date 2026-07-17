@@ -3,13 +3,16 @@ import Foundation
 import Photos
 
 final class PhotoKitPhotosLibraryAdapter: NSObject, PhotosLibraryAccessPort, PhotosChangeHistoryPort,
-    PhotosChangeObserverPort, PhotosCloudPreviewPort, PhotosFeaturePrintImagePort, PHPhotoLibraryChangeObserver,
+    PhotosChangeObserverPort, PhotosLibraryAvailabilityObserverPort, PhotosCloudPreviewPort,
+    PhotosFeaturePrintImagePort, PHPhotoLibraryChangeObserver, PHPhotoLibraryAvailabilityObserver,
     @unchecked Sendable
 {
     private let imageManager = PHCachingImageManager()
     private let observerLock = NSLock()
     private var onLibraryChange: (@Sendable () -> Void)?
     private var isObservingChanges = false
+    private var onLibraryUnavailable: (@Sendable (PhotosLibraryUnavailabilityReason) -> Void)?
+    private var isObservingAvailability = false
     private static let supportedTypes: Set<String> = [
         "public.jpeg",
         "public.png",
@@ -154,7 +157,7 @@ final class PhotoKitPhotosLibraryAdapter: NSObject, PhotosLibraryAccessPort, Pho
             return true
         }
         if shouldRegister {
-            PHPhotoLibrary.shared().register(self)
+            PHPhotoLibrary.shared().register(self as PHPhotoLibraryChangeObserver)
         }
     }
 
@@ -175,8 +178,45 @@ final class PhotoKitPhotosLibraryAdapter: NSObject, PhotosLibraryAccessPort, Pho
         }
     }
 
+    func startObservingAvailability(
+        _ onUnavailable: @escaping @Sendable (PhotosLibraryUnavailabilityReason) -> Void
+    ) {
+        let shouldRegister = observerLock.withLock {
+            onLibraryUnavailable = onUnavailable
+            guard !isObservingAvailability else { return false }
+            isObservingAvailability = true
+            return true
+        }
+        if shouldRegister {
+            PHPhotoLibrary.shared().register(self as PHPhotoLibraryAvailabilityObserver)
+        }
+    }
+
+    func photoLibraryDidBecomeUnavailable(_ photoLibrary: PHPhotoLibrary) {
+        let error = photoLibrary.unavailabilityReason as NSError?
+        let reason: PhotosLibraryUnavailabilityReason =
+            error?.code == PHPhotosError.Code.switchingSystemPhotoLibrary.rawValue
+                ? .systemLibrarySwitch
+                : .other
+        let callback = observerLock.withLock { onLibraryUnavailable }
+        callback?(reason)
+    }
+
+    func stopObservingAvailability() {
+        let shouldUnregister = observerLock.withLock {
+            onLibraryUnavailable = nil
+            guard isObservingAvailability else { return false }
+            isObservingAvailability = false
+            return true
+        }
+        if shouldUnregister {
+            PHPhotoLibrary.shared().unregisterAvailabilityObserver(self)
+        }
+    }
+
     deinit {
         stopObservingChanges()
+        stopObservingAvailability()
     }
 
     func requestLocalImage(

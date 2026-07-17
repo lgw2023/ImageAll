@@ -160,6 +160,7 @@ struct PhotosReconcileHandler: LeaseBoundJobHandler, Sendable {
                         leaseDurationMs: context.leaseDurationMs
                     )
                 ) { db in
+                    _ = try requireActiveGeneration(sourceID: decodedPayload.sourceID, db: db)
                     for metadata in batch.assets {
                         try upsert(
                             metadata,
@@ -218,6 +219,7 @@ struct PhotosReconcileHandler: LeaseBoundJobHandler, Sendable {
                     leaseDurationMs: context.leaseDurationMs
                 )
             ) { db in
+                _ = try requireActiveGeneration(sourceID: decodedPayload.sourceID, db: db)
                 try db.execute(
                     sql: """
                     UPDATE asset SET
@@ -359,6 +361,7 @@ struct PhotosReconcileHandler: LeaseBoundJobHandler, Sendable {
                 leaseDurationMs: leaseDurationMs
             )
         ) { db in
+            _ = try requireActiveGeneration(sourceID: sourceID, db: db)
             let currentDirtyEpoch = try Int.fetchOne(
                 db,
                 sql: "SELECT dirty_epoch FROM source WHERE id = ?",
