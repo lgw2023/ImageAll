@@ -17,8 +17,10 @@ enum FolderReconcileTestSupport {
             let url = FileManager.default.temporaryDirectory
                 .appendingPathComponent("\(Self.prefix)\(label)-\(UUID().uuidString)", isDirectory: true)
             try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
-            roots.append(url)
-            return url
+            let canonicalPath = try url.resourceValues(forKeys: [.canonicalPathKey]).canonicalPath
+            let canonicalURL = canonicalPath.map { URL(fileURLWithPath: $0, isDirectory: true) } ?? url
+            roots.append(canonicalURL)
+            return canonicalURL
         }
 
         func writeFile(

@@ -55,6 +55,7 @@ final class LibraryWorkspaceModel: ObservableObject {
     fileprivate var lastReviewMutation: ReviewMutationUndoRecord?
     private var personalizationRunnerTask: Task<Void, Never>?
     private var catalogReconcileTask: Task<Void, Never>?
+    private var catalogReconcileRunRequested = false
     private var cloudPreviewTask: Task<Void, Never>?
     private var cloudPreviewRequestID: UUID?
     private var selectionAnchorID: UUID?
@@ -74,6 +75,10 @@ final class LibraryWorkspaceModel: ObservableObject {
         self.service = service
         self.review = review
         self.catalogProgressRefreshInterval = catalogProgressRefreshInterval
+    }
+
+    deinit {
+        service.stopFolderSourceMonitoring()
     }
 
     var isBusy: Bool {
@@ -117,6 +122,15 @@ final class LibraryWorkspaceModel: ObservableObject {
     func start() async {
         guard !started else { return }
         started = true
+        do {
+            try service.startFolderSourceMonitoring { [weak self] in
+                Task { @MainActor [weak self] in
+                    self?.startCatalogReconcileRunnerIfNeeded()
+                }
+            }
+        } catch {
+            notice = .backgroundScanFailed
+        }
         await reload(runPendingJobs: true)
     }
 
@@ -617,6 +631,7 @@ final class LibraryWorkspaceModel: ObservableObject {
     }
 
     private func startCatalogReconcileRunnerIfNeeded() {
+        catalogReconcileRunRequested = true
         guard catalogReconcileTask == nil else { return }
         isCatalogScanning = true
         let service = service
@@ -625,32 +640,43 @@ final class LibraryWorkspaceModel: ObservableObject {
             let progressMonitor = Task { [weak self] in
                 await self?.monitorCatalogReconcileProgress()
             }
-            do {
-                try await Self.offMain {
-                    try service.runPendingReconcileJobs()
-                    try service.runPendingPhotosReconcileJobs()
+            repeat {
+                self.catalogReconcileRunRequested = false
+                do {
+                    try await Self.offMain {
+                        try service.runPendingReconcileJobs()
+                        try service.runPendingPhotosReconcileJobs()
+                    }
+                    if let refreshed = try? await Self.offMain({ try service.fetchSources() }) {
+                        self.sources = refreshed
+                    }
+                    await self.loadFirstPage()
+                    await self.refreshReviewState()
+                    self.startPersonalizationRunnerIfNeeded()
+                } catch {
+                    self.catalogReconcileRunRequested = false
+                    if let refreshed = try? await Self.offMain({ try service.fetchSources() }) {
+                        self.sources = refreshed
+                    }
+                    if self.sources.contains(where: { $0.kind == .photos && $0.state == .authorizationRequired }) {
+                        self.phase = .content
+                        self.notice = .photosAuthorizationRequired
+                    } else if self.items.isEmpty {
+                        self.phase = .failed(.scanFailed)
+                    } else {
+                        self.notice = .backgroundScanFailed
+                    }
                 }
-                await self.loadFirstPage()
-                await self.refreshReviewState()
-                self.startPersonalizationRunnerIfNeeded()
-            } catch {
-                if let refreshed = try? await Self.offMain({ try service.fetchSources() }) {
-                    self.sources = refreshed
-                }
-                if self.sources.contains(where: { $0.kind == .photos && $0.state == .authorizationRequired }) {
-                    self.phase = .content
-                    self.notice = .photosAuthorizationRequired
-                } else if self.items.isEmpty {
-                    self.phase = .failed(.scanFailed)
-                } else {
-                    self.notice = .backgroundScanFailed
-                }
-            }
+            } while self.catalogReconcileRunRequested
             progressMonitor.cancel()
             await progressMonitor.value
             self.catalogReconcileProgress = nil
-            self.isCatalogScanning = false
             self.catalogReconcileTask = nil
+            if self.catalogReconcileRunRequested {
+                self.startCatalogReconcileRunnerIfNeeded()
+            } else {
+                self.isCatalogScanning = false
+            }
         }
     }
 

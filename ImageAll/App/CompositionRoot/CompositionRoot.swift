@@ -41,6 +41,17 @@ struct CompositionRoot {
             rootValidator: rootValidator,
             clock: clock
         )
+        let folderSourceMonitor = FolderSourceMonitoringCoordinator(
+            repository: sourceRepository,
+            bookmarkPort: bookmark,
+            rootValidator: rootValidator,
+            dirtyTrigger: FolderSourceDirtyTrigger(
+                database: runtime.database,
+                clock: clock
+            ),
+            streamFactory: FoundationFolderFileSystemEventStreamFactory(),
+            clock: clock
+        )
         let handler = FolderReconcileHandler(rootAccess: sourceAccess)
         let photosAccess = PhotoKitPhotosLibraryAdapter()
         let photosConnection = PhotosLibraryConnectionService(
@@ -103,6 +114,7 @@ struct CompositionRoot {
         )
         let service = ProductionLibraryWorkspaceService(
             sourceRepository: sourceRepository,
+            folderSourceMonitor: folderSourceMonitor,
             authorization: authorization,
             photosConnection: photosConnection,
             queue: runtime.jobQueue,

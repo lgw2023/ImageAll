@@ -7,6 +7,7 @@ enum ProductionLibraryWorkspaceError: Error {
 
 struct ProductionLibraryWorkspaceService: LibraryWorkspacePort, Sendable {
     let sourceRepository: GRDBFolderSourceAuthorizationRepository
+    let folderSourceMonitor: FolderSourceMonitoringCoordinator
     let authorization: any FolderAuthorizationCommandPort
     let photosConnection: PhotosLibraryConnectionService
     let queue: GRDBJobQueue
@@ -21,6 +22,14 @@ struct ProductionLibraryWorkspaceService: LibraryWorkspacePort, Sendable {
     let portableExporter: PortableCatalogExporter
     let appVersion: String
     let clock: any JobClock
+
+    func startFolderSourceMonitoring(onChange: @escaping @Sendable () -> Void) throws {
+        try folderSourceMonitor.start(onChange: onChange)
+    }
+
+    func stopFolderSourceMonitoring() {
+        folderSourceMonitor.stop()
+    }
 
     @MainActor
     func choosePortableExportDirectory() -> URL? {
@@ -70,7 +79,9 @@ struct ProductionLibraryWorkspaceService: LibraryWorkspacePort, Sendable {
     }
 
     func connectFolder() async throws -> ConnectFolderOutcome {
-        try await authorization.connectFolder()
+        let outcome = try await authorization.connectFolder()
+        try folderSourceMonitor.synchronize()
+        return outcome
     }
 
     func connectPhotos() async throws -> ConnectPhotosOutcome {
@@ -78,14 +89,18 @@ struct ProductionLibraryWorkspaceService: LibraryWorkspacePort, Sendable {
     }
 
     func reauthorizeFolder(sourceID: UUID) async throws -> ReauthorizeFolderOutcome {
-        try await authorization.reauthorizeFolder(sourceID: sourceID)
+        let outcome = try await authorization.reauthorizeFolder(sourceID: sourceID)
+        try folderSourceMonitor.synchronize()
+        return outcome
     }
 
     func disableFolderSource(sourceID: UUID) async throws -> DisableFolderOutcome {
         if try photosConnection.fetchSources().first(where: { $0.id == sourceID })?.kind == .photos {
             return try photosConnection.disable(sourceID: sourceID)
         }
-        return try await authorization.disableFolderSource(sourceID: sourceID)
+        let outcome = try await authorization.disableFolderSource(sourceID: sourceID)
+        try folderSourceMonitor.synchronize()
+        return outcome
     }
 
     func enqueueReconcile(sourceIDs: [UUID]) throws {
@@ -144,6 +159,7 @@ struct ProductionLibraryWorkspaceService: LibraryWorkspacePort, Sendable {
     }
 
     func runPendingReconcileJobs() throws {
+        defer { try? folderSourceMonitor.synchronize() }
         let claim = ClaimNextInput(
             owner: "imageall-reconcile-\(UUID().uuidString.lowercased())",
             leaseDurationMs: 60_000,

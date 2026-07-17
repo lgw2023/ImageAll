@@ -294,6 +294,33 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         await waitForCatalogScanToFinish(model)
     }
 
+    func testFolderMonitoringChangeRunsAutomaticReconcile() async {
+        let sourceID = UUID()
+        let asset = Self.makeAsset(sourceID: sourceID, fileName: "auto-added.png")
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: sourceID,
+                displayName: "Fixture",
+                state: .active
+            ),
+            reconciledItems: [asset],
+            startsConnected: true
+        )
+        let model = LibraryWorkspaceModel(service: service)
+        await model.start()
+        await waitForCatalogScanToFinish(model)
+        XCTAssertEqual(service.reconcileRunCount, 1)
+
+        service.triggerFolderMonitoringChange()
+
+        for _ in 0 ..< 10_000 where service.reconcileRunCount < 2 {
+            await Task.yield()
+        }
+        await waitForCatalogScanToFinish(model)
+        XCTAssertEqual(service.reconcileRunCount, 2)
+        XCTAssertEqual(model.items.map(\.assetID), [asset.assetID])
+    }
+
     func testBackgroundScanPublishesProgressAndFirstBatchBeforeCompletion() async {
         let sourceID = UUID()
         let asset = Self.makeAsset(sourceID: sourceID, fileName: "first-photo.jpg")
@@ -1242,6 +1269,7 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
     private var storedJobActivityItems: [JobActivityItem]
     private var storedJobActivityFetchCallCount = 0
     private var storedJobActivityActionCallCount = 0
+    private var folderMonitoringCallback: (@Sendable () -> Void)?
     private var storedTags: [TagListItem]
     private var decisions: [UUID: [UUID: TagDecisionQueryState]] = [:]
     private let exportParentURL: URL?
@@ -1374,6 +1402,18 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
 
     var jobActivityActionCallCount: Int {
         lock.withLock { storedJobActivityActionCallCount }
+    }
+
+    func startFolderSourceMonitoring(onChange: @escaping @Sendable () -> Void) throws {
+        lock.withLock { folderMonitoringCallback = onChange }
+    }
+
+    func stopFolderSourceMonitoring() {
+        lock.withLock { folderMonitoringCallback = nil }
+    }
+
+    func triggerFolderMonitoringChange() {
+        lock.withLock { folderMonitoringCallback }?()
     }
 
     func fetchPreviewCacheUsage() throws -> DerivedImageCacheUsage {

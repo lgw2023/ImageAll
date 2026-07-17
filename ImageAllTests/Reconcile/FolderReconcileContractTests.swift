@@ -2,6 +2,178 @@ import XCTest
 @testable import ImageAll
 
 final class FolderReconcileContractTests: XCTestCase {
+    func testFolderDirtyBatchIncrementsEpochAndCoalescesReconcileJob() throws {
+        let url = try makeTempDatabaseURL()
+        let database = try CatalogDatabase.open(at: url)
+        let queue = FolderReconcileTestSupport.makeQueue(database: database)
+        let sourceID = UUID()
+        try FolderReconcileTestSupport.seedActiveFolderSource(
+            database: database,
+            sourceID: sourceID,
+            bookmark: Data("bookmark".utf8)
+        )
+        _ = try FolderReconcileTestSupport.enqueueReconcileJob(
+            queue: queue,
+            sourceID: sourceID
+        )
+        let trigger = FolderSourceDirtyTrigger(
+            database: database,
+            clock: FixedJobClock(nowMs: FolderReconcileTestSupport.baseTimeMs)
+        )
+
+        XCTAssertTrue(try trigger.recordEventBatch(sourceID: sourceID, eventCount: 3))
+
+        let evidence = try database.pool.read { db in
+            (
+                dirtyEpoch: try Int.fetchOne(
+                    db,
+                    sql: "SELECT dirty_epoch FROM source WHERE id = ?",
+                    arguments: [sourceID.uuidString.lowercased()]
+                ),
+                activeJobCount: try Int.fetchOne(
+                    db,
+                    sql: """
+                    SELECT COUNT(*) FROM job
+                    WHERE coalescing_key = ?
+                        AND state IN ('pending', 'running', 'paused', 'retryableFailed')
+                    """,
+                    arguments: [FolderReconcileJobFactory.coalescingKey(sourceID: sourceID)]
+                )
+            )
+        }
+        XCTAssertEqual(evidence.dirtyEpoch, 3)
+        XCTAssertEqual(evidence.activeJobCount, 1)
+    }
+
+    func testFolderMonitorRootLossMarksSourceUnavailableAndStopsAccess() throws {
+        let fixture = FolderReconcileTestSupport.TempFixtureRoot()
+        defer { fixture.cleanup() }
+        let root = try fixture.makeRoot(label: "watch-root-loss")
+        let bookmark = Data("watch-bookmark".utf8)
+        let database = try CatalogDatabase.open(at: makeTempDatabaseURL())
+        let sourceID = UUID()
+        try FolderReconcileTestSupport.seedActiveFolderSource(
+            database: database,
+            sourceID: sourceID,
+            bookmark: bookmark
+        )
+        let bookmarkPort = FolderReconcileTestSupport.TestBookmarkPort(
+            rootByBookmark: [bookmark: root]
+        )
+        let streamFactory = TestFolderEventStreamFactory()
+        let repository = GRDBFolderSourceAuthorizationRepository(database: database)
+        let monitor = FolderSourceMonitoringCoordinator(
+            repository: repository,
+            bookmarkPort: bookmarkPort,
+            rootValidator: FolderRootValidator(),
+            dirtyTrigger: FolderSourceDirtyTrigger(database: database),
+            streamFactory: streamFactory
+        )
+        try monitor.start(onChange: {})
+
+        streamFactory.send(
+            FolderFileSystemEventBatch(eventCount: 1, flags: [.rootChanged])
+        )
+
+        guard case let .folder(source) = try repository.lookupSource(id: sourceID) else {
+            return XCTFail("folder source missing")
+        }
+        XCTAssertEqual(source.state, .unavailable)
+        XCTAssertEqual(source.dirtyEpoch, 0)
+        XCTAssertEqual(streamFactory.stopCount, 1)
+        XCTAssertEqual(bookmarkPort.scopeStopCount, 1)
+    }
+
+    func testFSEventAutomaticallyReconcilesSyntheticFolderChange() throws {
+        let fixture = FolderReconcileTestSupport.TempFixtureRoot()
+        defer { fixture.cleanup() }
+        let root = try fixture.makeRoot(label: "fsevents-reconcile")
+        let firstData = FolderReconcileTestSupport.minimalPNGData()
+        try firstData.write(to: root.appendingPathComponent("first.png"))
+        let bookmark = Data("watch-bookmark".utf8)
+        let database = try CatalogDatabase.open(at: makeTempDatabaseURL())
+        let queue = FolderReconcileTestSupport.makeQueue(database: database)
+        let clock = FixedJobClock(nowMs: FolderReconcileTestSupport.baseTimeMs)
+        let sourceID = UUID()
+        try FolderReconcileTestSupport.seedActiveFolderSource(
+            database: database,
+            sourceID: sourceID,
+            bookmark: bookmark
+        )
+        let bookmarkPort = FolderReconcileTestSupport.TestBookmarkPort(
+            rootByBookmark: [bookmark: root]
+        )
+        let access = FolderReconcileTestSupport.makeSourceAccess(
+            database: database,
+            bookmarkPort: bookmarkPort
+        )
+        let handler = FolderReconcileHandler(rootAccess: access)
+        let execution = FolderReconcileTestSupport.makeCoordinator(
+            queue: queue,
+            handler: handler
+        )
+        let monitor = FolderSourceMonitoringCoordinator(
+            repository: GRDBFolderSourceAuthorizationRepository(database: database),
+            bookmarkPort: bookmarkPort,
+            rootValidator: FolderRootValidator(),
+            dirtyTrigger: FolderSourceDirtyTrigger(database: database, clock: clock),
+            streamFactory: FoundationFolderFileSystemEventStreamFactory(latency: 0.05),
+            clock: clock
+        )
+        let workerQueue = DispatchQueue(label: "ImageAllTests.fsevents-reconcile")
+        let initial = expectation(description: "initial reconcile")
+        initial.assertForOverFulfill = false
+        let changed = expectation(description: "event-driven reconcile")
+        changed.assertForOverFulfill = false
+        let failure = LockedFailure()
+
+        try monitor.start {
+            workerQueue.async {
+                do {
+                    let claim = ClaimNextInput(
+                        owner: "fsevents-test-worker",
+                        leaseDurationMs: FolderReconcileTestSupport.leaseDurationMs,
+                        allowedKinds: [FolderReconcileJobFactory.kind]
+                    )
+                    while let result = try execution.claimAndExecuteOnce(claim) {
+                        guard result.snapshot.state == .completed else {
+                            throw ProductionLibraryWorkspaceError.reconcileFailed
+                        }
+                    }
+                    let names = try database.pool.read { db in
+                        try String.fetchAll(
+                            db,
+                            sql: """
+                            SELECT file_name FROM asset
+                            WHERE source_id = ? AND availability = 'available'
+                            ORDER BY file_name
+                            """,
+                            arguments: [sourceID.uuidString.lowercased()]
+                        )
+                    }
+                    if names == ["first.png"] { initial.fulfill() }
+                    if names == ["first.png", "second.png"] { changed.fulfill() }
+                } catch {
+                    failure.record(error)
+                    initial.fulfill()
+                    changed.fulfill()
+                }
+            }
+        }
+        wait(for: [initial], timeout: 5)
+        XCTAssertNil(failure.message)
+
+        let secondData = firstData + Data([0x00])
+        try secondData.write(to: root.appendingPathComponent("second.png"))
+
+        wait(for: [changed], timeout: 5)
+        monitor.stop()
+        XCTAssertNil(failure.message)
+        XCTAssertEqual(try Data(contentsOf: root.appendingPathComponent("first.png")), firstData)
+        XCTAssertEqual(try Data(contentsOf: root.appendingPathComponent("second.png")), secondData)
+        XCTAssertEqual(bookmarkPort.scopeStartCount, bookmarkPort.scopeStopCount)
+    }
+
     func testStrictJSONAcceptsDeserializedIntegerOne() throws {
         let sourceID = UUID()
         let payload: [String: Any] = [
@@ -170,5 +342,62 @@ final class FolderReconcileContractTests: XCTestCase {
         let result = try XCTUnwrap(try coordinator.claimAndExecuteOnce(ClaimNextInput(owner: "w", leaseDurationMs: 1000)))
         XCTAssertEqual(result.snapshot.state, .completed)
         XCTAssertEqual(result.snapshot.checkpoint, JobTestSupport.testCheckpoint)
+    }
+}
+
+private final class TestFolderEventStreamFactory: FolderFileSystemEventStreamFactory, @unchecked Sendable {
+    private let lock = NSLock()
+    private var storedStopCount = 0
+    private var callbacks: [@Sendable (FolderFileSystemEventBatch) -> Void] = []
+
+    var stopCount: Int {
+        lock.withLock { storedStopCount }
+    }
+
+    func start(
+        rootURL: URL,
+        onEventBatch: @escaping @Sendable (FolderFileSystemEventBatch) -> Void
+    ) throws -> any FolderFileSystemEventStream {
+        lock.withLock {
+            callbacks.append(onEventBatch)
+        }
+        return TestFolderEventStream { [weak self] in
+            self?.lock.withLock { self?.storedStopCount += 1 }
+        }
+    }
+
+    func send(_ batch: FolderFileSystemEventBatch) {
+        let captured = lock.withLock { callbacks }
+        captured.forEach { $0(batch) }
+    }
+}
+
+private final class TestFolderEventStream: FolderFileSystemEventStream, @unchecked Sendable {
+    private let onStop: @Sendable () -> Void
+    private let lock = NSLock()
+    private var stopped = false
+
+    init(onStop: @escaping @Sendable () -> Void) {
+        self.onStop = onStop
+    }
+
+    func stop() {
+        let shouldStop = lock.withLock {
+            guard !stopped else { return false }
+            stopped = true
+            return true
+        }
+        if shouldStop { onStop() }
+    }
+}
+
+private final class LockedFailure: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storedMessage: String?
+
+    var message: String? { lock.withLock { storedMessage } }
+
+    func record(_ error: Error) {
+        lock.withLock { storedMessage = String(describing: error) }
     }
 }

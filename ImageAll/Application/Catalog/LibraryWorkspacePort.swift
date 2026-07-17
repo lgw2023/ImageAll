@@ -122,6 +122,8 @@ enum LibraryInspectorTagDecisionState: Equatable, Sendable {
 }
 
 protocol LibraryWorkspacePort: Sendable {
+    func startFolderSourceMonitoring(onChange: @escaping @Sendable () -> Void) throws
+    func stopFolderSourceMonitoring()
     @MainActor func choosePortableExportDirectory() -> URL?
     func exportPortableUserData(to parentDirectoryURL: URL) throws -> PortableCatalogExportResult
     func fetchPreviewCacheUsage() throws -> DerivedImageCacheUsage
@@ -164,4 +166,9 @@ protocol LibraryWorkspacePort: Sendable {
     ) throws -> TagCreateAndApplyResult
     func renameTag(tagID: UUID, rawName: String) throws -> TagListItem
     func archiveTag(tagID: UUID) throws
+}
+
+extension LibraryWorkspacePort {
+    func startFolderSourceMonitoring(onChange: @escaping @Sendable () -> Void) throws {}
+    func stopFolderSourceMonitoring() {}
 }
