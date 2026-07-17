@@ -1,8 +1,8 @@
 # ImageAll 阶段 1 加速交付计划
 
-> 状态：Slice A-F implemented；Slice B 低空间显示问题已修复
+> 状态：Slice A-F、W implemented；Slice B 低空间显示问题已修复
 >
-> 日期：2026-07-16
+> 日期：2026-07-17
 >
 > 设计基线：`main@a03d1296b4f7ffa22de369baebc89042ea94283f`
 >
@@ -17,6 +17,8 @@
 > Slice E 实现：`main@fa670a7a14ee0958028f25058d169e395617dc47`
 >
 > Slice F 实现：`main@fe21362269c955abf224201f1ba1bbc132cebab7`
+>
+> Slice W 实现：`main@eb538d6d33bdd7dd021c2e0f61cffc0313cccf86`
 
 ## 1. 决策
 
@@ -38,6 +40,7 @@
 → 按可用状态、静态图片格式筛选，并切换稳定排序
 → 从来源行重扫、重新授权或安全停用来源
 → 从标签行重命名或归档标签，同时保留人工决定历史
+→ 活跃文件夹发生变化后自动合并事件、重跑对账并刷新网格
 ```
 
 ## 2. 加速切片 A：连接、扫描、浏览
@@ -73,21 +76,19 @@
 
 ## 4. 明确延期
 
-Slice F 完成后仍明确延期：
+Slice W 完成后仍明确延期：
 
-- FSEvents watcher、dirty trigger 与自动增量重扫；
-- Activity 工作区、任务列表、暂停、取消、重试；
 - `Command-K` 和多窗口状态同步；
-- 来源信息面板，以及任务级暂停/继续控制；
+- 更完整的来源信息面板；
 - Inspector 技术错误详情、标签操作前的独立影响数量确认；
-- 10,000/100,000 项性能基准、完整无障碍矩阵和所有故障注入；
+- 完整无障碍矩阵和非关键故障注入；
 - 真实 `/Volumes/HDD2` 数据 smoke。
 
 这些项目进入阶段 1 技术债清单，后续按对实际使用价值的影响排序补回。延期不包括来源只读、bookmark 生命周期、目录边界、原子数据库写入、派生缓存路径安全和真实照片保护。
 
-## 5. 最小验证门
+## 5. Slice A 最小验证门
 
-为了加快交付，本切片只要求：
+为了加快首个纵切片交付，Slice A 只要求：
 
 1. 一个公开界面级模型测试证明“空库可连接，成功后执行扫描并出现照片”；
 2. 一个失败测试证明连接/扫描失败进入安全错误状态且不会伪装为空库；
@@ -99,7 +100,7 @@ Slice F 完成后仍明确延期：
 
 ## 6. 停止位置
 
-切片 B 停止于“浏览—选择—人工标签—搜索筛选”闭环；项目所有者实际体验反馈后，切片 C 已补齐单图查看与键盘浏览，切片 D 已补齐状态、格式和排序控件，切片 E 已补齐来源生命周期，切片 F 已补齐标签重命名与归档。FSEvents、活动中心和扩展验证继续延期；后续纵切片继续优先直接用户主路径，不默认回补 watcher/活动能力。
+切片 B 停止于“浏览—选择—人工标签—搜索筛选”闭环；项目所有者实际体验反馈后，切片 C 已补齐单图查看与键盘浏览，切片 D 已补齐状态、格式和排序控件，切片 E 已补齐来源生命周期，切片 F 已补齐标签重命名与归档。阶段 4 已补齐活动工作区和任务控制，切片 W 又补齐文件夹 FSEvents 自动重扫；下一条推荐纵切片是让现有 PhotoKit 变化观察器复用同一自动 runner 唤醒链路，不再等待用户手动重扫或下次启动。
 
 ## 7. 切片 A 验收记录
 
@@ -197,3 +198,23 @@ Slice F 完成后仍明确延期：
 - 本机 Downloads 目录库完成只读启动验收；因当前目录库没有 active Tag，没有为了展示菜单而创建临时标签或修改应用元数据；
 - 未访问 `/Volumes/HDD2`，未修改、删除或移动 Downloads 来源文件，未新增 schema、entitlement、privacy manifest 或依赖，未 push；
 - 实现提交：`fe21362269c955abf224201f1ba1bbc132cebab7`（`Agent-Role: implementation`）。
+
+## 14. 加速切片 W：文件夹变化自动重扫
+
+2026-07-17 已完成并通过：
+
+- 每个 active 文件夹来源最多建立一个 FSEvents watcher；先建立 watcher，再排队首次对账，并在来源停用、不可用、根丢失或 App 生命周期结束时成对释放 stream 与安全作用域；
+- FSEvents 回调不持久化或解释逐文件 path/event ID；watcher 从当前时刻开始，启动时另排一次完整对账。事件只在数据库事务中递增 `dirty_epoch` 并按 `folder.reconcile.v1:<source_id>` 合并排队；扫描期间的新变化继续由 generation 完成事务生成后继任务；
+- `MustScanSubDirs`、事件丢失和 ID wrap 仍走完整 reconcile；root changed / unmount 只把来源转为 `unavailable`，不把资产误判为 missing；
+- Workspace runner 在收到 watcher 通知后自动执行文件夹与 Photos 待处理任务、刷新来源/网格/Review 状态，并覆盖运行中与退出尾部到达的新通知；
+- 真实 FSEvents + 合成临时目录集成测试证明外部新增文件后自动进入目录库，且前后文件字节不变；来源丢失、事件合并和模型唤醒另有最小契约测试；
+- 当前 macOS `/var` 与 `/private/var` 临时目录别名导致旧只读矩阵误判，测试夹具已改用系统 canonical path，生产扫描逻辑未改变；
+- unsigned 全量 795/795 通过（`/tmp/ImageAll-Stage1W-20260717-1/Logs/Test/Test-ImageAll-2026.07.17_13-41-40-+0800.xcresult`），Apple Development 签名宿主 entitlement 1/1 通过（`/tmp/ImageAll-Stage1W-20260717-signed-tests/Logs/Test/Test-ImageAll-2026.07.17_13-43-06-+0800.xcresult`）；arm64 Debug 独立 bundle 位于 `/tmp/ImageAll-Stage1W-20260717-build/Build/Products/Debug/ImageAll.app`，并通过 `codesign --verify --deep --strict`；
+- 自动化未访问 `/Volumes/HDD2`，未读取 `user/`，未修改来源文件，未新增 schema、entitlement、privacy manifest 或依赖，未 push；
+- 实现提交：`eb538d6d33bdd7dd021c2e0f61cffc0313cccf86`（`Agent-Role: implementation`）。
+
+W 不新增卷重新挂载自动探测；root 丢失后仍遵循既有 `unavailable`、重新授权和手动重扫生命周期。阶段 1 继续标记为进行中，是因为外置盘小型真实数据的只读人工验收尚未关闭；合成目录 FSEvents 证据不能替代该独立门。
+
+可复现验证使用 `ImageAll.xcodeproj` / `ImageAll` scheme、Debug、`platform=macOS,arch=arm64`、独立 DerivedData 和固定 package checkout：unsigned 全量运行 `xcodebuild ... test -skip-testing:ImageAllTests/FolderAuthorizationEntitlementPanelTests/testProductionEntitlementsContainApprovedSandboxCapabilities CODE_SIGNING_ALLOWED=NO`；签名门单独运行 `xcodebuild ... test -only-testing:ImageAllTests/FolderAuthorizationEntitlementPanelTests/testProductionEntitlementsContainApprovedSandboxCapabilities`；独立 bundle 运行 `xcodebuild ... PRODUCT_BUNDLE_IDENTIFIER=com.gwlee.ImageAll.Stage1W.20260717 build` 后执行 `codesign --verify --deep --strict <ImageAll.app>`。结果包过期后仍可用相同 project、scheme、destination、bundle ID 和测试选择重跑。
+
+下一推荐切片：让 `PhotosLibraryChangeObserverCoordinator` 在成功递增 Photos `dirty_epoch` 并排队任务后通知 Workspace runner，自动消费 persistent change history 并刷新网格。验收只使用 fake PhotoKit 回调和合成数据库，不申请或读取真实 Photos 权限数据；必须证明通知合并、运行中重触发和人工决定不受影响。
