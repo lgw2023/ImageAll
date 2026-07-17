@@ -58,6 +58,8 @@ enum LibraryWorkspaceNotice: Equatable, Sendable {
     case insufficientSuggestionSamples(positiveMissing: Int, negativeMissing: Int)
     case reviewMutationApplied(count: Int, tagName: String)
     case portableExportCompleted(bundleName: String, recordCount: Int)
+    case portableExportDestinationOverlapsSource
+    case portableExportIsolationIndeterminate
     case portableExportFailed
     case previewCacheCleared(removedEntries: Int, partialReclaim: Bool)
     case previewCacheActionFailed

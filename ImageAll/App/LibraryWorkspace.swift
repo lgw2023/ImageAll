@@ -136,6 +136,10 @@ final class LibraryWorkspaceModel: ObservableObject {
                 bundleName: result.bundleURL.lastPathComponent,
                 recordCount: result.totalRecordCount
             )
+        } catch PortableCatalogExportError.destinationOverlapsSource {
+            notice = .portableExportDestinationOverlapsSource
+        } catch PortableCatalogExportError.destinationIsolationIndeterminate {
+            notice = .portableExportIsolationIndeterminate
         } catch {
             notice = .portableExportFailed
         }
@@ -2381,6 +2385,10 @@ struct LibraryWorkspaceView: View {
             "已处理 \(count) 条“\(tagName)”建议"
         case let .portableExportCompleted(bundleName, recordCount):
             "已导出 \(recordCount) 条记录到“\(bundleName)”。"
+        case .portableExportDestinationOverlapsSource:
+            "导出位置不能与已连接来源重叠，请选择其他文件夹。"
+        case .portableExportIsolationIndeterminate:
+            "无法确认导出位置与来源隔离，请重新授权来源或选择其他位置。"
         case .portableExportFailed:
             "用户数据导出未完成，现有资料没有被修改。请重试。"
         case let .previewCacheCleared(removedEntries, partialReclaim):

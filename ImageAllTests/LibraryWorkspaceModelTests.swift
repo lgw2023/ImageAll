@@ -76,6 +76,48 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertFalse(model.isExportingPortableData)
     }
 
+    func testPortableExportSourceOverlapPublishesActionableNotice() async {
+        let parentURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ImageAll-Export-Parent", isDirectory: true)
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: UUID(),
+                displayName: "Fixture",
+                state: .active
+            ),
+            reconciledItems: [],
+            exportParentURL: parentURL,
+            portableExportError: PortableCatalogExportError.destinationOverlapsSource
+        )
+        let model = LibraryWorkspaceModel(service: service)
+
+        await model.exportPortableUserData()
+
+        XCTAssertEqual(model.notice, .portableExportDestinationOverlapsSource)
+        XCTAssertFalse(model.isExportingPortableData)
+    }
+
+    func testPortableExportIndeterminateIsolationPublishesActionableNotice() async {
+        let parentURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ImageAll-Export-Parent", isDirectory: true)
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: UUID(),
+                displayName: "Fixture",
+                state: .active
+            ),
+            reconciledItems: [],
+            exportParentURL: parentURL,
+            portableExportError: PortableCatalogExportError.destinationIsolationIndeterminate
+        )
+        let model = LibraryWorkspaceModel(service: service)
+
+        await model.exportPortableUserData()
+
+        XCTAssertEqual(model.notice, .portableExportIsolationIndeterminate)
+        XCTAssertFalse(model.isExportingPortableData)
+    }
+
     func testPreviewCacheClearRefreshesUsageAndPublishesSuccess() async {
         let service = FakeLibraryWorkspaceService(
             connectedSource: LibrarySourceSummary(
@@ -1191,6 +1233,7 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
     private let exportParentURL: URL?
     private let portableExportResult: PortableCatalogExportResult?
     private let portableExportFails: Bool
+    private let portableExportError: Error?
     private var storedPreviewCacheUsage: DerivedImageCacheUsage
     private let previewCacheClearResult: DerivedImageCacheClearResult?
     private let previewCacheClearFails: Bool
@@ -1216,6 +1259,7 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
         exportParentURL: URL? = nil,
         portableExportResult: PortableCatalogExportResult? = nil,
         portableExportFails: Bool = false,
+        portableExportError: Error? = nil,
         previewCacheUsage: DerivedImageCacheUsage = .zero,
         previewCacheClearResult: DerivedImageCacheClearResult? = nil,
         previewCacheClearFails: Bool = false,
@@ -1238,6 +1282,7 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
         self.exportParentURL = exportParentURL
         self.portableExportResult = portableExportResult
         self.portableExportFails = portableExportFails
+        self.portableExportError = portableExportError
         storedPreviewCacheUsage = previewCacheUsage
         self.previewCacheClearResult = previewCacheClearResult
         self.previewCacheClearFails = previewCacheClearFails
@@ -1390,6 +1435,9 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
     }
 
     func exportPortableUserData(to parentDirectoryURL: URL) throws -> PortableCatalogExportResult {
+        if let portableExportError {
+            throw portableExportError
+        }
         if portableExportFails {
             throw FakeWorkspaceError.portableExportFailed
         }
