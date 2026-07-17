@@ -60,18 +60,29 @@
 
 ## 4. macOS 权限与平台契约
 
-### 4.1 entitlement 最小增量
+### 4.1 entitlement 最小增量与当前状态
 
-阶段 1 计划在现有 App Sandbox 之外只新增：
+阶段 1 交付时在现有 App Sandbox 之外只新增：
 
 | entitlement | 用途 |
 |---|---|
 | `com.apple.security.files.user-selected.read-only` | 允许读取用户在系统面板中选择的文件夹 |
 | `com.apple.security.files.bookmarks.app-scope` | 允许创建并解析跨启动的 app-scoped bookmark |
 
-不得新增 `user-selected.read-write`、全盘访问、Pictures 全目录权限、Photos、网络、Automation、App Group 或其他无关能力。Apple 将 `user-selected.read-only` 定义为只读访问用户在 Open/Save dialog 中选择的文件；app-scoped bookmark entitlement 用于持久访问安全作用域资源：
+这是阶段 1 当时的切片边界，不是当前签名产物的完整描述。阶段 4 的可移植用户数据导出需要向用户在
+系统面板中选择的父目录写入数据包，因此生产 target 现已把 app-wide user-selected entitlement 改为
+`com.apple.security.files.user-selected.read-write`；macOS 不为同一 target 分别授予“来源选择只读”和
+“导出选择读写”两套 user-selected entitlement。该变更不改变来源访问契约：文件夹来源仍只生成带
+`.securityScopeAllowOnlyReadAccess` 的 app-scoped bookmark，且每次解析后只读访问；导出选择得到的
+写 scope 只在本次导出期间使用，不持久化 bookmark。导出前还必须对全部已记录文件夹来源执行隔离
+预检：目标与任一来源相同、位于来源内或包含来源时拒绝，关系无法确认时也拒绝。
+
+除上述可移植导出所需能力和阶段 2 已批准的 Photos 读取能力外，仍不得新增全盘访问、Pictures 全目录
+权限、网络、Automation、App Group 或其他无关能力。Apple 将 `user-selected.read-only` 定义为只读访问
+用户在 Open/Save dialog 中选择的文件；app-scoped bookmark entitlement 用于持久访问安全作用域资源：
 
 - [Apple: user-selected read-only entitlement](https://developer.apple.com/documentation/BundleResources/Entitlements/com.apple.security.files.user-selected.read-only)
+- [Apple: user-selected read-write entitlement](https://developer.apple.com/documentation/BundleResources/Entitlements/com.apple.security.files.user-selected.read-write)
 - [Apple: Enabling Security-Scoped Bookmark and URL Access](https://developer.apple.com/documentation/professional-video-applications/enabling-security-scoped-bookmark-and-url-access)
 - [Apple: Accessing files from the macOS App Sandbox](https://developer.apple.com/documentation/Security/accessing-files-from-the-macos-app-sandbox)
 

@@ -299,6 +299,12 @@ Undo 是阶段 1 的会话级单级能力：成功批量命令返回每个 Asset
 切片 2 的精确端口、Job payload、AppKit 配置、重授权身份、失败回滚与测试矩阵以
 [`CURSOR-STAGE-1-SLICE-2-HANDOFF.md`](./CURSOR-STAGE-1-SLICE-2-HANDOFF.md) 为准。
 
+> 当前状态说明：上述 entitlement 条目冻结的是阶段 1 切片 2 的交付边界。阶段 4 可移植导出后来要求
+> 向用户选择的目录写入数据包，production target 因此改用 app-wide `user-selected.read-write`。来源
+> bookmark 仍显式包含 `.securityScopeAllowOnlyReadAccess`；导出写 scope 不持久化，并在写入前拒绝与
+> 任一已记录文件夹来源相同、互为祖先/后代或关系无法确认的目标。当前安全契约及证据见阶段 4 实施
+> 规格第 13 节，不得把全局 entitlement 变化解释为允许写入来源树。
+
 ### 5.2 切片 3：对账
 
 - streaming enumerator，批次建议上限 256；
