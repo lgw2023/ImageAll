@@ -256,6 +256,15 @@ evaluation cohort、离线 metrics 与面向用户的强度文案继续延期；
 - 保留 `score > 0` 为内部候选过滤，不显示百分比或固定强度档；
 - evaluation cohort、离线 metrics 和自动代表样本多样性选择仍是后续独立切片。
 
+项目所有者随后明确：当前阶段不负责给现有相册形成准确或完整的自动标签体系。上述校准只用于证明
+链路可运行并记录轻量基线的局限，不再把统一命中率、样本完整性或标签覆盖率作为验收门，也不继续
+执行“美食 v3”样本补强。常用标签预设可以先作为普通、可编辑和可归档的起点；面向现有照片的通用
+语义预测将在后续阶段评估 Hugging Face 候选模型，并复用现有 prediction 与 Review Queue 边界。
+
 实现切片按 TDD 先证明新增概览契约缺失，再通过定向测试；Personalization 回归 37/37、0 失败，
 独立 arm64 Debug build 成功，`git diff --check` 通过。整个校准未触发 iCloud 下载、未调用 Photos 写入
 API、未直接访问或遍历 `/Volumes/HDD2`，也未读取仓库 `user/`。
+
+常用标签预设由 `7a736ef` 实现：侧栏可幂等补齐“人像、风景、美食、动物、植物、建筑、旅行、截图、
+文档”，已有同名或已归档标签不会重复创建；该动作不写入 `asset_tag_decision`、prediction，也不启动
+分析任务。相关标签事务与 Workspace 模型回归 73/73、0 失败，独立 arm64 Debug build 成功。

@@ -369,5 +369,7 @@ bundle 位于
 可见结果组成的真实图库主路径门。三类代表性标签随后已按新的明确测试选择完成运行校准，混合质量结论与
 停止位置见
 [`STAGE-3-REVIEW-QUEUE-IMPLEMENTATION-SPEC.md`](./STAGE-3-REVIEW-QUEUE-IMPLEMENTATION-SPEC.md) 第 8.1 节。
+该校准只记录当前本地轻量基线的能力边界，不要求现有相册标签预测达到统一准确率、样本完整性或
+语义覆盖率，也不阻塞本阶段验收；后续通用语义预测模型另行评估。
 System Photo Library 实际切换/显式重绑定仍是发布前人工门；批量云下载和后台自动获取 iCloud-only 内容
 继续留在 MVP 范围外。
