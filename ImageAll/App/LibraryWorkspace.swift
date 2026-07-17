@@ -2345,7 +2345,7 @@ struct LibraryWorkspaceView: View {
     private func noticeBar(_ notice: LibraryWorkspaceNotice) -> some View {
         HStack(spacing: 10) {
             Image(systemName: noticeIcon(notice))
-            Text(noticeText(notice))
+            Text(Self.noticeText(notice))
                 .font(.caption)
             Spacer()
             Button("关闭") { model.dismissNotice() }
@@ -2368,7 +2368,7 @@ struct LibraryWorkspaceView: View {
         }
     }
 
-    private func noticeText(_ notice: LibraryWorkspaceNotice) -> String {
+    static func noticeText(_ notice: LibraryWorkspaceNotice) -> String {
         switch notice {
         case .selectionHiddenByFilter: "当前选择已被筛选条件隐藏，因此已清除。"
         case .invalidTagName: "标签名称无效。"
@@ -2386,9 +2386,9 @@ struct LibraryWorkspaceView: View {
         case let .portableExportCompleted(bundleName, recordCount):
             "已导出 \(recordCount) 条记录到“\(bundleName)”。"
         case .portableExportDestinationOverlapsSource:
-            "导出位置不能与已连接来源重叠，请选择其他文件夹。"
+            "导出位置不能与已添加的文件夹来源重叠，请选择其他文件夹。"
         case .portableExportIsolationIndeterminate:
-            "无法确认导出位置与来源隔离，请重新授权来源或选择其他位置。"
+            "无法确认导出位置与来源隔离，尚未开始导出。请重新授权来源或选择其他位置；仍失败时请停止导出。"
         case .portableExportFailed:
             "用户数据导出未完成，现有资料没有被修改。请重试。"
         case let .previewCacheCleared(removedEntries, partialReclaim):

@@ -118,6 +118,20 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertFalse(model.isExportingPortableData)
     }
 
+    func testPortableExportSourceOverlapNoticeExplainsSafeRecovery() {
+        XCTAssertEqual(
+            LibraryWorkspaceView.noticeText(.portableExportDestinationOverlapsSource),
+            "导出位置不能与已添加的文件夹来源重叠，请选择其他文件夹。"
+        )
+    }
+
+    func testPortableExportIndeterminateIsolationNoticeFailsClosed() {
+        XCTAssertEqual(
+            LibraryWorkspaceView.noticeText(.portableExportIsolationIndeterminate),
+            "无法确认导出位置与来源隔离，尚未开始导出。请重新授权来源或选择其他位置；仍失败时请停止导出。"
+        )
+    }
+
     func testPreviewCacheClearRefreshesUsageAndPublishesSuccess() async {
         let service = FakeLibraryWorkspaceService(
             connectedSource: LibrarySourceSummary(
