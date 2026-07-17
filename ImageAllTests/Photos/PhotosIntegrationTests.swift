@@ -1310,6 +1310,63 @@ final class PhotosIntegrationTests: XCTestCase {
         XCTAssertEqual(assetCount, 5)
     }
 
+    func testPhotosReconcileHeartbeatStopsEnumerationAtPauseBoundary() async throws {
+        let database = try FolderAuthorizationTestSupport.makeDatabase()
+        let sourceID = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
+        let jobID = UUID(uuidString: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")!
+        let clock = MutableJobClock(nowMs: DatabaseTestSupport.timestampMs)
+        let queue = GRDBJobQueue(
+            database: database,
+            clock: clock,
+            retryPolicy: FixedDelayRetryPolicy(delayMs: 1_000)
+        )
+        let access = LeaseAdvancingPhotosLibraryAccess(
+            assetCount: 5,
+            elapsedMsPerAsset: 13_000,
+            clock: clock,
+            afterAsset: { enumeratedCount in
+                guard enumeratedCount == 2 else { return }
+                _ = try? queue.applyStateCommand(
+                    JobStateCommand(jobID: jobID, operation: .pause)
+                )
+            }
+        )
+        let connection = PhotosLibraryConnectionService(
+            database: database,
+            access: access,
+            clock: clock,
+            idGenerator: IDSequence([sourceID, jobID]).next
+        )
+        _ = try await connection.connect()
+
+        let handler = PhotosReconcileHandler(
+            database: database,
+            queue: queue,
+            access: access,
+            clock: clock
+        )
+        let coordinator = JobExecutionCoordinator(
+            queue: queue,
+            registry: MultiJobHandlerRegistry(handlers: [handler]),
+            leaseContextProvider: GRDBJobLeaseContextProvider(queue: queue)
+        )
+
+        let result = try coordinator.claimAndExecuteOnce(
+            ClaimNextInput(
+                owner: "slow-photos-pause-test",
+                leaseDurationMs: 60_000,
+                allowedKinds: [PhotosReconcileJobFactory.kind]
+            )
+        )
+
+        XCTAssertEqual(result?.snapshot.state, .paused)
+        XCTAssertEqual(access.enumeratedCount, 3)
+        let assetCount = try await database.pool.read { db in
+            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM asset")
+        }
+        XCTAssertEqual(assetCount, 0)
+    }
+
     func testImageLoaderRoutesPhotosToLocalProviderAndFilesToDerivedCache() async throws {
         let database = try FolderAuthorizationTestSupport.makeDatabase()
         let photosSourceID = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
@@ -1820,12 +1877,23 @@ private final class LeaseAdvancingPhotosLibraryAccess: PhotosLibraryAccessPort, 
     private let assetCount: Int
     private let elapsedMsPerAsset: Int64
     private let clock: MutableJobClock
+    private let afterAsset: (@Sendable (Int) -> Void)?
+    private let lock = NSLock()
+    private var storedEnumeratedCount = 0
 
-    init(assetCount: Int, elapsedMsPerAsset: Int64, clock: MutableJobClock) {
+    init(
+        assetCount: Int,
+        elapsedMsPerAsset: Int64,
+        clock: MutableJobClock,
+        afterAsset: (@Sendable (Int) -> Void)? = nil
+    ) {
         self.assetCount = assetCount
         self.elapsedMsPerAsset = elapsedMsPerAsset
         self.clock = clock
+        self.afterAsset = afterAsset
     }
+
+    var enumeratedCount: Int { lock.withLock { storedEnumeratedCount } }
 
     func authorizationState() -> PhotosAuthorizationState { .authorized }
     func requestAuthorization() async -> PhotosAuthorizationState { .authorized }
@@ -1866,6 +1934,11 @@ private final class LeaseAdvancingPhotosLibraryAccess: PhotosLibraryAccessPort, 
                         modifiedAtMs: DatabaseTestSupport.timestampMs
                     )
                 )
+                let currentCount = lock.withLock {
+                    storedEnumeratedCount += 1
+                    return storedEnumeratedCount
+                }
+                afterAsset?(currentCount)
                 try onAssetEnumerated()
             }
             try onBatch(

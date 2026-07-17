@@ -45,6 +45,10 @@ private enum PhotosReconcileError: Error {
     case sourceUnavailable
 }
 
+private struct PhotosReconcileSafeBoundaryReached: Error {
+    let snapshot: JobRecordSnapshot
+}
+
 struct PhotosReconcileHandler: LeaseBoundJobHandler, Sendable {
     let database: CatalogDatabase
     let queue: GRDBJobQueue
@@ -141,7 +145,7 @@ struct PhotosReconcileHandler: LeaseBoundJobHandler, Sendable {
                 onAssetEnumerated: {
                     let nowMs = clock.nowMs
                     guard nowMs - lastLeaseRenewedAtMs >= heartbeatIntervalMs else { return }
-                    _ = try queue.commitLeaseProtectedBatch(
+                    let snapshot = try queue.commitLeaseProtectedBatch(
                         input: SafeBatchCommitInput(
                             lease: lease,
                             outcome: .continue,
@@ -154,6 +158,9 @@ struct PhotosReconcileHandler: LeaseBoundJobHandler, Sendable {
                         )
                     ) { _ in }
                     lastLeaseRenewedAtMs = nowMs
+                    guard snapshot.state == .running else {
+                        throw PhotosReconcileSafeBoundaryReached(snapshot: snapshot)
+                    }
                 },
                 onBatch: { batch in
                     guard batch.completedCount >= state.processedCount,
@@ -288,6 +295,13 @@ struct PhotosReconcileHandler: LeaseBoundJobHandler, Sendable {
                 outcome: .completed,
                 checkpoint: finalCheckpoint,
                 progress: JobProgress(completed: state.processedCount, total: enumerationTotal),
+                settledByHandler: true
+            )
+        } catch let boundary as PhotosReconcileSafeBoundaryReached {
+            return JobHandlerExecutionResult(
+                outcome: boundary.snapshot.state == .cancelled ? .completed : .continue,
+                checkpoint: boundary.snapshot.checkpoint,
+                progress: boundary.snapshot.progress,
                 settledByHandler: true
             )
         } catch PhotosReconcileError.invalidPayload {
