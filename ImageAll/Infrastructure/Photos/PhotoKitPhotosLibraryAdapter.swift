@@ -35,6 +35,7 @@ final class PhotoKitPhotosLibraryAdapter: NSObject, PhotosLibraryAccessPort, Pho
     func enumerateStaticImages(
         startingAt startOffset: Int,
         batchSize: Int,
+        onAssetEnumerated: () throws -> Void,
         onBatch: (PhotosAssetEnumerationBatch) throws -> Void
     ) throws {
         guard authorizationState() == .authorized else {
@@ -62,13 +63,14 @@ final class PhotoKitPhotosLibraryAdapter: NSObject, PhotosLibraryAccessPort, Pho
 
         for batchStart in stride(from: effectiveStart, to: totalCount, by: batchSize) {
             let batchEnd = min(batchStart + batchSize, totalCount)
-            let fetchedAssets = result.objects(at: IndexSet(integersIn: batchStart ..< batchEnd))
             var metadataBatch: [PhotosAssetMetadata] = []
-            metadataBatch.reserveCapacity(fetchedAssets.count)
-            for asset in fetchedAssets {
+            metadataBatch.reserveCapacity(batchEnd - batchStart)
+            for index in batchStart ..< batchEnd {
+                let asset = result.object(at: index)
                 if let metadata = metadata(for: asset) {
                     metadataBatch.append(metadata)
                 }
+                try onAssetEnumerated()
             }
             try onBatch(
                 PhotosAssetEnumerationBatch(

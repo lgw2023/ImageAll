@@ -57,6 +57,7 @@ protocol PhotosLibraryAccessPort: Sendable {
     func enumerateStaticImages(
         startingAt startOffset: Int,
         batchSize: Int,
+        onAssetEnumerated: () throws -> Void,
         onBatch: (PhotosAssetEnumerationBatch) throws -> Void
     ) throws
     func requestLocalImage(

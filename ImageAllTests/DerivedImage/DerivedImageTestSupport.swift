@@ -34,6 +34,7 @@ enum DerivedImageTestSupport {
         func enumerateStaticImages(
             startingAt startOffset: Int,
             batchSize: Int,
+            onAssetEnumerated: () throws -> Void,
             onBatch: (PhotosAssetEnumerationBatch) throws -> Void
         ) throws {
             throw PhotosLibraryError.libraryUnavailable

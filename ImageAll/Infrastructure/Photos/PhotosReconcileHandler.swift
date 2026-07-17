@@ -64,7 +64,7 @@ struct PhotosReconcileHandler: LeaseBoundJobHandler, Sendable {
         access: any PhotosLibraryAccessPort,
         changeHistory: (any PhotosChangeHistoryPort)? = nil,
         clock: any JobClock = SystemJobClock(),
-        batchSize: Int = 200,
+        batchSize: Int = 25,
         idGenerator: @escaping @Sendable () -> UUID = { UUID() }
     ) {
         self.database = database
@@ -93,7 +93,9 @@ struct PhotosReconcileHandler: LeaseBoundJobHandler, Sendable {
     ) throws -> JobHandlerExecutionResult {
         var currentState: PhotosReconcileCheckpoint?
         var sourceID: UUID?
-        let persistedCompleted = (try? queue.fetchJob(id: lease.jobID).progress.completed) ?? 0
+        let persistedProgress = (try? queue.fetchJob(id: lease.jobID).progress)
+            ?? JobProgress(completed: 0, total: nil)
+        let persistedCompleted = persistedProgress.completed
         do {
             guard payloadVersion == PhotosReconcileJobFactory.payloadVersion else {
                 throw PhotosReconcileError.invalidPayload
@@ -127,53 +129,74 @@ struct PhotosReconcileHandler: LeaseBoundJobHandler, Sendable {
                 leaseDurationMs: context.leaseDurationMs
             )
             currentState = state
-            var enumerationTotal = state.processedCount
+            var enumerationTotal = persistedProgress.total ?? state.processedCount
+            let heartbeatIntervalMs = max(1, context.leaseDurationMs / 2)
+            var lastLeaseRenewedAtMs = clock.nowMs
 
             // Legacy checkpoints counted supported assets, which is a safe lower-bound
             // for the raw PhotoKit offset: upgrades may repeat work but never skip it.
             try access.enumerateStaticImages(
                 startingAt: state.processedCount,
-                batchSize: batchSize
-            ) { batch in
-                guard batch.completedCount >= state.processedCount,
-                      batch.totalCount >= batch.completedCount
-                else {
-                    throw PhotosReconcileError.invalidCheckpoint
-                }
-                let nextState = PhotosReconcileCheckpoint(
-                    generation: state.generation,
-                    processedCount: batch.completedCount,
-                    frozenChangeToken: state.frozenChangeToken,
-                    replayChangeToken: state.replayChangeToken,
-                    startedDirtyEpoch: state.startedDirtyEpoch
-                )
-                let nextCheckpoint = try nextState.jobCheckpoint
-                _ = try queue.commitLeaseProtectedBatch(
-                    input: SafeBatchCommitInput(
-                        lease: lease,
-                        outcome: .continue,
-                        checkpoint: nextCheckpoint,
-                        progress: JobProgress(
-                            completed: batch.completedCount,
-                            total: batch.totalCount
-                        ),
-                        leaseDurationMs: context.leaseDurationMs
-                    )
-                ) { db in
-                    _ = try requireActiveGeneration(sourceID: decodedPayload.sourceID, db: db)
-                    for metadata in batch.assets {
-                        try upsert(
-                            metadata,
-                            sourceID: decodedPayload.sourceID,
-                            generation: state.generation,
-                            db: db
+                batchSize: batchSize,
+                onAssetEnumerated: {
+                    let nowMs = clock.nowMs
+                    guard nowMs - lastLeaseRenewedAtMs >= heartbeatIntervalMs else { return }
+                    _ = try queue.commitLeaseProtectedBatch(
+                        input: SafeBatchCommitInput(
+                            lease: lease,
+                            outcome: .continue,
+                            checkpoint: try state.jobCheckpoint,
+                            progress: JobProgress(
+                                completed: state.processedCount,
+                                total: enumerationTotal
+                            ),
+                            leaseDurationMs: context.leaseDurationMs
                         )
+                    ) { _ in }
+                    lastLeaseRenewedAtMs = nowMs
+                },
+                onBatch: { batch in
+                    guard batch.completedCount >= state.processedCount,
+                          batch.totalCount >= batch.completedCount
+                    else {
+                        throw PhotosReconcileError.invalidCheckpoint
                     }
+                    let nextState = PhotosReconcileCheckpoint(
+                        generation: state.generation,
+                        processedCount: batch.completedCount,
+                        frozenChangeToken: state.frozenChangeToken,
+                        replayChangeToken: state.replayChangeToken,
+                        startedDirtyEpoch: state.startedDirtyEpoch
+                    )
+                    let nextCheckpoint = try nextState.jobCheckpoint
+                    _ = try queue.commitLeaseProtectedBatch(
+                        input: SafeBatchCommitInput(
+                            lease: lease,
+                            outcome: .continue,
+                            checkpoint: nextCheckpoint,
+                            progress: JobProgress(
+                                completed: batch.completedCount,
+                                total: batch.totalCount
+                            ),
+                            leaseDurationMs: context.leaseDurationMs
+                        )
+                    ) { db in
+                        _ = try requireActiveGeneration(sourceID: decodedPayload.sourceID, db: db)
+                        for metadata in batch.assets {
+                            try upsert(
+                                metadata,
+                                sourceID: decodedPayload.sourceID,
+                                generation: state.generation,
+                                db: db
+                            )
+                        }
+                    }
+                    state = nextState
+                    currentState = nextState
+                    enumerationTotal = batch.totalCount
+                    lastLeaseRenewedAtMs = clock.nowMs
                 }
-                state = nextState
-                currentState = nextState
-                enumerationTotal = batch.totalCount
-            }
+            )
 
             if let changeHistory,
                let replayStartToken = state.replayChangeToken ?? state.frozenChangeToken

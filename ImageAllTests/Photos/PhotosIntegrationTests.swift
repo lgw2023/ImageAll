@@ -1259,6 +1259,57 @@ final class PhotosIntegrationTests: XCTestCase {
         XCTAssertEqual(resumed?.progress, JobProgress(completed: 3, total: 3))
     }
 
+    func testDefaultPhotosReconcileRenewsLeaseDuringSlowMetadataEnumeration() async throws {
+        let database = try FolderAuthorizationTestSupport.makeDatabase()
+        let sourceID = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
+        let jobID = UUID(uuidString: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")!
+        let clock = MutableJobClock(nowMs: DatabaseTestSupport.timestampMs)
+        let access = LeaseAdvancingPhotosLibraryAccess(
+            assetCount: 5,
+            elapsedMsPerAsset: 13_000,
+            clock: clock
+        )
+        let connection = PhotosLibraryConnectionService(
+            database: database,
+            access: access,
+            clock: clock,
+            idGenerator: IDSequence([sourceID, jobID]).next
+        )
+        _ = try await connection.connect()
+
+        let queue = GRDBJobQueue(
+            database: database,
+            clock: clock,
+            retryPolicy: FixedDelayRetryPolicy(delayMs: 1_000)
+        )
+        let handler = PhotosReconcileHandler(
+            database: database,
+            queue: queue,
+            access: access,
+            clock: clock
+        )
+        let coordinator = JobExecutionCoordinator(
+            queue: queue,
+            registry: MultiJobHandlerRegistry(handlers: [handler]),
+            leaseContextProvider: GRDBJobLeaseContextProvider(queue: queue)
+        )
+
+        let result = try coordinator.claimAndExecuteOnce(
+            ClaimNextInput(
+                owner: "slow-photos-metadata-test",
+                leaseDurationMs: 60_000,
+                allowedKinds: [PhotosReconcileJobFactory.kind]
+            )
+        )
+
+        XCTAssertEqual(result?.snapshot.state, .completed)
+        XCTAssertEqual(result?.snapshot.progress, JobProgress(completed: 5, total: 5))
+        let assetCount = try await database.pool.read { db in
+            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM asset")
+        }
+        XCTAssertEqual(assetCount, 5)
+    }
+
     func testImageLoaderRoutesPhotosToLocalProviderAndFilesToDerivedCache() async throws {
         let database = try FolderAuthorizationTestSupport.makeDatabase()
         let photosSourceID = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
@@ -1611,6 +1662,7 @@ private final class SuspendedPhotosAuthorizationAccess: PhotosLibraryAccessPort,
     func enumerateStaticImages(
         startingAt _: Int,
         batchSize _: Int,
+        onAssetEnumerated _: () throws -> Void,
         onBatch _: (PhotosAssetEnumerationBatch) throws -> Void
     ) throws {
         throw PhotosLibraryError.libraryUnavailable
@@ -1662,6 +1714,7 @@ private final class FakePhotosLibraryAccess: PhotosLibraryAccessPort, PhotosChan
     func enumerateStaticImages(
         startingAt startOffset: Int,
         batchSize: Int,
+        onAssetEnumerated: () throws -> Void,
         onBatch: (PhotosAssetEnumerationBatch) throws -> Void
     ) throws {
         switch state {
@@ -1686,6 +1739,9 @@ private final class FakePhotosLibraryAccess: PhotosLibraryAccessPort, PhotosChan
             completed += batch.count
             guard completed > startOffset else { continue }
             let unseenStart = max(0, startOffset - batchStart)
+            for _ in batch.dropFirst(unseenStart) {
+                try onAssetEnumerated()
+            }
             try onBatch(
                 PhotosAssetEnumerationBatch(
                     assets: Array(batch.dropFirst(unseenStart)),
@@ -1757,6 +1813,76 @@ private final class FakePhotosLibraryAccess: PhotosLibraryAccessPort, PhotosChan
 
     var requestedChangeTokens: [Data] {
         lock.withLock { storedRequestedChangeTokens }
+    }
+}
+
+private final class LeaseAdvancingPhotosLibraryAccess: PhotosLibraryAccessPort, @unchecked Sendable {
+    private let assetCount: Int
+    private let elapsedMsPerAsset: Int64
+    private let clock: MutableJobClock
+
+    init(assetCount: Int, elapsedMsPerAsset: Int64, clock: MutableJobClock) {
+        self.assetCount = assetCount
+        self.elapsedMsPerAsset = elapsedMsPerAsset
+        self.clock = clock
+    }
+
+    func authorizationState() -> PhotosAuthorizationState { .authorized }
+    func requestAuthorization() async -> PhotosAuthorizationState { .authorized }
+
+    func enumerateStaticImages(
+        startingAt startOffset: Int,
+        batchSize: Int,
+        onAssetEnumerated: () throws -> Void,
+        onBatch: (PhotosAssetEnumerationBatch) throws -> Void
+    ) throws {
+        guard batchSize > 0 else { throw PhotosLibraryError.libraryUnavailable }
+        let start = min(max(0, startOffset), assetCount)
+        guard start < assetCount else {
+            try onBatch(
+                PhotosAssetEnumerationBatch(
+                    assets: [],
+                    completedCount: assetCount,
+                    totalCount: assetCount
+                )
+            )
+            return
+        }
+
+        for batchStart in stride(from: start, to: assetCount, by: batchSize) {
+            let batchEnd = min(batchStart + batchSize, assetCount)
+            var assets: [PhotosAssetMetadata] = []
+            assets.reserveCapacity(batchEnd - batchStart)
+            for index in batchStart ..< batchEnd {
+                clock.setNowMs(clock.nowMs + elapsedMsPerAsset)
+                assets.append(
+                    PhotosAssetMetadata(
+                        localIdentifier: "slow-photos-\(index)",
+                        fileName: "Slow-\(index).jpg",
+                        mediaType: "public.jpeg",
+                        width: 1_200,
+                        height: 800,
+                        createdAtMs: DatabaseTestSupport.timestampMs,
+                        modifiedAtMs: DatabaseTestSupport.timestampMs
+                    )
+                )
+                try onAssetEnumerated()
+            }
+            try onBatch(
+                PhotosAssetEnumerationBatch(
+                    assets: assets,
+                    completedCount: batchEnd,
+                    totalCount: assetCount
+                )
+            )
+        }
+    }
+
+    func requestLocalImage(
+        localIdentifier _: String,
+        variant _: PhotosImageVariant
+    ) async throws -> Data {
+        throw PhotosLibraryError.libraryUnavailable
     }
 }
 
