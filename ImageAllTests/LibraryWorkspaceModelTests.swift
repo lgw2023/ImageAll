@@ -580,6 +580,26 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertEqual(service.reconcileRunCount, 1)
     }
 
+    func testFirstUseGuideAppearsOnlyUntilTheNewCatalogGetsItsFirstSetupFact() async {
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: UUID(),
+                displayName: "Fixture",
+                state: .active
+            ),
+            reconciledItems: []
+        )
+        let model = LibraryWorkspaceModel(service: service)
+
+        await model.start()
+
+        XCTAssertTrue(model.showsFirstUseGuide)
+
+        await model.installPresetTags()
+
+        XCTAssertFalse(model.showsFirstUseGuide)
+    }
+
     func testRescanSelectedPhotosSourceRevalidatesAuthorizationBeforeSync() async {
         let sourceID = UUID()
         let source = LibrarySourceSummary(

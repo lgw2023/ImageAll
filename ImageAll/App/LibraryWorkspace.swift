@@ -85,6 +85,10 @@ final class LibraryWorkspaceModel: ObservableObject {
         phase == .loading || phase == .scanning || isCatalogScanning
     }
 
+    var showsFirstUseGuide: Bool {
+        phase == .empty && sources.isEmpty && items.isEmpty && tags.isEmpty
+    }
+
     var canUndoTagMutation: Bool {
         lastTagMutation != nil
     }
@@ -1993,19 +1997,40 @@ struct LibraryWorkspaceView: View {
             ProgressView("正在扫描照片…")
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         case .empty:
-            ContentUnavailableView {
-                Label("ImageAll 在原位置读取照片", systemImage: "photo.stack")
-            } description: {
-                Text("不会导入、移动、重命名或删除原图。索引、标签和缩略图保存在 ImageAll 自己的应用容器中。")
-            } actions: {
-                Button("连接照片文件夹…") {
-                    Task { await model.connectFolder() }
+            if model.showsFirstUseGuide {
+                ContentUnavailableView {
+                    Label("开始建立你的照片资料库", systemImage: "photo.stack")
+                } description: {
+                    Text("连接一个照片来源，也可以添加一组可编辑的常用标签。常用标签不会分析照片，也不会自动应用到任何照片。")
+                } actions: {
+                    Button("连接照片文件夹…") {
+                        Task { await model.connectFolder() }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    Button("连接 Apple Photos…") {
+                        showPhotosConnectionExplanation = true
+                    }
+                    .buttonStyle(.bordered)
+                    Button("添加常用标签") {
+                        Task { await model.installPresetTags() }
+                    }
+                    .buttonStyle(.bordered)
                 }
-                .buttonStyle(.borderedProminent)
-                Button("连接 Apple Photos…") {
-                    showPhotosConnectionExplanation = true
+            } else {
+                ContentUnavailableView {
+                    Label("ImageAll 在原位置读取照片", systemImage: "photo.stack")
+                } description: {
+                    Text("不会导入、移动、重命名或删除原图。索引、标签和缩略图保存在 ImageAll 自己的应用容器中。")
+                } actions: {
+                    Button("连接照片文件夹…") {
+                        Task { await model.connectFolder() }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    Button("连接 Apple Photos…") {
+                        showPhotosConnectionExplanation = true
+                    }
+                    .buttonStyle(.bordered)
                 }
-                .buttonStyle(.bordered)
             }
         case .content:
             if case .overview = model.reviewMode {
