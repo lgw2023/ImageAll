@@ -47,6 +47,114 @@ enum CatalogQueryTestSupport {
         return (database, query, tags, repository, ids)
     }
 
+    static func openScaleDatabase(
+        at url: URL,
+        assetCount: Int
+    ) throws -> (
+        database: CatalogDatabase,
+        query: GRDBAssetCatalogQueryRepository,
+        folderSourceID: UUID,
+        acceptedTagID: UUID
+    ) {
+        let folderSourceID = UUID(uuidString: "30000000-0000-4000-8000-100000000001")!
+        let acceptedTagID = UUID(uuidString: "30000000-0000-4000-8000-200000000001")!
+        let database = try CatalogDatabase.open(at: url)
+        try database.pool.write { db in
+            try db.execute(
+                sql: """
+                INSERT INTO source (
+                    id, kind, display_name, bookmark, state, created_at_ms, updated_at_ms
+                ) VALUES
+                    ('30000000-0000-4000-8000-100000000001', 'folder',
+                     'Synthetic Folder', ?, 'active', 1, 1),
+                    ('30000000-0000-4000-8000-100000000002', 'photos',
+                     'Synthetic Photos', NULL, 'active', 1, 1)
+                """,
+                arguments: [DatabaseTestSupport.folderBookmark()]
+            )
+            try db.execute(
+                sql: """
+                WITH RECURSIVE synthetic_asset(asset_index) AS (
+                    SELECT 0
+                    UNION ALL
+                    SELECT asset_index + 1
+                    FROM synthetic_asset
+                    WHERE asset_index + 1 < ?
+                )
+                INSERT INTO asset (
+                    id, source_id, locator_kind, relative_path, photos_local_identifier,
+                    locator_state, file_name, media_type, width, height,
+                    media_created_at_ms, media_modified_at_ms, content_revision,
+                    last_seen_generation, availability, record_created_at_ms, record_updated_at_ms
+                )
+                SELECT
+                    printf('30000000-0000-4000-8000-%012x', asset_index),
+                    CASE asset_index % 2
+                        WHEN 0 THEN '30000000-0000-4000-8000-100000000001'
+                        ELSE '30000000-0000-4000-8000-100000000002'
+                    END,
+                    CASE asset_index % 2 WHEN 0 THEN 'file' ELSE 'photos' END,
+                    CASE asset_index % 2
+                        WHEN 0 THEN printf('synthetic/%06d/asset-%06d.jpg', asset_index / 1_000, asset_index)
+                        ELSE NULL
+                    END,
+                    CASE asset_index % 2
+                        WHEN 0 THEN NULL
+                        ELSE printf('synthetic-photos-%06d', asset_index)
+                    END,
+                    'current',
+                    CASE asset_index % 2 WHEN 0 THEN printf('asset-%06d.jpg', asset_index) ELSE NULL END,
+                    CASE asset_index % 3 WHEN 0 THEN 'public.jpeg' WHEN 1 THEN 'public.heic' ELSE 'public.png' END,
+                    4_032,
+                    3_024,
+                    1_700_000_000_000 + asset_index,
+                    1_700_000_000_000 + asset_index,
+                    1,
+                    1,
+                    'available',
+                    1_700_000_000_000 + asset_index,
+                    1_700_000_000_000 + asset_index
+                FROM synthetic_asset
+                """,
+                arguments: [assetCount]
+            )
+            try db.execute(
+                sql: """
+                INSERT INTO tag (id, name, normalized_name, state, created_at_ms, updated_at_ms)
+                VALUES (?, 'Synthetic Accepted', 'synthetic accepted', 'active', 1, 1)
+                """,
+                arguments: [acceptedTagID.uuidString.lowercased()]
+            )
+            try db.execute(
+                sql: """
+                INSERT INTO asset_tag_decision (asset_id, tag_id, decision, updated_at_ms)
+                SELECT id, ?, 'accepted', record_updated_at_ms
+                FROM asset
+                WHERE (media_created_at_ms - 1_700_000_000_000) % 10 = 0
+                """,
+                arguments: [acceptedTagID.uuidString.lowercased()]
+            )
+        }
+        return (
+            database,
+            GRDBAssetCatalogQueryRepository(database: database),
+            folderSourceID,
+            acceptedTagID
+        )
+    }
+
+    static func scaleAssetID(_ index: Int) -> UUID {
+        UUID(uuidString: String(format: "30000000-0000-4000-8000-%012x", index))!
+    }
+
+    static func scaleDecisionCount(assetCount: Int) -> Int {
+        (assetCount + 9) / 10
+    }
+
+    static func scalePortableRecordCount(assetCount: Int) -> Int {
+        assetCount + scaleDecisionCount(assetCount: assetCount) + 3
+    }
+
     static func openFaultDatabase() throws -> (
         database: CatalogDatabase,
         tags: GRDBTagCatalogRepository,

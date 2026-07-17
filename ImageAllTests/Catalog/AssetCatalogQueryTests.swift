@@ -424,6 +424,88 @@ final class AssetCatalogQueryTests: XCTestCase {
         XCTAssertEqual(work?.decision, .rejected)
     }
 
+    func testHundredThousandSyntheticAssetsKeepNewestKeysetPagesStable() throws {
+        let fixture = try CatalogQueryTestSupport.openScaleDatabase(
+            at: makeTempDatabaseURL(),
+            assetCount: 100_000
+        )
+        let startedAt = ContinuousClock.now
+        let firstPage = try fixture.query.fetchAssetPage(
+            AssetPageRequest(filter: AssetPageFilter(), sort: .newest, cursor: nil, limit: 100)
+        )
+        let firstExpected = (99_900 ... 99_999).reversed().map(CatalogQueryTestSupport.scaleAssetID)
+        XCTAssertEqual(firstPage.items.map(\.assetID), firstExpected)
+
+        let cursor = try XCTUnwrap(firstPage.nextCursor)
+        let secondPage = try fixture.query.fetchAssetPage(
+            AssetPageRequest(filter: AssetPageFilter(), sort: .newest, cursor: cursor, limit: 100)
+        )
+        let secondExpected = (99_800 ... 99_899).reversed().map(CatalogQueryTestSupport.scaleAssetID)
+        XCTAssertEqual(secondPage.items.map(\.assetID), secondExpected)
+        XCTAssertTrue(Set(firstPage.items.map(\.assetID)).isDisjoint(with: secondPage.items.map(\.assetID)))
+        XCTAssertLessThan(ContinuousClock.now - startedAt, .seconds(1))
+    }
+
+    func testHundredThousandSyntheticAssetsKeepFiltersSortAndSearchCorrect() throws {
+        let fixture = try CatalogQueryTestSupport.openScaleDatabase(
+            at: makeTempDatabaseURL(),
+            assetCount: 100_000
+        )
+        let startedAt = ContinuousClock.now
+
+        let sourceAndTypePage = try fixture.query.fetchAssetPage(
+            AssetPageRequest(
+                filter: AssetPageFilter(
+                    sourceIDs: [fixture.folderSourceID],
+                    mediaTypes: ["public.jpeg"]
+                ),
+                sort: .newest,
+                cursor: nil,
+                limit: 5
+            )
+        )
+        XCTAssertEqual(
+            sourceAndTypePage.items.map(\.assetID),
+            [99_996, 99_990, 99_984, 99_978, 99_972].map(CatalogQueryTestSupport.scaleAssetID)
+        )
+
+        let taggedPage = try fixture.query.fetchAssetPage(
+            AssetPageRequest(
+                filter: AssetPageFilter(
+                    tagDecisionFilters: [
+                        TagDecisionFilter(tagID: fixture.acceptedTagID, decision: .accepted),
+                    ]
+                ),
+                sort: .newest,
+                cursor: nil,
+                limit: 5
+            )
+        )
+        XCTAssertEqual(
+            taggedPage.items.map(\.assetID),
+            [99_990, 99_980, 99_970, 99_960, 99_950].map(CatalogQueryTestSupport.scaleAssetID)
+        )
+
+        let fileNamePage = try fixture.query.fetchAssetPage(
+            AssetPageRequest(filter: AssetPageFilter(), sort: .fileNameAscending, cursor: nil, limit: 5)
+        )
+        XCTAssertEqual(
+            fileNamePage.items.map(\.assetID),
+            [0, 2, 4, 6, 8].map(CatalogQueryTestSupport.scaleAssetID)
+        )
+
+        let searchPage = try fixture.query.fetchAssetPage(
+            AssetPageRequest(
+                filter: AssetPageFilter(searchText: "asset-099998"),
+                sort: .newest,
+                cursor: nil,
+                limit: 5
+            )
+        )
+        XCTAssertEqual(searchPage.items.map(\.assetID), [CatalogQueryTestSupport.scaleAssetID(99_998)])
+        XCTAssertLessThan(ContinuousClock.now - startedAt, .seconds(2))
+    }
+
     func testClosedPoolQuerySurfacesPersistenceFailure() throws {
         let url = try makeTempDatabaseURL()
         let database = try CatalogDatabase.open(at: url)

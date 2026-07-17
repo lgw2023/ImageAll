@@ -77,6 +77,42 @@ final class PortableCatalogExportTests: XCTestCase {
         }
     }
 
+    func testExportsHundredThousandSyntheticAssetsWithVerifiedManifest() throws {
+        let assetCount = 100_000
+        let databaseURL = try makeTempDatabaseURL()
+        let exportParent = databaseURL.deletingLastPathComponent().appendingPathComponent("Exports", isDirectory: true)
+        try FileManager.default.createDirectory(at: exportParent, withIntermediateDirectories: true)
+        let fixture = try CatalogQueryTestSupport.openScaleDatabase(at: databaseURL, assetCount: assetCount)
+
+        let startedAt = ContinuousClock.now
+        let result = try PortableCatalogExporter(database: fixture.database).export(
+            PortableCatalogExportRequest(
+                parentDirectoryURL: exportParent,
+                bundleName: "ImageAll-Export-Scale-100000",
+                createdAtMs: 1_752_700_000_000,
+                appVersion: "scale-test"
+            )
+        )
+        let elapsed = ContinuousClock.now - startedAt
+
+        let manifestData = try Data(contentsOf: result.bundleURL.appendingPathComponent("manifest.json"))
+        let manifest = try JSONDecoder().decode(PortableExportManifest.self, from: manifestData)
+        let counts = Dictionary(uniqueKeysWithValues: manifest.files.map { ($0.filename, $0.recordCount) })
+        XCTAssertEqual(counts["assets.jsonl"], assetCount)
+        XCTAssertEqual(counts["decisions.jsonl"], CatalogQueryTestSupport.scaleDecisionCount(assetCount: assetCount))
+        XCTAssertEqual(result.totalRecordCount, CatalogQueryTestSupport.scalePortableRecordCount(assetCount: assetCount))
+        XCTAssertTrue(manifest.files.allSatisfy { $0.byteCount >= 0 && $0.sha256.count == 64 })
+        XCTAssertLessThan(elapsed, .seconds(10))
+
+        let byteCount = manifest.files.reduce(Int64(0)) { $0 + $1.byteCount }
+        let attachment = XCTAttachment(
+            string: "assets=\(assetCount) export_seconds=\(elapsed) export_bytes=\(byteCount)"
+        )
+        attachment.name = "ImageAll 100k synthetic export baseline"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+
     func testPublicationFailureRemovesTemporaryBundleAndPublishesNothing() throws {
         struct PublicationFailure: PortableExportFaultInjecting {
             func beforePublication() throws {
