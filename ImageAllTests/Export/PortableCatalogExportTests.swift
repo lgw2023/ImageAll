@@ -49,6 +49,84 @@ final class PortableCatalogExportTests: XCTestCase {
         XCTAssertEqual(bookmarkPort.scopeStartCount, bookmarkPort.scopeStopCount)
     }
 
+    func testSourceIsolationChecksDisabledSourcesAndFailsClosedWhenAccessIsIndeterminate() throws {
+        let container = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ImageAll-PortableExportIsolationFailures-\(UUID().uuidString)", isDirectory: true)
+        let firstSource = container.appendingPathComponent("FirstSource", isDirectory: true)
+        let disabledSource = container.appendingPathComponent("DisabledSource", isDirectory: true)
+        let disabledSourceChild = disabledSource.appendingPathComponent("Nested", isDirectory: true)
+        let disjointExport = container.appendingPathComponent("Exports", isDirectory: true)
+        for directory in [firstSource, disabledSourceChild, disjointExport] {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        }
+        addTeardownBlock { try? FileManager.default.removeItem(at: container) }
+
+        let database = try CatalogDatabase.open(at: container.appendingPathComponent("catalog.sqlite"))
+        let firstBookmark = Data("first-source-bookmark".utf8)
+        let disabledBookmark = Data("disabled-source-bookmark".utf8)
+        try FolderReconcileTestSupport.seedActiveFolderSource(
+            database: database,
+            sourceID: UUID(uuidString: "00000000-0000-0000-0000-000000000001")!,
+            bookmark: firstBookmark,
+            displayName: "First"
+        )
+        let disabledSourceID = UUID(uuidString: "FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFFF")!
+        try FolderReconcileTestSupport.seedActiveFolderSource(
+            database: database,
+            sourceID: disabledSourceID,
+            bookmark: disabledBookmark,
+            displayName: "Disabled"
+        )
+        try database.pool.write { db in
+            try db.execute(
+                sql: "UPDATE source SET state = 'disabled' WHERE id = ?",
+                arguments: [disabledSourceID.uuidString.lowercased()]
+            )
+        }
+
+        let bookmarkPort = FolderAuthorizationTestSupport.MappingBookmarkPort()
+        bookmarkPort.urlByBookmark = [
+            firstBookmark: firstSource,
+            disabledBookmark: disabledSource,
+        ]
+        let repository = GRDBFolderSourceAuthorizationRepository(database: database)
+        let productionRelationshipChecker = FoundationFolderRootRelationshipChecker()
+        let validator = PortableExportSourceIsolationValidator(
+            sourceRepository: repository,
+            bookmarkPort: bookmarkPort,
+            relationshipChecker: productionRelationshipChecker
+        )
+
+        XCTAssertThrowsError(try validator.validate(parentDirectoryURL: disabledSourceChild)) { error in
+            XCTAssertEqual(error as? PortableCatalogExportError, .destinationOverlapsSource)
+        }
+
+        bookmarkPort.resolveFailure = true
+        XCTAssertThrowsError(try validator.validate(parentDirectoryURL: disjointExport)) { error in
+            XCTAssertEqual(error as? PortableCatalogExportError, .destinationIsolationIndeterminate)
+        }
+        bookmarkPort.resolveFailure = false
+
+        bookmarkPort.forceStartResult = false
+        XCTAssertThrowsError(try validator.validate(parentDirectoryURL: disjointExport)) { error in
+            XCTAssertEqual(error as? PortableCatalogExportError, .destinationIsolationIndeterminate)
+        }
+        bookmarkPort.forceStartResult = true
+
+        let indeterminateChecker = FolderAuthorizationTestSupport.IndeterminateParentRelationshipChecker()
+        indeterminateChecker.indeterminatePairs = ["\(disjointExport.path)|\(firstSource.path)"]
+        let indeterminateValidator = PortableExportSourceIsolationValidator(
+            sourceRepository: repository,
+            bookmarkPort: bookmarkPort,
+            relationshipChecker: indeterminateChecker
+        )
+        XCTAssertThrowsError(
+            try indeterminateValidator.validate(parentDirectoryURL: disjointExport)
+        ) { error in
+            XCTAssertEqual(error as? PortableCatalogExportError, .destinationIsolationIndeterminate)
+        }
+    }
+
     func testExportsStableFolderAndPhotosFactsWithVerifiedManifest() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("ImageAll-PortableExportTests-\(UUID().uuidString)", isDirectory: true)
