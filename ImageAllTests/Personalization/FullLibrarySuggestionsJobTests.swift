@@ -647,6 +647,94 @@ final class FullLibrarySuggestionsJobTests: XCTestCase {
         XCTAssertLessThan(paused.progress.completed, 150)
     }
 
+    func testSlowFeatureGenerationRenewsLeaseWithinDefaultScanBatch() throws {
+        let fixture = try makeLargeLibraryFixture(assetCount: 8)
+        let clock = MutableJobClock(nowMs: DatabaseTestSupport.timestampMs)
+        let queue = GRDBJobQueue(
+            database: fixture.database,
+            clock: clock,
+            retryPolicy: FixedDelayRetryPolicy(delayMs: 1_000)
+        )
+        let loader = ClockAdvancingFeatureLoader(
+            base: fixture.loader,
+            clock: clock,
+            elapsedMsPerLoad: 10_000
+        )
+        let handler = FullLibrarySuggestionsHandler(
+            dependencies: FullLibrarySuggestionsHandlerDependencies(
+                database: fixture.database,
+                queue: queue,
+                featureLoader: loader,
+                clock: clock
+            )
+        )
+        let coordinator = makeCoordinator(
+            database: fixture.database,
+            handler: handler,
+            queue: queue
+        )
+        let job = try enqueueJob(
+            queue: queue,
+            tagID: fixture.tagID,
+            sourceIDs: [fixture.sourceID],
+            cutoffMs: fixture.cutoffMs,
+            database: fixture.database
+        )
+
+        _ = try coordinator.claimAndExecuteOnce(personalizationClaim())
+
+        let completed = try queue.fetchJob(id: job.id)
+        XCTAssertEqual(completed.state, .completed)
+        XCTAssertEqual(completed.progress, JobProgress(completed: 8, total: 8))
+    }
+
+    func testSlowFeatureHeartbeatHonorsPauseDuringSamplePreparation() throws {
+        let fixture = try makeLargeLibraryFixture(assetCount: 8)
+        let clock = MutableJobClock(nowMs: DatabaseTestSupport.timestampMs)
+        let queue = GRDBJobQueue(
+            database: fixture.database,
+            clock: clock,
+            retryPolicy: FixedDelayRetryPolicy(delayMs: 1_000)
+        )
+        let job = try enqueueJob(
+            queue: queue,
+            tagID: fixture.tagID,
+            sourceIDs: [fixture.sourceID],
+            cutoffMs: fixture.cutoffMs,
+            database: fixture.database
+        )
+        let loader = ClockAdvancingFeatureLoader(
+            base: fixture.loader,
+            clock: clock,
+            elapsedMsPerLoad: 10_000,
+            afterLoad: { loadCount in
+                guard loadCount == 2 else { return }
+                _ = try? queue.applyStateCommand(
+                    JobStateCommand(jobID: job.id, operation: .pause)
+                )
+            }
+        )
+        let handler = FullLibrarySuggestionsHandler(
+            dependencies: FullLibrarySuggestionsHandlerDependencies(
+                database: fixture.database,
+                queue: queue,
+                featureLoader: loader,
+                clock: clock
+            )
+        )
+        let coordinator = makeCoordinator(
+            database: fixture.database,
+            handler: handler,
+            queue: queue
+        )
+
+        _ = try coordinator.claimAndExecuteOnce(personalizationClaim())
+
+        let paused = try queue.fetchJob(id: job.id)
+        XCTAssertEqual(paused.state, .paused)
+        XCTAssertEqual(paused.progress, JobProgress(completed: 0, total: 8))
+    }
+
     func testPauseAfterFirstBatchStopsWithPartialProgress() throws {
         let fixture = try makeLargeLibraryFixture(assetCount: 150)
         var dependencies = makeHandlerDependencies(
@@ -1445,6 +1533,38 @@ private final class CacheFailureAfterSamplesLoader: SyncFeatureVectorLoading, @u
             throw FeaturePrintError.cacheUnsafePath
         }
         return try base.loadOrGenerateSync(assetID: assetID)
+    }
+}
+
+private final class ClockAdvancingFeatureLoader: SyncFeatureVectorLoading, @unchecked Sendable {
+    private let base: StubSyncFeatureVectorLoader
+    private let clock: MutableJobClock
+    private let elapsedMsPerLoad: Int64
+    private let afterLoad: (@Sendable (Int) -> Void)?
+    private let lock = NSLock()
+    private var loadCount = 0
+
+    init(
+        base: StubSyncFeatureVectorLoader,
+        clock: MutableJobClock,
+        elapsedMsPerLoad: Int64,
+        afterLoad: (@Sendable (Int) -> Void)? = nil
+    ) {
+        self.base = base
+        self.clock = clock
+        self.elapsedMsPerLoad = elapsedMsPerLoad
+        self.afterLoad = afterLoad
+    }
+
+    func loadOrGenerateSync(assetID: UUID) throws -> FeatureVectorPayload {
+        let result = try base.loadOrGenerateSync(assetID: assetID)
+        clock.setNowMs(clock.nowMs + elapsedMsPerLoad)
+        let currentCount = lock.withLock {
+            loadCount += 1
+            return loadCount
+        }
+        afterLoad?(currentCount)
+        return result
     }
 }
 

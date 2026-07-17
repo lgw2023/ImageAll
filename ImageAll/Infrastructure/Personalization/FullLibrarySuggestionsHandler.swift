@@ -1,6 +1,10 @@
 import Foundation
 import GRDB
 
+private struct FullLibrarySuggestionsSafeBoundaryReached: Error {
+    let snapshot: JobRecordSnapshot
+}
+
 struct FullLibrarySuggestionsHandlerDependencies: Sendable {
     let database: CatalogDatabase
     let queue: GRDBJobQueue
@@ -37,7 +41,8 @@ struct FullLibrarySuggestionsHandler: LeaseBoundJobHandler, Sendable {
                 lease: lease,
                 payloadVersion: payloadVersion,
                 payload: payload,
-                checkpoint: checkpoint
+                checkpoint: checkpoint,
+                leaseDurationMs: context.leaseDurationMs
             )
         } catch let error as FullLibrarySuggestionsCodecError {
             switch error {
@@ -78,7 +83,8 @@ struct FullLibrarySuggestionsHandler: LeaseBoundJobHandler, Sendable {
         lease: JobLeaseToken,
         payloadVersion: Int,
         payload: Data,
-        checkpoint: JobCheckpoint?
+        checkpoint: JobCheckpoint?,
+        leaseDurationMs: Int64
     ) throws -> JobHandlerExecutionResult {
         guard payloadVersion == FullLibrarySuggestionsJobFactory.payloadVersion else {
             return failure(.personalizationPayloadInvalid, checkpoint: checkpoint, progress: nil)
@@ -98,10 +104,32 @@ struct FullLibrarySuggestionsHandler: LeaseBoundJobHandler, Sendable {
             sourceIDs: decodedPayload.sourceIDs,
             catalogCutoffMs: decodedPayload.catalogCutoffMs
         )
+        let heartbeatIntervalMs = max(1, leaseDurationMs / 2)
+        var lastLeaseRenewedAtMs = dependencies.clock.nowMs
+        func heartbeatIfNeeded() throws {
+            let nowMs = dependencies.clock.nowMs
+            guard nowMs - lastLeaseRenewedAtMs >= heartbeatIntervalMs else { return }
+            let snapshot = try dependencies.queue.commitLeaseProtectedBatch(
+                input: SafeBatchCommitInput(
+                    lease: lease,
+                    outcome: .continue,
+                    checkpoint: try FullLibrarySuggestionsCodec.jobCheckpoint(from: state),
+                    progress: JobProgress(completed: state.checkedCount, total: total),
+                    leaseDurationMs: leaseDurationMs
+                )
+            ) { _ in }
+            lastLeaseRenewedAtMs = nowMs
+            guard snapshot.state == .running else {
+                throw FullLibrarySuggestionsSafeBoundaryReached(snapshot: snapshot)
+            }
+        }
         var batchNumber = 0
 
         do {
-            let scoring = try prepareScoring(payload: decodedPayload)
+            let scoring = try prepareScoring(
+                payload: decodedPayload,
+                heartbeat: heartbeatIfNeeded
+            )
             while true {
             dependencies.beforeEachBatch?(batchNumber)
             if try shouldStopForControl(jobID: lease.jobID) {
@@ -129,9 +157,10 @@ struct FullLibrarySuggestionsHandler: LeaseBoundJobHandler, Sendable {
                         outcome: .completed,
                         checkpoint: jobCheckpoint,
                         progress: progress,
-                        leaseDurationMs: 60_000
+                        leaseDurationMs: leaseDurationMs
                     )
                 ) { _ in }
+                lastLeaseRenewedAtMs = dependencies.clock.nowMs
                 if let stop = stopResultIfNeeded(snapshot: snapshot, checkpoint: jobCheckpoint, progress: progress) {
                     return stop
                 }
@@ -184,7 +213,10 @@ struct FullLibrarySuggestionsHandler: LeaseBoundJobHandler, Sendable {
                 eligibleDelta += 1
                 batchAssetIDs.append(assetID)
                 do {
-                    let feature = try dependencies.featureLoader.loadOrGenerateSync(assetID: assetID)
+                    let feature = try loadFeature(
+                        assetID: assetID,
+                        heartbeat: heartbeatIfNeeded
+                    )
                     guard feature.identity.contentRevision == context.contentRevision else {
                         skippedDelta += 1
                         continue
@@ -244,7 +276,7 @@ struct FullLibrarySuggestionsHandler: LeaseBoundJobHandler, Sendable {
                             outcome: completed ? .completed : .continue,
                             checkpoint: jobCheckpoint,
                             progress: progress,
-                            leaseDurationMs: 60_000
+                            leaseDurationMs: leaseDurationMs
                         )
                     ) { db in
                         try dependencies.publishFailureInjector?()
@@ -279,7 +311,7 @@ struct FullLibrarySuggestionsHandler: LeaseBoundJobHandler, Sendable {
                             outcome: completed ? .completed : .continue,
                             checkpoint: jobCheckpoint,
                             progress: progress,
-                            leaseDurationMs: 60_000
+                            leaseDurationMs: leaseDurationMs
                         )
                     ) { db in
                         try catalog.appendPredictions(
@@ -297,7 +329,7 @@ struct FullLibrarySuggestionsHandler: LeaseBoundJobHandler, Sendable {
                             outcome: completed ? .completed : .continue,
                             checkpoint: jobCheckpoint,
                             progress: progress,
-                            leaseDurationMs: 60_000
+                            leaseDurationMs: leaseDurationMs
                         )
                     ) { _ in }
                 }
@@ -317,6 +349,7 @@ struct FullLibrarySuggestionsHandler: LeaseBoundJobHandler, Sendable {
                 )
             }
 
+            lastLeaseRenewedAtMs = dependencies.clock.nowMs
             state = nextState
             batchNumber += 1
             if let stop = stopResultIfNeeded(snapshot: snapshot, checkpoint: jobCheckpoint, progress: progress) {
@@ -331,6 +364,17 @@ struct FullLibrarySuggestionsHandler: LeaseBoundJobHandler, Sendable {
                 )
             }
             }
+        } catch let boundary as FullLibrarySuggestionsSafeBoundaryReached {
+            let jobCheckpoint = try FullLibrarySuggestionsCodec.jobCheckpoint(from: state)
+            let progress = JobProgress(completed: state.checkedCount, total: total)
+            guard let stop = stopResultIfNeeded(
+                snapshot: boundary.snapshot,
+                checkpoint: jobCheckpoint,
+                progress: progress
+            ) else {
+                throw PersonalizationCatalogError.persistenceFailure
+            }
+            return stop
         } catch let error as FeaturePrintError where isRetryableFeatureError(error) {
             return try retryableFailureWithCommittedState(state: state, total: total)
         } catch is PersonalizationCatalogError {
@@ -365,12 +409,15 @@ struct FullLibrarySuggestionsHandler: LeaseBoundJobHandler, Sendable {
         let sampleRegistrations: [ModelSampleRegistration]
     }
 
-    private func prepareScoring(payload: FullLibrarySuggestionsPayload) throws -> ScoringContext {
+    private func prepareScoring(
+        payload: FullLibrarySuggestionsPayload,
+        heartbeat: () throws -> Void
+    ) throws -> ScoringContext {
         var loadedPositives: [PersonalizedSuggestionScoringCore.LoadedSample] = []
         var loadedNegatives: [PersonalizedSuggestionScoringCore.LoadedSample] = []
 
         for sample in payload.frozenPositiveSamples {
-            let feature = try dependencies.featureLoader.loadOrGenerateSync(assetID: sample.assetID)
+            let feature = try loadFeature(assetID: sample.assetID, heartbeat: heartbeat)
             guard feature.identity.contentRevision == sample.contentRevision else { continue }
             loadedPositives.append(
                 PersonalizedSuggestionScoringCore.LoadedSample(
@@ -382,7 +429,7 @@ struct FullLibrarySuggestionsHandler: LeaseBoundJobHandler, Sendable {
             )
         }
         for sample in payload.frozenNegativeSamples {
-            let feature = try dependencies.featureLoader.loadOrGenerateSync(assetID: sample.assetID)
+            let feature = try loadFeature(assetID: sample.assetID, heartbeat: heartbeat)
             guard feature.identity.contentRevision == sample.contentRevision else { continue }
             loadedNegatives.append(
                 PersonalizedSuggestionScoringCore.LoadedSample(
@@ -414,6 +461,18 @@ struct FullLibrarySuggestionsHandler: LeaseBoundJobHandler, Sendable {
                 negatives: loadedNegatives
             )
         )
+    }
+
+    private func loadFeature(
+        assetID: UUID,
+        heartbeat: () throws -> Void
+    ) throws -> FeatureVectorPayload {
+        try heartbeat()
+        let result = Result {
+            try dependencies.featureLoader.loadOrGenerateSync(assetID: assetID)
+        }
+        try heartbeat()
+        return try result.get()
     }
 
     private func shouldStopForControl(jobID: UUID) throws -> Bool {
