@@ -47,6 +47,34 @@ final class TagCatalogTransactionTests: XCTestCase {
         XCTAssertEqual(tag.normalizedName, "café")
     }
 
+    func testCreateMissingTagsAddsOnlyNewTagsWithoutChangingDecisions() throws {
+        let fixture = try CatalogQueryTestSupport.openQueryDatabase()
+        let decisionsBefore = try fixture.database.pool.read { db in
+            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM asset_tag_decision")
+        }
+
+        let created = try fixture.tags.createMissingTags(
+            rawNames: ["Family", "人像", "风景", "人像"],
+            timestampMs: DatabaseTestSupport.timestampMs
+        )
+
+        XCTAssertEqual(created.map(\.displayName), ["人像", "风景"])
+        XCTAssertEqual(
+            try fixture.tags.listTags(includeArchived: false).map(\.displayName),
+            ["Family", "Work", "人像", "风景"]
+        )
+        XCTAssertTrue(
+            try fixture.tags.createMissingTags(
+                rawNames: ["family", " 人像 ", "风景"],
+                timestampMs: DatabaseTestSupport.timestampMs + 1
+            ).isEmpty
+        )
+        let decisionsAfter = try fixture.database.pool.read { db in
+            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM asset_tag_decision")
+        }
+        XCTAssertEqual(decisionsAfter, decisionsBefore)
+    }
+
     func testDuplicateNormalizedTagIsRejected() throws {
         try testRepositoryDuplicateTagReturnsStructuredError()
     }

@@ -6,6 +6,16 @@ struct TagListItem: Sendable, Equatable {
     let state: TagState
 }
 
+enum TagPresetCatalog {
+    static let starterDisplayNames = [
+        "人像", "风景", "美食", "动物", "植物", "建筑", "旅行", "截图", "文档",
+    ]
+}
+
+struct TagPresetInstallResult: Sendable, Equatable {
+    let createdTags: [TagListItem]
+}
+
 struct TagSelectionAggregate: Sendable, Equatable {
     let tagID: UUID
     let acceptedCount: Int

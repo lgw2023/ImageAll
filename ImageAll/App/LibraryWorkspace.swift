@@ -597,6 +597,25 @@ final class LibraryWorkspaceModel: ObservableObject {
         }
     }
 
+    func installPresetTags() async {
+        let service = service
+        do {
+            notice = nil
+            let result = try await Self.offMain { try service.installPresetTags() }
+            guard !result.createdTags.isEmpty else {
+                notice = .presetTagsAlreadyAvailable
+                return
+            }
+            tags.append(contentsOf: result.createdTags)
+            tags.sort { $0.displayName.localizedStandardCompare($1.displayName) == .orderedAscending }
+            lastTagMutation = nil
+            notice = .presetTagsInstalled(createdCount: result.createdTags.count)
+            await refreshInspector()
+        } catch {
+            notice = tagNotice(for: error)
+        }
+    }
+
     func renameTag(_ tagID: UUID, to rawName: String) async -> Bool {
         let service = service
         do {
@@ -1866,6 +1885,13 @@ struct LibraryWorkspaceView: View {
                         .tag(LibrarySidebarSelection.tag(tag.id))
                 }
                 Button {
+                    Task { await model.installPresetTags() }
+                } label: {
+                    Label("添加常用标签", systemImage: "tag.badge.plus")
+                }
+                .buttonStyle(.plain)
+                .disabled(model.isBusy)
+                Button {
                     newTagFieldFocused = true
                 } label: {
                     Label("新建标签…", systemImage: "plus")
@@ -2470,7 +2496,8 @@ struct LibraryWorkspaceView: View {
         switch notice {
         case .selectionHiddenByFilter:
             "line.3.horizontal.decrease.circle"
-        case .portableExportCompleted, .previewCacheCleared:
+        case .presetTagsInstalled, .presetTagsAlreadyAvailable,
+             .portableExportCompleted, .previewCacheCleared:
             "checkmark.circle"
         default:
             "exclamationmark.triangle"
@@ -2480,6 +2507,8 @@ struct LibraryWorkspaceView: View {
     static func noticeText(_ notice: LibraryWorkspaceNotice) -> String {
         switch notice {
         case .selectionHiddenByFilter: "当前选择已被筛选条件隐藏，因此已清除。"
+        case let .presetTagsInstalled(createdCount): "已添加 " + String(createdCount) + " 个常用标签；未给照片应用标签。"
+        case .presetTagsAlreadyAvailable: "常用标签已经齐全；未修改照片或人工标签。"
         case .invalidTagName: "标签名称无效。"
         case .duplicateTag: "已有同名标签。"
         case .tagMutationFailed: "标签操作未保存，请重试。"

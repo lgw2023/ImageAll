@@ -51,6 +51,8 @@ enum LibraryWorkspaceSafeError: String, Equatable, Sendable {
 
 enum LibraryWorkspaceNotice: Equatable, Sendable {
     case selectionHiddenByFilter
+    case presetTagsInstalled(createdCount: Int)
+    case presetTagsAlreadyAvailable
     case invalidTagName
     case duplicateTag
     case tagMutationFailed
@@ -157,6 +159,7 @@ protocol LibraryWorkspacePort: Sendable {
         onProgress: @escaping @Sendable (Double) -> Void
     ) async throws -> Data
     func listTags() throws -> [TagListItem]
+    func installPresetTags() throws -> TagPresetInstallResult
     func fetchInspectorDetail(assetID: UUID) throws -> AssetInspectorDetail
     func selectionAggregate(tagIDs: [UUID], assetIDs: [UUID]) throws -> [TagSelectionAggregate]
     func mutateTag(

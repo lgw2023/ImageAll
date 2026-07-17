@@ -230,6 +230,18 @@ struct ProductionLibraryWorkspaceService: LibraryWorkspacePort, Sendable {
         try tags.listTags(includeArchived: false)
     }
 
+    func installPresetTags() throws -> TagPresetInstallResult {
+        let created = try tags.createMissingTags(
+            rawNames: TagPresetCatalog.starterDisplayNames,
+            timestampMs: clock.nowMs
+        )
+        return TagPresetInstallResult(
+            createdTags: created.map {
+                TagListItem(id: $0.id, displayName: $0.displayName, state: $0.state)
+            }
+        )
+    }
+
     func fetchInspectorDetail(assetID: UUID) throws -> AssetInspectorDetail {
         try query.fetchInspectorDetail(assetID: assetID)
     }

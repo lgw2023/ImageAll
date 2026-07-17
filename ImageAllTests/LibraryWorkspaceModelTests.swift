@@ -809,6 +809,36 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertTrue(model.canUndoTagMutation)
     }
 
+    func testInstallPresetTagsAddsMissingCatalogEntriesAndReportsIdempotence() async {
+        let sourceID = UUID()
+        let asset = Self.makeAsset(sourceID: sourceID)
+        let existing = TagListItem(id: UUID(), displayName: "人像", state: .active)
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(id: sourceID, displayName: "Fixture", state: .active),
+            reconciledItems: [asset],
+            tags: [existing]
+        )
+        let model = LibraryWorkspaceModel(service: service)
+
+        await model.start()
+        await model.installPresetTags()
+
+        XCTAssertEqual(
+            Set(model.tags.map(\.displayName)),
+            Set(["人像", "风景", "美食", "动物", "植物", "建筑", "旅行", "截图", "文档"])
+        )
+        XCTAssertEqual(model.notice, .presetTagsInstalled(createdCount: 8))
+        XCTAssertEqual(
+            LibraryWorkspaceView.noticeText(.presetTagsInstalled(createdCount: 8)),
+            "已添加 8 个常用标签；未给照片应用标签。"
+        )
+
+        await model.installPresetTags()
+
+        XCTAssertEqual(model.tags.count, 9)
+        XCTAssertEqual(model.notice, .presetTagsAlreadyAvailable)
+    }
+
     func testRenameTagRefreshesSidebarAndInspectorPresentation() async {
         let sourceID = UUID()
         let asset = Self.makeAsset(sourceID: sourceID)
@@ -1757,6 +1787,18 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
 
     func listTags() throws -> [TagListItem] {
         lock.withLock { storedTags }
+    }
+
+    func installPresetTags() throws -> TagPresetInstallResult {
+        lock.withLock {
+            let existingNames = Set(storedTags.map(\.displayName))
+            let created: [TagListItem] = TagPresetCatalog.starterDisplayNames.compactMap { displayName in
+                guard !existingNames.contains(displayName) else { return nil }
+                return TagListItem(id: UUID(), displayName: displayName, state: .active)
+            }
+            storedTags.append(contentsOf: created)
+            return TagPresetInstallResult(createdTags: created)
+        }
     }
 
     func fetchInspectorDetail(assetID: UUID) throws -> AssetInspectorDetail {

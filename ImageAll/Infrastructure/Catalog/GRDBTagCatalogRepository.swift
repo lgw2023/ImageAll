@@ -124,6 +124,52 @@ struct GRDBTagCatalogRepository: TagCatalogQueryPort, TagDecisionCommandPort, Se
         }
     }
 
+    func createMissingTags(rawNames: [String], timestampMs: Int64) throws -> [Tag] {
+        try CatalogQueryErrorMapping.perform {
+            try database.pool.write { db in
+                var existing = try fetchExistingTags(db)
+                var created: [Tag] = []
+
+                for rawName in rawNames {
+                    let tag: Tag
+                    switch TagCatalogRules.createTag(rawName: rawName, existingTags: existing) {
+                    case let .success(newTag):
+                        tag = newTag
+                    case .failure(.duplicateTag):
+                        continue
+                    case let .failure(error):
+                        throw mapDomainError(error)
+                    }
+
+                    do {
+                        try db.execute(
+                            sql: """
+                            INSERT INTO tag (id, name, normalized_name, state, created_at_ms, updated_at_ms)
+                            VALUES (?, ?, ?, 'active', ?, ?)
+                            """,
+                            arguments: [
+                                CatalogQuerySQLHelpers.lowercaseUUID(tag.id),
+                                tag.displayName,
+                                tag.normalizedName,
+                                timestampMs,
+                                timestampMs,
+                            ]
+                        )
+                    } catch let error as DatabaseError where error.resultCode == .SQLITE_CONSTRAINT {
+                        throw mapTagInsertConstraint(error, db: db, normalizedName: tag.normalizedName)
+                    } catch {
+                        throw CatalogQueryError.persistenceFailure
+                    }
+
+                    existing.append(tag)
+                    created.append(tag)
+                }
+
+                return created
+            }
+        }
+    }
+
     func renameTag(tagID: UUID, rawName: String, timestampMs: Int64) throws -> Tag {
         try CatalogQueryErrorMapping.perform {
             try database.pool.write { db in
