@@ -49,7 +49,7 @@ final class PortableCatalogExportTests: XCTestCase {
         XCTAssertEqual(bookmarkPort.scopeStartCount, bookmarkPort.scopeStopCount)
     }
 
-    func testSourceIsolationChecksDisabledSourcesAndFailsClosedWhenAccessIsIndeterminate() throws {
+    func testSourceIsolationChecksDisabledSourcesAndFailsClosedWhenIsolationIsIndeterminate() throws {
         let container = FileManager.default.temporaryDirectory
             .appendingPathComponent("ImageAll-PortableExportIsolationFailures-\(UUID().uuidString)", isDirectory: true)
         let firstSource = container.appendingPathComponent("FirstSource", isDirectory: true)
@@ -123,6 +123,14 @@ final class PortableCatalogExportTests: XCTestCase {
         XCTAssertThrowsError(
             try indeterminateValidator.validate(parentDirectoryURL: disjointExport)
         ) { error in
+            XCTAssertEqual(error as? PortableCatalogExportError, .destinationIsolationIndeterminate)
+        }
+
+        try FolderAuthorizationTestSupport.insertUndecodableFolderSource(
+            database: database,
+            sourceID: UUID(uuidString: "00000000-0000-0000-0000-000000000000")!
+        )
+        XCTAssertThrowsError(try validator.validate(parentDirectoryURL: disjointExport)) { error in
             XCTAssertEqual(error as? PortableCatalogExportError, .destinationIsolationIndeterminate)
         }
     }
