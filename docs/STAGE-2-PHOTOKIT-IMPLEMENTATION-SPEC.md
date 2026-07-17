@@ -1,6 +1,6 @@
 # ImageAll 阶段 2：Apple Photos 接入实施规格
 
-> 状态：Slice A-G implementation and automated acceptance complete；发布前真实图库人工 smoke 仍开放<br>
+> 状态：Slice A-G implementation and automated acceptance complete；受保护真实图库只读主路径 smoke 已完成；System Photo Library 切换/重绑定人工 smoke 仍开放<br>
 > 日期：2026-07-17<br>
 > 产品决策：项目所有者已批准“单图标准预览”，并选择保留旧 unavailable Source/Asset、为当前系统图库新建 active Source 的重绑定语义<br>
 > 文档基线：`3cb8853`；阶段 2 主要实现提交：`4f1e1a5`、`cd99bcb`、`eeb8cb4`、`7893f03`、`8aded93`、`1a4734c`、`5eca952`、`a474340`、`2912022`、`3431439`、`9d7a2c2`、`dabb86e`
@@ -272,8 +272,7 @@ smoke 仍开放。
 
 ## 8. 阶段 2 验收记录
 
-2026-07-17 已完成 Slice A-G 实现与各切片功能验收；全量性能绿色门已由 Stage 4-W 关闭，发布前真实图库
-人工 smoke 仍开放：
+2026-07-17 已完成 Slice A-G 实现与各切片功能验收；全量性能绿色门已由 Stage 4-W 关闭：
 
 - Slice A 的连接与统一图库由 `4f1e1a5` 完成；Photos 个性化输入由 `cd99bcb` 接通；
 - Slice B 的 persistent change history 与启动追赶由 `eeb8cb4`、`7893f03` 完成；
@@ -341,5 +340,32 @@ bundle 位于
 严格验签。该修复只改变本地目录库查询加速结构，不新增 PhotoKit I/O，也不改变 Stage 2 的来源隔离与
 读取契约。
 
-发布前仍需由用户在专用或明确授权的 System Photo Library 上执行只读人工 smoke；该门不属于自动化，
-也不授权访问受保护的真实照片路径。批量云下载和后台自动获取 iCloud-only 内容继续留在 MVP 范围外。
+### 8.1 受保护真实图库只读主路径 smoke
+
+2026-07-17 经项目所有者明确授权，使用精确 `df7bcc2` 干净归档构建的 Apple Development 签名 App，
+只通过 PhotoKit 和应用 UI 完成只读主路径人工 smoke。验收事实如下：
+
+- 独立 bundle `com.gwlee.ImageAll.Stage4Y.20260717` 由 Team `962554J6D3` 签名并通过
+  `codesign --verify --deep --strict`；实际 entitlement 只有 App Sandbox、app-scope bookmark、
+  user-selected read-write、Photos Library 与 Debug 工具链的 `get-task-allow`；
+- 目录库最多一个 active Photos Source 的不变量成立；全量 reconcile 以 9518/9518 完成并发布
+  9480 个可用静态图片资产；先前的 unavailable/失败历史事实未被覆盖或删除；
+- 一个真实用户标签保留 2 个 accepted 与 2 个 rejected 人工决定，模型修订固化 4 个 positive 与
+  4 个 negative 样本；全库建议复核时已推进到至少 1300/9480、生成至少 1315 个 Feature Print，
+  并在 Review Queue 发布至少 406 条 `pendingReview` 建议；
+- 建议任务在慢 Feature Print 批次内观察到租约剩余时间重新增长，证明 `76c6dca` 的半租约 heartbeat
+  在真实 PhotoKit 工作负载生效；`79ea3b0` 与 `df7bcc2` 同样使 reconcile 在元数据枚举内续租并在
+  pause/cancel 安全边界停止；`334ca5b` 保留用户已确认的建议启动意图；
+- local-only Photos 网格缩略图路径曾生成 37 个 `gridRegular` 派生条目，并在 App 重启后命中复用；
+  该数字只证明持久缓存路径和跨重启复用，不承诺条目绕过统一配额、磁盘余量或后续回收而永久驻留；
+- `Personalization` 定向回归 27/27、`PhotosIntegrationTests` 28/28 通过。精确 `df7bcc2` 干净归档的
+  unsigned 测试按互斥测试类分为四片，分别 204、203、186、222 项通过；签名 entitlement 面板另有
+  4/4 通过，合计 819/819、0 失败。结果位于
+  `/tmp/ImageAll-Verify-df7bcc2-20260717-1924/`；同一归档的独立 Debug App 构建和严格验签通过；
+- 整个 smoke 未触发 iCloud 下载、未调用 Photos 写入 API、未直接访问或遍历 `/Volumes/HDD2` 受保护
+  路径，也未读取仓库 `user/`；验收结束时 App 保持运行，让已确认的全库建议任务继续收敛。
+
+本记录关闭连接、只读元数据对账、本地图片输入、个性化样本、Feature Print、全库建议与 Review Queue
+可见结果组成的真实图库主路径门。System Photo Library 实际切换/显式重绑定，以及三类代表性标签的
+内容质量校准仍是发布前人工门；它们需要新的明确测试选择，不由本次 smoke 静默执行。批量云下载和后台
+自动获取 iCloud-only 内容继续留在 MVP 范围外。
