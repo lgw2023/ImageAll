@@ -1,6 +1,6 @@
 # ImageAll 阶段 3：全库个性化建议与 Review Queue 实施规格
 
-> 状态：Approved for implementation
+> 状态：Implemented；文件夹与 Apple Photos 只读主路径已完成 Review Queue 闭环
 >
 > 日期：2026-07-16
 >
@@ -216,3 +216,20 @@ pause/cancel 在可接受时间内生效，不为本轮暴露用户配置。
 - FSEvents、完整活动中心与资源限制设置；
 - 跨 App 后台守护、相似组、自动触发更新；
 - 导出、Smart Collection、比较/Survey 和高级模型。
+
+## 8. 实施与验收记录
+
+- `45c86b9` 交付全库建议、持久任务、标签概览、Review Queue、Inspector 建议与批量审核主路径；
+  `a9a6c51`、`2466913`、`d76ebdf` 依次关闭复审发现的原子性、调度、分页与稍后动作问题；
+- `cd99bcb` 将 Apple Photos 资产接入来源无关的个性化输入，`1a4734c` 允许用户显式下载的单图预览
+  复用于建议；`79ea3b0`、`76c6dca`、`df7bcc2` 补齐真实长批次中的 reconcile 与建议任务续租、
+  pause/cancel 安全边界，`334ca5b` 修复确认弹窗后的启动意图竞争；
+- 精确 `df7bcc2` 干净归档的 unsigned 测试按互斥测试类分为四片，204/204、203/203、186/186、
+  222/222 通过；Apple Development 签名 entitlement 面板 4/4 通过，合计 819/819、0 失败；
+- 经项目所有者明确授权的签名 App 只读 smoke 已证明 2 个 accepted 与 2 个 rejected 人工样本可形成
+  4 个 positive 与 4 个 negative 固化样本，Apple Photos 全库建议渐进发布到 Review Queue，任务在
+  慢 Feature Print 批次内持续续租。完整安全边界、计数和构建证据见
+  [`STAGE-2-PHOTOKIT-IMPLEMENTATION-SPEC.md`](./STAGE-2-PHOTOKIT-IMPLEMENTATION-SPEC.md) 第 8.1 节。
+
+第 7 节是本规格批准时的停止位置，保留为历史范围说明；其后的 PhotoKit 扩展已经交付。强度文案、
+阈值选择、冻结 evaluation cohort 与三个代表性标签的内容质量校准仍未关闭。
