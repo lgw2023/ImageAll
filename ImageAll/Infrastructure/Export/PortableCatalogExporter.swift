@@ -39,10 +39,58 @@ enum PortableExportBundleNamer {
 enum PortableCatalogExportError: Error, Equatable, Sendable {
     case invalidRequest
     case destinationCollision
+    case destinationOverlapsSource
+    case destinationIsolationIndeterminate
     case databaseReadFailed
     case writeFailed
     case validationFailed
     case publicationFailed
+}
+
+struct PortableExportSourceIsolationValidator: Sendable {
+    let sourceRepository: GRDBFolderSourceAuthorizationRepository
+    let bookmarkPort: any SecurityScopedBookmarkPort
+    let relationshipChecker: any FolderRootRelationshipChecking
+
+    func validate(parentDirectoryURL: URL) throws {
+        let didAccessDestination = parentDirectoryURL.startAccessingSecurityScopedResource()
+        defer {
+            if didAccessDestination {
+                parentDirectoryURL.stopAccessingSecurityScopedResource()
+            }
+        }
+        let sources: [StoredFolderSourceRecord]
+        do {
+            sources = try sourceRepository.fetchAllFolderSources()
+        } catch {
+            throw PortableCatalogExportError.destinationIsolationIndeterminate
+        }
+
+        for source in sources {
+            let sourceURL: URL
+            do {
+                sourceURL = try bookmarkPort.resolveBookmark(source.bookmark).url
+            } catch {
+                throw PortableCatalogExportError.destinationIsolationIndeterminate
+            }
+            guard bookmarkPort.startAccessing(sourceURL) else {
+                throw PortableCatalogExportError.destinationIsolationIndeterminate
+            }
+            defer { bookmarkPort.stopAccessing(sourceURL) }
+
+            switch relationshipChecker.relationship(
+                between: parentDirectoryURL,
+                and: sourceURL
+            ) {
+            case .same, .existingAncestor, .newAncestor:
+                throw PortableCatalogExportError.destinationOverlapsSource
+            case .disjoint:
+                continue
+            case .indeterminate:
+                throw PortableCatalogExportError.destinationIsolationIndeterminate
+            }
+        }
+    }
 }
 
 struct PortableCatalogExportRequest: Equatable, Sendable {

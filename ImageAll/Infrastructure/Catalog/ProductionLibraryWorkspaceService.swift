@@ -17,6 +17,7 @@ struct ProductionLibraryWorkspaceService: LibraryWorkspacePort, Sendable {
     let personalizationReview: PersonalizationReviewService
     let derivedImageCache: DerivedImageCacheService
     let portableExportDestinationPicker: any PortableExportDestinationPicking
+    let portableExportSourceIsolation: PortableExportSourceIsolationValidator
     let portableExporter: PortableCatalogExporter
     let appVersion: String
     let clock: any JobClock
@@ -27,6 +28,7 @@ struct ProductionLibraryWorkspaceService: LibraryWorkspacePort, Sendable {
     }
 
     func exportPortableUserData(to parentDirectoryURL: URL) throws -> PortableCatalogExportResult {
+        try portableExportSourceIsolation.validate(parentDirectoryURL: parentDirectoryURL)
         let createdAtMs = clock.nowMs
         return try portableExporter.export(
             PortableCatalogExportRequest(

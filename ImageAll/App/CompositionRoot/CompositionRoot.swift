@@ -113,6 +113,11 @@ struct CompositionRoot {
             personalizationReview: personalizationReview,
             derivedImageCache: derivedImages,
             portableExportDestinationPicker: AppKitPortableExportDestinationPicker(),
+            portableExportSourceIsolation: PortableExportSourceIsolationValidator(
+                sourceRepository: sourceRepository,
+                bookmarkPort: bookmark,
+                relationshipChecker: FoundationFolderRootRelationshipChecker()
+            ),
             portableExporter: PortableCatalogExporter(database: runtime.database),
             appVersion: BundleAppVersionProvider().currentVersion(),
             clock: clock

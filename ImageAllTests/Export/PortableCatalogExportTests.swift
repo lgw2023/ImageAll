@@ -4,6 +4,51 @@ import XCTest
 @testable import ImageAll
 
 final class PortableCatalogExportTests: XCTestCase {
+    func testSourceIsolationRejectsOverlappingExportDestinationsAndAllowsDisjointDirectory() throws {
+        let container = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ImageAll-PortableExportIsolation-\(UUID().uuidString)", isDirectory: true)
+        let sourceRoot = container.appendingPathComponent("Source", isDirectory: true)
+        let sourceChild = sourceRoot.appendingPathComponent("Nested", isDirectory: true)
+        let disjointExport = container.appendingPathComponent("Exports", isDirectory: true)
+        try FileManager.default.createDirectory(at: sourceChild, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: disjointExport, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: container) }
+        let sentinel = sourceRoot.appendingPathComponent("original.jpg")
+        let sentinelBytes = Data("original-source".utf8)
+        try sentinelBytes.write(to: sentinel)
+
+        let database = try CatalogDatabase.open(at: container.appendingPathComponent("catalog.sqlite"))
+        let sourceID = UUID()
+        let bookmark = Data("read-only-source-bookmark".utf8)
+        try FolderReconcileTestSupport.seedActiveFolderSource(
+            database: database,
+            sourceID: sourceID,
+            bookmark: bookmark
+        )
+        let bookmarkPort = FolderReconcileTestSupport.TestBookmarkPort(
+            rootByBookmark: [bookmark: sourceRoot]
+        )
+        let validator = PortableExportSourceIsolationValidator(
+            sourceRepository: GRDBFolderSourceAuthorizationRepository(database: database),
+            bookmarkPort: bookmarkPort,
+            relationshipChecker: FoundationFolderRootRelationshipChecker()
+        )
+
+        for overlappingDestination in [sourceRoot, sourceChild, container] {
+            XCTAssertThrowsError(
+                try validator.validate(parentDirectoryURL: overlappingDestination)
+            ) { error in
+                XCTAssertEqual(
+                    error as? PortableCatalogExportError,
+                    .destinationOverlapsSource
+                )
+            }
+        }
+        XCTAssertNoThrow(try validator.validate(parentDirectoryURL: disjointExport))
+        XCTAssertEqual(try Data(contentsOf: sentinel), sentinelBytes)
+        XCTAssertEqual(bookmarkPort.scopeStartCount, bookmarkPort.scopeStopCount)
+    }
+
     func testExportsStableFolderAndPhotosFactsWithVerifiedManifest() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("ImageAll-PortableExportTests-\(UUID().uuidString)", isDirectory: true)
