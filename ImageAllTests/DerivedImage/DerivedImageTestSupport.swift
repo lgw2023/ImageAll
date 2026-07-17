@@ -173,6 +173,30 @@ enum DerivedImageTestSupport {
             return fileURL
         }
 
+        func runProductionReconcileForFixture() async throws {
+            try FolderReconcileTestSupport.seedActiveFolderSource(
+                database: database,
+                sourceID: sourceID,
+                bookmark: bookmark
+            )
+            let queue = FolderReconcileTestSupport.makeQueue(database: database)
+            let (handler, _) = FolderReconcileTestSupport.makeHandler(
+                database: database,
+                root: sourceRoot,
+                bookmark: bookmark
+            )
+            let coordinator = FolderReconcileTestSupport.makeCoordinator(queue: queue, handler: handler)
+            _ = try FolderReconcileTestSupport.enqueueReconcileJob(queue: queue, sourceID: sourceID)
+            let result = try XCTUnwrap(
+                try coordinator.claimAndExecuteOnce(
+                    ClaimNextInput(owner: "derived-scale-reconcile", leaseDurationMs: 60_000)
+                )
+            )
+            guard result.snapshot.state == .completed else {
+                throw NSError(domain: "DerivedImageTestSupport", code: 5)
+            }
+        }
+
         func makeService(
             cachesDirectory overrideCachesDirectory: URL? = nil,
             faultInjector: any DerivedImageCacheStoreFaultInjecting = NoDerivedImageCacheStoreFaultInjector(),

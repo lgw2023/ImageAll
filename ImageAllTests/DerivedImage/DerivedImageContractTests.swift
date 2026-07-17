@@ -87,6 +87,105 @@ final class DerivedImageContractTests: XCTestCase {
         add(attachment)
     }
 
+    func testHundredJPEGsReconcileQueryGenerateAndHitCacheWithinImageIOGate() async throws {
+        let env = try DerivedImageTestSupport.TempEnvironment(label: "image-io-scale")
+        defer { env.cleanup() }
+        let assetCount = 100
+        let jpeg = try XCTUnwrap(
+            FolderReconcileTestSupport.minimalEncodedImageData(
+                uti: "public.jpeg",
+                width: 128,
+                height: 96
+            )
+        )
+        for index in 0 ..< assetCount {
+            _ = try env.writeSource(
+                relativePath: "scale/image-\(index).jpg",
+                contents: jpeg
+            )
+        }
+        let sourceBefore = try env.sourceTreeSnapshot()
+
+        let pipelineStartedAt = ContinuousClock.now
+        let reconcileStartedAt = ContinuousClock.now
+        try await env.runProductionReconcileForFixture()
+        let reconcileElapsed = ContinuousClock.now - reconcileStartedAt
+
+        let queryStartedAt = ContinuousClock.now
+        let query = GRDBAssetCatalogQueryRepository(database: env.database)
+        let page = try query.fetchAssetPage(
+            AssetPageRequest(
+                filter: AssetPageFilter(sourceIDs: [env.sourceID]),
+                sort: .fileNameAscending,
+                cursor: nil,
+                limit: assetCount
+            )
+        )
+        let terminalPage = try query.fetchAssetPage(
+            AssetPageRequest(
+                filter: AssetPageFilter(sourceIDs: [env.sourceID]),
+                sort: .fileNameAscending,
+                cursor: try XCTUnwrap(page.nextCursor),
+                limit: assetCount
+            )
+        )
+        let queryElapsed = ContinuousClock.now - queryStartedAt
+        XCTAssertEqual(page.items.count, assetCount)
+        XCTAssertTrue(terminalPage.items.isEmpty)
+        XCTAssertNil(terminalPage.nextCursor)
+
+        let (service, bookmarkPort) = env.makeService(
+            volumeReader: DerivedImageTestSupport.generousVolume
+        )
+        let generationStartedAt = ContinuousClock.now
+        var generatedBytes = 0
+        for item in page.items {
+            let payload = try await service.loadOrGenerate(
+                DerivedImageRequest(assetID: item.assetID, variant: .gridRegular)
+            )
+            XCTAssertEqual(payload.origin, .generated)
+            XCTAssertEqual(payload.pixelWidth, 512)
+            XCTAssertEqual(payload.pixelHeight, 512)
+            XCTAssertFalse(payload.encodedBytes.isEmpty)
+            generatedBytes += payload.encodedBytes.count
+        }
+        let generationElapsed = ContinuousClock.now - generationStartedAt
+        let scopeStartsAfterGeneration = bookmarkPort.scopeStartCount
+
+        let cacheHitStartedAt = ContinuousClock.now
+        for item in page.items {
+            let payload = try await service.loadOrGenerate(
+                DerivedImageRequest(assetID: item.assetID, variant: .gridRegular)
+            )
+            XCTAssertEqual(payload.origin, .cacheHit)
+        }
+        let cacheHitElapsed = ContinuousClock.now - cacheHitStartedAt
+        let pipelineElapsed = ContinuousClock.now - pipelineStartedAt
+
+        XCTAssertEqual(bookmarkPort.scopeStartCount, scopeStartsAfterGeneration)
+        XCTAssertEqual(bookmarkPort.scopeStartCount, bookmarkPort.scopeStopCount)
+        XCTAssertEqual(
+            try service.cacheUsage().entryCount,
+            assetCount
+        )
+        let artifacts = try await env.cacheArtifactCounts()
+        XCTAssertEqual(artifacts.entries, assetCount)
+        XCTAssertEqual(artifacts.objects, assetCount)
+        XCTAssertEqual(artifacts.stagingFiles, 0)
+        XCTAssertEqual(try env.sourceTreeSnapshot(), sourceBefore)
+        XCTAssertLessThan(pipelineElapsed, .seconds(30))
+
+        let attachment = XCTAttachment(
+            string: "assets=\(assetCount) reconcile_seconds=\(reconcileElapsed) "
+                + "query_seconds=\(queryElapsed) generation_seconds=\(generationElapsed) "
+                + "cache_hit_seconds=\(cacheHitElapsed) pipeline_seconds=\(pipelineElapsed) "
+                + "generated_bytes=\(generatedBytes)"
+        )
+        attachment.name = "ImageAll 100-image end-to-end I/O baseline"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+
     func testClearRejectsObjectSymlinkBeforeInvalidatingEntries() async throws {
         let env = try DerivedImageTestSupport.TempEnvironment(label: "cache-clear-symlink")
         defer { env.cleanup() }
