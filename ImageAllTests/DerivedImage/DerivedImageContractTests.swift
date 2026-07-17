@@ -186,6 +186,110 @@ final class DerivedImageContractTests: XCTestCase {
         add(attachment)
     }
 
+    func testMixedSupportedFormatsReconcileAndLoadConcurrentlyThroughLibraryPipeline() async throws {
+        let env = try DerivedImageTestSupport.TempEnvironment(label: "mixed-image-io")
+        defer { env.cleanup() }
+        let fixtures: [(extension: String, mediaType: String, data: Data)] = [
+            ("jpg", "public.jpeg", try XCTUnwrap(
+                FolderReconcileTestSupport.minimalEncodedImageData(
+                    uti: "public.jpeg", width: 128, height: 96
+                )
+            )),
+            ("png", "public.png", try XCTUnwrap(
+                FolderReconcileTestSupport.minimalEncodedImageData(
+                    uti: "public.png", width: 96, height: 128
+                )
+            )),
+            ("heic", "public.heic", try XCTUnwrap(FolderReconcileTestSupport.minimalHEICData())),
+            ("heif", "public.heif", FolderReconcileTestSupport.minimalHEIFData()),
+            ("tiff", "public.tiff", try XCTUnwrap(FolderReconcileTestSupport.minimalTIFFData())),
+            ("webp", "org.webmproject.webp", FolderReconcileTestSupport.minimalWebPData()),
+        ]
+        let copiesPerFormat = 5
+        for fixture in fixtures {
+            XCTAssertEqual(
+                FolderReconcileTestSupport.imageIOActualType(for: fixture.data),
+                fixture.mediaType
+            )
+            for index in 0 ..< copiesPerFormat {
+                _ = try env.writeSource(
+                    relativePath: "mixed/\(fixture.extension)-\(index).\(fixture.extension)",
+                    contents: fixture.data
+                )
+            }
+        }
+        let assetCount = fixtures.count * copiesPerFormat
+        let sourceBefore = try env.sourceTreeSnapshot()
+
+        let pipelineStartedAt = ContinuousClock.now
+        try await env.runProductionReconcileForFixture()
+        let query = GRDBAssetCatalogQueryRepository(database: env.database)
+        let page = try query.fetchAssetPage(
+            AssetPageRequest(
+                filter: AssetPageFilter(sourceIDs: [env.sourceID]),
+                sort: .fileNameAscending,
+                cursor: nil,
+                limit: assetCount
+            )
+        )
+        let terminalPage = try query.fetchAssetPage(
+            AssetPageRequest(
+                filter: AssetPageFilter(sourceIDs: [env.sourceID]),
+                sort: .fileNameAscending,
+                cursor: try XCTUnwrap(page.nextCursor),
+                limit: assetCount
+            )
+        )
+        XCTAssertEqual(page.items.count, assetCount)
+        XCTAssertTrue(terminalPage.items.isEmpty)
+        XCTAssertNil(terminalPage.nextCursor)
+        XCTAssertEqual(
+            Dictionary(grouping: page.items, by: \.mediaType).mapValues(\.count),
+            Dictionary(uniqueKeysWithValues: fixtures.map { ($0.mediaType, copiesPerFormat) })
+        )
+
+        let (service, bookmarkPort) = env.makeService(
+            volumeReader: DerivedImageTestSupport.generousVolume
+        )
+        let loader = DerivedImageTestSupport.makeLibraryAssetImageLoader(
+            database: env.database,
+            fileImages: service,
+            maximumConcurrentLoads: 4
+        )
+        let coldStartedAt = ContinuousClock.now
+        let coldPayloads = try await loadGridImages(page.items, using: loader)
+        let coldElapsed = ContinuousClock.now - coldStartedAt
+        XCTAssertEqual(coldPayloads.count, assetCount)
+        try assertRegularGridPayloads(coldPayloads)
+        let scopeStartsAfterColdPass = bookmarkPort.scopeStartCount
+
+        let warmStartedAt = ContinuousClock.now
+        let warmPayloads = try await loadGridImages(page.items, using: loader)
+        let warmElapsed = ContinuousClock.now - warmStartedAt
+        let pipelineElapsed = ContinuousClock.now - pipelineStartedAt
+        XCTAssertEqual(warmPayloads.count, assetCount)
+        try assertRegularGridPayloads(warmPayloads)
+
+        XCTAssertEqual(bookmarkPort.scopeStartCount, scopeStartsAfterColdPass)
+        XCTAssertEqual(bookmarkPort.scopeStartCount, bookmarkPort.scopeStopCount)
+        XCTAssertEqual(try service.cacheUsage().entryCount, assetCount)
+        let artifacts = try await env.cacheArtifactCounts()
+        XCTAssertEqual(artifacts.entries, assetCount)
+        XCTAssertEqual(artifacts.objects, assetCount)
+        XCTAssertEqual(artifacts.stagingFiles, 0)
+        XCTAssertEqual(try env.sourceTreeSnapshot(), sourceBefore)
+        XCTAssertLessThan(pipelineElapsed, .seconds(30))
+
+        let attachment = XCTAttachment(
+            string: "assets=\(assetCount) formats=\(fixtures.count) copies_per_format=\(copiesPerFormat) "
+                + "cold_seconds=\(coldElapsed) warm_seconds=\(warmElapsed) "
+                + "pipeline_seconds=\(pipelineElapsed)"
+        )
+        attachment.name = "ImageAll mixed-format concurrent I/O baseline"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+
     func testClearRejectsObjectSymlinkBeforeInvalidatingEntries() async throws {
         let env = try DerivedImageTestSupport.TempEnvironment(label: "cache-clear-symlink")
         defer { env.cleanup() }
@@ -207,6 +311,47 @@ final class DerivedImageContractTests: XCTestCase {
 
         XCTAssertEqual(try service.cacheUsage().entryCount, 1)
         XCTAssertEqual(try Data(contentsOf: sentinel), sentinelBytes)
+    }
+
+    private func loadGridImages(
+        _ items: [AssetGridItemProjection],
+        using loader: LibraryAssetImageLoader
+    ) async throws -> [Data] {
+        try await withThrowingTaskGroup(of: Data.self) { group in
+            for item in items {
+                group.addTask {
+                    try await loader.load(assetID: item.assetID, variant: .grid)
+                }
+            }
+            var payloads: [Data] = []
+            for try await payload in group {
+                payloads.append(payload)
+            }
+            return payloads
+        }
+    }
+
+    private func assertRegularGridPayloads(
+        _ payloads: [Data],
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) throws {
+        XCTAssertFalse(payloads.isEmpty, file: file, line: line)
+        for payload in payloads {
+            XCTAssertFalse(payload.isEmpty, file: file, line: line)
+            let source = try XCTUnwrap(
+                CGImageSourceCreateWithData(payload as CFData, nil),
+                file: file,
+                line: line
+            )
+            let image = try XCTUnwrap(
+                CGImageSourceCreateImageAtIndex(source, 0, nil),
+                file: file,
+                line: line
+            )
+            XCTAssertEqual(image.width, 512, file: file, line: line)
+            XCTAssertEqual(image.height, 512, file: file, line: line)
+        }
     }
 
     func testClearDeletionFailureInvalidatesEntriesAndReportsPartialReclaim() async throws {

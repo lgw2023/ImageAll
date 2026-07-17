@@ -113,8 +113,21 @@ enum FolderReconcileTestSupport {
 
     final class TestBookmarkPort: SecurityScopedBookmarkPort, @unchecked Sendable {
         let rootByBookmark: [Data: URL]
-        var scopeStartCount = 0
-        var scopeStopCount = 0
+        private let countLock = NSLock()
+        private var storedScopeStartCount = 0
+        private var storedScopeStopCount = 0
+
+        var scopeStartCount: Int {
+            countLock.lock()
+            defer { countLock.unlock() }
+            return storedScopeStartCount
+        }
+
+        var scopeStopCount: Int {
+            countLock.lock()
+            defer { countLock.unlock() }
+            return storedScopeStopCount
+        }
 
         init(rootByBookmark: [Data: URL]) {
             self.rootByBookmark = rootByBookmark
@@ -132,12 +145,16 @@ enum FolderReconcileTestSupport {
         }
 
         func startAccessing(_ url: URL) -> Bool {
-            scopeStartCount += 1
+            countLock.lock()
+            storedScopeStartCount += 1
+            countLock.unlock()
             return true
         }
 
         func stopAccessing(_ url: URL) {
-            scopeStopCount += 1
+            countLock.lock()
+            storedScopeStopCount += 1
+            countLock.unlock()
         }
     }
 

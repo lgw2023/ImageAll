@@ -9,6 +9,44 @@ import XCTest
 @testable import ImageAll
 
 enum DerivedImageTestSupport {
+    static func makeLibraryAssetImageLoader(
+        database: CatalogDatabase,
+        fileImages: any DerivedImageCachePort,
+        maximumConcurrentLoads: Int
+    ) -> LibraryAssetImageLoader {
+        LibraryAssetImageLoader(
+            database: database,
+            fileImages: fileImages,
+            photosImages: UnavailablePhotosLibraryAccess(),
+            maximumConcurrentLoads: maximumConcurrentLoads
+        )
+    }
+
+    private struct UnavailablePhotosLibraryAccess: PhotosLibraryAccessPort {
+        func authorizationState() -> PhotosAuthorizationState {
+            .denied
+        }
+
+        func requestAuthorization() async -> PhotosAuthorizationState {
+            .denied
+        }
+
+        func enumerateStaticImages(
+            startingAt startOffset: Int,
+            batchSize: Int,
+            onBatch: (PhotosAssetEnumerationBatch) throws -> Void
+        ) throws {
+            throw PhotosLibraryError.libraryUnavailable
+        }
+
+        func requestLocalImage(
+            localIdentifier: String,
+            variant: PhotosImageVariant
+        ) async throws -> Data {
+            throw PhotosLibraryError.libraryUnavailable
+        }
+    }
+
     struct GenerationCatalogFacts: Equatable {
         let assetID: UUID
         let sourceID: UUID
