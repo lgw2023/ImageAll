@@ -100,7 +100,7 @@ Slice W 完成后仍明确延期：
 
 ## 6. 停止位置
 
-切片 B 停止于“浏览—选择—人工标签—搜索筛选”闭环；项目所有者实际体验反馈后，切片 C 已补齐单图查看与键盘浏览，切片 D 已补齐状态、格式和排序控件，切片 E 已补齐来源生命周期，切片 F 已补齐标签重命名与归档。阶段 4 已补齐活动工作区和任务控制，切片 W 又补齐文件夹 FSEvents 自动重扫；下一条推荐纵切片是让现有 PhotoKit 变化观察器复用同一自动 runner 唤醒链路，不再等待用户手动重扫或下次启动。
+切片 B 停止于“浏览—选择—人工标签—搜索筛选”闭环；项目所有者实际体验反馈后，切片 C 已补齐单图查看与键盘浏览，切片 D 已补齐状态、格式和排序控件，切片 E 已补齐来源生命周期，切片 F 已补齐标签重命名与归档。阶段 4 已补齐活动工作区和任务控制，切片 W 又补齐文件夹 FSEvents 自动重扫；Stage 2-D 已让 PhotoKit 变化观察器复用同一自动 runner 唤醒链路。
 
 ## 7. 切片 A 验收记录
 
@@ -217,4 +217,4 @@ W 不新增卷重新挂载自动探测；root 丢失后仍遵循既有 `unavaila
 
 可复现验证使用 `ImageAll.xcodeproj` / `ImageAll` scheme、Debug、`platform=macOS,arch=arm64`、独立 DerivedData 和固定 package checkout：unsigned 全量运行 `xcodebuild ... test -skip-testing:ImageAllTests/FolderAuthorizationEntitlementPanelTests/testProductionEntitlementsContainApprovedSandboxCapabilities CODE_SIGNING_ALLOWED=NO`；签名门单独运行 `xcodebuild ... test -only-testing:ImageAllTests/FolderAuthorizationEntitlementPanelTests/testProductionEntitlementsContainApprovedSandboxCapabilities`；独立 bundle 运行 `xcodebuild ... PRODUCT_BUNDLE_IDENTIFIER=com.gwlee.ImageAll.Stage1W.20260717 build` 后执行 `codesign --verify --deep --strict <ImageAll.app>`。结果包过期后仍可用相同 project、scheme、destination、bundle ID 和测试选择重跑。
 
-下一推荐切片：让 `PhotosLibraryChangeObserverCoordinator` 在成功递增 Photos `dirty_epoch` 并排队任务后通知 Workspace runner，自动消费 persistent change history 并刷新网格。验收只使用 fake PhotoKit 回调和合成数据库，不申请或读取真实 Photos 权限数据；必须证明通知合并、运行中重触发和人工决定不受影响。
+原下一推荐切片已由 Stage 2-D / `2912022` 完成。新的推荐工作是先做 System Photo Library 身份切换的可行性与 fail-closed 契约切片：在没有稳定身份信号时不得把大规模合法变化静默解释成同一图库，也不得迁移或删除既有 Source/Asset；验收先限于 API 能力核对、fake library identity seam 与合成数据库，不请求或读取真实 Photos 权限数据。
