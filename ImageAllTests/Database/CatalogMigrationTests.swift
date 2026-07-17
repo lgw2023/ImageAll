@@ -38,6 +38,97 @@ final class CatalogMigrationTests: XCTestCase {
         XCTAssertEqual(count, 1)
     }
 
+    func testCurrentSchemaMaintainsTrigramAssetSearchIndex() throws {
+        let url = try makeTempDatabaseURL()
+        let sourceID = UUID()
+        let assetID = UUID()
+        let database = try CatalogDatabase.open(at: url)
+        let repository = CatalogRepository(database: database)
+        try DatabaseTestSupport.makeFolderSourceWithFileAsset(
+            repository: repository,
+            sourceID: sourceID,
+            assetID: assetID
+        )
+
+        func matchedAssetIDs(_ query: String) throws -> [String] {
+            try database.pool.read { db in
+                try String.fetchAll(
+                    db,
+                    sql: """
+                    SELECT asset.id
+                    FROM asset_search
+                    INNER JOIN asset ON asset.rowid = asset_search.rowid
+                    WHERE asset_search MATCH ?
+                    """,
+                    arguments: [query]
+                )
+            }
+        }
+
+        try database.pool.write { db in
+            try db.execute(
+                sql: "UPDATE asset SET file_name = 'needle-file.jpg', relative_path = 'archive/needle-file.jpg' WHERE id = ?",
+                arguments: [assetID.uuidString.lowercased()]
+            )
+        }
+        XCTAssertEqual(try matchedAssetIDs("\"needle-file\""), [assetID.uuidString.lowercased()])
+
+        try database.pool.write { db in
+            try db.execute(
+                sql: "UPDATE asset SET file_name = 'renamed-photo.jpg', relative_path = 'archive/renamed-photo.jpg' WHERE id = ?",
+                arguments: [assetID.uuidString.lowercased()]
+            )
+        }
+        XCTAssertTrue(try matchedAssetIDs("\"needle-file\"").isEmpty)
+        XCTAssertEqual(try matchedAssetIDs("\"renamed-photo\""), [assetID.uuidString.lowercased()])
+
+        try database.pool.write { db in
+            try db.execute(sql: "DELETE FROM asset WHERE id = ?", arguments: [assetID.uuidString.lowercased()])
+        }
+        XCTAssertTrue(try matchedAssetIDs("\"renamed-photo\"").isEmpty)
+        XCTAssertEqual(CatalogMigrationID.knownOrdered.last, "v006_add_asset_text_search")
+    }
+
+    func testV006BackfillsAssetTextFromExistingV005Database() throws {
+        let url = try makeTempDatabaseURL()
+        var config = Configuration()
+        config.prepareDatabase { db in
+            try db.execute(sql: "PRAGMA foreign_keys = ON")
+        }
+        let pool = try DatabasePool(path: url.path, configuration: config)
+        try DatabaseTestSupport.makeV005OnlyMigrator().migrate(pool)
+
+        let database = CatalogDatabase(pool: pool)
+        let sourceID = UUID()
+        let assetID = UUID()
+        try DatabaseTestSupport.makeFolderSourceWithFileAsset(
+            repository: CatalogRepository(database: database),
+            sourceID: sourceID,
+            assetID: assetID
+        )
+        try pool.write { db in
+            try db.execute(
+                sql: "UPDATE asset SET file_name = 'before-upgrade.jpg', relative_path = 'archive/before-upgrade.jpg' WHERE id = ?",
+                arguments: [assetID.uuidString.lowercased()]
+            )
+        }
+
+        try CatalogDatabase.makeMigrator().migrate(pool)
+
+        let matchedIDs = try pool.read { db in
+            try String.fetchAll(
+                db,
+                sql: """
+                SELECT asset.id
+                FROM asset_search
+                INNER JOIN asset ON asset.rowid = asset_search.rowid
+                WHERE asset_search MATCH '"before-upgrade"'
+                """
+            )
+        }
+        XCTAssertEqual(matchedIDs, [assetID.uuidString.lowercased()])
+    }
+
     func testUnknownFutureMigrationIsRejected() throws {
         let url = try makeTempDatabaseURL()
         var config = Configuration()

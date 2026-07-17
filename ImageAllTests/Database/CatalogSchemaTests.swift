@@ -30,10 +30,12 @@ final class CatalogSchemaTests: XCTestCase {
             XCTAssertEqual(
                 objectTypes,
                 Set(CatalogSchemaExpectations.allowedSchemaObjectTypes),
-                "Schema must contain only tables and indexes, found: \(objectTypes)"
+                "Schema contains unexpected object types: \(objectTypes)"
             )
-            XCTAssertFalse(objects.contains { $0.type == "trigger" })
             XCTAssertFalse(objects.contains { $0.type == "view" })
+
+            let triggers = objects.filter { $0.type == "trigger" }.map(\.name).sorted()
+            XCTAssertEqual(triggers, CatalogSchemaExpectations.infrastructureTriggers)
 
             let tables = objects.filter { $0.type == "table" }.map(\.name).sorted()
             let expectedTables = (

@@ -27,6 +27,14 @@ enum DatabaseTestSupport {
         return migrator
     }
 
+    static func makeV005OnlyMigrator() -> DatabaseMigrator {
+        var migrator = makeV002OnlyMigrator()
+        V003AddDerivedImageCacheMigration.register(on: &migrator)
+        V004AddPersonalizationMigration.register(on: &migrator)
+        V005AddCatalogScaleIndexesMigration.register(on: &migrator)
+        return migrator
+    }
+
     static func makeTempDatabaseURL(addTeardown: ((@escaping () -> Void) -> Void)? = nil) throws -> URL {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("ImageAllTests-\(UUID().uuidString)", isDirectory: true)
@@ -51,16 +59,17 @@ enum DatabaseTestSupport {
     }
 
     static func tableNames(_ db: Database) throws -> [String] {
-        try fetchStrings(
+        let tables = try fetchStrings(
             db,
             sql: """
             SELECT name FROM sqlite_schema
             WHERE type = 'table'
                 AND name NOT LIKE 'sqlite_%'
-                AND name != 'grdb_migrations'
             ORDER BY name
             """
         )
+        let infrastructure = Set(CatalogSchemaExpectations.infrastructureTables)
+        return tables.filter { !infrastructure.contains($0) }
     }
 
     static func normalizeSQL(_ sql: String) -> String {

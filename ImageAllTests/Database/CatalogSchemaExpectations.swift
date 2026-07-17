@@ -59,9 +59,22 @@ enum CatalogSchemaExpectations {
 
     static let assetCoalescedMediaTimeExpression = "coalesce(media_created_at_ms, media_modified_at_ms)"
 
-    static let infrastructureTables = ["grdb_migrations"]
+    static let infrastructureTables = [
+        "asset_search",
+        "asset_search_config",
+        "asset_search_data",
+        "asset_search_docsize",
+        "asset_search_idx",
+        "grdb_migrations",
+    ]
 
-    static let allowedSchemaObjectTypes = ["index", "table"]
+    static let infrastructureTriggers = [
+        "asset_search_after_delete",
+        "asset_search_after_insert",
+        "asset_search_after_update",
+    ]
+
+    static let allowedSchemaObjectTypes = ["index", "table", "trigger"]
 
     static let businessTables = [
         "asset",

@@ -15,7 +15,7 @@ struct GRDBAssetCatalogQueryRepository: AssetCatalogQueryPort, Sendable {
         return try CatalogQueryErrorMapping.perform {
             try database.pool.read { db in
             var arguments = StatementArguments()
-            let whereClause = try buildWhereClause(filter: request.filter, arguments: &arguments)
+            let whereClause = try buildWhereClause(db: db, filter: request.filter, arguments: &arguments)
             let orderClause = orderClause(for: request.sort)
             if let cursor = request.cursor {
                 let cursorClause = try buildCursorClause(cursor: cursor, arguments: &arguments)
@@ -387,7 +387,11 @@ struct GRDBAssetCatalogQueryRepository: AssetCatalogQueryPort, Sendable {
         }
     }
 
-    private func buildWhereClause(filter: AssetPageFilter, arguments: inout StatementArguments) throws -> String {
+    private func buildWhereClause(
+        db: Database,
+        filter: AssetPageFilter,
+        arguments: inout StatementArguments
+    ) throws -> String {
         var clauses = ["1 = 1"]
 
         if !filter.sourceIDs.isEmpty {
@@ -479,23 +483,69 @@ struct GRDBAssetCatalogQueryRepository: AssetCatalogQueryPort, Sendable {
 
         if let searchText = CatalogQuerySQLHelpers.normalizedSearchText(filter.searchText) {
             let pattern = "%\(CatalogQuerySQLHelpers.escapeLikePattern(searchText))%"
-            arguments += [pattern, pattern, pattern, pattern]
-            clauses.append(
-                """
-                (
-                    asset.file_name LIKE ? ESCAPE '\\'
-                    OR asset.relative_path LIKE ? ESCAPE '\\'
-                    OR source.display_name LIKE ? ESCAPE '\\'
-                    OR EXISTS (
+            let matchingSourceIDs = try String.fetchAll(
+                db,
+                sql: "SELECT id FROM source WHERE display_name LIKE ? ESCAPE '\\'",
+                arguments: [pattern]
+            )
+            let matchingTagIDs = try String.fetchAll(
+                db,
+                sql: "SELECT id FROM tag WHERE name LIKE ? ESCAPE '\\'",
+                arguments: [pattern]
+            )
+
+            var searchClauses: [String]
+            if let trigramPhrase = CatalogQuerySQLHelpers.trigramLiteralPhrase(searchText) {
+                searchClauses = [
+                    """
+                    (
+                        asset.rowid IN (
+                            SELECT rowid
+                            FROM asset_search
+                            WHERE asset_search MATCH ?
+                        )
+                        AND (
+                            asset.file_name LIKE ? ESCAPE '\\'
+                            OR asset.relative_path LIKE ? ESCAPE '\\'
+                        )
+                    )
+                    """
+                ]
+                arguments += [trigramPhrase, pattern, pattern]
+            } else {
+                searchClauses = [
+                    "asset.file_name LIKE ? ESCAPE '\\'",
+                    "asset.relative_path LIKE ? ESCAPE '\\'",
+                ]
+                arguments += [pattern, pattern]
+            }
+
+            if !matchingSourceIDs.isEmpty {
+                let placeholders = Array(repeating: "?", count: matchingSourceIDs.count).joined(separator: ", ")
+                searchClauses.append("asset.source_id IN (\(placeholders))")
+                for sourceID in matchingSourceIDs {
+                    arguments += [sourceID]
+                }
+            }
+
+            if !matchingTagIDs.isEmpty {
+                let placeholders = Array(repeating: "?", count: matchingTagIDs.count).joined(separator: ", ")
+                searchClauses.append(
+                    """
+                    EXISTS (
                         SELECT 1
                         FROM asset_tag_decision d
-                        INNER JOIN tag ON tag.id = d.tag_id
                         WHERE d.asset_id = asset.id
-                            AND tag.name LIKE ? ESCAPE '\\'
+                            AND d.tag_id IN (\(placeholders))
                     )
+                    """
                 )
-                """
-            )
+                for tagID in matchingTagIDs {
+                    arguments += [tagID]
+                }
+            }
+
+            clauses.append("(\(searchClauses.joined(separator: " OR ")))")
         }
 
         return clauses.joined(separator: " AND ")

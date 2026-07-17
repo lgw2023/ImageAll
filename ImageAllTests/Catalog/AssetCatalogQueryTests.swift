@@ -265,8 +265,27 @@ final class AssetCatalogQueryTests: XCTestCase {
         let injection = try fixture.query.fetchAssetPage(
             AssetPageRequest(filter: AssetPageFilter(searchText: "' OR '1'='1"), sort: .newest, cursor: nil, limit: 200)
         )
+        let quotedPhrase = try fixture.query.fetchAssetPage(
+            AssetPageRequest(filter: AssetPageFilter(searchText: "abc\"def"), sort: .newest, cursor: nil, limit: 200)
+        )
         XCTAssertTrue(baseline.items.isEmpty)
         XCTAssertTrue(injection.items.isEmpty)
+        XCTAssertTrue(quotedPhrase.items.isEmpty)
+    }
+
+    func testTwoCharacterAssetSearchKeepsLiteralLikeFallback() throws {
+        let fixture = try CatalogQueryTestSupport.openQueryDatabase()
+        try fixture.database.pool.write { db in
+            try db.execute(
+                sql: "UPDATE asset SET file_name = 'QZ.jpg' WHERE id = ?",
+                arguments: [fixture.ids.assetMiddle.uuidString.lowercased()]
+            )
+        }
+
+        let page = try fixture.query.fetchAssetPage(
+            AssetPageRequest(filter: AssetPageFilter(searchText: "QZ"), sort: .newest, cursor: nil, limit: 200)
+        )
+        XCTAssertEqual(page.items.map(\.assetID), [fixture.ids.assetMiddle])
     }
 
     func testWhitespaceOnlySearchMatchesUnfiltered() throws {
@@ -607,8 +626,12 @@ final class AssetCatalogQueryTests: XCTestCase {
                     limit: 5
                 )
             )
-            queryTimings.append("search=\(ContinuousClock.now - queryStartedAt)")
+            let searchElapsed = ContinuousClock.now - queryStartedAt
+            queryTimings.append("search=\(searchElapsed)")
             XCTAssertEqual(searchPage.items.map(\.assetID), [CatalogQueryTestSupport.scaleAssetID(searchIndex)])
+            if assetCount == 1_000_000 {
+                XCTAssertLessThan(searchElapsed, .seconds(2))
+            }
 
             let elapsed = ContinuousClock.now - startedAt
             let threshold: Duration = assetCount == 10_000 ? .seconds(1) : .seconds(5)

@@ -11,6 +11,7 @@ struct CatalogDatabase: Sendable {
         V003AddDerivedImageCacheMigration.register(on: &migrator)
         V004AddPersonalizationMigration.register(on: &migrator)
         V005AddCatalogScaleIndexesMigration.register(on: &migrator)
+        V006AddAssetTextSearchMigration.register(on: &migrator)
         return migrator
     }
 
@@ -397,4 +398,55 @@ enum V005AddCatalogScaleIndexesMigration {
         ) WHERE locator_state = 'current'
         """,
     ]
+}
+
+enum V006AddAssetTextSearchMigration {
+    static func register(on migrator: inout DatabaseMigrator) {
+        migrator.registerMigration(CatalogMigrationID.v006AddAssetTextSearch) { db in
+            try db.execute(
+                sql: """
+                CREATE VIRTUAL TABLE asset_search USING fts5(
+                    file_name,
+                    relative_path,
+                    content = 'asset',
+                    content_rowid = 'rowid',
+                    tokenize = 'trigram'
+                )
+                """
+            )
+            try db.execute(
+                sql: """
+                CREATE TRIGGER asset_search_after_insert
+                AFTER INSERT ON asset
+                BEGIN
+                    INSERT INTO asset_search(rowid, file_name, relative_path)
+                    VALUES (new.rowid, new.file_name, new.relative_path);
+                END
+                """
+            )
+            try db.execute(
+                sql: """
+                CREATE TRIGGER asset_search_after_delete
+                AFTER DELETE ON asset
+                BEGIN
+                    INSERT INTO asset_search(asset_search, rowid, file_name, relative_path)
+                    VALUES ('delete', old.rowid, old.file_name, old.relative_path);
+                END
+                """
+            )
+            try db.execute(
+                sql: """
+                CREATE TRIGGER asset_search_after_update
+                AFTER UPDATE OF file_name, relative_path ON asset
+                BEGIN
+                    INSERT INTO asset_search(asset_search, rowid, file_name, relative_path)
+                    VALUES ('delete', old.rowid, old.file_name, old.relative_path);
+                    INSERT INTO asset_search(rowid, file_name, relative_path)
+                    VALUES (new.rowid, new.file_name, new.relative_path);
+                END
+                """
+            )
+            try db.execute(sql: "INSERT INTO asset_search(asset_search) VALUES ('rebuild')")
+        }
+    }
 }

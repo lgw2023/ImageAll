@@ -32,6 +32,11 @@ enum CatalogQuerySQLHelpers {
         return result
     }
 
+    static func trigramLiteralPhrase(_ text: String) -> String? {
+        guard text.unicodeScalars.count >= 3 else { return nil }
+        return "\"\(text.replacingOccurrences(of: "\"", with: "\"\""))\""
+    }
+
     static func lowercaseUUID(_ id: UUID) -> String {
         id.uuidString.lowercased()
     }
