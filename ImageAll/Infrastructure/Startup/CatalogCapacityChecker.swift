@@ -10,9 +10,9 @@ struct CatalogCapacityRequirement {
 
     static func requiredAdditionalBytes(sourceFootprint: UInt64) -> UInt64? {
         let scaledFootprint = max(sourceFootprint, minimumFootprintBytes)
-        let doubled = scaledFootprint.multipliedReportingOverflow(by: 2)
-        guard !doubled.overflow else { return nil }
-        let total = doubled.partialValue.addingReportingOverflow(minimumMarginBytes)
+        let tripled = scaledFootprint.multipliedReportingOverflow(by: 3)
+        guard !tripled.overflow else { return nil }
+        let total = tripled.partialValue.addingReportingOverflow(minimumMarginBytes)
         guard !total.overflow else { return nil }
         return total.partialValue
     }

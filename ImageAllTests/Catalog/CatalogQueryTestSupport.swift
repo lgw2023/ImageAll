@@ -6,6 +6,7 @@ import XCTest
 enum CatalogQueryTestSupport {
     enum ScaleFixtureError: Error, Equatable {
         case unsupportedExportAssetCount(String)
+        case unsupportedMigrationAssetCount(String)
     }
 
     struct FixtureIDs: Sendable {
@@ -60,9 +61,22 @@ enum CatalogQueryTestSupport {
         folderSourceID: UUID,
         acceptedTagID: UUID
     ) {
+        let database = try CatalogDatabase.open(at: url)
+        let ids = try seedScaleCatalog(database: database, assetCount: assetCount)
+        return (
+            database,
+            GRDBAssetCatalogQueryRepository(database: database),
+            ids.folderSourceID,
+            ids.acceptedTagID
+        )
+    }
+
+    static func seedScaleCatalog(
+        database: CatalogDatabase,
+        assetCount: Int
+    ) throws -> (folderSourceID: UUID, acceptedTagID: UUID) {
         let folderSourceID = UUID(uuidString: "30000000-0000-4000-8000-100000000001")!
         let acceptedTagID = UUID(uuidString: "30000000-0000-4000-8000-200000000001")!
-        let database = try CatalogDatabase.open(at: url)
         try database.pool.write { db in
             try db.execute(
                 sql: """
@@ -139,12 +153,7 @@ enum CatalogQueryTestSupport {
                 arguments: [acceptedTagID.uuidString.lowercased()]
             )
         }
-        return (
-            database,
-            GRDBAssetCatalogQueryRepository(database: database),
-            folderSourceID,
-            acceptedTagID
-        )
+        return (folderSourceID, acceptedTagID)
     }
 
     static func scaleAssetID(_ index: Int) -> UUID {
@@ -164,6 +173,18 @@ enum CatalogQueryTestSupport {
             return 1_000_000
         default:
             throw ScaleFixtureError.unsupportedExportAssetCount(value)
+        }
+    }
+
+    static func scaleMigrationAssetCount(environmentValue: String?) throws -> Int {
+        let value = environmentValue ?? "10000"
+        switch value {
+        case "10000":
+            return 10_000
+        case "1000000":
+            return 1_000_000
+        default:
+            throw ScaleFixtureError.unsupportedMigrationAssetCount(value)
         }
     }
 

@@ -129,6 +129,189 @@ final class CatalogMigrationTests: XCTestCase {
         XCTAssertEqual(matchedIDs, [assetID.uuidString.lowercased()])
     }
 
+    func testScaleMigrationConfigurationAcceptsOnlySmokeAndMillionCounts() throws {
+        XCTAssertEqual(try CatalogQueryTestSupport.scaleMigrationAssetCount(environmentValue: nil), 10_000)
+        XCTAssertEqual(try CatalogQueryTestSupport.scaleMigrationAssetCount(environmentValue: "10000"), 10_000)
+        XCTAssertEqual(try CatalogQueryTestSupport.scaleMigrationAssetCount(environmentValue: "1000000"), 1_000_000)
+        XCTAssertThrowsError(
+            try CatalogQueryTestSupport.scaleMigrationAssetCount(environmentValue: "100000")
+        ) { error in
+            XCTAssertEqual(
+                error as? CatalogQueryTestSupport.ScaleFixtureError,
+                .unsupportedMigrationAssetCount("100000")
+            )
+        }
+    }
+
+    func testConfiguredV005ToV006StartupMigrationCalibratesCapacityEnvelope() throws {
+        let environment = ProcessInfo.processInfo.environment
+        #if IMAGEALL_MIGRATION_MILLION
+        let configuredAssetCount = "1000000"
+        #else
+        let configuredAssetCount = environment["IMAGEALL_SYNTHETIC_MIGRATION_ASSET_COUNT"]
+        #endif
+        let assetCount = try CatalogQueryTestSupport.scaleMigrationAssetCount(
+            environmentValue: configuredAssetCount
+        )
+        let parentURL = environment["IMAGEALL_SYNTHETIC_MIGRATION_ROOT"]
+            .map { URL(fileURLWithPath: $0, isDirectory: true) }
+            ?? FileManager.default.temporaryDirectory
+        let resolvedParentPath = parentURL.standardizedFileURL.resolvingSymlinksInPath().path
+        let forbiddenRoots = [
+            "/Volumes/HDD2",
+            "/Volumes/SSD1/ImageAll/user",
+        ]
+        guard !forbiddenRoots.contains(where: {
+            resolvedParentPath == $0 || resolvedParentPath.hasPrefix($0 + "/")
+        }) else {
+            return XCTFail("Migration calibration root is protected: \(resolvedParentPath)")
+        }
+
+        let root = parentURL.appendingPathComponent(
+            "ImageAll-MigrationCalibration-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+
+        let pathsResolver = StartupTestSupport.makePathsResolver(root: root)
+        let paths = try pathsResolver.resolve()
+        try pathsResolver.ensureRequiredDirectories(for: paths)
+
+        var configuration = Configuration()
+        configuration.prepareDatabase { db in
+            try db.execute(sql: "PRAGMA foreign_keys = ON")
+        }
+        let pool = try DatabasePool(path: paths.catalogDatabaseURL.path, configuration: configuration)
+        try DatabaseTestSupport.makeV005OnlyMigrator().migrate(pool)
+        let v005Database = CatalogDatabase(pool: pool)
+        _ = try CatalogQueryTestSupport.seedScaleCatalog(database: v005Database, assetCount: assetCount)
+
+        try pool.read { db in
+            XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM asset"), assetCount)
+            XCTAssertEqual(
+                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM asset_tag_decision"),
+                CatalogQueryTestSupport.scaleDecisionCount(assetCount: assetCount)
+            )
+            XCTAssertEqual(
+                try CatalogDatabase.readAppliedMigrationIDs(from: db),
+                Array(CatalogMigrationID.knownOrdered.dropLast())
+            )
+            try CatalogDatabase.performQuickCheck(on: db)
+        }
+        try v005Database.checkpointAndCloseForReplacement()
+
+        let capacityChecker = CatalogCapacityChecker()
+        let sourceFootprint = try capacityChecker.databaseFootprintBytes(at: paths.catalogDatabaseURL)
+        let baselineUsage = CatalogMigrationFootprintMonitor.measureUsage(at: root)
+        let requiredAdditional = try XCTUnwrap(
+            CatalogCapacityRequirement.requiredAdditionalBytes(sourceFootprint: sourceFootprint)
+        )
+        let initialAvailable = try FoundationCatalogCapacityProvider().availableBytes(for: root)
+        let initialFileSystemFree = CatalogMigrationFootprintMonitor.fileSystemFreeBytes(at: root)
+        let operationID = UUID(uuidString: "40000000-0000-4000-8000-000000000001")!
+        let monitor = CatalogMigrationFootprintMonitor(rootURL: root)
+        monitor.start()
+
+        let startedAt = ContinuousClock.now
+        let result = CatalogBootstrapCoordinator(
+            dependencies: StartupTestSupport.makeDependencies(
+                root: root,
+                capacityProvider: FixedCapacityProvider(bytes: .max),
+                operationID: operationID
+            )
+        ).bootstrap()
+        let elapsed = ContinuousClock.now - startedAt
+        let peak = monitor.stop()
+
+        guard case let .ready(token) = result else {
+            return XCTFail("Expected ready after v005 to v006 migration, got \(result)")
+        }
+        defer { try? token.close() }
+
+        let finalDatabase = token.runtime.database
+        try finalDatabase.validateQuickCheck()
+        XCTAssertEqual(try finalDatabase.appliedMigrationIDs(), CatalogMigrationID.knownOrdered)
+        let representativeIndex = assetCount - 2
+        try finalDatabase.pool.read { db in
+            XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM asset"), assetCount)
+            XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM source"), 2)
+            XCTAssertEqual(
+                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM asset_tag_decision"),
+                CatalogQueryTestSupport.scaleDecisionCount(assetCount: assetCount)
+            )
+            XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM asset_search"), assetCount)
+            XCTAssertEqual(
+                try String.fetchAll(
+                    db,
+                    sql: """
+                    SELECT asset.id
+                    FROM asset_search
+                    INNER JOIN asset ON asset.rowid = asset_search.rowid
+                    WHERE asset_search MATCH ?
+                    """,
+                    arguments: ["\"\(CatalogQueryTestSupport.scaleSearchText(index: representativeIndex))\""]
+                ),
+                [CatalogQueryTestSupport.scaleAssetID(representativeIndex).uuidString.lowercased()]
+            )
+        }
+
+        let backupURL = paths.catalogDirectory.appendingPathComponent(
+            "ImageAll.sqlite.pre-restore-\(operationID.uuidString.lowercased())"
+        )
+        XCTAssertEqual(
+            try SnapshotTestSupport.readMigrationIDs(at: backupURL),
+            Array(CatalogMigrationID.knownOrdered.dropLast())
+        )
+        let backupAssetCount = try CatalogDatabase.withReadonlyQueue(at: backupURL) { db in
+            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM asset") ?? 0
+        }
+        XCTAssertEqual(backupAssetCount, assetCount)
+
+        let peakAdditionalLogical = peak.logicalBytes > baselineUsage.logicalBytes
+            ? peak.logicalBytes - baselineUsage.logicalBytes
+            : 0
+        XCTAssertGreaterThan(peak.sampleCount, 0)
+        XCTAssertGreaterThanOrEqual(requiredAdditional, peakAdditionalLogical)
+
+        let finalFootprint = try capacityChecker.databaseFootprintBytes(at: paths.catalogDatabaseURL)
+        let availableDrop: UInt64?
+        if let initialAvailable, let minimumAvailable = peak.minimumAvailableBytes,
+           initialAvailable >= minimumAvailable {
+            availableDrop = initialAvailable - minimumAvailable
+        } else {
+            availableDrop = nil
+        }
+        let fileSystemFreeDrop: UInt64?
+        if let initialFileSystemFree, let minimumFileSystemFree = peak.minimumFileSystemFreeBytes,
+           initialFileSystemFree >= minimumFileSystemFree {
+            fileSystemFreeDrop = initialFileSystemFree - minimumFileSystemFree
+        } else {
+            fileSystemFreeDrop = nil
+        }
+        let legacyRequirement = sourceFootprint * 2 + CatalogCapacityRequirement.minimumMarginBytes
+        let attachment = XCTAttachment(
+            string: [
+                "assets=\(assetCount)",
+                "migration_elapsed=\(elapsed)",
+                "v005_source_bytes=\(sourceFootprint)",
+                "v006_live_bytes=\(finalFootprint)",
+                "baseline_logical_bytes=\(baselineUsage.logicalBytes)",
+                "peak_logical_bytes=\(peak.logicalBytes)",
+                "peak_additional_logical_bytes=\(peakAdditionalLogical)",
+                "peak_allocated_bytes=\(peak.allocatedBytes)",
+                "available_capacity_drop_bytes=\(availableDrop.map(String.init) ?? "unavailable")",
+                "file_system_free_drop_bytes=\(fileSystemFreeDrop.map(String.init) ?? "unavailable")",
+                "legacy_required_additional_bytes=\(legacyRequirement)",
+                "required_additional_bytes=\(requiredAdditional)",
+                "samples=\(peak.sampleCount)",
+            ].joined(separator: "\n")
+        )
+        attachment.name = "ImageAll \(assetCount) v005-to-v006 migration calibration"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+
     func testUnknownFutureMigrationIsRejected() throws {
         let url = try makeTempDatabaseURL()
         var config = Configuration()
@@ -210,4 +393,119 @@ final class CatalogMigrationTests: XCTestCase {
 
 private enum TestMigrationFailure: Error {
     case intentional
+}
+
+private final class CatalogMigrationFootprintMonitor: @unchecked Sendable {
+    struct Usage {
+        var logicalBytes: UInt64
+        var allocatedBytes: UInt64
+    }
+
+    struct Result {
+        var logicalBytes: UInt64
+        var allocatedBytes: UInt64
+        var minimumAvailableBytes: UInt64?
+        var minimumFileSystemFreeBytes: UInt64?
+        var sampleCount: Int
+    }
+
+    private let rootURL: URL
+    private let lock = NSLock()
+    private let group = DispatchGroup()
+    private var shouldStop = false
+    private var result = Result(
+        logicalBytes: 0,
+        allocatedBytes: 0,
+        minimumAvailableBytes: nil,
+        minimumFileSystemFreeBytes: nil,
+        sampleCount: 0
+    )
+
+    init(rootURL: URL) {
+        self.rootURL = rootURL
+    }
+
+    func start() {
+        group.enter()
+        DispatchQueue.global(qos: .utility).async { [self] in
+            defer { group.leave() }
+            while true {
+                recordSample()
+                lock.lock()
+                let stop = shouldStop
+                lock.unlock()
+                if stop { return }
+                Thread.sleep(forTimeInterval: 0.01)
+            }
+        }
+    }
+
+    func stop() -> Result {
+        lock.lock()
+        shouldStop = true
+        lock.unlock()
+        group.wait()
+        lock.lock()
+        defer { lock.unlock() }
+        return result
+    }
+
+    static func measureUsage(at rootURL: URL) -> Usage {
+        let keys: [URLResourceKey] = [
+            .isRegularFileKey,
+            .fileSizeKey,
+            .totalFileAllocatedSizeKey,
+        ]
+        guard let enumerator = FileManager.default.enumerator(
+            at: rootURL,
+            includingPropertiesForKeys: keys
+        ) else {
+            return Usage(logicalBytes: 0, allocatedBytes: 0)
+        }
+
+        var usage = Usage(logicalBytes: 0, allocatedBytes: 0)
+        for case let url as URL in enumerator {
+            guard let values = try? url.resourceValues(forKeys: Set(keys)),
+                  values.isRegularFile == true else {
+                continue
+            }
+            usage.logicalBytes += UInt64(max(values.fileSize ?? 0, 0))
+            usage.allocatedBytes += UInt64(max(values.totalFileAllocatedSize ?? 0, 0))
+        }
+        return usage
+    }
+
+    static func fileSystemFreeBytes(at url: URL) -> UInt64? {
+        guard let attributes = try? FileManager.default.attributesOfFileSystem(forPath: url.path),
+              let bytes = attributes[.systemFreeSize] as? NSNumber else {
+            return nil
+        }
+        return bytes.uint64Value
+    }
+
+    private func recordSample() {
+        let usage = Self.measureUsage(at: rootURL)
+        let available: UInt64?
+        do {
+            available = try FoundationCatalogCapacityProvider().availableBytes(for: rootURL)
+        } catch {
+            available = nil
+        }
+        let fileSystemFree = Self.fileSystemFreeBytes(at: rootURL)
+
+        lock.lock()
+        defer { lock.unlock() }
+        result.logicalBytes = max(result.logicalBytes, usage.logicalBytes)
+        result.allocatedBytes = max(result.allocatedBytes, usage.allocatedBytes)
+        if let available {
+            result.minimumAvailableBytes = min(result.minimumAvailableBytes ?? available, available)
+        }
+        if let fileSystemFree {
+            result.minimumFileSystemFreeBytes = min(
+                result.minimumFileSystemFreeBytes ?? fileSystemFree,
+                fileSystemFree
+            )
+        }
+        result.sampleCount += 1
+    }
 }

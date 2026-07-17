@@ -5,17 +5,17 @@ final class CatalogCapacityRequirementTests: XCTestCase {
     private let oneMiB: UInt64 = 1024 * 1024
     private let margin: UInt64 = 64 * 1024 * 1024
 
-    func testFootprintZeroUsesOneMiBMinimumBeforeDoubling() {
+    func testFootprintZeroUsesOneMiBMinimumBeforeTripling() {
         XCTAssertEqual(
             CatalogCapacityRequirement.requiredAdditionalBytes(sourceFootprint: 0),
-            2 * oneMiB + margin
+            3 * oneMiB + margin
         )
     }
 
     func testFootprintExactlyOneMiB() {
         XCTAssertEqual(
             CatalogCapacityRequirement.requiredAdditionalBytes(sourceFootprint: oneMiB),
-            2 * oneMiB + margin
+            3 * oneMiB + margin
         )
     }
 
@@ -23,7 +23,7 @@ final class CatalogCapacityRequirementTests: XCTestCase {
         let footprint: UInt64 = oneMiB + 512
         XCTAssertEqual(
             CatalogCapacityRequirement.requiredAdditionalBytes(sourceFootprint: footprint),
-            2 * footprint + margin
+            3 * footprint + margin
         )
     }
 
