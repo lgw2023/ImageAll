@@ -1140,8 +1140,12 @@ extension LibraryWorkspaceModel {
         )
     }
 
-    func confirmPendingSuggestionEnqueue() async -> Bool {
-        guard let pending = pendingSuggestionConfirmation else { return false }
+    func confirmPendingSuggestionEnqueue(
+        _ capturedConfirmation: SuggestionEnqueueConfirmation? = nil
+    ) async -> Bool {
+        guard let pending = capturedConfirmation ?? pendingSuggestionConfirmation else {
+            return false
+        }
         pendingSuggestionConfirmation = nil
         let reviewPort = review
         do {
@@ -1425,8 +1429,10 @@ struct LibraryWorkspaceView: View {
             ),
             titleVisibility: .visible
         ) {
-            Button("开始") {
-                Task { _ = await model.confirmPendingSuggestionEnqueue() }
+            if let pending = model.pendingSuggestionConfirmation {
+                Button("开始") {
+                    Task { _ = await model.confirmPendingSuggestionEnqueue(pending) }
+                }
             }
             Button("取消", role: .cancel) {
                 model.cancelPendingSuggestionEnqueue()
@@ -2574,9 +2580,9 @@ struct LibraryWorkspaceView: View {
     private func suggestionConfirmationMessage(_ pending: SuggestionEnqueueConfirmation) -> String {
         switch pending.mode {
         case .generate:
-            return "将检查 \(pending.sourceCount) 个 active 文件夹来源中已入库的照片，并生成待审核建议。"
+            return "将检查 \(pending.sourceCount) 个 active 来源中已入库的照片，并生成待审核建议。"
         case .update:
-            return "将检查 \(pending.sourceCount) 个 active 文件夹来源中已入库的照片。未审核建议会在第一批新结果成功后刷新；人工标签不会改变。"
+            return "将检查 \(pending.sourceCount) 个 active 来源中已入库的照片。未审核建议会在第一批新结果成功后刷新；人工标签不会改变。"
         }
     }
 

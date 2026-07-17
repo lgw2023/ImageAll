@@ -1207,6 +1207,37 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertEqual(review.enqueueCallCount, 1)
     }
 
+    func testConfirmSuggestionEnqueueUsesCapturedConfirmationAfterDialogDismissal() async throws {
+        let review = FakePersonalizationReviewPort()
+        let sourceID = UUID()
+        let model = LibraryWorkspaceModel(
+            service: FakeLibraryWorkspaceService(
+                connectedSource: LibrarySourceSummary(
+                    id: sourceID,
+                    displayName: "Fixture",
+                    state: .active
+                ),
+                reconciledItems: []
+            ),
+            review: review
+        )
+        let tagID = UUID()
+
+        model.requestEnqueueSuggestions(
+            tagID: tagID,
+            displayName: "Family",
+            mode: .generate,
+            sourceCount: 1
+        )
+        let captured = try XCTUnwrap(model.pendingSuggestionConfirmation)
+        model.cancelPendingSuggestionEnqueue()
+
+        let confirmed = await model.confirmPendingSuggestionEnqueue(captured)
+
+        XCTAssertTrue(confirmed)
+        XCTAssertEqual(review.enqueueCallCount, 1)
+    }
+
     private func waitForCatalogScanToFinish(_ model: LibraryWorkspaceModel) async {
         for _ in 0 ..< 10_000 {
             if !model.isCatalogScanning { return }
