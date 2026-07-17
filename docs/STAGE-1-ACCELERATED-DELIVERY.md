@@ -217,10 +217,13 @@ W 不新增卷重新挂载自动探测；root 丢失后仍遵循既有 `unavaila
 
 可复现验证使用 `ImageAll.xcodeproj` / `ImageAll` scheme、Debug、`platform=macOS,arch=arm64`、独立 DerivedData 和固定 package checkout：unsigned 全量运行 `xcodebuild ... test -skip-testing:ImageAllTests/FolderAuthorizationEntitlementPanelTests/testProductionEntitlementsContainApprovedSandboxCapabilities CODE_SIGNING_ALLOWED=NO`；签名门单独运行 `xcodebuild ... test -only-testing:ImageAllTests/FolderAuthorizationEntitlementPanelTests/testProductionEntitlementsContainApprovedSandboxCapabilities`；独立 bundle 运行 `xcodebuild ... PRODUCT_BUNDLE_IDENTIFIER=com.gwlee.ImageAll.Stage1W.20260717 build` 后执行 `codesign --verify --deep --strict <ImageAll.app>`。结果包过期后仍可用相同 project、scheme、destination、bundle ID 和测试选择重跑。
 
-Stage 2-D / `2912022`、Stage 2-E / `3431439` 与 Stage 2-F / `9d7a2c2` 已依次完成 PhotoKit 自动刷新、
-local-only 网格缩略图持久缓存，以及 System Photo Library unavailable 时的 fail-closed。下一推荐切片为
-Stage 2-G：显式、用户确认的 Photos 重绑定体验。由于本次公开 API 核对未发现稳定图库身份，实施前必须先选择 Source
-语义；推荐保留旧 unavailable Source/Asset 作为历史事实，并新建一个 active Photos Source，同时把当前
-“最多一个 Photos Source”收窄为“最多一个 active Photos Source”。不推荐在原 Source 上直接复用新图库的
-local identifier，因为这会把两个无法证明相同的图库静默混合。验收必须证明旧标签/决定不丢失、新旧
-local identifier 不碰撞、普通连接不绕过确认，且仍只使用 fake availability seam 与合成数据库。
+Stage 2-D / `2912022`、Stage 2-E / `3431439`、Stage 2-F / `9d7a2c2` 与 Stage 2-G / `dabb86e` 已依次完成
+PhotoKit 自动刷新、local-only 网格缩略图持久缓存、System Photo Library unavailable 时的 fail-closed，
+以及项目所有者批准的保守重绑定：旧 unavailable Source/Asset 作为历史事实保留，为当前系统图库新建 active
+Source，且最多一个 active Photos Source。普通连接、授权等待竞态与图片加载都不能绕过该隔离；旧标签、决定
+和缓存不迁移、不合并、不删除。
+
+下一推荐切片转入 Stage 4-W：恢复百万资产搜索的性能余量。当前同一 5 秒门在隔离复跑为 4.929 秒，但在全量
+并发环境为 10.625 秒；其中线性 search 单项占 4.858 秒。该切片只优化现有文件名、相对路径、来源名和标签名的
+字面子串语义，不改变结果、排序、分页或阈值，不引入真实照片 I/O。验收要求百万档六项在隔离与全量套件中均
+低于 5 秒，搜索特殊字符与 SQL 注入回归保持通过，相关 Catalog/Workspace 回归和签名 Debug build 通过。
