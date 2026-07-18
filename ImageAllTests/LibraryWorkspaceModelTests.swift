@@ -2024,6 +2024,50 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertEqual(model.singlePhotoNavigation?.fileName, "item-3.jpg")
     }
 
+    func testReviewDecisionOnLastQueueItemReturnsFromSinglePhoto() async {
+        let sourceID = UUID()
+        let tag = TagListItem(id: UUID(), displayName: "Family", state: .active)
+        let asset = Self.makeAsset(sourceID: sourceID, fileName: "last.jpg")
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: sourceID,
+                displayName: "Fixture",
+                state: .active
+            ),
+            reconciledItems: [asset],
+            tags: [tag]
+        )
+        let review = FakePersonalizationReviewPort(
+            queueItems: [
+                ReviewQueueItemProjection(
+                    assetID: asset.assetID,
+                    fileName: asset.fileName,
+                    availability: asset.availability,
+                    acceptedTagCount: 0,
+                    rejectedTagCount: 0
+                ),
+            ]
+        )
+        review.decidedAssetIDsProvider = { [weak service] tagID in
+            service?.decidedAssetIDs(tagID: tagID) ?? []
+        }
+        let model = LibraryWorkspaceModel(service: service, review: review)
+
+        await model.start()
+        await model.connectFolder()
+        await waitForCatalogScanToFinish(model)
+        await model.enterReviewQueue(tagID: tag.id, displayName: tag.displayName)
+        await model.openSinglePhotoView(assetID: asset.assetID)
+
+        await model.applyReviewDecision(action: .accept)
+
+        XCTAssertTrue(model.reviewQueueItems.isEmpty)
+        XCTAssertTrue(model.selectedAssetIDs.isEmpty)
+        XCTAssertNil(model.inspectorDetail)
+        XCTAssertFalse(model.isSinglePhotoPresented)
+        XCTAssertNil(model.singlePhotoNavigation)
+    }
+
     func testInspectorClearsSuggestionsWhenMultiSelect() async {
         let sourceID = UUID()
         let first = Self.makeAsset(sourceID: sourceID, fileName: "first.jpg")

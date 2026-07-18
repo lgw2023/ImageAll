@@ -1704,6 +1704,7 @@ extension LibraryWorkspaceModel {
                 selectedAssetIDs = [next]
             } else {
                 selectedAssetIDs = []
+                isSinglePhotoPresented = false
             }
             await refreshReviewState()
             await refreshInspector()
