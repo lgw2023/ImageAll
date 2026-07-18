@@ -9,6 +9,7 @@
 - 仅监听 loopback 的 FastAPI/uvicorn 服务；
 - 合成 embedding 上可使用 MPS 的线性多标签 head 训练与可复核 bundle；
 - 可由启动命令装载的标准 package 与 catalog-scoped personal bundle；
+- personal bundle 的只读 capability 握手与完整身份 fail-closed 推理；
 - fake provider、输入边界、训练重载和真实 DINOv2 smoke 测试。
 
 ## 安装
@@ -94,6 +95,17 @@ uv run imageall-model-backend \
 完全一致；缺少 provider 或身份不匹配时
 服务在监听端口前停止。标准 fixture 只验证 package、mapping、policy 与 HTTP 契约，不代表生产模型准确率。
 
+App 在请求个人建议前先读取当前服务能力：
+
+```bash
+curl http://127.0.0.1:8765/v1/capabilities
+```
+
+未加载个人 bundle 时 `personal.status` 为 `unavailable`。加载后响应只公开 catalog scope、bundle、
+encoder、标签 UUID 词表 revision、权重 SHA-256、policy revision 和 bundle 内已有的 `tag_ids`；不公开
+标签名称、训练样本或权重内容。personal `/v1/suggestions` 必须原样带回这份完整身份，任一字段缺失或
+不匹配都返回 `409 personal_bundle_mismatch`，且不会回退 standard。
+
 CLI 不提供 host 参数，服务固定绑定 `127.0.0.1`。接口契约见
 [`docs/LOCAL-MODEL-MODULE-SPEC.md`](../docs/LOCAL-MODEL-MODULE-SPEC.md)。
 
@@ -119,6 +131,8 @@ uv run pytest -q
 uv build
 ```
 
-仓库已有 Swift loopback client 与显式单图 standard 预览，但仍没有个人 bundle App 接线、数据库持久化、
-模型自动安装、生产标准模型、SigLIP2 或 Ollama adapter；Core ML 的 Xcode compute plan、实际 ANE、
-内存与热量仍由独立后续切片验收。
+仓库已有 Swift loopback client、显式单图 standard 预览，以及 personal capability → 当前 catalog →
+既有个人标签 UUID → 用户明确接受/拒绝的 Inspector 闭环。个人建议本身仍是临时状态；只有用户点击
+接受或拒绝后才复用既有人工标签事务。版本化训练快照导出、bundle 生命周期/自动重训、模型自动安装、
+生产标准模型、SigLIP2 或 Ollama adapter 尚未实现；Core ML 的 Xcode compute plan、实际 ANE、内存与
+热量仍由独立后续切片验收。
