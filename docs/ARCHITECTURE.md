@@ -786,7 +786,9 @@ System Photo Library 实际切换/显式重绑定、真实摄影格式/内容分
 
 ### 阶段 5：可选本地模型模块
 
-状态：First tracer slice approved。该阶段把 Hugging Face 视觉 encoder、线性多标签训练、
+状态：First tracer slice implemented。独立 loopback 服务、固定 revision 的 DINOv2-small、MPS
+线性多标签 head、锁定依赖、真实模型 HTTP smoke 与无模块 App build 已由 `058a161` 交付。
+该阶段把 Hugging Face 视觉 encoder、线性多标签训练、
 Core ML 部署与可选 Ollama VLM 适配器放入独立模块；模块未安装或不可用时，App 原有浏览、
 人工标签、标签预设和 Vision Feature Print 建议闭环必须完整运行。首个 encoder 固定为
 `facebook/dinov2-small` 的明确 revision；SigLIP2、FastViT、DINOv3 和 Ollama 均按独立切片
@@ -823,7 +825,7 @@ optional client 和真实照片只读 smoke 均为后续独立验收门。
 | ADR-020 | 当前 v005→v006 启动迁移预检要求 `3 × max(source footprint, 1 MiB) + 64 MiB` | 已决定 | 百万合成迁移观测到旧双份公式比逻辑峰值少 32,531,023 字节；三份公式覆盖 source、工作副本索引增长和保留旧库，并继续以同卷原子替换与失败回滚保护事实 |
 | ADR-021 | 常用标签预设只幂等创建普通 Tag | 已决定 | 预设用于降低起步成本，不代表已识别相册内容；不得自动产生人工决定、prediction 或分析任务，安装后可重命名、归档 |
 | ADR-022 | 后续 Hugging Face 模型通过可替换本地推理边界接入 | 已决定方向，具体模型待评估 | 当前轻量算法只承担可运行基线；目录库和审核闭环不绑定模型仓库或 runtime，模型替换只失效派生数据并保留人工事实 |
-| ADR-023 | Hugging Face 模型先进入独立 loopback 模块，训练用 PyTorch/MPS，App 部署主线用 Core ML，Ollama 仅作可选 VLM adapter | 首个 tracer slice 已批准 | DINO/SigLIP/FastViT 并非 Ollama 原生训练对象；隔离 runtime 可保持 App 无模块运行，并让每个 provider、权重和预处理 revision 独立失效与评测 |
+| ADR-023 | Hugging Face 模型先进入独立 loopback 模块，训练用 PyTorch/MPS，App 部署主线用 Core ML，Ollama 仅作可选 VLM adapter | 首个 tracer slice 已实施 | DINO/SigLIP/FastViT 并非 Ollama 原生训练对象；隔离 runtime 可保持 App 无模块运行，并让每个 provider、权重和预处理 revision 独立失效与评测 |
 
 ## 20. 尚待确认的问题
 

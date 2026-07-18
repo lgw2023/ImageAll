@@ -1,6 +1,6 @@
 # ImageAll 可选本地模型模块实施规格
 
-> 状态：Approved for first tracer slice  
+> 状态：First tracer slice implemented
 > 日期：2026-07-18  
 > 开工基线：`main@14c3890b8c83c87a6f603c8900dfaabb3179ea6c`  
 > 范围：独立模型训练、部署与推理模块；本切片不接线 Xcode 工程或生产目录库
@@ -150,3 +150,26 @@ Core ML 转换、SigLIP2 下载、Ollama 模型下载、生产数据库接线和
 - 不在本切片修改已有 migration、entitlement、privacy manifest 或 Xcode 工程；
 - 不 push、不 amend、不清理或提交现有命令面板、App 图标、`design/`、`scripts/`、
   `Assets.xcassets/`、`user/` 等来源不明改动。
+
+## 8. 实施与验收记录
+
+| 交付 | Commit | 结果 |
+|---|---|---|
+| 架构、契约与阶段重排 | `31e256a` | 冻结独立模块、provider/version、HTTP、训练 bundle 与安全边界 |
+| 首个实现切片 | `058a161` | loopback 服务、DINOv2-small、MPS 线性 head、锁定依赖与 12 项测试 |
+
+2026-07-18 验收：
+
+- `uv sync --extra test` 在 `ModelBackend/.venv` 解析并安装锁定依赖，不修改全局 Python；
+- `HF_HOME=/tmp/ImageAll-ModelBackend-HF IMAGEALL_RUN_MODEL_SMOKE=1 uv run pytest -q`：
+  12 passed；测试仅使用程序生成 PNG 和合成 embedding；
+- 独立 uvicorn 进程实际绑定 `127.0.0.1:18766`，HTTP 请求返回固定 DINOv2 revision、
+  384 个有限 `float32` 元素，随后正常关闭；
+- `uv build` 成功生成 sdist 和 wheel；
+- 从 `058a161` 导出的干净快照在不启动、不导入、不安装 `ModelBackend` 的情况下完成 unsigned
+  arm64 Debug App build，结果为 `BUILD SUCCEEDED`；这证明当前 App 编译链不依赖模型模块；
+- 工作区既有命令面板、App 图标、`design/`、`scripts/`、`Assets.xcassets/` 与 `user/`
+  未进入上述两个提交；未访问 `/Volumes/HDD2` 或任何 `.photoslibrary`，未 push。
+
+pytest 当前报告一条来自 FastAPI/Starlette `TestClient` 与未来 `httpx2` 迁移相关的弃用 warning；
+它不影响本切片行为或构建，依赖升级时需单独消除，不能据此宣称未来版本兼容。
