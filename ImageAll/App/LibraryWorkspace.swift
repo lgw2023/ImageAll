@@ -37,6 +37,31 @@ enum LibraryGridDensity: String, CaseIterable, Sendable {
     }
 }
 
+enum LibraryWorkspaceCommand: Hashable {
+    case showAllPhotos
+    case showReviewSuggestions
+    case showActivity
+    case showSource(UUID)
+    case showTag(UUID)
+    case acceptTag(UUID)
+    case rejectTag(UUID)
+    case clearTagDecision(UUID)
+    case createTag
+    case connectFolder
+    case rescanCurrentSource
+    case toggleSinglePhoto
+    case showKeyboardShortcuts
+}
+
+struct LibraryWorkspaceCommandItem: Identifiable, Equatable {
+    let command: LibraryWorkspaceCommand
+    let title: String
+    let systemImage: String
+    let isEnabled: Bool
+
+    var id: LibraryWorkspaceCommand { command }
+}
+
 @MainActor
 final class LibraryWorkspaceModel: ObservableObject {
     @Published private(set) var phase: LibraryWorkspacePhase = .loading
@@ -153,6 +178,105 @@ final class LibraryWorkspaceModel: ObservableObject {
             return sources.first(where: { $0.id == selectedSourceID })?.state == .active
         }
         return sources.contains { $0.state == .active }
+    }
+
+    func workspaceCommands(matching query: String) -> [LibraryWorkspaceCommandItem] {
+        let hasSelection = !selectedAssetIDs.isEmpty
+        var commands = [
+            LibraryWorkspaceCommandItem(
+                command: .showAllPhotos,
+                title: "前往全部照片",
+                systemImage: "photo.on.rectangle.angled",
+                isEnabled: true
+            ),
+            LibraryWorkspaceCommandItem(
+                command: .showReviewSuggestions,
+                title: "前往待审核建议",
+                systemImage: "sparkles",
+                isEnabled: true
+            ),
+            LibraryWorkspaceCommandItem(
+                command: .showActivity,
+                title: "显示活动",
+                systemImage: "clock.arrow.circlepath",
+                isEnabled: true
+            ),
+        ]
+
+        commands.append(contentsOf: sources.map { source in
+            LibraryWorkspaceCommandItem(
+                command: .showSource(source.id),
+                title: "前往来源：\(source.displayName)",
+                systemImage: source.kind == .photos ? "photo.on.rectangle" : "externaldrive",
+                isEnabled: true
+            )
+        })
+        commands.append(contentsOf: tags.map { tag in
+            LibraryWorkspaceCommandItem(
+                command: .showTag(tag.id),
+                title: "前往标签：\(tag.displayName)",
+                systemImage: "tag",
+                isEnabled: true
+            )
+        })
+        for tag in tags {
+            commands.append(contentsOf: [
+                LibraryWorkspaceCommandItem(
+                    command: .acceptTag(tag.id),
+                    title: "确认标签：\(tag.displayName)",
+                    systemImage: "checkmark.circle",
+                    isEnabled: hasSelection
+                ),
+                LibraryWorkspaceCommandItem(
+                    command: .rejectTag(tag.id),
+                    title: "拒绝标签：\(tag.displayName)",
+                    systemImage: "xmark.circle",
+                    isEnabled: hasSelection
+                ),
+                LibraryWorkspaceCommandItem(
+                    command: .clearTagDecision(tag.id),
+                    title: "清除标签决定：\(tag.displayName)",
+                    systemImage: "minus.circle",
+                    isEnabled: hasSelection
+                ),
+            ])
+        }
+        commands.append(contentsOf: [
+            LibraryWorkspaceCommandItem(
+                command: .createTag,
+                title: "新建标签",
+                systemImage: "tag.badge.plus",
+                isEnabled: hasSelection
+            ),
+            LibraryWorkspaceCommandItem(
+                command: .connectFolder,
+                title: "连接文件夹",
+                systemImage: "folder.badge.plus",
+                isEnabled: !isBusy
+            ),
+            LibraryWorkspaceCommandItem(
+                command: .rescanCurrentSource,
+                title: "重扫当前来源",
+                systemImage: "arrow.clockwise",
+                isEnabled: !isBusy && canRescan
+            ),
+            LibraryWorkspaceCommandItem(
+                command: .toggleSinglePhoto,
+                title: isSinglePhotoPresented ? "返回照片网格" : "切换单图查看",
+                systemImage: isSinglePhotoPresented ? "square.grid.2x2" : "photo",
+                isEnabled: primarySelectedAssetID != nil
+            ),
+            LibraryWorkspaceCommandItem(
+                command: .showKeyboardShortcuts,
+                title: "显示快捷键",
+                systemImage: "keyboard",
+                isEnabled: true
+            ),
+        ])
+
+        let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedQuery.isEmpty else { return commands }
+        return commands.filter { $0.title.localizedCaseInsensitiveContains(trimmedQuery) }
     }
 
     func isPhotosSource(_ sourceID: UUID) -> Bool {
@@ -1439,6 +1563,13 @@ private enum LibrarySidebarSelection: Hashable {
     case tag(UUID)
 }
 
+private enum LibraryWorkspaceSheet: String, Identifiable {
+    case commandPalette
+    case keyboardShortcuts
+
+    var id: String { rawValue }
+}
+
 private struct LibraryMediaFormatFilterOption {
     let title: String
     let mediaTypes: [String]
@@ -1469,8 +1600,11 @@ struct LibraryWorkspaceView: View {
     @State private var showPreviewCachePanel = false
     @State private var showPreviewCacheClearConfirmation = false
     @State private var showJobActivityPanel = false
+    @State private var activeSheet: LibraryWorkspaceSheet?
+    @State private var commandSearchText = ""
     @FocusState private var newTagFieldFocused: Bool
     @FocusState private var contentFocused: Bool
+    @FocusState private var commandSearchFieldFocused: Bool
 
     private var workspaceWithSourceControls: some View {
         NavigationSplitView {
@@ -1616,6 +1750,14 @@ struct LibraryWorkspaceView: View {
                 .popover(isPresented: $showPreviewCachePanel) {
                     previewCachePanel
                 }
+
+                Button {
+                    activeSheet = .commandPalette
+                } label: {
+                    Label("命令", systemImage: "command")
+                }
+                .keyboardShortcut("k", modifiers: .command)
+                .help("打开命令面板（⌘K）")
 
                 Button {
                     showJobActivityPanel = true
@@ -1891,6 +2033,14 @@ struct LibraryWorkspaceView: View {
         } message: { _ in
             Text("标签会从侧栏和编辑器隐藏，但已保存的人工确认、拒绝和历史都会保留。")
         }
+        .sheet(item: $activeSheet) { sheet in
+            switch sheet {
+            case .commandPalette:
+                commandPalette
+            case .keyboardShortcuts:
+                keyboardShortcuts
+            }
+        }
         .task { await model.start() }
         .onChange(of: selection) { _, newValue in
             Task {
@@ -1915,6 +2065,125 @@ struct LibraryWorkspaceView: View {
                     await model.showAcceptedTag(tagID)
                 }
             }
+        }
+    }
+
+    private var commandPalette: some View {
+        let commands = model.workspaceCommands(matching: commandSearchText)
+        return VStack(alignment: .leading, spacing: 12) {
+            Text("命令")
+                .font(.headline)
+            TextField("搜索命令", text: $commandSearchText)
+                .textFieldStyle(.roundedBorder)
+                .focused($commandSearchFieldFocused)
+                .onSubmit {
+                    if let command = commands.first(where: \.isEnabled) {
+                        execute(command.command)
+                    }
+                }
+
+            if commands.isEmpty {
+                ContentUnavailableView.search(text: commandSearchText)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                List(commands) { item in
+                    Button {
+                        execute(item.command)
+                    } label: {
+                        Label(item.title, systemImage: item.systemImage)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(!item.isEnabled)
+                }
+                .listStyle(.inset)
+            }
+        }
+        .padding()
+        .frame(width: 460, height: 500)
+        .accessibilityIdentifier("libraryCommandPalette")
+        .onAppear {
+            commandSearchText = ""
+            commandSearchFieldFocused = true
+        }
+        .onExitCommand {
+            activeSheet = nil
+        }
+    }
+
+    private var keyboardShortcuts: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack {
+                Text("快捷键")
+                    .font(.title2.bold())
+                Spacer()
+                Button("完成") {
+                    activeSheet = nil
+                }
+                .keyboardShortcut(.defaultAction)
+            }
+            shortcutRow("打开命令面板", keys: "⌘K")
+            shortcutRow("切换单图查看", keys: "Space")
+            shortcutRow("返回照片网格", keys: "Esc")
+            shortcutRow("移动照片选择", keys: "←  →")
+            Spacer()
+        }
+        .padding(24)
+        .frame(width: 420, height: 280)
+        .onExitCommand {
+            activeSheet = nil
+        }
+    }
+
+    private func shortcutRow(_ title: String, keys: String) -> some View {
+        HStack {
+            Text(title)
+            Spacer()
+            Text(keys)
+                .font(.body.monospaced())
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private func execute(_ command: LibraryWorkspaceCommand) {
+        if command == .showKeyboardShortcuts {
+            activeSheet = .keyboardShortcuts
+            return
+        }
+
+        activeSheet = nil
+        switch command {
+        case .showAllPhotos:
+            selection = .all
+        case .showReviewSuggestions:
+            selection = .reviewSuggestions
+        case .showActivity:
+            Task { @MainActor in
+                await Task.yield()
+                showJobActivityPanel = true
+                await model.refreshJobActivity()
+            }
+        case let .showSource(sourceID):
+            selection = .source(sourceID)
+        case let .showTag(tagID):
+            selection = .tag(tagID)
+        case let .acceptTag(tagID):
+            Task { await model.applyTagDecision(tagID: tagID, action: .accept) }
+        case let .rejectTag(tagID):
+            Task { await model.applyTagDecision(tagID: tagID, action: .reject) }
+        case let .clearTagDecision(tagID):
+            Task { await model.applyTagDecision(tagID: tagID, action: .clear) }
+        case .createTag:
+            newTagFieldFocused = true
+        case .connectFolder:
+            Task { await model.connectFolder() }
+        case .rescanCurrentSource:
+            Task { await model.rescan() }
+        case .toggleSinglePhoto:
+            model.toggleSinglePhotoView()
+        case .showKeyboardShortcuts:
+            break
         }
     }
 

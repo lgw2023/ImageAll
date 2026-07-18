@@ -1105,6 +1105,111 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertEqual(model.selectedAssetIDs, [second.assetID])
     }
 
+    func testCommandPaletteListsOnlyImplementedCoreAndLibraryActions() async {
+        let sourceID = UUID()
+        let tag = TagListItem(id: UUID(), displayName: "Family", state: .active)
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: sourceID,
+                displayName: "Fixture",
+                state: .active
+            ),
+            reconciledItems: [],
+            tags: [tag],
+            startsConnected: true
+        )
+        let model = LibraryWorkspaceModel(service: service)
+
+        await model.start()
+        await waitForCatalogScanToFinish(model)
+
+        let commands = model.workspaceCommands(matching: "")
+
+        XCTAssertEqual(
+            Set(commands.map(\.command)),
+            [
+                .showAllPhotos,
+                .showReviewSuggestions,
+                .showActivity,
+                .showSource(sourceID),
+                .showTag(tag.id),
+                .acceptTag(tag.id),
+                .rejectTag(tag.id),
+                .clearTagDecision(tag.id),
+                .createTag,
+                .connectFolder,
+                .rescanCurrentSource,
+                .toggleSinglePhoto,
+                .showKeyboardShortcuts,
+            ]
+        )
+        XCTAssertEqual(commands.first(where: { $0.command == .showSource(sourceID) })?.title, "前往来源：Fixture")
+        XCTAssertEqual(commands.first(where: { $0.command == .showTag(tag.id) })?.title, "前往标签：Family")
+    }
+
+    func testCommandPaletteSearchMatchesDynamicCommandTitles() async {
+        let sourceID = UUID()
+        let family = TagListItem(id: UUID(), displayName: "Family", state: .active)
+        let travel = TagListItem(id: UUID(), displayName: "Travel", state: .active)
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: sourceID,
+                displayName: "Fixture",
+                state: .active
+            ),
+            reconciledItems: [],
+            tags: [family, travel],
+            startsConnected: true
+        )
+        let model = LibraryWorkspaceModel(service: service)
+
+        await model.start()
+        await waitForCatalogScanToFinish(model)
+
+        XCTAssertEqual(
+            Set(model.workspaceCommands(matching: "family").map(\.command)),
+            [
+                .showTag(family.id),
+                .acceptTag(family.id),
+                .rejectTag(family.id),
+                .clearTagDecision(family.id),
+            ]
+        )
+    }
+
+    func testCommandPaletteDisablesSelectionActionsUntilOnePhotoIsSelected() async {
+        let sourceID = UUID()
+        let asset = Self.makeAsset(sourceID: sourceID)
+        let tag = TagListItem(id: UUID(), displayName: "Family", state: .active)
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: sourceID,
+                displayName: "Fixture",
+                state: .active
+            ),
+            reconciledItems: [asset],
+            tags: [tag],
+            startsConnected: true
+        )
+        let model = LibraryWorkspaceModel(service: service)
+
+        await model.start()
+        await waitForCatalogScanToFinish(model)
+
+        let initialCommands = model.workspaceCommands(matching: "")
+        XCTAssertFalse(initialCommands.first(where: { $0.command == .acceptTag(tag.id) })?.isEnabled ?? true)
+        XCTAssertFalse(initialCommands.first(where: { $0.command == .createTag })?.isEnabled ?? true)
+        XCTAssertFalse(initialCommands.first(where: { $0.command == .toggleSinglePhoto })?.isEnabled ?? true)
+        XCTAssertTrue(initialCommands.first(where: { $0.command == .rescanCurrentSource })?.isEnabled ?? false)
+
+        await model.selectAsset(asset.assetID)
+
+        let selectedCommands = model.workspaceCommands(matching: "")
+        XCTAssertTrue(selectedCommands.first(where: { $0.command == .acceptTag(tag.id) })?.isEnabled ?? false)
+        XCTAssertTrue(selectedCommands.first(where: { $0.command == .createTag })?.isEnabled ?? false)
+        XCTAssertTrue(selectedCommands.first(where: { $0.command == .toggleSinglePhoto })?.isEnabled ?? false)
+    }
+
     func testChangingGridDensityPreservesLoadedCatalogSelectionAndSinglePhotoState() async {
         let sourceID = UUID()
         let first = Self.makeAsset(sourceID: sourceID, fileName: "first.jpg")
