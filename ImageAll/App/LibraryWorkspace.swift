@@ -210,6 +210,34 @@ final class LibraryWorkspaceModel: ObservableObject {
         return selectedAssetIDs.first
     }
 
+    var singlePhotoNavigation: LibrarySinglePhotoNavigationPresentation? {
+        guard isSinglePhotoPresented, let assetID = primarySelectedAssetID else {
+            return nil
+        }
+        if case .tagQueue = reviewMode {
+            guard let index = reviewQueueItems.firstIndex(where: { $0.assetID == assetID }) else {
+                return nil
+            }
+            return LibrarySinglePhotoNavigationPresentation(
+                fileName: reviewQueueItems[index].fileName ?? "照片",
+                position: index + 1,
+                loadedCount: reviewQueueItems.count,
+                canMovePrevious: index > 0,
+                canMoveNext: index < reviewQueueItems.count - 1 || reviewNextCursor != nil
+            )
+        }
+        guard let index = items.firstIndex(where: { $0.assetID == assetID }) else {
+            return nil
+        }
+        return LibrarySinglePhotoNavigationPresentation(
+            fileName: items[index].fileName ?? "照片",
+            position: index + 1,
+            loadedCount: items.count,
+            canMovePrevious: index > 0,
+            canMoveNext: index < items.count - 1 || nextCursor != nil
+        )
+    }
+
     var hasAssetPropertyFilters: Bool {
         !selectedAvailabilities.isEmpty || !selectedMediaTypes.isEmpty
     }
@@ -759,6 +787,18 @@ final class LibraryWorkspaceModel: ObservableObject {
 
     func closeSinglePhotoView() {
         isSinglePhotoPresented = false
+    }
+
+    func moveSinglePhotoSelection(by offset: Int) async {
+        guard isSinglePhotoPresented, offset != 0 else { return }
+        if reviewMode != nil {
+            await moveReviewPrimarySelection(
+                in: offset > 0 ? .right : .left,
+                columnCount: abs(offset)
+            )
+        } else {
+            await movePrimarySelection(by: offset)
+        }
     }
 
     func movePrimarySelection(by offset: Int) async {
@@ -3412,20 +3452,26 @@ private struct SinglePhotoReviewView: View {
     @State private var image: NSImage?
 
     var body: some View {
-        ZStack {
-            Color(nsColor: .windowBackgroundColor)
-            if let image {
-                Image(nsImage: image)
-                    .resizable()
-                    .scaledToFit()
-                    .padding(24)
-            } else {
-                Image(systemName: "photo")
-                    .font(.system(size: 48))
-                    .foregroundStyle(.secondary)
+        VStack(spacing: 0) {
+            SinglePhotoNavigationBar(model: model)
+            Divider()
+            ZStack {
+                Color(nsColor: .windowBackgroundColor)
+                if let image {
+                    Image(nsImage: image)
+                        .resizable()
+                        .scaledToFit()
+                        .padding(24)
+                } else {
+                    Image(systemName: "photo")
+                        .font(.system(size: 48))
+                        .foregroundStyle(.secondary)
+                }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .accessibilityIdentifier("singlePhotoView")
+        .accessibilityLabel(item.fileName ?? "照片")
         .task(id: item.assetID) {
             image = nil
             guard item.availability == .available,
@@ -3442,20 +3488,24 @@ private struct SinglePhotoView: View {
     @State private var image: NSImage?
 
     var body: some View {
-        ZStack {
-            Color(nsColor: .windowBackgroundColor)
-            if let image {
-                Image(nsImage: image)
-                    .resizable()
-                    .scaledToFit()
-                    .padding(24)
-            } else {
-                Image(systemName: model.isPhotosSource(item.sourceID) ? "icloud.and.arrow.down" : placeholderIcon)
-                    .font(.system(size: 48))
-                    .foregroundStyle(.secondary)
+        VStack(spacing: 0) {
+            SinglePhotoNavigationBar(model: model)
+            Divider()
+            ZStack {
+                Color(nsColor: .windowBackgroundColor)
+                if let image {
+                    Image(nsImage: image)
+                        .resizable()
+                        .scaledToFit()
+                        .padding(24)
+                } else {
+                    Image(systemName: model.isPhotosSource(item.sourceID) ? "icloud.and.arrow.down" : placeholderIcon)
+                        .font(.system(size: 48))
+                        .foregroundStyle(.secondary)
+                }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .accessibilityIdentifier("singlePhotoView")
         .accessibilityLabel(item.fileName ?? "照片")
         .task(id: item.assetID) {
@@ -3475,6 +3525,51 @@ private struct SinglePhotoView: View {
         case .missing: return "questionmark.folder"
         case .unreadable: return "exclamationmark.triangle"
         case .unsupported: return "nosign"
+        }
+    }
+}
+
+private struct SinglePhotoNavigationBar: View {
+    @ObservedObject var model: LibraryWorkspaceModel
+
+    var body: some View {
+        if let navigation = model.singlePhotoNavigation {
+            HStack(spacing: 12) {
+                Button("返回网格", systemImage: "square.grid.2x2") {
+                    model.closeSinglePhotoView()
+                }
+
+                Spacer()
+
+                VStack(spacing: 2) {
+                    Text(navigation.fileName)
+                        .font(.headline)
+                        .lineLimit(1)
+                        .help(navigation.fileName)
+                    Text("\(navigation.position) / \(navigation.loadedCount)")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                        .accessibilityLabel(
+                            "第 \(navigation.position) 张，已载入 \(navigation.loadedCount) 张"
+                        )
+                }
+
+                Spacer()
+
+                Button("上一张", systemImage: "chevron.left") {
+                    Task { await model.moveSinglePhotoSelection(by: -1) }
+                }
+                .disabled(!navigation.canMovePrevious)
+
+                Button("下一张", systemImage: "chevron.right") {
+                    Task { await model.moveSinglePhotoSelection(by: 1) }
+                }
+                .disabled(!navigation.canMoveNext)
+            }
+            .buttonStyle(.borderless)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .accessibilityIdentifier("singlePhotoNavigationBar")
         }
     }
 }

@@ -1322,6 +1322,116 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertEqual(model.inspectorDetail?.assetID, second.assetID)
     }
 
+    func testSinglePhotoNavigationDescribesCatalogPositionAndBoundaries() async {
+        let sourceID = UUID()
+        let first = Self.makeAsset(sourceID: sourceID, fileName: "first.jpg")
+        let second = Self.makeAsset(sourceID: sourceID, fileName: "second.jpg")
+        let third = Self.makeAsset(sourceID: sourceID, fileName: "third.jpg")
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: sourceID,
+                displayName: "Fixture",
+                state: .active
+            ),
+            reconciledItems: [first, second, third]
+        )
+        let model = LibraryWorkspaceModel(service: service)
+
+        await model.start()
+        await model.connectFolder()
+        await waitForCatalogScanToFinish(model)
+        await model.openSinglePhotoView(assetID: first.assetID)
+
+        XCTAssertEqual(
+            model.singlePhotoNavigation,
+            LibrarySinglePhotoNavigationPresentation(
+                fileName: "first.jpg",
+                position: 1,
+                loadedCount: 3,
+                canMovePrevious: false,
+                canMoveNext: true
+            )
+        )
+
+        await model.moveSinglePhotoSelection(by: 1)
+
+        XCTAssertEqual(
+            model.singlePhotoNavigation,
+            LibrarySinglePhotoNavigationPresentation(
+                fileName: "second.jpg",
+                position: 2,
+                loadedCount: 3,
+                canMovePrevious: true,
+                canMoveNext: true
+            )
+        )
+        XCTAssertEqual(model.inspectorDetail?.assetID, second.assetID)
+    }
+
+    func testSinglePhotoNavigationUsesReviewQueueAndLoadsItsNextPage() async {
+        let sourceID = UUID()
+        let tag = TagListItem(id: UUID(), displayName: "Family", state: .active)
+        let assets = (0 ..< 3).map {
+            Self.makeAsset(sourceID: sourceID, fileName: "review-\($0).jpg")
+        }
+        let queueItems = assets.map {
+            ReviewQueueItemProjection(
+                assetID: $0.assetID,
+                fileName: $0.fileName,
+                availability: $0.availability,
+                acceptedTagCount: 0,
+                rejectedTagCount: 0
+            )
+        }
+        let model = LibraryWorkspaceModel(
+            service: FakeLibraryWorkspaceService(
+                connectedSource: LibrarySourceSummary(
+                    id: sourceID,
+                    displayName: "Fixture",
+                    state: .active
+                ),
+                reconciledItems: assets,
+                tags: [tag]
+            ),
+            review: FakePersonalizationReviewPort(
+                queueItems: queueItems,
+                queuePageSize: 2
+            )
+        )
+
+        await model.start()
+        await model.connectFolder()
+        await waitForCatalogScanToFinish(model)
+        await model.enterReviewQueue(tagID: tag.id, displayName: tag.displayName)
+        await model.openSinglePhotoView(assetID: assets[1].assetID)
+
+        XCTAssertEqual(
+            model.singlePhotoNavigation,
+            LibrarySinglePhotoNavigationPresentation(
+                fileName: "review-1.jpg",
+                position: 2,
+                loadedCount: 2,
+                canMovePrevious: true,
+                canMoveNext: true
+            )
+        )
+
+        await model.moveSinglePhotoSelection(by: 1)
+
+        XCTAssertEqual(model.primarySelectedAssetID, assets[2].assetID)
+        XCTAssertEqual(model.inspectorDetail?.assetID, assets[2].assetID)
+        XCTAssertEqual(
+            model.singlePhotoNavigation,
+            LibrarySinglePhotoNavigationPresentation(
+                fileName: "review-2.jpg",
+                position: 3,
+                loadedCount: 3,
+                canMovePrevious: true,
+                canMoveNext: false
+            )
+        )
+    }
+
     func testGridNavigationMovesPrimarySelectionByRowsAndColumns() async {
         let sourceID = UUID()
         let assets = (0 ..< 8).map {

@@ -124,6 +124,14 @@ struct LibraryNewTagConfirmation: Identifiable, Equatable, Sendable {
     var affectedCount: Int { assetIDs.count }
 }
 
+struct LibrarySinglePhotoNavigationPresentation: Equatable, Sendable {
+    let fileName: String
+    let position: Int
+    let loadedCount: Int
+    let canMovePrevious: Bool
+    let canMoveNext: Bool
+}
+
 struct LibraryInspectorTagPresentation: Identifiable, Equatable, Sendable {
     let id: UUID
     let displayName: String
