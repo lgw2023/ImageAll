@@ -1,8 +1,8 @@
 # ImageAll 可选本地模型模块实施规格
 
 > 状态：First tracer slice implemented
-> 日期：2026-07-18  
-> 开工基线：`main@14c3890b8c83c87a6f603c8900dfaabb3179ea6c`  
+> 日期：2026-07-18
+> 开工基线：`main@14c3890b8c83c87a6f603c8900dfaabb3179ea6c`
 > 范围：独立模型训练、部署与推理模块；本切片不接线 Xcode 工程或生产目录库
 
 ## 1. 目标与停止位置
