@@ -183,12 +183,29 @@ struct PersonalModelSuggestionTarget: Equatable, Sendable {
     let catalogScopeID: String
     let bundleID: String
     let bundleRevision: String
+    let provider: String
+    let modelID: String
+    let modelRevision: String
+    let preprocessingRevision: String
+    let elementCount: Int
     let labelVocabularyRevision: String
+    let weightsSHA256: String
+    let policyRevision: String
 }
 
 enum ModelSuggestionTarget: Equatable, Sendable {
     case standard(StandardModelSuggestionTarget)
     case personal(PersonalModelSuggestionTarget)
+}
+
+struct PersonalModelSuggestionCapability: Equatable, Sendable {
+    let target: PersonalModelSuggestionTarget
+    let tagIDs: [UUID]
+}
+
+enum PersonalModelSuggestionCapabilityAvailability: Equatable, Sendable {
+    case unavailable
+    case available(PersonalModelSuggestionCapability)
 }
 
 struct LocalModelSuggestion: Codable, Equatable, Sendable {
@@ -206,7 +223,9 @@ struct LocalModelSuggestion: Codable, Equatable, Sendable {
     let modelID: String?
     let modelRevision: String
     let preprocessingRevision: String
+    let elementCount: Int?
     let labelVocabularyRevision: String?
+    let weightsSHA256: String?
     let ontologyID: String?
     let ontologyRevision: String?
     let mappingRevision: String?
@@ -227,7 +246,9 @@ struct LocalModelSuggestion: Codable, Equatable, Sendable {
         case modelID = "model_id"
         case modelRevision = "model_revision"
         case preprocessingRevision = "preprocessing_revision"
+        case elementCount = "element_count"
         case labelVocabularyRevision = "label_vocabulary_revision"
+        case weightsSHA256 = "weights_sha256"
         case ontologyID = "ontology_id"
         case ontologyRevision = "ontology_revision"
         case mappingRevision = "mapping_revision"
@@ -244,6 +265,7 @@ enum LocalModelSuggestionClientError: Error, Equatable, Sendable {
 }
 
 protocol LocalModelSuggestionClient: Sendable {
+    func personalCapability() async throws -> PersonalModelSuggestionCapabilityAvailability
     func suggestions(
         imageData: Data,
         requestID: String,
@@ -251,9 +273,16 @@ protocol LocalModelSuggestionClient: Sendable {
     ) async throws -> [LocalModelSuggestion]
 }
 
+extension LocalModelSuggestionClient {
+    func personalCapability() async throws -> PersonalModelSuggestionCapabilityAvailability {
+        .unavailable
+    }
+}
+
 struct LocalModelSuggestionRuntime: Sendable {
     let client: any LocalModelSuggestionClient
     let target: ModelSuggestionTarget
+    let catalogScopeID: String
 }
 
 enum LocalModelSuggestionPresentationState: Equatable, Sendable {
@@ -262,6 +291,7 @@ enum LocalModelSuggestionPresentationState: Equatable, Sendable {
     case loading(assetID: UUID)
     case results(assetID: UUID, suggestions: [LocalModelSuggestion])
     case previewUnavailable(assetID: UUID)
+    case personalUnavailable(assetID: UUID)
     case serviceUnavailable(assetID: UUID)
     case failed(assetID: UUID)
 
@@ -273,6 +303,7 @@ enum LocalModelSuggestionPresentationState: Equatable, Sendable {
              let .loading(assetID),
              let .results(assetID, _),
              let .previewUnavailable(assetID),
+             let .personalUnavailable(assetID),
              let .serviceUnavailable(assetID),
              let .failed(assetID):
             assetID

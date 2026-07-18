@@ -712,6 +712,205 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         )
     }
 
+    func testCurrentCatalogPersonalSuggestionStaysTransientUntilExplicitAcceptance() async {
+        let sourceID = UUID()
+        let asset = Self.makeAsset(sourceID: sourceID, fileName: "personal-preview.jpg")
+        let tag = TagListItem(id: UUID(), displayName: "旅行", state: .active)
+        let capability = Self.makePersonalCapability(tagIDs: [tag.id])
+        let suggestion = Self.makePersonalSuggestion(tagID: tag.id)
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: sourceID,
+                displayName: "Fixture",
+                state: .active
+            ),
+            reconciledItems: [asset],
+            tags: [tag],
+            initialItems: [asset],
+            startsConnected: true,
+            previewData: Data("personal-preview".utf8)
+        )
+        let client = FakeLocalModelSuggestionClient(
+            result: .success([suggestion]),
+            personalCapability: .available(capability)
+        )
+        let model = LibraryWorkspaceModel(
+            service: service,
+            localModelSuggestions: Self.makeStandardRuntime(client: client)
+        )
+
+        await model.start()
+        await model.selectAsset(asset.assetID)
+        await model.requestPersonalModelSuggestions()
+
+        XCTAssertEqual(client.lastTarget, .personal(capability.target))
+        XCTAssertEqual(
+            model.localModelSuggestionState,
+            .results(assetID: asset.assetID, suggestions: [suggestion])
+        )
+        XCTAssertEqual(service.mutateTagCallCount, 0)
+
+        await model.applyLocalModelSuggestionDecision(suggestion, action: .accept)
+
+        XCTAssertEqual(service.mutateTagCallCount, 1)
+        XCTAssertEqual(
+            model.inspectorTags.first(where: { $0.id == tag.id })?.decision,
+            .accepted
+        )
+        XCTAssertEqual(
+            model.localModelSuggestionState,
+            .results(assetID: asset.assetID, suggestions: [])
+        )
+    }
+
+    func testPersonalSuggestionResponseWithStaleBundleFailsClosed() async {
+        let sourceID = UUID()
+        let asset = Self.makeAsset(sourceID: sourceID, fileName: "stale-personal-bundle.jpg")
+        let tag = TagListItem(id: UUID(), displayName: "旅行", state: .active)
+        let capability = Self.makePersonalCapability(tagIDs: [tag.id])
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: sourceID,
+                displayName: "Fixture",
+                state: .active
+            ),
+            reconciledItems: [asset],
+            tags: [tag],
+            initialItems: [asset],
+            startsConnected: true,
+            previewData: Data("personal-preview".utf8)
+        )
+        let client = FakeLocalModelSuggestionClient(
+            result: .success([
+                Self.makePersonalSuggestion(
+                    tagID: tag.id,
+                    bundleRevision: "stale-bundle"
+                ),
+            ]),
+            personalCapability: .available(capability)
+        )
+        let model = LibraryWorkspaceModel(
+            service: service,
+            localModelSuggestions: Self.makeStandardRuntime(client: client)
+        )
+
+        await model.start()
+        await model.selectAsset(asset.assetID)
+        await model.requestPersonalModelSuggestions()
+
+        XCTAssertEqual(model.localModelSuggestionState, .failed(assetID: asset.assetID))
+        XCTAssertEqual(client.callCount, 1)
+        XCTAssertEqual(service.mutateTagCallCount, 0)
+    }
+
+    func testPersonalCapabilityWithUnknownTagFailsClosedBeforeInference() async {
+        let sourceID = UUID()
+        let asset = Self.makeAsset(sourceID: sourceID, fileName: "unknown-tag.jpg")
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: sourceID,
+                displayName: "Fixture",
+                state: .active
+            ),
+            reconciledItems: [asset],
+            initialItems: [asset],
+            startsConnected: true,
+            previewData: Data("must-not-load".utf8)
+        )
+        let client = FakeLocalModelSuggestionClient(
+            result: .success([]),
+            personalCapability: .available(
+                Self.makePersonalCapability(tagIDs: [UUID()])
+            )
+        )
+        let model = LibraryWorkspaceModel(
+            service: service,
+            localModelSuggestions: Self.makeStandardRuntime(client: client)
+        )
+
+        await model.start()
+        await model.selectAsset(asset.assetID)
+        await model.requestPersonalModelSuggestions()
+
+        XCTAssertEqual(model.localModelSuggestionState, .failed(assetID: asset.assetID))
+        XCTAssertEqual(client.callCount, 0)
+        XCTAssertEqual(service.previewLoadCallCount, 0)
+        XCTAssertEqual(service.mutateTagCallCount, 0)
+    }
+
+    func testUnavailablePersonalBundleDoesNotFallBackToStandardSuggestions() async {
+        let sourceID = UUID()
+        let asset = Self.makeAsset(sourceID: sourceID, fileName: "no-personal-bundle.jpg")
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: sourceID,
+                displayName: "Fixture",
+                state: .active
+            ),
+            reconciledItems: [asset],
+            initialItems: [asset],
+            startsConnected: true,
+            previewData: Data("must-not-load".utf8)
+        )
+        let client = FakeLocalModelSuggestionClient(result: .success([]))
+        let model = LibraryWorkspaceModel(
+            service: service,
+            localModelSuggestions: Self.makeStandardRuntime(client: client)
+        )
+
+        await model.start()
+        await model.selectAsset(asset.assetID)
+        await model.requestPersonalModelSuggestions()
+
+        XCTAssertEqual(
+            model.localModelSuggestionState,
+            .personalUnavailable(assetID: asset.assetID)
+        )
+        XCTAssertEqual(model.localModelSuggestionTrack, .personal)
+        XCTAssertEqual(client.callCount, 0)
+        XCTAssertEqual(service.previewLoadCallCount, 0)
+    }
+
+    func testPersonalBundleFromAnotherCatalogFailsClosedBeforeInference() async {
+        let sourceID = UUID()
+        let asset = Self.makeAsset(sourceID: sourceID, fileName: "other-catalog.jpg")
+        let tag = TagListItem(id: UUID(), displayName: "旅行", state: .active)
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: sourceID,
+                displayName: "Fixture",
+                state: .active
+            ),
+            reconciledItems: [asset],
+            tags: [tag],
+            initialItems: [asset],
+            startsConnected: true,
+            previewData: Data("must-not-load".utf8)
+        )
+        let client = FakeLocalModelSuggestionClient(
+            result: .success([]),
+            personalCapability: .available(
+                Self.makePersonalCapability(
+                    tagIDs: [tag.id],
+                    catalogScopeID: "another-catalog"
+                )
+            )
+        )
+        let model = LibraryWorkspaceModel(
+            service: service,
+            localModelSuggestions: Self.makeStandardRuntime(client: client)
+        )
+
+        await model.start()
+        await model.selectAsset(asset.assetID)
+        await model.requestPersonalModelSuggestions()
+
+        XCTAssertEqual(model.localModelSuggestionState, .failed(assetID: asset.assetID))
+        XCTAssertEqual(client.callCount, 0)
+        XCTAssertEqual(service.previewLoadCallCount, 0)
+        XCTAssertEqual(service.mutateTagCallCount, 0)
+    }
+
     func testConnectFolderRunsReconcileAndLoadsFirstPage() async {
         let sourceID = UUID()
         let asset = Self.makeAsset(sourceID: sourceID)
@@ -2401,7 +2600,30 @@ final class LibraryWorkspaceModelTests: XCTestCase {
                     standardPackID: "imageall-public-fixture",
                     standardPackRevision: "pack-v1"
                 )
-            )
+            ),
+            catalogScopeID: "catalog-fixture"
+        )
+    }
+
+    private static func makePersonalCapability(
+        tagIDs: [UUID],
+        catalogScopeID: String = "catalog-fixture"
+    ) -> PersonalModelSuggestionCapability {
+        PersonalModelSuggestionCapability(
+            target: PersonalModelSuggestionTarget(
+                catalogScopeID: catalogScopeID,
+                bundleID: "personal-fixture",
+                bundleRevision: "bundle-v1",
+                provider: "dinov2",
+                modelID: "facebook/dinov2-small",
+                modelRevision: "model-v1",
+                preprocessingRevision: "preprocessing-v1",
+                elementCount: 384,
+                labelVocabularyRevision: "personal-tags-v1",
+                weightsSHA256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                policyRevision: "personal-policy-v1"
+            ),
+            tagIDs: tagIDs
         )
     }
 
@@ -2423,11 +2645,42 @@ final class LibraryWorkspaceModelTests: XCTestCase {
             modelID: "imageall/fixture-scene-linear",
             modelRevision: "model-v1",
             preprocessingRevision: "rgb-channel-mean-v1",
+            elementCount: nil,
             labelVocabularyRevision: nil,
+            weightsSHA256: nil,
             ontologyID: "imageall-public-fixture",
             ontologyRevision: "ontology-v1",
             mappingRevision: "mapping-v1",
             policyRevision: "policy-v1"
+        )
+    }
+
+    private static func makePersonalSuggestion(
+        tagID: UUID,
+        bundleRevision: String = "bundle-v1"
+    ) -> LocalModelSuggestion {
+        LocalModelSuggestion(
+            track: .personal,
+            conceptID: nil,
+            tagID: tagID,
+            score: 1.25,
+            recommendedState: .suggested,
+            catalogScopeID: "catalog-fixture",
+            bundleID: "personal-fixture",
+            bundleRevision: bundleRevision,
+            standardPackID: nil,
+            standardPackRevision: nil,
+            provider: "dinov2",
+            modelID: "facebook/dinov2-small",
+            modelRevision: "model-v1",
+            preprocessingRevision: "preprocessing-v1",
+            elementCount: 384,
+            labelVocabularyRevision: "personal-tags-v1",
+            weightsSHA256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            ontologyID: nil,
+            ontologyRevision: nil,
+            mappingRevision: nil,
+            policyRevision: "personal-policy-v1"
         )
     }
 
@@ -2489,6 +2742,7 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
     private var storedCloudPreviewDownloadCallCount = 0
     private var storedCloudPreviewCancellationCount = 0
     private var storedThumbnailLoadCallCount = 0
+    private var storedPreviewLoadCallCount = 0
     private var storedPortableExportCallCount = 0
     private var storedPreviewCacheClearCallCount = 0
     private var storedCreateTagAndAcceptCallCount = 0
@@ -2630,6 +2884,10 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
 
     var thumbnailLoadCallCount: Int {
         lock.withLock { storedThumbnailLoadCallCount }
+    }
+
+    var previewLoadCallCount: Int {
+        lock.withLock { storedPreviewLoadCallCount }
     }
 
     var portableExportCallCount: Int {
@@ -2939,6 +3197,7 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
     }
 
     func loadPreview(assetID: UUID) async throws -> Data {
+        lock.withLock { storedPreviewLoadCallCount += 1 }
         if let previewError {
             throw previewError
         }
@@ -3126,15 +3385,19 @@ private final class FakeLocalModelSuggestionClient: LocalModelSuggestionClient, 
     private let lock = NSLock()
     private let result: Result<[LocalModelSuggestion], LocalModelSuggestionClientError>
     private let blocksRequests: Bool
+    private let personalCapabilityResult: PersonalModelSuggestionCapabilityAvailability
     private var storedCallCount = 0
     private var storedLastImageData: Data?
+    private var storedLastTarget: ModelSuggestionTarget?
     private var blockedContinuation: CheckedContinuation<Void, Never>?
 
     init(
         result: Result<[LocalModelSuggestion], LocalModelSuggestionClientError>,
+        personalCapability: PersonalModelSuggestionCapabilityAvailability = .unavailable,
         blocksRequests: Bool = false
     ) {
         self.result = result
+        personalCapabilityResult = personalCapability
         self.blocksRequests = blocksRequests
     }
 
@@ -3144,6 +3407,10 @@ private final class FakeLocalModelSuggestionClient: LocalModelSuggestionClient, 
 
     var lastImageData: Data? {
         lock.withLock { storedLastImageData }
+    }
+
+    var lastTarget: ModelSuggestionTarget? {
+        lock.withLock { storedLastTarget }
     }
 
     var hasBlockedRequest: Bool {
@@ -3159,6 +3426,10 @@ private final class FakeLocalModelSuggestionClient: LocalModelSuggestionClient, 
         continuation?.resume()
     }
 
+    func personalCapability() async throws -> PersonalModelSuggestionCapabilityAvailability {
+        personalCapabilityResult
+    }
+
     func suggestions(
         imageData: Data,
         requestID: String,
@@ -3167,6 +3438,7 @@ private final class FakeLocalModelSuggestionClient: LocalModelSuggestionClient, 
         lock.withLock {
             storedCallCount += 1
             storedLastImageData = imageData
+            storedLastTarget = target
         }
         if blocksRequests {
             await withCheckedContinuation { continuation in

@@ -169,7 +169,7 @@ final class V002MigrationTests: XCTestCase {
         let v001URL = try makeTempDatabaseURL()
         let v001Only = try CatalogQueryTestSupport.openV001OnlyDatabase(at: v001URL)
         let v001EraTables = CatalogSchemaExpectations.businessTables.filter {
-            !["derived_image_cache_entry", "feature", "tag_model_revision", "tag_model_sample", "tag_model", "prediction"].contains($0)
+            !["catalog_scope", "derived_image_cache_entry", "feature", "tag_model_revision", "tag_model_sample", "tag_model", "prediction"].contains($0)
         }
         let v001Dump = try v001Only.pool.read { db in
             try DatabaseTestSupport.schemaObjects(db)

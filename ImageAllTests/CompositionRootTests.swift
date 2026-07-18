@@ -4,7 +4,11 @@ import XCTest
 @MainActor
 final class CompositionRootTests: XCTestCase {
     func testProductionLocalModelRuntimePinsTheStandardFixtureIdentity() throws {
-        let runtime = try XCTUnwrap(CompositionRoot.makeLocalModelSuggestionRuntime())
+        let runtime = try XCTUnwrap(
+            CompositionRoot.makeLocalModelSuggestionRuntime(
+                catalogScopeID: "catalog-fixture"
+            )
+        )
 
         XCTAssertEqual(
             runtime.target,
@@ -15,6 +19,7 @@ final class CompositionRootTests: XCTestCase {
                 )
             )
         )
+        XCTAssertEqual(runtime.catalogScopeID, "catalog-fixture")
     }
 
     func testCompositionRootProducesFoundationReadyPresentation() async throws {

@@ -336,7 +336,14 @@ final class LoopbackModelSuggestionClient: LocalModelSuggestionClient, @unchecke
         let standardPackRevision: String?
         let bundleID: String?
         let bundleRevision: String?
+        let provider: String?
+        let modelID: String?
+        let modelRevision: String?
+        let preprocessingRevision: String?
+        let elementCount: Int?
         let labelVocabularyRevision: String?
+        let weightsSHA256: String?
+        let policyRevision: String?
 
         enum CodingKeys: String, CodingKey {
             case track
@@ -345,7 +352,14 @@ final class LoopbackModelSuggestionClient: LocalModelSuggestionClient, @unchecke
             case standardPackRevision = "standard_pack_revision"
             case bundleID = "bundle_id"
             case bundleRevision = "bundle_revision"
+            case provider
+            case modelID = "model_id"
+            case modelRevision = "model_revision"
+            case preprocessingRevision = "preprocessing_revision"
+            case elementCount = "element_count"
             case labelVocabularyRevision = "label_vocabulary_revision"
+            case weightsSHA256 = "weights_sha256"
+            case policyRevision = "policy_revision"
         }
 
         init(_ target: ModelSuggestionTarget) {
@@ -357,7 +371,14 @@ final class LoopbackModelSuggestionClient: LocalModelSuggestionClient, @unchecke
                 standardPackRevision = standard.standardPackRevision
                 bundleID = nil
                 bundleRevision = nil
+                provider = nil
+                modelID = nil
+                modelRevision = nil
+                preprocessingRevision = nil
+                elementCount = nil
                 labelVocabularyRevision = nil
+                weightsSHA256 = nil
+                policyRevision = nil
             case let .personal(personal):
                 track = .personal
                 catalogScopeID = personal.catalogScopeID
@@ -365,8 +386,65 @@ final class LoopbackModelSuggestionClient: LocalModelSuggestionClient, @unchecke
                 standardPackRevision = nil
                 bundleID = personal.bundleID
                 bundleRevision = personal.bundleRevision
+                provider = personal.provider
+                modelID = personal.modelID
+                modelRevision = personal.modelRevision
+                preprocessingRevision = personal.preprocessingRevision
+                elementCount = personal.elementCount
                 labelVocabularyRevision = personal.labelVocabularyRevision
+                weightsSHA256 = personal.weightsSHA256
+                policyRevision = personal.policyRevision
             }
+        }
+    }
+
+    private struct CapabilitiesResponsePayload: Decodable {
+        let serviceVersion: String
+        let personal: PersonalCapabilityPayload
+
+        enum CodingKeys: String, CodingKey {
+            case serviceVersion = "service_version"
+            case personal
+        }
+    }
+
+    private struct PersonalCapabilityPayload: Decodable {
+        struct Encoder: Decodable {
+            let provider: String
+            let modelID: String
+            let modelRevision: String
+            let preprocessingRevision: String
+            let elementCount: Int
+
+            enum CodingKeys: String, CodingKey {
+                case provider
+                case modelID = "model_id"
+                case modelRevision = "model_revision"
+                case preprocessingRevision = "preprocessing_revision"
+                case elementCount = "element_count"
+            }
+        }
+
+        let status: String
+        let catalogScopeID: String?
+        let bundleID: String?
+        let bundleRevision: String?
+        let encoder: Encoder?
+        let labelVocabularyRevision: String?
+        let weightsSHA256: String?
+        let policyRevision: String?
+        let tagIDs: [UUID]?
+
+        enum CodingKeys: String, CodingKey {
+            case status
+            case catalogScopeID = "catalog_scope_id"
+            case bundleID = "bundle_id"
+            case bundleRevision = "bundle_revision"
+            case encoder
+            case labelVocabularyRevision = "label_vocabulary_revision"
+            case weightsSHA256 = "weights_sha256"
+            case policyRevision = "policy_revision"
+            case tagIDs = "tag_ids"
         }
     }
 
@@ -407,6 +485,100 @@ final class LoopbackModelSuggestionClient: LocalModelSuggestionClient, @unchecke
         }
         self.endpoint = endpoint
         self.session = session
+    }
+
+    func personalCapability() async throws -> PersonalModelSuggestionCapabilityAvailability {
+        var request = URLRequest(
+            url: endpoint.appendingPathComponent("v1/capabilities"),
+            timeoutInterval: 10
+        )
+        request.httpMethod = "GET"
+
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await session.data(for: request)
+        } catch {
+            throw LocalModelSuggestionClientError.serviceUnavailable
+        }
+        guard let http = response as? HTTPURLResponse else {
+            throw LocalModelSuggestionClientError.invalidResponse
+        }
+        guard (200 ... 299).contains(http.statusCode) else {
+            let code = try? JSONDecoder()
+                .decode(ErrorResponsePayload.self, from: data)
+                .detail.code
+            throw LocalModelSuggestionClientError.rejected(
+                statusCode: http.statusCode,
+                code: code
+            )
+        }
+        guard let payload = try? JSONDecoder().decode(
+            CapabilitiesResponsePayload.self,
+            from: data
+        ),
+            !payload.serviceVersion.isEmpty
+        else {
+            throw LocalModelSuggestionClientError.invalidResponse
+        }
+        let personal = payload.personal
+        if personal.status == "unavailable" {
+            guard personal.catalogScopeID == nil,
+                  personal.bundleID == nil,
+                  personal.bundleRevision == nil,
+                  personal.encoder == nil,
+                  personal.labelVocabularyRevision == nil,
+                  personal.weightsSHA256 == nil,
+                  personal.policyRevision == nil,
+                  personal.tagIDs == nil
+            else {
+                throw LocalModelSuggestionClientError.invalidResponse
+            }
+            return .unavailable
+        }
+        guard personal.status == "available",
+              let catalogScopeID = personal.catalogScopeID,
+              !catalogScopeID.isEmpty,
+              let bundleID = personal.bundleID,
+              !bundleID.isEmpty,
+              let bundleRevision = personal.bundleRevision,
+              !bundleRevision.isEmpty,
+              let encoder = personal.encoder,
+              !encoder.provider.isEmpty,
+              !encoder.modelID.isEmpty,
+              !encoder.modelRevision.isEmpty,
+              !encoder.preprocessingRevision.isEmpty,
+              encoder.elementCount > 0,
+              let labelVocabularyRevision = personal.labelVocabularyRevision,
+              !labelVocabularyRevision.isEmpty,
+              let weightsSHA256 = personal.weightsSHA256,
+              Self.isLowercaseSHA256(weightsSHA256),
+              let policyRevision = personal.policyRevision,
+              !policyRevision.isEmpty,
+              let tagIDs = personal.tagIDs,
+              !tagIDs.isEmpty,
+              Set(tagIDs).count == tagIDs.count
+        else {
+            throw LocalModelSuggestionClientError.invalidResponse
+        }
+        return .available(
+            PersonalModelSuggestionCapability(
+                target: PersonalModelSuggestionTarget(
+                    catalogScopeID: catalogScopeID,
+                    bundleID: bundleID,
+                    bundleRevision: bundleRevision,
+                    provider: encoder.provider,
+                    modelID: encoder.modelID,
+                    modelRevision: encoder.modelRevision,
+                    preprocessingRevision: encoder.preprocessingRevision,
+                    elementCount: encoder.elementCount,
+                    labelVocabularyRevision: labelVocabularyRevision,
+                    weightsSHA256: weightsSHA256,
+                    policyRevision: policyRevision
+                ),
+                tagIDs: tagIDs
+            )
+        )
     }
 
     func suggestions(
@@ -486,7 +658,9 @@ final class LoopbackModelSuggestionClient: LocalModelSuggestionClient, @unchecke
                   payload.catalogScopeID == nil,
                   payload.bundleID == nil,
                   payload.bundleRevision == nil,
-                  payload.labelVocabularyRevision == nil
+                  payload.elementCount == nil,
+                  payload.labelVocabularyRevision == nil,
+                  payload.weightsSHA256 == nil
             else {
                 throw LocalModelSuggestionClientError.identityMismatch
             }
@@ -498,7 +672,14 @@ final class LoopbackModelSuggestionClient: LocalModelSuggestionClient, @unchecke
                   payload.catalogScopeID == expected.catalogScopeID,
                   payload.bundleID == expected.bundleID,
                   payload.bundleRevision == expected.bundleRevision,
+                  payload.provider == expected.provider,
+                  payload.modelID == expected.modelID,
+                  payload.modelRevision == expected.modelRevision,
+                  payload.preprocessingRevision == expected.preprocessingRevision,
+                  payload.elementCount == expected.elementCount,
                   payload.labelVocabularyRevision == expected.labelVocabularyRevision,
+                  payload.weightsSHA256 == expected.weightsSHA256,
+                  payload.policyRevision == expected.policyRevision,
                   payload.standardPackID == nil,
                   payload.standardPackRevision == nil
             else {
@@ -506,5 +687,9 @@ final class LoopbackModelSuggestionClient: LocalModelSuggestionClient, @unchecke
             }
         }
         return payload
+    }
+
+    private static func isLowercaseSHA256(_ value: String) -> Bool {
+        value.count == 64 && value.allSatisfy { "0123456789abcdef".contains($0) }
     }
 }

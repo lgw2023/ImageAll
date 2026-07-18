@@ -79,6 +79,7 @@ enum CatalogSchemaExpectations {
     static let businessTables = [
         "asset",
         "asset_tag_decision",
+        "catalog_scope",
         "derived_image_cache_entry",
         "feature",
         "file_fingerprint",
@@ -116,6 +117,10 @@ enum CatalogSchemaExpectations {
     ]
 
     static let columnsByTable: [String: [ColumnExpectation]] = [
+        "catalog_scope": [
+            .init(name: "singleton", type: "INTEGER", notNull: false, defaultValue: nil, primaryKeyOrder: 1),
+            .init(name: "scope_id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+        ],
         "source": [
             .init(name: "id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 1),
             .init(name: "kind", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 0),

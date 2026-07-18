@@ -3,6 +3,7 @@ import Foundation
 enum CatalogDatabaseError: Error, Equatable, Sendable {
     case integrityCheckFailed
     case futureSchema(applied: [String], unknown: [String])
+    case invalidCatalogScopeIdentity
 }
 
 enum CatalogRepositoryError: Error, Equatable, Sendable {

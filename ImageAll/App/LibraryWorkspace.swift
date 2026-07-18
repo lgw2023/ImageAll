@@ -150,6 +150,7 @@ final class LibraryWorkspaceModel: ObservableObject {
     @Published private(set) var assetPendingSuggestions: [AssetPendingSuggestion] = []
     @Published private(set) var cloudPreviewState: CloudPreviewPresentationState = .hidden
     @Published private(set) var localModelSuggestionState: LocalModelSuggestionPresentationState = .hidden
+    @Published private(set) var localModelSuggestionTrack: ModelSuggestionTrack = .standard
     @Published private(set) var isExportingPortableData = false
     @Published private(set) var previewCacheUsage = DerivedImageCacheUsage.zero
     @Published private(set) var isClearingPreviewCache = false
@@ -785,6 +786,7 @@ final class LibraryWorkspaceModel: ObservableObject {
             return
         }
         let requestID = UUID()
+        localModelSuggestionTrack = .standard
         localModelSuggestionRequestID = requestID
         localModelSuggestionState = .loading(assetID: assetID)
 
@@ -834,6 +836,130 @@ final class LibraryWorkspaceModel: ObservableObject {
             localModelSuggestionState = .failed(assetID: assetID)
             localModelSuggestionRequestID = nil
         }
+    }
+
+    func requestPersonalModelSuggestions() async {
+        guard let runtime = localModelSuggestions,
+              let assetID = primarySelectedAssetID
+        else {
+            return
+        }
+        let requestID = UUID()
+        localModelSuggestionTrack = .personal
+        localModelSuggestionRequestID = requestID
+        localModelSuggestionState = .loading(assetID: assetID)
+
+        do {
+            let availability = try await runtime.client.personalCapability()
+            guard localModelSuggestionRequestID == requestID,
+                  primarySelectedAssetID == assetID
+            else {
+                return
+            }
+            guard case let .available(capability) = availability else {
+                localModelSuggestionState = .personalUnavailable(assetID: assetID)
+                localModelSuggestionRequestID = nil
+                return
+            }
+            let activeTagIDs = Set(tags.filter { $0.state == .active }.map(\.id))
+            guard capability.target.catalogScopeID == runtime.catalogScopeID,
+                  !capability.tagIDs.isEmpty,
+                  Set(capability.tagIDs).count == capability.tagIDs.count,
+                  Set(capability.tagIDs).isSubset(of: activeTagIDs)
+            else {
+                throw LocalModelSuggestionClientError.identityMismatch
+            }
+
+            let imageData: Data
+            if case let .downloaded(downloadedAssetID, data) = cloudPreviewState,
+               downloadedAssetID == assetID
+            {
+                imageData = data
+            } else {
+                imageData = try await service.loadPreview(assetID: assetID)
+            }
+            let suggestions = try await runtime.client.suggestions(
+                imageData: imageData,
+                requestID: requestID.uuidString.lowercased(),
+                target: .personal(capability.target)
+            )
+            let currentActiveTagIDs = Set(tags.filter { $0.state == .active }.map(\.id))
+            guard localModelSuggestionRequestID == requestID,
+                  primarySelectedAssetID == assetID,
+                  suggestions.allSatisfy({ suggestion in
+                      guard let tagID = suggestion.tagID else { return false }
+                      return suggestion.track == .personal
+                          && suggestion.conceptID == nil
+                          && suggestion.recommendedState == .suggested
+                          && capability.tagIDs.contains(tagID)
+                          && currentActiveTagIDs.contains(tagID)
+                          && suggestion.catalogScopeID == capability.target.catalogScopeID
+                          && suggestion.bundleID == capability.target.bundleID
+                          && suggestion.bundleRevision == capability.target.bundleRevision
+                          && suggestion.provider == capability.target.provider
+                          && suggestion.modelID == capability.target.modelID
+                          && suggestion.modelRevision == capability.target.modelRevision
+                          && suggestion.preprocessingRevision == capability.target.preprocessingRevision
+                          && suggestion.elementCount == capability.target.elementCount
+                          && suggestion.labelVocabularyRevision == capability.target.labelVocabularyRevision
+                          && suggestion.weightsSHA256 == capability.target.weightsSHA256
+                          && suggestion.policyRevision == capability.target.policyRevision
+                          && suggestion.standardPackID == nil
+                          && suggestion.standardPackRevision == nil
+                  })
+            else {
+                throw LocalModelSuggestionClientError.identityMismatch
+            }
+            localModelSuggestionState = .results(assetID: assetID, suggestions: suggestions)
+            localModelSuggestionRequestID = nil
+        } catch PhotosLibraryError.cloudOnly {
+            guard localModelSuggestionRequestID == requestID,
+                  primarySelectedAssetID == assetID
+            else {
+                return
+            }
+            localModelSuggestionState = .previewUnavailable(assetID: assetID)
+            localModelSuggestionRequestID = nil
+        } catch LocalModelSuggestionClientError.serviceUnavailable {
+            guard localModelSuggestionRequestID == requestID,
+                  primarySelectedAssetID == assetID
+            else {
+                return
+            }
+            localModelSuggestionState = .serviceUnavailable(assetID: assetID)
+            localModelSuggestionRequestID = nil
+        } catch {
+            guard localModelSuggestionRequestID == requestID,
+                  primarySelectedAssetID == assetID
+            else {
+                return
+            }
+            localModelSuggestionState = .failed(assetID: assetID)
+            localModelSuggestionRequestID = nil
+        }
+    }
+
+    func applyLocalModelSuggestionDecision(
+        _ suggestion: LocalModelSuggestion,
+        action: LibraryTagDecisionAction
+    ) async {
+        guard suggestion.track == .personal,
+              let tagID = suggestion.tagID,
+              tags.contains(where: { $0.id == tagID && $0.state == .active }),
+              case let .results(assetID, suggestions) = localModelSuggestionState,
+              primarySelectedAssetID == assetID,
+              suggestions.contains(suggestion),
+              action == .accept || action == .reject
+        else {
+            return
+        }
+        guard await applyTagDecision(tagID: tagID, action: action, assetIDs: [assetID]) else {
+            return
+        }
+        localModelSuggestionState = .results(
+            assetID: assetID,
+            suggestions: suggestions.filter { $0 != suggestion }
+        )
     }
 
     func toggleSinglePhotoView() {
@@ -905,15 +1031,16 @@ final class LibraryWorkspaceModel: ObservableObject {
 
     func applyTagDecision(tagID: UUID, action: LibraryTagDecisionAction) async {
         let assetIDs = Array(selectedAssetIDs)
-        await applyTagDecision(tagID: tagID, action: action, assetIDs: assetIDs)
+        _ = await applyTagDecision(tagID: tagID, action: action, assetIDs: assetIDs)
     }
 
+    @discardableResult
     private func applyTagDecision(
         tagID: UUID,
         action: LibraryTagDecisionAction,
         assetIDs: [UUID]
-    ) async {
-        guard !assetIDs.isEmpty else { return }
+    ) async -> Bool {
+        guard !assetIDs.isEmpty else { return false }
         let service = service
         do {
             notice = nil
@@ -927,8 +1054,10 @@ final class LibraryWorkspaceModel: ObservableObject {
             }
             await refreshInspector()
             await refreshReviewState()
+            return true
         } catch {
             notice = tagNotice(for: error)
+            return false
         }
     }
 
@@ -1525,6 +1654,7 @@ final class LibraryWorkspaceModel: ObservableObject {
 
     private func resetLocalModelSuggestionsForSelection() {
         localModelSuggestionRequestID = nil
+        localModelSuggestionTrack = .standard
         guard localModelSuggestions != nil,
               let assetID = primarySelectedAssetID
         else {

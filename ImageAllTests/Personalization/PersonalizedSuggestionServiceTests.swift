@@ -4,6 +4,105 @@ import XCTest
 @testable import ImageAll
 
 final class PersonalizedSuggestionServiceTests: XCTestCase {
+    func testLoopbackClientDiscoversTheLoadedPersonalBundleIdentity() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [ModelSuggestionURLProtocolStub.self]
+        ModelSuggestionURLProtocolStub.handler = { request in
+            XCTAssertEqual(request.url?.path, "/v1/capabilities")
+            XCTAssertEqual(request.httpMethod, "GET")
+            return (
+                HTTPURLResponse(
+                    url: try XCTUnwrap(request.url),
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: ["Content-Type": "application/json"]
+                )!,
+                Data(
+                    """
+                    {
+                      "service_version": "0.1.0",
+                      "personal": {
+                        "status": "available",
+                        "catalog_scope_id": "catalog-fixture",
+                        "bundle_id": "personal-fixture",
+                        "bundle_revision": "bundle-v1",
+                        "encoder": {
+                          "provider": "dinov2",
+                          "model_id": "facebook/dinov2-small",
+                          "model_revision": "model-v1",
+                          "preprocessing_revision": "preprocessing-v1",
+                          "element_count": 384
+                        },
+                        "label_vocabulary_revision": "personal-tags-v1",
+                        "weights_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                        "policy_revision": "personal-policy-v1",
+                        "tag_ids": ["2c000000-0000-4000-8000-000000000001"]
+                      }
+                    }
+                    """.utf8
+                )
+            )
+        }
+        defer { ModelSuggestionURLProtocolStub.handler = nil }
+        let client = try LoopbackModelSuggestionClient(
+            session: URLSession(configuration: configuration)
+        )
+
+        let availability = try await client.personalCapability()
+
+        let capability: PersonalModelSuggestionCapability
+        switch availability {
+        case .unavailable:
+            return XCTFail("expected an available personal bundle")
+        case let .available(value):
+            capability = value
+        }
+        XCTAssertEqual(capability.target.catalogScopeID, "catalog-fixture")
+        XCTAssertEqual(capability.target.bundleID, "personal-fixture")
+        XCTAssertEqual(capability.target.provider, "dinov2")
+        XCTAssertEqual(capability.target.modelID, "facebook/dinov2-small")
+        XCTAssertEqual(capability.target.elementCount, 384)
+        XCTAssertEqual(
+            capability.target.weightsSHA256,
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        )
+        XCTAssertEqual(
+            capability.tagIDs,
+            [UUID(uuidString: "2C000000-0000-4000-8000-000000000001")!]
+        )
+    }
+
+    func testLoopbackClientReportsAnExplicitlyUnavailablePersonalBundle() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [ModelSuggestionURLProtocolStub.self]
+        ModelSuggestionURLProtocolStub.handler = { request in
+            (
+                HTTPURLResponse(
+                    url: try XCTUnwrap(request.url),
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: nil
+                )!,
+                Data(
+                    """
+                    {
+                      "service_version": "0.1.0",
+                      "personal": {"status": "unavailable"}
+                    }
+                    """.utf8
+                )
+            )
+        }
+        defer { ModelSuggestionURLProtocolStub.handler = nil }
+        let client = try LoopbackModelSuggestionClient(
+            session: URLSession(configuration: configuration)
+        )
+
+        let availability = try await client.personalCapability()
+
+        XCTAssertEqual(availability, .unavailable)
+    }
+
     func testLoopbackClientReturnsOnlyTheRequestedPersonalBundleTags() async throws {
         let endpoint = URL(string: "http://127.0.0.1:8765")!
         let configuration = URLSessionConfiguration.ephemeral
@@ -21,6 +120,16 @@ final class PersonalizedSuggestionServiceTests: XCTestCase {
             XCTAssertEqual(target["track"] as? String, "personal")
             XCTAssertEqual(target["catalog_scope_id"] as? String, "catalog-fixture")
             XCTAssertEqual(target["bundle_id"] as? String, "personal-fixture")
+            XCTAssertEqual(target["provider"] as? String, "dinov2")
+            XCTAssertEqual(target["model_id"] as? String, "facebook/dinov2-small")
+            XCTAssertEqual(target["model_revision"] as? String, "model-v1")
+            XCTAssertEqual(target["preprocessing_revision"] as? String, "preprocessing-v1")
+            XCTAssertEqual(target["element_count"] as? Int, 384)
+            XCTAssertEqual(
+                target["weights_sha256"] as? String,
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            )
+            XCTAssertEqual(target["policy_revision"] as? String, "personal-policy-v1")
             return (
                 HTTPURLResponse(
                     url: try XCTUnwrap(request.url),
@@ -49,7 +158,14 @@ final class PersonalizedSuggestionServiceTests: XCTestCase {
                     catalogScopeID: "catalog-fixture",
                     bundleID: "personal-fixture",
                     bundleRevision: "bundle-v1",
-                    labelVocabularyRevision: "personal-tags-v1"
+                    provider: "dinov2",
+                    modelID: "facebook/dinov2-small",
+                    modelRevision: "model-v1",
+                    preprocessingRevision: "preprocessing-v1",
+                    elementCount: 384,
+                    labelVocabularyRevision: "personal-tags-v1",
+                    weightsSHA256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    policyRevision: "personal-policy-v1"
                 )
             )
         )
@@ -156,7 +272,14 @@ final class PersonalizedSuggestionServiceTests: XCTestCase {
                         catalogScopeID: "catalog-fixture",
                         bundleID: "personal-fixture",
                         bundleRevision: "bundle-v1",
-                        labelVocabularyRevision: "personal-tags-v1"
+                        provider: "dinov2",
+                        modelID: "facebook/dinov2-small",
+                        modelRevision: "model-v1",
+                        preprocessingRevision: "preprocessing-v1",
+                        elementCount: 384,
+                        labelVocabularyRevision: "personal-tags-v1",
+                        weightsSHA256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                        policyRevision: "personal-policy-v1"
                     )
                 )
             )
@@ -404,7 +527,9 @@ private func personalSuggestionResponseData(
                 "model_id": "facebook/dinov2-small",
                 "model_revision": "model-v1",
                 "preprocessing_revision": "preprocessing-v1",
+                "element_count": 384,
                 "label_vocabulary_revision": "personal-tags-v1",
+                "weights_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 "policy_revision": "personal-policy-v1",
                 "standard_pack_id": NSNull(),
                 "standard_pack_revision": NSNull(),

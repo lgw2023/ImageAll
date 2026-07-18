@@ -38,6 +38,18 @@ final class CatalogMigrationTests: XCTestCase {
         XCTAssertEqual(count, 1)
     }
 
+    func testCurrentCatalogScopeIdentityIsCanonicalAndStableAcrossReopen() throws {
+        let url = try makeTempDatabaseURL()
+
+        let first = try CatalogDatabase.open(at: url)
+        let firstScopeID = try first.catalogScopeID()
+        let parsed = try XCTUnwrap(UUID(uuidString: firstScopeID))
+        XCTAssertEqual(firstScopeID, parsed.uuidString.lowercased())
+
+        let second = try CatalogDatabase.open(at: url)
+        XCTAssertEqual(try second.catalogScopeID(), firstScopeID)
+    }
+
     func testCurrentSchemaMaintainsTrigramAssetSearchIndex() throws {
         let url = try makeTempDatabaseURL()
         let sourceID = UUID()
@@ -86,7 +98,7 @@ final class CatalogMigrationTests: XCTestCase {
             try db.execute(sql: "DELETE FROM asset WHERE id = ?", arguments: [assetID.uuidString.lowercased()])
         }
         XCTAssertTrue(try matchedAssetIDs("\"renamed-photo\"").isEmpty)
-        XCTAssertEqual(CatalogMigrationID.knownOrdered.last, "v006_add_asset_text_search")
+        XCTAssertTrue(CatalogMigrationID.knownOrdered.contains("v006_add_asset_text_search"))
     }
 
     func testV006BackfillsAssetTextFromExistingV005Database() throws {
@@ -195,7 +207,7 @@ final class CatalogMigrationTests: XCTestCase {
             )
             XCTAssertEqual(
                 try CatalogDatabase.readAppliedMigrationIDs(from: db),
-                Array(CatalogMigrationID.knownOrdered.dropLast())
+                Array(CatalogMigrationID.knownOrdered.prefix(5))
             )
             try CatalogDatabase.performQuickCheck(on: db)
         }
@@ -261,7 +273,7 @@ final class CatalogMigrationTests: XCTestCase {
         )
         XCTAssertEqual(
             try SnapshotTestSupport.readMigrationIDs(at: backupURL),
-            Array(CatalogMigrationID.knownOrdered.dropLast())
+            Array(CatalogMigrationID.knownOrdered.prefix(5))
         )
         let backupAssetCount = try CatalogDatabase.withReadonlyQueue(at: backupURL) { db in
             try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM asset") ?? 0

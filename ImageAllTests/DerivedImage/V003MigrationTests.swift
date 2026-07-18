@@ -490,7 +490,7 @@ final class V003MigrationTests: XCTestCase {
 
         let fullURL = try makeTempDatabaseURL()
         let full = try CatalogDatabase.open(at: fullURL)
-        let laterTables = Set(["feature", "tag_model_revision", "tag_model_sample", "tag_model", "prediction"])
+        let laterTables = Set(["catalog_scope", "feature", "tag_model_revision", "tag_model_sample", "tag_model", "prediction"])
         for table in CatalogSchemaExpectations.businessTables
             where table != "derived_image_cache_entry" && !laterTables.contains(table)
         {

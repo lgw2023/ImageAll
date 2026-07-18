@@ -405,7 +405,10 @@ struct InspectorLocalModelSuggestionSection: View {
             EmptyView()
         case .ready:
             container {
-                requestButton("获取本地模型建议")
+                HStack {
+                    standardRequestButton("标准场景")
+                    personalRequestButton("个人标签")
+                }
             }
         case .loading:
             container {
@@ -427,13 +430,40 @@ struct InspectorLocalModelSuggestionSection: View {
                         HStack {
                             Text(displayName(for: suggestion))
                             Spacer()
-                            Text(suggestion.recommendedState == .autoAssigned ? "自动匹配" : "建议复核")
-                                .foregroundStyle(.secondary)
+                            if suggestion.track == .personal {
+                                Button {
+                                    Task {
+                                        await model.applyLocalModelSuggestionDecision(
+                                            suggestion,
+                                            action: .reject
+                                        )
+                                    }
+                                } label: {
+                                    Image(systemName: "xmark")
+                                }
+                                .buttonStyle(.borderless)
+                                .help("标记为不合适")
+                                Button {
+                                    Task {
+                                        await model.applyLocalModelSuggestionDecision(
+                                            suggestion,
+                                            action: .accept
+                                        )
+                                    }
+                                } label: {
+                                    Image(systemName: "checkmark")
+                                }
+                                .buttonStyle(.borderless)
+                                .help("确认并添加标签")
+                            } else {
+                                Text(suggestion.recommendedState == .autoAssigned ? "自动匹配" : "建议复核")
+                                    .foregroundStyle(.secondary)
+                            }
                         }
                         .font(.caption)
                     }
                 }
-                requestButton("重新分析")
+                retryButton("重新分析")
                     .font(.caption)
             }
         case .previewUnavailable:
@@ -442,12 +472,20 @@ struct InspectorLocalModelSuggestionSection: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+        case .personalUnavailable:
+            container {
+                Text("当前目录没有可用的个人模型。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                personalRequestButton("重试")
+                    .font(.caption)
+            }
         case .serviceUnavailable:
             container {
                 Text("本地模型服务当前不可用，照片与人工标签不受影响。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                requestButton("重试")
+                retryButton("重试")
                     .font(.caption)
             }
         case .failed:
@@ -455,7 +493,7 @@ struct InspectorLocalModelSuggestionSection: View {
                 Text("模型结果未通过校验，已安全忽略。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                requestButton("重试")
+                retryButton("重试")
                     .font(.caption)
             }
         }
@@ -471,14 +509,35 @@ struct InspectorLocalModelSuggestionSection: View {
         }
     }
 
-    private func requestButton(_ title: String) -> some View {
+    private func standardRequestButton(_ title: String) -> some View {
         Button(title) {
             Task { await model.requestLocalModelSuggestions() }
         }
         .buttonStyle(.bordered)
     }
 
+    private func personalRequestButton(_ title: String) -> some View {
+        Button(title) {
+            Task { await model.requestPersonalModelSuggestions() }
+        }
+        .buttonStyle(.bordered)
+    }
+
+    @ViewBuilder
+    private func retryButton(_ title: String) -> some View {
+        if model.localModelSuggestionTrack == .personal {
+            personalRequestButton(title)
+        } else {
+            standardRequestButton(title)
+        }
+    }
+
     private func displayName(for suggestion: LocalModelSuggestion) -> String {
+        if let tagID = suggestion.tagID,
+           let tag = model.tags.first(where: { $0.id == tagID })
+        {
+            return tag.displayName
+        }
         guard suggestion.ontologyID == "imageall-public-fixture",
               suggestion.ontologyRevision == "ontology-v1"
         else {

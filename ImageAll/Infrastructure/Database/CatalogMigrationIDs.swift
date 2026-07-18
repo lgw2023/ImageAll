@@ -7,6 +7,7 @@ enum CatalogMigrationID {
     static let v004AddPersonalization = "v004_add_personalization"
     static let v005AddCatalogScaleIndexes = "v005_add_catalog_scale_indexes"
     static let v006AddAssetTextSearch = "v006_add_asset_text_search"
+    static let v007AddCatalogScopeIdentity = "v007_add_catalog_scope_identity"
 
     static let knownOrdered: [String] = [
         v001CreateCatalogCore,
@@ -15,5 +16,6 @@ enum CatalogMigrationID {
         v004AddPersonalization,
         v005AddCatalogScaleIndexes,
         v006AddAssetTextSearch,
+        v007AddCatalogScopeIdentity,
     ]
 }

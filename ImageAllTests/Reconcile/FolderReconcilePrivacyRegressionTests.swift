@@ -29,6 +29,7 @@ final class FolderReconcilePrivacyRegressionTests: XCTestCase {
             CatalogMigrationID.v004AddPersonalization,
             CatalogMigrationID.v005AddCatalogScaleIndexes,
             CatalogMigrationID.v006AddAssetTextSearch,
+            CatalogMigrationID.v007AddCatalogScopeIdentity,
         ])
     }
 }

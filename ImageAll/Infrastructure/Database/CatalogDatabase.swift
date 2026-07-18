@@ -12,6 +12,7 @@ struct CatalogDatabase: Sendable {
         V004AddPersonalizationMigration.register(on: &migrator)
         V005AddCatalogScaleIndexesMigration.register(on: &migrator)
         V006AddAssetTextSearchMigration.register(on: &migrator)
+        V007AddCatalogScopeIdentityMigration.register(on: &migrator)
         return migrator
     }
 
@@ -77,6 +78,21 @@ struct CatalogDatabase: Sendable {
     func appliedMigrationIDs() throws -> [String] {
         try pool.read { db in
             try String.fetchAll(db, sql: "SELECT identifier FROM grdb_migrations ORDER BY identifier")
+        }
+    }
+
+    func catalogScopeID() throws -> String {
+        try pool.read { db in
+            guard let value = try String.fetchOne(
+                db,
+                sql: "SELECT scope_id FROM catalog_scope WHERE singleton = 1"
+            ),
+                let uuid = UUID(uuidString: value),
+                value == uuid.uuidString.lowercased()
+            else {
+                throw CatalogDatabaseError.invalidCatalogScopeIdentity
+            }
+            return value
         }
     }
 
@@ -447,6 +463,25 @@ enum V006AddAssetTextSearchMigration {
                 """
             )
             try db.execute(sql: "INSERT INTO asset_search(asset_search) VALUES ('rebuild')")
+        }
+    }
+}
+
+enum V007AddCatalogScopeIdentityMigration {
+    static func register(on migrator: inout DatabaseMigrator) {
+        migrator.registerMigration(CatalogMigrationID.v007AddCatalogScopeIdentity) { db in
+            try db.execute(
+                sql: """
+                CREATE TABLE catalog_scope (
+                    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                    scope_id TEXT NOT NULL UNIQUE
+                ) STRICT
+                """
+            )
+            try db.execute(
+                sql: "INSERT INTO catalog_scope (singleton, scope_id) VALUES (1, ?)",
+                arguments: [UUID().uuidString.lowercased()]
+            )
         }
     }
 }
