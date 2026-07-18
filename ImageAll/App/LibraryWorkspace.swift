@@ -37,6 +37,27 @@ enum LibraryGridDensity: String, CaseIterable, Sendable {
     }
 }
 
+enum LibraryGridNavigationDirection: Equatable, Sendable {
+    case left
+    case right
+    case up
+    case down
+}
+
+enum LibraryGridLayout {
+    static let spacing: CGFloat = 8
+    static let horizontalPadding: CGFloat = 12
+
+    static func columnCount(
+        containerWidth: CGFloat,
+        density: LibraryGridDensity
+    ) -> Int {
+        let availableWidth = max(containerWidth - horizontalPadding * 2, 0)
+        let minimumWidth = density.cellWidthRange.lowerBound
+        return max(Int((availableWidth + spacing) / (minimumWidth + spacing)), 1)
+    }
+}
+
 enum LibraryWorkspaceCommand: Hashable {
     case showAllPhotos
     case showReviewSuggestions
@@ -683,8 +704,12 @@ final class LibraryWorkspaceModel: ObservableObject {
     func movePrimarySelection(by offset: Int) async {
         guard offset != 0, let currentID = primarySelectedAssetID else { return }
 
-        if offset > 0, currentID == items.last?.assetID {
-            await loadMoreIfNeeded(currentAssetID: currentID)
+        if offset > 0,
+           let currentIndex = items.firstIndex(where: { $0.assetID == currentID }),
+           currentIndex + offset >= items.count,
+           let lastLoadedID = items.last?.assetID
+        {
+            await loadMoreIfNeeded(currentAssetID: lastLoadedID)
         }
 
         guard let currentIndex = items.firstIndex(where: { $0.assetID == currentID }) else {
@@ -693,6 +718,20 @@ final class LibraryWorkspaceModel: ObservableObject {
         let targetIndex = min(max(currentIndex + offset, 0), items.count - 1)
         guard targetIndex != currentIndex else { return }
         await selectAsset(items[targetIndex].assetID)
+    }
+
+    func movePrimarySelection(
+        in direction: LibraryGridNavigationDirection,
+        columnCount: Int
+    ) async {
+        let columns = max(columnCount, 1)
+        let offset = switch direction {
+        case .left: -1
+        case .right: 1
+        case .up: -columns
+        case .down: columns
+        }
+        await movePrimarySelection(by: offset)
     }
 
     func applyTagDecision(tagID: UUID, action: LibraryTagDecisionAction) async {
@@ -1602,6 +1641,8 @@ struct LibraryWorkspaceView: View {
     @State private var showJobActivityPanel = false
     @State private var activeSheet: LibraryWorkspaceSheet?
     @State private var commandSearchText = ""
+    @State private var gridColumnCount = 1
+    @State private var gridScrollTargetID: UUID?
     @FocusState private var newTagFieldFocused: Bool
     @FocusState private var contentFocused: Bool
     @FocusState private var commandSearchFieldFocused: Bool
@@ -1626,12 +1667,10 @@ struct LibraryWorkspaceView: View {
                     model.closeSinglePhotoView()
                     return .handled
                 }
-                .onKeyPress(keys: [.leftArrow, .rightArrow]) { keyPress in
-                    guard model.primarySelectedAssetID != nil else { return .ignored }
-                    let offset = keyPress.key == .leftArrow ? -1 : 1
-                    Task { await model.movePrimarySelection(by: offset) }
-                    return .handled
-                }
+                .onKeyPress(
+                    keys: [.leftArrow, .rightArrow, .upArrow, .downArrow],
+                    action: handleGridNavigationKey
+                )
         } detail: {
             inspector
                 .navigationSplitViewColumnWidth(min: 240, ideal: 300, max: 380)
@@ -2126,7 +2165,7 @@ struct LibraryWorkspaceView: View {
             shortcutRow("打开命令面板", keys: "⌘K")
             shortcutRow("切换单图查看", keys: "Space")
             shortcutRow("返回照片网格", keys: "Esc")
-            shortcutRow("移动照片选择", keys: "←  →")
+            shortcutRow("移动照片选择", keys: "←  ↑  ↓  →")
             Spacer()
         }
         .padding(24)
@@ -2185,6 +2224,34 @@ struct LibraryWorkspaceView: View {
         case .showKeyboardShortcuts:
             break
         }
+    }
+
+    private func handleGridNavigationKey(_ keyPress: KeyPress) -> KeyPress.Result {
+        guard model.primarySelectedAssetID != nil else { return .ignored }
+        let direction: LibraryGridNavigationDirection
+        switch keyPress.key {
+        case .leftArrow: direction = .left
+        case .rightArrow: direction = .right
+        case .upArrow: direction = .up
+        case .downArrow: direction = .down
+        default: return .ignored
+        }
+
+        if model.isSinglePhotoPresented, direction == .up || direction == .down {
+            return .ignored
+        }
+        if model.reviewMode != nil {
+            guard direction == .left || direction == .right else { return .ignored }
+            let offset = direction == .left ? -1 : 1
+            Task { await model.movePrimarySelection(by: offset) }
+            return .handled
+        }
+
+        Task {
+            await model.movePrimarySelection(in: direction, columnCount: gridColumnCount)
+            gridScrollTargetID = model.primarySelectedAssetID
+        }
+        return .handled
     }
 
     private var sidebar: some View {
@@ -2488,44 +2555,72 @@ struct LibraryWorkspaceView: View {
 
     private var assetGrid: some View {
         let widthRange = model.gridDensity.cellWidthRange
-        return ScrollView {
-            LazyVGrid(
-                columns: [
-                    GridItem(
-                        .adaptive(
-                            minimum: widthRange.lowerBound,
-                            maximum: widthRange.upperBound
-                        ),
-                        spacing: 8
-                    ),
-                ],
-                spacing: 8
-            ) {
-                ForEach(model.items, id: \.assetID) { item in
-                    AssetThumbnailView(
-                        item: item,
-                        model: model,
-                        isSelected: model.selectedAssetIDs.contains(item.assetID)
+        return GeometryReader { proxy in
+            ScrollViewReader { scrollProxy in
+                ScrollView {
+                    LazyVGrid(
+                        columns: [
+                            GridItem(
+                                .adaptive(
+                                    minimum: widthRange.lowerBound,
+                                    maximum: widthRange.upperBound
+                                ),
+                                spacing: LibraryGridLayout.spacing
+                            ),
+                        ],
+                        spacing: LibraryGridLayout.spacing
                     ) {
-                        contentFocused = true
-                        let flags = NSEvent.modifierFlags.intersection(.deviceIndependentFlagsMask)
-                        Task {
-                            await model.selectAsset(
-                                item.assetID,
-                                additive: flags.contains(.command),
-                                extendRange: flags.contains(.shift)
-                            )
+                        ForEach(model.items, id: \.assetID) { item in
+                            AssetThumbnailView(
+                                item: item,
+                                model: model,
+                                isSelected: model.selectedAssetIDs.contains(item.assetID)
+                            ) {
+                                contentFocused = true
+                                let flags = NSEvent.modifierFlags.intersection(.deviceIndependentFlagsMask)
+                                Task {
+                                    await model.selectAsset(
+                                        item.assetID,
+                                        additive: flags.contains(.command),
+                                        extendRange: flags.contains(.shift)
+                                    )
+                                }
+                            }
+                                .id(item.assetID)
+                                .task {
+                                    await model.loadMoreIfNeeded(currentAssetID: item.assetID)
+                                }
                         }
                     }
-                        .task {
-                            await model.loadMoreIfNeeded(currentAssetID: item.assetID)
-                        }
+                    .padding(LibraryGridLayout.horizontalPadding)
+                }
+                .background(Color(nsColor: .windowBackgroundColor))
+                .accessibilityLabel("照片网格")
+                .onAppear {
+                    updateGridColumnCount(containerWidth: proxy.size.width)
+                    contentFocused = true
+                    gridScrollTargetID = model.primarySelectedAssetID
+                }
+                .onChange(of: proxy.size.width) { _, width in
+                    updateGridColumnCount(containerWidth: width)
+                }
+                .onChange(of: model.gridDensity) { _, _ in
+                    updateGridColumnCount(containerWidth: proxy.size.width)
+                }
+                .onChange(of: gridScrollTargetID) { _, assetID in
+                    guard let assetID else { return }
+                    scrollProxy.scrollTo(assetID, anchor: .center)
+                    gridScrollTargetID = nil
                 }
             }
-            .padding(12)
         }
-        .background(Color(nsColor: .windowBackgroundColor))
-        .onAppear { contentFocused = true }
+    }
+
+    private func updateGridColumnCount(containerWidth: CGFloat) {
+        gridColumnCount = LibraryGridLayout.columnCount(
+            containerWidth: containerWidth,
+            density: model.gridDensity
+        )
     }
 
     private var inspector: some View {
@@ -3126,6 +3221,12 @@ private struct AssetThumbnailView: View {
         .aspectRatio(1, contentMode: .fit)
         .contentShape(Rectangle())
         .onTapGesture(perform: onSelect)
+        .accessibilityAddTraits(.isButton)
+        .accessibilityValue(isSelected ? "已选择" : "未选择")
+        .accessibilityHint("选择照片；选择后按空格查看单张照片")
+        .accessibilityAction {
+            onSelect()
+        }
         .task(id: thumbnailLoadID) {
             guard item.availability == .available,
                   let data = await model.thumbnailData(assetID: item.assetID)

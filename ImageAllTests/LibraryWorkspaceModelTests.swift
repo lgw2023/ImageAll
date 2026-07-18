@@ -1105,6 +1105,83 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertEqual(model.selectedAssetIDs, [second.assetID])
     }
 
+    func testGridNavigationMovesPrimarySelectionByRowsAndColumns() async {
+        let sourceID = UUID()
+        let assets = (0 ..< 8).map {
+            Self.makeAsset(sourceID: sourceID, fileName: "photo-\($0).jpg")
+        }
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: sourceID,
+                displayName: "Fixture",
+                state: .active
+            ),
+            reconciledItems: assets
+        )
+        let model = LibraryWorkspaceModel(service: service)
+
+        await model.start()
+        await model.connectFolder()
+        await waitForCatalogScanToFinish(model)
+        await model.selectAsset(assets[4].assetID)
+
+        await model.movePrimarySelection(in: .up, columnCount: 3)
+        XCTAssertEqual(model.primarySelectedAssetID, assets[1].assetID)
+
+        await model.movePrimarySelection(in: .down, columnCount: 3)
+        XCTAssertEqual(model.primarySelectedAssetID, assets[4].assetID)
+
+        await model.movePrimarySelection(in: .left, columnCount: 3)
+        XCTAssertEqual(model.primarySelectedAssetID, assets[3].assetID)
+
+        await model.movePrimarySelection(in: .right, columnCount: 3)
+        XCTAssertEqual(model.primarySelectedAssetID, assets[4].assetID)
+        XCTAssertEqual(model.selectedAssetIDs.count, 1)
+    }
+
+    func testGridNavigationLoadsNextPageBeforeMovingDownPastLoadedItems() async {
+        let sourceID = UUID()
+        let assets = (0 ..< 6).map {
+            Self.makeAsset(sourceID: sourceID, fileName: "photo-\($0).jpg")
+        }
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: sourceID,
+                displayName: "Fixture",
+                state: .active
+            ),
+            reconciledItems: assets,
+            assetPageSize: 4
+        )
+        let model = LibraryWorkspaceModel(service: service)
+
+        await model.start()
+        await model.connectFolder()
+        await waitForCatalogScanToFinish(model)
+        XCTAssertEqual(model.items.map(\.assetID), Array(assets.prefix(4)).map(\.assetID))
+        await model.selectAsset(assets[2].assetID)
+
+        await model.movePrimarySelection(in: .down, columnCount: 3)
+
+        XCTAssertEqual(model.primarySelectedAssetID, assets[5].assetID)
+        XCTAssertEqual(model.items.map(\.assetID), assets.map(\.assetID))
+    }
+
+    func testAdaptiveGridColumnCountTracksAvailableWidthAndDensity() {
+        XCTAssertEqual(
+            LibraryGridLayout.columnCount(containerWidth: 900, density: .standard),
+            6
+        )
+        XCTAssertEqual(
+            LibraryGridLayout.columnCount(containerWidth: 430, density: .standard),
+            2
+        )
+        XCTAssertEqual(
+            LibraryGridLayout.columnCount(containerWidth: 100, density: .large),
+            1
+        )
+    }
+
     func testCommandPaletteListsOnlyImplementedCoreAndLibraryActions() async {
         let sourceID = UUID()
         let tag = TagListItem(id: UUID(), displayName: "Family", state: .active)
@@ -1662,6 +1739,7 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
     private let jobActivityActionFails: Bool
     private let jobActivityItemsAfterFailedAction: [JobActivityItem]?
     private let blockedSearchText: String?
+    private let assetPageSize: Int?
     private let assetPageFetchGate = DispatchSemaphore(value: 0)
     private var storedHasStartedBlockedAssetPageFetch = false
 
@@ -1692,7 +1770,8 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
         jobActivityItems: [JobActivityItem] = [],
         jobActivityActionFails: Bool = false,
         jobActivityItemsAfterFailedAction: [JobActivityItem]? = nil,
-        blockedSearchText: String? = nil
+        blockedSearchText: String? = nil,
+        assetPageSize: Int? = nil
     ) {
         self.connectedSource = connectedSource
         self.reconciledItems = reconciledItems
@@ -1718,6 +1797,7 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
         self.jobActivityActionFails = jobActivityActionFails
         self.jobActivityItemsAfterFailedAction = jobActivityItemsAfterFailedAction
         self.blockedSearchText = blockedSearchText
+        self.assetPageSize = assetPageSize
         storedSources = startsConnected ? [connectedSource] : []
         storedItems = initialItems
         storedTags = tags
@@ -2045,7 +2125,30 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
                 guard let search, !search.isEmpty else { return true }
                 return item.fileName?.lowercased().contains(search) == true
             }
-            return AssetPageResult(items: filtered, nextCursor: nil)
+            let cursorAssetID: UUID? = cursor.map {
+                switch $0.payload {
+                case let .timeSort(_, _, assetID), let .fileNameSort(_, _, assetID):
+                    assetID
+                }
+            }
+            let startIndex = cursorAssetID
+                .flatMap { id in filtered.firstIndex(where: { $0.assetID == id }) }
+                .map { $0 + 1 } ?? 0
+            let pageItems = Array(
+                filtered.dropFirst(startIndex).prefix(assetPageSize ?? filtered.count)
+            )
+            let hasNextPage = startIndex + pageItems.count < filtered.count
+            let nextCursor = hasNextPage ? pageItems.last.map {
+                AssetPageCursor(
+                    sort: sort,
+                    payload: .timeSort(
+                        timeEmptyMarker: 0,
+                        coalescedTimeMs: $0.mediaModifiedAtMs,
+                        assetID: $0.assetID
+                    )
+                )
+            } : nil
+            return AssetPageResult(items: pageItems, nextCursor: nextCursor)
         }
     }
 
