@@ -395,3 +395,100 @@ struct InspectorSuggestionSection: View {
         }
     }
 }
+
+struct InspectorLocalModelSuggestionSection: View {
+    @ObservedObject var model: LibraryWorkspaceModel
+
+    var body: some View {
+        switch model.localModelSuggestionState {
+        case .hidden:
+            EmptyView()
+        case .ready:
+            container {
+                requestButton("获取本地模型建议")
+            }
+        case .loading:
+            container {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text("正在分析当前照片…")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        case let .results(_, suggestions):
+            container {
+                if suggestions.isEmpty {
+                    Text("当前模型没有给出建议。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(Array(suggestions.enumerated()), id: \.offset) { _, suggestion in
+                        HStack {
+                            Text(displayName(for: suggestion))
+                            Spacer()
+                            Text(suggestion.recommendedState == .autoAssigned ? "自动匹配" : "建议复核")
+                                .foregroundStyle(.secondary)
+                        }
+                        .font(.caption)
+                    }
+                }
+                requestButton("重新分析")
+                    .font(.caption)
+            }
+        case .previewUnavailable:
+            container {
+                Text("请先在上方获取这张照片的 iCloud 预览。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        case .serviceUnavailable:
+            container {
+                Text("本地模型服务当前不可用，照片与人工标签不受影响。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                requestButton("重试")
+                    .font(.caption)
+            }
+        case .failed:
+            container {
+                Text("模型结果未通过校验，已安全忽略。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                requestButton("重试")
+                    .font(.caption)
+            }
+        }
+    }
+
+    private func container<Content: View>(
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("本地模型预览")
+                .font(.headline)
+            content()
+        }
+    }
+
+    private func requestButton(_ title: String) -> some View {
+        Button(title) {
+            Task { await model.requestLocalModelSuggestions() }
+        }
+        .buttonStyle(.bordered)
+    }
+
+    private func displayName(for suggestion: LocalModelSuggestion) -> String {
+        guard suggestion.ontologyID == "imageall-public-fixture",
+              suggestion.ontologyRevision == "ontology-v1"
+        else {
+            return "标准场景建议"
+        }
+        return switch suggestion.conceptID {
+        case "scene.environment": "环境"
+        case "scene.outdoor": "户外"
+        case "scene.water": "水域"
+        default: "标准场景建议"
+        }
+    }
+}

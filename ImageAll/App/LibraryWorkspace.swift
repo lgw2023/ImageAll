@@ -149,6 +149,7 @@ final class LibraryWorkspaceModel: ObservableObject {
     @Published private(set) var pendingNewTagConfirmation: LibraryNewTagConfirmation?
     @Published private(set) var assetPendingSuggestions: [AssetPendingSuggestion] = []
     @Published private(set) var cloudPreviewState: CloudPreviewPresentationState = .hidden
+    @Published private(set) var localModelSuggestionState: LocalModelSuggestionPresentationState = .hidden
     @Published private(set) var isExportingPortableData = false
     @Published private(set) var previewCacheUsage = DerivedImageCacheUsage.zero
     @Published private(set) var isClearingPreviewCache = false
@@ -157,6 +158,7 @@ final class LibraryWorkspaceModel: ObservableObject {
 
     fileprivate let review: any PersonalizationReviewPort
     private let service: any LibraryWorkspacePort
+    private let localModelSuggestions: LocalModelSuggestionRuntime?
     private var lastTagMutation: LibraryTagUndoRecord?
     fileprivate var lastReviewMutation: ReviewMutationUndoRecord?
     private var personalizationRunnerTask: Task<Void, Never>?
@@ -164,6 +166,7 @@ final class LibraryWorkspaceModel: ObservableObject {
     private var catalogReconcileRunRequested = false
     private var cloudPreviewTask: Task<Void, Never>?
     private var cloudPreviewRequestID: UUID?
+    private var localModelSuggestionRequestID: UUID?
     private var searchDebounceTask: Task<Void, Never>?
     private var assetPageRequestID: UUID?
     private var selectionAnchorID: UUID?
@@ -179,11 +182,13 @@ final class LibraryWorkspaceModel: ObservableObject {
     init(
         service: any LibraryWorkspacePort,
         review: any PersonalizationReviewPort = EmptyPersonalizationReviewPort(),
+        localModelSuggestions: LocalModelSuggestionRuntime? = nil,
         catalogProgressRefreshInterval: Duration = .milliseconds(750),
         searchDebounceInterval: Duration = .milliseconds(300)
     ) {
         self.service = service
         self.review = review
+        self.localModelSuggestions = localModelSuggestions
         self.catalogProgressRefreshInterval = catalogProgressRefreshInterval
         self.searchDebounceInterval = searchDebounceInterval
     }
@@ -769,7 +774,66 @@ final class LibraryWorkspaceModel: ObservableObject {
             isSinglePhotoPresented = false
         }
         resetCloudPreviewIfSelectionChanged()
+        resetLocalModelSuggestionsForSelection()
         await refreshInspector()
+    }
+
+    func requestLocalModelSuggestions() async {
+        guard let runtime = localModelSuggestions,
+              let assetID = primarySelectedAssetID
+        else {
+            return
+        }
+        let requestID = UUID()
+        localModelSuggestionRequestID = requestID
+        localModelSuggestionState = .loading(assetID: assetID)
+
+        do {
+            let imageData: Data
+            if case let .downloaded(downloadedAssetID, data) = cloudPreviewState,
+               downloadedAssetID == assetID
+            {
+                imageData = data
+            } else {
+                imageData = try await service.loadPreview(assetID: assetID)
+            }
+            let suggestions = try await runtime.client.suggestions(
+                imageData: imageData,
+                requestID: requestID.uuidString.lowercased(),
+                target: runtime.target
+            )
+            guard localModelSuggestionRequestID == requestID,
+                  primarySelectedAssetID == assetID
+            else {
+                return
+            }
+            localModelSuggestionState = .results(assetID: assetID, suggestions: suggestions)
+            localModelSuggestionRequestID = nil
+        } catch PhotosLibraryError.cloudOnly {
+            guard localModelSuggestionRequestID == requestID,
+                  primarySelectedAssetID == assetID
+            else {
+                return
+            }
+            localModelSuggestionState = .previewUnavailable(assetID: assetID)
+            localModelSuggestionRequestID = nil
+        } catch LocalModelSuggestionClientError.serviceUnavailable {
+            guard localModelSuggestionRequestID == requestID,
+                  primarySelectedAssetID == assetID
+            else {
+                return
+            }
+            localModelSuggestionState = .serviceUnavailable(assetID: assetID)
+            localModelSuggestionRequestID = nil
+        } catch {
+            guard localModelSuggestionRequestID == requestID,
+                  primarySelectedAssetID == assetID
+            else {
+                return
+            }
+            localModelSuggestionState = .failed(assetID: assetID)
+            localModelSuggestionRequestID = nil
+        }
     }
 
     func toggleSinglePhotoView() {
@@ -1457,6 +1521,17 @@ final class LibraryWorkspaceModel: ObservableObject {
         }
         cancelCloudPreviewTask(resetToAvailable: false)
         cloudPreviewState = .hidden
+    }
+
+    private func resetLocalModelSuggestionsForSelection() {
+        localModelSuggestionRequestID = nil
+        guard localModelSuggestions != nil,
+              let assetID = primarySelectedAssetID
+        else {
+            localModelSuggestionState = .hidden
+            return
+        }
+        localModelSuggestionState = .ready(assetID: assetID)
     }
 
     private func cancelCloudPreviewTask(resetToAvailable: Bool) {
@@ -2989,6 +3064,7 @@ struct LibraryWorkspaceView: View {
                         if let detail = model.inspectorDetail {
                             InspectorPreview(assetID: detail.assetID, model: model)
                             if model.reviewMode == nil {
+                                InspectorLocalModelSuggestionSection(model: model)
                                 InspectorSuggestionSection(model: model)
                             } else if case let .tagQueue(tagID, displayName) = model.reviewMode {
                                 reviewInspectorActions(tagID: tagID, displayName: displayName)

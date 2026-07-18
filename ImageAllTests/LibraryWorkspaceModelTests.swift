@@ -559,6 +559,159 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertEqual(service.cloudPreviewCancellationCount, 1)
     }
 
+    func testLocalModelSuggestionsRunOnlyAfterExplicitRequestForCurrentAsset() async {
+        let sourceID = UUID()
+        let asset = Self.makeAsset(sourceID: sourceID, fileName: "standard-preview.jpg")
+        let previewData = Data("standard-preview".utf8)
+        let suggestion = Self.makeStandardSuggestion(recommendedState: .autoAssigned)
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: sourceID,
+                displayName: "Fixture",
+                state: .active
+            ),
+            reconciledItems: [asset],
+            initialItems: [asset],
+            startsConnected: true,
+            previewData: previewData
+        )
+        let client = FakeLocalModelSuggestionClient(result: .success([suggestion]))
+        let model = LibraryWorkspaceModel(
+            service: service,
+            localModelSuggestions: Self.makeStandardRuntime(client: client)
+        )
+
+        await model.start()
+        await model.selectAsset(asset.assetID)
+
+        XCTAssertEqual(client.callCount, 0)
+        XCTAssertEqual(model.localModelSuggestionState, .ready(assetID: asset.assetID))
+
+        await model.requestLocalModelSuggestions()
+
+        XCTAssertEqual(client.callCount, 1)
+        XCTAssertEqual(client.lastImageData, previewData)
+        XCTAssertEqual(
+            model.localModelSuggestionState,
+            .results(assetID: asset.assetID, suggestions: [suggestion])
+        )
+        XCTAssertEqual(service.mutateTagCallCount, 0)
+    }
+
+    func testOfflineLocalModelSuggestionServiceFailsClosedWithoutTagMutation() async {
+        let sourceID = UUID()
+        let asset = Self.makeAsset(sourceID: sourceID, fileName: "offline.jpg")
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: sourceID,
+                displayName: "Fixture",
+                state: .active
+            ),
+            reconciledItems: [asset],
+            initialItems: [asset],
+            startsConnected: true,
+            previewData: Data("preview".utf8)
+        )
+        let client = FakeLocalModelSuggestionClient(
+            result: .failure(.serviceUnavailable)
+        )
+        let model = LibraryWorkspaceModel(
+            service: service,
+            localModelSuggestions: Self.makeStandardRuntime(client: client)
+        )
+
+        await model.start()
+        await model.selectAsset(asset.assetID)
+        await model.requestLocalModelSuggestions()
+
+        XCTAssertEqual(
+            model.localModelSuggestionState,
+            .serviceUnavailable(assetID: asset.assetID)
+        )
+        XCTAssertEqual(service.mutateTagCallCount, 0)
+        XCTAssertNil(model.notice)
+    }
+
+    func testLocalModelSuggestionResultIsDiscardedAfterSelectionChanges() async {
+        let sourceID = UUID()
+        let first = Self.makeAsset(sourceID: sourceID, fileName: "first.jpg")
+        let second = Self.makeAsset(sourceID: sourceID, fileName: "second.jpg")
+        let suggestion = Self.makeStandardSuggestion(recommendedState: .suggested)
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(id: sourceID, displayName: "Fixture", state: .active),
+            reconciledItems: [first, second],
+            initialItems: [first, second],
+            startsConnected: true,
+            previewData: Data("preview".utf8)
+        )
+        let client = FakeLocalModelSuggestionClient(
+            result: .success([suggestion]),
+            blocksRequests: true
+        )
+        let model = LibraryWorkspaceModel(
+            service: service,
+            localModelSuggestions: Self.makeStandardRuntime(client: client)
+        )
+        await model.start()
+        await model.selectAsset(first.assetID)
+
+        let request = Task { await model.requestLocalModelSuggestions() }
+        for _ in 0 ..< 10_000 where !client.hasBlockedRequest {
+            await Task.yield()
+        }
+        XCTAssertTrue(client.hasBlockedRequest)
+
+        await model.selectAsset(second.assetID)
+        client.releaseBlockedRequest()
+        await request.value
+
+        XCTAssertEqual(
+            model.localModelSuggestionState,
+            .ready(assetID: second.assetID)
+        )
+    }
+
+    func testLocalModelSuggestionsReuseExplicitlyDownloadedCloudPreview() async {
+        let sourceID = UUID()
+        let asset = Self.makeAsset(sourceID: sourceID, fileName: "cloud-model.jpg")
+        let downloaded = Data("downloaded-standard-preview".utf8)
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: sourceID,
+                kind: .photos,
+                displayName: "Apple Photos",
+                state: .active
+            ),
+            reconciledItems: [asset],
+            initialItems: [asset],
+            startsConnected: true,
+            previewError: .cloudOnly,
+            cloudPreviewData: downloaded
+        )
+        let client = FakeLocalModelSuggestionClient(result: .success([]))
+        let model = LibraryWorkspaceModel(
+            service: service,
+            localModelSuggestions: Self.makeStandardRuntime(client: client)
+        )
+        await model.start()
+        await model.selectAsset(asset.assetID)
+        _ = await model.previewData(assetID: asset.assetID)
+
+        model.downloadCloudPreview(assetID: asset.assetID)
+        await waitForCloudPreviewState(
+            .downloaded(assetID: asset.assetID, data: downloaded),
+            model: model
+        )
+        await model.requestLocalModelSuggestions()
+
+        XCTAssertEqual(client.lastImageData, downloaded)
+        XCTAssertEqual(service.cloudPreviewDownloadCallCount, 1)
+        XCTAssertEqual(
+            model.localModelSuggestionState,
+            .results(assetID: asset.assetID, suggestions: [])
+        )
+    }
+
     func testConnectFolderRunsReconcileAndLoadsFirstPage() async {
         let sourceID = UUID()
         let asset = Self.makeAsset(sourceID: sourceID)
@@ -2238,6 +2391,46 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTFail("asset page fetch did not block")
     }
 
+    private static func makeStandardRuntime(
+        client: any LocalModelSuggestionClient
+    ) -> LocalModelSuggestionRuntime {
+        LocalModelSuggestionRuntime(
+            client: client,
+            target: .standard(
+                StandardModelSuggestionTarget(
+                    standardPackID: "imageall-public-fixture",
+                    standardPackRevision: "pack-v1"
+                )
+            )
+        )
+    }
+
+    private static func makeStandardSuggestion(
+        recommendedState: ModelSuggestionRecommendedState
+    ) -> LocalModelSuggestion {
+        LocalModelSuggestion(
+            track: .standard,
+            conceptID: "scene.water",
+            tagID: nil,
+            score: 0.9,
+            recommendedState: recommendedState,
+            catalogScopeID: nil,
+            bundleID: nil,
+            bundleRevision: nil,
+            standardPackID: "imageall-public-fixture",
+            standardPackRevision: "pack-v1",
+            provider: "rgb-linear",
+            modelID: "imageall/fixture-scene-linear",
+            modelRevision: "model-v1",
+            preprocessingRevision: "rgb-channel-mean-v1",
+            labelVocabularyRevision: nil,
+            ontologyID: "imageall-public-fixture",
+            ontologyRevision: "ontology-v1",
+            mappingRevision: "mapping-v1",
+            policyRevision: "policy-v1"
+        )
+    }
+
     private static func makeAsset(
         sourceID: UUID,
         fileName: String = "sample.jpg",
@@ -2287,6 +2480,7 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
     private let reboundSource: LibrarySourceSummary?
     private let catalogReconcileProgress: CatalogReconcileProgress?
     private let previewError: PhotosLibraryError?
+    private let previewData: Data
     private let cloudPreviewData: Data
     private let cloudPreviewProgress: [Double]
     private let cloudPreviewFailureCount: Int
@@ -2334,6 +2528,7 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
         reboundSource: LibrarySourceSummary? = nil,
         catalogReconcileProgress: CatalogReconcileProgress? = nil,
         previewError: PhotosLibraryError? = nil,
+        previewData: Data = Data(),
         cloudPreviewData: Data = Data(),
         cloudPreviewProgress: [Double] = [],
         cloudPreviewFailureCount: Int = 0,
@@ -2360,6 +2555,7 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
         self.reboundSource = reboundSource
         self.catalogReconcileProgress = catalogReconcileProgress
         self.previewError = previewError
+        self.previewData = previewData
         self.cloudPreviewData = cloudPreviewData
         self.cloudPreviewProgress = cloudPreviewProgress
         self.cloudPreviewFailureCount = cloudPreviewFailureCount
@@ -2746,7 +2942,7 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
         if let previewError {
             throw previewError
         }
-        return Data()
+        return previewData
     }
 
     func downloadCloudPreview(
@@ -2923,6 +3119,61 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
                 }
             )
         }
+    }
+}
+
+private final class FakeLocalModelSuggestionClient: LocalModelSuggestionClient, @unchecked Sendable {
+    private let lock = NSLock()
+    private let result: Result<[LocalModelSuggestion], LocalModelSuggestionClientError>
+    private let blocksRequests: Bool
+    private var storedCallCount = 0
+    private var storedLastImageData: Data?
+    private var blockedContinuation: CheckedContinuation<Void, Never>?
+
+    init(
+        result: Result<[LocalModelSuggestion], LocalModelSuggestionClientError>,
+        blocksRequests: Bool = false
+    ) {
+        self.result = result
+        self.blocksRequests = blocksRequests
+    }
+
+    var callCount: Int {
+        lock.withLock { storedCallCount }
+    }
+
+    var lastImageData: Data? {
+        lock.withLock { storedLastImageData }
+    }
+
+    var hasBlockedRequest: Bool {
+        lock.withLock { blockedContinuation != nil }
+    }
+
+    func releaseBlockedRequest() {
+        let continuation = lock.withLock {
+            let continuation = blockedContinuation
+            blockedContinuation = nil
+            return continuation
+        }
+        continuation?.resume()
+    }
+
+    func suggestions(
+        imageData: Data,
+        requestID: String,
+        target: ModelSuggestionTarget
+    ) async throws -> [LocalModelSuggestion] {
+        lock.withLock {
+            storedCallCount += 1
+            storedLastImageData = imageData
+        }
+        if blocksRequests {
+            await withCheckedContinuation { continuation in
+                lock.withLock { blockedContinuation = continuation }
+            }
+        }
+        return try result.get()
     }
 }
 

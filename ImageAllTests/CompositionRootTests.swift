@@ -3,6 +3,20 @@ import XCTest
 
 @MainActor
 final class CompositionRootTests: XCTestCase {
+    func testProductionLocalModelRuntimePinsTheStandardFixtureIdentity() throws {
+        let runtime = try XCTUnwrap(CompositionRoot.makeLocalModelSuggestionRuntime())
+
+        XCTAssertEqual(
+            runtime.target,
+            .standard(
+                StandardModelSuggestionTarget(
+                    standardPackID: "imageall-public-fixture",
+                    standardPackRevision: "pack-v1"
+                )
+            )
+        )
+    }
+
     func testCompositionRootProducesFoundationReadyPresentation() async throws {
         let root = try StartupTestSupport.makeTempRoot(testCase: self)
         let dependencies = StartupTestSupport.makeDependencies(root: root)

@@ -114,6 +114,7 @@ struct CompositionRoot {
             tags: GRDBTagCatalogRepository(database: runtime.database),
             clock: clock
         )
+        let localModelSuggestions = makeLocalModelSuggestionRuntime()
         let service = ProductionLibraryWorkspaceService(
             sourceRepository: sourceRepository,
             folderSourceMonitor: folderSourceMonitor,
@@ -137,6 +138,23 @@ struct CompositionRoot {
             appVersion: BundleAppVersionProvider().currentVersion(),
             clock: clock
         )
-        return LibraryWorkspaceModel(service: service, review: personalizationReview)
+        return LibraryWorkspaceModel(
+            service: service,
+            review: personalizationReview,
+            localModelSuggestions: localModelSuggestions
+        )
+    }
+
+    static func makeLocalModelSuggestionRuntime() -> LocalModelSuggestionRuntime? {
+        guard let client = try? LoopbackModelSuggestionClient() else { return nil }
+        return LocalModelSuggestionRuntime(
+            client: client,
+            target: .standard(
+                StandardModelSuggestionTarget(
+                    standardPackID: "imageall-public-fixture",
+                    standardPackRevision: "pack-v1"
+                )
+            )
+        )
     }
 }

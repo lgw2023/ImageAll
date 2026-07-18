@@ -250,3 +250,32 @@ protocol LocalModelSuggestionClient: Sendable {
         target: ModelSuggestionTarget
     ) async throws -> [LocalModelSuggestion]
 }
+
+struct LocalModelSuggestionRuntime: Sendable {
+    let client: any LocalModelSuggestionClient
+    let target: ModelSuggestionTarget
+}
+
+enum LocalModelSuggestionPresentationState: Equatable, Sendable {
+    case hidden
+    case ready(assetID: UUID)
+    case loading(assetID: UUID)
+    case results(assetID: UUID, suggestions: [LocalModelSuggestion])
+    case previewUnavailable(assetID: UUID)
+    case serviceUnavailable(assetID: UUID)
+    case failed(assetID: UUID)
+
+    var assetID: UUID? {
+        switch self {
+        case .hidden:
+            nil
+        case let .ready(assetID),
+             let .loading(assetID),
+             let .results(assetID, _),
+             let .previewUnavailable(assetID),
+             let .serviceUnavailable(assetID),
+             let .failed(assetID):
+            assetID
+        }
+    }
+}
