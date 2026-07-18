@@ -163,3 +163,90 @@ protocol PersonalizationCatalogPort: Sendable {
         createdAtMs: Int64
     ) throws
 }
+
+enum ModelSuggestionTrack: String, Codable, Equatable, Sendable {
+    case standard
+    case personal
+}
+
+enum ModelSuggestionRecommendedState: String, Codable, Equatable, Sendable {
+    case suggested
+    case autoAssigned
+}
+
+struct StandardModelSuggestionTarget: Equatable, Sendable {
+    let standardPackID: String
+    let standardPackRevision: String
+}
+
+struct PersonalModelSuggestionTarget: Equatable, Sendable {
+    let catalogScopeID: String
+    let bundleID: String
+    let bundleRevision: String
+    let labelVocabularyRevision: String
+}
+
+enum ModelSuggestionTarget: Equatable, Sendable {
+    case standard(StandardModelSuggestionTarget)
+    case personal(PersonalModelSuggestionTarget)
+}
+
+struct LocalModelSuggestion: Codable, Equatable, Sendable {
+    let track: ModelSuggestionTrack
+    let conceptID: String?
+    let tagID: UUID?
+    let score: Double
+    let recommendedState: ModelSuggestionRecommendedState
+    let catalogScopeID: String?
+    let bundleID: String?
+    let bundleRevision: String?
+    let standardPackID: String?
+    let standardPackRevision: String?
+    let provider: String
+    let modelID: String?
+    let modelRevision: String
+    let preprocessingRevision: String
+    let labelVocabularyRevision: String?
+    let ontologyID: String?
+    let ontologyRevision: String?
+    let mappingRevision: String?
+    let policyRevision: String
+
+    enum CodingKeys: String, CodingKey {
+        case track
+        case conceptID = "concept_id"
+        case tagID = "tag_id"
+        case score
+        case recommendedState = "recommended_state"
+        case catalogScopeID = "catalog_scope_id"
+        case bundleID = "bundle_id"
+        case bundleRevision = "bundle_revision"
+        case standardPackID = "standard_pack_id"
+        case standardPackRevision = "standard_pack_revision"
+        case provider
+        case modelID = "model_id"
+        case modelRevision = "model_revision"
+        case preprocessingRevision = "preprocessing_revision"
+        case labelVocabularyRevision = "label_vocabulary_revision"
+        case ontologyID = "ontology_id"
+        case ontologyRevision = "ontology_revision"
+        case mappingRevision = "mapping_revision"
+        case policyRevision = "policy_revision"
+    }
+}
+
+enum LocalModelSuggestionClientError: Error, Equatable, Sendable {
+    case invalidEndpoint
+    case serviceUnavailable
+    case rejected(statusCode: Int, code: String?)
+    case invalidResponse
+    case identityMismatch
+}
+
+protocol LocalModelSuggestionClient: Sendable {
+    func suggestions(
+        imageData: Data,
+        requestID: String,
+        target: ModelSuggestionTarget
+    ) async throws -> [LocalModelSuggestion]
+}

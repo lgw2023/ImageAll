@@ -315,3 +315,196 @@ final class PersonalizedSuggestionService: @unchecked Sendable {
         return values.filter { seen.insert($0).inserted }
     }
 }
+
+final class LoopbackModelSuggestionClient: LocalModelSuggestionClient, @unchecked Sendable {
+    private struct SuggestionRequestPayload: Encodable {
+        let requestID: String
+        let imageBase64: String
+        let target: SuggestionTargetPayload
+
+        enum CodingKeys: String, CodingKey {
+            case requestID = "request_id"
+            case imageBase64 = "image_base64"
+            case target
+        }
+    }
+
+    private struct SuggestionTargetPayload: Encodable {
+        let track: ModelSuggestionTrack
+        let catalogScopeID: String?
+        let standardPackID: String?
+        let standardPackRevision: String?
+        let bundleID: String?
+        let bundleRevision: String?
+        let labelVocabularyRevision: String?
+
+        enum CodingKeys: String, CodingKey {
+            case track
+            case catalogScopeID = "catalog_scope_id"
+            case standardPackID = "standard_pack_id"
+            case standardPackRevision = "standard_pack_revision"
+            case bundleID = "bundle_id"
+            case bundleRevision = "bundle_revision"
+            case labelVocabularyRevision = "label_vocabulary_revision"
+        }
+
+        init(_ target: ModelSuggestionTarget) {
+            switch target {
+            case let .standard(standard):
+                track = .standard
+                catalogScopeID = nil
+                standardPackID = standard.standardPackID
+                standardPackRevision = standard.standardPackRevision
+                bundleID = nil
+                bundleRevision = nil
+                labelVocabularyRevision = nil
+            case let .personal(personal):
+                track = .personal
+                catalogScopeID = personal.catalogScopeID
+                standardPackID = nil
+                standardPackRevision = nil
+                bundleID = personal.bundleID
+                bundleRevision = personal.bundleRevision
+                labelVocabularyRevision = personal.labelVocabularyRevision
+            }
+        }
+    }
+
+    private struct SuggestionResponsePayload: Decodable {
+        let requestID: String
+        let suggestions: [LocalModelSuggestion]
+
+        enum CodingKeys: String, CodingKey {
+            case requestID = "request_id"
+            case suggestions
+        }
+    }
+
+    private struct ErrorResponsePayload: Decodable {
+        struct Detail: Decodable {
+            let code: String
+        }
+
+        let detail: Detail
+    }
+
+    private let endpoint: URL
+    private let session: URLSession
+
+    init(
+        endpoint: URL = URL(string: "http://127.0.0.1:8765")!,
+        session: URLSession = .shared
+    ) throws {
+        guard endpoint.scheme == "http",
+              endpoint.host == "127.0.0.1",
+              endpoint.user == nil,
+              endpoint.password == nil,
+              endpoint.query == nil,
+              endpoint.fragment == nil,
+              endpoint.path.isEmpty || endpoint.path == "/"
+        else {
+            throw LocalModelSuggestionClientError.invalidEndpoint
+        }
+        self.endpoint = endpoint
+        self.session = session
+    }
+
+    func suggestions(
+        imageData: Data,
+        requestID: String,
+        target: ModelSuggestionTarget
+    ) async throws -> [LocalModelSuggestion] {
+        var request = URLRequest(
+            url: endpoint.appendingPathComponent("v1/suggestions"),
+            timeoutInterval: 30
+        )
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode(
+            SuggestionRequestPayload(
+                requestID: requestID,
+                imageBase64: imageData.base64EncodedString(),
+                target: SuggestionTargetPayload(target)
+            )
+        )
+
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await session.data(for: request)
+        } catch {
+            throw LocalModelSuggestionClientError.serviceUnavailable
+        }
+        guard let http = response as? HTTPURLResponse else {
+            throw LocalModelSuggestionClientError.invalidResponse
+        }
+        guard (200 ... 299).contains(http.statusCode) else {
+            let code = try? JSONDecoder()
+                .decode(ErrorResponsePayload.self, from: data)
+                .detail.code
+            throw LocalModelSuggestionClientError.rejected(
+                statusCode: http.statusCode,
+                code: code
+            )
+        }
+        let payload: SuggestionResponsePayload
+        do {
+            payload = try JSONDecoder().decode(
+                SuggestionResponsePayload.self,
+                from: data
+            )
+        } catch {
+            throw LocalModelSuggestionClientError.invalidResponse
+        }
+        guard payload.requestID == requestID else {
+            throw LocalModelSuggestionClientError.identityMismatch
+        }
+        return try payload.suggestions.map { suggestion in
+            try Self.validate(suggestion, target: target)
+        }
+    }
+
+    private static func validate(
+        _ payload: LocalModelSuggestion,
+        target: ModelSuggestionTarget
+    ) throws -> LocalModelSuggestion {
+        guard payload.score.isFinite,
+              !payload.provider.isEmpty,
+              !payload.modelRevision.isEmpty,
+              !payload.preprocessingRevision.isEmpty,
+              !payload.policyRevision.isEmpty
+        else {
+            throw LocalModelSuggestionClientError.invalidResponse
+        }
+        switch target {
+        case let .standard(expected):
+            guard payload.track == .standard,
+                  payload.conceptID?.isEmpty == false,
+                  payload.tagID == nil,
+                  payload.standardPackID == expected.standardPackID,
+                  payload.standardPackRevision == expected.standardPackRevision,
+                  payload.catalogScopeID == nil,
+                  payload.bundleID == nil,
+                  payload.bundleRevision == nil,
+                  payload.labelVocabularyRevision == nil
+            else {
+                throw LocalModelSuggestionClientError.identityMismatch
+            }
+        case let .personal(expected):
+            guard payload.track == .personal,
+                  payload.conceptID == nil,
+                  payload.tagID != nil,
+                  payload.recommendedState == .suggested,
+                  payload.catalogScopeID == expected.catalogScopeID,
+                  payload.bundleID == expected.bundleID,
+                  payload.bundleRevision == expected.bundleRevision,
+                  payload.labelVocabularyRevision == expected.labelVocabularyRevision,
+                  payload.standardPackID == nil,
+                  payload.standardPackRevision == nil
+            else {
+                throw LocalModelSuggestionClientError.identityMismatch
+            }
+        }
+        return payload
+    }
+}

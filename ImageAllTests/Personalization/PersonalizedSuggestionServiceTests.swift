@@ -4,6 +4,202 @@ import XCTest
 @testable import ImageAll
 
 final class PersonalizedSuggestionServiceTests: XCTestCase {
+    func testLoopbackClientReturnsOnlyTheRequestedPersonalBundleTags() async throws {
+        let endpoint = URL(string: "http://127.0.0.1:8765")!
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [ModelSuggestionURLProtocolStub.self]
+        let session = URLSession(configuration: configuration)
+        let tagID = UUID(uuidString: "2C000000-0000-4000-8000-000000000001")!
+        ModelSuggestionURLProtocolStub.handler = { request in
+            XCTAssertEqual(request.url?.path, "/v1/suggestions")
+            XCTAssertEqual(request.httpMethod, "POST")
+            let body = try requestBodyData(request)
+            let json = try XCTUnwrap(
+                JSONSerialization.jsonObject(with: body) as? [String: Any]
+            )
+            let target = try XCTUnwrap(json["target"] as? [String: Any])
+            XCTAssertEqual(target["track"] as? String, "personal")
+            XCTAssertEqual(target["catalog_scope_id"] as? String, "catalog-fixture")
+            XCTAssertEqual(target["bundle_id"] as? String, "personal-fixture")
+            return (
+                HTTPURLResponse(
+                    url: try XCTUnwrap(request.url),
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: ["Content-Type": "application/json"]
+                )!,
+                try personalSuggestionResponseData(
+                    requestID: "request-fixture",
+                    tagID: tagID,
+                    bundleRevision: "bundle-v1"
+                )
+            )
+        }
+        defer { ModelSuggestionURLProtocolStub.handler = nil }
+        let client = try LoopbackModelSuggestionClient(
+            endpoint: endpoint,
+            session: session
+        )
+
+        let suggestions = try await client.suggestions(
+            imageData: Data([0x89, 0x50, 0x4E, 0x47]),
+            requestID: "request-fixture",
+            target: .personal(
+                PersonalModelSuggestionTarget(
+                    catalogScopeID: "catalog-fixture",
+                    bundleID: "personal-fixture",
+                    bundleRevision: "bundle-v1",
+                    labelVocabularyRevision: "personal-tags-v1"
+                )
+            )
+        )
+
+        XCTAssertEqual(suggestions.count, 1)
+        XCTAssertEqual(suggestions[0].tagID, tagID)
+        XCTAssertNil(suggestions[0].conceptID)
+        XCTAssertEqual(suggestions[0].recommendedState, .suggested)
+        XCTAssertEqual(suggestions[0].bundleRevision, "bundle-v1")
+    }
+
+    func testLoopbackClientReturnsAValidatedStandardConcept() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [ModelSuggestionURLProtocolStub.self]
+        ModelSuggestionURLProtocolStub.handler = { request in
+            let target = try XCTUnwrap(
+                JSONSerialization.jsonObject(with: requestBodyData(request))
+                    as? [String: Any]
+            )["target"] as? [String: Any]
+            XCTAssertEqual(target?["track"] as? String, "standard")
+            return (
+                HTTPURLResponse(
+                    url: try XCTUnwrap(request.url),
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: nil
+                )!,
+                Data(
+                    """
+                    {
+                      "request_id": "standard-request",
+                      "suggestions": [{
+                        "track": "standard",
+                        "concept_id": "scene.water",
+                        "tag_id": null,
+                        "score": 0.9,
+                        "recommended_state": "autoAssigned",
+                        "standard_pack_id": "imageall-public-fixture",
+                        "standard_pack_revision": "pack-v1",
+                        "ontology_id": "imageall-public",
+                        "ontology_revision": "ontology-v1",
+                        "provider": "rgb-linear",
+                        "model_revision": "model-v1",
+                        "preprocessing_revision": "rgb-channel-mean-v1",
+                        "mapping_revision": "mapping-v1",
+                        "policy_revision": "policy-v1"
+                      }]
+                    }
+                    """.utf8
+                )
+            )
+        }
+        defer { ModelSuggestionURLProtocolStub.handler = nil }
+        let client = try LoopbackModelSuggestionClient(
+            session: URLSession(configuration: configuration)
+        )
+
+        let suggestions = try await client.suggestions(
+            imageData: Data([0x89, 0x50, 0x4E, 0x47]),
+            requestID: "standard-request",
+            target: .standard(
+                StandardModelSuggestionTarget(
+                    standardPackID: "imageall-public-fixture",
+                    standardPackRevision: "pack-v1"
+                )
+            )
+        )
+
+        XCTAssertEqual(suggestions.count, 1)
+        XCTAssertEqual(suggestions[0].conceptID, "scene.water")
+        XCTAssertNil(suggestions[0].tagID)
+        XCTAssertEqual(suggestions[0].recommendedState, .autoAssigned)
+    }
+
+    func testLoopbackClientRejectsAPersonalSuggestionFromAnotherBundle() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [ModelSuggestionURLProtocolStub.self]
+        ModelSuggestionURLProtocolStub.handler = { request in
+            (
+                HTTPURLResponse(
+                    url: try XCTUnwrap(request.url),
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: nil
+                )!,
+                try personalSuggestionResponseData(
+                    requestID: "personal-mismatch",
+                    tagID: UUID(uuidString: "2C000000-0000-4000-8000-000000000001")!,
+                    bundleRevision: "stale-bundle"
+                )
+            )
+        }
+        defer { ModelSuggestionURLProtocolStub.handler = nil }
+        let client = try LoopbackModelSuggestionClient(
+            session: URLSession(configuration: configuration)
+        )
+
+        do {
+            _ = try await client.suggestions(
+                imageData: Data([0x89, 0x50, 0x4E, 0x47]),
+                requestID: "personal-mismatch",
+                target: .personal(
+                    PersonalModelSuggestionTarget(
+                        catalogScopeID: "catalog-fixture",
+                        bundleID: "personal-fixture",
+                        bundleRevision: "bundle-v1",
+                        labelVocabularyRevision: "personal-tags-v1"
+                    )
+                )
+            )
+            XCTFail("stale personal bundle response must fail closed")
+        } catch {
+            XCTAssertEqual(
+                error as? LocalModelSuggestionClientError,
+                .identityMismatch
+            )
+        }
+    }
+
+    func testLoopbackClientTreatsAnOfflineServiceAsOptional() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [ModelSuggestionURLProtocolStub.self]
+        ModelSuggestionURLProtocolStub.handler = { _ in
+            throw URLError(.cannotConnectToHost)
+        }
+        defer { ModelSuggestionURLProtocolStub.handler = nil }
+        let client = try LoopbackModelSuggestionClient(
+            session: URLSession(configuration: configuration)
+        )
+
+        do {
+            _ = try await client.suggestions(
+                imageData: Data([0x89, 0x50, 0x4E, 0x47]),
+                requestID: "offline-request",
+                target: .standard(
+                    StandardModelSuggestionTarget(
+                        standardPackID: "imageall-public-fixture",
+                        standardPackRevision: "pack-v1"
+                    )
+                )
+            )
+            XCTFail("offline optional service must not return suggestions")
+        } catch {
+            XCTAssertEqual(
+                error as? LocalModelSuggestionClientError,
+                .serviceUnavailable
+            )
+        }
+    }
+
     func testBuildsVersionedModelAndKeepsManualDecisionAuthoritative() async throws {
         let fixture = try CatalogQueryTestSupport.openQueryDatabase()
         let accepted = [fixture.ids.assetNewest, fixture.ids.assetMiddle]
@@ -167,6 +363,79 @@ final class PersonalizedSuggestionServiceTests: XCTestCase {
         XCTAssertEqual(result.negativeSampleCount, 2)
         XCTAssertEqual(result.predictedCandidateCount, 1)
     }
+}
+
+private func requestBodyData(_ request: URLRequest) throws -> Data {
+    if let body = request.httpBody { return body }
+    let stream = try XCTUnwrap(request.httpBodyStream)
+    stream.open()
+    defer { stream.close() }
+    var data = Data()
+    var buffer = [UInt8](repeating: 0, count: 4_096)
+    while stream.hasBytesAvailable {
+        let count = stream.read(&buffer, maxLength: buffer.count)
+        guard count >= 0 else {
+            throw stream.streamError ?? URLError(.cannotDecodeContentData)
+        }
+        if count == 0 { break }
+        data.append(buffer, count: count)
+    }
+    return data
+}
+
+private func personalSuggestionResponseData(
+    requestID: String,
+    tagID: UUID,
+    bundleRevision: String
+) throws -> Data {
+    try JSONSerialization.data(
+        withJSONObject: [
+            "request_id": requestID,
+            "suggestions": [[
+                "track": "personal",
+                "concept_id": NSNull(),
+                "tag_id": tagID.uuidString.lowercased(),
+                "score": 1.25,
+                "recommended_state": "suggested",
+                "catalog_scope_id": "catalog-fixture",
+                "bundle_id": "personal-fixture",
+                "bundle_revision": bundleRevision,
+                "provider": "dinov2",
+                "model_id": "facebook/dinov2-small",
+                "model_revision": "model-v1",
+                "preprocessing_revision": "preprocessing-v1",
+                "label_vocabulary_revision": "personal-tags-v1",
+                "policy_revision": "personal-policy-v1",
+                "standard_pack_id": NSNull(),
+                "standard_pack_revision": NSNull(),
+                "ontology_id": NSNull(),
+                "ontology_revision": NSNull(),
+                "mapping_revision": NSNull(),
+            ]],
+        ],
+        options: [.sortedKeys]
+    )
+}
+
+private final class ModelSuggestionURLProtocolStub: URLProtocol, @unchecked Sendable {
+    nonisolated(unsafe) static var handler: ((URLRequest) throws -> (HTTPURLResponse, Data))?
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        do {
+            let handler = try XCTUnwrap(Self.handler)
+            let (response, data) = try handler(request)
+            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocol(self, didLoad: data)
+            client?.urlProtocolDidFinishLoading(self)
+        } catch {
+            client?.urlProtocol(self, didFailWithError: error)
+        }
+    }
+
+    override func stopLoading() {}
 }
 
 private actor StubFeatureVectorLoader: FeatureVectorLoading {
