@@ -1,0 +1,9 @@
+{
+  "entries": [
+    {
+      "concept_id": "scene.water",
+      "provider_label": "blue_scene"
+    }
+  ],
+  "mapping_revision": "mapping-v1"
+}

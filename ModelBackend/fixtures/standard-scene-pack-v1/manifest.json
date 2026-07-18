@@ -1,0 +1,34 @@
+{
+  "file_sha256": {
+    "LICENSES/model.txt": "0f9469299268df4d4a6eef7d123ef69db2aa8833f18f0d3168893db064bc8439",
+    "mapping.json": "08c1f7a015d6b3f4ade379b4f0910668cbfa719a67c0b00f52d79a879ac9b06f",
+    "models/scene-linear.json": "4129427105a9392e02b5306b657a029f7d0034f05a10d1363254e5f3d579fce9",
+    "ontology.json": "a7be0d39a9e9f543c9ab258a2554f21219626f36d8c9b948bc7344a82c003ef6",
+    "policy.json": "76621be0ff24fcad4333f6fc4a96d5459fb106e482735962fd49e545fb9546f3"
+  },
+  "licenses": [
+    {
+      "id": "CC0-1.0",
+      "path": "LICENSES/model.txt"
+    }
+  ],
+  "mapping_revision": "mapping-v1",
+  "model_license_id": "CC0-1.0",
+  "model_path": "models/scene-linear.json",
+  "ontology_id": "imageall-public-fixture",
+  "ontology_revision": "ontology-v1",
+  "policy_revision": "policy-v1",
+  "provider_identity": {
+    "model_id": "imageall/fixture-scene-linear",
+    "model_revision": "model-v1",
+    "preprocessing_revision": "rgb-channel-mean-v1",
+    "provider": "rgb-linear"
+  },
+  "schema_revision": 1,
+  "standard_pack_id": "imageall-public-fixture",
+  "standard_pack_revision": "pack-v1",
+  "supported_languages": [
+    "en",
+    "zh-Hans"
+  ]
+}

@@ -1,0 +1,11 @@
+{
+  "concepts": [
+    {
+      "auto_assign_at": 0.8,
+      "calibration_evidence_id": "synthetic-blue-fixture-v1",
+      "concept_id": "scene.water",
+      "suggest_at": 0.6
+    }
+  ],
+  "policy_revision": "policy-v1"
+}

@@ -1,0 +1,14 @@
+{
+  "feature_revision": "rgb-channel-mean-v1",
+  "labels": [
+    {
+      "bias": 0.5,
+      "provider_label": "blue_scene",
+      "weights": [
+        -1.0,
+        0.0,
+        1.0
+      ]
+    }
+  ]
+}

@@ -5,6 +5,8 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
+from imageall_model_backend.providers import StandardProviderIdentity
+
 
 class StandardPackValidationError(ValueError):
     pass
@@ -52,6 +54,8 @@ class StandardPack:
     root: Path
     standard_pack_id: str
     standard_pack_revision: str
+    provider_identity: StandardProviderIdentity
+    model_path: Path
     ontology: StandardOntology
     mapping: StandardMapping
     policy: StandardPolicy
@@ -135,6 +139,8 @@ def load_standard_pack(root: Path) -> StandardPack:
     mapping_payload = json.loads(
         (root / "mapping.json").read_text(encoding="utf-8")
     )
+    if mapping_payload["mapping_revision"] != manifest["mapping_revision"]:
+        raise StandardPackValidationError("mapping revision mismatch")
     concept_by_provider_label: dict[str, str] = {}
     for entry in mapping_payload["entries"]:
         if entry["concept_id"] not in concept_ids:
@@ -143,6 +149,8 @@ def load_standard_pack(root: Path) -> StandardPack:
     policy_payload = json.loads(
         (root / "policy.json").read_text(encoding="utf-8")
     )
+    if policy_payload["policy_revision"] != manifest["policy_revision"]:
+        raise StandardPackValidationError("policy revision mismatch")
     entry_by_concept: dict[str, StandardPolicyEntry] = {}
     for entry in policy_payload["concepts"]:
         if entry["concept_id"] not in concept_ids:
@@ -177,6 +185,8 @@ def load_standard_pack(root: Path) -> StandardPack:
         root=root,
         standard_pack_id=manifest["standard_pack_id"],
         standard_pack_revision=manifest["standard_pack_revision"],
+        provider_identity=StandardProviderIdentity(**manifest["provider_identity"]),
+        model_path=_package_file(root, manifest["model_path"]),
         ontology=ontology,
         mapping=StandardMapping(
             mapping_revision=mapping_payload["mapping_revision"],

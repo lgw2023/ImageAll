@@ -1,0 +1,5 @@
+SPDX-License-Identifier: CC0-1.0
+
+This synthetic RGB linear fixture model and its metadata contain no external
+weights or user data. To the extent possible under law, their authors dedicate
+them to the public domain under CC0 1.0.

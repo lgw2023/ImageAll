@@ -251,3 +251,29 @@ def test_rejects_a_package_path_that_escapes_the_package_root(tmp_path: Path) ->
 
     with pytest.raises(StandardPackValidationError, match="path escapes package root"):
         load_standard_pack(pack_path)
+
+
+def test_rejects_a_mapping_revision_that_differs_from_the_manifest(
+    tmp_path: Path,
+) -> None:
+    pack_path = write_standard_pack(tmp_path / "standard-pack")
+    mapping_path = pack_path / "mapping.json"
+    mapping = json.loads(mapping_path.read_text(encoding="utf-8"))
+    mapping["mapping_revision"] = "other-revision"
+    rewrite_payload_and_checksum(pack_path, "mapping.json", mapping)
+
+    with pytest.raises(StandardPackValidationError, match="mapping revision mismatch"):
+        load_standard_pack(pack_path)
+
+
+def test_rejects_a_policy_revision_that_differs_from_the_manifest(
+    tmp_path: Path,
+) -> None:
+    pack_path = write_standard_pack(tmp_path / "standard-pack")
+    policy_path = pack_path / "policy.json"
+    policy = json.loads(policy_path.read_text(encoding="utf-8"))
+    policy["policy_revision"] = "other-revision"
+    rewrite_payload_and_checksum(pack_path, "policy.json", policy)
+
+    with pytest.raises(StandardPackValidationError, match="policy revision mismatch"):
+        load_standard_pack(pack_path)

@@ -1,0 +1,37 @@
+{
+  "concepts": [
+    {
+      "concept_id": "scene.environment",
+      "names": {
+        "en": "Environment",
+        "zh-Hans": "环境"
+      }
+    },
+    {
+      "concept_id": "scene.outdoor",
+      "names": {
+        "en": "Outdoor",
+        "zh-Hans": "户外"
+      }
+    },
+    {
+      "concept_id": "scene.water",
+      "names": {
+        "en": "Water",
+        "zh-Hans": "水域"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "child": "scene.outdoor",
+      "parent": "scene.environment"
+    },
+    {
+      "child": "scene.water",
+      "parent": "scene.outdoor"
+    }
+  ],
+  "ontology_id": "imageall-public-fixture",
+  "ontology_revision": "ontology-v1"
+}
