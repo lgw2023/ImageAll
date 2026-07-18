@@ -1182,6 +1182,52 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         )
     }
 
+    func testNarrowingWorkspaceCollapsesInspectorBeforeSidebar() {
+        var layout = LibraryWorkspaceLayoutState()
+
+        layout.updateWindowWidth(1_100)
+        layout.updateWindowWidth(760)
+
+        XCTAssertTrue(layout.isSidebarPresented)
+        XCTAssertFalse(layout.isInspectorPresented)
+    }
+
+    func testWorkspacePanelsToggleIndependentlyAndManualInspectorRestorePersistsWhileNarrow() {
+        var layout = LibraryWorkspaceLayoutState()
+        layout.updateWindowWidth(760)
+
+        layout.toggleInspector()
+        layout.toggleSidebar()
+        layout.updateWindowWidth(740)
+
+        XCTAssertFalse(layout.isSidebarPresented)
+        XCTAssertTrue(layout.isInspectorPresented)
+    }
+
+    func testCommandPalettePanelActionsDescribeCurrentVisibility() {
+        let model = LibraryWorkspaceModel(
+            service: FakeLibraryWorkspaceService(
+                connectedSource: LibrarySourceSummary(
+                    id: UUID(),
+                    displayName: "Fixture",
+                    state: .active
+                ),
+                reconciledItems: []
+            )
+        )
+        var layout = LibraryWorkspaceLayoutState()
+
+        var commands = model.workspaceCommands(matching: "", layout: layout)
+        XCTAssertEqual(commands.first(where: { $0.command == .toggleSidebar })?.title, "隐藏侧栏")
+        XCTAssertEqual(commands.first(where: { $0.command == .toggleInspector })?.title, "隐藏检查器")
+
+        layout.toggleSidebar()
+        layout.toggleInspector()
+        commands = model.workspaceCommands(matching: "", layout: layout)
+        XCTAssertEqual(commands.first(where: { $0.command == .toggleSidebar })?.title, "显示侧栏")
+        XCTAssertEqual(commands.first(where: { $0.command == .toggleInspector })?.title, "显示检查器")
+    }
+
     func testCommandPaletteListsOnlyImplementedCoreAndLibraryActions() async {
         let sourceID = UUID()
         let tag = TagListItem(id: UUID(), displayName: "Family", state: .active)
@@ -1208,6 +1254,8 @@ final class LibraryWorkspaceModelTests: XCTestCase {
                 .showAllPhotos,
                 .showReviewSuggestions,
                 .showActivity,
+                .toggleSidebar,
+                .toggleInspector,
                 .showSource(sourceID),
                 .showTag(tag.id),
                 .acceptTag(tag.id),

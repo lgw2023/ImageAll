@@ -58,10 +58,45 @@ enum LibraryGridLayout {
     }
 }
 
+struct LibraryWorkspaceLayoutState: Equatable {
+    static let inspectorCollapseWidth: CGFloat = 840
+
+    private(set) var isSidebarPresented = true
+    private(set) var isInspectorPresented = true
+    private var hasAppliedNarrowInspectorCollapse = false
+
+    mutating func updateWindowWidth(_ width: CGFloat) {
+        if width >= Self.inspectorCollapseWidth {
+            hasAppliedNarrowInspectorCollapse = false
+        } else if !hasAppliedNarrowInspectorCollapse {
+            isInspectorPresented = false
+            hasAppliedNarrowInspectorCollapse = true
+        }
+    }
+
+    mutating func toggleSidebar() {
+        setSidebarPresented(!isSidebarPresented)
+    }
+
+    mutating func toggleInspector() {
+        setInspectorPresented(!isInspectorPresented)
+    }
+
+    mutating func setSidebarPresented(_ isPresented: Bool) {
+        isSidebarPresented = isPresented
+    }
+
+    mutating func setInspectorPresented(_ isPresented: Bool) {
+        isInspectorPresented = isPresented
+    }
+}
+
 enum LibraryWorkspaceCommand: Hashable {
     case showAllPhotos
     case showReviewSuggestions
     case showActivity
+    case toggleSidebar
+    case toggleInspector
     case showSource(UUID)
     case showTag(UUID)
     case acceptTag(UUID)
@@ -201,7 +236,10 @@ final class LibraryWorkspaceModel: ObservableObject {
         return sources.contains { $0.state == .active }
     }
 
-    func workspaceCommands(matching query: String) -> [LibraryWorkspaceCommandItem] {
+    func workspaceCommands(
+        matching query: String,
+        layout: LibraryWorkspaceLayoutState = LibraryWorkspaceLayoutState()
+    ) -> [LibraryWorkspaceCommandItem] {
         let hasSelection = !selectedAssetIDs.isEmpty
         var commands = [
             LibraryWorkspaceCommandItem(
@@ -220,6 +258,18 @@ final class LibraryWorkspaceModel: ObservableObject {
                 command: .showActivity,
                 title: "显示活动",
                 systemImage: "clock.arrow.circlepath",
+                isEnabled: true
+            ),
+            LibraryWorkspaceCommandItem(
+                command: .toggleSidebar,
+                title: layout.isSidebarPresented ? "隐藏侧栏" : "显示侧栏",
+                systemImage: "sidebar.left",
+                isEnabled: true
+            ),
+            LibraryWorkspaceCommandItem(
+                command: .toggleInspector,
+                title: layout.isInspectorPresented ? "隐藏检查器" : "显示检查器",
+                systemImage: "sidebar.right",
                 isEnabled: true
             ),
         ]
@@ -1678,15 +1728,16 @@ struct LibraryWorkspaceView: View {
     @State private var commandSearchText = ""
     @State private var gridColumnCount = 1
     @State private var gridScrollTargetID: UUID?
+    @State private var layoutState = LibraryWorkspaceLayoutState()
     @FocusState private var newTagFieldFocused: Bool
     @FocusState private var contentFocused: Bool
     @FocusState private var commandSearchFieldFocused: Bool
 
     private var workspaceWithSourceControls: some View {
-        NavigationSplitView {
+        NavigationSplitView(columnVisibility: sidebarColumnVisibility) {
             sidebar
                 .navigationSplitViewColumnWidth(min: 180, ideal: 220, max: 300)
-        } content: {
+        } detail: {
             content
                 .navigationTitle("全部照片")
                 .focusable()
@@ -1706,11 +1757,23 @@ struct LibraryWorkspaceView: View {
                     keys: [.leftArrow, .rightArrow, .upArrow, .downArrow],
                     action: handleGridNavigationKey
                 )
-        } detail: {
-            inspector
-                .navigationSplitViewColumnWidth(min: 240, ideal: 300, max: 380)
         }
-        .frame(minWidth: 900, minHeight: 560)
+        .inspector(isPresented: inspectorVisibility) {
+            inspector
+                .inspectorColumnWidth(min: 240, ideal: 300, max: 380)
+        }
+        .frame(minWidth: 640, minHeight: 560)
+        .background {
+            GeometryReader { proxy in
+                Color.clear
+                    .onAppear {
+                        layoutState.updateWindowWidth(proxy.size.width)
+                    }
+                    .onChange(of: proxy.size.width) { _, width in
+                        layoutState.updateWindowWidth(width)
+                    }
+            }
+        }
         .confirmationDialog(
             suggestionConfirmationTitle(model.pendingSuggestionConfirmation),
             isPresented: Binding(
@@ -1745,6 +1808,26 @@ struct LibraryWorkspaceView: View {
         }
         .toolbar {
             ToolbarItemGroup {
+                Button {
+                    layoutState.toggleSidebar()
+                } label: {
+                    Label(
+                        layoutState.isSidebarPresented ? "隐藏侧栏" : "显示侧栏",
+                        systemImage: "sidebar.left"
+                    )
+                }
+                .help(layoutState.isSidebarPresented ? "隐藏侧栏" : "显示侧栏")
+
+                Button {
+                    layoutState.toggleInspector()
+                } label: {
+                    Label(
+                        layoutState.isInspectorPresented ? "隐藏检查器" : "显示检查器",
+                        systemImage: "sidebar.right"
+                    )
+                }
+                .help(layoutState.isInspectorPresented ? "隐藏检查器" : "显示检查器")
+
                 if model.isCatalogScanning {
                     HStack(spacing: 6) {
                         if let progress = model.catalogReconcileProgress,
@@ -1851,6 +1934,7 @@ struct LibraryWorkspaceView: View {
                 .disabled(model.isBusy || !model.canRescan)
             }
         }
+        .toolbar(removing: .sidebarToggle)
         .safeAreaInset(edge: .bottom, spacing: 0) {
             if let notice = model.notice {
                 noticeBar(notice)
@@ -2142,8 +2226,22 @@ struct LibraryWorkspaceView: View {
         }
     }
 
+    private var sidebarColumnVisibility: Binding<NavigationSplitViewVisibility> {
+        Binding(
+            get: { layoutState.isSidebarPresented ? .all : .detailOnly },
+            set: { layoutState.setSidebarPresented($0 != .detailOnly) }
+        )
+    }
+
+    private var inspectorVisibility: Binding<Bool> {
+        Binding(
+            get: { layoutState.isInspectorPresented },
+            set: { layoutState.setInspectorPresented($0) }
+        )
+    }
+
     private var commandPalette: some View {
-        let commands = model.workspaceCommands(matching: commandSearchText)
+        let commands = model.workspaceCommands(matching: commandSearchText, layout: layoutState)
         return VStack(alignment: .leading, spacing: 12) {
             Text("命令")
                 .font(.headline)
@@ -2238,6 +2336,10 @@ struct LibraryWorkspaceView: View {
                 showJobActivityPanel = true
                 await model.refreshJobActivity()
             }
+        case .toggleSidebar:
+            layoutState.toggleSidebar()
+        case .toggleInspector:
+            layoutState.toggleInspector()
         case let .showSource(sourceID):
             selection = .source(sourceID)
         case let .showTag(tagID):
