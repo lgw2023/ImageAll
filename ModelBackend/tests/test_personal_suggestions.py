@@ -44,6 +44,7 @@ def test_personal_engine_returns_only_bundle_tags_as_suggestions() -> None:
         encoder_identity=identity,
         personal_tag_ids=("tag-low", "tag-trip"),
         label_vocabulary_revision="personal-tags-v1",
+        weights_sha256="1" * 64,
         suggestion_policy=PersonalSuggestionPolicy(
             revision="personal-logit-zero-top10-v1",
             max_suggestions=1,
@@ -69,5 +70,7 @@ def test_personal_engine_returns_only_bundle_tags_as_suggestions() -> None:
     assert suggestion.provider == "dinov2"
     assert suggestion.model_revision == "fixture-model-revision"
     assert suggestion.preprocessing_revision == "fixture-preprocessing-revision"
+    assert suggestion.element_count == 2
     assert suggestion.label_vocabulary_revision == "personal-tags-v1"
+    assert suggestion.weights_sha256 == "1" * 64
     assert suggestion.policy_revision == "personal-logit-zero-top10-v1"

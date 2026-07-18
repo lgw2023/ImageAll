@@ -55,6 +55,7 @@ class PersonalLinearHeadBundle:
     encoder_identity: EmbeddingProviderIdentity
     personal_tag_ids: tuple[str, ...]
     label_vocabulary_revision: str
+    weights_sha256: str
     suggestion_policy: PersonalSuggestionPolicy
     weights: np.ndarray
     bias: np.ndarray
@@ -280,6 +281,7 @@ def load_personal_linear_head(
         encoder_identity=encoder_identity,
         personal_tag_ids=personal_tag_ids,
         label_vocabulary_revision=manifest["label_vocabulary_revision"],
+        weights_sha256=manifest["weights_sha256"],
         suggestion_policy=PersonalSuggestionPolicy(
             revision=policy_payload["revision"],
             max_suggestions=policy_payload["max_suggestions"],

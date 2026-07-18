@@ -4,6 +4,7 @@ import argparse
 import json
 from pathlib import Path
 from typing import Sequence
+from zipfile import BadZipFile
 
 import uvicorn
 
@@ -64,20 +65,28 @@ def main(argv: Sequence[str] | None = None) -> int:
             parser.error(
                 "--personal-bundle requires --provider dinov2 or coreml"
             )
-        manifest = json.loads(
-            (args.personal_bundle / "manifest.json").read_text(encoding="utf-8")
-        )
-        bundle = load_personal_linear_head(
-            args.personal_bundle,
-            expected_catalog_scope_id=manifest["catalog_scope_id"],
-            expected_bundle_id=manifest["bundle_id"],
-            expected_bundle_revision=manifest["bundle_revision"],
-            expected_encoder_identity=provider.identity,
-            expected_label_vocabulary_revision=manifest[
-                "label_vocabulary_revision"
-            ],
-        )
-        personal_suggestion_engine = PersonalSuggestionEngine(provider, bundle)
+        try:
+            manifest = json.loads(
+                (args.personal_bundle / "manifest.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            bundle = load_personal_linear_head(
+                args.personal_bundle,
+                expected_catalog_scope_id=manifest["catalog_scope_id"],
+                expected_bundle_id=manifest["bundle_id"],
+                expected_bundle_revision=manifest["bundle_revision"],
+                expected_encoder_identity=provider.identity,
+                expected_label_vocabulary_revision=manifest[
+                    "label_vocabulary_revision"
+                ],
+            )
+            personal_suggestion_engine = PersonalSuggestionEngine(
+                provider,
+                bundle,
+            )
+        except (BadZipFile, KeyError, OSError, TypeError, ValueError) as error:
+            parser.error(f"Personal bundle could not be loaded: {error}")
     standard_suggestion_engine: StandardSuggestionEngine | None = None
     if args.standard_pack is not None:
         pack = load_standard_pack(args.standard_pack)

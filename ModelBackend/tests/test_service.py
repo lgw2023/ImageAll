@@ -1,5 +1,6 @@
 import base64
 import io
+import json
 from pathlib import Path
 
 import numpy as np
@@ -90,6 +91,28 @@ def personal_suggestion_client(tmp_path: Path) -> TestClient:
     )
 
 
+def personal_target(tmp_path: Path) -> dict[str, object]:
+    manifest = json.loads(
+        (tmp_path / "personal-bundle" / "manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    return {
+        "track": "personal",
+        "catalog_scope_id": "catalog-fixture",
+        "bundle_id": "personal-fixture",
+        "bundle_revision": "bundle-v1",
+        "provider": "dinov2",
+        "model_id": "facebook/dinov2-small",
+        "model_revision": "fixture-model-revision",
+        "preprocessing_revision": "fixture-preprocessing-revision",
+        "element_count": 2,
+        "label_vocabulary_revision": "personal-tags-v1",
+        "weights_sha256": manifest["weights_sha256"],
+        "policy_revision": "personal-logit-zero-top10-v1",
+    }
+
+
 def png_base64(color: tuple[int, int, int]) -> str:
     image = Image.new("RGB", (8, 8), color=color)
     buffer = io.BytesIO()
@@ -118,6 +141,53 @@ def test_service_starts_degraded_without_a_model_provider() -> None:
             "code": "model_unavailable",
             "message": "No model provider is configured.",
         }
+    }
+
+
+def test_capabilities_reports_personal_suggestions_as_unavailable() -> None:
+    client = TestClient(create_app())
+
+    response = client.get("/v1/capabilities")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "service_version": "0.1.0",
+        "personal": {"status": "unavailable"},
+    }
+
+
+def test_capabilities_reports_the_loaded_personal_bundle_identity(
+    tmp_path: Path,
+) -> None:
+    client = personal_suggestion_client(tmp_path)
+    manifest = json.loads(
+        (tmp_path / "personal-bundle" / "manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    response = client.get("/v1/capabilities")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "service_version": "0.1.0",
+        "personal": {
+            "status": "available",
+            "catalog_scope_id": "catalog-fixture",
+            "bundle_id": "personal-fixture",
+            "bundle_revision": "bundle-v1",
+            "encoder": {
+                "provider": "dinov2",
+                "model_id": "facebook/dinov2-small",
+                "model_revision": "fixture-model-revision",
+                "preprocessing_revision": "fixture-preprocessing-revision",
+                "element_count": 2,
+            },
+            "label_vocabulary_revision": "personal-tags-v1",
+            "weights_sha256": manifest["weights_sha256"],
+            "policy_revision": "personal-logit-zero-top10-v1",
+            "tag_ids": ["tag-trip"],
+        },
     }
 
 
@@ -339,19 +409,14 @@ def test_personal_suggestion_endpoint_returns_only_scoped_bundle_tags(
     tmp_path: Path,
 ) -> None:
     client = personal_suggestion_client(tmp_path)
+    target = personal_target(tmp_path)
 
     response = client.post(
         "/v1/suggestions",
         json={
             "request_id": "personal-request-2",
             "image_base64": png_base64((32, 64, 128)),
-            "target": {
-                "track": "personal",
-                "catalog_scope_id": "catalog-fixture",
-                "bundle_id": "personal-fixture",
-                "bundle_revision": "bundle-v1",
-                "label_vocabulary_revision": "personal-tags-v1",
-            },
+            "target": target,
         },
     )
 
@@ -368,11 +433,14 @@ def test_personal_suggestion_endpoint_returns_only_scoped_bundle_tags(
     assert suggestion["bundle_id"] == "personal-fixture"
     assert suggestion["bundle_revision"] == "bundle-v1"
     assert suggestion["provider"] == "dinov2"
+    assert suggestion["model_id"] == "facebook/dinov2-small"
     assert suggestion["model_revision"] == "fixture-model-revision"
     assert suggestion["preprocessing_revision"] == (
         "fixture-preprocessing-revision"
     )
+    assert suggestion["element_count"] == 2
     assert suggestion["label_vocabulary_revision"] == "personal-tags-v1"
+    assert suggestion["weights_sha256"] == target["weights_sha256"]
     assert suggestion["policy_revision"] == "personal-logit-zero-top10-v1"
 
 
@@ -382,28 +450,52 @@ def test_personal_suggestion_endpoint_returns_only_scoped_bundle_tags(
         ("catalog_scope_id", "another-catalog"),
         ("bundle_id", "another-bundle"),
         ("bundle_revision", "stale-bundle-revision"),
+        ("provider", "another-provider"),
+        ("model_id", "another-model"),
+        ("model_revision", "stale-model-revision"),
+        ("preprocessing_revision", "stale-preprocessing-revision"),
+        ("element_count", 384),
         ("label_vocabulary_revision", "stale-vocabulary"),
+        ("weights_sha256", "0" * 64),
+        ("policy_revision", "stale-policy-revision"),
     ),
 )
 def test_personal_target_fails_closed_on_bundle_identity_mismatch(
     tmp_path: Path,
     field: str,
-    stale_value: str,
+    stale_value: object,
 ) -> None:
     client = personal_suggestion_client(tmp_path)
-    target = {
-        "track": "personal",
-        "catalog_scope_id": "catalog-fixture",
-        "bundle_id": "personal-fixture",
-        "bundle_revision": "bundle-v1",
-        "label_vocabulary_revision": "personal-tags-v1",
-    }
+    target = personal_target(tmp_path)
     target[field] = stale_value
 
     response = client.post(
         "/v1/suggestions",
         json={
             "request_id": "stale-personal-request",
+            "image_base64": png_base64((32, 64, 128)),
+            "target": target,
+        },
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == {
+        "code": "personal_bundle_mismatch",
+        "message": "Requested personal bundle identity is not loaded.",
+    }
+
+
+def test_personal_target_fails_closed_when_weight_identity_is_missing(
+    tmp_path: Path,
+) -> None:
+    client = personal_suggestion_client(tmp_path)
+    target = personal_target(tmp_path)
+    del target["weights_sha256"]
+
+    response = client.post(
+        "/v1/suggestions",
+        json={
+            "request_id": "incomplete-personal-request",
             "image_base64": png_base64((32, 64, 128)),
             "target": target,
         },
@@ -435,13 +527,7 @@ def test_personal_provider_failure_is_stable_and_does_not_return_suggestions(
         json={
             "request_id": "failed-personal-request",
             "image_base64": png_base64((32, 64, 128)),
-            "target": {
-                "track": "personal",
-                "catalog_scope_id": "catalog-fixture",
-                "bundle_id": "personal-fixture",
-                "bundle_revision": "bundle-v1",
-                "label_vocabulary_revision": "personal-tags-v1",
-            },
+            "target": personal_target(tmp_path),
         },
     )
 

@@ -16,6 +16,18 @@ class PersonalSuggestionError(ValueError):
 
 
 @dataclass(frozen=True)
+class PersonalBundleIdentity:
+    catalog_scope_id: str
+    bundle_id: str
+    bundle_revision: str
+    encoder: EmbeddingProviderIdentity
+    label_vocabulary_revision: str
+    weights_sha256: str
+    policy_revision: str
+    tag_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class PersonalSuggestion:
     track: str
     concept_id: None
@@ -29,7 +41,9 @@ class PersonalSuggestion:
     model_id: str
     model_revision: str
     preprocessing_revision: str
+    element_count: int
     label_vocabulary_revision: str
+    weights_sha256: str
     policy_revision: str
     standard_pack_id: None = None
     standard_pack_revision: None = None
@@ -71,6 +85,19 @@ class PersonalSuggestionEngine:
     def label_vocabulary_revision(self) -> str:
         return self._bundle.label_vocabulary_revision
 
+    @property
+    def bundle_identity(self) -> PersonalBundleIdentity:
+        return PersonalBundleIdentity(
+            catalog_scope_id=self._bundle.catalog_scope_id,
+            bundle_id=self._bundle.bundle_id,
+            bundle_revision=self._bundle.bundle_revision,
+            encoder=self._bundle.encoder_identity,
+            label_vocabulary_revision=self._bundle.label_vocabulary_revision,
+            weights_sha256=self._bundle.weights_sha256,
+            policy_revision=self._bundle.suggestion_policy.revision,
+            tag_ids=self._bundle.personal_tag_ids,
+        )
+
     def suggest(self, image_bytes: bytes) -> tuple[PersonalSuggestion, ...]:
         embedding = np.asarray(self._provider.embed(image_bytes), dtype=np.float32)
         if (
@@ -100,7 +127,9 @@ class PersonalSuggestionEngine:
                 model_id=identity.model_id,
                 model_revision=identity.model_revision,
                 preprocessing_revision=identity.preprocessing_revision,
+                element_count=identity.element_count,
                 label_vocabulary_revision=self._bundle.label_vocabulary_revision,
+                weights_sha256=self._bundle.weights_sha256,
                 policy_revision=self._bundle.suggestion_policy.revision,
             )
             for tag_id, score, threshold in zip(

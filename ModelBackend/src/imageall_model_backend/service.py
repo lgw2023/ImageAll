@@ -30,7 +30,14 @@ class SuggestionTarget(BaseModel):
     standard_pack_revision: str | None = None
     bundle_id: str | None = None
     bundle_revision: str | None = None
+    provider: str | None = None
+    model_id: str | None = None
+    model_revision: str | None = None
+    preprocessing_revision: str | None = None
+    element_count: int | None = None
     label_vocabulary_revision: str | None = None
+    weights_sha256: str | None = None
+    policy_revision: str | None = None
 
 
 class SuggestionRequest(BaseModel):
@@ -119,6 +126,19 @@ def create_app(
             ),
         }
 
+    @app.get("/v1/capabilities")
+    def capabilities() -> dict[str, object]:
+        personal: dict[str, object] = {"status": "unavailable"}
+        if personal_suggestion_engine is not None:
+            personal = {
+                "status": "available",
+                **asdict(personal_suggestion_engine.bundle_identity),
+            }
+        return {
+            "service_version": __version__,
+            "personal": personal,
+        }
+
     @app.post("/v1/embeddings")
     def embeddings(request: EmbeddingRequest) -> dict[str, object]:
         if provider is None:
@@ -173,14 +193,27 @@ def create_app(
                         "message": "No personal suggestion bundle is configured.",
                     },
                 )
+            bundle_identity = personal_suggestion_engine.bundle_identity
+            encoder_identity = bundle_identity.encoder
             if (
                 request.target.catalog_scope_id
-                != personal_suggestion_engine.catalog_scope_id
-                or request.target.bundle_id != personal_suggestion_engine.bundle_id
+                != bundle_identity.catalog_scope_id
+                or request.target.bundle_id != bundle_identity.bundle_id
                 or request.target.bundle_revision
-                != personal_suggestion_engine.bundle_revision
+                != bundle_identity.bundle_revision
+                or request.target.provider != encoder_identity.provider
+                or request.target.model_id != encoder_identity.model_id
+                or request.target.model_revision
+                != encoder_identity.model_revision
+                or request.target.preprocessing_revision
+                != encoder_identity.preprocessing_revision
+                or request.target.element_count != encoder_identity.element_count
                 or request.target.label_vocabulary_revision
-                != personal_suggestion_engine.label_vocabulary_revision
+                != bundle_identity.label_vocabulary_revision
+                or request.target.weights_sha256
+                != bundle_identity.weights_sha256
+                or request.target.policy_revision
+                != bundle_identity.policy_revision
             ):
                 raise HTTPException(
                     status_code=409,

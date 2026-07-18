@@ -229,23 +229,34 @@ def test_cli_serves_a_catalog_scoped_personal_bundle(
     image = Image.new("RGB", (8, 8), color=(32, 64, 128))
     buffer = io.BytesIO()
     image.save(buffer, format="PNG")
-    response = TestClient(captured["app"]).post(
+    client = TestClient(captured["app"])
+    capability_response = client.get("/v1/capabilities")
+    personal = capability_response.json()["personal"]
+    response = client.post(
         "/v1/suggestions",
         json={
             "request_id": "personal-cli-request",
             "image_base64": base64.b64encode(buffer.getvalue()).decode("ascii"),
             "target": {
                 "track": "personal",
-                "catalog_scope_id": "catalog-fixture",
-                "bundle_id": "personal-fixture",
-                "bundle_revision": "bundle-v1",
-                "label_vocabulary_revision": "personal-tags-v1",
+                "catalog_scope_id": personal["catalog_scope_id"],
+                "bundle_id": personal["bundle_id"],
+                "bundle_revision": personal["bundle_revision"],
+                **personal["encoder"],
+                "label_vocabulary_revision": personal[
+                    "label_vocabulary_revision"
+                ],
+                "weights_sha256": personal["weights_sha256"],
+                "policy_revision": personal["policy_revision"],
             },
         },
     )
 
     assert exit_code == 0
     assert captured["host"] == "127.0.0.1"
+    assert capability_response.status_code == 200
+    assert personal["status"] == "available"
+    assert personal["tag_ids"] == ["tag-trip"]
     assert response.status_code == 200
     assert [item["tag_id"] for item in response.json()["suggestions"]] == [
         "tag-trip"
@@ -255,6 +266,51 @@ def test_cli_serves_a_catalog_scoped_personal_bundle(
 def test_cli_rejects_a_personal_bundle_without_an_embedding_provider() -> None:
     with pytest.raises(SystemExit, match="2"):
         cli.main(["--provider", "none", "--personal-bundle", "/tmp/bundle"])
+
+
+@pytest.mark.parametrize("manifest_contents", (None, "[]"))
+def test_cli_fails_closed_when_the_personal_bundle_cannot_be_loaded(
+    tmp_path, monkeypatch, manifest_contents
+) -> None:
+    class FakeDinoProvider:
+        identity = EmbeddingProviderIdentity(
+            provider="dinov2",
+            model_id="fixture-dinov2",
+            model_revision="fixture-model-revision",
+            preprocessing_revision="fixture-preprocessing-revision",
+            element_count=2,
+        )
+
+        def __init__(self, *, cache_dir, local_files_only) -> None:
+            assert cache_dir is None
+            assert local_files_only is True
+
+    def unexpected_run(*args, **kwargs):
+        raise AssertionError("server should not start")
+
+    monkeypatch.setattr(
+        "imageall_model_backend.dinov2.DinoV2SmallProvider",
+        FakeDinoProvider,
+    )
+    monkeypatch.setattr(cli.uvicorn, "run", unexpected_run)
+    bundle_path = tmp_path / "invalid-personal-bundle"
+    if manifest_contents is not None:
+        bundle_path.mkdir()
+        (bundle_path / "manifest.json").write_text(
+            manifest_contents,
+            encoding="utf-8",
+        )
+
+    with pytest.raises(SystemExit, match="2"):
+        cli.main(
+            [
+                "--provider",
+                "dinov2",
+                "--personal-bundle",
+                str(bundle_path),
+                "--offline",
+            ]
+        )
 
 
 def test_cli_serves_a_validated_standard_pack(monkeypatch) -> None:
