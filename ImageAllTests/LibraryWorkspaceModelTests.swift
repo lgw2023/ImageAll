@@ -1459,6 +1459,92 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertEqual(model.selectedAssetIDs, [second.assetID])
     }
 
+    func testReviewQueueGridNavigationMovesByRowsAndColumns() async {
+        let sourceID = UUID()
+        let tag = TagListItem(id: UUID(), displayName: "Family", state: .active)
+        let assets = (0 ..< 8).map {
+            Self.makeAsset(sourceID: sourceID, fileName: "review-\($0).jpg")
+        }
+        let queueItems = assets.map {
+            ReviewQueueItemProjection(
+                assetID: $0.assetID,
+                fileName: $0.fileName,
+                availability: $0.availability,
+                acceptedTagCount: 0,
+                rejectedTagCount: 0
+            )
+        }
+        let model = LibraryWorkspaceModel(
+            service: FakeLibraryWorkspaceService(
+                connectedSource: LibrarySourceSummary(
+                    id: sourceID,
+                    displayName: "Fixture",
+                    state: .active
+                ),
+                reconciledItems: assets,
+                tags: [tag]
+            ),
+            review: FakePersonalizationReviewPort(queueItems: queueItems)
+        )
+
+        await model.enterReviewQueue(tagID: tag.id, displayName: tag.displayName)
+        await model.selectAsset(assets[4].assetID)
+
+        await model.moveReviewPrimarySelection(in: .up, columnCount: 3)
+        XCTAssertEqual(model.primarySelectedAssetID, assets[1].assetID)
+
+        await model.moveReviewPrimarySelection(in: .down, columnCount: 3)
+        XCTAssertEqual(model.primarySelectedAssetID, assets[4].assetID)
+
+        await model.moveReviewPrimarySelection(in: .left, columnCount: 3)
+        XCTAssertEqual(model.primarySelectedAssetID, assets[3].assetID)
+
+        await model.moveReviewPrimarySelection(in: .right, columnCount: 3)
+        XCTAssertEqual(model.primarySelectedAssetID, assets[4].assetID)
+        XCTAssertEqual(model.selectedAssetIDs.count, 1)
+    }
+
+    func testReviewQueueGridNavigationLoadsNextPageBeforeMovingDown() async {
+        let sourceID = UUID()
+        let tag = TagListItem(id: UUID(), displayName: "Family", state: .active)
+        let assets = (0 ..< 6).map {
+            Self.makeAsset(sourceID: sourceID, fileName: "review-\($0).jpg")
+        }
+        let queueItems = assets.map {
+            ReviewQueueItemProjection(
+                assetID: $0.assetID,
+                fileName: $0.fileName,
+                availability: $0.availability,
+                acceptedTagCount: 0,
+                rejectedTagCount: 0
+            )
+        }
+        let model = LibraryWorkspaceModel(
+            service: FakeLibraryWorkspaceService(
+                connectedSource: LibrarySourceSummary(
+                    id: sourceID,
+                    displayName: "Fixture",
+                    state: .active
+                ),
+                reconciledItems: assets,
+                tags: [tag]
+            ),
+            review: FakePersonalizationReviewPort(
+                queueItems: queueItems,
+                queuePageSize: 4
+            )
+        )
+
+        await model.enterReviewQueue(tagID: tag.id, displayName: tag.displayName)
+        XCTAssertEqual(model.reviewQueueItems.map(\.assetID), Array(assets.prefix(4)).map(\.assetID))
+        await model.selectAsset(assets[2].assetID)
+
+        await model.moveReviewPrimarySelection(in: .down, columnCount: 3)
+
+        XCTAssertEqual(model.primarySelectedAssetID, assets[5].assetID)
+        XCTAssertEqual(model.reviewQueueItems.map(\.assetID), assets.map(\.assetID))
+    }
+
     func testReviewDecisionFromMiddleOfQueueSelectsNextOriginalItem() async {
         let sourceID = UUID()
         let tag = TagListItem(id: UUID(), displayName: "Family", state: .active)
@@ -2355,6 +2441,7 @@ private final class FakePersonalizationReviewPort: PersonalizationReviewPort, @u
     private var storedOverviews: [SuggestionTagOverview]
     private var storedQueueItems: [ReviewQueueItemProjection]
     private var storedPendingByAsset: [UUID: [AssetPendingSuggestion]]
+    private let queuePageSize: Int?
     var decidedAssetIDsProvider: (@Sendable (UUID) -> Set<UUID>)?
     let blocksRunPendingJobs: Bool
     private(set) var enqueueCallCount = 0
@@ -2364,12 +2451,14 @@ private final class FakePersonalizationReviewPort: PersonalizationReviewPort, @u
         overviews: [SuggestionTagOverview] = [],
         queueItems: [ReviewQueueItemProjection] = [],
         pendingByAsset: [UUID: [AssetPendingSuggestion]] = [:],
-        blocksRunPendingJobs: Bool = false
+        blocksRunPendingJobs: Bool = false,
+        queuePageSize: Int? = nil
     ) {
         storedOverviews = overviews
         storedQueueItems = queueItems
         storedPendingByAsset = pendingByAsset
         self.blocksRunPendingJobs = blocksRunPendingJobs
+        self.queuePageSize = queuePageSize
     }
 
     func totalPendingSuggestionCount() throws -> Int {
@@ -2384,7 +2473,16 @@ private final class FakePersonalizationReviewPort: PersonalizationReviewPort, @u
         lock.withLock {
             let excluded = decidedAssetIDsProvider?(tagID) ?? []
             let visible = storedQueueItems.filter { !excluded.contains($0.assetID) }
-            return ReviewQueuePage(items: Array(visible.prefix(limit)), nextCursor: nil)
+            let startIndex = cursor
+                .flatMap { String(data: $0.token, encoding: .utf8) }
+                .flatMap(Int.init) ?? 0
+            let pageSize = min(queuePageSize ?? limit, limit)
+            let items = Array(visible.dropFirst(startIndex).prefix(pageSize))
+            let nextIndex = startIndex + items.count
+            let nextCursor = nextIndex < visible.count
+                ? ReviewQueueCursor(token: Data(String(nextIndex).utf8))
+                : nil
+            return ReviewQueuePage(items: items, nextCursor: nextCursor)
         }
     }
 

@@ -116,6 +116,8 @@ struct ReviewQueueContentView: View {
     let tagID: UUID
     let displayName: String
     @FocusState.Binding var contentFocused: Bool
+    @State private var gridColumnCount = 1
+    @State private var gridScrollTargetID: UUID?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -149,39 +151,72 @@ struct ReviewQueueContentView: View {
             model.toggleSinglePhotoView()
             return .handled
         }
+        .onKeyPress(
+            keys: [.leftArrow, .rightArrow, .upArrow, .downArrow],
+            action: handleNavigationKey
+        )
     }
 
     private var reviewGrid: some View {
-        ScrollView {
-            LazyVGrid(
-                columns: [GridItem(.adaptive(minimum: 132, maximum: 220), spacing: 8)],
-                spacing: 8
-            ) {
-                ForEach(model.reviewQueueItems) { item in
-                    ReviewThumbnailView(
-                        item: item,
-                        model: model,
-                        isSelected: model.selectedAssetIDs.contains(item.assetID)
+        GeometryReader { proxy in
+            ScrollViewReader { scrollProxy in
+                ScrollView {
+                    LazyVGrid(
+                        columns: [
+                            GridItem(
+                                .adaptive(
+                                    minimum: LibraryGridDensity.standard.cellWidthRange.lowerBound,
+                                    maximum: LibraryGridDensity.standard.cellWidthRange.upperBound
+                                ),
+                                spacing: LibraryGridLayout.spacing
+                            ),
+                        ],
+                        spacing: LibraryGridLayout.spacing
                     ) {
-                        contentFocused = true
-                        let flags = NSEvent.modifierFlags.intersection(.deviceIndependentFlagsMask)
-                        Task {
-                            await model.selectAsset(
-                                item.assetID,
-                                additive: flags.contains(.command),
-                                extendRange: flags.contains(.shift)
-                            )
+                        ForEach(model.reviewQueueItems) { item in
+                            ReviewThumbnailView(
+                                item: item,
+                                model: model,
+                                isSelected: model.selectedAssetIDs.contains(item.assetID)
+                            ) {
+                                contentFocused = true
+                                let flags = NSEvent.modifierFlags.intersection(.deviceIndependentFlagsMask)
+                                Task {
+                                    await model.selectAsset(
+                                        item.assetID,
+                                        additive: flags.contains(.command),
+                                        extendRange: flags.contains(.shift)
+                                    )
+                                }
+                            }
+                            .id(item.assetID)
+                            .task {
+                                await model.loadMoreReviewQueueIfNeeded(
+                                    currentAssetID: item.assetID,
+                                    tagID: tagID
+                                )
+                            }
                         }
                     }
-                    .task {
-                        await model.loadMoreReviewQueueIfNeeded(currentAssetID: item.assetID, tagID: tagID)
-                    }
+                    .padding(LibraryGridLayout.horizontalPadding)
+                }
+                .background(Color(nsColor: .windowBackgroundColor))
+                .accessibilityLabel("待审核建议网格")
+                .onAppear {
+                    updateGridColumnCount(containerWidth: proxy.size.width)
+                    contentFocused = true
+                    gridScrollTargetID = model.primarySelectedAssetID
+                }
+                .onChange(of: proxy.size.width) { _, width in
+                    updateGridColumnCount(containerWidth: width)
+                }
+                .onChange(of: gridScrollTargetID) { _, assetID in
+                    guard let assetID else { return }
+                    scrollProxy.scrollTo(assetID, anchor: .center)
+                    gridScrollTargetID = nil
                 }
             }
-            .padding(12)
         }
-        .background(Color(nsColor: .windowBackgroundColor))
-        .onAppear { contentFocused = true }
     }
 
     private func handleReviewKey(_ action: LibraryTagDecisionAction) -> KeyPress.Result {
@@ -194,6 +229,34 @@ struct ReviewQueueContentView: View {
         guard contentFocused else { return .ignored }
         model.deferReviewSelection()
         return .handled
+    }
+
+    private func handleNavigationKey(_ keyPress: KeyPress) -> KeyPress.Result {
+        guard contentFocused, model.primarySelectedAssetID != nil else { return .ignored }
+        let direction: LibraryGridNavigationDirection
+        switch keyPress.key {
+        case .leftArrow: direction = .left
+        case .rightArrow: direction = .right
+        case .upArrow: direction = .up
+        case .downArrow: direction = .down
+        default: return .ignored
+        }
+
+        Task {
+            await model.moveReviewPrimarySelection(
+                in: direction,
+                columnCount: gridColumnCount
+            )
+            gridScrollTargetID = model.primarySelectedAssetID
+        }
+        return .handled
+    }
+
+    private func updateGridColumnCount(containerWidth: CGFloat) {
+        gridColumnCount = LibraryGridLayout.columnCount(
+            containerWidth: containerWidth,
+            density: .standard
+        )
     }
 
     private var emptyTitle: String {
@@ -259,6 +322,13 @@ private struct ReviewThumbnailView: View {
         .aspectRatio(1, contentMode: .fit)
         .contentShape(Rectangle())
         .onTapGesture(perform: onSelect)
+        .accessibilityLabel(item.fileName ?? "照片")
+        .accessibilityAddTraits(.isButton)
+        .accessibilityValue(isSelected ? "已选择" : "未选择")
+        .accessibilityHint("选择待审核照片；可按 P、X 或 U 处理")
+        .accessibilityAction {
+            onSelect()
+        }
         .task(id: item.assetID) {
             guard item.availability == .available,
                   let data = await model.thumbnailData(assetID: item.assetID)

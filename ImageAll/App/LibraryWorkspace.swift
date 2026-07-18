@@ -1371,6 +1371,41 @@ extension LibraryWorkspaceModel {
         } catch {}
     }
 
+    func moveReviewPrimarySelection(
+        in direction: LibraryGridNavigationDirection,
+        columnCount: Int
+    ) async {
+        guard case let .tagQueue(tagID, _) = reviewMode,
+              let currentID = primarySelectedAssetID
+        else { return }
+
+        let columns = max(columnCount, 1)
+        let offset = switch direction {
+        case .left: -1
+        case .right: 1
+        case .up: -columns
+        case .down: columns
+        }
+
+        if offset > 0,
+           let currentIndex = reviewQueueItems.firstIndex(where: { $0.assetID == currentID }),
+           currentIndex + offset >= reviewQueueItems.count,
+           let lastLoadedID = reviewQueueItems.last?.assetID
+        {
+            await loadMoreReviewQueueIfNeeded(
+                currentAssetID: lastLoadedID,
+                tagID: tagID
+            )
+        }
+
+        guard let currentIndex = reviewQueueItems.firstIndex(where: { $0.assetID == currentID }) else {
+            return
+        }
+        let targetIndex = min(max(currentIndex + offset, 0), reviewQueueItems.count - 1)
+        guard targetIndex != currentIndex else { return }
+        await selectAsset(reviewQueueItems[targetIndex].assetID)
+    }
+
     func requestEnqueueSuggestions(
         tagID: UUID,
         displayName: String,
@@ -2242,8 +2277,9 @@ struct LibraryWorkspaceView: View {
         }
         if model.reviewMode != nil {
             guard direction == .left || direction == .right else { return .ignored }
-            let offset = direction == .left ? -1 : 1
-            Task { await model.movePrimarySelection(by: offset) }
+            Task {
+                await model.moveReviewPrimarySelection(in: direction, columnCount: 1)
+            }
             return .handled
         }
 
