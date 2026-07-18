@@ -797,6 +797,120 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertTrue(service.lastFilter.tagDecisionFilters.allSatisfy { $0.decision == .accepted })
     }
 
+    func testTypingSearchDebouncesToLatestText() async {
+        let sourceID = UUID()
+        let first = Self.makeAsset(sourceID: sourceID, fileName: "first.jpg")
+        let second = Self.makeAsset(sourceID: sourceID, fileName: "beach.jpg")
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(id: sourceID, displayName: "Fixture", state: .active),
+            reconciledItems: [first, second],
+            initialItems: [first, second],
+            startsConnected: true
+        )
+        let model = LibraryWorkspaceModel(
+            service: service,
+            searchDebounceInterval: .milliseconds(20)
+        )
+
+        await model.start()
+        await waitForCatalogScanToFinish(model)
+        let initialFetchCount = service.assetPageFetchCallCount
+
+        model.scheduleSearchText("first")
+        model.scheduleSearchText("beach")
+        try? await Task.sleep(for: .milliseconds(60))
+
+        XCTAssertEqual(model.searchText, "beach")
+        XCTAssertEqual(model.items.map(\.assetID), [second.assetID])
+        XCTAssertEqual(service.assetPageFetchCallCount, initialFetchCount + 1)
+    }
+
+    func testSubmittingSearchRunsImmediatelyAndCancelsDebouncedSearch() async {
+        let sourceID = UUID()
+        let first = Self.makeAsset(sourceID: sourceID, fileName: "first.jpg")
+        let second = Self.makeAsset(sourceID: sourceID, fileName: "beach.jpg")
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(id: sourceID, displayName: "Fixture", state: .active),
+            reconciledItems: [first, second],
+            initialItems: [first, second],
+            startsConnected: true
+        )
+        let model = LibraryWorkspaceModel(
+            service: service,
+            searchDebounceInterval: .milliseconds(20)
+        )
+
+        await model.start()
+        await waitForCatalogScanToFinish(model)
+        let initialFetchCount = service.assetPageFetchCallCount
+
+        model.scheduleSearchText("first")
+        await model.submitSearchText("beach")
+
+        XCTAssertEqual(model.searchText, "beach")
+        XCTAssertEqual(model.items.map(\.assetID), [second.assetID])
+        XCTAssertEqual(service.assetPageFetchCallCount, initialFetchCount + 1)
+
+        try? await Task.sleep(for: .milliseconds(60))
+        XCTAssertEqual(service.assetPageFetchCallCount, initialFetchCount + 1)
+    }
+
+    func testOlderSearchResultCannotReplaceNewerSearch() async {
+        let sourceID = UUID()
+        let old = Self.makeAsset(sourceID: sourceID, fileName: "old.jpg")
+        let new = Self.makeAsset(sourceID: sourceID, fileName: "new.jpg")
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(id: sourceID, displayName: "Fixture", state: .active),
+            reconciledItems: [old, new],
+            initialItems: [old, new],
+            startsConnected: true,
+            blockedSearchText: "old"
+        )
+        let model = LibraryWorkspaceModel(service: service)
+
+        await model.start()
+        await waitForCatalogScanToFinish(model)
+
+        let olderSearch = Task { await model.submitSearchText("old") }
+        await waitForAssetPageFetchToBlock(service)
+
+        await model.submitSearchText("new")
+        XCTAssertEqual(model.items.map(\.assetID), [new.assetID])
+
+        service.releaseBlockedAssetPageFetch()
+        await olderSearch.value
+
+        XCTAssertEqual(model.searchText, "new")
+        XCTAssertEqual(model.items.map(\.assetID), [new.assetID])
+    }
+
+    func testClearingSearchSkipsDebounceDelay() async {
+        let sourceID = UUID()
+        let first = Self.makeAsset(sourceID: sourceID, fileName: "first.jpg")
+        let second = Self.makeAsset(sourceID: sourceID, fileName: "beach.jpg")
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(id: sourceID, displayName: "Fixture", state: .active),
+            reconciledItems: [first, second],
+            initialItems: [first, second],
+            startsConnected: true
+        )
+        let model = LibraryWorkspaceModel(
+            service: service,
+            searchDebounceInterval: .seconds(5)
+        )
+
+        await model.start()
+        await waitForCatalogScanToFinish(model)
+        await model.applySearchText("beach")
+        let filteredFetchCount = service.assetPageFetchCallCount
+
+        model.scheduleSearchText("")
+        await waitForItems([first.assetID, second.assetID], model: model)
+
+        XCTAssertEqual(model.searchText, "")
+        XCTAssertEqual(service.assetPageFetchCallCount, filteredFetchCount + 1)
+    }
+
     func testMultiSelectionShowsMixedStateAndCreatesAcceptedTag() async {
         let sourceID = UUID()
         let first = Self.makeAsset(sourceID: sourceID, fileName: "first.jpg")
@@ -1359,6 +1473,14 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTFail("cloud preview state did not become \(expected)")
     }
 
+    private func waitForAssetPageFetchToBlock(_ service: FakeLibraryWorkspaceService) async {
+        for _ in 0 ..< 10_000 {
+            if service.hasStartedBlockedAssetPageFetch { return }
+            await Task.yield()
+        }
+        XCTFail("asset page fetch did not block")
+    }
+
     private static func makeAsset(
         sourceID: UUID,
         fileName: String = "sample.jpg",
@@ -1418,6 +1540,7 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
     private var storedThumbnailLoadCallCount = 0
     private var storedPortableExportCallCount = 0
     private var storedPreviewCacheClearCallCount = 0
+    private var storedAssetPageFetchCallCount = 0
     private var storedJobActivityItems: [JobActivityItem]
     private var storedJobActivityFetchCallCount = 0
     private var storedJobActivityActionCallCount = 0
@@ -1433,6 +1556,9 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
     private let previewCacheClearFails: Bool
     private let jobActivityActionFails: Bool
     private let jobActivityItemsAfterFailedAction: [JobActivityItem]?
+    private let blockedSearchText: String?
+    private let assetPageFetchGate = DispatchSemaphore(value: 0)
+    private var storedHasStartedBlockedAssetPageFetch = false
 
     init(
         connectedSource: LibrarySourceSummary,
@@ -1460,7 +1586,8 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
         previewCacheClearFails: Bool = false,
         jobActivityItems: [JobActivityItem] = [],
         jobActivityActionFails: Bool = false,
-        jobActivityItemsAfterFailedAction: [JobActivityItem]? = nil
+        jobActivityItemsAfterFailedAction: [JobActivityItem]? = nil,
+        blockedSearchText: String? = nil
     ) {
         self.connectedSource = connectedSource
         self.reconciledItems = reconciledItems
@@ -1485,6 +1612,7 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
         storedJobActivityItems = jobActivityItems
         self.jobActivityActionFails = jobActivityActionFails
         self.jobActivityItemsAfterFailedAction = jobActivityItemsAfterFailedAction
+        self.blockedSearchText = blockedSearchText
         storedSources = startsConnected ? [connectedSource] : []
         storedItems = initialItems
         storedTags = tags
@@ -1552,6 +1680,18 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
 
     var previewCacheClearCallCount: Int {
         lock.withLock { storedPreviewCacheClearCallCount }
+    }
+
+    var assetPageFetchCallCount: Int {
+        lock.withLock { storedAssetPageFetchCallCount }
+    }
+
+    var hasStartedBlockedAssetPageFetch: Bool {
+        lock.withLock { storedHasStartedBlockedAssetPageFetch }
+    }
+
+    func releaseBlockedAssetPageFetch() {
+        assetPageFetchGate.signal()
     }
 
     var jobActivityFetchCallCount: Int {
@@ -1777,7 +1917,12 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
         sort: AssetPageSort,
         cursor: AssetPageCursor?
     ) throws -> AssetPageResult {
-        lock.withLock {
+        if filter.searchText == blockedSearchText {
+            lock.withLock { storedHasStartedBlockedAssetPageFetch = true }
+            assetPageFetchGate.wait()
+        }
+        return lock.withLock {
+            storedAssetPageFetchCallCount += 1
             storedLastFilter = filter
             storedLastSort = sort
             let search = filter.searchText?.lowercased()

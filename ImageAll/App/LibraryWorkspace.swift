@@ -81,6 +81,8 @@ final class LibraryWorkspaceModel: ObservableObject {
     private var catalogReconcileRunRequested = false
     private var cloudPreviewTask: Task<Void, Never>?
     private var cloudPreviewRequestID: UUID?
+    private var searchDebounceTask: Task<Void, Never>?
+    private var assetPageRequestID: UUID?
     private var selectionAnchorID: UUID?
     private var selectedTagFilterDecisions: [UUID: PersistableTagDecision] = [:]
     private var selectedSourceID: UUID?
@@ -89,18 +91,22 @@ final class LibraryWorkspaceModel: ObservableObject {
     private var isLoadingMore = false
     fileprivate var isLoadingMoreReviewQueue = false
     private let catalogProgressRefreshInterval: Duration
+    private let searchDebounceInterval: Duration
 
     init(
         service: any LibraryWorkspacePort,
         review: any PersonalizationReviewPort = EmptyPersonalizationReviewPort(),
-        catalogProgressRefreshInterval: Duration = .milliseconds(750)
+        catalogProgressRefreshInterval: Duration = .milliseconds(750),
+        searchDebounceInterval: Duration = .milliseconds(300)
     ) {
         self.service = service
         self.review = review
         self.catalogProgressRefreshInterval = catalogProgressRefreshInterval
+        self.searchDebounceInterval = searchDebounceInterval
     }
 
     deinit {
+        searchDebounceTask?.cancel()
         service.stopCatalogSourceMonitoring()
     }
 
@@ -412,13 +418,16 @@ final class LibraryWorkspaceModel: ObservableObject {
         let service = service
         let filter = currentFilter
         let sort = sort
+        let requestID = assetPageRequestID
         do {
             let page = try await Self.offMain {
                 try service.fetchAssetPage(filter: filter, sort: sort, cursor: cursor)
             }
+            guard assetPageRequestID == requestID else { return }
             items.append(contentsOf: page.items)
             nextCursor = page.nextCursor
         } catch {
+            guard assetPageRequestID == requestID else { return }
             phase = .failed(.catalogFailed)
         }
     }
@@ -781,6 +790,8 @@ final class LibraryWorkspaceModel: ObservableObject {
     }
 
     private func loadFirstPage() async {
+        let requestID = UUID()
+        assetPageRequestID = requestID
         let service = service
         let filter = currentFilter
         let sort = sort
@@ -788,6 +799,7 @@ final class LibraryWorkspaceModel: ObservableObject {
             let page = try await Self.offMain {
                 try service.fetchAssetPage(filter: filter, sort: sort, cursor: nil)
             }
+            guard assetPageRequestID == requestID else { return }
             items = page.items
             nextCursor = page.nextCursor
             let hadSelection = !selectedAssetIDs.isEmpty
@@ -804,6 +816,7 @@ final class LibraryWorkspaceModel: ObservableObject {
             }
             phase = .content
         } catch {
+            guard assetPageRequestID == requestID else { return }
             phase = .failed(.catalogFailed)
         }
     }
@@ -811,6 +824,25 @@ final class LibraryWorkspaceModel: ObservableObject {
     func applySearchText(_ text: String) async {
         searchText = text
         await loadFirstPage()
+    }
+
+    func scheduleSearchText(_ text: String) {
+        searchDebounceTask?.cancel()
+        let interval = text.isEmpty ? Duration.zero : searchDebounceInterval
+        searchDebounceTask = Task { [weak self] in
+            do {
+                try await Task.sleep(for: interval)
+            } catch {
+                return
+            }
+            await self?.applySearchText(text)
+        }
+    }
+
+    func submitSearchText(_ text: String) async {
+        searchDebounceTask?.cancel()
+        searchDebounceTask = nil
+        await applySearchText(text)
     }
 
     func toggleAcceptedTagFilter(_ tagID: UUID) async {
@@ -1498,12 +1530,10 @@ struct LibraryWorkspaceView: View {
             prompt: "搜索文件名、路径、标签或来源"
         )
         .onSubmit(of: .search) {
-            Task { await model.applySearchText(searchText) }
+            Task { await model.submitSearchText(searchText) }
         }
         .onChange(of: searchText) { _, newValue in
-            if newValue.isEmpty, !model.searchText.isEmpty {
-                Task { await model.applySearchText("") }
-            }
+            model.scheduleSearchText(newValue)
         }
         .toolbar {
             ToolbarItemGroup {
