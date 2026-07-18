@@ -3523,8 +3523,13 @@ private struct AssetThumbnailView: View {
         }
         .aspectRatio(1, contentMode: .fit)
         .contentShape(Rectangle())
-        .onTapGesture(count: 2, perform: onOpen)
-        .onTapGesture(perform: onSelect)
+        .gesture(
+            TapGesture(count: 2)
+                .onEnded { onOpen() }
+                .exclusively(
+                    before: TapGesture().onEnded { onSelect() }
+                )
+        )
         .accessibilityAddTraits(.isButton)
         .accessibilityValue(isSelected ? "已选择" : "未选择")
         .accessibilityHint("选择照片；双击或选择后按空格查看单张照片")
