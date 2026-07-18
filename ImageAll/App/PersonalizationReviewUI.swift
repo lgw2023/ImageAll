@@ -232,7 +232,7 @@ struct ReviewQueueContentView: View {
     }
 
     private func handleNavigationKey(_ keyPress: KeyPress) -> KeyPress.Result {
-        guard contentFocused, model.primarySelectedAssetID != nil else { return .ignored }
+        guard contentFocused, !model.reviewQueueItems.isEmpty else { return .ignored }
         let direction: LibraryGridNavigationDirection
         switch keyPress.key {
         case .leftArrow: direction = .left

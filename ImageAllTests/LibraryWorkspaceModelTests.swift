@@ -1218,6 +1218,31 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertEqual(model.selectedAssetIDs.count, 1)
     }
 
+    func testGridArrowNavigationStartsAtFirstItemWhenNothingIsSelected() async {
+        let sourceID = UUID()
+        let first = Self.makeAsset(sourceID: sourceID, fileName: "first.jpg")
+        let second = Self.makeAsset(sourceID: sourceID, fileName: "second.jpg")
+        let model = LibraryWorkspaceModel(
+            service: FakeLibraryWorkspaceService(
+                connectedSource: LibrarySourceSummary(
+                    id: sourceID,
+                    displayName: "Fixture",
+                    state: .active
+                ),
+                reconciledItems: [first, second]
+            )
+        )
+        await model.start()
+        await model.connectFolder()
+        await waitForCatalogScanToFinish(model)
+        XCTAssertNil(model.primarySelectedAssetID)
+
+        await model.movePrimarySelection(in: .down, columnCount: 3)
+
+        XCTAssertEqual(model.primarySelectedAssetID, first.assetID)
+        XCTAssertEqual(model.inspectorDetail?.assetID, first.assetID)
+    }
+
     func testGridNavigationLoadsNextPageBeforeMovingDownPastLoadedItems() async {
         let sourceID = UUID()
         let assets = (0 ..< 6).map {
@@ -1629,6 +1654,44 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         await model.moveReviewPrimarySelection(in: .right, columnCount: 3)
         XCTAssertEqual(model.primarySelectedAssetID, assets[4].assetID)
         XCTAssertEqual(model.selectedAssetIDs.count, 1)
+    }
+
+    func testReviewQueueArrowNavigationStartsAtFirstItemWhenNothingIsSelected() async {
+        let sourceID = UUID()
+        let tag = TagListItem(id: UUID(), displayName: "Family", state: .active)
+        let first = Self.makeAsset(sourceID: sourceID, fileName: "first.jpg")
+        let second = Self.makeAsset(sourceID: sourceID, fileName: "second.jpg")
+        let queueItems = [first, second].map {
+            ReviewQueueItemProjection(
+                assetID: $0.assetID,
+                fileName: $0.fileName,
+                availability: $0.availability,
+                acceptedTagCount: 0,
+                rejectedTagCount: 0
+            )
+        }
+        let model = LibraryWorkspaceModel(
+            service: FakeLibraryWorkspaceService(
+                connectedSource: LibrarySourceSummary(
+                    id: sourceID,
+                    displayName: "Fixture",
+                    state: .active
+                ),
+                reconciledItems: [first, second],
+                tags: [tag]
+            ),
+            review: FakePersonalizationReviewPort(queueItems: queueItems)
+        )
+        await model.start()
+        await model.connectFolder()
+        await waitForCatalogScanToFinish(model)
+        await model.enterReviewQueue(tagID: tag.id, displayName: tag.displayName)
+        XCTAssertNil(model.primarySelectedAssetID)
+
+        await model.moveReviewPrimarySelection(in: .up, columnCount: 3)
+
+        XCTAssertEqual(model.primarySelectedAssetID, first.assetID)
+        XCTAssertEqual(model.inspectorDetail?.assetID, first.assetID)
     }
 
     func testReviewQueueGridNavigationLoadsNextPageBeforeMovingDown() async {

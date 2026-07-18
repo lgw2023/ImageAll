@@ -775,6 +775,11 @@ final class LibraryWorkspaceModel: ObservableObject {
         in direction: LibraryGridNavigationDirection,
         columnCount: Int
     ) async {
+        if primarySelectedAssetID == nil {
+            guard let firstAssetID = items.first?.assetID else { return }
+            await selectAsset(firstAssetID)
+            return
+        }
         let columns = max(columnCount, 1)
         let offset = switch direction {
         case .left: -1
@@ -1466,9 +1471,12 @@ extension LibraryWorkspaceModel {
         in direction: LibraryGridNavigationDirection,
         columnCount: Int
     ) async {
-        guard case let .tagQueue(tagID, _) = reviewMode,
-              let currentID = primarySelectedAssetID
-        else { return }
+        guard case let .tagQueue(tagID, _) = reviewMode else { return }
+        guard let currentID = primarySelectedAssetID else {
+            guard let firstAssetID = reviewQueueItems.first?.assetID else { return }
+            await selectAsset(firstAssetID)
+            return
+        }
 
         let columns = max(columnCount, 1)
         let offset = switch direction {
@@ -2423,7 +2431,10 @@ struct LibraryWorkspaceView: View {
     }
 
     private func handleGridNavigationKey(_ keyPress: KeyPress) -> KeyPress.Result {
-        guard model.primarySelectedAssetID != nil else { return .ignored }
+        let hasNavigableItems = model.reviewMode == nil
+            ? !model.items.isEmpty
+            : !model.reviewQueueItems.isEmpty
+        guard hasNavigableItems else { return .ignored }
         let direction: LibraryGridNavigationDirection
         switch keyPress.key {
         case .leftArrow: direction = .left
