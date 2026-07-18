@@ -146,6 +146,7 @@ final class LibraryWorkspaceModel: ObservableObject {
     @Published fileprivate(set) var reviewNextCursor: ReviewQueueCursor?
     @Published var pendingSuggestionConfirmation: SuggestionEnqueueConfirmation?
     @Published private(set) var pendingTagDecisionConfirmation: LibraryTagDecisionConfirmation?
+    @Published private(set) var pendingNewTagConfirmation: LibraryNewTagConfirmation?
     @Published private(set) var assetPendingSuggestions: [AssetPendingSuggestion] = []
     @Published private(set) var cloudPreviewState: CloudPreviewPresentationState = .hidden
     @Published private(set) var isExportingPortableData = false
@@ -871,6 +872,10 @@ final class LibraryWorkspaceModel: ObservableObject {
 
     func createAndAcceptTag(named rawName: String) async {
         let assetIDs = Array(selectedAssetIDs)
+        await createAndAcceptTag(named: rawName, assetIDs: assetIDs)
+    }
+
+    private func createAndAcceptTag(named rawName: String, assetIDs: [UUID]) async {
         guard !assetIDs.isEmpty else { return }
         let service = service
         do {
@@ -890,6 +895,35 @@ final class LibraryWorkspaceModel: ObservableObject {
         } catch {
             notice = tagNotice(for: error)
         }
+    }
+
+    func requestCreateAndAcceptTag(named rawName: String) async {
+        guard case let .success(name) = TagNameNormalizer.validateAndNormalize(rawName) else {
+            return
+        }
+        guard selectedAssetIDs.count > 1 else {
+            await createAndAcceptTag(named: name.displayName)
+            return
+        }
+        pendingNewTagConfirmation = LibraryNewTagConfirmation(
+            tagDisplayName: name.displayName,
+            assetIDs: selectedAssetIDs
+        )
+    }
+
+    func confirmPendingNewTag(
+        _ capturedConfirmation: LibraryNewTagConfirmation? = nil
+    ) async {
+        guard let pending = capturedConfirmation ?? pendingNewTagConfirmation else { return }
+        pendingNewTagConfirmation = nil
+        await createAndAcceptTag(
+            named: pending.tagDisplayName,
+            assetIDs: Array(pending.assetIDs)
+        )
+    }
+
+    func cancelPendingNewTag() {
+        pendingNewTagConfirmation = nil
     }
 
     func installPresetTags() async {
@@ -1861,6 +1895,24 @@ struct LibraryWorkspaceView: View {
             }
         } message: { pending in
             Text("这会修改 \(pending.affectedCount) 张照片的人工标签决定；完成后仍可撤销一次。原照片不会被修改。")
+        }
+        .confirmationDialog(
+            newTagConfirmationTitle(model.pendingNewTagConfirmation),
+            isPresented: Binding(
+                get: { model.pendingNewTagConfirmation != nil },
+                set: { if !$0 { model.cancelPendingNewTag() } }
+            ),
+            titleVisibility: .visible,
+            presenting: model.pendingNewTagConfirmation
+        ) { pending in
+            Button("创建并应用") {
+                Task { await model.confirmPendingNewTag(pending) }
+            }
+            Button("取消", role: .cancel) {
+                model.cancelPendingNewTag()
+            }
+        } message: { pending in
+            Text("这会创建“\(pending.tagDisplayName)”并应用到 \(pending.affectedCount) 张照片；完成后仍可撤销一次。原照片不会被修改。")
         }
         .searchable(
             text: $searchText,
@@ -3151,7 +3203,7 @@ struct LibraryWorkspaceView: View {
         let candidate = newTagName
         guard !TagNameNormalizer.trimUnicodeWhiteSpace(candidate).isEmpty else { return }
         Task {
-            await model.createAndAcceptTag(named: candidate)
+            await model.requestCreateAndAcceptTag(named: candidate)
             if model.notice == nil {
                 newTagName = ""
             }
@@ -3307,6 +3359,11 @@ struct LibraryWorkspaceView: View {
         case .reject: "拒绝并应用"
         case .clear: "清除决定"
         }
+    }
+
+    private func newTagConfirmationTitle(_ pending: LibraryNewTagConfirmation?) -> String {
+        guard let pending else { return "确认批量新建标签？" }
+        return "为 \(pending.affectedCount) 张照片新建“\(pending.tagDisplayName)”？"
     }
 
     private func suggestionConfirmationMessage(_ pending: SuggestionEnqueueConfirmation) -> String {

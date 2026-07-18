@@ -116,6 +116,14 @@ struct LibraryTagDecisionConfirmation: Identifiable, Equatable, Sendable {
     var affectedCount: Int { assetIDs.count }
 }
 
+struct LibraryNewTagConfirmation: Identifiable, Equatable, Sendable {
+    let tagDisplayName: String
+    let assetIDs: Set<UUID>
+
+    var id: String { tagDisplayName }
+    var affectedCount: Int { assetIDs.count }
+}
+
 struct LibraryInspectorTagPresentation: Identifiable, Equatable, Sendable {
     let id: UUID
     let displayName: String

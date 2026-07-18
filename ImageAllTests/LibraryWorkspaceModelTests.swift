@@ -944,6 +944,123 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertTrue(model.canUndoTagMutation)
     }
 
+    func testBulkNewTagRequestShowsNormalizedNameAndImpactBeforeMutatingCatalog() async throws {
+        let sourceID = UUID()
+        let first = Self.makeAsset(sourceID: sourceID, fileName: "first.jpg")
+        let second = Self.makeAsset(sourceID: sourceID, fileName: "second.jpg")
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(id: sourceID, displayName: "Fixture", state: .active),
+            reconciledItems: [first, second]
+        )
+        let model = LibraryWorkspaceModel(service: service)
+        await model.start()
+        await model.connectFolder()
+        await waitForCatalogScanToFinish(model)
+        await model.selectAsset(first.assetID)
+        await model.selectAsset(second.assetID, additive: true)
+
+        await model.requestCreateAndAcceptTag(named: "  Print  ")
+
+        XCTAssertEqual(service.createTagAndAcceptCallCount, 0)
+        let pending = try XCTUnwrap(model.pendingNewTagConfirmation)
+        XCTAssertEqual(pending.tagDisplayName, "Print")
+        XCTAssertEqual(pending.affectedCount, 2)
+        XCTAssertEqual(pending.assetIDs, Set([first.assetID, second.assetID]))
+    }
+
+    func testConfirmingBulkNewTagAppliesCapturedSelectionOnce() async throws {
+        let sourceID = UUID()
+        let first = Self.makeAsset(sourceID: sourceID, fileName: "first.jpg")
+        let second = Self.makeAsset(sourceID: sourceID, fileName: "second.jpg")
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(id: sourceID, displayName: "Fixture", state: .active),
+            reconciledItems: [first, second]
+        )
+        let model = LibraryWorkspaceModel(service: service)
+        await model.start()
+        await model.connectFolder()
+        await waitForCatalogScanToFinish(model)
+        await model.selectAsset(first.assetID)
+        await model.selectAsset(second.assetID, additive: true)
+        await model.requestCreateAndAcceptTag(named: "Print")
+        await model.selectAsset(first.assetID)
+
+        await model.confirmPendingNewTag()
+
+        XCTAssertEqual(service.createTagAndAcceptCallCount, 1)
+        XCTAssertEqual(service.lastCreateTagAssetIDs, Set([first.assetID, second.assetID]))
+        XCTAssertNil(model.pendingNewTagConfirmation)
+        XCTAssertEqual(model.tags.map(\.displayName), ["Print"])
+    }
+
+    func testCancellingBulkNewTagCreatesNoTagOrDecision() async {
+        let sourceID = UUID()
+        let first = Self.makeAsset(sourceID: sourceID, fileName: "first.jpg")
+        let second = Self.makeAsset(sourceID: sourceID, fileName: "second.jpg")
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(id: sourceID, displayName: "Fixture", state: .active),
+            reconciledItems: [first, second]
+        )
+        let model = LibraryWorkspaceModel(service: service)
+        await model.start()
+        await model.connectFolder()
+        await waitForCatalogScanToFinish(model)
+        await model.selectAsset(first.assetID)
+        await model.selectAsset(second.assetID, additive: true)
+        await model.requestCreateAndAcceptTag(named: "Print")
+
+        model.cancelPendingNewTag()
+
+        XCTAssertNil(model.pendingNewTagConfirmation)
+        XCTAssertEqual(service.createTagAndAcceptCallCount, 0)
+        XCTAssertTrue(model.tags.isEmpty)
+    }
+
+    func testBulkNewTagConfirmationSurvivesDialogDismissalOrdering() async throws {
+        let sourceID = UUID()
+        let first = Self.makeAsset(sourceID: sourceID, fileName: "first.jpg")
+        let second = Self.makeAsset(sourceID: sourceID, fileName: "second.jpg")
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(id: sourceID, displayName: "Fixture", state: .active),
+            reconciledItems: [first, second]
+        )
+        let model = LibraryWorkspaceModel(service: service)
+        await model.start()
+        await model.connectFolder()
+        await waitForCatalogScanToFinish(model)
+        await model.selectAsset(first.assetID)
+        await model.selectAsset(second.assetID, additive: true)
+        await model.requestCreateAndAcceptTag(named: "Print")
+        let captured = try XCTUnwrap(model.pendingNewTagConfirmation)
+
+        model.cancelPendingNewTag()
+        await model.confirmPendingNewTag(captured)
+
+        XCTAssertEqual(service.createTagAndAcceptCallCount, 1)
+        XCTAssertEqual(service.lastCreateTagAssetIDs, Set([first.assetID, second.assetID]))
+        XCTAssertEqual(model.tags.map(\.displayName), ["Print"])
+    }
+
+    func testSingleSelectionNewTagRequestAppliesWithoutConfirmation() async {
+        let sourceID = UUID()
+        let asset = Self.makeAsset(sourceID: sourceID)
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(id: sourceID, displayName: "Fixture", state: .active),
+            reconciledItems: [asset]
+        )
+        let model = LibraryWorkspaceModel(service: service)
+        await model.start()
+        await model.connectFolder()
+        await waitForCatalogScanToFinish(model)
+        await model.selectAsset(asset.assetID)
+
+        await model.requestCreateAndAcceptTag(named: "  Print  ")
+
+        XCTAssertNil(model.pendingNewTagConfirmation)
+        XCTAssertEqual(service.createTagAndAcceptCallCount, 1)
+        XCTAssertEqual(model.tags.map(\.displayName), ["Print"])
+    }
+
     func testBulkTagDecisionRequestShowsImpactBeforeMutatingCatalog() async throws {
         let sourceID = UUID()
         let first = Self.makeAsset(sourceID: sourceID, fileName: "first.jpg")
@@ -1998,6 +2115,8 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
     private var storedThumbnailLoadCallCount = 0
     private var storedPortableExportCallCount = 0
     private var storedPreviewCacheClearCallCount = 0
+    private var storedCreateTagAndAcceptCallCount = 0
+    private var storedLastCreateTagAssetIDs: Set<UUID> = []
     private var storedAssetPageFetchCallCount = 0
     private var storedJobActivityItems: [JobActivityItem]
     private var storedJobActivityFetchCallCount = 0
@@ -2141,6 +2260,14 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
 
     var previewCacheClearCallCount: Int {
         lock.withLock { storedPreviewCacheClearCallCount }
+    }
+
+    var createTagAndAcceptCallCount: Int {
+        lock.withLock { storedCreateTagAndAcceptCallCount }
+    }
+
+    var lastCreateTagAssetIDs: Set<UUID> {
+        lock.withLock { storedLastCreateTagAssetIDs }
     }
 
     var assetPageFetchCallCount: Int {
@@ -2566,6 +2693,8 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
         assetIDs: [UUID]
     ) throws -> TagCreateAndApplyResult {
         lock.withLock {
+            storedCreateTagAndAcceptCallCount += 1
+            storedLastCreateTagAssetIDs = Set(assetIDs)
             let tag = TagListItem(id: UUID(), displayName: rawName, state: .active)
             storedTags.append(tag)
             for assetID in assetIDs {
