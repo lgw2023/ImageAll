@@ -1,6 +1,6 @@
 # ImageAll 可选本地模型模块实施规格
 
-> 状态：标准/个人 suggestion HTTP、双轨服务启动、个人训练 CLI、Swift client tracer 与 DINOv2 Core ML FP16 导出/基准已实现；生产公共模型和 App 持久化接线仍待后续门
+> 状态：标准/个人 suggestion HTTP、双轨服务启动、个人训练 CLI、Swift client tracer 与 DINOv2 Core ML FP16 导出/HTTP provider 已实现；生产公共模型和 App 持久化接线仍待后续门
 > 日期：2026-07-18
 > 开工基线：`main@14c3890b8c83c87a6f603c8900dfaabb3179ea6c`
 > 范围：独立模型训练、部署与推理模块；本切片不接线 Xcode 工程或生产目录库
@@ -35,13 +35,15 @@ CompositionRoot/Review Queue 接线与真实照片验证均未接入。
 与稀疏人工决定快照训练线性多标签 head，未观察的 asset/tag pair 通过 observation mask 排除，并输出
 带 catalog、bundle、encoder、标签词表和权重 hash 身份的只读 bundle。personal `/v1/suggestions`
 现已加载该 bundle，只返回其中已有的 `tag_id` 且固定为 `suggested`；该切片仍不包含 App 侧快照导出
-或生产照片训练。服务 CLI 通过 `--provider dinov2 --personal-bundle <path>` 同时装载实际 DINO provider
+或生产照片训练。服务 CLI 可通过 `--provider dinov2 --personal-bundle <path>`，或通过
+`--provider coreml --coreml-bundle <path> --personal-bundle <path>`，同时装载实际 DINO provider
 与个人 bundle，并在开始监听前拒绝缺少 provider 或 encoder identity 不一致的组合。
 
 Core ML tracer 已把同一固定 DINOv2 revision 转换为 macOS 15+ FP16 ML Program，并输出带完整
 encoder/preprocessing identity 和目录内容 SHA-256 的 artifact manifest。转换 CLI 只用程序生成 RGB
-图片经固定 AutoImageProcessor 得到的 tensor 做数值与延迟基准；artifact 尚未装载进 Python HTTP
-provider 或 App target，模块缺失时的原有降级边界不变。
+图片经固定 AutoImageProcessor 得到的 tensor 做数值与延迟基准；服务 CLI 现可用
+`--provider coreml --coreml-bundle <path>` 装载 artifact，并复用 `/v1/embeddings` 与 personal
+`/v1/suggestions`。artifact 未接入 App target，模块缺失时的原有降级边界不变。
 
 ## 2. 技术决策
 
@@ -65,7 +67,7 @@ backbone。训练产物必须记录 encoder、模型 revision、预处理 revisi
 | 候选 | 职责 | 准入状态 |
 |---|---|---|
 | Places365 ResNet18 | 标准场景标签、场景属性和 ontology mapping 的首个 tracer 候选 | 未批准；先关闭 revision、许可证、公开 fixture 和 Core ML 门 |
-| DINOv2-small | 个人标签冻结 embedding | 固定 revision 的独立服务与 Core ML FP16 artifact tracer 已实现 |
+| DINOv2-small | 个人标签冻结 embedding | 固定 revision 的 PyTorch/Core ML 独立服务与 FP16 artifact tracer 已实现 |
 | SigLIP2 B/32 256 | 开放词表与标准概念候选评测 | 后续 benchmark |
 | SegFormer-B0 ADE20K | 水域、天空、道路等标准标签的区域证据 | 研究候选，不单独决定标签 |
 | RAM++ | 通用对象/属性候选 | 许可证、权重来源和转换门未关闭，不得进入产品 |
@@ -87,6 +89,8 @@ backbone。训练产物必须记录 encoder、模型 revision、预处理 revisi
   `1×3×224×224 float32 → 1×384 float32` 输入/输出和 FP16 内部精度关闭首个转换门；
 - artifact 加载必须核对 encoder/provider/model/preprocessing identity、转换格式、部署目标与模型目录
   SHA-256；现有 gate 为所有样本 cosine `>= 0.999` 且 relative L2 `<= 0.02`；
+- Core ML HTTP provider 还必须核对固定 `1×3×224×224` 输入；artifact 缺失、身份/校验和/输入不匹配
+  或 runtime 不可用时须在监听前失败，禁止自动回退 PyTorch 或 standard；
 - Python 基准分别请求 `CPU_ONLY` 与 `ALL`。`ALL` 允许 Core ML 自选 CPU/GPU/Neural Engine，但
   报告固定写明实际设备分配尚未验证；Xcode compute plan、内存与热量另行关闭后，才可宣称 ANE；
 - 首个 Core ML 版本通过后再独立评估 INT8 weight-only；
@@ -352,6 +356,15 @@ revision、许可证、公开评测集和自动阈值校准仍是生产公共模
 5. 两张程序生成 RGB 图片经固定 AutoImageProcessor 后，两种 compute-unit 请求均通过 cosine 与
    relative L2 门。测试和转换产物只在临时目录，不读取任何真实照片。
 
+`3a49774` 继续关闭 provider 门：
+
+1. 真实临时 ML Program 经生成 PNG、固定 AutoImageProcessor 和公共 `EmbeddingProvider` 接口返回
+   384 维有限向量，provider identity 与 artifact manifest 固定一致；
+2. CLI 只接受 `--provider coreml --coreml-bundle <path>` 的成对配置，缺失、错配或不可加载时在监听前
+   稳定退出；
+3. `/v1/embeddings` 与 personal `/v1/suggestions` 复用既有响应和 bundle identity；personal 仍只输出
+   bundle 内已有 `tag_id`、固定 `suggested`，Core ML 失败不回退 PyTorch 或 standard。
+
 ## 7. 后续切片
 
 1. 标准场景 tracer：fixture 级闭环已完成；生产公共模型 revision、许可证和校准仍待批准；
@@ -359,10 +372,10 @@ revision、许可证、公开评测集和自动阈值校准仍是生产公共模
 3. `/v1/suggestions`：standard 与 personal 双轨、稳定错误、禁止跨轨回退及 CLI 装载已完成；
 4. Core ML FP16：Python 转换、artifact 校验、数值一致性与 CPU_ONLY/ALL 请求基准已完成；Xcode
    compute plan、实际 Neural Engine、内存与热量仍待独立验收；
-5. Core ML provider：下一独立模型切片把已验证 artifact 装载为 Python 服务的可选 DINO embedding
-   provider，保持 HTTP/personal bundle identity 和无跨 provider 回退不变；
-6. Swift optional client：loopback transport、双轨严格解码与离线错误已完成；下一 App 切片收敛
-   sandbox/ATS 后，仍须默认关闭地接入现有查询和 Review Queue；
+5. Core ML provider：已完成；已验证 artifact 可装载为 Python 服务的可选 DINO embedding provider，
+   保持 HTTP/personal bundle identity 和无跨 provider 回退不变；
+6. Swift optional client：loopback transport、双轨严格解码、sandbox/ATS 与显式 Inspector standard
+   预览已完成；个人 bundle 配置、持久化与 Review Queue 仍待独立 App 切片；
 7. 再独立评估 SigLIP2、区域证据、FastViT student 和可选 Ollama VLM adapter。
 
 Core ML Xcode 接线、SigLIP2 下载、Ollama 模型下载、生产数据库接线和真实照片人工验证都必须按
@@ -396,6 +409,7 @@ Core ML Xcode 接线、SigLIP2 下载、Ollama 模型下载、生产数据库接
 | 双轨服务启动 | `e447f80` | CLI 装载已校验 standard pack 或 DINO personal bundle，仍只绑定 loopback |
 | Swift optional client tracer | `ffb1fd2` | 仅允许 `127.0.0.1`、双轨完整身份解码、跨 bundle fail closed、离线服务不回退 |
 | DINOv2 Core ML FP16 | `dfac6eb` | 固定位置编码、原子 ML Program artifact、严格身份/checksum 与 CPU_ONLY/ALL 数值基准 |
+| DINOv2 Core ML provider | `3a49774` | 固定预处理/输入、embedding 与 personal HTTP 复用、启动前 fail closed 且不跨 provider 回退 |
 | Inspector 标准建议预览 | `c68a6aa` | CompositionRoot 固定公开 fixture 身份；显式单图请求、选择隔离、iCloud 已下载预览复用、离线 fail closed 与零持久化 |
 
 2026-07-18 至 2026-07-19 验收：
@@ -442,3 +456,10 @@ cosine `0.999950`、maximum relative L2 `0.010020`、median `2.75 ms`。约 41 M
 只生成在 pytest 临时目录；数值与延迟是当前 Mac 的小样本 tracer，不是发布性能结论，也未证明
 ALL 实际使用 ANE。`imageall-convert-coreml --help`、Python compileall 与 `uv build` 通过；未修改
 Swift、Xcode 或 SQLite，未读取 `user/`、`/Volumes/HDD2` 或 `.photoslibrary`，未 push。
+
+同日 Core ML provider 验收：默认全模块为 `69 passed, 2 skipped`；使用
+`HF_HOME=/tmp/ImageAll-ModelBackend-HF HF_HUB_OFFLINE=1` 并显式启用 DINO/Core ML 两项生产 smoke
+后为 `71 passed`。真实固定 revision 完成 PyTorch embedding、FP16 转换/数值门和“程序生成 PNG →
+固定 processor → Core ML provider → 384 维 embedding”路径；Python compileall、服务 CLI help 与
+`uv build` 均通过。所有 artifact 仅生成在 pytest 临时目录，未读取 `user/`、`/Volumes/HDD2` 或
+`.photoslibrary`，未修改 Swift、Xcode 或 SQLite，未 push。

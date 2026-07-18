@@ -5,7 +5,7 @@
 
 当前模块包含：
 
-- 固定 revision 的 `facebook/dinov2-small` embedding provider；
+- 固定 revision 的 `facebook/dinov2-small` PyTorch/Core ML embedding provider；
 - 仅监听 loopback 的 FastAPI/uvicorn 服务；
 - 合成 embedding 上可使用 MPS 的线性多标签 head 训练与可复核 bundle；
 - 可由启动命令装载的标准 package 与 catalog-scoped personal bundle；
@@ -21,6 +21,7 @@ uv sync --extra test
 ```
 
 依赖安装在 `ModelBackend/.venv`，不会修改全局 Python 环境。版本由 `uv.lock` 固定。
+只安装运行时 Core ML 可选依赖时使用 `uv sync --extra coreml`。
 
 ## 启动
 
@@ -47,6 +48,29 @@ uv run imageall-model-backend \
   --port 8765
 ```
 
+先转换固定 DINOv2 revision 并生成带校验 manifest 的 FP16 artifact：
+
+```bash
+uv run imageall-convert-coreml \
+  --output /absolute/path/to/dinov2-small-coreml \
+  --model-cache /absolute/path/to/huggingface/hub \
+  --offline
+```
+
+再把该 artifact 装载为 HTTP embedding provider：
+
+```bash
+uv run imageall-model-backend \
+  --provider coreml \
+  --coreml-bundle /absolute/path/to/dinov2-small-coreml \
+  --model-cache /absolute/path/to/huggingface/hub \
+  --offline \
+  --port 8765
+```
+
+`--provider coreml` 与 `--coreml-bundle` 必须同时出现。artifact identity、checksum 或固定输入契约
+不匹配时服务在监听前停止，不会回退到 PyTorch provider。
+
 加载仓库内的标准场景公开 fixture：
 
 ```bash
@@ -66,7 +90,8 @@ uv run imageall-model-backend \
   --port 8765
 ```
 
-个人 bundle 必须与启动时实际装载的 DINO provider identity 完全一致；缺少 provider 或身份不匹配时
+个人 bundle 可与 PyTorch 或 Core ML DINO provider 配合，但必须与启动时实际装载的 provider identity
+完全一致；缺少 provider 或身份不匹配时
 服务在监听端口前停止。标准 fixture 只验证 package、mapping、policy 与 HTTP 契约，不代表生产模型准确率。
 
 CLI 不提供 host 参数，服务固定绑定 `127.0.0.1`。接口契约见
@@ -94,6 +119,6 @@ uv run pytest -q
 uv build
 ```
 
-仓库已有默认未接入 CompositionRoot 的 Swift loopback client tracer，但仍没有数据库/UI 接线、
-模型自动安装、生产标准模型、SigLIP2 或 Ollama adapter；Core ML 工作由独立后续切片验收。
-这些能力按规格中的独立后续切片实施。
+仓库已有 Swift loopback client 与显式单图 standard 预览，但仍没有个人 bundle App 接线、数据库持久化、
+模型自动安装、生产标准模型、SigLIP2 或 Ollama adapter；Core ML 的 Xcode compute plan、实际 ANE、
+内存与热量仍由独立后续切片验收。
