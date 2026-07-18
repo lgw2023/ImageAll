@@ -2,14 +2,23 @@ import base64
 import io
 from pathlib import Path
 
+import numpy as np
+import pytest
 from fastapi.testclient import TestClient
 from PIL import Image
 
+from imageall_model_backend.personal_suggestions import PersonalSuggestionEngine
+from imageall_model_backend.personal_training import (
+    PersonalTrainingInput,
+    load_personal_linear_head,
+    train_personal_linear_head,
+)
 from imageall_model_backend.providers import EmbeddingProviderIdentity
 from imageall_model_backend.rgb_linear import RGBLinearSceneProvider
 from imageall_model_backend.service import create_app
 from imageall_model_backend.standard_pack import load_standard_pack
 from imageall_model_backend.standard_suggestions import StandardSuggestionEngine
+from imageall_model_backend.training import LinearHeadTrainingConfig
 
 PUBLIC_FIXTURE_PACK = (
     Path(__file__).parents[1] / "fixtures" / "standard-scene-pack-v1"
@@ -20,6 +29,65 @@ def standard_suggestion_client() -> TestClient:
     pack = load_standard_pack(PUBLIC_FIXTURE_PACK)
     engine = StandardSuggestionEngine(pack, RGBLinearSceneProvider.from_pack(pack))
     return TestClient(create_app(standard_suggestion_engine=engine))
+
+
+class FakePersonalEmbeddingProvider:
+    identity = EmbeddingProviderIdentity(
+        provider="dinov2",
+        model_id="facebook/dinov2-small",
+        model_revision="fixture-model-revision",
+        preprocessing_revision="fixture-preprocessing-revision",
+        element_count=2,
+    )
+
+    def embed(self, image_bytes: bytes) -> list[float]:
+        assert image_bytes.startswith(b"\x89PNG\r\n\x1a\n")
+        return [2.0, 0.0]
+
+
+def personal_suggestion_engine(
+    tmp_path: Path,
+    provider: FakePersonalEmbeddingProvider | None = None,
+) -> PersonalSuggestionEngine:
+    identity = FakePersonalEmbeddingProvider.identity
+    embeddings = np.asarray(
+        [[-2.0, 0.0], [-1.0, 0.0], [1.0, 0.0], [2.0, 0.0]],
+        dtype=np.float32,
+    )
+    training_input = PersonalTrainingInput(
+        catalog_scope_id="catalog-fixture",
+        decision_snapshot_revision="decisions-v1",
+        encoder_identity=identity,
+        personal_tag_ids=("tag-trip",),
+        label_vocabulary_revision="personal-tags-v1",
+        asset_ids=("asset-1", "asset-2", "asset-3", "asset-4"),
+        content_revisions=("r1", "r1", "r1", "r1"),
+        embeddings=embeddings,
+        targets=np.asarray([[0.0], [0.0], [1.0], [1.0]], dtype=np.float32),
+        observation_mask=np.ones((4, 1), dtype=np.bool_),
+    )
+    result = train_personal_linear_head(
+        training_input=training_input,
+        output_dir=tmp_path / "personal-bundle",
+        bundle_id="personal-fixture",
+        bundle_revision="bundle-v1",
+        config=LinearHeadTrainingConfig(epochs=40, learning_rate=0.1),
+    )
+    bundle = load_personal_linear_head(
+        result.bundle_path,
+        expected_catalog_scope_id="catalog-fixture",
+        expected_bundle_id="personal-fixture",
+        expected_bundle_revision="bundle-v1",
+        expected_encoder_identity=identity,
+        expected_label_vocabulary_revision="personal-tags-v1",
+    )
+    return PersonalSuggestionEngine(provider or FakePersonalEmbeddingProvider(), bundle)
+
+
+def personal_suggestion_client(tmp_path: Path) -> TestClient:
+    return TestClient(
+        create_app(personal_suggestion_engine=personal_suggestion_engine(tmp_path))
+    )
 
 
 def png_base64(color: tuple[int, int, int]) -> str:
@@ -264,6 +332,123 @@ def test_personal_target_does_not_fall_back_to_standard_suggestions() -> None:
             "code": "personal_bundle_unavailable",
             "message": "No personal suggestion bundle is configured.",
         }
+    }
+
+
+def test_personal_suggestion_endpoint_returns_only_scoped_bundle_tags(
+    tmp_path: Path,
+) -> None:
+    client = personal_suggestion_client(tmp_path)
+
+    response = client.post(
+        "/v1/suggestions",
+        json={
+            "request_id": "personal-request-2",
+            "image_base64": png_base64((32, 64, 128)),
+            "target": {
+                "track": "personal",
+                "catalog_scope_id": "catalog-fixture",
+                "bundle_id": "personal-fixture",
+                "bundle_revision": "bundle-v1",
+                "label_vocabulary_revision": "personal-tags-v1",
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["request_id"] == "personal-request-2"
+    assert len(payload["suggestions"]) == 1
+    suggestion = payload["suggestions"][0]
+    assert suggestion["track"] == "personal"
+    assert suggestion["concept_id"] is None
+    assert suggestion["tag_id"] == "tag-trip"
+    assert suggestion["recommended_state"] == "suggested"
+    assert suggestion["catalog_scope_id"] == "catalog-fixture"
+    assert suggestion["bundle_id"] == "personal-fixture"
+    assert suggestion["bundle_revision"] == "bundle-v1"
+    assert suggestion["provider"] == "dinov2"
+    assert suggestion["model_revision"] == "fixture-model-revision"
+    assert suggestion["preprocessing_revision"] == (
+        "fixture-preprocessing-revision"
+    )
+    assert suggestion["label_vocabulary_revision"] == "personal-tags-v1"
+    assert suggestion["policy_revision"] == "personal-logit-zero-top10-v1"
+
+
+@pytest.mark.parametrize(
+    ("field", "stale_value"),
+    (
+        ("catalog_scope_id", "another-catalog"),
+        ("bundle_id", "another-bundle"),
+        ("bundle_revision", "stale-bundle-revision"),
+        ("label_vocabulary_revision", "stale-vocabulary"),
+    ),
+)
+def test_personal_target_fails_closed_on_bundle_identity_mismatch(
+    tmp_path: Path,
+    field: str,
+    stale_value: str,
+) -> None:
+    client = personal_suggestion_client(tmp_path)
+    target = {
+        "track": "personal",
+        "catalog_scope_id": "catalog-fixture",
+        "bundle_id": "personal-fixture",
+        "bundle_revision": "bundle-v1",
+        "label_vocabulary_revision": "personal-tags-v1",
+    }
+    target[field] = stale_value
+
+    response = client.post(
+        "/v1/suggestions",
+        json={
+            "request_id": "stale-personal-request",
+            "image_base64": png_base64((32, 64, 128)),
+            "target": target,
+        },
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == {
+        "code": "personal_bundle_mismatch",
+        "message": "Requested personal bundle identity is not loaded.",
+    }
+
+
+class InvalidPersonalEmbeddingProvider(FakePersonalEmbeddingProvider):
+    def embed(self, image_bytes: bytes) -> list[float]:
+        return [float("nan"), 0.0]
+
+
+def test_personal_provider_failure_is_stable_and_does_not_return_suggestions(
+    tmp_path: Path,
+) -> None:
+    engine = personal_suggestion_engine(
+        tmp_path,
+        provider=InvalidPersonalEmbeddingProvider(),
+    )
+    client = TestClient(create_app(personal_suggestion_engine=engine))
+
+    response = client.post(
+        "/v1/suggestions",
+        json={
+            "request_id": "failed-personal-request",
+            "image_base64": png_base64((32, 64, 128)),
+            "target": {
+                "track": "personal",
+                "catalog_scope_id": "catalog-fixture",
+                "bundle_id": "personal-fixture",
+                "bundle_revision": "bundle-v1",
+                "label_vocabulary_revision": "personal-tags-v1",
+            },
+        },
+    )
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == {
+        "code": "personal_model_failure",
+        "message": "Personal provider failed to produce suggestions.",
     }
 
 

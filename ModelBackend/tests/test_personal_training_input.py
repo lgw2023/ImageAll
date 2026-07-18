@@ -295,6 +295,11 @@ def test_trains_and_reloads_a_catalog_scoped_personal_bundle(tmp_path: Path) -> 
         "tag-trip": {"negative": 2, "positive": 2},
         "tag-work": {"negative": 2, "positive": 2},
     }
+    assert manifest["suggestion_policy"] == {
+        "revision": "personal-logit-zero-top10-v1",
+        "max_suggestions": 10,
+        "thresholds": {"tag-trip": 0.0, "tag-work": 0.0},
+    }
     assert manifest["weights_sha256"] == _sha256(weights_path)
 
     bundle = load_personal_linear_head(
@@ -306,6 +311,9 @@ def test_trains_and_reloads_a_catalog_scoped_personal_bundle(tmp_path: Path) -> 
         expected_label_vocabulary_revision="personal-tags-v1",
     )
     logits = bundle.predict_logits(embeddings)
+    assert bundle.suggestion_policy.revision == "personal-logit-zero-top10-v1"
+    assert bundle.suggestion_policy.max_suggestions == 10
+    assert bundle.suggestion_policy.thresholds == (0.0, 0.0)
     assert np.all(logits[:2, 0] < 0)
     assert np.all(logits[2:, 0] > 0)
     assert np.all(logits[[0, 2], 1] < 0)

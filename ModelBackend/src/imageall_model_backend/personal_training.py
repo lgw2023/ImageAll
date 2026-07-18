@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import tempfile
 from dataclasses import asdict, dataclass
@@ -12,6 +13,9 @@ import torch
 
 from imageall_model_backend.providers import EmbeddingProviderIdentity
 from imageall_model_backend.training import LinearHeadTrainingConfig
+
+PERSONAL_SUGGESTION_POLICY_REVISION = "personal-logit-zero-top10-v1"
+PERSONAL_MAX_SUGGESTIONS = 10
 
 
 @dataclass(frozen=True)
@@ -36,6 +40,13 @@ class PersonalLinearHeadTrainingResult:
 
 
 @dataclass(frozen=True)
+class PersonalSuggestionPolicy:
+    revision: str
+    max_suggestions: int
+    thresholds: tuple[float, ...]
+
+
+@dataclass(frozen=True)
 class PersonalLinearHeadBundle:
     bundle_id: str
     bundle_revision: str
@@ -44,6 +55,7 @@ class PersonalLinearHeadBundle:
     encoder_identity: EmbeddingProviderIdentity
     personal_tag_ids: tuple[str, ...]
     label_vocabulary_revision: str
+    suggestion_policy: PersonalSuggestionPolicy
     weights: np.ndarray
     bias: np.ndarray
 
@@ -193,6 +205,13 @@ def train_personal_linear_head(
             }
             for index, tag_id in enumerate(training_input.personal_tag_ids)
         },
+        "suggestion_policy": {
+            "revision": PERSONAL_SUGGESTION_POLICY_REVISION,
+            "max_suggestions": PERSONAL_MAX_SUGGESTIONS,
+            "thresholds": {
+                tag_id: 0.0 for tag_id in training_input.personal_tag_ids
+            },
+        },
         "training": {
             "device": device.type,
             "epochs": config.epochs,
@@ -235,6 +254,18 @@ def load_personal_linear_head(
         raise ValueError("personal bundle encoder identity mismatch")
     if manifest["label_vocabulary_revision"] != expected_label_vocabulary_revision:
         raise ValueError("personal bundle label vocabulary revision mismatch")
+    personal_tag_ids = tuple(manifest["personal_tag_ids"])
+    policy_payload = manifest["suggestion_policy"]
+    thresholds_payload = policy_payload["thresholds"]
+    if (
+        policy_payload["revision"] != PERSONAL_SUGGESTION_POLICY_REVISION
+        or policy_payload["max_suggestions"] <= 0
+        or set(thresholds_payload) != set(personal_tag_ids)
+    ):
+        raise ValueError("personal suggestion policy mismatch")
+    thresholds = tuple(float(thresholds_payload[tag_id]) for tag_id in personal_tag_ids)
+    if not all(math.isfinite(threshold) for threshold in thresholds):
+        raise ValueError("personal suggestion policy mismatch")
     weights_path = bundle_path / "linear-head.npz"
     if hashlib.sha256(weights_path.read_bytes()).hexdigest() != manifest["weights_sha256"]:
         raise ValueError("personal linear head weights hash does not match manifest")
@@ -247,8 +278,13 @@ def load_personal_linear_head(
         catalog_scope_id=manifest["catalog_scope_id"],
         decision_snapshot_revision=manifest["decision_snapshot_revision"],
         encoder_identity=encoder_identity,
-        personal_tag_ids=tuple(manifest["personal_tag_ids"]),
+        personal_tag_ids=personal_tag_ids,
         label_vocabulary_revision=manifest["label_vocabulary_revision"],
+        suggestion_policy=PersonalSuggestionPolicy(
+            revision=policy_payload["revision"],
+            max_suggestions=policy_payload["max_suggestions"],
+            thresholds=thresholds,
+        ),
         weights=weights,
         bias=bias,
     )
