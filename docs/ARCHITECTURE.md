@@ -926,8 +926,10 @@ System Photo Library 实际切换/显式重绑定、真实摄影格式/内容分
 
 ### 阶段 5：可选本地模型模块
 
-状态：First tracer slice implemented；双轨后续切片契约已冻结。独立 loopback 服务、固定 revision 的 DINOv2-small、MPS
-线性多标签 head、锁定依赖、真实模型 HTTP smoke 与无模块 App build 已由 `058a161` 交付。
+状态：独立双轨 tracer 已实现；生产模型、personal HTTP 与 App 接线待后续切片。独立 loopback 服务、
+固定 revision 的 DINOv2-small、MPS 线性多标签 head、锁定依赖、真实模型 HTTP smoke 与无模块 App
+build 已由 `058a161` 交付；标准 package/fixture/HTTP 由 `c937299`、`f51c666`、`61b29f5` 交付，个人
+DINO 稀疏训练 CLI 由 `abc5ef0` 交付。
 该阶段把标准标签公共模型、个人标签 embedding/线性训练、Core ML 部署与可选 Ollama VLM
 适配器放入独立模块；模块未安装或不可用时，App 原有浏览、人工标签、历史标签预设和 Vision
 Feature Print 建议闭环必须完整运行。首个 encoder 固定为
@@ -939,11 +941,12 @@ Feature Print 建议闭环必须完整运行。首个 encoder 固定为
 embedding 和 MPS 线性 head 训练。Core ML FP16 数值一致性、Xcode benchmark、模型安装、Swift
 optional client 和真实照片只读 smoke 均为后续独立验收门。
 
-下一纵切片首先关闭标准场景标签 tracer，而不是继续扩展通用多标签 head：使用可公开分发 fixture，
-验证“公共模型类别 → 版本化 mapping → 标准 concept ID → DAG 父标签 → `autoAssigned` / `suggested`
-策略”。该切片只可使用批准的模型 revision 和许可证记录；个人决策 manifest、生产 schema 与 Swift
-接线继续分别验收。阶段 5 的双轨 gate 是：标准轨道零用户样本可运行，个人轨道无人工样本不运行，
-人工决定覆盖两类机器结果，模型模块缺失不影响 App，自动化测试不读取受保护真实照片。
+标准场景标签 fixture tracer 已验证“公共模型类别 → 版本化 mapping → 标准 concept ID → DAG 父标签
+→ `autoAssigned` / `suggested` 策略”；个人训练 CLI 已验证“DINO embedding + 稀疏人工正负决定 →
+目录作用域 bundle”，且未观察 pair 不进入 loss。下一纵切片接入 personal `/v1/suggestions`，只返回
+bundle 中已有 `tag_id` 且固定为 `suggested`；App 快照导出、生产 schema 与 Swift 接线继续分别验收。
+阶段 5 的双轨 gate 是：标准轨道零用户样本可运行，个人轨道无人工样本不运行，人工决定覆盖两类
+机器结果，模型模块缺失不影响 App，自动化测试不读取受保护真实照片。
 
 ## 19. 架构决策记录
 
