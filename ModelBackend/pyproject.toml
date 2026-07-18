@@ -25,6 +25,7 @@ test = [
 
 [project.scripts]
 imageall-model-backend = "imageall_model_backend.cli:main"
+imageall-train-personal = "imageall_model_backend.personal_cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/imageall_model_backend"]
