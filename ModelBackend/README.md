@@ -94,6 +94,6 @@ uv run pytest -q
 uv build
 ```
 
-当前没有 Swift client、数据库接线、模型自动安装、生产标准模型、SigLIP2 或 Ollama adapter；
-Core ML 工作由独立后续切片验收。
+仓库已有默认未接入 CompositionRoot 的 Swift loopback client tracer，但仍没有数据库/UI 接线、
+模型自动安装、生产标准模型、SigLIP2 或 Ollama adapter；Core ML 工作由独立后续切片验收。
 这些能力按规格中的独立后续切片实施。
