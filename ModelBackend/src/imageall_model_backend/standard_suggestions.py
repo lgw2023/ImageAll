@@ -3,7 +3,10 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
-from imageall_model_backend.providers import StandardSuggestionProvider
+from imageall_model_backend.providers import (
+    StandardProviderIdentity,
+    StandardSuggestionProvider,
+)
 from imageall_model_backend.standard_pack import StandardPack
 
 
@@ -50,6 +53,18 @@ class StandardSuggestionEngine:
             raise StandardSuggestionError("provider identity does not match package")
         self._pack = pack
         self._provider = provider
+
+    @property
+    def standard_pack_id(self) -> str:
+        return self._pack.standard_pack_id
+
+    @property
+    def standard_pack_revision(self) -> str:
+        return self._pack.standard_pack_revision
+
+    @property
+    def provider_identity(self) -> StandardProviderIdentity:
+        return self._provider.identity
 
     def trace(self, image_bytes: bytes) -> StandardSuggestionTrace:
         best_score_by_concept: dict[str, float] = {}
