@@ -12,19 +12,24 @@ dependencies = [
   "numpy>=2,<3",
   "pillow>=11,<13",
   "pydantic>=2.10,<3",
-  "torch>=2.7,<3",
+  "torch==2.7.0",
   "transformers>=4.56,<5",
   "uvicorn>=0.34,<1",
 ]
 
 [project.optional-dependencies]
+coreml = [
+  "coremltools>=9,<10; sys_platform == 'darwin'",
+]
 test = [
+  "coremltools>=9,<10; sys_platform == 'darwin'",
   "httpx>=0.28,<1",
   "pytest>=8.3,<10",
 ]
 
 [project.scripts]
 imageall-model-backend = "imageall_model_backend.cli:main"
+imageall-convert-coreml = "imageall_model_backend.coreml_cli:main"
 imageall-train-personal = "imageall_model_backend.personal_cli:main"
 
 [tool.hatch.build.targets.wheel]
@@ -33,5 +38,6 @@ packages = ["src/imageall_model_backend"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 markers = [
+  "coreml_smoke: downloads, converts, and benchmarks the pinned production model",
   "model_smoke: downloads and runs a pinned production model",
 ]
