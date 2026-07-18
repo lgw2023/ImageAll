@@ -1826,7 +1826,7 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         )
     }
 
-    func testDeferReviewSelectionAdvancesSelectionWithoutReorderingQueue() async {
+    func testDeferReviewSelectionAdvancesPreviewAndInspectorWithoutReorderingQueue() async {
         let sourceID = UUID()
         let tag = TagListItem(id: UUID(), displayName: "Family", state: .active)
         let first = Self.makeAsset(sourceID: sourceID, fileName: "first.jpg")
@@ -1849,14 +1849,19 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         let review = FakePersonalizationReviewPort(queueItems: queueItems)
         let model = LibraryWorkspaceModel(service: service, review: review)
 
+        await model.start()
+        await model.connectFolder()
+        await waitForCatalogScanToFinish(model)
         await model.enterReviewQueue(tagID: tag.id, displayName: tag.displayName)
         let originalOrder = model.reviewQueueItems.map(\.assetID)
-        await model.selectAsset(first.assetID)
-        model.deferReviewSelection()
+        await model.openSinglePhotoView(assetID: first.assetID)
+        await model.deferReviewSelection()
 
         XCTAssertEqual(service.mutateTagCallCount, 0)
         XCTAssertEqual(model.reviewQueueItems.map(\.assetID), originalOrder)
         XCTAssertEqual(model.selectedAssetIDs, [second.assetID])
+        XCTAssertEqual(model.inspectorDetail?.assetID, second.assetID)
+        XCTAssertTrue(model.isSinglePhotoPresented)
     }
 
     func testReviewQueueGridNavigationMovesByRowsAndColumns() async {
@@ -2010,11 +2015,13 @@ final class LibraryWorkspaceModelTests: XCTestCase {
 
         await model.enterReviewQueue(tagID: tag.id, displayName: tag.displayName)
         let originalOrder = model.reviewQueueItems.map(\.assetID)
-        await model.selectAsset(assets[2].assetID)
+        await model.openSinglePhotoView(assetID: assets[2].assetID)
         await model.applyReviewDecision(action: .reject)
 
         XCTAssertEqual(model.reviewQueueItems.map(\.assetID), originalOrder.filter { $0 != assets[2].assetID })
         XCTAssertEqual(model.selectedAssetIDs, [assets[3].assetID])
+        XCTAssertTrue(model.isSinglePhotoPresented)
+        XCTAssertEqual(model.singlePhotoNavigation?.fileName, "item-3.jpg")
     }
 
     func testInspectorClearsSuggestionsWhenMultiSelect() async {

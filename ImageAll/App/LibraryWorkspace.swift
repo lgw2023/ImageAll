@@ -1712,7 +1712,7 @@ extension LibraryWorkspaceModel {
         }
     }
 
-    func deferReviewSelection() {
+    func deferReviewSelection() async {
         guard case .tagQueue = reviewMode,
               !selectedAssetIDs.isEmpty,
               !reviewQueueItems.isEmpty
@@ -1720,6 +1720,8 @@ extension LibraryWorkspaceModel {
         let selected = selectedAssetIDs
         if let next = Self.deferredReviewSelection(in: reviewQueueItems, selected: selected) {
             selectedAssetIDs = next
+            resetCloudPreviewIfSelectionChanged()
+            await refreshInspector()
         }
     }
 
@@ -1883,6 +1885,15 @@ struct LibraryWorkspaceView: View {
                     guard model.isSinglePhotoPresented else { return .ignored }
                     model.closeSinglePhotoView()
                     return .handled
+                }
+                .onKeyPress("p") {
+                    handleSinglePhotoReviewDecisionKey(.accept)
+                }
+                .onKeyPress("x") {
+                    handleSinglePhotoReviewDecisionKey(.reject)
+                }
+                .onKeyPress("u") {
+                    handleSinglePhotoReviewDeferKey()
                 }
                 .onKeyPress(
                     keys: [.leftArrow, .rightArrow, .upArrow, .downArrow],
@@ -2559,6 +2570,28 @@ struct LibraryWorkspaceView: View {
             await model.movePrimarySelection(in: direction, columnCount: gridColumnCount)
             gridScrollTargetID = model.primarySelectedAssetID
         }
+        return .handled
+    }
+
+    private func handleSinglePhotoReviewDecisionKey(
+        _ action: LibraryTagDecisionAction
+    ) -> KeyPress.Result {
+        guard contentFocused,
+              model.isSinglePhotoPresented,
+              model.reviewMode != nil,
+              !model.selectedAssetIDs.isEmpty
+        else { return .ignored }
+        Task { await model.applyReviewDecision(action: action) }
+        return .handled
+    }
+
+    private func handleSinglePhotoReviewDeferKey() -> KeyPress.Result {
+        guard contentFocused,
+              model.isSinglePhotoPresented,
+              model.reviewMode != nil,
+              !model.selectedAssetIDs.isEmpty
+        else { return .ignored }
+        Task { await model.deferReviewSelection() }
         return .handled
     }
 
@@ -3343,7 +3376,7 @@ struct LibraryWorkspaceView: View {
                     Task { await model.applyReviewDecision(action: .reject) }
                 }
                 Button("稍后 (U)") {
-                    model.deferReviewSelection()
+                    Task { await model.deferReviewSelection() }
                 }
             }
             .disabled(model.selectedAssetIDs.isEmpty)
@@ -3454,6 +3487,23 @@ private struct SinglePhotoReviewView: View {
     var body: some View {
         VStack(spacing: 0) {
             SinglePhotoNavigationBar(model: model)
+            Divider()
+            HStack(spacing: 12) {
+                Button("属于 (P)", systemImage: "checkmark.circle") {
+                    Task { await model.applyReviewDecision(action: .accept) }
+                }
+                Button("不属于 (X)", systemImage: "xmark.circle") {
+                    Task { await model.applyReviewDecision(action: .reject) }
+                }
+                Button("稍后 (U)", systemImage: "arrow.right.circle") {
+                    Task { await model.deferReviewSelection() }
+                }
+            }
+            .buttonStyle(.bordered)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .disabled(model.selectedAssetIDs.isEmpty)
+            .accessibilityIdentifier("singlePhotoReviewActions")
             Divider()
             ZStack {
                 Color(nsColor: .windowBackgroundColor)

@@ -234,7 +234,7 @@ struct ReviewQueueContentView: View {
 
     private func handleReviewDefer() -> KeyPress.Result {
         guard contentFocused else { return .ignored }
-        model.deferReviewSelection()
+        Task { await model.deferReviewSelection() }
         return .handled
     }
 
