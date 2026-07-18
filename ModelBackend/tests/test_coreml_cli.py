@@ -1,11 +1,15 @@
+import io
 import json
 import os
 
+import numpy as np
 import pytest
 import torch
+from PIL import Image
 
 from imageall_model_backend import coreml_cli
 from imageall_model_backend.dinov2 import (
+    CoreMLDinoV2SmallProvider,
     DINO_V2_SMALL_INPUT_SHAPE,
     load_dinov2_small_embedding_model,
 )
@@ -70,3 +74,14 @@ def test_pinned_dinov2_small_converts_and_passes_coreml_fp16_gate(
         "ed25f3a31f01632728cabb09d1542f84ab7b0056"
     )
     assert manifest["model_sha256"] == report["artifact"]["model_sha256"]
+
+    image = Image.new("RGB", (96, 64), color=(80, 120, 160))
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    provider = CoreMLDinoV2SmallProvider(
+        artifact_path=output_dir,
+        local_files_only=True,
+    )
+    embedding = np.asarray(provider.embed(buffer.getvalue()), dtype=np.float32)
+    assert embedding.shape == (384,)
+    assert np.isfinite(embedding).all()

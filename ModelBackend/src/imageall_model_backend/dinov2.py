@@ -166,6 +166,43 @@ class DinoV2SmallProvider:
         return embedding.tolist()
 
 
+class CoreMLDinoV2SmallProvider:
+    identity = DinoV2SmallProvider.identity
+
+    def __init__(
+        self,
+        *,
+        artifact_path: Path,
+        cache_dir: Path | None = None,
+        local_files_only: bool = False,
+    ) -> None:
+        from imageall_model_backend.coreml_export import load_coreml_artifact
+
+        self._artifact = load_coreml_artifact(
+            artifact_path,
+            expected_encoder_identity=self.identity,
+        )
+        if self._artifact.input_shape != DINO_V2_SMALL_INPUT_SHAPE:
+            raise ValueError("Core ML DINOv2 input contract does not match")
+        self._processor = load_dinov2_small_image_processor(
+            cache_dir=cache_dir,
+            local_files_only=local_files_only,
+        )
+
+    def embed(self, image_bytes: bytes) -> list[float]:
+        with Image.open(io.BytesIO(image_bytes)) as opened:
+            image = ImageOps.exif_transpose(opened).convert("RGB")
+        inputs = self._processor(images=image, return_tensors="np")
+        pixel_values = np.asarray(inputs["pixel_values"], dtype=np.float32)
+        vector = self._artifact.predict(pixel_values)[0]
+        embedding = np.asarray(vector, dtype=np.float32)
+        if embedding.shape != (self.identity.element_count,) or not np.isfinite(
+            embedding
+        ).all():
+            raise RuntimeError("Core ML DINOv2 returned an invalid embedding")
+        return embedding.tolist()
+
+
 def _load_options(
     *,
     cache_dir: Path | None,

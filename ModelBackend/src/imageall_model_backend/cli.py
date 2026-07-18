@@ -18,10 +18,15 @@ from imageall_model_backend.standard_suggestions import StandardSuggestionEngine
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Serve the optional ImageAll model backend")
-    parser.add_argument("--provider", choices=("none", "dinov2"), default="none")
+    parser.add_argument(
+        "--provider",
+        choices=("none", "dinov2", "coreml"),
+        default="none",
+    )
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--model-cache", type=Path)
     parser.add_argument("--offline", action="store_true")
+    parser.add_argument("--coreml-bundle", type=Path)
     parser.add_argument("--personal-bundle", type=Path)
     parser.add_argument("--standard-pack", type=Path)
     return parser
@@ -30,6 +35,10 @@ def _parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = _parser()
     args = parser.parse_args(argv)
+    if args.provider == "coreml" and args.coreml_bundle is None:
+        parser.error("--provider coreml requires --coreml-bundle")
+    if args.provider != "coreml" and args.coreml_bundle is not None:
+        parser.error("--coreml-bundle requires --provider coreml")
     provider: EmbeddingProvider | None = None
     if args.provider == "dinov2":
         from imageall_model_backend.dinov2 import DinoV2SmallProvider
@@ -38,10 +47,23 @@ def main(argv: Sequence[str] | None = None) -> int:
             cache_dir=args.model_cache,
             local_files_only=args.offline,
         )
+    if args.provider == "coreml":
+        from imageall_model_backend.dinov2 import CoreMLDinoV2SmallProvider
+
+        try:
+            provider = CoreMLDinoV2SmallProvider(
+                artifact_path=args.coreml_bundle,
+                cache_dir=args.model_cache,
+                local_files_only=args.offline,
+            )
+        except (OSError, RuntimeError, ValueError) as error:
+            parser.error(f"Core ML provider could not be loaded: {error}")
     personal_suggestion_engine: PersonalSuggestionEngine | None = None
     if args.personal_bundle is not None:
         if provider is None:
-            parser.error("--personal-bundle requires --provider dinov2")
+            parser.error(
+                "--personal-bundle requires --provider dinov2 or coreml"
+            )
         manifest = json.loads(
             (args.personal_bundle / "manifest.json").read_text(encoding="utf-8")
         )

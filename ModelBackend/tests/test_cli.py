@@ -36,8 +36,117 @@ def test_cli_serves_only_on_loopback(monkeypatch) -> None:
     assert captured["app"] is not None
 
 
-def test_cli_serves_a_catalog_scoped_personal_bundle(
+def test_cli_serves_embeddings_with_a_coreml_artifact(
     tmp_path, monkeypatch
+) -> None:
+    identity = EmbeddingProviderIdentity(
+        provider="dinov2",
+        model_id="fixture-coreml-dinov2",
+        model_revision="fixture-coreml-revision",
+        preprocessing_revision="fixture-coreml-preprocessing",
+        element_count=3,
+    )
+
+    class FakeCoreMLProvider:
+        def __init__(
+            self, *, artifact_path, cache_dir, local_files_only
+        ) -> None:
+            assert artifact_path == tmp_path / "coreml-bundle"
+            assert cache_dir is None
+            assert local_files_only is True
+
+        def embed(self, image_bytes: bytes) -> list[float]:
+            assert image_bytes.startswith(b"\x89PNG\r\n\x1a\n")
+            return [0.25, -0.5, 1.0]
+
+    FakeCoreMLProvider.identity = identity
+    captured: dict[str, object] = {}
+
+    def fake_run(app, *, host: str, port: int) -> None:
+        captured.update(app=app, host=host, port=port)
+
+    monkeypatch.setattr(
+        "imageall_model_backend.dinov2.CoreMLDinoV2SmallProvider",
+        FakeCoreMLProvider,
+    )
+    monkeypatch.setattr(cli.uvicorn, "run", fake_run)
+
+    exit_code = cli.main(
+        [
+            "--provider",
+            "coreml",
+            "--coreml-bundle",
+            str(tmp_path / "coreml-bundle"),
+            "--offline",
+        ]
+    )
+
+    image = Image.new("RGB", (8, 8), color=(32, 64, 128))
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    response = TestClient(captured["app"]).post(
+        "/v1/embeddings",
+        json={
+            "request_id": "coreml-cli-request",
+            "image_base64": base64.b64encode(buffer.getvalue()).decode("ascii"),
+        },
+    )
+
+    assert exit_code == 0
+    assert captured["host"] == "127.0.0.1"
+    assert response.status_code == 200
+    assert response.json()["provider"] == "dinov2"
+    assert response.json()["embedding"] == [0.25, -0.5, 1.0]
+
+
+def test_cli_rejects_coreml_without_an_artifact(monkeypatch) -> None:
+    def unexpected_provider(**kwargs):
+        raise AssertionError(f"provider should not be created: {kwargs}")
+
+    monkeypatch.setattr(
+        "imageall_model_backend.dinov2.CoreMLDinoV2SmallProvider",
+        unexpected_provider,
+    )
+
+    with pytest.raises(SystemExit, match="2"):
+        cli.main(["--provider", "coreml"])
+
+
+def test_cli_rejects_a_coreml_artifact_for_another_provider(
+    tmp_path, monkeypatch
+) -> None:
+    def unexpected_run(*args, **kwargs):
+        raise AssertionError("server should not start")
+
+    monkeypatch.setattr(cli.uvicorn, "run", unexpected_run)
+
+    with pytest.raises(SystemExit, match="2"):
+        cli.main(["--coreml-bundle", str(tmp_path / "coreml-bundle")])
+
+
+def test_cli_fails_closed_when_the_coreml_artifact_cannot_be_loaded(
+    tmp_path, monkeypatch
+) -> None:
+    def unexpected_run(*args, **kwargs):
+        raise AssertionError("server should not start")
+
+    monkeypatch.setattr(cli.uvicorn, "run", unexpected_run)
+
+    with pytest.raises(SystemExit, match="2"):
+        cli.main(
+            [
+                "--provider",
+                "coreml",
+                "--coreml-bundle",
+                str(tmp_path / "missing-coreml-bundle"),
+                "--offline",
+            ]
+        )
+
+
+@pytest.mark.parametrize("provider_name", ("dinov2", "coreml"))
+def test_cli_serves_a_catalog_scoped_personal_bundle(
+    tmp_path, monkeypatch, provider_name
 ) -> None:
     identity = EmbeddingProviderIdentity(
         provider="dinov2",
@@ -70,9 +179,20 @@ def test_cli_serves_a_catalog_scoped_personal_bundle(
     )
 
     class FakeDinoProvider:
-        def __init__(self, *, cache_dir, local_files_only) -> None:
+        def __init__(
+            self,
+            *,
+            cache_dir,
+            local_files_only,
+            artifact_path=None,
+        ) -> None:
             assert cache_dir is None
             assert local_files_only is True
+            assert artifact_path == (
+                tmp_path / "coreml-bundle"
+                if provider_name == "coreml"
+                else None
+            )
 
         def embed(self, image_bytes: bytes) -> list[float]:
             assert image_bytes.startswith(b"\x89PNG\r\n\x1a\n")
@@ -85,21 +205,26 @@ def test_cli_serves_a_catalog_scoped_personal_bundle(
     def fake_run(app, *, host: str, port: int) -> None:
         captured.update(app=app, host=host, port=port)
 
+    provider_class = (
+        "CoreMLDinoV2SmallProvider"
+        if provider_name == "coreml"
+        else "DinoV2SmallProvider"
+    )
     monkeypatch.setattr(
-        "imageall_model_backend.dinov2.DinoV2SmallProvider",
+        f"imageall_model_backend.dinov2.{provider_class}",
         FakeDinoProvider,
     )
     monkeypatch.setattr(cli.uvicorn, "run", fake_run)
 
-    exit_code = cli.main(
-        [
-            "--provider",
-            "dinov2",
-            "--personal-bundle",
-            str(result.bundle_path),
-            "--offline",
-        ]
+    arguments = ["--provider", provider_name]
+    if provider_name == "coreml":
+        arguments.extend(
+            ["--coreml-bundle", str(tmp_path / "coreml-bundle")]
+        )
+    arguments.extend(
+        ["--personal-bundle", str(result.bundle_path), "--offline"]
     )
+    exit_code = cli.main(arguments)
 
     image = Image.new("RGB", (8, 8), color=(32, 64, 128))
     buffer = io.BytesIO()
@@ -127,7 +252,7 @@ def test_cli_serves_a_catalog_scoped_personal_bundle(
     ]
 
 
-def test_cli_rejects_a_personal_bundle_without_a_dino_provider() -> None:
+def test_cli_rejects_a_personal_bundle_without_an_embedding_provider() -> None:
     with pytest.raises(SystemExit, match="2"):
         cli.main(["--provider", "none", "--personal-bundle", "/tmp/bundle"])
 
