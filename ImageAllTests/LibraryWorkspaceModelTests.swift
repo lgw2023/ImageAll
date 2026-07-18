@@ -750,8 +750,9 @@ final class LibraryWorkspaceModelTests: XCTestCase {
 
         XCTAssertEqual(model.inspectorTags.first?.decision, .unknown)
 
-        await model.applyTagDecision(tagID: tag.id, action: .accept)
+        await model.requestTagDecision(tagID: tag.id, action: .accept)
 
+        XCTAssertNil(model.pendingTagDecisionConfirmation)
         XCTAssertEqual(model.inspectorTags.first?.decision, .accepted)
         XCTAssertEqual(model.items.first?.acceptedTagCount, 1)
         XCTAssertTrue(model.canUndoTagMutation)
@@ -941,6 +942,84 @@ final class LibraryWorkspaceModelTests: XCTestCase {
             .accepted
         )
         XCTAssertTrue(model.canUndoTagMutation)
+    }
+
+    func testBulkTagDecisionRequestShowsImpactBeforeMutatingCatalog() async throws {
+        let sourceID = UUID()
+        let first = Self.makeAsset(sourceID: sourceID, fileName: "first.jpg")
+        let second = Self.makeAsset(sourceID: sourceID, fileName: "second.jpg")
+        let family = TagListItem(id: UUID(), displayName: "Family", state: .active)
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(id: sourceID, displayName: "Fixture", state: .active),
+            reconciledItems: [first, second],
+            tags: [family]
+        )
+        let model = LibraryWorkspaceModel(service: service)
+        await model.start()
+        await model.connectFolder()
+        await waitForCatalogScanToFinish(model)
+        await model.selectAsset(first.assetID)
+        await model.selectAsset(second.assetID, additive: true)
+
+        await model.requestTagDecision(tagID: family.id, action: .accept)
+
+        XCTAssertEqual(service.mutateTagCallCount, 0)
+        let pending = try XCTUnwrap(model.pendingTagDecisionConfirmation)
+        XCTAssertEqual(pending.tagID, family.id)
+        XCTAssertEqual(pending.tagDisplayName, "Family")
+        XCTAssertEqual(pending.action, .accept)
+        XCTAssertEqual(pending.affectedCount, 2)
+    }
+
+    func testConfirmingBulkTagDecisionMutatesCapturedSelectionOnce() async throws {
+        let sourceID = UUID()
+        let first = Self.makeAsset(sourceID: sourceID, fileName: "first.jpg")
+        let second = Self.makeAsset(sourceID: sourceID, fileName: "second.jpg")
+        let family = TagListItem(id: UUID(), displayName: "Family", state: .active)
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(id: sourceID, displayName: "Fixture", state: .active),
+            reconciledItems: [first, second],
+            tags: [family]
+        )
+        let model = LibraryWorkspaceModel(service: service)
+        await model.start()
+        await model.connectFolder()
+        await waitForCatalogScanToFinish(model)
+        await model.selectAsset(first.assetID)
+        await model.selectAsset(second.assetID, additive: true)
+        await model.requestTagDecision(tagID: family.id, action: .accept)
+
+        await model.confirmPendingTagDecision()
+
+        XCTAssertEqual(service.mutateTagCallCount, 1)
+        XCTAssertNil(model.pendingTagDecisionConfirmation)
+        XCTAssertEqual(model.inspectorTags.first(where: { $0.id == family.id })?.decision, .accepted)
+    }
+
+    func testBulkTagConfirmationSurvivesDialogDismissalOrdering() async throws {
+        let sourceID = UUID()
+        let first = Self.makeAsset(sourceID: sourceID, fileName: "first.jpg")
+        let second = Self.makeAsset(sourceID: sourceID, fileName: "second.jpg")
+        let family = TagListItem(id: UUID(), displayName: "Family", state: .active)
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(id: sourceID, displayName: "Fixture", state: .active),
+            reconciledItems: [first, second],
+            tags: [family]
+        )
+        let model = LibraryWorkspaceModel(service: service)
+        await model.start()
+        await model.connectFolder()
+        await waitForCatalogScanToFinish(model)
+        await model.selectAsset(first.assetID)
+        await model.selectAsset(second.assetID, additive: true)
+        await model.requestTagDecision(tagID: family.id, action: .reject)
+        let captured = try XCTUnwrap(model.pendingTagDecisionConfirmation)
+
+        model.cancelPendingTagDecision()
+        await model.confirmPendingTagDecision(captured)
+
+        XCTAssertEqual(service.mutateTagCallCount, 1)
+        XCTAssertEqual(model.inspectorTags.first(where: { $0.id == family.id })?.decision, .rejected)
     }
 
     func testInstallPresetTagsAddsMissingCatalogEntriesAndReportsIdempotence() async {

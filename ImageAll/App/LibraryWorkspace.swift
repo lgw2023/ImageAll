@@ -145,6 +145,7 @@ final class LibraryWorkspaceModel: ObservableObject {
     @Published private(set) var reviewQueueItems: [ReviewQueueItemProjection] = []
     @Published fileprivate(set) var reviewNextCursor: ReviewQueueCursor?
     @Published var pendingSuggestionConfirmation: SuggestionEnqueueConfirmation?
+    @Published private(set) var pendingTagDecisionConfirmation: LibraryTagDecisionConfirmation?
     @Published private(set) var assetPendingSuggestions: [AssetPendingSuggestion] = []
     @Published private(set) var cloudPreviewState: CloudPreviewPresentationState = .hidden
     @Published private(set) var isExportingPortableData = false
@@ -786,6 +787,14 @@ final class LibraryWorkspaceModel: ObservableObject {
 
     func applyTagDecision(tagID: UUID, action: LibraryTagDecisionAction) async {
         let assetIDs = Array(selectedAssetIDs)
+        await applyTagDecision(tagID: tagID, action: action, assetIDs: assetIDs)
+    }
+
+    private func applyTagDecision(
+        tagID: UUID,
+        action: LibraryTagDecisionAction,
+        assetIDs: [UUID]
+    ) async {
         guard !assetIDs.isEmpty else { return }
         let service = service
         do {
@@ -803,6 +812,38 @@ final class LibraryWorkspaceModel: ObservableObject {
         } catch {
             notice = tagNotice(for: error)
         }
+    }
+
+    func requestTagDecision(tagID: UUID, action: LibraryTagDecisionAction) async {
+        guard selectedAssetIDs.count > 1 else {
+            await applyTagDecision(tagID: tagID, action: action)
+            return
+        }
+        guard let displayName = tags.first(where: { $0.id == tagID })?.displayName else {
+            return
+        }
+        pendingTagDecisionConfirmation = LibraryTagDecisionConfirmation(
+            tagID: tagID,
+            tagDisplayName: displayName,
+            action: action,
+            assetIDs: selectedAssetIDs
+        )
+    }
+
+    func confirmPendingTagDecision(
+        _ capturedConfirmation: LibraryTagDecisionConfirmation? = nil
+    ) async {
+        guard let pending = capturedConfirmation ?? pendingTagDecisionConfirmation else { return }
+        pendingTagDecisionConfirmation = nil
+        await applyTagDecision(
+            tagID: pending.tagID,
+            action: pending.action,
+            assetIDs: Array(pending.assetIDs)
+        )
+    }
+
+    func cancelPendingTagDecision() {
+        pendingTagDecisionConfirmation = nil
     }
 
     func undoLastTagMutation() async {
@@ -1795,6 +1836,24 @@ struct LibraryWorkspaceView: View {
                 Text(suggestionConfirmationMessage(pending))
             }
         }
+        .confirmationDialog(
+            tagDecisionConfirmationTitle(model.pendingTagDecisionConfirmation),
+            isPresented: Binding(
+                get: { model.pendingTagDecisionConfirmation != nil },
+                set: { if !$0 { model.cancelPendingTagDecision() } }
+            ),
+            titleVisibility: .visible,
+            presenting: model.pendingTagDecisionConfirmation
+        ) { pending in
+            Button(tagDecisionConfirmationActionTitle(pending.action)) {
+                Task { await model.confirmPendingTagDecision(pending) }
+            }
+            Button("取消", role: .cancel) {
+                model.cancelPendingTagDecision()
+            }
+        } message: { pending in
+            Text("这会修改 \(pending.affectedCount) 张照片的人工标签决定；完成后仍可撤销一次。原照片不会被修改。")
+        }
         .searchable(
             text: $searchText,
             placement: .toolbar,
@@ -2345,11 +2404,11 @@ struct LibraryWorkspaceView: View {
         case let .showTag(tagID):
             selection = .tag(tagID)
         case let .acceptTag(tagID):
-            Task { await model.applyTagDecision(tagID: tagID, action: .accept) }
+            Task { await model.requestTagDecision(tagID: tagID, action: .accept) }
         case let .rejectTag(tagID):
-            Task { await model.applyTagDecision(tagID: tagID, action: .reject) }
+            Task { await model.requestTagDecision(tagID: tagID, action: .reject) }
         case let .clearTagDecision(tagID):
-            Task { await model.applyTagDecision(tagID: tagID, action: .clear) }
+            Task { await model.requestTagDecision(tagID: tagID, action: .clear) }
         case .createTag:
             newTagFieldFocused = true
         case .connectFolder:
@@ -2849,21 +2908,21 @@ struct LibraryWorkspaceView: View {
                 label: "确认 \(tag.displayName)",
                 isActive: tag.decision == .accepted
             ) {
-                await model.applyTagDecision(tagID: tag.id, action: .accept)
+                await model.requestTagDecision(tagID: tag.id, action: .accept)
             }
             tagDecisionButton(
                 systemImage: "xmark",
                 label: "拒绝 \(tag.displayName)",
                 isActive: tag.decision == .rejected
             ) {
-                await model.applyTagDecision(tagID: tag.id, action: .reject)
+                await model.requestTagDecision(tagID: tag.id, action: .reject)
             }
             tagDecisionButton(
                 systemImage: "minus",
                 label: "清除 \(tag.displayName) 的决定",
                 isActive: tag.decision == .unknown
             ) {
-                await model.applyTagDecision(tagID: tag.id, action: .clear)
+                await model.requestTagDecision(tagID: tag.id, action: .clear)
             }
         }
     }
@@ -3214,6 +3273,28 @@ struct LibraryWorkspaceView: View {
         switch pending.mode {
         case .generate: return "生成“\(pending.displayName)”建议"
         case .update: return "更新“\(pending.displayName)”建议"
+        }
+    }
+
+    private func tagDecisionConfirmationTitle(
+        _ pending: LibraryTagDecisionConfirmation?
+    ) -> String {
+        guard let pending else { return "确认批量标签操作？" }
+        return switch pending.action {
+        case .accept:
+            "为 \(pending.affectedCount) 张照片确认“\(pending.tagDisplayName)”？"
+        case .reject:
+            "为 \(pending.affectedCount) 张照片拒绝“\(pending.tagDisplayName)”？"
+        case .clear:
+            "清除 \(pending.affectedCount) 张照片的“\(pending.tagDisplayName)”决定？"
+        }
+    }
+
+    private func tagDecisionConfirmationActionTitle(_ action: LibraryTagDecisionAction) -> String {
+        switch action {
+        case .accept: "确认并应用"
+        case .reject: "拒绝并应用"
+        case .clear: "清除决定"
         }
     }
 

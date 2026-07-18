@@ -106,6 +106,16 @@ enum LibraryTagDecisionAction: Equatable, Sendable {
     }
 }
 
+struct LibraryTagDecisionConfirmation: Identifiable, Equatable, Sendable {
+    let tagID: UUID
+    let tagDisplayName: String
+    let action: LibraryTagDecisionAction
+    let assetIDs: Set<UUID>
+
+    var id: UUID { tagID }
+    var affectedCount: Int { assetIDs.count }
+}
+
 struct LibraryInspectorTagPresentation: Identifiable, Equatable, Sendable {
     let id: UUID
     let displayName: String
