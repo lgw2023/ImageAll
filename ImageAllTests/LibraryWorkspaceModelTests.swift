@@ -991,6 +991,39 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertEqual(model.selectedAssetIDs, [second.assetID])
     }
 
+    func testChangingGridDensityPreservesLoadedCatalogSelectionAndSinglePhotoState() async {
+        let sourceID = UUID()
+        let first = Self.makeAsset(sourceID: sourceID, fileName: "first.jpg")
+        let second = Self.makeAsset(sourceID: sourceID, fileName: "second.jpg")
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(id: sourceID, displayName: "Fixture", state: .active),
+            reconciledItems: [first, second]
+        )
+        let model = LibraryWorkspaceModel(service: service)
+
+        await model.start()
+        await model.connectFolder()
+        await waitForCatalogScanToFinish(model)
+        await model.selectAsset(second.assetID)
+        model.toggleSinglePhotoView()
+
+        XCTAssertEqual(model.gridDensity, .standard)
+
+        model.setGridDensity(.compact)
+
+        XCTAssertEqual(model.gridDensity, .compact)
+        XCTAssertEqual(model.items.map(\.assetID), [first.assetID, second.assetID])
+        XCTAssertEqual(model.selectedAssetIDs, [second.assetID])
+        XCTAssertTrue(model.isSinglePhotoPresented)
+
+        model.setGridDensity(.large)
+
+        XCTAssertEqual(model.gridDensity, .large)
+        XCTAssertEqual(model.items.map(\.assetID), [first.assetID, second.assetID])
+        XCTAssertEqual(model.selectedAssetIDs, [second.assetID])
+        XCTAssertTrue(model.isSinglePhotoPresented)
+    }
+
     func testAvailabilityFormatAndSortControlsReloadCatalogAndClearHiddenSelection() async {
         let sourceID = UUID()
         let availableJPEG = Self.makeAsset(

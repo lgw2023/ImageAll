@@ -15,6 +15,28 @@ private struct ReviewMutationUndoRecord {
     let affectedCount: Int
 }
 
+enum LibraryGridDensity: String, CaseIterable, Sendable {
+    case compact
+    case standard
+    case large
+
+    var displayName: String {
+        switch self {
+        case .compact: "紧凑"
+        case .standard: "标准"
+        case .large: "大图"
+        }
+    }
+
+    var cellWidthRange: ClosedRange<CGFloat> {
+        switch self {
+        case .compact: 96 ... 160
+        case .standard: 132 ... 220
+        case .large: 180 ... 300
+        }
+    }
+}
+
 @MainActor
 final class LibraryWorkspaceModel: ObservableObject {
     @Published private(set) var phase: LibraryWorkspacePhase = .loading
@@ -32,6 +54,7 @@ final class LibraryWorkspaceModel: ObservableObject {
     @Published private(set) var selectedAvailabilities: [AssetAvailability] = []
     @Published private(set) var selectedMediaTypes: [String] = []
     @Published private(set) var sort: AssetPageSort = .newest
+    @Published private(set) var gridDensity: LibraryGridDensity = .standard
     @Published private(set) var notice: LibraryWorkspaceNotice?
     @Published private(set) var pendingSuggestionTotal = 0
     @Published private(set) var isCatalogScanning = false
@@ -816,6 +839,10 @@ final class LibraryWorkspaceModel: ObservableObject {
         await loadFirstPage()
     }
 
+    func setGridDensity(_ density: LibraryGridDensity) {
+        gridDensity = density
+    }
+
     func toggleAvailabilityFilter(_ availability: AssetAvailability) async {
         if let index = selectedAvailabilities.firstIndex(of: availability) {
             selectedAvailabilities.remove(at: index)
@@ -1503,6 +1530,24 @@ struct LibraryWorkspaceView: View {
                 filterMenu
                 sortMenu
 
+                if !model.items.isEmpty, model.reviewMode == nil {
+                    Picker(
+                        "缩略图大小",
+                        selection: Binding(
+                            get: { model.gridDensity },
+                            set: { model.setGridDensity($0) }
+                        )
+                    ) {
+                        ForEach(LibraryGridDensity.allCases, id: \.self) { density in
+                            Text(density.displayName).tag(density)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .fixedSize()
+                    .accessibilityLabel("缩略图大小")
+                    .help("调整照片网格缩略图大小")
+                }
+
                 Button {
                     Task { await model.undoLastTagMutation() }
                 } label: {
@@ -2143,9 +2188,18 @@ struct LibraryWorkspaceView: View {
     }
 
     private var assetGrid: some View {
-        ScrollView {
+        let widthRange = model.gridDensity.cellWidthRange
+        return ScrollView {
             LazyVGrid(
-                columns: [GridItem(.adaptive(minimum: 132, maximum: 220), spacing: 8)],
+                columns: [
+                    GridItem(
+                        .adaptive(
+                            minimum: widthRange.lowerBound,
+                            maximum: widthRange.upperBound
+                        ),
+                        spacing: 8
+                    ),
+                ],
                 spacing: 8
             ) {
                 ForEach(model.items, id: \.assetID) { item in
