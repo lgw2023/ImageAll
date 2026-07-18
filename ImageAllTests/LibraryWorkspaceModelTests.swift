@@ -1301,6 +1301,27 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertEqual(model.selectedAssetIDs, [second.assetID])
     }
 
+    func testOpeningSinglePhotoSelectsTheRequestedAssetAndRefreshesInspector() async {
+        let sourceID = UUID()
+        let first = Self.makeAsset(sourceID: sourceID, fileName: "first.jpg")
+        let second = Self.makeAsset(sourceID: sourceID, fileName: "second.jpg")
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(id: sourceID, displayName: "Fixture", state: .active),
+            reconciledItems: [first, second]
+        )
+        let model = LibraryWorkspaceModel(service: service)
+        await model.start()
+        await model.connectFolder()
+        await waitForCatalogScanToFinish(model)
+        await model.selectAsset(first.assetID)
+
+        await model.openSinglePhotoView(assetID: second.assetID)
+
+        XCTAssertTrue(model.isSinglePhotoPresented)
+        XCTAssertEqual(model.selectedAssetIDs, [second.assetID])
+        XCTAssertEqual(model.inspectorDetail?.assetID, second.assetID)
+    }
+
     func testGridNavigationMovesPrimarySelectionByRowsAndColumns() async {
         let sourceID = UUID()
         let assets = (0 ..< 8).map {

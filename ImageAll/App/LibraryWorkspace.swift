@@ -749,6 +749,14 @@ final class LibraryWorkspaceModel: ObservableObject {
         isSinglePhotoPresented.toggle()
     }
 
+    func openSinglePhotoView(assetID: UUID) async {
+        guard items.contains(where: { $0.assetID == assetID })
+            || reviewQueueItems.contains(where: { $0.assetID == assetID })
+        else { return }
+        await selectAsset(assetID)
+        isSinglePhotoPresented = true
+    }
+
     func closeSinglePhotoView() {
         isSinglePhotoPresented = false
     }
@@ -2834,18 +2842,25 @@ struct LibraryWorkspaceView: View {
                             AssetThumbnailView(
                                 item: item,
                                 model: model,
-                                isSelected: model.selectedAssetIDs.contains(item.assetID)
-                            ) {
-                                contentFocused = true
-                                let flags = NSEvent.modifierFlags.intersection(.deviceIndependentFlagsMask)
-                                Task {
-                                    await model.selectAsset(
-                                        item.assetID,
-                                        additive: flags.contains(.command),
-                                        extendRange: flags.contains(.shift)
-                                    )
+                                isSelected: model.selectedAssetIDs.contains(item.assetID),
+                                onSelect: {
+                                    contentFocused = true
+                                    let flags = NSEvent.modifierFlags.intersection(.deviceIndependentFlagsMask)
+                                    Task {
+                                        await model.selectAsset(
+                                            item.assetID,
+                                            additive: flags.contains(.command),
+                                            extendRange: flags.contains(.shift)
+                                        )
+                                    }
+                                },
+                                onOpen: {
+                                    contentFocused = true
+                                    Task {
+                                        await model.openSinglePhotoView(assetID: item.assetID)
+                                    }
                                 }
-                            }
+                            )
                                 .id(item.assetID)
                                 .task {
                                     await model.loadMoreIfNeeded(currentAssetID: item.assetID)
@@ -3469,6 +3484,7 @@ private struct AssetThumbnailView: View {
     @ObservedObject var model: LibraryWorkspaceModel
     let isSelected: Bool
     let onSelect: () -> Void
+    let onOpen: () -> Void
     @State private var image: NSImage?
 
     var body: some View {
@@ -3507,12 +3523,16 @@ private struct AssetThumbnailView: View {
         }
         .aspectRatio(1, contentMode: .fit)
         .contentShape(Rectangle())
+        .onTapGesture(count: 2, perform: onOpen)
         .onTapGesture(perform: onSelect)
         .accessibilityAddTraits(.isButton)
         .accessibilityValue(isSelected ? "已选择" : "未选择")
-        .accessibilityHint("选择照片；选择后按空格查看单张照片")
+        .accessibilityHint("选择照片；双击或选择后按空格查看单张照片")
         .accessibilityAction {
             onSelect()
+        }
+        .accessibilityAction(named: "打开单图预览") {
+            onOpen()
         }
         .task(id: thumbnailLoadID) {
             guard item.availability == .available,

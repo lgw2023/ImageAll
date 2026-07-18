@@ -177,18 +177,25 @@ struct ReviewQueueContentView: View {
                             ReviewThumbnailView(
                                 item: item,
                                 model: model,
-                                isSelected: model.selectedAssetIDs.contains(item.assetID)
-                            ) {
-                                contentFocused = true
-                                let flags = NSEvent.modifierFlags.intersection(.deviceIndependentFlagsMask)
-                                Task {
-                                    await model.selectAsset(
-                                        item.assetID,
-                                        additive: flags.contains(.command),
-                                        extendRange: flags.contains(.shift)
-                                    )
+                                isSelected: model.selectedAssetIDs.contains(item.assetID),
+                                onSelect: {
+                                    contentFocused = true
+                                    let flags = NSEvent.modifierFlags.intersection(.deviceIndependentFlagsMask)
+                                    Task {
+                                        await model.selectAsset(
+                                            item.assetID,
+                                            additive: flags.contains(.command),
+                                            extendRange: flags.contains(.shift)
+                                        )
+                                    }
+                                },
+                                onOpen: {
+                                    contentFocused = true
+                                    Task {
+                                        await model.openSinglePhotoView(assetID: item.assetID)
+                                    }
                                 }
-                            }
+                            )
                             .id(item.assetID)
                             .task {
                                 await model.loadMoreReviewQueueIfNeeded(
@@ -296,6 +303,7 @@ private struct ReviewThumbnailView: View {
     @ObservedObject var model: LibraryWorkspaceModel
     let isSelected: Bool
     let onSelect: () -> Void
+    let onOpen: () -> Void
     @State private var image: NSImage?
 
     var body: some View {
@@ -321,13 +329,17 @@ private struct ReviewThumbnailView: View {
         }
         .aspectRatio(1, contentMode: .fit)
         .contentShape(Rectangle())
+        .onTapGesture(count: 2, perform: onOpen)
         .onTapGesture(perform: onSelect)
         .accessibilityLabel(item.fileName ?? "照片")
         .accessibilityAddTraits(.isButton)
         .accessibilityValue(isSelected ? "已选择" : "未选择")
-        .accessibilityHint("选择待审核照片；可按 P、X 或 U 处理")
+        .accessibilityHint("选择待审核照片；双击可预览，也可按 P、X 或 U 处理")
         .accessibilityAction {
             onSelect()
+        }
+        .accessibilityAction(named: "打开单图预览") {
+            onOpen()
         }
         .task(id: item.assetID) {
             guard item.availability == .available,
