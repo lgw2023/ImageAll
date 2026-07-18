@@ -926,11 +926,11 @@ System Photo Library 实际切换/显式重绑定、真实摄影格式/内容分
 
 ### 阶段 5：可选本地模型模块
 
-状态：独立双轨 tracer、HTTP、CLI 装载、Swift client transport 与 DINOv2 Core ML FP16 导出门已实现；生产公共模型与 App 持久化接线待后续切片。独立 loopback 服务、
+状态：独立双轨 tracer、HTTP、CLI 装载、Swift client transport、Inspector 标准 fixture 预览与 DINOv2 Core ML FP16 导出门已实现；生产公共模型、个人 bundle App 接线与持久化仍待后续切片。独立 loopback 服务、
 固定 revision 的 DINOv2-small、MPS 线性多标签 head、锁定依赖、真实模型 HTTP smoke 与无模块 App
 build 已由 `058a161` 交付；标准 package/fixture/HTTP 由 `c937299`、`f51c666`、`61b29f5` 交付，个人
 DINO 稀疏训练 CLI 与 suggestion HTTP 由 `abc5ef0`、`b92a01b` 交付，双轨启动装载由 `e447f80`
-交付，默认未接入 CompositionRoot 的 Swift client tracer 由 `ffb1fd2` 交付，固定输入的 FP16
+交付，Swift client tracer 与 Inspector standard fixture 接线由 `ffb1fd2`、`c68a6aa` 交付，固定输入的 FP16
 ML Program、严格 artifact identity/checksum 与 CPU_ONLY/ALL 基准由 `dfac6eb` 交付。
 该阶段把标准标签公共模型、个人标签 embedding/线性训练、Core ML 部署与可选 Ollama VLM
 适配器放入独立模块；模块未安装或不可用时，App 原有浏览、人工标签、历史标签预设和 Vision
@@ -941,19 +941,21 @@ Feature Print 建议闭环必须完整运行。首个 encoder 固定为
 
 第一切片不修改 App target、SQLite schema 或 UI，只用合成图片证明独立 loopback 服务、版本化
 embedding 和 MPS 线性 head 训练。Python 侧 Core ML FP16 数值一致性已经关闭；Xcode compute plan、
-实际 Neural Engine 分配、峰值内存/热量、模型安装、CompositionRoot 接线和真实照片只读 smoke
+实际 Neural Engine 分配、峰值内存/热量、模型安装、个人 bundle/生产标准包接线和真实照片只读 smoke
 仍为后续独立验收门。
 
 标准场景标签 fixture tracer 已验证“公共模型类别 → 版本化 mapping → 标准 concept ID → DAG 父标签
 → `autoAssigned` / `suggested` 策略”；个人训练 CLI 已验证“DINO embedding + 稀疏人工正负决定 →
 目录作用域 bundle”，且未观察 pair 不进入 loss。personal `/v1/suggestions` 已只返回 bundle 中已有
 `tag_id` 且固定为 `suggested`，身份不匹配 fail closed 且不回退 standard；服务 CLI 已能装载双轨
-推理产物并保持 loopback-only。Swift client 只接受 `127.0.0.1`，会再次复核 track 与 revision identity，
-服务离线只产生 optional 错误，不改变既有 Feature Print 路径。Core ML tracer 已使用固定
+推理产物并保持 loopback-only。Swift client 只接受 `127.0.0.1`，会再次复核 track 与 revision identity。
+CompositionRoot 当前只固定接入公开 standard fixture；Inspector 必须由用户显式触发，复用当前单图
+标准预览或已显式下载的 iCloud 预览，选择变化丢弃旧结果，离线或校验失败只显示安全状态，不写
+SQLite、人工标签或 Review Queue，也不改变既有 Feature Print 路径。Core ML tracer 已使用固定
 AutoImageProcessor 和程序生成 RGB 输入通过 `cosine >= 0.999`、relative L2 `<= 0.02` 门；
 CPU_ONLY/ALL 只记录请求的 compute units，不宣称已证明 ANE 调度。下一独立模型切片把已验证
-artifact 接成 Python 服务内的可选 Core ML embedding provider；App 快照导出、生产 schema、Xcode
-compute plan 与 Swift 接线继续分别验收。
+artifact 接成 Python 服务内的可选 Core ML embedding provider；App 快照导出、标准概念持久化
+schema/Review Queue、个人 bundle 配置、Xcode compute plan 与生产模型安装继续分别验收。
 阶段 5 的双轨 gate 是：标准轨道零用户样本可运行，个人轨道无人工样本不运行，人工决定覆盖两类
 机器结果，模型模块缺失不影响 App，自动化测试不读取受保护真实照片。
 

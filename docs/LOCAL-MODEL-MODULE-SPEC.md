@@ -75,12 +75,13 @@ backbone。训练产物必须记录 encoder、模型 revision、预处理 revisi
 
 - Python 服务只允许绑定 `127.0.0.1`；
 - App 或测试向服务传递单张解码后图片 bytes，不传任意本机文件路径；
-- Swift tracer 只允许 `http://127.0.0.1:<port>` endpoint，并在 App 边界复核 request、track、package
-  或 bundle identity；当前不由 CompositionRoot 创建，保持默认关闭；
-- 真正启用签名 App 接线前，必须按 Apple 的
+- Swift client 只允许 `http://127.0.0.1:<port>` endpoint，并在 App 边界复核 request、track、package
+  或 bundle identity；CompositionRoot 当前只接入固定身份的公开标准 fixture，Inspector 仅在用户
+  显式点击后发送当前单图的既有标准预览，个人 bundle 尚未接线；
+- 签名 App 接线已按 Apple 的
   [`com.apple.security.network.client`](https://developer.apple.com/documentation/bundleresources/entitlements/com.apple.security.network.client)
   与 [`NSAllowsLocalNetworking`](https://developer.apple.com/documentation/bundleresources/information-property-list/nsapptransportsecurity/nsallowslocalnetworking)
-  契约单独收敛 sandbox/ATS 配置，不得扩大为任意远端 HTTP；
+  契约收敛 sandbox/ATS 配置；transport 仍由 Swift client 强制为 `127.0.0.1`，不得扩大为任意远端 HTTP；
 - DINO/SigLIP/FastViT 的最终 App 内部署主线为
   `PyTorch → torch.jit.trace → coremltools.convert → ML Program`；DINOv2-small 已按固定
   `1×3×224×224 float32 → 1×384 float32` 输入/输出和 FP16 内部精度关闭首个转换门；
@@ -395,8 +396,9 @@ Core ML Xcode 接线、SigLIP2 下载、Ollama 模型下载、生产数据库接
 | 双轨服务启动 | `e447f80` | CLI 装载已校验 standard pack 或 DINO personal bundle，仍只绑定 loopback |
 | Swift optional client tracer | `ffb1fd2` | 仅允许 `127.0.0.1`、双轨完整身份解码、跨 bundle fail closed、离线服务不回退 |
 | DINOv2 Core ML FP16 | `dfac6eb` | 固定位置编码、原子 ML Program artifact、严格身份/checksum 与 CPU_ONLY/ALL 数值基准 |
+| Inspector 标准建议预览 | `c68a6aa` | CompositionRoot 固定公开 fixture 身份；显式单图请求、选择隔离、iCloud 已下载预览复用、离线 fail closed 与零持久化 |
 
-2026-07-18 验收：
+2026-07-18 至 2026-07-19 验收：
 
 - `uv sync --extra test` 在 `ModelBackend/.venv` 解析并安装锁定依赖，不修改全局 Python；
 - `HF_HOME=/tmp/ImageAll-ModelBackend-HF IMAGEALL_RUN_MODEL_SMOKE=1 uv run pytest -q`：
@@ -408,6 +410,9 @@ Core ML Xcode 接线、SigLIP2 下载、Ollama 模型下载、生产数据库接
   均通过，测试只使用临时目录、合成 embedding 和程序生成 PNG；
 - `ffb1fd2` 的 Apple Development 签名 App 全量测试为 856 passed；client 定向 4 项与原有
   Feature Print/Photos 个性化 2 项共同通过，未把 client 注入 CompositionRoot；
+- `c68a6aa` 的 Apple Development 签名 App 全量测试为 861 passed、0 failed、0 skipped；Inspector
+  只在显式动作后调用固定 standard fixture，服务离线、身份失败或选择变化均不落库；构建产物的
+  `NSAllowsLocalNetworking`、`com.apple.security.network.client` 与严格验签均通过；
 - 从 `058a161` 导出的干净快照在不启动、不导入、不安装 `ModelBackend` 的情况下完成 unsigned
   arm64 Debug App build，结果为 `BUILD SUCCEEDED`；这证明当前 App 编译链不依赖模型模块；
 - 工作区既有命令面板、App 图标、`design/`、`scripts/`、`Assets.xcassets/` 与 `user/`
