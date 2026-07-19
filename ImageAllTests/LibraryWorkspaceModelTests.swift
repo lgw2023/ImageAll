@@ -908,6 +908,72 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(review.runPendingJobsCallCount, 1)
     }
 
+    func testReviewOverviewPausesPendingPersonalLibrarySuggestionJob() async {
+        let jobID = UUID()
+        let otherSuggestionJobID = UUID()
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: UUID(),
+                displayName: "Fixture",
+                state: .active
+            ),
+            reconciledItems: [],
+            jobActivityItems: [
+                JobActivityItem(
+                    id: otherSuggestionJobID,
+                    kind: .personalizationSuggestions,
+                    state: .running,
+                    controlRequest: .none,
+                    progress: JobProgress(completed: 8, total: 10)
+                ),
+                JobActivityItem(
+                    id: jobID,
+                    kind: .personalizationSuggestions,
+                    state: .pending,
+                    controlRequest: .none,
+                    progress: JobProgress(completed: 4, total: 20)
+                ),
+            ]
+        )
+        let review = FakePersonalizationReviewPort(
+            personalLibraryJob: PersonalLibrarySuggestionJobProjection(
+                id: jobID,
+                state: .pending,
+                checkedCount: 4,
+                totalCount: 20,
+                suggestedCount: 2,
+                skippedCount: 1,
+                lastErrorCode: nil
+            )
+        )
+        let model = LibraryWorkspaceModel(
+            service: service,
+            review: review,
+            localModelSuggestions: Self.makeStandardRuntime(
+                client: FakeLocalModelSuggestionClient(result: .success([]))
+            )
+        )
+
+        await model.enterReviewOverview()
+
+        XCTAssertEqual(
+            model.personalLibrarySuggestionJobActivity?.availableActions,
+            [.pause, .cancel]
+        )
+
+        await model.applyPersonalLibrarySuggestionAction(.pause)
+
+        XCTAssertEqual(service.jobActivityActionCallCount, 1)
+        XCTAssertEqual(model.personalLibrarySuggestionJobActivity?.id, jobID)
+        XCTAssertEqual(model.jobActivityItems.first?.id, otherSuggestionJobID)
+        XCTAssertEqual(model.jobActivityItems.first?.state, .running)
+        XCTAssertEqual(model.personalLibrarySuggestionJobActivity?.state, .paused)
+        XCTAssertEqual(
+            model.personalLibrarySuggestionJobActivity?.availableActions,
+            [.resume, .cancel]
+        )
+    }
+
     func testPersonalLibraryScanEnqueueDoesNotDownloadCloudOnlyAssets() async {
         let sourceID = UUID()
         let asset = Self.makeAsset(sourceID: sourceID, fileName: "cloud-only-personal.jpg")

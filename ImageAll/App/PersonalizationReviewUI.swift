@@ -55,6 +55,24 @@ struct ReviewOverviewView: View {
                                 || model.isRebuildingPersonalModel
                         )
                         .help("仅分析当前可本地读取的预览；iCloud 云端照片会跳过，不会批量下载")
+                        if let activity = model.personalLibrarySuggestionJobActivity,
+                           !activity.availableActions.isEmpty
+                        {
+                            HStack {
+                                ForEach(activity.availableActions, id: \.self) { action in
+                                    Button(
+                                        personalLibraryActionTitle(action),
+                                        role: action == .cancel ? .destructive : nil
+                                    ) {
+                                        Task {
+                                            await model.applyPersonalLibrarySuggestionAction(action)
+                                        }
+                                    }
+                                    .disabled(model.isApplyingJobActivityAction(activity.id))
+                                }
+                            }
+                            .buttonStyle(.link)
+                        }
                     }
                     .padding(.vertical, 4)
                 }
@@ -199,6 +217,14 @@ struct ReviewOverviewView: View {
             .orange
         default:
             .secondary
+        }
+    }
+
+    private func personalLibraryActionTitle(_ action: JobActivityAction) -> String {
+        switch action {
+        case .pause: "暂停"
+        case .resume: "继续"
+        case .cancel: "取消"
         }
     }
 

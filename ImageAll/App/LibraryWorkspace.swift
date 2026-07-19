@@ -154,6 +154,7 @@ final class LibraryWorkspaceModel: ObservableObject {
     @Published private(set) var localModelServiceHealthState: LocalModelServiceHealthPresentationState = .unchecked
     @Published private(set) var localModelSuggestionTrack: ModelSuggestionTrack = .standard
     @Published private(set) var personalLibrarySuggestionState: PersonalLibrarySuggestionPresentationState = .idle
+    @Published private(set) var personalLibrarySuggestionJobID: UUID?
     @Published private(set) var isRebuildingPersonalModel = false
     @Published private(set) var isExportingPortableData = false
     @Published private(set) var previewCacheUsage = DerivedImageCacheUsage.zero
@@ -545,6 +546,7 @@ final class LibraryWorkspaceModel: ObservableObject {
             if let refreshed = try? await Self.offMain({ try service.fetchJobActivity() }) {
                 jobActivityItems = refreshed
             }
+            await refreshReviewState()
             notice = .jobActivityActionFailed
         }
     }
@@ -2029,6 +2031,20 @@ extension LibraryWorkspaceModel {
 
     var canUndoReviewMutation: Bool { lastReviewMutation != nil }
 
+    var personalLibrarySuggestionJobActivity: JobActivityItem? {
+        guard let personalLibrarySuggestionJobID else { return nil }
+        return jobActivityItems.first { $0.id == personalLibrarySuggestionJobID }
+    }
+
+    func applyPersonalLibrarySuggestionAction(_ action: JobActivityAction) async {
+        guard let activity = personalLibrarySuggestionJobActivity,
+              activity.availableActions.contains(action)
+        else {
+            return
+        }
+        await applyJobActivityAction(action, to: activity.id)
+    }
+
     func refreshReviewState() async {
         let reviewPort = review
         do {
@@ -2038,9 +2054,21 @@ extension LibraryWorkspaceModel {
                 try reviewPort.personalLibrarySuggestionJob()
             }
             if let personalJob {
+                personalLibrarySuggestionJobID = personalJob.id
                 personalLibrarySuggestionState = Self.personalLibraryPresentation(
                     for: personalJob
                 )
+            } else {
+                personalLibrarySuggestionJobID = nil
+                personalLibrarySuggestionState = .idle
+            }
+            if reviewMode == .overview {
+                let service = service
+                if let activity = try? await Self.offMain({
+                    try service.fetchJobActivity()
+                }) {
+                    jobActivityItems = activity
+                }
             }
             if case let .tagQueue(tagID, _) = reviewMode {
                 await loadReviewQueueFirstPage(tagID: tagID)
