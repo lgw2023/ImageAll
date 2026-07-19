@@ -213,7 +213,7 @@ Slice W 完成后仍明确延期：
 - 自动化未访问 `/Volumes/HDD2`，未读取 `user/`，未修改来源文件，未新增 schema、entitlement、privacy manifest 或依赖，未 push；
 - 实现提交：`eb538d6d33bdd7dd021c2e0f61cffc0313cccf86`（`Agent-Role: implementation`）。
 
-W 不新增卷重新挂载自动探测；root 丢失后仍遵循既有 `unavailable`、重新授权和手动重扫生命周期。阶段 1 继续标记为进行中，是因为外置盘小型真实数据的只读人工验收尚未关闭；合成目录 FSEvents 证据不能替代该独立门。
+W 不新增卷重新挂载自动探测；root 丢失后仍遵循既有 `unavailable`、重新授权和手动重扫生命周期。阶段 1 实现已经完成，但 acceptance 仍开放，因为外置盘小型真实数据的只读人工验收尚未关闭；合成目录 FSEvents 证据不能替代该独立门，也不代表还有可由继续写代码关闭的实现缺口。
 
 可复现验证使用 `ImageAll.xcodeproj` / `ImageAll` scheme、Debug、`platform=macOS,arch=arm64`、独立 DerivedData 和固定 package checkout：unsigned 全量运行 `xcodebuild ... test -skip-testing:ImageAllTests/FolderAuthorizationEntitlementPanelTests/testProductionEntitlementsContainApprovedSandboxCapabilities CODE_SIGNING_ALLOWED=NO`；签名门单独运行 `xcodebuild ... test -only-testing:ImageAllTests/FolderAuthorizationEntitlementPanelTests/testProductionEntitlementsContainApprovedSandboxCapabilities`；独立 bundle 运行 `xcodebuild ... PRODUCT_BUNDLE_IDENTIFIER=com.gwlee.ImageAll.Stage1W.20260717 build` 后执行 `codesign --verify --deep --strict <ImageAll.app>`。结果包过期后仍可用相同 project、scheme、destination、bundle ID 和测试选择重跑。
 
