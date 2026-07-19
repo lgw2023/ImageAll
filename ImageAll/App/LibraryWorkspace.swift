@@ -996,9 +996,7 @@ final class LibraryWorkspaceModel: ObservableObject {
             case .unavailable:
                 expectedActiveBundle = nil
             case let .available(capability):
-                guard capability.target.catalogScopeID == runtime.catalogScopeID,
-                      Set(capability.tagIDs).isSubset(of: activeTagIDs)
-                else {
+                guard capability.target.catalogScopeID == runtime.catalogScopeID else {
                     throw LocalModelSuggestionClientError.identityMismatch
                 }
                 expectedActiveBundle = PersonalModelActiveBundleIdentity(

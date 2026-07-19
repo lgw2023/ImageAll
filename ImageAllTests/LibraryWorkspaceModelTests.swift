@@ -766,6 +766,7 @@ final class LibraryWorkspaceModelTests: XCTestCase {
     func testUserTriggeredPersonalRebuildPublishesOnlyVersionedManualSnapshot() async throws {
         let sourceID = UUID()
         let tagID = UUID(uuidString: "2C000000-0000-4000-8000-000000000001")!
+        let archivedTagID = UUID(uuidString: "2C000000-0000-4000-8000-000000000002")!
         let assetIDs = (1 ... 4).map { index in
             UUID(uuidString: String(format: "2D000000-0000-4000-8000-%012d", index))!
         }
@@ -800,7 +801,10 @@ final class LibraryWorkspaceModelTests: XCTestCase {
                 state: .active
             ),
             reconciledItems: items,
-            tags: [tag],
+            tags: [
+                tag,
+                TagListItem(id: archivedTagID, displayName: "旧标签", state: .archived),
+            ],
             initialItems: items,
             startsConnected: true,
             previewData: Data("personal-training-preview".utf8)
@@ -834,9 +838,28 @@ final class LibraryWorkspaceModelTests: XCTestCase {
             ),
             tagIDs: [tagID]
         )
+        let existingCapability = PersonalModelSuggestionCapability(
+            target: PersonalModelSuggestionTarget(
+                catalogScopeID: "catalog-fixture",
+                bundleID: "personal-fixture",
+                bundleRevision: "bundle-v1",
+                provider: encoder.provider,
+                modelID: encoder.modelID,
+                modelRevision: encoder.modelRevision,
+                preprocessingRevision: encoder.preprocessingRevision,
+                elementCount: encoder.elementCount,
+                labelVocabularyRevision: String(repeating: "a", count: 64),
+                weightsSHA256: String(repeating: "b", count: 64),
+                policyRevision: "personal-policy-v1"
+            ),
+            tagIDs: [tagID, archivedTagID]
+        )
         let client = FakeLocalModelSuggestionClient(
             result: .success([]),
-            personalCapabilities: [.unavailable, .available(rebuiltCapability)],
+            personalCapabilities: [
+                .available(existingCapability),
+                .available(rebuiltCapability),
+            ],
             embeddingResult: .success(
                 PersonalTrainingEmbedding(encoder: encoder, values: [0.25, -0.5])
             ),
@@ -852,7 +875,13 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         await model.rebuildPersonalModel()
 
         let published = try XCTUnwrap(client.lastRebuildSnapshot)
-        XCTAssertNil(client.lastExpectedActiveBundle)
+        XCTAssertEqual(
+            client.lastExpectedActiveBundle,
+            PersonalModelActiveBundleIdentity(
+                bundleRevision: "bundle-v1",
+                weightsSHA256: String(repeating: "b", count: 64)
+            )
+        )
         XCTAssertEqual(client.embeddingCallCount, 4)
         XCTAssertEqual(client.rebuildCallCount, 1)
         XCTAssertEqual(client.personalCapabilityCallCount, 2)
