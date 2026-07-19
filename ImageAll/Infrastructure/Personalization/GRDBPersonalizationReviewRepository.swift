@@ -674,8 +674,8 @@ struct GRDBPersonalizationReviewRepository: Sendable {
             try Row.fetchAll(
                 db,
                 sql: """
-                WITH pending_tags AS (
-                    SELECT p.tag_id
+                WITH raw_pending_tags AS (
+                    SELECT p.tag_id, 0 AS origin_rank
                     FROM prediction p
                     JOIN tag_model m
                         ON m.tag_id = p.tag_id
@@ -691,8 +691,8 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                     WHERE p.asset_id = ?
                         AND p.state = 'pendingReview'
                         AND d.asset_id IS NULL
-                    UNION
-                    SELECT p.tag_id
+                    UNION ALL
+                    SELECT p.tag_id, 1 AS origin_rank
                     FROM personal_prediction p
                     JOIN personal_suggestion_model m ON m.singleton = 1
                     JOIN personal_suggestion_tag pst ON pst.tag_id = p.tag_id
@@ -707,8 +707,16 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                     WHERE p.asset_id = ?
                         AND p.state = 'pendingReview'
                         AND d.asset_id IS NULL
+                ), pending_tags AS (
+                    SELECT tag_id, MAX(origin_rank) AS origin_rank
+                    FROM raw_pending_tags
+                    GROUP BY tag_id
                 )
-                SELECT p.tag_id, t.name
+                SELECT p.tag_id, t.name,
+                    CASE p.origin_rank
+                        WHEN 1 THEN 'personalModel'
+                        ELSE 'featurePrint'
+                    END AS suggestion_origin
                 FROM pending_tags p
                 JOIN tag t ON t.id = p.tag_id
                 ORDER BY t.name COLLATE NOCASE ASC, p.tag_id ASC
@@ -716,7 +724,13 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                 arguments: [uuid(assetID), uuid(assetID)]
             ).compactMap { row in
                 guard let tagID = UUID(uuidString: row["tag_id"]) else { return nil }
-                return AssetPendingSuggestion(tagID: tagID, displayName: row["name"])
+                return AssetPendingSuggestion(
+                    tagID: tagID,
+                    displayName: row["name"],
+                    suggestionOrigin: ReviewQueueSuggestionOrigin(
+                        rawValue: row["suggestion_origin"]
+                    ) ?? .featurePrint
+                )
             }
         }
     }

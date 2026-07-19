@@ -87,6 +87,17 @@ struct ReviewQueuePage: Equatable, Sendable {
 struct AssetPendingSuggestion: Identifiable, Equatable, Sendable {
     let tagID: UUID
     let displayName: String
+    let suggestionOrigin: ReviewQueueSuggestionOrigin
+
+    init(
+        tagID: UUID,
+        displayName: String,
+        suggestionOrigin: ReviewQueueSuggestionOrigin = .featurePrint
+    ) {
+        self.tagID = tagID
+        self.displayName = displayName
+        self.suggestionOrigin = suggestionOrigin
+    }
 
     var id: UUID { tagID }
 }

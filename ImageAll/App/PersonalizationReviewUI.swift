@@ -438,6 +438,16 @@ struct InspectorSuggestionSection: View {
                 ForEach(visible) { suggestion in
                     HStack {
                         Text(suggestion.displayName)
+                        Text(
+                            suggestion.suggestionOrigin == .personalModel
+                                ? "个人 DINO"
+                                : "Feature Print"
+                        )
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 2)
+                        .background(.secondary.opacity(0.12), in: Capsule())
                         Spacer()
                         Button("属于") {
                             Task {

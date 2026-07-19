@@ -130,8 +130,14 @@ final class FullLibrarySuggestionsJobTests: XCTestCase {
         )
 
         XCTAssertEqual(
-            try service.pendingSuggestionsForAsset(assetID: candidate.assetID).map(\.tagID),
-            [fixture.tagID]
+            try service.pendingSuggestionsForAsset(assetID: candidate.assetID),
+            [
+                AssetPendingSuggestion(
+                    tagID: fixture.tagID,
+                    displayName: "Family",
+                    suggestionOrigin: .personalModel
+                ),
+            ]
         )
     }
 
@@ -263,6 +269,16 @@ final class FullLibrarySuggestionsJobTests: XCTestCase {
         XCTAssertEqual(
             page.items.first(where: { $0.assetID == overlappingAssetID })?.suggestionOrigin,
             .personalModel
+        )
+        XCTAssertEqual(
+            try service.pendingSuggestionsForAsset(assetID: overlappingAssetID),
+            [
+                AssetPendingSuggestion(
+                    tagID: fixture.tagID,
+                    displayName: "Family",
+                    suggestionOrigin: .personalModel
+                ),
+            ]
         )
         XCTAssertEqual(try service.totalPendingSuggestionCount(), 1)
     }
