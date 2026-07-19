@@ -1,6 +1,6 @@
 # ImageAll 可选本地模型模块实施规格
 
-> 状态：标准/个人 suggestion HTTP、双轨服务启动、个人训练 CLI、DINOv2 Core ML FP16 provider、完整 personal bundle/standard package capability 握手、Inspector personal 确认流、用户触发的原子重建、personal/standard 持久全库任务、显式服务状态、v009 标准概念持久化、v010 standard Review Queue、显式单图发布与 v011 标准祖先展开已实现；生产公共模型、实际 ANE 取证与自动后台训练仍待后续门
+> 状态：标准/个人 suggestion HTTP、双轨服务启动、个人训练 CLI、DINOv2 Core ML FP16 provider、完整 personal bundle/standard package capability 握手、Inspector personal 确认流、用户触发的原子重建、personal/standard 持久全库任务、显式服务状态、v009 标准概念持久化、v010 standard Review Queue、显式单图发布与 v011 标准祖先展开已实现；生产公共模型准入规格已冻结，实际模型评测/接入、ANE 取证与自动后台训练仍待后续门
 > 日期：2026-07-19
 > 开工基线：`main@14c3890b8c83c87a6f603c8900dfaabb3179ea6c`
 > 范围：独立模型训练、部署与推理模块，以及可选的当前目录库确认/用户触发训练接线；不包含自动模型安装、自动后台训练或生产准确率承诺
@@ -78,7 +78,7 @@ backbone。训练产物必须记录 encoder、模型 revision、预处理 revisi
 
 | 候选 | 职责 | 准入状态 |
 |---|---|---|
-| Places365 ResNet18 | 标准场景标签、场景属性和 ontology mapping 的首个 tracer 候选 | 未批准；先关闭 revision、许可证、公开 fixture 和 Core ML 门 |
+| Places365 ResNet18 | 标准场景标签、场景属性和 ontology mapping 的首个 tracer 候选 | `research`；固定上游 commit，但权重许可版本、官方字节 SHA、公开评测和 Core ML 门未关闭 |
 | DINOv2-small | 个人标签冻结 embedding | 固定 revision 的 PyTorch/Core ML 独立服务与 FP16 artifact tracer 已实现 |
 | SigLIP2 B/32 256 | 开放词表与标准概念候选评测 | 后续 benchmark |
 | SegFormer-B0 ADE20K | 水域、天空、道路等标准标签的区域证据 | 研究候选，不单独决定标签 |
@@ -532,7 +532,11 @@ Swift client 对 available/unavailable 形状、嵌套 provider 字段与两个 
 
 ## 7. 后续切片
 
-1. 标准场景 tracer：fixture 级闭环、完整 package capability 握手、v009 ontology/model identity、v010 standard prediction/Review Queue、显式 Inspector 发布、v011 祖先 DAG 展开与 standard 全库持久任务已完成；生产公共模型 revision、许可证和校准仍待批准；
+生产 standard 模型的完整状态机、Places365 候选档案、suggested-only 质量门和资源门见
+[`STANDARD-MODEL-ADMISSION-SPEC.md`](./STANDARD-MODEL-ADMISSION-SPEC.md)。当前先实现不下载模型的
+离线证据 verifier；只有官方权重字节、许可和公开数据 manifest verified 后，才另起 benchmark runner。
+
+1. 标准场景 tracer：fixture 级闭环、完整 package capability 握手、v009 ontology/model identity、v010 standard prediction/Review Queue、显式 Inspector 发布、v011 祖先 DAG 展开与 standard 全库持久任务已完成；生产准入规格已冻结，Places365 ResNet18 当前为 `research`，实际评测、转换和批准仍待完成；
 2. 个人训练：独立 CLI 与 App 用户触发的版本化 embedding/decision 快照、同步重建、原子发布和热重载
    已完成；后端版本化 embedding 持久缓存与 Swift 重建请求采用均已完成；personal 全库建议
    已通过持久 job/checkpoint、启动恢复、pause/resume/cancel 和 retryable 到期唤醒进入现有 Review
