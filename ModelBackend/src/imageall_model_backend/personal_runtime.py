@@ -108,6 +108,9 @@ class PersonalModelRuntime:
                 if should_cancel is not None and should_cancel():
                     raise RuntimeError("personal rebuild cancelled")
                 os.replace(candidate_path, final_path)
+                if should_cancel is not None and should_cancel():
+                    shutil.rmtree(final_path, ignore_errors=True)
+                    raise RuntimeError("personal rebuild cancelled")
                 self._write_active_pointer(candidate_engine)
                 self._engine = candidate_engine
                 return candidate_engine
