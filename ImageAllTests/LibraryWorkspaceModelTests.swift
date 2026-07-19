@@ -634,8 +634,10 @@ final class LibraryWorkspaceModelTests: XCTestCase {
             previewData: previewData
         )
         let client = FakeLocalModelSuggestionClient(result: .success([suggestion]))
+        let review = FakePersonalizationReviewPort()
         let model = LibraryWorkspaceModel(
             service: service,
+            review: review,
             localModelSuggestions: Self.makeStandardRuntime(client: client)
         )
 
@@ -654,6 +656,21 @@ final class LibraryWorkspaceModelTests: XCTestCase {
             .results(assetID: asset.assetID, suggestions: [suggestion])
         )
         XCTAssertEqual(service.mutateTagCallCount, 0)
+        XCTAssertEqual(service.standardOntologyInstallCallCount, 1)
+        XCTAssertEqual(
+            review.standardSuggestionReplacements,
+            [
+                FakeStandardSuggestionReplacement(
+                    assetID: asset.assetID,
+                    contentRevision: asset.contentRevision,
+                    suggestions: [suggestion],
+                    expectedTarget: StandardModelSuggestionTarget(
+                        standardPackID: "imageall-public-fixture",
+                        standardPackRevision: "pack-v1"
+                    )
+                ),
+            ]
+        )
     }
 
     func testOfflineLocalModelSuggestionServiceFailsClosedWithoutTagMutation() async {
@@ -688,6 +705,40 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         )
         XCTAssertEqual(service.mutateTagCallCount, 0)
         XCTAssertNil(model.notice)
+    }
+
+    func testStandardSuggestionPersistenceFailureDoesNotDisplayModelResult() async {
+        let sourceID = UUID()
+        let asset = Self.makeAsset(sourceID: sourceID, fileName: "publish-failure.jpg")
+        let suggestion = Self.makeStandardSuggestion(recommendedState: .suggested)
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: sourceID,
+                displayName: "Fixture",
+                state: .active
+            ),
+            reconciledItems: [asset],
+            initialItems: [asset],
+            startsConnected: true,
+            previewData: Data("preview".utf8)
+        )
+        let review = FakePersonalizationReviewPort(
+            standardSuggestionReplacementFails: true
+        )
+        let client = FakeLocalModelSuggestionClient(result: .success([suggestion]))
+        let model = LibraryWorkspaceModel(
+            service: service,
+            review: review,
+            localModelSuggestions: Self.makeStandardRuntime(client: client)
+        )
+
+        await model.start()
+        await model.selectAsset(asset.assetID)
+        await model.requestLocalModelSuggestions()
+
+        XCTAssertEqual(model.localModelSuggestionState, .failed(assetID: asset.assetID))
+        XCTAssertTrue(review.standardSuggestionReplacements.isEmpty)
+        XCTAssertEqual(service.mutateTagCallCount, 0)
     }
 
     func testLocalModelSuggestionResultIsDiscardedAfterSelectionChanges() async {
@@ -729,6 +780,44 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         )
     }
 
+    func testStandardSuggestionResultIsDiscardedAfterContentRevisionChanges() async {
+        let sourceID = UUID()
+        let asset = Self.makeAsset(sourceID: sourceID, fileName: "changed.jpg")
+        let suggestion = Self.makeStandardSuggestion(recommendedState: .suggested)
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(id: sourceID, displayName: "Fixture", state: .active),
+            reconciledItems: [asset],
+            initialItems: [asset],
+            startsConnected: true,
+            previewData: Data("old-preview".utf8)
+        )
+        let client = FakeLocalModelSuggestionClient(
+            result: .success([suggestion]),
+            blocksRequests: true
+        )
+        let review = FakePersonalizationReviewPort()
+        let model = LibraryWorkspaceModel(
+            service: service,
+            review: review,
+            localModelSuggestions: Self.makeStandardRuntime(client: client)
+        )
+        await model.start()
+        await model.selectAsset(asset.assetID)
+
+        let request = Task { await model.requestLocalModelSuggestions() }
+        for _ in 0 ..< 10_000 where !client.hasBlockedRequest {
+            await Task.yield()
+        }
+        XCTAssertTrue(client.hasBlockedRequest)
+
+        service.setContentRevision(assetID: asset.assetID, contentRevision: 2)
+        client.releaseBlockedRequest()
+        await request.value
+
+        XCTAssertEqual(model.localModelSuggestionState, .failed(assetID: asset.assetID))
+        XCTAssertTrue(review.standardSuggestionReplacements.isEmpty)
+    }
+
     func testLocalModelSuggestionsReuseExplicitlyDownloadedCloudPreview() async {
         let sourceID = UUID()
         let asset = Self.makeAsset(sourceID: sourceID, fileName: "cloud-model.jpg")
@@ -747,8 +836,10 @@ final class LibraryWorkspaceModelTests: XCTestCase {
             cloudPreviewData: downloaded
         )
         let client = FakeLocalModelSuggestionClient(result: .success([]))
+        let review = FakePersonalizationReviewPort()
         let model = LibraryWorkspaceModel(
             service: service,
+            review: review,
             localModelSuggestions: Self.makeStandardRuntime(client: client)
         )
         await model.start()
@@ -3433,6 +3524,7 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
     private var storedJobActivityActionCallCount = 0
     private var folderMonitoringCallback: (@Sendable () -> Void)?
     private var storedTags: [TagListItem]
+    private var storedStandardOntologyInstallCallCount = 0
     private var decisions: [UUID: [UUID: TagDecisionQueryState]] = [:]
     private let exportParentURL: URL?
     private let portableExportResult: PortableCatalogExportResult?
@@ -3548,6 +3640,10 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
 
     var mutateTagCallCount: Int {
         lock.withLock { storedMutateTagCallCount }
+    }
+
+    var standardOntologyInstallCallCount: Int {
+        lock.withLock { storedStandardOntologyInstallCallCount }
     }
 
     var lastSort: AssetPageSort {
@@ -3927,6 +4023,50 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
         }
     }
 
+    func installStandardOntologyPackage(
+        _ package: StandardOntologyPackageInput
+    ) throws -> StandardOntologyInstallResult {
+        lock.withLock {
+            storedStandardOntologyInstallCallCount += 1
+            let existingNames = Set(storedTags.map(\.displayName))
+            let installed = package.concepts.map { concept in
+                storedTags.first(where: { $0.displayName == concept.canonicalName })
+                    ?? TagListItem(id: UUID(), displayName: concept.canonicalName, state: .active)
+            }
+            storedTags.append(contentsOf: installed.filter { !existingNames.contains($0.displayName) })
+            return StandardOntologyInstallResult(
+                installedTags: installed,
+                wasAlreadyInstalled: installed.allSatisfy { existingNames.contains($0.displayName) }
+            )
+        }
+    }
+
+    func setContentRevision(assetID: UUID, contentRevision: Int) {
+        lock.withLock {
+            guard let index = storedItems.firstIndex(where: { $0.assetID == assetID }) else {
+                return
+            }
+            let item = storedItems[index]
+            storedItems[index] = AssetGridItemProjection(
+                assetID: item.assetID,
+                sourceID: item.sourceID,
+                sourceDisplayName: item.sourceDisplayName,
+                sourceState: item.sourceState,
+                relativePath: item.relativePath,
+                fileName: item.fileName,
+                mediaType: item.mediaType,
+                mediaCreatedAtMs: item.mediaCreatedAtMs,
+                mediaModifiedAtMs: item.mediaModifiedAtMs,
+                width: item.width,
+                height: item.height,
+                availability: item.availability,
+                contentRevision: contentRevision,
+                acceptedTagCount: item.acceptedTagCount,
+                rejectedTagCount: item.rejectedTagCount
+            )
+        }
+    }
+
     func fetchInspectorDetail(assetID: UUID) throws -> AssetInspectorDetail {
         try lock.withLock {
             guard let item = storedItems.first(where: { $0.assetID == assetID }) else {
@@ -4228,6 +4368,13 @@ private struct FakePersonalSuggestionReplacement: Equatable {
     let expectedCapability: PersonalModelSuggestionCapability
 }
 
+private struct FakeStandardSuggestionReplacement: Equatable {
+    let assetID: UUID
+    let contentRevision: Int
+    let suggestions: [LocalModelSuggestion]
+    let expectedTarget: StandardModelSuggestionTarget
+}
+
 private final class FakePersonalizationReviewPort: PersonalizationReviewPort, @unchecked Sendable {
     private let lock = NSLock()
     private var storedOverviews: [SuggestionTagOverview]
@@ -4238,9 +4385,11 @@ private final class FakePersonalizationReviewPort: PersonalizationReviewPort, @u
     private var storedEnqueuedPersonalCapability: PersonalModelSuggestionCapability?
     private var storedPersonalLibraryJob: PersonalLibrarySuggestionJobProjection?
     private var storedPersonalSuggestionReplacements: [FakePersonalSuggestionReplacement] = []
+    private var storedStandardSuggestionReplacements: [FakeStandardSuggestionReplacement] = []
     private var storedPersonalSuggestionInvalidationCallCount = 0
     private let queuePageSize: Int?
     private let trainingSnapshot: PersonalTrainingSnapshot?
+    private let standardSuggestionReplacementFails: Bool
     var decidedAssetIDsProvider: (@Sendable (UUID) -> Set<UUID>)?
     let blocksRunPendingJobs: Bool
     private let pendingJobsBlocker = DispatchSemaphore(value: 0)
@@ -4254,6 +4403,7 @@ private final class FakePersonalizationReviewPort: PersonalizationReviewPort, @u
         personalCandidates: [PersonalSuggestionCandidate] = [],
         personalLibraryJob: PersonalLibrarySuggestionJobProjection? = nil,
         trainingSnapshot: PersonalTrainingSnapshot? = nil,
+        standardSuggestionReplacementFails: Bool = false,
         blocksRunPendingJobs: Bool = false,
         queuePageSize: Int? = nil
     ) {
@@ -4263,6 +4413,7 @@ private final class FakePersonalizationReviewPort: PersonalizationReviewPort, @u
         self.personalCandidates = personalCandidates
         storedPersonalLibraryJob = personalLibraryJob
         self.trainingSnapshot = trainingSnapshot
+        self.standardSuggestionReplacementFails = standardSuggestionReplacementFails
         self.blocksRunPendingJobs = blocksRunPendingJobs
         self.queuePageSize = queuePageSize
     }
@@ -4277,6 +4428,10 @@ private final class FakePersonalizationReviewPort: PersonalizationReviewPort, @u
 
     var personalSuggestionReplacements: [FakePersonalSuggestionReplacement] {
         lock.withLock { storedPersonalSuggestionReplacements }
+    }
+
+    var standardSuggestionReplacements: [FakeStandardSuggestionReplacement] {
+        lock.withLock { storedStandardSuggestionReplacements }
     }
 
     var personalSuggestionInvalidationCallCount: Int {
@@ -4351,6 +4506,28 @@ private final class FakePersonalizationReviewPort: PersonalizationReviewPort, @u
                 )
             )
             return predictions.count
+        }
+    }
+
+    func replaceStandardSuggestions(
+        assetID: UUID,
+        contentRevision: Int,
+        suggestions: [LocalModelSuggestion],
+        expectedTarget: StandardModelSuggestionTarget
+    ) throws -> Int {
+        if standardSuggestionReplacementFails {
+            throw PersonalizationReviewError.persistenceFailure
+        }
+        return lock.withLock {
+            storedStandardSuggestionReplacements.append(
+                FakeStandardSuggestionReplacement(
+                    assetID: assetID,
+                    contentRevision: contentRevision,
+                    suggestions: suggestions,
+                    expectedTarget: expectedTarget
+                )
+            )
+            return suggestions.count
         }
     }
 

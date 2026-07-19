@@ -841,6 +841,31 @@ final class LibraryWorkspaceModel: ObservableObject {
         localModelSuggestionState = .loading(assetID: assetID)
 
         do {
+            let package = StandardOntologyCatalog.bundledSceneFixture
+            guard case let .standard(expectedTarget) = runtime.target,
+                  expectedTarget.standardPackID == package.standardPackID,
+                  expectedTarget.standardPackRevision == package.standardPackRevision
+            else {
+                throw LocalModelSuggestionClientError.identityMismatch
+            }
+            let service = service
+            _ = try await Self.offMain {
+                try service.installStandardOntologyPackage(package)
+            }
+            tags = try await Self.offMain { try service.listTags() }
+            guard localModelSuggestionRequestID == requestID,
+                  primarySelectedAssetID == assetID
+            else {
+                return
+            }
+            let requestedDetail = try await Self.offMain {
+                try service.fetchInspectorDetail(assetID: assetID)
+            }
+            guard requestedDetail.assetID == assetID,
+                  requestedDetail.contentRevision > 0
+            else {
+                throw LocalModelSuggestionClientError.identityMismatch
+            }
             let imageData: Data
             if case let .downloaded(downloadedAssetID, data) = cloudPreviewState,
                downloadedAssetID == assetID
@@ -859,8 +884,36 @@ final class LibraryWorkspaceModel: ObservableObject {
             else {
                 return
             }
+            let currentDetail = try await Self.offMain {
+                try service.fetchInspectorDetail(assetID: assetID)
+            }
+            guard localModelSuggestionRequestID == requestID,
+                  primarySelectedAssetID == assetID
+            else {
+                return
+            }
+            guard currentDetail.assetID == assetID,
+                  currentDetail.contentRevision == requestedDetail.contentRevision
+            else {
+                throw LocalModelSuggestionClientError.identityMismatch
+            }
+            let reviewPort = review
+            try await Self.offMain {
+                _ = try reviewPort.replaceStandardSuggestions(
+                    assetID: assetID,
+                    contentRevision: requestedDetail.contentRevision,
+                    suggestions: suggestions,
+                    expectedTarget: expectedTarget
+                )
+            }
+            guard localModelSuggestionRequestID == requestID,
+                  primarySelectedAssetID == assetID
+            else {
+                return
+            }
             localModelSuggestionState = .results(assetID: assetID, suggestions: suggestions)
             localModelSuggestionRequestID = nil
+            await refreshReviewState()
         } catch PhotosLibraryError.cloudOnly {
             guard localModelSuggestionRequestID == requestID,
                   primarySelectedAssetID == assetID

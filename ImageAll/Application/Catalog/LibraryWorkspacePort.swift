@@ -191,6 +191,9 @@ protocol LibraryWorkspacePort: Sendable {
     ) async throws -> Data
     func listTags() throws -> [TagListItem]
     func installPresetTags() throws -> TagPresetInstallResult
+    func installStandardOntologyPackage(
+        _ package: StandardOntologyPackageInput
+    ) throws -> StandardOntologyInstallResult
     func fetchInspectorDetail(assetID: UUID) throws -> AssetInspectorDetail
     func selectionAggregate(tagIDs: [UUID], assetIDs: [UUID]) throws -> [TagSelectionAggregate]
     func mutateTag(

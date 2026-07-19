@@ -12,6 +12,38 @@ enum TagPresetCatalog {
     ]
 }
 
+enum StandardOntologyCatalog {
+    static let bundledSceneFixture = StandardOntologyPackageInput(
+        standardPackID: "imageall-public-fixture",
+        standardPackRevision: "pack-v1",
+        ontologyID: "imageall-public-fixture",
+        ontologyRevision: "ontology-v1",
+        localeRevision: "zh-Hans-v1",
+        manifestSHA256: "dc7b0a9a8391978a56b7e55f97c1abc73fe9e9834f1c2dd16152fc13883bd873",
+        provider: "rgb-linear",
+        modelRevision: "model-v1",
+        preprocessingRevision: "rgb-channel-mean-v1",
+        mappingRevision: "mapping-v1",
+        policyRevision: "policy-v1",
+        weightsSHA256: "4129427105a9392e02b5306b657a029f7d0034f05a10d1363254e5f3d579fce9",
+        concepts: [
+            StandardOntologyConceptInput(conceptID: "scene.environment", canonicalName: "环境"),
+            StandardOntologyConceptInput(conceptID: "scene.outdoor", canonicalName: "户外"),
+            StandardOntologyConceptInput(conceptID: "scene.water", canonicalName: "水域"),
+        ],
+        edges: [
+            StandardOntologyEdgeInput(
+                parentConceptID: "scene.environment",
+                childConceptID: "scene.outdoor"
+            ),
+            StandardOntologyEdgeInput(
+                parentConceptID: "scene.outdoor",
+                childConceptID: "scene.water"
+            ),
+        ]
+    )
+}
+
 struct TagPresetInstallResult: Sendable, Equatable {
     let createdTags: [TagListItem]
 }

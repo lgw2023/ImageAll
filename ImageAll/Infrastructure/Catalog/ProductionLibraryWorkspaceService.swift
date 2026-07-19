@@ -242,6 +242,12 @@ struct ProductionLibraryWorkspaceService: LibraryWorkspacePort, Sendable {
         )
     }
 
+    func installStandardOntologyPackage(
+        _ package: StandardOntologyPackageInput
+    ) throws -> StandardOntologyInstallResult {
+        try tags.installStandardOntologyPackage(package, timestampMs: clock.nowMs)
+    }
+
     func fetchInspectorDetail(assetID: UUID) throws -> AssetInspectorDetail {
         try query.fetchInspectorDetail(assetID: assetID)
     }

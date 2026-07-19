@@ -3,6 +3,33 @@ import XCTest
 
 @MainActor
 final class CompositionRootTests: XCTestCase {
+    func testBundledStandardOntologyMatchesRuntimeIdentityAndConcepts() throws {
+        let package = StandardOntologyCatalog.bundledSceneFixture
+        let runtime = try XCTUnwrap(
+            CompositionRoot.makeLocalModelSuggestionRuntime(catalogScopeID: "catalog-fixture")
+        )
+
+        XCTAssertEqual(
+            runtime.target,
+            .standard(
+                StandardModelSuggestionTarget(
+                    standardPackID: package.standardPackID,
+                    standardPackRevision: package.standardPackRevision
+                )
+            )
+        )
+        XCTAssertEqual(package.ontologyID, "imageall-public-fixture")
+        XCTAssertEqual(package.ontologyRevision, "ontology-v1")
+        XCTAssertEqual(package.provider, "rgb-linear")
+        XCTAssertEqual(package.modelRevision, "model-v1")
+        XCTAssertEqual(package.preprocessingRevision, "rgb-channel-mean-v1")
+        XCTAssertEqual(package.mappingRevision, "mapping-v1")
+        XCTAssertEqual(package.policyRevision, "policy-v1")
+        XCTAssertEqual(package.concepts.map(\.conceptID), [
+            "scene.environment", "scene.outdoor", "scene.water",
+        ])
+    }
+
     func testProductionLocalModelRuntimePinsTheStandardFixtureIdentity() throws {
         let runtime = try XCTUnwrap(
             CompositionRoot.makeLocalModelSuggestionRuntime(
