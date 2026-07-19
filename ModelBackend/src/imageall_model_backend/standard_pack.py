@@ -55,6 +55,8 @@ class StandardPack:
     root: Path
     standard_pack_id: str
     standard_pack_revision: str
+    manifest_sha256: str
+    weights_sha256: str
     provider_identity: StandardProviderIdentity
     model_path: Path
     ontology: StandardOntology
@@ -94,7 +96,8 @@ def _package_file(root: Path, relative_path: str) -> Path:
 
 
 def load_standard_pack(root: Path) -> StandardPack:
-    manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
+    manifest_bytes = (root / "manifest.json").read_bytes()
+    manifest = json.loads(manifest_bytes)
     recorded_license_ids = {
         license_entry["id"] for license_entry in manifest["licenses"]
     }
@@ -200,6 +203,8 @@ def load_standard_pack(root: Path) -> StandardPack:
         root=root,
         standard_pack_id=manifest["standard_pack_id"],
         standard_pack_revision=manifest["standard_pack_revision"],
+        manifest_sha256=hashlib.sha256(manifest_bytes).hexdigest(),
+        weights_sha256=manifest["file_sha256"][manifest["model_path"]],
         provider_identity=StandardProviderIdentity(**manifest["provider_identity"]),
         model_path=_package_file(root, manifest["model_path"]),
         ontology=ontology,

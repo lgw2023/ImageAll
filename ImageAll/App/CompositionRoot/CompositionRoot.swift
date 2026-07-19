@@ -186,12 +186,6 @@ struct CompositionRoot {
         guard let client = try? LoopbackModelSuggestionClient() else { return nil }
         return LocalModelSuggestionRuntime(
             client: client,
-            target: .standard(
-                StandardModelSuggestionTarget(
-                    standardPackID: "imageall-public-fixture",
-                    standardPackRevision: "pack-v1"
-                )
-            ),
             catalogScopeID: catalogScopeID
         )
     }

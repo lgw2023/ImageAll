@@ -245,6 +245,25 @@ struct StandardModelSuggestionTarget: Codable, Equatable, Sendable {
     let standardPackRevision: String
 }
 
+struct StandardModelSuggestionCapability: Equatable, Sendable {
+    let target: StandardModelSuggestionTarget
+    let manifestSHA256: String
+    let ontologyID: String
+    let ontologyRevision: String
+    let provider: String
+    let modelID: String
+    let modelRevision: String
+    let preprocessingRevision: String
+    let mappingRevision: String
+    let policyRevision: String
+    let weightsSHA256: String
+}
+
+enum StandardModelSuggestionCapabilityAvailability: Equatable, Sendable {
+    case unavailable
+    case available(StandardModelSuggestionCapability)
+}
+
 struct PersonalModelSuggestionTarget: Codable, Equatable, Sendable {
     let catalogScopeID: String
     let bundleID: String
@@ -351,6 +370,7 @@ enum LocalModelServiceHealthPresentationState: Equatable, Sendable {
 
 protocol LocalModelSuggestionClient: Sendable {
     func serviceHealth() async throws -> LocalModelServiceHealth
+    func standardCapability() async throws -> StandardModelSuggestionCapabilityAvailability
     func personalCapability() async throws -> PersonalModelSuggestionCapabilityAvailability
     func embedding(
         imageData: Data,
@@ -375,6 +395,10 @@ extension LocalModelSuggestionClient {
     }
 
     func personalCapability() async throws -> PersonalModelSuggestionCapabilityAvailability {
+        .unavailable
+    }
+
+    func standardCapability() async throws -> StandardModelSuggestionCapabilityAvailability {
         .unavailable
     }
 
@@ -408,7 +432,6 @@ extension LocalModelSuggestionClient {
 
 struct LocalModelSuggestionRuntime: Sendable {
     let client: any LocalModelSuggestionClient
-    let target: ModelSuggestionTarget
     let catalogScopeID: String
 }
 

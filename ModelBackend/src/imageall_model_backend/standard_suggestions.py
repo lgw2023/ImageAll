@@ -15,6 +15,19 @@ class StandardSuggestionError(ValueError):
 
 
 @dataclass(frozen=True)
+class StandardSuggestionCapability:
+    standard_pack_id: str
+    standard_pack_revision: str
+    manifest_sha256: str
+    ontology_id: str
+    ontology_revision: str
+    provider: StandardProviderIdentity
+    mapping_revision: str
+    policy_revision: str
+    weights_sha256: str
+
+
+@dataclass(frozen=True)
 class StandardSuggestion:
     track: str
     concept_id: str
@@ -65,6 +78,20 @@ class StandardSuggestionEngine:
     @property
     def provider_identity(self) -> StandardProviderIdentity:
         return self._provider.identity
+
+    @property
+    def capability(self) -> StandardSuggestionCapability:
+        return StandardSuggestionCapability(
+            standard_pack_id=self._pack.standard_pack_id,
+            standard_pack_revision=self._pack.standard_pack_revision,
+            manifest_sha256=self._pack.manifest_sha256,
+            ontology_id=self._pack.ontology.ontology_id,
+            ontology_revision=self._pack.ontology.ontology_revision,
+            provider=self._pack.provider_identity,
+            mapping_revision=self._pack.mapping.mapping_revision,
+            policy_revision=self._pack.policy.policy_revision,
+            weights_sha256=self._pack.weights_sha256,
+        )
 
     def trace(self, image_bytes: bytes) -> StandardSuggestionTrace:
         best_score_by_concept: dict[str, float] = {}

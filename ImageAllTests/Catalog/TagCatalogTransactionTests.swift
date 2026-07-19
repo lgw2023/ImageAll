@@ -975,6 +975,7 @@ final class TagCatalogTransactionTests: XCTestCase {
             localeRevision: "locale-en-v1",
             manifestSHA256: manifestSHA256,
             provider: "synthetic",
+            modelID: "synthetic/model",
             modelRevision: "model-v1",
             preprocessingRevision: "preprocessing-v1",
             mappingRevision: "mapping-v1",

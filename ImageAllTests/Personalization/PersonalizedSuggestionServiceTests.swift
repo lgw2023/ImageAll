@@ -378,6 +378,195 @@ final class PersonalizedSuggestionServiceTests: XCTestCase {
         XCTAssertEqual(capability.tagIDs, [tagID])
     }
 
+    func testLoopbackClientDiscoversTheLoadedStandardPackageIdentity() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [ModelSuggestionURLProtocolStub.self]
+        ModelSuggestionURLProtocolStub.handler = { request in
+            XCTAssertEqual(request.url?.path, "/v1/capabilities")
+            XCTAssertEqual(request.httpMethod, "GET")
+            return (
+                HTTPURLResponse(
+                    url: try XCTUnwrap(request.url),
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: ["Content-Type": "application/json"]
+                )!,
+                Data(
+                    """
+                    {
+                      "service_version": "0.1.0",
+                      "standard": {
+                        "status": "available",
+                        "standard_pack_id": "imageall-public-fixture",
+                        "standard_pack_revision": "pack-v1",
+                        "manifest_sha256": "dc7b0a9a8391978a56b7e55f97c1abc73fe9e9834f1c2dd16152fc13883bd873",
+                        "ontology_id": "imageall-public-fixture",
+                        "ontology_revision": "ontology-v1",
+                        "provider": {
+                          "provider": "rgb-linear",
+                          "model_id": "imageall/fixture-scene-linear",
+                          "model_revision": "model-v1",
+                          "preprocessing_revision": "rgb-channel-mean-v1"
+                        },
+                        "mapping_revision": "mapping-v1",
+                        "policy_revision": "policy-v1",
+                        "weights_sha256": "4129427105a9392e02b5306b657a029f7d0034f05a10d1363254e5f3d579fce9"
+                      },
+                      "personal": {"status": "unavailable"}
+                    }
+                    """.utf8
+                )
+            )
+        }
+        defer { ModelSuggestionURLProtocolStub.handler = nil }
+        let client = try LoopbackModelSuggestionClient(
+            session: URLSession(configuration: configuration)
+        )
+
+        let availability = try await client.standardCapability()
+
+        guard case let .available(capability) = availability else {
+            return XCTFail("expected an available standard package")
+        }
+        XCTAssertEqual(
+            capability.target,
+            StandardModelSuggestionTarget(
+                standardPackID: "imageall-public-fixture",
+                standardPackRevision: "pack-v1"
+            )
+        )
+        XCTAssertEqual(
+            capability.manifestSHA256,
+            "dc7b0a9a8391978a56b7e55f97c1abc73fe9e9834f1c2dd16152fc13883bd873"
+        )
+        XCTAssertEqual(capability.ontologyID, "imageall-public-fixture")
+        XCTAssertEqual(capability.ontologyRevision, "ontology-v1")
+        XCTAssertEqual(capability.provider, "rgb-linear")
+        XCTAssertEqual(capability.modelID, "imageall/fixture-scene-linear")
+        XCTAssertEqual(capability.modelRevision, "model-v1")
+        XCTAssertEqual(capability.preprocessingRevision, "rgb-channel-mean-v1")
+        XCTAssertEqual(capability.mappingRevision, "mapping-v1")
+        XCTAssertEqual(capability.policyRevision, "policy-v1")
+        XCTAssertEqual(
+            capability.weightsSHA256,
+            "4129427105a9392e02b5306b657a029f7d0034f05a10d1363254e5f3d579fce9"
+        )
+    }
+
+    func testLoopbackClientReportsAnExplicitlyUnavailableStandardPackage() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [ModelSuggestionURLProtocolStub.self]
+        ModelSuggestionURLProtocolStub.handler = { request in
+            (
+                HTTPURLResponse(
+                    url: try XCTUnwrap(request.url),
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: nil
+                )!,
+                Data(
+                    """
+                    {
+                      "service_version": "0.1.0",
+                      "standard": {"status": "unavailable"},
+                      "personal": {"status": "unavailable"}
+                    }
+                    """.utf8
+                )
+            )
+        }
+        defer { ModelSuggestionURLProtocolStub.handler = nil }
+        let client = try LoopbackModelSuggestionClient(
+            session: URLSession(configuration: configuration)
+        )
+
+        let availability = try await client.standardCapability()
+
+        XCTAssertEqual(availability, .unavailable)
+    }
+
+    func testLoopbackClientRejectsMalformedStandardCapabilities() async throws {
+        let malformedStandardPayloads = [
+            """
+            {
+              "status": "available",
+              "standard_pack_id": "imageall-public-fixture",
+              "standard_pack_revision": "pack-v1",
+              "manifest_sha256": "dc7b0a9a8391978a56b7e55f97c1abc73fe9e9834f1c2dd16152fc13883bd873",
+              "ontology_id": "imageall-public-fixture",
+              "ontology_revision": "ontology-v1",
+              "provider": {
+                "provider": "rgb-linear",
+                "model_id": "imageall/fixture-scene-linear",
+                "model_revision": "model-v1",
+                "preprocessing_revision": "rgb-channel-mean-v1"
+              },
+              "mapping_revision": "mapping-v1",
+              "policy_revision": "policy-v1"
+            }
+            """,
+            """
+            {
+              "status": "available",
+              "standard_pack_id": "imageall-public-fixture",
+              "standard_pack_revision": "pack-v1",
+              "manifest_sha256": "DC7B0A9A8391978A56B7E55F97C1ABC73FE9E9834F1C2DD16152FC13883BD873",
+              "ontology_id": "imageall-public-fixture",
+              "ontology_revision": "ontology-v1",
+              "provider": {
+                "provider": "rgb-linear",
+                "model_id": "imageall/fixture-scene-linear",
+                "model_revision": "model-v1",
+                "preprocessing_revision": "rgb-channel-mean-v1"
+              },
+              "mapping_revision": "mapping-v1",
+              "policy_revision": "policy-v1",
+              "weights_sha256": "4129427105a9392e02b5306b657a029f7d0034f05a10d1363254e5f3d579fce9"
+            }
+            """,
+            """
+            {"status": "unavailable", "standard_pack_id": "contradiction"}
+            """,
+            """
+            {"status": "unavailable", "unexpected": "field"}
+            """,
+        ]
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [ModelSuggestionURLProtocolStub.self]
+        defer { ModelSuggestionURLProtocolStub.handler = nil }
+        let client = try LoopbackModelSuggestionClient(
+            session: URLSession(configuration: configuration)
+        )
+
+        for standardPayload in malformedStandardPayloads {
+            ModelSuggestionURLProtocolStub.handler = { request in
+                (
+                    HTTPURLResponse(
+                        url: try XCTUnwrap(request.url),
+                        statusCode: 200,
+                        httpVersion: nil,
+                        headerFields: nil
+                    )!,
+                    Data(
+                        """
+                        {
+                          "service_version": "0.1.0",
+                          "standard": \(standardPayload),
+                          "personal": {"status": "unavailable"}
+                        }
+                        """.utf8
+                    )
+                )
+            }
+            do {
+                _ = try await client.standardCapability()
+                XCTFail("expected malformed standard capability to fail")
+            } catch let error as LocalModelSuggestionClientError {
+                XCTAssertEqual(error, .invalidResponse)
+            }
+        }
+    }
+
     func testLoopbackClientDiscoversTheLoadedPersonalBundleIdentity() async throws {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [ModelSuggestionURLProtocolStub.self]

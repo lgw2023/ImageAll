@@ -645,10 +645,12 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         await model.selectAsset(asset.assetID)
 
         XCTAssertEqual(client.callCount, 0)
+        XCTAssertEqual(client.standardCapabilityCallCount, 0)
         XCTAssertEqual(model.localModelSuggestionState, .ready(assetID: asset.assetID))
 
         await model.requestLocalModelSuggestions()
 
+        XCTAssertEqual(client.standardCapabilityCallCount, 1)
         XCTAssertEqual(client.callCount, 1)
         XCTAssertEqual(client.lastImageData, previewData)
         XCTAssertEqual(
@@ -671,6 +673,58 @@ final class LibraryWorkspaceModelTests: XCTestCase {
                 ),
             ]
         )
+    }
+
+    func testMismatchedStandardCapabilityStopsBeforeInstallOrPreviewRead() async {
+        let sourceID = UUID()
+        let asset = Self.makeAsset(sourceID: sourceID, fileName: "mismatch.jpg")
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: sourceID,
+                displayName: "Fixture",
+                state: .active
+            ),
+            reconciledItems: [asset],
+            initialItems: [asset],
+            startsConnected: true,
+            previewData: Data("must-not-read".utf8)
+        )
+        let fixture = StandardModelSuggestionCapability.fixture
+        let client = FakeLocalModelSuggestionClient(
+            result: .success([]),
+            standardCapability: .available(
+                StandardModelSuggestionCapability(
+                    target: fixture.target,
+                    manifestSHA256: fixture.manifestSHA256,
+                    ontologyID: fixture.ontologyID,
+                    ontologyRevision: fixture.ontologyRevision,
+                    provider: fixture.provider,
+                    modelID: "unapproved/model",
+                    modelRevision: fixture.modelRevision,
+                    preprocessingRevision: fixture.preprocessingRevision,
+                    mappingRevision: fixture.mappingRevision,
+                    policyRevision: fixture.policyRevision,
+                    weightsSHA256: fixture.weightsSHA256
+                )
+            )
+        )
+        let review = FakePersonalizationReviewPort()
+        let model = LibraryWorkspaceModel(
+            service: service,
+            review: review,
+            localModelSuggestions: Self.makeStandardRuntime(client: client)
+        )
+        await model.start()
+        await model.selectAsset(asset.assetID)
+
+        await model.requestLocalModelSuggestions()
+
+        XCTAssertEqual(client.standardCapabilityCallCount, 1)
+        XCTAssertEqual(client.callCount, 0)
+        XCTAssertEqual(service.standardOntologyInstallCallCount, 0)
+        XCTAssertEqual(service.previewLoadCallCount, 0)
+        XCTAssertTrue(review.standardSuggestionReplacements.isEmpty)
+        XCTAssertEqual(model.localModelSuggestionState, .failed(assetID: asset.assetID))
     }
 
     func testOfflineLocalModelSuggestionServiceFailsClosedWithoutTagMutation() async {
@@ -1233,17 +1287,17 @@ final class LibraryWorkspaceModelTests: XCTestCase {
             previewError: .cloudOnly
         )
         let review = FakePersonalizationReviewPort()
+        let client = FakeLocalModelSuggestionClient(result: .success([]))
         let model = LibraryWorkspaceModel(
             service: service,
             review: review,
-            localModelSuggestions: Self.makeStandardRuntime(
-                client: FakeLocalModelSuggestionClient(result: .success([]))
-            )
+            localModelSuggestions: Self.makeStandardRuntime(client: client)
         )
         await model.start()
 
         await model.generateStandardLibrarySuggestions()
 
+        XCTAssertEqual(client.standardCapabilityCallCount, 1)
         XCTAssertEqual(
             model.standardLibrarySuggestionState,
             .waiting(checked: 0, suggested: 0, skipped: 0)
@@ -1256,6 +1310,41 @@ final class LibraryWorkspaceModelTests: XCTestCase {
                 standardPackRevision: "pack-v1"
             )
         )
+        XCTAssertEqual(service.previewLoadCallCount, 0)
+        XCTAssertEqual(service.cloudPreviewDownloadCallCount, 0)
+    }
+
+    func testUnavailableStandardCapabilityDoesNotInstallOrEnqueueLibraryScan() async {
+        let sourceID = UUID()
+        let asset = Self.makeAsset(sourceID: sourceID, fileName: "standard-unavailable.jpg")
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: sourceID,
+                displayName: "Fixture",
+                state: .active
+            ),
+            reconciledItems: [asset],
+            initialItems: [asset],
+            startsConnected: true
+        )
+        let review = FakePersonalizationReviewPort()
+        let client = FakeLocalModelSuggestionClient(
+            result: .success([]),
+            standardCapability: .unavailable
+        )
+        let model = LibraryWorkspaceModel(
+            service: service,
+            review: review,
+            localModelSuggestions: Self.makeStandardRuntime(client: client)
+        )
+        await model.start()
+
+        await model.generateStandardLibrarySuggestions()
+
+        XCTAssertEqual(client.standardCapabilityCallCount, 1)
+        XCTAssertEqual(model.standardLibrarySuggestionState, .serviceUnavailable)
+        XCTAssertEqual(service.standardOntologyInstallCallCount, 0)
+        XCTAssertNil(review.enqueuedStandardTarget)
         XCTAssertEqual(service.previewLoadCallCount, 0)
         XCTAssertEqual(service.cloudPreviewDownloadCallCount, 0)
     }
@@ -3442,12 +3531,6 @@ final class LibraryWorkspaceModelTests: XCTestCase {
     ) -> LocalModelSuggestionRuntime {
         LocalModelSuggestionRuntime(
             client: client,
-            target: .standard(
-                StandardModelSuggestionTarget(
-                    standardPackID: "imageall-public-fixture",
-                    standardPackRevision: "pack-v1"
-                )
-            ),
             catalogScopeID: "catalog-fixture"
         )
     }
@@ -4298,16 +4381,37 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
     }
 }
 
+private extension StandardModelSuggestionCapability {
+    static let fixture = StandardModelSuggestionCapability(
+        target: StandardModelSuggestionTarget(
+            standardPackID: "imageall-public-fixture",
+            standardPackRevision: "pack-v1"
+        ),
+        manifestSHA256: "dc7b0a9a8391978a56b7e55f97c1abc73fe9e9834f1c2dd16152fc13883bd873",
+        ontologyID: "imageall-public-fixture",
+        ontologyRevision: "ontology-v1",
+        provider: "rgb-linear",
+        modelID: "imageall/fixture-scene-linear",
+        modelRevision: "model-v1",
+        preprocessingRevision: "rgb-channel-mean-v1",
+        mappingRevision: "mapping-v1",
+        policyRevision: "policy-v1",
+        weightsSHA256: "4129427105a9392e02b5306b657a029f7d0034f05a10d1363254e5f3d579fce9"
+    )
+}
+
 private final class FakeLocalModelSuggestionClient: LocalModelSuggestionClient, @unchecked Sendable {
     private let lock = NSLock()
     private let result: Result<[LocalModelSuggestion], LocalModelSuggestionClientError>
     private let serviceHealthResult: Result<LocalModelServiceHealth, LocalModelSuggestionClientError>
     private let blocksRequests: Bool
+    private let standardCapability: StandardModelSuggestionCapabilityAvailability
     private var storedPersonalCapabilities: [PersonalModelSuggestionCapabilityAvailability]
     private let embeddingResult: Result<PersonalTrainingEmbedding, LocalModelSuggestionClientError>
     private let rebuildResult: Result<PersonalModelSuggestionCapability, LocalModelSuggestionClientError>
     private var storedCallCount = 0
     private var storedServiceHealthCallCount = 0
+    private var storedStandardCapabilityCallCount = 0
     private var storedEmbeddingCallCount = 0
     private var storedEmbeddingCacheKeys: [PersonalTrainingEmbeddingCacheKey?] = []
     private var storedRebuildCallCount = 0
@@ -4321,6 +4425,7 @@ private final class FakeLocalModelSuggestionClient: LocalModelSuggestionClient, 
     init(
         result: Result<[LocalModelSuggestion], LocalModelSuggestionClientError>,
         serviceHealthResult: Result<LocalModelServiceHealth, LocalModelSuggestionClientError> = .failure(.serviceUnavailable),
+        standardCapability: StandardModelSuggestionCapabilityAvailability = .available(.fixture),
         personalCapability: PersonalModelSuggestionCapabilityAvailability = .unavailable,
         personalCapabilities: [PersonalModelSuggestionCapabilityAvailability]? = nil,
         embeddingResult: Result<PersonalTrainingEmbedding, LocalModelSuggestionClientError> = .failure(.serviceUnavailable),
@@ -4329,6 +4434,7 @@ private final class FakeLocalModelSuggestionClient: LocalModelSuggestionClient, 
     ) {
         self.result = result
         self.serviceHealthResult = serviceHealthResult
+        self.standardCapability = standardCapability
         storedPersonalCapabilities = personalCapabilities ?? [personalCapability]
         self.embeddingResult = embeddingResult
         self.rebuildResult = rebuildResult
@@ -4341,6 +4447,10 @@ private final class FakeLocalModelSuggestionClient: LocalModelSuggestionClient, 
 
     var serviceHealthCallCount: Int {
         lock.withLock { storedServiceHealthCallCount }
+    }
+
+    var standardCapabilityCallCount: Int {
+        lock.withLock { storedStandardCapabilityCallCount }
     }
 
     var lastImageData: Data? {
@@ -4397,6 +4507,11 @@ private final class FakeLocalModelSuggestionClient: LocalModelSuggestionClient, 
             storedPersonalCapabilityCallCount += 1
             return storedPersonalCapabilities[index]
         }
+    }
+
+    func standardCapability() async throws -> StandardModelSuggestionCapabilityAvailability {
+        lock.withLock { storedStandardCapabilityCallCount += 1 }
+        return standardCapability
     }
 
     func serviceHealth() async throws -> LocalModelServiceHealth {

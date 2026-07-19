@@ -3028,6 +3028,7 @@ private func makeStandardReviewPackage(
         localeRevision: "locale-en-v1",
         manifestSHA256: String(repeating: "a", count: 64),
         provider: "synthetic",
+        modelID: "synthetic/model",
         modelRevision: "model-v1",
         preprocessingRevision: "preprocessing-v1",
         mappingRevision: "mapping-v1",

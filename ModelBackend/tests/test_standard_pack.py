@@ -117,6 +117,10 @@ def test_loads_a_complete_standard_pack_with_versioned_ontology(tmp_path: Path) 
 
     assert pack.standard_pack_id == "imageall-public-fixture"
     assert pack.standard_pack_revision == "pack-v1"
+    assert pack.manifest_sha256 == hashlib.sha256(
+        (pack.root / "manifest.json").read_bytes()
+    ).hexdigest()
+    assert pack.weights_sha256 == hashlib.sha256(pack.model_path.read_bytes()).hexdigest()
     assert pack.ontology.parents_of("scene.water") == ("scene.outdoor",)
     assert pack.mapping.concept_for("blue_scene") == "scene.water"
     assert pack.policy.entry_for("scene.water").auto_assign_at == 0.8

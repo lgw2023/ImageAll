@@ -540,11 +540,128 @@ final class LoopbackModelSuggestionClient: LocalModelSuggestionClient, @unchecke
 
     private struct CapabilitiesResponsePayload: Decodable {
         let serviceVersion: String
+        let standard: StandardCapabilityPayload?
         let personal: PersonalCapabilityPayload
 
         enum CodingKeys: String, CodingKey {
             case serviceVersion = "service_version"
+            case standard
             case personal
+        }
+    }
+
+    private struct StrictCodingKey: CodingKey {
+        let stringValue: String
+        let intValue: Int? = nil
+
+        init?(stringValue: String) {
+            self.stringValue = stringValue
+        }
+
+        init?(intValue _: Int) {
+            return nil
+        }
+    }
+
+    private struct StandardCapabilityPayload: Decodable {
+        struct Provider: Decodable {
+            let provider: String
+            let modelID: String
+            let modelRevision: String
+            let preprocessingRevision: String
+
+            enum CodingKeys: String, CodingKey, CaseIterable {
+                case provider
+                case modelID = "model_id"
+                case modelRevision = "model_revision"
+                case preprocessingRevision = "preprocessing_revision"
+            }
+
+            init(from decoder: Decoder) throws {
+                let dynamic = try decoder.container(keyedBy: StrictCodingKey.self)
+                let expected = Set(CodingKeys.allCases.map(\.rawValue))
+                guard Set(dynamic.allKeys.map(\.stringValue)) == expected else {
+                    throw DecodingError.dataCorrupted(
+                        .init(
+                            codingPath: decoder.codingPath,
+                            debugDescription: "standard provider identity has unexpected fields"
+                        )
+                    )
+                }
+                let container = try decoder.container(keyedBy: CodingKeys.self)
+                provider = try container.decode(String.self, forKey: .provider)
+                modelID = try container.decode(String.self, forKey: .modelID)
+                modelRevision = try container.decode(String.self, forKey: .modelRevision)
+                preprocessingRevision = try container.decode(
+                    String.self,
+                    forKey: .preprocessingRevision
+                )
+            }
+        }
+
+        let status: String
+        let standardPackID: String?
+        let standardPackRevision: String?
+        let manifestSHA256: String?
+        let ontologyID: String?
+        let ontologyRevision: String?
+        let provider: Provider?
+        let mappingRevision: String?
+        let policyRevision: String?
+        let weightsSHA256: String?
+
+        enum CodingKeys: String, CodingKey, CaseIterable {
+            case status
+            case standardPackID = "standard_pack_id"
+            case standardPackRevision = "standard_pack_revision"
+            case manifestSHA256 = "manifest_sha256"
+            case ontologyID = "ontology_id"
+            case ontologyRevision = "ontology_revision"
+            case provider
+            case mappingRevision = "mapping_revision"
+            case policyRevision = "policy_revision"
+            case weightsSHA256 = "weights_sha256"
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            status = try container.decode(String.self, forKey: .status)
+            let dynamic = try decoder.container(keyedBy: StrictCodingKey.self)
+            let actualKeys = Set(dynamic.allKeys.map(\.stringValue))
+            let expectedKeys: Set<String>
+            switch status {
+            case "unavailable":
+                expectedKeys = [CodingKeys.status.rawValue]
+            case "available":
+                expectedKeys = Set(CodingKeys.allCases.map(\.rawValue))
+            default:
+                throw DecodingError.dataCorrupted(
+                    .init(
+                        codingPath: decoder.codingPath,
+                        debugDescription: "standard capability status is invalid"
+                    )
+                )
+            }
+            guard actualKeys == expectedKeys else {
+                throw DecodingError.dataCorrupted(
+                    .init(
+                        codingPath: decoder.codingPath,
+                        debugDescription: "standard capability fields do not match status"
+                    )
+                )
+            }
+            standardPackID = try container.decodeIfPresent(String.self, forKey: .standardPackID)
+            standardPackRevision = try container.decodeIfPresent(
+                String.self,
+                forKey: .standardPackRevision
+            )
+            manifestSHA256 = try container.decodeIfPresent(String.self, forKey: .manifestSHA256)
+            ontologyID = try container.decodeIfPresent(String.self, forKey: .ontologyID)
+            ontologyRevision = try container.decodeIfPresent(String.self, forKey: .ontologyRevision)
+            provider = try container.decodeIfPresent(Provider.self, forKey: .provider)
+            mappingRevision = try container.decodeIfPresent(String.self, forKey: .mappingRevision)
+            policyRevision = try container.decodeIfPresent(String.self, forKey: .policyRevision)
+            weightsSHA256 = try container.decodeIfPresent(String.self, forKey: .weightsSHA256)
         }
     }
 
@@ -717,6 +834,101 @@ final class LoopbackModelSuggestionClient: LocalModelSuggestionClient, @unchecke
             throw LocalModelSuggestionClientError.invalidResponse
         }
         return try Self.personalAvailability(payload.personal)
+    }
+
+    func standardCapability() async throws -> StandardModelSuggestionCapabilityAvailability {
+        var request = URLRequest(
+            url: endpoint.appendingPathComponent("v1/capabilities"),
+            timeoutInterval: 10
+        )
+        request.httpMethod = "GET"
+
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await session.data(for: request)
+        } catch {
+            throw LocalModelSuggestionClientError.serviceUnavailable
+        }
+        guard let http = response as? HTTPURLResponse else {
+            throw LocalModelSuggestionClientError.invalidResponse
+        }
+        guard (200 ... 299).contains(http.statusCode) else {
+            let code = try? JSONDecoder()
+                .decode(ErrorResponsePayload.self, from: data)
+                .detail.code
+            throw LocalModelSuggestionClientError.rejected(
+                statusCode: http.statusCode,
+                code: code
+            )
+        }
+        guard let payload = try? JSONDecoder().decode(
+            CapabilitiesResponsePayload.self,
+            from: data
+        ),
+            !payload.serviceVersion.isEmpty,
+            let standard = payload.standard
+        else {
+            throw LocalModelSuggestionClientError.invalidResponse
+        }
+        if standard.status == "unavailable" {
+            guard standard.standardPackID == nil,
+                  standard.standardPackRevision == nil,
+                  standard.manifestSHA256 == nil,
+                  standard.ontologyID == nil,
+                  standard.ontologyRevision == nil,
+                  standard.provider == nil,
+                  standard.mappingRevision == nil,
+                  standard.policyRevision == nil,
+                  standard.weightsSHA256 == nil
+            else {
+                throw LocalModelSuggestionClientError.invalidResponse
+            }
+            return .unavailable
+        }
+        guard standard.status == "available",
+            let standardPackID = standard.standardPackID,
+            !standardPackID.isEmpty,
+            let standardPackRevision = standard.standardPackRevision,
+            !standardPackRevision.isEmpty,
+            let manifestSHA256 = standard.manifestSHA256,
+            Self.isLowercaseSHA256(manifestSHA256),
+            let ontologyID = standard.ontologyID,
+            !ontologyID.isEmpty,
+            let ontologyRevision = standard.ontologyRevision,
+            !ontologyRevision.isEmpty,
+            let provider = standard.provider,
+            !provider.provider.isEmpty,
+            !provider.modelID.isEmpty,
+            !provider.modelRevision.isEmpty,
+            !provider.preprocessingRevision.isEmpty,
+            let mappingRevision = standard.mappingRevision,
+            !mappingRevision.isEmpty,
+            let policyRevision = standard.policyRevision,
+            !policyRevision.isEmpty,
+            let weightsSHA256 = standard.weightsSHA256,
+            Self.isLowercaseSHA256(weightsSHA256)
+        else {
+            throw LocalModelSuggestionClientError.invalidResponse
+        }
+        return .available(
+            StandardModelSuggestionCapability(
+                target: StandardModelSuggestionTarget(
+                    standardPackID: standardPackID,
+                    standardPackRevision: standardPackRevision
+                ),
+                manifestSHA256: manifestSHA256,
+                ontologyID: ontologyID,
+                ontologyRevision: ontologyRevision,
+                provider: provider.provider,
+                modelID: provider.modelID,
+                modelRevision: provider.modelRevision,
+                preprocessingRevision: provider.preprocessingRevision,
+                mappingRevision: mappingRevision,
+                policyRevision: policyRevision,
+                weightsSHA256: weightsSHA256
+            )
+        )
     }
 
     private static func personalAvailability(

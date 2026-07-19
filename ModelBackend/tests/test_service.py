@@ -144,7 +144,7 @@ def test_service_starts_degraded_without_a_model_provider() -> None:
     }
 
 
-def test_capabilities_reports_personal_suggestions_as_unavailable() -> None:
+def test_capabilities_reports_unloaded_suggestion_tracks_as_unavailable() -> None:
     client = TestClient(create_app())
 
     response = client.get("/v1/capabilities")
@@ -152,6 +152,42 @@ def test_capabilities_reports_personal_suggestions_as_unavailable() -> None:
     assert response.status_code == 200
     assert response.json() == {
         "service_version": "0.1.0",
+        "standard": {"status": "unavailable"},
+        "personal": {"status": "unavailable"},
+    }
+
+
+def test_capabilities_reports_the_loaded_standard_package_identity() -> None:
+    client = standard_suggestion_client()
+
+    response = client.get("/v1/capabilities")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "service_version": "0.1.0",
+        "standard": {
+            "status": "available",
+            "standard_pack_id": "imageall-public-fixture",
+            "standard_pack_revision": "pack-v1",
+            "manifest_sha256": (
+                "dc7b0a9a8391978a56b7e55f97c1abc7"
+                "3fe9e9834f1c2dd16152fc13883bd873"
+            ),
+            "ontology_id": "imageall-public-fixture",
+            "ontology_revision": "ontology-v1",
+            "provider": {
+                "provider": "rgb-linear",
+                "model_id": "imageall/fixture-scene-linear",
+                "model_revision": "model-v1",
+                "preprocessing_revision": "rgb-channel-mean-v1",
+            },
+            "mapping_revision": "mapping-v1",
+            "policy_revision": "policy-v1",
+            "weights_sha256": (
+                "4129427105a9392e02b5306b657a029f"
+                "7d0034f05a10d1363254e5f3d579fce9"
+            ),
+        },
         "personal": {"status": "unavailable"},
     }
 
@@ -171,6 +207,7 @@ def test_capabilities_reports_the_loaded_personal_bundle_identity(
     assert response.status_code == 200
     assert response.json() == {
         "service_version": "0.1.0",
+        "standard": {"status": "unavailable"},
         "personal": {
             "status": "available",
             "catalog_scope_id": "catalog-fixture",

@@ -221,6 +221,12 @@ def create_app(
 
     @app.get("/v1/capabilities")
     def capabilities() -> dict[str, object]:
+        standard: dict[str, object] = {"status": "unavailable"}
+        if standard_suggestion_engine is not None:
+            standard = {
+                "status": "available",
+                **asdict(standard_suggestion_engine.capability),
+            }
         personal: dict[str, object] = {"status": "unavailable"}
         current_personal_engine = active_personal_engine()
         if current_personal_engine is not None:
@@ -230,6 +236,7 @@ def create_app(
             }
         return {
             "service_version": __version__,
+            "standard": standard,
             "personal": personal,
         }
 

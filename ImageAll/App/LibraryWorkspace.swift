@@ -219,9 +219,7 @@ final class LibraryWorkspaceModel: ObservableObject {
     }
 
     var supportsStandardLibrarySuggestions: Bool {
-        guard let localModelSuggestions else { return false }
-        if case .standard = localModelSuggestions.target { return true }
-        return false
+        localModelSuggestions != nil
     }
 
     var isGeneratingPersonalLibrarySuggestions: Bool {
@@ -858,13 +856,17 @@ final class LibraryWorkspaceModel: ObservableObject {
         localModelSuggestionState = .loading(assetID: assetID)
 
         do {
-            let package = StandardOntologyCatalog.bundledSceneFixture
-            guard case let .standard(expectedTarget) = runtime.target,
-                  expectedTarget.standardPackID == package.standardPackID,
-                  expectedTarget.standardPackRevision == package.standardPackRevision
+            let availability = try await runtime.client.standardCapability()
+            guard localModelSuggestionRequestID == requestID,
+                  primarySelectedAssetID == assetID
             else {
-                throw LocalModelSuggestionClientError.identityMismatch
+                return
             }
+            guard case let .available(capability) = availability else {
+                throw LocalModelSuggestionClientError.serviceUnavailable
+            }
+            let package = try Self.approvedStandardPackage(for: capability)
+            let expectedTarget = capability.target
             let service = service
             _ = try await Self.offMain {
                 try service.installStandardOntologyPackage(package)
@@ -894,7 +896,7 @@ final class LibraryWorkspaceModel: ObservableObject {
             let suggestions = try await runtime.client.suggestions(
                 imageData: imageData,
                 requestID: requestID.uuidString.lowercased(),
-                target: runtime.target
+                target: .standard(expectedTarget)
             )
             guard localModelSuggestionRequestID == requestID,
                   primarySelectedAssetID == assetID
@@ -1043,21 +1045,18 @@ final class LibraryWorkspaceModel: ObservableObject {
 
     func generateStandardLibrarySuggestions() async {
         guard !isGeneratingStandardLibrarySuggestions else { return }
-        guard let runtime = localModelSuggestions,
-              case let .standard(target) = runtime.target
-        else {
+        guard let runtime = localModelSuggestions else {
             standardLibrarySuggestionState = .serviceUnavailable
             return
         }
 
         standardLibrarySuggestionState = .waiting(checked: 0, suggested: 0, skipped: 0)
         do {
-            let package = StandardOntologyCatalog.bundledSceneFixture
-            guard target.standardPackID == package.standardPackID,
-                  target.standardPackRevision == package.standardPackRevision
-            else {
-                throw LocalModelSuggestionClientError.identityMismatch
+            let availability = try await runtime.client.standardCapability()
+            guard case let .available(capability) = availability else {
+                throw LocalModelSuggestionClientError.serviceUnavailable
             }
+            let package = try Self.approvedStandardPackage(for: capability)
             let service = service
             _ = try await Self.offMain {
                 try service.installStandardOntologyPackage(package)
@@ -1065,7 +1064,7 @@ final class LibraryWorkspaceModel: ObservableObject {
             tags = try await Self.offMain { try service.listTags() }
             let reviewPort = review
             try await Self.offMain {
-                _ = try reviewPort.enqueueStandardLibrarySuggestions(target: target)
+                _ = try reviewPort.enqueueStandardLibrarySuggestions(target: capability.target)
             }
             await refreshReviewState()
             startPersonalizationRunnerIfNeeded()
@@ -1175,6 +1174,28 @@ final class LibraryWorkspaceModel: ObservableObject {
         else {
             throw LocalModelSuggestionClientError.identityMismatch
         }
+    }
+
+    private static func approvedStandardPackage(
+        for capability: StandardModelSuggestionCapability
+    ) throws -> StandardOntologyPackageInput {
+        let package = StandardOntologyCatalog.bundledSceneFixture
+        guard capability.target.standardPackID == package.standardPackID,
+              capability.target.standardPackRevision == package.standardPackRevision,
+              capability.manifestSHA256 == package.manifestSHA256,
+              capability.ontologyID == package.ontologyID,
+              capability.ontologyRevision == package.ontologyRevision,
+              capability.provider == package.provider,
+              capability.modelID == package.modelID,
+              capability.modelRevision == package.modelRevision,
+              capability.preprocessingRevision == package.preprocessingRevision,
+              capability.mappingRevision == package.mappingRevision,
+              capability.policyRevision == package.policyRevision,
+              capability.weightsSHA256 == package.weightsSHA256
+        else {
+            throw LocalModelSuggestionClientError.identityMismatch
+        }
+        return package
     }
 
     private static func personalPredictions(

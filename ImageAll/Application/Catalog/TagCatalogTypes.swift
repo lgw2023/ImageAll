@@ -21,6 +21,7 @@ enum StandardOntologyCatalog {
         localeRevision: "zh-Hans-v1",
         manifestSHA256: "dc7b0a9a8391978a56b7e55f97c1abc73fe9e9834f1c2dd16152fc13883bd873",
         provider: "rgb-linear",
+        modelID: "imageall/fixture-scene-linear",
         modelRevision: "model-v1",
         preprocessingRevision: "rgb-channel-mean-v1",
         mappingRevision: "mapping-v1",
@@ -66,6 +67,7 @@ struct StandardOntologyPackageInput: Sendable, Equatable {
     let localeRevision: String
     let manifestSHA256: String
     let provider: String
+    let modelID: String
     let modelRevision: String
     let preprocessingRevision: String
     let mappingRevision: String
