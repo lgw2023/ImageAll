@@ -1530,6 +1530,7 @@ final class LibraryWorkspaceModel: ObservableObject {
             }
             lastTagMutation = LibraryTagUndoRecord(snapshot: snapshot, appliedDecision: action.decision)
             applyGridDecision(snapshot: snapshot, newDecision: action.decision)
+            await enqueueAutomaticPersonalModelRebuildIfReady()
             if mutationAffectsCurrentFilter(tagID: tagID) {
                 await loadFirstPage()
             }
@@ -1582,6 +1583,7 @@ final class LibraryWorkspaceModel: ObservableObject {
             try await Self.offMain { try service.restoreTagMutation(undo.snapshot) }
             restoreGridDecision(undo)
             lastTagMutation = nil
+            await enqueueAutomaticPersonalModelRebuildIfReady()
             if mutationAffectsCurrentFilter(tagID: undo.snapshot.tagID) {
                 await loadFirstPage()
             }
@@ -1610,6 +1612,7 @@ final class LibraryWorkspaceModel: ObservableObject {
             applyGridDecision(snapshot: snapshot, newDecision: .accepted)
             tags.append(TagListItem(id: result.tagID, displayName: result.displayName, state: .active))
             tags.sort { $0.displayName.localizedStandardCompare($1.displayName) == .orderedAscending }
+            await enqueueAutomaticPersonalModelRebuildIfReady()
             if tagPresence != .any || !TagNameNormalizer.trimUnicodeWhiteSpace(searchText).isEmpty {
                 await loadFirstPage()
             }
@@ -1699,6 +1702,7 @@ final class LibraryWorkspaceModel: ObservableObject {
             selectedTagFilterDecisions.removeValue(forKey: tagID)
             selectedTagFilterIDs.remove(tagID)
             lastTagMutation = nil
+            await enqueueAutomaticPersonalModelRebuildIfReady()
             await loadFirstPage()
             await refreshInspector()
             return true
@@ -2495,6 +2499,21 @@ extension LibraryWorkspaceModel {
         }
     }
 
+    private func enqueueAutomaticPersonalModelRebuildIfReady() async {
+        guard localModelSuggestions != nil else { return }
+        let reviewPort = review
+        do {
+            let jobID = try await Self.offMain {
+                try reviewPort.enqueuePersonalModelRebuildIfReady()
+            }
+            if jobID != nil {
+                startPersonalizationRunnerIfNeeded()
+            }
+        } catch {
+            // Automatic retraining is best-effort; manual rebuild remains available.
+        }
+    }
+
     func enqueueSuggestions(tagID: UUID, mode: PersonalizationReviewEnqueueMode) async -> Bool {
         guard let overview = suggestionOverviews.first(where: { $0.id == tagID }) else { return false }
         requestEnqueueSuggestions(
@@ -2555,6 +2574,7 @@ extension LibraryWorkspaceModel {
                 selectedAssetIDs = []
                 isSinglePhotoPresented = false
             }
+            await enqueueAutomaticPersonalModelRebuildIfReady()
             await refreshReviewState()
             await refreshInspector()
         } catch {
@@ -2624,6 +2644,7 @@ extension LibraryWorkspaceModel {
             notice = nil
             try await Self.offMain { try workspace.restoreTagMutation(undo.snapshot) }
             lastReviewMutation = nil
+            await enqueueAutomaticPersonalModelRebuildIfReady()
             if case let .tagQueue(tagID, _) = reviewMode {
                 await loadReviewQueueFirstPage(tagID: tagID)
             }
@@ -2643,6 +2664,7 @@ extension LibraryWorkspaceModel {
                 try workspace.mutateTag(tagID: tagID, assetIDs: [assetID], action: action)
             }
             assetPendingSuggestions.removeAll { $0.tagID == tagID }
+            await enqueueAutomaticPersonalModelRebuildIfReady()
             await refreshInspector()
             await refreshReviewState()
         } catch {

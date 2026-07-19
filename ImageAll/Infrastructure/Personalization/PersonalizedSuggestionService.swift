@@ -445,6 +445,17 @@ final class LoopbackModelSuggestionClient: LocalModelSuggestionClient, @unchecke
             case expectedActiveBundle = "expected_active_bundle"
             case snapshot
         }
+
+        func encode(to encoder: Encoder) throws {
+            var container = encoder.container(keyedBy: CodingKeys.self)
+            try container.encode(requestID, forKey: .requestID)
+            if let expectedActiveBundle {
+                try container.encode(expectedActiveBundle, forKey: .expectedActiveBundle)
+            } else {
+                try container.encodeNil(forKey: .expectedActiveBundle)
+            }
+            try container.encode(snapshot, forKey: .snapshot)
+        }
     }
 
     private struct PersonalRebuildResponsePayload: Decodable {
@@ -454,6 +465,61 @@ final class LoopbackModelSuggestionClient: LocalModelSuggestionClient, @unchecke
         enum CodingKeys: String, CodingKey {
             case requestID = "request_id"
             case personal
+        }
+    }
+
+    private struct PersonalCachedRebuildRequestPayload: Encodable {
+        struct Snapshot: Encodable {
+            struct EmbeddingKey: Encodable {
+                let assetID: String
+                let contentRevision: String
+
+                enum CodingKeys: String, CodingKey {
+                    case assetID = "asset_id"
+                    case contentRevision = "content_revision"
+                }
+            }
+
+            let schemaRevision = 1
+            let catalogScopeID: String
+            let decisionSnapshotRevision: String
+            let encoder: PersonalTrainingEncoderIdentity
+            let personalTagIDs: [String]
+            let labelVocabularyRevision: String
+            let embeddingKeys: [EmbeddingKey]
+            let decisions: [PersonalRebuildRequestPayload.Snapshot.Decision]
+
+            enum CodingKeys: String, CodingKey {
+                case schemaRevision = "schema_revision"
+                case catalogScopeID = "catalog_scope_id"
+                case decisionSnapshotRevision = "decision_snapshot_revision"
+                case encoder
+                case personalTagIDs = "personal_tag_ids"
+                case labelVocabularyRevision = "label_vocabulary_revision"
+                case embeddingKeys = "embedding_keys"
+                case decisions
+            }
+        }
+
+        let requestID: String
+        let expectedActiveBundle: PersonalRebuildRequestPayload.ExpectedActiveBundle?
+        let snapshot: Snapshot
+
+        enum CodingKeys: String, CodingKey {
+            case requestID = "request_id"
+            case expectedActiveBundle = "expected_active_bundle"
+            case snapshot
+        }
+
+        func encode(to encoder: Encoder) throws {
+            var container = encoder.container(keyedBy: CodingKeys.self)
+            try container.encode(requestID, forKey: .requestID)
+            if let expectedActiveBundle {
+                try container.encode(expectedActiveBundle, forKey: .expectedActiveBundle)
+            } else {
+                try container.encodeNil(forKey: .expectedActiveBundle)
+            }
+            try container.encode(snapshot, forKey: .snapshot)
         }
     }
 
@@ -1139,43 +1205,102 @@ final class LoopbackModelSuggestionClient: LocalModelSuggestionClient, @unchecke
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONEncoder().encode(requestPayload)
 
-        let data: Data
-        let response: URLResponse
-        do {
-            (data, response) = try await session.data(for: request)
-        } catch {
-            throw LocalModelSuggestionClientError.serviceUnavailable
+        return try await submitPersonalRebuild(
+            request,
+            requestID: requestID,
+            catalogScopeID: snapshot.catalogScopeID,
+            encoder: snapshot.encoder,
+            personalTagIDs: snapshot.personalTagIDs,
+            labelVocabularyRevision: snapshot.labelVocabularyRevision
+        )
+    }
+
+    func rebuildPersonalModelFromCache(
+        requestID: String,
+        expectedActiveBundle: PersonalModelActiveBundleIdentity?,
+        snapshot: PersonalModelCachedRebuildSnapshot
+    ) async throws -> PersonalModelSuggestionCapability {
+        let embeddingIdentities = snapshot.embeddingKeys.map {
+            "\($0.assetID.uuidString.lowercased())|\($0.contentRevision)"
         }
-        guard let http = response as? HTTPURLResponse else {
+        let embeddingIdentitySet = Set(embeddingIdentities)
+        guard !requestID.isEmpty,
+              !snapshot.catalogScopeID.isEmpty,
+              Self.isLowercaseSHA256(snapshot.decisionSnapshotRevision),
+              Self.isLowercaseSHA256(snapshot.labelVocabularyRevision),
+              !snapshot.encoder.provider.isEmpty,
+              !snapshot.encoder.modelID.isEmpty,
+              !snapshot.encoder.modelRevision.isEmpty,
+              !snapshot.encoder.preprocessingRevision.isEmpty,
+              snapshot.encoder.elementCount > 0,
+              !snapshot.personalTagIDs.isEmpty,
+              Set(snapshot.personalTagIDs).count == snapshot.personalTagIDs.count,
+              !snapshot.embeddingKeys.isEmpty,
+              embeddingIdentitySet.count == snapshot.embeddingKeys.count,
+              !snapshot.decisions.isEmpty,
+              expectedActiveBundle.map({
+                  !$0.bundleRevision.isEmpty && Self.isLowercaseSHA256($0.weightsSHA256)
+              }) ?? true,
+              snapshot.embeddingKeys.allSatisfy({ key in
+                  key.catalogScopeID == snapshot.catalogScopeID && key.contentRevision >= 0
+              }),
+              snapshot.decisions.allSatisfy({ decision in
+                  decision.contentRevision >= 0
+                      && snapshot.personalTagIDs.contains(decision.tagID)
+                      && embeddingIdentitySet.contains(
+                          "\(decision.assetID.uuidString.lowercased())|\(decision.contentRevision)"
+                      )
+              })
+        else {
             throw LocalModelSuggestionClientError.invalidResponse
         }
-        guard (200 ... 299).contains(http.statusCode) else {
-            let code = try? JSONDecoder()
-                .decode(ErrorResponsePayload.self, from: data)
-                .detail.code
-            throw LocalModelSuggestionClientError.rejected(
-                statusCode: http.statusCode,
-                code: code
+        let requestPayload = PersonalCachedRebuildRequestPayload(
+            requestID: requestID,
+            expectedActiveBundle: expectedActiveBundle.map {
+                PersonalRebuildRequestPayload.ExpectedActiveBundle(
+                    bundleRevision: $0.bundleRevision,
+                    weightsSHA256: $0.weightsSHA256
+                )
+            },
+            snapshot: PersonalCachedRebuildRequestPayload.Snapshot(
+                catalogScopeID: snapshot.catalogScopeID,
+                decisionSnapshotRevision: snapshot.decisionSnapshotRevision,
+                encoder: snapshot.encoder,
+                personalTagIDs: snapshot.personalTagIDs.map {
+                    $0.uuidString.lowercased()
+                },
+                labelVocabularyRevision: snapshot.labelVocabularyRevision,
+                embeddingKeys: snapshot.embeddingKeys.map {
+                    PersonalCachedRebuildRequestPayload.Snapshot.EmbeddingKey(
+                        assetID: $0.assetID.uuidString.lowercased(),
+                        contentRevision: String($0.contentRevision)
+                    )
+                },
+                decisions: snapshot.decisions.map {
+                    PersonalRebuildRequestPayload.Snapshot.Decision(
+                        assetID: $0.assetID.uuidString.lowercased(),
+                        contentRevision: String($0.contentRevision),
+                        tagID: $0.tagID.uuidString.lowercased(),
+                        state: $0.state
+                    )
+                }
             )
-        }
-        guard let payload = try? JSONDecoder().decode(
-            PersonalRebuildResponsePayload.self,
-            from: data
-        ),
-            payload.requestID == requestID,
-            case let .available(capability) = try Self.personalAvailability(payload.personal),
-            capability.target.catalogScopeID == snapshot.catalogScopeID,
-            capability.target.provider == snapshot.encoder.provider,
-            capability.target.modelID == snapshot.encoder.modelID,
-            capability.target.modelRevision == snapshot.encoder.modelRevision,
-            capability.target.preprocessingRevision == snapshot.encoder.preprocessingRevision,
-            capability.target.elementCount == snapshot.encoder.elementCount,
-            capability.target.labelVocabularyRevision == snapshot.labelVocabularyRevision,
-            capability.tagIDs == snapshot.personalTagIDs
-        else {
-            throw LocalModelSuggestionClientError.identityMismatch
-        }
-        return capability
+        )
+        var request = URLRequest(
+            url: endpoint.appendingPathComponent("v1/personal/rebuild-cached"),
+            timeoutInterval: 300
+        )
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode(requestPayload)
+        return try await submitPersonalRebuild(
+            request,
+            requestID: requestID,
+            catalogScopeID: snapshot.catalogScopeID,
+            encoder: snapshot.encoder,
+            personalTagIDs: snapshot.personalTagIDs,
+            labelVocabularyRevision: snapshot.labelVocabularyRevision
+        )
     }
 
     func suggestions(
@@ -1284,6 +1409,53 @@ final class LoopbackModelSuggestionClient: LocalModelSuggestionClient, @unchecke
             }
         }
         return payload
+    }
+
+    private func submitPersonalRebuild(
+        _ request: URLRequest,
+        requestID: String,
+        catalogScopeID: String,
+        encoder: PersonalTrainingEncoderIdentity,
+        personalTagIDs: [UUID],
+        labelVocabularyRevision: String
+    ) async throws -> PersonalModelSuggestionCapability {
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await session.data(for: request)
+        } catch {
+            throw LocalModelSuggestionClientError.serviceUnavailable
+        }
+        guard let http = response as? HTTPURLResponse else {
+            throw LocalModelSuggestionClientError.invalidResponse
+        }
+        guard (200 ... 299).contains(http.statusCode) else {
+            let code = try? JSONDecoder()
+                .decode(ErrorResponsePayload.self, from: data)
+                .detail.code
+            throw LocalModelSuggestionClientError.rejected(
+                statusCode: http.statusCode,
+                code: code
+            )
+        }
+        guard let payload = try? JSONDecoder().decode(
+            PersonalRebuildResponsePayload.self,
+            from: data
+        ),
+            payload.requestID == requestID,
+            case let .available(capability) = try Self.personalAvailability(payload.personal),
+            capability.target.catalogScopeID == catalogScopeID,
+            capability.target.provider == encoder.provider,
+            capability.target.modelID == encoder.modelID,
+            capability.target.modelRevision == encoder.modelRevision,
+            capability.target.preprocessingRevision == encoder.preprocessingRevision,
+            capability.target.elementCount == encoder.elementCount,
+            capability.target.labelVocabularyRevision == labelVocabularyRevision,
+            capability.tagIDs == personalTagIDs
+        else {
+            throw LocalModelSuggestionClientError.identityMismatch
+        }
+        return capability
     }
 
     private static func isLowercaseSHA256(_ value: String) -> Bool {

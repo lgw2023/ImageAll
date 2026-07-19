@@ -161,6 +161,7 @@ protocol PersonalizationReviewPort: Sendable {
     func totalPendingSuggestionCount() throws -> Int
     func tagOverviews() throws -> [SuggestionTagOverview]
     func personalTrainingSnapshot() throws -> PersonalTrainingSnapshot
+    func enqueuePersonalModelRebuildIfReady() throws -> UUID?
     func fetchReviewQueue(
         tagID: UUID,
         cursor: ReviewQueueCursor?,
@@ -210,6 +211,8 @@ extension PersonalizationReviewPort {
     func personalTrainingSnapshot() throws -> PersonalTrainingSnapshot {
         throw PersonalizationReviewError.persistenceFailure
     }
+
+    func enqueuePersonalModelRebuildIfReady() throws -> UUID? { nil }
 
     func personalSuggestionCandidates(
         afterAssetID _: UUID?,

@@ -113,6 +113,16 @@ struct CompositionRoot {
         var jobHandlers: [any JobHandler] = [handler, photosHandler, personalizationHandler]
         if let localModelSuggestions {
             jobHandlers.append(
+                PersonalModelRebuildJobHandler(
+                    dependencies: PersonalModelRebuildJobHandlerDependencies(
+                        database: runtime.database,
+                        client: localModelSuggestions.client,
+                        catalogScopeID: localModelSuggestions.catalogScopeID,
+                        clock: clock
+                    )
+                )
+            )
+            jobHandlers.append(
                 PersonalLibrarySuggestionsHandler(
                     dependencies: PersonalLibrarySuggestionsHandlerDependencies(
                         database: runtime.database,
@@ -148,7 +158,8 @@ struct CompositionRoot {
             tags: GRDBTagCatalogRepository(database: runtime.database),
             clock: clock,
             personalLibrarySuggestionsEnabled: localModelSuggestions != nil,
-            standardLibrarySuggestionsEnabled: localModelSuggestions != nil
+            standardLibrarySuggestionsEnabled: localModelSuggestions != nil,
+            personalModelRebuildEnabled: localModelSuggestions != nil
         )
         let service = ProductionLibraryWorkspaceService(
             sourceRepository: sourceRepository,

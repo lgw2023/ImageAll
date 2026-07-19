@@ -1,4 +1,164 @@
+import CryptoKit
 import Foundation
+
+enum PersonalModelRebuildJobFactory {
+    static let kind = "personalization.personalModelRebuild"
+    static let payloadVersion = 1
+    static let checkpointVersion = 1
+    static let contractVersion = 1
+    static let maxAttempts = 5
+    static let priority = 0
+    static let debounceDelayMs: Int64 = 30_000
+
+    static func coalescingKey(
+        catalogScopeID: String,
+        decisionSnapshotRevision: String
+    ) -> String {
+        "personalization:personal-rebuild:\(catalogScopeID):\(decisionSnapshotRevision)"
+    }
+
+    static func payload(
+        from snapshot: PersonalTrainingSnapshot
+    ) throws -> PersonalModelRebuildJobPayload? {
+        guard !snapshot.personalTagIDs.isEmpty, !snapshot.decisions.isEmpty else {
+            return nil
+        }
+        let tagIDs = snapshot.personalTagIDs.sorted {
+            $0.uuidString.lowercased() < $1.uuidString.lowercased()
+        }
+        let decisions = snapshot.decisions.sorted(by: decisionIsOrderedBefore)
+        let embeddingKeys = Array(Set(decisions.map {
+            PersonalTrainingEmbeddingCacheKey(
+                catalogScopeID: snapshot.catalogScopeID,
+                assetID: $0.assetID,
+                contentRevision: $0.contentRevision
+            )
+        })).sorted(by: embeddingKeyIsOrderedBefore)
+        let payload = PersonalModelRebuildJobPayload(
+            contractVersion: contractVersion,
+            catalogScopeID: snapshot.catalogScopeID,
+            decisionSnapshotRevision: sha256(
+                decisions.map(decisionIdentity).joined(separator: "\n")
+            ),
+            personalTagIDs: tagIDs,
+            labelVocabularyRevision: sha256(
+                tagIDs.map { $0.uuidString.lowercased() }.joined(separator: "\n")
+            ),
+            embeddingKeys: embeddingKeys,
+            decisions: decisions
+        )
+        guard PersonalModelRebuildJobCodec.validate(payload) else {
+            throw PersonalModelRebuildJobCodecError.invalidPayload
+        }
+        return payload
+    }
+
+    private static func decisionIsOrderedBefore(
+        _ lhs: PersonalTrainingDecision,
+        _ rhs: PersonalTrainingDecision
+    ) -> Bool {
+        decisionIdentity(lhs) < decisionIdentity(rhs)
+    }
+
+    private static func decisionIdentity(_ decision: PersonalTrainingDecision) -> String {
+        "\(decision.tagID.uuidString.lowercased())|\(decision.assetID.uuidString.lowercased())|\(decision.contentRevision)|\(decision.state.rawValue)"
+    }
+
+    private static func embeddingKeyIsOrderedBefore(
+        _ lhs: PersonalTrainingEmbeddingCacheKey,
+        _ rhs: PersonalTrainingEmbeddingCacheKey
+    ) -> Bool {
+        let left = "\(lhs.assetID.uuidString.lowercased())|\(lhs.contentRevision)"
+        let right = "\(rhs.assetID.uuidString.lowercased())|\(rhs.contentRevision)"
+        return left < right
+    }
+
+    private static func sha256(_ value: String) -> String {
+        SHA256.hash(data: Data(value.utf8)).map { String(format: "%02x", $0) }.joined()
+    }
+}
+
+struct PersonalModelRebuildJobPayload: Codable, Equatable, Sendable {
+    let contractVersion: Int
+    let catalogScopeID: String
+    let decisionSnapshotRevision: String
+    let personalTagIDs: [UUID]
+    let labelVocabularyRevision: String
+    let embeddingKeys: [PersonalTrainingEmbeddingCacheKey]
+    let decisions: [PersonalTrainingDecision]
+}
+
+enum PersonalModelRebuildJobCodec {
+    static func encodePayload(_ payload: PersonalModelRebuildJobPayload) throws -> Data {
+        try JSONEncoder().encode(payload)
+    }
+
+    static func decodePayload(_ data: Data) throws -> PersonalModelRebuildJobPayload {
+        let payload = try JSONDecoder().decode(PersonalModelRebuildJobPayload.self, from: data)
+        guard validate(payload) else {
+            throw PersonalModelRebuildJobCodecError.invalidPayload
+        }
+        return payload
+    }
+
+    static func validate(_ payload: PersonalModelRebuildJobPayload) -> Bool {
+        let keyIdentities = payload.embeddingKeys.map {
+            "\($0.assetID.uuidString.lowercased())|\($0.contentRevision)"
+        }
+        let keyIdentitySet = Set(keyIdentities)
+        return payload.contractVersion == PersonalModelRebuildJobFactory.contractVersion
+            && UUID(uuidString: payload.catalogScopeID)?.uuidString.lowercased()
+                == payload.catalogScopeID
+            && isLowercaseSHA256(payload.decisionSnapshotRevision)
+            && isLowercaseSHA256(payload.labelVocabularyRevision)
+            && !payload.personalTagIDs.isEmpty
+            && Set(payload.personalTagIDs).count == payload.personalTagIDs.count
+            && !payload.embeddingKeys.isEmpty
+            && keyIdentitySet.count == payload.embeddingKeys.count
+            && payload.embeddingKeys.allSatisfy {
+                $0.catalogScopeID == payload.catalogScopeID && $0.contentRevision >= 0
+            }
+            && !payload.decisions.isEmpty
+            && payload.decisions.allSatisfy {
+                $0.contentRevision >= 0
+                    && payload.personalTagIDs.contains($0.tagID)
+                    && keyIdentitySet.contains(
+                        "\($0.assetID.uuidString.lowercased())|\($0.contentRevision)"
+                    )
+            }
+    }
+
+    private static func isLowercaseSHA256(_ value: String) -> Bool {
+        value.count == 64 && value.allSatisfy { "0123456789abcdef".contains($0) }
+    }
+}
+
+enum PersonalModelRebuildJobCodecError: Error, Equatable {
+    case invalidPayload
+}
+
+enum PersonalModelRebuildJobEnqueue {
+    static func makeEnqueueCommand(
+        jobID: UUID,
+        payload: PersonalModelRebuildJobPayload,
+        notBeforeMs: Int64
+    ) throws -> EnqueueJobCommand {
+        EnqueueJobCommand(
+            id: jobID,
+            kind: PersonalModelRebuildJobFactory.kind,
+            payloadVersion: PersonalModelRebuildJobFactory.payloadVersion,
+            payload: try PersonalModelRebuildJobCodec.encodePayload(payload),
+            sourceID: nil,
+            coalescingKey: PersonalModelRebuildJobFactory.coalescingKey(
+                catalogScopeID: payload.catalogScopeID,
+                decisionSnapshotRevision: payload.decisionSnapshotRevision
+            ),
+            priority: PersonalModelRebuildJobFactory.priority,
+            maxAttempts: PersonalModelRebuildJobFactory.maxAttempts,
+            notBeforeMs: notBeforeMs
+        )
+    }
+}
 
 enum PersonalLibrarySuggestionsJobFactory {
     static let kind = "personalization.personalLibrarySuggestions"

@@ -57,6 +57,10 @@ struct JobSafeErrorCode: Sendable, Equatable, Hashable {
     static let personalLibraryBundleMismatch = JobSafeErrorCode(unchecked: "personalLibraryBundleMismatch")
     static let personalLibraryServiceUnavailable = JobSafeErrorCode(unchecked: "personalLibraryServiceUnavailable")
     static let personalLibraryInferenceFailure = JobSafeErrorCode(unchecked: "personalLibraryInferenceFailure")
+    static let personalRebuildCacheMiss = JobSafeErrorCode(unchecked: "personalRebuildCacheMiss")
+    static let personalRebuildBundleMismatch = JobSafeErrorCode(unchecked: "personalRebuildBundleMismatch")
+    static let personalRebuildServiceUnavailable = JobSafeErrorCode(unchecked: "personalRebuildServiceUnavailable")
+    static let personalRebuildInvalidSnapshot = JobSafeErrorCode(unchecked: "personalRebuildInvalidSnapshot")
     static let standardLibraryIdentityMismatch = JobSafeErrorCode(unchecked: "standardLibraryIdentityMismatch")
     static let standardLibraryServiceUnavailable = JobSafeErrorCode(unchecked: "standardLibraryServiceUnavailable")
     static let standardLibraryInferenceFailure = JobSafeErrorCode(unchecked: "standardLibraryInferenceFailure")
@@ -133,7 +137,8 @@ enum JobActivityKind: Sendable, Equatable {
         case "photos.reconcile.v1":
             self = .photosReconcile
         case "personalization.fullLibrarySuggestions",
-             "personalization.personalLibrarySuggestions":
+             "personalization.personalLibrarySuggestions",
+             "personalization.personalModelRebuild":
             self = .personalizationSuggestions
         case "personalization.standardLibrarySuggestions":
             self = .standardSuggestions

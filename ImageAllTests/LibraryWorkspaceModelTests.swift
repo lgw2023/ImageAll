@@ -2392,6 +2392,40 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertEqual(model.inspectorTags.first(where: { $0.id == family.id })?.decision, .accepted)
     }
 
+    func testSuccessfulTagDecisionEnqueuesAutomaticPersonalRebuild() async throws {
+        let sourceID = UUID()
+        let asset = Self.makeAsset(sourceID: sourceID, fileName: "feedback.jpg")
+        let family = TagListItem(id: UUID(), displayName: "Family", state: .active)
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: sourceID,
+                displayName: "Fixture",
+                state: .active
+            ),
+            reconciledItems: [asset],
+            tags: [family]
+        )
+        let review = FakePersonalizationReviewPort()
+        let client = FakeLocalModelSuggestionClient(result: .success([]))
+        let model = LibraryWorkspaceModel(
+            service: service,
+            review: review,
+            localModelSuggestions: LocalModelSuggestionRuntime(
+                client: client,
+                catalogScopeID: "11111111-1111-4111-8111-111111111111"
+            )
+        )
+        await model.start()
+        await model.connectFolder()
+        await waitForCatalogScanToFinish(model)
+        await model.selectAsset(asset.assetID)
+
+        await model.applyTagDecision(tagID: family.id, action: .accept)
+
+        XCTAssertEqual(review.personalModelRebuildEnqueueCallCount, 1)
+        XCTAssertEqual(service.mutateTagCallCount, 1)
+    }
+
     func testBulkTagConfirmationSurvivesDialogDismissalOrdering() async throws {
         let sourceID = UUID()
         let first = Self.makeAsset(sourceID: sourceID, fileName: "first.jpg")
@@ -4601,6 +4635,7 @@ private final class FakePersonalizationReviewPort: PersonalizationReviewPort, @u
     private var storedPersonalSuggestionReplacements: [FakePersonalSuggestionReplacement] = []
     private var storedStandardSuggestionReplacements: [FakeStandardSuggestionReplacement] = []
     private var storedPersonalSuggestionInvalidationCallCount = 0
+    private var storedPersonalModelRebuildEnqueueCallCount = 0
     private let queuePageSize: Int?
     private let trainingSnapshot: PersonalTrainingSnapshot?
     private let standardSuggestionReplacementFails: Bool
@@ -4658,6 +4693,10 @@ private final class FakePersonalizationReviewPort: PersonalizationReviewPort, @u
         lock.withLock { storedPersonalSuggestionInvalidationCallCount }
     }
 
+    var personalModelRebuildEnqueueCallCount: Int {
+        lock.withLock { storedPersonalModelRebuildEnqueueCallCount }
+    }
+
     func totalPendingSuggestionCount() throws -> Int {
         lock.withLock { storedQueueItems.count }
     }
@@ -4692,6 +4731,13 @@ private final class FakePersonalizationReviewPort: PersonalizationReviewPort, @u
             throw PersonalizationReviewError.persistenceFailure
         }
         return trainingSnapshot
+    }
+
+    func enqueuePersonalModelRebuildIfReady() throws -> UUID? {
+        lock.withLock {
+            storedPersonalModelRebuildEnqueueCallCount += 1
+            return UUID()
+        }
     }
 
     func personalSuggestionCandidates(

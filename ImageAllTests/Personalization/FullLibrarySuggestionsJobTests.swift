@@ -7,6 +7,181 @@ import XCTest
 @testable import ImageAll
 
 final class FullLibrarySuggestionsJobTests: XCTestCase {
+    func testReviewServiceEnqueuesDebouncedCacheOnlyPersonalRebuild() throws {
+        let fixture = try makeLargeLibraryFixture(assetCount: 8)
+        let service = PersonalizationReviewService(
+            database: fixture.database,
+            queue: fixture.queue,
+            executionCoordinator: makeCoordinator(
+                database: fixture.database,
+                handler: makeHandler(
+                    database: fixture.database,
+                    loader: fixture.loader,
+                    queue: fixture.queue
+                ),
+                queue: fixture.queue
+            ),
+            tags: fixture.tags,
+            clock: FixedJobClock(nowMs: fixture.cutoffMs),
+            personalModelRebuildEnabled: true
+        )
+
+        let jobID = try XCTUnwrap(service.enqueuePersonalModelRebuildIfReady())
+        XCTAssertEqual(try service.enqueuePersonalModelRebuildIfReady(), jobID)
+
+        let persisted = try fixture.queue.fetchJob(id: jobID)
+        let payload = try PersonalModelRebuildJobCodec.decodePayload(persisted.payload)
+        XCTAssertEqual(persisted.kind, PersonalModelRebuildJobFactory.kind)
+        XCTAssertEqual(persisted.notBeforeMs, fixture.cutoffMs + 30_000)
+        XCTAssertEqual(
+            try service.nextSuggestionRetryDelayNanoseconds(),
+            30_000_000_000
+        )
+        XCTAssertEqual(payload.catalogScopeID, try fixture.database.catalogScopeID())
+        XCTAssertEqual(payload.personalTagIDs, [fixture.tagID])
+        XCTAssertFalse(payload.embeddingKeys.isEmpty)
+        XCTAssertEqual(
+            Set(payload.embeddingKeys.map(\.assetID)),
+            Set(payload.decisions.map(\.assetID))
+        )
+        let json = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: persisted.payload) as? [String: Any]
+        )
+        XCTAssertEqual(
+            Set(json.keys),
+            [
+                "contractVersion", "catalogScopeID", "decisionSnapshotRevision",
+                "personalTagIDs", "labelVocabularyRevision", "embeddingKeys",
+                "decisions",
+            ]
+        )
+        let serialized = String(decoding: persisted.payload, as: UTF8.self)
+        for forbidden in ["image", "path", "bookmark", "bytes", "preview"] {
+            XCTAssertFalse(serialized.localizedCaseInsensitiveContains(forbidden))
+        }
+    }
+
+    func testPersonalRebuildJobPublishesOnlyFromCacheAndActivatesCapability() async throws {
+        let fixture = try makeLargeLibraryFixture(assetCount: 8)
+        let enqueueService = makePersonalModelRebuildReviewService(
+            fixture: fixture,
+            queue: fixture.queue,
+            clock: FixedJobClock(nowMs: fixture.cutoffMs),
+            client: RecordingCachedPersonalRebuildClient()
+        )
+        let jobID = try XCTUnwrap(enqueueService.enqueuePersonalModelRebuildIfReady())
+        let executionClock = FixedJobClock(nowMs: fixture.cutoffMs + 30_000)
+        let queue = JobTestSupport.makeQueue(
+            database: fixture.database,
+            nowMs: executionClock.nowMs,
+            retryDelayMs: 0
+        )
+        let client = RecordingCachedPersonalRebuildClient()
+        let service = makePersonalModelRebuildReviewService(
+            fixture: fixture,
+            queue: queue,
+            clock: executionClock,
+            client: client
+        )
+
+        let didWork = try await service.runPendingSuggestionJobsAsync(maxSteps: 1)
+        XCTAssertTrue(didWork)
+
+        let completed = try queue.fetchJob(id: jobID)
+        XCTAssertEqual(completed.state, .completed)
+        XCTAssertEqual(completed.progress, JobProgress(completed: 1, total: 1))
+        let receivedValue = await client.receivedSnapshot
+        let received = try XCTUnwrap(receivedValue)
+        XCTAssertFalse(received.embeddingKeys.isEmpty)
+        XCTAssertEqual(received.embeddingKeys.map(\.catalogScopeID), [
+            String
+        ](repeating: try fixture.database.catalogScopeID(), count: received.embeddingKeys.count))
+        let capabilityValue = await client.activeCapability
+        let capability = try XCTUnwrap(capabilityValue)
+        XCTAssertTrue(
+            try GRDBPersonalizationReviewRepository(database: fixture.database)
+                .personalSuggestionCapabilityMatches(capability)
+        )
+    }
+
+    func testStalePersonalRebuildJobCompletesWithoutCallingModelService() async throws {
+        let fixture = try makeLargeLibraryFixture(assetCount: 8)
+        let enqueueService = makePersonalModelRebuildReviewService(
+            fixture: fixture,
+            queue: fixture.queue,
+            clock: FixedJobClock(nowMs: fixture.cutoffMs),
+            client: RecordingCachedPersonalRebuildClient()
+        )
+        let jobID = try XCTUnwrap(enqueueService.enqueuePersonalModelRebuildIfReady())
+        try await fixture.database.pool.write { db in
+            try db.execute(
+                sql: "DELETE FROM asset_tag_decision WHERE asset_id = ? AND tag_id = ?",
+                arguments: [
+                    fixture.positiveIDs[0].uuidString.lowercased(),
+                    fixture.tagID.uuidString.lowercased(),
+                ]
+            )
+        }
+        let executionClock = FixedJobClock(nowMs: fixture.cutoffMs + 30_000)
+        let queue = JobTestSupport.makeQueue(
+            database: fixture.database,
+            nowMs: executionClock.nowMs,
+            retryDelayMs: 0
+        )
+        let client = RecordingCachedPersonalRebuildClient()
+        let service = makePersonalModelRebuildReviewService(
+            fixture: fixture,
+            queue: queue,
+            clock: executionClock,
+            client: client
+        )
+
+        let didWork = try await service.runPendingSuggestionJobsAsync(maxSteps: 1)
+        XCTAssertTrue(didWork)
+
+        XCTAssertEqual(try queue.fetchJob(id: jobID).state, .completed)
+        let rebuildCallCount = await client.rebuildCallCount
+        XCTAssertEqual(rebuildCallCount, 0)
+    }
+
+    func testPersonalRebuildCacheMissIsTerminalAndLeavesManualFallback() async throws {
+        let fixture = try makeLargeLibraryFixture(assetCount: 8)
+        let enqueueService = makePersonalModelRebuildReviewService(
+            fixture: fixture,
+            queue: fixture.queue,
+            clock: FixedJobClock(nowMs: fixture.cutoffMs),
+            client: RecordingCachedPersonalRebuildClient()
+        )
+        let jobID = try XCTUnwrap(enqueueService.enqueuePersonalModelRebuildIfReady())
+        let executionClock = FixedJobClock(nowMs: fixture.cutoffMs + 30_000)
+        let queue = JobTestSupport.makeQueue(
+            database: fixture.database,
+            nowMs: executionClock.nowMs,
+            retryDelayMs: 0
+        )
+        let client = RecordingCachedPersonalRebuildClient(rebuildError: .rejected(
+            statusCode: 409,
+            code: "personal_embedding_cache_miss"
+        ))
+        let service = makePersonalModelRebuildReviewService(
+            fixture: fixture,
+            queue: queue,
+            clock: executionClock,
+            client: client
+        )
+
+        let didWork = try await service.runPendingSuggestionJobsAsync(maxSteps: 1)
+        XCTAssertTrue(didWork)
+
+        let failed = try queue.fetchJob(id: jobID)
+        XCTAssertEqual(failed.state, .terminalFailed)
+        XCTAssertEqual(failed.lastErrorCode, .personalRebuildCacheMiss)
+        let activeBundleCount = try await fixture.database.pool.read { db in
+            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM personal_suggestion_model") ?? 0
+        }
+        XCTAssertEqual(activeBundleCount, 0)
+    }
+
     func testReviewServiceEnqueuesAndProjectsDurablePersonalLibraryJob() throws {
         let fixture = try makeLargeLibraryFixture(assetCount: 8)
         let handler = makeHandler(
@@ -2837,6 +3012,103 @@ private actor PausingPersonalLibrarySuggestionImages: PersonalLibrarySuggestionI
         }
         return Data("preview".utf8)
     }
+}
+
+private actor RecordingCachedPersonalRebuildClient: LocalModelSuggestionClient {
+    let rebuildError: LocalModelSuggestionClientError?
+    private(set) var receivedSnapshot: PersonalModelCachedRebuildSnapshot?
+    private(set) var activeCapability: PersonalModelSuggestionCapability?
+    private(set) var rebuildCallCount = 0
+
+    init(rebuildError: LocalModelSuggestionClientError? = nil) {
+        self.rebuildError = rebuildError
+    }
+
+    func serviceHealth() async throws -> LocalModelServiceHealth {
+        .ready(
+            serviceVersion: "test",
+            provider: PersonalTrainingEncoderIdentity(
+                provider: "dinov2",
+                modelID: "facebook/dinov2-small",
+                modelRevision: "model-r1",
+                preprocessingRevision: "pre-r1",
+                elementCount: 384
+            )
+        )
+    }
+
+    func personalCapability() async throws -> PersonalModelSuggestionCapabilityAvailability {
+        activeCapability.map(PersonalModelSuggestionCapabilityAvailability.available)
+            ?? .unavailable
+    }
+
+    func rebuildPersonalModelFromCache(
+        requestID _: String,
+        expectedActiveBundle _: PersonalModelActiveBundleIdentity?,
+        snapshot: PersonalModelCachedRebuildSnapshot
+    ) async throws -> PersonalModelSuggestionCapability {
+        rebuildCallCount += 1
+        receivedSnapshot = snapshot
+        if let rebuildError {
+            throw rebuildError
+        }
+        let capability = PersonalModelSuggestionCapability(
+            target: PersonalModelSuggestionTarget(
+                catalogScopeID: snapshot.catalogScopeID,
+                bundleID: "personal-cache-only",
+                bundleRevision: "bundle-cache-only-r1",
+                provider: snapshot.encoder.provider,
+                modelID: snapshot.encoder.modelID,
+                modelRevision: snapshot.encoder.modelRevision,
+                preprocessingRevision: snapshot.encoder.preprocessingRevision,
+                elementCount: snapshot.encoder.elementCount,
+                labelVocabularyRevision: snapshot.labelVocabularyRevision,
+                weightsSHA256: String(repeating: "d", count: 64),
+                policyRevision: "personal-policy-v1"
+            ),
+            tagIDs: snapshot.personalTagIDs
+        )
+        activeCapability = capability
+        return capability
+    }
+
+    func suggestions(
+        imageData _: Data,
+        requestID _: String,
+        target _: ModelSuggestionTarget
+    ) async throws -> [LocalModelSuggestion] {
+        throw LocalModelSuggestionClientError.invalidResponse
+    }
+}
+
+private func makePersonalModelRebuildReviewService(
+    fixture: LargeLibraryFixture,
+    queue: GRDBJobQueue,
+    clock: FixedJobClock,
+    client: any LocalModelSuggestionClient
+) -> PersonalizationReviewService {
+    let handler = PersonalModelRebuildJobHandler(
+        dependencies: PersonalModelRebuildJobHandlerDependencies(
+            database: fixture.database,
+            client: client,
+            catalogScopeID: (try? fixture.database.catalogScopeID()) ?? "",
+            clock: clock
+        )
+    )
+    return PersonalizationReviewService(
+        database: fixture.database,
+        queue: queue,
+        executionCoordinator: JobExecutionCoordinator(
+            queue: queue,
+            registry: MultiJobHandlerRegistry(handlers: [handler]),
+            leaseContextProvider: GRDBJobLeaseContextProvider(queue: queue)
+        ),
+        tags: fixture.tags,
+        clock: clock,
+        personalLibrarySuggestionsEnabled: false,
+        standardLibrarySuggestionsEnabled: false,
+        personalModelRebuildEnabled: true
+    )
 }
 
 private actor StubPersistentPersonalSuggestionClient: LocalModelSuggestionClient {

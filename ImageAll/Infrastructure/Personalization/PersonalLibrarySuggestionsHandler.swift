@@ -851,3 +851,195 @@ private extension StandardLibrarySuggestionsHandler {
         )
     }
 }
+
+struct PersonalModelRebuildJobHandlerDependencies: Sendable {
+    let database: CatalogDatabase
+    let client: any LocalModelSuggestionClient
+    let catalogScopeID: String
+    let clock: any JobClock
+}
+
+struct PersonalModelRebuildJobHandler: AsyncLeaseBoundJobHandler, Sendable {
+    let dependencies: PersonalModelRebuildJobHandlerDependencies
+
+    var kind: String { PersonalModelRebuildJobFactory.kind }
+    var supportedPayloadVersions: Set<Int> { [PersonalModelRebuildJobFactory.payloadVersion] }
+    var supportedCheckpointVersions: Set<Int> { [PersonalModelRebuildJobFactory.checkpointVersion] }
+
+    func execute(
+        payloadVersion _: Int,
+        payload _: Data,
+        checkpoint: JobCheckpoint?
+    ) -> JobHandlerExecutionResult {
+        retryableFailure(.personalizationPersistenceFailure, checkpoint: checkpoint)
+    }
+
+    func executeAsync(
+        lease _: JobLeaseToken,
+        payloadVersion: Int,
+        payload: Data,
+        checkpoint: JobCheckpoint?,
+        context _: JobLeaseExecutionContext
+    ) async throws -> JobHandlerExecutionResult {
+        guard payloadVersion == PersonalModelRebuildJobFactory.payloadVersion,
+              checkpoint == nil,
+              let frozen = try? PersonalModelRebuildJobCodec.decodePayload(payload),
+              frozen.catalogScopeID == dependencies.catalogScopeID
+        else {
+            return terminalFailure(.personalRebuildInvalidSnapshot)
+        }
+
+        do {
+            guard try currentPayload() == frozen else {
+                return completed()
+            }
+            let encoder: PersonalTrainingEncoderIdentity
+            do {
+                guard case let .ready(_, provider) = try await dependencies.client.serviceHealth()
+                else {
+                    throw ModelFailure.serviceUnavailable
+                }
+                encoder = provider
+            } catch let failure as ModelFailure {
+                throw failure
+            } catch {
+                throw classify(error)
+            }
+
+            let expectedActiveBundle: PersonalModelActiveBundleIdentity?
+            do {
+                switch try await dependencies.client.personalCapability() {
+                case .unavailable:
+                    expectedActiveBundle = nil
+                case let .available(capability):
+                    guard capability.target.catalogScopeID == frozen.catalogScopeID else {
+                        throw ModelFailure.bundleMismatch
+                    }
+                    expectedActiveBundle = PersonalModelActiveBundleIdentity(
+                        bundleRevision: capability.target.bundleRevision,
+                        weightsSHA256: capability.target.weightsSHA256
+                    )
+                }
+            } catch let failure as ModelFailure {
+                throw failure
+            } catch {
+                throw classify(error)
+            }
+
+            let rebuilt: PersonalModelSuggestionCapability
+            do {
+                rebuilt = try await dependencies.client.rebuildPersonalModelFromCache(
+                    requestID: UUID().uuidString.lowercased(),
+                    expectedActiveBundle: expectedActiveBundle,
+                    snapshot: PersonalModelCachedRebuildSnapshot(
+                        catalogScopeID: frozen.catalogScopeID,
+                        decisionSnapshotRevision: frozen.decisionSnapshotRevision,
+                        encoder: encoder,
+                        personalTagIDs: frozen.personalTagIDs,
+                        labelVocabularyRevision: frozen.labelVocabularyRevision,
+                        embeddingKeys: frozen.embeddingKeys,
+                        decisions: frozen.decisions
+                    )
+                )
+                guard case let .available(confirmed) = try await dependencies.client
+                    .personalCapability(),
+                    confirmed == rebuilt
+                else {
+                    throw ModelFailure.bundleMismatch
+                }
+            } catch let failure as ModelFailure {
+                throw failure
+            } catch {
+                throw classify(error)
+            }
+
+            guard try currentPayload() == frozen else {
+                return completed()
+            }
+            try GRDBPersonalizationReviewRepository(database: dependencies.database)
+                .activatePersonalSuggestionBundle(
+                    rebuilt,
+                    activatedAtMs: dependencies.clock.nowMs
+                )
+            return completed()
+        } catch let failure as ModelFailure {
+            switch failure {
+            case .cacheMiss:
+                return terminalFailure(.personalRebuildCacheMiss)
+            case .invalidSnapshot:
+                return terminalFailure(.personalRebuildInvalidSnapshot)
+            case .bundleMismatch:
+                return retryableFailure(.personalRebuildBundleMismatch, checkpoint: nil)
+            case .serviceUnavailable:
+                return retryableFailure(.personalRebuildServiceUnavailable, checkpoint: nil)
+            }
+        } catch {
+            return retryableFailure(.personalizationPersistenceFailure, checkpoint: nil)
+        }
+    }
+}
+
+private extension PersonalModelRebuildJobHandler {
+    enum ModelFailure: Error {
+        case cacheMiss
+        case invalidSnapshot
+        case bundleMismatch
+        case serviceUnavailable
+    }
+
+    func currentPayload() throws -> PersonalModelRebuildJobPayload? {
+        try PersonalModelRebuildJobFactory.payload(
+            from: GRDBPersonalizationReviewRepository(database: dependencies.database)
+                .personalTrainingSnapshot()
+        )
+    }
+
+    func classify(_ error: Error) -> ModelFailure {
+        guard let error = error as? LocalModelSuggestionClientError else {
+            return .serviceUnavailable
+        }
+        switch error {
+        case .serviceUnavailable, .invalidEndpoint:
+            return .serviceUnavailable
+        case .identityMismatch, .invalidResponse:
+            return .invalidSnapshot
+        case let .rejected(statusCode, code)
+            where statusCode == 409 && code == "personal_embedding_cache_miss":
+            return .cacheMiss
+        case let .rejected(statusCode, code)
+            where statusCode == 409 && code == "personal_bundle_mismatch":
+            return .bundleMismatch
+        case let .rejected(statusCode, _) where statusCode == 503:
+            return .serviceUnavailable
+        case .rejected:
+            return .invalidSnapshot
+        }
+    }
+
+    func completed() -> JobHandlerExecutionResult {
+        JobHandlerExecutionResult(
+            outcome: .completed,
+            checkpoint: nil,
+            progress: JobProgress(completed: 1, total: 1)
+        )
+    }
+
+    func terminalFailure(_ code: JobSafeErrorCode) -> JobHandlerExecutionResult {
+        JobHandlerExecutionResult(
+            outcome: .nonRetryableFailure(code: code),
+            checkpoint: nil,
+            progress: JobProgress(completed: 0, total: 1)
+        )
+    }
+
+    func retryableFailure(
+        _ code: JobSafeErrorCode,
+        checkpoint: JobCheckpoint?
+    ) -> JobHandlerExecutionResult {
+        JobHandlerExecutionResult(
+            outcome: .retryableFailure(code: code),
+            checkpoint: checkpoint,
+            progress: JobProgress(completed: 0, total: 1)
+        )
+    }
+}

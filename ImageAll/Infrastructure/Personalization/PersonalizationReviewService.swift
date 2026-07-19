@@ -9,6 +9,7 @@ struct PersonalizationReviewService: PersonalizationReviewPort, Sendable {
     let clock: any JobClock
     let personalLibrarySuggestionsEnabled: Bool
     let standardLibrarySuggestionsEnabled: Bool
+    let personalModelRebuildEnabled: Bool
 
     init(
         database: CatalogDatabase,
@@ -17,7 +18,8 @@ struct PersonalizationReviewService: PersonalizationReviewPort, Sendable {
         tags: GRDBTagCatalogRepository,
         clock: any JobClock,
         personalLibrarySuggestionsEnabled: Bool = true,
-        standardLibrarySuggestionsEnabled: Bool = false
+        standardLibrarySuggestionsEnabled: Bool = false,
+        personalModelRebuildEnabled: Bool = false
     ) {
         self.database = database
         self.queue = queue
@@ -26,6 +28,7 @@ struct PersonalizationReviewService: PersonalizationReviewPort, Sendable {
         self.clock = clock
         self.personalLibrarySuggestionsEnabled = personalLibrarySuggestionsEnabled
         self.standardLibrarySuggestionsEnabled = standardLibrarySuggestionsEnabled
+        self.personalModelRebuildEnabled = personalModelRebuildEnabled
     }
 
     private var review: GRDBPersonalizationReviewRepository {
@@ -76,6 +79,32 @@ struct PersonalizationReviewService: PersonalizationReviewPort, Sendable {
 
     func personalTrainingSnapshot() throws -> PersonalTrainingSnapshot {
         try review.personalTrainingSnapshot()
+    }
+
+    func enqueuePersonalModelRebuildIfReady() throws -> UUID? {
+        guard personalModelRebuildEnabled,
+              let payload = try PersonalModelRebuildJobFactory.payload(
+                  from: review.personalTrainingSnapshot()
+              )
+        else {
+            return nil
+        }
+        let scheduled = clock.nowMs.addingReportingOverflow(
+            PersonalModelRebuildJobFactory.debounceDelayMs
+        )
+        guard !scheduled.overflow else {
+            throw PersonalizationReviewError.persistenceFailure
+        }
+        let command = try PersonalModelRebuildJobEnqueue.makeEnqueueCommand(
+            jobID: UUID(),
+            payload: payload,
+            notBeforeMs: scheduled.partialValue
+        )
+        do {
+            return try queue.enqueue(command).id
+        } catch let JobQueueError.activeCoalescingConflict(existingJobID) {
+            return existingJobID
+        }
     }
 
     func fetchReviewQueue(
@@ -379,6 +408,9 @@ struct PersonalizationReviewService: PersonalizationReviewPort, Sendable {
         if standardLibrarySuggestionsEnabled {
             allowedKinds.insert(StandardLibrarySuggestionsJobFactory.kind)
         }
+        if personalModelRebuildEnabled {
+            allowedKinds.insert(PersonalModelRebuildJobFactory.kind)
+        }
         let claim = ClaimNextInput(
             owner: PersonalizationSuggestionRunner.claimOwner,
             leaseDurationMs: 60_000,
@@ -407,17 +439,24 @@ struct PersonalizationReviewService: PersonalizationReviewPort, Sendable {
         if standardLibrarySuggestionsEnabled {
             kinds.append(StandardLibrarySuggestionsJobFactory.kind)
         }
+        if personalModelRebuildEnabled {
+            kinds.append(PersonalModelRebuildJobFactory.kind)
+        }
         let placeholders = Array(repeating: "?", count: kinds.count).joined(separator: ", ")
+        var arguments = kinds.map { $0 as any DatabaseValueConvertible }
+        arguments.append(clock.nowMs)
         let nextNotBeforeMs: Int64? = try database.pool.read { db in
             try Int64.fetchOne(
                 db,
                 sql: """
                 SELECT MIN(not_before_ms) FROM job
                 WHERE kind IN (\(placeholders))
-                    AND state = 'retryableFailed'
-                    AND attempts < max_attempts
+                    AND (
+                        (state = 'pending' AND not_before_ms > ?)
+                        OR (state = 'retryableFailed' AND attempts < max_attempts)
+                    )
                 """,
-                arguments: StatementArguments(kinds)
+                arguments: StatementArguments(arguments)
             )
         }
         guard let nextNotBeforeMs else { return nil }

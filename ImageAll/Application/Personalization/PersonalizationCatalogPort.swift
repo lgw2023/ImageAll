@@ -91,7 +91,7 @@ enum PersonalTrainingDecisionState: String, Codable, Equatable, Hashable, Sendab
     case manualRejected
 }
 
-struct PersonalTrainingDecision: Equatable, Hashable, Sendable {
+struct PersonalTrainingDecision: Codable, Equatable, Hashable, Sendable {
     let assetID: UUID
     let contentRevision: Int
     let tagID: UUID
@@ -125,7 +125,7 @@ struct PersonalTrainingEmbedding: Equatable, Sendable {
     let values: [Float]
 }
 
-struct PersonalTrainingEmbeddingCacheKey: Equatable, Sendable {
+struct PersonalTrainingEmbeddingCacheKey: Codable, Equatable, Hashable, Sendable {
     let catalogScopeID: String
     let assetID: UUID
     let contentRevision: Int
@@ -149,6 +149,16 @@ struct PersonalModelRebuildSnapshot: Equatable, Sendable {
     let personalTagIDs: [UUID]
     let labelVocabularyRevision: String
     let embeddings: [PersonalTrainingEmbeddingRow]
+    let decisions: [PersonalTrainingDecision]
+}
+
+struct PersonalModelCachedRebuildSnapshot: Equatable, Sendable {
+    let catalogScopeID: String
+    let decisionSnapshotRevision: String
+    let encoder: PersonalTrainingEncoderIdentity
+    let personalTagIDs: [UUID]
+    let labelVocabularyRevision: String
+    let embeddingKeys: [PersonalTrainingEmbeddingCacheKey]
     let decisions: [PersonalTrainingDecision]
 }
 
@@ -382,6 +392,11 @@ protocol LocalModelSuggestionClient: Sendable {
         expectedActiveBundle: PersonalModelActiveBundleIdentity?,
         snapshot: PersonalModelRebuildSnapshot
     ) async throws -> PersonalModelSuggestionCapability
+    func rebuildPersonalModelFromCache(
+        requestID: String,
+        expectedActiveBundle: PersonalModelActiveBundleIdentity?,
+        snapshot: PersonalModelCachedRebuildSnapshot
+    ) async throws -> PersonalModelSuggestionCapability
     func suggestions(
         imageData: Data,
         requestID: String,
@@ -425,6 +440,14 @@ extension LocalModelSuggestionClient {
         requestID _: String,
         expectedActiveBundle _: PersonalModelActiveBundleIdentity?,
         snapshot _: PersonalModelRebuildSnapshot
+    ) async throws -> PersonalModelSuggestionCapability {
+        throw LocalModelSuggestionClientError.serviceUnavailable
+    }
+
+    func rebuildPersonalModelFromCache(
+        requestID _: String,
+        expectedActiveBundle _: PersonalModelActiveBundleIdentity?,
+        snapshot _: PersonalModelCachedRebuildSnapshot
     ) async throws -> PersonalModelSuggestionCapability {
         throw LocalModelSuggestionClientError.serviceUnavailable
     }
