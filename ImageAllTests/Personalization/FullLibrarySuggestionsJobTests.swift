@@ -2139,7 +2139,7 @@ final class FullLibrarySuggestionsJobTests: XCTestCase {
         XCTAssertTrue(try reviewService.runPendingSuggestionJobs(maxSteps: 1))
     }
 
-    func testRunnerRefreshTicksWhileWorkerBlocked() async {
+    func testRunnerRefreshesWhileWorkerBlocked() async {
         let review = BlockingPersonalizationReviewPort(blockDuration: 0.6)
         let counter = RefreshCounter()
         let worker = Task {
@@ -2159,10 +2159,10 @@ final class FullLibrarySuggestionsJobTests: XCTestCase {
         XCTAssertFalse(parallelResult)
         XCTAssertEqual(review.peakConcurrentWorkers, 1)
         for _ in 0 ..< 30 {
-            if counter.value >= 2 { break }
+            if counter.value >= 1 { break }
             try? await Task.sleep(nanoseconds: 50_000_000)
         }
-        XCTAssertGreaterThanOrEqual(counter.value, 2)
+        XCTAssertGreaterThanOrEqual(counter.value, 1)
         _ = await worker.value
     }
 
@@ -2174,6 +2174,18 @@ final class FullLibrarySuggestionsJobTests: XCTestCase {
         runner.cancel()
 
         XCTAssertEqual(review.runCount, 1)
+    }
+
+    func testRunnerDoesNotRefreshAfterIdleStep() async {
+        let review = IdlePersonalizationReviewPort()
+        let counter = RefreshCounter()
+        let runner = await PersonalizationSuggestionRunner.startLoop(review: review) {
+            counter.bump()
+        }
+
+        await runner.value
+
+        XCTAssertEqual(counter.value, 0)
     }
 }
 

@@ -89,7 +89,6 @@ enum PersonalizationSuggestionRunner {
         let refreshTicker: Task<Void, Never>?
         if let refresh {
             refreshTicker = Task { @MainActor in
-                await refresh()
                 while !Task.isCancelled {
                     try? await Task.sleep(nanoseconds: refreshIntervalNs)
                     guard !Task.isCancelled else { break }
