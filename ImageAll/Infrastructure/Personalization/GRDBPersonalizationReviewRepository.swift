@@ -1,6 +1,24 @@
 import Foundation
 import GRDB
 
+private struct MappedStandardSuggestion {
+    let tagID: String
+    let derivedFromConceptID: String?
+    let suggestion: LocalModelSuggestion
+
+    func precedes(_ other: MappedStandardSuggestion) -> Bool {
+        let isDirect = derivedFromConceptID == nil
+        let otherIsDirect = other.derivedFromConceptID == nil
+        if isDirect != otherIsDirect {
+            return isDirect
+        }
+        if suggestion.score != other.suggestion.score {
+            return suggestion.score > other.suggestion.score
+        }
+        return (derivedFromConceptID ?? "") < (other.derivedFromConceptID ?? "")
+    }
+}
+
 struct GRDBPersonalizationReviewRepository: Sendable {
     let database: CatalogDatabase
 
@@ -699,8 +717,7 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                 throw PersonalizationReviewError.persistenceFailure
             }
 
-            var mapped: [(tagID: String, suggestion: LocalModelSuggestion)] = []
-            mapped.reserveCapacity(suggestions.count)
+            var mappedByTagID: [String: MappedStandardSuggestion] = [:]
             for suggestion in suggestions {
                 guard suggestion.track == .standard,
                       let conceptID = suggestion.conceptID,
@@ -724,48 +741,83 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                       !ontologyID.isEmpty,
                       !ontologyRevision.isEmpty,
                       !mappingRevision.isEmpty,
-                      !suggestion.policyRevision.isEmpty,
-                      let tagID = try String.fetchOne(
-                          db,
-                          sql: """
-                          SELECT binding.tag_id
-                          FROM ontology_pack p
-                          JOIN standard_model_revision m
-                              ON m.standard_pack_id = p.standard_pack_id
-                              AND m.standard_pack_revision = p.standard_pack_revision
-                          JOIN standard_tag_binding binding
-                              ON binding.ontology_id = p.ontology_id
-                              AND binding.ontology_revision = p.ontology_revision
-                          JOIN tag t ON t.id = binding.tag_id AND t.state = 'active'
-                          WHERE p.standard_pack_id = ?
-                              AND p.standard_pack_revision = ?
-                              AND p.ontology_id = ?
-                              AND p.ontology_revision = ?
-                              AND p.state = 'active'
-                              AND m.provider = ?
-                              AND m.model_revision = ?
-                              AND m.preprocessing_revision = ?
-                              AND m.mapping_revision = ?
-                              AND m.policy_revision = ?
-                              AND binding.concept_id = ?
-                          """,
-                          arguments: [
-                              expectedTarget.standardPackID,
-                              expectedTarget.standardPackRevision,
-                              ontologyID,
-                              ontologyRevision,
-                              suggestion.provider,
-                              suggestion.modelRevision,
-                              suggestion.preprocessingRevision,
-                              mappingRevision,
-                              suggestion.policyRevision,
-                              conceptID,
-                          ]
-                      )
+                      !suggestion.policyRevision.isEmpty
                 else {
                     throw PersonalizationReviewError.persistenceFailure
                 }
-                mapped.append((tagID, suggestion))
+                let rows = try Row.fetchAll(
+                    db,
+                    sql: """
+                    WITH RECURSIVE concept_closure(concept_id) AS (
+                        SELECT ?
+                        UNION
+                        SELECT edge.parent_concept_id
+                        FROM ontology_edge edge
+                        JOIN concept_closure closure
+                            ON closure.concept_id = edge.child_concept_id
+                        WHERE edge.ontology_id = ?
+                            AND edge.ontology_revision = ?
+                    )
+                    SELECT binding.tag_id, closure.concept_id
+                    FROM ontology_pack p
+                    JOIN standard_model_revision m
+                        ON m.standard_pack_id = p.standard_pack_id
+                        AND m.standard_pack_revision = p.standard_pack_revision
+                    CROSS JOIN concept_closure closure
+                    JOIN standard_tag_binding binding
+                        ON binding.ontology_id = p.ontology_id
+                        AND binding.ontology_revision = p.ontology_revision
+                        AND binding.concept_id = closure.concept_id
+                    JOIN tag t ON t.id = binding.tag_id AND t.state = 'active'
+                    WHERE p.standard_pack_id = ?
+                        AND p.standard_pack_revision = ?
+                        AND p.ontology_id = ?
+                        AND p.ontology_revision = ?
+                        AND p.state = 'active'
+                        AND m.provider = ?
+                        AND m.model_revision = ?
+                        AND m.preprocessing_revision = ?
+                        AND m.mapping_revision = ?
+                        AND m.policy_revision = ?
+                    ORDER BY (closure.concept_id = ?) DESC, closure.concept_id
+                    """,
+                    arguments: [
+                        conceptID,
+                        ontologyID,
+                        ontologyRevision,
+                        expectedTarget.standardPackID,
+                        expectedTarget.standardPackRevision,
+                        ontologyID,
+                        ontologyRevision,
+                        suggestion.provider,
+                        suggestion.modelRevision,
+                        suggestion.preprocessingRevision,
+                        mappingRevision,
+                        suggestion.policyRevision,
+                        conceptID,
+                    ]
+                )
+                guard rows.contains(where: { row in
+                    let rowConceptID: String = row["concept_id"]
+                    return rowConceptID == conceptID
+                }) else {
+                    throw PersonalizationReviewError.persistenceFailure
+                }
+                for row in rows {
+                    let tagID: String = row["tag_id"]
+                    let expandedConceptID: String = row["concept_id"]
+                    let candidate = MappedStandardSuggestion(
+                        tagID: tagID,
+                        derivedFromConceptID: expandedConceptID == conceptID ? nil : conceptID,
+                        suggestion: suggestion
+                    )
+                    if let existing = mappedByTagID[tagID],
+                       !candidate.precedes(existing)
+                    {
+                        continue
+                    }
+                    mappedByTagID[tagID] = candidate
+                }
             }
 
             try db.execute(
@@ -773,15 +825,16 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                 arguments: [uuid(assetID)]
             )
             var inserted = 0
-            for entry in mapped {
+            for entry in mappedByTagID.values.sorted(by: { $0.tagID < $1.tagID }) {
                 try db.execute(
                     sql: """
                     INSERT INTO standard_prediction (
                         asset_id, tag_id, content_revision,
                         standard_pack_id, standard_pack_revision,
-                        score, recommended_state, state, created_at_ms
+                        score, recommended_state, state, created_at_ms,
+                        derived_from_concept_id
                     )
-                    SELECT ?, ?, ?, ?, ?, ?, ?, 'pendingReview', ?
+                    SELECT ?, ?, ?, ?, ?, ?, ?, 'pendingReview', ?, ?
                     WHERE NOT EXISTS (
                         SELECT 1 FROM asset_tag_decision d
                         WHERE d.asset_id = ? AND d.tag_id = ?
@@ -796,6 +849,7 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                         entry.suggestion.score,
                         entry.suggestion.recommendedState.rawValue,
                         createdAtMs,
+                        entry.derivedFromConceptID,
                         uuid(assetID),
                         entry.tagID,
                     ]

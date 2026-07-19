@@ -16,6 +16,7 @@ struct CatalogDatabase: Sendable {
         V008AddPersonalModelSuggestionsMigration.register(on: &migrator)
         V009AddStandardOntologyMigration.register(on: &migrator)
         V010AddStandardPredictionsMigration.register(on: &migrator)
+        V011AddStandardPredictionProvenanceMigration.register(on: &migrator)
         return migrator
     }
 
@@ -703,6 +704,23 @@ enum V010AddStandardPredictionsMigration {
                     score DESC,
                     asset_id
                 )
+                """
+            )
+        }
+    }
+}
+
+enum V011AddStandardPredictionProvenanceMigration {
+    static func register(on migrator: inout DatabaseMigrator) {
+        migrator.registerMigration(CatalogMigrationID.v011AddStandardPredictionProvenance) { db in
+            try db.execute(
+                sql: """
+                ALTER TABLE standard_prediction
+                ADD COLUMN derived_from_concept_id TEXT
+                    CHECK(
+                        derived_from_concept_id IS NULL
+                        OR length(derived_from_concept_id) > 0
+                    )
                 """
             )
         }

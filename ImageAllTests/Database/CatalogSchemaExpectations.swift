@@ -183,6 +183,7 @@ enum CatalogSchemaExpectations {
             .init(name: "recommended_state", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
             .init(name: "state", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
             .init(name: "created_at_ms", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "derived_from_concept_id", type: "TEXT", notNull: false, defaultValue: nil, primaryKeyOrder: 0),
         ],
         "personal_suggestion_model": [
             .init(name: "singleton", type: "INTEGER", notNull: false, defaultValue: nil, primaryKeyOrder: 1),

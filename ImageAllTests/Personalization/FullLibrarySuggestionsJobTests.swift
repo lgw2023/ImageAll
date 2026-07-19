@@ -467,6 +467,147 @@ final class FullLibrarySuggestionsJobTests: XCTestCase {
         )
     }
 
+    func testStandardSuggestionExpandsOntologyAncestorsWithDirectProvenance() throws {
+        let fixture = try makeLargeLibraryFixture(assetCount: 8)
+        let package = makeStandardReviewPackage(includeAncestors: true)
+        _ = try fixture.tags.installStandardOntologyPackage(
+            package,
+            timestampMs: fixture.cutoffMs
+        )
+        let handler = makeHandler(database: fixture.database, loader: fixture.loader, queue: fixture.queue)
+        let service = PersonalizationReviewService(
+            database: fixture.database,
+            queue: fixture.queue,
+            executionCoordinator: makeCoordinator(
+                database: fixture.database,
+                handler: handler,
+                queue: fixture.queue
+            ),
+            tags: fixture.tags,
+            clock: FixedJobClock(nowMs: fixture.cutoffMs + 1)
+        )
+        let candidate = try XCTUnwrap(
+            service.personalSuggestionCandidates(afterAssetID: nil, limit: 100).first {
+                $0.assetID.uuidString.hasPrefix("21000000-")
+                    && !fixture.positiveIDs.contains($0.assetID)
+                    && !fixture.negativeIDs.contains($0.assetID)
+            }
+        )
+
+        XCTAssertEqual(
+            try service.replaceStandardSuggestions(
+                assetID: candidate.assetID,
+                contentRevision: candidate.contentRevision,
+                suggestions: [makeStandardReviewSuggestion(package: package)],
+                expectedTarget: StandardModelSuggestionTarget(
+                    standardPackID: package.standardPackID,
+                    standardPackRevision: package.standardPackRevision
+                )
+            ),
+            3
+        )
+
+        try fixture.database.pool.read { db in
+            XCTAssertEqual(
+                try String.fetchAll(
+                    db,
+                    sql: """
+                    SELECT binding.concept_id || ':'
+                        || COALESCE(prediction.derived_from_concept_id, 'direct')
+                    FROM standard_prediction prediction
+                    JOIN standard_tag_binding binding ON binding.tag_id = prediction.tag_id
+                    WHERE prediction.asset_id = ?
+                    ORDER BY binding.concept_id
+                    """,
+                    arguments: [candidate.assetID.uuidString.lowercased()]
+                ),
+                [
+                    "scene.environment:scene.water",
+                    "scene.outdoor:scene.water",
+                    "scene.water:direct",
+                ]
+            )
+        }
+    }
+
+    func testStandardAncestorExpansionPrefersDirectThenHighestScore() throws {
+        let fixture = try makeLargeLibraryFixture(assetCount: 8)
+        let package = makeStandardReviewPackage(includeAncestors: true)
+        _ = try fixture.tags.installStandardOntologyPackage(
+            package,
+            timestampMs: fixture.cutoffMs
+        )
+        let service = PersonalizationReviewService(
+            database: fixture.database,
+            queue: fixture.queue,
+            executionCoordinator: makeCoordinator(
+                database: fixture.database,
+                handler: makeHandler(
+                    database: fixture.database,
+                    loader: fixture.loader,
+                    queue: fixture.queue
+                ),
+                queue: fixture.queue
+            ),
+            tags: fixture.tags,
+            clock: FixedJobClock(nowMs: fixture.cutoffMs + 1)
+        )
+        let candidate = try XCTUnwrap(
+            service.personalSuggestionCandidates(afterAssetID: nil, limit: 100).first {
+                $0.assetID.uuidString.hasPrefix("21000000-")
+                    && !fixture.positiveIDs.contains($0.assetID)
+                    && !fixture.negativeIDs.contains($0.assetID)
+            }
+        )
+
+        XCTAssertEqual(
+            try service.replaceStandardSuggestions(
+                assetID: candidate.assetID,
+                contentRevision: candidate.contentRevision,
+                suggestions: [
+                    makeStandardReviewSuggestion(
+                        package: package,
+                        conceptID: "scene.water",
+                        score: 0.9
+                    ),
+                    makeStandardReviewSuggestion(
+                        package: package,
+                        conceptID: "scene.outdoor",
+                        score: 0.1
+                    ),
+                ],
+                expectedTarget: StandardModelSuggestionTarget(
+                    standardPackID: package.standardPackID,
+                    standardPackRevision: package.standardPackRevision
+                )
+            ),
+            3
+        )
+
+        try fixture.database.pool.read { db in
+            XCTAssertEqual(
+                try String.fetchAll(
+                    db,
+                    sql: """
+                    SELECT binding.concept_id || ':'
+                        || COALESCE(prediction.derived_from_concept_id, 'direct')
+                        || ':' || printf('%.1f', prediction.score)
+                    FROM standard_prediction prediction
+                    JOIN standard_tag_binding binding ON binding.tag_id = prediction.tag_id
+                    WHERE prediction.asset_id = ?
+                    ORDER BY binding.concept_id
+                    """,
+                    arguments: [candidate.assetID.uuidString.lowercased()]
+                ),
+                [
+                    "scene.environment:scene.water:0.9",
+                    "scene.outdoor:direct:0.1",
+                    "scene.water:direct:0.9",
+                ]
+            )
+        }
+    }
+
     func testStandardSuggestionIdentityMismatchRollsBackWholeReplacement() throws {
         let fixture = try makeLargeLibraryFixture(assetCount: 8)
         let package = makeStandardReviewPackage()
@@ -2406,7 +2547,9 @@ private func makePersonalCapability(
     )
 }
 
-private func makeStandardReviewPackage() -> StandardOntologyPackageInput {
+private func makeStandardReviewPackage(
+    includeAncestors: Bool = false
+) -> StandardOntologyPackageInput {
     StandardOntologyPackageInput(
         standardPackID: "imageall.standard.review.synthetic",
         standardPackRevision: "pack-v1",
@@ -2420,22 +2563,41 @@ private func makeStandardReviewPackage() -> StandardOntologyPackageInput {
         mappingRevision: "mapping-v1",
         policyRevision: "policy-v1",
         weightsSHA256: String(repeating: "b", count: 64),
-        concepts: [
-            StandardOntologyConceptInput(conceptID: "scene.water", canonicalName: "Water"),
-        ],
-        edges: []
+        concepts: includeAncestors
+            ? [
+                StandardOntologyConceptInput(
+                    conceptID: "scene.environment",
+                    canonicalName: "Environment"
+                ),
+                StandardOntologyConceptInput(conceptID: "scene.outdoor", canonicalName: "Outdoor"),
+                StandardOntologyConceptInput(conceptID: "scene.water", canonicalName: "Water"),
+            ]
+            : [StandardOntologyConceptInput(conceptID: "scene.water", canonicalName: "Water")],
+        edges: includeAncestors
+            ? [
+                StandardOntologyEdgeInput(
+                    parentConceptID: "scene.environment",
+                    childConceptID: "scene.outdoor"
+                ),
+                StandardOntologyEdgeInput(
+                    parentConceptID: "scene.outdoor",
+                    childConceptID: "scene.water"
+                ),
+            ]
+            : []
     )
 }
 
 private func makeStandardReviewSuggestion(
     package: StandardOntologyPackageInput,
-    conceptID: String = "scene.water"
+    conceptID: String = "scene.water",
+    score: Double = 0.9
 ) -> LocalModelSuggestion {
     LocalModelSuggestion(
         track: .standard,
         conceptID: conceptID,
         tagID: nil,
-        score: 0.9,
+        score: score,
         recommendedState: .autoAssigned,
         catalogScopeID: nil,
         bundleID: nil,
