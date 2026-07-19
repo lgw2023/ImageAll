@@ -974,6 +974,62 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         )
     }
 
+    func testReviewOverviewImmediatelyRetriesRetryablePersonalLibrarySuggestionJob() async {
+        let jobID = UUID()
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: UUID(),
+                displayName: "Fixture",
+                state: .active
+            ),
+            reconciledItems: [],
+            jobActivityItems: [
+                JobActivityItem(
+                    id: jobID,
+                    kind: .personalizationSuggestions,
+                    state: .retryableFailed,
+                    controlRequest: .none,
+                    progress: JobProgress(completed: 4, total: 20)
+                ),
+            ]
+        )
+        let review = FakePersonalizationReviewPort(
+            personalLibraryJob: PersonalLibrarySuggestionJobProjection(
+                id: jobID,
+                state: .retryableFailed,
+                checkedCount: 4,
+                totalCount: 20,
+                suggestedCount: 2,
+                skippedCount: 1,
+                lastErrorCode: .interrupted
+            )
+        )
+        let model = LibraryWorkspaceModel(
+            service: service,
+            review: review,
+            localModelSuggestions: Self.makeStandardRuntime(
+                client: FakeLocalModelSuggestionClient(result: .success([]))
+            )
+        )
+
+        await model.enterReviewOverview()
+
+        XCTAssertEqual(
+            model.personalLibrarySuggestionJobActivity?.availableActions,
+            [.resume, .cancel]
+        )
+
+        await model.applyPersonalLibrarySuggestionAction(.resume)
+
+        XCTAssertEqual(service.jobActivityActionCallCount, 1)
+        XCTAssertEqual(model.personalLibrarySuggestionJobActivity?.id, jobID)
+        XCTAssertEqual(model.personalLibrarySuggestionJobActivity?.state, .pending)
+        XCTAssertEqual(
+            model.personalLibrarySuggestionJobActivity?.availableActions,
+            [.pause, .cancel]
+        )
+    }
+
     func testPersonalLibraryScanEnqueueDoesNotDownloadCloudOnlyAssets() async {
         let sourceID = UUID()
         let asset = Self.makeAsset(sourceID: sourceID, fileName: "cloud-only-personal.jpg")
@@ -3614,7 +3670,7 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
                 (nextState, nextControl) = (.running, .pause)
             case (.running, .cancel):
                 (nextState, nextControl) = (.running, .cancel)
-            case (.paused, .resume):
+            case (.paused, .resume), (.retryableFailed, .resume):
                 (nextState, nextControl) = (.pending, .none)
             default:
                 throw FakeWorkspaceError.jobActivityActionFailed

@@ -22,7 +22,7 @@ final class JobStateTransitionTests: XCTestCase {
             (.paused, .resume(notBeforeMs: JobTestSupport.baseTimeMs), .transition(state: .pending, control: .none)),
             (.retryableFailed, .pause, .invalid("pause")),
             (.retryableFailed, .cancel, .transition(state: .cancelled, control: .none)),
-            (.retryableFailed, .resume(notBeforeMs: JobTestSupport.baseTimeMs), .invalid("resume")),
+            (.retryableFailed, .resume(notBeforeMs: JobTestSupport.baseTimeMs), .transition(state: .pending, control: .none)),
             (.completed, .pause, .invalid("pause")),
             (.completed, .cancel, .invalid("cancel")),
             (.completed, .resume(notBeforeMs: JobTestSupport.baseTimeMs), .invalid("resume")),
@@ -70,6 +70,34 @@ final class JobStateTransitionTests: XCTestCase {
                 }
             }
         }
+    }
+
+    func testResumeRetryableJobRunsImmediatelyAndClearsTransientFailure() throws {
+        let database = try CatalogDatabase.open(at: makeTempDatabaseURL())
+        let queue = JobTestSupport.makeQueue(database: database)
+        let jobID = try JobTestSupport.prepareJobInState(
+            queue: queue,
+            database: database,
+            state: .retryableFailed
+        )
+        let failed = try queue.fetchJob(id: jobID)
+        XCTAssertEqual(failed.lastErrorCode, .interrupted)
+        XCTAssertEqual(failed.notBeforeMs, JobTestSupport.baseTimeMs + JobTestSupport.retryDelayMs)
+
+        let resumed = try queue.applyStateCommand(
+            JobStateCommand(
+                jobID: jobID,
+                operation: .resume(notBeforeMs: JobTestSupport.baseTimeMs)
+            )
+        )
+
+        XCTAssertEqual(resumed.state, .pending)
+        XCTAssertEqual(resumed.controlRequest, .none)
+        XCTAssertEqual(resumed.notBeforeMs, JobTestSupport.baseTimeMs)
+        XCTAssertNil(resumed.lastErrorCode)
+        XCTAssertNil(resumed.leaseOwner)
+        XCTAssertNil(resumed.leaseExpiresAtMs)
+        XCTAssertEqual(try JobTestSupport.claimDefault(queue: queue)?.jobID, jobID)
     }
 
     func testRunningControlRequestsAreIdempotentNoOps() throws {
@@ -307,7 +335,7 @@ final class JobStateTransitionTests: XCTestCase {
             (.running, .pause, [.cancel]),
             (.running, .cancel, []),
             (.paused, .none, [.resume, .cancel]),
-            (.retryableFailed, .none, [.cancel]),
+            (.retryableFailed, .none, [.resume, .cancel]),
             (.completed, .none, []),
             (.terminalFailed, .none, []),
             (.cancelled, .none, []),

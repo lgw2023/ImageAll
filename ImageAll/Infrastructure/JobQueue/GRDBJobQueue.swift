@@ -463,14 +463,14 @@ private extension GRDBJobQueue {
     }
 
     func applyResume(db: Database, snapshot: JobRecordSnapshot, notBeforeMs: Int64, nowMs: Int64) throws {
-        guard snapshot.state == .paused else {
+        guard snapshot.state == .paused || snapshot.state == .retryableFailed else {
             throw JobQueueError.invalidTransition(currentState: snapshot.state, operation: "resume")
         }
 
         try updateJobDirect(
             db: db,
             jobID: snapshot.id,
-            expectedState: .paused,
+            expectedState: snapshot.state,
             newState: .pending,
             notBeforeMs: notBeforeMs,
             errorCode: nil,

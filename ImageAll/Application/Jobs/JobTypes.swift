@@ -163,7 +163,7 @@ struct JobActivityItem: Identifiable, Sendable, Equatable {
         case .paused:
             [.resume, .cancel]
         case .retryableFailed:
-            [.cancel]
+            [.resume, .cancel]
         case .completed, .terminalFailed, .cancelled:
             []
         }
