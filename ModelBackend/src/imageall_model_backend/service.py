@@ -89,7 +89,6 @@ class PersonalRebuildSnapshot(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     schema_revision: int
-    track: str
     catalog_scope_id: str
     decision_snapshot_revision: str
     encoder: PersonalRebuildEncoder
@@ -433,8 +432,6 @@ def _personal_training_input(
 ) -> PersonalTrainingInput:
     if snapshot.schema_revision != 1:
         raise ValueError("unsupported personal training snapshot schema")
-    if snapshot.track != "personal":
-        raise ValueError("training snapshot track is not personal")
     _canonical_uuid(snapshot.catalog_scope_id, "catalog_scope_id")
     _sha256_revision(snapshot.decision_snapshot_revision, "decision snapshot revision")
     _sha256_revision(snapshot.label_vocabulary_revision, "label vocabulary revision")

@@ -74,7 +74,6 @@ def rebuild_request() -> dict[str, object]:
         "expected_active_bundle": None,
         "snapshot": {
             "schema_revision": 1,
-            "track": "personal",
             "catalog_scope_id": "40000000-0000-4000-8000-000000000001",
             "decision_snapshot_revision": "a" * 64,
             "encoder": {
