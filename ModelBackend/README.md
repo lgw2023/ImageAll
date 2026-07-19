@@ -163,7 +163,8 @@ uv build
 既有个人标签 UUID → 用户明确接受/拒绝的 Inspector 闭环。个人建议本身仍是临时状态；只有用户点击
 接受或拒绝后才复用既有人工标签事务。App 现可由用户显式触发：从当前 active 标签选择每角色最多
 12 条最新人工决定，经 `/v1/embeddings` 构造不含原图和路径的版本化快照，调用同步 rebuild，并再次
-读取 capability 确认新身份。后端已支持上述可选 embedding cache key，但当前 Swift client 尚未发送
-该字段，因此 App 重建路径还不会命中该持久缓存。自动后台重训、模型自动安装、生产标准模型、
+读取 capability 确认新身份。Swift client 会为该重建路径的每个唯一 asset revision 发送上述可选
+embedding cache key；服务启用 `--embedding-cache` 时可复用完整 encoder identity 匹配的持久向量。
+自动后台重训、模型自动安装、生产标准模型、
 SigLIP2 或 Ollama adapter 尚未实现；Core ML 的 Xcode compute plan、实际 ANE、内存与热量仍由
 独立后续切片验收。

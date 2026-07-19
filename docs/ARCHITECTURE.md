@@ -567,6 +567,9 @@ revision 后，才能成为标准概念。
 当前可选 DINO 路径已实现用户触发的最小重建闭环：App 只选择 current catalog 中 active 且满足
 `2 accepted + 2 rejected` 的标签，每标签每角色最多取 12 条最新人工决定；对去重后的
 `asset_id + content_revision` 逐项请求 loopback DINO embedding，并在发送前再次确认人工快照未变化。
+每个请求携带 schema revision、当前 catalog scope、canonical asset UUID 和十进制 content revision
+作为可选缓存键；后端再绑定实际 provider 的完整 encoder identity。无键调用与未配置缓存的服务保持
+既有行为，任何 identity/revision 不匹配或缓存损坏都只按 miss 重新计算。
 同步 rebuild payload 只含 canonical UUID/revision、embedding 和明确人工决定，不含原图、locator、路径
 或 bookmark。后端以当前 `bundle_revision + weights_sha256` 做 CAS，候选训练与完整重载校验成功后才
 原子切换 active bundle；App 再读取 capability，完整身份相等才报告成功。模块离线、样本不足、图片
@@ -971,6 +974,7 @@ App 用户触发闭环分别由 `dae828b`、`3fa349c`、`8b4cabc` 交付。
 归档标签后以旧 bundle CAS 重建当前 active 词表的窄修正由 `d717b3e` 交付。
 版本化 DINO embedding 缓存与 personal 全库 Review Queue tracer 分别由 `ed90bcb`、`f8ea5e7`
 交付；后者新增 v008 capability/prediction 表、local-only 分页推理、二次身份门与来源去重展示。
+Inspector 来源投影与 Swift 重建缓存键采用分别由 `c7eb0d2`、`abeb442` 收敛。
 该阶段把标准标签公共模型、个人标签 embedding/线性训练、Core ML 部署与可选 Ollama VLM
 适配器放入独立模块；模块未安装或不可用时，App 原有浏览、人工标签、历史标签预设和 Vision
 Feature Print 建议闭环必须完整运行。首个 encoder 固定为
