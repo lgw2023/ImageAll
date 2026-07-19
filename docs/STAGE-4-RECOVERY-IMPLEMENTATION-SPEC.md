@@ -156,9 +156,10 @@ Slice K 不提供配额调整、按来源/类型清理、Feature Print 清理、
 任务名称、状态、进度和可用动作；不得显示 payload、checkpoint、lease owner、底层路径、Photos
 identifier 或原始错误消息。
 
-MVP 任务名称只映射现有 `folder.reconcile.v1`、`photos.reconcile.v1` 和
-`personalization.fullLibrarySuggestions` kind；界面分别显示“文件夹同步”“Apple Photos 同步”和
-“个性化建议”。未知 kind 显示“后台任务”，不能暴露原始 kind。状态与动作遵循既有 Job 状态机：
+MVP 任务名称只映射现有 `folder.reconcile.v1`、`photos.reconcile.v1`、
+`personalization.fullLibrarySuggestions` 和 `personalization.personalLibrarySuggestions` kind；界面分别
+显示“文件夹同步”“Apple Photos 同步”和“个性化建议”，两个 personalization kind 共用安全的产品
+文案。未知 kind 显示“后台任务”，不能暴露原始 kind。状态与动作遵循既有 Job 状态机：
 
 - pending：暂停、取消；
 - running：请求暂停、请求取消；请求落库后立即显示“正在暂停”或“正在取消”；

@@ -577,19 +577,24 @@ revision 后，才能成为标准概念。
 若旧 active bundle 仍含刚归档的标签，personal 推理继续 fail closed；显式 rebuild 仍可使用该旧
 revision/weights 作为 CAS 基线，并把新 bundle 词表收敛到当前 active 标签，避免归档动作永久阻断更新。
 
-当前 personal 全库建议的首条 App tracer 也已接入统一审核闭环：用户只能从 Review Overview 显式
-启动，App 先读取并校验当前 catalog、active 标签词表与完整 bundle/encoder/policy identity，再按稳定
-Asset ID、每页 100 条串行读取本地预览并调用 personal `/v1/suggestions`。每次推理后重新读取
-capability；bundle、权重、encoder、词表或 policy 任一变化都清除该次 personal 可重建结果并 fail
-closed。iCloud-only 或其他本地预览不可用资产只计为跳过，不签发批量下载能力。一次响应可为同一
-资产产生多个既有 `tag_id`，但人工决定始终优先，机器结果固定为待审核建议。
+当前 personal 全库建议已接入统一持久任务与审核闭环：用户只能从 Review Overview 显式启动，App
+先读取并校验当前 catalog、active 标签词表与完整 bundle/encoder/policy identity，再在一个 GRDB 写
+事务中原子激活该 capability 并写入冻结 active source、catalog cutoff 与完整身份的持久 job。若已有
+非终态 personal job，只有 payload capability 与数据库 active identity 都完全相同时才幂等复用；
+其他冲突不替换 active identity，也不改旧 job。
+
+异步 handler 按稳定 Asset ID 继续 checkpoint，每个资产在 lease-protected 事务中一起提交 prediction、
+进度和 cursor。读取本地预览前后及推理后都核对 capability；bundle、权重、encoder、词表或 policy
+任一变化都清除该 capability 的可重建 personal 结果并 fail closed。iCloud-only 或其他本地预览不可用
+资产只计为跳过，不签发批量下载能力。一次响应可为同一资产产生多个既有 `tag_id`，但人工决定始终
+优先，机器结果固定为待审核建议。
 
 App 通过 v008 的 `personal_suggestion_model`、`personal_suggestion_tag` 和 `personal_prediction` 保存
 当前已确认的完整 capability 与可重建建议；bundle 切换以级联删除清理旧结果。personal 与 Feature
 Print 对同一 `asset_id + tag_id` 重叠时，Review Queue 只显示一次并明确标记“个人 DINO”来源，不
-横向比较两种 provider 的原始 score。该首条 tracer 仍是 App 运行期间的前台编排，只展示内存进度，
-尚未接入持久 job/checkpoint/pause/resume/cancel；规模化前必须复用第 12 节既有任务队列，不能另建
-第二套后台状态机。
+横向比较两种 provider 的原始 score。任务复用第 12 节既有队列，支持启动恢复、checkpoint、暂停、
+继续、取消与 retryable `not_before` 到期唤醒；失败或 App 重启不回滚已提交建议，且不另建第二套后台
+状态机。该能力仍只由用户显式触发，不构成自动后台重训。
 
 标准标签也允许用户接受或拒绝；这类人工决定服从统一优先级，但不会把标准概念改成个人标签。
 用户如果需要更细的个人语义，例如在标准“狗”下建立“我的宠物”，应创建独立个人标签并单独训练。
