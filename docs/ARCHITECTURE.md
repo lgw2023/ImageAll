@@ -593,7 +593,8 @@ App 通过 v008 的 `personal_suggestion_model`、`personal_suggestion_tag` 和 
 当前已确认的完整 capability 与可重建建议；bundle 切换以级联删除清理旧结果。personal 与 Feature
 Print 对同一 `asset_id + tag_id` 重叠时，Review Queue 只显示一次并明确标记“个人 DINO”来源，不
 横向比较两种 provider 的原始 score。任务复用第 12 节既有队列，支持启动恢复、checkpoint、暂停、
-继续、取消与 retryable `not_before` 到期唤醒；失败或 App 重启不回滚已提交建议，且不另建第二套后台
+继续、取消、retryable `not_before` 到期唤醒，以及服务恢复后的显式立即重试；失败或 App 重启不回滚
+已提交建议，且不另建第二套后台
 状态机。该能力仍只由用户显式触发，不构成自动后台重训。
 
 标准标签也允许用户接受或拒绝；这类人工决定服从统一优先级，但不会把标准概念改成个人标签。
@@ -982,6 +983,8 @@ App 用户触发闭环分别由 `dae828b`、`3fa349c`、`8b4cabc` 交付。
 Inspector 来源投影与 Swift 重建缓存键采用分别由 `c7eb0d2`、`abeb442` 收敛。
 personal 全库持久任务、Core ML 只读 compute plan 报告与 App 显式服务状态分别由 `e728bcd`、
 `23396a3`、`ecb62bb` 交付；服务状态仅在用户点击刷新后请求 loopback health，不负责启动服务或下载模型。
+Review Overview 的稳定 job 控制与 retryable 立即重试分别由 `62ed8eb`、`d7ec461` 交付；后者把延迟中的
+retryable job 原子恢复为立即可领取的 pending，并清除瞬态错误与租约，终态仍不可复活。
 该阶段把标准标签公共模型、个人标签 embedding/线性训练、Core ML 部署与可选 Ollama VLM
 适配器放入独立模块；模块未安装或不可用时，App 原有浏览、人工标签、历史标签预设和 Vision
 Feature Print 建议闭环必须完整运行。首个 encoder 固定为
@@ -1015,7 +1018,8 @@ PyTorch/standard。App 当前按 active 标签与人工决定生成不含图像/
 同步请求 `/v1/personal/rebuild`；后端在 managed store 内完成 `2 + 2` 复核、CAS、候选训练、完整加载、
 原子 `active.json` 与热重载，App 随后以 capability 二次确认。该动作只由用户显式触发，不增加异步
 job/progress/cancel 状态机。用户显式触发的 personal 全库建议现通过统一持久任务写入 Review Queue，
-支持 checkpoint、启动恢复、暂停、继续、取消与 retryable 到期唤醒；自动后台重训、标准概念持久化
+支持 checkpoint、启动恢复、暂停、继续、取消、retryable 到期唤醒与显式立即重试；自动后台重训、
+标准概念持久化
 schema/Review Queue、实际 Neural Engine 取证与生产模型安装继续分别验收。Review Overview 还可由
 用户显式刷新 loopback `GET /v1/health`，展示 ready/degraded/unavailable；该动作不会启动服务或下载模型。
 阶段 5 的双轨 gate 是：标准轨道零用户样本可运行，个人轨道无人工样本不运行，人工决定覆盖两类
