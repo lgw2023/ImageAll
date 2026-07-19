@@ -1,0 +1,70 @@
+{
+  "actual_device_allocation_verified": true,
+  "artifact": {
+    "encoder": {
+      "element_count": 384,
+      "model_id": "facebook/dinov2-small",
+      "model_revision": "ed25f3a31f01632728cabb09d1542f84ab7b0056",
+      "preprocessing_revision": "dinov2-hf-autoimageprocessor-v1",
+      "provider": "dinov2"
+    },
+    "model_sha256": "c7655594ef5a081b3abaa981e9311c7445e0fdf9d275cf546d95a4a77dd331a8"
+  },
+  "device": {
+    "model": "Mac mini",
+    "os_version": "26.5.1 (25F80)",
+    "platform": "macOS"
+  },
+  "evidence_kind": "instruments_coreml_resource_trace",
+  "instruments": {
+    "template": "Core ML",
+    "version": "16.0 (17F113)"
+  },
+  "neural_engine": {
+    "active_inference_interval_count": 1021,
+    "total_active_inference_duration_milliseconds": 2661.655171
+  },
+  "resource_benchmark": {
+    "acceptance_thresholds": {
+      "maximum_artifact_bytes": 83886080,
+      "maximum_cold_load_seconds": 2.0,
+      "maximum_median_milliseconds": 50.0,
+      "maximum_p95_milliseconds": 100.0,
+      "maximum_peak_rss_increment_bytes": 367001600,
+      "maximum_thermal_state": "fair",
+      "minimum_sequential_inference_count": 1000
+    },
+    "compute_units": "ALL",
+    "input_count": 8,
+    "input_generation_revision": "imageall-coreml-synthetic-tensor-v1",
+    "overall_passed": true,
+    "performance": {
+      "cold_load_seconds": 0.08732016599969938,
+      "dependency_initialization_seconds": 1.6016991670039715,
+      "measured_iterations": 1000,
+      "median_milliseconds": 2.724874997511506,
+      "p95_milliseconds": 2.819139551866101,
+      "warmup_iterations": 20
+    },
+    "resources": {
+      "artifact_bytes": 43424525,
+      "baseline_rss_bytes": 310083584,
+      "peak_rss_bytes": 363151360,
+      "peak_rss_increment_bytes": 53067776,
+      "sample_count": 1227,
+      "thermal_state_end": "nominal",
+      "thermal_state_max": "nominal",
+      "thermal_state_start": "nominal"
+    },
+    "stability": {
+      "inference_failure_count": 0,
+      "nonfinite_output_count": 0,
+      "sequential_inference_count": 1000
+    }
+  },
+  "schema_revision": 1,
+  "target": {
+    "exit_status": 0,
+    "termination_reason": "exit(0)"
+  }
+}

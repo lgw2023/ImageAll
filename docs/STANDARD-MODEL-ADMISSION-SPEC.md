@@ -125,6 +125,10 @@ ImageAll mapping 必须另做 concept-level 评测：
 - `.mlpackage` 及编译产物都要以内容 SHA-256 进入 manifest，转换过程不得联网补取权重；
 - 当前目标 Apple Silicon Mac 上：模型 artifact `<= 80 MiB`、冷加载 `<= 2 s`、单图预热后
   median `<= 50 ms`、p95 `<= 100 ms`、峰值 RSS 增量 `<= 350 MiB`；
+- “冷加载”从 Python/Core ML runtime 依赖初始化完成后开始，覆盖 manifest/checksum 校验与
+  `MLModel`/`CompiledMLModel` 装载；依赖初始化时长必须另列，不能并入后再静默忽略。RSS 基线同样在
+  依赖初始化和程序生成输入准备后、模型装载前采集。端到端“新进程启动 → 服务 ready”是独立产品门，
+  不得用本模型加载指标冒充；
 - 分别记录 `CPU_ONLY` 和 `ALL`。`ALL` 通过不等于实际 ANE 调度；在独立 ANE 门关闭前不得宣称 ANE；
 - 1000 次程序生成输入顺序推理必须零崩溃、零非有限输出，且不创建来源侧文件。
 

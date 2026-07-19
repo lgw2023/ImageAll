@@ -766,3 +766,21 @@ Backend 默认全量为 `152 passed, 2 skipped`；CLI help、compileall、sdist 
 [`coreml-ane-dinov2-small-2026-07-19.json`](./evidence/coreml-ane-dinov2-small-2026-07-19.json)。
 原始 Instruments trace 因包含本机环境快照已从 `/tmp` 删除且不入库；测试与运行仅使用既有离线模型
 缓存和程序生成图片，未读取 `user/`、`/Volumes/HDD2` 或 `.photoslibrary`，未修改 App/Xcode，未 push。
+
+同日 Core ML 运行资源与预编译安装验收：`f56f62c` 新增 runtime-only benchmark，冻结 80 MiB artifact、
+2 秒模型冷加载、50/100 ms median/p95、350 MiB RSS 增量、1,000 次零失败/零非有限输出及最高 fair
+thermal 门。最初把 Core ML Python 依赖首次导入与模型装载合并计时时，三次新进程分别为 2.430、
+3.359 和 2.513 秒，稳定失败；没有降低阈值。规格随后明确把依赖初始化单列，模型冷加载从 runtime
+ready 后开始，端到端“进程启动 → 服务 ready”保留为独立开放门。`4d570c2` 增加原子
+`imageall-install-coreml`：先完整验证 schema v1 `.mlpackage`，再只发布带 source/compiled 双 SHA 的
+schema v2 `encoder.mlmodelc`；目标已存在不覆盖，compiled 字节被改写即拒绝，compute-plan 兼容保持。
+
+预编译 artifact 的安全附加采样由 `b739cfe` 验证：resource trace verifier 会解开 xctrace 的 `id/ref`
+压缩，并重新核对固定 encoder、compiled SHA、冻结阈值、程序生成输入、资源/稳定性报告、目标 exit 0、
+Core ML 模板和 Active `AneInference` 行。最终 artifact 为 43,424,525 字节，依赖初始化 1.6017 秒、
+模型冷加载 0.0873 秒、RSS 增量 53,067,776 字节，1,000 次推理零失败/零非有限输出，thermal 始终
+nominal，median/p95 为 2.7249/2.8191 ms；同一 Instruments 运行记录 1,021 个 Active ANE inference
+区间，累计 2,661.655171 ms。去标识聚合结果见
+[`coreml-compiled-runtime-dinov2-small-2026-07-19.json`](./evidence/coreml-compiled-runtime-dinov2-small-2026-07-19.json)。
+本轮 Backend 全量为 `168 passed, 2 skipped`，compileall、sdist 与 wheel build 通过；运行环境在附加前
+清空为最小白名单，原始 trace/TOC 不入库。未读取受保护照片或 `user/`，未修改 App/Xcode，未 push。
