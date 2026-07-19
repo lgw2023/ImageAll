@@ -345,6 +345,7 @@ Photos 的 `localIdentifier` 只在当前本地照片库上下文中使用。跨
 | `asset_tag_decision` | `asset_id`, `tag_id`, `decision`, `updated_at` | 用户接受或拒绝的事实 |
 | `feature` | `asset_id`, `provider`, `revision`, `content_revision`, `cache_key` | 视觉特征索引 |
 | `standard_model_revision` | `standard_pack_id`, `standard_pack_revision`, `provider`, `model_revision`, `preprocessing_revision`, `mapping_revision`, `policy_revision`, `weights_sha256` | v009 一组标准概念共用的公共模型身份 |
+| `standard_prediction` | `asset_id`, `tag_id`, `content_revision`, `standard_pack_id`, `standard_pack_revision`, `score`, `recommended_state`, `state`, `created_at_ms` | v010 可重建标准结果；当前 `state` 固定为 `pendingReview` |
 | `tag_model` | `tag_id`, `current_revision` | 个人标签当前模型指针 |
 | `tag_model_revision` | `tag_id`, `revision`, `provider`, `threshold`, `sample_budget`, `created_at` | 不可变的个人标签模型版本；metrics 与 selection policy 尚未进入 v004 |
 | `tag_model_sample` | `tag_id`, `model_revision`, `asset_id`, `content_revision`, `role`, `rank` | 可复现的正负代表样本集合 |
@@ -354,8 +355,9 @@ Photos 的 `localIdentifier` 只在当前本地照片库上下文中使用。跨
 
 本表同时标明目标逻辑模型与当前实现。v009 已交付 ontology package、concept、edge、standard model
 identity 和 `standard_tag_binding`；它不改写 v001 `tag` DDL，而以绑定存在性投影 standard/personal
-命名空间。`prediction.track/policy_revision`、standard Review Queue 与 `autoAssigned` 仍是后续阶段 5
-能力；现有普通标签全部保守保持个人语义，不按名称自动绑定 concept。
+命名空间。v010 已交付 direct concept 的 `standard_prediction` 与 Review Queue 投影；即使 provider
+返回 `autoAssigned` recommendation，当前仍固定进入 `pendingReview`，不会绕过人工确认成为事实。
+现有普通标签全部保守保持个人语义，不按名称自动绑定 concept。
 
 关键约束：
 
@@ -363,7 +365,7 @@ identity 和 `standard_tag_binding`；它不改写 v001 `tag` DDL，而以绑定
 - 标准本地身份以 `ontology_id + concept_id` 唯一，绑定同时记录精确 ontology revision；当前 installer 对 revision/identity 冲突 fail closed，不迁移旧人工事实；
 - `ontology_edge` 必须引用同一 ontology revision，安装时拒绝环；DAG 允许一个子概念拥有多个父概念；
 - `asset_tag_decision(asset_id, tag_id)` 唯一；
-- `prediction(asset_id, tag_id, content_revision, model_revision)` 唯一；
+- `standard_prediction(asset_id, tag_id, content_revision)` 唯一；
 - `feature(asset_id, provider, revision, content_revision)` 唯一；
 - `tag_model_revision(tag_id, revision)` 唯一，`tag_model_sample(tag_id, model_revision, asset_id)` 唯一；`tag_model(tag_id, current_revision)` 必须引用已存在的 revision；
 - `tag_model` 与 `tag_model_sample` 只服务 `personal` 标签；标准模型版本不能混入用户个人样本；
@@ -971,7 +973,7 @@ System Photo Library 实际切换/显式重绑定、真实摄影格式/内容分
 
 ### 阶段 5：可选本地模型模块
 
-状态：独立双轨 tracer、HTTP、CLI 装载、Swift client transport、Inspector 标准/personal 单图流、DINOv2 Core ML FP16 导出/HTTP provider、用户触发的 personal 快照重建与原子 bundle 生命周期、持久 personal 全库任务、显式本地服务状态，以及 v009 标准概念持久化基座已实现；生产公共模型、standard Review Queue、实际 ANE 取证与自动后台训练仍待后续切片。独立 loopback 服务、
+状态：独立双轨 tracer、HTTP、CLI 装载、Swift client transport、Inspector 标准/personal 单图流、DINOv2 Core ML FP16 导出/HTTP provider、用户触发的 personal 快照重建与原子 bundle 生命周期、持久 personal 全库任务、显式本地服务状态、v009 标准概念持久化、v010 standard Review Queue 与显式单图发布已实现；生产公共模型、标准祖先展开、standard 全库任务、实际 ANE 取证与自动后台训练仍待后续切片。独立 loopback 服务、
 固定 revision 的 DINOv2-small、MPS 线性多标签 head、锁定依赖、真实模型 HTTP smoke 与无模块 App
 build 已由 `058a161` 交付；标准 package/fixture/HTTP 由 `c937299`、`f51c666`、`61b29f5` 交付，个人
 DINO 稀疏训练 CLI 与 suggestion HTTP 由 `abc5ef0`、`b92a01b` 交付，双轨启动装载由 `e447f80`
@@ -990,6 +992,9 @@ Review Overview 的稳定 job 控制与 retryable 立即重试分别由 `62ed8eb
 retryable job 原子恢复为立即可领取的 pending，并清除瞬态错误与租约，终态仍不可复活。
 v009 ontology package/concept/DAG/model identity、稳定 standard Tag 绑定及原子幂等 synthetic installer
 由 `c2884d9` 交付；历史 Tag DDL 与 identity 保持不变，同名 personal/standard 不合并。
+v010 standard prediction/Review Queue 与完整身份门由 `ce5dd34` 交付；显式 Inspector 请求的惰性
+fixture 安装、内容 revision 二次核对和成功发布后展示由 `1df422c` 交付。无任务的 personalization
+runner 不再发出可能覆盖当前 Review Queue 页面的启动刷新，窄修正由 `9c3abfe` 交付。
 该阶段把标准标签公共模型、个人标签 embedding/线性训练、Core ML 部署与可选 Ollama VLM
 适配器放入独立模块；模块未安装或不可用时，App 原有浏览、人工标签、历史标签预设和 Vision
 Feature Print 建议闭环必须完整运行。首个 encoder 固定为
@@ -1023,8 +1028,9 @@ PyTorch/standard。App 当前按 active 标签与人工决定生成不含图像/
 同步请求 `/v1/personal/rebuild`；后端在 managed store 内完成 `2 + 2` 复核、CAS、候选训练、完整加载、
 原子 `active.json` 与热重载，App 随后以 capability 二次确认。该动作只由用户显式触发，不增加异步
 job/progress/cancel 状态机。用户显式触发的 personal 全库建议现通过统一持久任务写入 Review Queue，
-支持 checkpoint、启动恢复、暂停、继续、取消、retryable 到期唤醒与显式立即重试；自动后台重训、
-standard prediction/Review Queue、实际 Neural Engine 取证与生产模型安装继续分别验收。Review Overview 还可由
+支持 checkpoint、启动恢复、暂停、继续、取消、retryable 到期唤醒与显式立即重试。standard direct
+concept 已经由显式 Inspector 请求进入 v010 Review Queue；祖先展开、standard 全库任务、自动后台重训、
+实际 Neural Engine 取证与生产模型安装继续分别验收。Review Overview 还可由
 用户显式刷新 loopback `GET /v1/health`，展示 ready/degraded/unavailable；该动作不会启动服务或下载模型。
 阶段 5 的双轨 gate 是：标准轨道零用户样本可运行，个人轨道无人工样本不运行，人工决定覆盖两类
 机器结果，模型模块缺失不影响 App，自动化测试不读取受保护真实照片。
@@ -1056,7 +1062,7 @@ standard prediction/Review Queue、实际 Neural Engine 取证与生产模型安
 | ADR-021 | 常用标签预设只幂等创建普通 Tag | 已交付，阶段 5 语义由 ADR-024 取代 | 该行为继续作为历史兼容；双轨迁移时全部保守视为个人标签，不按名称自动绑定标准概念 |
 | ADR-022 | 后续 Hugging Face 模型通过可替换本地推理边界接入 | 已决定方向，具体模型待评估 | 当前轻量算法只承担可运行基线；目录库和审核闭环不绑定模型仓库或 runtime，模型替换只失效派生数据并保留人工事实 |
 | ADR-023 | Hugging Face 模型先进入独立 loopback 模块，训练用 PyTorch/MPS，App 部署主线用 Core ML，Ollama 仅作可选 VLM adapter | 首个 tracer slice 已实施 | DINO/SigLIP/FastViT 并非 Ollama 原生训练对象；隔离 runtime 可保持 App 无模块运行，并让每个 provider、权重和预处理 revision 独立失效与评测 |
-| ADR-024 | 标签定义分为版本化标准概念与用户个人标签；赋值另分人工事实、标准自动结果和待审核建议 | 持久化基座已实现，standard prediction 待实现 | 公共模型提供零样本初始价值，个人模型随用户反馈长期学习；v009 以绑定表区分命名空间，人工决定统一优先 |
+| ADR-024 | 标签定义分为版本化标准概念与用户个人标签；赋值另分人工事实、标准自动结果和待审核建议 | standard prediction/Review Queue 已实现，自动赋值仍待校准 | 公共模型提供零样本初始价值，个人模型随用户反馈长期学习；v009 以绑定表区分命名空间，v010 固定 pending Review，人工决定统一优先 |
 | ADR-025 | 标准标签使用版本化 ontology DAG 和独立公共模型生命周期 | ontology/model identity 已实现，生产包待实现 | 一个概念可属于多个父类；model、mapping、policy 与 ontology 分别版本化，冲突安装不迁移人工决定 |
 | ADR-026 | personal bundle 使用持久化 catalog scope 与完整 capability 身份握手，建议只在 Inspector 临时展示 | 已实现 | 防止跨目录库、旧 bundle、错 encoder/权重或未知标签串用；只有用户明确接受或拒绝后才复用人工标签事务，模块不可用时原功能不受影响 |
 | ADR-027 | personal 重建使用同步 embedding/manual-decision snapshot 与 managed store 原子 active 指针 | 已实现 | personal endpoint 已限定轨道，无需持久异步 job；CAS、候选完整校验和 capability 二次确认防止旧快照或半 bundle 生效，失败继续使用旧模型 |
