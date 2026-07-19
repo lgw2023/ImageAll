@@ -317,6 +317,18 @@ final class PersonalizedSuggestionService: @unchecked Sendable {
 }
 
 final class LoopbackModelSuggestionClient: LocalModelSuggestionClient, @unchecked Sendable {
+    private struct HealthResponsePayload: Decodable {
+        let status: String
+        let serviceVersion: String
+        let provider: PersonalTrainingEncoderIdentity?
+
+        enum CodingKeys: String, CodingKey {
+            case status
+            case serviceVersion = "service_version"
+            case provider
+        }
+    }
+
     private struct EmbeddingRequestPayload: Encodable {
         struct CacheKey: Encodable {
             let schemaRevision = 1
@@ -613,6 +625,61 @@ final class LoopbackModelSuggestionClient: LocalModelSuggestionClient, @unchecke
         }
         self.endpoint = endpoint
         self.session = session
+    }
+
+    func serviceHealth() async throws -> LocalModelServiceHealth {
+        var request = URLRequest(
+            url: endpoint.appendingPathComponent("v1/health"),
+            timeoutInterval: 10
+        )
+        request.httpMethod = "GET"
+
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await session.data(for: request)
+        } catch {
+            throw LocalModelSuggestionClientError.serviceUnavailable
+        }
+        guard let http = response as? HTTPURLResponse else {
+            throw LocalModelSuggestionClientError.invalidResponse
+        }
+        guard (200 ... 299).contains(http.statusCode) else {
+            let code = try? JSONDecoder()
+                .decode(ErrorResponsePayload.self, from: data)
+                .detail.code
+            throw LocalModelSuggestionClientError.rejected(
+                statusCode: http.statusCode,
+                code: code
+            )
+        }
+        guard let payload = try? JSONDecoder().decode(
+            HealthResponsePayload.self,
+            from: data
+        ),
+            !payload.serviceVersion.isEmpty
+        else {
+            throw LocalModelSuggestionClientError.invalidResponse
+        }
+        switch (payload.status, payload.provider) {
+        case let ("ready", provider?):
+            guard !provider.provider.isEmpty,
+                  !provider.modelID.isEmpty,
+                  !provider.modelRevision.isEmpty,
+                  !provider.preprocessingRevision.isEmpty,
+                  provider.elementCount > 0
+            else {
+                throw LocalModelSuggestionClientError.invalidResponse
+            }
+            return .ready(
+                serviceVersion: payload.serviceVersion,
+                provider: provider
+            )
+        case ("degraded", nil):
+            return .degraded(serviceVersion: payload.serviceVersion)
+        default:
+            throw LocalModelSuggestionClientError.invalidResponse
+        }
     }
 
     func personalCapability() async throws -> PersonalModelSuggestionCapabilityAvailability {

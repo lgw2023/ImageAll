@@ -4,6 +4,126 @@ import XCTest
 @testable import ImageAll
 
 final class PersonalizedSuggestionServiceTests: XCTestCase {
+    func testLoopbackClientReturnsValidatedReadyServiceHealth() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [ModelSuggestionURLProtocolStub.self]
+        ModelSuggestionURLProtocolStub.handler = { request in
+            XCTAssertEqual(request.url?.path, "/v1/health")
+            XCTAssertEqual(request.httpMethod, "GET")
+            return (
+                HTTPURLResponse(
+                    url: try XCTUnwrap(request.url),
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: ["Content-Type": "application/json"]
+                )!,
+                Data(
+                    """
+                    {
+                      "status": "ready",
+                      "service_version": "0.1.0",
+                      "provider": {
+                        "provider": "dinov2",
+                        "model_id": "facebook/dinov2-small",
+                        "model_revision": "model-v1",
+                        "preprocessing_revision": "preprocessing-v1",
+                        "element_count": 384
+                      }
+                    }
+                    """.utf8
+                )
+            )
+        }
+        defer { ModelSuggestionURLProtocolStub.handler = nil }
+        let client = try LoopbackModelSuggestionClient(
+            session: URLSession(configuration: configuration)
+        )
+
+        let health = try await client.serviceHealth()
+
+        XCTAssertEqual(
+            health,
+            .ready(
+                serviceVersion: "0.1.0",
+                provider: PersonalTrainingEncoderIdentity(
+                    provider: "dinov2",
+                    modelID: "facebook/dinov2-small",
+                    modelRevision: "model-v1",
+                    preprocessingRevision: "preprocessing-v1",
+                    elementCount: 384
+                )
+            )
+        )
+    }
+
+    func testLoopbackClientReturnsDegradedServiceHealthWithoutProvider() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [ModelSuggestionURLProtocolStub.self]
+        ModelSuggestionURLProtocolStub.handler = { request in
+            XCTAssertEqual(request.url?.path, "/v1/health")
+            return (
+                HTTPURLResponse(
+                    url: try XCTUnwrap(request.url),
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: ["Content-Type": "application/json"]
+                )!,
+                Data(
+                    """
+                    {
+                      "status": "degraded",
+                      "service_version": "0.1.0",
+                      "provider": null
+                    }
+                    """.utf8
+                )
+            )
+        }
+        defer { ModelSuggestionURLProtocolStub.handler = nil }
+        let client = try LoopbackModelSuggestionClient(
+            session: URLSession(configuration: configuration)
+        )
+
+        let health = try await client.serviceHealth()
+
+        XCTAssertEqual(health, .degraded(serviceVersion: "0.1.0"))
+    }
+
+    func testLoopbackClientRejectsReadyHealthWithoutProvider() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [ModelSuggestionURLProtocolStub.self]
+        ModelSuggestionURLProtocolStub.handler = { request in
+            (
+                HTTPURLResponse(
+                    url: try XCTUnwrap(request.url),
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: ["Content-Type": "application/json"]
+                )!,
+                Data(
+                    """
+                    {
+                      "status": "ready",
+                      "service_version": "0.1.0",
+                      "provider": null
+                    }
+                    """.utf8
+                )
+            )
+        }
+        defer { ModelSuggestionURLProtocolStub.handler = nil }
+        let client = try LoopbackModelSuggestionClient(
+            session: URLSession(configuration: configuration)
+        )
+
+        do {
+            _ = try await client.serviceHealth()
+            XCTFail("Expected inconsistent health payload to fail closed")
+        } catch let error as LocalModelSuggestionClientError {
+            XCTAssertEqual(error, .invalidResponse)
+        }
+    }
+
     func testLoopbackClientReturnsAValidatedTrainingEmbedding() async throws {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [ModelSuggestionURLProtocolStub.self]

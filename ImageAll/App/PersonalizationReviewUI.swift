@@ -15,6 +15,26 @@ struct ReviewOverviewView: View {
             if model.supportsPersonalLibrarySuggestions {
                 Section("个人模型") {
                     VStack(alignment: .leading, spacing: 8) {
+                        Text(localModelServiceStatusText)
+                            .font(.caption)
+                            .foregroundStyle(localModelServiceStatusColor)
+                        Button {
+                            Task { await model.refreshLocalModelServiceHealth() }
+                        } label: {
+                            if model.localModelServiceHealthState == .checking {
+                                HStack(spacing: 8) {
+                                    ProgressView().controlSize(.small)
+                                    Text("正在检查本地服务")
+                                }
+                            } else {
+                                Label("刷新服务状态", systemImage: "arrow.clockwise")
+                            }
+                        }
+                        .disabled(model.localModelServiceHealthState == .checking)
+                        .help("只检查本机回环服务，不会启动服务或下载模型")
+
+                        Divider()
+
                         Text(personalLibraryStatusText)
                             .font(.caption)
                             .foregroundStyle(personalLibraryStatusColor)
@@ -115,6 +135,34 @@ struct ReviewOverviewView: View {
             ToolbarItem(placement: .navigation) {
                 Button("返回图库", action: onBack)
             }
+        }
+    }
+
+    private var localModelServiceStatusText: String {
+        switch model.localModelServiceHealthState {
+        case .unchecked:
+            "本地模型服务尚未检查。"
+        case .checking:
+            "正在检查本地模型服务…"
+        case let .ready(serviceVersion, provider):
+            "服务已就绪 · \(provider.provider) / \(provider.modelID) · v\(serviceVersion)"
+        case let .degraded(serviceVersion):
+            "服务已连接，但尚未加载模型 · v\(serviceVersion)"
+        case .unavailable:
+            "本地模型服务未运行；现有照片、标签和 Feature Print 不受影响。"
+        }
+    }
+
+    private var localModelServiceStatusColor: Color {
+        switch model.localModelServiceHealthState {
+        case .ready:
+            .green
+        case .degraded:
+            .orange
+        case .unavailable:
+            .red
+        case .unchecked, .checking:
+            .secondary
         }
     }
 

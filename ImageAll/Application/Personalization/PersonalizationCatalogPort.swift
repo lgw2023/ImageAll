@@ -330,7 +330,27 @@ enum LocalModelSuggestionClientError: Error, Equatable, Sendable {
     case identityMismatch
 }
 
+enum LocalModelServiceHealth: Equatable, Sendable {
+    case ready(
+        serviceVersion: String,
+        provider: PersonalTrainingEncoderIdentity
+    )
+    case degraded(serviceVersion: String)
+}
+
+enum LocalModelServiceHealthPresentationState: Equatable, Sendable {
+    case unchecked
+    case checking
+    case ready(
+        serviceVersion: String,
+        provider: PersonalTrainingEncoderIdentity
+    )
+    case degraded(serviceVersion: String)
+    case unavailable
+}
+
 protocol LocalModelSuggestionClient: Sendable {
+    func serviceHealth() async throws -> LocalModelServiceHealth
     func personalCapability() async throws -> PersonalModelSuggestionCapabilityAvailability
     func embedding(
         imageData: Data,
@@ -350,6 +370,10 @@ protocol LocalModelSuggestionClient: Sendable {
 }
 
 extension LocalModelSuggestionClient {
+    func serviceHealth() async throws -> LocalModelServiceHealth {
+        throw LocalModelSuggestionClientError.serviceUnavailable
+    }
+
     func personalCapability() async throws -> PersonalModelSuggestionCapabilityAvailability {
         .unavailable
     }

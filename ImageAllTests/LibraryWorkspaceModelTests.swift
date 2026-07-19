@@ -4,6 +4,64 @@ import XCTest
 
 @MainActor
 final class LibraryWorkspaceModelTests: XCTestCase {
+    func testRefreshingLocalModelServiceHealthPublishesReadyProvider() async {
+        let provider = PersonalTrainingEncoderIdentity(
+            provider: "dinov2",
+            modelID: "facebook/dinov2-small",
+            modelRevision: "model-v1",
+            preprocessingRevision: "preprocessing-v1",
+            elementCount: 384
+        )
+        let client = FakeLocalModelSuggestionClient(
+            result: .success([]),
+            serviceHealthResult: .success(
+                .ready(serviceVersion: "0.1.0", provider: provider)
+            )
+        )
+        let model = LibraryWorkspaceModel(
+            service: FakeLibraryWorkspaceService(
+                connectedSource: LibrarySourceSummary(
+                    id: UUID(),
+                    displayName: "Fixture",
+                    state: .active
+                ),
+                reconciledItems: []
+            ),
+            localModelSuggestions: Self.makeStandardRuntime(client: client)
+        )
+
+        XCTAssertEqual(model.localModelServiceHealthState, .unchecked)
+        XCTAssertEqual(client.serviceHealthCallCount, 0)
+
+        await model.refreshLocalModelServiceHealth()
+
+        XCTAssertEqual(
+            model.localModelServiceHealthState,
+            .ready(serviceVersion: "0.1.0", provider: provider)
+        )
+        XCTAssertEqual(client.serviceHealthCallCount, 1)
+    }
+
+    func testRefreshingUnavailableLocalModelServicePublishesSafeState() async {
+        let client = FakeLocalModelSuggestionClient(result: .success([]))
+        let model = LibraryWorkspaceModel(
+            service: FakeLibraryWorkspaceService(
+                connectedSource: LibrarySourceSummary(
+                    id: UUID(),
+                    displayName: "Fixture",
+                    state: .active
+                ),
+                reconciledItems: []
+            ),
+            localModelSuggestions: Self.makeStandardRuntime(client: client)
+        )
+
+        await model.refreshLocalModelServiceHealth()
+
+        XCTAssertEqual(model.localModelServiceHealthState, .unavailable)
+        XCTAssertEqual(client.serviceHealthCallCount, 1)
+    }
+
     func testPortableExportPublishesVisibleSuccessNotice() async {
         let sourceID = UUID()
         let parentURL = FileManager.default.temporaryDirectory
@@ -3884,11 +3942,13 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
 private final class FakeLocalModelSuggestionClient: LocalModelSuggestionClient, @unchecked Sendable {
     private let lock = NSLock()
     private let result: Result<[LocalModelSuggestion], LocalModelSuggestionClientError>
+    private let serviceHealthResult: Result<LocalModelServiceHealth, LocalModelSuggestionClientError>
     private let blocksRequests: Bool
     private var storedPersonalCapabilities: [PersonalModelSuggestionCapabilityAvailability]
     private let embeddingResult: Result<PersonalTrainingEmbedding, LocalModelSuggestionClientError>
     private let rebuildResult: Result<PersonalModelSuggestionCapability, LocalModelSuggestionClientError>
     private var storedCallCount = 0
+    private var storedServiceHealthCallCount = 0
     private var storedEmbeddingCallCount = 0
     private var storedEmbeddingCacheKeys: [PersonalTrainingEmbeddingCacheKey?] = []
     private var storedRebuildCallCount = 0
@@ -3901,6 +3961,7 @@ private final class FakeLocalModelSuggestionClient: LocalModelSuggestionClient, 
 
     init(
         result: Result<[LocalModelSuggestion], LocalModelSuggestionClientError>,
+        serviceHealthResult: Result<LocalModelServiceHealth, LocalModelSuggestionClientError> = .failure(.serviceUnavailable),
         personalCapability: PersonalModelSuggestionCapabilityAvailability = .unavailable,
         personalCapabilities: [PersonalModelSuggestionCapabilityAvailability]? = nil,
         embeddingResult: Result<PersonalTrainingEmbedding, LocalModelSuggestionClientError> = .failure(.serviceUnavailable),
@@ -3908,6 +3969,7 @@ private final class FakeLocalModelSuggestionClient: LocalModelSuggestionClient, 
         blocksRequests: Bool = false
     ) {
         self.result = result
+        self.serviceHealthResult = serviceHealthResult
         storedPersonalCapabilities = personalCapabilities ?? [personalCapability]
         self.embeddingResult = embeddingResult
         self.rebuildResult = rebuildResult
@@ -3916,6 +3978,10 @@ private final class FakeLocalModelSuggestionClient: LocalModelSuggestionClient, 
 
     var callCount: Int {
         lock.withLock { storedCallCount }
+    }
+
+    var serviceHealthCallCount: Int {
+        lock.withLock { storedServiceHealthCallCount }
     }
 
     var lastImageData: Data? {
@@ -3972,6 +4038,11 @@ private final class FakeLocalModelSuggestionClient: LocalModelSuggestionClient, 
             storedPersonalCapabilityCallCount += 1
             return storedPersonalCapabilities[index]
         }
+    }
+
+    func serviceHealth() async throws -> LocalModelServiceHealth {
+        lock.withLock { storedServiceHealthCallCount += 1 }
+        return try serviceHealthResult.get()
     }
 
     func embedding(

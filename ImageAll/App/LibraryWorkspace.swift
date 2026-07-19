@@ -151,6 +151,7 @@ final class LibraryWorkspaceModel: ObservableObject {
     @Published private(set) var assetPendingSuggestions: [AssetPendingSuggestion] = []
     @Published private(set) var cloudPreviewState: CloudPreviewPresentationState = .hidden
     @Published private(set) var localModelSuggestionState: LocalModelSuggestionPresentationState = .hidden
+    @Published private(set) var localModelServiceHealthState: LocalModelServiceHealthPresentationState = .unchecked
     @Published private(set) var localModelSuggestionTrack: ModelSuggestionTrack = .standard
     @Published private(set) var personalLibrarySuggestionState: PersonalLibrarySuggestionPresentationState = .idle
     @Published private(set) var isRebuildingPersonalModel = false
@@ -458,6 +459,29 @@ final class LibraryWorkspaceModel: ObservableObject {
             }
         } catch {
             notice = .previewCacheActionFailed
+        }
+    }
+
+    func refreshLocalModelServiceHealth() async {
+        guard let localModelSuggestions else {
+            localModelServiceHealthState = .unavailable
+            return
+        }
+        localModelServiceHealthState = .checking
+        do {
+            switch try await localModelSuggestions.client.serviceHealth() {
+            case let .ready(serviceVersion, provider):
+                localModelServiceHealthState = .ready(
+                    serviceVersion: serviceVersion,
+                    provider: provider
+                )
+            case let .degraded(serviceVersion):
+                localModelServiceHealthState = .degraded(
+                    serviceVersion: serviceVersion
+                )
+            }
+        } catch {
+            localModelServiceHealthState = .unavailable
         }
     }
 
