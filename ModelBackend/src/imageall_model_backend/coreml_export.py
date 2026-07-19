@@ -17,7 +17,7 @@ from imageall_model_backend.providers import EmbeddingProviderIdentity
 COREML_ARTIFACT_SCHEMA_REVISION = 1
 COREML_MODEL_PACKAGE_NAME = "encoder.mlpackage"
 COREML_MANIFEST_NAME = "manifest.json"
-COREML_BENCHMARK_SCHEMA_REVISION = 1
+COREML_BENCHMARK_SCHEMA_REVISION = 2
 COREML_MINIMUM_COSINE_SIMILARITY = 0.999
 COREML_MAXIMUM_RELATIVE_L2_ERROR = 0.02
 
@@ -255,6 +255,7 @@ def benchmark_coreml_artifact(
         )
 
     compute_unit_results: dict[str, object] = {}
+    all_artifact: CoreMLArtifact | None = None
     for name, compute_units in (
         ("CPU_ONLY", ct.ComputeUnit.CPU_ONLY),
         ("ALL", ct.ComputeUnit.ALL),
@@ -264,6 +265,8 @@ def benchmark_coreml_artifact(
             expected_encoder_identity=expected_encoder_identity,
             compute_units=compute_units,
         )
+        if name == "ALL":
+            all_artifact = artifact
         numpy_inputs = tuple(
             np.asarray(value.numpy(), dtype=np.float32) for value in cpu_inputs
         )
@@ -294,6 +297,8 @@ def benchmark_coreml_artifact(
     manifest = json.loads(
         (Path(bundle_path) / COREML_MANIFEST_NAME).read_text(encoding="utf-8")
     )
+    if all_artifact is None:
+        raise RuntimeError("Core ML ALL artifact was not loaded")
     return {
         "schema_revision": COREML_BENCHMARK_SCHEMA_REVISION,
         "artifact": {
@@ -307,10 +312,115 @@ def benchmark_coreml_artifact(
             "maximum_relative_l2_error": COREML_MAXIMUM_RELATIVE_L2_ERROR,
         },
         "compute_units": compute_unit_results,
+        "compute_plan": _coreml_compute_plan_summary(all_artifact),
         "overall_passed": all(
             result["numerical"]["passed"]
             for result in compute_unit_results.values()
         ),
+    }
+
+
+def _coreml_compute_plan_summary(artifact: CoreMLArtifact) -> dict[str, object]:
+    from coremltools.models.compute_device import (
+        MLComputeDevice,
+        MLCPUComputeDevice,
+        MLGPUComputeDevice,
+        MLNeuralEngineComputeDevice,
+    )
+    from coremltools.models.compute_plan import MLComputePlan
+
+    ct = _coremltools()
+    device_types = (
+        (MLCPUComputeDevice, "cpu"),
+        (MLGPUComputeDevice, "gpu"),
+        (MLNeuralEngineComputeDevice, "neural_engine"),
+    )
+
+    def device_name(device: object) -> str:
+        for device_type, name in device_types:
+            if isinstance(device, device_type):
+                return name
+        raise RuntimeError("Core ML compute plan returned an unknown device")
+
+    compiled_model_path = artifact._model.get_compiled_model_path()
+    compute_plan = MLComputePlan.load_from_path(
+        compiled_model_path,
+        compute_units=ct.ComputeUnit.ALL,
+    )
+    program = compute_plan.model_structure.program
+    if program is None:
+        raise RuntimeError("Core ML compute plan is not an ML Program")
+
+    accessible_counts = {"cpu": 0, "gpu": 0, "neural_engine": 0}
+    neural_engine_total_core_count = 0
+    for device in MLComputeDevice.get_all_compute_devices():
+        name = device_name(device)
+        accessible_counts[name] += 1
+        if name == "neural_engine":
+            neural_engine_total_core_count += device.total_core_count
+
+    preferred_counts = {"cpu": 0, "gpu": 0, "neural_engine": 0}
+    supported_counts = {"cpu": 0, "gpu": 0, "neural_engine": 0}
+    estimated_costs = {
+        "cpu": 0.0,
+        "gpu": 0.0,
+        "neural_engine": 0.0,
+        "unknown": 0.0,
+    }
+    total_operations = 0
+    operations_with_device_usage = 0
+
+    def visit_block(block: Any) -> None:
+        nonlocal total_operations, operations_with_device_usage
+        for operation in block.operations:
+            total_operations += 1
+            usage = compute_plan.get_compute_device_usage_for_mlprogram_operation(
+                operation
+            )
+            preferred_name = "unknown"
+            if usage is not None:
+                operations_with_device_usage += 1
+                preferred_name = device_name(usage.preferred_compute_device)
+                preferred_counts[preferred_name] += 1
+                supported_names = {
+                    device_name(device)
+                    for device in usage.supported_compute_devices
+                }
+                if preferred_name not in supported_names:
+                    raise RuntimeError(
+                        "Core ML compute plan preferred device is not supported"
+                    )
+                for name in supported_names:
+                    supported_counts[name] += 1
+
+            cost = compute_plan.get_estimated_cost_for_mlprogram_operation(operation)
+            if cost is not None:
+                weight = float(cost.weight)
+                if not np.isfinite(weight) or weight < 0.0 or weight > 1.0:
+                    raise RuntimeError("Core ML compute plan cost is invalid")
+                estimated_costs[preferred_name] += weight
+            for nested_block in operation.blocks:
+                visit_block(nested_block)
+
+    for function in program.functions.values():
+        visit_block(function.block)
+
+    if total_operations < 1 or operations_with_device_usage < 1:
+        raise RuntimeError("Core ML compute plan has no device usage evidence")
+    return {
+        "requested_compute_units": "ALL",
+        "evidence_kind": "anticipated_compute_plan",
+        "actual_device_allocation_verified": False,
+        "accessible_compute_devices": accessible_counts,
+        "neural_engine_total_core_count": neural_engine_total_core_count,
+        "operations": {
+            "total": total_operations,
+            "with_device_usage": operations_with_device_usage,
+            "without_device_usage": total_operations - operations_with_device_usage,
+            "preferred_compute_device_counts": preferred_counts,
+            "supported_compute_device_counts": supported_counts,
+            "estimated_cost_weight_by_preferred_compute_device": estimated_costs,
+        },
     }
 
 

@@ -65,10 +65,21 @@ def test_pinned_dinov2_small_converts_and_passes_coreml_fp16_gate(
     report = json.loads((output_dir / "benchmark.json").read_text())
     manifest = json.loads((output_dir / "manifest.json").read_text())
     assert exit_code == 0
+    assert report["schema_revision"] == 2
     assert report["overall_passed"] is True
     assert report["input_generation_revision"] == (
         "imageall-dinov2-synthetic-rgb-processor-v1"
     )
+    compute_plan = report["compute_plan"]
+    assert compute_plan["evidence_kind"] == "anticipated_compute_plan"
+    assert compute_plan["actual_device_allocation_verified"] is False
+    assert compute_plan["neural_engine_total_core_count"] > 0
+    assert compute_plan["operations"]["preferred_compute_device_counts"][
+        "neural_engine"
+    ] > 0
+    assert compute_plan["operations"][
+        "estimated_cost_weight_by_preferred_compute_device"
+    ]["neural_engine"] > 0
     assert manifest["encoder"]["model_id"] == "facebook/dinov2-small"
     assert manifest["encoder"]["model_revision"] == (
         "ed25f3a31f01632728cabb09d1542f84ab7b0056"

@@ -164,7 +164,7 @@ def test_coreml_benchmark_reports_numerical_and_requested_compute_units(
         measured_iterations=3,
     )
 
-    assert report["schema_revision"] == 1
+    assert report["schema_revision"] == 2
     assert report["artifact"]["model_sha256"] == json.loads(
         (output_dir / "manifest.json").read_text()
     )["model_sha256"]
@@ -191,3 +191,61 @@ def test_coreml_benchmark_reports_numerical_and_requested_compute_units(
         assert result["performance"]["measured_iterations"] == 3
         assert result["performance"]["median_milliseconds"] > 0
         assert result["performance"]["p95_milliseconds"] > 0
+
+
+def test_coreml_benchmark_reports_anticipated_compute_plan_without_claiming_actual_allocation(
+    tmp_path,
+) -> None:
+    output_dir = tmp_path / "coreml-bundle"
+    source_model = _TinyEmbeddingModel().eval()
+    example_input = torch.ones((1, 3, 8, 8), dtype=torch.float32)
+    convert_embedding_model_to_coreml(
+        model=source_model,
+        encoder_identity=_fixture_identity(),
+        example_input=example_input,
+        output_dir=output_dir,
+    )
+
+    report = benchmark_coreml_artifact(
+        bundle_path=output_dir,
+        expected_encoder_identity=_fixture_identity(),
+        source_model=source_model,
+        inputs=(example_input,),
+        warmup_iterations=0,
+        measured_iterations=1,
+    )
+
+    compute_plan = report["compute_plan"]
+    assert compute_plan["requested_compute_units"] == "ALL"
+    assert compute_plan["evidence_kind"] == "anticipated_compute_plan"
+    assert compute_plan["actual_device_allocation_verified"] is False
+    assert compute_plan["accessible_compute_devices"]["cpu"] >= 1
+    assert compute_plan["accessible_compute_devices"]["gpu"] >= 1
+    assert compute_plan["accessible_compute_devices"]["neural_engine"] >= 1
+    assert compute_plan["neural_engine_total_core_count"] > 0
+
+    operations = compute_plan["operations"]
+    assert operations["total"] > 0
+    assert operations["with_device_usage"] > 0
+    assert operations["with_device_usage"] + operations["without_device_usage"] == (
+        operations["total"]
+    )
+    assert set(operations["preferred_compute_device_counts"]) == {
+        "cpu",
+        "gpu",
+        "neural_engine",
+    }
+    assert set(operations["supported_compute_device_counts"]) == {
+        "cpu",
+        "gpu",
+        "neural_engine",
+    }
+    assert set(operations["estimated_cost_weight_by_preferred_compute_device"]) == {
+        "cpu",
+        "gpu",
+        "neural_engine",
+        "unknown",
+    }
+    assert sum(operations["preferred_compute_device_counts"].values()) == operations[
+        "with_device_usage"
+    ]
