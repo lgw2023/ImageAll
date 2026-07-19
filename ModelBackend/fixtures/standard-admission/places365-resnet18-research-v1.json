@@ -1,0 +1,55 @@
+{
+  "candidate": {
+    "code_license_id": "MIT",
+    "code_license_sha256": "d4e65e5f2171ee6cca57b0f15ef1da5f11e91a170b6f4511342574b8e2d046c2",
+    "model_id": "csailvision/places365-resnet18",
+    "model_revision": "upstream-8a953ed-weights-2f47592",
+    "preprocessing_revision": "places365-resnet18-center-crop-v1",
+    "provider": "places365-resnet18",
+    "upstream_readme_sha256": "1de70ec4bb303cc7e8ab569bbdb7ab835112ee5c16cdbb73328acbb33895b521",
+    "upstream_revision": "8a953ed56438726dc98bdef3796d042e7f1f171e",
+    "weights_license_evidence_sha256": "1de70ec4bb303cc7e8ab569bbdb7ab835112ee5c16cdbb73328acbb33895b521",
+    "weights_license_id": "LicenseRef-Places365-Pretrained-CC-BY-Unversioned",
+    "weights_license_verified": false,
+    "weights_sha256": "2f4759217d470da2b803f8f66cd4488a066406b555a5fb95ee9a4663f9f05588",
+    "weights_sha256_verified": false
+  },
+  "coreml": {
+    "artifact_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "compiled_artifact_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "maximum_relative_l2": 0.0,
+    "measured": false,
+    "minimum_cosine": 0.0,
+    "sample_count": 0,
+    "top1_match_rate": 0.0
+  },
+  "dataset": {
+    "license_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "manifest_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "verified": false
+  },
+  "pack": {
+    "measured": false,
+    "suggested_only": true,
+    "validated": false
+  },
+  "quality": {
+    "concepts": [],
+    "measured": false,
+    "micro_coverage": 0.0,
+    "micro_precision": 0.0,
+    "provider_top1_accuracy": 0.0,
+    "provider_top5_accuracy": 0.0
+  },
+  "resources": {
+    "artifact_bytes": 0,
+    "cold_load_seconds": 0.0,
+    "measured": false,
+    "median_inference_ms": 0.0,
+    "p95_inference_ms": 0.0,
+    "peak_rss_increment_bytes": 0,
+    "sequential_failure_count": 0,
+    "sequential_inference_count": 0
+  },
+  "schema_revision": 1
+}
