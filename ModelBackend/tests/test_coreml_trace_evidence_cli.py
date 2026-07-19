@@ -8,6 +8,7 @@ from imageall_model_backend import coreml_trace_evidence_cli
 from imageall_model_backend.coreml_trace_evidence import (
     CoreMLTraceEvidenceError,
     verify_coreml_trace_evidence,
+    verify_coreml_resource_trace_evidence,
 )
 
 
@@ -104,6 +105,52 @@ def _ane_intervals(*, include_row: bool = True, state: str = "Active") -> str:
   </node>
 </trace-query-result>
 """
+
+
+def _resource_report() -> dict:
+    return {
+        "schema_revision": 1,
+        "overall_passed": True,
+        "compute_units": "ALL",
+        "input_count": 8,
+        "input_generation_revision": "imageall-coreml-synthetic-tensor-v1",
+        "artifact": {
+            "encoder": _benchmark()["artifact"]["encoder"],
+            "model_sha256": "c" * 64,
+        },
+        "acceptance_thresholds": {
+            "maximum_artifact_bytes": 80 * 1024 * 1024,
+            "maximum_cold_load_seconds": 2.0,
+            "maximum_median_milliseconds": 50.0,
+            "maximum_p95_milliseconds": 100.0,
+            "maximum_peak_rss_increment_bytes": 350 * 1024 * 1024,
+            "maximum_thermal_state": "fair",
+            "minimum_sequential_inference_count": 1000,
+        },
+        "performance": {
+            "cold_load_seconds": 0.1,
+            "dependency_initialization_seconds": 0.7,
+            "measured_iterations": 1000,
+            "median_milliseconds": 2.7,
+            "p95_milliseconds": 2.9,
+            "warmup_iterations": 20,
+        },
+        "resources": {
+            "artifact_bytes": 42 * 1024 * 1024,
+            "baseline_rss_bytes": 300 * 1024 * 1024,
+            "peak_rss_bytes": 355 * 1024 * 1024,
+            "peak_rss_increment_bytes": 55 * 1024 * 1024,
+            "sample_count": 1200,
+            "thermal_state_start": "nominal",
+            "thermal_state_max": "nominal",
+            "thermal_state_end": "nominal",
+        },
+        "stability": {
+            "inference_failure_count": 0,
+            "nonfinite_output_count": 0,
+            "sequential_inference_count": 1000,
+        },
+    }
 
 
 def test_actual_ane_evidence_is_derived_without_host_metadata() -> None:
@@ -210,6 +257,96 @@ def test_non_synthetic_benchmark_inputs_are_rejected() -> None:
             toc_xml=_toc(),
             ane_intervals_xml=_ane_intervals(),
         )
+
+
+def test_repeated_xctrace_rows_resolve_id_references() -> None:
+    intervals = _ane_intervals().replace(
+        "  </node>",
+        """    <row>
+      <start-time>1163091583</start-time>
+      <duration>3000000</duration>
+      <ane-event-name ref="3"/>
+      <formatted-label ref="5"/>
+      <gpu-state ref="9"/>
+    </row>
+  </node>""",
+    ).replace(
+        "<ane-event-name>", '<ane-event-name id="3">',
+    ).replace(
+        "<formatted-label>", '<formatted-label id="5">',
+    ).replace(
+        "<gpu-state>", '<gpu-state id="9">',
+    )
+
+    evidence = verify_coreml_trace_evidence(
+        benchmark=_benchmark(),
+        toc_xml=_toc(),
+        ane_intervals_xml=intervals,
+    )
+
+    assert evidence["neural_engine"] == {
+        "active_inference_interval_count": 2,
+        "total_active_inference_duration_milliseconds": 5.545917,
+    }
+
+
+def test_resource_trace_evidence_preserves_compiled_identity() -> None:
+    intervals = _ane_intervals().replace(
+        "  </node>",
+        """    <row>
+      <duration>3000000</duration>
+      <ane-event-name ref="3"/>
+      <formatted-label ref="5"/>
+      <gpu-state ref="9"/>
+    </row>
+  </node>""",
+    ).replace(
+        "<ane-event-name>", '<ane-event-name id="3">',
+    ).replace(
+        "<formatted-label>", '<formatted-label id="5">',
+    ).replace(
+        "<gpu-state>", '<gpu-state id="9">',
+    )
+
+    evidence = verify_coreml_resource_trace_evidence(
+        resource_report=_resource_report(),
+        toc_xml=_toc(),
+        ane_intervals_xml=intervals,
+    )
+
+    assert evidence["actual_device_allocation_verified"] is True
+    assert evidence["evidence_kind"] == "instruments_coreml_resource_trace"
+    assert evidence["artifact"]["model_sha256"] == "c" * 64
+    assert evidence["resource_benchmark"]["overall_passed"] is True
+    assert evidence["neural_engine"] == {
+        "active_inference_interval_count": 2,
+        "total_active_inference_duration_milliseconds": 5.545917,
+    }
+
+
+def test_cli_accepts_a_passing_resource_report(tmp_path, capsys) -> None:
+    report_path = tmp_path / "resource.json"
+    toc_path = tmp_path / "toc.xml"
+    ane_path = tmp_path / "ane.xml"
+    report_path.write_text(json.dumps(_resource_report()), encoding="utf-8")
+    toc_path.write_text(_toc(), encoding="utf-8")
+    ane_path.write_text(_ane_intervals(), encoding="utf-8")
+
+    exit_code = coreml_trace_evidence_cli.main(
+        [
+            "--resource-report",
+            str(report_path),
+            "--toc",
+            str(toc_path),
+            "--ane-intervals",
+            str(ane_path),
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert json.loads(captured.out)["artifact"]["model_sha256"] == "c" * 64
+    assert captured.err == ""
 
 
 def test_cli_emits_stable_safe_json(tmp_path, capsys) -> None:
