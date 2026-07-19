@@ -36,6 +36,7 @@ imageall-verify-standard-admission = "imageall_model_backend.standard_admission_
 imageall-verify-coreml-trace = "imageall_model_backend.coreml_trace_evidence_cli:main"
 imageall-benchmark-coreml-resources = "imageall_model_backend.coreml_resource_benchmark_cli:main"
 imageall-install-coreml = "imageall_model_backend.coreml_install_cli:main"
+imageall-verify-service-startup = "imageall_model_backend.service_startup_evidence_cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/imageall_model_backend"]
