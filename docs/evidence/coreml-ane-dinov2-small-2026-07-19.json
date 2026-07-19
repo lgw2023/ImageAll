@@ -1,0 +1,48 @@
+{
+  "actual_device_allocation_verified": true,
+  "benchmark": {
+    "all": {
+      "maximum_relative_l2_error": 0.010436527846189154,
+      "measured_iterations": 50,
+      "median_milliseconds": 2.7827915037050843,
+      "minimum_cosine_similarity": 0.9999455503849752,
+      "p95_milliseconds": 2.8973461950954515,
+      "warmup_iterations": 5
+    },
+    "cpu_only": {
+      "measured_iterations": 50,
+      "median_milliseconds": 6.765979000192601,
+      "p95_milliseconds": 7.23823734515463,
+      "warmup_iterations": 5
+    },
+    "input_count": 8,
+    "input_generation_revision": "imageall-dinov2-synthetic-rgb-processor-v1"
+  },
+  "device": {
+    "model": "Mac mini",
+    "os_version": "26.5.1 (25F80)",
+    "platform": "macOS"
+  },
+  "encoder": {
+    "element_count": 384,
+    "model_id": "facebook/dinov2-small",
+    "model_revision": "ed25f3a31f01632728cabb09d1542f84ab7b0056",
+    "model_sha256": "3ced436e838d6aac4af4a6c17dcd823989feb2b7f0c637d47bb0f2ca3238f5ba",
+    "preprocessing_revision": "dinov2-hf-autoimageprocessor-v1",
+    "provider": "dinov2"
+  },
+  "evidence_kind": "instruments_core_ml_trace",
+  "instruments": {
+    "template": "Core ML",
+    "version": "16.0 (17F113)"
+  },
+  "neural_engine": {
+    "active_inference_interval_count": 1,
+    "total_active_inference_duration_milliseconds": 2.545917
+  },
+  "schema_revision": 1,
+  "target": {
+    "exit_status": 0,
+    "termination_reason": "exit(0)"
+  }
+}

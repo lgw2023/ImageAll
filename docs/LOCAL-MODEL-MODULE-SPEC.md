@@ -750,3 +750,19 @@ Development 签名串行 App 全量为 `929 passed, 0 failed, 0 skipped`；Debug
 `.photoslibrary`，未修改 App/Xcode，未 push。后续窄修正确保任一已经 measured 的硬门失败立即
 `rejected`，不能被其他未测门降级为 `evaluationReady`。同轮只读预筛确认固定 SigLIP2 仓库约
 1.55 GB、主 safetensors 约 1.51 GB，因明显超过 80 MiB 首包门而未下载，继续只作为 teacher 候选。
+
+同日固定 DINOv2 实际 ANE 验收：`7e57484` 新增
+`imageall-verify-coreml-trace`，以通过的 Core ML benchmark、去标识 Instruments TOC 和
+`ane-hw-intervals-internal` 导出共同判定，不接受 benchmark 自报设备分配、失败目标、错误模板、空表、
+非 Active 区间、非 `AneInference` 标签、DTD/ENTITY 或非程序生成输入。TDD 定向为 `11 passed`，
+Backend 默认全量为 `152 passed, 2 skipped`；CLI help、compileall、sdist 与 wheel build 均通过。
+真实离线运行固定 `facebook/dinov2-small@ed25f3a31f01632728cabb09d1542f84ab7b0056`，8 张程序
+生成 RGB 输入、5 次预热、50 次测量；ALL minimum cosine 为 `0.9999455504`、maximum relative L2
+为 `0.0104365278`、median 为 `2.7828 ms`、p95 为 `2.8973 ms`，CPU_ONLY median 为
+`6.7660 ms`、p95 为 `7.2382 ms`。Xcode Instruments 16.0 `Core ML` 模板在同一退出码 0 运行中
+记录到 1 个 `Apple Neural Engine` / `Active` / `AneInference` 区间，共 `2.545917 ms`；因此只证明
+该固定 artifact 在本次运行中至少一次实际使用 ANE，不宣称全部算子或未来 standard 模型也使用 ANE。
+去标识聚合证据见
+[`coreml-ane-dinov2-small-2026-07-19.json`](./evidence/coreml-ane-dinov2-small-2026-07-19.json)。
+原始 Instruments trace 因包含本机环境快照已从 `/tmp` 删除且不入库；测试与运行仅使用既有离线模型
+缓存和程序生成图片，未读取 `user/`、`/Volumes/HDD2` 或 `.photoslibrary`，未修改 App/Xcode，未 push。
