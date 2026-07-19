@@ -72,6 +72,8 @@ enum CatalogSchemaExpectations {
         "asset_search_after_delete",
         "asset_search_after_insert",
         "asset_search_after_update",
+        "personal_suggestion_tag_before_insert",
+        "personal_tag_model_before_insert",
     ]
 
     static let allowedSchemaObjectTypes = ["index", "table", "trigger"]
@@ -84,11 +86,16 @@ enum CatalogSchemaExpectations {
         "feature",
         "file_fingerprint",
         "job",
+        "ontology_concept",
+        "ontology_edge",
+        "ontology_pack",
         "personal_prediction",
         "personal_suggestion_model",
         "personal_suggestion_tag",
         "prediction",
         "source",
+        "standard_model_revision",
+        "standard_tag_binding",
         "tag",
         "tag_model",
         "tag_model_revision",
@@ -124,6 +131,45 @@ enum CatalogSchemaExpectations {
         "catalog_scope": [
             .init(name: "singleton", type: "INTEGER", notNull: false, defaultValue: nil, primaryKeyOrder: 1),
             .init(name: "scope_id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+        ],
+        "ontology_pack": [
+            .init(name: "standard_pack_id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 1),
+            .init(name: "standard_pack_revision", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 2),
+            .init(name: "ontology_id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "ontology_revision", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "locale_revision", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "manifest_sha256", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "state", type: "TEXT", notNull: true, defaultValue: "'active'", primaryKeyOrder: 0),
+            .init(name: "installed_at_ms", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+        ],
+        "ontology_concept": [
+            .init(name: "ontology_id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 1),
+            .init(name: "ontology_revision", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 2),
+            .init(name: "concept_id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 3),
+            .init(name: "canonical_name", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "normalized_name", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+        ],
+        "ontology_edge": [
+            .init(name: "ontology_id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 1),
+            .init(name: "ontology_revision", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 2),
+            .init(name: "parent_concept_id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 3),
+            .init(name: "child_concept_id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 4),
+        ],
+        "standard_model_revision": [
+            .init(name: "standard_pack_id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 1),
+            .init(name: "standard_pack_revision", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 2),
+            .init(name: "provider", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "model_revision", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "preprocessing_revision", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "mapping_revision", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "policy_revision", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "weights_sha256", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+        ],
+        "standard_tag_binding": [
+            .init(name: "tag_id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 1),
+            .init(name: "ontology_id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "ontology_revision", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "concept_id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
         ],
         "personal_suggestion_model": [
             .init(name: "singleton", type: "INTEGER", notNull: false, defaultValue: nil, primaryKeyOrder: 1),
@@ -299,6 +345,29 @@ enum CatalogSchemaExpectations {
 
     static let foreignKeysByTable: [String: [ForeignKeyExpectation]] = [
         "source": [],
+        "ontology_pack": [],
+        "ontology_concept": [
+            .init(from: "ontology_id", toTable: "ontology_pack", to: "ontology_id", onDelete: "RESTRICT"),
+            .init(from: "ontology_revision", toTable: "ontology_pack", to: "ontology_revision", onDelete: "RESTRICT"),
+        ],
+        "ontology_edge": [
+            .init(from: "ontology_id", toTable: "ontology_concept", to: "ontology_id", onDelete: "RESTRICT"),
+            .init(from: "ontology_revision", toTable: "ontology_concept", to: "ontology_revision", onDelete: "RESTRICT"),
+            .init(from: "parent_concept_id", toTable: "ontology_concept", to: "concept_id", onDelete: "RESTRICT"),
+            .init(from: "ontology_id", toTable: "ontology_concept", to: "ontology_id", onDelete: "RESTRICT"),
+            .init(from: "ontology_revision", toTable: "ontology_concept", to: "ontology_revision", onDelete: "RESTRICT"),
+            .init(from: "child_concept_id", toTable: "ontology_concept", to: "concept_id", onDelete: "RESTRICT"),
+        ],
+        "standard_model_revision": [
+            .init(from: "standard_pack_id", toTable: "ontology_pack", to: "standard_pack_id", onDelete: "RESTRICT"),
+            .init(from: "standard_pack_revision", toTable: "ontology_pack", to: "standard_pack_revision", onDelete: "RESTRICT"),
+        ],
+        "standard_tag_binding": [
+            .init(from: "tag_id", toTable: "tag", to: "id", onDelete: "RESTRICT"),
+            .init(from: "ontology_id", toTable: "ontology_concept", to: "ontology_id", onDelete: "RESTRICT"),
+            .init(from: "ontology_revision", toTable: "ontology_concept", to: "ontology_revision", onDelete: "RESTRICT"),
+            .init(from: "concept_id", toTable: "ontology_concept", to: "concept_id", onDelete: "RESTRICT"),
+        ],
         "personal_suggestion_model": [
             .init(from: "catalog_scope_id", toTable: "catalog_scope", to: "scope_id", onDelete: "CASCADE"),
         ],

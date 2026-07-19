@@ -79,6 +79,210 @@ final class TagCatalogTransactionTests: XCTestCase {
         try testRepositoryDuplicateTagReturnsStructuredError()
     }
 
+    func testInstallStandardOntologyIsAtomicIdempotentAndKeepsPersonalSameName() throws {
+        let fixture = try CatalogQueryTestSupport.openQueryDatabase()
+        let personalBeach = try fixture.tags.createTag(
+            rawName: "Beach",
+            timestampMs: DatabaseTestSupport.timestampMs
+        )
+        let package = makeStandardOntologyPackage()
+
+        let first = try fixture.tags.installStandardOntologyPackage(
+            package,
+            timestampMs: DatabaseTestSupport.timestampMs + 1
+        )
+        let second = try fixture.tags.installStandardOntologyPackage(
+            package,
+            timestampMs: DatabaseTestSupport.timestampMs + 2
+        )
+
+        XCTAssertFalse(first.wasAlreadyInstalled)
+        XCTAssertTrue(second.wasAlreadyInstalled)
+        XCTAssertEqual(first.installedTags, second.installedTags)
+        XCTAssertEqual(first.installedTags.map(\.displayName), ["Beach", "Scenes"])
+        XCTAssertEqual(
+            try fixture.tags.listTags(includeArchived: false).filter { $0.displayName == "Beach" }.count,
+            2
+        )
+
+        try fixture.database.pool.read { db in
+            XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM ontology_pack"), 1)
+            XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM ontology_concept"), 2)
+            XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM ontology_edge"), 1)
+            XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM standard_model_revision"), 1)
+
+            let personal = try Row.fetchOne(
+                db,
+                sql: """
+                SELECT tag.id, binding.ontology_id, binding.concept_id, binding.ontology_revision
+                FROM tag
+                LEFT JOIN standard_tag_binding binding ON binding.tag_id = tag.id
+                WHERE tag.id = ?
+                """,
+                arguments: [personalBeach.id.uuidString.lowercased()]
+            )
+            XCTAssertNil(personal?["ontology_id"] as String?)
+            XCTAssertNil(personal?["concept_id"] as String?)
+            XCTAssertNil(personal?["ontology_revision"] as String?)
+
+            let standardBeach = try Row.fetchOne(
+                db,
+                sql: """
+                SELECT tag.id, binding.ontology_id, binding.concept_id, binding.ontology_revision
+                FROM standard_tag_binding binding
+                JOIN tag ON tag.id = binding.tag_id
+                WHERE binding.concept_id = 'scene.beach'
+                """
+            )
+            XCTAssertNotEqual(standardBeach?["id"] as String?, personalBeach.id.uuidString.lowercased())
+            XCTAssertEqual(standardBeach?["ontology_id"] as String?, package.ontologyID)
+            XCTAssertEqual(standardBeach?["concept_id"] as String?, "scene.beach")
+            XCTAssertEqual(standardBeach?["ontology_revision"] as String?, package.ontologyRevision)
+        }
+    }
+
+    func testInstallStandardOntologyRejectsCycleWithoutPartialWrites() throws {
+        let fixture = try CatalogQueryTestSupport.openQueryDatabase()
+        let package = makeStandardOntologyPackage(
+            edges: [
+                StandardOntologyEdgeInput(parentConceptID: "scene.root", childConceptID: "scene.beach"),
+                StandardOntologyEdgeInput(parentConceptID: "scene.beach", childConceptID: "scene.root"),
+            ]
+        )
+
+        XCTAssertThrowsError(
+            try fixture.tags.installStandardOntologyPackage(
+                package,
+                timestampMs: DatabaseTestSupport.timestampMs
+            )
+        ) { error in
+            XCTAssertEqual(error as? StandardOntologyCatalogError, .invalidPackage)
+        }
+
+        try fixture.database.pool.read { db in
+            XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM ontology_pack"), 0)
+            XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM ontology_concept"), 0)
+            XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM ontology_edge"), 0)
+            XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM standard_model_revision"), 0)
+            XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM standard_tag_binding"), 0)
+        }
+    }
+
+    func testConflictingStandardPackRevisionPreservesInstalledFacts() throws {
+        let fixture = try CatalogQueryTestSupport.openQueryDatabase()
+        let installed = try fixture.tags.installStandardOntologyPackage(
+            makeStandardOntologyPackage(),
+            timestampMs: DatabaseTestSupport.timestampMs
+        )
+        let conflicting = makeStandardOntologyPackage(
+            standardPackRevision: "standard-pack-v2",
+            manifestSHA256: String(repeating: "b", count: 64)
+        )
+
+        XCTAssertThrowsError(
+            try fixture.tags.installStandardOntologyPackage(
+                conflicting,
+                timestampMs: DatabaseTestSupport.timestampMs + 1
+            )
+        ) { error in
+            XCTAssertEqual(error as? StandardOntologyCatalogError, .conflictingPackage)
+        }
+
+        let preserved = try fixture.database.pool.read { db in
+            (
+                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM ontology_pack") ?? 0,
+                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM ontology_concept") ?? 0,
+                try String.fetchAll(
+                    db,
+                    sql: """
+                    SELECT tag.id
+                    FROM standard_tag_binding binding
+                    JOIN tag ON tag.id = binding.tag_id
+                    ORDER BY tag.id
+                    """
+                )
+            )
+        }
+        XCTAssertEqual(preserved.0, 1)
+        XCTAssertEqual(preserved.1, 2)
+        XCTAssertEqual(preserved.2, installed.installedTags.map { $0.id.uuidString.lowercased() }.sorted())
+    }
+
+    func testConflictingStandardOntologyIdentityPreservesInstalledFacts() throws {
+        let fixture = try CatalogQueryTestSupport.openQueryDatabase()
+        _ = try fixture.tags.installStandardOntologyPackage(
+            makeStandardOntologyPackage(),
+            timestampMs: DatabaseTestSupport.timestampMs
+        )
+        let conflicting = makeStandardOntologyPackage(
+            standardPackID: "imageall.standard.other",
+            standardPackRevision: "other-v1",
+            manifestSHA256: String(repeating: "d", count: 64)
+        )
+
+        XCTAssertThrowsError(
+            try fixture.tags.installStandardOntologyPackage(
+                conflicting,
+                timestampMs: DatabaseTestSupport.timestampMs + 1
+            )
+        ) { error in
+            XCTAssertEqual(error as? StandardOntologyCatalogError, .conflictingPackage)
+        }
+
+        try fixture.database.pool.read { db in
+            XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM ontology_pack"), 1)
+            XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM ontology_concept"), 2)
+            XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM standard_tag_binding"), 2)
+        }
+    }
+
+    func testV009MigratesExistingTagsAsPersonalWithoutChangingIdentity() throws {
+        let url = try makeTempDatabaseURL()
+        var configuration = Configuration()
+        configuration.prepareDatabase { db in
+            try db.execute(sql: "PRAGMA foreign_keys = ON")
+        }
+        let pool = try DatabasePool(path: url.path, configuration: configuration)
+        var migrator = DatabaseMigrator()
+        V001CreateCatalogCoreMigration.register(on: &migrator)
+        V002AddStage1CatalogQuerySupportMigration.register(on: &migrator)
+        V003AddDerivedImageCacheMigration.register(on: &migrator)
+        V004AddPersonalizationMigration.register(on: &migrator)
+        V005AddCatalogScaleIndexesMigration.register(on: &migrator)
+        V006AddAssetTextSearchMigration.register(on: &migrator)
+        V007AddCatalogScopeIdentityMigration.register(on: &migrator)
+        V008AddPersonalModelSuggestionsMigration.register(on: &migrator)
+        try migrator.migrate(pool)
+
+        let tagID = UUID().uuidString.lowercased()
+        try pool.write { db in
+            try db.execute(
+                sql: """
+                INSERT INTO tag (id, name, normalized_name, state, created_at_ms, updated_at_ms)
+                VALUES (?, 'Existing', 'existing', 'active', ?, ?)
+                """,
+                arguments: [tagID, DatabaseTestSupport.timestampMs, DatabaseTestSupport.timestampMs]
+            )
+        }
+
+        try CatalogDatabase(pool: pool).migrate()
+
+        try pool.read { db in
+            let row = try Row.fetchOne(
+                db,
+                sql: """
+                SELECT tag.id, binding.tag_id AS standard_tag_id
+                FROM tag
+                LEFT JOIN standard_tag_binding binding ON binding.tag_id = tag.id
+                WHERE tag.id = ?
+                """,
+                arguments: [tagID]
+            )
+            XCTAssertEqual(row?["id"] as String?, tagID)
+            XCTAssertNil(row?["standard_tag_id"] as String?)
+        }
+    }
+
     func testRenameTagUsesDomainNormalizationAndKeepsIdentity() throws {
         let fixture = try CatalogQueryTestSupport.openQueryDatabase()
 
@@ -753,6 +957,35 @@ final class TagCatalogTransactionTests: XCTestCase {
         let assetB: UUID
         let assetC: UUID
         let assetD: UUID
+    }
+
+    private func makeStandardOntologyPackage(
+        standardPackID: String = "imageall.standard.synthetic",
+        standardPackRevision: String = "standard-pack-v1",
+        manifestSHA256: String = String(repeating: "a", count: 64),
+        edges: [StandardOntologyEdgeInput] = [
+            StandardOntologyEdgeInput(parentConceptID: "scene.root", childConceptID: "scene.beach"),
+        ]
+    ) -> StandardOntologyPackageInput {
+        StandardOntologyPackageInput(
+            standardPackID: standardPackID,
+            standardPackRevision: standardPackRevision,
+            ontologyID: "imageall.synthetic.scene",
+            ontologyRevision: "ontology-v1",
+            localeRevision: "locale-en-v1",
+            manifestSHA256: manifestSHA256,
+            provider: "synthetic",
+            modelRevision: "model-v1",
+            preprocessingRevision: "preprocessing-v1",
+            mappingRevision: "mapping-v1",
+            policyRevision: "policy-v1",
+            weightsSHA256: String(repeating: "c", count: 64),
+            concepts: [
+                StandardOntologyConceptInput(conceptID: "scene.root", canonicalName: "Scenes"),
+                StandardOntologyConceptInput(conceptID: "scene.beach", canonicalName: "Beach"),
+            ],
+            edges: edges
+        )
     }
 
     private func seedMinimalRestoreFixture(

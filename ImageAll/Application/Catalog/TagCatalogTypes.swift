@@ -16,6 +16,44 @@ struct TagPresetInstallResult: Sendable, Equatable {
     let createdTags: [TagListItem]
 }
 
+struct StandardOntologyConceptInput: Sendable, Equatable {
+    let conceptID: String
+    let canonicalName: String
+}
+
+struct StandardOntologyEdgeInput: Sendable, Equatable {
+    let parentConceptID: String
+    let childConceptID: String
+}
+
+struct StandardOntologyPackageInput: Sendable, Equatable {
+    let standardPackID: String
+    let standardPackRevision: String
+    let ontologyID: String
+    let ontologyRevision: String
+    let localeRevision: String
+    let manifestSHA256: String
+    let provider: String
+    let modelRevision: String
+    let preprocessingRevision: String
+    let mappingRevision: String
+    let policyRevision: String
+    let weightsSHA256: String
+    let concepts: [StandardOntologyConceptInput]
+    let edges: [StandardOntologyEdgeInput]
+}
+
+struct StandardOntologyInstallResult: Sendable, Equatable {
+    let installedTags: [TagListItem]
+    let wasAlreadyInstalled: Bool
+}
+
+enum StandardOntologyCatalogError: Error, Sendable, Equatable {
+    case invalidPackage
+    case conflictingPackage
+    case persistenceFailure
+}
+
 struct TagSelectionAggregate: Sendable, Equatable {
     let tagID: UUID
     let acceptedCount: Int

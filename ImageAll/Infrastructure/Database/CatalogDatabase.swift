@@ -14,6 +14,7 @@ struct CatalogDatabase: Sendable {
         V006AddAssetTextSearchMigration.register(on: &migrator)
         V007AddCatalogScopeIdentityMigration.register(on: &migrator)
         V008AddPersonalModelSuggestionsMigration.register(on: &migrator)
+        V009AddStandardOntologyMigration.register(on: &migrator)
         return migrator
     }
 
@@ -549,6 +550,116 @@ enum V008AddPersonalModelSuggestionsMigration {
                     score DESC,
                     asset_id
                 )
+                """
+            )
+        }
+    }
+}
+
+enum V009AddStandardOntologyMigration {
+    static func register(on migrator: inout DatabaseMigrator) {
+        migrator.registerMigration(CatalogMigrationID.v009AddStandardOntology) { db in
+            try db.execute(
+                sql: """
+                CREATE TABLE ontology_pack (
+                    standard_pack_id TEXT NOT NULL CHECK(length(standard_pack_id) BETWEEN 1 AND 200),
+                    standard_pack_revision TEXT NOT NULL CHECK(length(standard_pack_revision) BETWEEN 1 AND 200),
+                    ontology_id TEXT NOT NULL CHECK(length(ontology_id) BETWEEN 1 AND 200),
+                    ontology_revision TEXT NOT NULL CHECK(length(ontology_revision) BETWEEN 1 AND 200),
+                    locale_revision TEXT NOT NULL CHECK(length(locale_revision) BETWEEN 1 AND 200),
+                    manifest_sha256 TEXT NOT NULL CHECK(
+                        length(manifest_sha256) = 64
+                        AND manifest_sha256 NOT GLOB '*[^0-9a-f]*'
+                    ),
+                    state TEXT NOT NULL DEFAULT 'active' CHECK(state = 'active'),
+                    installed_at_ms INTEGER NOT NULL CHECK(installed_at_ms >= 0),
+                    PRIMARY KEY(standard_pack_id, standard_pack_revision),
+                    UNIQUE(ontology_id, ontology_revision)
+                ) STRICT
+                """
+            )
+            try db.execute(
+                sql: """
+                CREATE TABLE ontology_concept (
+                    ontology_id TEXT NOT NULL,
+                    ontology_revision TEXT NOT NULL,
+                    concept_id TEXT NOT NULL CHECK(length(concept_id) BETWEEN 1 AND 300),
+                    canonical_name TEXT NOT NULL CHECK(length(canonical_name) BETWEEN 1 AND 200),
+                    normalized_name TEXT NOT NULL CHECK(length(normalized_name) BETWEEN 1 AND 200),
+                    PRIMARY KEY(ontology_id, ontology_revision, concept_id),
+                    FOREIGN KEY(ontology_id, ontology_revision)
+                        REFERENCES ontology_pack(ontology_id, ontology_revision) ON DELETE RESTRICT
+                ) STRICT
+                """
+            )
+            try db.execute(
+                sql: """
+                CREATE TABLE ontology_edge (
+                    ontology_id TEXT NOT NULL,
+                    ontology_revision TEXT NOT NULL,
+                    parent_concept_id TEXT NOT NULL,
+                    child_concept_id TEXT NOT NULL,
+                    CHECK(parent_concept_id <> child_concept_id),
+                    PRIMARY KEY(ontology_id, ontology_revision, parent_concept_id, child_concept_id),
+                    FOREIGN KEY(ontology_id, ontology_revision, parent_concept_id)
+                        REFERENCES ontology_concept(ontology_id, ontology_revision, concept_id) ON DELETE RESTRICT,
+                    FOREIGN KEY(ontology_id, ontology_revision, child_concept_id)
+                        REFERENCES ontology_concept(ontology_id, ontology_revision, concept_id) ON DELETE RESTRICT
+                ) STRICT
+                """
+            )
+            try db.execute(
+                sql: """
+                CREATE TABLE standard_model_revision (
+                    standard_pack_id TEXT NOT NULL,
+                    standard_pack_revision TEXT NOT NULL,
+                    provider TEXT NOT NULL CHECK(length(provider) BETWEEN 1 AND 200),
+                    model_revision TEXT NOT NULL CHECK(length(model_revision) BETWEEN 1 AND 200),
+                    preprocessing_revision TEXT NOT NULL CHECK(length(preprocessing_revision) BETWEEN 1 AND 200),
+                    mapping_revision TEXT NOT NULL CHECK(length(mapping_revision) BETWEEN 1 AND 200),
+                    policy_revision TEXT NOT NULL CHECK(length(policy_revision) BETWEEN 1 AND 200),
+                    weights_sha256 TEXT NOT NULL CHECK(
+                        length(weights_sha256) = 64
+                        AND weights_sha256 NOT GLOB '*[^0-9a-f]*'
+                    ),
+                    PRIMARY KEY(standard_pack_id, standard_pack_revision),
+                    FOREIGN KEY(standard_pack_id, standard_pack_revision)
+                        REFERENCES ontology_pack(standard_pack_id, standard_pack_revision) ON DELETE RESTRICT
+                ) STRICT
+                """
+            )
+            try db.execute(
+                sql: """
+                CREATE TABLE standard_tag_binding (
+                    tag_id TEXT NOT NULL PRIMARY KEY
+                        REFERENCES tag(id) ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
+                    ontology_id TEXT NOT NULL,
+                    ontology_revision TEXT NOT NULL,
+                    concept_id TEXT NOT NULL,
+                    UNIQUE(ontology_id, concept_id),
+                    FOREIGN KEY(ontology_id, ontology_revision, concept_id)
+                        REFERENCES ontology_concept(ontology_id, ontology_revision, concept_id) ON DELETE RESTRICT
+                ) STRICT
+                """
+            )
+            try db.execute(
+                sql: """
+                CREATE TRIGGER personal_tag_model_before_insert
+                BEFORE INSERT ON tag_model_revision
+                WHEN EXISTS (SELECT 1 FROM standard_tag_binding WHERE tag_id = NEW.tag_id)
+                BEGIN
+                    SELECT RAISE(ABORT, 'personal model requires personal tag');
+                END
+                """
+            )
+            try db.execute(
+                sql: """
+                CREATE TRIGGER personal_suggestion_tag_before_insert
+                BEFORE INSERT ON personal_suggestion_tag
+                WHEN EXISTS (SELECT 1 FROM standard_tag_binding WHERE tag_id = NEW.tag_id)
+                BEGIN
+                    SELECT RAISE(ABORT, 'personal suggestion requires personal tag');
+                END
                 """
             )
         }

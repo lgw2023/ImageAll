@@ -1,7 +1,8 @@
+import CryptoKit
 import Foundation
 import GRDB
 
-struct GRDBTagCatalogRepository: TagCatalogQueryPort, TagDecisionCommandPort, Sendable {
+struct GRDBTagCatalogRepository: TagCatalogQueryPort, TagDecisionCommandPort, StandardOntologyCatalogPort, Sendable {
     let database: CatalogDatabase
 
     func listTags(includeArchived: Bool) throws -> [TagListItem] {
@@ -10,16 +11,26 @@ struct GRDBTagCatalogRepository: TagCatalogQueryPort, TagDecisionCommandPort, Se
                 let sql: String
                 if includeArchived {
                     sql = """
-                    SELECT id, name, state
+                    SELECT tag.id, tag.name, tag.state
                     FROM tag
-                    ORDER BY normalized_name COLLATE BINARY, id
+                    LEFT JOIN standard_tag_binding binding ON binding.tag_id = tag.id
+                    LEFT JOIN ontology_concept concept
+                        ON concept.ontology_id = binding.ontology_id
+                        AND concept.ontology_revision = binding.ontology_revision
+                        AND concept.concept_id = binding.concept_id
+                    ORDER BY coalesce(concept.normalized_name, tag.normalized_name) COLLATE BINARY, tag.id
                     """
                 } else {
                     sql = """
-                    SELECT id, name, state
+                    SELECT tag.id, tag.name, tag.state
                     FROM tag
-                    WHERE state = 'active'
-                    ORDER BY normalized_name COLLATE BINARY, id
+                    LEFT JOIN standard_tag_binding binding ON binding.tag_id = tag.id
+                    LEFT JOIN ontology_concept concept
+                        ON concept.ontology_id = binding.ontology_id
+                        AND concept.ontology_revision = binding.ontology_revision
+                        AND concept.concept_id = binding.concept_id
+                    WHERE tag.state = 'active'
+                    ORDER BY coalesce(concept.normalized_name, tag.normalized_name) COLLATE BINARY, tag.id
                     """
                 }
                 return try Row.fetchAll(db, sql: sql).map { row in
@@ -85,6 +96,194 @@ struct GRDBTagCatalogRepository: TagCatalogQueryPort, TagDecisionCommandPort, Se
                 }
                 return aggregates
             }
+        }
+    }
+
+    func installStandardOntologyPackage(
+        _ package: StandardOntologyPackageInput,
+        timestampMs: Int64
+    ) throws -> StandardOntologyInstallResult {
+        let validated = try validateStandardOntologyPackage(package, timestampMs: timestampMs)
+
+        do {
+            return try database.pool.write { db in
+                if let installed = try Row.fetchOne(
+                    db,
+                    sql: """
+                    SELECT
+                        p.standard_pack_revision,
+                        p.ontology_id,
+                        p.ontology_revision,
+                        p.locale_revision,
+                        p.manifest_sha256,
+                        m.provider,
+                        m.model_revision,
+                        m.preprocessing_revision,
+                        m.mapping_revision,
+                        m.policy_revision,
+                        m.weights_sha256
+                    FROM ontology_pack p
+                    JOIN standard_model_revision m
+                        ON m.standard_pack_id = p.standard_pack_id
+                        AND m.standard_pack_revision = p.standard_pack_revision
+                    WHERE p.standard_pack_id = ?
+                    ORDER BY p.standard_pack_revision
+                    LIMIT 1
+                    """,
+                    arguments: [package.standardPackID]
+                ) {
+                    guard standardPackageIdentityMatches(installed, package: package),
+                          try installedStandardPackageContentsMatch(db, package: package, concepts: validated.concepts)
+                    else {
+                        throw StandardOntologyCatalogError.conflictingPackage
+                    }
+                    return StandardOntologyInstallResult(
+                        installedTags: try fetchStandardTags(
+                            db,
+                            ontologyID: package.ontologyID,
+                            ontologyRevision: package.ontologyRevision
+                        ),
+                        wasAlreadyInstalled: true
+                    )
+                }
+
+                let ontologyIdentityCount = try Int.fetchOne(
+                    db,
+                    sql: "SELECT COUNT(*) FROM ontology_pack WHERE ontology_id = ?",
+                    arguments: [package.ontologyID]
+                ) ?? 0
+                guard ontologyIdentityCount == 0 else {
+                    throw StandardOntologyCatalogError.conflictingPackage
+                }
+                for concept in validated.concepts {
+                    let tagID = standardTagID(ontologyID: package.ontologyID, conceptID: concept.conceptID)
+                    let tagIdentityCount = try Int.fetchOne(
+                        db,
+                        sql: "SELECT COUNT(*) FROM tag WHERE id = ? OR normalized_name = ?",
+                        arguments: [
+                            tagID.uuidString.lowercased(),
+                            standardTagStorageKey(tagID: tagID),
+                        ]
+                    ) ?? 0
+                    guard tagIdentityCount == 0 else {
+                        throw StandardOntologyCatalogError.conflictingPackage
+                    }
+                }
+
+                try db.execute(
+                    sql: """
+                    INSERT INTO ontology_pack (
+                        standard_pack_id, standard_pack_revision, ontology_id, ontology_revision,
+                        locale_revision, manifest_sha256, state, installed_at_ms
+                    ) VALUES (?, ?, ?, ?, ?, ?, 'active', ?)
+                    """,
+                    arguments: [
+                        package.standardPackID,
+                        package.standardPackRevision,
+                        package.ontologyID,
+                        package.ontologyRevision,
+                        package.localeRevision,
+                        package.manifestSHA256,
+                        timestampMs,
+                    ]
+                )
+
+                for concept in validated.concepts {
+                    try db.execute(
+                        sql: """
+                        INSERT INTO ontology_concept (
+                            ontology_id, ontology_revision, concept_id,
+                            canonical_name, normalized_name
+                        ) VALUES (?, ?, ?, ?, ?)
+                        """,
+                        arguments: [
+                            package.ontologyID,
+                            package.ontologyRevision,
+                            concept.conceptID,
+                            concept.displayName,
+                            concept.normalizedName,
+                        ]
+                    )
+                }
+
+                for edge in package.edges {
+                    try db.execute(
+                        sql: """
+                        INSERT INTO ontology_edge (
+                            ontology_id, ontology_revision, parent_concept_id, child_concept_id
+                        ) VALUES (?, ?, ?, ?)
+                        """,
+                        arguments: [
+                            package.ontologyID,
+                            package.ontologyRevision,
+                            edge.parentConceptID,
+                            edge.childConceptID,
+                        ]
+                    )
+                }
+
+                try db.execute(
+                    sql: """
+                    INSERT INTO standard_model_revision (
+                        standard_pack_id, standard_pack_revision, provider, model_revision,
+                        preprocessing_revision, mapping_revision, policy_revision, weights_sha256
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    arguments: [
+                        package.standardPackID,
+                        package.standardPackRevision,
+                        package.provider,
+                        package.modelRevision,
+                        package.preprocessingRevision,
+                        package.mappingRevision,
+                        package.policyRevision,
+                        package.weightsSHA256,
+                    ]
+                )
+
+                for concept in validated.concepts {
+                    let tagID = standardTagID(ontologyID: package.ontologyID, conceptID: concept.conceptID)
+                    try db.execute(
+                        sql: """
+                        INSERT INTO standard_tag_binding (
+                            tag_id, ontology_id, ontology_revision, concept_id
+                        ) VALUES (?, ?, ?, ?)
+                        """,
+                        arguments: [
+                            tagID.uuidString.lowercased(),
+                            package.ontologyID,
+                            package.ontologyRevision,
+                            concept.conceptID,
+                        ]
+                    )
+                    try db.execute(
+                        sql: """
+                        INSERT INTO tag (id, name, normalized_name, state, created_at_ms, updated_at_ms)
+                        VALUES (?, ?, ?, 'active', ?, ?)
+                        """,
+                        arguments: [
+                            tagID.uuidString.lowercased(),
+                            concept.displayName,
+                            standardTagStorageKey(tagID: tagID),
+                            timestampMs,
+                            timestampMs,
+                        ]
+                    )
+                }
+
+                return StandardOntologyInstallResult(
+                    installedTags: try fetchStandardTags(
+                        db,
+                        ontologyID: package.ontologyID,
+                        ontologyRevision: package.ontologyRevision
+                    ),
+                    wasAlreadyInstalled: false
+                )
+            }
+        } catch let error as StandardOntologyCatalogError {
+            throw error
+        } catch {
+            throw StandardOntologyCatalogError.persistenceFailure
         }
     }
 
@@ -456,7 +655,15 @@ struct GRDBTagCatalogRepository: TagCatalogQueryPort, TagDecisionCommandPort, Se
     }
 
     private func fetchExistingTags(_ db: Database) throws -> [Tag] {
-        try Row.fetchAll(db, sql: "SELECT id, name, normalized_name, state FROM tag").map { row in
+        try Row.fetchAll(
+            db,
+            sql: """
+            SELECT tag.id, tag.name, tag.normalized_name, tag.state
+            FROM tag
+            LEFT JOIN standard_tag_binding binding ON binding.tag_id = tag.id
+            WHERE binding.tag_id IS NULL
+            """
+        ).map { row in
             let normalizedName: String = row["normalized_name"]
             return Tag(
                 id: UUID(uuidString: row["id"])!,
@@ -550,10 +757,216 @@ struct GRDBTagCatalogRepository: TagCatalogQueryPort, TagDecisionCommandPort, Se
     private func normalizedNameExists(_ db: Database, normalizedName: String) throws -> Bool {
         let count = try Int.fetchOne(
             db,
-            sql: "SELECT COUNT(*) FROM tag WHERE normalized_name = ?",
+            sql: """
+            SELECT COUNT(*)
+            FROM tag
+            LEFT JOIN standard_tag_binding binding ON binding.tag_id = tag.id
+            WHERE binding.tag_id IS NULL AND tag.normalized_name = ?
+            """,
             arguments: [normalizedName]
         ) ?? 0
         return count > 0
+    }
+
+    private func validateStandardOntologyPackage(
+        _ package: StandardOntologyPackageInput,
+        timestampMs: Int64
+    ) throws -> ValidatedStandardOntologyPackage {
+        guard timestampMs >= 0,
+              isValidStandardField(package.standardPackID, maxLength: 200),
+              isValidStandardField(package.standardPackRevision, maxLength: 200),
+              isValidStandardField(package.ontologyID, maxLength: 200),
+              isValidStandardField(package.ontologyRevision, maxLength: 200),
+              isValidStandardField(package.localeRevision, maxLength: 200),
+              isValidSHA256(package.manifestSHA256),
+              isValidStandardField(package.provider, maxLength: 200),
+              isValidStandardField(package.modelRevision, maxLength: 200),
+              isValidStandardField(package.preprocessingRevision, maxLength: 200),
+              isValidStandardField(package.mappingRevision, maxLength: 200),
+              isValidStandardField(package.policyRevision, maxLength: 200),
+              isValidSHA256(package.weightsSHA256),
+              !package.concepts.isEmpty
+        else {
+            throw StandardOntologyCatalogError.invalidPackage
+        }
+
+        var conceptIDs = Set<String>()
+        var concepts: [ValidatedStandardOntologyConcept] = []
+        for concept in package.concepts {
+            guard isValidStandardField(concept.conceptID, maxLength: 300),
+                  conceptIDs.insert(concept.conceptID).inserted,
+                  !concept.canonicalName.contains("\0"),
+                  concept.canonicalName.count <= 200
+            else {
+                throw StandardOntologyCatalogError.invalidPackage
+            }
+            let name: TagNameParts
+            switch TagNameNormalizer.validateAndNormalize(concept.canonicalName) {
+            case let .success(parts):
+                name = parts
+            case .failure:
+                throw StandardOntologyCatalogError.invalidPackage
+            }
+            guard name.displayName == concept.canonicalName,
+                  name.normalizedName.count <= 200
+            else {
+                throw StandardOntologyCatalogError.invalidPackage
+            }
+            concepts.append(
+                ValidatedStandardOntologyConcept(
+                    conceptID: concept.conceptID,
+                    displayName: name.displayName,
+                    normalizedName: name.normalizedName
+                )
+            )
+        }
+
+        var edgeKeys = Set<String>()
+        var indegree = Dictionary(uniqueKeysWithValues: conceptIDs.map { ($0, 0) })
+        var childrenByParent: [String: [String]] = [:]
+        for edge in package.edges {
+            guard conceptIDs.contains(edge.parentConceptID),
+                  conceptIDs.contains(edge.childConceptID),
+                  edge.parentConceptID != edge.childConceptID,
+                  edgeKeys.insert("\(edge.parentConceptID)\0\(edge.childConceptID)").inserted
+            else {
+                throw StandardOntologyCatalogError.invalidPackage
+            }
+            childrenByParent[edge.parentConceptID, default: []].append(edge.childConceptID)
+            indegree[edge.childConceptID, default: 0] += 1
+        }
+
+        var queue = indegree.filter { $0.value == 0 }.map(\.key)
+        var visitedCount = 0
+        while let conceptID = queue.popLast() {
+            visitedCount += 1
+            for child in childrenByParent[conceptID, default: []] {
+                indegree[child, default: 0] -= 1
+                if indegree[child] == 0 {
+                    queue.append(child)
+                }
+            }
+        }
+        guard visitedCount == conceptIDs.count else {
+            throw StandardOntologyCatalogError.invalidPackage
+        }
+
+        return ValidatedStandardOntologyPackage(
+            concepts: concepts.sorted { $0.conceptID < $1.conceptID }
+        )
+    }
+
+    private func isValidStandardField(_ value: String, maxLength: Int) -> Bool {
+        !value.isEmpty && value.count <= maxLength && !value.contains("\0")
+    }
+
+    private func isValidSHA256(_ value: String) -> Bool {
+        let lowercaseHex = Set("0123456789abcdef")
+        return value.count == 64 && value.allSatisfy(lowercaseHex.contains)
+    }
+
+    private func standardPackageIdentityMatches(
+        _ row: Row,
+        package: StandardOntologyPackageInput
+    ) -> Bool {
+        (row["standard_pack_revision"] as String?) == package.standardPackRevision
+            && (row["ontology_id"] as String?) == package.ontologyID
+            && (row["ontology_revision"] as String?) == package.ontologyRevision
+            && (row["locale_revision"] as String?) == package.localeRevision
+            && (row["manifest_sha256"] as String?) == package.manifestSHA256
+            && (row["provider"] as String?) == package.provider
+            && (row["model_revision"] as String?) == package.modelRevision
+            && (row["preprocessing_revision"] as String?) == package.preprocessingRevision
+            && (row["mapping_revision"] as String?) == package.mappingRevision
+            && (row["policy_revision"] as String?) == package.policyRevision
+            && (row["weights_sha256"] as String?) == package.weightsSHA256
+    }
+
+    private func installedStandardPackageContentsMatch(
+        _ db: Database,
+        package: StandardOntologyPackageInput,
+        concepts: [ValidatedStandardOntologyConcept]
+    ) throws -> Bool {
+        let installedConcepts = try Row.fetchAll(
+            db,
+            sql: """
+            SELECT concept_id, canonical_name, normalized_name
+            FROM ontology_concept
+            WHERE ontology_id = ? AND ontology_revision = ?
+            ORDER BY concept_id
+            """,
+            arguments: [package.ontologyID, package.ontologyRevision]
+        ).map { row in
+            ValidatedStandardOntologyConcept(
+                conceptID: row["concept_id"],
+                displayName: row["canonical_name"],
+                normalizedName: row["normalized_name"]
+            )
+        }
+        guard installedConcepts == concepts else { return false }
+
+        let installedEdges = try Row.fetchAll(
+            db,
+            sql: """
+            SELECT parent_concept_id, child_concept_id
+            FROM ontology_edge
+            WHERE ontology_id = ? AND ontology_revision = ?
+            ORDER BY parent_concept_id, child_concept_id
+            """,
+            arguments: [package.ontologyID, package.ontologyRevision]
+        ).map { row in
+            StandardOntologyEdgeInput(
+                parentConceptID: row["parent_concept_id"],
+                childConceptID: row["child_concept_id"]
+            )
+        }
+        let expectedEdges = package.edges.sorted {
+            ($0.parentConceptID, $0.childConceptID) < ($1.parentConceptID, $1.childConceptID)
+        }
+        return installedEdges == expectedEdges
+    }
+
+    private func fetchStandardTags(
+        _ db: Database,
+        ontologyID: String,
+        ontologyRevision: String
+    ) throws -> [TagListItem] {
+        try Row.fetchAll(
+            db,
+            sql: """
+            SELECT id, name, state
+            FROM standard_tag_binding binding
+            JOIN tag ON tag.id = binding.tag_id
+            JOIN ontology_concept concept
+                ON concept.ontology_id = binding.ontology_id
+                AND concept.ontology_revision = binding.ontology_revision
+                AND concept.concept_id = binding.concept_id
+            WHERE binding.ontology_id = ? AND binding.ontology_revision = ?
+            ORDER BY concept.normalized_name COLLATE BINARY, tag.id
+            """,
+            arguments: [ontologyID, ontologyRevision]
+        ).map { row in
+            TagListItem(
+                id: UUID(uuidString: row["id"])!,
+                displayName: row["name"],
+                state: TagState(rawValue: row["state"]) ?? .active
+            )
+        }
+    }
+
+    private func standardTagID(ontologyID: String, conceptID: String) -> UUID {
+        var bytes = Array(
+            SHA256.hash(data: Data("imageall-standard-tag\0\(ontologyID)\0\(conceptID)".utf8)).prefix(16)
+        )
+        bytes[6] = (bytes[6] & 0x0f) | 0x50
+        bytes[8] = (bytes[8] & 0x3f) | 0x80
+        let hex = bytes.map { String(format: "%02x", $0) }.joined()
+        let uuidString = "\(hex.prefix(8))-\(hex.dropFirst(8).prefix(4))-\(hex.dropFirst(12).prefix(4))-\(hex.dropFirst(16).prefix(4))-\(hex.dropFirst(20))"
+        return UUID(uuidString: uuidString)!
+    }
+
+    private func standardTagStorageKey(tagID: UUID) -> String {
+        "__imageall_standard__:\(tagID.uuidString.lowercased())"
     }
 
     private func mapDomainError(_ error: DomainError) -> CatalogQueryError {
@@ -570,6 +983,16 @@ struct GRDBTagCatalogRepository: TagCatalogQueryPort, TagDecisionCommandPort, Se
             .persistenceFailure
         }
     }
+}
+
+private struct ValidatedStandardOntologyPackage {
+    let concepts: [ValidatedStandardOntologyConcept]
+}
+
+private struct ValidatedStandardOntologyConcept: Equatable {
+    let conceptID: String
+    let displayName: String
+    let normalizedName: String
 }
 
 private extension Array {
