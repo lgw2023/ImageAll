@@ -15,7 +15,9 @@ import torch
 from imageall_model_backend.providers import EmbeddingProviderIdentity
 
 COREML_ARTIFACT_SCHEMA_REVISION = 1
+COREML_COMPILED_ARTIFACT_SCHEMA_REVISION = 2
 COREML_MODEL_PACKAGE_NAME = "encoder.mlpackage"
+COREML_COMPILED_MODEL_NAME = "encoder.mlmodelc"
 COREML_MANIFEST_NAME = "manifest.json"
 COREML_BENCHMARK_SCHEMA_REVISION = 2
 COREML_MINIMUM_COSINE_SIMILARITY = 0.999
@@ -166,7 +168,11 @@ def load_coreml_artifact(
     except (OSError, json.JSONDecodeError) as error:
         raise ValueError("Core ML manifest is missing or invalid") from error
 
-    if manifest.get("schema_revision") != COREML_ARTIFACT_SCHEMA_REVISION:
+    schema_revision = manifest.get("schema_revision")
+    if schema_revision not in {
+        COREML_ARTIFACT_SCHEMA_REVISION,
+        COREML_COMPILED_ARTIFACT_SCHEMA_REVISION,
+    }:
         raise ValueError("unsupported Core ML artifact schema")
     if manifest.get("encoder") != _identity_dict(expected_encoder_identity):
         raise ValueError("Core ML encoder identity does not match")
@@ -206,10 +212,23 @@ def load_coreml_artifact(
         "element_type": "float32",
     }:
         raise ValueError("Core ML output contract is invalid")
-    if manifest.get("model_path") != COREML_MODEL_PACKAGE_NAME:
+    expected_model_path = (
+        COREML_MODEL_PACKAGE_NAME
+        if schema_revision == COREML_ARTIFACT_SCHEMA_REVISION
+        else COREML_COMPILED_MODEL_NAME
+    )
+    if manifest.get("model_path") != expected_model_path:
         raise ValueError("Core ML model path is invalid")
+    if schema_revision == COREML_COMPILED_ARTIFACT_SCHEMA_REVISION:
+        source_model_sha256 = manifest.get("source_model_sha256")
+        if (
+            not isinstance(source_model_sha256, str)
+            or len(source_model_sha256) != 64
+            or any(character not in "0123456789abcdef" for character in source_model_sha256)
+        ):
+            raise ValueError("Core ML source model checksum is invalid")
 
-    model_path = bundle_path / COREML_MODEL_PACKAGE_NAME
+    model_path = bundle_path / expected_model_path
     if not model_path.is_dir() or model_path.is_symlink():
         raise ValueError("Core ML model package is missing or unsafe")
     model_sha256 = _directory_sha256(model_path)
@@ -219,7 +238,10 @@ def load_coreml_artifact(
     load_options = {}
     if compute_units is not None:
         load_options["compute_units"] = compute_units
-    coreml_model = ct.models.MLModel(str(model_path), **load_options)
+    if schema_revision == COREML_ARTIFACT_SCHEMA_REVISION:
+        coreml_model = ct.models.MLModel(str(model_path), **load_options)
+    else:
+        coreml_model = ct.models.CompiledMLModel(str(model_path), **load_options)
     return CoreMLArtifact(
         bundle_path=bundle_path,
         model_path=model_path,
@@ -342,7 +364,11 @@ def _coreml_compute_plan_summary(artifact: CoreMLArtifact) -> dict[str, object]:
                 return name
         raise RuntimeError("Core ML compute plan returned an unknown device")
 
-    compiled_model_path = artifact._model.get_compiled_model_path()
+    compiled_model_path = (
+        str(artifact.model_path)
+        if artifact.model_path.suffix == ".mlmodelc"
+        else artifact._model.get_compiled_model_path()
+    )
     compute_plan = MLComputePlan.load_from_path(
         compiled_model_path,
         compute_units=ct.ComputeUnit.ALL,

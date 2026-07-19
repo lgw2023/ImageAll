@@ -69,6 +69,12 @@ class _FakeSampler:
 def _install_fakes(monkeypatch, *, thermal_state="fair", nonfinite=False) -> None:
     monkeypatch.setattr(
         benchmark_module,
+        "_initialize_coreml_runtime",
+        lambda: None,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        benchmark_module,
         "_load_all_artifact",
         lambda _: _FakeArtifact(nonfinite=nonfinite),
     )
@@ -109,6 +115,7 @@ def test_runtime_resource_benchmark_passes_fixed_gates(monkeypatch) -> None:
     assert report["compute_units"] == "ALL"
     assert report["performance"] == pytest.approx({
         "cold_load_seconds": 0.001,
+        "dependency_initialization_seconds": 0.001,
         "measured_iterations": 1000,
         "median_milliseconds": 1.0,
         "p95_milliseconds": 1.0,

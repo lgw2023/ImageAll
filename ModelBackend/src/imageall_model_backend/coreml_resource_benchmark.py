@@ -47,6 +47,9 @@ def benchmark_coreml_runtime(
     if warmup_iterations < 0 or measured_iterations < 1:
         raise CoreMLResourceBenchmarkError("invalid iteration count")
     bundle_path = Path(bundle_path)
+    dependency_start = time.perf_counter()
+    _initialize_coreml_runtime()
+    dependency_initialization_seconds = time.perf_counter() - dependency_start
     artifact_bytes = _artifact_size_bytes(bundle_path)
     inputs = _generated_inputs()
     sampler = _RuntimeSampler()
@@ -98,6 +101,7 @@ def benchmark_coreml_runtime(
     }
     performance = {
         "cold_load_seconds": cold_load_seconds,
+        "dependency_initialization_seconds": dependency_initialization_seconds,
         "measured_iterations": measured_iterations,
         "median_milliseconds": median_milliseconds,
         "p95_milliseconds": p95_milliseconds,
@@ -186,6 +190,12 @@ def _load_all_artifact(bundle_path: Path):
         expected_encoder_identity=DinoV2SmallProvider.identity,
         compute_units=_coremltools().ComputeUnit.ALL,
     )
+
+
+def _initialize_coreml_runtime() -> None:
+    from imageall_model_backend.coreml_export import _coremltools
+
+    _coremltools()
 
 
 def _artifact_size_bytes(bundle_path: Path) -> int:
