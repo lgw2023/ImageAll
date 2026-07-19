@@ -34,6 +34,7 @@ imageall-train-personal = "imageall_model_backend.personal_cli:main"
 imageall-validate-standard-pack = "imageall_model_backend.standard_pack_cli:main"
 imageall-verify-standard-admission = "imageall_model_backend.standard_admission_cli:main"
 imageall-verify-coreml-trace = "imageall_model_backend.coreml_trace_evidence_cli:main"
+imageall-benchmark-coreml-resources = "imageall_model_backend.coreml_resource_benchmark_cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/imageall_model_backend"]
