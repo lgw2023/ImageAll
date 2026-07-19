@@ -90,6 +90,17 @@ uv run imageall-model-backend \
   --port 8765
 ```
 
+在安装或启动标准 pack 前，可以先做只读预发布校验：
+
+```bash
+uv run imageall-validate-standard-pack \
+  --pack fixtures/standard-scene-pack-v1
+```
+
+校验会复用服务实际使用的严格 loader，检查文件校验和、许可证登记、ontology DAG、mapping、policy
+与完整版本身份；成功时只输出不含路径的稳定 JSON 摘要，失败时返回退出码 2 且不启动服务、不下载或
+激活模型。校验通过只证明 pack 契约完整，不等于批准其许可证、准确率、阈值校准或生产使用。
+
 加载 `imageall-train-personal` 生成的个人 bundle：
 
 ```bash
