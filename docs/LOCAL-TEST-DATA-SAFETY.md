@@ -48,6 +48,13 @@
 - PhotoKit 没有供本产品使用的独立只读 access level，因此 `.readWrite` 授权不等于写入许可；评审必须证明生产 target 没有 Photos mutation API 调用路径；
 - 专门的可丢弃测试 Photos Library 仍用于故障和边界测试；此真实图库只作为额外的只读人工 smoke 来源。
 
+自动化宿主测试还必须把“启动 App”本身视为一次 Photos 访问：即使 `xcodebuild test` 只选择与 Photos
+无关的少数测试，production composition root 仍可能在测试方法执行前初始化系统 Photos store。
+2026-07-20 的一次定向宿主验证已观测到对受保护图库内部数据库 URL 的连接尝试；连接失败且未发生
+项目侧写入，但该行为仍属于未经授权的访问。因此，当受保护图库所在卷已挂载时，禁止再次启动生产
+App 测试宿主；宿主无关测试使用隔离的直接 test bundle，privacy manifest 与 entitlement 优先用构建
+产物静态校验。确需宿主态验证时，必须先提供不会解析真实图库的可丢弃测试环境或取得该次明确授权。
+
 ## 3. 禁止操作
 
 在没有项目所有者针对具体操作给出新的书面授权前，禁止对受保护数据执行或让应用执行：
