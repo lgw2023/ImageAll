@@ -7,6 +7,256 @@ import XCTest
 @testable import ImageAll
 
 final class FullLibrarySuggestionsJobTests: XCTestCase {
+    func testReviewServiceEnqueuesAndProjectsDurablePersonalLibraryJob() throws {
+        let fixture = try makeLargeLibraryFixture(assetCount: 8)
+        let handler = makeHandler(
+            database: fixture.database,
+            loader: fixture.loader,
+            queue: fixture.queue
+        )
+        let service = PersonalizationReviewService(
+            database: fixture.database,
+            queue: fixture.queue,
+            executionCoordinator: makeCoordinator(
+                database: fixture.database,
+                handler: handler,
+                queue: fixture.queue
+            ),
+            tags: fixture.tags,
+            clock: FixedJobClock(nowMs: fixture.cutoffMs)
+        )
+        let capability = try makePersonalCapability(
+            database: fixture.database,
+            tagIDs: [fixture.tagID],
+            bundleRevision: "bundle-r1"
+        )
+        let jobID = try service.enqueuePersonalLibrarySuggestions(capability: capability)
+        XCTAssertEqual(
+            try service.enqueuePersonalLibrarySuggestions(capability: capability),
+            jobID
+        )
+
+        let persisted = try fixture.queue.fetchJob(id: jobID)
+        let payload = try PersonalLibrarySuggestionsCodec.decodePayload(persisted.payload)
+        XCTAssertEqual(persisted.kind, PersonalLibrarySuggestionsJobFactory.kind)
+        XCTAssertTrue(payload.sourceIDs.contains(fixture.sourceID))
+        XCTAssertEqual(payload.catalogCutoffMs, fixture.cutoffMs)
+        XCTAssertEqual(payload.capability, capability)
+        XCTAssertTrue(
+            try GRDBPersonalizationReviewRepository(database: fixture.database)
+                .personalSuggestionCapabilityMatches(capability)
+        )
+        XCTAssertEqual(
+            try service.personalLibrarySuggestionJob(),
+            PersonalLibrarySuggestionJobProjection(
+                id: jobID,
+                state: .pending,
+                checkedCount: 0,
+                totalCount: nil,
+                suggestedCount: 0,
+                skippedCount: 0,
+                lastErrorCode: nil
+            )
+        )
+    }
+
+    func testConflictingPersonalLibraryJobDoesNotReplaceActiveBundleOrPayload() throws {
+        let fixture = try makeLargeLibraryFixture(assetCount: 8)
+        let handler = makeHandler(
+            database: fixture.database,
+            loader: fixture.loader,
+            queue: fixture.queue
+        )
+        let service = PersonalizationReviewService(
+            database: fixture.database,
+            queue: fixture.queue,
+            executionCoordinator: makeCoordinator(
+                database: fixture.database,
+                handler: handler,
+                queue: fixture.queue
+            ),
+            tags: fixture.tags,
+            clock: FixedJobClock(nowMs: fixture.cutoffMs)
+        )
+        let firstCapability = try makePersonalCapability(
+            database: fixture.database,
+            tagIDs: [fixture.tagID],
+            bundleRevision: "bundle-r1"
+        )
+        let conflictingCapability = try makePersonalCapability(
+            database: fixture.database,
+            tagIDs: [fixture.tagID],
+            bundleRevision: "bundle-r2"
+        )
+        let jobID = try service.enqueuePersonalLibrarySuggestions(capability: firstCapability)
+
+        XCTAssertThrowsError(
+            try service.enqueuePersonalLibrarySuggestions(capability: conflictingCapability)
+        ) { error in
+            XCTAssertEqual(error as? PersonalizationReviewError, .activeJobConflict)
+        }
+
+        let review = GRDBPersonalizationReviewRepository(database: fixture.database)
+        XCTAssertTrue(try review.personalSuggestionCapabilityMatches(firstCapability))
+        XCTAssertFalse(try review.personalSuggestionCapabilityMatches(conflictingCapability))
+        let persisted = try fixture.queue.fetchJob(id: jobID)
+        XCTAssertEqual(
+            try PersonalLibrarySuggestionsCodec.decodePayload(persisted.payload).capability,
+            firstCapability
+        )
+        XCTAssertEqual(try service.personalLibrarySuggestionJob()?.id, jobID)
+    }
+
+    func testPersonalLibraryProjectionPrefersActiveJobOverSameTimestampHistory() throws {
+        let fixture = try makeLargeLibraryFixture(assetCount: 8)
+        let handler = makeHandler(
+            database: fixture.database,
+            loader: fixture.loader,
+            queue: fixture.queue
+        )
+        let service = PersonalizationReviewService(
+            database: fixture.database,
+            queue: fixture.queue,
+            executionCoordinator: makeCoordinator(
+                database: fixture.database,
+                handler: handler,
+                queue: fixture.queue
+            ),
+            tags: fixture.tags,
+            clock: FixedJobClock(nowMs: fixture.cutoffMs)
+        )
+        let capability = try makePersonalCapability(
+            database: fixture.database,
+            tagIDs: [fixture.tagID],
+            bundleRevision: "bundle-r1"
+        )
+        let historicalID = try service.enqueuePersonalLibrarySuggestions(capability: capability)
+        try fixture.database.pool.write { db in
+            try db.execute(
+                sql: "UPDATE job SET state = 'completed' WHERE id = ?",
+                arguments: [historicalID.uuidString.lowercased()]
+            )
+        }
+        let activeID = try service.enqueuePersonalLibrarySuggestions(capability: capability)
+        try fixture.database.pool.write { db in
+            try db.execute(
+                sql: "UPDATE job SET id = ? WHERE id = ?",
+                arguments: [
+                    "ffffffff-ffff-4fff-bfff-ffffffffffff",
+                    historicalID.uuidString.lowercased(),
+                ]
+            )
+        }
+
+        let projection = try XCTUnwrap(service.personalLibrarySuggestionJob())
+        XCTAssertEqual(projection.id, activeID)
+        XCTAssertEqual(projection.state, .pending)
+    }
+
+    func testReviewServiceAsyncRunnerExecutesPersistentPersonalLibraryHandler() async throws {
+        let fixture = try makeLargeLibraryFixture(assetCount: 6)
+        let queue = JobTestSupport.makeQueue(
+            database: fixture.database,
+            nowMs: fixture.cutoffMs,
+            retryDelayMs: 0
+        )
+        let capability = try makePersonalCapability(
+            database: fixture.database,
+            tagIDs: [fixture.tagID],
+            bundleRevision: "bundle-r1"
+        )
+        let featureHandler = makeHandler(
+            database: fixture.database,
+            loader: fixture.loader,
+            queue: queue
+        )
+        let personalHandler = PersonalLibrarySuggestionsHandler(
+            dependencies: PersonalLibrarySuggestionsHandlerDependencies(
+                database: fixture.database,
+                queue: queue,
+                images: StubPersonalLibrarySuggestionImages(),
+                client: StubPersistentPersonalSuggestionClient(capability: capability),
+                catalogScopeID: try fixture.database.catalogScopeID(),
+                clock: FixedJobClock(nowMs: fixture.cutoffMs)
+            )
+        )
+        let coordinator = JobExecutionCoordinator(
+            queue: queue,
+            registry: MultiJobHandlerRegistry(handlers: [featureHandler, personalHandler]),
+            leaseContextProvider: GRDBJobLeaseContextProvider(queue: queue)
+        )
+        let service = PersonalizationReviewService(
+            database: fixture.database,
+            queue: queue,
+            executionCoordinator: coordinator,
+            tags: fixture.tags,
+            clock: FixedJobClock(nowMs: fixture.cutoffMs)
+        )
+        let jobID = try service.enqueuePersonalLibrarySuggestions(capability: capability)
+
+        let didRun = try await service.runPendingSuggestionJobsAsync(maxSteps: 1)
+        XCTAssertTrue(didRun)
+
+        let completed = try queue.fetchJob(id: jobID)
+        XCTAssertEqual(completed.state, .completed)
+        XCTAssertGreaterThan(try service.totalPendingSuggestionCount(), 0)
+    }
+
+    func testRunnerWakesWhenFuturePersonalRetryBecomesDue() async throws {
+        let fixture = try makeLargeLibraryFixture(assetCount: 6)
+        let clock = MutableJobClock(nowMs: fixture.cutoffMs)
+        let queue = GRDBJobQueue(
+            database: fixture.database,
+            clock: clock,
+            retryPolicy: FixedDelayRetryPolicy(delayMs: 800)
+        )
+        let capability = try makePersonalCapability(
+            database: fixture.database,
+            tagIDs: [fixture.tagID],
+            bundleRevision: "bundle-r1"
+        )
+        let handler = PersonalLibrarySuggestionsHandler(
+            dependencies: PersonalLibrarySuggestionsHandlerDependencies(
+                database: fixture.database,
+                queue: queue,
+                images: StubPersonalLibrarySuggestionImages(),
+                client: OneShotUnavailablePersistentPersonalSuggestionClient(
+                    capability: capability
+                ),
+                catalogScopeID: try fixture.database.catalogScopeID(),
+                clock: clock
+            )
+        )
+        let coordinator = JobExecutionCoordinator(
+            queue: queue,
+            registry: MultiJobHandlerRegistry(handlers: [handler]),
+            leaseContextProvider: GRDBJobLeaseContextProvider(queue: queue)
+        )
+        let service = PersonalizationReviewService(
+            database: fixture.database,
+            queue: queue,
+            executionCoordinator: coordinator,
+            tags: fixture.tags,
+            clock: clock
+        )
+        let jobID = try service.enqueuePersonalLibrarySuggestions(capability: capability)
+        let runner = await PersonalizationSuggestionRunner.startLoop(review: service) {}
+        let advanceClock = Task {
+            try? await Task.sleep(nanoseconds: 400_000_000)
+            clock.setNowMs(fixture.cutoffMs + 800)
+        }
+
+        for _ in 0 ..< 50 {
+            if try queue.fetchJob(id: jobID).state == .completed { break }
+            try? await Task.sleep(nanoseconds: 50_000_000)
+        }
+        runner.cancel()
+        await runner.value
+        await advanceClock.value
+
+        XCTAssertEqual(try queue.fetchJob(id: jobID).state, .completed)
+    }
+
     func testPersonalBundleSuggestionAppearsInExistingReviewQueueWithProvenance() throws {
         let fixture = try makeLargeLibraryFixture(assetCount: 8)
         let handler = makeHandler(
@@ -1849,6 +2099,58 @@ private actor StubPersistentPersonalSuggestionClient: LocalModelSuggestionClient
 
     func personalCapability() async throws -> PersonalModelSuggestionCapabilityAvailability {
         .available(capability)
+    }
+
+    func suggestions(
+        imageData _: Data,
+        requestID _: String,
+        target: ModelSuggestionTarget
+    ) async throws -> [LocalModelSuggestion] {
+        guard target == .personal(capability.target) else {
+            throw LocalModelSuggestionClientError.identityMismatch
+        }
+        return capability.tagIDs.map { tagID in
+            LocalModelSuggestion(
+                track: .personal,
+                conceptID: nil,
+                tagID: tagID,
+                score: 0.75,
+                recommendedState: .suggested,
+                catalogScopeID: capability.target.catalogScopeID,
+                bundleID: capability.target.bundleID,
+                bundleRevision: capability.target.bundleRevision,
+                standardPackID: nil,
+                standardPackRevision: nil,
+                provider: capability.target.provider,
+                modelID: capability.target.modelID,
+                modelRevision: capability.target.modelRevision,
+                preprocessingRevision: capability.target.preprocessingRevision,
+                elementCount: capability.target.elementCount,
+                labelVocabularyRevision: capability.target.labelVocabularyRevision,
+                weightsSHA256: capability.target.weightsSHA256,
+                ontologyID: nil,
+                ontologyRevision: nil,
+                mappingRevision: nil,
+                policyRevision: capability.target.policyRevision
+            )
+        }
+    }
+}
+
+private actor OneShotUnavailablePersistentPersonalSuggestionClient: LocalModelSuggestionClient {
+    let capability: PersonalModelSuggestionCapability
+    private var capabilityCallCount = 0
+
+    init(capability: PersonalModelSuggestionCapability) {
+        self.capability = capability
+    }
+
+    func personalCapability() async throws -> PersonalModelSuggestionCapabilityAvailability {
+        capabilityCallCount += 1
+        if capabilityCallCount == 1 {
+            throw LocalModelSuggestionClientError.serviceUnavailable
+        }
+        return .available(capability)
     }
 
     func suggestions(

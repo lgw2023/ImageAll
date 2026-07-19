@@ -1,4 +1,5 @@
 import Foundation
+import GRDB
 
 struct PersonalizationReviewService: PersonalizationReviewPort, Sendable {
     let database: CatalogDatabase
@@ -6,6 +7,23 @@ struct PersonalizationReviewService: PersonalizationReviewPort, Sendable {
     let executionCoordinator: JobExecutionCoordinator
     let tags: GRDBTagCatalogRepository
     let clock: any JobClock
+    let personalLibrarySuggestionsEnabled: Bool
+
+    init(
+        database: CatalogDatabase,
+        queue: GRDBJobQueue,
+        executionCoordinator: JobExecutionCoordinator,
+        tags: GRDBTagCatalogRepository,
+        clock: any JobClock,
+        personalLibrarySuggestionsEnabled: Bool = true
+    ) {
+        self.database = database
+        self.queue = queue
+        self.executionCoordinator = executionCoordinator
+        self.tags = tags
+        self.clock = clock
+        self.personalLibrarySuggestionsEnabled = personalLibrarySuggestionsEnabled
+    }
 
     private var review: GRDBPersonalizationReviewRepository {
         GRDBPersonalizationReviewRepository(database: database)
@@ -141,6 +159,83 @@ struct PersonalizationReviewService: PersonalizationReviewPort, Sendable {
         return jobID
     }
 
+    func enqueuePersonalLibrarySuggestions(
+        capability: PersonalModelSuggestionCapability
+    ) throws -> UUID {
+        guard personalLibrarySuggestionsEnabled,
+              capability.target.catalogScopeID == (try database.catalogScopeID())
+        else {
+            throw PersonalizationReviewError.persistenceFailure
+        }
+        let jobID = UUID()
+        let nowMs = clock.nowMs
+        do {
+            return try database.pool.write { db in
+                if let row = try Row.fetchOne(
+                    db,
+                    sql: """
+                    SELECT * FROM job
+                    WHERE kind = ?
+                        AND state IN ('pending', 'running', 'paused', 'retryableFailed')
+                    ORDER BY created_at_ms DESC, id DESC
+                    LIMIT 1
+                    """,
+                    arguments: [PersonalLibrarySuggestionsJobFactory.kind]
+                ) {
+                    let existing = try JobPersistenceMapping.snapshot(from: row)
+                    let existingPayload = try PersonalLibrarySuggestionsCodec.decodePayload(
+                        existing.payload
+                    )
+                    guard existingPayload.capability == capability,
+                          try review.personalCapabilityMatches(capability, in: db)
+                    else {
+                        throw PersonalizationReviewError.activeJobConflict
+                    }
+                    return existing.id
+                }
+                let sourceIDs = try review.activePersonalizationSourceIDs(in: db)
+                guard !sourceIDs.isEmpty else {
+                    throw PersonalizationReviewError.persistenceFailure
+                }
+                let command = try PersonalLibrarySuggestionsJobEnqueue.makeEnqueueCommand(
+                    jobID: jobID,
+                    sourceIDs: sourceIDs,
+                    catalogCutoffMs: nowMs,
+                    capability: capability,
+                    notBeforeMs: nowMs
+                )
+                try review.activatePersonalSuggestionBundle(
+                    capability,
+                    activatedAtMs: nowMs,
+                    on: db
+                )
+                try JobInsertInTransaction.insertPendingJob(
+                    db,
+                    command: command,
+                    nowMs: nowMs
+                )
+                return jobID
+            }
+        } catch JobQueueError.activeCoalescingConflict {
+            throw PersonalizationReviewError.activeJobConflict
+        }
+    }
+
+    func personalLibrarySuggestionJob() throws -> PersonalLibrarySuggestionJobProjection? {
+        guard let job = try review.latestPersonalLibrarySuggestionJob() else { return nil }
+        let checkpoint = (try? PersonalLibrarySuggestionsCodec.checkpoint(from: job.checkpoint))
+            ?? .empty
+        return PersonalLibrarySuggestionJobProjection(
+            id: job.id,
+            state: job.state,
+            checkedCount: checkpoint.checkedCount,
+            totalCount: job.progress.total,
+            suggestedCount: checkpoint.suggestedCount,
+            skippedCount: checkpoint.skippedCount,
+            lastErrorCode: job.lastErrorCode
+        )
+    }
+
     func pauseSuggestionJob(jobID: UUID) throws {
         _ = try queue.applyStateCommand(JobStateCommand(jobID: jobID, operation: .pause))
     }
@@ -178,6 +273,76 @@ struct PersonalizationReviewService: PersonalizationReviewPort, Sendable {
             }
         }
         return didWork
+    }
+
+    func runPendingSuggestionJobsAsync(maxSteps: Int? = nil) async throws -> Bool {
+        try queue.settleRetryableJobs()
+        if try queue.hasBlockingReconcileWork(nowMs: clock.nowMs) {
+            return false
+        }
+        var allowedKinds = Set([FullLibrarySuggestionsJobFactory.kind])
+        if personalLibrarySuggestionsEnabled {
+            allowedKinds.insert(PersonalLibrarySuggestionsJobFactory.kind)
+        }
+        let claim = ClaimNextInput(
+            owner: PersonalizationSuggestionRunner.claimOwner,
+            leaseDurationMs: 60_000,
+            allowedKinds: allowedKinds
+        )
+        var steps = 0
+        var didWork = false
+        while true {
+            if let maxSteps, steps >= maxSteps { break }
+            if try queue.hasBlockingReconcileWork(nowMs: clock.nowMs) { break }
+            guard let result = try await executionCoordinator.claimAndExecuteOnceAsync(claim) else { break }
+            didWork = true
+            steps += 1
+            if result.snapshot.state == .terminalFailed {
+                break
+            }
+        }
+        return didWork
+    }
+
+    func nextSuggestionRetryDelayNanoseconds() throws -> UInt64? {
+        let nextNotBeforeMs: Int64?
+        if personalLibrarySuggestionsEnabled {
+            nextNotBeforeMs = try database.pool.read { db in
+                try Int64.fetchOne(
+                    db,
+                    sql: """
+                    SELECT MIN(not_before_ms) FROM job
+                    WHERE kind IN (?, ?)
+                        AND state = 'retryableFailed'
+                        AND attempts < max_attempts
+                    """,
+                    arguments: [
+                        FullLibrarySuggestionsJobFactory.kind,
+                        PersonalLibrarySuggestionsJobFactory.kind,
+                    ]
+                )
+            }
+        } else {
+            nextNotBeforeMs = try database.pool.read { db in
+                try Int64.fetchOne(
+                    db,
+                    sql: """
+                    SELECT MIN(not_before_ms) FROM job
+                    WHERE kind = ?
+                        AND state = 'retryableFailed'
+                        AND attempts < max_attempts
+                    """,
+                    arguments: [FullLibrarySuggestionsJobFactory.kind]
+                )
+            }
+        }
+        guard let nextNotBeforeMs else { return nil }
+        let difference = nextNotBeforeMs.subtractingReportingOverflow(clock.nowMs)
+        guard !difference.overflow, difference.partialValue > 0 else { return 0 }
+        let nanoseconds = UInt64(difference.partialValue).multipliedReportingOverflow(
+            by: 1_000_000
+        )
+        return nanoseconds.overflow ? UInt64.max : nanoseconds.partialValue
     }
 
     private func mapTaskStatus(

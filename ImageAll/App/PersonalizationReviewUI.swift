@@ -122,10 +122,18 @@ struct ReviewOverviewView: View {
         switch model.personalLibrarySuggestionState {
         case .idle:
             "把当前个人 DINO 模型的建议加入现有审核队列。"
+        case let .waiting(checked, suggested, skipped):
+            "等待扫描 · 已检查 \(checked) 张 · 建议 \(suggested) 条 · 跳过 \(skipped) 张"
         case let .running(checked, suggested, skipped):
             "已检查 \(checked) 张 · 建议 \(suggested) 条 · 跳过 \(skipped) 张"
+        case let .paused(checked, suggested, skipped):
+            "扫描已暂停 · 已检查 \(checked) 张 · 建议 \(suggested) 条 · 跳过 \(skipped) 张"
+        case let .retryableFailure(checked, suggested, skipped):
+            "本地服务暂时不可用，任务将重试 · 已检查 \(checked) 张 · 建议 \(suggested) 条 · 跳过 \(skipped) 张"
         case let .completed(checked, suggested, skipped):
             "扫描完成：检查 \(checked) 张，加入 \(suggested) 条建议，跳过 \(skipped) 张。"
+        case let .cancelled(checked, suggested, skipped):
+            "扫描已取消：检查 \(checked) 张，加入 \(suggested) 条建议，跳过 \(skipped) 张。"
         case .personalUnavailable:
             "当前目录没有可用的个人模型，请先重建个人模型。"
         case .serviceUnavailable:
@@ -137,9 +145,9 @@ struct ReviewOverviewView: View {
 
     private var personalLibraryStatusColor: Color {
         switch model.personalLibrarySuggestionState {
-        case .failed, .serviceUnavailable:
+        case .failed, .serviceUnavailable, .retryableFailure:
             .red
-        case .personalUnavailable:
+        case .personalUnavailable, .paused:
             .orange
         default:
             .secondary

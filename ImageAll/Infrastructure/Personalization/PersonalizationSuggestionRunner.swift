@@ -31,6 +31,11 @@ enum PersonalizationSuggestionRunner {
 
     private static let inFlightGate = InFlightGate()
 
+    private enum StepResult {
+        case busy
+        case completed(Bool)
+    }
+
     static var isWorkerInFlight: Bool {
         inFlightGate.isInFlight
     }
@@ -42,10 +47,22 @@ enum PersonalizationSuggestionRunner {
     ) -> Task<Void, Never> {
         Task {
             while !Task.isCancelled {
-                let didWork = await runOneStep(review: review, refresh: refresh)
-                guard didWork else { return }
-                await refresh()
-                try? await Task.sleep(nanoseconds: refreshIntervalNs)
+                switch await runOneStepResult(review: review, refresh: refresh) {
+                case .busy:
+                    try? await Task.sleep(nanoseconds: refreshIntervalNs)
+                case let .completed(didWork):
+                    if didWork {
+                        await refresh()
+                        try? await Task.sleep(nanoseconds: refreshIntervalNs)
+                        continue
+                    }
+                    let retryDelay = await Task.detached {
+                        try? review.nextSuggestionRetryDelayNanoseconds()
+                    }.value
+                    guard let retryDelay else { return }
+                    await refresh()
+                    try? await Task.sleep(nanoseconds: max(1_000_000, retryDelay))
+                }
             }
         }
     }
@@ -54,7 +71,19 @@ enum PersonalizationSuggestionRunner {
         review: any PersonalizationReviewPort,
         refresh: (@MainActor () async -> Void)? = nil
     ) async -> Bool {
-        guard inFlightGate.tryEnter() else { return false }
+        switch await runOneStepResult(review: review, refresh: refresh) {
+        case .busy:
+            return false
+        case let .completed(didWork):
+            return didWork
+        }
+    }
+
+    private static func runOneStepResult(
+        review: any PersonalizationReviewPort,
+        refresh: (@MainActor () async -> Void)?
+    ) async -> StepResult {
+        guard inFlightGate.tryEnter() else { return .busy }
         defer { inFlightGate.leave() }
 
         let refreshTicker: Task<Void, Never>?
@@ -72,11 +101,8 @@ enum PersonalizationSuggestionRunner {
         }
         defer { refreshTicker?.cancel() }
 
-        return await withCheckedContinuation { continuation in
-            DispatchQueue.global(qos: .utility).async {
-                let didWork = (try? review.runPendingSuggestionJobs(maxSteps: 1)) ?? false
-                continuation.resume(returning: didWork)
-            }
-        }
+        return .completed(
+            (try? await review.runPendingSuggestionJobsAsync(maxSteps: 1)) ?? false
+        )
     }
 }

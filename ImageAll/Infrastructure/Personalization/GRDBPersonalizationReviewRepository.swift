@@ -320,15 +320,19 @@ struct GRDBPersonalizationReviewRepository: Sendable {
 
     func activePersonalizationSourceIDs() throws -> [UUID] {
         try database.pool.read { db in
-            try String.fetchAll(
-                db,
-                sql: """
-                SELECT id FROM source
-                WHERE kind IN ('folder', 'photos') AND state = 'active'
-                ORDER BY id ASC
-                """
-            ).compactMap(UUID.init(uuidString:))
+            try activePersonalizationSourceIDs(in: db)
         }
+    }
+
+    func activePersonalizationSourceIDs(in db: Database) throws -> [UUID] {
+        try String.fetchAll(
+            db,
+            sql: """
+            SELECT id FROM source
+            WHERE kind IN ('folder', 'photos') AND state = 'active'
+            ORDER BY id ASC
+            """
+        ).compactMap(UUID.init(uuidString:))
     }
 
     func frozenAssetBatch(
@@ -432,6 +436,20 @@ struct GRDBPersonalizationReviewRepository: Sendable {
         _ capability: PersonalModelSuggestionCapability,
         activatedAtMs: Int64
     ) throws {
+        try database.pool.write { db in
+            try activatePersonalSuggestionBundle(
+                capability,
+                activatedAtMs: activatedAtMs,
+                on: db
+            )
+        }
+    }
+
+    func activatePersonalSuggestionBundle(
+        _ capability: PersonalModelSuggestionCapability,
+        activatedAtMs: Int64,
+        on db: Database
+    ) throws {
         let target = capability.target
         guard activatedAtMs >= 0,
               !capability.tagIDs.isEmpty,
@@ -442,37 +460,35 @@ struct GRDBPersonalizationReviewRepository: Sendable {
         else {
             throw PersonalizationReviewError.persistenceFailure
         }
-        try database.pool.write { db in
-            if try personalCapabilityMatches(capability, in: db) {
-                return
-            }
-            try db.execute(sql: "DELETE FROM personal_suggestion_model")
+        if try personalCapabilityMatches(capability, in: db) {
+            return
+        }
+        try db.execute(sql: "DELETE FROM personal_suggestion_model")
+        try db.execute(
+            sql: """
+            INSERT INTO personal_suggestion_model (
+                singleton, catalog_scope_id, bundle_id, bundle_revision, provider, model_id,
+                model_revision, preprocessing_revision, element_count,
+                label_vocabulary_revision, weights_sha256, policy_revision, activated_at_ms
+            ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            arguments: [
+                target.catalogScopeID, target.bundleID, target.bundleRevision, target.provider,
+                target.modelID, target.modelRevision, target.preprocessingRevision,
+                target.elementCount, target.labelVocabularyRevision, target.weightsSHA256,
+                target.policyRevision, activatedAtMs,
+            ]
+        )
+        for tagID in capability.tagIDs {
             try db.execute(
                 sql: """
-                INSERT INTO personal_suggestion_model (
-                    singleton, catalog_scope_id, bundle_id, bundle_revision, provider, model_id,
-                    model_revision, preprocessing_revision, element_count,
-                    label_vocabulary_revision, weights_sha256, policy_revision, activated_at_ms
-                ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO personal_suggestion_tag (tag_id, model_singleton)
+                SELECT id, 1 FROM tag WHERE id = ? AND state = 'active'
                 """,
-                arguments: [
-                    target.catalogScopeID, target.bundleID, target.bundleRevision, target.provider,
-                    target.modelID, target.modelRevision, target.preprocessingRevision,
-                    target.elementCount, target.labelVocabularyRevision, target.weightsSHA256,
-                    target.policyRevision, activatedAtMs,
-                ]
+                arguments: [uuid(tagID)]
             )
-            for tagID in capability.tagIDs {
-                try db.execute(
-                    sql: """
-                    INSERT INTO personal_suggestion_tag (tag_id, model_singleton)
-                    SELECT id, 1 FROM tag WHERE id = ? AND state = 'active'
-                    """,
-                    arguments: [uuid(tagID)]
-                )
-                guard db.changesCount == 1 else {
-                    throw PersonalizationReviewError.persistenceFailure
-                }
+            guard db.changesCount == 1 else {
+                throw PersonalizationReviewError.persistenceFailure
             }
         }
     }
@@ -787,6 +803,28 @@ struct GRDBPersonalizationReviewRepository: Sendable {
         }
     }
 
+    func latestPersonalLibrarySuggestionJob() throws -> JobRecordSnapshot? {
+        try database.pool.read { db in
+            guard let row = try Row.fetchOne(
+                db,
+                sql: """
+                SELECT * FROM job
+                WHERE kind = ?
+                ORDER BY
+                    CASE
+                        WHEN state IN ('pending', 'running', 'paused', 'retryableFailed') THEN 0
+                        ELSE 1
+                    END ASC,
+                    created_at_ms DESC,
+                    id DESC
+                LIMIT 1
+                """,
+                arguments: [PersonalLibrarySuggestionsJobFactory.kind]
+            ) else { return nil }
+            return try JobPersistenceMapping.snapshot(from: row)
+        }
+    }
+
     func nextModelRevision(tagID: UUID) throws -> Int {
         try database.pool.read { db in
             let current: Int = try Int.fetchOne(
@@ -903,7 +941,7 @@ struct GRDBPersonalizationReviewRepository: Sendable {
         }
     }
 
-    private func personalCapabilityMatches(
+    func personalCapabilityMatches(
         _ capability: PersonalModelSuggestionCapability,
         in db: Database
     ) throws -> Bool {

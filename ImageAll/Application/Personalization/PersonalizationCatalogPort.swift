@@ -416,8 +416,12 @@ enum LocalModelSuggestionPresentationState: Equatable, Sendable {
 
 enum PersonalLibrarySuggestionPresentationState: Equatable, Sendable {
     case idle
+    case waiting(checked: Int, suggested: Int, skipped: Int)
     case running(checked: Int, suggested: Int, skipped: Int)
+    case paused(checked: Int, suggested: Int, skipped: Int)
+    case retryableFailure(checked: Int, suggested: Int, skipped: Int)
     case completed(checked: Int, suggested: Int, skipped: Int)
+    case cancelled(checked: Int, suggested: Int, skipped: Int)
     case personalUnavailable
     case serviceUnavailable
     case failed

@@ -763,16 +763,12 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         )
     }
 
-    func testUserTriggeredPersonalLibraryScanPublishesVersionedSuggestionsForReview() async {
+    func testUserTriggeredPersonalLibraryScanEnqueuesVersionedPersistentJob() async {
         let sourceID = UUID()
         let asset = Self.makeAsset(sourceID: sourceID, fileName: "personal-library.jpg")
         let tag = TagListItem(id: UUID(), displayName: "旅行", state: .active)
         let secondTag = TagListItem(id: UUID(), displayName: "家人", state: .active)
         let capability = Self.makePersonalCapability(tagIDs: [tag.id, secondTag.id])
-        let suggestions = [
-            Self.makePersonalSuggestion(tagID: tag.id),
-            Self.makePersonalSuggestion(tagID: secondTag.id),
-        ]
         let service = FakeLibraryWorkspaceService(
             connectedSource: LibrarySourceSummary(
                 id: sourceID,
@@ -785,20 +781,10 @@ final class LibraryWorkspaceModelTests: XCTestCase {
             startsConnected: true,
             previewData: Data("personal-library-preview".utf8)
         )
-        let review = FakePersonalizationReviewPort(
-            personalCandidates: [
-                PersonalSuggestionCandidate(
-                    assetID: asset.assetID,
-                    contentRevision: asset.contentRevision
-                ),
-            ]
-        )
+        let review = FakePersonalizationReviewPort()
         let client = FakeLocalModelSuggestionClient(
-            result: .success(suggestions),
-            personalCapabilities: [
-                .available(capability),
-                .available(capability),
-            ]
+            result: .success([]),
+            personalCapability: .available(capability)
         )
         let model = LibraryWorkspaceModel(
             service: service,
@@ -811,33 +797,60 @@ final class LibraryWorkspaceModelTests: XCTestCase {
 
         XCTAssertEqual(
             model.personalLibrarySuggestionState,
-            .completed(checked: 1, suggested: 2, skipped: 0)
+            .waiting(checked: 0, suggested: 0, skipped: 0)
         )
         XCTAssertEqual(review.activatedPersonalCapability, capability)
-        XCTAssertEqual(
-            review.personalSuggestionReplacements,
-            [
-                FakePersonalSuggestionReplacement(
-                    candidate: PersonalSuggestionCandidate(
-                        assetID: asset.assetID,
-                        contentRevision: asset.contentRevision
-                    ),
-                    predictions: [
-                        PersonalSuggestionPrediction(tagID: tag.id, score: suggestions[0].score),
-                        PersonalSuggestionPrediction(tagID: secondTag.id, score: suggestions[1].score),
-                    ],
-                    expectedCapability: capability
-                ),
-            ]
-        )
-        XCTAssertEqual(client.personalCapabilityCallCount, 2)
-        XCTAssertEqual(client.callCount, 1)
-        XCTAssertEqual(client.lastTarget, .personal(capability.target))
-        XCTAssertEqual(service.previewLoadCallCount, 1)
+        XCTAssertEqual(review.enqueuedPersonalCapability, capability)
+        XCTAssertEqual(client.personalCapabilityCallCount, 1)
+        XCTAssertEqual(client.callCount, 0)
+        XCTAssertEqual(service.previewLoadCallCount, 0)
         XCTAssertEqual(service.mutateTagCallCount, 0)
     }
 
-    func testPersonalLibraryScanSkipsCloudOnlyAssetsWithoutDownloadingThem() async {
+    func testStartRestoresPendingPersonalLibrarySuggestionJobAndStartsWorker() async {
+        let sourceID = UUID()
+        let jobID = UUID()
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: sourceID,
+                displayName: "Fixture",
+                state: .active
+            ),
+            reconciledItems: [],
+            initialItems: [],
+            startsConnected: true
+        )
+        let review = FakePersonalizationReviewPort(
+            personalLibraryJob: PersonalLibrarySuggestionJobProjection(
+                id: jobID,
+                state: .pending,
+                checkedCount: 7,
+                totalCount: 20,
+                suggestedCount: 3,
+                skippedCount: 1,
+                lastErrorCode: nil
+            )
+        )
+        let client = FakeLocalModelSuggestionClient(result: .success([]))
+        let model = LibraryWorkspaceModel(
+            service: service,
+            review: review,
+            localModelSuggestions: Self.makeStandardRuntime(client: client)
+        )
+
+        await model.start()
+        for _ in 0 ..< 40 where review.runPendingJobsCallCount == 0 {
+            try? await Task.sleep(nanoseconds: 25_000_000)
+        }
+
+        XCTAssertEqual(
+            model.personalLibrarySuggestionState,
+            .waiting(checked: 7, suggested: 3, skipped: 1)
+        )
+        XCTAssertGreaterThanOrEqual(review.runPendingJobsCallCount, 1)
+    }
+
+    func testPersonalLibraryScanEnqueueDoesNotDownloadCloudOnlyAssets() async {
         let sourceID = UUID()
         let asset = Self.makeAsset(sourceID: sourceID, fileName: "cloud-only-personal.jpg")
         let tag = TagListItem(id: UUID(), displayName: "旅行", state: .active)
@@ -855,14 +868,7 @@ final class LibraryWorkspaceModelTests: XCTestCase {
             startsConnected: true,
             previewError: .cloudOnly
         )
-        let review = FakePersonalizationReviewPort(
-            personalCandidates: [
-                PersonalSuggestionCandidate(
-                    assetID: asset.assetID,
-                    contentRevision: asset.contentRevision
-                ),
-            ]
-        )
+        let review = FakePersonalizationReviewPort()
         let client = FakeLocalModelSuggestionClient(
             result: .success([]),
             personalCapability: .available(capability)
@@ -878,13 +884,12 @@ final class LibraryWorkspaceModelTests: XCTestCase {
 
         XCTAssertEqual(
             model.personalLibrarySuggestionState,
-            .completed(checked: 1, suggested: 0, skipped: 1)
+            .waiting(checked: 0, suggested: 0, skipped: 0)
         )
         XCTAssertEqual(client.callCount, 0)
-        XCTAssertEqual(service.previewLoadCallCount, 1)
+        XCTAssertEqual(service.previewLoadCallCount, 0)
         XCTAssertEqual(service.cloudPreviewDownloadCallCount, 0)
-        XCTAssertTrue(review.personalSuggestionReplacements.isEmpty)
-        XCTAssertEqual(review.personalSuggestionInvalidationCallCount, 0)
+        XCTAssertEqual(review.enqueuedPersonalCapability, capability)
     }
 
     func testUnavailablePersonalBundleInvalidatesPersistedPersonalSuggestions() async {
@@ -915,7 +920,7 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertEqual(service.previewLoadCallCount, 0)
     }
 
-    func testPersonalLibraryScanInvalidatesSuggestionsWhenBundleChangesDuringInference() async {
+    func testPersonalLibraryScanFreezesCapabilityWithoutForegroundRecheck() async {
         let sourceID = UUID()
         let asset = Self.makeAsset(sourceID: sourceID, fileName: "bundle-change.jpg")
         let tag = TagListItem(id: UUID(), displayName: "旅行", state: .active)
@@ -948,14 +953,7 @@ final class LibraryWorkspaceModelTests: XCTestCase {
             startsConnected: true,
             previewData: Data("bundle-change-preview".utf8)
         )
-        let review = FakePersonalizationReviewPort(
-            personalCandidates: [
-                PersonalSuggestionCandidate(
-                    assetID: asset.assetID,
-                    contentRevision: asset.contentRevision
-                ),
-            ]
-        )
+        let review = FakePersonalizationReviewPort()
         let client = FakeLocalModelSuggestionClient(
             result: .success([Self.makePersonalSuggestion(tagID: tag.id)]),
             personalCapabilities: [
@@ -972,58 +970,13 @@ final class LibraryWorkspaceModelTests: XCTestCase {
 
         await model.generatePersonalLibrarySuggestions()
 
-        XCTAssertEqual(model.personalLibrarySuggestionState, .failed)
-        XCTAssertNil(review.activatedPersonalCapability)
-        XCTAssertTrue(review.personalSuggestionReplacements.isEmpty)
-        XCTAssertEqual(review.personalSuggestionInvalidationCallCount, 1)
-        XCTAssertEqual(client.callCount, 1)
-        XCTAssertEqual(service.mutateTagCallCount, 0)
-    }
-
-    func testPersonalLibraryScanInvalidatesSuggestionsAfterBackendBundleMismatch() async {
-        let sourceID = UUID()
-        let asset = Self.makeAsset(sourceID: sourceID, fileName: "backend-mismatch.jpg")
-        let tag = TagListItem(id: UUID(), displayName: "旅行", state: .active)
-        let capability = Self.makePersonalCapability(tagIDs: [tag.id])
-        let service = FakeLibraryWorkspaceService(
-            connectedSource: LibrarySourceSummary(
-                id: sourceID,
-                displayName: "Fixture",
-                state: .active
-            ),
-            reconciledItems: [asset],
-            tags: [tag],
-            initialItems: [asset],
-            startsConnected: true,
-            previewData: Data("backend-mismatch-preview".utf8)
+        XCTAssertEqual(
+            model.personalLibrarySuggestionState,
+            .waiting(checked: 0, suggested: 0, skipped: 0)
         )
-        let review = FakePersonalizationReviewPort(
-            personalCandidates: [
-                PersonalSuggestionCandidate(
-                    assetID: asset.assetID,
-                    contentRevision: asset.contentRevision
-                ),
-            ]
-        )
-        let client = FakeLocalModelSuggestionClient(
-            result: .failure(
-                .rejected(statusCode: 409, code: "personal_bundle_mismatch")
-            ),
-            personalCapability: .available(capability)
-        )
-        let model = LibraryWorkspaceModel(
-            service: service,
-            review: review,
-            localModelSuggestions: Self.makeStandardRuntime(client: client)
-        )
-        await model.start()
-
-        await model.generatePersonalLibrarySuggestions()
-
-        XCTAssertEqual(model.personalLibrarySuggestionState, .failed)
-        XCTAssertNil(review.activatedPersonalCapability)
-        XCTAssertTrue(review.personalSuggestionReplacements.isEmpty)
-        XCTAssertEqual(review.personalSuggestionInvalidationCallCount, 1)
+        XCTAssertEqual(review.enqueuedPersonalCapability, initialCapability)
+        XCTAssertEqual(client.personalCapabilityCallCount, 1)
+        XCTAssertEqual(client.callCount, 0)
         XCTAssertEqual(service.mutateTagCallCount, 0)
     }
 
@@ -3028,6 +2981,15 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertTrue(confirmed)
         XCTAssertLessThan(elapsed, .seconds(1))
         XCTAssertEqual(review.enqueueCallCount, 1)
+        for _ in 0 ..< 100 where review.runPendingJobsCallCount == 0 {
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertEqual(review.runPendingJobsCallCount, 1)
+        review.releaseBlockedPendingJobs()
+        for _ in 0 ..< 40 where PersonalizationSuggestionRunner.isWorkerInFlight {
+            try? await Task.sleep(nanoseconds: 25_000_000)
+        }
+        XCTAssertFalse(PersonalizationSuggestionRunner.isWorkerInFlight)
     }
 
     func testConfirmSuggestionEnqueueUsesCapturedConfirmationAfterDialogDismissal() async throws {
@@ -4080,12 +4042,15 @@ private final class FakePersonalizationReviewPort: PersonalizationReviewPort, @u
     private var storedPendingByAsset: [UUID: [AssetPendingSuggestion]]
     private let personalCandidates: [PersonalSuggestionCandidate]
     private var storedActivatedPersonalCapability: PersonalModelSuggestionCapability?
+    private var storedEnqueuedPersonalCapability: PersonalModelSuggestionCapability?
+    private var storedPersonalLibraryJob: PersonalLibrarySuggestionJobProjection?
     private var storedPersonalSuggestionReplacements: [FakePersonalSuggestionReplacement] = []
     private var storedPersonalSuggestionInvalidationCallCount = 0
     private let queuePageSize: Int?
     private let trainingSnapshot: PersonalTrainingSnapshot?
     var decidedAssetIDsProvider: (@Sendable (UUID) -> Set<UUID>)?
     let blocksRunPendingJobs: Bool
+    private let pendingJobsBlocker = DispatchSemaphore(value: 0)
     private(set) var enqueueCallCount = 0
     private(set) var runPendingJobsCallCount = 0
 
@@ -4094,6 +4059,7 @@ private final class FakePersonalizationReviewPort: PersonalizationReviewPort, @u
         queueItems: [ReviewQueueItemProjection] = [],
         pendingByAsset: [UUID: [AssetPendingSuggestion]] = [:],
         personalCandidates: [PersonalSuggestionCandidate] = [],
+        personalLibraryJob: PersonalLibrarySuggestionJobProjection? = nil,
         trainingSnapshot: PersonalTrainingSnapshot? = nil,
         blocksRunPendingJobs: Bool = false,
         queuePageSize: Int? = nil
@@ -4102,6 +4068,7 @@ private final class FakePersonalizationReviewPort: PersonalizationReviewPort, @u
         storedQueueItems = queueItems
         storedPendingByAsset = pendingByAsset
         self.personalCandidates = personalCandidates
+        storedPersonalLibraryJob = personalLibraryJob
         self.trainingSnapshot = trainingSnapshot
         self.blocksRunPendingJobs = blocksRunPendingJobs
         self.queuePageSize = queuePageSize
@@ -4109,6 +4076,10 @@ private final class FakePersonalizationReviewPort: PersonalizationReviewPort, @u
 
     var activatedPersonalCapability: PersonalModelSuggestionCapability? {
         lock.withLock { storedActivatedPersonalCapability }
+    }
+
+    var enqueuedPersonalCapability: PersonalModelSuggestionCapability? {
+        lock.withLock { storedEnqueuedPersonalCapability }
     }
 
     var personalSuggestionReplacements: [FakePersonalSuggestionReplacement] {
@@ -4203,6 +4174,30 @@ private final class FakePersonalizationReviewPort: PersonalizationReviewPort, @u
         return UUID()
     }
 
+    func enqueuePersonalLibrarySuggestions(
+        capability: PersonalModelSuggestionCapability
+    ) throws -> UUID {
+        lock.withLock {
+            let jobID = UUID()
+            storedActivatedPersonalCapability = capability
+            storedEnqueuedPersonalCapability = capability
+            storedPersonalLibraryJob = PersonalLibrarySuggestionJobProjection(
+                id: jobID,
+                state: .pending,
+                checkedCount: 0,
+                totalCount: nil,
+                suggestedCount: 0,
+                skippedCount: 0,
+                lastErrorCode: nil
+            )
+            return jobID
+        }
+    }
+
+    func personalLibrarySuggestionJob() throws -> PersonalLibrarySuggestionJobProjection? {
+        lock.withLock { storedPersonalLibraryJob }
+    }
+
     func pauseSuggestionJob(jobID: UUID) throws {}
     func resumeSuggestionJob(jobID: UUID) throws {}
     func cancelSuggestionJob(jobID: UUID) throws {}
@@ -4210,8 +4205,12 @@ private final class FakePersonalizationReviewPort: PersonalizationReviewPort, @u
     func runPendingSuggestionJobs(maxSteps: Int?) throws -> Bool {
         lock.withLock { runPendingJobsCallCount += 1 }
         if blocksRunPendingJobs {
-            Thread.sleep(forTimeInterval: 5)
+            _ = pendingJobsBlocker.wait(timeout: .now() + 5)
         }
         return false
+    }
+
+    func releaseBlockedPendingJobs() {
+        pendingJobsBlocker.signal()
     }
 }

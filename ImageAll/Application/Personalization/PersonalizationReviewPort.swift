@@ -136,6 +136,16 @@ struct SuggestionEnqueueConfirmation: Identifiable, Equatable, Sendable {
     var id: UUID { tagID }
 }
 
+struct PersonalLibrarySuggestionJobProjection: Equatable, Sendable {
+    let id: UUID
+    let state: JobState
+    let checkedCount: Int
+    let totalCount: Int?
+    let suggestedCount: Int
+    let skippedCount: Int
+    let lastErrorCode: JobSafeErrorCode?
+}
+
 protocol PersonalizationReviewPort: Sendable {
     func totalPendingSuggestionCount() throws -> Int
     func tagOverviews() throws -> [SuggestionTagOverview]
@@ -163,10 +173,16 @@ protocol PersonalizationReviewPort: Sendable {
         tagID: UUID,
         mode: PersonalizationReviewEnqueueMode
     ) throws -> UUID
+    func enqueuePersonalLibrarySuggestions(
+        capability: PersonalModelSuggestionCapability
+    ) throws -> UUID
+    func personalLibrarySuggestionJob() throws -> PersonalLibrarySuggestionJobProjection?
     func pauseSuggestionJob(jobID: UUID) throws
     func resumeSuggestionJob(jobID: UUID) throws
     func cancelSuggestionJob(jobID: UUID) throws
     func runPendingSuggestionJobs(maxSteps: Int?) throws -> Bool
+    func runPendingSuggestionJobsAsync(maxSteps: Int?) async throws -> Bool
+    func nextSuggestionRetryDelayNanoseconds() throws -> UInt64?
 }
 
 extension PersonalizationReviewPort {
@@ -197,6 +213,34 @@ extension PersonalizationReviewPort {
 
     func invalidatePersonalSuggestionBundle() throws {
         throw PersonalizationReviewError.persistenceFailure
+    }
+
+    func enqueuePersonalLibrarySuggestions(
+        capability _: PersonalModelSuggestionCapability
+    ) throws -> UUID {
+        throw PersonalizationReviewError.persistenceFailure
+    }
+
+    func personalLibrarySuggestionJob() throws -> PersonalLibrarySuggestionJobProjection? {
+        nil
+    }
+
+    func runPendingSuggestionJobsAsync(maxSteps: Int?) async throws -> Bool {
+        try await withCheckedThrowingContinuation { continuation in
+            DispatchQueue.global(qos: .utility).async {
+                do {
+                    continuation.resume(
+                        returning: try runPendingSuggestionJobs(maxSteps: maxSteps)
+                    )
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
+
+    func nextSuggestionRetryDelayNanoseconds() throws -> UInt64? {
+        nil
     }
 }
 

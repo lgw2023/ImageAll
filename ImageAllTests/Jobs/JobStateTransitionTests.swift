@@ -260,6 +260,21 @@ final class JobStateTransitionTests: XCTestCase {
         XCTAssertEqual(items[1].controlRequest, .pause)
     }
 
+    func testPersonalLibrarySuggestionActivityUsesPersonalizationPresentation() throws {
+        let database = try CatalogDatabase.open(at: makeTempDatabaseURL())
+        let queue = JobTestSupport.makeQueue(database: database)
+        let jobID = UUID()
+
+        _ = try JobTestSupport.enqueueDefault(
+            queue: queue,
+            id: jobID,
+            kind: PersonalLibrarySuggestionsJobFactory.kind
+        )
+
+        let item = try XCTUnwrap(queue.fetchActivityItems().first { $0.id == jobID })
+        XCTAssertEqual(item.kind, .personalizationSuggestions)
+    }
+
     func testActivityProjectionLimitsResultsToOneHundredNewestActiveJobs() throws {
         let database = try CatalogDatabase.open(at: makeTempDatabaseURL())
         let queue = JobTestSupport.makeQueue(database: database)

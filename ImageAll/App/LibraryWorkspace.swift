@@ -215,10 +215,12 @@ final class LibraryWorkspaceModel: ObservableObject {
     }
 
     var isGeneratingPersonalLibrarySuggestions: Bool {
-        if case .running = personalLibrarySuggestionState {
+        switch personalLibrarySuggestionState {
+        case .waiting, .running, .paused, .retryableFailure:
             return true
+        default:
+            return false
         }
-        return false
     }
 
     var showsFirstUseGuide: Bool {
@@ -511,6 +513,10 @@ final class LibraryWorkspaceModel: ObservableObject {
                 try service.applyJobActivityAction(action, jobID: jobID)
                 return try service.fetchJobActivity()
             }
+            if action == .resume {
+                startPersonalizationRunnerIfNeeded()
+            }
+            await refreshReviewState()
         } catch {
             if let refreshed = try? await Self.offMain({ try service.fetchJobActivity() }) {
                 jobActivityItems = refreshed
@@ -948,14 +954,7 @@ final class LibraryWorkspaceModel: ObservableObject {
             return
         }
 
-        var checked = 0
-        var suggested = 0
-        var skipped = 0
-        personalLibrarySuggestionState = .running(
-            checked: checked,
-            suggested: suggested,
-            skipped: skipped
-        )
+        personalLibrarySuggestionState = .waiting(checked: 0, suggested: 0, skipped: 0)
 
         do {
             let availability = try await runtime.client.personalCapability()
@@ -976,88 +975,13 @@ final class LibraryWorkspaceModel: ObservableObject {
 
             let reviewPort = review
             try await Self.offMain {
-                try reviewPort.activatePersonalSuggestionBundle(capability)
+                _ = try reviewPort.enqueuePersonalLibrarySuggestions(capability: capability)
             }
-
-            var afterAssetID: UUID?
-            while true {
-                try Task.checkCancellation()
-                let cursor = afterAssetID
-                let candidates = try await Self.offMain {
-                    try reviewPort.personalSuggestionCandidates(
-                        afterAssetID: cursor,
-                        limit: 100
-                    )
-                }
-                guard !candidates.isEmpty else { break }
-
-                for candidate in candidates {
-                    try Task.checkCancellation()
-                    checked += 1
-                    personalLibrarySuggestionState = .running(
-                        checked: checked,
-                        suggested: suggested,
-                        skipped: skipped
-                    )
-
-                    let imageData: Data
-                    do {
-                        imageData = try await service.loadPreview(assetID: candidate.assetID)
-                    } catch is CancellationError {
-                        throw CancellationError()
-                    } catch {
-                        skipped += 1
-                        personalLibrarySuggestionState = .running(
-                            checked: checked,
-                            suggested: suggested,
-                            skipped: skipped
-                        )
-                        continue
-                    }
-
-                    let suggestions = try await runtime.client.suggestions(
-                        imageData: imageData,
-                        requestID: UUID().uuidString.lowercased(),
-                        target: .personal(capability.target)
-                    )
-                    guard case let .available(confirmed) = try await runtime.client.personalCapability(),
-                          confirmed == capability
-                    else {
-                        throw LocalModelSuggestionClientError.identityMismatch
-                    }
-                    let activeTagIDs = Set(tags.filter { $0.state == .active }.map(\.id))
-                    try Self.validatePersonalCapability(
-                        confirmed,
-                        catalogScopeID: runtime.catalogScopeID,
-                        activeTagIDs: activeTagIDs
-                    )
-                    let predictions = try Self.personalPredictions(
-                        suggestions,
-                        capability: capability,
-                        activeTagIDs: activeTagIDs
-                    )
-                    suggested += try await Self.offMain {
-                        try reviewPort.replacePersonalSuggestions(
-                            candidate: candidate,
-                            predictions: predictions,
-                            expectedCapability: capability
-                        )
-                    }
-                    personalLibrarySuggestionState = .running(
-                        checked: checked,
-                        suggested: suggested,
-                        skipped: skipped
-                    )
-                }
-                afterAssetID = candidates.last?.assetID
-            }
-
             await refreshReviewState()
-            personalLibrarySuggestionState = .completed(
-                checked: checked,
-                suggested: suggested,
-                skipped: skipped
-            )
+            startPersonalizationRunnerIfNeeded()
+        } catch PersonalizationReviewError.activeJobConflict {
+            await refreshReviewState()
+            startPersonalizationRunnerIfNeeded()
         } catch LocalModelSuggestionClientError.identityMismatch {
             await invalidatePersonalLibrarySuggestionBundle()
             personalLibrarySuggestionState = .failed
@@ -1649,6 +1573,7 @@ final class LibraryWorkspaceModel: ObservableObject {
         await refreshReviewState()
         if runPendingJobs {
             startCatalogReconcileRunnerIfNeeded()
+            startPersonalizationRunnerIfNeeded()
         }
     }
 
@@ -2085,6 +2010,14 @@ extension LibraryWorkspaceModel {
         do {
             pendingSuggestionTotal = try await Self.offMain { try reviewPort.totalPendingSuggestionCount() }
             suggestionOverviews = try await Self.offMain { try reviewPort.tagOverviews() }
+            let personalJob = try await Self.offMain {
+                try reviewPort.personalLibrarySuggestionJob()
+            }
+            if let personalJob {
+                personalLibrarySuggestionState = Self.personalLibraryPresentation(
+                    for: personalJob
+                )
+            }
             if case let .tagQueue(tagID, _) = reviewMode {
                 await loadReviewQueueFirstPage(tagID: tagID)
             }
@@ -2098,6 +2031,58 @@ extension LibraryWorkspaceModel {
         } catch {
             suggestionOverviews = []
             pendingSuggestionTotal = 0
+        }
+    }
+
+    private static func personalLibraryPresentation(
+        for job: PersonalLibrarySuggestionJobProjection
+    ) -> PersonalLibrarySuggestionPresentationState {
+        let counts = (
+            checked: job.checkedCount,
+            suggested: job.suggestedCount,
+            skipped: job.skippedCount
+        )
+        switch job.state {
+        case .pending:
+            return .waiting(
+                checked: counts.checked,
+                suggested: counts.suggested,
+                skipped: counts.skipped
+            )
+        case .running:
+            return .running(
+                checked: counts.checked,
+                suggested: counts.suggested,
+                skipped: counts.skipped
+            )
+        case .paused:
+            return .paused(
+                checked: counts.checked,
+                suggested: counts.suggested,
+                skipped: counts.skipped
+            )
+        case .retryableFailed:
+            return .retryableFailure(
+                checked: counts.checked,
+                suggested: counts.suggested,
+                skipped: counts.skipped
+            )
+        case .completed:
+            return .completed(
+                checked: counts.checked,
+                suggested: counts.suggested,
+                skipped: counts.skipped
+            )
+        case .cancelled:
+            return .cancelled(
+                checked: counts.checked,
+                suggested: counts.suggested,
+                skipped: counts.skipped
+            )
+        case .terminalFailed:
+            return job.lastErrorCode == .personalLibraryBundleUnavailable
+                ? .personalUnavailable
+                : .failed
         }
     }
 

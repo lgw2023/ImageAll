@@ -128,7 +128,8 @@ enum JobActivityKind: Sendable, Equatable {
             self = .folderReconcile
         case "photos.reconcile.v1":
             self = .photosReconcile
-        case "personalization.fullLibrarySuggestions":
+        case "personalization.fullLibrarySuggestions",
+             "personalization.personalLibrarySuggestions":
             self = .personalizationSuggestions
         default:
             self = .background

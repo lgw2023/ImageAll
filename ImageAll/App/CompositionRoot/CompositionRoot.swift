@@ -94,11 +94,6 @@ struct CompositionRoot {
                 clock: clock
             )
         )
-        let executionCoordinator = JobExecutionCoordinator(
-            queue: runtime.jobQueue,
-            registry: MultiJobHandlerRegistry(handlers: [handler, photosHandler, personalizationHandler]),
-            leaseContextProvider: GRDBJobLeaseContextProvider(queue: runtime.jobQueue)
-        )
         let assetImages = LibraryAssetImageLoader(
             database: runtime.database,
             fileImages: derivedImages,
@@ -106,13 +101,6 @@ struct CompositionRoot {
             cloudPreviews: photosAccess,
             downloadedPreviews: derivedImages,
             photoThumbnails: derivedImages
-        )
-        let personalizationReview = PersonalizationReviewService(
-            database: runtime.database,
-            queue: runtime.jobQueue,
-            executionCoordinator: executionCoordinator,
-            tags: GRDBTagCatalogRepository(database: runtime.database),
-            clock: clock
         )
         let localModelSuggestions: LocalModelSuggestionRuntime?
         if let catalogScopeID = try? runtime.database.catalogScopeID() {
@@ -122,6 +110,34 @@ struct CompositionRoot {
         } else {
             localModelSuggestions = nil
         }
+        var jobHandlers: [any JobHandler] = [handler, photosHandler, personalizationHandler]
+        if let localModelSuggestions {
+            jobHandlers.append(
+                PersonalLibrarySuggestionsHandler(
+                    dependencies: PersonalLibrarySuggestionsHandlerDependencies(
+                        database: runtime.database,
+                        queue: runtime.jobQueue,
+                        images: assetImages,
+                        client: localModelSuggestions.client,
+                        catalogScopeID: localModelSuggestions.catalogScopeID,
+                        clock: clock
+                    )
+                )
+            )
+        }
+        let executionCoordinator = JobExecutionCoordinator(
+            queue: runtime.jobQueue,
+            registry: MultiJobHandlerRegistry(handlers: jobHandlers),
+            leaseContextProvider: GRDBJobLeaseContextProvider(queue: runtime.jobQueue)
+        )
+        let personalizationReview = PersonalizationReviewService(
+            database: runtime.database,
+            queue: runtime.jobQueue,
+            executionCoordinator: executionCoordinator,
+            tags: GRDBTagCatalogRepository(database: runtime.database),
+            clock: clock,
+            personalLibrarySuggestionsEnabled: localModelSuggestions != nil
+        )
         let service = ProductionLibraryWorkspaceService(
             sourceRepository: sourceRepository,
             folderSourceMonitor: folderSourceMonitor,
