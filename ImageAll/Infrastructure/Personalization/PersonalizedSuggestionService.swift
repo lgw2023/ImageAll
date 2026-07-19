@@ -317,6 +317,118 @@ final class PersonalizedSuggestionService: @unchecked Sendable {
 }
 
 final class LoopbackModelSuggestionClient: LocalModelSuggestionClient, @unchecked Sendable {
+    private struct EmbeddingRequestPayload: Encodable {
+        let requestID: String
+        let imageBase64: String
+
+        enum CodingKeys: String, CodingKey {
+            case requestID = "request_id"
+            case imageBase64 = "image_base64"
+        }
+    }
+
+    private struct EmbeddingResponsePayload: Decodable {
+        let requestID: String
+        let provider: String
+        let modelID: String
+        let modelRevision: String
+        let preprocessingRevision: String
+        let elementType: String
+        let elementCount: Int
+        let embedding: [Float]
+
+        enum CodingKeys: String, CodingKey {
+            case requestID = "request_id"
+            case provider
+            case modelID = "model_id"
+            case modelRevision = "model_revision"
+            case preprocessingRevision = "preprocessing_revision"
+            case elementType = "element_type"
+            case elementCount = "element_count"
+            case embedding
+        }
+    }
+
+    private struct PersonalRebuildRequestPayload: Encodable {
+        struct ExpectedActiveBundle: Encodable {
+            let bundleRevision: String
+            let weightsSHA256: String
+
+            enum CodingKeys: String, CodingKey {
+                case bundleRevision = "bundle_revision"
+                case weightsSHA256 = "weights_sha256"
+            }
+        }
+
+        struct Snapshot: Encodable {
+            struct Embedding: Encodable {
+                let assetID: String
+                let contentRevision: String
+                let embedding: [Float]
+
+                enum CodingKeys: String, CodingKey {
+                    case assetID = "asset_id"
+                    case contentRevision = "content_revision"
+                    case embedding
+                }
+            }
+
+            struct Decision: Encodable {
+                let assetID: String
+                let contentRevision: String
+                let tagID: String
+                let state: PersonalTrainingDecisionState
+
+                enum CodingKeys: String, CodingKey {
+                    case assetID = "asset_id"
+                    case contentRevision = "content_revision"
+                    case tagID = "tag_id"
+                    case state
+                }
+            }
+
+            let schemaRevision = 1
+            let catalogScopeID: String
+            let decisionSnapshotRevision: String
+            let encoder: PersonalTrainingEncoderIdentity
+            let personalTagIDs: [String]
+            let labelVocabularyRevision: String
+            let embeddings: [Embedding]
+            let decisions: [Decision]
+
+            enum CodingKeys: String, CodingKey {
+                case schemaRevision = "schema_revision"
+                case catalogScopeID = "catalog_scope_id"
+                case decisionSnapshotRevision = "decision_snapshot_revision"
+                case encoder
+                case personalTagIDs = "personal_tag_ids"
+                case labelVocabularyRevision = "label_vocabulary_revision"
+                case embeddings
+                case decisions
+            }
+        }
+
+        let requestID: String
+        let expectedActiveBundle: ExpectedActiveBundle?
+        let snapshot: Snapshot
+
+        enum CodingKeys: String, CodingKey {
+            case requestID = "request_id"
+            case expectedActiveBundle = "expected_active_bundle"
+            case snapshot
+        }
+    }
+
+    private struct PersonalRebuildResponsePayload: Decodable {
+        let requestID: String
+        let personal: PersonalCapabilityPayload
+
+        enum CodingKeys: String, CodingKey {
+            case requestID = "request_id"
+            case personal
+        }
+    }
+
     private struct SuggestionRequestPayload: Encodable {
         let requestID: String
         let imageBase64: String
@@ -521,7 +633,12 @@ final class LoopbackModelSuggestionClient: LocalModelSuggestionClient, @unchecke
         else {
             throw LocalModelSuggestionClientError.invalidResponse
         }
-        let personal = payload.personal
+        return try Self.personalAvailability(payload.personal)
+    }
+
+    private static func personalAvailability(
+        _ personal: PersonalCapabilityPayload
+    ) throws -> PersonalModelSuggestionCapabilityAvailability {
         if personal.status == "unavailable" {
             guard personal.catalogScopeID == nil,
                   personal.bundleID == nil,
@@ -579,6 +696,183 @@ final class LoopbackModelSuggestionClient: LocalModelSuggestionClient, @unchecke
                 tagIDs: tagIDs
             )
         )
+    }
+
+    func embedding(
+        imageData: Data,
+        requestID: String
+    ) async throws -> PersonalTrainingEmbedding {
+        var request = URLRequest(
+            url: endpoint.appendingPathComponent("v1/embeddings"),
+            timeoutInterval: 30
+        )
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode(
+            EmbeddingRequestPayload(
+                requestID: requestID,
+                imageBase64: imageData.base64EncodedString()
+            )
+        )
+
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await session.data(for: request)
+        } catch {
+            throw LocalModelSuggestionClientError.serviceUnavailable
+        }
+        guard let http = response as? HTTPURLResponse else {
+            throw LocalModelSuggestionClientError.invalidResponse
+        }
+        guard (200 ... 299).contains(http.statusCode) else {
+            let code = try? JSONDecoder()
+                .decode(ErrorResponsePayload.self, from: data)
+                .detail.code
+            throw LocalModelSuggestionClientError.rejected(
+                statusCode: http.statusCode,
+                code: code
+            )
+        }
+        guard let payload = try? JSONDecoder().decode(
+            EmbeddingResponsePayload.self,
+            from: data
+        ),
+            payload.requestID == requestID,
+            !payload.provider.isEmpty,
+            !payload.modelID.isEmpty,
+            !payload.modelRevision.isEmpty,
+            !payload.preprocessingRevision.isEmpty,
+            payload.elementType == "float32",
+            payload.elementCount > 0,
+            payload.embedding.count == payload.elementCount,
+            payload.embedding.allSatisfy(\.isFinite)
+        else {
+            throw LocalModelSuggestionClientError.invalidResponse
+        }
+        return PersonalTrainingEmbedding(
+            encoder: PersonalTrainingEncoderIdentity(
+                provider: payload.provider,
+                modelID: payload.modelID,
+                modelRevision: payload.modelRevision,
+                preprocessingRevision: payload.preprocessingRevision,
+                elementCount: payload.elementCount
+            ),
+            values: payload.embedding
+        )
+    }
+
+    func rebuildPersonalModel(
+        requestID: String,
+        expectedActiveBundle: PersonalModelActiveBundleIdentity?,
+        snapshot: PersonalModelRebuildSnapshot
+    ) async throws -> PersonalModelSuggestionCapability {
+        guard !requestID.isEmpty,
+              !snapshot.catalogScopeID.isEmpty,
+              Self.isLowercaseSHA256(snapshot.decisionSnapshotRevision),
+              Self.isLowercaseSHA256(snapshot.labelVocabularyRevision),
+              !snapshot.encoder.provider.isEmpty,
+              !snapshot.encoder.modelID.isEmpty,
+              !snapshot.encoder.modelRevision.isEmpty,
+              !snapshot.encoder.preprocessingRevision.isEmpty,
+              snapshot.encoder.elementCount > 0,
+              !snapshot.personalTagIDs.isEmpty,
+              Set(snapshot.personalTagIDs).count == snapshot.personalTagIDs.count,
+              !snapshot.embeddings.isEmpty,
+              !snapshot.decisions.isEmpty,
+              expectedActiveBundle.map({
+                  !$0.bundleRevision.isEmpty && Self.isLowercaseSHA256($0.weightsSHA256)
+              }) ?? true,
+              snapshot.embeddings.allSatisfy({ row in
+                  row.contentRevision >= 0
+                      && row.values.count == snapshot.encoder.elementCount
+                      && row.values.allSatisfy(\.isFinite)
+              }),
+              snapshot.decisions.allSatisfy({ decision in
+                  decision.contentRevision >= 0
+                      && snapshot.personalTagIDs.contains(decision.tagID)
+              })
+        else {
+            throw LocalModelSuggestionClientError.invalidResponse
+        }
+        let requestPayload = PersonalRebuildRequestPayload(
+            requestID: requestID,
+            expectedActiveBundle: expectedActiveBundle.map {
+                PersonalRebuildRequestPayload.ExpectedActiveBundle(
+                    bundleRevision: $0.bundleRevision,
+                    weightsSHA256: $0.weightsSHA256
+                )
+            },
+            snapshot: PersonalRebuildRequestPayload.Snapshot(
+                catalogScopeID: snapshot.catalogScopeID,
+                decisionSnapshotRevision: snapshot.decisionSnapshotRevision,
+                encoder: snapshot.encoder,
+                personalTagIDs: snapshot.personalTagIDs.map {
+                    $0.uuidString.lowercased()
+                },
+                labelVocabularyRevision: snapshot.labelVocabularyRevision,
+                embeddings: snapshot.embeddings.map {
+                    PersonalRebuildRequestPayload.Snapshot.Embedding(
+                        assetID: $0.assetID.uuidString.lowercased(),
+                        contentRevision: String($0.contentRevision),
+                        embedding: $0.values
+                    )
+                },
+                decisions: snapshot.decisions.map {
+                    PersonalRebuildRequestPayload.Snapshot.Decision(
+                        assetID: $0.assetID.uuidString.lowercased(),
+                        contentRevision: String($0.contentRevision),
+                        tagID: $0.tagID.uuidString.lowercased(),
+                        state: $0.state
+                    )
+                }
+            )
+        )
+        var request = URLRequest(
+            url: endpoint.appendingPathComponent("v1/personal/rebuild"),
+            timeoutInterval: 300
+        )
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode(requestPayload)
+
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await session.data(for: request)
+        } catch {
+            throw LocalModelSuggestionClientError.serviceUnavailable
+        }
+        guard let http = response as? HTTPURLResponse else {
+            throw LocalModelSuggestionClientError.invalidResponse
+        }
+        guard (200 ... 299).contains(http.statusCode) else {
+            let code = try? JSONDecoder()
+                .decode(ErrorResponsePayload.self, from: data)
+                .detail.code
+            throw LocalModelSuggestionClientError.rejected(
+                statusCode: http.statusCode,
+                code: code
+            )
+        }
+        guard let payload = try? JSONDecoder().decode(
+            PersonalRebuildResponsePayload.self,
+            from: data
+        ),
+            payload.requestID == requestID,
+            case let .available(capability) = try Self.personalAvailability(payload.personal),
+            capability.target.catalogScopeID == snapshot.catalogScopeID,
+            capability.target.provider == snapshot.encoder.provider,
+            capability.target.modelID == snapshot.encoder.modelID,
+            capability.target.modelRevision == snapshot.encoder.modelRevision,
+            capability.target.preprocessingRevision == snapshot.encoder.preprocessingRevision,
+            capability.target.elementCount == snapshot.encoder.elementCount,
+            capability.target.labelVocabularyRevision == snapshot.labelVocabularyRevision,
+            capability.tagIDs == snapshot.personalTagIDs
+        else {
+            throw LocalModelSuggestionClientError.identityMismatch
+        }
+        return capability
     }
 
     func suggestions(

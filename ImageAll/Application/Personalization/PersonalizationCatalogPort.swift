@@ -86,6 +86,66 @@ enum ModelSampleRole: String, Equatable, Sendable {
     case negative
 }
 
+enum PersonalTrainingDecisionState: String, Codable, Equatable, Hashable, Sendable {
+    case manualAccepted
+    case manualRejected
+}
+
+struct PersonalTrainingDecision: Equatable, Hashable, Sendable {
+    let assetID: UUID
+    let contentRevision: Int
+    let tagID: UUID
+    let state: PersonalTrainingDecisionState
+}
+
+struct PersonalTrainingSnapshot: Equatable, Sendable {
+    let catalogScopeID: String
+    let personalTagIDs: [UUID]
+    let decisions: [PersonalTrainingDecision]
+}
+
+struct PersonalTrainingEncoderIdentity: Codable, Equatable, Sendable {
+    let provider: String
+    let modelID: String
+    let modelRevision: String
+    let preprocessingRevision: String
+    let elementCount: Int
+
+    enum CodingKeys: String, CodingKey {
+        case provider
+        case modelID = "model_id"
+        case modelRevision = "model_revision"
+        case preprocessingRevision = "preprocessing_revision"
+        case elementCount = "element_count"
+    }
+}
+
+struct PersonalTrainingEmbedding: Equatable, Sendable {
+    let encoder: PersonalTrainingEncoderIdentity
+    let values: [Float]
+}
+
+struct PersonalModelActiveBundleIdentity: Equatable, Sendable {
+    let bundleRevision: String
+    let weightsSHA256: String
+}
+
+struct PersonalTrainingEmbeddingRow: Equatable, Sendable {
+    let assetID: UUID
+    let contentRevision: Int
+    let values: [Float]
+}
+
+struct PersonalModelRebuildSnapshot: Equatable, Sendable {
+    let catalogScopeID: String
+    let decisionSnapshotRevision: String
+    let encoder: PersonalTrainingEncoderIdentity
+    let personalTagIDs: [UUID]
+    let labelVocabularyRevision: String
+    let embeddings: [PersonalTrainingEmbeddingRow]
+    let decisions: [PersonalTrainingDecision]
+}
+
 struct ModelSampleRegistration: Equatable, Sendable {
     let identity: FeatureIdentity
     let role: ModelSampleRole
@@ -266,6 +326,15 @@ enum LocalModelSuggestionClientError: Error, Equatable, Sendable {
 
 protocol LocalModelSuggestionClient: Sendable {
     func personalCapability() async throws -> PersonalModelSuggestionCapabilityAvailability
+    func embedding(
+        imageData: Data,
+        requestID: String
+    ) async throws -> PersonalTrainingEmbedding
+    func rebuildPersonalModel(
+        requestID: String,
+        expectedActiveBundle: PersonalModelActiveBundleIdentity?,
+        snapshot: PersonalModelRebuildSnapshot
+    ) async throws -> PersonalModelSuggestionCapability
     func suggestions(
         imageData: Data,
         requestID: String,
@@ -276,6 +345,21 @@ protocol LocalModelSuggestionClient: Sendable {
 extension LocalModelSuggestionClient {
     func personalCapability() async throws -> PersonalModelSuggestionCapabilityAvailability {
         .unavailable
+    }
+
+    func embedding(
+        imageData _: Data,
+        requestID _: String
+    ) async throws -> PersonalTrainingEmbedding {
+        throw LocalModelSuggestionClientError.serviceUnavailable
+    }
+
+    func rebuildPersonalModel(
+        requestID _: String,
+        expectedActiveBundle _: PersonalModelActiveBundleIdentity?,
+        snapshot _: PersonalModelRebuildSnapshot
+    ) async throws -> PersonalModelSuggestionCapability {
+        throw LocalModelSuggestionClientError.serviceUnavailable
     }
 }
 

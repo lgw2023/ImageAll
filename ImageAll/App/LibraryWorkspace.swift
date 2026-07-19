@@ -1,4 +1,5 @@
 import AppKit
+import CryptoKit
 import Foundation
 import SwiftUI
 import UniformTypeIdentifiers
@@ -151,6 +152,7 @@ final class LibraryWorkspaceModel: ObservableObject {
     @Published private(set) var cloudPreviewState: CloudPreviewPresentationState = .hidden
     @Published private(set) var localModelSuggestionState: LocalModelSuggestionPresentationState = .hidden
     @Published private(set) var localModelSuggestionTrack: ModelSuggestionTrack = .standard
+    @Published private(set) var isRebuildingPersonalModel = false
     @Published private(set) var isExportingPortableData = false
     @Published private(set) var previewCacheUsage = DerivedImageCacheUsage.zero
     @Published private(set) var isClearingPreviewCache = false
@@ -201,6 +203,10 @@ final class LibraryWorkspaceModel: ObservableObject {
 
     var isBusy: Bool {
         phase == .loading || phase == .scanning || isCatalogScanning
+    }
+
+    var supportsPersonalModelRebuild: Bool {
+        localModelSuggestions != nil
     }
 
     var showsFirstUseGuide: Bool {
@@ -960,6 +966,177 @@ final class LibraryWorkspaceModel: ObservableObject {
             assetID: assetID,
             suggestions: suggestions.filter { $0 != suggestion }
         )
+    }
+
+    func rebuildPersonalModel() async {
+        guard !isRebuildingPersonalModel else { return }
+        guard let runtime = localModelSuggestions else {
+            notice = .personalModelRebuildServiceUnavailable
+            return
+        }
+        isRebuildingPersonalModel = true
+        notice = nil
+        defer { isRebuildingPersonalModel = false }
+
+        do {
+            let snapshot = try review.personalTrainingSnapshot()
+            let activeTagIDs = Set(tags.filter { $0.state == .active }.map(\.id))
+            guard snapshot.catalogScopeID == runtime.catalogScopeID,
+                  !snapshot.personalTagIDs.isEmpty,
+                  Set(snapshot.personalTagIDs).count == snapshot.personalTagIDs.count,
+                  Set(snapshot.personalTagIDs).isSubset(of: activeTagIDs),
+                  Self.hasMinimumPersonalTrainingSamples(snapshot)
+            else {
+                notice = .personalModelRebuildNotReady
+                return
+            }
+
+            let expectedActiveBundle: PersonalModelActiveBundleIdentity?
+            switch try await runtime.client.personalCapability() {
+            case .unavailable:
+                expectedActiveBundle = nil
+            case let .available(capability):
+                guard capability.target.catalogScopeID == runtime.catalogScopeID,
+                      Set(capability.tagIDs).isSubset(of: activeTagIDs)
+                else {
+                    throw LocalModelSuggestionClientError.identityMismatch
+                }
+                expectedActiveBundle = PersonalModelActiveBundleIdentity(
+                    bundleRevision: capability.target.bundleRevision,
+                    weightsSHA256: capability.target.weightsSHA256
+                )
+            }
+
+            let revisions = Set(snapshot.decisions.map {
+                PersonalTrainingAssetRevision(
+                    assetID: $0.assetID,
+                    contentRevision: $0.contentRevision
+                )
+            }).sorted(by: PersonalTrainingAssetRevision.isOrderedBefore)
+            var encoder: PersonalTrainingEncoderIdentity?
+            var embeddings: [PersonalTrainingEmbeddingRow] = []
+            for revision in revisions {
+                try Task.checkCancellation()
+                let imageData = try await service.loadPreview(assetID: revision.assetID)
+                let embedding = try await runtime.client.embedding(
+                    imageData: imageData,
+                    requestID: UUID().uuidString.lowercased()
+                )
+                if let encoder {
+                    guard encoder == embedding.encoder else {
+                        throw LocalModelSuggestionClientError.identityMismatch
+                    }
+                } else {
+                    encoder = embedding.encoder
+                }
+                embeddings.append(
+                    PersonalTrainingEmbeddingRow(
+                        assetID: revision.assetID,
+                        contentRevision: revision.contentRevision,
+                        values: embedding.values
+                    )
+                )
+            }
+
+            try Task.checkCancellation()
+            guard try review.personalTrainingSnapshot() == snapshot,
+                  let encoder
+            else {
+                throw LocalModelSuggestionClientError.identityMismatch
+            }
+            let tagIDs = snapshot.personalTagIDs.sorted {
+                $0.uuidString.lowercased() < $1.uuidString.lowercased()
+            }
+            let rebuildSnapshot = PersonalModelRebuildSnapshot(
+                catalogScopeID: snapshot.catalogScopeID,
+                decisionSnapshotRevision: Self.decisionSnapshotRevision(snapshot),
+                encoder: encoder,
+                personalTagIDs: tagIDs,
+                labelVocabularyRevision: Self.labelVocabularyRevision(tagIDs),
+                embeddings: embeddings,
+                decisions: snapshot.decisions
+            )
+            let requestID = UUID().uuidString.lowercased()
+            let rebuilt = try await runtime.client.rebuildPersonalModel(
+                requestID: requestID,
+                expectedActiveBundle: expectedActiveBundle,
+                snapshot: rebuildSnapshot
+            )
+            guard case let .available(confirmed) = try await runtime.client.personalCapability(),
+                  confirmed == rebuilt
+            else {
+                throw LocalModelSuggestionClientError.identityMismatch
+            }
+            notice = .personalModelRebuildCompleted(
+                tagCount: tagIDs.count,
+                sampleCount: embeddings.count
+            )
+        } catch PhotosLibraryError.cloudOnly {
+            notice = .personalModelRebuildPreviewUnavailable
+        } catch LocalModelSuggestionClientError.serviceUnavailable {
+            notice = .personalModelRebuildServiceUnavailable
+        } catch let LocalModelSuggestionClientError.rejected(statusCode, code)
+            where statusCode == 503
+                && (code == "model_unavailable" || code == "personal_rebuild_unavailable")
+        {
+            notice = .personalModelRebuildServiceUnavailable
+        } catch is CancellationError {
+            notice = nil
+        } catch {
+            notice = .personalModelRebuildFailed
+        }
+    }
+
+    private struct PersonalTrainingAssetRevision: Hashable {
+        let assetID: UUID
+        let contentRevision: Int
+
+        static func isOrderedBefore(
+            _ lhs: PersonalTrainingAssetRevision,
+            _ rhs: PersonalTrainingAssetRevision
+        ) -> Bool {
+            let lhsID = lhs.assetID.uuidString.lowercased()
+            let rhsID = rhs.assetID.uuidString.lowercased()
+            return lhsID == rhsID
+                ? lhs.contentRevision < rhs.contentRevision
+                : lhsID < rhsID
+        }
+    }
+
+    private static func hasMinimumPersonalTrainingSamples(
+        _ snapshot: PersonalTrainingSnapshot
+    ) -> Bool {
+        snapshot.personalTagIDs.allSatisfy { tagID in
+            snapshot.decisions.filter {
+                $0.tagID == tagID && $0.state == .manualAccepted
+            }.count >= 2 && snapshot.decisions.filter {
+                $0.tagID == tagID && $0.state == .manualRejected
+            }.count >= 2
+        }
+    }
+
+    private static func labelVocabularyRevision(_ tagIDs: [UUID]) -> String {
+        sha256(tagIDs.map { $0.uuidString.lowercased() }.joined(separator: "\n"))
+    }
+
+    private static func decisionSnapshotRevision(_ snapshot: PersonalTrainingSnapshot) -> String {
+        let decisions = snapshot.decisions.sorted { lhs, rhs in
+            let lhsKey = "\(lhs.tagID.uuidString.lowercased())|\(lhs.assetID.uuidString.lowercased())|\(lhs.contentRevision)|\(lhs.state.rawValue)"
+            let rhsKey = "\(rhs.tagID.uuidString.lowercased())|\(rhs.assetID.uuidString.lowercased())|\(rhs.contentRevision)|\(rhs.state.rawValue)"
+            return lhsKey < rhsKey
+        }
+        let lines = ["catalog|\(snapshot.catalogScopeID)"]
+            + snapshot.personalTagIDs.map { "tag|\($0.uuidString.lowercased())" }.sorted()
+            + decisions.map {
+                "decision|\($0.assetID.uuidString.lowercased())|\($0.contentRevision)|\($0.tagID.uuidString.lowercased())|\($0.state.rawValue)"
+            }
+        return sha256(lines.joined(separator: "\n"))
+    }
+
+    private static func sha256(_ value: String) -> String {
+        SHA256.hash(data: Data(value.utf8))
+            .map { String(format: "%02x", $0) }
+            .joined()
     }
 
     func toggleSinglePhotoView() {
@@ -2230,6 +2407,21 @@ struct LibraryWorkspaceView: View {
                     }
                     .accessibilityElement(children: .combine)
                     .accessibilityLabel(catalogProgressTitle(model.catalogReconcileProgress))
+                }
+
+                if model.supportsPersonalModelRebuild {
+                    Button {
+                        Task { await model.rebuildPersonalModel() }
+                    } label: {
+                        if model.isRebuildingPersonalModel {
+                            ProgressView()
+                                .controlSize(.small)
+                        } else {
+                            Label("重建个人模型", systemImage: "brain.head.profile")
+                        }
+                    }
+                    .disabled(model.isRebuildingPersonalModel)
+                    .help("使用当前人工确认与拒绝样本重建个人模型")
                 }
 
                 filterMenu
@@ -3525,7 +3717,8 @@ struct LibraryWorkspaceView: View {
         case .selectionHiddenByFilter:
             "line.3.horizontal.decrease.circle"
         case .presetTagsInstalled, .presetTagsAlreadyAvailable,
-             .portableExportCompleted, .previewCacheCleared:
+             .portableExportCompleted, .previewCacheCleared,
+             .personalModelRebuildCompleted:
             "checkmark.circle"
         default:
             "exclamationmark.triangle"
@@ -3565,6 +3758,16 @@ struct LibraryWorkspaceView: View {
             "预览缓存操作未完成。原照片、人工标签和个性化数据没有被修改。"
         case .jobActivityActionFailed:
             "任务操作未完成，已重新读取当前状态。请重试。"
+        case let .personalModelRebuildCompleted(tagCount, sampleCount):
+            "个人模型已从 \(tagCount) 个标签的 \(sampleCount) 张人工样本重建并确认生效。"
+        case .personalModelRebuildNotReady:
+            "尚无可训练标签；每个标签至少需要 2 张确认和 2 张拒绝样本。"
+        case .personalModelRebuildPreviewUnavailable:
+            "训练样本中有照片尚未在本机可用；未下载云端原图，也未替换现有个人模型。"
+        case .personalModelRebuildServiceUnavailable:
+            "个人模型服务当前不可用；现有模型和标准建议不受影响。"
+        case .personalModelRebuildFailed:
+            "个人模型重建未完成；现有模型保持不变，请核对样本后重试。"
         }
     }
 

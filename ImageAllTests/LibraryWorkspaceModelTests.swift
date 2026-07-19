@@ -763,6 +763,222 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         )
     }
 
+    func testUserTriggeredPersonalRebuildPublishesOnlyVersionedManualSnapshot() async throws {
+        let sourceID = UUID()
+        let tagID = UUID(uuidString: "2C000000-0000-4000-8000-000000000001")!
+        let assetIDs = (1 ... 4).map { index in
+            UUID(uuidString: String(format: "2D000000-0000-4000-8000-%012d", index))!
+        }
+        let decisions = Self.makePersonalTrainingDecisions(
+            tagID: tagID,
+            assetIDs: assetIDs
+        )
+        let tag = TagListItem(id: tagID, displayName: "旅行", state: .active)
+        let items = assetIDs.map { assetID in
+            AssetGridItemProjection(
+                assetID: assetID,
+                sourceID: sourceID,
+                sourceDisplayName: "Fixture",
+                sourceState: .active,
+                relativePath: "\(assetID).jpg",
+                fileName: "\(assetID).jpg",
+                mediaType: "public.jpeg",
+                mediaCreatedAtMs: 1,
+                mediaModifiedAtMs: 1,
+                width: 32,
+                height: 32,
+                availability: .available,
+                contentRevision: 1,
+                acceptedTagCount: 0,
+                rejectedTagCount: 0
+            )
+        }
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: sourceID,
+                displayName: "Fixture",
+                state: .active
+            ),
+            reconciledItems: items,
+            tags: [tag],
+            initialItems: items,
+            startsConnected: true,
+            previewData: Data("personal-training-preview".utf8)
+        )
+        let snapshot = PersonalTrainingSnapshot(
+            catalogScopeID: "catalog-fixture",
+            personalTagIDs: [tagID],
+            decisions: decisions
+        )
+        let review = FakePersonalizationReviewPort(trainingSnapshot: snapshot)
+        let encoder = PersonalTrainingEncoderIdentity(
+            provider: "dinov2",
+            modelID: "facebook/dinov2-small",
+            modelRevision: "model-v1",
+            preprocessingRevision: "preprocessing-v1",
+            elementCount: 2
+        )
+        let rebuiltCapability = PersonalModelSuggestionCapability(
+            target: PersonalModelSuggestionTarget(
+                catalogScopeID: "catalog-fixture",
+                bundleID: "personal-fixture",
+                bundleRevision: "bundle-v2",
+                provider: encoder.provider,
+                modelID: encoder.modelID,
+                modelRevision: encoder.modelRevision,
+                preprocessingRevision: encoder.preprocessingRevision,
+                elementCount: encoder.elementCount,
+                labelVocabularyRevision: String(repeating: "c", count: 64),
+                weightsSHA256: String(repeating: "d", count: 64),
+                policyRevision: "personal-policy-v1"
+            ),
+            tagIDs: [tagID]
+        )
+        let client = FakeLocalModelSuggestionClient(
+            result: .success([]),
+            personalCapabilities: [.unavailable, .available(rebuiltCapability)],
+            embeddingResult: .success(
+                PersonalTrainingEmbedding(encoder: encoder, values: [0.25, -0.5])
+            ),
+            rebuildResult: .success(rebuiltCapability)
+        )
+        let model = LibraryWorkspaceModel(
+            service: service,
+            review: review,
+            localModelSuggestions: Self.makeStandardRuntime(client: client)
+        )
+        await model.start()
+
+        await model.rebuildPersonalModel()
+
+        let published = try XCTUnwrap(client.lastRebuildSnapshot)
+        XCTAssertNil(client.lastExpectedActiveBundle)
+        XCTAssertEqual(client.embeddingCallCount, 4)
+        XCTAssertEqual(client.rebuildCallCount, 1)
+        XCTAssertEqual(client.personalCapabilityCallCount, 2)
+        XCTAssertEqual(published.catalogScopeID, "catalog-fixture")
+        XCTAssertEqual(published.encoder, encoder)
+        XCTAssertEqual(published.personalTagIDs, [tagID])
+        XCTAssertEqual(published.decisions, decisions)
+        XCTAssertEqual(Set(published.embeddings.map(\.assetID)), Set(assetIDs))
+        XCTAssertEqual(published.embeddings.map(\.contentRevision), [1, 1, 1, 1])
+        XCTAssertTrue(Self.isLowercaseSHA256(published.decisionSnapshotRevision))
+        XCTAssertTrue(Self.isLowercaseSHA256(published.labelVocabularyRevision))
+        XCTAssertFalse(model.isRebuildingPersonalModel)
+        XCTAssertEqual(
+            model.notice,
+            .personalModelRebuildCompleted(tagCount: 1, sampleCount: 4)
+        )
+    }
+
+    func testPersonalRebuildWithCloudOnlySampleFailsClosedBeforePublish() async {
+        let sourceID = UUID()
+        let tagID = UUID(uuidString: "2C000000-0000-4000-8000-000000000001")!
+        let assetIDs = (1 ... 4).map { index in
+            UUID(uuidString: String(format: "2D000000-0000-4000-8000-%012d", index))!
+        }
+        let tag = TagListItem(id: tagID, displayName: "旅行", state: .active)
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: sourceID,
+                kind: .photos,
+                displayName: "Apple Photos",
+                state: .active
+            ),
+            reconciledItems: [],
+            tags: [tag],
+            startsConnected: true,
+            previewError: .cloudOnly
+        )
+        let review = FakePersonalizationReviewPort(
+            trainingSnapshot: PersonalTrainingSnapshot(
+                catalogScopeID: "catalog-fixture",
+                personalTagIDs: [tagID],
+                decisions: Self.makePersonalTrainingDecisions(
+                    tagID: tagID,
+                    assetIDs: assetIDs
+                )
+            )
+        )
+        let client = FakeLocalModelSuggestionClient(result: .success([]))
+        let model = LibraryWorkspaceModel(
+            service: service,
+            review: review,
+            localModelSuggestions: Self.makeStandardRuntime(client: client)
+        )
+        await model.start()
+
+        await model.rebuildPersonalModel()
+
+        XCTAssertEqual(client.personalCapabilityCallCount, 1)
+        XCTAssertEqual(client.embeddingCallCount, 0)
+        XCTAssertEqual(client.rebuildCallCount, 0)
+        XCTAssertEqual(model.notice, .personalModelRebuildPreviewUnavailable)
+        XCTAssertFalse(model.isRebuildingPersonalModel)
+    }
+
+    func testUnavailablePersonalRebuildServiceLeavesExistingAppFlowUntouched() async {
+        let sourceID = UUID()
+        let tagID = UUID(uuidString: "2C000000-0000-4000-8000-000000000001")!
+        let assetIDs = (1 ... 4).map { index in
+            UUID(uuidString: String(format: "2D000000-0000-4000-8000-%012d", index))!
+        }
+        let tag = TagListItem(id: tagID, displayName: "旅行", state: .active)
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: sourceID,
+                displayName: "Fixture",
+                state: .active
+            ),
+            reconciledItems: [],
+            tags: [tag],
+            startsConnected: true,
+            previewData: Data("training-preview".utf8)
+        )
+        let review = FakePersonalizationReviewPort(
+            trainingSnapshot: PersonalTrainingSnapshot(
+                catalogScopeID: "catalog-fixture",
+                personalTagIDs: [tagID],
+                decisions: Self.makePersonalTrainingDecisions(
+                    tagID: tagID,
+                    assetIDs: assetIDs
+                )
+            )
+        )
+        let encoder = PersonalTrainingEncoderIdentity(
+            provider: "dinov2",
+            modelID: "facebook/dinov2-small",
+            modelRevision: "model-v1",
+            preprocessingRevision: "preprocessing-v1",
+            elementCount: 2
+        )
+        let client = FakeLocalModelSuggestionClient(
+            result: .success([]),
+            embeddingResult: .success(
+                PersonalTrainingEmbedding(encoder: encoder, values: [0.25, -0.5])
+            ),
+            rebuildResult: .failure(
+                .rejected(
+                    statusCode: 503,
+                    code: "personal_rebuild_unavailable"
+                )
+            )
+        )
+        let model = LibraryWorkspaceModel(
+            service: service,
+            review: review,
+            localModelSuggestions: Self.makeStandardRuntime(client: client)
+        )
+        await model.start()
+
+        await model.rebuildPersonalModel()
+
+        XCTAssertEqual(client.rebuildCallCount, 1)
+        XCTAssertEqual(client.callCount, 0)
+        XCTAssertEqual(model.notice, .personalModelRebuildServiceUnavailable)
+        XCTAssertFalse(model.isRebuildingPersonalModel)
+    }
+
     func testPersonalSuggestionResponseWithStaleBundleFailsClosed() async {
         let sourceID = UUID()
         let asset = Self.makeAsset(sourceID: sourceID, fileName: "stale-personal-bundle.jpg")
@@ -2627,6 +2843,27 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         )
     }
 
+    private static func isLowercaseSHA256(_ value: String) -> Bool {
+        value.count == 64 && value.allSatisfy { ("0" ... "9").contains(String($0))
+            || ("a" ... "f").contains(String($0))
+        }
+    }
+
+    private static func makePersonalTrainingDecisions(
+        tagID: UUID,
+        assetIDs: [UUID]
+    ) -> [PersonalTrainingDecision] {
+        precondition(assetIDs.count == 4)
+        return assetIDs.enumerated().map { index, assetID in
+            PersonalTrainingDecision(
+                assetID: assetID,
+                contentRevision: 1,
+                tagID: tagID,
+                state: index < 2 ? .manualAccepted : .manualRejected
+            )
+        }
+    }
+
     private static func makeStandardSuggestion(
         recommendedState: ModelSuggestionRecommendedState
     ) -> LocalModelSuggestion {
@@ -3385,19 +3622,31 @@ private final class FakeLocalModelSuggestionClient: LocalModelSuggestionClient, 
     private let lock = NSLock()
     private let result: Result<[LocalModelSuggestion], LocalModelSuggestionClientError>
     private let blocksRequests: Bool
-    private let personalCapabilityResult: PersonalModelSuggestionCapabilityAvailability
+    private var storedPersonalCapabilities: [PersonalModelSuggestionCapabilityAvailability]
+    private let embeddingResult: Result<PersonalTrainingEmbedding, LocalModelSuggestionClientError>
+    private let rebuildResult: Result<PersonalModelSuggestionCapability, LocalModelSuggestionClientError>
     private var storedCallCount = 0
+    private var storedEmbeddingCallCount = 0
+    private var storedRebuildCallCount = 0
+    private var storedPersonalCapabilityCallCount = 0
     private var storedLastImageData: Data?
     private var storedLastTarget: ModelSuggestionTarget?
+    private var storedLastExpectedActiveBundle: PersonalModelActiveBundleIdentity?
+    private var storedLastRebuildSnapshot: PersonalModelRebuildSnapshot?
     private var blockedContinuation: CheckedContinuation<Void, Never>?
 
     init(
         result: Result<[LocalModelSuggestion], LocalModelSuggestionClientError>,
         personalCapability: PersonalModelSuggestionCapabilityAvailability = .unavailable,
+        personalCapabilities: [PersonalModelSuggestionCapabilityAvailability]? = nil,
+        embeddingResult: Result<PersonalTrainingEmbedding, LocalModelSuggestionClientError> = .failure(.serviceUnavailable),
+        rebuildResult: Result<PersonalModelSuggestionCapability, LocalModelSuggestionClientError> = .failure(.serviceUnavailable),
         blocksRequests: Bool = false
     ) {
         self.result = result
-        personalCapabilityResult = personalCapability
+        storedPersonalCapabilities = personalCapabilities ?? [personalCapability]
+        self.embeddingResult = embeddingResult
+        self.rebuildResult = rebuildResult
         self.blocksRequests = blocksRequests
     }
 
@@ -3411,6 +3660,26 @@ private final class FakeLocalModelSuggestionClient: LocalModelSuggestionClient, 
 
     var lastTarget: ModelSuggestionTarget? {
         lock.withLock { storedLastTarget }
+    }
+
+    var embeddingCallCount: Int {
+        lock.withLock { storedEmbeddingCallCount }
+    }
+
+    var rebuildCallCount: Int {
+        lock.withLock { storedRebuildCallCount }
+    }
+
+    var personalCapabilityCallCount: Int {
+        lock.withLock { storedPersonalCapabilityCallCount }
+    }
+
+    var lastExpectedActiveBundle: PersonalModelActiveBundleIdentity? {
+        lock.withLock { storedLastExpectedActiveBundle }
+    }
+
+    var lastRebuildSnapshot: PersonalModelRebuildSnapshot? {
+        lock.withLock { storedLastRebuildSnapshot }
     }
 
     var hasBlockedRequest: Bool {
@@ -3427,7 +3696,35 @@ private final class FakeLocalModelSuggestionClient: LocalModelSuggestionClient, 
     }
 
     func personalCapability() async throws -> PersonalModelSuggestionCapabilityAvailability {
-        personalCapabilityResult
+        lock.withLock {
+            let index = min(
+                storedPersonalCapabilityCallCount,
+                max(0, storedPersonalCapabilities.count - 1)
+            )
+            storedPersonalCapabilityCallCount += 1
+            return storedPersonalCapabilities[index]
+        }
+    }
+
+    func embedding(
+        imageData: Data,
+        requestID: String
+    ) async throws -> PersonalTrainingEmbedding {
+        lock.withLock { storedEmbeddingCallCount += 1 }
+        return try embeddingResult.get()
+    }
+
+    func rebuildPersonalModel(
+        requestID: String,
+        expectedActiveBundle: PersonalModelActiveBundleIdentity?,
+        snapshot: PersonalModelRebuildSnapshot
+    ) async throws -> PersonalModelSuggestionCapability {
+        lock.withLock {
+            storedRebuildCallCount += 1
+            storedLastExpectedActiveBundle = expectedActiveBundle
+            storedLastRebuildSnapshot = snapshot
+        }
+        return try rebuildResult.get()
     }
 
     func suggestions(
@@ -3466,6 +3763,7 @@ private final class FakePersonalizationReviewPort: PersonalizationReviewPort, @u
     private var storedQueueItems: [ReviewQueueItemProjection]
     private var storedPendingByAsset: [UUID: [AssetPendingSuggestion]]
     private let queuePageSize: Int?
+    private let trainingSnapshot: PersonalTrainingSnapshot?
     var decidedAssetIDsProvider: (@Sendable (UUID) -> Set<UUID>)?
     let blocksRunPendingJobs: Bool
     private(set) var enqueueCallCount = 0
@@ -3475,12 +3773,14 @@ private final class FakePersonalizationReviewPort: PersonalizationReviewPort, @u
         overviews: [SuggestionTagOverview] = [],
         queueItems: [ReviewQueueItemProjection] = [],
         pendingByAsset: [UUID: [AssetPendingSuggestion]] = [:],
+        trainingSnapshot: PersonalTrainingSnapshot? = nil,
         blocksRunPendingJobs: Bool = false,
         queuePageSize: Int? = nil
     ) {
         storedOverviews = overviews
         storedQueueItems = queueItems
         storedPendingByAsset = pendingByAsset
+        self.trainingSnapshot = trainingSnapshot
         self.blocksRunPendingJobs = blocksRunPendingJobs
         self.queuePageSize = queuePageSize
     }
@@ -3512,6 +3812,13 @@ private final class FakePersonalizationReviewPort: PersonalizationReviewPort, @u
 
     func pendingSuggestionsForAsset(assetID: UUID) throws -> [AssetPendingSuggestion] {
         lock.withLock { storedPendingByAsset[assetID] ?? [] }
+    }
+
+    func personalTrainingSnapshot() throws -> PersonalTrainingSnapshot {
+        guard let trainingSnapshot else {
+            throw PersonalizationReviewError.persistenceFailure
+        }
+        return trainingSnapshot
     }
 
     func enqueueFullLibrarySuggestions(tagID: UUID, mode: PersonalizationReviewEnqueueMode) throws -> UUID {

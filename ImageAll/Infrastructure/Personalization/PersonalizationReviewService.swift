@@ -52,6 +52,10 @@ struct PersonalizationReviewService: PersonalizationReviewPort, Sendable {
         }.sorted(by: sortOverviews)
     }
 
+    func personalTrainingSnapshot() throws -> PersonalTrainingSnapshot {
+        try review.personalTrainingSnapshot()
+    }
+
     func fetchReviewQueue(
         tagID: UUID,
         cursor: ReviewQueueCursor?,

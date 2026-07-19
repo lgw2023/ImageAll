@@ -96,6 +96,7 @@ struct SuggestionEnqueueConfirmation: Identifiable, Equatable, Sendable {
 protocol PersonalizationReviewPort: Sendable {
     func totalPendingSuggestionCount() throws -> Int
     func tagOverviews() throws -> [SuggestionTagOverview]
+    func personalTrainingSnapshot() throws -> PersonalTrainingSnapshot
     func fetchReviewQueue(
         tagID: UUID,
         cursor: ReviewQueueCursor?,
@@ -110,6 +111,12 @@ protocol PersonalizationReviewPort: Sendable {
     func resumeSuggestionJob(jobID: UUID) throws
     func cancelSuggestionJob(jobID: UUID) throws
     func runPendingSuggestionJobs(maxSteps: Int?) throws -> Bool
+}
+
+extension PersonalizationReviewPort {
+    func personalTrainingSnapshot() throws -> PersonalTrainingSnapshot {
+        throw PersonalizationReviewError.persistenceFailure
+    }
 }
 
 struct EmptyPersonalizationReviewPort: PersonalizationReviewPort, Sendable {

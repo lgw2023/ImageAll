@@ -4,6 +4,192 @@ import XCTest
 @testable import ImageAll
 
 final class PersonalizedSuggestionServiceTests: XCTestCase {
+    func testLoopbackClientReturnsAValidatedTrainingEmbedding() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [ModelSuggestionURLProtocolStub.self]
+        ModelSuggestionURLProtocolStub.handler = { request in
+            XCTAssertEqual(request.url?.path, "/v1/embeddings")
+            let body = try XCTUnwrap(
+                JSONSerialization.jsonObject(with: requestBodyData(request))
+                    as? [String: Any]
+            )
+            XCTAssertEqual(body["request_id"] as? String, "embedding-fixture")
+            XCTAssertEqual(body["image_base64"] as? String, Data("preview".utf8).base64EncodedString())
+            return (
+                HTTPURLResponse(
+                    url: try XCTUnwrap(request.url),
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: ["Content-Type": "application/json"]
+                )!,
+                Data(
+                    """
+                    {
+                      "request_id": "embedding-fixture",
+                      "provider": "dinov2",
+                      "model_id": "facebook/dinov2-small",
+                      "model_revision": "model-v1",
+                      "preprocessing_revision": "preprocessing-v1",
+                      "element_type": "float32",
+                      "element_count": 2,
+                      "embedding": [0.25, -0.5]
+                    }
+                    """.utf8
+                )
+            )
+        }
+        defer { ModelSuggestionURLProtocolStub.handler = nil }
+        let client = try LoopbackModelSuggestionClient(
+            session: URLSession(configuration: configuration)
+        )
+
+        let embedding = try await client.embedding(
+            imageData: Data("preview".utf8),
+            requestID: "embedding-fixture"
+        )
+
+        XCTAssertEqual(
+            embedding,
+            PersonalTrainingEmbedding(
+                encoder: PersonalTrainingEncoderIdentity(
+                    provider: "dinov2",
+                    modelID: "facebook/dinov2-small",
+                    modelRevision: "model-v1",
+                    preprocessingRevision: "preprocessing-v1",
+                    elementCount: 2
+                ),
+                values: [0.25, -0.5]
+            )
+        )
+    }
+
+    func testLoopbackClientRebuildsFromVersionedEmbeddingsAndManualDecisions() async throws {
+        let tagID = UUID(uuidString: "2C000000-0000-4000-8000-000000000001")!
+        let assetID = UUID(uuidString: "2D000000-0000-4000-8000-000000000001")!
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [ModelSuggestionURLProtocolStub.self]
+        ModelSuggestionURLProtocolStub.handler = { request in
+            XCTAssertEqual(request.url?.path, "/v1/personal/rebuild")
+            XCTAssertEqual(request.httpMethod, "POST")
+            let body = try XCTUnwrap(
+                JSONSerialization.jsonObject(with: requestBodyData(request))
+                    as? [String: Any]
+            )
+            XCTAssertEqual(body["request_id"] as? String, "rebuild-fixture")
+            let expected = try XCTUnwrap(body["expected_active_bundle"] as? [String: Any])
+            XCTAssertEqual(expected["bundle_revision"] as? String, "bundle-v1")
+            XCTAssertEqual(
+                expected["weights_sha256"] as? String,
+                String(repeating: "a", count: 64)
+            )
+            let snapshot = try XCTUnwrap(body["snapshot"] as? [String: Any])
+            XCTAssertEqual(snapshot["schema_revision"] as? Int, 1)
+            XCTAssertEqual(snapshot["catalog_scope_id"] as? String, "catalog-fixture")
+            XCTAssertEqual(
+                snapshot["decision_snapshot_revision"] as? String,
+                String(repeating: "b", count: 64)
+            )
+            XCTAssertEqual(
+                snapshot["label_vocabulary_revision"] as? String,
+                String(repeating: "c", count: 64)
+            )
+            XCTAssertEqual(snapshot["personal_tag_ids"] as? [String], [tagID.uuidString.lowercased()])
+            let embedding = try XCTUnwrap(
+                (snapshot["embeddings"] as? [[String: Any]])?.first
+            )
+            XCTAssertEqual(embedding["asset_id"] as? String, assetID.uuidString.lowercased())
+            XCTAssertEqual(embedding["content_revision"] as? String, "1")
+            XCTAssertEqual(embedding["embedding"] as? [Double], [0.25, -0.5])
+            let decision = try XCTUnwrap(
+                (snapshot["decisions"] as? [[String: Any]])?.first
+            )
+            XCTAssertEqual(decision["tag_id"] as? String, tagID.uuidString.lowercased())
+            XCTAssertEqual(decision["state"] as? String, "manualAccepted")
+            XCTAssertNil(snapshot["image"])
+            XCTAssertNil(snapshot["image_base64"])
+            XCTAssertNil(snapshot["path"])
+            XCTAssertNil(snapshot["bookmark"])
+            XCTAssertNil(snapshot["bytes"])
+            return (
+                HTTPURLResponse(
+                    url: try XCTUnwrap(request.url),
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: ["Content-Type": "application/json"]
+                )!,
+                Data(
+                    """
+                    {
+                      "request_id": "rebuild-fixture",
+                      "personal": {
+                        "status": "available",
+                        "catalog_scope_id": "catalog-fixture",
+                        "bundle_id": "personal-fixture",
+                        "bundle_revision": "bundle-v2",
+                        "encoder": {
+                          "provider": "dinov2",
+                          "model_id": "facebook/dinov2-small",
+                          "model_revision": "model-v1",
+                          "preprocessing_revision": "preprocessing-v1",
+                          "element_count": 2
+                        },
+                        "label_vocabulary_revision": "\(String(repeating: "c", count: 64))",
+                        "weights_sha256": "\(String(repeating: "d", count: 64))",
+                        "policy_revision": "personal-policy-v1",
+                        "tag_ids": ["\(tagID.uuidString.lowercased())"]
+                      }
+                    }
+                    """.utf8
+                )
+            )
+        }
+        defer { ModelSuggestionURLProtocolStub.handler = nil }
+        let client = try LoopbackModelSuggestionClient(
+            session: URLSession(configuration: configuration)
+        )
+        let encoder = PersonalTrainingEncoderIdentity(
+            provider: "dinov2",
+            modelID: "facebook/dinov2-small",
+            modelRevision: "model-v1",
+            preprocessingRevision: "preprocessing-v1",
+            elementCount: 2
+        )
+
+        let capability = try await client.rebuildPersonalModel(
+            requestID: "rebuild-fixture",
+            expectedActiveBundle: PersonalModelActiveBundleIdentity(
+                bundleRevision: "bundle-v1",
+                weightsSHA256: String(repeating: "a", count: 64)
+            ),
+            snapshot: PersonalModelRebuildSnapshot(
+                catalogScopeID: "catalog-fixture",
+                decisionSnapshotRevision: String(repeating: "b", count: 64),
+                encoder: encoder,
+                personalTagIDs: [tagID],
+                labelVocabularyRevision: String(repeating: "c", count: 64),
+                embeddings: [
+                    PersonalTrainingEmbeddingRow(
+                        assetID: assetID,
+                        contentRevision: 1,
+                        values: [0.25, -0.5]
+                    ),
+                ],
+                decisions: [
+                    PersonalTrainingDecision(
+                        assetID: assetID,
+                        contentRevision: 1,
+                        tagID: tagID,
+                        state: .manualAccepted
+                    ),
+                ]
+            )
+        )
+
+        XCTAssertEqual(capability.target.bundleRevision, "bundle-v2")
+        XCTAssertEqual(capability.target.catalogScopeID, "catalog-fixture")
+        XCTAssertEqual(capability.tagIDs, [tagID])
+    }
+
     func testLoopbackClientDiscoversTheLoadedPersonalBundleIdentity() async throws {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [ModelSuggestionURLProtocolStub.self]

@@ -70,6 +70,11 @@ enum LibraryWorkspaceNotice: Equatable, Sendable {
     case previewCacheCleared(removedEntries: Int, partialReclaim: Bool)
     case previewCacheActionFailed
     case jobActivityActionFailed
+    case personalModelRebuildCompleted(tagCount: Int, sampleCount: Int)
+    case personalModelRebuildNotReady
+    case personalModelRebuildPreviewUnavailable
+    case personalModelRebuildServiceUnavailable
+    case personalModelRebuildFailed
 }
 
 enum CloudPreviewPresentationState: Equatable, Sendable {

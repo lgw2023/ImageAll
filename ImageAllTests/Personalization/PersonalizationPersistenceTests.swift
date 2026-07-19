@@ -169,4 +169,55 @@ final class PersonalizationPersistenceTests: XCTestCase {
             XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM tag_model") ?? -1, 0)
         }
     }
+
+    func testPersonalTrainingSnapshotIncludesOnlyTrainableActiveManualDecisions() throws {
+        let fixture = try CatalogQueryTestSupport.openQueryDatabase()
+        try fixture.database.pool.write { db in
+            try db.execute(
+                sql: "UPDATE source SET state = 'active' WHERE id = ?",
+                arguments: [fixture.ids.sourceA.uuidString.lowercased()]
+            )
+        }
+        let accepted = [fixture.ids.assetNewest, fixture.ids.assetMiddle]
+        let rejected = [fixture.ids.assetDuplicateTimeA, fixture.ids.assetDuplicateTimeB]
+        _ = try fixture.tags.batchAccept(
+            tagID: fixture.ids.tagFamily,
+            assetIDs: accepted,
+            timestampMs: DatabaseTestSupport.timestampMs + 1
+        )
+        _ = try fixture.tags.batchReject(
+            tagID: fixture.ids.tagFamily,
+            assetIDs: rejected,
+            timestampMs: DatabaseTestSupport.timestampMs + 2
+        )
+
+        let snapshot = try GRDBPersonalizationReviewRepository(
+            database: fixture.database
+        ).personalTrainingSnapshot()
+
+        XCTAssertEqual(snapshot.catalogScopeID, try fixture.database.catalogScopeID())
+        XCTAssertEqual(snapshot.personalTagIDs, [fixture.ids.tagFamily])
+        XCTAssertEqual(
+            Set(snapshot.decisions),
+            Set(
+                accepted.map {
+                    PersonalTrainingDecision(
+                        assetID: $0,
+                        contentRevision: 1,
+                        tagID: fixture.ids.tagFamily,
+                        state: .manualAccepted
+                    )
+                } + rejected.map {
+                    PersonalTrainingDecision(
+                        assetID: $0,
+                        contentRevision: 1,
+                        tagID: fixture.ids.tagFamily,
+                        state: .manualRejected
+                    )
+                }
+            )
+        )
+        XCTAssertFalse(snapshot.decisions.contains { $0.tagID == fixture.ids.tagWork })
+        XCTAssertFalse(snapshot.decisions.contains { $0.tagID == fixture.ids.tagArchived })
+    }
 }

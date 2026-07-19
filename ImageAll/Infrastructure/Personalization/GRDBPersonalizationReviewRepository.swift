@@ -163,6 +163,84 @@ struct GRDBPersonalizationReviewRepository: Sendable {
         }
     }
 
+    func personalTrainingSnapshot() throws -> PersonalTrainingSnapshot {
+        let catalogScopeID = try database.catalogScopeID()
+        return try database.pool.read { db in
+            let rows = try Row.fetchAll(
+                db,
+                sql: """
+                WITH eligible_decisions AS (
+                    SELECT
+                        d.asset_id,
+                        a.content_revision,
+                        d.tag_id,
+                        d.decision,
+                        d.updated_at_ms
+                    FROM asset_tag_decision d
+                    JOIN tag t ON t.id = d.tag_id
+                    JOIN asset a ON a.id = d.asset_id
+                    JOIN source s ON s.id = a.source_id
+                    WHERE t.state = 'active'
+                        AND d.decision IN ('accepted', 'rejected')
+                        AND a.locator_state = 'current'
+                        AND a.availability = 'available'
+                        AND s.state = 'active'
+                        AND (
+                            (s.kind = 'folder' AND a.locator_kind = 'file')
+                            OR (s.kind = 'photos' AND a.locator_kind = 'photos')
+                        )
+                ),
+                trainable_tags AS (
+                    SELECT tag_id
+                    FROM eligible_decisions
+                    GROUP BY tag_id
+                    HAVING SUM(CASE WHEN decision = 'accepted' THEN 1 ELSE 0 END) >= 2
+                        AND SUM(CASE WHEN decision = 'rejected' THEN 1 ELSE 0 END) >= 2
+                ),
+                ranked AS (
+                    SELECT
+                        asset_id,
+                        content_revision,
+                        tag_id,
+                        decision,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY tag_id, decision
+                            ORDER BY updated_at_ms DESC, asset_id ASC
+                        ) AS role_rank
+                    FROM eligible_decisions
+                    WHERE tag_id IN (SELECT tag_id FROM trainable_tags)
+                )
+                SELECT asset_id, content_revision, tag_id, decision
+                FROM ranked
+                WHERE role_rank <= 12
+                ORDER BY tag_id ASC, decision ASC, role_rank ASC
+                """
+            )
+            let decisions = rows.compactMap { row -> PersonalTrainingDecision? in
+                guard let assetID = UUID(uuidString: row["asset_id"]),
+                      let tagID = UUID(uuidString: row["tag_id"])
+                else {
+                    return nil
+                }
+                let decision: String = row["decision"]
+                return PersonalTrainingDecision(
+                    assetID: assetID,
+                    contentRevision: row["content_revision"],
+                    tagID: tagID,
+                    state: decision == "accepted" ? .manualAccepted : .manualRejected
+                )
+            }
+            let tagIDs = Array(Set(decisions.map(\.tagID))).sorted {
+                $0.uuidString < $1.uuidString
+            }
+            return PersonalTrainingSnapshot(
+                catalogScopeID: catalogScopeID,
+                personalTagIDs: tagIDs,
+                decisions: decisions
+            )
+        }
+    }
+
     struct FrozenAssetProcessingContext: Sendable {
         let contentRevision: Int
         let availability: String
