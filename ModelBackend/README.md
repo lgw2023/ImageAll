@@ -11,6 +11,7 @@
 - 可由启动命令装载的标准 package 与 catalog-scoped personal bundle；
 - personal bundle 的只读 capability 握手与完整身份 fail-closed 推理；
 - 用户触发的 embedding/人工决定快照训练、原子 personal bundle 发布与热重载；
+- 可选的 catalog/asset/content revision/encoder 全身份 embedding 持久缓存；
 - fake provider、输入边界、训练重载和真实 DINOv2 smoke 测试。
 
 ## 安装
@@ -46,9 +47,17 @@ uv run imageall-model-backend --provider dinov2 --port 8765
 uv run imageall-model-backend \
   --provider dinov2 \
   --model-cache /absolute/path/to/huggingface/hub \
+  --embedding-cache /absolute/path/to/imageall-embeddings.sqlite3 \
   --offline \
   --port 8765
 ```
+
+`--model-cache` 保存固定模型文件；`--embedding-cache` 是独立、可删除和可选的计算结果缓存。只有
+`POST /v1/embeddings` 同时携带 schema revision、catalog scope UUID、asset UUID 和十进制
+`content_revision` 时才尝试复用；实际主键还绑定当前 provider 的完整 encoder identity。任一身份或
+revision 变化、校验和不匹配、数据库损坏或不可写都按 cache miss 处理，并回到当前 provider 计算。
+SQLite 只保存上述身份、有限 float32 向量和向量 SHA-256，不保存原图、base64、路径或 bookmark。
+不配置该参数时原接口行为不变。
 
 先转换固定 DINOv2 revision 并生成带校验 manifest 的 FP16 artifact：
 
@@ -154,5 +163,7 @@ uv build
 既有个人标签 UUID → 用户明确接受/拒绝的 Inspector 闭环。个人建议本身仍是临时状态；只有用户点击
 接受或拒绝后才复用既有人工标签事务。App 现可由用户显式触发：从当前 active 标签选择每角色最多
 12 条最新人工决定，经 `/v1/embeddings` 构造不含原图和路径的版本化快照，调用同步 rebuild，并再次
-读取 capability 确认新身份。自动后台重训、模型自动安装、生产标准模型、SigLIP2 或 Ollama adapter
-尚未实现；Core ML 的 Xcode compute plan、实际 ANE、内存与热量仍由独立后续切片验收。
+读取 capability 确认新身份。后端已支持上述可选 embedding cache key，但当前 Swift client 尚未发送
+该字段，因此 App 重建路径还不会命中该持久缓存。自动后台重训、模型自动安装、生产标准模型、
+SigLIP2 或 Ollama adapter 尚未实现；Core ML 的 Xcode compute plan、实际 ANE、内存与热量仍由
+独立后续切片验收。
