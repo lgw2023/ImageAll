@@ -240,7 +240,7 @@ enum ModelSuggestionRecommendedState: String, Codable, Equatable, Sendable {
     case autoAssigned
 }
 
-struct StandardModelSuggestionTarget: Equatable, Sendable {
+struct StandardModelSuggestionTarget: Codable, Equatable, Sendable {
     let standardPackID: String
     let standardPackRevision: String
 }
@@ -447,6 +447,18 @@ enum PersonalLibrarySuggestionPresentationState: Equatable, Sendable {
     case completed(checked: Int, suggested: Int, skipped: Int)
     case cancelled(checked: Int, suggested: Int, skipped: Int)
     case personalUnavailable
+    case serviceUnavailable
+    case failed
+}
+
+enum StandardLibrarySuggestionPresentationState: Equatable, Sendable {
+    case idle
+    case waiting(checked: Int, suggested: Int, skipped: Int)
+    case running(checked: Int, suggested: Int, skipped: Int)
+    case paused(checked: Int, suggested: Int, skipped: Int)
+    case retryableFailure(checked: Int, suggested: Int, skipped: Int)
+    case completed(checked: Int, suggested: Int, skipped: Int)
+    case cancelled(checked: Int, suggested: Int, skipped: Int)
     case serviceUnavailable
     case failed
 }

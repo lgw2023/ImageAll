@@ -57,6 +57,9 @@ struct JobSafeErrorCode: Sendable, Equatable, Hashable {
     static let personalLibraryBundleMismatch = JobSafeErrorCode(unchecked: "personalLibraryBundleMismatch")
     static let personalLibraryServiceUnavailable = JobSafeErrorCode(unchecked: "personalLibraryServiceUnavailable")
     static let personalLibraryInferenceFailure = JobSafeErrorCode(unchecked: "personalLibraryInferenceFailure")
+    static let standardLibraryIdentityMismatch = JobSafeErrorCode(unchecked: "standardLibraryIdentityMismatch")
+    static let standardLibraryServiceUnavailable = JobSafeErrorCode(unchecked: "standardLibraryServiceUnavailable")
+    static let standardLibraryInferenceFailure = JobSafeErrorCode(unchecked: "standardLibraryInferenceFailure")
     static let photosPayloadInvalid = JobSafeErrorCode(unchecked: "photosPayloadInvalid")
     static let photosCheckpointInvalid = JobSafeErrorCode(unchecked: "photosCheckpointInvalid")
     static let photosAuthorizationRequired = JobSafeErrorCode(unchecked: "photosAuthorizationRequired")
@@ -120,6 +123,7 @@ enum JobActivityKind: Sendable, Equatable {
     case folderReconcile
     case photosReconcile
     case personalizationSuggestions
+    case standardSuggestions
     case background
 
     init(persistedKind: String) {
@@ -131,6 +135,8 @@ enum JobActivityKind: Sendable, Equatable {
         case "personalization.fullLibrarySuggestions",
              "personalization.personalLibrarySuggestions":
             self = .personalizationSuggestions
+        case "personalization.standardLibrarySuggestions":
+            self = .standardSuggestions
         default:
             self = .background
         }

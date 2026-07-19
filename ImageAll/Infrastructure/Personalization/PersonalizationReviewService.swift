@@ -8,6 +8,7 @@ struct PersonalizationReviewService: PersonalizationReviewPort, Sendable {
     let tags: GRDBTagCatalogRepository
     let clock: any JobClock
     let personalLibrarySuggestionsEnabled: Bool
+    let standardLibrarySuggestionsEnabled: Bool
 
     init(
         database: CatalogDatabase,
@@ -15,7 +16,8 @@ struct PersonalizationReviewService: PersonalizationReviewPort, Sendable {
         executionCoordinator: JobExecutionCoordinator,
         tags: GRDBTagCatalogRepository,
         clock: any JobClock,
-        personalLibrarySuggestionsEnabled: Bool = true
+        personalLibrarySuggestionsEnabled: Bool = true,
+        standardLibrarySuggestionsEnabled: Bool = false
     ) {
         self.database = database
         self.queue = queue
@@ -23,6 +25,7 @@ struct PersonalizationReviewService: PersonalizationReviewPort, Sendable {
         self.tags = tags
         self.clock = clock
         self.personalLibrarySuggestionsEnabled = personalLibrarySuggestionsEnabled
+        self.standardLibrarySuggestionsEnabled = standardLibrarySuggestionsEnabled
     }
 
     private var review: GRDBPersonalizationReviewRepository {
@@ -252,6 +255,79 @@ struct PersonalizationReviewService: PersonalizationReviewPort, Sendable {
         )
     }
 
+    func enqueueStandardLibrarySuggestions(
+        target: StandardModelSuggestionTarget
+    ) throws -> UUID {
+        guard standardLibrarySuggestionsEnabled,
+              StandardLibrarySuggestionsCodec.validateTarget(target)
+        else {
+            throw PersonalizationReviewError.persistenceFailure
+        }
+        let jobID = UUID()
+        let nowMs = clock.nowMs
+        do {
+            return try database.pool.write { db in
+                guard try review.standardSuggestionTargetMatches(target, in: db) else {
+                    throw PersonalizationReviewError.persistenceFailure
+                }
+                if let row = try Row.fetchOne(
+                    db,
+                    sql: """
+                    SELECT * FROM job
+                    WHERE kind = ?
+                        AND state IN ('pending', 'running', 'paused', 'retryableFailed')
+                    ORDER BY created_at_ms DESC, id DESC
+                    LIMIT 1
+                    """,
+                    arguments: [StandardLibrarySuggestionsJobFactory.kind]
+                ) {
+                    let existing = try JobPersistenceMapping.snapshot(from: row)
+                    let existingPayload = try StandardLibrarySuggestionsCodec.decodePayload(
+                        existing.payload
+                    )
+                    guard existingPayload.target == target else {
+                        throw PersonalizationReviewError.activeJobConflict
+                    }
+                    return existing.id
+                }
+                let sourceIDs = try review.activePersonalizationSourceIDs(in: db)
+                guard !sourceIDs.isEmpty else {
+                    throw PersonalizationReviewError.persistenceFailure
+                }
+                let command = try StandardLibrarySuggestionsJobEnqueue.makeEnqueueCommand(
+                    jobID: jobID,
+                    sourceIDs: sourceIDs,
+                    catalogCutoffMs: nowMs,
+                    target: target,
+                    notBeforeMs: nowMs
+                )
+                try JobInsertInTransaction.insertPendingJob(
+                    db,
+                    command: command,
+                    nowMs: nowMs
+                )
+                return jobID
+            }
+        } catch JobQueueError.activeCoalescingConflict {
+            throw PersonalizationReviewError.activeJobConflict
+        }
+    }
+
+    func standardLibrarySuggestionJob() throws -> StandardLibrarySuggestionJobProjection? {
+        guard let job = try review.latestStandardLibrarySuggestionJob() else { return nil }
+        let checkpoint = (try? StandardLibrarySuggestionsCodec.checkpoint(from: job.checkpoint))
+            ?? .empty
+        return StandardLibrarySuggestionJobProjection(
+            id: job.id,
+            state: job.state,
+            checkedCount: checkpoint.checkedCount,
+            totalCount: job.progress.total,
+            suggestedCount: checkpoint.suggestedCount,
+            skippedCount: checkpoint.skippedCount,
+            lastErrorCode: job.lastErrorCode
+        )
+    }
+
     func pauseSuggestionJob(jobID: UUID) throws {
         _ = try queue.applyStateCommand(JobStateCommand(jobID: jobID, operation: .pause))
     }
@@ -300,6 +376,9 @@ struct PersonalizationReviewService: PersonalizationReviewPort, Sendable {
         if personalLibrarySuggestionsEnabled {
             allowedKinds.insert(PersonalLibrarySuggestionsJobFactory.kind)
         }
+        if standardLibrarySuggestionsEnabled {
+            allowedKinds.insert(StandardLibrarySuggestionsJobFactory.kind)
+        }
         let claim = ClaimNextInput(
             owner: PersonalizationSuggestionRunner.claimOwner,
             leaseDurationMs: 60_000,
@@ -321,36 +400,25 @@ struct PersonalizationReviewService: PersonalizationReviewPort, Sendable {
     }
 
     func nextSuggestionRetryDelayNanoseconds() throws -> UInt64? {
-        let nextNotBeforeMs: Int64?
+        var kinds = [FullLibrarySuggestionsJobFactory.kind]
         if personalLibrarySuggestionsEnabled {
-            nextNotBeforeMs = try database.pool.read { db in
-                try Int64.fetchOne(
-                    db,
-                    sql: """
-                    SELECT MIN(not_before_ms) FROM job
-                    WHERE kind IN (?, ?)
-                        AND state = 'retryableFailed'
-                        AND attempts < max_attempts
-                    """,
-                    arguments: [
-                        FullLibrarySuggestionsJobFactory.kind,
-                        PersonalLibrarySuggestionsJobFactory.kind,
-                    ]
-                )
-            }
-        } else {
-            nextNotBeforeMs = try database.pool.read { db in
-                try Int64.fetchOne(
-                    db,
-                    sql: """
-                    SELECT MIN(not_before_ms) FROM job
-                    WHERE kind = ?
-                        AND state = 'retryableFailed'
-                        AND attempts < max_attempts
-                    """,
-                    arguments: [FullLibrarySuggestionsJobFactory.kind]
-                )
-            }
+            kinds.append(PersonalLibrarySuggestionsJobFactory.kind)
+        }
+        if standardLibrarySuggestionsEnabled {
+            kinds.append(StandardLibrarySuggestionsJobFactory.kind)
+        }
+        let placeholders = Array(repeating: "?", count: kinds.count).joined(separator: ", ")
+        let nextNotBeforeMs: Int64? = try database.pool.read { db in
+            try Int64.fetchOne(
+                db,
+                sql: """
+                SELECT MIN(not_before_ms) FROM job
+                WHERE kind IN (\(placeholders))
+                    AND state = 'retryableFailed'
+                    AND attempts < max_attempts
+                """,
+                arguments: StatementArguments(kinds)
+            )
         }
         guard let nextNotBeforeMs else { return nil }
         let difference = nextNotBeforeMs.subtractingReportingOverflow(clock.nowMs)

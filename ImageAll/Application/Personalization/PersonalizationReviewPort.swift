@@ -147,6 +147,16 @@ struct PersonalLibrarySuggestionJobProjection: Equatable, Sendable {
     let lastErrorCode: JobSafeErrorCode?
 }
 
+struct StandardLibrarySuggestionJobProjection: Equatable, Sendable {
+    let id: UUID
+    let state: JobState
+    let checkedCount: Int
+    let totalCount: Int?
+    let suggestedCount: Int
+    let skippedCount: Int
+    let lastErrorCode: JobSafeErrorCode?
+}
+
 protocol PersonalizationReviewPort: Sendable {
     func totalPendingSuggestionCount() throws -> Int
     func tagOverviews() throws -> [SuggestionTagOverview]
@@ -184,6 +194,10 @@ protocol PersonalizationReviewPort: Sendable {
         capability: PersonalModelSuggestionCapability
     ) throws -> UUID
     func personalLibrarySuggestionJob() throws -> PersonalLibrarySuggestionJobProjection?
+    func enqueueStandardLibrarySuggestions(
+        target: StandardModelSuggestionTarget
+    ) throws -> UUID
+    func standardLibrarySuggestionJob() throws -> StandardLibrarySuggestionJobProjection?
     func pauseSuggestionJob(jobID: UUID) throws
     func resumeSuggestionJob(jobID: UUID) throws
     func cancelSuggestionJob(jobID: UUID) throws
@@ -238,6 +252,16 @@ extension PersonalizationReviewPort {
     }
 
     func personalLibrarySuggestionJob() throws -> PersonalLibrarySuggestionJobProjection? {
+        nil
+    }
+
+    func enqueueStandardLibrarySuggestions(
+        target _: StandardModelSuggestionTarget
+    ) throws -> UUID {
+        throw PersonalizationReviewError.persistenceFailure
+    }
+
+    func standardLibrarySuggestionJob() throws -> StandardLibrarySuggestionJobProjection? {
         nil
     }
 

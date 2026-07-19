@@ -155,6 +155,8 @@ final class LibraryWorkspaceModel: ObservableObject {
     @Published private(set) var localModelSuggestionTrack: ModelSuggestionTrack = .standard
     @Published private(set) var personalLibrarySuggestionState: PersonalLibrarySuggestionPresentationState = .idle
     @Published private(set) var personalLibrarySuggestionJobID: UUID?
+    @Published private(set) var standardLibrarySuggestionState: StandardLibrarySuggestionPresentationState = .idle
+    @Published private(set) var standardLibrarySuggestionJobID: UUID?
     @Published private(set) var isRebuildingPersonalModel = false
     @Published private(set) var isExportingPortableData = false
     @Published private(set) var previewCacheUsage = DerivedImageCacheUsage.zero
@@ -216,8 +218,23 @@ final class LibraryWorkspaceModel: ObservableObject {
         localModelSuggestions != nil
     }
 
+    var supportsStandardLibrarySuggestions: Bool {
+        guard let localModelSuggestions else { return false }
+        if case .standard = localModelSuggestions.target { return true }
+        return false
+    }
+
     var isGeneratingPersonalLibrarySuggestions: Bool {
         switch personalLibrarySuggestionState {
+        case .waiting, .running, .paused, .retryableFailure:
+            return true
+        default:
+            return false
+        }
+    }
+
+    var isGeneratingStandardLibrarySuggestions: Bool {
+        switch standardLibrarySuggestionState {
         case .waiting, .running, .paused, .retryableFailure:
             return true
         default:
@@ -1021,6 +1038,46 @@ final class LibraryWorkspaceModel: ObservableObject {
             }
             localModelSuggestionState = .failed(assetID: assetID)
             localModelSuggestionRequestID = nil
+        }
+    }
+
+    func generateStandardLibrarySuggestions() async {
+        guard !isGeneratingStandardLibrarySuggestions else { return }
+        guard let runtime = localModelSuggestions,
+              case let .standard(target) = runtime.target
+        else {
+            standardLibrarySuggestionState = .serviceUnavailable
+            return
+        }
+
+        standardLibrarySuggestionState = .waiting(checked: 0, suggested: 0, skipped: 0)
+        do {
+            let package = StandardOntologyCatalog.bundledSceneFixture
+            guard target.standardPackID == package.standardPackID,
+                  target.standardPackRevision == package.standardPackRevision
+            else {
+                throw LocalModelSuggestionClientError.identityMismatch
+            }
+            let service = service
+            _ = try await Self.offMain {
+                try service.installStandardOntologyPackage(package)
+            }
+            tags = try await Self.offMain { try service.listTags() }
+            let reviewPort = review
+            try await Self.offMain {
+                _ = try reviewPort.enqueueStandardLibrarySuggestions(target: target)
+            }
+            await refreshReviewState()
+            startPersonalizationRunnerIfNeeded()
+        } catch PersonalizationReviewError.activeJobConflict {
+            await refreshReviewState()
+            startPersonalizationRunnerIfNeeded()
+        } catch LocalModelSuggestionClientError.serviceUnavailable {
+            standardLibrarySuggestionState = .serviceUnavailable
+        } catch is CancellationError {
+            standardLibrarySuggestionState = .idle
+        } catch {
+            standardLibrarySuggestionState = .failed
         }
     }
 
@@ -2089,6 +2146,20 @@ extension LibraryWorkspaceModel {
         return jobActivityItems.first { $0.id == personalLibrarySuggestionJobID }
     }
 
+    var standardLibrarySuggestionJobActivity: JobActivityItem? {
+        guard let standardLibrarySuggestionJobID else { return nil }
+        return jobActivityItems.first { $0.id == standardLibrarySuggestionJobID }
+    }
+
+    func applyStandardLibrarySuggestionAction(_ action: JobActivityAction) async {
+        guard let activity = standardLibrarySuggestionJobActivity,
+              activity.availableActions.contains(action)
+        else {
+            return
+        }
+        await applyJobActivityAction(action, to: activity.id)
+    }
+
     func applyPersonalLibrarySuggestionAction(_ action: JobActivityAction) async {
         guard let activity = personalLibrarySuggestionJobActivity,
               activity.availableActions.contains(action)
@@ -2114,6 +2185,18 @@ extension LibraryWorkspaceModel {
             } else {
                 personalLibrarySuggestionJobID = nil
                 personalLibrarySuggestionState = .idle
+            }
+            let standardJob = try await Self.offMain {
+                try reviewPort.standardLibrarySuggestionJob()
+            }
+            if let standardJob {
+                standardLibrarySuggestionJobID = standardJob.id
+                standardLibrarySuggestionState = Self.standardLibraryPresentation(
+                    for: standardJob
+                )
+            } else {
+                standardLibrarySuggestionJobID = nil
+                standardLibrarySuggestionState = .idle
             }
             if reviewMode == .overview {
                 let service = service
@@ -2188,6 +2271,56 @@ extension LibraryWorkspaceModel {
             return job.lastErrorCode == .personalLibraryBundleUnavailable
                 ? .personalUnavailable
                 : .failed
+        }
+    }
+
+    private static func standardLibraryPresentation(
+        for job: StandardLibrarySuggestionJobProjection
+    ) -> StandardLibrarySuggestionPresentationState {
+        let counts = (
+            checked: job.checkedCount,
+            suggested: job.suggestedCount,
+            skipped: job.skippedCount
+        )
+        switch job.state {
+        case .pending:
+            return .waiting(
+                checked: counts.checked,
+                suggested: counts.suggested,
+                skipped: counts.skipped
+            )
+        case .running:
+            return .running(
+                checked: counts.checked,
+                suggested: counts.suggested,
+                skipped: counts.skipped
+            )
+        case .paused:
+            return .paused(
+                checked: counts.checked,
+                suggested: counts.suggested,
+                skipped: counts.skipped
+            )
+        case .retryableFailed:
+            return .retryableFailure(
+                checked: counts.checked,
+                suggested: counts.suggested,
+                skipped: counts.skipped
+            )
+        case .completed:
+            return .completed(
+                checked: counts.checked,
+                suggested: counts.suggested,
+                skipped: counts.skipped
+            )
+        case .cancelled:
+            return .cancelled(
+                checked: counts.checked,
+                suggested: counts.suggested,
+                skipped: counts.skipped
+            )
+        case .terminalFailed:
+            return .failed
         }
     }
 
@@ -2991,6 +3124,7 @@ struct LibraryWorkspaceView: View {
         case .folderReconcile: "文件夹同步"
         case .photosReconcile: "Apple Photos 同步"
         case .personalizationSuggestions: "个性化建议"
+        case .standardSuggestions: "标准模型建议"
         case .background: "后台任务"
         }
     }

@@ -33,3 +33,33 @@ enum PersonalLibrarySuggestionsJobEnqueue {
         )
     }
 }
+
+enum StandardLibrarySuggestionsJobEnqueue {
+    static func makeEnqueueCommand(
+        jobID: UUID,
+        sourceIDs: [UUID],
+        catalogCutoffMs: Int64,
+        target: StandardModelSuggestionTarget,
+        notBeforeMs: Int64
+    ) throws -> EnqueueJobCommand {
+        let payload = StandardLibrarySuggestionsPayload(
+            contractVersion: StandardLibrarySuggestionsJobFactory.contractVersion,
+            sourceIDs: sourceIDs.sorted { $0.uuidString < $1.uuidString },
+            catalogCutoffMs: catalogCutoffMs,
+            target: target
+        )
+        return EnqueueJobCommand(
+            id: jobID,
+            kind: StandardLibrarySuggestionsJobFactory.kind,
+            payloadVersion: StandardLibrarySuggestionsJobFactory.payloadVersion,
+            payload: try StandardLibrarySuggestionsCodec.encodePayload(payload),
+            sourceID: nil,
+            coalescingKey: StandardLibrarySuggestionsJobFactory.coalescingKey(
+                standardPackID: target.standardPackID
+            ),
+            priority: StandardLibrarySuggestionsJobFactory.priority,
+            maxAttempts: StandardLibrarySuggestionsJobFactory.maxAttempts,
+            notBeforeMs: notBeforeMs
+        )
+    }
+}

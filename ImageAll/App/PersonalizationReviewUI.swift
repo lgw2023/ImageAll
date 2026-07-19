@@ -12,8 +12,8 @@ struct ReviewOverviewView: View {
 
     var body: some View {
         List {
-            if model.supportsPersonalLibrarySuggestions {
-                Section("个人模型") {
+            if model.supportsPersonalLibrarySuggestions || model.supportsStandardLibrarySuggestions {
+                Section("本地模型") {
                     VStack(alignment: .leading, spacing: 8) {
                         Text(localModelServiceStatusText)
                             .font(.caption)
@@ -35,43 +35,90 @@ struct ReviewOverviewView: View {
 
                         Divider()
 
-                        Text(personalLibraryStatusText)
-                            .font(.caption)
-                            .foregroundStyle(personalLibraryStatusColor)
-                        Button {
-                            Task { await model.generatePersonalLibrarySuggestions() }
-                        } label: {
-                            if model.isGeneratingPersonalLibrarySuggestions {
-                                HStack(spacing: 8) {
-                                    ProgressView().controlSize(.small)
-                                    Text("正在扫描全库")
+                        if model.supportsStandardLibrarySuggestions {
+                            Text(standardLibraryStatusText)
+                                .font(.caption)
+                                .foregroundStyle(standardLibraryStatusColor)
+                            Button {
+                                Task { await model.generateStandardLibrarySuggestions() }
+                            } label: {
+                                if model.isGeneratingStandardLibrarySuggestions {
+                                    HStack(spacing: 8) {
+                                        ProgressView().controlSize(.small)
+                                        Text("正在扫描全库")
+                                    }
+                                } else {
+                                    Label("用标准模型扫描全库", systemImage: "sparkles.rectangle.stack")
                                 }
-                            } else {
-                                Label("用个人模型扫描全库", systemImage: "brain.head.profile")
+                            }
+                            .disabled(
+                                model.isGeneratingStandardLibrarySuggestions
+                                    || model.isGeneratingPersonalLibrarySuggestions
+                                    || model.isRebuildingPersonalModel
+                            )
+                            .help("仅分析当前可本地读取的预览；iCloud 云端照片会跳过，不会批量下载")
+                            if let activity = model.standardLibrarySuggestionJobActivity,
+                               !activity.availableActions.isEmpty
+                            {
+                                HStack {
+                                    ForEach(activity.availableActions, id: \.self) { action in
+                                        Button(
+                                            personalLibraryActionTitle(action),
+                                            role: action == .cancel ? .destructive : nil
+                                        ) {
+                                            Task {
+                                                await model.applyStandardLibrarySuggestionAction(action)
+                                            }
+                                        }
+                                        .disabled(model.isApplyingJobActivityAction(activity.id))
+                                    }
+                                }
+                                .buttonStyle(.link)
                             }
                         }
-                        .disabled(
-                            model.isGeneratingPersonalLibrarySuggestions
-                                || model.isRebuildingPersonalModel
-                        )
-                        .help("仅分析当前可本地读取的预览；iCloud 云端照片会跳过，不会批量下载")
-                        if let activity = model.personalLibrarySuggestionJobActivity,
-                           !activity.availableActions.isEmpty
-                        {
-                            HStack {
-                                ForEach(activity.availableActions, id: \.self) { action in
-                                    Button(
-                                        personalLibraryActionTitle(action),
-                                        role: action == .cancel ? .destructive : nil
-                                    ) {
-                                        Task {
-                                            await model.applyPersonalLibrarySuggestionAction(action)
-                                        }
+
+                        if model.supportsPersonalLibrarySuggestions {
+                            Divider()
+
+                            Text(personalLibraryStatusText)
+                                .font(.caption)
+                                .foregroundStyle(personalLibraryStatusColor)
+                            Button {
+                                Task { await model.generatePersonalLibrarySuggestions() }
+                            } label: {
+                                if model.isGeneratingPersonalLibrarySuggestions {
+                                    HStack(spacing: 8) {
+                                        ProgressView().controlSize(.small)
+                                        Text("正在扫描全库")
                                     }
-                                    .disabled(model.isApplyingJobActivityAction(activity.id))
+                                } else {
+                                    Label("用个人模型扫描全库", systemImage: "brain.head.profile")
                                 }
                             }
-                            .buttonStyle(.link)
+                            .disabled(
+                                model.isGeneratingPersonalLibrarySuggestions
+                                    || model.isGeneratingStandardLibrarySuggestions
+                                    || model.isRebuildingPersonalModel
+                            )
+                            .help("仅分析当前可本地读取的预览；iCloud 云端照片会跳过，不会批量下载")
+                            if let activity = model.personalLibrarySuggestionJobActivity,
+                               !activity.availableActions.isEmpty
+                            {
+                                HStack {
+                                    ForEach(activity.availableActions, id: \.self) { action in
+                                        Button(
+                                            personalLibraryActionTitle(action),
+                                            role: action == .cancel ? .destructive : nil
+                                        ) {
+                                            Task {
+                                                await model.applyPersonalLibrarySuggestionAction(action)
+                                            }
+                                        }
+                                        .disabled(model.isApplyingJobActivityAction(activity.id))
+                                    }
+                                }
+                                .buttonStyle(.link)
+                            }
                         }
                     }
                     .padding(.vertical, 4)
@@ -206,6 +253,40 @@ struct ReviewOverviewView: View {
             "本地模型服务不可用；现有照片、标签和 Feature Print 建议不受影响。"
         case .failed:
             "模型身份或结果未通过校验，personal 建议已安全忽略。"
+        }
+    }
+
+    private var standardLibraryStatusText: String {
+        switch model.standardLibrarySuggestionState {
+        case .idle:
+            "把当前标准模型的建议加入现有审核队列。"
+        case let .waiting(checked, suggested, skipped):
+            "等待标准扫描 · 已检查 \(checked) 张 · 建议 \(suggested) 条 · 跳过 \(skipped) 张"
+        case let .running(checked, suggested, skipped):
+            "标准扫描 · 已检查 \(checked) 张 · 建议 \(suggested) 条 · 跳过 \(skipped) 张"
+        case let .paused(checked, suggested, skipped):
+            "标准扫描已暂停 · 已检查 \(checked) 张 · 建议 \(suggested) 条 · 跳过 \(skipped) 张"
+        case let .retryableFailure(checked, suggested, skipped):
+            "本地服务暂时不可用，标准任务将重试 · 已检查 \(checked) 张 · 建议 \(suggested) 条 · 跳过 \(skipped) 张"
+        case let .completed(checked, suggested, skipped):
+            "标准扫描完成：检查 \(checked) 张，加入 \(suggested) 条建议，跳过 \(skipped) 张。"
+        case let .cancelled(checked, suggested, skipped):
+            "标准扫描已取消：检查 \(checked) 张，加入 \(suggested) 条建议，跳过 \(skipped) 张。"
+        case .serviceUnavailable:
+            "本地模型服务不可用；现有照片、标签和建议不受影响。"
+        case .failed:
+            "标准模型身份或结果未通过校验，结果已安全忽略。"
+        }
+    }
+
+    private var standardLibraryStatusColor: Color {
+        switch model.standardLibrarySuggestionState {
+        case .failed, .serviceUnavailable, .retryableFailure:
+            .red
+        case .paused:
+            .orange
+        default:
+            .secondary
         }
     }
 

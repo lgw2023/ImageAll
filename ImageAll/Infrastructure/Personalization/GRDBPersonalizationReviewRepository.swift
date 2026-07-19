@@ -1,6 +1,11 @@
 import Foundation
 import GRDB
 
+enum StandardSuggestionReplacementError: Error, Equatable {
+    case identityMismatch
+    case assetChanged
+}
+
 private struct MappedStandardSuggestion {
     let tagID: String
     let derivedFromConceptID: String?
@@ -388,6 +393,63 @@ struct GRDBPersonalizationReviewRepository: Sendable {
         }
     }
 
+    func frozenStandardAssetProcessingContext(assetID: UUID) throws -> FrozenAssetProcessingContext? {
+        try database.pool.read { db in
+            guard let row = try Row.fetchOne(
+                db,
+                sql: """
+                SELECT a.content_revision, a.availability, a.locator_state, a.record_updated_at_ms,
+                    s.state AS source_state
+                FROM asset a
+                JOIN source s ON s.id = a.source_id
+                WHERE a.id = ?
+                    AND a.locator_state = 'current'
+                    AND (
+                        (s.kind = 'folder' AND a.locator_kind = 'file')
+                        OR (s.kind = 'photos' AND a.locator_kind = 'photos')
+                    )
+                """,
+                arguments: [uuid(assetID)]
+            ) else { return nil }
+            return FrozenAssetProcessingContext(
+                contentRevision: row["content_revision"],
+                availability: row["availability"],
+                sourceState: row["source_state"],
+                locatorState: row["locator_state"],
+                recordUpdatedAtMs: row["record_updated_at_ms"],
+                hasDecision: false
+            )
+        }
+    }
+
+    func standardSuggestionTargetMatches(_ target: StandardModelSuggestionTarget) throws -> Bool {
+        try database.pool.read { db in
+            try standardSuggestionTargetMatches(target, in: db)
+        }
+    }
+
+    func standardSuggestionTargetMatches(
+        _ target: StandardModelSuggestionTarget,
+        in db: Database
+    ) throws -> Bool {
+        try Bool.fetchOne(
+            db,
+            sql: """
+            SELECT EXISTS(
+                SELECT 1
+                FROM ontology_pack p
+                JOIN standard_model_revision m
+                    ON m.standard_pack_id = p.standard_pack_id
+                    AND m.standard_pack_revision = p.standard_pack_revision
+                WHERE p.standard_pack_id = ?
+                    AND p.standard_pack_revision = ?
+                    AND p.state = 'active'
+            )
+            """,
+            arguments: [target.standardPackID, target.standardPackRevision]
+        ) == true
+    }
+
     func activePersonalizationSourceIDs() throws -> [UUID] {
         try database.pool.read { db in
             try activePersonalizationSourceIDs(in: db)
@@ -664,200 +726,226 @@ struct GRDBPersonalizationReviewRepository: Sendable {
         expectedTarget: StandardModelSuggestionTarget,
         createdAtMs: Int64
     ) throws -> Int {
-        guard contentRevision > 0,
-              createdAtMs >= 0,
-              !expectedTarget.standardPackID.isEmpty,
+        do {
+            return try database.pool.write { db in
+                try replaceStandardSuggestions(
+                    assetID: assetID,
+                    contentRevision: contentRevision,
+                    suggestions: suggestions,
+                    expectedTarget: expectedTarget,
+                    createdAtMs: createdAtMs,
+                    on: db
+                )
+            }
+        } catch is StandardSuggestionReplacementError {
+            throw PersonalizationReviewError.persistenceFailure
+        }
+    }
+
+    func replaceStandardSuggestions(
+        assetID: UUID,
+        contentRevision: Int,
+        suggestions: [LocalModelSuggestion],
+        expectedTarget: StandardModelSuggestionTarget,
+        createdAtMs: Int64,
+        on db: Database
+    ) throws -> Int {
+        guard contentRevision > 0, createdAtMs >= 0 else {
+            throw StandardSuggestionReplacementError.assetChanged
+        }
+        guard !expectedTarget.standardPackID.isEmpty,
               !expectedTarget.standardPackRevision.isEmpty,
               suggestions.allSatisfy({ $0.score.isFinite }),
               Set(suggestions.compactMap(\.conceptID)).count == suggestions.count
         else {
-            throw PersonalizationReviewError.persistenceFailure
+            throw StandardSuggestionReplacementError.identityMismatch
         }
 
-        return try database.pool.write { db in
-            guard try Bool.fetchOne(
+        guard try Bool.fetchOne(
+            db,
+            sql: """
+            SELECT EXISTS(
+                SELECT 1
+                FROM ontology_pack p
+                JOIN standard_model_revision m
+                    ON m.standard_pack_id = p.standard_pack_id
+                    AND m.standard_pack_revision = p.standard_pack_revision
+                WHERE p.standard_pack_id = ?
+                    AND p.standard_pack_revision = ?
+                    AND p.state = 'active'
+            )
+            """,
+            arguments: [
+                expectedTarget.standardPackID,
+                expectedTarget.standardPackRevision,
+            ]
+        ) == true
+        else {
+            throw StandardSuggestionReplacementError.identityMismatch
+        }
+        guard try Bool.fetchOne(
+            db,
+            sql: """
+            SELECT EXISTS(
+                SELECT 1
+                FROM asset a
+                JOIN source s ON s.id = a.source_id AND s.state = 'active'
+                WHERE a.id = ?
+                    AND a.content_revision = ?
+                    AND a.locator_state = 'current'
+                    AND a.availability = 'available'
+                    AND (
+                        (s.kind = 'folder' AND a.locator_kind = 'file')
+                        OR (s.kind = 'photos' AND a.locator_kind = 'photos')
+                    )
+            )
+            """,
+            arguments: [uuid(assetID), contentRevision]
+        ) == true
+        else {
+            throw StandardSuggestionReplacementError.assetChanged
+        }
+
+        var mappedByTagID: [String: MappedStandardSuggestion] = [:]
+        for suggestion in suggestions {
+            guard suggestion.track == .standard,
+                  let conceptID = suggestion.conceptID,
+                  !conceptID.isEmpty,
+                  suggestion.tagID == nil,
+                  suggestion.standardPackID == expectedTarget.standardPackID,
+                  suggestion.standardPackRevision == expectedTarget.standardPackRevision,
+                  suggestion.catalogScopeID == nil,
+                  suggestion.bundleID == nil,
+                  suggestion.bundleRevision == nil,
+                  suggestion.elementCount == nil,
+                  suggestion.labelVocabularyRevision == nil,
+                  suggestion.weightsSHA256 == nil,
+                  suggestion.modelID?.isEmpty != true,
+                  let ontologyID = suggestion.ontologyID,
+                  let ontologyRevision = suggestion.ontologyRevision,
+                  let mappingRevision = suggestion.mappingRevision,
+                  !suggestion.provider.isEmpty,
+                  !suggestion.modelRevision.isEmpty,
+                  !suggestion.preprocessingRevision.isEmpty,
+                  !ontologyID.isEmpty,
+                  !ontologyRevision.isEmpty,
+                  !mappingRevision.isEmpty,
+                  !suggestion.policyRevision.isEmpty
+            else {
+                throw StandardSuggestionReplacementError.identityMismatch
+            }
+            let rows = try Row.fetchAll(
                 db,
                 sql: """
-                SELECT EXISTS(
-                    SELECT 1
-                    FROM ontology_pack p
-                    JOIN standard_model_revision m
-                        ON m.standard_pack_id = p.standard_pack_id
-                        AND m.standard_pack_revision = p.standard_pack_revision
-                    WHERE p.standard_pack_id = ?
-                        AND p.standard_pack_revision = ?
-                        AND p.state = 'active'
+                WITH RECURSIVE concept_closure(concept_id) AS (
+                    SELECT ?
+                    UNION
+                    SELECT edge.parent_concept_id
+                    FROM ontology_edge edge
+                    JOIN concept_closure closure
+                        ON closure.concept_id = edge.child_concept_id
+                    WHERE edge.ontology_id = ?
+                        AND edge.ontology_revision = ?
+                )
+                SELECT binding.tag_id, closure.concept_id
+                FROM ontology_pack p
+                JOIN standard_model_revision m
+                    ON m.standard_pack_id = p.standard_pack_id
+                    AND m.standard_pack_revision = p.standard_pack_revision
+                CROSS JOIN concept_closure closure
+                JOIN standard_tag_binding binding
+                    ON binding.ontology_id = p.ontology_id
+                    AND binding.ontology_revision = p.ontology_revision
+                    AND binding.concept_id = closure.concept_id
+                JOIN tag t ON t.id = binding.tag_id AND t.state = 'active'
+                WHERE p.standard_pack_id = ?
+                    AND p.standard_pack_revision = ?
+                    AND p.ontology_id = ?
+                    AND p.ontology_revision = ?
+                    AND p.state = 'active'
+                    AND m.provider = ?
+                    AND m.model_revision = ?
+                    AND m.preprocessing_revision = ?
+                    AND m.mapping_revision = ?
+                    AND m.policy_revision = ?
+                ORDER BY (closure.concept_id = ?) DESC, closure.concept_id
+                """,
+                arguments: [
+                    conceptID,
+                    ontologyID,
+                    ontologyRevision,
+                    expectedTarget.standardPackID,
+                    expectedTarget.standardPackRevision,
+                    ontologyID,
+                    ontologyRevision,
+                    suggestion.provider,
+                    suggestion.modelRevision,
+                    suggestion.preprocessingRevision,
+                    mappingRevision,
+                    suggestion.policyRevision,
+                    conceptID,
+                ]
+            )
+            guard rows.contains(where: { row in
+                let rowConceptID: String = row["concept_id"]
+                return rowConceptID == conceptID
+            }) else {
+                throw StandardSuggestionReplacementError.identityMismatch
+            }
+            for row in rows {
+                let tagID: String = row["tag_id"]
+                let expandedConceptID: String = row["concept_id"]
+                let candidate = MappedStandardSuggestion(
+                    tagID: tagID,
+                    derivedFromConceptID: expandedConceptID == conceptID ? nil : conceptID,
+                    suggestion: suggestion
+                )
+                if let existing = mappedByTagID[tagID],
+                   !candidate.precedes(existing)
+                {
+                    continue
+                }
+                mappedByTagID[tagID] = candidate
+            }
+        }
+
+        try db.execute(
+            sql: "DELETE FROM standard_prediction WHERE asset_id = ?",
+            arguments: [uuid(assetID)]
+        )
+        var inserted = 0
+        for entry in mappedByTagID.values.sorted(by: { $0.tagID < $1.tagID }) {
+            try db.execute(
+                sql: """
+                INSERT INTO standard_prediction (
+                    asset_id, tag_id, content_revision,
+                    standard_pack_id, standard_pack_revision,
+                    score, recommended_state, state, created_at_ms,
+                    derived_from_concept_id
+                )
+                SELECT ?, ?, ?, ?, ?, ?, ?, 'pendingReview', ?, ?
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM asset_tag_decision d
+                    WHERE d.asset_id = ? AND d.tag_id = ?
                 )
                 """,
                 arguments: [
+                    uuid(assetID),
+                    entry.tagID,
+                    contentRevision,
                     expectedTarget.standardPackID,
                     expectedTarget.standardPackRevision,
+                    entry.suggestion.score,
+                    entry.suggestion.recommendedState.rawValue,
+                    createdAtMs,
+                    entry.derivedFromConceptID,
+                    uuid(assetID),
+                    entry.tagID,
                 ]
-            ) == true,
-                try Bool.fetchOne(
-                    db,
-                    sql: """
-                    SELECT EXISTS(
-                        SELECT 1
-                        FROM asset a
-                        JOIN source s ON s.id = a.source_id AND s.state = 'active'
-                        WHERE a.id = ?
-                            AND a.content_revision = ?
-                            AND a.locator_state = 'current'
-                            AND a.availability = 'available'
-                            AND (
-                                (s.kind = 'folder' AND a.locator_kind = 'file')
-                                OR (s.kind = 'photos' AND a.locator_kind = 'photos')
-                            )
-                    )
-                    """,
-                    arguments: [uuid(assetID), contentRevision]
-                ) == true
-            else {
-                throw PersonalizationReviewError.persistenceFailure
-            }
-
-            var mappedByTagID: [String: MappedStandardSuggestion] = [:]
-            for suggestion in suggestions {
-                guard suggestion.track == .standard,
-                      let conceptID = suggestion.conceptID,
-                      !conceptID.isEmpty,
-                      suggestion.tagID == nil,
-                      suggestion.standardPackID == expectedTarget.standardPackID,
-                      suggestion.standardPackRevision == expectedTarget.standardPackRevision,
-                      suggestion.catalogScopeID == nil,
-                      suggestion.bundleID == nil,
-                      suggestion.bundleRevision == nil,
-                      suggestion.elementCount == nil,
-                      suggestion.labelVocabularyRevision == nil,
-                      suggestion.weightsSHA256 == nil,
-                      suggestion.modelID?.isEmpty != true,
-                      let ontologyID = suggestion.ontologyID,
-                      let ontologyRevision = suggestion.ontologyRevision,
-                      let mappingRevision = suggestion.mappingRevision,
-                      !suggestion.provider.isEmpty,
-                      !suggestion.modelRevision.isEmpty,
-                      !suggestion.preprocessingRevision.isEmpty,
-                      !ontologyID.isEmpty,
-                      !ontologyRevision.isEmpty,
-                      !mappingRevision.isEmpty,
-                      !suggestion.policyRevision.isEmpty
-                else {
-                    throw PersonalizationReviewError.persistenceFailure
-                }
-                let rows = try Row.fetchAll(
-                    db,
-                    sql: """
-                    WITH RECURSIVE concept_closure(concept_id) AS (
-                        SELECT ?
-                        UNION
-                        SELECT edge.parent_concept_id
-                        FROM ontology_edge edge
-                        JOIN concept_closure closure
-                            ON closure.concept_id = edge.child_concept_id
-                        WHERE edge.ontology_id = ?
-                            AND edge.ontology_revision = ?
-                    )
-                    SELECT binding.tag_id, closure.concept_id
-                    FROM ontology_pack p
-                    JOIN standard_model_revision m
-                        ON m.standard_pack_id = p.standard_pack_id
-                        AND m.standard_pack_revision = p.standard_pack_revision
-                    CROSS JOIN concept_closure closure
-                    JOIN standard_tag_binding binding
-                        ON binding.ontology_id = p.ontology_id
-                        AND binding.ontology_revision = p.ontology_revision
-                        AND binding.concept_id = closure.concept_id
-                    JOIN tag t ON t.id = binding.tag_id AND t.state = 'active'
-                    WHERE p.standard_pack_id = ?
-                        AND p.standard_pack_revision = ?
-                        AND p.ontology_id = ?
-                        AND p.ontology_revision = ?
-                        AND p.state = 'active'
-                        AND m.provider = ?
-                        AND m.model_revision = ?
-                        AND m.preprocessing_revision = ?
-                        AND m.mapping_revision = ?
-                        AND m.policy_revision = ?
-                    ORDER BY (closure.concept_id = ?) DESC, closure.concept_id
-                    """,
-                    arguments: [
-                        conceptID,
-                        ontologyID,
-                        ontologyRevision,
-                        expectedTarget.standardPackID,
-                        expectedTarget.standardPackRevision,
-                        ontologyID,
-                        ontologyRevision,
-                        suggestion.provider,
-                        suggestion.modelRevision,
-                        suggestion.preprocessingRevision,
-                        mappingRevision,
-                        suggestion.policyRevision,
-                        conceptID,
-                    ]
-                )
-                guard rows.contains(where: { row in
-                    let rowConceptID: String = row["concept_id"]
-                    return rowConceptID == conceptID
-                }) else {
-                    throw PersonalizationReviewError.persistenceFailure
-                }
-                for row in rows {
-                    let tagID: String = row["tag_id"]
-                    let expandedConceptID: String = row["concept_id"]
-                    let candidate = MappedStandardSuggestion(
-                        tagID: tagID,
-                        derivedFromConceptID: expandedConceptID == conceptID ? nil : conceptID,
-                        suggestion: suggestion
-                    )
-                    if let existing = mappedByTagID[tagID],
-                       !candidate.precedes(existing)
-                    {
-                        continue
-                    }
-                    mappedByTagID[tagID] = candidate
-                }
-            }
-
-            try db.execute(
-                sql: "DELETE FROM standard_prediction WHERE asset_id = ?",
-                arguments: [uuid(assetID)]
             )
-            var inserted = 0
-            for entry in mappedByTagID.values.sorted(by: { $0.tagID < $1.tagID }) {
-                try db.execute(
-                    sql: """
-                    INSERT INTO standard_prediction (
-                        asset_id, tag_id, content_revision,
-                        standard_pack_id, standard_pack_revision,
-                        score, recommended_state, state, created_at_ms,
-                        derived_from_concept_id
-                    )
-                    SELECT ?, ?, ?, ?, ?, ?, ?, 'pendingReview', ?, ?
-                    WHERE NOT EXISTS (
-                        SELECT 1 FROM asset_tag_decision d
-                        WHERE d.asset_id = ? AND d.tag_id = ?
-                    )
-                    """,
-                    arguments: [
-                        uuid(assetID),
-                        entry.tagID,
-                        contentRevision,
-                        expectedTarget.standardPackID,
-                        expectedTarget.standardPackRevision,
-                        entry.suggestion.score,
-                        entry.suggestion.recommendedState.rawValue,
-                        createdAtMs,
-                        entry.derivedFromConceptID,
-                        uuid(assetID),
-                        entry.tagID,
-                    ]
-                )
-                inserted += db.changesCount
-            }
-            return inserted
+            inserted += db.changesCount
         }
+        return inserted
     }
 
     func invalidatePersonalSuggestionBundle() throws {
@@ -1139,6 +1227,28 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                 LIMIT 1
                 """,
                 arguments: [PersonalLibrarySuggestionsJobFactory.kind]
+            ) else { return nil }
+            return try JobPersistenceMapping.snapshot(from: row)
+        }
+    }
+
+    func latestStandardLibrarySuggestionJob() throws -> JobRecordSnapshot? {
+        try database.pool.read { db in
+            guard let row = try Row.fetchOne(
+                db,
+                sql: """
+                SELECT * FROM job
+                WHERE kind = ?
+                ORDER BY
+                    CASE
+                        WHEN state IN ('pending', 'running', 'paused', 'retryableFailed') THEN 0
+                        ELSE 1
+                    END ASC,
+                    created_at_ms DESC,
+                    id DESC
+                LIMIT 1
+                """,
+                arguments: [StandardLibrarySuggestionsJobFactory.kind]
             ) else { return nil }
             return try JobPersistenceMapping.snapshot(from: row)
         }

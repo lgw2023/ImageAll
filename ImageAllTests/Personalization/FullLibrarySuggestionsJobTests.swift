@@ -202,6 +202,367 @@ final class FullLibrarySuggestionsJobTests: XCTestCase {
         XCTAssertGreaterThan(try service.totalPendingSuggestionCount(), 0)
     }
 
+    func testReviewServiceAsyncRunnerPublishesDurableStandardLibrarySuggestions() async throws {
+        let fixture = try makeLargeLibraryFixture(assetCount: 6)
+        let queue = JobTestSupport.makeQueue(
+            database: fixture.database,
+            nowMs: fixture.cutoffMs,
+            retryDelayMs: 0
+        )
+        let package = makeStandardReviewPackage(includeAncestors: true)
+        _ = try fixture.tags.installStandardOntologyPackage(
+            package,
+            timestampMs: fixture.cutoffMs
+        )
+        let target = StandardModelSuggestionTarget(
+            standardPackID: package.standardPackID,
+            standardPackRevision: package.standardPackRevision
+        )
+        let handler = StandardLibrarySuggestionsHandler(
+            dependencies: StandardLibrarySuggestionsHandlerDependencies(
+                database: fixture.database,
+                queue: queue,
+                images: StubStandardLibrarySuggestionImages(),
+                client: StubPersistentStandardSuggestionClient(package: package),
+                clock: FixedJobClock(nowMs: fixture.cutoffMs)
+            )
+        )
+        let coordinator = JobExecutionCoordinator(
+            queue: queue,
+            registry: MultiJobHandlerRegistry(handlers: [handler]),
+            leaseContextProvider: GRDBJobLeaseContextProvider(queue: fixture.queue)
+        )
+        let service = PersonalizationReviewService(
+            database: fixture.database,
+            queue: queue,
+            executionCoordinator: coordinator,
+            tags: fixture.tags,
+            clock: FixedJobClock(nowMs: fixture.cutoffMs),
+            personalLibrarySuggestionsEnabled: false,
+            standardLibrarySuggestionsEnabled: true
+        )
+
+        let jobID = try service.enqueueStandardLibrarySuggestions(target: target)
+        let didRun = try await service.runPendingSuggestionJobsAsync(maxSteps: 1)
+
+        XCTAssertTrue(didRun)
+        let completed = try queue.fetchJob(id: jobID)
+        XCTAssertEqual(completed.state, .completed)
+        let checkpoint = try StandardLibrarySuggestionsCodec.checkpoint(from: completed.checkpoint)
+        XCTAssertEqual(checkpoint.checkedCount, completed.progress.total)
+        XCTAssertGreaterThan(checkpoint.checkedCount, 0)
+        XCTAssertEqual(checkpoint.skippedCount, 0)
+        XCTAssertGreaterThan(checkpoint.suggestedCount, 0)
+        XCTAssertGreaterThan(try service.totalPendingSuggestionCount(), 0)
+    }
+
+    func testStandardLibraryJobRejectsMismatchedModelIdentityWithoutPublishing() async throws {
+        let fixture = try makeLargeLibraryFixture(assetCount: 2)
+        let queue = JobTestSupport.makeQueue(
+            database: fixture.database,
+            nowMs: fixture.cutoffMs,
+            retryDelayMs: 0
+        )
+        let package = makeStandardReviewPackage()
+        _ = try fixture.tags.installStandardOntologyPackage(
+            package,
+            timestampMs: fixture.cutoffMs
+        )
+        let target = StandardModelSuggestionTarget(
+            standardPackID: package.standardPackID,
+            standardPackRevision: package.standardPackRevision
+        )
+        let handler = StandardLibrarySuggestionsHandler(
+            dependencies: StandardLibrarySuggestionsHandlerDependencies(
+                database: fixture.database,
+                queue: queue,
+                images: StubStandardLibrarySuggestionImages(),
+                client: MismatchedPersistentStandardSuggestionClient(package: package),
+                clock: FixedJobClock(nowMs: fixture.cutoffMs)
+            )
+        )
+        let coordinator = JobExecutionCoordinator(
+            queue: queue,
+            registry: MultiJobHandlerRegistry(handlers: [handler]),
+            leaseContextProvider: GRDBJobLeaseContextProvider(queue: queue)
+        )
+        let service = PersonalizationReviewService(
+            database: fixture.database,
+            queue: queue,
+            executionCoordinator: coordinator,
+            tags: fixture.tags,
+            clock: FixedJobClock(nowMs: fixture.cutoffMs),
+            personalLibrarySuggestionsEnabled: false,
+            standardLibrarySuggestionsEnabled: true
+        )
+        let jobID = try service.enqueueStandardLibrarySuggestions(target: target)
+
+        let didRun = try await service.runPendingSuggestionJobsAsync(maxSteps: 1)
+        XCTAssertTrue(didRun)
+
+        let failed = try queue.fetchJob(id: jobID)
+        XCTAssertEqual(failed.state, .terminalFailed)
+        XCTAssertEqual(failed.lastErrorCode, .standardLibraryIdentityMismatch)
+        XCTAssertEqual(
+            try StandardLibrarySuggestionsCodec.checkpoint(from: failed.checkpoint).checkedCount,
+            0
+        )
+        let predictionCount = try await fixture.database.pool.read { db in
+            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM standard_prediction") ?? 0
+        }
+        XCTAssertEqual(predictionCount, 0)
+    }
+
+    func testStandardLibraryJobSkipsAssetsWhoseContentChangesDuringInference() async throws {
+        let fixture = try makeLargeLibraryFixture(assetCount: 2)
+        let queue = JobTestSupport.makeQueue(
+            database: fixture.database,
+            nowMs: fixture.cutoffMs,
+            retryDelayMs: 0
+        )
+        let package = makeStandardReviewPackage()
+        _ = try fixture.tags.installStandardOntologyPackage(
+            package,
+            timestampMs: fixture.cutoffMs
+        )
+        let target = StandardModelSuggestionTarget(
+            standardPackID: package.standardPackID,
+            standardPackRevision: package.standardPackRevision
+        )
+        let handler = StandardLibrarySuggestionsHandler(
+            dependencies: StandardLibrarySuggestionsHandlerDependencies(
+                database: fixture.database,
+                queue: queue,
+                images: RevisionChangingStandardLibrarySuggestionImages(
+                    database: fixture.database
+                ),
+                client: StubPersistentStandardSuggestionClient(package: package),
+                clock: FixedJobClock(nowMs: fixture.cutoffMs)
+            )
+        )
+        let coordinator = JobExecutionCoordinator(
+            queue: queue,
+            registry: MultiJobHandlerRegistry(handlers: [handler]),
+            leaseContextProvider: GRDBJobLeaseContextProvider(queue: queue)
+        )
+        let service = PersonalizationReviewService(
+            database: fixture.database,
+            queue: queue,
+            executionCoordinator: coordinator,
+            tags: fixture.tags,
+            clock: FixedJobClock(nowMs: fixture.cutoffMs),
+            personalLibrarySuggestionsEnabled: false,
+            standardLibrarySuggestionsEnabled: true
+        )
+        let jobID = try service.enqueueStandardLibrarySuggestions(target: target)
+
+        let didRun = try await service.runPendingSuggestionJobsAsync(maxSteps: 1)
+
+        XCTAssertTrue(didRun)
+        let completed = try queue.fetchJob(id: jobID)
+        XCTAssertEqual(completed.state, .completed)
+        let checkpoint = try StandardLibrarySuggestionsCodec.checkpoint(from: completed.checkpoint)
+        XCTAssertEqual(checkpoint.checkedCount, completed.progress.total)
+        XCTAssertEqual(checkpoint.skippedCount, checkpoint.checkedCount)
+        XCTAssertEqual(checkpoint.suggestedCount, 0)
+        let predictionCount = try await fixture.database.pool.read { db in
+            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM standard_prediction") ?? 0
+        }
+        XCTAssertEqual(predictionCount, 0)
+    }
+
+    func testStandardLibraryJobSkipsCloudOnlyPreviewsWithoutCallingModel() async throws {
+        let fixture = try makeLargeLibraryFixture(assetCount: 2)
+        let queue = JobTestSupport.makeQueue(
+            database: fixture.database,
+            nowMs: fixture.cutoffMs,
+            retryDelayMs: 0
+        )
+        let package = makeStandardReviewPackage()
+        _ = try fixture.tags.installStandardOntologyPackage(
+            package,
+            timestampMs: fixture.cutoffMs
+        )
+        let target = StandardModelSuggestionTarget(
+            standardPackID: package.standardPackID,
+            standardPackRevision: package.standardPackRevision
+        )
+        let handler = StandardLibrarySuggestionsHandler(
+            dependencies: StandardLibrarySuggestionsHandlerDependencies(
+                database: fixture.database,
+                queue: queue,
+                images: CloudOnlyStandardLibrarySuggestionImages(),
+                client: RejectingStandardSuggestionClient(),
+                clock: FixedJobClock(nowMs: fixture.cutoffMs)
+            )
+        )
+        let coordinator = JobExecutionCoordinator(
+            queue: queue,
+            registry: MultiJobHandlerRegistry(handlers: [handler]),
+            leaseContextProvider: GRDBJobLeaseContextProvider(queue: queue)
+        )
+        let service = PersonalizationReviewService(
+            database: fixture.database,
+            queue: queue,
+            executionCoordinator: coordinator,
+            tags: fixture.tags,
+            clock: FixedJobClock(nowMs: fixture.cutoffMs),
+            personalLibrarySuggestionsEnabled: false,
+            standardLibrarySuggestionsEnabled: true
+        )
+        let jobID = try service.enqueueStandardLibrarySuggestions(target: target)
+
+        let didRun = try await service.runPendingSuggestionJobsAsync(maxSteps: 1)
+
+        XCTAssertTrue(didRun)
+        let completed = try queue.fetchJob(id: jobID)
+        XCTAssertEqual(completed.state, .completed)
+        let checkpoint = try StandardLibrarySuggestionsCodec.checkpoint(from: completed.checkpoint)
+        XCTAssertEqual(checkpoint.checkedCount, completed.progress.total)
+        XCTAssertEqual(checkpoint.skippedCount, checkpoint.checkedCount)
+        XCTAssertEqual(checkpoint.suggestedCount, 0)
+    }
+
+    func testStandardLibraryJobRollsBackPublicationThenResumesFromCheckpoint() async throws {
+        let fixture = try makeLargeLibraryFixture(assetCount: 2)
+        let queue = JobTestSupport.makeQueue(
+            database: fixture.database,
+            nowMs: fixture.cutoffMs,
+            retryDelayMs: 0
+        )
+        let package = makeStandardReviewPackage()
+        _ = try fixture.tags.installStandardOntologyPackage(
+            package,
+            timestampMs: fixture.cutoffMs
+        )
+        let target = StandardModelSuggestionTarget(
+            standardPackID: package.standardPackID,
+            standardPackRevision: package.standardPackRevision
+        )
+        let failure = OneShotPersonalPublishFailure()
+        let handler = StandardLibrarySuggestionsHandler(
+            dependencies: StandardLibrarySuggestionsHandlerDependencies(
+                database: fixture.database,
+                queue: queue,
+                images: StubStandardLibrarySuggestionImages(),
+                client: StubPersistentStandardSuggestionClient(package: package),
+                clock: FixedJobClock(nowMs: fixture.cutoffMs),
+                publishFailureInjector: { try failure.failOnce() }
+            )
+        )
+        let coordinator = JobExecutionCoordinator(
+            queue: queue,
+            registry: MultiJobHandlerRegistry(handlers: [handler]),
+            leaseContextProvider: GRDBJobLeaseContextProvider(queue: queue)
+        )
+        let service = PersonalizationReviewService(
+            database: fixture.database,
+            queue: queue,
+            executionCoordinator: coordinator,
+            tags: fixture.tags,
+            clock: FixedJobClock(nowMs: fixture.cutoffMs),
+            personalLibrarySuggestionsEnabled: false,
+            standardLibrarySuggestionsEnabled: true
+        )
+        let jobID = try service.enqueueStandardLibrarySuggestions(target: target)
+
+        let firstRun = try await service.runPendingSuggestionJobsAsync(maxSteps: 1)
+        XCTAssertTrue(firstRun)
+        let retryable = try queue.fetchJob(id: jobID)
+        XCTAssertEqual(retryable.state, .retryableFailed)
+        XCTAssertEqual(
+            try StandardLibrarySuggestionsCodec.checkpoint(from: retryable.checkpoint).checkedCount,
+            0
+        )
+        let rolledBackCount = try await fixture.database.pool.read { db in
+            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM standard_prediction") ?? 0
+        }
+        XCTAssertEqual(rolledBackCount, 0)
+
+        let secondRun = try await service.runPendingSuggestionJobsAsync(maxSteps: 1)
+        XCTAssertTrue(secondRun)
+        let completed = try queue.fetchJob(id: jobID)
+        XCTAssertEqual(completed.state, .completed)
+        XCTAssertEqual(
+            try StandardLibrarySuggestionsCodec.checkpoint(from: completed.checkpoint).checkedCount,
+            completed.progress.total
+        )
+        let publishedCount = try await fixture.database.pool.read { db in
+            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM standard_prediction") ?? 0
+        }
+        XCTAssertGreaterThan(publishedCount, 0)
+    }
+
+    func testStandardLibraryServiceFailurePreservesPublishedSuggestionsForRetry() async throws {
+        let fixture = try makeLargeLibraryFixture(assetCount: 2)
+        let queue = JobTestSupport.makeQueue(
+            database: fixture.database,
+            nowMs: fixture.cutoffMs,
+            retryDelayMs: 1_000
+        )
+        let package = makeStandardReviewPackage()
+        _ = try fixture.tags.installStandardOntologyPackage(
+            package,
+            timestampMs: fixture.cutoffMs
+        )
+        let target = StandardModelSuggestionTarget(
+            standardPackID: package.standardPackID,
+            standardPackRevision: package.standardPackRevision
+        )
+        let review = GRDBPersonalizationReviewRepository(database: fixture.database)
+        let candidate = try XCTUnwrap(
+            review.personalSuggestionCandidates(afterAssetID: nil, limit: 1).first
+        )
+        XCTAssertGreaterThan(
+            try review.replaceStandardSuggestions(
+                assetID: candidate.assetID,
+                contentRevision: candidate.contentRevision,
+                suggestions: [makeStandardReviewSuggestion(package: package)],
+                expectedTarget: target,
+                createdAtMs: fixture.cutoffMs
+            ),
+            0
+        )
+        let initialCount = try await fixture.database.pool.read { db in
+            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM standard_prediction") ?? 0
+        }
+        let handler = StandardLibrarySuggestionsHandler(
+            dependencies: StandardLibrarySuggestionsHandlerDependencies(
+                database: fixture.database,
+                queue: queue,
+                images: StubStandardLibrarySuggestionImages(),
+                client: UnavailablePersistentPersonalSuggestionClient(),
+                clock: FixedJobClock(nowMs: fixture.cutoffMs)
+            )
+        )
+        let coordinator = JobExecutionCoordinator(
+            queue: queue,
+            registry: MultiJobHandlerRegistry(handlers: [handler]),
+            leaseContextProvider: GRDBJobLeaseContextProvider(queue: queue)
+        )
+        let service = PersonalizationReviewService(
+            database: fixture.database,
+            queue: queue,
+            executionCoordinator: coordinator,
+            tags: fixture.tags,
+            clock: FixedJobClock(nowMs: fixture.cutoffMs),
+            personalLibrarySuggestionsEnabled: false,
+            standardLibrarySuggestionsEnabled: true
+        )
+        let jobID = try service.enqueueStandardLibrarySuggestions(target: target)
+
+        let didRun = try await service.runPendingSuggestionJobsAsync(maxSteps: 1)
+
+        XCTAssertTrue(didRun)
+        let retryable = try queue.fetchJob(id: jobID)
+        XCTAssertEqual(retryable.state, .retryableFailed)
+        XCTAssertEqual(retryable.lastErrorCode, .standardLibraryServiceUnavailable)
+        let preservedCount = try await fixture.database.pool.read { db in
+            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM standard_prediction") ?? 0
+        }
+        XCTAssertEqual(preservedCount, initialCount)
+    }
+
     func testRunnerWakesWhenFuturePersonalRetryBecomesDue() async throws {
         let fixture = try makeLargeLibraryFixture(assetCount: 6)
         let clock = MutableJobClock(nowMs: fixture.cutoffMs)
@@ -2345,6 +2706,115 @@ private struct LargeLibraryFixture {
 private actor StubPersonalLibrarySuggestionImages: PersonalLibrarySuggestionImageLoading {
     func loadPersonalSuggestionPreview(assetID _: UUID) async throws -> Data {
         Data("preview".utf8)
+    }
+}
+
+private actor StubStandardLibrarySuggestionImages: StandardLibrarySuggestionImageLoading {
+    func loadStandardSuggestionPreview(assetID _: UUID) async throws -> Data {
+        Data("standard-preview".utf8)
+    }
+}
+
+private actor RevisionChangingStandardLibrarySuggestionImages: StandardLibrarySuggestionImageLoading {
+    let database: CatalogDatabase
+
+    init(database: CatalogDatabase) {
+        self.database = database
+    }
+
+    func loadStandardSuggestionPreview(assetID: UUID) async throws -> Data {
+        try await database.pool.write { db in
+            try db.execute(
+                sql: """
+                UPDATE asset
+                SET content_revision = content_revision + 1
+                WHERE id = ?
+                """,
+                arguments: [assetID.uuidString.lowercased()]
+            )
+        }
+        return Data("changed-standard-preview".utf8)
+    }
+}
+
+private actor CloudOnlyStandardLibrarySuggestionImages: StandardLibrarySuggestionImageLoading {
+    func loadStandardSuggestionPreview(assetID _: UUID) async throws -> Data {
+        throw PhotosLibraryError.cloudOnly
+    }
+}
+
+private actor RejectingStandardSuggestionClient: LocalModelSuggestionClient {
+    func suggestions(
+        imageData _: Data,
+        requestID _: String,
+        target _: ModelSuggestionTarget
+    ) async throws -> [LocalModelSuggestion] {
+        throw LocalModelSuggestionClientError.identityMismatch
+    }
+}
+
+private actor StubPersistentStandardSuggestionClient: LocalModelSuggestionClient {
+    let package: StandardOntologyPackageInput
+
+    init(package: StandardOntologyPackageInput) {
+        self.package = package
+    }
+
+    func suggestions(
+        imageData _: Data,
+        requestID _: String,
+        target: ModelSuggestionTarget
+    ) async throws -> [LocalModelSuggestion] {
+        guard target == .standard(
+            StandardModelSuggestionTarget(
+                standardPackID: package.standardPackID,
+                standardPackRevision: package.standardPackRevision
+            )
+        ) else {
+            throw LocalModelSuggestionClientError.identityMismatch
+        }
+        return [makeStandardReviewSuggestion(package: package)]
+    }
+}
+
+private actor MismatchedPersistentStandardSuggestionClient: LocalModelSuggestionClient {
+    let package: StandardOntologyPackageInput
+
+    init(package: StandardOntologyPackageInput) {
+        self.package = package
+    }
+
+    func suggestions(
+        imageData _: Data,
+        requestID _: String,
+        target _: ModelSuggestionTarget
+    ) async throws -> [LocalModelSuggestion] {
+        let valid = makeStandardReviewSuggestion(package: package)
+        return [
+            LocalModelSuggestion(
+                track: valid.track,
+                conceptID: valid.conceptID,
+                tagID: valid.tagID,
+                score: valid.score,
+                recommendedState: valid.recommendedState,
+                catalogScopeID: valid.catalogScopeID,
+                bundleID: valid.bundleID,
+                bundleRevision: valid.bundleRevision,
+                standardPackID: valid.standardPackID,
+                standardPackRevision: valid.standardPackRevision,
+                provider: valid.provider,
+                modelID: valid.modelID,
+                modelRevision: "mismatched-model",
+                preprocessingRevision: valid.preprocessingRevision,
+                elementCount: valid.elementCount,
+                labelVocabularyRevision: valid.labelVocabularyRevision,
+                weightsSHA256: valid.weightsSHA256,
+                ontologyID: valid.ontologyID,
+                ontologyRevision: valid.ontologyRevision,
+                mappingRevision: valid.mappingRevision,
+                policyRevision: valid.policyRevision
+            ),
+        ]
     }
 }
 

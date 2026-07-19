@@ -124,6 +124,17 @@ struct CompositionRoot {
                     )
                 )
             )
+            jobHandlers.append(
+                StandardLibrarySuggestionsHandler(
+                    dependencies: StandardLibrarySuggestionsHandlerDependencies(
+                        database: runtime.database,
+                        queue: runtime.jobQueue,
+                        images: assetImages,
+                        client: localModelSuggestions.client,
+                        clock: clock
+                    )
+                )
+            )
         }
         let executionCoordinator = JobExecutionCoordinator(
             queue: runtime.jobQueue,
@@ -136,7 +147,8 @@ struct CompositionRoot {
             executionCoordinator: executionCoordinator,
             tags: GRDBTagCatalogRepository(database: runtime.database),
             clock: clock,
-            personalLibrarySuggestionsEnabled: localModelSuggestions != nil
+            personalLibrarySuggestionsEnabled: localModelSuggestions != nil,
+            standardLibrarySuggestionsEnabled: localModelSuggestions != nil
         )
         let service = ProductionLibraryWorkspaceService(
             sourceRepository: sourceRepository,
