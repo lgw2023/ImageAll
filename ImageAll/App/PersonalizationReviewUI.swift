@@ -12,6 +12,33 @@ struct ReviewOverviewView: View {
 
     var body: some View {
         List {
+            if model.supportsPersonalLibrarySuggestions {
+                Section("个人模型") {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(personalLibraryStatusText)
+                            .font(.caption)
+                            .foregroundStyle(personalLibraryStatusColor)
+                        Button {
+                            Task { await model.generatePersonalLibrarySuggestions() }
+                        } label: {
+                            if model.isGeneratingPersonalLibrarySuggestions {
+                                HStack(spacing: 8) {
+                                    ProgressView().controlSize(.small)
+                                    Text("正在扫描全库")
+                                }
+                            } else {
+                                Label("用个人模型扫描全库", systemImage: "brain.head.profile")
+                            }
+                        }
+                        .disabled(
+                            model.isGeneratingPersonalLibrarySuggestions
+                                || model.isRebuildingPersonalModel
+                        )
+                        .help("仅分析当前可本地读取的预览；iCloud 云端照片会跳过，不会批量下载")
+                    }
+                    .padding(.vertical, 4)
+                }
+            }
             ForEach(model.suggestionOverviews) { overview in
                 VStack(alignment: .leading, spacing: 8) {
                     HStack {
@@ -88,6 +115,34 @@ struct ReviewOverviewView: View {
             ToolbarItem(placement: .navigation) {
                 Button("返回图库", action: onBack)
             }
+        }
+    }
+
+    private var personalLibraryStatusText: String {
+        switch model.personalLibrarySuggestionState {
+        case .idle:
+            "把当前个人 DINO 模型的建议加入现有审核队列。"
+        case let .running(checked, suggested, skipped):
+            "已检查 \(checked) 张 · 建议 \(suggested) 条 · 跳过 \(skipped) 张"
+        case let .completed(checked, suggested, skipped):
+            "扫描完成：检查 \(checked) 张，加入 \(suggested) 条建议，跳过 \(skipped) 张。"
+        case .personalUnavailable:
+            "当前目录没有可用的个人模型，请先重建个人模型。"
+        case .serviceUnavailable:
+            "本地模型服务不可用；现有照片、标签和 Feature Print 建议不受影响。"
+        case .failed:
+            "模型身份或结果未通过校验，personal 建议已安全忽略。"
+        }
+    }
+
+    private var personalLibraryStatusColor: Color {
+        switch model.personalLibrarySuggestionState {
+        case .failed, .serviceUnavailable:
+            .red
+        case .personalUnavailable:
+            .orange
+        default:
+            .secondary
         }
     }
 
@@ -320,6 +375,19 @@ private struct ReviewThumbnailView: View {
                         .font(.title)
                         .foregroundStyle(.secondary)
                 }
+                VStack {
+                    Spacer()
+                    HStack {
+                        Text(item.suggestionOrigin == .personalModel ? "个人 DINO" : "Feature Print")
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 3)
+                            .background(.black.opacity(0.65), in: Capsule())
+                        Spacer()
+                    }
+                    .padding(6)
+                }
             }
             .clipShape(RoundedRectangle(cornerRadius: 5))
             .overlay {
@@ -338,7 +406,9 @@ private struct ReviewThumbnailView: View {
         )
         .accessibilityLabel(item.fileName ?? "照片")
         .accessibilityAddTraits(.isButton)
-        .accessibilityValue(isSelected ? "已选择" : "未选择")
+        .accessibilityValue(
+            "\(isSelected ? "已选择" : "未选择")，\(item.suggestionOrigin == .personalModel ? "个人 DINO 建议" : "Feature Print 建议")"
+        )
         .accessibilityHint("选择待审核照片；双击可预览，也可按 P、X 或 U 处理")
         .accessibilityAction {
             onSelect()

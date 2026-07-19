@@ -43,12 +43,34 @@ struct SuggestionTagOverview: Identifiable, Equatable, Sendable {
     }
 }
 
+enum ReviewQueueSuggestionOrigin: String, Equatable, Sendable {
+    case featurePrint
+    case personalModel
+}
+
 struct ReviewQueueItemProjection: Identifiable, Equatable, Sendable {
     let assetID: UUID
     let fileName: String?
     let availability: AssetAvailability
     let acceptedTagCount: Int
     let rejectedTagCount: Int
+    let suggestionOrigin: ReviewQueueSuggestionOrigin
+
+    init(
+        assetID: UUID,
+        fileName: String?,
+        availability: AssetAvailability,
+        acceptedTagCount: Int,
+        rejectedTagCount: Int,
+        suggestionOrigin: ReviewQueueSuggestionOrigin = .featurePrint
+    ) {
+        self.assetID = assetID
+        self.fileName = fileName
+        self.availability = availability
+        self.acceptedTagCount = acceptedTagCount
+        self.rejectedTagCount = rejectedTagCount
+        self.suggestionOrigin = suggestionOrigin
+    }
 
     var id: UUID { assetID }
 }
@@ -67,6 +89,16 @@ struct AssetPendingSuggestion: Identifiable, Equatable, Sendable {
     let displayName: String
 
     var id: UUID { tagID }
+}
+
+struct PersonalSuggestionCandidate: Equatable, Sendable {
+    let assetID: UUID
+    let contentRevision: Int
+}
+
+struct PersonalSuggestionPrediction: Equatable, Sendable {
+    let tagID: UUID
+    let score: Double
 }
 
 enum PersonalizationReviewError: Error, Equatable, Sendable {
@@ -103,6 +135,19 @@ protocol PersonalizationReviewPort: Sendable {
         limit: Int
     ) throws -> ReviewQueuePage
     func pendingSuggestionsForAsset(assetID: UUID) throws -> [AssetPendingSuggestion]
+    func personalSuggestionCandidates(
+        afterAssetID: UUID?,
+        limit: Int
+    ) throws -> [PersonalSuggestionCandidate]
+    func activatePersonalSuggestionBundle(
+        _ capability: PersonalModelSuggestionCapability
+    ) throws
+    func replacePersonalSuggestions(
+        candidate: PersonalSuggestionCandidate,
+        predictions: [PersonalSuggestionPrediction],
+        expectedCapability: PersonalModelSuggestionCapability
+    ) throws -> Int
+    func invalidatePersonalSuggestionBundle() throws
     func enqueueFullLibrarySuggestions(
         tagID: UUID,
         mode: PersonalizationReviewEnqueueMode
@@ -115,6 +160,31 @@ protocol PersonalizationReviewPort: Sendable {
 
 extension PersonalizationReviewPort {
     func personalTrainingSnapshot() throws -> PersonalTrainingSnapshot {
+        throw PersonalizationReviewError.persistenceFailure
+    }
+
+    func personalSuggestionCandidates(
+        afterAssetID _: UUID?,
+        limit _: Int
+    ) throws -> [PersonalSuggestionCandidate] {
+        throw PersonalizationReviewError.persistenceFailure
+    }
+
+    func activatePersonalSuggestionBundle(
+        _: PersonalModelSuggestionCapability
+    ) throws {
+        throw PersonalizationReviewError.persistenceFailure
+    }
+
+    func replacePersonalSuggestions(
+        candidate _: PersonalSuggestionCandidate,
+        predictions _: [PersonalSuggestionPrediction],
+        expectedCapability _: PersonalModelSuggestionCapability
+    ) throws -> Int {
+        throw PersonalizationReviewError.persistenceFailure
+    }
+
+    func invalidatePersonalSuggestionBundle() throws {
         throw PersonalizationReviewError.persistenceFailure
     }
 }

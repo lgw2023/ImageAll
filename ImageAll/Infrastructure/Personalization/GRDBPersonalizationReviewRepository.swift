@@ -9,21 +9,37 @@ struct GRDBPersonalizationReviewRepository: Sendable {
             try Int.fetchOne(
                 db,
                 sql: """
-                SELECT COUNT(*)
-                FROM prediction p
-                JOIN tag_model m
-                    ON m.tag_id = p.tag_id
-                    AND m.current_revision = p.model_revision
-                JOIN tag t ON t.id = p.tag_id AND t.state = 'active'
-                JOIN asset a
-                    ON a.id = p.asset_id
-                    AND a.content_revision = p.content_revision
-                    AND a.locator_state = 'current'
-                    AND a.availability = 'available'
-                LEFT JOIN asset_tag_decision d
-                    ON d.asset_id = p.asset_id AND d.tag_id = p.tag_id
-                WHERE p.state = 'pendingReview'
-                    AND d.asset_id IS NULL
+                WITH pending_pairs AS (
+                    SELECT p.asset_id, p.tag_id
+                    FROM prediction p
+                    JOIN tag_model m
+                        ON m.tag_id = p.tag_id
+                        AND m.current_revision = p.model_revision
+                    JOIN tag t ON t.id = p.tag_id AND t.state = 'active'
+                    JOIN asset a
+                        ON a.id = p.asset_id
+                        AND a.content_revision = p.content_revision
+                        AND a.locator_state = 'current'
+                        AND a.availability = 'available'
+                    LEFT JOIN asset_tag_decision d
+                        ON d.asset_id = p.asset_id AND d.tag_id = p.tag_id
+                    WHERE p.state = 'pendingReview' AND d.asset_id IS NULL
+                    UNION
+                    SELECT p.asset_id, p.tag_id
+                    FROM personal_prediction p
+                    JOIN personal_suggestion_model m ON m.singleton = 1
+                    JOIN personal_suggestion_tag pst ON pst.tag_id = p.tag_id
+                    JOIN tag t ON t.id = p.tag_id AND t.state = 'active'
+                    JOIN asset a
+                        ON a.id = p.asset_id
+                        AND a.content_revision = p.content_revision
+                        AND a.locator_state = 'current'
+                        AND a.availability = 'available'
+                    LEFT JOIN asset_tag_decision d
+                        ON d.asset_id = p.asset_id AND d.tag_id = p.tag_id
+                    WHERE p.state = 'pendingReview' AND d.asset_id IS NULL
+                )
+                SELECT COUNT(*) FROM pending_pairs
                 """
             ) ?? 0
         }
@@ -34,24 +50,43 @@ struct GRDBPersonalizationReviewRepository: Sendable {
             try Int.fetchOne(
                 db,
                 sql: """
-                SELECT COUNT(*)
-                FROM prediction p
-                JOIN tag_model m
-                    ON m.tag_id = p.tag_id
-                    AND m.current_revision = p.model_revision
-                JOIN tag t ON t.id = p.tag_id AND t.state = 'active'
-                JOIN asset a
-                    ON a.id = p.asset_id
-                    AND a.content_revision = p.content_revision
-                    AND a.locator_state = 'current'
-                    AND a.availability = 'available'
-                LEFT JOIN asset_tag_decision d
-                    ON d.asset_id = p.asset_id AND d.tag_id = p.tag_id
-                WHERE p.tag_id = ?
-                    AND p.state = 'pendingReview'
-                    AND d.asset_id IS NULL
+                WITH pending_pairs AS (
+                    SELECT p.asset_id, p.tag_id
+                    FROM prediction p
+                    JOIN tag_model m
+                        ON m.tag_id = p.tag_id
+                        AND m.current_revision = p.model_revision
+                    JOIN tag t ON t.id = p.tag_id AND t.state = 'active'
+                    JOIN asset a
+                        ON a.id = p.asset_id
+                        AND a.content_revision = p.content_revision
+                        AND a.locator_state = 'current'
+                        AND a.availability = 'available'
+                    LEFT JOIN asset_tag_decision d
+                        ON d.asset_id = p.asset_id AND d.tag_id = p.tag_id
+                    WHERE p.tag_id = ?
+                        AND p.state = 'pendingReview'
+                        AND d.asset_id IS NULL
+                    UNION
+                    SELECT p.asset_id, p.tag_id
+                    FROM personal_prediction p
+                    JOIN personal_suggestion_model m ON m.singleton = 1
+                    JOIN personal_suggestion_tag pst ON pst.tag_id = p.tag_id
+                    JOIN tag t ON t.id = p.tag_id AND t.state = 'active'
+                    JOIN asset a
+                        ON a.id = p.asset_id
+                        AND a.content_revision = p.content_revision
+                        AND a.locator_state = 'current'
+                        AND a.availability = 'available'
+                    LEFT JOIN asset_tag_decision d
+                        ON d.asset_id = p.asset_id AND d.tag_id = p.tag_id
+                    WHERE p.tag_id = ?
+                        AND p.state = 'pendingReview'
+                        AND d.asset_id IS NULL
+                )
+                SELECT COUNT(*) FROM pending_pairs
                 """,
-                arguments: [uuid(tagID)]
+                arguments: [uuid(tagID), uuid(tagID)]
             ) ?? 0
         }
     }
@@ -359,51 +394,245 @@ struct GRDBPersonalizationReviewRepository: Sendable {
         }
     }
 
+    func personalSuggestionCandidates(
+        afterAssetID: UUID?,
+        limit: Int
+    ) throws -> [PersonalSuggestionCandidate] {
+        guard limit > 0 else { return [] }
+        var sql = """
+        SELECT a.id, a.content_revision
+        FROM asset a
+        JOIN source s ON s.id = a.source_id AND s.state = 'active'
+        WHERE a.locator_state = 'current'
+            AND a.availability = 'available'
+            AND (
+                (s.kind = 'folder' AND a.locator_kind = 'file')
+                OR (s.kind = 'photos' AND a.locator_kind = 'photos')
+            )
+        """
+        var arguments: [DatabaseValueConvertible] = []
+        if let afterAssetID {
+            sql += " AND a.id > ?"
+            arguments.append(uuid(afterAssetID))
+        }
+        sql += " ORDER BY a.id ASC LIMIT ?"
+        arguments.append(limit)
+        return try database.pool.read { db in
+            try Row.fetchAll(db, sql: sql, arguments: StatementArguments(arguments)).compactMap { row in
+                guard let assetID = UUID(uuidString: row["id"]) else { return nil }
+                return PersonalSuggestionCandidate(
+                    assetID: assetID,
+                    contentRevision: row["content_revision"]
+                )
+            }
+        }
+    }
+
+    func activatePersonalSuggestionBundle(
+        _ capability: PersonalModelSuggestionCapability,
+        activatedAtMs: Int64
+    ) throws {
+        let target = capability.target
+        guard activatedAtMs >= 0,
+              !capability.tagIDs.isEmpty,
+              Set(capability.tagIDs).count == capability.tagIDs.count,
+              target.elementCount > 0,
+              isLowercaseSHA256(target.labelVocabularyRevision),
+              isLowercaseSHA256(target.weightsSHA256)
+        else {
+            throw PersonalizationReviewError.persistenceFailure
+        }
+        try database.pool.write { db in
+            if try personalCapabilityMatches(capability, in: db) {
+                return
+            }
+            try db.execute(sql: "DELETE FROM personal_suggestion_model")
+            try db.execute(
+                sql: """
+                INSERT INTO personal_suggestion_model (
+                    singleton, catalog_scope_id, bundle_id, bundle_revision, provider, model_id,
+                    model_revision, preprocessing_revision, element_count,
+                    label_vocabulary_revision, weights_sha256, policy_revision, activated_at_ms
+                ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                arguments: [
+                    target.catalogScopeID, target.bundleID, target.bundleRevision, target.provider,
+                    target.modelID, target.modelRevision, target.preprocessingRevision,
+                    target.elementCount, target.labelVocabularyRevision, target.weightsSHA256,
+                    target.policyRevision, activatedAtMs,
+                ]
+            )
+            for tagID in capability.tagIDs {
+                try db.execute(
+                    sql: """
+                    INSERT INTO personal_suggestion_tag (tag_id, model_singleton)
+                    SELECT id, 1 FROM tag WHERE id = ? AND state = 'active'
+                    """,
+                    arguments: [uuid(tagID)]
+                )
+                guard db.changesCount == 1 else {
+                    throw PersonalizationReviewError.persistenceFailure
+                }
+            }
+        }
+    }
+
+    func replacePersonalSuggestions(
+        candidate: PersonalSuggestionCandidate,
+        predictions: [PersonalSuggestionPrediction],
+        expectedCapability: PersonalModelSuggestionCapability,
+        createdAtMs: Int64
+    ) throws -> Int {
+        guard candidate.contentRevision > 0,
+              createdAtMs >= 0,
+              Set(predictions.map(\.tagID)).count == predictions.count,
+              predictions.allSatisfy({ $0.score.isFinite })
+        else {
+            throw PersonalizationReviewError.persistenceFailure
+        }
+        return try database.pool.write { db in
+            guard try personalCapabilityMatches(expectedCapability, in: db),
+                  try Bool.fetchOne(
+                      db,
+                      sql: """
+                      SELECT EXISTS(
+                          SELECT 1
+                          FROM asset a
+                          JOIN source s ON s.id = a.source_id AND s.state = 'active'
+                          WHERE a.id = ?
+                              AND a.content_revision = ?
+                              AND a.locator_state = 'current'
+                              AND a.availability = 'available'
+                              AND (
+                                  (s.kind = 'folder' AND a.locator_kind = 'file')
+                                  OR (s.kind = 'photos' AND a.locator_kind = 'photos')
+                              )
+                      )
+                      """,
+                      arguments: [uuid(candidate.assetID), candidate.contentRevision]
+                  ) == true
+            else {
+                throw PersonalizationReviewError.persistenceFailure
+            }
+            try db.execute(
+                sql: "DELETE FROM personal_prediction WHERE asset_id = ?",
+                arguments: [uuid(candidate.assetID)]
+            )
+            var inserted = 0
+            for prediction in predictions {
+                guard expectedCapability.tagIDs.contains(prediction.tagID) else {
+                    throw PersonalizationReviewError.persistenceFailure
+                }
+                try db.execute(
+                    sql: """
+                    INSERT INTO personal_prediction (
+                        asset_id, tag_id, content_revision, score, state, created_at_ms
+                    )
+                    SELECT ?, pst.tag_id, ?, ?, 'pendingReview', ?
+                    FROM personal_suggestion_tag pst
+                    JOIN tag t ON t.id = pst.tag_id AND t.state = 'active'
+                    WHERE pst.tag_id = ?
+                        AND NOT EXISTS (
+                            SELECT 1 FROM asset_tag_decision d
+                            WHERE d.asset_id = ? AND d.tag_id = pst.tag_id
+                        )
+                    """,
+                    arguments: [
+                        uuid(candidate.assetID), candidate.contentRevision, prediction.score,
+                        createdAtMs, uuid(prediction.tagID), uuid(candidate.assetID),
+                    ]
+                )
+                inserted += db.changesCount
+            }
+            return inserted
+        }
+    }
+
+    func invalidatePersonalSuggestionBundle() throws {
+        try database.pool.write { db in
+            try db.execute(sql: "DELETE FROM personal_suggestion_model")
+        }
+    }
+
     func fetchReviewQueuePage(
         tagID: UUID,
         cursor: ReviewQueueCursor?,
         limit: Int
     ) throws -> ReviewQueuePage {
         var sql = """
-        SELECT p.asset_id, p.score, a.file_name, a.availability,
+        WITH raw_suggestions AS (
+            SELECT p.asset_id, p.score, 0 AS origin_rank, 'featurePrint' AS suggestion_origin,
+                a.file_name, a.availability
+            FROM prediction p
+            JOIN tag_model m
+                ON m.tag_id = p.tag_id
+                AND m.current_revision = p.model_revision
+            JOIN tag t ON t.id = p.tag_id AND t.state = 'active'
+            JOIN asset a
+                ON a.id = p.asset_id
+                AND a.content_revision = p.content_revision
+                AND a.locator_state = 'current'
+                AND a.availability = 'available'
+            LEFT JOIN asset_tag_decision d
+                ON d.asset_id = p.asset_id AND d.tag_id = p.tag_id
+            WHERE p.tag_id = ?
+                AND p.state = 'pendingReview'
+                AND d.asset_id IS NULL
+            UNION ALL
+            SELECT p.asset_id, p.score, 1 AS origin_rank, 'personalModel' AS suggestion_origin,
+                a.file_name, a.availability
+            FROM personal_prediction p
+            JOIN personal_suggestion_model m ON m.singleton = 1
+            JOIN personal_suggestion_tag pst ON pst.tag_id = p.tag_id
+            JOIN tag t ON t.id = p.tag_id AND t.state = 'active'
+            JOIN asset a
+                ON a.id = p.asset_id
+                AND a.content_revision = p.content_revision
+                AND a.locator_state = 'current'
+                AND a.availability = 'available'
+            LEFT JOIN asset_tag_decision d
+                ON d.asset_id = p.asset_id AND d.tag_id = p.tag_id
+            WHERE p.tag_id = ?
+                AND p.state = 'pendingReview'
+                AND d.asset_id IS NULL
+        ), ranked AS (
+            SELECT *, ROW_NUMBER() OVER (
+                PARTITION BY asset_id
+                ORDER BY origin_rank DESC, score DESC
+            ) AS duplicate_rank
+            FROM raw_suggestions
+        )
+        SELECT r.asset_id, r.score, r.origin_rank, r.suggestion_origin,
+            r.file_name, r.availability,
             (
                 SELECT COUNT(*) FROM asset_tag_decision d
-                WHERE d.asset_id = a.id AND d.decision = 'accepted'
+                WHERE d.asset_id = r.asset_id AND d.decision = 'accepted'
             ) AS accepted_count,
             (
                 SELECT COUNT(*) FROM asset_tag_decision d
-                WHERE d.asset_id = a.id AND d.decision = 'rejected'
+                WHERE d.asset_id = r.asset_id AND d.decision = 'rejected'
             ) AS rejected_count
-        FROM prediction p
-        JOIN tag_model m
-            ON m.tag_id = p.tag_id
-            AND m.current_revision = p.model_revision
-        JOIN tag t ON t.id = p.tag_id AND t.state = 'active'
-        JOIN asset a
-            ON a.id = p.asset_id
-            AND a.content_revision = p.content_revision
-            AND a.locator_state = 'current'
-            AND a.availability = 'available'
-        LEFT JOIN asset_tag_decision d
-            ON d.asset_id = p.asset_id AND d.tag_id = p.tag_id
-        WHERE p.tag_id = ?
-            AND p.state = 'pendingReview'
-            AND d.asset_id IS NULL
+        FROM ranked r
+        WHERE r.duplicate_rank = 1
         """
-        var arguments: [DatabaseValueConvertible] = [uuid(tagID)]
+        var arguments: [DatabaseValueConvertible] = [uuid(tagID), uuid(tagID)]
         if let cursor {
             let boundary = try ReviewQueueCursorCodec.decodeBoundary(cursor)
             sql += """
              AND (
-                p.score < ?
-                OR (p.score = ? AND p.asset_id > ?)
+                r.origin_rank < ?
+                OR (r.origin_rank = ? AND r.score < ?)
+                OR (r.origin_rank = ? AND r.score = ? AND r.asset_id > ?)
              )
             """
+            arguments.append(boundary.originRank)
+            arguments.append(boundary.originRank)
             arguments.append(boundary.score)
+            arguments.append(boundary.originRank)
             arguments.append(boundary.score)
             arguments.append(uuid(boundary.assetID))
         }
-        sql += " ORDER BY p.score DESC, p.asset_id ASC LIMIT ?"
+        sql += " ORDER BY r.origin_rank DESC, r.score DESC, r.asset_id ASC LIMIT ?"
         arguments.append(limit + 1)
 
         return try database.pool.read { db in
@@ -417,7 +646,10 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                     fileName: row["file_name"],
                     availability: availability,
                     acceptedTagCount: row["accepted_count"],
-                    rejectedTagCount: row["rejected_count"]
+                    rejectedTagCount: row["rejected_count"],
+                    suggestionOrigin: ReviewQueueSuggestionOrigin(
+                        rawValue: row["suggestion_origin"]
+                    ) ?? .featurePrint
                 )
             }
             let items = Array(mapped.prefix(limit))
@@ -426,6 +658,7 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                 let boundary = rows[limit - 1]
                 let assetID = UUID(uuidString: boundary["asset_id"]) ?? items.last!.assetID
                 nextCursor = try ReviewQueueCursorCodec.encodeBoundary(
+                    originRank: boundary["origin_rank"],
                     score: boundary["score"],
                     assetID: assetID
                 )
@@ -441,25 +674,46 @@ struct GRDBPersonalizationReviewRepository: Sendable {
             try Row.fetchAll(
                 db,
                 sql: """
+                WITH pending_tags AS (
+                    SELECT p.tag_id
+                    FROM prediction p
+                    JOIN tag_model m
+                        ON m.tag_id = p.tag_id
+                        AND m.current_revision = p.model_revision
+                    JOIN tag t ON t.id = p.tag_id AND t.state = 'active'
+                    JOIN asset a
+                        ON a.id = p.asset_id
+                        AND a.content_revision = p.content_revision
+                        AND a.locator_state = 'current'
+                        AND a.availability = 'available'
+                    LEFT JOIN asset_tag_decision d
+                        ON d.asset_id = p.asset_id AND d.tag_id = p.tag_id
+                    WHERE p.asset_id = ?
+                        AND p.state = 'pendingReview'
+                        AND d.asset_id IS NULL
+                    UNION
+                    SELECT p.tag_id
+                    FROM personal_prediction p
+                    JOIN personal_suggestion_model m ON m.singleton = 1
+                    JOIN personal_suggestion_tag pst ON pst.tag_id = p.tag_id
+                    JOIN tag t ON t.id = p.tag_id AND t.state = 'active'
+                    JOIN asset a
+                        ON a.id = p.asset_id
+                        AND a.content_revision = p.content_revision
+                        AND a.locator_state = 'current'
+                        AND a.availability = 'available'
+                    LEFT JOIN asset_tag_decision d
+                        ON d.asset_id = p.asset_id AND d.tag_id = p.tag_id
+                    WHERE p.asset_id = ?
+                        AND p.state = 'pendingReview'
+                        AND d.asset_id IS NULL
+                )
                 SELECT p.tag_id, t.name
-                FROM prediction p
-                JOIN tag_model m
-                    ON m.tag_id = p.tag_id
-                    AND m.current_revision = p.model_revision
-                JOIN tag t ON t.id = p.tag_id AND t.state = 'active'
-                JOIN asset a
-                    ON a.id = p.asset_id
-                    AND a.content_revision = p.content_revision
-                    AND a.locator_state = 'current'
-                    AND a.availability = 'available'
-                LEFT JOIN asset_tag_decision d
-                    ON d.asset_id = p.asset_id AND d.tag_id = p.tag_id
-                WHERE p.asset_id = ?
-                    AND p.state = 'pendingReview'
-                    AND d.asset_id IS NULL
+                FROM pending_tags p
+                JOIN tag t ON t.id = p.tag_id
                 ORDER BY t.name COLLATE NOCASE ASC, p.tag_id ASC
                 """,
-                arguments: [uuid(assetID)]
+                arguments: [uuid(assetID), uuid(assetID)]
             ).compactMap { row in
                 guard let tagID = UUID(uuidString: row["tag_id"]) else { return nil }
                 return AssetPendingSuggestion(tagID: tagID, displayName: row["name"])
@@ -593,29 +847,89 @@ struct GRDBPersonalizationReviewRepository: Sendable {
     private func uuid(_ value: UUID) -> String {
         value.uuidString.lowercased()
     }
+
+    private func isLowercaseSHA256(_ value: String) -> Bool {
+        value.count == 64 && value.allSatisfy {
+            ("0" ... "9").contains(String($0)) || ("a" ... "f").contains(String($0))
+        }
+    }
+
+    private func personalCapabilityMatches(
+        _ capability: PersonalModelSuggestionCapability,
+        in db: Database
+    ) throws -> Bool {
+        let target = capability.target
+        let matches = try Bool.fetchOne(
+            db,
+            sql: """
+            SELECT EXISTS(
+                SELECT 1 FROM personal_suggestion_model
+                WHERE singleton = 1
+                    AND catalog_scope_id = ?
+                    AND bundle_id = ?
+                    AND bundle_revision = ?
+                    AND provider = ?
+                    AND model_id = ?
+                    AND model_revision = ?
+                    AND preprocessing_revision = ?
+                    AND element_count = ?
+                    AND label_vocabulary_revision = ?
+                    AND weights_sha256 = ?
+                    AND policy_revision = ?
+            )
+            """,
+            arguments: [
+                target.catalogScopeID, target.bundleID, target.bundleRevision, target.provider,
+                target.modelID, target.modelRevision, target.preprocessingRevision,
+                target.elementCount, target.labelVocabularyRevision, target.weightsSHA256,
+                target.policyRevision,
+            ]
+        ) ?? false
+        guard matches else { return false }
+        let tagIDs = try String.fetchAll(
+            db,
+            sql: """
+            SELECT pst.tag_id
+            FROM personal_suggestion_tag pst
+            JOIN tag t ON t.id = pst.tag_id AND t.state = 'active'
+            ORDER BY pst.tag_id
+            """
+        )
+        return tagIDs == capability.tagIDs.map(uuid).sorted()
+    }
 }
 
 enum ReviewQueueCursorCodec {
     private struct BoundaryPayload: Codable {
+        let originRank: Int
         let score: Double
         let assetID: UUID
     }
 
     struct Boundary: Sendable {
+        let originRank: Int
         let score: Double
         let assetID: UUID
     }
 
-    static func encodeBoundary(score: Double, assetID: UUID) throws -> ReviewQueueCursor {
+    static func encodeBoundary(
+        originRank: Int,
+        score: Double,
+        assetID: UUID
+    ) throws -> ReviewQueueCursor {
         ReviewQueueCursor(
             token: try JSONEncoder().encode(
-                BoundaryPayload(score: score, assetID: assetID)
+                BoundaryPayload(originRank: originRank, score: score, assetID: assetID)
             )
         )
     }
 
     static func decodeBoundary(_ cursor: ReviewQueueCursor) throws -> Boundary {
         let payload = try JSONDecoder().decode(BoundaryPayload.self, from: cursor.token)
-        return Boundary(score: payload.score, assetID: payload.assetID)
+        return Boundary(
+            originRank: payload.originRank,
+            score: payload.score,
+            assetID: payload.assetID
+        )
     }
 }

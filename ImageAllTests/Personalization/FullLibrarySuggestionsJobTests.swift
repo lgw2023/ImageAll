@@ -7,6 +7,266 @@ import XCTest
 @testable import ImageAll
 
 final class FullLibrarySuggestionsJobTests: XCTestCase {
+    func testPersonalBundleSuggestionAppearsInExistingReviewQueueWithProvenance() throws {
+        let fixture = try makeLargeLibraryFixture(assetCount: 8)
+        let handler = makeHandler(
+            database: fixture.database,
+            loader: fixture.loader,
+            queue: fixture.queue
+        )
+        let service = PersonalizationReviewService(
+            database: fixture.database,
+            queue: fixture.queue,
+            executionCoordinator: makeCoordinator(
+                database: fixture.database,
+                handler: handler,
+                queue: fixture.queue
+            ),
+            tags: fixture.tags,
+            clock: FixedJobClock(nowMs: fixture.cutoffMs)
+        )
+        let capability = try makePersonalCapability(
+            database: fixture.database,
+            tagIDs: [fixture.tagID],
+            bundleRevision: "bundle-r1"
+        )
+
+        let candidates = try service.personalSuggestionCandidates(afterAssetID: nil, limit: 100)
+        let candidate = try XCTUnwrap(candidates.first {
+            $0.assetID.uuidString.hasPrefix("21000000-")
+                && !fixture.positiveIDs.contains($0.assetID)
+                && !fixture.negativeIDs.contains($0.assetID)
+        })
+        try service.activatePersonalSuggestionBundle(capability)
+        XCTAssertEqual(
+            try service.replacePersonalSuggestions(
+                candidate: candidate,
+                predictions: [
+                    PersonalSuggestionPrediction(tagID: fixture.tagID, score: 0.75),
+                ],
+                expectedCapability: capability
+            ),
+            1
+        )
+
+        let page = try service.fetchReviewQueue(tagID: fixture.tagID, cursor: nil, limit: 10)
+        let item = try XCTUnwrap(page.items.first(where: { $0.assetID == candidate.assetID }))
+        XCTAssertEqual(item.suggestionOrigin, .personalModel)
+    }
+
+    func testPersonalBundleSuggestionIsIncludedInReviewOverviewCounts() throws {
+        let fixture = try makeLargeLibraryFixture(assetCount: 8)
+        let handler = makeHandler(
+            database: fixture.database,
+            loader: fixture.loader,
+            queue: fixture.queue
+        )
+        let service = PersonalizationReviewService(
+            database: fixture.database,
+            queue: fixture.queue,
+            executionCoordinator: makeCoordinator(
+                database: fixture.database,
+                handler: handler,
+                queue: fixture.queue
+            ),
+            tags: fixture.tags,
+            clock: FixedJobClock(nowMs: fixture.cutoffMs)
+        )
+        let capability = try makePersonalCapability(
+            database: fixture.database,
+            tagIDs: [fixture.tagID],
+            bundleRevision: "bundle-r1"
+        )
+        let candidate = try XCTUnwrap(
+            service.personalSuggestionCandidates(afterAssetID: nil, limit: 100).first {
+                $0.assetID.uuidString.hasPrefix("21000000-")
+                    && !fixture.positiveIDs.contains($0.assetID)
+                    && !fixture.negativeIDs.contains($0.assetID)
+            }
+        )
+        try service.activatePersonalSuggestionBundle(capability)
+        _ = try service.replacePersonalSuggestions(
+            candidate: candidate,
+            predictions: [PersonalSuggestionPrediction(tagID: fixture.tagID, score: 0.75)],
+            expectedCapability: capability
+        )
+
+        let overview = try XCTUnwrap(service.tagOverviews().first { $0.id == fixture.tagID })
+        XCTAssertEqual(overview.pendingSuggestionCount, 1)
+        XCTAssertEqual(try service.totalPendingSuggestionCount(), 1)
+    }
+
+    func testPersonalBundleSuggestionAppearsInExistingInspectorSuggestionList() throws {
+        let fixture = try makeLargeLibraryFixture(assetCount: 8)
+        let handler = makeHandler(database: fixture.database, loader: fixture.loader, queue: fixture.queue)
+        let service = PersonalizationReviewService(
+            database: fixture.database,
+            queue: fixture.queue,
+            executionCoordinator: makeCoordinator(
+                database: fixture.database,
+                handler: handler,
+                queue: fixture.queue
+            ),
+            tags: fixture.tags,
+            clock: FixedJobClock(nowMs: fixture.cutoffMs)
+        )
+        let capability = try makePersonalCapability(
+            database: fixture.database,
+            tagIDs: [fixture.tagID],
+            bundleRevision: "bundle-r1"
+        )
+        let candidate = try XCTUnwrap(
+            service.personalSuggestionCandidates(afterAssetID: nil, limit: 100).first {
+                $0.assetID.uuidString.hasPrefix("21000000-")
+                    && !fixture.positiveIDs.contains($0.assetID)
+                    && !fixture.negativeIDs.contains($0.assetID)
+            }
+        )
+        try service.activatePersonalSuggestionBundle(capability)
+        _ = try service.replacePersonalSuggestions(
+            candidate: candidate,
+            predictions: [PersonalSuggestionPrediction(tagID: fixture.tagID, score: 0.75)],
+            expectedCapability: capability
+        )
+
+        XCTAssertEqual(
+            try service.pendingSuggestionsForAsset(assetID: candidate.assetID).map(\.tagID),
+            [fixture.tagID]
+        )
+    }
+
+    func testPersonalSuggestionPublishFailsClosedAfterBundleTagIsArchived() throws {
+        let fixture = try makeLargeLibraryFixture(assetCount: 8)
+        let handler = makeHandler(database: fixture.database, loader: fixture.loader, queue: fixture.queue)
+        let service = PersonalizationReviewService(
+            database: fixture.database,
+            queue: fixture.queue,
+            executionCoordinator: makeCoordinator(
+                database: fixture.database,
+                handler: handler,
+                queue: fixture.queue
+            ),
+            tags: fixture.tags,
+            clock: FixedJobClock(nowMs: fixture.cutoffMs)
+        )
+        let capability = try makePersonalCapability(
+            database: fixture.database,
+            tagIDs: [fixture.tagID],
+            bundleRevision: "bundle-r1"
+        )
+        let candidate = try XCTUnwrap(
+            service.personalSuggestionCandidates(afterAssetID: nil, limit: 100).first {
+                $0.assetID.uuidString.hasPrefix("21000000-")
+                    && !fixture.positiveIDs.contains($0.assetID)
+                    && !fixture.negativeIDs.contains($0.assetID)
+            }
+        )
+        try service.activatePersonalSuggestionBundle(capability)
+        _ = try fixture.tags.archiveTag(tagID: fixture.tagID, timestampMs: fixture.cutoffMs + 1)
+
+        XCTAssertThrowsError(
+            try service.replacePersonalSuggestions(
+                candidate: candidate,
+                predictions: [PersonalSuggestionPrediction(tagID: fixture.tagID, score: 0.75)],
+                expectedCapability: capability
+            )
+        )
+    }
+
+    func testActivatingNewPersonalBundleInvalidatesOldSuggestionsAndIdentity() throws {
+        let fixture = try makeLargeLibraryFixture(assetCount: 8)
+        let handler = makeHandler(database: fixture.database, loader: fixture.loader, queue: fixture.queue)
+        let service = PersonalizationReviewService(
+            database: fixture.database,
+            queue: fixture.queue,
+            executionCoordinator: makeCoordinator(
+                database: fixture.database,
+                handler: handler,
+                queue: fixture.queue
+            ),
+            tags: fixture.tags,
+            clock: FixedJobClock(nowMs: fixture.cutoffMs)
+        )
+        let oldCapability = try makePersonalCapability(
+            database: fixture.database,
+            tagIDs: [fixture.tagID],
+            bundleRevision: "bundle-r1"
+        )
+        let newCapability = try makePersonalCapability(
+            database: fixture.database,
+            tagIDs: [fixture.tagID],
+            bundleRevision: "bundle-r2"
+        )
+        let candidate = try XCTUnwrap(
+            service.personalSuggestionCandidates(afterAssetID: nil, limit: 100).first {
+                $0.assetID.uuidString.hasPrefix("21000000-")
+                    && !fixture.positiveIDs.contains($0.assetID)
+                    && !fixture.negativeIDs.contains($0.assetID)
+            }
+        )
+        try service.activatePersonalSuggestionBundle(oldCapability)
+        _ = try service.replacePersonalSuggestions(
+            candidate: candidate,
+            predictions: [PersonalSuggestionPrediction(tagID: fixture.tagID, score: 0.75)],
+            expectedCapability: oldCapability
+        )
+        XCTAssertEqual(try service.totalPendingSuggestionCount(), 1)
+
+        try service.activatePersonalSuggestionBundle(newCapability)
+
+        XCTAssertEqual(try service.totalPendingSuggestionCount(), 0)
+        XCTAssertThrowsError(
+            try service.replacePersonalSuggestions(
+                candidate: candidate,
+                predictions: [PersonalSuggestionPrediction(tagID: fixture.tagID, score: 0.75)],
+                expectedCapability: oldCapability
+            )
+        )
+    }
+
+    func testPersonalSuggestionWinsProvenanceWithoutDuplicatingFeaturePrintSuggestion() throws {
+        let fixture = try makeLargeLibraryFixture(assetCount: 8, preseedPredictions: 1)
+        let handler = makeHandler(database: fixture.database, loader: fixture.loader, queue: fixture.queue)
+        let service = PersonalizationReviewService(
+            database: fixture.database,
+            queue: fixture.queue,
+            executionCoordinator: makeCoordinator(
+                database: fixture.database,
+                handler: handler,
+                queue: fixture.queue
+            ),
+            tags: fixture.tags,
+            clock: FixedJobClock(nowMs: fixture.cutoffMs)
+        )
+        let capability = try makePersonalCapability(
+            database: fixture.database,
+            tagIDs: [fixture.tagID],
+            bundleRevision: "bundle-r1"
+        )
+        let overlappingAssetID = UUID(
+            uuidString: "21000000-0000-4000-8000-000000000005"
+        )!
+        let candidate = try XCTUnwrap(
+            service.personalSuggestionCandidates(afterAssetID: nil, limit: 100).first {
+                $0.assetID == overlappingAssetID
+            }
+        )
+        try service.activatePersonalSuggestionBundle(capability)
+        _ = try service.replacePersonalSuggestions(
+            candidate: candidate,
+            predictions: [PersonalSuggestionPrediction(tagID: fixture.tagID, score: 0.75)],
+            expectedCapability: capability
+        )
+
+        let page = try service.fetchReviewQueue(tagID: fixture.tagID, cursor: nil, limit: 10)
+        XCTAssertEqual(page.items.filter { $0.assetID == overlappingAssetID }.count, 1)
+        XCTAssertEqual(
+            page.items.first(where: { $0.assetID == overlappingAssetID })?.suggestionOrigin,
+            .personalModel
+        )
+        XCTAssertEqual(try service.totalPendingSuggestionCount(), 1)
+    }
+
     func testPhotosSamplesCountTowardSuggestionReadiness() throws {
         let fixture = try CatalogQueryTestSupport.openQueryDatabase()
         let photosSourceID = UUID(uuidString: "22000000-0000-4000-8000-000000000001")!
@@ -1196,6 +1456,29 @@ private struct LargeLibraryFixture {
     let cutoffMs: Int64
     let positiveIDs: [UUID]
     let negativeIDs: [UUID]
+}
+
+private func makePersonalCapability(
+    database: CatalogDatabase,
+    tagIDs: [UUID],
+    bundleRevision: String
+) throws -> PersonalModelSuggestionCapability {
+    PersonalModelSuggestionCapability(
+        target: PersonalModelSuggestionTarget(
+            catalogScopeID: try database.catalogScopeID(),
+            bundleID: "personal-bundle",
+            bundleRevision: bundleRevision,
+            provider: "dinov2",
+            modelID: "facebook/dinov2-small",
+            modelRevision: "model-r1",
+            preprocessingRevision: "pre-r1",
+            elementCount: 384,
+            labelVocabularyRevision: String(repeating: "a", count: 64),
+            weightsSHA256: String(repeating: "b", count: 64),
+            policyRevision: "policy-r1"
+        ),
+        tagIDs: tagIDs
+    )
 }
 
 private func makeLargeLibraryFixture(

@@ -84,6 +84,9 @@ enum CatalogSchemaExpectations {
         "feature",
         "file_fingerprint",
         "job",
+        "personal_prediction",
+        "personal_suggestion_model",
+        "personal_suggestion_tag",
         "prediction",
         "source",
         "tag",
@@ -111,6 +114,7 @@ enum CatalogSchemaExpectations {
         "file_fingerprint_sha256_idx",
         "job_active_coalescing_uq",
         "job_queue_idx",
+        "personal_prediction_review_rank_idx",
         "prediction_review_rank_idx",
         "tag_model_sample_feature_idx",
         "tag_normalized_name_uq",
@@ -120,6 +124,33 @@ enum CatalogSchemaExpectations {
         "catalog_scope": [
             .init(name: "singleton", type: "INTEGER", notNull: false, defaultValue: nil, primaryKeyOrder: 1),
             .init(name: "scope_id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+        ],
+        "personal_suggestion_model": [
+            .init(name: "singleton", type: "INTEGER", notNull: false, defaultValue: nil, primaryKeyOrder: 1),
+            .init(name: "catalog_scope_id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "bundle_id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "bundle_revision", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "provider", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "model_id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "model_revision", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "preprocessing_revision", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "element_count", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "label_vocabulary_revision", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "weights_sha256", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "policy_revision", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "activated_at_ms", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+        ],
+        "personal_suggestion_tag": [
+            .init(name: "tag_id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 1),
+            .init(name: "model_singleton", type: "INTEGER", notNull: true, defaultValue: "1", primaryKeyOrder: 0),
+        ],
+        "personal_prediction": [
+            .init(name: "asset_id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 1),
+            .init(name: "tag_id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 2),
+            .init(name: "content_revision", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 3),
+            .init(name: "score", type: "REAL", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "state", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "created_at_ms", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
         ],
         "source": [
             .init(name: "id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 1),
@@ -268,6 +299,17 @@ enum CatalogSchemaExpectations {
 
     static let foreignKeysByTable: [String: [ForeignKeyExpectation]] = [
         "source": [],
+        "personal_suggestion_model": [
+            .init(from: "catalog_scope_id", toTable: "catalog_scope", to: "scope_id", onDelete: "CASCADE"),
+        ],
+        "personal_suggestion_tag": [
+            .init(from: "tag_id", toTable: "tag", to: "id", onDelete: "CASCADE"),
+            .init(from: "model_singleton", toTable: "personal_suggestion_model", to: "singleton", onDelete: "CASCADE"),
+        ],
+        "personal_prediction": [
+            .init(from: "asset_id", toTable: "asset", to: "id", onDelete: "CASCADE"),
+            .init(from: "tag_id", toTable: "personal_suggestion_tag", to: "tag_id", onDelete: "CASCADE"),
+        ],
         "asset": [
             .init(from: "source_id", toTable: "source", to: "id", onDelete: "RESTRICT"),
         ],
@@ -333,6 +375,7 @@ enum CatalogSchemaExpectations {
         "file_fingerprint_sha256_idx": "file_fingerprint",
         "job_queue_idx": "job",
         "job_active_coalescing_uq": "job",
+        "personal_prediction_review_rank_idx": "personal_prediction",
         "prediction_review_rank_idx": "prediction",
         "tag_model_sample_feature_idx": "tag_model_sample",
     ]
@@ -561,6 +604,16 @@ enum CatalogSchemaExpectations {
                 .init(name: "request_revision", descending: false, collation: "BINARY"),
                 .init(name: "preprocessing_revision", descending: false, collation: "BINARY"),
                 .init(name: "content_revision", descending: false, collation: "BINARY"),
+            ],
+            unique: false
+        ),
+        .init(
+            name: "personal_prediction_review_rank_idx",
+            keyColumns: [
+                .init(name: "tag_id", descending: false, collation: "BINARY"),
+                .init(name: "state", descending: false, collation: "BINARY"),
+                .init(name: "score", descending: true, collation: "BINARY"),
+                .init(name: "asset_id", descending: false, collation: "BINARY"),
             ],
             unique: false
         ),

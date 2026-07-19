@@ -394,3 +394,12 @@ enum LocalModelSuggestionPresentationState: Equatable, Sendable {
         }
     }
 }
+
+enum PersonalLibrarySuggestionPresentationState: Equatable, Sendable {
+    case idle
+    case running(checked: Int, suggested: Int, skipped: Int)
+    case completed(checked: Int, suggested: Int, skipped: Int)
+    case personalUnavailable
+    case serviceUnavailable
+    case failed
+}

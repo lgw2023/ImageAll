@@ -13,6 +13,7 @@ struct CatalogDatabase: Sendable {
         V005AddCatalogScaleIndexesMigration.register(on: &migrator)
         V006AddAssetTextSearchMigration.register(on: &migrator)
         V007AddCatalogScopeIdentityMigration.register(on: &migrator)
+        V008AddPersonalModelSuggestionsMigration.register(on: &migrator)
         return migrator
     }
 
@@ -481,6 +482,74 @@ enum V007AddCatalogScopeIdentityMigration {
             try db.execute(
                 sql: "INSERT INTO catalog_scope (singleton, scope_id) VALUES (1, ?)",
                 arguments: [UUID().uuidString.lowercased()]
+            )
+        }
+    }
+}
+
+enum V008AddPersonalModelSuggestionsMigration {
+    static func register(on migrator: inout DatabaseMigrator) {
+        migrator.registerMigration(CatalogMigrationID.v008AddPersonalModelSuggestions) { db in
+            try db.execute(
+                sql: """
+                CREATE TABLE personal_suggestion_model (
+                    singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+                    catalog_scope_id TEXT NOT NULL REFERENCES catalog_scope(scope_id) ON DELETE CASCADE,
+                    bundle_id TEXT NOT NULL CHECK(length(bundle_id) BETWEEN 1 AND 200),
+                    bundle_revision TEXT NOT NULL CHECK(length(bundle_revision) BETWEEN 1 AND 200),
+                    provider TEXT NOT NULL CHECK(length(provider) BETWEEN 1 AND 200),
+                    model_id TEXT NOT NULL CHECK(length(model_id) BETWEEN 1 AND 300),
+                    model_revision TEXT NOT NULL CHECK(length(model_revision) BETWEEN 1 AND 200),
+                    preprocessing_revision TEXT NOT NULL CHECK(length(preprocessing_revision) BETWEEN 1 AND 200),
+                    element_count INTEGER NOT NULL CHECK(element_count > 0),
+                    label_vocabulary_revision TEXT NOT NULL CHECK(
+                        length(label_vocabulary_revision) = 64
+                        AND label_vocabulary_revision NOT GLOB '*[^0-9a-f]*'
+                    ),
+                    weights_sha256 TEXT NOT NULL CHECK(
+                        length(weights_sha256) = 64
+                        AND weights_sha256 NOT GLOB '*[^0-9a-f]*'
+                    ),
+                    policy_revision TEXT NOT NULL CHECK(length(policy_revision) BETWEEN 1 AND 200),
+                    activated_at_ms INTEGER NOT NULL CHECK(activated_at_ms >= 0)
+                ) STRICT
+                """
+            )
+            try db.execute(
+                sql: """
+                CREATE TABLE personal_suggestion_tag (
+                    tag_id TEXT PRIMARY KEY REFERENCES tag(id) ON DELETE CASCADE,
+                    model_singleton INTEGER NOT NULL DEFAULT 1 CHECK(model_singleton = 1)
+                        REFERENCES personal_suggestion_model(singleton) ON DELETE CASCADE
+                ) STRICT
+                """
+            )
+            try db.execute(
+                sql: """
+                CREATE TABLE personal_prediction (
+                    asset_id TEXT NOT NULL REFERENCES asset(id) ON DELETE CASCADE,
+                    tag_id TEXT NOT NULL REFERENCES personal_suggestion_tag(tag_id) ON DELETE CASCADE,
+                    content_revision INTEGER NOT NULL CHECK(content_revision > 0),
+                    score REAL NOT NULL CHECK(
+                        typeof(score) IN ('real', 'integer')
+                        AND score = score
+                        AND score BETWEEN -1.0e308 AND 1.0e308
+                    ),
+                    state TEXT NOT NULL CHECK(state = 'pendingReview'),
+                    created_at_ms INTEGER NOT NULL CHECK(created_at_ms >= 0),
+                    PRIMARY KEY(asset_id, tag_id, content_revision)
+                ) STRICT
+                """
+            )
+            try db.execute(
+                sql: """
+                CREATE INDEX personal_prediction_review_rank_idx ON personal_prediction (
+                    tag_id,
+                    state,
+                    score DESC,
+                    asset_id
+                )
+                """
             )
         }
     }

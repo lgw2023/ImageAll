@@ -68,6 +68,36 @@ struct PersonalizationReviewService: PersonalizationReviewPort, Sendable {
         try review.pendingSuggestionsForAsset(assetID: assetID)
     }
 
+    func personalSuggestionCandidates(
+        afterAssetID: UUID?,
+        limit: Int
+    ) throws -> [PersonalSuggestionCandidate] {
+        try review.personalSuggestionCandidates(afterAssetID: afterAssetID, limit: limit)
+    }
+
+    func activatePersonalSuggestionBundle(
+        _ capability: PersonalModelSuggestionCapability
+    ) throws {
+        try review.activatePersonalSuggestionBundle(capability, activatedAtMs: clock.nowMs)
+    }
+
+    func replacePersonalSuggestions(
+        candidate: PersonalSuggestionCandidate,
+        predictions: [PersonalSuggestionPrediction],
+        expectedCapability: PersonalModelSuggestionCapability
+    ) throws -> Int {
+        try review.replacePersonalSuggestions(
+            candidate: candidate,
+            predictions: predictions,
+            expectedCapability: expectedCapability,
+            createdAtMs: clock.nowMs
+        )
+    }
+
+    func invalidatePersonalSuggestionBundle() throws {
+        try review.invalidatePersonalSuggestionBundle()
+    }
+
     func enqueueFullLibrarySuggestions(
         tagID: UUID,
         mode: PersonalizationReviewEnqueueMode

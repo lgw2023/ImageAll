@@ -30,6 +30,7 @@ final class DerivedImagePrivacyRegressionTests: XCTestCase {
             CatalogMigrationID.v005AddCatalogScaleIndexes,
             CatalogMigrationID.v006AddAssetTextSearch,
             CatalogMigrationID.v007AddCatalogScopeIdentity,
+            CatalogMigrationID.v008AddPersonalModelSuggestions,
         ])
     }
 

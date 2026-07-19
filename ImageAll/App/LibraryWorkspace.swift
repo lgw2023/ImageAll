@@ -152,6 +152,7 @@ final class LibraryWorkspaceModel: ObservableObject {
     @Published private(set) var cloudPreviewState: CloudPreviewPresentationState = .hidden
     @Published private(set) var localModelSuggestionState: LocalModelSuggestionPresentationState = .hidden
     @Published private(set) var localModelSuggestionTrack: ModelSuggestionTrack = .standard
+    @Published private(set) var personalLibrarySuggestionState: PersonalLibrarySuggestionPresentationState = .idle
     @Published private(set) var isRebuildingPersonalModel = false
     @Published private(set) var isExportingPortableData = false
     @Published private(set) var previewCacheUsage = DerivedImageCacheUsage.zero
@@ -207,6 +208,17 @@ final class LibraryWorkspaceModel: ObservableObject {
 
     var supportsPersonalModelRebuild: Bool {
         localModelSuggestions != nil
+    }
+
+    var supportsPersonalLibrarySuggestions: Bool {
+        localModelSuggestions != nil
+    }
+
+    var isGeneratingPersonalLibrarySuggestions: Bool {
+        if case .running = personalLibrarySuggestionState {
+            return true
+        }
+        return false
     }
 
     var showsFirstUseGuide: Bool {
@@ -868,13 +880,11 @@ final class LibraryWorkspaceModel: ObservableObject {
                 return
             }
             let activeTagIDs = Set(tags.filter { $0.state == .active }.map(\.id))
-            guard capability.target.catalogScopeID == runtime.catalogScopeID,
-                  !capability.tagIDs.isEmpty,
-                  Set(capability.tagIDs).count == capability.tagIDs.count,
-                  Set(capability.tagIDs).isSubset(of: activeTagIDs)
-            else {
-                throw LocalModelSuggestionClientError.identityMismatch
-            }
+            try Self.validatePersonalCapability(
+                capability,
+                catalogScopeID: runtime.catalogScopeID,
+                activeTagIDs: activeTagIDs
+            )
 
             let imageData: Data
             if case let .downloaded(downloadedAssetID, data) = cloudPreviewState,
@@ -891,31 +901,15 @@ final class LibraryWorkspaceModel: ObservableObject {
             )
             let currentActiveTagIDs = Set(tags.filter { $0.state == .active }.map(\.id))
             guard localModelSuggestionRequestID == requestID,
-                  primarySelectedAssetID == assetID,
-                  suggestions.allSatisfy({ suggestion in
-                      guard let tagID = suggestion.tagID else { return false }
-                      return suggestion.track == .personal
-                          && suggestion.conceptID == nil
-                          && suggestion.recommendedState == .suggested
-                          && capability.tagIDs.contains(tagID)
-                          && currentActiveTagIDs.contains(tagID)
-                          && suggestion.catalogScopeID == capability.target.catalogScopeID
-                          && suggestion.bundleID == capability.target.bundleID
-                          && suggestion.bundleRevision == capability.target.bundleRevision
-                          && suggestion.provider == capability.target.provider
-                          && suggestion.modelID == capability.target.modelID
-                          && suggestion.modelRevision == capability.target.modelRevision
-                          && suggestion.preprocessingRevision == capability.target.preprocessingRevision
-                          && suggestion.elementCount == capability.target.elementCount
-                          && suggestion.labelVocabularyRevision == capability.target.labelVocabularyRevision
-                          && suggestion.weightsSHA256 == capability.target.weightsSHA256
-                          && suggestion.policyRevision == capability.target.policyRevision
-                          && suggestion.standardPackID == nil
-                          && suggestion.standardPackRevision == nil
-                  })
+                  primarySelectedAssetID == assetID
             else {
-                throw LocalModelSuggestionClientError.identityMismatch
+                return
             }
+            _ = try Self.personalPredictions(
+                suggestions,
+                capability: capability,
+                activeTagIDs: currentActiveTagIDs
+            )
             localModelSuggestionState = .results(assetID: assetID, suggestions: suggestions)
             localModelSuggestionRequestID = nil
         } catch PhotosLibraryError.cloudOnly {
@@ -945,6 +939,230 @@ final class LibraryWorkspaceModel: ObservableObject {
         }
     }
 
+    func generatePersonalLibrarySuggestions() async {
+        guard !isGeneratingPersonalLibrarySuggestions,
+              !isRebuildingPersonalModel
+        else { return }
+        guard let runtime = localModelSuggestions else {
+            personalLibrarySuggestionState = .serviceUnavailable
+            return
+        }
+
+        var checked = 0
+        var suggested = 0
+        var skipped = 0
+        personalLibrarySuggestionState = .running(
+            checked: checked,
+            suggested: suggested,
+            skipped: skipped
+        )
+
+        do {
+            let availability = try await runtime.client.personalCapability()
+            guard case let .available(capability) = availability else {
+                let reviewPort = review
+                try await Self.offMain {
+                    try reviewPort.invalidatePersonalSuggestionBundle()
+                }
+                await refreshReviewState()
+                personalLibrarySuggestionState = .personalUnavailable
+                return
+            }
+            try Self.validatePersonalCapability(
+                capability,
+                catalogScopeID: runtime.catalogScopeID,
+                activeTagIDs: Set(tags.filter { $0.state == .active }.map(\.id))
+            )
+
+            let reviewPort = review
+            try await Self.offMain {
+                try reviewPort.activatePersonalSuggestionBundle(capability)
+            }
+
+            var afterAssetID: UUID?
+            while true {
+                try Task.checkCancellation()
+                let cursor = afterAssetID
+                let candidates = try await Self.offMain {
+                    try reviewPort.personalSuggestionCandidates(
+                        afterAssetID: cursor,
+                        limit: 100
+                    )
+                }
+                guard !candidates.isEmpty else { break }
+
+                for candidate in candidates {
+                    try Task.checkCancellation()
+                    checked += 1
+                    personalLibrarySuggestionState = .running(
+                        checked: checked,
+                        suggested: suggested,
+                        skipped: skipped
+                    )
+
+                    let imageData: Data
+                    do {
+                        imageData = try await service.loadPreview(assetID: candidate.assetID)
+                    } catch is CancellationError {
+                        throw CancellationError()
+                    } catch {
+                        skipped += 1
+                        personalLibrarySuggestionState = .running(
+                            checked: checked,
+                            suggested: suggested,
+                            skipped: skipped
+                        )
+                        continue
+                    }
+
+                    let suggestions = try await runtime.client.suggestions(
+                        imageData: imageData,
+                        requestID: UUID().uuidString.lowercased(),
+                        target: .personal(capability.target)
+                    )
+                    guard case let .available(confirmed) = try await runtime.client.personalCapability(),
+                          confirmed == capability
+                    else {
+                        throw LocalModelSuggestionClientError.identityMismatch
+                    }
+                    let activeTagIDs = Set(tags.filter { $0.state == .active }.map(\.id))
+                    try Self.validatePersonalCapability(
+                        confirmed,
+                        catalogScopeID: runtime.catalogScopeID,
+                        activeTagIDs: activeTagIDs
+                    )
+                    let predictions = try Self.personalPredictions(
+                        suggestions,
+                        capability: capability,
+                        activeTagIDs: activeTagIDs
+                    )
+                    suggested += try await Self.offMain {
+                        try reviewPort.replacePersonalSuggestions(
+                            candidate: candidate,
+                            predictions: predictions,
+                            expectedCapability: capability
+                        )
+                    }
+                    personalLibrarySuggestionState = .running(
+                        checked: checked,
+                        suggested: suggested,
+                        skipped: skipped
+                    )
+                }
+                afterAssetID = candidates.last?.assetID
+            }
+
+            await refreshReviewState()
+            personalLibrarySuggestionState = .completed(
+                checked: checked,
+                suggested: suggested,
+                skipped: skipped
+            )
+        } catch LocalModelSuggestionClientError.identityMismatch {
+            await invalidatePersonalLibrarySuggestionBundle()
+            personalLibrarySuggestionState = .failed
+        } catch let LocalModelSuggestionClientError.rejected(statusCode, code)
+            where statusCode == 409 && code == "personal_bundle_mismatch"
+        {
+            await invalidatePersonalLibrarySuggestionBundle()
+            personalLibrarySuggestionState = .failed
+        } catch let LocalModelSuggestionClientError.rejected(statusCode, code)
+            where statusCode == 503 && code == "personal_bundle_unavailable"
+        {
+            await invalidatePersonalLibrarySuggestionBundle()
+            personalLibrarySuggestionState = .personalUnavailable
+        } catch LocalModelSuggestionClientError.serviceUnavailable {
+            personalLibrarySuggestionState = .serviceUnavailable
+        } catch let LocalModelSuggestionClientError.rejected(statusCode, _)
+            where statusCode == 503
+        {
+            personalLibrarySuggestionState = .serviceUnavailable
+        } catch is CancellationError {
+            personalLibrarySuggestionState = .idle
+        } catch {
+            personalLibrarySuggestionState = .failed
+        }
+    }
+
+    private func invalidatePersonalLibrarySuggestionBundle() async {
+        let reviewPort = review
+        try? await Self.offMain {
+            try reviewPort.invalidatePersonalSuggestionBundle()
+        }
+        await refreshReviewState()
+    }
+
+    private static func validatePersonalCapability(
+        _ capability: PersonalModelSuggestionCapability,
+        catalogScopeID: String,
+        activeTagIDs: Set<UUID>
+    ) throws {
+        let target = capability.target
+        guard target.catalogScopeID == catalogScopeID,
+              !target.bundleID.isEmpty,
+              !target.bundleRevision.isEmpty,
+              !target.provider.isEmpty,
+              !target.modelID.isEmpty,
+              !target.modelRevision.isEmpty,
+              !target.preprocessingRevision.isEmpty,
+              target.elementCount > 0,
+              isLowercaseSHA256(target.labelVocabularyRevision),
+              isLowercaseSHA256(target.weightsSHA256),
+              !target.policyRevision.isEmpty,
+              !capability.tagIDs.isEmpty,
+              Set(capability.tagIDs).count == capability.tagIDs.count,
+              Set(capability.tagIDs).isSubset(of: activeTagIDs)
+        else {
+            throw LocalModelSuggestionClientError.identityMismatch
+        }
+    }
+
+    private static func personalPredictions(
+        _ suggestions: [LocalModelSuggestion],
+        capability: PersonalModelSuggestionCapability,
+        activeTagIDs: Set<UUID>
+    ) throws -> [PersonalSuggestionPrediction] {
+        let tagIDs = suggestions.compactMap(\.tagID)
+        guard tagIDs.count == suggestions.count,
+              Set(tagIDs).count == tagIDs.count,
+              suggestions.allSatisfy({ suggestion in
+                  guard let tagID = suggestion.tagID else { return false }
+                  return suggestion.score.isFinite
+                      && suggestion.track == .personal
+                      && suggestion.conceptID == nil
+                      && suggestion.recommendedState == .suggested
+                      && capability.tagIDs.contains(tagID)
+                      && activeTagIDs.contains(tagID)
+                      && suggestion.catalogScopeID == capability.target.catalogScopeID
+                      && suggestion.bundleID == capability.target.bundleID
+                      && suggestion.bundleRevision == capability.target.bundleRevision
+                      && suggestion.provider == capability.target.provider
+                      && suggestion.modelID == capability.target.modelID
+                      && suggestion.modelRevision == capability.target.modelRevision
+                      && suggestion.preprocessingRevision == capability.target.preprocessingRevision
+                      && suggestion.elementCount == capability.target.elementCount
+                      && suggestion.labelVocabularyRevision == capability.target.labelVocabularyRevision
+                      && suggestion.weightsSHA256 == capability.target.weightsSHA256
+                      && suggestion.policyRevision == capability.target.policyRevision
+                      && suggestion.standardPackID == nil
+                      && suggestion.standardPackRevision == nil
+              })
+        else {
+            throw LocalModelSuggestionClientError.identityMismatch
+        }
+        return suggestions.compactMap { suggestion in
+            suggestion.tagID.map {
+                PersonalSuggestionPrediction(tagID: $0, score: suggestion.score)
+            }
+        }
+    }
+
+    private static func isLowercaseSHA256(_ value: String) -> Bool {
+        value.count == 64 && value.allSatisfy {
+            ("0" ... "9").contains(String($0)) || ("a" ... "f").contains(String($0))
+        }
+    }
+
     func applyLocalModelSuggestionDecision(
         _ suggestion: LocalModelSuggestion,
         action: LibraryTagDecisionAction
@@ -969,7 +1187,9 @@ final class LibraryWorkspaceModel: ObservableObject {
     }
 
     func rebuildPersonalModel() async {
-        guard !isRebuildingPersonalModel else { return }
+        guard !isRebuildingPersonalModel,
+              !isGeneratingPersonalLibrarySuggestions
+        else { return }
         guard let runtime = localModelSuggestions else {
             notice = .personalModelRebuildServiceUnavailable
             return
@@ -2418,7 +2638,10 @@ struct LibraryWorkspaceView: View {
                             Label("重建个人模型", systemImage: "brain.head.profile")
                         }
                     }
-                    .disabled(model.isRebuildingPersonalModel)
+                    .disabled(
+                        model.isRebuildingPersonalModel
+                            || model.isGeneratingPersonalLibrarySuggestions
+                    )
                     .help("使用当前人工确认与拒绝样本重建个人模型")
                 }
 
