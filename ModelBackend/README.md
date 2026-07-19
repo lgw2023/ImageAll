@@ -101,6 +101,17 @@ uv run imageall-validate-standard-pack \
 与完整版本身份；成功时只输出不含路径的稳定 JSON 摘要，失败时返回退出码 2 且不启动服务、不下载或
 激活模型。校验通过只证明 pack 契约完整，不等于批准其许可证、准确率、阈值校准或生产使用。
 
+生产 standard 候选还要通过独立 evidence verifier。仓库内 Places365 报告只记录公开来源元数据，不含
+权重或图片，并应稳定保持 `research`：
+
+```bash
+uv run imageall-verify-standard-admission \
+  --report fixtures/standard-admission/places365-resnet18-research-v1.json
+```
+
+输出状态为 `approvedSuggestedOnly` 时退出 0；`research`、`evaluationReady` 或 `rejected` 时退出 2；
+畸形报告退出 3。verifier 不下载、转换或运行模型，也不会生成 standard pack。
+
 加载 `imageall-train-personal` 生成的个人 bundle：
 
 ```bash

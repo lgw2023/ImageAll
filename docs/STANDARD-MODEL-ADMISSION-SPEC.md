@@ -1,6 +1,6 @@
 # ImageAll 生产 standard 模型准入规格
 
-> 状态：Approved architecture；Places365 ResNet18 当前仅为 `research` 候选<br>
+> 状态：Evidence verifier implemented；Places365 ResNet18 当前仅为 `research` 候选<br>
 > 日期：2026-07-19<br>
 > 适用范围：阶段 5 的首个生产 standard scene pack
 
@@ -50,6 +50,9 @@
 - 固定 commit 的 README 对预训练权重只声明 Creative Commons Attribution（`CC BY`），没有给出
   版本号或完整许可证文本；因此暂记为
   `LicenseRef-Places365-Pretrained-CC-BY-Unversioned`，不得伪写成 `CC-BY-4.0`；
+- 官方 Places 项目主页又把数据库和已训练 CNN 描述为供 academic research / education 使用；数据下载
+  条款进一步限定为 non-commercial research / education。它们不能与未标版本的 `CC BY` 静默合并成
+  产品分发许可，当前按更保守边界处理；
 - 任何内部 benchmark 都必须保留上游项目页、论文和作者归属；
 - 在权重许可证版本和分发义务被完整记录前，候选不得进入可再分发 App/package。第三方镜像的
   `MIT` 元数据不能扩大上游权重授权。
@@ -131,7 +134,7 @@ ImageAll mapping 必须另做 concept-level 评测：
 
 ## 5. 机器可验收证据契约
 
-下一实现切片只增加一个离线 verifier，不下载或运行模型。输入报告必须显式提供：候选 identity、全部
+`1699138` 已实现离线 verifier，不下载或运行模型。输入报告必须显式提供：候选 identity、全部
 来源/许可证/权重 SHA、dataset manifest SHA、样本计数、provider 指标、逐 concept 指标、Core ML
 parity、资源指标和 pack validation 结果。verifier 必须：
 
@@ -142,7 +145,14 @@ parity、资源指标和 pack validation 结果。verifier 必须：
 - 当前 Places365 候选 fixture 因许可证版本与官方权重 SHA 未 verified，必须稳定得到 `research`，且不
   生成 standard pack。
 
-该 verifier 通过后，后续独立切片才可在权重和数据均由显式、已审核输入提供时增加 benchmark runner。
+CLI 为 `imageall-verify-standard-admission --report <json>`；批准返回 0，研究/待评测/拒绝返回 2，畸形
+报告返回 3。仓库内 `places365-resnet18-research-v1.json` 固定当前候选证据并稳定返回 `research`。
+
+验收为 verifier 定向 `20 passed`、Backend 全量 `140 passed, 2 skipped`；compileall、sdist 和 wheel
+build 通过。测试和 fixture 不含图片、模型权重或本机路径，未下载模型/数据集，未读取受保护数据。
+
+后续独立切片只有在权重和数据均由显式、已审核输入提供时才可增加 benchmark runner。当前官方许可
+表述相互不充分，不满足 `evaluationReady`，因此不能以“继续开发”推导下载或产品接入授权。
 
 ## 6. 主要来源
 
@@ -152,4 +162,6 @@ parity、资源指标和 pack validation 结果。verifier 必须：
   `https://raw.githubusercontent.com/CSAILVision/places365/8a953ed56438726dc98bdef3796d042e7f1f171e/README.md`
 - 固定代码许可证：
   `https://raw.githubusercontent.com/CSAILVision/places365/8a953ed56438726dc98bdef3796d042e7f1f171e/LICENSE`
+- Places 项目主页和数据条款：`https://places2.csail.mit.edu/`、
+  `https://places2.csail.mit.edu/download-private.html`
 - Places365 论文：`https://arxiv.org/abs/1610.02055`
