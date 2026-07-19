@@ -8,6 +8,7 @@ from zipfile import BadZipFile
 
 import uvicorn
 
+from imageall_model_backend.embedding_cache import EmbeddingCache
 from imageall_model_backend.personal_suggestions import PersonalSuggestionEngine
 from imageall_model_backend.personal_runtime import PersonalModelRuntime
 from imageall_model_backend.personal_training import load_personal_linear_head
@@ -27,6 +28,7 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--model-cache", type=Path)
+    parser.add_argument("--embedding-cache", type=Path)
     parser.add_argument("--offline", action="store_true")
     parser.add_argument("--coreml-bundle", type=Path)
     parser.add_argument("--personal-bundle", type=Path)
@@ -117,6 +119,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     uvicorn.run(
         create_app(
             provider=provider,
+            embedding_cache=(
+                EmbeddingCache(args.embedding_cache)
+                if args.embedding_cache is not None
+                else None
+            ),
             standard_suggestion_engine=standard_suggestion_engine,
             personal_suggestion_engine=personal_suggestion_engine,
             personal_model_runtime=personal_model_runtime,

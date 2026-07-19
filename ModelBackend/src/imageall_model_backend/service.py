@@ -12,6 +12,7 @@ from PIL import Image, UnidentifiedImageError
 from pydantic import BaseModel, ConfigDict
 
 from imageall_model_backend import __version__
+from imageall_model_backend.embedding_cache import EmbeddingCache
 from imageall_model_backend.personal_runtime import (
     ExpectedActivePersonalBundle,
     PersonalBundleMismatch,
@@ -30,9 +31,19 @@ PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 JPEG_PREFIX = b"\xff\xd8\xff"
 
 
+class EmbeddingCacheKeyRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    schema_revision: int
+    catalog_scope_id: str
+    asset_id: str
+    content_revision: str
+
+
 class EmbeddingRequest(BaseModel):
     request_id: str
     image_base64: str
+    cache_key: EmbeddingCacheKeyRequest | None = None
 
 
 class SuggestionTarget(BaseModel):
@@ -173,6 +184,7 @@ def _decode_image(image_base64: str) -> bytes:
 
 def create_app(
     provider: EmbeddingProvider | None = None,
+    embedding_cache: EmbeddingCache | None = None,
     standard_suggestion_engine: StandardSuggestionEngine | None = None,
     personal_suggestion_engine: PersonalSuggestionEngine | None = None,
     personal_model_runtime: PersonalModelRuntime | None = None,
@@ -287,8 +299,45 @@ def create_app(
                 },
             )
         image_bytes = _decode_image(request.image_base64)
+        identity = provider.identity
+        cached_vector: list[float] | None = None
+        if request.cache_key is not None:
+            if request.cache_key.schema_revision != 1:
+                raise HTTPException(
+                    status_code=422,
+                    detail={
+                        "code": "invalid_embedding_cache_key",
+                        "message": "Unsupported embedding cache key schema.",
+                    },
+                )
+            try:
+                _canonical_uuid(
+                    request.cache_key.catalog_scope_id,
+                    "catalog_scope_id",
+                )
+                _canonical_uuid(request.cache_key.asset_id, "asset id")
+                _decimal_revision(request.cache_key.content_revision)
+            except ValueError as error:
+                raise HTTPException(
+                    status_code=422,
+                    detail={
+                        "code": "invalid_embedding_cache_key",
+                        "message": str(error),
+                    },
+                ) from None
+            if embedding_cache is not None:
+                cached_vector = embedding_cache.get(
+                    catalog_scope_id=request.cache_key.catalog_scope_id,
+                    asset_id=request.cache_key.asset_id,
+                    content_revision=request.cache_key.content_revision,
+                    encoder=identity,
+                )
         try:
-            vector = [float(value) for value in provider.embed(image_bytes)]
+            raw_vector = cached_vector or provider.embed(image_bytes)
+            vector = [
+                float(value)
+                for value in np.asarray(raw_vector, dtype=np.float32)
+            ]
         except Exception:
             raise HTTPException(
                 status_code=503,
@@ -297,7 +346,6 @@ def create_app(
                     "message": "Model provider failed to produce a valid embedding.",
                 },
             ) from None
-        identity = provider.identity
         if len(vector) != identity.element_count or not all(
             math.isfinite(value) for value in vector
         ):
@@ -307,6 +355,18 @@ def create_app(
                     "code": "model_failure",
                     "message": "Model provider failed to produce a valid embedding.",
                 },
+            )
+        if (
+            cached_vector is None
+            and embedding_cache is not None
+            and request.cache_key is not None
+        ):
+            embedding_cache.put(
+                catalog_scope_id=request.cache_key.catalog_scope_id,
+                asset_id=request.cache_key.asset_id,
+                content_revision=request.cache_key.content_revision,
+                encoder=identity,
+                embedding=vector,
             )
         return {
             "request_id": request.request_id,

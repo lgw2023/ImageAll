@@ -99,6 +99,86 @@ def test_cli_serves_embeddings_with_a_coreml_artifact(
     assert response.json()["embedding"] == [0.25, -0.5, 1.0]
 
 
+def test_cli_enables_the_versioned_embedding_cache_explicitly(
+    tmp_path, monkeypatch
+) -> None:
+    def png_base64(color: tuple[int, int, int]) -> str:
+        image = Image.new("RGB", (8, 8), color=color)
+        buffer = io.BytesIO()
+        image.save(buffer, format="PNG")
+        return base64.b64encode(buffer.getvalue()).decode("ascii")
+
+    class FakeDinoProvider:
+        identity = EmbeddingProviderIdentity(
+            provider="dinov2",
+            model_id="fixture-dinov2",
+            model_revision="fixture-model-revision",
+            preprocessing_revision="fixture-preprocessing-revision",
+            element_count=2,
+        )
+        call_count = 0
+
+        def __init__(self, *, cache_dir, local_files_only) -> None:
+            assert cache_dir is None
+            assert local_files_only is True
+
+        def embed(self, image_bytes: bytes) -> list[float]:
+            assert image_bytes.startswith(b"\x89PNG\r\n\x1a\n")
+            type(self).call_count += 1
+            return [float(type(self).call_count), 0.0]
+
+    captured: dict[str, object] = {}
+
+    def fake_run(app, *, host: str, port: int) -> None:
+        captured.update(app=app, host=host, port=port)
+
+    monkeypatch.setattr(
+        "imageall_model_backend.dinov2.DinoV2SmallProvider",
+        FakeDinoProvider,
+    )
+    monkeypatch.setattr(cli.uvicorn, "run", fake_run)
+
+    exit_code = cli.main(
+        [
+            "--provider",
+            "dinov2",
+            "--embedding-cache",
+            str(tmp_path / "embeddings.sqlite3"),
+            "--offline",
+        ]
+    )
+    cache_key = {
+        "schema_revision": 1,
+        "catalog_scope_id": "11111111-1111-4111-8111-111111111111",
+        "asset_id": "22222222-2222-4222-8222-222222222222",
+        "content_revision": "7",
+    }
+    client = TestClient(captured["app"])
+    first = client.post(
+        "/v1/embeddings",
+        json={
+            "request_id": "first-cli-cache-request",
+            "image_base64": png_base64((32, 64, 128)),
+            "cache_key": cache_key,
+        },
+    )
+    second = client.post(
+        "/v1/embeddings",
+        json={
+            "request_id": "second-cli-cache-request",
+            "image_base64": png_base64((128, 64, 32)),
+            "cache_key": cache_key,
+        },
+    )
+
+    assert exit_code == 0
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert first.json()["embedding"] == [1.0, 0.0]
+    assert second.json()["embedding"] == [1.0, 0.0]
+    assert FakeDinoProvider.call_count == 1
+
+
 def test_cli_rejects_coreml_without_an_artifact(monkeypatch) -> None:
     def unexpected_provider(**kwargs):
         raise AssertionError(f"provider should not be created: {kwargs}")
