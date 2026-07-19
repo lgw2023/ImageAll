@@ -472,3 +472,21 @@ def test_cli_serves_a_validated_standard_pack(monkeypatch) -> None:
     assert [item["concept_id"] for item in response.json()["suggestions"]] == [
         "scene.water"
     ]
+
+
+def test_cli_fails_closed_before_listening_when_standard_pack_is_invalid(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    def unexpected_run(*args, **kwargs):
+        raise AssertionError("server should not start")
+
+    monkeypatch.setattr(cli.uvicorn, "run", unexpected_run)
+    invalid_pack = tmp_path / "private-standard-pack"
+
+    with pytest.raises(SystemExit) as exit_info:
+        cli.main(["--standard-pack", str(invalid_pack)])
+
+    captured = capsys.readouterr()
+    assert exit_info.value.code == 2
+    assert "standard pack could not be loaded" in captured.err
+    assert str(invalid_pack) not in captured.err

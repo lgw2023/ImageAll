@@ -108,14 +108,17 @@ def main(argv: Sequence[str] | None = None) -> int:
             parser.error(f"Personal store could not be loaded: {error}")
     standard_suggestion_engine: StandardSuggestionEngine | None = None
     if args.standard_pack is not None:
-        pack = load_standard_pack(args.standard_pack)
-        if pack.provider_identity.provider != "rgb-linear":
-            parser.error("standard pack provider is not supported by this build")
-        standard_provider = RGBLinearSceneProvider.from_pack(pack)
-        standard_suggestion_engine = StandardSuggestionEngine(
-            pack,
-            standard_provider,
-        )
+        try:
+            pack = load_standard_pack(args.standard_pack)
+            if pack.provider_identity.provider != "rgb-linear":
+                parser.error("standard pack provider is not supported by this build")
+            standard_provider = RGBLinearSceneProvider.from_pack(pack)
+            standard_suggestion_engine = StandardSuggestionEngine(
+                pack,
+                standard_provider,
+            )
+        except (KeyError, OSError, TypeError, ValueError):
+            parser.error("standard pack could not be loaded")
     uvicorn.run(
         create_app(
             provider=provider,
