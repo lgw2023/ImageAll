@@ -318,12 +318,28 @@ final class PersonalizedSuggestionService: @unchecked Sendable {
 
 final class LoopbackModelSuggestionClient: LocalModelSuggestionClient, @unchecked Sendable {
     private struct EmbeddingRequestPayload: Encodable {
+        struct CacheKey: Encodable {
+            let schemaRevision = 1
+            let catalogScopeID: String
+            let assetID: String
+            let contentRevision: String
+
+            enum CodingKeys: String, CodingKey {
+                case schemaRevision = "schema_revision"
+                case catalogScopeID = "catalog_scope_id"
+                case assetID = "asset_id"
+                case contentRevision = "content_revision"
+            }
+        }
+
         let requestID: String
         let imageBase64: String
+        let cacheKey: CacheKey?
 
         enum CodingKeys: String, CodingKey {
             case requestID = "request_id"
             case imageBase64 = "image_base64"
+            case cacheKey = "cache_key"
         }
     }
 
@@ -700,7 +716,8 @@ final class LoopbackModelSuggestionClient: LocalModelSuggestionClient, @unchecke
 
     func embedding(
         imageData: Data,
-        requestID: String
+        requestID: String,
+        cacheKey: PersonalTrainingEmbeddingCacheKey?
     ) async throws -> PersonalTrainingEmbedding {
         var request = URLRequest(
             url: endpoint.appendingPathComponent("v1/embeddings"),
@@ -711,7 +728,14 @@ final class LoopbackModelSuggestionClient: LocalModelSuggestionClient, @unchecke
         request.httpBody = try JSONEncoder().encode(
             EmbeddingRequestPayload(
                 requestID: requestID,
-                imageBase64: imageData.base64EncodedString()
+                imageBase64: imageData.base64EncodedString(),
+                cacheKey: cacheKey.map {
+                    EmbeddingRequestPayload.CacheKey(
+                        catalogScopeID: $0.catalogScopeID,
+                        assetID: $0.assetID.uuidString.lowercased(),
+                        contentRevision: String($0.contentRevision)
+                    )
+                }
             )
         )
 

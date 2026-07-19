@@ -125,6 +125,12 @@ struct PersonalTrainingEmbedding: Equatable, Sendable {
     let values: [Float]
 }
 
+struct PersonalTrainingEmbeddingCacheKey: Equatable, Sendable {
+    let catalogScopeID: String
+    let assetID: UUID
+    let contentRevision: Int
+}
+
 struct PersonalModelActiveBundleIdentity: Equatable, Sendable {
     let bundleRevision: String
     let weightsSHA256: String
@@ -328,7 +334,8 @@ protocol LocalModelSuggestionClient: Sendable {
     func personalCapability() async throws -> PersonalModelSuggestionCapabilityAvailability
     func embedding(
         imageData: Data,
-        requestID: String
+        requestID: String,
+        cacheKey: PersonalTrainingEmbeddingCacheKey?
     ) async throws -> PersonalTrainingEmbedding
     func rebuildPersonalModel(
         requestID: String,
@@ -348,8 +355,20 @@ extension LocalModelSuggestionClient {
     }
 
     func embedding(
+        imageData: Data,
+        requestID: String
+    ) async throws -> PersonalTrainingEmbedding {
+        try await embedding(
+            imageData: imageData,
+            requestID: requestID,
+            cacheKey: nil
+        )
+    }
+
+    func embedding(
         imageData _: Data,
-        requestID _: String
+        requestID _: String,
+        cacheKey _: PersonalTrainingEmbeddingCacheKey?
     ) async throws -> PersonalTrainingEmbedding {
         throw LocalModelSuggestionClientError.serviceUnavailable
     }

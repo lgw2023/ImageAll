@@ -1147,6 +1147,14 @@ final class LibraryWorkspaceModelTests: XCTestCase {
             )
         )
         XCTAssertEqual(client.embeddingCallCount, 4)
+        let expectedEmbeddingCacheKeys: [PersonalTrainingEmbeddingCacheKey?] = assetIDs.map {
+            PersonalTrainingEmbeddingCacheKey(
+                catalogScopeID: "catalog-fixture",
+                assetID: $0,
+                contentRevision: 1
+            )
+        }
+        XCTAssertEqual(client.embeddingCacheKeys, expectedEmbeddingCacheKeys)
         XCTAssertEqual(client.rebuildCallCount, 1)
         XCTAssertEqual(client.personalCapabilityCallCount, 2)
         XCTAssertEqual(published.catalogScopeID, "catalog-fixture")
@@ -3920,6 +3928,7 @@ private final class FakeLocalModelSuggestionClient: LocalModelSuggestionClient, 
     private let rebuildResult: Result<PersonalModelSuggestionCapability, LocalModelSuggestionClientError>
     private var storedCallCount = 0
     private var storedEmbeddingCallCount = 0
+    private var storedEmbeddingCacheKeys: [PersonalTrainingEmbeddingCacheKey?] = []
     private var storedRebuildCallCount = 0
     private var storedPersonalCapabilityCallCount = 0
     private var storedLastImageData: Data?
@@ -3957,6 +3966,10 @@ private final class FakeLocalModelSuggestionClient: LocalModelSuggestionClient, 
 
     var embeddingCallCount: Int {
         lock.withLock { storedEmbeddingCallCount }
+    }
+
+    var embeddingCacheKeys: [PersonalTrainingEmbeddingCacheKey?] {
+        lock.withLock { storedEmbeddingCacheKeys }
     }
 
     var rebuildCallCount: Int {
@@ -4001,9 +4014,13 @@ private final class FakeLocalModelSuggestionClient: LocalModelSuggestionClient, 
 
     func embedding(
         imageData: Data,
-        requestID: String
+        requestID: String,
+        cacheKey: PersonalTrainingEmbeddingCacheKey?
     ) async throws -> PersonalTrainingEmbedding {
-        lock.withLock { storedEmbeddingCallCount += 1 }
+        lock.withLock {
+            storedEmbeddingCallCount += 1
+            storedEmbeddingCacheKeys.append(cacheKey)
+        }
         return try embeddingResult.get()
     }
 

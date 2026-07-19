@@ -1238,7 +1238,12 @@ final class LibraryWorkspaceModel: ObservableObject {
                 let imageData = try await service.loadPreview(assetID: revision.assetID)
                 let embedding = try await runtime.client.embedding(
                     imageData: imageData,
-                    requestID: UUID().uuidString.lowercased()
+                    requestID: UUID().uuidString.lowercased(),
+                    cacheKey: PersonalTrainingEmbeddingCacheKey(
+                        catalogScopeID: runtime.catalogScopeID,
+                        assetID: revision.assetID,
+                        contentRevision: revision.contentRevision
+                    )
                 )
                 if let encoder {
                     guard encoder == embedding.encoder else {

@@ -13,6 +13,7 @@ final class PersonalizedSuggestionServiceTests: XCTestCase {
                 JSONSerialization.jsonObject(with: requestBodyData(request))
                     as? [String: Any]
             )
+            XCTAssertEqual(Set(body.keys), ["request_id", "image_base64"])
             XCTAssertEqual(body["request_id"] as? String, "embedding-fixture")
             XCTAssertEqual(body["image_base64"] as? String, Data("preview".utf8).base64EncodedString())
             return (
@@ -59,6 +60,73 @@ final class PersonalizedSuggestionServiceTests: XCTestCase {
                     elementCount: 2
                 ),
                 values: [0.25, -0.5]
+            )
+        )
+    }
+
+    func testLoopbackClientSendsAVersionedEmbeddingCacheKeyWithoutPrivateFields() async throws {
+        let assetID = UUID(uuidString: "2D000000-0000-4000-8000-000000000001")!
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [ModelSuggestionURLProtocolStub.self]
+        ModelSuggestionURLProtocolStub.handler = { request in
+            let body = try XCTUnwrap(
+                JSONSerialization.jsonObject(with: requestBodyData(request))
+                    as? [String: Any]
+            )
+            XCTAssertEqual(
+                Set(body.keys),
+                ["request_id", "image_base64", "cache_key"]
+            )
+            let cacheKey = try XCTUnwrap(body["cache_key"] as? [String: Any])
+            XCTAssertEqual(
+                Set(cacheKey.keys),
+                ["schema_revision", "catalog_scope_id", "asset_id", "content_revision"]
+            )
+            XCTAssertEqual(cacheKey["schema_revision"] as? Int, 1)
+            XCTAssertEqual(
+                cacheKey["catalog_scope_id"] as? String,
+                "11111111-1111-4111-8111-111111111111"
+            )
+            XCTAssertEqual(
+                cacheKey["asset_id"] as? String,
+                assetID.uuidString.lowercased()
+            )
+            XCTAssertEqual(cacheKey["content_revision"] as? String, "7")
+            return (
+                HTTPURLResponse(
+                    url: try XCTUnwrap(request.url),
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: ["Content-Type": "application/json"]
+                )!,
+                Data(
+                    """
+                    {
+                      "request_id": "cached-embedding-fixture",
+                      "provider": "dinov2",
+                      "model_id": "facebook/dinov2-small",
+                      "model_revision": "model-v1",
+                      "preprocessing_revision": "preprocessing-v1",
+                      "element_type": "float32",
+                      "element_count": 2,
+                      "embedding": [0.25, -0.5]
+                    }
+                    """.utf8
+                )
+            )
+        }
+        defer { ModelSuggestionURLProtocolStub.handler = nil }
+        let client = try LoopbackModelSuggestionClient(
+            session: URLSession(configuration: configuration)
+        )
+
+        _ = try await client.embedding(
+            imageData: Data("preview".utf8),
+            requestID: "cached-embedding-fixture",
+            cacheKey: PersonalTrainingEmbeddingCacheKey(
+                catalogScopeID: "11111111-1111-4111-8111-111111111111",
+                assetID: assetID,
+                contentRevision: 7
             )
         )
     }
