@@ -1,7 +1,7 @@
 # ImageAll 架构设计
 
-> 状态：Draft v0.5<br>
-> 日期：2026-07-18<br>
+> 状态：Draft v0.6<br>
+> 日期：2026-07-19<br>
 > 目标读者：产品开发者、后续参与实现与评审的工程师<br>
 > 决策范围：首个可用版本（MVP）及其可演进边界
 
@@ -564,6 +564,16 @@ revision 后，才能成为标准概念。
 - 模型 bundle 绑定目录库作用域、标签稳定顺序、encoder/preprocessing revision 和人工决策快照
   revision，不得与其他目录库或用户混用。
 
+当前可选 DINO 路径已实现用户触发的最小重建闭环：App 只选择 current catalog 中 active 且满足
+`2 accepted + 2 rejected` 的标签，每标签每角色最多取 12 条最新人工决定；对去重后的
+`asset_id + content_revision` 逐项请求 loopback DINO embedding，并在发送前再次确认人工快照未变化。
+同步 rebuild payload 只含 canonical UUID/revision、embedding 和明确人工决定，不含原图、locator、路径
+或 bookmark。后端以当前 `bundle_revision + weights_sha256` 做 CAS，候选训练与完整重载校验成功后才
+原子切换 active bundle；App 再读取 capability，完整身份相等才报告成功。模块离线、样本不足、图片
+本地不可用、身份冲突或发布失败均不改变旧 bundle，也不回退 standard。
+若旧 active bundle 仍含刚归档的标签，personal 推理继续 fail closed；显式 rebuild 仍可使用该旧
+revision/weights 作为 CAS 基线，并把新 bundle 词表收敛到当前 active 标签，避免归档动作永久阻断更新。
+
 标准标签也允许用户接受或拒绝；这类人工决定服从统一优先级，但不会把标准概念改成个人标签。
 用户如果需要更细的个人语义，例如在标准“狗”下建立“我的宠物”，应创建独立个人标签并单独训练。
 人工决定只作用于用户操作的精确标签，不沿 DAG 自动接受或拒绝其他节点；遇到“接受子概念但拒绝
@@ -602,6 +612,12 @@ Feature Print revision 或预处理规则变化时，新旧特征不得混用。
 个人模型的新版本先完整写入不可变的 `tag_model_revision` 与 `tag_model_sample`，校验样本特征可用后，
 再在同一事务更新 `tag_model.current_revision`。标准模型结果则同时绑定 ontology、model、preprocessing、
 mapping 和 policy revision；其中任一项变化，只失效相应机器结果。
+
+可选 Python DINO 模块当前使用独立 managed store 承载 bundle 文件生命周期，不把权重写入 App
+SQLite：候选目录在 store 内生成，manifest、encoder、词表、policy 与权重 SHA-256 全部重载通过后，
+先原子替换 `active.json`，再热切换内存 engine。崩溃或发布失败最多留下未被 active 指针引用的版本化
+孤儿 bundle，不能产生半激活模型；服务重启只从已校验的 active 指针恢复。App 仍以 capability 作为
+该可选进程的当前身份来源，`tag_model` 表的既有 Feature Print 生命周期不被静默改写。
 
 ontology 升级可以通过 manifest 中的稳定 concept ID 与显式 `supersedes` 关系保留未变概念的本地别名
 和人工决定；概念发生拆分、合并或删除时，不自动迁移人工决定，而是保留并归档旧标准标签，等待用户
@@ -927,14 +943,16 @@ System Photo Library 实际切换/显式重绑定、真实摄影格式/内容分
 
 ### 阶段 5：可选本地模型模块
 
-状态：独立双轨 tracer、HTTP、CLI 装载、Swift client transport、Inspector 标准/personal 单图流与 DINOv2 Core ML FP16 导出/HTTP provider 门已实现；生产公共模型、训练快照导出与 bundle 自动生命周期仍待后续切片。独立 loopback 服务、
+状态：独立双轨 tracer、HTTP、CLI 装载、Swift client transport、Inspector 标准/personal 单图流、DINOv2 Core ML FP16 导出/HTTP provider，以及用户触发的 personal 快照重建与原子 bundle 生命周期已实现；生产公共模型与自动后台训练仍待后续切片。独立 loopback 服务、
 固定 revision 的 DINOv2-small、MPS 线性多标签 head、锁定依赖、真实模型 HTTP smoke 与无模块 App
 build 已由 `058a161` 交付；标准 package/fixture/HTTP 由 `c937299`、`f51c666`、`61b29f5` 交付，个人
 DINO 稀疏训练 CLI 与 suggestion HTTP 由 `abc5ef0`、`b92a01b` 交付，双轨启动装载由 `e447f80`
 交付，Swift client tracer 与 Inspector standard fixture 接线由 `ffb1fd2`、`c68a6aa` 交付，固定输入的 FP16
 ML Program、严格 artifact identity/checksum 与 CPU_ONLY/ALL 基准由 `dfac6eb` 交付，可选 Core ML
 embedding/personal HTTP provider 由 `3a49774` 交付；当前 catalog 的 Inspector personal 确认流与完整
-bundle capability 握手分别由 `7e0ce5e`、`972d42f` 交付。
+bundle capability 握手分别由 `7e0ce5e`、`972d42f` 交付；同步 managed-store rebuild、payload 对齐与
+App 用户触发闭环分别由 `dae828b`、`3fa349c`、`8b4cabc` 交付。
+归档标签后以旧 bundle CAS 重建当前 active 词表的窄修正由 `d717b3e` 交付。
 该阶段把标准标签公共模型、个人标签 embedding/线性训练、Core ML 部署与可选 Ollama VLM
 适配器放入独立模块；模块未安装或不可用时，App 原有浏览、人工标签、历史标签预设和 Vision
 Feature Print 建议闭环必须完整运行。首个 encoder 固定为
@@ -944,7 +962,7 @@ Feature Print 建议闭环必须完整运行。首个 encoder 固定为
 
 第一切片不修改 App target、SQLite schema 或 UI，只用合成图片证明独立 loopback 服务、版本化
 embedding 和 MPS 线性 head 训练。Python 侧 Core ML FP16 数值一致性及 HTTP provider 已经关闭；Xcode compute plan、
-实际 Neural Engine 分配、峰值内存/热量、模型安装、训练快照导出/自动重训、生产标准包接线和真实照片只读 smoke
+实际 Neural Engine 分配、峰值内存/热量、模型安装、自动后台重训、生产标准包接线和真实照片只读 smoke
 仍为后续独立验收门。
 
 标准场景标签 fixture tracer 已验证“公共模型类别 → 版本化 mapping → 标准 concept ID → DAG 父标签
@@ -963,8 +981,11 @@ AutoImageProcessor 和程序生成 RGB 输入通过 `cosine >= 0.999`、relative
 CPU_ONLY/ALL 只记录请求的 compute units，不宣称已证明 ANE 调度。已验证 artifact 现可通过
 `--provider coreml --coreml-bundle <path>` 接入同一 loopback HTTP；服务固定核对 DINO encoder、
 model/preprocessing revision、`1×3×224×224` 输入及 artifact checksum，加载或推理失败不回退
-PyTorch/standard。App 快照导出、标准概念持久化 schema/Review Queue、个人 bundle 生命周期、Xcode
-compute plan 与生产模型安装继续分别验收。
+PyTorch/standard。App 当前按 active 标签与人工决定生成不含图像/路径的版本化 embedding snapshot，
+同步请求 `/v1/personal/rebuild`；后端在 managed store 内完成 `2 + 2` 复核、CAS、候选训练、完整加载、
+原子 `active.json` 与热重载，App 随后以 capability 二次确认。该动作只由用户显式触发，不增加异步
+job/progress/cancel 状态机；自动后台重训、标准概念持久化 schema/Review Queue、Xcode compute plan
+与生产模型安装继续分别验收。
 阶段 5 的双轨 gate 是：标准轨道零用户样本可运行，个人轨道无人工样本不运行，人工决定覆盖两类
 机器结果，模型模块缺失不影响 App，自动化测试不读取受保护真实照片。
 
@@ -998,6 +1019,7 @@ compute plan 与生产模型安装继续分别验收。
 | ADR-024 | 标签定义分为版本化标准概念与用户个人标签；赋值另分人工事实、标准自动结果和待审核建议 | 已决定，待实现 | 公共模型提供零样本初始价值，个人模型随用户反馈长期学习；语义轨道与赋值来源正交，人工决定统一优先 |
 | ADR-025 | 标准标签使用版本化 ontology DAG 和独立公共模型生命周期 | 已决定，待实现 | 一个概念可属于多个父类；model、mapping、policy 与 ontology 分别版本化，升级只重建机器结果，拆分/合并不自动迁移人工决定 |
 | ADR-026 | personal bundle 使用持久化 catalog scope 与完整 capability 身份握手，建议只在 Inspector 临时展示 | 已实现 | 防止跨目录库、旧 bundle、错 encoder/权重或未知标签串用；只有用户明确接受或拒绝后才复用人工标签事务，模块不可用时原功能不受影响 |
+| ADR-027 | personal 重建使用同步 embedding/manual-decision snapshot 与 managed store 原子 active 指针 | 已实现 | personal endpoint 已限定轨道，无需持久异步 job；CAS、候选完整校验和 capability 二次确认防止旧快照或半 bundle 生效，失败继续使用旧模型 |
 
 ## 20. 尚待确认的问题
 
