@@ -7,9 +7,11 @@ from dataclasses import asdict
 from uuid import UUID
 
 import numpy as np
+from anyio import from_thread
 from fastapi import FastAPI, HTTPException
 from PIL import Image, UnidentifiedImageError
 from pydantic import BaseModel, ConfigDict
+from starlette.requests import Request
 
 from imageall_model_backend import __version__
 from imageall_model_backend.embedding_cache import EmbeddingCache
@@ -232,7 +234,10 @@ def create_app(
         }
 
     @app.post("/v1/personal/rebuild")
-    def rebuild_personal(request: PersonalRebuildRequest) -> dict[str, object]:
+    def rebuild_personal(
+        request: PersonalRebuildRequest,
+        http_request: Request,
+    ) -> dict[str, object]:
         if personal_model_runtime is None:
             raise HTTPException(
                 status_code=503,
@@ -255,6 +260,9 @@ def create_app(
             engine = personal_model_runtime.rebuild(
                 training_input=training_input,
                 expected_active_bundle=expected_active_bundle,
+                should_cancel=lambda: from_thread.run(
+                    http_request.is_disconnected
+                ),
             )
         except PersonalBundleMismatch:
             raise HTTPException(

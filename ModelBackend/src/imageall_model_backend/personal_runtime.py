@@ -5,6 +5,7 @@ import os
 import shutil
 import tempfile
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from uuid import UUID, uuid4
@@ -58,6 +59,7 @@ class PersonalModelRuntime:
         *,
         training_input: PersonalTrainingInput,
         expected_active_bundle: ExpectedActivePersonalBundle | None,
+        should_cancel: Callable[[], bool] | None = None,
     ) -> PersonalSuggestionEngine:
         with self._rebuild_lock:
             self._validate_rebuild_identity(
@@ -65,6 +67,8 @@ class PersonalModelRuntime:
                 expected_active_bundle=expected_active_bundle,
             )
             validate_personal_training_input(training_input)
+            if should_cancel is not None and should_cancel():
+                raise RuntimeError("personal rebuild cancelled")
             current_engine = self._engine
             bundle_id = (
                 current_engine.bundle_id
@@ -101,6 +105,8 @@ class PersonalModelRuntime:
                         "personal candidate bundle validation failed"
                     ) from error
                 candidate_engine = PersonalSuggestionEngine(self._provider, bundle)
+                if should_cancel is not None and should_cancel():
+                    raise RuntimeError("personal rebuild cancelled")
                 os.replace(candidate_path, final_path)
                 self._write_active_pointer(candidate_engine)
                 self._engine = candidate_engine

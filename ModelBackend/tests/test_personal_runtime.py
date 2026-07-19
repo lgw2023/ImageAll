@@ -9,6 +9,7 @@ from uuid import UUID
 import pytest
 from fastapi.testclient import TestClient
 from PIL import Image
+from starlette.requests import Request
 
 import imageall_model_backend.personal_runtime as personal_runtime_module
 from imageall_model_backend.personal_runtime import PersonalModelRuntime
@@ -406,6 +407,50 @@ def test_publish_failure_keeps_the_previous_active_bundle(
     assert restarted_runtime.current_engine is not None
     assert restarted_runtime.current_engine.bundle_identity == (
         runtime.current_engine.bundle_identity
+    )
+
+
+def test_client_disconnect_before_activation_keeps_the_previous_bundle(
+    tmp_path: Path, monkeypatch
+) -> None:
+    provider = FakeEmbeddingProvider()
+    store_root = tmp_path / "personal-store"
+    runtime = PersonalModelRuntime(
+        provider=provider,
+        store_root=store_root,
+        training_config=LinearHeadTrainingConfig(epochs=1, learning_rate=0.1),
+    )
+    client = TestClient(
+        create_app(provider=provider, personal_model_runtime=runtime)
+    )
+    active = client.post(
+        "/v1/personal/rebuild", json=rebuild_request()
+    ).json()["personal"]
+    active_pointer = (store_root / "active.json").read_bytes()
+    active_bundles = sorted(
+        path.name for path in (store_root / "bundles").iterdir()
+    )
+    next_request = rebuild_request()
+    next_request["expected_active_bundle"] = {
+        "bundle_revision": active["bundle_revision"],
+        "weights_sha256": active["weights_sha256"],
+    }
+    next_request["snapshot"]["decision_snapshot_revision"] = "c" * 64
+    disconnected = iter((False, True))
+
+    async def disconnect_after_training(_request: Request) -> bool:
+        return next(disconnected, True)
+
+    monkeypatch.setattr(Request, "is_disconnected", disconnect_after_training)
+
+    response = client.post("/v1/personal/rebuild", json=next_request)
+
+    assert response.status_code == 503
+    assert response.json()["detail"]["code"] == "personal_rebuild_failed"
+    assert client.get("/v1/capabilities").json()["personal"] == active
+    assert (store_root / "active.json").read_bytes() == active_pointer
+    assert sorted(path.name for path in (store_root / "bundles").iterdir()) == (
+        active_bundles
     )
 
 
