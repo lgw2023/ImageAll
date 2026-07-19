@@ -82,6 +82,29 @@ uv run imageall-model-backend \
 `--provider coreml` 与 `--coreml-bundle` 必须同时出现。artifact identity、checksum 或固定输入契约
 不匹配时服务在监听前停止，不会回退到 PyTorch provider。
 
+发布前可用独立启动验收器验证“进程启动 → loopback health/capability → 程序生成 PNG 请求 →
+确定性关闭”。验收器不经过 shell 执行目标 argv，只允许 `127.0.0.1`，输出不会记录完整命令或路径：
+
+```bash
+uv run imageall-verify-service-startup \
+  --endpoint http://127.0.0.1:18773 \
+  --expected-health ready \
+  --probe-kind embedding \
+  --output /tmp/imageall-service-startup.json \
+  -- .venv/bin/imageall-model-backend \
+    --provider coreml \
+    --coreml-bundle /absolute/path/to/verified-compiled-coreml \
+    --model-cache /absolute/path/to/huggingface/hub \
+    --offline \
+    --port 18773
+```
+
+`control` 只验 health/capability，`embedding` 额外核对完整 provider identity、384 维有限 float32
+结果，`standard` 则从已验证 standard capability 构造 target 并发送程序生成蓝色 PNG。成功或失败都先
+terminate，超时才 kill，并把是否仍有子进程写入证据。该命令是一次性发布门，不负责常驻服务或 App
+内自动启动。目标应是当前环境中直接安装的 `imageall-model-backend` console executable；不要再套一层
+`uv run`，否则验收器只能管理包装进程而不能证明实际服务已退出。
+
 加载仓库内的标准场景公开 fixture：
 
 ```bash
