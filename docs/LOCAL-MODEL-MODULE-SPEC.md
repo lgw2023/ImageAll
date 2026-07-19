@@ -80,7 +80,7 @@ backbone。训练产物必须记录 encoder、模型 revision、预处理 revisi
 |---|---|---|
 | Places365 ResNet18 | 标准场景标签、场景属性和 ontology mapping 的首个 tracer 候选 | `research`；固定上游 commit，但权重许可版本、官方字节 SHA、公开评测和 Core ML 门未关闭 |
 | DINOv2-small | 个人标签冻结 embedding | 固定 revision 的 PyTorch/Core ML 独立服务与 FP16 artifact tracer 已实现 |
-| SigLIP2 B/32 256 | 开放词表与标准概念候选评测 | 后续 benchmark |
+| SigLIP2 B/32 256 | 开放词表与标准概念候选评测 | 固定 revision 官方仓库约 1.55 GB，直接首包路径已由只读资源预筛拒绝；保留 teacher 研究候选 |
 | SegFormer-B0 ADE20K | 水域、天空、道路等标准标签的区域证据 | 研究候选，不单独决定标签 |
 | RAM++ | 通用对象/属性候选 | 许可证、权重来源和转换门未关闭，不得进入产品 |
 | FastViT-T12/T8 | 公共高频标签稳定后的端侧 student | 后续蒸馏候选，不承担动态个人词表 |
@@ -743,8 +743,10 @@ Development 签名串行 App 全量为 `929 passed, 0 failed, 0 skipped`；Debug
 全部测试使用公开 fixture、合成目录库与 preview bytes，未读取 `user/`、`/Volumes/HDD2` 或
 `.photoslibrary`，未 push。
 
-同日 production standard 准入 verifier 验收：CLI 定向为 `20 passed`，Backend 默认全量为
-`140 passed, 2 skipped`；Python compileall、sdist 和 wheel build 通过。tracked Places365 报告固定
+同日 production standard 准入 verifier 验收：CLI 定向为 `21 passed`，Backend 默认全量为
+`141 passed, 2 skipped`；Python compileall、sdist 和 wheel build 通过。tracked Places365 报告固定
 上游 commit、来源/许可证据 hash 与候选权重 hash，但因官方权重字节、许可版本和评测集均未 verified，
 稳定输出 `research`/exit 2。未下载模型或数据集，未读取 `user/`、`/Volumes/HDD2` 或
-`.photoslibrary`，未修改 App/Xcode，未 push。
+`.photoslibrary`，未修改 App/Xcode，未 push。后续窄修正确保任一已经 measured 的硬门失败立即
+`rejected`，不能被其他未测门降级为 `evaluationReady`。同轮只读预筛确认固定 SigLIP2 仓库约
+1.55 GB、主 safetensors 约 1.51 GB，因明显超过 80 MiB 首包门而未下载，继续只作为 teacher 候选。
