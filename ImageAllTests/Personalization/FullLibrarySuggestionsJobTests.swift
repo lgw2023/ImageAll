@@ -391,6 +391,132 @@ final class FullLibrarySuggestionsJobTests: XCTestCase {
         )
     }
 
+    func testStandardSuggestionPersistsIntoExistingReviewSurfacesAndManualDecisionWins() throws {
+        let fixture = try makeLargeLibraryFixture(assetCount: 8)
+        let package = makeStandardReviewPackage()
+        let installed = try fixture.tags.installStandardOntologyPackage(
+            package,
+            timestampMs: fixture.cutoffMs
+        )
+        let waterTag = try XCTUnwrap(installed.installedTags.first { $0.displayName == "Water" })
+        let handler = makeHandler(database: fixture.database, loader: fixture.loader, queue: fixture.queue)
+        let service = PersonalizationReviewService(
+            database: fixture.database,
+            queue: fixture.queue,
+            executionCoordinator: makeCoordinator(
+                database: fixture.database,
+                handler: handler,
+                queue: fixture.queue
+            ),
+            tags: fixture.tags,
+            clock: FixedJobClock(nowMs: fixture.cutoffMs + 1)
+        )
+        let candidate = try XCTUnwrap(
+            service.personalSuggestionCandidates(afterAssetID: nil, limit: 100).first {
+                $0.assetID.uuidString.hasPrefix("21000000-")
+                    && !fixture.positiveIDs.contains($0.assetID)
+                    && !fixture.negativeIDs.contains($0.assetID)
+            }
+        )
+
+        XCTAssertEqual(
+            try service.replaceStandardSuggestions(
+                assetID: candidate.assetID,
+                contentRevision: candidate.contentRevision,
+                suggestions: [makeStandardReviewSuggestion(package: package)],
+                expectedTarget: StandardModelSuggestionTarget(
+                    standardPackID: package.standardPackID,
+                    standardPackRevision: package.standardPackRevision
+                )
+            ),
+            1
+        )
+
+        let overview = try XCTUnwrap(service.tagOverviews().first { $0.id == waterTag.id })
+        XCTAssertEqual(overview.pendingSuggestionCount, 1)
+        XCTAssertTrue(overview.canReview)
+        XCTAssertFalse(overview.canGenerate)
+        XCTAssertFalse(overview.canUpdate)
+        XCTAssertEqual(try service.totalPendingSuggestionCount(), 1)
+        XCTAssertEqual(
+            try service.pendingSuggestionsForAsset(assetID: candidate.assetID),
+            [
+                AssetPendingSuggestion(
+                    tagID: waterTag.id,
+                    displayName: "Water",
+                    suggestionOrigin: .standardModel
+                ),
+            ]
+        )
+        let page = try service.fetchReviewQueue(tagID: waterTag.id, cursor: nil, limit: 10)
+        XCTAssertEqual(page.items.map(\.assetID), [candidate.assetID])
+        XCTAssertEqual(page.items.first?.suggestionOrigin, .standardModel)
+
+        _ = try fixture.tags.batchAccept(
+            tagID: waterTag.id,
+            assetIDs: [candidate.assetID],
+            timestampMs: fixture.cutoffMs + 2
+        )
+
+        XCTAssertEqual(try service.totalPendingSuggestionCount(), 0)
+        XCTAssertTrue(
+            try service.fetchReviewQueue(tagID: waterTag.id, cursor: nil, limit: 10).items.isEmpty
+        )
+        XCTAssertTrue(
+            try service.pendingSuggestionsForAsset(assetID: candidate.assetID).isEmpty
+        )
+    }
+
+    func testStandardSuggestionIdentityMismatchRollsBackWholeReplacement() throws {
+        let fixture = try makeLargeLibraryFixture(assetCount: 8)
+        let package = makeStandardReviewPackage()
+        _ = try fixture.tags.installStandardOntologyPackage(
+            package,
+            timestampMs: fixture.cutoffMs
+        )
+        let handler = makeHandler(database: fixture.database, loader: fixture.loader, queue: fixture.queue)
+        let service = PersonalizationReviewService(
+            database: fixture.database,
+            queue: fixture.queue,
+            executionCoordinator: makeCoordinator(
+                database: fixture.database,
+                handler: handler,
+                queue: fixture.queue
+            ),
+            tags: fixture.tags,
+            clock: FixedJobClock(nowMs: fixture.cutoffMs + 1)
+        )
+        let candidate = try XCTUnwrap(
+            service.personalSuggestionCandidates(afterAssetID: nil, limit: 100).first {
+                $0.assetID.uuidString.hasPrefix("21000000-")
+                    && !fixture.positiveIDs.contains($0.assetID)
+                    && !fixture.negativeIDs.contains($0.assetID)
+            }
+        )
+        let mismatched = makeStandardReviewSuggestion(
+            package: package,
+            conceptID: "scene.unknown"
+        )
+
+        XCTAssertThrowsError(
+            try service.replaceStandardSuggestions(
+                assetID: candidate.assetID,
+                contentRevision: candidate.contentRevision,
+                suggestions: [makeStandardReviewSuggestion(package: package), mismatched],
+                expectedTarget: StandardModelSuggestionTarget(
+                    standardPackID: package.standardPackID,
+                    standardPackRevision: package.standardPackRevision
+                )
+            )
+        ) { error in
+            XCTAssertEqual(error as? PersonalizationReviewError, .persistenceFailure)
+        }
+
+        try fixture.database.pool.read { db in
+            XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM standard_prediction"), 0)
+        }
+    }
+
     func testPersonalSuggestionPublishFailsClosedAfterBundleTagIsArchived() throws {
         let fixture = try makeLargeLibraryFixture(assetCount: 8)
         let handler = makeHandler(database: fixture.database, loader: fixture.loader, queue: fixture.queue)
@@ -2265,6 +2391,56 @@ private func makePersonalCapability(
             policyRevision: "policy-r1"
         ),
         tagIDs: tagIDs
+    )
+}
+
+private func makeStandardReviewPackage() -> StandardOntologyPackageInput {
+    StandardOntologyPackageInput(
+        standardPackID: "imageall.standard.review.synthetic",
+        standardPackRevision: "pack-v1",
+        ontologyID: "imageall.standard.review.synthetic",
+        ontologyRevision: "ontology-v1",
+        localeRevision: "locale-en-v1",
+        manifestSHA256: String(repeating: "a", count: 64),
+        provider: "synthetic",
+        modelRevision: "model-v1",
+        preprocessingRevision: "preprocessing-v1",
+        mappingRevision: "mapping-v1",
+        policyRevision: "policy-v1",
+        weightsSHA256: String(repeating: "b", count: 64),
+        concepts: [
+            StandardOntologyConceptInput(conceptID: "scene.water", canonicalName: "Water"),
+        ],
+        edges: []
+    )
+}
+
+private func makeStandardReviewSuggestion(
+    package: StandardOntologyPackageInput,
+    conceptID: String = "scene.water"
+) -> LocalModelSuggestion {
+    LocalModelSuggestion(
+        track: .standard,
+        conceptID: conceptID,
+        tagID: nil,
+        score: 0.9,
+        recommendedState: .autoAssigned,
+        catalogScopeID: nil,
+        bundleID: nil,
+        bundleRevision: nil,
+        standardPackID: package.standardPackID,
+        standardPackRevision: package.standardPackRevision,
+        provider: package.provider,
+        modelID: nil,
+        modelRevision: package.modelRevision,
+        preprocessingRevision: package.preprocessingRevision,
+        elementCount: nil,
+        labelVocabularyRevision: nil,
+        weightsSHA256: nil,
+        ontologyID: package.ontologyID,
+        ontologyRevision: package.ontologyRevision,
+        mappingRevision: package.mappingRevision,
+        policyRevision: package.policyRevision
     )
 }
 

@@ -435,6 +435,16 @@ struct ReviewQueueContentView: View {
     }
 }
 
+private extension ReviewQueueSuggestionOrigin {
+    var reviewDisplayName: String {
+        switch self {
+        case .featurePrint: "Feature Print"
+        case .standardModel: "标准模型"
+        case .personalModel: "个人 DINO"
+        }
+    }
+}
+
 private struct ReviewThumbnailView: View {
     let item: ReviewQueueItemProjection
     @ObservedObject var model: LibraryWorkspaceModel
@@ -460,7 +470,7 @@ private struct ReviewThumbnailView: View {
                 VStack {
                     Spacer()
                     HStack {
-                        Text(item.suggestionOrigin == .personalModel ? "个人 DINO" : "Feature Print")
+                        Text(item.suggestionOrigin.reviewDisplayName)
                             .font(.caption2.weight(.semibold))
                             .foregroundStyle(.white)
                             .padding(.horizontal, 6)
@@ -489,7 +499,7 @@ private struct ReviewThumbnailView: View {
         .accessibilityLabel(item.fileName ?? "照片")
         .accessibilityAddTraits(.isButton)
         .accessibilityValue(
-            "\(isSelected ? "已选择" : "未选择")，\(item.suggestionOrigin == .personalModel ? "个人 DINO 建议" : "Feature Print 建议")"
+            "\(isSelected ? "已选择" : "未选择")，\(item.suggestionOrigin.reviewDisplayName)建议"
         )
         .accessibilityHint("选择待审核照片；双击可预览，也可按 P、X 或 U 处理")
         .accessibilityAction {
@@ -520,11 +530,7 @@ struct InspectorSuggestionSection: View {
                 ForEach(visible) { suggestion in
                     HStack {
                         Text(suggestion.displayName)
-                        Text(
-                            suggestion.suggestionOrigin == .personalModel
-                                ? "个人 DINO"
-                                : "Feature Print"
-                        )
+                        Text(suggestion.suggestionOrigin.reviewDisplayName)
                         .font(.caption2.weight(.semibold))
                         .foregroundStyle(.secondary)
                         .padding(.horizontal, 5)

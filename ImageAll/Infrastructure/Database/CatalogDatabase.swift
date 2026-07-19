@@ -15,6 +15,7 @@ struct CatalogDatabase: Sendable {
         V007AddCatalogScopeIdentityMigration.register(on: &migrator)
         V008AddPersonalModelSuggestionsMigration.register(on: &migrator)
         V009AddStandardOntologyMigration.register(on: &migrator)
+        V010AddStandardPredictionsMigration.register(on: &migrator)
         return migrator
     }
 
@@ -660,6 +661,48 @@ enum V009AddStandardOntologyMigration {
                 BEGIN
                     SELECT RAISE(ABORT, 'personal suggestion requires personal tag');
                 END
+                """
+            )
+        }
+    }
+}
+
+enum V010AddStandardPredictionsMigration {
+    static func register(on migrator: inout DatabaseMigrator) {
+        migrator.registerMigration(CatalogMigrationID.v010AddStandardPredictions) { db in
+            try db.execute(
+                sql: """
+                CREATE TABLE standard_prediction (
+                    asset_id TEXT NOT NULL REFERENCES asset(id) ON DELETE CASCADE,
+                    tag_id TEXT NOT NULL REFERENCES standard_tag_binding(tag_id) ON DELETE CASCADE,
+                    content_revision INTEGER NOT NULL CHECK(content_revision > 0),
+                    standard_pack_id TEXT NOT NULL,
+                    standard_pack_revision TEXT NOT NULL,
+                    score REAL NOT NULL CHECK(
+                        typeof(score) IN ('real', 'integer')
+                        AND score = score
+                        AND score BETWEEN -1.0e308 AND 1.0e308
+                    ),
+                    recommended_state TEXT NOT NULL
+                        CHECK(recommended_state IN ('suggested', 'autoAssigned')),
+                    state TEXT NOT NULL CHECK(state = 'pendingReview'),
+                    created_at_ms INTEGER NOT NULL CHECK(created_at_ms >= 0),
+                    PRIMARY KEY(asset_id, tag_id, content_revision),
+                    FOREIGN KEY(standard_pack_id, standard_pack_revision)
+                        REFERENCES standard_model_revision(
+                            standard_pack_id, standard_pack_revision
+                        ) ON DELETE CASCADE
+                ) STRICT
+                """
+            )
+            try db.execute(
+                sql: """
+                CREATE INDEX standard_prediction_review_rank_idx ON standard_prediction (
+                    tag_id,
+                    state,
+                    score DESC,
+                    asset_id
+                )
                 """
             )
         }

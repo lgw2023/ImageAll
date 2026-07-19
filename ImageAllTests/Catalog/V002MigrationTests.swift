@@ -175,6 +175,7 @@ final class V002MigrationTests: XCTestCase {
                 "personal_suggestion_tag", "personal_prediction",
                 "ontology_pack", "ontology_concept", "ontology_edge", "standard_model_revision",
                 "standard_tag_binding",
+                "standard_prediction",
             ].contains($0)
         }
         let v001Dump = try v001Only.pool.read { db in

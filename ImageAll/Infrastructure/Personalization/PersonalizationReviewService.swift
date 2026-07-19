@@ -42,11 +42,12 @@ struct PersonalizationReviewService: PersonalizationReviewPort, Sendable {
             let status = mapTaskStatus(tag: tag, samples: samples, job: job)
             let checkpoint = try job.flatMap { try FullLibrarySuggestionsCodec.checkpoint(from: $0.checkpoint) }
             let hasModel = try review.tagHasCurrentModel(tagID: tag.id)
+            let isStandard = try review.tagIsStandard(tagID: tag.id)
             let missingPositive = max(0, 2 - samples.accepted)
             let missingNegative = max(0, 2 - samples.rejected)
             let samplesReady = missingPositive == 0 && missingNegative == 0
-            let canGenerate = samplesReady && !hasModel && job == nil
-            let canUpdate = samplesReady && hasModel && job == nil
+            let canGenerate = !isStandard && samplesReady && !hasModel && job == nil
+            let canUpdate = !isStandard && samplesReady && hasModel && job == nil
             return SuggestionTagOverview(
                 id: tag.id,
                 displayName: tag.displayName,
@@ -108,6 +109,21 @@ struct PersonalizationReviewService: PersonalizationReviewPort, Sendable {
             candidate: candidate,
             predictions: predictions,
             expectedCapability: expectedCapability,
+            createdAtMs: clock.nowMs
+        )
+    }
+
+    func replaceStandardSuggestions(
+        assetID: UUID,
+        contentRevision: Int,
+        suggestions: [LocalModelSuggestion],
+        expectedTarget: StandardModelSuggestionTarget
+    ) throws -> Int {
+        try review.replaceStandardSuggestions(
+            assetID: assetID,
+            contentRevision: contentRevision,
+            suggestions: suggestions,
+            expectedTarget: expectedTarget,
             createdAtMs: clock.nowMs
         )
     }

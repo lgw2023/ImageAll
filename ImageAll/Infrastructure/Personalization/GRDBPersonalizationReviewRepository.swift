@@ -26,6 +26,26 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                     WHERE p.state = 'pendingReview' AND d.asset_id IS NULL
                     UNION
                     SELECT p.asset_id, p.tag_id
+                    FROM standard_prediction p
+                    JOIN ontology_pack pack
+                        ON pack.standard_pack_id = p.standard_pack_id
+                        AND pack.standard_pack_revision = p.standard_pack_revision
+                        AND pack.state = 'active'
+                    JOIN standard_tag_binding binding
+                        ON binding.tag_id = p.tag_id
+                        AND binding.ontology_id = pack.ontology_id
+                        AND binding.ontology_revision = pack.ontology_revision
+                    JOIN tag t ON t.id = p.tag_id AND t.state = 'active'
+                    JOIN asset a
+                        ON a.id = p.asset_id
+                        AND a.content_revision = p.content_revision
+                        AND a.locator_state = 'current'
+                        AND a.availability = 'available'
+                    LEFT JOIN asset_tag_decision d
+                        ON d.asset_id = p.asset_id AND d.tag_id = p.tag_id
+                    WHERE p.state = 'pendingReview' AND d.asset_id IS NULL
+                    UNION
+                    SELECT p.asset_id, p.tag_id
                     FROM personal_prediction p
                     JOIN personal_suggestion_model m ON m.singleton = 1
                     JOIN personal_suggestion_tag pst ON pst.tag_id = p.tag_id
@@ -69,6 +89,28 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                         AND d.asset_id IS NULL
                     UNION
                     SELECT p.asset_id, p.tag_id
+                    FROM standard_prediction p
+                    JOIN ontology_pack pack
+                        ON pack.standard_pack_id = p.standard_pack_id
+                        AND pack.standard_pack_revision = p.standard_pack_revision
+                        AND pack.state = 'active'
+                    JOIN standard_tag_binding binding
+                        ON binding.tag_id = p.tag_id
+                        AND binding.ontology_id = pack.ontology_id
+                        AND binding.ontology_revision = pack.ontology_revision
+                    JOIN tag t ON t.id = p.tag_id AND t.state = 'active'
+                    JOIN asset a
+                        ON a.id = p.asset_id
+                        AND a.content_revision = p.content_revision
+                        AND a.locator_state = 'current'
+                        AND a.availability = 'available'
+                    LEFT JOIN asset_tag_decision d
+                        ON d.asset_id = p.asset_id AND d.tag_id = p.tag_id
+                    WHERE p.tag_id = ?
+                        AND p.state = 'pendingReview'
+                        AND d.asset_id IS NULL
+                    UNION
+                    SELECT p.asset_id, p.tag_id
                     FROM personal_prediction p
                     JOIN personal_suggestion_model m ON m.singleton = 1
                     JOIN personal_suggestion_tag pst ON pst.tag_id = p.tag_id
@@ -86,7 +128,7 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                 )
                 SELECT COUNT(*) FROM pending_pairs
                 """,
-                arguments: [uuid(tagID), uuid(tagID)]
+                arguments: [uuid(tagID), uuid(tagID), uuid(tagID)]
             ) ?? 0
         }
     }
@@ -138,6 +180,16 @@ struct GRDBPersonalizationReviewRepository: Sendable {
             try Bool.fetchOne(
                 db,
                 sql: "SELECT EXISTS(SELECT 1 FROM tag_model WHERE tag_id = ?)",
+                arguments: [uuid(tagID)]
+            ) ?? false
+        }
+    }
+
+    func tagIsStandard(tagID: UUID) throws -> Bool {
+        try database.pool.read { db in
+            try Bool.fetchOne(
+                db,
+                sql: "SELECT EXISTS(SELECT 1 FROM standard_tag_binding WHERE tag_id = ?)",
                 arguments: [uuid(tagID)]
             ) ?? false
         }
@@ -587,6 +639,173 @@ struct GRDBPersonalizationReviewRepository: Sendable {
         return inserted
     }
 
+    func replaceStandardSuggestions(
+        assetID: UUID,
+        contentRevision: Int,
+        suggestions: [LocalModelSuggestion],
+        expectedTarget: StandardModelSuggestionTarget,
+        createdAtMs: Int64
+    ) throws -> Int {
+        guard contentRevision > 0,
+              createdAtMs >= 0,
+              !expectedTarget.standardPackID.isEmpty,
+              !expectedTarget.standardPackRevision.isEmpty,
+              suggestions.allSatisfy({ $0.score.isFinite }),
+              Set(suggestions.compactMap(\.conceptID)).count == suggestions.count
+        else {
+            throw PersonalizationReviewError.persistenceFailure
+        }
+
+        return try database.pool.write { db in
+            guard try Bool.fetchOne(
+                db,
+                sql: """
+                SELECT EXISTS(
+                    SELECT 1
+                    FROM ontology_pack p
+                    JOIN standard_model_revision m
+                        ON m.standard_pack_id = p.standard_pack_id
+                        AND m.standard_pack_revision = p.standard_pack_revision
+                    WHERE p.standard_pack_id = ?
+                        AND p.standard_pack_revision = ?
+                        AND p.state = 'active'
+                )
+                """,
+                arguments: [
+                    expectedTarget.standardPackID,
+                    expectedTarget.standardPackRevision,
+                ]
+            ) == true,
+                try Bool.fetchOne(
+                    db,
+                    sql: """
+                    SELECT EXISTS(
+                        SELECT 1
+                        FROM asset a
+                        JOIN source s ON s.id = a.source_id AND s.state = 'active'
+                        WHERE a.id = ?
+                            AND a.content_revision = ?
+                            AND a.locator_state = 'current'
+                            AND a.availability = 'available'
+                            AND (
+                                (s.kind = 'folder' AND a.locator_kind = 'file')
+                                OR (s.kind = 'photos' AND a.locator_kind = 'photos')
+                            )
+                    )
+                    """,
+                    arguments: [uuid(assetID), contentRevision]
+                ) == true
+            else {
+                throw PersonalizationReviewError.persistenceFailure
+            }
+
+            var mapped: [(tagID: String, suggestion: LocalModelSuggestion)] = []
+            mapped.reserveCapacity(suggestions.count)
+            for suggestion in suggestions {
+                guard suggestion.track == .standard,
+                      let conceptID = suggestion.conceptID,
+                      !conceptID.isEmpty,
+                      suggestion.tagID == nil,
+                      suggestion.standardPackID == expectedTarget.standardPackID,
+                      suggestion.standardPackRevision == expectedTarget.standardPackRevision,
+                      suggestion.catalogScopeID == nil,
+                      suggestion.bundleID == nil,
+                      suggestion.bundleRevision == nil,
+                      suggestion.elementCount == nil,
+                      suggestion.labelVocabularyRevision == nil,
+                      suggestion.weightsSHA256 == nil,
+                      suggestion.modelID?.isEmpty != true,
+                      let ontologyID = suggestion.ontologyID,
+                      let ontologyRevision = suggestion.ontologyRevision,
+                      let mappingRevision = suggestion.mappingRevision,
+                      !suggestion.provider.isEmpty,
+                      !suggestion.modelRevision.isEmpty,
+                      !suggestion.preprocessingRevision.isEmpty,
+                      !ontologyID.isEmpty,
+                      !ontologyRevision.isEmpty,
+                      !mappingRevision.isEmpty,
+                      !suggestion.policyRevision.isEmpty,
+                      let tagID = try String.fetchOne(
+                          db,
+                          sql: """
+                          SELECT binding.tag_id
+                          FROM ontology_pack p
+                          JOIN standard_model_revision m
+                              ON m.standard_pack_id = p.standard_pack_id
+                              AND m.standard_pack_revision = p.standard_pack_revision
+                          JOIN standard_tag_binding binding
+                              ON binding.ontology_id = p.ontology_id
+                              AND binding.ontology_revision = p.ontology_revision
+                          JOIN tag t ON t.id = binding.tag_id AND t.state = 'active'
+                          WHERE p.standard_pack_id = ?
+                              AND p.standard_pack_revision = ?
+                              AND p.ontology_id = ?
+                              AND p.ontology_revision = ?
+                              AND p.state = 'active'
+                              AND m.provider = ?
+                              AND m.model_revision = ?
+                              AND m.preprocessing_revision = ?
+                              AND m.mapping_revision = ?
+                              AND m.policy_revision = ?
+                              AND binding.concept_id = ?
+                          """,
+                          arguments: [
+                              expectedTarget.standardPackID,
+                              expectedTarget.standardPackRevision,
+                              ontologyID,
+                              ontologyRevision,
+                              suggestion.provider,
+                              suggestion.modelRevision,
+                              suggestion.preprocessingRevision,
+                              mappingRevision,
+                              suggestion.policyRevision,
+                              conceptID,
+                          ]
+                      )
+                else {
+                    throw PersonalizationReviewError.persistenceFailure
+                }
+                mapped.append((tagID, suggestion))
+            }
+
+            try db.execute(
+                sql: "DELETE FROM standard_prediction WHERE asset_id = ?",
+                arguments: [uuid(assetID)]
+            )
+            var inserted = 0
+            for entry in mapped {
+                try db.execute(
+                    sql: """
+                    INSERT INTO standard_prediction (
+                        asset_id, tag_id, content_revision,
+                        standard_pack_id, standard_pack_revision,
+                        score, recommended_state, state, created_at_ms
+                    )
+                    SELECT ?, ?, ?, ?, ?, ?, ?, 'pendingReview', ?
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM asset_tag_decision d
+                        WHERE d.asset_id = ? AND d.tag_id = ?
+                    )
+                    """,
+                    arguments: [
+                        uuid(assetID),
+                        entry.tagID,
+                        contentRevision,
+                        expectedTarget.standardPackID,
+                        expectedTarget.standardPackRevision,
+                        entry.suggestion.score,
+                        entry.suggestion.recommendedState.rawValue,
+                        createdAtMs,
+                        uuid(assetID),
+                        entry.tagID,
+                    ]
+                )
+                inserted += db.changesCount
+            }
+            return inserted
+        }
+    }
+
     func invalidatePersonalSuggestionBundle() throws {
         try database.pool.write { db in
             try invalidatePersonalSuggestionBundle(on: db)
@@ -630,7 +849,30 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                 AND p.state = 'pendingReview'
                 AND d.asset_id IS NULL
             UNION ALL
-            SELECT p.asset_id, p.score, 1 AS origin_rank, 'personalModel' AS suggestion_origin,
+            SELECT p.asset_id, p.score, 1 AS origin_rank, 'standardModel' AS suggestion_origin,
+                a.file_name, a.availability
+            FROM standard_prediction p
+            JOIN ontology_pack pack
+                ON pack.standard_pack_id = p.standard_pack_id
+                AND pack.standard_pack_revision = p.standard_pack_revision
+                AND pack.state = 'active'
+            JOIN standard_tag_binding binding
+                ON binding.tag_id = p.tag_id
+                AND binding.ontology_id = pack.ontology_id
+                AND binding.ontology_revision = pack.ontology_revision
+            JOIN tag t ON t.id = p.tag_id AND t.state = 'active'
+            JOIN asset a
+                ON a.id = p.asset_id
+                AND a.content_revision = p.content_revision
+                AND a.locator_state = 'current'
+                AND a.availability = 'available'
+            LEFT JOIN asset_tag_decision d
+                ON d.asset_id = p.asset_id AND d.tag_id = p.tag_id
+            WHERE p.tag_id = ?
+                AND p.state = 'pendingReview'
+                AND d.asset_id IS NULL
+            UNION ALL
+            SELECT p.asset_id, p.score, 2 AS origin_rank, 'personalModel' AS suggestion_origin,
                 a.file_name, a.availability
             FROM personal_prediction p
             JOIN personal_suggestion_model m ON m.singleton = 1
@@ -666,7 +908,7 @@ struct GRDBPersonalizationReviewRepository: Sendable {
         FROM ranked r
         WHERE r.duplicate_rank = 1
         """
-        var arguments: [DatabaseValueConvertible] = [uuid(tagID), uuid(tagID)]
+        var arguments: [DatabaseValueConvertible] = [uuid(tagID), uuid(tagID), uuid(tagID)]
         if let cursor {
             let boundary = try ReviewQueueCursorCodec.decodeBoundary(cursor)
             sql += """
@@ -744,6 +986,28 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                         AND d.asset_id IS NULL
                     UNION ALL
                     SELECT p.tag_id, 1 AS origin_rank
+                    FROM standard_prediction p
+                    JOIN ontology_pack pack
+                        ON pack.standard_pack_id = p.standard_pack_id
+                        AND pack.standard_pack_revision = p.standard_pack_revision
+                        AND pack.state = 'active'
+                    JOIN standard_tag_binding binding
+                        ON binding.tag_id = p.tag_id
+                        AND binding.ontology_id = pack.ontology_id
+                        AND binding.ontology_revision = pack.ontology_revision
+                    JOIN tag t ON t.id = p.tag_id AND t.state = 'active'
+                    JOIN asset a
+                        ON a.id = p.asset_id
+                        AND a.content_revision = p.content_revision
+                        AND a.locator_state = 'current'
+                        AND a.availability = 'available'
+                    LEFT JOIN asset_tag_decision d
+                        ON d.asset_id = p.asset_id AND d.tag_id = p.tag_id
+                    WHERE p.asset_id = ?
+                        AND p.state = 'pendingReview'
+                        AND d.asset_id IS NULL
+                    UNION ALL
+                    SELECT p.tag_id, 2 AS origin_rank
                     FROM personal_prediction p
                     JOIN personal_suggestion_model m ON m.singleton = 1
                     JOIN personal_suggestion_tag pst ON pst.tag_id = p.tag_id
@@ -765,14 +1029,15 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                 )
                 SELECT p.tag_id, t.name,
                     CASE p.origin_rank
-                        WHEN 1 THEN 'personalModel'
+                        WHEN 2 THEN 'personalModel'
+                        WHEN 1 THEN 'standardModel'
                         ELSE 'featurePrint'
                     END AS suggestion_origin
                 FROM pending_tags p
                 JOIN tag t ON t.id = p.tag_id
                 ORDER BY t.name COLLATE NOCASE ASC, p.tag_id ASC
                 """,
-                arguments: [uuid(assetID), uuid(assetID)]
+                arguments: [uuid(assetID), uuid(assetID), uuid(assetID)]
             ).compactMap { row in
                 guard let tagID = UUID(uuidString: row["tag_id"]) else { return nil }
                 return AssetPendingSuggestion(

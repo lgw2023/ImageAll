@@ -95,6 +95,7 @@ enum CatalogSchemaExpectations {
         "prediction",
         "source",
         "standard_model_revision",
+        "standard_prediction",
         "standard_tag_binding",
         "tag",
         "tag_model",
@@ -123,6 +124,7 @@ enum CatalogSchemaExpectations {
         "job_queue_idx",
         "personal_prediction_review_rank_idx",
         "prediction_review_rank_idx",
+        "standard_prediction_review_rank_idx",
         "tag_model_sample_feature_idx",
         "tag_normalized_name_uq",
     ]
@@ -170,6 +172,17 @@ enum CatalogSchemaExpectations {
             .init(name: "ontology_id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
             .init(name: "ontology_revision", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
             .init(name: "concept_id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+        ],
+        "standard_prediction": [
+            .init(name: "asset_id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 1),
+            .init(name: "tag_id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 2),
+            .init(name: "content_revision", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 3),
+            .init(name: "standard_pack_id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "standard_pack_revision", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "score", type: "REAL", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "recommended_state", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "state", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "created_at_ms", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
         ],
         "personal_suggestion_model": [
             .init(name: "singleton", type: "INTEGER", notNull: false, defaultValue: nil, primaryKeyOrder: 1),
@@ -368,6 +381,12 @@ enum CatalogSchemaExpectations {
             .init(from: "ontology_revision", toTable: "ontology_concept", to: "ontology_revision", onDelete: "RESTRICT"),
             .init(from: "concept_id", toTable: "ontology_concept", to: "concept_id", onDelete: "RESTRICT"),
         ],
+        "standard_prediction": [
+            .init(from: "asset_id", toTable: "asset", to: "id", onDelete: "CASCADE"),
+            .init(from: "tag_id", toTable: "standard_tag_binding", to: "tag_id", onDelete: "CASCADE"),
+            .init(from: "standard_pack_id", toTable: "standard_model_revision", to: "standard_pack_id", onDelete: "CASCADE"),
+            .init(from: "standard_pack_revision", toTable: "standard_model_revision", to: "standard_pack_revision", onDelete: "CASCADE"),
+        ],
         "personal_suggestion_model": [
             .init(from: "catalog_scope_id", toTable: "catalog_scope", to: "scope_id", onDelete: "CASCADE"),
         ],
@@ -446,6 +465,7 @@ enum CatalogSchemaExpectations {
         "job_active_coalescing_uq": "job",
         "personal_prediction_review_rank_idx": "personal_prediction",
         "prediction_review_rank_idx": "prediction",
+        "standard_prediction_review_rank_idx": "standard_prediction",
         "tag_model_sample_feature_idx": "tag_model_sample",
     ]
 
@@ -678,6 +698,16 @@ enum CatalogSchemaExpectations {
         ),
         .init(
             name: "personal_prediction_review_rank_idx",
+            keyColumns: [
+                .init(name: "tag_id", descending: false, collation: "BINARY"),
+                .init(name: "state", descending: false, collation: "BINARY"),
+                .init(name: "score", descending: true, collation: "BINARY"),
+                .init(name: "asset_id", descending: false, collation: "BINARY"),
+            ],
+            unique: false
+        ),
+        .init(
+            name: "standard_prediction_review_rank_idx",
             keyColumns: [
                 .init(name: "tag_id", descending: false, collation: "BINARY"),
                 .init(name: "state", descending: false, collation: "BINARY"),

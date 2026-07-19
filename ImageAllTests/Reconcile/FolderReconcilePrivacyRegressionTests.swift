@@ -32,6 +32,7 @@ final class FolderReconcilePrivacyRegressionTests: XCTestCase {
             CatalogMigrationID.v007AddCatalogScopeIdentity,
             CatalogMigrationID.v008AddPersonalModelSuggestions,
             CatalogMigrationID.v009AddStandardOntology,
+            CatalogMigrationID.v010AddStandardPredictions,
         ])
     }
 }

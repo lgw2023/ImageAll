@@ -45,6 +45,7 @@ struct SuggestionTagOverview: Identifiable, Equatable, Sendable {
 
 enum ReviewQueueSuggestionOrigin: String, Equatable, Sendable {
     case featurePrint
+    case standardModel
     case personalModel
 }
 
@@ -168,6 +169,12 @@ protocol PersonalizationReviewPort: Sendable {
         predictions: [PersonalSuggestionPrediction],
         expectedCapability: PersonalModelSuggestionCapability
     ) throws -> Int
+    func replaceStandardSuggestions(
+        assetID: UUID,
+        contentRevision: Int,
+        suggestions: [LocalModelSuggestion],
+        expectedTarget: StandardModelSuggestionTarget
+    ) throws -> Int
     func invalidatePersonalSuggestionBundle() throws
     func enqueueFullLibrarySuggestions(
         tagID: UUID,
@@ -212,6 +219,15 @@ extension PersonalizationReviewPort {
     }
 
     func invalidatePersonalSuggestionBundle() throws {
+        throw PersonalizationReviewError.persistenceFailure
+    }
+
+    func replaceStandardSuggestions(
+        assetID _: UUID,
+        contentRevision _: Int,
+        suggestions _: [LocalModelSuggestion],
+        expectedTarget _: StandardModelSuggestionTarget
+    ) throws -> Int {
         throw PersonalizationReviewError.persistenceFailure
     }
 

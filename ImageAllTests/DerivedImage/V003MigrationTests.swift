@@ -495,6 +495,7 @@ final class V003MigrationTests: XCTestCase {
             "prediction", "personal_suggestion_model", "personal_suggestion_tag",
             "personal_prediction", "ontology_pack", "ontology_concept", "ontology_edge",
             "standard_model_revision", "standard_tag_binding",
+            "standard_prediction",
         ])
         for table in CatalogSchemaExpectations.businessTables
             where table != "derived_image_cache_entry" && !laterTables.contains(table)
