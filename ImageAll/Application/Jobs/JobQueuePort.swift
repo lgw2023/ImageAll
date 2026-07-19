@@ -27,10 +27,37 @@ struct JobExecutionCoordinator: Sendable {
     }
 
     func claimAndExecuteOnce(_ input: ClaimNextInput) throws -> JobExecutionResult? {
-        guard let lease = try queue.claimNext(input) else {
-            return nil
+        guard let claim = try claimAndValidate(input) else { return nil }
+        switch claim {
+        case let .settled(result):
+            return result
+        case let .ready(lease, handler):
+            return try executeSync(lease: lease, handler: handler, input: input)
         }
+    }
 
+    func claimAndExecuteOnceAsync(_ input: ClaimNextInput) async throws -> JobExecutionResult? {
+        guard let claim = try claimAndValidate(input) else { return nil }
+        switch claim {
+        case let .settled(result):
+            return result
+        case let .ready(lease, handler):
+            guard let asyncHandler = handler as? any AsyncLeaseBoundJobHandler else {
+                return try executeSync(lease: lease, handler: handler, input: input)
+            }
+            let execution = try await asyncHandler.executeAsync(
+                lease: lease,
+                payloadVersion: lease.payloadVersion,
+                payload: lease.payload,
+                checkpoint: lease.checkpoint,
+                context: try leaseContext(for: input)
+            )
+            return try settle(execution, lease: lease, leaseDurationMs: input.leaseDurationMs)
+        }
+    }
+
+    private func claimAndValidate(_ input: ClaimNextInput) throws -> ValidatedJobClaim? {
+        guard let lease = try queue.claimNext(input) else { return nil }
         if let validationError = JobRegistryValidation.validate(
             kind: lease.kind,
             payloadVersion: lease.payloadVersion,
@@ -48,7 +75,6 @@ struct JobExecutionCoordinator: Sendable {
             default:
                 throw validationError
             }
-
             let persisted = try queue.fetchJob(id: lease.jobID)
             let snapshot = try queue.submitSafeBatch(
                 SafeBatchCommitInput(
@@ -58,60 +84,72 @@ struct JobExecutionCoordinator: Sendable {
                     progress: persisted.progress
                 )
             )
-            return JobExecutionResult(lease: lease, snapshot: snapshot, handlerInvoked: false)
+            return .settled(
+                JobExecutionResult(lease: lease, snapshot: snapshot, handlerInvoked: false)
+            )
         }
-
         guard let handler = registry.handler(forKind: lease.kind) else {
             throw JobQueueError.unknownJobKind(lease.kind)
         }
+        return .ready(lease, handler)
+    }
 
+    private func executeSync(
+        lease: JobLeaseToken,
+        handler: any JobHandler,
+        input: ClaimNextInput
+    ) throws -> JobExecutionResult {
+        let execution: JobHandlerExecutionResult
         if let leaseHandler = handler as? any LeaseBoundJobHandler {
-            guard let leaseContextProvider else {
-                throw JobQueueError.invalidClaimInput(reason: "lease context provider required")
-            }
-            let context = leaseContextProvider.makeLeaseContext(
-                leaseDurationMs: input.leaseDurationMs
-            )
-            let execution = try leaseHandler.execute(
+            execution = try leaseHandler.execute(
                 lease: lease,
                 payloadVersion: lease.payloadVersion,
                 payload: lease.payload,
                 checkpoint: lease.checkpoint,
-                context: context
+                context: try leaseContext(for: input)
             )
-            if execution.settledByHandler {
-                let snapshot = try queue.fetchJob(id: lease.jobID)
-                return JobExecutionResult(lease: lease, snapshot: snapshot, handlerInvoked: true)
-            }
-            let snapshot = try queue.submitSafeBatch(
-                SafeBatchCommitInput(
-                    lease: lease,
-                    outcome: execution.outcome,
-                    checkpoint: execution.checkpoint,
-                    progress: execution.progress,
-                    leaseDurationMs: input.leaseDurationMs
-                )
+        } else {
+            execution = handler.execute(
+                payloadVersion: lease.payloadVersion,
+                payload: lease.payload,
+                checkpoint: lease.checkpoint
             )
+        }
+        return try settle(execution, lease: lease, leaseDurationMs: input.leaseDurationMs)
+    }
+
+    private func leaseContext(for input: ClaimNextInput) throws -> JobLeaseExecutionContext {
+        guard let leaseContextProvider else {
+            throw JobQueueError.invalidClaimInput(reason: "lease context provider required")
+        }
+        return leaseContextProvider.makeLeaseContext(leaseDurationMs: input.leaseDurationMs)
+    }
+
+    private func settle(
+        _ execution: JobHandlerExecutionResult,
+        lease: JobLeaseToken,
+        leaseDurationMs: Int64
+    ) throws -> JobExecutionResult {
+        if execution.settledByHandler {
+            let snapshot = try queue.fetchJob(id: lease.jobID)
             return JobExecutionResult(lease: lease, snapshot: snapshot, handlerInvoked: true)
         }
-
-        let execution = handler.execute(
-            payloadVersion: lease.payloadVersion,
-            payload: lease.payload,
-            checkpoint: lease.checkpoint
-        )
-
         let snapshot = try queue.submitSafeBatch(
             SafeBatchCommitInput(
                 lease: lease,
                 outcome: execution.outcome,
                 checkpoint: execution.checkpoint,
                 progress: execution.progress,
-                leaseDurationMs: input.leaseDurationMs
+                leaseDurationMs: leaseDurationMs
             )
         )
         return JobExecutionResult(lease: lease, snapshot: snapshot, handlerInvoked: true)
     }
+}
+
+private enum ValidatedJobClaim {
+    case settled(JobExecutionResult)
+    case ready(JobLeaseToken, any JobHandler)
 }
 
 struct JobExecutionResult: Sendable, Equatable {

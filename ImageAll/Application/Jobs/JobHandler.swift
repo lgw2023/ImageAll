@@ -47,6 +47,16 @@ protocol LeaseBoundJobHandler: JobHandler {
     ) throws -> JobHandlerExecutionResult
 }
 
+protocol AsyncLeaseBoundJobHandler: JobHandler {
+    func executeAsync(
+        lease: JobLeaseToken,
+        payloadVersion: Int,
+        payload: Data,
+        checkpoint: JobCheckpoint?,
+        context: JobLeaseExecutionContext
+    ) async throws -> JobHandlerExecutionResult
+}
+
 protocol JobHandlerRegistry: Sendable {
     func handler(forKind kind: String) -> (any JobHandler)?
 }

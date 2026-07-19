@@ -208,4 +208,65 @@ final class JobRegistryTests: XCTestCase {
         XCTAssertTrue(result.handlerInvoked)
         XCTAssertEqual(result.snapshot.state, .completed)
     }
+
+    func testAsyncLeaseBoundHandlerUsesAsyncCoordinatorPath() async throws {
+        let url = try makeTempDatabaseURL()
+        let database = try CatalogDatabase.open(at: url)
+        let queue = JobTestSupport.makeQueue(database: database)
+        let tracker = JobTestSupport.HandlerCallTracker()
+        let handler = FakeAsyncLeaseBoundJobHandler(
+            kind: JobTestSupport.testKind,
+            tracker: tracker
+        )
+        let coordinator = JobExecutionCoordinator(
+            queue: queue,
+            registry: InMemoryJobHandlerRegistry(handlers: [handler]),
+            leaseContextProvider: GRDBJobLeaseContextProvider(queue: queue)
+        )
+        _ = try JobTestSupport.enqueueDefault(queue: queue)
+
+        let execution = try await coordinator.claimAndExecuteOnceAsync(
+            ClaimNextInput(owner: "async-worker", leaseDurationMs: JobTestSupport.leaseDurationMs)
+        )
+        let result = try XCTUnwrap(execution)
+
+        XCTAssertTrue(tracker.called)
+        XCTAssertTrue(result.handlerInvoked)
+        XCTAssertEqual(result.snapshot.state, .completed)
+        XCTAssertEqual(result.snapshot.progress, JobProgress(completed: 1, total: 1))
+    }
+}
+
+private struct FakeAsyncLeaseBoundJobHandler: AsyncLeaseBoundJobHandler {
+    let kind: String
+    let tracker: JobTestSupport.HandlerCallTracker
+    let supportedPayloadVersions: Set<Int> = [1]
+    let supportedCheckpointVersions: Set<Int> = [1]
+
+    func execute(
+        payloadVersion _: Int,
+        payload _: Data,
+        checkpoint: JobCheckpoint?
+    ) -> JobHandlerExecutionResult {
+        JobHandlerExecutionResult(
+            outcome: .nonRetryableFailure(code: .interrupted),
+            checkpoint: checkpoint,
+            progress: JobProgress(completed: 0, total: 1)
+        )
+    }
+
+    func executeAsync(
+        lease _: JobLeaseToken,
+        payloadVersion _: Int,
+        payload _: Data,
+        checkpoint: JobCheckpoint?,
+        context _: JobLeaseExecutionContext
+    ) async throws -> JobHandlerExecutionResult {
+        tracker.markCalled()
+        return JobHandlerExecutionResult(
+            outcome: .completed,
+            checkpoint: checkpoint,
+            progress: JobProgress(completed: 1, total: 1)
+        )
+    }
 }
