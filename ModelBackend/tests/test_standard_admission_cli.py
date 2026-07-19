@@ -219,6 +219,34 @@ def test_verified_inputs_are_evaluation_ready_until_measurements_exist(
     }
 
 
+def test_known_resource_failure_rejects_before_other_measurements_exist(
+    tmp_path, capsys
+) -> None:
+    report = _research_report()
+    report["candidate"]["weights_sha256_verified"] = True
+    report["candidate"]["weights_license_id"] = "Apache-2.0"
+    report["candidate"]["weights_license_verified"] = True
+    report["dataset"]["verified"] = True
+    report["resources"] = dict(_passing_report()["resources"])
+    report["resources"]["artifact_bytes"] += 1
+    report_path = tmp_path / "admission-report.json"
+    report_path.write_text(json.dumps(report), encoding="utf-8")
+
+    exit_code = standard_admission_cli.main(["--report", str(report_path)])
+
+    assert exit_code == 2
+    assert json.loads(capsys.readouterr().out) == {
+        "reason_codes": [
+            "coreml_unmeasured",
+            "pack_unmeasured",
+            "quality_unmeasured",
+            "resources_out_of_bounds",
+        ],
+        "schema_revision": 1,
+        "status": "rejected",
+    }
+
+
 def test_complete_report_at_every_boundary_is_approved_suggested_only(
     tmp_path, capsys
 ) -> None:

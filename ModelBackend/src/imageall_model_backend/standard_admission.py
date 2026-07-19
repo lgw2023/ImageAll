@@ -268,20 +268,14 @@ def evaluate_standard_admission(report: Any) -> StandardAdmissionDecision:
     if reasons:
         return StandardAdmissionDecision("research", tuple(sorted(reasons)))
 
-    for section_name in ("coreml", "pack", "quality", "resources"):
-        if not report[section_name]["measured"]:
-            reasons.append(f"{section_name}_unmeasured")
-    if reasons:
-        return StandardAdmissionDecision(
-            "evaluationReady", tuple(sorted(reasons))
-        )
-
     quality = report["quality"]
     concepts_pass = bool(quality["concepts"]) and all(
         concept["support"] >= 25 and concept["precision"] >= 0.65
         for concept in quality["concepts"]
     )
-    if not (
+    if not quality["measured"]:
+        reasons.append("quality_unmeasured")
+    elif not (
         quality["micro_precision"] >= 0.80
         and quality["micro_coverage"] >= 0.20
         and concepts_pass
@@ -289,7 +283,9 @@ def evaluate_standard_admission(report: Any) -> StandardAdmissionDecision:
         reasons.append("quality_below_threshold")
 
     coreml = report["coreml"]
-    if not (
+    if not coreml["measured"]:
+        reasons.append("coreml_unmeasured")
+    elif not (
         coreml["sample_count"] >= 8
         and coreml["minimum_cosine"] >= 0.999
         and coreml["maximum_relative_l2"] <= 0.02
@@ -298,7 +294,9 @@ def evaluate_standard_admission(report: Any) -> StandardAdmissionDecision:
         reasons.append("coreml_below_threshold")
 
     resources = report["resources"]
-    if not (
+    if not resources["measured"]:
+        reasons.append("resources_unmeasured")
+    elif not (
         resources["artifact_bytes"] <= 80 * 1024 * 1024
         and resources["cold_load_seconds"] <= 2.0
         and resources["median_inference_ms"] <= 50.0
@@ -310,8 +308,17 @@ def evaluate_standard_admission(report: Any) -> StandardAdmissionDecision:
         reasons.append("resources_out_of_bounds")
 
     pack = report["pack"]
-    if not (pack["validated"] and pack["suggested_only"]):
+    if not pack["measured"]:
+        reasons.append("pack_unmeasured")
+    elif not (pack["validated"] and pack["suggested_only"]):
         reasons.append("pack_invalid")
-    if reasons:
+    if any(
+        reason.endswith(("_below_threshold", "_invalid", "_out_of_bounds"))
+        for reason in reasons
+    ):
         return StandardAdmissionDecision("rejected", tuple(sorted(reasons)))
+    if reasons:
+        return StandardAdmissionDecision(
+            "evaluationReady", tuple(sorted(reasons))
+        )
     return StandardAdmissionDecision("approvedSuggestedOnly", ())
