@@ -245,7 +245,7 @@ struct StandardModelSuggestionTarget: Equatable, Sendable {
     let standardPackRevision: String
 }
 
-struct PersonalModelSuggestionTarget: Equatable, Sendable {
+struct PersonalModelSuggestionTarget: Codable, Equatable, Sendable {
     let catalogScopeID: String
     let bundleID: String
     let bundleRevision: String
@@ -264,7 +264,7 @@ enum ModelSuggestionTarget: Equatable, Sendable {
     case personal(PersonalModelSuggestionTarget)
 }
 
-struct PersonalModelSuggestionCapability: Equatable, Sendable {
+struct PersonalModelSuggestionCapability: Codable, Equatable, Sendable {
     let target: PersonalModelSuggestionTarget
     let tagIDs: [UUID]
 }

@@ -214,6 +214,9 @@
 		NN0000010000000000000006 /* FullLibrarySuggestionsJobEnqueue.swift in Sources */ = {isa = PBXBuildFile; fileRef = NN0001010000000000000006 /* FullLibrarySuggestionsJobEnqueue.swift */; };
 		NN0000010000000000000007 /* PersonalizedSuggestionScoringCore.swift in Sources */ = {isa = PBXBuildFile; fileRef = NN0001010000000000000007 /* PersonalizedSuggestionScoringCore.swift */; };
 		NN0000010000000000000008 /* PersonalizationReviewUI.swift in Sources */ = {isa = PBXBuildFile; fileRef = NN0001010000000000000008 /* PersonalizationReviewUI.swift */; };
+		NN000001000000000000000B /* PersonalLibrarySuggestionsContracts.swift in Sources */ = {isa = PBXBuildFile; fileRef = NN000101000000000000000B /* PersonalLibrarySuggestionsContracts.swift */; };
+		NN000001000000000000000C /* PersonalLibrarySuggestionsHandler.swift in Sources */ = {isa = PBXBuildFile; fileRef = NN000101000000000000000C /* PersonalLibrarySuggestionsHandler.swift */; };
+		NN000001000000000000000D /* PersonalLibrarySuggestionsJobEnqueue.swift in Sources */ = {isa = PBXBuildFile; fileRef = NN000101000000000000000D /* PersonalLibrarySuggestionsJobEnqueue.swift */; };
 		NN0000010000000000000101 /* FullLibrarySuggestionsJobTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = NN0001010000000000000101 /* FullLibrarySuggestionsJobTests.swift */; };
 /* End PBXBuildFile section */
 
@@ -436,6 +439,9 @@
 		NN0001010000000000000006 /* FullLibrarySuggestionsJobEnqueue.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FullLibrarySuggestionsJobEnqueue.swift; sourceTree = "<group>"; };
 		NN0001010000000000000007 /* PersonalizedSuggestionScoringCore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersonalizedSuggestionScoringCore.swift; sourceTree = "<group>"; };
 		NN0001010000000000000008 /* PersonalizationReviewUI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersonalizationReviewUI.swift; sourceTree = "<group>"; };
+		NN000101000000000000000B /* PersonalLibrarySuggestionsContracts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersonalLibrarySuggestionsContracts.swift; sourceTree = "<group>"; };
+		NN000101000000000000000C /* PersonalLibrarySuggestionsHandler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersonalLibrarySuggestionsHandler.swift; sourceTree = "<group>"; };
+		NN000101000000000000000D /* PersonalLibrarySuggestionsJobEnqueue.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersonalLibrarySuggestionsJobEnqueue.swift; sourceTree = "<group>"; };
 		NN0001010000000000000101 /* FullLibrarySuggestionsJobTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FullLibrarySuggestionsJobTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -594,6 +600,7 @@
 				KK0001010000000000000002 /* PersonalizationCatalogPort.swift */,
 				NN0001010000000000000001 /* PersonalizationReviewPort.swift */,
 				NN0001010000000000000002 /* FullLibrarySuggestionsContracts.swift */,
+				NN000101000000000000000B /* PersonalLibrarySuggestionsContracts.swift */,
 			);
 			path = Personalization;
 			sourceTree = "<group>";
@@ -725,6 +732,8 @@
 				NN0001010000000000000004 /* GRDBPersonalizationReviewRepository.swift */,
 				NN0001010000000000000005 /* FullLibrarySuggestionsHandler.swift */,
 				NN0001010000000000000006 /* FullLibrarySuggestionsJobEnqueue.swift */,
+				NN000101000000000000000C /* PersonalLibrarySuggestionsHandler.swift */,
+				NN000101000000000000000D /* PersonalLibrarySuggestionsJobEnqueue.swift */,
 				NN0001010000000000000007 /* PersonalizedSuggestionScoringCore.swift */,
 			);
 			path = Personalization;
@@ -1205,11 +1214,14 @@
 				II000001000000000000000C /* DerivedImageCacheService.swift in Sources */,
 				NN0000010000000000000001 /* PersonalizationReviewPort.swift in Sources */,
 				NN0000010000000000000002 /* FullLibrarySuggestionsContracts.swift in Sources */,
+				NN000001000000000000000B /* PersonalLibrarySuggestionsContracts.swift in Sources */,
 				NN000001000000000000000A /* PersonalizationSuggestionRunner.swift in Sources */,
 				NN0000010000000000000003 /* PersonalizationReviewService.swift in Sources */,
 				NN0000010000000000000004 /* GRDBPersonalizationReviewRepository.swift in Sources */,
 				NN0000010000000000000005 /* FullLibrarySuggestionsHandler.swift in Sources */,
 				NN0000010000000000000006 /* FullLibrarySuggestionsJobEnqueue.swift in Sources */,
+				NN000001000000000000000C /* PersonalLibrarySuggestionsHandler.swift in Sources */,
+				NN000001000000000000000D /* PersonalLibrarySuggestionsJobEnqueue.swift in Sources */,
 				NN0000010000000000000007 /* PersonalizedSuggestionScoringCore.swift in Sources */,
 				NN0000010000000000000008 /* PersonalizationReviewUI.swift in Sources */,
 			);

@@ -491,66 +491,101 @@ struct GRDBPersonalizationReviewRepository: Sendable {
             throw PersonalizationReviewError.persistenceFailure
         }
         return try database.pool.write { db in
-            guard try personalCapabilityMatches(expectedCapability, in: db),
-                  try Bool.fetchOne(
-                      db,
-                      sql: """
-                      SELECT EXISTS(
-                          SELECT 1
-                          FROM asset a
-                          JOIN source s ON s.id = a.source_id AND s.state = 'active'
-                          WHERE a.id = ?
-                              AND a.content_revision = ?
-                              AND a.locator_state = 'current'
-                              AND a.availability = 'available'
-                              AND (
-                                  (s.kind = 'folder' AND a.locator_kind = 'file')
-                                  OR (s.kind = 'photos' AND a.locator_kind = 'photos')
-                              )
-                      )
-                      """,
-                      arguments: [uuid(candidate.assetID), candidate.contentRevision]
-                  ) == true
-            else {
+            try replacePersonalSuggestions(
+                candidate: candidate,
+                predictions: predictions,
+                expectedCapability: expectedCapability,
+                createdAtMs: createdAtMs,
+                on: db
+            )
+        }
+    }
+
+    func replacePersonalSuggestions(
+        candidate: PersonalSuggestionCandidate,
+        predictions: [PersonalSuggestionPrediction],
+        expectedCapability: PersonalModelSuggestionCapability,
+        createdAtMs: Int64,
+        on db: Database
+    ) throws -> Int {
+        guard candidate.contentRevision > 0,
+              createdAtMs >= 0,
+              Set(predictions.map(\.tagID)).count == predictions.count,
+              predictions.allSatisfy({ $0.score.isFinite })
+        else {
+            throw PersonalizationReviewError.persistenceFailure
+        }
+        guard try personalCapabilityMatches(expectedCapability, in: db),
+              try Bool.fetchOne(
+                  db,
+                  sql: """
+                  SELECT EXISTS(
+                      SELECT 1
+                      FROM asset a
+                      JOIN source s ON s.id = a.source_id AND s.state = 'active'
+                      WHERE a.id = ?
+                          AND a.content_revision = ?
+                          AND a.locator_state = 'current'
+                          AND a.availability = 'available'
+                          AND (
+                              (s.kind = 'folder' AND a.locator_kind = 'file')
+                              OR (s.kind = 'photos' AND a.locator_kind = 'photos')
+                          )
+                  )
+                  """,
+                  arguments: [uuid(candidate.assetID), candidate.contentRevision]
+              ) == true
+        else {
+            throw PersonalizationReviewError.persistenceFailure
+        }
+        try db.execute(
+            sql: "DELETE FROM personal_prediction WHERE asset_id = ?",
+            arguments: [uuid(candidate.assetID)]
+        )
+        var inserted = 0
+        for prediction in predictions {
+            guard expectedCapability.tagIDs.contains(prediction.tagID) else {
                 throw PersonalizationReviewError.persistenceFailure
             }
             try db.execute(
-                sql: "DELETE FROM personal_prediction WHERE asset_id = ?",
-                arguments: [uuid(candidate.assetID)]
-            )
-            var inserted = 0
-            for prediction in predictions {
-                guard expectedCapability.tagIDs.contains(prediction.tagID) else {
-                    throw PersonalizationReviewError.persistenceFailure
-                }
-                try db.execute(
-                    sql: """
-                    INSERT INTO personal_prediction (
-                        asset_id, tag_id, content_revision, score, state, created_at_ms
-                    )
-                    SELECT ?, pst.tag_id, ?, ?, 'pendingReview', ?
-                    FROM personal_suggestion_tag pst
-                    JOIN tag t ON t.id = pst.tag_id AND t.state = 'active'
-                    WHERE pst.tag_id = ?
-                        AND NOT EXISTS (
-                            SELECT 1 FROM asset_tag_decision d
-                            WHERE d.asset_id = ? AND d.tag_id = pst.tag_id
-                        )
-                    """,
-                    arguments: [
-                        uuid(candidate.assetID), candidate.contentRevision, prediction.score,
-                        createdAtMs, uuid(prediction.tagID), uuid(candidate.assetID),
-                    ]
+                sql: """
+                INSERT INTO personal_prediction (
+                    asset_id, tag_id, content_revision, score, state, created_at_ms
                 )
-                inserted += db.changesCount
-            }
-            return inserted
+                SELECT ?, pst.tag_id, ?, ?, 'pendingReview', ?
+                FROM personal_suggestion_tag pst
+                JOIN tag t ON t.id = pst.tag_id AND t.state = 'active'
+                WHERE pst.tag_id = ?
+                    AND NOT EXISTS (
+                        SELECT 1 FROM asset_tag_decision d
+                        WHERE d.asset_id = ? AND d.tag_id = pst.tag_id
+                    )
+                """,
+                arguments: [
+                    uuid(candidate.assetID), candidate.contentRevision, prediction.score,
+                    createdAtMs, uuid(prediction.tagID), uuid(candidate.assetID),
+                ]
+            )
+            inserted += db.changesCount
         }
+        return inserted
     }
 
     func invalidatePersonalSuggestionBundle() throws {
         try database.pool.write { db in
-            try db.execute(sql: "DELETE FROM personal_suggestion_model")
+            try invalidatePersonalSuggestionBundle(on: db)
+        }
+    }
+
+    func invalidatePersonalSuggestionBundle(on db: Database) throws {
+        try db.execute(sql: "DELETE FROM personal_suggestion_model")
+    }
+
+    func personalSuggestionCapabilityMatches(
+        _ capability: PersonalModelSuggestionCapability
+    ) throws -> Bool {
+        try database.pool.read { db in
+            try personalCapabilityMatches(capability, in: db)
         }
     }
 

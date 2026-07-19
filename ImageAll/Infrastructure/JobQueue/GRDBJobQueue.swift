@@ -339,6 +339,26 @@ struct GRDBJobQueue: JobQueue, Sendable {
         }
     }
 
+    func commitLeaseProtectedBatch(
+        lease: JobLeaseToken,
+        businessWork: (Database) throws -> SafeBatchCommitInput
+    ) throws -> JobRecordSnapshot {
+        let nowMs = clock.nowMs
+        return try runLeaseProtectedTransaction(lease: lease) { db in
+            let persisted = try persistedRunningSnapshot(db: db, lease: lease)
+            let input = try businessWork(db)
+            guard input.lease == lease else {
+                throw JobQueueError.invalidClaimInput(reason: "safe batch lease mismatch")
+            }
+            try JobPersistenceMapping.validateProgress(input.progress)
+            try JobPersistenceMapping.validateProgressMonotonic(
+                input.progress,
+                persisted: persisted.progress
+            )
+            return try submitSafeBatchInTransaction(db: db, input: input, nowMs: nowMs)
+        }
+    }
+
     func runLeaseProtectedTransaction<T>(
         lease: JobLeaseToken,
         body: (Database) throws -> T

@@ -283,6 +283,345 @@ final class FullLibrarySuggestionsJobTests: XCTestCase {
         XCTAssertEqual(try service.totalPendingSuggestionCount(), 1)
     }
 
+    func testPersistentPersonalLibraryPayloadContainsOnlyCatalogAndBundleFacts() throws {
+        let fixture = try makeLargeLibraryFixture(assetCount: 6)
+        let capability = try makePersonalCapability(
+            database: fixture.database,
+            tagIDs: [fixture.tagID],
+            bundleRevision: "bundle-r1"
+        )
+        let command = try PersonalLibrarySuggestionsJobEnqueue.makeEnqueueCommand(
+            jobID: UUID(),
+            sourceIDs: [fixture.sourceID],
+            catalogCutoffMs: fixture.cutoffMs,
+            capability: capability,
+            notBeforeMs: fixture.cutoffMs
+        )
+
+        let payload = try PersonalLibrarySuggestionsCodec.decodePayload(command.payload)
+        XCTAssertEqual(command.kind, PersonalLibrarySuggestionsJobFactory.kind)
+        XCTAssertEqual(payload.sourceIDs, [fixture.sourceID])
+        XCTAssertEqual(payload.catalogCutoffMs, fixture.cutoffMs)
+        XCTAssertEqual(payload.capability, capability)
+
+        let object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: command.payload) as? [String: Any]
+        )
+        XCTAssertEqual(
+            Set(object.keys),
+            ["contractVersion", "sourceIDs", "catalogCutoffMs", "capability"]
+        )
+        let encoded = try XCTUnwrap(String(data: command.payload, encoding: .utf8))
+        for forbidden in ["path", "bookmark", "image", "bytes"] {
+            XCTAssertFalse(encoded.localizedCaseInsensitiveContains(forbidden))
+        }
+    }
+
+    func testPersistentPersonalLibraryCheckpointCountsMultipleSuggestionsForOneAsset() throws {
+        let fixture = try makeLargeLibraryFixture(assetCount: 1)
+        let capability = try makePersonalCapability(
+            database: fixture.database,
+            tagIDs: [fixture.tagID, UUID()],
+            bundleRevision: "bundle-r1"
+        )
+        let checkpoint = PersonalLibrarySuggestionsCheckpoint(
+            lastAssetID: UUID(),
+            capability: capability,
+            checkedCount: 1,
+            suggestedCount: 2,
+            skippedCount: 0
+        )
+
+        XCTAssertEqual(
+            try PersonalLibrarySuggestionsCodec.decodeCheckpoint(
+                PersonalLibrarySuggestionsCodec.encodeCheckpoint(checkpoint)
+            ),
+            checkpoint
+        )
+    }
+
+    func testPersistentPersonalLibraryJobRollsBackThenResumesFromItsCheckpoint() async throws {
+        let fixture = try makeLargeLibraryFixture(assetCount: 6)
+        let capability = try makePersonalCapability(
+            database: fixture.database,
+            tagIDs: [fixture.tagID],
+            bundleRevision: "bundle-r1"
+        )
+        let review = GRDBPersonalizationReviewRepository(database: fixture.database)
+        try review.activatePersonalSuggestionBundle(
+            capability,
+            activatedAtMs: fixture.cutoffMs
+        )
+        _ = try fixture.queue.enqueue(
+            PersonalLibrarySuggestionsJobEnqueue.makeEnqueueCommand(
+                jobID: UUID(),
+                sourceIDs: [fixture.sourceID],
+                catalogCutoffMs: fixture.cutoffMs,
+                capability: capability,
+                notBeforeMs: JobTestSupport.baseTimeMs
+            )
+        )
+        let images = StubPersonalLibrarySuggestionImages()
+        let client = StubPersistentPersonalSuggestionClient(capability: capability)
+        let failure = OneShotPersonalPublishFailure()
+        let failingHandler = PersonalLibrarySuggestionsHandler(
+            dependencies: PersonalLibrarySuggestionsHandlerDependencies(
+                database: fixture.database,
+                queue: fixture.queue,
+                images: images,
+                client: client,
+                catalogScopeID: try fixture.database.catalogScopeID(),
+                clock: FixedJobClock(nowMs: fixture.cutoffMs),
+                publishFailureInjector: { try failure.failOnce() }
+            )
+        )
+        let failingCoordinator = JobExecutionCoordinator(
+            queue: fixture.queue,
+            registry: MultiJobHandlerRegistry(handlers: [failingHandler]),
+            leaseContextProvider: GRDBJobLeaseContextProvider(queue: fixture.queue)
+        )
+
+        let first = try await failingCoordinator.claimAndExecuteOnceAsync(
+            personalLibrarySuggestionClaim()
+        )
+        let failed = try XCTUnwrap(first?.snapshot)
+        XCTAssertEqual(failed.state, .retryableFailed)
+        XCTAssertEqual(try review.totalPendingSuggestionCount(), 0)
+        XCTAssertEqual(
+            try PersonalLibrarySuggestionsCodec.checkpoint(from: failed.checkpoint),
+            .empty
+        )
+
+        try fixture.queue.settleRetryableJobs()
+        let handler = PersonalLibrarySuggestionsHandler(
+            dependencies: PersonalLibrarySuggestionsHandlerDependencies(
+                database: fixture.database,
+                queue: fixture.queue,
+                images: images,
+                client: client,
+                catalogScopeID: try fixture.database.catalogScopeID(),
+                clock: FixedJobClock(nowMs: fixture.cutoffMs)
+            )
+        )
+        let coordinator = JobExecutionCoordinator(
+            queue: fixture.queue,
+            registry: MultiJobHandlerRegistry(handlers: [handler]),
+            leaseContextProvider: GRDBJobLeaseContextProvider(queue: fixture.queue)
+        )
+        let resumed = try await coordinator.claimAndExecuteOnceAsync(
+            personalLibrarySuggestionClaim()
+        )
+        let completed = try XCTUnwrap(resumed?.snapshot)
+        let checkpoint = try PersonalLibrarySuggestionsCodec.checkpoint(from: completed.checkpoint)
+
+        XCTAssertEqual(completed.state, .completed)
+        XCTAssertEqual(checkpoint.capability, capability)
+        XCTAssertEqual(checkpoint.checkedCount, completed.progress.total)
+        XCTAssertGreaterThan(try review.totalPendingSuggestionCount(), 0)
+    }
+
+    func testPersistentPersonalLibraryJobInvalidatesSuggestionsWhenBundleIdentityChanges() async throws {
+        let fixture = try makeLargeLibraryFixture(assetCount: 6)
+        let capability = try makePersonalCapability(
+            database: fixture.database,
+            tagIDs: [fixture.tagID],
+            bundleRevision: "bundle-r1"
+        )
+        let changedCapability = try makePersonalCapability(
+            database: fixture.database,
+            tagIDs: [fixture.tagID],
+            bundleRevision: "bundle-r2"
+        )
+        let review = GRDBPersonalizationReviewRepository(database: fixture.database)
+        try review.activatePersonalSuggestionBundle(
+            capability,
+            activatedAtMs: fixture.cutoffMs
+        )
+        try seedPersonalSuggestion(
+            review: review,
+            tagID: fixture.tagID,
+            capability: capability,
+            createdAtMs: fixture.cutoffMs
+        )
+        XCTAssertEqual(try review.totalPendingSuggestionCount(), 1)
+
+        _ = try fixture.queue.enqueue(
+            PersonalLibrarySuggestionsJobEnqueue.makeEnqueueCommand(
+                jobID: UUID(),
+                sourceIDs: [fixture.sourceID],
+                catalogCutoffMs: fixture.cutoffMs,
+                capability: capability,
+                notBeforeMs: JobTestSupport.baseTimeMs
+            )
+        )
+        let handler = PersonalLibrarySuggestionsHandler(
+            dependencies: PersonalLibrarySuggestionsHandlerDependencies(
+                database: fixture.database,
+                queue: fixture.queue,
+                images: StubPersonalLibrarySuggestionImages(),
+                client: StubPersistentPersonalSuggestionClient(capability: changedCapability),
+                catalogScopeID: try fixture.database.catalogScopeID(),
+                clock: FixedJobClock(nowMs: fixture.cutoffMs)
+            )
+        )
+        let coordinator = JobExecutionCoordinator(
+            queue: fixture.queue,
+            registry: MultiJobHandlerRegistry(handlers: [handler]),
+            leaseContextProvider: GRDBJobLeaseContextProvider(queue: fixture.queue)
+        )
+
+        let result = try await coordinator.claimAndExecuteOnceAsync(
+            personalLibrarySuggestionClaim()
+        )
+        let failed = try XCTUnwrap(result?.snapshot)
+
+        XCTAssertEqual(failed.state, .terminalFailed)
+        XCTAssertEqual(failed.lastErrorCode, .personalLibraryBundleMismatch)
+        XCTAssertEqual(try review.totalPendingSuggestionCount(), 0)
+        XCTAssertFalse(try review.personalSuggestionCapabilityMatches(capability))
+    }
+
+    func testPersistentPersonalLibraryJobPreservesSuggestionsWhenServiceIsUnavailable() async throws {
+        let fixture = try makeLargeLibraryFixture(assetCount: 6)
+        let capability = try makePersonalCapability(
+            database: fixture.database,
+            tagIDs: [fixture.tagID],
+            bundleRevision: "bundle-r1"
+        )
+        let review = GRDBPersonalizationReviewRepository(database: fixture.database)
+        try review.activatePersonalSuggestionBundle(
+            capability,
+            activatedAtMs: fixture.cutoffMs
+        )
+        try seedPersonalSuggestion(
+            review: review,
+            tagID: fixture.tagID,
+            capability: capability,
+            createdAtMs: fixture.cutoffMs
+        )
+
+        _ = try fixture.queue.enqueue(
+            PersonalLibrarySuggestionsJobEnqueue.makeEnqueueCommand(
+                jobID: UUID(),
+                sourceIDs: [fixture.sourceID],
+                catalogCutoffMs: fixture.cutoffMs,
+                capability: capability,
+                notBeforeMs: JobTestSupport.baseTimeMs
+            )
+        )
+        let handler = PersonalLibrarySuggestionsHandler(
+            dependencies: PersonalLibrarySuggestionsHandlerDependencies(
+                database: fixture.database,
+                queue: fixture.queue,
+                images: StubPersonalLibrarySuggestionImages(),
+                client: UnavailablePersistentPersonalSuggestionClient(),
+                catalogScopeID: try fixture.database.catalogScopeID(),
+                clock: FixedJobClock(nowMs: fixture.cutoffMs)
+            )
+        )
+        let coordinator = JobExecutionCoordinator(
+            queue: fixture.queue,
+            registry: MultiJobHandlerRegistry(handlers: [handler]),
+            leaseContextProvider: GRDBJobLeaseContextProvider(queue: fixture.queue)
+        )
+
+        let result = try await coordinator.claimAndExecuteOnceAsync(
+            personalLibrarySuggestionClaim()
+        )
+        let failed = try XCTUnwrap(result?.snapshot)
+
+        XCTAssertEqual(failed.state, .retryableFailed)
+        XCTAssertEqual(failed.lastErrorCode, .personalLibraryServiceUnavailable)
+        XCTAssertEqual(try review.totalPendingSuggestionCount(), 1)
+        XCTAssertTrue(try review.personalSuggestionCapabilityMatches(capability))
+    }
+
+    func testPersistentPersonalLibraryJobPausesAtOneAssetThenResumes() async throws {
+        let fixture = try makeLargeLibraryFixture(assetCount: 6)
+        let capability = try makePersonalCapability(
+            database: fixture.database,
+            tagIDs: [fixture.tagID],
+            bundleRevision: "bundle-r1"
+        )
+        let review = GRDBPersonalizationReviewRepository(database: fixture.database)
+        try review.activatePersonalSuggestionBundle(
+            capability,
+            activatedAtMs: fixture.cutoffMs
+        )
+        let jobID = UUID()
+        _ = try fixture.queue.enqueue(
+            PersonalLibrarySuggestionsJobEnqueue.makeEnqueueCommand(
+                jobID: jobID,
+                sourceIDs: [fixture.sourceID],
+                catalogCutoffMs: fixture.cutoffMs,
+                capability: capability,
+                notBeforeMs: JobTestSupport.baseTimeMs
+            )
+        )
+        let client = StubPersistentPersonalSuggestionClient(capability: capability)
+        let pausingHandler = PersonalLibrarySuggestionsHandler(
+            dependencies: PersonalLibrarySuggestionsHandlerDependencies(
+                database: fixture.database,
+                queue: fixture.queue,
+                images: PausingPersonalLibrarySuggestionImages(
+                    queue: fixture.queue,
+                    jobID: jobID
+                ),
+                client: client,
+                catalogScopeID: try fixture.database.catalogScopeID(),
+                clock: FixedJobClock(nowMs: fixture.cutoffMs)
+            )
+        )
+        let pausingCoordinator = JobExecutionCoordinator(
+            queue: fixture.queue,
+            registry: MultiJobHandlerRegistry(handlers: [pausingHandler]),
+            leaseContextProvider: GRDBJobLeaseContextProvider(queue: fixture.queue)
+        )
+
+        let first = try await pausingCoordinator.claimAndExecuteOnceAsync(
+            personalLibrarySuggestionClaim()
+        )
+        let paused = try XCTUnwrap(first?.snapshot)
+        let pausedCheckpoint = try PersonalLibrarySuggestionsCodec.checkpoint(
+            from: paused.checkpoint
+        )
+        XCTAssertEqual(paused.state, .paused)
+        XCTAssertEqual(paused.progress.completed, 1)
+        XCTAssertEqual(pausedCheckpoint.checkedCount, 1)
+
+        _ = try fixture.queue.applyStateCommand(
+            JobStateCommand(
+                jobID: jobID,
+                operation: .resume(notBeforeMs: JobTestSupport.baseTimeMs)
+            )
+        )
+        let resumedHandler = PersonalLibrarySuggestionsHandler(
+            dependencies: PersonalLibrarySuggestionsHandlerDependencies(
+                database: fixture.database,
+                queue: fixture.queue,
+                images: StubPersonalLibrarySuggestionImages(),
+                client: client,
+                catalogScopeID: try fixture.database.catalogScopeID(),
+                clock: FixedJobClock(nowMs: fixture.cutoffMs)
+            )
+        )
+        let resumedCoordinator = JobExecutionCoordinator(
+            queue: fixture.queue,
+            registry: MultiJobHandlerRegistry(handlers: [resumedHandler]),
+            leaseContextProvider: GRDBJobLeaseContextProvider(queue: fixture.queue)
+        )
+
+        let resumed = try await resumedCoordinator.claimAndExecuteOnceAsync(
+            personalLibrarySuggestionClaim()
+        )
+        let completed = try XCTUnwrap(resumed?.snapshot)
+        let completedCheckpoint = try PersonalLibrarySuggestionsCodec.checkpoint(
+            from: completed.checkpoint
+        )
+        XCTAssertEqual(completed.state, .completed)
+        XCTAssertEqual(completedCheckpoint.checkedCount, completed.progress.total)
+    }
+
     func testPhotosSamplesCountTowardSuggestionReadiness() throws {
         let fixture = try CatalogQueryTestSupport.openQueryDatabase()
         let photosSourceID = UUID(uuidString: "22000000-0000-4000-8000-000000000001")!
@@ -1472,6 +1811,136 @@ private struct LargeLibraryFixture {
     let cutoffMs: Int64
     let positiveIDs: [UUID]
     let negativeIDs: [UUID]
+}
+
+private actor StubPersonalLibrarySuggestionImages: PersonalLibrarySuggestionImageLoading {
+    func loadPersonalSuggestionPreview(assetID _: UUID) async throws -> Data {
+        Data("preview".utf8)
+    }
+}
+
+private actor PausingPersonalLibrarySuggestionImages: PersonalLibrarySuggestionImageLoading {
+    let queue: GRDBJobQueue
+    let jobID: UUID
+    private var didRequestPause = false
+
+    init(queue: GRDBJobQueue, jobID: UUID) {
+        self.queue = queue
+        self.jobID = jobID
+    }
+
+    func loadPersonalSuggestionPreview(assetID _: UUID) async throws -> Data {
+        if !didRequestPause {
+            didRequestPause = true
+            _ = try queue.applyStateCommand(
+                JobStateCommand(jobID: jobID, operation: .pause)
+            )
+        }
+        return Data("preview".utf8)
+    }
+}
+
+private actor StubPersistentPersonalSuggestionClient: LocalModelSuggestionClient {
+    let capability: PersonalModelSuggestionCapability
+
+    init(capability: PersonalModelSuggestionCapability) {
+        self.capability = capability
+    }
+
+    func personalCapability() async throws -> PersonalModelSuggestionCapabilityAvailability {
+        .available(capability)
+    }
+
+    func suggestions(
+        imageData _: Data,
+        requestID _: String,
+        target: ModelSuggestionTarget
+    ) async throws -> [LocalModelSuggestion] {
+        guard target == .personal(capability.target) else {
+            throw LocalModelSuggestionClientError.identityMismatch
+        }
+        return capability.tagIDs.map { tagID in
+            LocalModelSuggestion(
+                track: .personal,
+                conceptID: nil,
+                tagID: tagID,
+                score: 0.75,
+                recommendedState: .suggested,
+                catalogScopeID: capability.target.catalogScopeID,
+                bundleID: capability.target.bundleID,
+                bundleRevision: capability.target.bundleRevision,
+                standardPackID: nil,
+                standardPackRevision: nil,
+                provider: capability.target.provider,
+                modelID: capability.target.modelID,
+                modelRevision: capability.target.modelRevision,
+                preprocessingRevision: capability.target.preprocessingRevision,
+                elementCount: capability.target.elementCount,
+                labelVocabularyRevision: capability.target.labelVocabularyRevision,
+                weightsSHA256: capability.target.weightsSHA256,
+                ontologyID: nil,
+                ontologyRevision: nil,
+                mappingRevision: nil,
+                policyRevision: capability.target.policyRevision
+            )
+        }
+    }
+}
+
+private actor UnavailablePersistentPersonalSuggestionClient: LocalModelSuggestionClient {
+    func personalCapability() async throws -> PersonalModelSuggestionCapabilityAvailability {
+        throw LocalModelSuggestionClientError.serviceUnavailable
+    }
+
+    func suggestions(
+        imageData _: Data,
+        requestID _: String,
+        target _: ModelSuggestionTarget
+    ) async throws -> [LocalModelSuggestion] {
+        throw LocalModelSuggestionClientError.serviceUnavailable
+    }
+}
+
+private final class OneShotPersonalPublishFailure: @unchecked Sendable {
+    private let lock = NSLock()
+    private var shouldFail = true
+
+    func failOnce() throws {
+        try lock.withLock {
+            guard shouldFail else { return }
+            shouldFail = false
+            throw PersonalizationReviewError.persistenceFailure
+        }
+    }
+}
+
+private func personalLibrarySuggestionClaim() -> ClaimNextInput {
+    ClaimNextInput(
+        owner: "personal-library-worker",
+        leaseDurationMs: 60_000,
+        allowedKinds: [PersonalLibrarySuggestionsJobFactory.kind]
+    )
+}
+
+private func seedPersonalSuggestion(
+    review: GRDBPersonalizationReviewRepository,
+    tagID: UUID,
+    capability: PersonalModelSuggestionCapability,
+    createdAtMs: Int64
+) throws {
+    let candidates = try review.personalSuggestionCandidates(afterAssetID: nil, limit: 100)
+    for candidate in candidates {
+        let inserted = try review.replacePersonalSuggestions(
+            candidate: candidate,
+            predictions: [PersonalSuggestionPrediction(tagID: tagID, score: 0.9)],
+            expectedCapability: capability,
+            createdAtMs: createdAtMs
+        )
+        if inserted == 1 {
+            return
+        }
+    }
+    XCTFail("expected a candidate without an explicit decision")
 }
 
 private func makePersonalCapability(
