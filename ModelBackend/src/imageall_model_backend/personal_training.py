@@ -135,16 +135,9 @@ def load_personal_training_input(root: Path) -> PersonalTrainingInput:
     )
 
 
-def train_personal_linear_head(
-    *,
+def validate_personal_training_input(
     training_input: PersonalTrainingInput,
-    output_dir: Path,
-    bundle_id: str,
-    bundle_revision: str,
-    config: LinearHeadTrainingConfig,
-) -> PersonalLinearHeadTrainingResult:
-    if config.epochs <= 0 or config.learning_rate <= 0:
-        raise ValueError("training configuration must be positive")
+) -> None:
     positive_counts = np.sum(
         training_input.observation_mask & (training_input.targets == 1.0), axis=0
     )
@@ -158,6 +151,24 @@ def train_personal_linear_head(
                 "and 2 negative decisions"
             )
 
+
+def train_personal_linear_head(
+    *,
+    training_input: PersonalTrainingInput,
+    output_dir: Path,
+    bundle_id: str,
+    bundle_revision: str,
+    config: LinearHeadTrainingConfig,
+) -> PersonalLinearHeadTrainingResult:
+    if config.epochs <= 0 or config.learning_rate <= 0:
+        raise ValueError("training configuration must be positive")
+    validate_personal_training_input(training_input)
+    positive_counts = np.sum(
+        training_input.observation_mask & (training_input.targets == 1.0), axis=0
+    )
+    negative_counts = np.sum(
+        training_input.observation_mask & (training_input.targets == 0.0), axis=0
+    )
     device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
     torch.manual_seed(0)
     model = torch.nn.Linear(

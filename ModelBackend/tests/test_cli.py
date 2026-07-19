@@ -268,6 +268,53 @@ def test_cli_rejects_a_personal_bundle_without_an_embedding_provider() -> None:
         cli.main(["--provider", "none", "--personal-bundle", "/tmp/bundle"])
 
 
+def test_cli_starts_with_an_empty_managed_personal_store(
+    tmp_path, monkeypatch
+) -> None:
+    class FakeDinoProvider:
+        identity = EmbeddingProviderIdentity(
+            provider="dinov2",
+            model_id="fixture-dinov2",
+            model_revision="fixture-model-revision",
+            preprocessing_revision="fixture-preprocessing-revision",
+            element_count=2,
+        )
+
+        def __init__(self, *, cache_dir, local_files_only) -> None:
+            assert cache_dir is None
+            assert local_files_only is True
+
+        def embed(self, image_bytes: bytes) -> list[float]:
+            raise AssertionError("empty store capability must not embed an image")
+
+    captured: dict[str, object] = {}
+
+    def fake_run(app, *, host: str, port: int) -> None:
+        captured.update(app=app, host=host, port=port)
+
+    monkeypatch.setattr(
+        "imageall_model_backend.dinov2.DinoV2SmallProvider",
+        FakeDinoProvider,
+    )
+    monkeypatch.setattr(cli.uvicorn, "run", fake_run)
+
+    exit_code = cli.main(
+        [
+            "--provider",
+            "dinov2",
+            "--personal-store",
+            str(tmp_path / "personal-store"),
+            "--offline",
+        ]
+    )
+
+    response = TestClient(captured["app"]).get("/v1/capabilities")
+    assert exit_code == 0
+    assert captured["host"] == "127.0.0.1"
+    assert response.status_code == 200
+    assert response.json()["personal"] == {"status": "unavailable"}
+
+
 @pytest.mark.parametrize("manifest_contents", (None, "[]"))
 def test_cli_fails_closed_when_the_personal_bundle_cannot_be_loaded(
     tmp_path, monkeypatch, manifest_contents
