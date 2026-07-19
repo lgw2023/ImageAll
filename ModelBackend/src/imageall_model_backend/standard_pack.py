@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -145,6 +146,8 @@ def load_standard_pack(root: Path) -> StandardPack:
     for entry in mapping_payload["entries"]:
         if entry["concept_id"] not in concept_ids:
             raise StandardPackValidationError("mapping concept is not published")
+        if entry["provider_label"] in concept_by_provider_label:
+            raise StandardPackValidationError("duplicate provider label")
         concept_by_provider_label[entry["provider_label"]] = entry["concept_id"]
     policy_payload = json.loads(
         (root / "policy.json").read_text(encoding="utf-8")
@@ -155,20 +158,32 @@ def load_standard_pack(root: Path) -> StandardPack:
     for entry in policy_payload["concepts"]:
         if entry["concept_id"] not in concept_ids:
             raise StandardPackValidationError("policy concept is not published")
+        if entry["concept_id"] in entry_by_concept:
+            raise StandardPackValidationError("duplicate policy concept")
         if entry["auto_assign_at"] is not None and not entry[
             "calibration_evidence_id"
         ]:
             raise StandardPackValidationError(
                 "automatic policy requires calibration evidence"
             )
+        suggest_at = float(entry["suggest_at"])
+        auto_assign_at = (
+            float(entry["auto_assign_at"])
+            if entry["auto_assign_at"] is not None
+            else None
+        )
+        if not math.isfinite(suggest_at) or (
+            auto_assign_at is not None and not math.isfinite(auto_assign_at)
+        ):
+            raise StandardPackValidationError("policy thresholds must be finite")
+        if auto_assign_at is not None and auto_assign_at < suggest_at:
+            raise StandardPackValidationError(
+                "automatic threshold must not be below suggestion threshold"
+            )
         policy_entry = StandardPolicyEntry(
             concept_id=entry["concept_id"],
-            suggest_at=float(entry["suggest_at"]),
-            auto_assign_at=(
-                float(entry["auto_assign_at"])
-                if entry["auto_assign_at"] is not None
-                else None
-            ),
+            suggest_at=suggest_at,
+            auto_assign_at=auto_assign_at,
             calibration_evidence_id=entry["calibration_evidence_id"],
         )
         entry_by_concept[policy_entry.concept_id] = policy_entry

@@ -183,6 +183,21 @@ def test_rejects_a_mapping_to_an_unpublished_concept(tmp_path: Path) -> None:
         load_standard_pack(pack_path)
 
 
+def test_rejects_duplicate_provider_labels_in_the_mapping(tmp_path: Path) -> None:
+    pack_path = write_standard_pack(tmp_path / "standard-pack")
+    mapping = {
+        "mapping_revision": "mapping-v1",
+        "entries": [
+            {"provider_label": "blue_scene", "concept_id": "scene.water"},
+            {"provider_label": "blue_scene", "concept_id": "scene.outdoor"},
+        ],
+    }
+    rewrite_payload_and_checksum(pack_path, "mapping.json", mapping)
+
+    with pytest.raises(StandardPackValidationError, match="duplicate provider label"):
+        load_standard_pack(pack_path)
+
+
 def test_rejects_an_automatic_policy_without_calibration_evidence(
     tmp_path: Path,
 ) -> None:
@@ -201,6 +216,82 @@ def test_rejects_an_automatic_policy_without_calibration_evidence(
     rewrite_payload_and_checksum(pack_path, "policy.json", policy)
 
     with pytest.raises(StandardPackValidationError, match="automatic policy requires"):
+        load_standard_pack(pack_path)
+
+
+def test_rejects_duplicate_concepts_in_the_policy(tmp_path: Path) -> None:
+    pack_path = write_standard_pack(tmp_path / "standard-pack")
+    policy = {
+        "policy_revision": "policy-v1",
+        "concepts": [
+            {
+                "concept_id": "scene.water",
+                "suggest_at": 0.6,
+                "auto_assign_at": 0.8,
+                "calibration_evidence_id": "fixture-calibration-v1",
+            },
+            {
+                "concept_id": "scene.water",
+                "suggest_at": 0.7,
+                "auto_assign_at": 0.9,
+                "calibration_evidence_id": "fixture-calibration-v2",
+            },
+        ],
+    }
+    rewrite_payload_and_checksum(pack_path, "policy.json", policy)
+
+    with pytest.raises(StandardPackValidationError, match="duplicate policy concept"):
+        load_standard_pack(pack_path)
+
+
+@pytest.mark.parametrize(
+    ("suggest_at", "auto_assign_at"),
+    (("NaN", 0.8), (0.6, "Infinity")),
+)
+def test_rejects_a_non_finite_policy_threshold(
+    tmp_path: Path,
+    suggest_at: object,
+    auto_assign_at: object,
+) -> None:
+    pack_path = write_standard_pack(tmp_path / "standard-pack")
+    policy = {
+        "policy_revision": "policy-v1",
+        "concepts": [
+            {
+                "concept_id": "scene.water",
+                "suggest_at": suggest_at,
+                "auto_assign_at": auto_assign_at,
+                "calibration_evidence_id": "fixture-calibration-v1",
+            }
+        ],
+    }
+    rewrite_payload_and_checksum(pack_path, "policy.json", policy)
+
+    with pytest.raises(StandardPackValidationError, match="thresholds must be finite"):
+        load_standard_pack(pack_path)
+
+
+def test_rejects_an_automatic_threshold_below_the_suggestion_threshold(
+    tmp_path: Path,
+) -> None:
+    pack_path = write_standard_pack(tmp_path / "standard-pack")
+    policy = {
+        "policy_revision": "policy-v1",
+        "concepts": [
+            {
+                "concept_id": "scene.water",
+                "suggest_at": 0.8,
+                "auto_assign_at": 0.6,
+                "calibration_evidence_id": "fixture-calibration-v1",
+            }
+        ],
+    }
+    rewrite_payload_and_checksum(pack_path, "policy.json", policy)
+
+    with pytest.raises(
+        StandardPackValidationError,
+        match="automatic threshold must not be below suggestion threshold",
+    ):
         load_standard_pack(pack_path)
 
 
