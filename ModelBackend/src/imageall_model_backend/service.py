@@ -89,6 +89,13 @@ class PersonalRebuildEmbedding(BaseModel):
     embedding: list[float]
 
 
+class PersonalRebuildEmbeddingKey(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    asset_id: str
+    content_revision: str
+
+
 class PersonalRebuildDecision(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -124,6 +131,27 @@ class PersonalRebuildRequest(BaseModel):
     request_id: str
     expected_active_bundle: ExpectedActivePersonalBundleRequest | None
     snapshot: PersonalRebuildSnapshot
+
+
+class PersonalCachedRebuildSnapshot(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    schema_revision: int
+    catalog_scope_id: str
+    decision_snapshot_revision: str
+    encoder: PersonalRebuildEncoder
+    personal_tag_ids: list[str]
+    label_vocabulary_revision: str
+    embedding_keys: list[PersonalRebuildEmbeddingKey]
+    decisions: list[PersonalRebuildDecision]
+
+
+class PersonalCachedRebuildRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    request_id: str
+    expected_active_bundle: ExpectedActivePersonalBundleRequest | None
+    snapshot: PersonalCachedRebuildSnapshot
 
 
 def _decode_image(image_base64: str) -> bytes:
@@ -203,6 +231,66 @@ def create_app(
             return personal_model_runtime.current_engine
         return personal_suggestion_engine
 
+    def publish_personal_model(
+        *,
+        request_id: str,
+        expected_active_bundle_request: (
+            ExpectedActivePersonalBundleRequest | None
+        ),
+        training_input: PersonalTrainingInput,
+        http_request: Request,
+    ) -> dict[str, object]:
+        assert personal_model_runtime is not None
+        try:
+            expected_active_bundle = (
+                ExpectedActivePersonalBundle(
+                    bundle_revision=(
+                        expected_active_bundle_request.bundle_revision
+                    ),
+                    weights_sha256=expected_active_bundle_request.weights_sha256,
+                )
+                if expected_active_bundle_request is not None
+                else None
+            )
+            engine = personal_model_runtime.rebuild(
+                training_input=training_input,
+                expected_active_bundle=expected_active_bundle,
+                should_cancel=lambda: from_thread.run(
+                    http_request.is_disconnected
+                ),
+            )
+        except PersonalBundleMismatch:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "personal_bundle_mismatch",
+                    "message": "Expected personal bundle identity is not active.",
+                },
+            ) from None
+        except ValueError as error:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "invalid_personal_training_snapshot",
+                    "message": str(error),
+                },
+            ) from None
+        except (OSError, RuntimeError):
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "code": "personal_rebuild_failed",
+                    "message": "Personal model training or publication failed.",
+                },
+            ) from None
+        return {
+            "request_id": request_id,
+            "personal": {
+                "status": "available",
+                **asdict(engine.bundle_identity),
+            },
+        }
+
     @app.get("/v1/health")
     def health() -> dict[str, object]:
         active_identity = provider.identity if provider is not None else None
@@ -256,29 +344,6 @@ def create_app(
         try:
             _canonical_uuid(request.request_id, "request id")
             training_input = _personal_training_input(request.snapshot)
-            expected_active_bundle = (
-                ExpectedActivePersonalBundle(
-                    bundle_revision=request.expected_active_bundle.bundle_revision,
-                    weights_sha256=request.expected_active_bundle.weights_sha256,
-                )
-                if request.expected_active_bundle is not None
-                else None
-            )
-            engine = personal_model_runtime.rebuild(
-                training_input=training_input,
-                expected_active_bundle=expected_active_bundle,
-                should_cancel=lambda: from_thread.run(
-                    http_request.is_disconnected
-                ),
-            )
-        except PersonalBundleMismatch:
-            raise HTTPException(
-                status_code=409,
-                detail={
-                    "code": "personal_bundle_mismatch",
-                    "message": "Expected personal bundle identity is not active.",
-                },
-            ) from None
         except ValueError as error:
             raise HTTPException(
                 status_code=422,
@@ -287,21 +352,54 @@ def create_app(
                     "message": str(error),
                 },
             ) from None
-        except (OSError, RuntimeError):
+        return publish_personal_model(
+            request_id=request.request_id,
+            expected_active_bundle_request=request.expected_active_bundle,
+            training_input=training_input,
+            http_request=http_request,
+        )
+
+    @app.post("/v1/personal/rebuild-cached")
+    def rebuild_personal_from_cache(
+        request: PersonalCachedRebuildRequest,
+        http_request: Request,
+    ) -> dict[str, object]:
+        if personal_model_runtime is None:
             raise HTTPException(
                 status_code=503,
                 detail={
-                    "code": "personal_rebuild_failed",
-                    "message": "Personal model training or publication failed.",
+                    "code": "personal_rebuild_unavailable",
+                    "message": "No personal model store is configured.",
+                },
+            )
+        if embedding_cache is None:
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "code": "personal_embedding_cache_unavailable",
+                    "message": "No embedding cache is configured.",
+                },
+            )
+        try:
+            _canonical_uuid(request.request_id, "request id")
+            training_input = _personal_cached_training_input(
+                request.snapshot,
+                embedding_cache,
+            )
+        except ValueError as error:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "invalid_personal_training_snapshot",
+                    "message": str(error),
                 },
             ) from None
-        return {
-            "request_id": request.request_id,
-            "personal": {
-                "status": "available",
-                **asdict(engine.bundle_identity),
-            },
-        }
+        return publish_personal_model(
+            request_id=request.request_id,
+            expected_active_bundle_request=request.expected_active_bundle,
+            training_input=training_input,
+            http_request=http_request,
+        )
 
     @app.post("/v1/embeddings")
     def embeddings(request: EmbeddingRequest) -> dict[str, object]:
@@ -505,20 +603,7 @@ def create_app(
 def _personal_training_input(
     snapshot: PersonalRebuildSnapshot,
 ) -> PersonalTrainingInput:
-    if snapshot.schema_revision != 1:
-        raise ValueError("unsupported personal training snapshot schema")
-    _canonical_uuid(snapshot.catalog_scope_id, "catalog_scope_id")
-    _sha256_revision(snapshot.decision_snapshot_revision, "decision snapshot revision")
-    _sha256_revision(snapshot.label_vocabulary_revision, "label vocabulary revision")
-    if not snapshot.personal_tag_ids or len(set(snapshot.personal_tag_ids)) != len(
-        snapshot.personal_tag_ids
-    ):
-        raise ValueError("personal tag vocabulary must be non-empty and unique")
-    for tag_id in snapshot.personal_tag_ids:
-        _canonical_uuid(tag_id, "personal tag id")
-    encoder_identity = EmbeddingProviderIdentity(**snapshot.encoder.model_dump())
-    if encoder_identity.element_count <= 0:
-        raise ValueError("encoder element count must be positive")
+    encoder_identity = _validate_personal_snapshot_header(snapshot)
 
     asset_keys: list[tuple[str, str]] = []
     seen_asset_keys: set[tuple[str, str]] = set()
@@ -579,6 +664,80 @@ def _personal_training_input(
         targets=targets,
         observation_mask=observation_mask,
     )
+
+
+def _personal_cached_training_input(
+    snapshot: PersonalCachedRebuildSnapshot,
+    embedding_cache: EmbeddingCache,
+) -> PersonalTrainingInput:
+    encoder_identity = _validate_personal_snapshot_header(snapshot)
+    seen_asset_keys: set[tuple[str, str]] = set()
+    for row in snapshot.embedding_keys:
+        _canonical_uuid(row.asset_id, "asset id")
+        _decimal_revision(row.content_revision)
+        key = (row.asset_id, row.content_revision)
+        if key in seen_asset_keys:
+            raise ValueError("duplicate personal embedding key")
+        seen_asset_keys.add(key)
+    if not seen_asset_keys:
+        raise ValueError("personal training snapshot has no embedding keys")
+
+    embeddings: list[PersonalRebuildEmbedding] = []
+    for row in snapshot.embedding_keys:
+        vector = embedding_cache.get(
+            catalog_scope_id=snapshot.catalog_scope_id,
+            asset_id=row.asset_id,
+            content_revision=row.content_revision,
+            encoder=encoder_identity,
+        )
+        if vector is None:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "personal_embedding_cache_miss",
+                    "message": "A required personal training embedding is not cached.",
+                },
+            )
+        embeddings.append(
+            PersonalRebuildEmbedding(
+                asset_id=row.asset_id,
+                content_revision=row.content_revision,
+                embedding=vector,
+            )
+        )
+
+    return _personal_training_input(
+        PersonalRebuildSnapshot(
+            schema_revision=snapshot.schema_revision,
+            catalog_scope_id=snapshot.catalog_scope_id,
+            decision_snapshot_revision=snapshot.decision_snapshot_revision,
+            encoder=snapshot.encoder,
+            personal_tag_ids=snapshot.personal_tag_ids,
+            label_vocabulary_revision=snapshot.label_vocabulary_revision,
+            embeddings=embeddings,
+            decisions=snapshot.decisions,
+        )
+    )
+
+
+def _validate_personal_snapshot_header(
+    snapshot: PersonalRebuildSnapshot | PersonalCachedRebuildSnapshot,
+) -> EmbeddingProviderIdentity:
+    if snapshot.schema_revision != 1:
+        raise ValueError("unsupported personal training snapshot schema")
+    _canonical_uuid(snapshot.catalog_scope_id, "catalog_scope_id")
+    _sha256_revision(snapshot.decision_snapshot_revision, "decision snapshot revision")
+    _sha256_revision(snapshot.label_vocabulary_revision, "label vocabulary revision")
+    if not snapshot.personal_tag_ids or len(set(snapshot.personal_tag_ids)) != len(
+        snapshot.personal_tag_ids
+    ):
+        raise ValueError("personal tag vocabulary must be non-empty and unique")
+    for tag_id in snapshot.personal_tag_ids:
+        _canonical_uuid(tag_id, "personal tag id")
+    encoder_identity = EmbeddingProviderIdentity(**snapshot.encoder.model_dump())
+    if encoder_identity.element_count <= 0:
+        raise ValueError("encoder element count must be positive")
+    return encoder_identity
 
 
 def _canonical_uuid(value: str, field: str) -> None:

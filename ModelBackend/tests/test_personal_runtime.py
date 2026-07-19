@@ -12,6 +12,7 @@ from PIL import Image
 from starlette.requests import Request
 
 import imageall_model_backend.personal_runtime as personal_runtime_module
+from imageall_model_backend.embedding_cache import EmbeddingCache
 from imageall_model_backend.personal_runtime import PersonalModelRuntime
 from imageall_model_backend.providers import EmbeddingProviderIdentity
 from imageall_model_backend.service import create_app
@@ -106,6 +107,32 @@ def png_base64() -> str:
     return base64.b64encode(buffer.getvalue()).decode("ascii")
 
 
+def cached_rebuild_request() -> dict[str, object]:
+    request = rebuild_request()
+    embeddings = request["snapshot"].pop("embeddings")
+    request["snapshot"]["embedding_keys"] = [
+        {
+            "asset_id": row["asset_id"],
+            "content_revision": row["content_revision"],
+        }
+        for row in embeddings
+    ]
+    return request
+
+
+def populated_embedding_cache(tmp_path: Path) -> EmbeddingCache:
+    cache = EmbeddingCache(tmp_path / "embeddings.sqlite3")
+    for row in rebuild_request()["snapshot"]["embeddings"]:
+        cache.put(
+            catalog_scope_id=rebuild_request()["snapshot"]["catalog_scope_id"],
+            asset_id=row["asset_id"],
+            content_revision=row["content_revision"],
+            encoder=FakeEmbeddingProvider.identity,
+            embedding=row["embedding"],
+        )
+    return cache
+
+
 def test_rebuild_activates_a_catalog_scoped_bundle(tmp_path: Path) -> None:
     provider = FakeEmbeddingProvider()
     runtime = PersonalModelRuntime(
@@ -131,6 +158,132 @@ def test_rebuild_activates_a_catalog_scoped_bundle(tmp_path: Path) -> None:
     assert UUID(personal["bundle_revision"]) == UUID(personal["bundle_revision"])
     assert len(personal["weights_sha256"]) == 64
     assert client.get("/v1/capabilities").json()["personal"] == personal
+
+
+def test_cached_rebuild_never_calls_the_image_provider(tmp_path: Path) -> None:
+    provider = FakeEmbeddingProvider()
+    runtime = PersonalModelRuntime(
+        provider=provider,
+        store_root=tmp_path / "personal-store",
+        training_config=LinearHeadTrainingConfig(epochs=20, learning_rate=0.1),
+    )
+    client = TestClient(
+        create_app(
+            provider=provider,
+            embedding_cache=populated_embedding_cache(tmp_path),
+            personal_model_runtime=runtime,
+        )
+    )
+
+    response = client.post(
+        "/v1/personal/rebuild-cached",
+        json=cached_rebuild_request(),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["personal"]["status"] == "available"
+    assert provider.embed_call_count == 0
+
+
+def test_cached_rebuild_fails_closed_on_any_cache_miss(tmp_path: Path) -> None:
+    provider = FakeEmbeddingProvider()
+    runtime = PersonalModelRuntime(
+        provider=provider,
+        store_root=tmp_path / "personal-store",
+        training_config=LinearHeadTrainingConfig(epochs=1, learning_rate=0.1),
+    )
+    cache = populated_embedding_cache(tmp_path)
+    request = cached_rebuild_request()
+    request["snapshot"]["embedding_keys"][0]["content_revision"] = "2"
+    client = TestClient(
+        create_app(
+            provider=provider,
+            embedding_cache=cache,
+            personal_model_runtime=runtime,
+        )
+    )
+
+    response = client.post("/v1/personal/rebuild-cached", json=request)
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "personal_embedding_cache_miss"
+    assert provider.embed_call_count == 0
+    assert client.get("/v1/capabilities").json()["personal"] == {
+        "status": "unavailable"
+    }
+
+
+def test_cached_rebuild_requires_an_explicit_embedding_cache(tmp_path: Path) -> None:
+    provider = FakeEmbeddingProvider()
+    runtime = PersonalModelRuntime(
+        provider=provider,
+        store_root=tmp_path / "personal-store",
+        training_config=LinearHeadTrainingConfig(epochs=1, learning_rate=0.1),
+    )
+    client = TestClient(
+        create_app(provider=provider, personal_model_runtime=runtime)
+    )
+
+    response = client.post(
+        "/v1/personal/rebuild-cached",
+        json=cached_rebuild_request(),
+    )
+
+    assert response.status_code == 503
+    assert response.json()["detail"]["code"] == (
+        "personal_embedding_cache_unavailable"
+    )
+    assert provider.embed_call_count == 0
+
+
+def test_cached_rebuild_contract_forbids_image_and_path_fields(tmp_path: Path) -> None:
+    provider = FakeEmbeddingProvider()
+    runtime = PersonalModelRuntime(
+        provider=provider,
+        store_root=tmp_path / "personal-store",
+        training_config=LinearHeadTrainingConfig(epochs=1, learning_rate=0.1),
+    )
+    request = cached_rebuild_request()
+    request["snapshot"]["image_base64"] = png_base64()
+    request["snapshot"]["path"] = "/private/photo.jpg"
+    client = TestClient(
+        create_app(
+            provider=provider,
+            embedding_cache=populated_embedding_cache(tmp_path),
+            personal_model_runtime=runtime,
+        )
+    )
+
+    response = client.post("/v1/personal/rebuild-cached", json=request)
+
+    assert response.status_code == 422
+    assert provider.embed_call_count == 0
+
+
+def test_cached_rebuild_validates_snapshot_before_cache_lookup(tmp_path: Path) -> None:
+    provider = FakeEmbeddingProvider()
+    runtime = PersonalModelRuntime(
+        provider=provider,
+        store_root=tmp_path / "personal-store",
+        training_config=LinearHeadTrainingConfig(epochs=1, learning_rate=0.1),
+    )
+    request = cached_rebuild_request()
+    request["snapshot"]["catalog_scope_id"] = "not-a-catalog-uuid"
+    client = TestClient(
+        create_app(
+            provider=provider,
+            embedding_cache=populated_embedding_cache(tmp_path),
+            personal_model_runtime=runtime,
+        )
+    )
+
+    response = client.post("/v1/personal/rebuild-cached", json=request)
+
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == (
+        "invalid_personal_training_snapshot"
+    )
+    assert provider.embed_call_count == 0
 
 
 def test_rebuild_hot_reloads_personal_suggestions_without_a_restart(
