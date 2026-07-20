@@ -8,6 +8,9 @@ struct AppCoreMLModelIdentity: Equatable, Sendable {
     let modelID: String
     let modelRevision: String
     let preprocessingRevision: String
+    let embeddingSemantics: String
+    let postprocessingRevision: String
+    let elementType: String
     let elementCount: Int
     let sourceModelSHA256: String
     let artifactSHA256: String
@@ -147,6 +150,9 @@ final class AppCoreMLEmbeddingService: @unchecked Sendable {
             modelID: manifest.encoder.modelID,
             modelRevision: manifest.encoder.modelRevision,
             preprocessingRevision: manifest.encoder.preprocessingRevision,
+            embeddingSemantics: manifest.output.semantics,
+            postprocessingRevision: manifest.output.postprocessingRevision,
+            elementType: manifest.output.elementType,
             elementCount: manifest.encoder.elementCount,
             sourceModelSHA256: manifest.conversion.sourceModelSHA256,
             artifactSHA256: manifest.artifact.sha256,
@@ -296,7 +302,7 @@ final class AppCoreMLEmbeddingService: @unchecked Sendable {
         let conversion: Conversion
         let artifact: Artifact
         let input: Tensor
-        let output: Tensor
+        let output: OutputTensor
 
         enum CodingKeys: String, CodingKey {
             case schemaRevision = "schema_revision"
@@ -305,7 +311,7 @@ final class AppCoreMLEmbeddingService: @unchecked Sendable {
 
         func validate() throws {
             guard
-                schemaRevision == 1,
+                schemaRevision == 2,
                 license.id == "Apache-2.0",
                 license.file == "LICENSE.txt",
                 license.source == "https://raw.githubusercontent.com/facebookresearch/dinov2/7764ea0f912e53c92e82eb78a2a1631e92725fc8/LICENSE",
@@ -406,10 +412,27 @@ final class AppCoreMLEmbeddingService: @unchecked Sendable {
             shape: [1, 3, 224, 224],
             elementType: "float32"
         )
-        static let approvedOutput = Tensor(
+    }
+
+    private struct OutputTensor: Decodable, Equatable {
+        let name: String
+        let shape: [Int]
+        let elementType: String
+        let semantics: String
+        let postprocessingRevision: String
+
+        enum CodingKeys: String, CodingKey {
+            case name, shape, semantics
+            case elementType = "element_type"
+            case postprocessingRevision = "postprocessing_revision"
+        }
+
+        static let approvedOutput = OutputTensor(
             name: "embedding",
             shape: [1, 384],
-            elementType: "float32"
+            elementType: "float32",
+            semantics: "dinov2-cls-token",
+            postprocessingRevision: "raw-float32-v1"
         )
     }
 

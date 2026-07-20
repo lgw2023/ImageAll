@@ -1,3 +1,4 @@
+import CoreGraphics
 import XCTest
 @testable import ImageAll
 
@@ -46,6 +47,30 @@ final class CompositionRootTests: XCTestCase {
         XCTAssertEqual(identity.elementCount, 384)
     }
 
+    func testProductionCoreMLCacheFactoryGeneratesAnIdentityMatchedEmbedding() throws {
+        let cacheRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: cacheRoot) }
+        let cache = CompositionRoot.makeAppCoreMLEmbeddingCache(
+            isEnabled: true,
+            cachesDirectory: cacheRoot,
+            bundle: try appBundle()
+        )
+
+        let result = try cache.embedding(
+            for: generatedImage(),
+            key: AppCoreMLEmbeddingCacheKey(
+                catalogScopeID: UUID(),
+                assetID: UUID(),
+                contentRevision: 1
+            )
+        )
+
+        XCTAssertEqual(result.origin, .generated)
+        XCTAssertEqual(result.identity.modelID, "facebook/dinov2-small")
+        XCTAssertEqual(result.values.count, 384)
+    }
+
     func testProductionModelSettingsFactoryStartsNewInstallDisabled() async {
         let suiteName = "CompositionRootTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
@@ -91,5 +116,38 @@ final class CompositionRootTests: XCTestCase {
             try? await Task.sleep(nanoseconds: 50_000_000)
         }
         return condition()
+    }
+
+    private func appBundle() throws -> Bundle {
+        let testBundleURL = Bundle(for: CompositionRootTests.self).bundleURL
+        let appBundleURL = testBundleURL
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        return try XCTUnwrap(Bundle(url: appBundleURL))
+    }
+
+    private func generatedImage() throws -> CGImage {
+        guard let context = CGContext(
+            data: nil,
+            width: 64,
+            height: 64,
+            bitsPerComponent: 8,
+            bytesPerRow: 64 * 4,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else {
+            throw CompositionRootTestError.imageCreationFailed
+        }
+        context.setFillColor(red: 0.25, green: 0.5, blue: 0.75, alpha: 1)
+        context.fill(CGRect(x: 0, y: 0, width: 64, height: 64))
+        guard let image = context.makeImage() else {
+            throw CompositionRootTestError.imageCreationFailed
+        }
+        return image
+    }
+
+    private enum CompositionRootTestError: Error {
+        case imageCreationFailed
     }
 }

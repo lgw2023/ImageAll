@@ -198,6 +198,20 @@ struct CompositionRoot {
         )
     }
 
+    static func makeAppCoreMLEmbeddingCache(
+        isEnabled: Bool,
+        cachesDirectory: URL,
+        bundle: Bundle = .main
+    ) -> AppCoreMLEmbeddingCache {
+        AppCoreMLEmbeddingCache(
+            cachesDirectory: cachesDirectory,
+            service: makeAppCoreMLEmbeddingService(
+                isEnabled: isEnabled,
+                bundle: bundle
+            )
+        )
+    }
+
     @MainActor
     static func makeAppModelSettingsModel(
         defaults: UserDefaults = .standard,

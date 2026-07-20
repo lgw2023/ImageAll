@@ -207,9 +207,11 @@
 		MM0000010000000000000101 /* PersonalizedSuggestionServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = MM0001010000000000000101 /* PersonalizedSuggestionServiceTests.swift */; };
 		MM0000010000000000000001 /* PersonalizedSuggestionService.swift in Sources */ = {isa = PBXBuildFile; fileRef = MM0001010000000000000001 /* PersonalizedSuggestionService.swift */; };
 		CM0000010000000000000101 /* AppCoreMLEmbeddingServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CM0001010000000000000101 /* AppCoreMLEmbeddingServiceTests.swift */; };
+		CM0000010000000000000104 /* AppCoreMLEmbeddingCacheTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CM0001010000000000000104 /* AppCoreMLEmbeddingCacheTests.swift */; };
 		CM0000010000000000000103 /* AppModelActivationCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CM0001010000000000000103 /* AppModelActivationCoordinatorTests.swift */; };
 		CM0000010000000000000102 /* LoopbackModelSuggestionClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = CM0001010000000000000102 /* LoopbackModelSuggestionClient.swift */; };
 		CM0000010000000000000001 /* AppCoreMLEmbeddingService.swift in Sources */ = {isa = PBXBuildFile; fileRef = CM0001010000000000000001 /* AppCoreMLEmbeddingService.swift */; };
+		CM0000010000000000000006 /* AppCoreMLEmbeddingCache.swift in Sources */ = {isa = PBXBuildFile; fileRef = CM0001010000000000000006 /* AppCoreMLEmbeddingCache.swift */; };
 		CM0000010000000000000002 /* AppModelActivationContracts.swift in Sources */ = {isa = PBXBuildFile; fileRef = CM0001010000000000000002 /* AppModelActivationContracts.swift */; };
 		CM0000010000000000000003 /* AppModelActivationCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = CM0001010000000000000003 /* AppModelActivationCoordinator.swift */; };
 		CM0000010000000000000004 /* UserDefaultsModelEnablementPreferenceStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = CM0001010000000000000004 /* UserDefaultsModelEnablementPreferenceStore.swift */; };
@@ -442,9 +444,11 @@
 		MM0001010000000000000101 /* PersonalizedSuggestionServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersonalizedSuggestionServiceTests.swift; sourceTree = "<group>"; };
 		MM0001010000000000000001 /* PersonalizedSuggestionService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersonalizedSuggestionService.swift; sourceTree = "<group>"; };
 		CM0001010000000000000101 /* AppCoreMLEmbeddingServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppCoreMLEmbeddingServiceTests.swift; sourceTree = "<group>"; };
+		CM0001010000000000000104 /* AppCoreMLEmbeddingCacheTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppCoreMLEmbeddingCacheTests.swift; sourceTree = "<group>"; };
 		CM0001010000000000000103 /* AppModelActivationCoordinatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModelActivationCoordinatorTests.swift; sourceTree = "<group>"; };
 		CM0001010000000000000102 /* LoopbackModelSuggestionClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LoopbackModelSuggestionClient.swift; sourceTree = "<group>"; };
 		CM0001010000000000000001 /* AppCoreMLEmbeddingService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppCoreMLEmbeddingService.swift; sourceTree = "<group>"; };
+		CM0001010000000000000006 /* AppCoreMLEmbeddingCache.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppCoreMLEmbeddingCache.swift; sourceTree = "<group>"; };
 		CM0001010000000000000002 /* AppModelActivationContracts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModelActivationContracts.swift; sourceTree = "<group>"; };
 		CM0001010000000000000003 /* AppModelActivationCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModelActivationCoordinator.swift; sourceTree = "<group>"; };
 		CM0001010000000000000004 /* UserDefaultsModelEnablementPreferenceStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UserDefaultsModelEnablementPreferenceStore.swift; sourceTree = "<group>"; };
@@ -533,6 +537,7 @@
 			isa = PBXGroup;
 			children = (
 				CM0001010000000000000101 /* AppCoreMLEmbeddingServiceTests.swift */,
+				CM0001010000000000000104 /* AppCoreMLEmbeddingCacheTests.swift */,
 				CM0001010000000000000103 /* AppModelActivationCoordinatorTests.swift */,
 				CM0001010000000000000102 /* LoopbackModelSuggestionClient.swift */,
 				MM0001010000000000000101 /* PersonalizedSuggestionServiceTests.swift */,
@@ -752,6 +757,7 @@
 			isa = PBXGroup;
 			children = (
 				CM0001010000000000000001 /* AppCoreMLEmbeddingService.swift */,
+				CM0001010000000000000006 /* AppCoreMLEmbeddingCache.swift */,
 				CM0001010000000000000003 /* AppModelActivationCoordinator.swift */,
 				CM0001010000000000000004 /* UserDefaultsModelEnablementPreferenceStore.swift */,
 				MM0001010000000000000001 /* PersonalizedSuggestionService.swift */,
@@ -1171,6 +1177,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				CM0000010000000000000005 /* AppModelSettingsView.swift in Sources */,
+				CM0000010000000000000006 /* AppCoreMLEmbeddingCache.swift in Sources */,
 				CM0000010000000000000001 /* AppCoreMLEmbeddingService.swift in Sources */,
 				CM0000010000000000000002 /* AppModelActivationContracts.swift in Sources */,
 				CM0000010000000000000003 /* AppModelActivationCoordinator.swift in Sources */,
@@ -1303,6 +1310,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				CM0000010000000000000101 /* AppCoreMLEmbeddingServiceTests.swift in Sources */,
+				CM0000010000000000000104 /* AppCoreMLEmbeddingCacheTests.swift in Sources */,
 				CM0000010000000000000103 /* AppModelActivationCoordinatorTests.swift in Sources */,
 				CM0000010000000000000102 /* LoopbackModelSuggestionClient.swift in Sources */,
 				EX0000010000000000000101 /* PortableCatalogExportTests.swift in Sources */,

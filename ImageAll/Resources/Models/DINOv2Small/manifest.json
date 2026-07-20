@@ -1,5 +1,5 @@
 {
-  "schema_revision": 1,
+  "schema_revision": 2,
   "license": {
     "id": "Apache-2.0",
     "file": "LICENSE.txt",
@@ -34,6 +34,8 @@
   "output": {
     "name": "embedding",
     "shape": [1, 384],
-    "element_type": "float32"
+    "element_type": "float32",
+    "semantics": "dinov2-cls-token",
+    "postprocessing_revision": "raw-float32-v1"
   }
 }
