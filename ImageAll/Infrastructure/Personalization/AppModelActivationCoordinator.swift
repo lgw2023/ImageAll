@@ -40,6 +40,11 @@ actor AppModelActivationCoordinator {
         return state
     }
 
+    func readyService() -> AppCoreMLEmbeddingService? {
+        guard case .ready = state else { return nil }
+        return service
+    }
+
     private func activate() -> AppModelActivationState {
         let candidate = serviceFactory()
         switch candidate.availability {

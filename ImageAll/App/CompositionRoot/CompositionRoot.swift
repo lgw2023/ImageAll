@@ -2,11 +2,17 @@ import Foundation
 
 struct CompositionRoot {
     @MainActor
-    func makeStartupModel() -> CatalogStartupModel {
+    func makeStartupModel(
+        modelActivationCoordinator: AppModelActivationCoordinator? = nil,
+        dependencies: CatalogBootstrapDependencies = Self.makeProductionDependencies()
+    ) -> CatalogStartupModel {
         CatalogStartupModel(
-            dependencies: Self.makeProductionDependencies(),
+            dependencies: dependencies,
             workspaceFactory: { token in
-                Self.makeWorkspaceModel(runtime: token.runtime)
+                Self.makeWorkspaceModel(
+                    runtime: token.runtime,
+                    modelActivationCoordinator: modelActivationCoordinator
+                )
             }
         )
     }
@@ -19,7 +25,10 @@ struct CompositionRoot {
     }
 
     @MainActor
-    private static func makeWorkspaceModel(runtime: CatalogRuntime) -> LibraryWorkspaceModel {
+    private static func makeWorkspaceModel(
+        runtime: CatalogRuntime,
+        modelActivationCoordinator: AppModelActivationCoordinator?
+    ) -> LibraryWorkspaceModel {
         let clock = SystemJobClock()
         let sourceRepository = GRDBFolderSourceAuthorizationRepository(database: runtime.database)
         let bookmark = FoundationSecurityScopedBookmarkAdapter()
@@ -155,6 +164,22 @@ struct CompositionRoot {
             standardLibrarySuggestionsEnabled: localModelSuggestions != nil,
             personalModelRebuildEnabled: localModelSuggestions != nil
         )
+        let appPersonalModelRebuilder: AppPersonalModelRebuildRuntime?
+        if let modelActivationCoordinator,
+           let catalogScopeID = try? runtime.database.catalogScopeID()
+        {
+            appPersonalModelRebuilder = AppPersonalModelRebuildRuntime(
+                expectedCatalogScopeID: catalogScopeID,
+                activationCoordinator: modelActivationCoordinator,
+                snapshotSource: AppPersonalTrainingSnapshotPortSource {
+                    try personalizationReview.personalTrainingSnapshot()
+                },
+                cachesDirectory: runtime.paths.cachesDirectory,
+                applicationSupportDirectory: runtime.paths.applicationSupportDirectory
+            )
+        } else {
+            appPersonalModelRebuilder = nil
+        }
         let service = ProductionLibraryWorkspaceService(
             sourceRepository: sourceRepository,
             folderSourceMonitor: folderSourceMonitor,
@@ -181,7 +206,8 @@ struct CompositionRoot {
         return LibraryWorkspaceModel(
             service: service,
             review: personalizationReview,
-            localModelSuggestions: localModelSuggestions
+            localModelSuggestions: localModelSuggestions,
+            appPersonalModelRebuilder: appPersonalModelRebuilder
         )
     }
 
@@ -217,10 +243,22 @@ struct CompositionRoot {
         defaults: UserDefaults = .standard,
         bundle: Bundle = .main
     ) -> AppModelSettingsModel {
+        AppModelSettingsModel(
+            coordinator: makeAppModelActivationCoordinator(
+                defaults: defaults,
+                bundle: bundle
+            )
+        )
+    }
+
+    static func makeAppModelActivationCoordinator(
+        defaults: UserDefaults = .standard,
+        bundle: Bundle = .main
+    ) -> AppModelActivationCoordinator {
         let preferenceStore = UserDefaultsModelEnablementPreferenceStore(
             defaults: defaults
         )
-        let coordinator = AppModelActivationCoordinator(
+        return AppModelActivationCoordinator(
             preferenceStore: preferenceStore,
             serviceFactory: {
                 makeAppCoreMLEmbeddingService(
@@ -229,7 +267,13 @@ struct CompositionRoot {
                 )
             }
         )
-        return AppModelSettingsModel(coordinator: coordinator)
+    }
+
+    @MainActor
+    static func makeAppModelSettingsModel(
+        coordinator: AppModelActivationCoordinator
+    ) -> AppModelSettingsModel {
+        AppModelSettingsModel(coordinator: coordinator)
     }
 
     static func makeLocalModelSuggestionRuntime() -> LocalModelSuggestionRuntime? {

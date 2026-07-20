@@ -1,7 +1,123 @@
+import CoreGraphics
 import XCTest
 @testable import ImageAll
 
 final class AppPersonalModelRebuildCoordinatorTests: XCTestCase {
+    func testAppRuntimeWithoutReadyModelCreatesNoCacheOrHeadState() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let cachesDirectory = root.appendingPathComponent("Caches", isDirectory: true)
+        let applicationSupportDirectory = root.appendingPathComponent(
+            "ApplicationSupport",
+            isDirectory: true
+        )
+        defer { try? FileManager.default.removeItem(at: root) }
+        let catalogScopeID = UUID().uuidString.lowercased()
+        let activation = AppModelActivationCoordinator(
+            preferenceStore: InMemoryModelEnablementPreferenceStore(),
+            serviceFactory: {
+                AppCoreMLEmbeddingService(
+                    isEnabled: true,
+                    artifactDirectory: Self.projectArtifactDirectory()
+                )
+            }
+        )
+        let runtime = AppPersonalModelRebuildRuntime(
+            expectedCatalogScopeID: catalogScopeID,
+            activationCoordinator: activation,
+            snapshotSource: FixedSnapshotSource(
+                snapshot: makeTrainingSnapshot(catalogScopeID: catalogScopeID)
+            ),
+            cachesDirectory: cachesDirectory,
+            applicationSupportDirectory: applicationSupportDirectory
+        )
+
+        do {
+            _ = try await runtime.rebuild()
+            XCTFail("expected disabled model to reject App personal rebuild")
+        } catch {
+            XCTAssertEqual(error as? AppPersonalModelRebuildError, .modelUnavailable)
+        }
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: cachesDirectory.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: applicationSupportDirectory.path))
+    }
+
+    func testActivatedAppRuntimePublishesFromProductionCacheOnlySources() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let cachesDirectory = root.appendingPathComponent("Caches", isDirectory: true)
+        let applicationSupportDirectory = root.appendingPathComponent(
+            "ApplicationSupport",
+            isDirectory: true
+        )
+        defer { try? FileManager.default.removeItem(at: root) }
+        let catalogID = UUID()
+        let snapshot = makeTrainingSnapshot(
+            catalogScopeID: catalogID.uuidString.lowercased()
+        )
+        let preference = InMemoryModelEnablementPreferenceStore()
+        let activation = AppModelActivationCoordinator(
+            preferenceStore: preference,
+            serviceFactory: {
+                AppCoreMLEmbeddingService(
+                    isEnabled: true,
+                    artifactDirectory: Self.projectArtifactDirectory()
+                )
+            }
+        )
+        guard case let .ready(encoderIdentity) = await activation.setEnabled(true),
+              let service = await activation.readyService()
+        else {
+            return XCTFail("expected fixed Core ML artifact to be ready")
+        }
+        let cache = AppCoreMLEmbeddingCache(
+            cachesDirectory: cachesDirectory,
+            service: service
+        )
+        for decision in snapshot.decisions {
+            _ = try cache.embedding(
+                for: generatedImage(decision.assetID),
+                key: AppCoreMLEmbeddingCacheKey(
+                    catalogScopeID: catalogID,
+                    assetID: decision.assetID,
+                    contentRevision: Int64(decision.contentRevision)
+                )
+            )
+        }
+        let runtime = AppPersonalModelRebuildRuntime(
+            expectedCatalogScopeID: snapshot.catalogScopeID,
+            activationCoordinator: activation,
+            snapshotSource: FixedSnapshotSource(snapshot: snapshot),
+            cachesDirectory: cachesDirectory,
+            applicationSupportDirectory: applicationSupportDirectory
+        )
+
+        let identity = try await runtime.rebuild()
+
+        XCTAssertEqual(identity.catalogScopeID, snapshot.catalogScopeID)
+        XCTAssertEqual(identity.encoderIdentity, encoderIdentity)
+        XCTAssertEqual(identity.personalTagIDs, snapshot.personalTagIDs)
+        let restarted = AppPersonalLinearHeadStore(
+            applicationSupportDirectory: applicationSupportDirectory,
+            expectedCatalogScopeID: snapshot.catalogScopeID,
+            expectedEncoderIdentity: encoderIdentity
+        )
+        let restartedCapability = await restarted.start()
+        XCTAssertEqual(restartedCapability, .ready(identity))
+    }
+
+    func testProductionSnapshotSourceReadsManualFactsThroughTheReviewBoundary() async throws {
+        let expected = makeTrainingSnapshot()
+        let source = AppPersonalTrainingSnapshotPortSource {
+            expected
+        }
+
+        let actual = try await source.currentSnapshot()
+
+        XCTAssertEqual(actual, expected)
+    }
+
     func testExplicitRebuildPublishesAHeadFromReadOnlyFactsAndCachedEmbeddings() async throws {
         let applicationSupportDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -251,7 +367,10 @@ final class AppPersonalModelRebuildCoordinatorTests: XCTestCase {
         XCTAssertEqual(capability, .ready(oldIdentity))
     }
 
-    private func makeTrainingSnapshot(contentRevision: Int = 1) -> PersonalTrainingSnapshot {
+    private func makeTrainingSnapshot(
+        catalogScopeID: String = "catalog-fixture",
+        contentRevision: Int = 1
+    ) -> PersonalTrainingSnapshot {
         let tagID = UUID(uuidString: "10000000-0000-0000-0000-000000000001")!
         let accepted = [
             UUID(uuidString: "20000000-0000-0000-0000-000000000001")!,
@@ -262,7 +381,7 @@ final class AppPersonalModelRebuildCoordinatorTests: XCTestCase {
             UUID(uuidString: "30000000-0000-0000-0000-000000000002")!,
         ]
         return PersonalTrainingSnapshot(
-            catalogScopeID: "catalog-fixture",
+            catalogScopeID: catalogScopeID,
             personalTagIDs: [tagID],
             decisions: accepted.map {
                 PersonalTrainingDecision(
@@ -312,6 +431,51 @@ final class AppPersonalModelRebuildCoordinatorTests: XCTestCase {
             licenseSHA256: String(repeating: "4", count: 64)
         )
     }
+
+    private static func projectArtifactDirectory() -> URL {
+        URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("ImageAll/Resources/Models/DINOv2Small")
+    }
+
+    private func generatedImage(_ assetID: UUID) throws -> CGImage {
+        guard let context = CGContext(
+            data: nil,
+            width: 64,
+            height: 64,
+            bitsPerComponent: 8,
+            bytesPerRow: 64 * 4,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else {
+            throw AppPersonalModelRebuildTestError.imageCreationFailed
+        }
+        let byte = assetID.uuid.0
+        context.setFillColor(
+            red: CGFloat(byte) / 255,
+            green: 0.5,
+            blue: 1 - CGFloat(byte) / 255,
+            alpha: 1
+        )
+        context.fill(CGRect(x: 0, y: 0, width: 64, height: 64))
+        guard let image = context.makeImage() else {
+            throw AppPersonalModelRebuildTestError.imageCreationFailed
+        }
+        return image
+    }
+}
+
+private enum AppPersonalModelRebuildTestError: Error {
+    case imageCreationFailed
+}
+
+private final class InMemoryModelEnablementPreferenceStore:
+    ModelEnablementPreferenceStore,
+    @unchecked Sendable
+{
+    var isEnabled = false
 }
 
 private struct FixedSnapshotSource: AppPersonalTrainingSnapshotSource {

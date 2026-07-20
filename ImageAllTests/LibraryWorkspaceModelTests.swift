@@ -1582,6 +1582,108 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         )
     }
 
+    func testUserTriggeredPersonalRebuildUsesTheAppRuntimeWithoutLoopback() async {
+        let tagID = UUID()
+        let assetIDs = (0..<4).map { _ in UUID() }
+        let snapshot = PersonalTrainingSnapshot(
+            catalogScopeID: UUID().uuidString.lowercased(),
+            personalTagIDs: [tagID],
+            decisions: Self.makePersonalTrainingDecisions(
+                tagID: tagID,
+                assetIDs: assetIDs
+            )
+        )
+        let rebuilder = FakeAppPersonalModelRebuilder(
+            result: .success(
+                AppPersonalLinearHeadIdentity(
+                    catalogScopeID: snapshot.catalogScopeID,
+                    decisionSnapshotRevision: String(repeating: "1", count: 64),
+                    labelVocabularyRevision: String(repeating: "2", count: 64),
+                    encoderIdentity: AppCoreMLModelIdentity(
+                        provider: "dinov2",
+                        modelID: "facebook/dinov2-small",
+                        modelRevision: "model-v1",
+                        preprocessingRevision: "preprocessing-v1",
+                        embeddingSemantics: "dinov2-cls-token",
+                        postprocessingRevision: "raw-float32-v1",
+                        elementType: "float32",
+                        elementCount: 384,
+                        sourceModelSHA256: String(repeating: "3", count: 64),
+                        artifactSHA256: String(repeating: "4", count: 64),
+                        manifestSHA256: String(repeating: "5", count: 64),
+                        licenseID: "Apache-2.0",
+                        licenseSHA256: String(repeating: "6", count: 64)
+                    ),
+                    personalTagIDs: [tagID],
+                    weightsSHA256: String(repeating: "7", count: 64)
+                )
+            )
+        )
+        let model = LibraryWorkspaceModel(
+            service: FakeLibraryWorkspaceService(
+                connectedSource: LibrarySourceSummary(
+                    id: UUID(),
+                    displayName: "Fixture",
+                    state: .active
+                ),
+                reconciledItems: []
+            ),
+            review: FakePersonalizationReviewPort(trainingSnapshot: snapshot),
+            appPersonalModelRebuilder: rebuilder
+        )
+
+        XCTAssertTrue(model.supportsPersonalModelRebuild)
+        await model.rebuildPersonalModel()
+
+        let rebuildCallCount = await rebuilder.callCount()
+        XCTAssertEqual(rebuildCallCount, 1)
+        XCTAssertEqual(
+            model.notice,
+            .personalModelRebuildCompleted(tagCount: 1, sampleCount: 4)
+        )
+        XCTAssertFalse(model.isRebuildingPersonalModel)
+    }
+
+    func testAppPersonalRebuildCacheMissLeavesBrowsingAndManualTagsAvailable() async {
+        let sourceID = UUID()
+        let asset = Self.makeAsset(sourceID: sourceID, fileName: "cached-miss.jpg")
+        let tag = TagListItem(id: UUID(), displayName: "旅行", state: .active)
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: sourceID,
+                displayName: "Fixture",
+                state: .active
+            ),
+            reconciledItems: [asset],
+            tags: [tag],
+            initialItems: [asset],
+            startsConnected: true
+        )
+        let rebuilder = FakeAppPersonalModelRebuilder(
+            result: .failure(AppPersonalModelRebuildError.embeddingUnavailable)
+        )
+        let model = LibraryWorkspaceModel(
+            service: service,
+            review: FakePersonalizationReviewPort(
+                trainingSnapshot: PersonalTrainingSnapshot(
+                    catalogScopeID: UUID().uuidString.lowercased(),
+                    personalTagIDs: [tag.id],
+                    decisions: []
+                )
+            ),
+            appPersonalModelRebuilder: rebuilder
+        )
+        await model.start()
+
+        await model.rebuildPersonalModel()
+
+        XCTAssertEqual(model.items.map(\.assetID), [asset.assetID])
+        XCTAssertEqual(model.tags.map(\.id), [tag.id])
+        XCTAssertEqual(service.mutateTagCallCount, 0)
+        XCTAssertEqual(model.notice, .personalModelRebuildCacheUnavailable)
+        XCTAssertFalse(model.isRebuildingPersonalModel)
+    }
+
     func testPersonalRebuildWithCloudOnlySampleFailsClosedBeforePublish() async {
         let sourceID = UUID()
         let tagID = UUID(uuidString: "2C000000-0000-4000-8000-000000000001")!
@@ -4606,6 +4708,24 @@ private enum FakeWorkspaceError: Error {
     case portableExportFailed
     case previewCacheClearFailed
     case jobActivityActionFailed
+}
+
+private actor FakeAppPersonalModelRebuilder: AppPersonalModelRebuilding {
+    private let result: Result<AppPersonalLinearHeadIdentity, Error>
+    private var storedCallCount = 0
+
+    init(result: Result<AppPersonalLinearHeadIdentity, Error>) {
+        self.result = result
+    }
+
+    func rebuild() async throws -> AppPersonalLinearHeadIdentity {
+        storedCallCount += 1
+        return try result.get()
+    }
+
+    func callCount() -> Int {
+        storedCallCount
+    }
 }
 
 private struct FakePersonalSuggestionReplacement: Equatable {

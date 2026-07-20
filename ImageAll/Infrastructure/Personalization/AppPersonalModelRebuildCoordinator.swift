@@ -1,7 +1,105 @@
 import CryptoKit
 import Foundation
 
-actor AppPersonalModelRebuildCoordinator {
+struct AppPersonalTrainingSnapshotPortSource: AppPersonalTrainingSnapshotSource {
+    let readSnapshot: @Sendable () throws -> PersonalTrainingSnapshot
+
+    init(readSnapshot: @escaping @Sendable () throws -> PersonalTrainingSnapshot) {
+        self.readSnapshot = readSnapshot
+    }
+
+    func currentSnapshot() async throws -> PersonalTrainingSnapshot {
+        try readSnapshot()
+    }
+}
+
+struct AppPersonalTrainingEmbeddingCacheSource: AppPersonalTrainingEmbeddingSource {
+    let cache: AppCoreMLEmbeddingCache
+
+    func cachedEmbedding(
+        for key: PersonalTrainingEmbeddingCacheKey
+    ) async throws -> PersonalTrainingEmbedding? {
+        guard let catalogScopeID = UUID(uuidString: key.catalogScopeID) else {
+            return nil
+        }
+        return try cache.cachedEmbedding(
+            for: AppCoreMLEmbeddingCacheKey(
+                catalogScopeID: catalogScopeID,
+                assetID: key.assetID,
+                contentRevision: Int64(key.contentRevision)
+            )
+        ).map {
+            PersonalTrainingEmbedding(
+                encoder: PersonalTrainingEncoderIdentity($0.identity),
+                values: $0.values
+            )
+        }
+    }
+}
+
+actor AppPersonalModelRebuildRuntime: AppPersonalModelRebuilding {
+    private let expectedCatalogScopeID: String
+    private let activationCoordinator: AppModelActivationCoordinator
+    private let snapshotSource: any AppPersonalTrainingSnapshotSource
+    private let cachesDirectory: URL
+    private let applicationSupportDirectory: URL
+    private var isRebuilding = false
+    private var activeCoordinator: AppPersonalModelRebuildCoordinator?
+
+    init(
+        expectedCatalogScopeID: String,
+        activationCoordinator: AppModelActivationCoordinator,
+        snapshotSource: any AppPersonalTrainingSnapshotSource,
+        cachesDirectory: URL,
+        applicationSupportDirectory: URL
+    ) {
+        self.expectedCatalogScopeID = expectedCatalogScopeID
+        self.activationCoordinator = activationCoordinator
+        self.snapshotSource = snapshotSource
+        self.cachesDirectory = cachesDirectory
+        self.applicationSupportDirectory = applicationSupportDirectory
+    }
+
+    func rebuild() async throws -> AppPersonalLinearHeadIdentity {
+        guard !isRebuilding else {
+            throw AppPersonalModelRebuildError.alreadyRunning
+        }
+        isRebuilding = true
+        defer { isRebuilding = false }
+        guard let service = await activationCoordinator.readyService(),
+              case let .ready(identity) = service.availability
+        else {
+            throw AppPersonalModelRebuildError.modelUnavailable
+        }
+        let store = AppPersonalLinearHeadStore(
+            applicationSupportDirectory: applicationSupportDirectory,
+            expectedCatalogScopeID: expectedCatalogScopeID,
+            expectedEncoderIdentity: identity
+        )
+        _ = await store.start()
+        let coordinator = AppPersonalModelRebuildCoordinator(
+            expectedCatalogScopeID: expectedCatalogScopeID,
+            encoderIdentity: identity,
+            snapshotSource: snapshotSource,
+            embeddingSource: AppPersonalTrainingEmbeddingCacheSource(
+                cache: AppCoreMLEmbeddingCache(
+                    cachesDirectory: cachesDirectory,
+                    service: service
+                )
+            ),
+            store: store
+        )
+        activeCoordinator = coordinator
+        defer { activeCoordinator = nil }
+        return try await coordinator.rebuild()
+    }
+
+    func cancel() async {
+        await activeCoordinator?.cancel()
+    }
+}
+
+actor AppPersonalModelRebuildCoordinator: AppPersonalModelRebuilding {
     private let expectedCatalogScopeID: String
     private let encoderIdentity: AppCoreMLModelIdentity
     private let snapshotSource: any AppPersonalTrainingSnapshotSource
@@ -163,7 +261,7 @@ actor AppPersonalModelRebuildCoordinator {
     }
 }
 
-private extension PersonalTrainingEncoderIdentity {
+extension PersonalTrainingEncoderIdentity {
     init(_ identity: AppCoreMLModelIdentity) {
         self.init(
             provider: identity.provider,

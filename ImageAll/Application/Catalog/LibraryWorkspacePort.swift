@@ -73,6 +73,7 @@ enum LibraryWorkspaceNotice: Equatable, Sendable {
     case personalModelRebuildCompleted(tagCount: Int, sampleCount: Int)
     case personalModelRebuildNotReady
     case personalModelRebuildPreviewUnavailable
+    case personalModelRebuildCacheUnavailable
     case personalModelRebuildServiceUnavailable
     case personalModelRebuildFailed
 }

@@ -86,6 +86,39 @@ final class CompositionRootTests: XCTestCase {
         XCTAssertEqual(model.state, .disabled)
     }
 
+    func testProductionCompositionSharesActivatedCoreMLWithWorkspaceRebuild() async throws {
+        let suiteName = "CompositionRootTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.removePersistentDomain(forName: suiteName)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let activation = CompositionRoot.makeAppModelActivationCoordinator(
+            defaults: defaults,
+            bundle: try appBundle()
+        )
+        let settings = CompositionRoot.makeAppModelSettingsModel(
+            coordinator: activation
+        )
+        settings.setEnabled(true)
+        let activated = await waitUntil(timeoutSeconds: 5) {
+            if case .ready = settings.state { return true }
+            return false
+        }
+        XCTAssertTrue(activated)
+        let tempRoot = try StartupTestSupport.makeTempRoot(testCase: self)
+        let startup = CompositionRoot().makeStartupModel(
+            modelActivationCoordinator: activation,
+            dependencies: StartupTestSupport.makeDependencies(root: tempRoot)
+        )
+
+        let ready = await waitUntil(timeoutSeconds: 5) {
+            startup.workspaceModel != nil
+        }
+
+        XCTAssertTrue(ready)
+        XCTAssertTrue(startup.workspaceModel?.supportsPersonalModelRebuild == true)
+        try startup.closeForTesting()
+    }
+
     func testCompositionRootProducesFoundationReadyPresentation() async throws {
         let root = try StartupTestSupport.makeTempRoot(testCase: self)
         let dependencies = StartupTestSupport.makeDependencies(root: root)

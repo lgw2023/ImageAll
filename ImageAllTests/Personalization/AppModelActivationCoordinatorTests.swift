@@ -3,6 +3,32 @@ import XCTest
 @testable import ImageAll
 
 final class AppModelActivationCoordinatorTests: XCTestCase {
+    func testReadyServiceSharesTheActivatedInstanceAndDisablingHidesIt() async {
+        let store = UserDefaultsModelEnablementPreferenceStore(
+            defaults: makeIsolatedUserDefaults()
+        )
+        let factory = ModelServiceFactoryRecorder(
+            artifactDirectory: projectArtifactDirectory()
+        )
+        let coordinator = AppModelActivationCoordinator(
+            preferenceStore: store,
+            serviceFactory: factory.makeService
+        )
+
+        guard case let .ready(identity) = await coordinator.setEnabled(true) else {
+            return XCTFail("expected fixed Core ML artifact to be ready")
+        }
+        let readyService = await coordinator.readyService()
+
+        XCTAssertEqual(readyService?.availability, .ready(identity))
+        XCTAssertEqual(factory.callCount, 1)
+
+        _ = await coordinator.setEnabled(false)
+        let disabledService = await coordinator.readyService()
+        XCTAssertNil(disabledService)
+        XCTAssertEqual(factory.callCount, 1)
+    }
+
     func testNewInstallStartsDisabledWithoutCreatingModelService() async {
         let defaults = makeIsolatedUserDefaults()
         let store = UserDefaultsModelEnablementPreferenceStore(defaults: defaults)

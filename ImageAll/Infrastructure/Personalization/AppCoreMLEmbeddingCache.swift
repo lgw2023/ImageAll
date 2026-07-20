@@ -76,6 +76,19 @@ final class AppCoreMLEmbeddingCache: @unchecked Sendable {
         }
     }
 
+    func cachedEmbedding(
+        for key: AppCoreMLEmbeddingCacheKey
+    ) throws -> AppCoreMLCachedEmbedding? {
+        guard case let .ready(identity) = service.availability else {
+            throw AppCoreMLEmbeddingError.unavailable
+        }
+        guard key.contentRevision >= 0 else { return nil }
+        let address = CacheAddress(key: key, identity: identity)
+        return Self.processLock.withLock {
+            try? read(address: address, identity: identity)
+        }
+    }
+
     private func embeddingLocked(
         for image: CGImage,
         key: AppCoreMLEmbeddingCacheKey

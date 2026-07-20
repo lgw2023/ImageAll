@@ -7,9 +7,16 @@ struct ImageAllApp: App {
 
     init() {
         let root = CompositionRoot()
-        _startupModel = StateObject(wrappedValue: root.makeStartupModel())
+        let modelActivationCoordinator = CompositionRoot.makeAppModelActivationCoordinator()
+        _startupModel = StateObject(
+            wrappedValue: root.makeStartupModel(
+                modelActivationCoordinator: modelActivationCoordinator
+            )
+        )
         _modelSettingsModel = StateObject(
-            wrappedValue: CompositionRoot.makeAppModelSettingsModel()
+            wrappedValue: CompositionRoot.makeAppModelSettingsModel(
+                coordinator: modelActivationCoordinator
+            )
         )
     }
 

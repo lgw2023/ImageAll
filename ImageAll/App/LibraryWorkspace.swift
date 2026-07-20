@@ -167,6 +167,7 @@ final class LibraryWorkspaceModel: ObservableObject {
     fileprivate let review: any PersonalizationReviewPort
     private let service: any LibraryWorkspacePort
     private let localModelSuggestions: LocalModelSuggestionRuntime?
+    private let appPersonalModelRebuilder: (any AppPersonalModelRebuilding)?
     private var lastTagMutation: LibraryTagUndoRecord?
     fileprivate var lastReviewMutation: ReviewMutationUndoRecord?
     private var personalizationRunnerTask: Task<Void, Never>?
@@ -191,12 +192,14 @@ final class LibraryWorkspaceModel: ObservableObject {
         service: any LibraryWorkspacePort,
         review: any PersonalizationReviewPort = EmptyPersonalizationReviewPort(),
         localModelSuggestions: LocalModelSuggestionRuntime? = nil,
+        appPersonalModelRebuilder: (any AppPersonalModelRebuilding)? = nil,
         catalogProgressRefreshInterval: Duration = .milliseconds(750),
         searchDebounceInterval: Duration = .milliseconds(300)
     ) {
         self.service = service
         self.review = review
         self.localModelSuggestions = localModelSuggestions
+        self.appPersonalModelRebuilder = appPersonalModelRebuilder
         self.catalogProgressRefreshInterval = catalogProgressRefreshInterval
         self.searchDebounceInterval = searchDebounceInterval
     }
@@ -211,7 +214,7 @@ final class LibraryWorkspaceModel: ObservableObject {
     }
 
     var supportsPersonalModelRebuild: Bool {
-        localModelSuggestions != nil
+        appPersonalModelRebuilder != nil || localModelSuggestions != nil
     }
 
     var supportsPersonalLibrarySuggestions: Bool {
@@ -1271,6 +1274,10 @@ final class LibraryWorkspaceModel: ObservableObject {
         guard !isRebuildingPersonalModel,
               !isGeneratingPersonalLibrarySuggestions
         else { return }
+        if let appPersonalModelRebuilder {
+            await rebuildAppPersonalModel(using: appPersonalModelRebuilder)
+            return
+        }
         guard let runtime = localModelSuggestions else {
             notice = .personalModelRebuildServiceUnavailable
             return
@@ -1386,6 +1393,44 @@ final class LibraryWorkspaceModel: ObservableObject {
             notice = .personalModelRebuildServiceUnavailable
         } catch is CancellationError {
             notice = nil
+        } catch {
+            notice = .personalModelRebuildFailed
+        }
+    }
+
+    private func rebuildAppPersonalModel(
+        using rebuilder: any AppPersonalModelRebuilding
+    ) async {
+        isRebuildingPersonalModel = true
+        notice = nil
+        defer { isRebuildingPersonalModel = false }
+
+        do {
+            let snapshot = try review.personalTrainingSnapshot()
+            let identity = try await rebuilder.rebuild()
+            let sampleCount = Set(snapshot.decisions.map {
+                PersonalTrainingAssetRevision(
+                    assetID: $0.assetID,
+                    contentRevision: $0.contentRevision
+                )
+            }).count
+            notice = .personalModelRebuildCompleted(
+                tagCount: identity.personalTagIDs.count,
+                sampleCount: sampleCount
+            )
+        } catch let error as AppPersonalModelRebuildError {
+            switch error {
+            case .cancelled:
+                notice = nil
+            case .invalidSnapshot:
+                notice = .personalModelRebuildNotReady
+            case .modelUnavailable:
+                notice = .personalModelRebuildServiceUnavailable
+            case .embeddingUnavailable:
+                notice = .personalModelRebuildCacheUnavailable
+            case .alreadyRunning, .staleSnapshot:
+                notice = .personalModelRebuildFailed
+            }
         } catch {
             notice = .personalModelRebuildFailed
         }
@@ -2913,7 +2958,7 @@ struct LibraryWorkspaceView: View {
                         model.isRebuildingPersonalModel
                             || model.isGeneratingPersonalLibrarySuggestions
                     )
-                    .help("使用当前人工确认与拒绝样本重建个人模型")
+                    .help("只使用当前人工确认与拒绝事实及身份匹配的本地 embedding 缓存；不会读取照片")
                 }
 
                 filterMenu
@@ -4257,6 +4302,8 @@ struct LibraryWorkspaceView: View {
             "尚无可训练标签；每个标签至少需要 2 张确认和 2 张拒绝样本。"
         case .personalModelRebuildPreviewUnavailable:
             "训练样本中有照片尚未在本机可用；未下载云端原图，也未替换现有个人模型。"
+        case .personalModelRebuildCacheUnavailable:
+            "训练样本缺少身份匹配的本地 embedding 缓存；没有读取照片或替换现有个人模型。"
         case .personalModelRebuildServiceUnavailable:
             "个人模型服务当前不可用；现有模型和标准建议不受影响。"
         case .personalModelRebuildFailed:

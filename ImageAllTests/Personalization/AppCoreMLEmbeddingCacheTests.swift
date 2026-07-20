@@ -4,6 +4,87 @@ import XCTest
 @testable import ImageAll
 
 final class AppCoreMLEmbeddingCacheTests: XCTestCase {
+    func testPersonalTrainingSourceMapsOnlyExactCachedEmbeddingIdentity() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let catalogID = UUID()
+        let assetID = UUID()
+        let key = AppCoreMLEmbeddingCacheKey(
+            catalogScopeID: catalogID,
+            assetID: assetID,
+            contentRevision: 5
+        )
+        let cache = AppCoreMLEmbeddingCache(
+            cachesDirectory: root,
+            service: AppCoreMLEmbeddingService(
+                isEnabled: true,
+                artifactDirectory: projectArtifactDirectory()
+            )
+        )
+        let generated = try cache.embedding(for: generatedImage(), key: key)
+        let source = AppPersonalTrainingEmbeddingCacheSource(cache: cache)
+
+        let cached = try await source.cachedEmbedding(
+            for: PersonalTrainingEmbeddingCacheKey(
+                catalogScopeID: catalogID.uuidString.lowercased(),
+                assetID: assetID,
+                contentRevision: Int(key.contentRevision)
+            )
+        )
+        let invalidCatalog = try await source.cachedEmbedding(
+            for: PersonalTrainingEmbeddingCacheKey(
+                catalogScopeID: "not-a-catalog-uuid",
+                assetID: assetID,
+                contentRevision: Int(key.contentRevision)
+            )
+        )
+
+        XCTAssertEqual(cached?.values, generated.values)
+        XCTAssertEqual(cached?.encoder.modelID, generated.identity.modelID)
+        XCTAssertEqual(cached?.encoder.elementCount, generated.identity.elementCount)
+        XCTAssertNil(invalidCatalog)
+        XCTAssertEqual(cacheFiles(under: root).count, 1)
+    }
+
+    func testCacheOnlyLookupReturnsExistingExactIdentityWithoutGeneratingOnMiss() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let service = AppCoreMLEmbeddingService(
+            isEnabled: true,
+            artifactDirectory: projectArtifactDirectory()
+        )
+        let key = AppCoreMLEmbeddingCacheKey(
+            catalogScopeID: UUID(),
+            assetID: UUID(),
+            contentRevision: 7
+        )
+        let cache = AppCoreMLEmbeddingCache(
+            cachesDirectory: root,
+            service: service
+        )
+        let generated = try cache.embedding(for: generatedImage(), key: key)
+
+        let hit = try AppCoreMLEmbeddingCache(
+            cachesDirectory: root,
+            service: service
+        ).cachedEmbedding(for: key)
+        let miss = try cache.cachedEmbedding(
+            for: AppCoreMLEmbeddingCacheKey(
+                catalogScopeID: key.catalogScopeID,
+                assetID: UUID(),
+                contentRevision: key.contentRevision
+            )
+        )
+
+        XCTAssertEqual(hit?.origin, .cacheHit)
+        XCTAssertEqual(hit?.identity, generated.identity)
+        XCTAssertEqual(hit?.values, generated.values)
+        XCTAssertNil(miss)
+        XCTAssertEqual(cacheFiles(under: root).count, 1)
+    }
+
     func testExactIdentityEmbeddingPersistsAcrossCacheInstances() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
