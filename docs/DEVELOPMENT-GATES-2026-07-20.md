@@ -14,6 +14,9 @@
 - App 内版本化 embedding cache 切片开工基线：
   `main@d9f53fc0694553ace5be341dfc6cf2e506b341f8`；实现提交：
   `393e0dcdf8a4656bb91c1f6cc3a54ef219b89129`
+- embedding cache 资源与生命周期切片开工基线：
+  `main@6abc00737e70ce773e162096b032969cc8500226`；实现提交：
+  `f2cac3373bd03db04c41f5b07981db26ec4d2cc5`
 
 ### 1.1 本机凭据日志风险决定
 
@@ -63,6 +66,18 @@
    完整非宿主 xctest 执行 967 项，仍仅上述 3 个宿主身份测试产生 6 个环境断言失败；Release build、
    strict codesign、manifest/license 源包 SHA 一致性与 Python/权重/XPC/helper/loopback 禁入计数均通过。
    受保护图库挂载期间未启动 App 宿主，也未读取 `/Volumes/HDD2`。
+10. embedding cache 资源与生命周期：cache record schema 升为 2；不同 cache 实例先经进程锁收敛，
+    再以 `ModelEmbeddings/v1/lifecycle.lock` 的 POSIX 文件锁覆盖 lookup、Core ML inference、原子发布与
+    回收。8 个不同实例对同 key 并发得到 1 次 generation 和 7 次 hit。对象预算默认固定为 256 MiB，
+    只统计并淘汰 `ModelEmbeddings/v1/objects` 下的常规 `.embedding` 文件；测试证明单条预算下旧对象
+    被回收、上级无关 sentinel 保持不变、最新对象继续命中。首次成功维护会清理无法解码、旧 record
+    schema 或完整模型身份不匹配的自有对象；锁、缓存根、维护、写入或回收失败仍退化为实时有限
+    embedding，模型错误不被吞掉。TDD 实际观察到跨实例 `8 generated / 0 hit`、缺少容量接口、旧 schema
+    孤儿残留和旧 identity 孤儿残留四个 RED，随后逐项 GREEN。定向 cache `11/11`，连同 Core ML、能力
+    管理和 Composition Root 为 `34/34`；完整非宿主 xctest 执行 971 项，仍只有既有 3 个宿主身份测试的
+    6 个环境断言失败。Release build、strict codesign、manifest/license 源包 SHA 一致及
+    Python/原始权重/helper/XPC/loopback 禁入计数均通过。未启动 App 宿主、未读取 `/Volumes/HDD2`、
+    `.photoslibrary` 或真实照片。
 
 实现与产品/架构文档保持分离提交；当前相关收口提交为：
 
@@ -70,7 +85,8 @@
 - `42b6423` / `7f406e7` — App 自动重训实现 / 文档；
 - `7e0874b` / `3b6a276` — 服务启动验收器 / 文档与去标识证据；
 - `573add4` — App 内模型启用偏好、激活 actor、原生 Settings 与 TDD 验收；
-- `393e0dc` — App 内完整语义身份、版本化 embedding cache、损坏恢复与生产组合根。
+- `393e0dc` — App 内完整语义身份、版本化 embedding cache、损坏恢复与生产组合根；
+- `f2cac33` — 跨实例/进程生命周期锁、256 MiB 对象预算和旧 schema/identity 清理。
 
 ## 3. 仍开放但不能继续静默实施的门
 
@@ -109,18 +125,19 @@ target，或替换现有 fixture。解除条件是
 Feature Print 路径保持可用。Developer ID 与 Mac App Store 的选择不阻塞该接线。
 
 `ModelBackend` 与既有 loopback 证据继续作为转换、离线评测和开发验证资产保留，但不再形成发布门或
-用户运行路径。固定 artifact tracer、App 内模型启用选择/持久化/状态呈现及显式单图版本化 embedding
-cache 均已关闭。下一实现门是缓存资源与生命周期窄门：在不启动全库扫描的前提下补跨实例原子发布、
-有界容量/回收和 identity 升级清理；之后才接 App 内 DINO encoder + 轻量线性 head。缓存故障不得影响
+用户运行路径。固定 artifact tracer、App 内模型启用选择/持久化/状态呈现、显式单图版本化 embedding
+cache 及其跨实例原子发布、有界容量/回收和 identity 升级清理均已关闭。下一实现门切换为 App 内
+DINO encoder + Swift/Accelerate 轻量线性 head 的合成个人模型 tracer。缓存或个人模型故障不得影响
 浏览、人工标签或既有 Feature Print 路径。
 
 ## 4. 推荐恢复顺序
 
-1. 下一纵切片关闭 App 内 embedding cache 的资源与生命周期门，仍只用显式程序生成输入：跨实例同 key
-   发布不得产生半文件或身份串用，容量必须有明确上限并只回收 `ModelEmbeddings` 自有对象，旧 schema /
-   identity 可安全清理，缓存根异常继续退化为实时 embedding；不接图库扫描、SQLite 或个人标签；
-2. 上述窄门通过后，按 App 内 DINO encoder + Swift/Accelerate 轻量线性 head 做合成 embedding 的个人
-   模型 tracer；训练包必须绑定 catalog、encoder 完整身份、标签稳定顺序和人工决定快照，不读取真实照片；
+1. 下一纵切片按 App 内 DINO encoder + Swift/Accelerate 轻量线性 head 做合成 embedding 的个人模型
+   tracer：只接受内存中的有限 embedding 和合成人工决定，保持每标签 `2 + 2` 硬门；训练产物绑定
+   catalog scope、encoder 完整身份、标签稳定顺序、人工决定快照 revision 与权重 SHA-256，加载和推理
+   任一身份不匹配均 fail closed；不接图库扫描、SQLite、Review Queue 或真实照片；
+2. 上述 tracer 通过后，再设计显式用户动作如何从当前 App 内 cache/人工事实构造只读训练快照，并单独
+   决定训练调度、取消和持久化；不得恢复 Python/HTTP/helper/XPC 用户依赖；
 3. 并行补齐 Places365 权重许可版本/分发义务和真实公开验证数据 manifest；门关闭后才在隔离临时目录以
    `weights_only=True` 运行评测、转换、parity 与资源门；
 4. 若先取得具体真实数据只读授权，按“阶段 1 小型文件夹 → 阶段 2 显式重绑定 → 阶段 4 大容量 I/O”
