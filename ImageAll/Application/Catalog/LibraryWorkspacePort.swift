@@ -76,6 +76,10 @@ enum LibraryWorkspaceNotice: Equatable, Sendable {
     case personalModelRebuildCacheUnavailable
     case personalModelRebuildServiceUnavailable
     case personalModelRebuildFailed
+    case selectedAssetEmbeddingCached
+    case selectedAssetEmbeddingModelUnavailable
+    case selectedAssetEmbeddingPreviewUnavailable
+    case selectedAssetEmbeddingFailed
 }
 
 enum CloudPreviewPresentationState: Equatable, Sendable {

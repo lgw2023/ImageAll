@@ -2,6 +2,7 @@ import CoreGraphics
 import CryptoKit
 import Darwin
 import Foundation
+import ImageIO
 
 struct AppCoreMLEmbeddingCacheKey: Equatable, Sendable {
     let catalogScopeID: UUID
@@ -404,5 +405,58 @@ final class AppCoreMLEmbeddingCache: @unchecked Sendable {
                 && licenseID == identity.licenseID
                 && licenseSHA256 == identity.licenseSHA256
         }
+    }
+}
+
+actor AppSelectedAssetEmbeddingCacheRuntime: AppSelectedAssetEmbeddingCaching {
+    private let catalogScopeID: UUID
+    private let activationCoordinator: AppModelActivationCoordinator
+    private let cachesDirectory: URL
+
+    init(
+        catalogScopeID: UUID,
+        activationCoordinator: AppModelActivationCoordinator,
+        cachesDirectory: URL
+    ) {
+        self.catalogScopeID = catalogScopeID
+        self.activationCoordinator = activationCoordinator
+        self.cachesDirectory = cachesDirectory
+    }
+
+    func cacheSelectedAsset(
+        assetID: UUID,
+        contentRevision: Int,
+        imageData: @escaping @Sendable () async throws -> Data
+    ) async throws -> AppCoreMLCachedEmbedding {
+        guard contentRevision > 0 else {
+            throw AppSelectedAssetEmbeddingCacheError.invalidAsset
+        }
+        guard let service = await activationCoordinator.readyService() else {
+            throw AppSelectedAssetEmbeddingCacheError.modelUnavailable
+        }
+        let data = try await imageData()
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil),
+              CGImageSourceGetCount(source) == 1,
+              let image = CGImageSourceCreateImageAtIndex(source, 0, nil)
+        else {
+            throw AppSelectedAssetEmbeddingCacheError.invalidImage
+        }
+        let key = AppCoreMLEmbeddingCacheKey(
+            catalogScopeID: catalogScopeID,
+            assetID: assetID,
+            contentRevision: Int64(contentRevision)
+        )
+        let cache = AppCoreMLEmbeddingCache(
+            cachesDirectory: cachesDirectory,
+            service: service
+        )
+        let result = try cache.embedding(for: image, key: key)
+        guard let persisted = try cache.cachedEmbedding(for: key),
+              persisted.identity == result.identity,
+              persisted.vectorSHA256 == result.vectorSHA256
+        else {
+            throw AppSelectedAssetEmbeddingCacheError.persistenceFailed
+        }
+        return result
     }
 }

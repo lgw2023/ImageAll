@@ -1,9 +1,98 @@
 import CoreGraphics
 import CryptoKit
+import ImageIO
+import UniformTypeIdentifiers
 import XCTest
 @testable import ImageAll
 
 final class AppCoreMLEmbeddingCacheTests: XCTestCase {
+    func testSelectedAssetRuntimeCachesOneGeneratedImageWithActivatedIdentity() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let catalogID = UUID()
+        let assetID = UUID()
+        let defaults = UserDefaults(
+            suiteName: "AppCoreMLEmbeddingCacheTests.\(UUID().uuidString)"
+        )!
+        let artifactDirectory = projectArtifactDirectory()
+        let coordinator = AppModelActivationCoordinator(
+            preferenceStore: UserDefaultsModelEnablementPreferenceStore(defaults: defaults),
+            serviceFactory: {
+                AppCoreMLEmbeddingService(
+                    isEnabled: true,
+                    artifactDirectory: artifactDirectory
+                )
+            }
+        )
+        guard case let .ready(expectedIdentity) = await coordinator.setEnabled(true) else {
+            return XCTFail("expected fixed Core ML artifact to activate")
+        }
+        let runtime = AppSelectedAssetEmbeddingCacheRuntime(
+            catalogScopeID: catalogID,
+            activationCoordinator: coordinator,
+            cachesDirectory: root
+        )
+        let imageData = try generatedPNGData()
+
+        let result = try await runtime.cacheSelectedAsset(
+            assetID: assetID,
+            contentRevision: 7,
+            imageData: { imageData }
+        )
+
+        XCTAssertEqual(result.origin, .generated)
+        XCTAssertEqual(result.identity, expectedIdentity)
+        XCTAssertEqual(result.values.count, 384)
+        XCTAssertTrue(result.values.allSatisfy(\.isFinite))
+        XCTAssertEqual(cacheFiles(under: root).count, 1)
+    }
+
+    func testSelectedAssetRuntimeDoesNotReportSuccessWhenCacheCannotPersist() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+        let sentinel = Data("not a cache directory".utf8)
+        try sentinel.write(to: root, options: .atomic)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let defaults = UserDefaults(
+            suiteName: "AppCoreMLEmbeddingCacheTests.\(UUID().uuidString)"
+        )!
+        let artifactDirectory = projectArtifactDirectory()
+        let coordinator = AppModelActivationCoordinator(
+            preferenceStore: UserDefaultsModelEnablementPreferenceStore(defaults: defaults),
+            serviceFactory: {
+                AppCoreMLEmbeddingService(
+                    isEnabled: true,
+                    artifactDirectory: artifactDirectory
+                )
+            }
+        )
+        guard case .ready = await coordinator.setEnabled(true) else {
+            return XCTFail("expected fixed Core ML artifact to activate")
+        }
+        let runtime = AppSelectedAssetEmbeddingCacheRuntime(
+            catalogScopeID: UUID(),
+            activationCoordinator: coordinator,
+            cachesDirectory: root
+        )
+        let imageData = try generatedPNGData()
+
+        do {
+            _ = try await runtime.cacheSelectedAsset(
+                assetID: UUID(),
+                contentRevision: 1,
+                imageData: { imageData }
+            )
+            XCTFail("expected explicit cache fill to fail when persistence is unavailable")
+        } catch {
+            XCTAssertEqual(
+                error as? AppSelectedAssetEmbeddingCacheError,
+                .persistenceFailed
+            )
+        }
+        XCTAssertEqual(try Data(contentsOf: root), sentinel)
+    }
+
     func testPersonalTrainingSourceMapsOnlyExactCachedEmbeddingIdentity() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -528,6 +617,23 @@ final class AppCoreMLEmbeddingCacheTests: XCTestCase {
             throw TestImageError.creationFailed
         }
         return image
+    }
+
+    private func generatedPNGData() throws -> Data {
+        let data = NSMutableData()
+        guard let destination = CGImageDestinationCreateWithData(
+            data,
+            UTType.png.identifier as CFString,
+            1,
+            nil
+        ) else {
+            throw TestImageError.creationFailed
+        }
+        CGImageDestinationAddImage(destination, try generatedImage(), nil)
+        guard CGImageDestinationFinalize(destination) else {
+            throw TestImageError.creationFailed
+        }
+        return data as Data
     }
 
     private func cacheFiles(under root: URL) -> [URL] {

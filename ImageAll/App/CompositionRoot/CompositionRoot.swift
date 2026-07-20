@@ -164,10 +164,9 @@ struct CompositionRoot {
             standardLibrarySuggestionsEnabled: localModelSuggestions != nil,
             personalModelRebuildEnabled: localModelSuggestions != nil
         )
+        let catalogScopeID = try? runtime.database.catalogScopeID()
         let appPersonalModelRebuilder: AppPersonalModelRebuildRuntime?
-        if let modelActivationCoordinator,
-           let catalogScopeID = try? runtime.database.catalogScopeID()
-        {
+        if let modelActivationCoordinator, let catalogScopeID {
             appPersonalModelRebuilder = AppPersonalModelRebuildRuntime(
                 expectedCatalogScopeID: catalogScopeID,
                 activationCoordinator: modelActivationCoordinator,
@@ -179,6 +178,19 @@ struct CompositionRoot {
             )
         } else {
             appPersonalModelRebuilder = nil
+        }
+        let selectedAssetEmbeddingCache: AppSelectedAssetEmbeddingCacheRuntime?
+        if let modelActivationCoordinator,
+           let catalogScopeID,
+           let catalogScopeUUID = UUID(uuidString: catalogScopeID)
+        {
+            selectedAssetEmbeddingCache = AppSelectedAssetEmbeddingCacheRuntime(
+                catalogScopeID: catalogScopeUUID,
+                activationCoordinator: modelActivationCoordinator,
+                cachesDirectory: runtime.paths.cachesDirectory
+            )
+        } else {
+            selectedAssetEmbeddingCache = nil
         }
         let service = ProductionLibraryWorkspaceService(
             sourceRepository: sourceRepository,
@@ -207,7 +219,8 @@ struct CompositionRoot {
             service: service,
             review: personalizationReview,
             localModelSuggestions: localModelSuggestions,
-            appPersonalModelRebuilder: appPersonalModelRebuilder
+            appPersonalModelRebuilder: appPersonalModelRebuilder,
+            selectedAssetEmbeddingCache: selectedAssetEmbeddingCache
         )
     }
 

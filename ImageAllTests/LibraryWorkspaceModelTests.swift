@@ -1684,6 +1684,155 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertFalse(model.isRebuildingPersonalModel)
     }
 
+    func testExplicitSelectedAssetEmbeddingCacheReadsOnlyTheCurrentPreview() async {
+        let sourceID = UUID()
+        let asset = Self.makeAsset(
+            sourceID: sourceID,
+            fileName: "selected-cache.png"
+        )
+        let tag = TagListItem(id: UUID(), displayName: "旅行", state: .active)
+        let previewData = Data("program-generated-preview".utf8)
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: sourceID,
+                displayName: "Fixture",
+                state: .active
+            ),
+            reconciledItems: [asset],
+            tags: [tag],
+            initialItems: [asset],
+            startsConnected: true,
+            previewData: previewData
+        )
+        let cache = FakeSelectedAssetEmbeddingCache()
+        let model = LibraryWorkspaceModel(
+            service: service,
+            selectedAssetEmbeddingCache: cache
+        )
+        await model.start()
+        await model.selectAsset(asset.assetID)
+
+        await model.cacheSelectedAssetEmbedding()
+
+        let requests = await cache.requests()
+        XCTAssertEqual(
+            requests,
+            [
+                SelectedAssetEmbeddingCacheRequest(
+                    assetID: asset.assetID,
+                    contentRevision: asset.contentRevision,
+                    imageData: previewData
+                ),
+            ]
+        )
+        XCTAssertEqual(service.previewLoadCallCount, 1)
+        XCTAssertEqual(model.notice, .selectedAssetEmbeddingCached)
+        XCTAssertFalse(model.isCachingSelectedAssetEmbedding)
+        XCTAssertEqual(model.items.map(\.assetID), [asset.assetID])
+        XCTAssertEqual(model.tags.map(\.id), [tag.id])
+        XCTAssertEqual(service.mutateTagCallCount, 0)
+    }
+
+    func testUnavailableSelectedAssetModelFailsBeforePreviewRead() async {
+        let sourceID = UUID()
+        let asset = Self.makeAsset(sourceID: sourceID, fileName: "disabled-model.png")
+        let tag = TagListItem(id: UUID(), displayName: "旅行", state: .active)
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: sourceID,
+                displayName: "Fixture",
+                state: .active
+            ),
+            reconciledItems: [asset],
+            tags: [tag],
+            initialItems: [asset],
+            startsConnected: true
+        )
+        let cache = FakeSelectedAssetEmbeddingCache(
+            failure: AppSelectedAssetEmbeddingCacheError.modelUnavailable
+        )
+        let model = LibraryWorkspaceModel(
+            service: service,
+            selectedAssetEmbeddingCache: cache
+        )
+        await model.start()
+        await model.selectAsset(asset.assetID)
+
+        await model.cacheSelectedAssetEmbedding()
+
+        XCTAssertEqual(service.previewLoadCallCount, 0)
+        let requests = await cache.requests()
+        XCTAssertTrue(requests.isEmpty)
+        XCTAssertEqual(model.notice, .selectedAssetEmbeddingModelUnavailable)
+        XCTAssertFalse(model.isCachingSelectedAssetEmbedding)
+        XCTAssertEqual(model.items.map(\.assetID), [asset.assetID])
+        XCTAssertEqual(model.tags.map(\.id), [tag.id])
+        XCTAssertEqual(service.mutateTagCallCount, 0)
+    }
+
+    func testSelectedAssetCloudOnlyPreviewFailsWithoutChangingBrowsingOrTags() async {
+        let sourceID = UUID()
+        let asset = Self.makeAsset(sourceID: sourceID, fileName: "cloud-only.png")
+        let tag = TagListItem(id: UUID(), displayName: "旅行", state: .active)
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: sourceID,
+                kind: .photos,
+                displayName: "Apple Photos",
+                state: .active
+            ),
+            reconciledItems: [asset],
+            tags: [tag],
+            initialItems: [asset],
+            startsConnected: true,
+            previewError: .cloudOnly
+        )
+        let cache = FakeSelectedAssetEmbeddingCache()
+        let model = LibraryWorkspaceModel(
+            service: service,
+            selectedAssetEmbeddingCache: cache
+        )
+        await model.start()
+        await model.selectAsset(asset.assetID)
+
+        await model.cacheSelectedAssetEmbedding()
+
+        XCTAssertEqual(service.previewLoadCallCount, 1)
+        let requests = await cache.requests()
+        XCTAssertTrue(requests.isEmpty)
+        XCTAssertEqual(model.notice, .selectedAssetEmbeddingPreviewUnavailable)
+        XCTAssertFalse(model.isCachingSelectedAssetEmbedding)
+        XCTAssertEqual(model.items.map(\.assetID), [asset.assetID])
+        XCTAssertEqual(model.tags.map(\.id), [tag.id])
+        XCTAssertEqual(service.mutateTagCallCount, 0)
+    }
+
+    func testSelectedAssetEmbeddingCacheActionRequiresExactlyOneSelection() async {
+        let sourceID = UUID()
+        let first = Self.makeAsset(sourceID: sourceID, fileName: "first.png")
+        let second = Self.makeAsset(sourceID: sourceID, fileName: "second.png")
+        let model = LibraryWorkspaceModel(
+            service: FakeLibraryWorkspaceService(
+                connectedSource: LibrarySourceSummary(
+                    id: sourceID,
+                    displayName: "Fixture",
+                    state: .active
+                ),
+                reconciledItems: [first, second],
+                initialItems: [first, second],
+                startsConnected: true
+            ),
+            selectedAssetEmbeddingCache: FakeSelectedAssetEmbeddingCache()
+        )
+        await model.start()
+
+        XCTAssertFalse(model.canCacheSelectedAssetEmbedding)
+        await model.selectAsset(first.assetID)
+        XCTAssertTrue(model.canCacheSelectedAssetEmbedding)
+        await model.selectAsset(second.assetID, additive: true)
+        XCTAssertFalse(model.canCacheSelectedAssetEmbedding)
+    }
+
     func testPersonalRebuildWithCloudOnlySampleFailsClosedBeforePublish() async {
         let sourceID = UUID()
         let tagID = UUID(uuidString: "2C000000-0000-4000-8000-000000000001")!
@@ -4725,6 +4874,62 @@ private actor FakeAppPersonalModelRebuilder: AppPersonalModelRebuilding {
 
     func callCount() -> Int {
         storedCallCount
+    }
+}
+
+private struct SelectedAssetEmbeddingCacheRequest: Equatable {
+    let assetID: UUID
+    let contentRevision: Int
+    let imageData: Data
+}
+
+private actor FakeSelectedAssetEmbeddingCache: AppSelectedAssetEmbeddingCaching {
+    private var storedRequests: [SelectedAssetEmbeddingCacheRequest] = []
+    private let failure: Error?
+
+    init(failure: Error? = nil) {
+        self.failure = failure
+    }
+
+    func cacheSelectedAsset(
+        assetID: UUID,
+        contentRevision: Int,
+        imageData: @escaping @Sendable () async throws -> Data
+    ) async throws -> AppCoreMLCachedEmbedding {
+        if let failure { throw failure }
+        let data = try await imageData()
+        storedRequests.append(
+            SelectedAssetEmbeddingCacheRequest(
+                assetID: assetID,
+                contentRevision: contentRevision,
+                imageData: data
+            )
+        )
+        let identity = AppCoreMLModelIdentity(
+            provider: "dinov2",
+            modelID: "facebook/dinov2-small",
+            modelRevision: "fixture",
+            preprocessingRevision: "fixture",
+            embeddingSemantics: "fixture",
+            postprocessingRevision: "fixture",
+            elementType: "float32",
+            elementCount: 1,
+            sourceModelSHA256: String(repeating: "1", count: 64),
+            artifactSHA256: String(repeating: "2", count: 64),
+            manifestSHA256: String(repeating: "3", count: 64),
+            licenseID: "Apache-2.0",
+            licenseSHA256: String(repeating: "4", count: 64)
+        )
+        return AppCoreMLCachedEmbedding(
+            identity: identity,
+            values: [0.5],
+            vectorSHA256: String(repeating: "5", count: 64),
+            origin: .generated
+        )
+    }
+
+    func requests() -> [SelectedAssetEmbeddingCacheRequest] {
+        storedRequests
     }
 }
 

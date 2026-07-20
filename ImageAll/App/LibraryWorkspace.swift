@@ -158,6 +158,7 @@ final class LibraryWorkspaceModel: ObservableObject {
     @Published private(set) var standardLibrarySuggestionState: StandardLibrarySuggestionPresentationState = .idle
     @Published private(set) var standardLibrarySuggestionJobID: UUID?
     @Published private(set) var isRebuildingPersonalModel = false
+    @Published private(set) var isCachingSelectedAssetEmbedding = false
     @Published private(set) var isExportingPortableData = false
     @Published private(set) var previewCacheUsage = DerivedImageCacheUsage.zero
     @Published private(set) var isClearingPreviewCache = false
@@ -168,6 +169,7 @@ final class LibraryWorkspaceModel: ObservableObject {
     private let service: any LibraryWorkspacePort
     private let localModelSuggestions: LocalModelSuggestionRuntime?
     private let appPersonalModelRebuilder: (any AppPersonalModelRebuilding)?
+    private let selectedAssetEmbeddingCache: (any AppSelectedAssetEmbeddingCaching)?
     private var lastTagMutation: LibraryTagUndoRecord?
     fileprivate var lastReviewMutation: ReviewMutationUndoRecord?
     private var personalizationRunnerTask: Task<Void, Never>?
@@ -193,6 +195,7 @@ final class LibraryWorkspaceModel: ObservableObject {
         review: any PersonalizationReviewPort = EmptyPersonalizationReviewPort(),
         localModelSuggestions: LocalModelSuggestionRuntime? = nil,
         appPersonalModelRebuilder: (any AppPersonalModelRebuilding)? = nil,
+        selectedAssetEmbeddingCache: (any AppSelectedAssetEmbeddingCaching)? = nil,
         catalogProgressRefreshInterval: Duration = .milliseconds(750),
         searchDebounceInterval: Duration = .milliseconds(300)
     ) {
@@ -200,6 +203,7 @@ final class LibraryWorkspaceModel: ObservableObject {
         self.review = review
         self.localModelSuggestions = localModelSuggestions
         self.appPersonalModelRebuilder = appPersonalModelRebuilder
+        self.selectedAssetEmbeddingCache = selectedAssetEmbeddingCache
         self.catalogProgressRefreshInterval = catalogProgressRefreshInterval
         self.searchDebounceInterval = searchDebounceInterval
     }
@@ -215,6 +219,16 @@ final class LibraryWorkspaceModel: ObservableObject {
 
     var supportsPersonalModelRebuild: Bool {
         appPersonalModelRebuilder != nil || localModelSuggestions != nil
+    }
+
+    var supportsSelectedAssetEmbeddingCache: Bool {
+        selectedAssetEmbeddingCache != nil
+    }
+
+    var canCacheSelectedAssetEmbedding: Bool {
+        supportsSelectedAssetEmbeddingCache
+            && selectedAssetIDs.count == 1
+            && !isCachingSelectedAssetEmbedding
     }
 
     var supportsPersonalLibrarySuggestions: Bool {
@@ -1395,6 +1409,51 @@ final class LibraryWorkspaceModel: ObservableObject {
             notice = nil
         } catch {
             notice = .personalModelRebuildFailed
+        }
+    }
+
+    func cacheSelectedAssetEmbedding() async {
+        guard !isCachingSelectedAssetEmbedding,
+              let cache = selectedAssetEmbeddingCache,
+              let assetID = primarySelectedAssetID
+        else {
+            return
+        }
+        isCachingSelectedAssetEmbedding = true
+        notice = nil
+        defer { isCachingSelectedAssetEmbedding = false }
+
+        do {
+            let service = service
+            let detail = try await Self.offMain {
+                try service.fetchInspectorDetail(assetID: assetID)
+            }
+            guard detail.assetID == assetID, detail.contentRevision > 0 else {
+                throw AppSelectedAssetEmbeddingCacheError.invalidAsset
+            }
+            let downloadedData: Data?
+            if case let .downloaded(downloadedAssetID, data) = cloudPreviewState,
+               downloadedAssetID == assetID
+            {
+                downloadedData = data
+            } else {
+                downloadedData = nil
+            }
+            _ = try await cache.cacheSelectedAsset(
+                assetID: assetID,
+                contentRevision: detail.contentRevision,
+                imageData: {
+                    if let downloadedData { return downloadedData }
+                    return try await service.loadPreview(assetID: assetID)
+                }
+            )
+            notice = .selectedAssetEmbeddingCached
+        } catch AppSelectedAssetEmbeddingCacheError.modelUnavailable {
+            notice = .selectedAssetEmbeddingModelUnavailable
+        } catch PhotosLibraryError.cloudOnly {
+            notice = .selectedAssetEmbeddingPreviewUnavailable
+        } catch {
+            notice = .selectedAssetEmbeddingFailed
         }
     }
 
@@ -2961,6 +3020,21 @@ struct LibraryWorkspaceView: View {
                     .help("只使用当前人工确认与拒绝事实及身份匹配的本地 embedding 缓存；不会读取照片")
                 }
 
+                if model.supportsSelectedAssetEmbeddingCache {
+                    Button {
+                        Task { await model.cacheSelectedAssetEmbedding() }
+                    } label: {
+                        if model.isCachingSelectedAssetEmbedding {
+                            ProgressView()
+                                .controlSize(.small)
+                        } else {
+                            Label("准备当前照片特征", systemImage: "sparkles")
+                        }
+                    }
+                    .disabled(!model.canCacheSelectedAssetEmbedding)
+                    .help("仅为当前选中的一张照片生成 App 内模型缓存；不会扫描或预热图库")
+                }
+
                 filterMenu
                 sortMenu
 
@@ -4256,7 +4330,7 @@ struct LibraryWorkspaceView: View {
             "line.3.horizontal.decrease.circle"
         case .presetTagsInstalled, .presetTagsAlreadyAvailable,
              .portableExportCompleted, .previewCacheCleared,
-             .personalModelRebuildCompleted:
+             .personalModelRebuildCompleted, .selectedAssetEmbeddingCached:
             "checkmark.circle"
         default:
             "exclamationmark.triangle"
@@ -4308,6 +4382,14 @@ struct LibraryWorkspaceView: View {
             "个人模型服务当前不可用；现有模型和标准建议不受影响。"
         case .personalModelRebuildFailed:
             "个人模型重建未完成；现有模型保持不变，请核对样本后重试。"
+        case .selectedAssetEmbeddingCached:
+            "已为当前照片生成身份匹配的本地模型缓存。"
+        case .selectedAssetEmbeddingModelUnavailable:
+            "App 内模型尚未启用或当前不可用；没有读取照片，浏览和人工标签不受影响。"
+        case .selectedAssetEmbeddingPreviewUnavailable:
+            "当前照片尚未在本机可用；未自动下载云端原图，浏览和人工标签不受影响。"
+        case .selectedAssetEmbeddingFailed:
+            "当前照片的本地模型缓存未生成；浏览和人工标签不受影响。"
         }
     }
 

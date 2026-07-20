@@ -116,6 +116,7 @@ final class CompositionRootTests: XCTestCase {
 
         XCTAssertTrue(ready)
         XCTAssertTrue(startup.workspaceModel?.supportsPersonalModelRebuild == true)
+        XCTAssertTrue(startup.workspaceModel?.supportsSelectedAssetEmbeddingCache == true)
         try startup.closeForTesting()
     }
 
