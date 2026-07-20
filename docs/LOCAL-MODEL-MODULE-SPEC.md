@@ -1,6 +1,6 @@
 # ImageAll 可选本地模型模块实施规格
 
-> 状态：Python/HTTP 开发验证链、DINOv2 Core ML 转换/资源证据及既有双轨实验契约已实现；正式部署方向已切换为 App 容器内 Swift/Core ML，固定 artifact tracer、App 内启用选择、版本化 embedding cache、资源生命周期及合成个人线性 head 门已实现；Places365 官方权重字节已复核，许可、公开数据和生产准入仍待后续门
+> 状态：Python/HTTP 开发验证链、DINOv2 Core ML 转换/资源证据及既有双轨实验契约已实现；正式部署方向已切换为 App 容器内 Swift/Core ML，固定 artifact tracer、App 内启用选择、版本化 embedding cache、资源生命周期、合成个人线性 head 及其 managed artifact 门已实现；Places365 官方权重字节已复核，许可、公开数据和生产准入仍待后续门
 > 日期：2026-07-20
 > 开工基线：`main@14c3890b8c83c87a6f603c8900dfaabb3179ea6c`
 > 范围：正式 App 内 Core ML 推理/个人线性 head，以及仅供转换、离线评测和开发验证的独立 Python 工具；不包含 Python/HTTP/helper/XPC 用户运行依赖或生产准确率承诺
@@ -86,9 +86,23 @@ SQLite、Review Queue 或个人模型。
 → 只返回 artifact 内已知标签的有限正分建议；篡改或身份不匹配 fail closed
 ```
 
-该切片没有持久化 active artifact，也没有接入 LibraryWorkspace、图库扫描、SQLite、Review Queue、
-真实标注或真实照片。下一条推荐门是 App 容器内 managed head artifact 的候选校验、原子 active 切换、
-失败保留和独立能力状态；完成后才把现有 embedding cache 与人工事实接成只读训练快照。
+该切片本身没有持久化 active artifact，也没有接入 LibraryWorkspace、图库扫描、SQLite、Review Queue、
+真实标注或真实照片。
+
+第六条 App 内个人 head managed artifact 切片已完成：
+
+```text
+合成线性 head artifact
+→ App Application Support 内容寻址候选对象
+→ no-follow 重载、artifact SHA、catalog 与完整 encoder identity 复核
+→ 原子 active.json 切换与重启恢复
+→ 缺失/损坏/旧身份安全 unavailable；发布失败保留旧 capability
+```
+
+store 不扫描 objects 猜测 active，不接受候选对象或父目录符号链接；只有 active 完整有效时才开放推理。
+该切片仍未接入 LibraryWorkspace、图库扫描、SQLite、Review Queue、真实标注或真实照片。下一条推荐门
+是按显式用户动作把现有 App embedding cache 与人工事实构造成只读训练快照，并冻结调度、取消、快照
+二次复核和 managed artifact 发布契约。
 
 标准轨道的第二、第三条 tracer 已在独立模块内完成：只读 package 校验、CC0 合成 RGB 线性
 fixture、固定 mapping、ontology DAG、policy recommendation 和 standard `/v1/suggestions`。该 fixture
@@ -147,7 +161,7 @@ backbone。训练产物必须记录 encoder、模型 revision、预处理 revisi
 | 候选 | 职责 | 准入状态 |
 |---|---|---|
 | Places365 ResNet18 | 标准场景标签、场景属性和 ontology mapping 的首个 tracer 候选 | `research`；上游 commit 与官方字节 SHA 已复核，权重许可版本、公开评测和 Core ML 门未关闭 |
-| DINOv2-small | 个人标签冻结 embedding | 固定 revision 的 PyTorch/Core ML 开发验证、FP16 artifact、App 内 Swift 加载/启用选择/版本化 embedding cache、跨实例发布、256 MiB 预算和旧 identity 清理均已实现；合成 Swift/Accelerate 个人线性 head 已绑定完整 encoder/人工快照/标签/权重身份，managed artifact 生命周期待下一切片 |
+| DINOv2-small | 个人标签冻结 embedding | 固定 revision 的 PyTorch/Core ML 开发验证、FP16 artifact、App 内 Swift 加载/启用选择/版本化 embedding cache、跨实例发布、256 MiB 预算和旧 identity 清理均已实现；合成 Swift/Accelerate 个人线性 head 已绑定完整 encoder/人工快照/标签/权重身份，App Application Support managed artifact 生命周期也已实现；只读训练快照待下一切片 |
 | SigLIP2 B/32 256 | 开放词表与标准概念候选评测 | 固定 revision 官方仓库约 1.55 GB，直接首包路径已由只读资源预筛拒绝；保留 teacher 研究候选 |
 | SegFormer-B0 ADE20K | 水域、天空、道路等标准标签的区域证据 | 研究候选，不单独决定标签 |
 | RAM++ | 通用对象/属性候选 | 许可证、权重来源和转换门未关闭，不得进入产品 |
@@ -905,4 +919,14 @@ Core ML service、能力管理和 Composition Root 为 `39/39`。完整非宿主
 3 个宿主身份测试产生 6 个环境断言失败。Release build、strict codesign、manifest/license 源包 SHA
 一致，以及 Python/原始权重、嵌入式 helper/XPC 和 loopback 运行引用禁入均通过。未持久化 active head，
 未接 LibraryWorkspace、SQLite、图库或 Review Queue，未启动 App 宿主，未读取 `/Volumes/HDD2`、
+`.photoslibrary` 或真实照片。
+
+同日 App 内个人 head managed artifact 验收：`88b0b2a` 在 App Application Support 下使用内容寻址
+`.personal-head` 对象和单一 `active.json`；候选只在 no-follow 重载后通过 artifact SHA、原始字节、
+catalog scope 与完整 Core ML encoder identity 复核才原子激活。缺失、损坏、旧 identity、写失败、
+候选对象链接和父目录链接均 fail closed，发布失败保留旧内存 capability，损坏 active 不允许推理。
+TDD 观察到五类 RED 并收敛为 store `6/6`；相关回归 `45/45`。完整非宿主 xctest 执行 982 项，仍只有
+既有 3 个宿主身份测试产生 6 个环境断言失败。Release build、strict codesign、manifest/license 源包
+SHA 一致，以及 Python/原始权重、嵌入式 helper/XPC 和 loopback 运行引用禁入均通过。未接
+LibraryWorkspace、SQLite、图库扫描或 Review Queue，未启动 App 宿主，未读取 `/Volumes/HDD2`、
 `.photoslibrary` 或真实照片。
