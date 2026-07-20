@@ -1,6 +1,6 @@
 # ImageAll 可选本地模型模块实施规格
 
-> 状态：Python/HTTP 开发验证链、DINOv2 Core ML 转换/资源证据及既有双轨实验契约已实现；正式部署方向已切换为 App 容器内 Swift/Core ML，固定 artifact tracer、App 内启用选择、版本化 embedding cache 及其资源生命周期门已实现；Places365 官方权重字节已复核，许可、公开数据和生产准入仍待后续门
+> 状态：Python/HTTP 开发验证链、DINOv2 Core ML 转换/资源证据及既有双轨实验契约已实现；正式部署方向已切换为 App 容器内 Swift/Core ML，固定 artifact tracer、App 内启用选择、版本化 embedding cache、资源生命周期及合成个人线性 head 门已实现；Places365 官方权重字节已复核，许可、公开数据和生产准入仍待后续门
 > 日期：2026-07-20
 > 开工基线：`main@14c3890b8c83c87a6f603c8900dfaabb3179ea6c`
 > 范围：正式 App 内 Core ML 推理/个人线性 head，以及仅供转换、离线评测和开发验证的独立 Python 工具；不包含 Python/HTTP/helper/XPC 用户运行依赖或生产准确率承诺
@@ -75,8 +75,20 @@ SQLite、Review Queue 或个人模型。
 
 该切片把同 key 的 8 个不同实例收敛为一次 generation；旧 schema/identity 孤儿可清理，容量测试不触碰
 无关 sentinel。没有接入 LibraryWorkspace、图库扫描、SQLite、Review Queue、个人标签或真实照片。
-下一条推荐 tracer 切换为 App 内 DINO encoder + Swift/Accelerate 轻量线性 head，并先只消费内存中的
-合成 embedding 与合成人工决定。
+
+第五条 App 内个人线性 head tracer 也已完成：
+
+```text
+有限合成 DINO embedding + 合成人工决定（每标签至少 2 + 2）
+→ Swift 确定性训练 centroid-difference Float32 head
+→ artifact 绑定 catalog/snapshot/label/完整 encoder identity 与参数 SHA-256
+→ 重载后用 Accelerate vDSP 推理
+→ 只返回 artifact 内已知标签的有限正分建议；篡改或身份不匹配 fail closed
+```
+
+该切片没有持久化 active artifact，也没有接入 LibraryWorkspace、图库扫描、SQLite、Review Queue、
+真实标注或真实照片。下一条推荐门是 App 容器内 managed head artifact 的候选校验、原子 active 切换、
+失败保留和独立能力状态；完成后才把现有 embedding cache 与人工事实接成只读训练快照。
 
 标准轨道的第二、第三条 tracer 已在独立模块内完成：只读 package 校验、CC0 合成 RGB 线性
 fixture、固定 mapping、ontology DAG、policy recommendation 和 standard `/v1/suggestions`。该 fixture
@@ -135,7 +147,7 @@ backbone。训练产物必须记录 encoder、模型 revision、预处理 revisi
 | 候选 | 职责 | 准入状态 |
 |---|---|---|
 | Places365 ResNet18 | 标准场景标签、场景属性和 ontology mapping 的首个 tracer 候选 | `research`；上游 commit 与官方字节 SHA 已复核，权重许可版本、公开评测和 Core ML 门未关闭 |
-| DINOv2-small | 个人标签冻结 embedding | 固定 revision 的 PyTorch/Core ML 开发验证、FP16 artifact、App 内 Swift 加载/启用选择/版本化 embedding cache 及跨实例发布、256 MiB 预算和旧 identity 清理已实现；App manifest 固定 source/compiled SHA、转换工具版本与输出语义；个人线性 head 待下一切片 |
+| DINOv2-small | 个人标签冻结 embedding | 固定 revision 的 PyTorch/Core ML 开发验证、FP16 artifact、App 内 Swift 加载/启用选择/版本化 embedding cache、跨实例发布、256 MiB 预算和旧 identity 清理均已实现；合成 Swift/Accelerate 个人线性 head 已绑定完整 encoder/人工快照/标签/权重身份，managed artifact 生命周期待下一切片 |
 | SigLIP2 B/32 256 | 开放词表与标准概念候选评测 | 固定 revision 官方仓库约 1.55 GB，直接首包路径已由只读资源预筛拒绝；保留 teacher 研究候选 |
 | SegFormer-B0 ADE20K | 水域、天空、道路等标准标签的区域证据 | 研究候选，不单独决定标签 |
 | RAM++ | 通用对象/属性候选 | 许可证、权重来源和转换门未关闭，不得进入产品 |
@@ -669,6 +681,7 @@ App 内模型启用选择、SigLIP2 下载、Ollama 模型下载、生产 standa
 | standard package 能力握手 | `d157487` | 已验证 package 完整身份 discovery；单图/全库在任何安装、读图或入队前严格核准，畸形/不可用/mismatch fail closed |
 | production standard 准入 verifier | `1699138` | 严格 evidence schema、四态判定、suggested-only 质量/转换/资源门与 tracked Places365 research 报告；不下载模型或数据 |
 | loopback 服务启动验收器 | `7e0874b` | 仅回环、argv 无 shell、health/capability 与合成 embedding/standard 探针、路径脱敏证据、成功/失败确定性关闭 |
+| App 内个人线性 head tracer | `cbf7770` | 合成 embedding/决定、每标签 `2 + 2`、完整 encoder/snapshot/标签/权重身份、参数篡改拒绝与 Accelerate 有限建议 |
 
 2026-07-18 至 2026-07-19 验收：
 
@@ -882,4 +895,14 @@ RED，随后 GREEN；cache `11/11`，连同 Core ML service、能力管理和 Co
 完整非宿主 xctest 执行 971 项，仍只有 3 个 App 宿主身份测试产生 6 个环境断言失败。Release build、
 strict codesign、manifest/license 源包 SHA 一致和 Python/原始权重/helper/XPC/loopback 禁入计数均通过。
 测试只使用程序生成图片、合成身份与临时 cache 根，未启动 App 宿主，未读取 `/Volumes/HDD2`、
+`.photoslibrary` 或真实照片。
+
+同日 App 内个人线性 head tracer 验收：`cbf7770` 只消费合成 embedding 与人工决定快照，以每标签
+`2 + 2` 为硬门确定性训练 centroid-difference Float32 head；artifact 绑定 catalog scope、人工决定
+snapshot、标签词表、完整 Core ML encoder identity、稳定标签顺序和参数 SHA-256，重载后通过 Accelerate
+`vDSP` 只返回已知标签的有限正分建议。TDD 逐项观察五个 RED 并收敛为 head `5/5`；连同 cache、
+Core ML service、能力管理和 Composition Root 为 `39/39`。完整非宿主 xctest 为 976 项，仍只有既有
+3 个宿主身份测试产生 6 个环境断言失败。Release build、strict codesign、manifest/license 源包 SHA
+一致，以及 Python/原始权重、嵌入式 helper/XPC 和 loopback 运行引用禁入均通过。未持久化 active head，
+未接 LibraryWorkspace、SQLite、图库或 Review Queue，未启动 App 宿主，未读取 `/Volumes/HDD2`、
 `.photoslibrary` 或真实照片。

@@ -993,7 +993,8 @@ System Photo Library 实际切换/显式重绑定、真实摄影格式/内容分
 HTTP 和 managed-store 内容保留为已完成的开发验证历史，不再是产品运行路径。固定 DINOv2 Core ML
 artifact 的 App 内合成图 embedding、缺失/损坏/未启用降级、用户可见的启用选择，以及带完整
 preprocessing/postprocessing 语义身份的 App 内 embedding cache 及其跨实例发布、固定预算和旧身份
-清理均已关闭；当前下一门是只消费合成 embedding/人工决定的 App 内轻量个人线性 head。
+清理，以及只消费合成 embedding/人工决定的 App 内轻量个人线性 head 均已关闭；当前下一门是个人
+head 的 App 容器内 managed artifact 生命周期与能力状态。
 
 状态：独立双轨 tracer、HTTP、CLI 装载、Swift client transport、Inspector 标准/personal 单图流、DINOv2 Core ML FP16 导出/HTTP provider、用户触发的 personal 快照重建与原子 bundle 生命周期、cache-only 自动个人重训、personal/standard 持久全库任务、完整 standard package capability 握手、显式本地服务状态、v009 标准概念持久化、v010 standard Review Queue、显式单图发布与 v011 标准祖先展开已实现；生产公共模型准入规格已冻结，Places365 ResNet18 仍为 research 候选，固定 DINOv2 的实际 ANE、预编译安装、峰值 RSS、热状态与独立服务进程端到端 ready 取证已关闭，实际标准模型评测/接入仍待后续切片。独立 loopback 服务、
 固定 revision 的 DINOv2-small、MPS 线性多标签 head、锁定依赖、真实模型 HTTP smoke 与无模块 App
@@ -1078,8 +1079,12 @@ preprocessing/postprocessing/向量元素语义身份和 App Caches 内版本化
 并发单次生成，仍未接图库扫描、SQLite 或个人模型。`f2cac33` 进一步以进程锁和 App 自有 POSIX
 lifecycle 文件锁覆盖不同 cache 实例/进程的 lookup、Core ML inference、原子发布与回收；cache record
 schema 升为 2，首次维护清理旧 schema 或完整模型 identity，默认 256 MiB 预算只回收
-`ModelEmbeddings/v1/objects` 自有常规对象，任何缓存基础设施失败继续退化为实时 embedding。下一条
-产品 tracer 是只消费合成 embedding/人工决定的 App 内 Swift/Accelerate 轻量线性 head。
+`ModelEmbeddings/v1/objects` 自有常规对象，任何缓存基础设施失败继续退化为实时 embedding。
+`cbf7770` 再以每标签 `2 + 2` 合成决定训练确定性的 centroid-difference Float32 head；artifact 绑定
+catalog scope、人工决定 snapshot、标签词表、完整 Core ML encoder identity、标签顺序和参数 SHA-256，
+重载后通过 Accelerate `vDSP` 只返回已知标签的有限正分建议，篡改或身份不匹配 fail closed。该 tracer
+尚未持久化 active artifact，也未接 LibraryWorkspace、SQLite、图库或 Review Queue；下一门是 App
+容器内候选校验、原子 active 切换、失败保留与独立能力状态。
 
 标准场景标签 fixture tracer 已验证“公共模型类别 → 版本化 mapping → 标准 concept ID → DAG 父标签
 → `autoAssigned` / `suggested` 策略”；服务须先公布已校验 package 的完整 capability，App 只有在其与
@@ -1150,6 +1155,7 @@ revision 门；cache-only 自动个人重训和独立服务启动已经验收，
 | ADR-030 | 正式 App 在自身容器内校验并由 Swift 直接加载 Core ML；不启动 Python/HTTP/helper/XPC | 固定 DINOv2-small tracer、启用能力管理与版本化 embedding cache 已实现 | App bundle 工厂校验 pinned Apache-2.0 来源、许可证/模型 SHA、manifest 与完整 identity，Swift 直接返回 384 维有限 embedding；默认关闭，用户启用后异步校验，失败安全降级，关闭释放服务，生产二进制不含 loopback client |
 | ADR-031 | App 内 DINO embedding 采用完整语义身份的自有 Caches 文件缓存 | 显式单图与资源生命周期门已实现 | key 绑定 catalog/asset/content、encoder/preprocessing/postprocessing、元素语义及 artifact provenance；值只含有限 little-endian Float32、身份与 SHA-256，损坏/旧身份 miss，持久化失败退化为实时 embedding，不保存图片、路径或 bookmark |
 | ADR-032 | App 内 embedding cache 用单一 lifecycle 锁和固定自有对象预算管理跨实例发布与升级清理 | 已实现 | 进程锁加 POSIX 文件锁避免同 key 重复发布和半文件可见；record schema 2 与完整模型身份决定可清理对象；默认 256 MiB，只枚举和 unlink `ModelEmbeddings/v1/objects` 下常规 `.embedding`，清理失败不影响实时推理 |
+| ADR-033 | App 内个人标签先用确定性 centroid-difference Float32 线性 head 验证训练与推理契约 | 合成 tracer 已实现；managed artifact 待下一门 | 每标签保留 `2 + 2` 硬门，训练包绑定 catalog/snapshot/label/完整 encoder/参数 SHA；Accelerate 推理只返回包内已知标签的有限正分，不宣称准确率或替代人工事实 |
 
 ## 20. 尚待确认的问题
 
