@@ -157,6 +157,9 @@ def test_unverified_places365_candidate_remains_research(
 
 
 def test_tracked_places365_candidate_fixture_remains_research(capsys) -> None:
+    tracked_report = json.loads(RESEARCH_FIXTURE.read_text(encoding="utf-8"))
+    assert tracked_report["candidate"]["weights_sha256_verified"] is True
+
     exit_code = standard_admission_cli.main(
         ["--report", str(RESEARCH_FIXTURE)]
     )
@@ -166,7 +169,6 @@ def test_tracked_places365_candidate_fixture_remains_research(capsys) -> None:
         "reason_codes": [
             "dataset_unverified",
             "weights_license_unverified",
-            "weights_sha256_unverified",
         ],
         "schema_revision": 1,
         "status": "research",

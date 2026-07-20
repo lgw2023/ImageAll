@@ -12,7 +12,7 @@
     "weights_license_id": "LicenseRef-Places365-Pretrained-CC-BY-Unversioned",
     "weights_license_verified": false,
     "weights_sha256": "2f4759217d470da2b803f8f66cd4488a066406b555a5fb95ee9a4663f9f05588",
-    "weights_sha256_verified": false
+    "weights_sha256_verified": true
   },
   "coreml": {
     "artifact_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
