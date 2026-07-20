@@ -91,7 +91,7 @@ backbone。训练产物必须记录 encoder、模型 revision、预处理 revisi
 | 候选 | 职责 | 准入状态 |
 |---|---|---|
 | Places365 ResNet18 | 标准场景标签、场景属性和 ontology mapping 的首个 tracer 候选 | `research`；上游 commit 与官方字节 SHA 已复核，权重许可版本、公开评测和 Core ML 门未关闭 |
-| DINOv2-small | 个人标签冻结 embedding | 固定 revision 的 PyTorch/Core ML 开发验证、FP16 artifact 与 App 内 Swift 加载/embedding tracer 已实现；App 内启用选择和个人线性 head 待后续切片 |
+| DINOv2-small | 个人标签冻结 embedding | 固定 revision 的 PyTorch/Core ML 开发验证、FP16 artifact 与 App 内 Swift 加载/embedding tracer 已实现；App manifest 固定 source/compiled SHA 与转换工具版本；App 内启用选择和个人线性 head 待后续切片 |
 | SigLIP2 B/32 256 | 开放词表与标准概念候选评测 | 固定 revision 官方仓库约 1.55 GB，直接首包路径已由只读资源预筛拒绝；保留 teacher 研究候选 |
 | SegFormer-B0 ADE20K | 水域、天空、道路等标准标签的区域证据 | 研究候选，不单独决定标签 |
 | RAM++ | 通用对象/属性候选 | 许可证、权重来源和转换门未关闭，不得进入产品 |

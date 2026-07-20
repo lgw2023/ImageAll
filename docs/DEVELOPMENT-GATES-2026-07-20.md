@@ -22,7 +22,9 @@
 6. 服务启动切片：Backend `182 passed, 2 skipped`，compileall、sdist、wheel、console entrypoint、
    standard fixture 与真实 DINOv2 Core ML 两条进程探针通过。
 7. App 内固定 Core ML tracer：Swift 从实际 App bundle 校验 pinned Apache-2.0 来源、许可证/模型
-   SHA-256、manifest 与 DINOv2-small identity，程序生成图片返回 384 维有限 embedding；未启用、缺失、
+   SHA-256、manifest 与 DINOv2-small identity；conversion provenance 另锁定 source `.mlpackage` SHA
+   `cd6f6e9fd2219e04b6a831f70af84a2ef53be456ec01b530bb4d1c6b93a7a416`、`torch.jit.trace`、
+   torch 2.7.0 与 coremltools 9.0。程序生成图片返回 384 维有限 embedding；未启用、缺失、
    manifest 损坏和模型字节损坏均 fail closed。正式 App target 已移除 loopback client，普通 App 包中
    Python/`.pth.tar`/helper/XPC/loopback 字面量均为 0；Core ML、开发侧 loopback 合同、组合根、浏览与
    单图人工标签定向回归 `30/30`。完整无宿主 XCTest 为 947 项，其中 944 项通过；其余 3 项仅因
