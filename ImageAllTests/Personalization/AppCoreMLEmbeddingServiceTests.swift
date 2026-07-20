@@ -135,6 +135,10 @@ final class AppCoreMLEmbeddingServiceTests: XCTestCase {
         XCTAssertEqual(identity.provider, "dinov2")
         XCTAssertEqual(identity.modelID, "facebook/dinov2-small")
         XCTAssertEqual(identity.elementCount, 384)
+        XCTAssertEqual(
+            identity.sourceModelSHA256,
+            "cd6f6e9fd2219e04b6a831f70af84a2ef53be456ec01b530bb4d1c6b93a7a416"
+        )
         XCTAssertEqual(embedding.values.count, 384)
         XCTAssertTrue(embedding.values.allSatisfy { $0.isFinite })
     }

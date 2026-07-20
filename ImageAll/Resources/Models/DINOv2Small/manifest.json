@@ -13,6 +13,12 @@
     "preprocessing_revision": "dinov2-hf-autoimageprocessor-v1",
     "element_count": 384
   },
+  "conversion": {
+    "source_model_sha256": "cd6f6e9fd2219e04b6a831f70af84a2ef53be456ec01b530bb4d1c6b93a7a416",
+    "source_graph": "torch.jit.trace",
+    "torch_version": "2.7.0",
+    "coremltools_version": "9.0"
+  },
   "artifact": {
     "path": "encoder.mlmodelc",
     "sha256": "adf94162ab40f8214cb8b1da07718b57d55b39ec779bc00bc4410ba2268c5391",

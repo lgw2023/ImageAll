@@ -9,6 +9,7 @@ struct AppCoreMLModelIdentity: Equatable, Sendable {
     let modelRevision: String
     let preprocessingRevision: String
     let elementCount: Int
+    let sourceModelSHA256: String
     let artifactSHA256: String
     let manifestSHA256: String
     let licenseID: String
@@ -147,6 +148,7 @@ final class AppCoreMLEmbeddingService: @unchecked Sendable {
             modelRevision: manifest.encoder.modelRevision,
             preprocessingRevision: manifest.encoder.preprocessingRevision,
             elementCount: manifest.encoder.elementCount,
+            sourceModelSHA256: manifest.conversion.sourceModelSHA256,
             artifactSHA256: manifest.artifact.sha256,
             manifestSHA256: SHA256.hash(data: manifestData).hexString,
             licenseID: manifest.license.id,
@@ -291,13 +293,14 @@ final class AppCoreMLEmbeddingService: @unchecked Sendable {
         let schemaRevision: Int
         let license: License
         let encoder: Encoder
+        let conversion: Conversion
         let artifact: Artifact
         let input: Tensor
         let output: Tensor
 
         enum CodingKeys: String, CodingKey {
             case schemaRevision = "schema_revision"
-            case license, encoder, artifact, input, output
+            case license, encoder, conversion, artifact, input, output
         }
 
         func validate() throws {
@@ -308,6 +311,7 @@ final class AppCoreMLEmbeddingService: @unchecked Sendable {
                 license.source == "https://raw.githubusercontent.com/facebookresearch/dinov2/7764ea0f912e53c92e82eb78a2a1631e92725fc8/LICENSE",
                 license.sha256.isLowercaseSHA256,
                 encoder == .approved,
+                conversion == .approved,
                 artifact.path == "encoder.mlmodelc",
                 artifact.sha256.isLowercaseSHA256,
                 artifact.format == "mlprogram-compiled",
@@ -349,6 +353,27 @@ final class AppCoreMLEmbeddingService: @unchecked Sendable {
             modelRevision: "ed25f3a31f01632728cabb09d1542f84ab7b0056",
             preprocessingRevision: "dinov2-hf-autoimageprocessor-v1",
             elementCount: 384
+        )
+    }
+
+    private struct Conversion: Decodable, Equatable {
+        let sourceModelSHA256: String
+        let sourceGraph: String
+        let torchVersion: String
+        let coremltoolsVersion: String
+
+        enum CodingKeys: String, CodingKey {
+            case sourceModelSHA256 = "source_model_sha256"
+            case sourceGraph = "source_graph"
+            case torchVersion = "torch_version"
+            case coremltoolsVersion = "coremltools_version"
+        }
+
+        static let approved = Conversion(
+            sourceModelSHA256: "cd6f6e9fd2219e04b6a831f70af84a2ef53be456ec01b530bb4d1c6b93a7a416",
+            sourceGraph: "torch.jit.trace",
+            torchVersion: "2.7.0",
+            coremltoolsVersion: "9.0"
         )
     }
 
