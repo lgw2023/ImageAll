@@ -78,6 +78,50 @@ final class AppCoreMLEmbeddingCacheTests: XCTestCase {
         XCTAssertEqual(results.origins.filter { $0 == .cacheHit }.count, 7)
     }
 
+    func testConcurrentRequestsAcrossCacheInstancesGenerateOnlyOnce() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let service = AppCoreMLEmbeddingService(
+            isEnabled: true,
+            artifactDirectory: projectArtifactDirectory()
+        )
+        let caches = (0..<8).map { _ in
+            AppCoreMLEmbeddingCache(cachesDirectory: root, service: service)
+        }
+        let key = AppCoreMLEmbeddingCacheKey(
+            catalogScopeID: UUID(),
+            assetID: UUID(),
+            contentRevision: 1
+        )
+        let image = SendableImage(try generatedImage())
+        let results = ConcurrentResults()
+        let group = DispatchGroup()
+        let start = DispatchSemaphore(value: 0)
+
+        for cache in caches {
+            group.enter()
+            DispatchQueue.global().async {
+                defer { group.leave() }
+                start.wait()
+                do {
+                    results.append(
+                        try cache.embedding(for: image.value, key: key).origin
+                    )
+                } catch {
+                    results.append(error)
+                }
+            }
+        }
+        for _ in caches { start.signal() }
+
+        XCTAssertEqual(group.wait(timeout: .now() + 15), .success)
+        XCTAssertTrue(results.errors.isEmpty)
+        XCTAssertEqual(results.origins.filter { $0 == .generated }.count, 1)
+        XCTAssertEqual(results.origins.filter { $0 == .cacheHit }.count, 7)
+        XCTAssertEqual(cacheFiles(under: root).count, 1)
+    }
+
     func testContentRevisionChangeMissesWithoutInvalidatingTheOlderRevision() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -116,6 +160,64 @@ final class AppCoreMLEmbeddingCacheTests: XCTestCase {
         )
     }
 
+    func testCapacityLimitEvictsOnlyOwnedOlderObjects() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let sentinelURL = root.appendingPathComponent("unrelated-cache.bin")
+        let sentinel = Data("not owned by ModelEmbeddings".utf8)
+        try sentinel.write(to: sentinelURL, options: .atomic)
+        let service = AppCoreMLEmbeddingService(
+            isEnabled: true,
+            artifactDirectory: projectArtifactDirectory()
+        )
+        let catalogID = UUID()
+        let firstKey = AppCoreMLEmbeddingCacheKey(
+            catalogScopeID: catalogID,
+            assetID: UUID(),
+            contentRevision: 1
+        )
+        let secondKey = AppCoreMLEmbeddingCacheKey(
+            catalogScopeID: catalogID,
+            assetID: UUID(),
+            contentRevision: 1
+        )
+        _ = try AppCoreMLEmbeddingCache(
+            cachesDirectory: root,
+            service: service
+        ).embedding(for: generatedImage(), key: firstKey)
+        let firstFile = try XCTUnwrap(cacheFiles(under: root).only)
+        let budget = try XCTUnwrap(
+            firstFile.resourceValues(forKeys: [.fileSizeKey]).fileSize
+        )
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date(timeIntervalSince1970: 1)],
+            ofItemAtPath: firstFile.path
+        )
+        let boundedCache = AppCoreMLEmbeddingCache(
+            cachesDirectory: root,
+            service: service,
+            maximumCacheBytes: budget
+        )
+
+        let second = try boundedCache.embedding(for: generatedImage(), key: secondKey)
+        let remaining = cacheFiles(under: root)
+
+        XCTAssertEqual(second.origin, .generated)
+        XCTAssertEqual(remaining.count, 1)
+        XCTAssertLessThanOrEqual(
+            try XCTUnwrap(remaining.only?.resourceValues(forKeys: [.fileSizeKey]).fileSize),
+            budget
+        )
+        XCTAssertFalse(FileManager.default.fileExists(atPath: firstFile.path))
+        XCTAssertEqual(try Data(contentsOf: sentinelURL), sentinel)
+        XCTAssertEqual(
+            try boundedCache.embedding(for: generatedImage(), key: secondKey).origin,
+            .cacheHit
+        )
+    }
+
     func testVectorChecksumMismatchRegeneratesAndRepairsTheEntry() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -147,6 +249,80 @@ final class AppCoreMLEmbeddingCacheTests: XCTestCase {
         XCTAssertEqual(repaired.vectorSHA256, first.vectorSHA256)
         XCTAssertEqual(hit.origin, .cacheHit)
         XCTAssertEqual(hit.vectorSHA256, first.vectorSHA256)
+        XCTAssertEqual(cacheFiles(under: root).count, 1)
+    }
+
+    func testFirstUseRemovesOwnedObjectsWithOldRecordSchema() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let service = AppCoreMLEmbeddingService(
+            isEnabled: true,
+            artifactDirectory: projectArtifactDirectory()
+        )
+        let key = AppCoreMLEmbeddingCacheKey(
+            catalogScopeID: UUID(),
+            assetID: UUID(),
+            contentRevision: 1
+        )
+        _ = try AppCoreMLEmbeddingCache(
+            cachesDirectory: root,
+            service: service
+        ).embedding(for: generatedImage(), key: key)
+        let current = try XCTUnwrap(cacheFiles(under: root).only)
+        let stale = current.deletingLastPathComponent()
+            .appendingPathComponent("old-schema.embedding")
+        var record = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(contentsOf: current)) as? [String: Any]
+        )
+        record["schemaRevision"] = 0
+        try JSONSerialization.data(withJSONObject: record).write(to: stale, options: .atomic)
+
+        let result = try AppCoreMLEmbeddingCache(
+            cachesDirectory: root,
+            service: service
+        ).embedding(for: generatedImage(), key: key)
+
+        XCTAssertEqual(result.origin, .cacheHit)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: stale.path))
+        XCTAssertEqual(cacheFiles(under: root).count, 1)
+    }
+
+    func testFirstUseRemovesOwnedObjectsWithStaleModelIdentity() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let service = AppCoreMLEmbeddingService(
+            isEnabled: true,
+            artifactDirectory: projectArtifactDirectory()
+        )
+        let key = AppCoreMLEmbeddingCacheKey(
+            catalogScopeID: UUID(),
+            assetID: UUID(),
+            contentRevision: 1
+        )
+        _ = try AppCoreMLEmbeddingCache(
+            cachesDirectory: root,
+            service: service
+        ).embedding(for: generatedImage(), key: key)
+        let current = try XCTUnwrap(cacheFiles(under: root).only)
+        let stale = current.deletingLastPathComponent()
+            .appendingPathComponent("stale-identity.embedding")
+        var record = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(contentsOf: current)) as? [String: Any]
+        )
+        var address = try XCTUnwrap(record["address"] as? [String: Any])
+        address["modelRevision"] = "obsolete-revision"
+        record["address"] = address
+        try JSONSerialization.data(withJSONObject: record).write(to: stale, options: .atomic)
+
+        let result = try AppCoreMLEmbeddingCache(
+            cachesDirectory: root,
+            service: service
+        ).embedding(for: generatedImage(), key: key)
+
+        XCTAssertEqual(result.origin, .cacheHit)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: stale.path))
         XCTAssertEqual(cacheFiles(under: root).count, 1)
     }
 
@@ -282,6 +458,7 @@ final class AppCoreMLEmbeddingCacheTests: XCTestCase {
         }
         return enumerator.compactMap { item in
             guard let url = item as? URL,
+                  url.pathExtension == "embedding",
                   (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true
             else {
                 return nil
