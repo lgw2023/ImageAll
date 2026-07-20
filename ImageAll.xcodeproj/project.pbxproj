@@ -210,12 +210,15 @@
 		CM0000010000000000000104 /* AppCoreMLEmbeddingCacheTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CM0001010000000000000104 /* AppCoreMLEmbeddingCacheTests.swift */; };
 		CM0000010000000000000105 /* AppPersonalLinearHeadTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CM0001010000000000000105 /* AppPersonalLinearHeadTests.swift */; };
 		CM0000010000000000000106 /* AppPersonalLinearHeadStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CM0001010000000000000106 /* AppPersonalLinearHeadStoreTests.swift */; };
+		CM0000010000000000000107 /* AppPersonalModelRebuildCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CM0001010000000000000107 /* AppPersonalModelRebuildCoordinatorTests.swift */; };
 		CM0000010000000000000103 /* AppModelActivationCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CM0001010000000000000103 /* AppModelActivationCoordinatorTests.swift */; };
 		CM0000010000000000000102 /* LoopbackModelSuggestionClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = CM0001010000000000000102 /* LoopbackModelSuggestionClient.swift */; };
 		CM0000010000000000000001 /* AppCoreMLEmbeddingService.swift in Sources */ = {isa = PBXBuildFile; fileRef = CM0001010000000000000001 /* AppCoreMLEmbeddingService.swift */; };
 		CM0000010000000000000006 /* AppCoreMLEmbeddingCache.swift in Sources */ = {isa = PBXBuildFile; fileRef = CM0001010000000000000006 /* AppCoreMLEmbeddingCache.swift */; };
 		CM0000010000000000000007 /* AppPersonalLinearHead.swift in Sources */ = {isa = PBXBuildFile; fileRef = CM0001010000000000000007 /* AppPersonalLinearHead.swift */; };
 		CM0000010000000000000008 /* AppPersonalLinearHeadStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = CM0001010000000000000008 /* AppPersonalLinearHeadStore.swift */; };
+		CM0000010000000000000009 /* AppPersonalModelRebuildContracts.swift in Sources */ = {isa = PBXBuildFile; fileRef = CM0001010000000000000009 /* AppPersonalModelRebuildContracts.swift */; };
+		CM000001000000000000000A /* AppPersonalModelRebuildCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = CM000101000000000000000A /* AppPersonalModelRebuildCoordinator.swift */; };
 		CM0000010000000000000002 /* AppModelActivationContracts.swift in Sources */ = {isa = PBXBuildFile; fileRef = CM0001010000000000000002 /* AppModelActivationContracts.swift */; };
 		CM0000010000000000000003 /* AppModelActivationCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = CM0001010000000000000003 /* AppModelActivationCoordinator.swift */; };
 		CM0000010000000000000004 /* UserDefaultsModelEnablementPreferenceStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = CM0001010000000000000004 /* UserDefaultsModelEnablementPreferenceStore.swift */; };
@@ -451,12 +454,15 @@
 		CM0001010000000000000104 /* AppCoreMLEmbeddingCacheTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppCoreMLEmbeddingCacheTests.swift; sourceTree = "<group>"; };
 		CM0001010000000000000105 /* AppPersonalLinearHeadTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppPersonalLinearHeadTests.swift; sourceTree = "<group>"; };
 		CM0001010000000000000106 /* AppPersonalLinearHeadStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppPersonalLinearHeadStoreTests.swift; sourceTree = "<group>"; };
+		CM0001010000000000000107 /* AppPersonalModelRebuildCoordinatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppPersonalModelRebuildCoordinatorTests.swift; sourceTree = "<group>"; };
 		CM0001010000000000000103 /* AppModelActivationCoordinatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModelActivationCoordinatorTests.swift; sourceTree = "<group>"; };
 		CM0001010000000000000102 /* LoopbackModelSuggestionClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LoopbackModelSuggestionClient.swift; sourceTree = "<group>"; };
 		CM0001010000000000000001 /* AppCoreMLEmbeddingService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppCoreMLEmbeddingService.swift; sourceTree = "<group>"; };
 		CM0001010000000000000006 /* AppCoreMLEmbeddingCache.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppCoreMLEmbeddingCache.swift; sourceTree = "<group>"; };
 		CM0001010000000000000007 /* AppPersonalLinearHead.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppPersonalLinearHead.swift; sourceTree = "<group>"; };
 		CM0001010000000000000008 /* AppPersonalLinearHeadStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppPersonalLinearHeadStore.swift; sourceTree = "<group>"; };
+		CM0001010000000000000009 /* AppPersonalModelRebuildContracts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppPersonalModelRebuildContracts.swift; sourceTree = "<group>"; };
+		CM000101000000000000000A /* AppPersonalModelRebuildCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppPersonalModelRebuildCoordinator.swift; sourceTree = "<group>"; };
 		CM0001010000000000000002 /* AppModelActivationContracts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModelActivationContracts.swift; sourceTree = "<group>"; };
 		CM0001010000000000000003 /* AppModelActivationCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModelActivationCoordinator.swift; sourceTree = "<group>"; };
 		CM0001010000000000000004 /* UserDefaultsModelEnablementPreferenceStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UserDefaultsModelEnablementPreferenceStore.swift; sourceTree = "<group>"; };
@@ -548,6 +554,7 @@
 				CM0001010000000000000104 /* AppCoreMLEmbeddingCacheTests.swift */,
 				CM0001010000000000000105 /* AppPersonalLinearHeadTests.swift */,
 				CM0001010000000000000106 /* AppPersonalLinearHeadStoreTests.swift */,
+				CM0001010000000000000107 /* AppPersonalModelRebuildCoordinatorTests.swift */,
 				CM0001010000000000000103 /* AppModelActivationCoordinatorTests.swift */,
 				CM0001010000000000000102 /* LoopbackModelSuggestionClient.swift */,
 				MM0001010000000000000101 /* PersonalizedSuggestionServiceTests.swift */,
@@ -639,6 +646,7 @@
 			isa = PBXGroup;
 			children = (
 				CM0001010000000000000002 /* AppModelActivationContracts.swift */,
+				CM0001010000000000000009 /* AppPersonalModelRebuildContracts.swift */,
 				KK0001010000000000000002 /* PersonalizationCatalogPort.swift */,
 				NN0001010000000000000001 /* PersonalizationReviewPort.swift */,
 				NN0001010000000000000002 /* FullLibrarySuggestionsContracts.swift */,
@@ -770,6 +778,7 @@
 				CM0001010000000000000006 /* AppCoreMLEmbeddingCache.swift */,
 				CM0001010000000000000007 /* AppPersonalLinearHead.swift */,
 				CM0001010000000000000008 /* AppPersonalLinearHeadStore.swift */,
+				CM000101000000000000000A /* AppPersonalModelRebuildCoordinator.swift */,
 				CM0001010000000000000003 /* AppModelActivationCoordinator.swift */,
 				CM0001010000000000000004 /* UserDefaultsModelEnablementPreferenceStore.swift */,
 				MM0001010000000000000001 /* PersonalizedSuggestionService.swift */,
@@ -1192,6 +1201,8 @@
 				CM0000010000000000000006 /* AppCoreMLEmbeddingCache.swift in Sources */,
 				CM0000010000000000000007 /* AppPersonalLinearHead.swift in Sources */,
 				CM0000010000000000000008 /* AppPersonalLinearHeadStore.swift in Sources */,
+				CM0000010000000000000009 /* AppPersonalModelRebuildContracts.swift in Sources */,
+				CM000001000000000000000A /* AppPersonalModelRebuildCoordinator.swift in Sources */,
 				CM0000010000000000000001 /* AppCoreMLEmbeddingService.swift in Sources */,
 				CM0000010000000000000002 /* AppModelActivationContracts.swift in Sources */,
 				CM0000010000000000000003 /* AppModelActivationCoordinator.swift in Sources */,
@@ -1327,6 +1338,7 @@
 				CM0000010000000000000104 /* AppCoreMLEmbeddingCacheTests.swift in Sources */,
 				CM0000010000000000000105 /* AppPersonalLinearHeadTests.swift in Sources */,
 				CM0000010000000000000106 /* AppPersonalLinearHeadStoreTests.swift in Sources */,
+				CM0000010000000000000107 /* AppPersonalModelRebuildCoordinatorTests.swift in Sources */,
 				CM0000010000000000000103 /* AppModelActivationCoordinatorTests.swift in Sources */,
 				CM0000010000000000000102 /* LoopbackModelSuggestionClient.swift in Sources */,
 				EX0000010000000000000101 /* PortableCatalogExportTests.swift in Sources */,
