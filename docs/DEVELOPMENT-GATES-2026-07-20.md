@@ -144,6 +144,14 @@
     源包一致性，以及 Python/原始权重、embedded helper/XPC 和 loopback 字面量禁入均通过。未启动 App
     宿主，未读取 `/Volumes/HDD2`、`.photoslibrary` 或真实照片，也未接图库扫描、批量预热、后台任务、
     Review Queue 或个人建议展示。
+16. 真实人工验证的标签创建前置门：首次 production App 启动在人工样本开始前暴露“数据库标签事务与
+    当前选择呈现可能失同步”。`197a056` 以四条 RED→GREEN 纵向回归修复：真正写入失败继续返回
+    `tagMutationFailed` 且零 UI/数据库半事实；事务已提交但 inspector 后置读取失败时，当前选择保留
+    已确认标签并返回独立 `tagSelectionRefreshFailed`，明确不谎报未保存；重新选择同一照片会重新读取
+    持久层并清除临时告警。workspace model 与真实 GRDB 标签事务合计 `147/147`，完整非宿主 xctest 为
+    1007 项，仍只有既有 3 个 App 宿主身份测试产生 6 个环境断言失败。Universal Release、strict
+    codesign、Privacy manifest、双架构和 production 包禁止项通过；production Swift 仍无 Photos mutation
+    API。此门只修复人工标签前置能力，没有读取真实照片或扩大 PhotoKit 授权。
 
 实现与产品/架构文档保持分离提交；当前相关收口提交为：
 
@@ -158,6 +166,7 @@
 - `6f8e819` — App 内只读事实/cache 重建、取消、快照复核和 managed artifact 发布编排。
 - `173a117` — 生产人工事实/cache-only adapter、共享 App Core ML 激活实例和显式原生重建动作。
 - `916422c` — 当前选中单资产显式 App 内 DINO cache 填充与安全降级。
+- `197a056` — 标签创建提交态、选择刷新失败分类与重新选择收敛。
 
 ## 3. 仍开放但不能继续静默实施的门
 
