@@ -1,7 +1,7 @@
 # ImageAll 生产 standard 模型准入规格
 
 > 状态：Evidence verifier implemented；Places365 ResNet18 当前仅为 `research` 候选<br>
-> 日期：2026-07-19<br>
+> 日期：2026-07-20<br>
 > 适用范围：阶段 5 的首个生产 standard scene pack
 
 ## 1. 目标与停止位置
@@ -27,12 +27,18 @@
 | 上游 commit | `8a953ed56438726dc98bdef3796d042e7f1f171e` |
 | 官方权重 URL | `http://places2.csail.mit.edu/models_places365/resnet18_places365.pth.tar` |
 | 官方响应元数据 | `Content-Length=45506139`；`Last-Modified=2017-07-10T18:17:11Z`；`ETag="2b65e5b-553fa97795360"` |
-| 候选权重 SHA-256 | `2f4759217d470da2b803f8f66cd4488a066406b555a5fb95ee9a4663f9f05588`，目前只由同尺寸第三方镜像元数据给出，必须以官方 URL 实际字节复核后才转为 verified |
+| 官方权重 SHA-256 | `2f4759217d470da2b803f8f66cd4488a066406b555a5fb95ee9a4663f9f05588`；2026-07-20 已以 MIT 官方 URL 实际返回字节复核，文件大小 `45,506,139` bytes |
 | 架构 | torchvision ResNet18，365 logits |
 | 预处理 | RGB；resize `256×256`；center crop `224×224`；`ToTensor`；mean `[0.485,0.456,0.406]`；std `[0.229,0.224,0.225]` |
-| provider identity（预留） | `places365-resnet18`；在权重 verified 前不得写入可安装 manifest |
-| model identity（预留） | `csailvision/places365-resnet18`；revision 最终包含 verified 权重 SHA-256 |
+| provider identity（预留） | `places365-resnet18`；在许可证、数据、评测与转换全部 approved 前不得写入可安装 manifest |
+| model identity（预留） | `csailvision/places365-resnet18`；revision 必须包含上述 verified 权重 SHA-256 |
 | preprocessing revision（预留） | `places365-resnet18-center-crop-v1` |
+
+官方字节证据已由项目所有者提供并迁入只读目录
+`ModelBackend/research/inputs/places365/20260720T020727Z/`。该目录中的 `curl-metadata.txt`、
+`response-headers.txt`、伴随 SHA 文件与实际 checkpoint 共同证明 URL、HTTP 200、Content-Type、
+Content-Length、Last-Modified、ETag、文件大小和 SHA-256；不得重新下载或用第三方镜像替换该输入。
+原始 checkpoint 只属于研究输入，永不进入 Xcode resource 或 App bundle。
 
 上游小文件也固定到同一 commit，并在获取或生成 mapping 时复核：
 
@@ -86,8 +92,8 @@ pack 路径，继续只作为 teacher/开放词表研究候选。未来若裁剪
 状态只允许由完整证据重新计算，不接受人工把缺字段报告标成 approved。新的上游 commit、权重 SHA、
 类别顺序、预处理、ontology、mapping 或 policy 都是新候选，不能沿用旧证据。
 
-当前判定为 `research`。开放证据是：官方权重字节 SHA-256 复核、权重许可证版本与分发义务、评测集
-许可证/manifest、离线指标、Core ML parity、目标 Mac 资源以及最终 pack 复核。
+当前判定为 `research`。官方权重字节 SHA-256 已 verified；开放证据是：权重许可证版本与分发义务、
+评测集许可证/manifest、离线指标、Core ML parity、目标 Mac 资源以及最终 pack 复核。
 
 ## 4. 评测与批准门
 
@@ -156,8 +162,8 @@ parity、资源指标和 pack validation 结果。verifier 必须：
   `evaluationReady`；
 - 输出不含路径的稳定 JSON decision 和逐门 reason code；
 - `approvedSuggestedOnly` 返回退出码 0；证据完整但未过门返回 2；畸形报告返回 3；
-- 当前 Places365 候选 fixture 因许可证版本与官方权重 SHA 未 verified，必须稳定得到 `research`，且不
-  生成 standard pack。
+- 当前 Places365 候选 fixture 虽已复核官方权重 SHA，但因许可证版本/产品分发义务和公开数据 manifest
+  未 verified，必须稳定得到 `research`，且不生成 standard pack。
 
 CLI 为 `imageall-verify-standard-admission --report <json>`；批准返回 0，研究/待评测/拒绝返回 2，畸形
 报告返回 3。仓库内 `places365-resnet18-research-v1.json` 固定当前候选证据并稳定返回 `research`。
@@ -165,8 +171,10 @@ CLI 为 `imageall-verify-standard-admission --report <json>`；批准返回 0，
 验收为 verifier 定向 `21 passed`、Backend 全量 `141 passed, 2 skipped`；compileall、sdist 和 wheel
 build 通过。测试和 fixture 不含图片、模型权重或本机路径，未下载模型/数据集，未读取受保护数据。
 
-后续独立切片只有在权重和数据均由显式、已审核输入提供时才可增加 benchmark runner。当前官方许可
-表述相互不充分，不满足 `evaluationReady`，因此不能以“继续开发”推导下载或产品接入授权。
+后续独立切片只有在许可证和数据均由显式、已审核输入提供时才可运行 benchmark runner。当前权重
+字节已由项目所有者明确提供，但官方许可表述仍相互不充分，不满足 `evaluationReady`；因此不得加载
+checkpoint、转换或产品接入。若未来许可证门关闭，runner 也只能在隔离临时目录以
+`torch.load(..., weights_only=True)` 使用该只读输入，禁止任意 pickle 回退。
 
 ## 6. 主要来源
 

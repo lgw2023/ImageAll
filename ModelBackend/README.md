@@ -1,7 +1,9 @@
 # ImageAll ModelBackend
 
-`ModelBackend` 是 ImageAll 的可选本地模型进程。它不属于 Xcode target；未安装、未启动或
-模型不可用时，不影响原 App 的浏览、人工标签、标签预设和传统个性化建议。
+`ModelBackend` 是 ImageAll 的模型转换、离线评测和开发验证工具，不属于 Xcode target，也不随正式
+App 分发。普通用户运行模型不需要 Python、`uv`、loopback HTTP、helper/XPC 或本目录的 `.venv`；
+正式 App 由 Swift 在 App 容器内校验并直接加载 Core ML artifact。未启用模型、artifact 缺失/损坏或
+初始化失败时，不影响浏览、人工标签、标签预设和传统个性化建议。
 
 当前模块包含：
 
@@ -14,7 +16,7 @@
 - 可选的 catalog/asset/content revision/encoder 全身份 embedding 持久缓存；
 - fake provider、输入边界、训练重载和真实 DINOv2 smoke 测试。
 
-## 安装
+## 开发环境安装
 
 需要 Python 3.11～3.13 和 `uv`：
 
@@ -26,7 +28,7 @@ uv sync --extra test
 依赖安装在 `ModelBackend/.venv`，不会修改全局 Python 环境。版本由 `uv.lock` 固定。
 只安装运行时 Core ML 可选依赖时使用 `uv sync --extra coreml`。
 
-## 启动
+## 开发验证服务（不随 App 分发）
 
 先验证无模型降级服务：
 
@@ -68,7 +70,7 @@ uv run imageall-convert-coreml \
   --offline
 ```
 
-再把该 artifact 装载为 HTTP embedding provider：
+开发时可再把该 artifact 装载为 HTTP embedding provider，用于 parity 和接口回归；正式 App 不走此路径：
 
 ```bash
 uv run imageall-model-backend \
@@ -204,12 +206,8 @@ uv run pytest -q
 uv build
 ```
 
-仓库已有 Swift loopback client、显式单图 standard 预览，以及 personal capability → 当前 catalog →
-既有个人标签 UUID → 用户明确接受/拒绝的 Inspector 闭环。个人建议本身仍是临时状态；只有用户点击
-接受或拒绝后才复用既有人工标签事务。App 现可由用户显式触发：从当前 active 标签选择每角色最多
-12 条最新人工决定，经 `/v1/embeddings` 构造不含原图和路径的版本化快照，调用同步 rebuild，并再次
-读取 capability 确认新身份。Swift client 会为该重建路径的每个唯一 asset revision 发送上述可选
-embedding cache key；服务启用 `--embedding-cache` 时可复用完整 encoder identity 匹配的持久向量。
-自动后台重训、模型自动安装、生产标准模型、
-SigLIP2 或 Ollama adapter 尚未实现；Core ML 的 Xcode compute plan、实际 ANE、内存与热量仍由
-独立后续切片验收。
+仓库中的 Swift loopback client、HTTP suggestion/rebuild 与服务状态页面属于既有实验实现和回归资产，
+不再作为正式部署方向继续扩展。新的纵向切片是“程序生成图片 → App 内校验固定 Core ML artifact →
+Swift 直接推理 → 有限且身份匹配的 embedding”，并证明未启用、缺失或损坏时安全降级。个人模型后续
+优先在 App 内复用 DINO encoder 和轻量线性 head。生产标准模型仍须独立关闭许可证、公开数据、parity
+与资源门；原始 `.pth.tar`、本目录 Python 包和 loopback 服务永远不得进入正式 App bundle。

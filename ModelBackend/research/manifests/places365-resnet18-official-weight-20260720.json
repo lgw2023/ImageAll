@@ -1,0 +1,63 @@
+{
+  "schema_revision": 1,
+  "candidate": {
+    "provider": "places365-resnet18",
+    "model_id": "csailvision/places365-resnet18",
+    "upstream_commit": "8a953ed56438726dc98bdef3796d042e7f1f171e",
+    "preprocessing_revision": "places365-resnet18-center-crop-v1"
+  },
+  "official_download": {
+    "requested_url": "http://places2.csail.mit.edu/models_places365/resnet18_places365.pth.tar",
+    "effective_url": "http://places2.csail.mit.edu/models_places365/resnet18_places365.pth.tar",
+    "http_status": 200,
+    "content_type": "application/x-tar",
+    "content_length_bytes": 45506139,
+    "last_modified": "Mon, 10 Jul 2017 18:17:11 GMT",
+    "etag": "\"2b65e5b-553fa97795360\"",
+    "download_completed_utc": "2026-07-20T02:12:51Z",
+    "weights_sha256": "2f4759217d470da2b803f8f66cd4488a066406b555a5fb95ee9a4663f9f05588",
+    "bytes_verified": true
+  },
+  "repository_input": {
+    "relative_directory": "ModelBackend/research/inputs/places365/20260720T020727Z",
+    "moved_without_redownload": true,
+    "read_only": true,
+    "raw_checkpoint_git_tracked": false,
+    "app_resource_allowed": false
+  },
+  "evidence_files": {
+    "curl-metadata.txt": {
+      "bytes": 638,
+      "sha256": "94441b5c9a370cd406a10903002166c256cc9d2076265b11ef09580dde7599df"
+    },
+    "resnet18_places365.pth.tar": {
+      "bytes": 45506139,
+      "sha256": "2f4759217d470da2b803f8f66cd4488a066406b555a5fb95ee9a4663f9f05588"
+    },
+    "resnet18_places365.pth.tar.sha256": {
+      "bytes": 93,
+      "sha256": "a909ce3a937a69d586aebb1a38063a1d6a68fc5cc6c7c82690054af8a01c459b"
+    },
+    "response-headers.txt": {
+      "bytes": 246,
+      "sha256": "d14e683d360fc1cff7459083a674e349286555f860ffe687475c41ee1ce7b990"
+    },
+    "system-info.txt": {
+      "bytes": 244,
+      "sha256": "529cb7e10cda3fb4a12db6f90290801befd61a6f50b45f04b5ba7ffb0d14057d"
+    }
+  },
+  "license_gate": {
+    "code_license_id": "MIT",
+    "weights_license_id": "LicenseRef-Places365-Pretrained-CC-BY-Unversioned",
+    "weights_license_verified_for_product_distribution": false,
+    "redistribution_allowed": false,
+    "status": "research",
+    "reason": "The official repository names CC BY without a version or complete terms, while the official project pages describe trained CNNs for academic research and education. Product redistribution obligations remain unresolved."
+  },
+  "public_validation_dataset": {
+    "manifest_verified": false,
+    "status": "missing",
+    "reason": "No fixed, license-reviewed public validation image manifest has been approved yet."
+  }
+}

@@ -30,14 +30,18 @@
 
 ## 3. 仍开放但不能继续静默实施的门
 
-### A. production standard package：外部证据阻塞
+### A. production standard package：官方权重字节已关闭，许可和数据仍阻塞
 
-Places365 ResNet18 的官方预训练权重仍没有可复核的版本化许可文本与官方字节 SHA-256，当前公开用途
-说明也不足以证明产品分发许可。缺少这三项前，不得下载权重、运行生产 benchmark、生成批准 package
-或替换现有 fixture。解除条件是
+项目所有者已提供从 MIT 官方 URL 实际下载的只读证据；响应元数据、`45,506,139` bytes 与
+`2f4759217d470da2b803f8f66cd4488a066406b555a5fb95ee9a4663f9f05588` 已复核一致，因此“官方字节
+SHA-256”门已关闭。权重仍只有未标版本的 `CC BY` 声明，官方项目页同时把 CNN/数据描述为
+academic research / education 用途；当前不足以证明产品再分发许可。公开验证数据的许可与 manifest
+也尚未关闭。在这两项完成前，不得生成批准 package、把 Core ML artifact 加入 App target，或替换
+现有 fixture。解除条件是
 [`STANDARD-MODEL-ADMISSION-SPEC.md`](./STANDARD-MODEL-ADMISSION-SPEC.md) 要求的官方权重、许可义务和
 公开数据 manifest 全部 verified；之后才按 suggested-only 质量门、Core ML parity/resource/ANE 与 App
-capability 门继续。
+内 manifest/身份门继续。原始 checkpoint 只保存在 `ModelBackend/research/inputs/places365/`，不得进入
+正式 App。
 
 ### B. 真实数据门：需要项目所有者对具体动作的新授权
 
@@ -50,22 +54,26 @@ capability 门继续。
 无关测试，宿主启动仍会尝试初始化真实 Photos store；详见
 [`LOCAL-TEST-DATA-SAFETY.md`](./LOCAL-TEST-DATA-SAFETY.md)。
 
-### C. App 自动托管模型服务：需要先决定发布架构
+### C. App 模型部署方向：已决定为 App 内 Swift/Core ML
 
-当前仓库只有 Python/uv 独立服务，没有随 App 签名分发的 helper/XPC target。推荐继续保持“App 可在
-无模型模块时完整运行 + 独立 loopback 服务显式安装/启动”的 MVP 边界，禁止用 `Process` 启动工作区
-`.venv`。如果项目所有者要求普通用户从 App 启停模型能力，应先选择 Developer ID 或 Mac App Store
-分发方式，再冻结 signed helper/XPC、安装升级、代码签名、模型路径、端口占用、崩溃恢复、App 退出和
-卸载契约；该选择会修改 Xcode 工程，并与当前用户未提交的工程/App Icon 改动重叠，不能静默开工。
+自动托管模型服务规划已经取消。正式 App 不分发或启动 Python/uv、loopback HTTP、helper/XPC，也不把
+它们作为普通用户依赖。用户在 App 内选择启用模型后，App 只在自身容器中校验许可证、版本、SHA-256
+与 manifest，随后由 Swift 直接加载 Core ML artifact，并让 Core ML 使用本机 CPU/GPU/Neural Engine。
+模型未启用、缺失、损坏、身份不匹配或初始化失败时，模型能力安全降级，浏览、人工标签和既有
+Feature Print 路径保持可用。Developer ID 与 Mac App Store 的选择不阻塞该接线。
+
+`ModelBackend` 与既有 loopback 证据继续作为转换、离线评测和开发验证资产保留，但不再形成发布门或
+用户运行路径。下一实现门是“程序生成图片 → App 内固定 Core ML artifact → 有限且身份匹配的
+embedding → 缺失/损坏/未启用安全降级”。
 
 ## 4. 推荐恢复顺序
 
-1. 若先取得 production standard 官方证据，优先恢复 standard admission benchmark；这是唯一能把
-   当前公开 fixture 升级为真实公共模型的路径。
-2. 若先取得具体真实数据只读授权，按“阶段 1 小型文件夹 → 阶段 2 显式重绑定 → 阶段 4 大容量 I/O”
+1. 先关闭 App 内固定 DINOv2 Core ML tracer，证明无 Python/HTTP/helper 的 Swift 直连与安全降级；
+2. 并行补齐 Places365 权重许可版本/分发义务和公开验证数据 manifest；门关闭后才在隔离临时目录以
+   `weights_only=True` 运行评测、转换、parity 与资源门；
+3. 若先取得具体真实数据只读授权，按“阶段 1 小型文件夹 → 阶段 2 显式重绑定 → 阶段 4 大容量 I/O”
    顺序执行，并避免 production App 测试宿主自动接触 Photos。
-3. 若先确定 App 分发方式且明确要求自动托管，再单独设计 signed helper；在此之前不修改 Xcode 工程。
 
-在上述任一解除条件出现前，当前批准计划内没有还能通过继续本地实现而诚实关闭的门。评测 cohort、
+Developer ID/Mac App Store 选择、helper/XPC 和 loopback 托管不再阻塞当前切片。评测 cohort、
 开放词表、区域证据、FastViT student、Ollama adapter、XMP sidecar 和批量 iCloud 分析继续属于明确延期
 能力，不把它们冒充当前 MVP 缺陷。

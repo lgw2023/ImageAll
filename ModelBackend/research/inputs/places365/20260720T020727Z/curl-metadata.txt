@@ -1,0 +1,15 @@
+requested_url=http://places2.csail.mit.edu/models_places365/resnet18_places365.pth.tar
+effective_url=http://places2.csail.mit.edu/models_places365/resnet18_places365.pth.tar
+http_code=200
+content_type=application/x-tar
+size_download=45506139
+remote_ip=128.52.132.120
+ssl_verify_result=0
+download_speed=142650
+
+used_url=http://places2.csail.mit.edu/models_places365/resnet18_places365.pth.tar
+download_completed_utc=2026-07-20T02:12:51Z
+local_file=/Users/liguowei/places365-evidence/20260720T020727Z/resnet18_places365.pth.tar
+file_size_bytes=45506139
+file_type=data
+sha256=2f4759217d470da2b803f8f66cd4488a066406b555a5fb95ee9a4663f9f05588

@@ -1,0 +1,6 @@
+download_started_utc=2026-07-20T02:07:27Z
+macos_version=26.5.1
+macos_build=25F80
+architecture=arm64
+curl_version=curl 8.7.1 (x86_64-apple-darwin25.0) libcurl/8.7.1 (SecureTransport) LibreSSL/3.3.6 zlib/1.2.12 nghttp2/1.68.1
+shasum_version=6.02
