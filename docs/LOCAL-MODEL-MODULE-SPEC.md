@@ -100,9 +100,22 @@ SQLite、Review Queue 或个人模型。
 ```
 
 store 不扫描 objects 猜测 active，不接受候选对象或父目录符号链接；只有 active 完整有效时才开放推理。
-该切片仍未接入 LibraryWorkspace、图库扫描、SQLite、Review Queue、真实标注或真实照片。下一条推荐门
-是按显式用户动作把现有 App embedding cache 与人工事实构造成只读训练快照，并冻结调度、取消、快照
-二次复核和 managed artifact 发布契约。
+该切片仍未接入 LibraryWorkspace、图库扫描、SQLite、Review Queue、真实标注或真实照片。
+
+第七条只读重建编排 tracer 已完成：
+
+```text
+显式 rebuild → 合成人工事实只读端口 + 合成 cache-only embedding 端口
+→ 单运行调度 / 显式取消
+→ 确定性 Swift 训练
+→ 发布前重新读取并比较 snapshot revision
+→ managed artifact 原子发布；失败、取消或过期保留旧 active
+```
+
+该 tracer 不接受图片输入，也没有 Core ML 生成回退；cache error/miss、encoder identity 不匹配和样本
+不足均在发布前安全停止。当前仍只使用合成 adapter，未接生产 GRDB、`AppCoreMLEmbeddingCache`、
+Composition Root、Settings/Inspector、图库扫描、Review Queue 或真实照片。下一条推荐门是增加两个生产
+只读 adapter 和显式 UI 动作；cache-only 查询必须证明不会读取图片或触发推理。
 
 标准轨道的第二、第三条 tracer 已在独立模块内完成：只读 package 校验、CC0 合成 RGB 线性
 fixture、固定 mapping、ontology DAG、policy recommendation 和 standard `/v1/suggestions`。该 fixture
@@ -161,7 +174,7 @@ backbone。训练产物必须记录 encoder、模型 revision、预处理 revisi
 | 候选 | 职责 | 准入状态 |
 |---|---|---|
 | Places365 ResNet18 | 标准场景标签、场景属性和 ontology mapping 的首个 tracer 候选 | `research`；上游 commit 与官方字节 SHA 已复核，权重许可版本、公开评测和 Core ML 门未关闭 |
-| DINOv2-small | 个人标签冻结 embedding | 固定 revision 的 PyTorch/Core ML 开发验证、FP16 artifact、App 内 Swift 加载/启用选择/版本化 embedding cache、跨实例发布、256 MiB 预算和旧 identity 清理均已实现；合成 Swift/Accelerate 个人线性 head 已绑定完整 encoder/人工快照/标签/权重身份，App Application Support managed artifact 生命周期也已实现；只读训练快照待下一切片 |
+| DINOv2-small | 个人标签冻结 embedding | 固定 revision 的 PyTorch/Core ML 开发验证、FP16 artifact、App 内 Swift 加载/启用选择/版本化 embedding cache、跨实例发布、256 MiB 预算和旧 identity 清理均已实现；合成 Swift/Accelerate 个人线性 head、App Application Support managed artifact 和只读重建编排已实现；生产只读 adapter 与显式 UI 动作待下一切片 |
 | SigLIP2 B/32 256 | 开放词表与标准概念候选评测 | 固定 revision 官方仓库约 1.55 GB，直接首包路径已由只读资源预筛拒绝；保留 teacher 研究候选 |
 | SegFormer-B0 ADE20K | 水域、天空、道路等标准标签的区域证据 | 研究候选，不单独决定标签 |
 | RAM++ | 通用对象/属性候选 | 许可证、权重来源和转换门未关闭，不得进入产品 |

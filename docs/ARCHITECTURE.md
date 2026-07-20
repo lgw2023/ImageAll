@@ -1086,8 +1086,11 @@ catalog scope、人工决定 snapshot、标签词表、完整 Core ML encoder id
 重载后通过 Accelerate `vDSP` 只返回已知标签的有限正分建议，篡改或身份不匹配 fail closed。
 `88b0b2a` 进一步在 App Application Support 下以内容寻址 `.personal-head` 对象和单一 `active.json`
 管理候选与 active；候选经 no-follow 落盘重载、artifact SHA、原始字节、catalog 和完整 encoder identity
-复核后才原子激活，缺失/损坏/旧身份安全 unavailable，写失败或链接边界保留旧 capability。该门仍未接
-LibraryWorkspace、SQLite、图库或 Review Queue；下一门是显式动作构造只读训练快照并连接该发布端点。
+复核后才原子激活，缺失/损坏/旧身份安全 unavailable，写失败或链接边界保留旧 capability。
+`6f8e819` 再增加 App 内只读重建 coordinator：显式调用只从人工事实/cache-only 端口构造训练快照，
+同一时间只运行一次并可取消；训练后、发布前重新核对 snapshot revision，过期、cache miss/error、
+encoder 不匹配或样本不足均保留旧 active。该 tracer 仍只使用合成 adapter，未接生产 GRDB/cache、
+Composition Root、UI、图库或 Review Queue。
 
 标准场景标签 fixture tracer 已验证“公共模型类别 → 版本化 mapping → 标准 concept ID → DAG 父标签
 → `autoAssigned` / `suggested` 策略”；服务须先公布已校验 package 的完整 capability，App 只有在其与
@@ -1158,8 +1161,9 @@ revision 门；cache-only 自动个人重训和独立服务启动已经验收，
 | ADR-030 | 正式 App 在自身容器内校验并由 Swift 直接加载 Core ML；不启动 Python/HTTP/helper/XPC | 固定 DINOv2-small tracer、启用能力管理与版本化 embedding cache 已实现 | App bundle 工厂校验 pinned Apache-2.0 来源、许可证/模型 SHA、manifest 与完整 identity，Swift 直接返回 384 维有限 embedding；默认关闭，用户启用后异步校验，失败安全降级，关闭释放服务，生产二进制不含 loopback client |
 | ADR-031 | App 内 DINO embedding 采用完整语义身份的自有 Caches 文件缓存 | 显式单图与资源生命周期门已实现 | key 绑定 catalog/asset/content、encoder/preprocessing/postprocessing、元素语义及 artifact provenance；值只含有限 little-endian Float32、身份与 SHA-256，损坏/旧身份 miss，持久化失败退化为实时 embedding，不保存图片、路径或 bookmark |
 | ADR-032 | App 内 embedding cache 用单一 lifecycle 锁和固定自有对象预算管理跨实例发布与升级清理 | 已实现 | 进程锁加 POSIX 文件锁避免同 key 重复发布和半文件可见；record schema 2 与完整模型身份决定可清理对象；默认 256 MiB，只枚举和 unlink `ModelEmbeddings/v1/objects` 下常规 `.embedding`，清理失败不影响实时推理 |
-| ADR-033 | App 内个人标签先用确定性 centroid-difference Float32 线性 head 验证训练与推理契约 | 合成 tracer 与 managed artifact 已实现；只读训练快照待下一门 | 每标签保留 `2 + 2` 硬门，训练包绑定 catalog/snapshot/label/完整 encoder/参数 SHA；Accelerate 推理只返回包内已知标签的有限正分，不宣称准确率或替代人工事实 |
+| ADR-033 | App 内个人标签先用确定性 centroid-difference Float32 线性 head 验证训练与推理契约 | 合成 tracer、managed artifact 与只读重建编排已实现；生产 adapter/UI 待下一门 | 每标签保留 `2 + 2` 硬门，训练包绑定 catalog/snapshot/label/完整 encoder/参数 SHA；Accelerate 推理只返回包内已知标签的有限正分，不宣称准确率或替代人工事实 |
 | ADR-034 | App 内个人 head 使用内容寻址候选对象、单一原子 active 指针和独立 capability | 已实现 | 候选须经 no-follow 重载、artifact SHA、catalog 与完整 encoder identity 校验才激活；不扫描 objects 猜测回退，缺失/损坏/旧身份 fail closed，发布失败保留旧内存模型，且只写 App Application Support |
+| ADR-035 | App 内个人模型显式重建先通过只读事实/cache 端口、单运行 coordinator 和发布前快照复核 | 合成 adapter tracer 已实现 | rebuild 可取消且不自动读取图片；cache miss、训练失败、取消或 snapshot 过期均不切换 active；下一门只增加生产只读 adapter 与显式 UI 动作，不恢复 Python/HTTP/helper/XPC |
 
 ## 20. 尚待确认的问题
 
