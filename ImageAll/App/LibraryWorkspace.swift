@@ -858,7 +858,10 @@ final class LibraryWorkspaceModel: ObservableObject {
         }
         resetCloudPreviewIfSelectionChanged()
         resetLocalModelSuggestionsForSelection()
-        await refreshInspector()
+        let selectionRefreshed = await refreshInspector()
+        if selectionRefreshed, notice == .tagSelectionRefreshFailed {
+            notice = nil
+        }
     }
 
     func requestLocalModelSuggestions() async {
@@ -1720,7 +1723,11 @@ final class LibraryWorkspaceModel: ObservableObject {
             if tagPresence != .any || !TagNameNormalizer.trimUnicodeWhiteSpace(searchText).isEmpty {
                 await loadFirstPage()
             }
-            await refreshInspector()
+            let selectionRefreshed = await refreshInspector()
+            if !selectionRefreshed {
+                restoreCommittedNewTagPresentation(result, assetIDs: assetIDs)
+                notice = .tagSelectionRefreshFailed
+            }
         } catch {
             notice = tagNotice(for: error)
         }
@@ -2162,14 +2169,15 @@ final class LibraryWorkspaceModel: ObservableObject {
     }
 
 
-    private func refreshInspector() async {
+    @discardableResult
+    private func refreshInspector() async -> Bool {
         resetCloudPreviewIfSelectionChanged()
         let assetIDs = Array(selectedAssetIDs)
         guard !assetIDs.isEmpty else {
             inspectorDetail = nil
             inspectorTags = []
             assetPendingSuggestions = []
-            return
+            return true
         }
 
         let service = service
@@ -2219,10 +2227,34 @@ final class LibraryWorkspaceModel: ObservableObject {
                     )
                 }
             }
+            return true
         } catch {
             inspectorDetail = nil
             inspectorTags = []
             assetPendingSuggestions = []
+            return false
+        }
+    }
+
+    private func restoreCommittedNewTagPresentation(
+        _ result: TagCreateAndApplyResult,
+        assetIDs: [UUID]
+    ) {
+        let committedAssetIDs = Set(assetIDs)
+        guard !selectedAssetIDs.isEmpty,
+              selectedAssetIDs.isSubset(of: committedAssetIDs)
+        else {
+            return
+        }
+        inspectorTags.append(
+            LibraryInspectorTagPresentation(
+                id: result.tagID,
+                displayName: result.displayName,
+                decision: .accepted
+            )
+        )
+        inspectorTags.sort {
+            $0.displayName.localizedStandardCompare($1.displayName) == .orderedAscending
         }
     }
 
@@ -4345,6 +4377,7 @@ struct LibraryWorkspaceView: View {
         case .invalidTagName: "标签名称无效。"
         case .duplicateTag: "已有同名标签。"
         case .tagMutationFailed: "标签操作未保存，请重试。"
+        case .tagSelectionRefreshFailed: "标签已保存，但当前选择刷新失败；请重新选择照片后继续。"
         case .sourceActionFailed: "来源操作未完成。原照片没有被修改，请重试。"
         case .backgroundScanFailed: "后台扫描未完成，已索引的照片仍可继续浏览。"
         case .photosAuthorizationRequired: "ImageAll 当前没有照片访问权限。授权后请重新检查并同步。"

@@ -2591,6 +2591,118 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertEqual(model.tags.map(\.displayName), ["Print"])
     }
 
+    func testCreatingTagKeepsCommittedSelectionVisibleWhenInspectorRefreshFails() async throws {
+        let sourceID = UUID()
+        let asset = Self.makeAsset(sourceID: sourceID)
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(id: sourceID, displayName: "Fixture", state: .active),
+            reconciledItems: [asset],
+            inspectorDetailFails: true
+        )
+        let model = LibraryWorkspaceModel(service: service)
+        await model.start()
+        await model.connectFolder()
+        await waitForCatalogScanToFinish(model)
+        await model.selectAsset(asset.assetID)
+
+        await model.requestCreateAndAcceptTag(named: "Print")
+
+        let createdTag = try XCTUnwrap(model.tags.first)
+        XCTAssertEqual(service.decidedAssetIDs(tagID: createdTag.id), [asset.assetID])
+        XCTAssertEqual(model.selectedAssetIDs, [asset.assetID])
+        XCTAssertEqual(
+            model.inspectorTags,
+            [
+                LibraryInspectorTagPresentation(
+                    id: createdTag.id,
+                    displayName: "Print",
+                    decision: .accepted
+                ),
+            ]
+        )
+    }
+
+    func testCreatingTagClassifiesPostCommitInspectorRefreshFailure() async throws {
+        let sourceID = UUID()
+        let asset = Self.makeAsset(sourceID: sourceID)
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(id: sourceID, displayName: "Fixture", state: .active),
+            reconciledItems: [asset],
+            inspectorDetailFails: true
+        )
+        let model = LibraryWorkspaceModel(service: service)
+        await model.start()
+        await model.connectFolder()
+        await waitForCatalogScanToFinish(model)
+        await model.selectAsset(asset.assetID)
+
+        await model.requestCreateAndAcceptTag(named: "Print")
+
+        let notice = try XCTUnwrap(model.notice)
+        XCTAssertEqual(
+            LibraryWorkspaceView.noticeText(notice),
+            "标签已保存，但当前选择刷新失败；请重新选择照片后继续。"
+        )
+        XCTAssertNotEqual(notice, .tagMutationFailed)
+    }
+
+    func testReselectingAssetRecoversCommittedTagAfterRefreshFailure() async throws {
+        let sourceID = UUID()
+        let asset = Self.makeAsset(sourceID: sourceID)
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(id: sourceID, displayName: "Fixture", state: .active),
+            reconciledItems: [asset],
+            inspectorDetailFailuresAfterTagCreation: 1
+        )
+        let model = LibraryWorkspaceModel(service: service)
+        await model.start()
+        await model.connectFolder()
+        await waitForCatalogScanToFinish(model)
+        await model.selectAsset(asset.assetID)
+
+        await model.requestCreateAndAcceptTag(named: "Print")
+        XCTAssertEqual(model.notice, .tagSelectionRefreshFailed)
+
+        await model.selectAsset(asset.assetID)
+
+        XCTAssertNil(model.notice)
+        let createdTag = try XCTUnwrap(model.tags.first)
+        XCTAssertEqual(model.selectedAssetIDs, [asset.assetID])
+        XCTAssertEqual(
+            model.inspectorTags,
+            [
+                LibraryInspectorTagPresentation(
+                    id: createdTag.id,
+                    displayName: "Print",
+                    decision: .accepted
+                ),
+            ]
+        )
+    }
+
+    func testCreatingTagPersistenceFailurePublishesNoTagOrDecision() async {
+        let sourceID = UUID()
+        let asset = Self.makeAsset(sourceID: sourceID)
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(id: sourceID, displayName: "Fixture", state: .active),
+            reconciledItems: [asset],
+            tagMutationFails: true
+        )
+        let model = LibraryWorkspaceModel(service: service)
+        await model.start()
+        await model.connectFolder()
+        await waitForCatalogScanToFinish(model)
+        await model.selectAsset(asset.assetID)
+
+        await model.requestCreateAndAcceptTag(named: "Print")
+
+        XCTAssertEqual(model.notice, .tagMutationFailed)
+        XCTAssertTrue(model.tags.isEmpty)
+        XCTAssertTrue(model.inspectorTags.isEmpty)
+        XCTAssertFalse(model.canUndoTagMutation)
+        XCTAssertEqual(model.selectedAssetIDs, [asset.assetID])
+    }
+
     func testBulkTagDecisionRequestShowsImpactBeforeMutatingCatalog() async throws {
         let sourceID = UUID()
         let first = Self.makeAsset(sourceID: sourceID, fileName: "first.jpg")
@@ -3963,6 +4075,8 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
     private var storedLastSort: AssetPageSort = .newest
     private let scanFails: Bool
     private let tagMutationFails: Bool
+    private let inspectorDetailFails: Bool
+    private var remainingInspectorDetailFailuresAfterTagCreation: Int
     private let sourceMutationFails: Bool
     private let blocksReconcileRuns: Bool
     private let photosAuthorizationFails: Bool
@@ -4011,6 +4125,8 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
         scanFails: Bool = false,
         tags: [TagListItem] = [],
         tagMutationFails: Bool = false,
+        inspectorDetailFails: Bool = false,
+        inspectorDetailFailuresAfterTagCreation: Int = 0,
         sourceMutationFails: Bool = false,
         initialItems: [AssetGridItemProjection] = [],
         startsConnected: Bool = false,
@@ -4040,6 +4156,8 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
         self.reconciledItems = reconciledItems
         self.scanFails = scanFails
         self.tagMutationFails = tagMutationFails
+        self.inspectorDetailFails = inspectorDetailFails
+        remainingInspectorDetailFailuresAfterTagCreation = inspectorDetailFailuresAfterTagCreation
         self.sourceMutationFails = sourceMutationFails
         self.blocksReconcileRuns = blocksReconcileRuns
         self.photosAuthorizationFails = photosAuthorizationFails
@@ -4533,7 +4651,16 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
     }
 
     func fetchInspectorDetail(assetID: UUID) throws -> AssetInspectorDetail {
-        try lock.withLock {
+        if inspectorDetailFails {
+            throw FakeWorkspaceError.notFound
+        }
+        return try lock.withLock {
+            if storedCreateTagAndAcceptCallCount > 0,
+               remainingInspectorDetailFailuresAfterTagCreation > 0
+            {
+                remainingInspectorDetailFailuresAfterTagCreation -= 1
+                throw FakeWorkspaceError.notFound
+            }
             guard let item = storedItems.first(where: { $0.assetID == assetID }) else {
                 throw FakeWorkspaceError.notFound
             }
@@ -4614,7 +4741,10 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
         rawName: String,
         assetIDs: [UUID]
     ) throws -> TagCreateAndApplyResult {
-        lock.withLock {
+        if tagMutationFails {
+            throw FakeWorkspaceError.tagMutationFailed
+        }
+        return lock.withLock {
             storedCreateTagAndAcceptCallCount += 1
             storedLastCreateTagAssetIDs = Set(assetIDs)
             let tag = TagListItem(id: UUID(), displayName: rawName, state: .active)

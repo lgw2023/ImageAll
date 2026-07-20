@@ -56,6 +56,7 @@ enum LibraryWorkspaceNotice: Equatable, Sendable {
     case invalidTagName
     case duplicateTag
     case tagMutationFailed
+    case tagSelectionRefreshFailed
     case sourceActionFailed
     case backgroundScanFailed
     case photosAuthorizationRequired
