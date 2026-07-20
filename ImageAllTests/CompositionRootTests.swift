@@ -46,6 +46,21 @@ final class CompositionRootTests: XCTestCase {
         XCTAssertEqual(identity.elementCount, 384)
     }
 
+    func testProductionModelSettingsFactoryStartsNewInstallDisabled() async {
+        let suiteName = "CompositionRootTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.removePersistentDomain(forName: suiteName)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let model = CompositionRoot.makeAppModelSettingsModel(
+            defaults: defaults
+        )
+
+        await model.start()
+
+        XCTAssertFalse(model.isEnabled)
+        XCTAssertEqual(model.state, .disabled)
+    }
+
     func testCompositionRootProducesFoundationReadyPresentation() async throws {
         let root = try StartupTestSupport.makeTempRoot(testCase: self)
         let dependencies = StartupTestSupport.makeDependencies(root: root)

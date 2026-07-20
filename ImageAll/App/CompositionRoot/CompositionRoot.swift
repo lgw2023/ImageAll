@@ -198,6 +198,26 @@ struct CompositionRoot {
         )
     }
 
+    @MainActor
+    static func makeAppModelSettingsModel(
+        defaults: UserDefaults = .standard,
+        bundle: Bundle = .main
+    ) -> AppModelSettingsModel {
+        let preferenceStore = UserDefaultsModelEnablementPreferenceStore(
+            defaults: defaults
+        )
+        let coordinator = AppModelActivationCoordinator(
+            preferenceStore: preferenceStore,
+            serviceFactory: {
+                makeAppCoreMLEmbeddingService(
+                    isEnabled: true,
+                    bundle: bundle
+                )
+            }
+        )
+        return AppModelSettingsModel(coordinator: coordinator)
+    }
+
     static func makeLocalModelSuggestionRuntime() -> LocalModelSuggestionRuntime? {
         nil
     }
