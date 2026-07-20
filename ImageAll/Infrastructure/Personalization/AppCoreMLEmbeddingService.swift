@@ -305,6 +305,7 @@ final class AppCoreMLEmbeddingService: @unchecked Sendable {
                 schemaRevision == 1,
                 license.id == "Apache-2.0",
                 license.file == "LICENSE.txt",
+                license.source == "https://raw.githubusercontent.com/facebookresearch/dinov2/7764ea0f912e53c92e82eb78a2a1631e92725fc8/LICENSE",
                 license.sha256.isLowercaseSHA256,
                 encoder == .approved,
                 artifact.path == "encoder.mlmodelc",

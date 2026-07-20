@@ -207,6 +207,7 @@
 		MM0000010000000000000101 /* PersonalizedSuggestionServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = MM0001010000000000000101 /* PersonalizedSuggestionServiceTests.swift */; };
 		MM0000010000000000000001 /* PersonalizedSuggestionService.swift in Sources */ = {isa = PBXBuildFile; fileRef = MM0001010000000000000001 /* PersonalizedSuggestionService.swift */; };
 		CM0000010000000000000101 /* AppCoreMLEmbeddingServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CM0001010000000000000101 /* AppCoreMLEmbeddingServiceTests.swift */; };
+		CM0000010000000000000102 /* LoopbackModelSuggestionClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = CM0001010000000000000102 /* LoopbackModelSuggestionClient.swift */; };
 		CM0000010000000000000001 /* AppCoreMLEmbeddingService.swift in Sources */ = {isa = PBXBuildFile; fileRef = CM0001010000000000000001 /* AppCoreMLEmbeddingService.swift */; };
 		CM0000010000000000000201 /* DINOv2Small in Resources */ = {isa = PBXBuildFile; fileRef = CM0001010000000000000201 /* DINOv2Small */; };
 		NN0000010000000000000001 /* PersonalizationReviewPort.swift in Sources */ = {isa = PBXBuildFile; fileRef = NN0001010000000000000001 /* PersonalizationReviewPort.swift */; };
@@ -436,6 +437,7 @@
 		MM0001010000000000000101 /* PersonalizedSuggestionServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersonalizedSuggestionServiceTests.swift; sourceTree = "<group>"; };
 		MM0001010000000000000001 /* PersonalizedSuggestionService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersonalizedSuggestionService.swift; sourceTree = "<group>"; };
 		CM0001010000000000000101 /* AppCoreMLEmbeddingServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppCoreMLEmbeddingServiceTests.swift; sourceTree = "<group>"; };
+		CM0001010000000000000102 /* LoopbackModelSuggestionClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LoopbackModelSuggestionClient.swift; sourceTree = "<group>"; };
 		CM0001010000000000000001 /* AppCoreMLEmbeddingService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppCoreMLEmbeddingService.swift; sourceTree = "<group>"; };
 		CM0001010000000000000201 /* DINOv2Small */ = {isa = PBXFileReference; lastKnownFileType = folder; path = Resources/Models/DINOv2Small; sourceTree = "<group>"; };
 		NN0001010000000000000001 /* PersonalizationReviewPort.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersonalizationReviewPort.swift; sourceTree = "<group>"; };
@@ -521,6 +523,7 @@
 			isa = PBXGroup;
 			children = (
 				CM0001010000000000000101 /* AppCoreMLEmbeddingServiceTests.swift */,
+				CM0001010000000000000102 /* LoopbackModelSuggestionClient.swift */,
 				MM0001010000000000000101 /* PersonalizedSuggestionServiceTests.swift */,
 				LL0001010000000000000101 /* FeaturePrintCacheTests.swift */,
 				KK0001010000000000000101 /* PersonalizationPersistenceTests.swift */,
@@ -1281,6 +1284,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				CM0000010000000000000101 /* AppCoreMLEmbeddingServiceTests.swift in Sources */,
+				CM0000010000000000000102 /* LoopbackModelSuggestionClient.swift in Sources */,
 				EX0000010000000000000101 /* PortableCatalogExportTests.swift in Sources */,
 				OO0000010000000000000101 /* PhotosIntegrationTests.swift in Sources */,
 				MM0000010000000000000101 /* PersonalizedSuggestionServiceTests.swift in Sources */,

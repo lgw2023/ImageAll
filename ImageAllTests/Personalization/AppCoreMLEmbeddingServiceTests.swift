@@ -88,6 +88,38 @@ final class AppCoreMLEmbeddingServiceTests: XCTestCase {
         }
     }
 
+    func testEnabledServiceRejectsAnUnapprovedLicenseSource() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: false
+        )
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let source = projectArtifactDirectory()
+        let manifestURL = source.appendingPathComponent("manifest.json")
+        let manifest = try String(contentsOf: manifestURL, encoding: .utf8)
+            .replacingOccurrences(
+                of: "https://raw.githubusercontent.com/facebookresearch/dinov2/7764ea0f912e53c92e82eb78a2a1631e92725fc8/LICENSE",
+                with: "https://example.invalid/LICENSE"
+            )
+        try Data(manifest.utf8).write(
+            to: directory.appendingPathComponent("manifest.json"),
+            options: .atomic
+        )
+        try FileManager.default.copyItem(
+            at: source.appendingPathComponent("LICENSE.txt"),
+            to: directory.appendingPathComponent("LICENSE.txt")
+        )
+
+        let service = AppCoreMLEmbeddingService(
+            isEnabled: true,
+            artifactDirectory: directory
+        )
+
+        XCTAssertEqual(service.availability, .unavailable(.manifestInvalid))
+    }
+
     func testEnabledFixedArtifactReturnsAFiniteIdentityMatchedEmbedding() throws {
         let service = AppCoreMLEmbeddingService(
             isEnabled: true,

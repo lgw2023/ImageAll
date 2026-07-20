@@ -103,13 +103,7 @@ struct CompositionRoot {
             photoThumbnails: derivedImages
         )
         let localModelSuggestions: LocalModelSuggestionRuntime?
-        if let catalogScopeID = try? runtime.database.catalogScopeID() {
-            localModelSuggestions = makeLocalModelSuggestionRuntime(
-                catalogScopeID: catalogScopeID
-            )
-        } else {
-            localModelSuggestions = nil
-        }
+        localModelSuggestions = makeLocalModelSuggestionRuntime()
         var jobHandlers: [any JobHandler] = [handler, photosHandler, personalizationHandler]
         if let localModelSuggestions {
             jobHandlers.append(
@@ -204,9 +198,7 @@ struct CompositionRoot {
         )
     }
 
-    static func makeLocalModelSuggestionRuntime(
-        catalogScopeID: String
-    ) -> LocalModelSuggestionRuntime? {
+    static func makeLocalModelSuggestionRuntime() -> LocalModelSuggestionRuntime? {
         nil
     }
 }

@@ -20,9 +20,7 @@ final class CompositionRootTests: XCTestCase {
 
     func testProductionCompositionRootDoesNotCreateLoopbackRuntime() {
         XCTAssertNil(
-            CompositionRoot.makeLocalModelSuggestionRuntime(
-                catalogScopeID: "catalog-fixture"
-            )
+            CompositionRoot.makeLocalModelSuggestionRuntime()
         )
     }
 
