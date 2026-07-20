@@ -990,8 +990,9 @@ System Photo Library 实际切换/显式重绑定、真实摄影格式/内容分
 
 2026-07-20 的部署决策覆盖本节早期规划：正式 App 只采用“App 容器内校验 → Swift 直接加载 Core ML
 → CPU/GPU/Neural Engine 推理”，不启动或分发 Python/uv、loopback HTTP、helper/XPC。以下 loopback、
-HTTP 和 managed-store 内容保留为已完成的开发验证历史，不再是产品运行路径。当前下一门是固定
-DINOv2 Core ML artifact 的 App 内合成图 embedding 与缺失/损坏/未启用降级。
+HTTP 和 managed-store 内容保留为已完成的开发验证历史，不再是产品运行路径。固定 DINOv2 Core ML
+artifact 的 App 内合成图 embedding、缺失/损坏/未启用降级，以及用户可见的启用选择/持久化/状态呈现
+均已关闭；当前下一门是带完整 preprocessing/postprocessing 语义身份的 App 内 embedding cache。
 
 状态：独立双轨 tracer、HTTP、CLI 装载、Swift client transport、Inspector 标准/personal 单图流、DINOv2 Core ML FP16 导出/HTTP provider、用户触发的 personal 快照重建与原子 bundle 生命周期、cache-only 自动个人重训、personal/standard 持久全库任务、完整 standard package capability 握手、显式本地服务状态、v009 标准概念持久化、v010 standard Review Queue、显式单图发布与 v011 标准祖先展开已实现；生产公共模型准入规格已冻结，Places365 ResNet18 仍为 research 候选，固定 DINOv2 的实际 ANE、预编译安装、峰值 RSS、热状态与独立服务进程端到端 ready 取证已关闭，实际标准模型评测/接入仍待后续切片。独立 loopback 服务、
 固定 revision 的 DINOv2-small、MPS 线性多标签 head、锁定依赖、真实模型 HTTP smoke 与无模块 App
@@ -1068,7 +1069,10 @@ plan/resource 报告及固定 DINOv2 的实际 Neural Engine、峰值 RSS/热状
 ready 已经关闭；App 运行期的 cache-only 自动个人重训也已关闭；生产标准包接线和真实照片只读
 smoke 仍为后续独立验收门。第一条 App 内固定 DINOv2 Core ML 产品切片已完成：Swift 公开接口以
 程序生成图片返回 384 维有限且完整身份匹配的 embedding；模型未启用、缺失、损坏或身份不匹配时
-稳定降级，并且不影响浏览与人工标签。下一切片补用户可见的启用选择、持久化和状态呈现。
+稳定降级，并且不影响浏览与人工标签。`573add4` 进一步交付全局默认关闭的启用意图、非主线程串行
+激活 actor 和原生 Settings；失败保留启用意图，关闭释放服务，重启或 artifact 更新重新校验，且未接入
+LibraryWorkspace、图库扫描、SQLite 或个人模型。下一切片补 App 内版本化 embedding cache，并把
+preprocessing、postprocessing、向量元素语义与内容 revision 纳入完整身份。
 
 标准场景标签 fixture tracer 已验证“公共模型类别 → 版本化 mapping → 标准 concept ID → DAG 父标签
 → `autoAssigned` / `suggested` 策略”；服务须先公布已校验 package 的完整 capability，App 只有在其与
@@ -1136,7 +1140,7 @@ revision 门；cache-only 自动个人重训和独立服务启动已经验收，
 | ADR-027 | personal 显式重建使用同步 embedding/manual-decision snapshot 与 managed store 原子 active 指针 | 已实现 | 显式 endpoint 已限定轨道且不依赖持久 job；CAS、候选完整校验和 capability 二次确认防止旧快照或半 bundle 生效，失败继续使用旧模型 |
 | ADR-028 | 人工反馈后的个人模型自动重训使用 30 秒防抖的持久 cache-only job | 已实现 | 冻结 job 只携带决定、标签 revision 与 embedding cache key；快照过期即跳过，缓存 miss 保留手动重建入口，服务/CAS 故障可重试，禁止后台读取照片或启动服务 |
 | ADR-029 | 当前只验收可选 loopback 服务的独立进程生命周期，不让 App 启动开发 venv | 开发验证门已实现；自动托管规划由 ADR-030 取消 | 历史进程证据保留，但不再构成产品发布架构 |
-| ADR-030 | 正式 App 在自身容器内校验并由 Swift 直接加载 Core ML；不启动 Python/HTTP/helper/XPC | 首个固定 DINOv2-small App 内 tracer 已实现 | App bundle 工厂校验 pinned Apache-2.0 来源、许可证/模型 SHA、manifest 与完整 identity，Swift 直接返回 384 维有限 embedding；未启用、缺失、损坏安全降级，生产二进制不含 loopback client；下一切片补 App 内启用选择与状态呈现 |
+| ADR-030 | 正式 App 在自身容器内校验并由 Swift 直接加载 Core ML；不启动 Python/HTTP/helper/XPC | 固定 DINOv2-small tracer 与启用能力管理已实现 | App bundle 工厂校验 pinned Apache-2.0 来源、许可证/模型 SHA、manifest 与完整 identity，Swift 直接返回 384 维有限 embedding；默认关闭，用户启用后异步校验，失败安全降级，关闭释放服务，生产二进制不含 loopback client；下一切片补带完整语义身份的 App 内 embedding cache |
 
 ## 20. 尚待确认的问题
 

@@ -6,8 +6,18 @@
 - 审计开工 HEAD：`3b6a276fada7a059d2ee48de2c693f68cecf5dad`
 - App 内 Core ML 初版基线：`b87a82e82392e82f54938d681ae130a9c0c82a64`（外部状态变化已同步到
   `origin/main`；该提交同时包含此前 staged 的 App Icon 工作，未改写历史）
-- 本地边界修复：`2aaa7d19f185f8eb18bdff3ccb60a446910fef88`，未 push
-- 文档开工前 `main` 比 `origin/main` ahead 1，工作树和暂存区为空
+- 本地边界修复：`2aaa7d19f185f8eb18bdff3ccb60a446910fef88`；相关四个 Core ML 收口提交已于
+  2026-07-20 以 ahead 4 / behind 0 的无分叉状态推送，推送后
+  `HEAD == origin/main == 20d08f805d5561b6dbdde5b06be5e6feb36cbb34`
+- App 内模型能力管理切片开工基线：`main@20d08f805d5561b6dbdde5b06be5e6feb36cbb34`；实现提交：
+  `573add4da1565ea19c82bd963d613affe85fafca`
+
+### 1.1 本机凭据日志风险决定
+
+项目所有者确认：包含 API 环境变量的日志只保存在不对他人开放的本机，没有进入 Git/GitHub 历史，
+也没有发送或同步到第三方或外部服务；项目所有者接受当前风险并决定暂不轮换。因此“先轮换 API Key”
+不再是本项目继续开发的前置门。该决定不是对凭据永久安全性的保证；后续构建、测试、Git 和网络命令
+仍使用不含 API 环境变量的最小环境，提交前继续执行凭据字面量扫描，任何新外发证据都不得包含凭据值。
 
 ## 2. 本轮已关闭的本地门
 
@@ -30,12 +40,23 @@
    单图人工标签定向回归 `30/30`。完整无宿主 XCTest 为 947 项，其中 944 项通过；其余 3 项仅因
    `Bundle.main` 不是 App 宿主而失败，普通 App 静态审计已分别确认 Privacy manifest 和签名
    entitlements。受保护图库挂载期间没有启动 App 宿主。
+8. App 内模型能力管理：全局 UserDefaults 只持久化启用意图，默认关闭时模型工厂调用为 0；非主线程
+   actor 串行执行 bundle artifact 校验/初始化，并提供 `disabled → validating → ready(identity) |
+   unavailable(reason)` 状态。失败保留启用意图，关闭释放服务，重复/并发启用共享单次初始化，新 App
+   生命周期和 artifact 更新都会重新校验。原生 Settings 只显示固定本机 Core ML 运行方式、已校验
+   model identity 和去路径/异常栈的失败文案；没有接入 LibraryWorkspace、图库扫描、SQLite 或个人模型。
+   TDD 定向为能力管理 `11/11`、既有 Core ML 服务 `6/6`、组合根 `5/5`。完整直接 xctest 执行 958 项，
+   仅 3 个必须依赖 App 宿主身份的测试产生 6 个断言失败（2 个 `Bundle.main` 资源测试、1 个当前进程
+   entitlement 测试）；其余通过。受保护图库挂载期间未启动 App 宿主。独立 Release build 成功，
+   manifest/license 源与包内 SHA 一致，Python/原始权重/XPC/helper/loopback 禁入计数为 0；临时包按项目
+   entitlements ad-hoc 签名后通过 strict codesign 验证。
 
 实现与产品/架构文档保持分离提交；当前相关收口提交为：
 
 - `8946846` — Backend cache-only personal rebuild；
 - `42b6423` / `7f406e7` — App 自动重训实现 / 文档；
-- `7e0874b` / `3b6a276` — 服务启动验收器 / 文档与去标识证据。
+- `7e0874b` / `3b6a276` — 服务启动验收器 / 文档与去标识证据；
+- `573add4` — App 内模型启用偏好、激活 actor、原生 Settings 与 TDD 验收。
 
 ## 3. 仍开放但不能继续静默实施的门
 
@@ -74,13 +95,15 @@ target，或替换现有 fixture。解除条件是
 Feature Print 路径保持可用。Developer ID 与 Mac App Store 的选择不阻塞该接线。
 
 `ModelBackend` 与既有 loopback 证据继续作为转换、离线评测和开发验证资产保留，但不再形成发布门或
-用户运行路径。首个固定 artifact tracer 已关闭；下一实现门是“App 内模型启用选择 → 持久化设置 →
-bundle artifact 初始化/状态呈现 → 失败不影响浏览和人工标签”。
+用户运行路径。固定 artifact tracer 与 App 内模型启用选择/持久化/状态呈现均已关闭。下一实现门是
+App 容器内的版本化 embedding cache：缓存身份必须覆盖 encoder、preprocessing、element 语义和明确的
+postprocessing revision；损坏、旧 revision 或身份不完整只能 miss/清除，不得影响浏览和人工标签。
 
 ## 4. 推荐恢复顺序
 
-1. 下一纵切片接入 App 内模型启用选择，默认关闭；用户启用后只调用当前 Core ML bundle 工厂，显示
-   ready/缺失/损坏状态，重启保持选择，任何失败不改变浏览和人工标签；
+1. 下一纵切片接入 App 内版本化 embedding cache，先限定为显式单图/程序生成输入，不启动全库扫描；
+   cache key 固定包含完整 encoder/preprocessing/postprocessing identity、内容 revision 与向量语义，
+   值必须为有限向量并带 SHA-256，旧版本和损坏条目稳定 miss，关闭模型后不再生成新缓存；
 2. 并行补齐 Places365 权重许可版本/分发义务和真实公开验证数据 manifest；门关闭后才在隔离临时目录以
    `weights_only=True` 运行评测、转换、parity 与资源门；
 3. 若先取得具体真实数据只读授权，按“阶段 1 小型文件夹 → 阶段 2 显式重绑定 → 阶段 4 大容量 I/O”
