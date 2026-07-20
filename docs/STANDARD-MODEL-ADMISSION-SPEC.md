@@ -164,6 +164,9 @@ parity、资源指标和 pack validation 结果。verifier 必须：
 - `approvedSuggestedOnly` 返回退出码 0；证据完整但未过门返回 2；畸形报告返回 3；
 - 当前 Places365 候选 fixture 虽已复核官方权重 SHA，但因许可证版本/产品分发义务和公开数据 manifest
   未 verified，必须稳定得到 `research`，且不生成 standard pack。
+- `ModelBackend/research/manifests/places365-public-validation-20260720.json` 是显式 blocker manifest：
+  它固定记录 dataset identity、版本、许可证和 item 列表均未获批准，`items` 必须为空。该文件只证明
+  “公开验证门仍缺失”，不得冒充 dataset manifest、评测结果或 `evaluationReady` 证据。
 
 CLI 为 `imageall-verify-standard-admission --report <json>`；批准返回 0，研究/待评测/拒绝返回 2，畸形
 报告返回 3。仓库内 `places365-resnet18-research-v1.json` 固定当前候选证据并稳定返回 `research`。

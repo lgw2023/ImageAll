@@ -1,0 +1,41 @@
+{
+  "schema_revision": 1,
+  "manifest_kind": "public_validation_dataset_gate",
+  "candidate": {
+    "provider": "places365-resnet18",
+    "model_id": "csailvision/places365-resnet18",
+    "preprocessing_revision": "places365-resnet18-center-crop-v1"
+  },
+  "status": "missing",
+  "manifest_verified": false,
+  "approved_for_automated_use": false,
+  "dataset": {
+    "dataset_id": null,
+    "dataset_version": null,
+    "source_url": null,
+    "license_id": null,
+    "license_version": null,
+    "license_text_sha256": null,
+    "distribution_obligations_reviewed": false
+  },
+  "items": [],
+  "required_before_evaluation": [
+    "A fixed public dataset identity and immutable version",
+    "An authoritative source URL and acquisition record",
+    "A versioned license text with a verified SHA-256",
+    "A reviewed product-use and redistribution decision",
+    "A deterministic item list with per-file SHA-256 and label mapping",
+    "A manifest SHA-256 recorded in the standard-admission report"
+  ],
+  "safety": {
+    "dataset_download_allowed": false,
+    "checkpoint_loading_allowed": false,
+    "coreml_conversion_allowed": false,
+    "standard_pack_generation_allowed": false,
+    "protected_hdd2_data_allowed": false
+  },
+  "decision": {
+    "admission_state": "research",
+    "reason": "No fixed, license-reviewed public validation dataset or deterministic item manifest has been approved. This blocker manifest is evidence of the missing gate and is not an evaluation dataset manifest."
+  }
+}

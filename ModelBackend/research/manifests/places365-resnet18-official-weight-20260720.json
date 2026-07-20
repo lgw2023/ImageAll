@@ -56,6 +56,7 @@
     "reason": "The official repository names CC BY without a version or complete terms, while the official project pages describe trained CNNs for academic research and education. Product redistribution obligations remain unresolved."
   },
   "public_validation_dataset": {
+    "blocker_manifest": "ModelBackend/research/manifests/places365-public-validation-20260720.json",
     "manifest_verified": false,
     "status": "missing",
     "reason": "No fixed, license-reviewed public validation image manifest has been approved yet."
