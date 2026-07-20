@@ -18,15 +18,34 @@ final class CompositionRootTests: XCTestCase {
         ])
     }
 
-    func testProductionLocalModelRuntimeContainsLoopbackClientAndCatalogScope() throws {
-        let runtime = try XCTUnwrap(
+    func testProductionCompositionRootDoesNotCreateLoopbackRuntime() {
+        XCTAssertNil(
             CompositionRoot.makeLocalModelSuggestionRuntime(
                 catalogScopeID: "catalog-fixture"
             )
         )
+    }
 
-        XCTAssertTrue(runtime.client is LoopbackModelSuggestionClient)
-        XCTAssertEqual(runtime.catalogScopeID, "catalog-fixture")
+    func testProductionCoreMLFactoryLoadsBundledArtifactWhenEnabled() throws {
+        let testBundleURL = Bundle(for: CompositionRootTests.self).bundleURL
+        let appBundleURL = testBundleURL
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let appBundle = try XCTUnwrap(Bundle(url: appBundleURL))
+
+        let service = CompositionRoot.makeAppCoreMLEmbeddingService(
+            isEnabled: true,
+            bundle: appBundle
+        )
+
+        guard case let .ready(identity) = service.availability else {
+            return XCTFail(
+                "expected the bundled Core ML artifact to be ready, got \(service.availability)"
+            )
+        }
+        XCTAssertEqual(identity.modelID, "facebook/dinov2-small")
+        XCTAssertEqual(identity.elementCount, 384)
     }
 
     func testCompositionRootProducesFoundationReadyPresentation() async throws {

@@ -191,13 +191,22 @@ struct CompositionRoot {
         )
     }
 
+    static func makeAppCoreMLEmbeddingService(
+        isEnabled: Bool,
+        bundle: Bundle = .main
+    ) -> AppCoreMLEmbeddingService {
+        let artifactDirectory = bundle.resourceURL?
+            .appendingPathComponent("DINOv2Small", isDirectory: true)
+            ?? URL(fileURLWithPath: "/__ImageAllMissingBundleResource__")
+        return AppCoreMLEmbeddingService(
+            isEnabled: isEnabled,
+            artifactDirectory: artifactDirectory
+        )
+    }
+
     static func makeLocalModelSuggestionRuntime(
         catalogScopeID: String
     ) -> LocalModelSuggestionRuntime? {
-        guard let client = try? LoopbackModelSuggestionClient() else { return nil }
-        return LocalModelSuggestionRuntime(
-            client: client,
-            catalogScopeID: catalogScopeID
-        )
+        nil
     }
 }

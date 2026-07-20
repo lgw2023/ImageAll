@@ -15,6 +15,10 @@ DerivedData/
 *.dSYM.zip
 *.dSYM
 
+# Local user material and compiler profiling output
+user/
+*.profraw
+
 # Swift Package Manager
 .build/
 .swiftpm/xcode/package.xcworkspace/xcuserdata/

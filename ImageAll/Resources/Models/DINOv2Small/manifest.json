@@ -1,0 +1,33 @@
+{
+  "schema_revision": 1,
+  "license": {
+    "id": "Apache-2.0",
+    "file": "LICENSE.txt",
+    "sha256": "600cc67cc4cb2f5ea317dcfc687ad1c74dc4bec8782bbe9db0afd83513b935b7",
+    "source": "https://raw.githubusercontent.com/facebookresearch/dinov2/7764ea0f912e53c92e82eb78a2a1631e92725fc8/LICENSE"
+  },
+  "encoder": {
+    "provider": "dinov2",
+    "model_id": "facebook/dinov2-small",
+    "model_revision": "ed25f3a31f01632728cabb09d1542f84ab7b0056",
+    "preprocessing_revision": "dinov2-hf-autoimageprocessor-v1",
+    "element_count": 384
+  },
+  "artifact": {
+    "path": "encoder.mlmodelc",
+    "sha256": "adf94162ab40f8214cb8b1da07718b57d55b39ec779bc00bc4410ba2268c5391",
+    "format": "mlprogram-compiled",
+    "minimum_deployment_target": "macOS15",
+    "compute_precision": "float16"
+  },
+  "input": {
+    "name": "pixel_values",
+    "shape": [1, 3, 224, 224],
+    "element_type": "float32"
+  },
+  "output": {
+    "name": "embedding",
+    "shape": [1, 384],
+    "element_type": "float32"
+  }
+}
