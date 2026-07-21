@@ -4338,6 +4338,7 @@ struct LibraryWorkspaceView: View {
                     LibraryGridMarqueeContainer(
                         cellFrames: $gridCellFrames,
                         isMarqueeSelecting: $isMarqueeSelecting,
+                        viewportHeight: proxy.size.height,
                         currentSelection: model.selectedAssetIDs,
                         onSelectionChange: { assetIDs, isFinal in
                             contentFocused = true
@@ -4367,6 +4368,7 @@ struct LibraryWorkspaceView: View {
                                     model: model,
                                     isSelected: model.selectedAssetIDs.contains(item.assetID),
                                     onSelect: {
+                                        guard !isMarqueeSelecting else { return }
                                         contentFocused = true
                                         let flags = NSEvent.modifierFlags.intersection(.deviceIndependentFlagsMask)
                                         Task {

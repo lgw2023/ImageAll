@@ -2749,6 +2749,59 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertNil(model.selectionAnchorIDForTesting)
     }
 
+    func testMarqueeSelectionLogicResolvesAdditiveSelection() {
+        let first = UUID()
+        let second = UUID()
+        let third = UUID()
+
+        XCTAssertEqual(
+            LibraryGridMarqueeSelectionLogic.resolvedSelection(
+                baseSelection: [first],
+                hitIDs: [second, third],
+                additive: true
+            ),
+            Set([first, second, third])
+        )
+        XCTAssertEqual(
+            LibraryGridMarqueeSelectionLogic.resolvedSelection(
+                baseSelection: [first],
+                hitIDs: [second],
+                additive: false
+            ),
+            Set([second])
+        )
+    }
+
+    func testMarqueeSelectionLogicIntersectingRects() {
+        let first = UUID()
+        let second = UUID()
+        let frames = [
+            first: CGRect(x: 0, y: 0, width: 100, height: 100),
+            second: CGRect(x: 108, y: 0, width: 100, height: 100),
+        ]
+
+        XCTAssertEqual(
+            LibraryGridMarqueeSelectionLogic.assetIDsIntersecting(
+                CGRect(x: 20, y: 20, width: 10, height: 10),
+                cellFrames: frames
+            ),
+            Set([first])
+        )
+        XCTAssertEqual(
+            LibraryGridMarqueeSelectionLogic.assetIDsIntersecting(
+                CGRect(x: 90, y: 0, width: 30, height: 100),
+                cellFrames: frames
+            ),
+            Set([first, second])
+        )
+        XCTAssertTrue(
+            LibraryGridMarqueeSelectionLogic.assetIDsIntersecting(
+                CGRect(x: 104, y: 20, width: 2, height: 2),
+                cellFrames: frames
+            ).isEmpty
+        )
+    }
+
     func testMultiSelectionShowsMixedStateAndCreatesAcceptedTag() async {
         let sourceID = UUID()
         let first = Self.makeAsset(sourceID: sourceID, fileName: "first.jpg")

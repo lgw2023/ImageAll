@@ -44,11 +44,18 @@ enum LibraryGridMarqueeSelectionLogic {
     ) -> Set<UUID> {
         additive ? baseSelection.union(hitIDs) : hitIDs
     }
+
+    static func assetIDsIntersecting(_ rect: CGRect, cellFrames: [UUID: CGRect]) -> Set<UUID> {
+        Set(cellFrames.compactMap { assetID, frame in
+            rect.intersects(frame) ? assetID : nil
+        })
+    }
 }
 
 struct LibraryGridMarqueeContainer<Content: View>: View {
     @Binding var cellFrames: [UUID: CGRect]
     @Binding var isMarqueeSelecting: Bool
+    let viewportHeight: CGFloat
     let currentSelection: Set<UUID>
     let onSelectionChange: (_ assetIDs: Set<UUID>, _ isFinal: Bool) -> Void
     @ViewBuilder var content: () -> Content
@@ -75,6 +82,9 @@ struct LibraryGridMarqueeContainer<Content: View>: View {
             .onPreferenceChange(LibraryGridCellFramesPreferenceKey.self) { frames in
                 cellFrames = frames
             }
+            .frame(maxWidth: .infinity, minHeight: max(viewportHeight, 1), alignment: .topLeading)
+            .contentShape(Rectangle())
+            .simultaneousGesture(marqueeDragGesture)
             .overlay(alignment: .topLeading) {
                 if marqueeStarted, let selectionRect {
                     Rectangle()
@@ -88,16 +98,12 @@ struct LibraryGridMarqueeContainer<Content: View>: View {
                         .allowsHitTesting(false)
                 }
             }
-            .simultaneousGesture(marqueeDragGesture)
     }
 
     private var marqueeDragGesture: some Gesture {
-        DragGesture(minimumDistance: 4, coordinateSpace: .named(LibraryGridCoordinateSpace.name))
+        DragGesture(minimumDistance: 6, coordinateSpace: .named(LibraryGridCoordinateSpace.name))
             .onChanged { value in
                 if !marqueeStarted {
-                    if cellFrames.values.contains(where: { $0.contains(value.startLocation) }) {
-                        return
-                    }
                     marqueeStarted = true
                     isMarqueeSelecting = true
                     dragStart = value.startLocation
@@ -119,7 +125,10 @@ struct LibraryGridMarqueeContainer<Content: View>: View {
 
     private func applySelection(isFinal: Bool) {
         guard let selectionRect else { return }
-        let hitIDs = assetIDsIntersecting(selectionRect, cellFrames: cellFrames)
+        let hitIDs = LibraryGridMarqueeSelectionLogic.assetIDsIntersecting(
+            selectionRect,
+            cellFrames: cellFrames
+        )
         let nextSelection = LibraryGridMarqueeSelectionLogic.resolvedSelection(
             baseSelection: baseSelection,
             hitIDs: hitIDs,
@@ -135,10 +144,4 @@ struct LibraryGridMarqueeContainer<Content: View>: View {
         isMarqueeSelecting = false
         additiveAtDragStart = false
     }
-}
-
-private func assetIDsIntersecting(_ rect: CGRect, cellFrames: [UUID: CGRect]) -> Set<UUID> {
-    Set(cellFrames.compactMap { assetID, frame in
-        rect.intersects(frame) ? assetID : nil
-    })
 }
