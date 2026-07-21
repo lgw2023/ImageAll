@@ -3628,7 +3628,7 @@ final class LibraryWorkspaceModelTests: XCTestCase {
             ]
         )
         XCTAssertEqual(commands.first(where: { $0.command == .showSource(sourceID) })?.title, "前往来源：Fixture")
-        XCTAssertEqual(commands.first(where: { $0.command == .showTag(tag.id) })?.title, "前往标签：Family")
+        XCTAssertEqual(commands.first(where: { $0.command == .showTag(tag.id) })?.title, "筛选标签：Family")
     }
 
     func testCommandPaletteSearchMatchesDynamicCommandTitles() async {
