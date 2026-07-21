@@ -17,6 +17,8 @@ struct CatalogDatabase: Sendable {
         V009AddStandardOntologyMigration.register(on: &migrator)
         V010AddStandardPredictionsMigration.register(on: &migrator)
         V011AddStandardPredictionProvenanceMigration.register(on: &migrator)
+        V012RepairStandardTagBindingMigration.register(on: &migrator)
+        V013PhotosMissingAssetRepairMigration.register(on: &migrator)
         return migrator
     }
 
@@ -721,6 +723,47 @@ enum V011AddStandardPredictionProvenanceMigration {
                         derived_from_concept_id IS NULL
                         OR length(derived_from_concept_id) > 0
                     )
+                """
+            )
+        }
+    }
+}
+
+enum V012RepairStandardTagBindingMigration {
+    static func register(on migrator: inout DatabaseMigrator) {
+        migrator.registerMigration(CatalogMigrationID.v012RepairStandardTagBinding) { db in
+            // Some production catalogs recorded v009–v011 without creating
+            // `standard_tag_binding`. Tag list/create JOINs require the table.
+            guard try !db.tableExists("standard_tag_binding") else { return }
+            try db.execute(
+                sql: """
+                CREATE TABLE standard_tag_binding (
+                    tag_id TEXT NOT NULL PRIMARY KEY
+                        REFERENCES tag(id) ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
+                    ontology_id TEXT NOT NULL,
+                    ontology_revision TEXT NOT NULL,
+                    concept_id TEXT NOT NULL,
+                    UNIQUE(ontology_id, concept_id),
+                    FOREIGN KEY(ontology_id, ontology_revision, concept_id)
+                        REFERENCES ontology_concept(ontology_id, ontology_revision, concept_id) ON DELETE RESTRICT
+                ) STRICT
+                """
+            )
+        }
+    }
+}
+
+enum V013PhotosMissingAssetRepairMigration {
+    static func register(on migrator: inout DatabaseMigrator) {
+        migrator.registerMigration(CatalogMigrationID.v013PhotosMissingAssetRepair) { db in
+            // One-time upgrade repair: restore assets previously marked missing by
+            // incremental false-deletes. The next Photos reconcile job performs full
+            // generation because sync_cursor is cleared.
+            try db.execute(
+                sql: """
+                UPDATE source
+                SET sync_cursor = NULL
+                WHERE kind = 'photos' AND state = 'active'
                 """
             )
         }

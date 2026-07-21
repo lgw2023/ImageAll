@@ -119,6 +119,12 @@ struct LibraryWorkspaceCommandItem: Identifiable, Equatable {
     var id: LibraryWorkspaceCommand { command }
 }
 
+enum AssetThumbnailLoadResult: Equatable, Sendable {
+    case loaded(Data)
+    case cloudOnly
+    case unavailable
+}
+
 @MainActor
 final class LibraryWorkspaceModel: ObservableObject {
     @Published private(set) var phase: LibraryWorkspacePhase = .loading
@@ -131,6 +137,7 @@ final class LibraryWorkspaceModel: ObservableObject {
     @Published private(set) var tags: [TagListItem] = []
     @Published private(set) var searchText = ""
     @Published private(set) var selectedTagFilterIDs: Set<UUID> = []
+    @Published private(set) var excludedTagFilterIDs: Set<UUID> = []
     @Published private(set) var tagMatchMode: TagMatchMode = .all
     @Published private(set) var tagPresence: TagPresenceFilter = .any
     @Published private(set) var selectedAvailabilities: [AssetAvailability] = []
@@ -141,13 +148,12 @@ final class LibraryWorkspaceModel: ObservableObject {
     @Published private(set) var pendingSuggestionTotal = 0
     @Published private(set) var isCatalogScanning = false
     @Published private(set) var catalogReconcileProgress: CatalogReconcileProgress?
+    @Published private(set) var assetGridRevision = 0
     @Published private(set) var suggestionOverviews: [SuggestionTagOverview] = []
     @Published private(set) var reviewMode: ReviewWorkspaceMode?
     @Published private(set) var reviewQueueItems: [ReviewQueueItemProjection] = []
     @Published fileprivate(set) var reviewNextCursor: ReviewQueueCursor?
     @Published var pendingSuggestionConfirmation: SuggestionEnqueueConfirmation?
-    @Published private(set) var pendingTagDecisionConfirmation: LibraryTagDecisionConfirmation?
-    @Published private(set) var pendingNewTagConfirmation: LibraryNewTagConfirmation?
     @Published private(set) var assetPendingSuggestions: [AssetPendingSuggestion] = []
     @Published private(set) var cloudPreviewState: CloudPreviewPresentationState = .hidden
     @Published private(set) var localModelSuggestionState: LocalModelSuggestionPresentationState = .hidden
@@ -175,6 +181,7 @@ final class LibraryWorkspaceModel: ObservableObject {
     private var personalizationRunnerTask: Task<Void, Never>?
     private var catalogReconcileTask: Task<Void, Never>?
     private var catalogReconcileRunRequested = false
+    private var photosGridAutoRefreshTask: Task<Void, Never>?
     private var cloudPreviewTask: Task<Void, Never>?
     private var cloudPreviewRequestID: UUID?
     private var localModelSuggestionRequestID: UUID?
@@ -210,6 +217,7 @@ final class LibraryWorkspaceModel: ObservableObject {
 
     deinit {
         searchDebounceTask?.cancel()
+        photosGridAutoRefreshTask?.cancel()
         service.stopCatalogSourceMonitoring()
     }
 
@@ -326,6 +334,19 @@ final class LibraryWorkspaceModel: ObservableObject {
         return sources.contains { $0.state == .active }
     }
 
+    var rescanToolbarTitle: String {
+        if let selectedSourceID, isPhotosSource(selectedSourceID) {
+            return "立即同步"
+        }
+        if selectedSourceID == nil,
+           sources.count == 1,
+           sources.first?.kind == .photos
+        {
+            return "立即同步"
+        }
+        return "立即重扫"
+    }
+
     func workspaceCommands(
         matching query: String,
         layout: LibraryWorkspaceLayoutState = LibraryWorkspaceLayoutState()
@@ -375,7 +396,7 @@ final class LibraryWorkspaceModel: ObservableObject {
         commands.append(contentsOf: tags.map { tag in
             LibraryWorkspaceCommandItem(
                 command: .showTag(tag.id),
-                title: "前往标签：\(tag.displayName)",
+                title: "筛选标签：\(tag.displayName)",
                 systemImage: "tag",
                 isEnabled: true
             )
@@ -456,7 +477,14 @@ final class LibraryWorkspaceModel: ObservableObject {
         } catch {
             notice = .backgroundScanFailed
         }
-        await reload(runPendingJobs: true)
+        await reload(runPendingJobs: false)
+        for source in sources where source.kind == .photos && source.state == .active {
+            await ensurePhotosLibraryIndexed(sourceID: source.id)
+        }
+        if !isCatalogScanning {
+            startCatalogReconcileRunnerIfNeeded()
+        }
+        startPersonalizationRunnerIfNeeded()
     }
 
     func exportPortableUserData() async {
@@ -601,13 +629,19 @@ final class LibraryWorkspaceModel: ObservableObject {
     func connectPhotos() async {
         guard !isBusy else { return }
         notice = nil
-        phase = .scanning
         do {
-            _ = try await service.connectPhotos()
+            let outcome = try await service.connectPhotos()
             let service = service
             sources = try await Self.offMain { try service.fetchSources() }
-            await loadFirstPage()
-            startCatalogReconcileRunnerIfNeeded()
+            switch outcome {
+            case .connected:
+                phase = .scanning
+                await loadFirstPage()
+                startCatalogReconcileRunnerIfNeeded()
+            case .alreadyConnected:
+                phase = sources.isEmpty ? .empty : .content
+                notice = .photosAlreadyConnected
+            }
         } catch PhotosLibraryError.authorizationDenied, PhotosLibraryError.authorizationRestricted {
             let service = service
             if let refreshed = try? await Self.offMain({ try service.fetchSources() }) {
@@ -652,11 +686,12 @@ final class LibraryWorkspaceModel: ObservableObject {
         notice = nil
         do {
             if sources.first(where: { $0.id == sourceID })?.kind == .photos {
-                _ = try await service.connectPhotos()
+                try await service.reactivatePhotosLibrary(sourceID: sourceID)
                 let service = service
                 sources = try await Self.offMain { try service.fetchSources() }
                 await loadFirstPage()
                 startCatalogReconcileRunnerIfNeeded()
+                notice = .photosSyncQueued
                 return
             }
             switch try await service.reauthorizeFolder(sourceID: sourceID) {
@@ -692,7 +727,16 @@ final class LibraryWorkspaceModel: ObservableObject {
     func rescan() async {
         guard !isBusy, !sources.isEmpty else { return }
         if let selectedSourceID, isPhotosSource(selectedSourceID) {
-            await connectPhotos()
+            await syncPhotosLibrary(sourceID: selectedSourceID)
+            return
+        }
+        if selectedSourceID == nil,
+           sources.count == 1,
+           let photosSource = sources.first,
+           photosSource.kind == .photos,
+           photosSource.state == .active
+        {
+            await syncPhotosLibrary(sourceID: photosSource.id)
             return
         }
         let service = service
@@ -712,10 +756,194 @@ final class LibraryWorkspaceModel: ObservableObject {
         startCatalogReconcileRunnerIfNeeded()
     }
 
+    func syncPhotosLibrary(sourceID: UUID) async {
+        guard !isBusy else { return }
+        notice = nil
+        do {
+            try await enqueuePhotosLibrarySync(sourceID: sourceID)
+            notice = .photosSyncQueued
+        } catch {
+            notice = .sourceActionFailed
+        }
+    }
+
+    private func enqueuePhotosLibrarySync(sourceID: UUID) async throws {
+        let service = service
+        try await service.syncPhotosLibrary(sourceID: sourceID)
+        startCatalogReconcileRunnerIfNeeded()
+    }
+
+    private func ensurePhotosLibraryIndexed(sourceID: UUID) async {
+        let service = service
+        do {
+            let needsFullRepair = try await Self.offMain {
+                let libraryCount = try service.photosLibrarySupportedImageCount()
+                let catalogCount = try service.photosCatalogAssetCount(sourceID: sourceID)
+                guard libraryCount > 0 else { return false }
+                return catalogCount * 100 < libraryCount * 95
+            }
+            var enqueuedWork = false
+            if needsFullRepair {
+                try await service.requestPhotosFullRepair(sourceID: sourceID)
+                enqueuedWork = true
+            } else if !(isCatalogScanning && catalogReconcileProgress?.sourceKind == .photos) {
+                try await service.syncPhotosLibrary(sourceID: sourceID)
+                enqueuedWork = true
+            }
+            if enqueuedWork || !isCatalogScanning {
+                startCatalogReconcileRunnerIfNeeded()
+            }
+            startPhotosGridAutoRefresh(photosSourceID: sourceID)
+        } catch {
+            // Navigation-time sync stays silent; toolbar actions still surface errors.
+        }
+    }
+
+    private func startPhotosGridAutoRefresh(photosSourceID: UUID? = nil) {
+        photosGridAutoRefreshTask?.cancel()
+        photosGridAutoRefreshTask = Task { [weak self] in
+            guard let self else { return }
+            let service = self.service
+            let resolvedSourceID = photosSourceID
+                ?? self.selectedSourceID
+                ?? self.sources.first(where: { $0.kind == .photos && $0.state == .active })?.id
+            guard let resolvedSourceID else { return }
+
+            var lastCatalogCount = -1
+            var sawActiveScan = self.isCatalogScanning || self.catalogReconcileRunRequested
+            while !Task.isCancelled {
+                let scanning = self.isCatalogScanning || self.catalogReconcileRunRequested
+                sawActiveScan = sawActiveScan || scanning
+
+                let shouldTrackCatalog =
+                    self.selectedSourceIsPhotos
+                    || (self.selectedSourceID == nil && self.isPhotosSource(resolvedSourceID))
+                if shouldTrackCatalog,
+                   let catalogCount = try? await Self.offMain({
+                       try service.photosCatalogAssetCount(sourceID: resolvedSourceID)
+                   }),
+                   catalogCount != lastCatalogCount
+                {
+                    lastCatalogCount = catalogCount
+                    await self.loadFirstPage()
+                }
+
+                if sawActiveScan, !scanning {
+                    await self.loadFirstPage()
+                    break
+                }
+
+                if !scanning, !self.selectedSourceIsPhotos, self.selectedSourceID != nil {
+                    break
+                }
+
+                do {
+                    try await Task.sleep(for: self.catalogProgressRefreshInterval)
+                } catch {
+                    return
+                }
+            }
+        }
+    }
+
+    func requestPhotosFullRepair(sourceID: UUID) async {
+        guard !isBusy else { return }
+        notice = nil
+        let service = service
+        do {
+            try await service.requestPhotosFullRepair(sourceID: sourceID)
+            startCatalogReconcileRunnerIfNeeded()
+            notice = .photosFullRepairQueued
+        } catch {
+            notice = .sourceActionFailed
+        }
+    }
+
+    var hasActiveTagFilters: Bool {
+        !selectedTagFilterIDs.isEmpty || !excludedTagFilterIDs.isEmpty
+    }
+
+    func tagFilterSummaryText() -> String? {
+        Self.makeTagFilterSummaryText(
+            tags: tags,
+            includedTagIDs: selectedTagFilterIDs,
+            excludedTagIDs: excludedTagFilterIDs,
+            matchMode: tagMatchMode
+        )
+    }
+
+    static func makeTagFilterSummaryText(
+        tags: [TagListItem],
+        includedTagIDs: Set<UUID>,
+        excludedTagIDs: Set<UUID>,
+        matchMode: TagMatchMode
+    ) -> String? {
+        let tagNames = Dictionary(uniqueKeysWithValues: tags.map { ($0.id, $0.displayName) })
+        let includedNames = includedTagIDs.compactMap { tagNames[$0] }.sorted {
+            $0.localizedStandardCompare($1) == .orderedAscending
+        }
+        let excludedNames = excludedTagIDs.compactMap { tagNames[$0] }.sorted {
+            $0.localizedStandardCompare($1) == .orderedAscending
+        }
+        guard !includedNames.isEmpty || !excludedNames.isEmpty else { return nil }
+
+        var parts: [String] = []
+        if !includedNames.isEmpty {
+            let joiner = matchMode == .all ? " 且 " : " 或 "
+            parts.append(includedNames.joined(separator: joiner))
+        }
+        if !excludedNames.isEmpty {
+            parts.append("排除 " + excludedNames.joined(separator: "、"))
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    private func publishTagMutationNotice(
+        count: Int,
+        tagDisplayName: String,
+        action: LibraryTagMutationFeedbackKind
+    ) {
+        guard count > 0 else { return }
+        notice = .tagBatchMutationApplied(
+            count: count,
+            tagDisplayName: tagDisplayName,
+            action: action
+        )
+    }
+
+    private func tagDisplayName(for tagID: UUID) -> String {
+        tags.first(where: { $0.id == tagID })?.displayName ?? "标签"
+    }
+
+    private static func tagMutationFeedbackKind(
+        for action: LibraryTagDecisionAction
+    ) -> LibraryTagMutationFeedbackKind {
+        switch action {
+        case .accept: .accepted
+        case .reject: .rejected
+        case .clear: .cleared
+        }
+    }
+
     func selectSource(_ sourceID: UUID?) async {
         guard selectedSourceID != sourceID else { return }
         selectedSourceID = sourceID
+        if let sourceID,
+           isPhotosSource(sourceID),
+           sources.first(where: { $0.id == sourceID })?.state == .active
+        {
+            await ensurePhotosLibraryIndexed(sourceID: sourceID)
+        } else {
+            photosGridAutoRefreshTask?.cancel()
+        }
         await loadFirstPage()
+        if selectedSourceIsPhotos {
+            startPhotosGridAutoRefresh(photosSourceID: selectedSourceID)
+        } else if selectedSourceID == nil,
+                  sources.contains(where: { $0.kind == .photos && $0.state == .active })
+        {
+            startPhotosGridAutoRefresh()
+        }
     }
 
     func loadMoreIfNeeded(currentAssetID: UUID) async {
@@ -746,12 +974,25 @@ final class LibraryWorkspaceModel: ObservableObject {
     }
 
     func thumbnailData(assetID: UUID) async -> Data? {
+        if case let .loaded(data) = await loadThumbnailResult(assetID: assetID) {
+            return data
+        }
+        return nil
+    }
+
+    func loadThumbnailResult(assetID: UUID) async -> AssetThumbnailLoadResult {
         if case let .downloaded(downloadedAssetID, data) = cloudPreviewState,
            downloadedAssetID == assetID
         {
-            return data
+            return .loaded(data)
         }
-        return try? await service.loadThumbnail(assetID: assetID)
+        do {
+            return .loaded(try await service.loadThumbnail(assetID: assetID))
+        } catch PhotosLibraryError.cloudOnly {
+            return .cloudOnly
+        } catch {
+            return .unavailable
+        }
     }
 
     func previewData(assetID: UUID) async -> Data? {
@@ -1685,6 +1926,11 @@ final class LibraryWorkspaceModel: ObservableObject {
             }
             await refreshInspector()
             await refreshReviewState()
+            publishTagMutationNotice(
+                count: assetIDs.count,
+                tagDisplayName: tagDisplayName(for: tagID),
+                action: Self.tagMutationFeedbackKind(for: action)
+            )
             return true
         } catch {
             notice = tagNotice(for: error)
@@ -1693,35 +1939,7 @@ final class LibraryWorkspaceModel: ObservableObject {
     }
 
     func requestTagDecision(tagID: UUID, action: LibraryTagDecisionAction) async {
-        guard selectedAssetIDs.count > 1 else {
-            await applyTagDecision(tagID: tagID, action: action)
-            return
-        }
-        guard let displayName = tags.first(where: { $0.id == tagID })?.displayName else {
-            return
-        }
-        pendingTagDecisionConfirmation = LibraryTagDecisionConfirmation(
-            tagID: tagID,
-            tagDisplayName: displayName,
-            action: action,
-            assetIDs: selectedAssetIDs
-        )
-    }
-
-    func confirmPendingTagDecision(
-        _ capturedConfirmation: LibraryTagDecisionConfirmation? = nil
-    ) async {
-        guard let pending = capturedConfirmation ?? pendingTagDecisionConfirmation else { return }
-        pendingTagDecisionConfirmation = nil
-        await applyTagDecision(
-            tagID: pending.tagID,
-            action: pending.action,
-            assetIDs: Array(pending.assetIDs)
-        )
-    }
-
-    func cancelPendingTagDecision() {
-        pendingTagDecisionConfirmation = nil
+        await applyTagDecision(tagID: tagID, action: action)
     }
 
     func undoLastTagMutation() async {
@@ -1769,6 +1987,12 @@ final class LibraryWorkspaceModel: ObservableObject {
             if !selectionRefreshed {
                 restoreCommittedNewTagPresentation(result, assetIDs: assetIDs)
                 notice = .tagSelectionRefreshFailed
+            } else {
+                publishTagMutationNotice(
+                    count: assetIDs.count,
+                    tagDisplayName: result.displayName,
+                    action: .createdAndApplied
+                )
             }
         } catch {
             notice = tagNotice(for: error)
@@ -1779,29 +2003,7 @@ final class LibraryWorkspaceModel: ObservableObject {
         guard case let .success(name) = TagNameNormalizer.validateAndNormalize(rawName) else {
             return
         }
-        guard selectedAssetIDs.count > 1 else {
-            await createAndAcceptTag(named: name.displayName)
-            return
-        }
-        pendingNewTagConfirmation = LibraryNewTagConfirmation(
-            tagDisplayName: name.displayName,
-            assetIDs: selectedAssetIDs
-        )
-    }
-
-    func confirmPendingNewTag(
-        _ capturedConfirmation: LibraryNewTagConfirmation? = nil
-    ) async {
-        guard let pending = capturedConfirmation ?? pendingNewTagConfirmation else { return }
-        pendingNewTagConfirmation = nil
-        await createAndAcceptTag(
-            named: pending.tagDisplayName,
-            assetIDs: Array(pending.assetIDs)
-        )
-    }
-
-    func cancelPendingNewTag() {
-        pendingNewTagConfirmation = nil
+        await createAndAcceptTag(named: name.displayName)
     }
 
     func installPresetTags() async {
@@ -1854,6 +2056,7 @@ final class LibraryWorkspaceModel: ObservableObject {
             tags.removeAll { $0.id == tagID }
             selectedTagFilterDecisions.removeValue(forKey: tagID)
             selectedTagFilterIDs.remove(tagID)
+            excludedTagFilterIDs.remove(tagID)
             lastTagMutation = nil
             await enqueueAutomaticPersonalModelRebuildIfReady()
             await loadFirstPage()
@@ -1937,21 +2140,40 @@ final class LibraryWorkspaceModel: ObservableObject {
                 self.startCatalogReconcileRunnerIfNeeded()
             } else {
                 self.isCatalogScanning = false
+                await self.loadFirstPage()
             }
         }
     }
 
     private func monitorCatalogReconcileProgress() async {
         let service = service
-        var publishedFirstBatch = !items.isEmpty
+        var lastPublishedPhotosProgressCompleted = 0
+        var lastMonitoredSourceID = selectedSourceID
+        var hadPhotosProgress = false
         while !Task.isCancelled {
+            if lastMonitoredSourceID != selectedSourceID {
+                lastMonitoredSourceID = selectedSourceID
+                lastPublishedPhotosProgressCompleted = 0
+            }
             if let progress = try? await Self.offMain({
                 try service.fetchCatalogReconcileProgress()
             }) {
                 catalogReconcileProgress = progress
-                if !publishedFirstBatch, progress.completed > 0 {
+                if progress.sourceKind == .photos {
+                    hadPhotosProgress = true
+                    let shouldReloadForPhotosScan =
+                        (selectedSourceIsPhotos || selectedSourceID == nil)
+                        && progress.completed > lastPublishedPhotosProgressCompleted
+                    if shouldReloadForPhotosScan {
+                        await loadFirstPage()
+                        lastPublishedPhotosProgressCompleted = progress.completed
+                    }
+                }
+            } else if hadPhotosProgress {
+                hadPhotosProgress = false
+                catalogReconcileProgress = nil
+                if selectedSourceIsPhotos || selectedSourceID == nil {
                     await loadFirstPage()
-                    publishedFirstBatch = !items.isEmpty
                 }
             }
             do {
@@ -1975,6 +2197,7 @@ final class LibraryWorkspaceModel: ObservableObject {
             guard assetPageRequestID == requestID else { return }
             items = page.items
             nextCursor = page.nextCursor
+            assetGridRevision += 1
             let hadSelection = !selectedAssetIDs.isEmpty
             let visibleIDs = Set(page.items.map(\.assetID))
             selectedAssetIDs.formIntersection(visibleIDs)
@@ -2019,6 +2242,11 @@ final class LibraryWorkspaceModel: ObservableObject {
     }
 
     func toggleAcceptedTagFilter(_ tagID: UUID) async {
+        await toggleIncludedTagFilter(tagID)
+    }
+
+    func toggleIncludedTagFilter(_ tagID: UUID) async {
+        excludedTagFilterIDs.remove(tagID)
         if selectedTagFilterDecisions[tagID] == .accepted {
             selectedTagFilterDecisions.removeValue(forKey: tagID)
             selectedTagFilterIDs.remove(tagID)
@@ -2028,6 +2256,42 @@ final class LibraryWorkspaceModel: ObservableObject {
             tagPresence = .any
         }
         await loadFirstPage()
+    }
+
+    func filterToSingleIncludedTag(_ tagID: UUID) async {
+        selectedTagFilterDecisions = [tagID: .accepted]
+        selectedTagFilterIDs = [tagID]
+        excludedTagFilterIDs = []
+        tagPresence = .any
+        await loadFirstPage()
+    }
+
+    func clearTagFilters() async {
+        guard hasActiveTagFilters else { return }
+        selectedTagFilterDecisions = [:]
+        selectedTagFilterIDs = []
+        excludedTagFilterIDs = []
+        await loadFirstPage()
+    }
+
+    func toggleExcludedTagFilter(_ tagID: UUID) async {
+        selectedTagFilterDecisions.removeValue(forKey: tagID)
+        selectedTagFilterIDs.remove(tagID)
+        if excludedTagFilterIDs.contains(tagID) {
+            excludedTagFilterIDs.remove(tagID)
+        } else {
+            excludedTagFilterIDs.insert(tagID)
+            tagPresence = .any
+        }
+        await loadFirstPage()
+    }
+
+    func isTagFilterIncluded(_ tagID: UUID) -> Bool {
+        selectedTagFilterDecisions[tagID] == .accepted
+    }
+
+    func isTagFilterExcluded(_ tagID: UUID) -> Bool {
+        excludedTagFilterIDs.contains(tagID)
     }
 
     func setTagMatchMode(_ mode: TagMatchMode) async {
@@ -2040,6 +2304,7 @@ final class LibraryWorkspaceModel: ObservableObject {
         if presence != .any {
             selectedTagFilterDecisions = [:]
             selectedTagFilterIDs = []
+            excludedTagFilterIDs = []
         }
         await loadFirstPage()
     }
@@ -2113,11 +2378,7 @@ final class LibraryWorkspaceModel: ObservableObject {
     }
 
     func showAcceptedTag(_ tagID: UUID) async {
-        selectedTagFilterDecisions = [tagID: .accepted]
-        selectedTagFilterIDs = [tagID]
-        tagPresence = .any
-        tagMatchMode = .all
-        await loadFirstPage()
+        await filterToSingleIncludedTag(tagID)
     }
 
     func tagFilterDecision(for tagID: UUID) -> PersistableTagDecision? {
@@ -2134,6 +2395,7 @@ final class LibraryWorkspaceModel: ObservableObject {
                         TagDecisionFilter(tagID: tag.id, decision: $0)
                     }
                 },
+            excludedTagIDs: Array(excludedTagFilterIDs),
             tagMatchMode: tagMatchMode,
             availabilities: selectedAvailabilities,
             mediaTypes: selectedMediaTypes,
@@ -2159,6 +2421,7 @@ final class LibraryWorkspaceModel: ObservableObject {
 
     private func mutationAffectsCurrentFilter(tagID: UUID) -> Bool {
         selectedTagFilterIDs.contains(tagID) ||
+        excludedTagFilterIDs.contains(tagID) ||
         tagPresence != .any ||
         !TagNameNormalizer.trimUnicodeWhiteSpace(searchText).isEmpty
     }
@@ -2871,7 +3134,6 @@ private enum LibrarySidebarSelection: Hashable {
     case untagged
     case reviewSuggestions
     case source(UUID)
-    case tag(UUID)
 }
 
 private enum LibraryWorkspaceSheet: String, Identifiable {
@@ -2904,6 +3166,7 @@ struct LibraryWorkspaceView: View {
     @State private var newTagName = ""
     @State private var sourcePendingDisable: LibrarySourceSummary?
     @State private var photosSourcePendingRebind: LibrarySourceSummary?
+    @State private var photosSourcePendingFullRepair: LibrarySourceSummary?
     @State private var tagPendingRename: TagListItem?
     @State private var renamedTagName = ""
     @State private var tagPendingArchive: TagListItem?
@@ -2992,42 +3255,6 @@ struct LibraryWorkspaceView: View {
             if let pending = model.pendingSuggestionConfirmation {
                 Text(suggestionConfirmationMessage(pending))
             }
-        }
-        .confirmationDialog(
-            tagDecisionConfirmationTitle(model.pendingTagDecisionConfirmation),
-            isPresented: Binding(
-                get: { model.pendingTagDecisionConfirmation != nil },
-                set: { if !$0 { model.cancelPendingTagDecision() } }
-            ),
-            titleVisibility: .visible,
-            presenting: model.pendingTagDecisionConfirmation
-        ) { pending in
-            Button(tagDecisionConfirmationActionTitle(pending.action)) {
-                Task { await model.confirmPendingTagDecision(pending) }
-            }
-            Button("取消", role: .cancel) {
-                model.cancelPendingTagDecision()
-            }
-        } message: { pending in
-            Text("这会修改 \(pending.affectedCount) 张照片的人工标签决定；完成后仍可撤销一次。原照片不会被修改。")
-        }
-        .confirmationDialog(
-            newTagConfirmationTitle(model.pendingNewTagConfirmation),
-            isPresented: Binding(
-                get: { model.pendingNewTagConfirmation != nil },
-                set: { if !$0 { model.cancelPendingNewTag() } }
-            ),
-            titleVisibility: .visible,
-            presenting: model.pendingNewTagConfirmation
-        ) { pending in
-            Button("创建并应用") {
-                Task { await model.confirmPendingNewTag(pending) }
-            }
-            Button("取消", role: .cancel) {
-                model.cancelPendingNewTag()
-            }
-        } message: { pending in
-            Text("这会创建“\(pending.tagDisplayName)”并应用到 \(pending.affectedCount) 张照片；完成后仍可撤销一次。原照片不会被修改。")
         }
         .searchable(
             text: $searchText,
@@ -3196,7 +3423,7 @@ struct LibraryWorkspaceView: View {
                 Button {
                     Task { await model.rescan() }
                 } label: {
-                    Label("立即重扫", systemImage: "arrow.clockwise")
+                    Label(model.rescanToolbarTitle, systemImage: "arrow.clockwise")
                 }
                 .disabled(model.isBusy || !model.canRescan)
             }
@@ -3256,6 +3483,29 @@ struct LibraryWorkspaceView: View {
             Button("取消", role: .cancel) {}
         } message: {
             Text("ImageAll 会只读访问静态照片和元数据，在自身容器保存索引、标签和缓存；不会修改、移动或删除 Apple Photos 中的照片。iCloud 原图不会自动下载。")
+        }
+        .confirmationDialog(
+            photosSourcePendingFullRepair.map { "对“\($0.displayName)”执行完整修复扫描？" } ?? "完整修复扫描？",
+            isPresented: Binding(
+                get: { photosSourcePendingFullRepair != nil },
+                set: { if !$0 { photosSourcePendingFullRepair = nil } }
+            ),
+            titleVisibility: .visible,
+            presenting: photosSourcePendingFullRepair
+        ) { source in
+            Button("开始完整修复扫描") {
+                photosSourcePendingFullRepair = nil
+                selection = .source(source.id)
+                Task {
+                    await model.selectSource(source.id)
+                    await model.requestPhotosFullRepair(sourceID: source.id)
+                }
+            }
+            Button("取消", role: .cancel) {
+                photosSourcePendingFullRepair = nil
+            }
+        } message: { _ in
+            Text("这会重新扫描整个 Apple Photos 图库，并在后台修复先前可能误标为缺失的照片。扫描期间仍可浏览已有索引；大图库可能需要数分钟。")
         }
     }
 
@@ -3445,11 +3695,11 @@ struct LibraryWorkspaceView: View {
             presenting: tagPendingArchive
         ) { tag in
             Button("归档标签", role: .destructive) {
-                let shouldReturnToAllPhotos = selection == .tag(tag.id)
+                let hadTagFilters = model.isTagFilterIncluded(tag.id) || model.isTagFilterExcluded(tag.id)
                 tagPendingArchive = nil
                 Task {
-                    if await model.archiveTag(tag.id), shouldReturnToAllPhotos {
-                        selection = .all
+                    if await model.archiveTag(tag.id), hadTagFilters {
+                        await model.clearTagFilters()
                     }
                 }
             }
@@ -3485,10 +3735,6 @@ struct LibraryWorkspaceView: View {
                     await model.exitReviewMode()
                     await model.setTagPresence(.any)
                     await model.selectSource(sourceID)
-                case let .tag(tagID):
-                    await model.exitReviewMode()
-                    await model.selectSource(nil)
-                    await model.showAcceptedTag(tagID)
                 }
             }
         }
@@ -3611,7 +3857,7 @@ struct LibraryWorkspaceView: View {
         case let .showSource(sourceID):
             selection = .source(sourceID)
         case let .showTag(tagID):
-            selection = .tag(tagID)
+            Task { await model.filterToSingleIncludedTag(tagID) }
         case let .acceptTag(tagID):
             Task { await model.requestTagDecision(tagID: tagID, action: .accept) }
         case let .rejectTag(tagID):
@@ -3715,7 +3961,10 @@ struct LibraryWorkspaceView: View {
                 }
                 .buttonStyle(.plain)
                 .disabled(model.isBusy)
-                if !model.sources.contains(where: { $0.kind == .photos }) {
+                if model.sources.contains(where: { $0.kind == .photos && $0.state == .active }) {
+                    Label("已连接 Apple Photos", systemImage: "checkmark.circle")
+                        .foregroundStyle(.secondary)
+                } else if !model.sources.contains(where: { $0.kind == .photos }) {
                     Button {
                         showPhotosConnectionExplanation = true
                     } label: {
@@ -3728,7 +3977,6 @@ struct LibraryWorkspaceView: View {
             Section("标签") {
                 ForEach(model.tags, id: \.id) { tag in
                     tagRow(tag)
-                        .tag(LibrarySidebarSelection.tag(tag.id))
                 }
                 Button {
                     Task { await model.installPresetTags() }
@@ -3751,22 +3999,90 @@ struct LibraryWorkspaceView: View {
     }
 
     private func tagRow(_ tag: TagListItem) -> some View {
-        Label(tag.displayName, systemImage: "tag")
-            .contextMenu {
-                Button("在图库中查看") {
-                    selection = .tag(tag.id)
-                }
-                Button("重命名…") {
-                    renamedTagName = tag.displayName
-                    tagPendingRename = tag
-                }
+        let isIncluded = model.isTagFilterIncluded(tag.id)
+        let isExcluded = model.isTagFilterExcluded(tag.id)
+        let usesIntersection = isIncluded && model.tagMatchMode == .all
 
-                Divider()
-
-                Button("归档标签", role: .destructive) {
-                    tagPendingArchive = tag
+        return Button {
+            let flags = NSEvent.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            Task {
+                if flags.contains(.option) {
+                    await model.toggleExcludedTagFilter(tag.id)
+                } else {
+                    await model.toggleIncludedTagFilter(tag.id)
                 }
             }
+        } label: {
+            HStack(spacing: 8) {
+                Label {
+                    Text(tag.displayName)
+                } icon: {
+                    Image(systemName: isExcluded ? "tag.slash" : "tag")
+                }
+                Spacer(minLength: 0)
+                if isIncluded {
+                    if usesIntersection {
+                        Text("∩")
+                            .font(.caption.weight(.bold))
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Image(systemName: "checkmark")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                    }
+                } else if isExcluded {
+                    Image(systemName: "minus.circle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
+            }
+            .padding(.vertical, 3)
+            .padding(.horizontal, 6)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+            .background {
+                if isIncluded {
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(
+                            usesIntersection
+                                ? Color.orange.opacity(0.18)
+                                : Color.accentColor.opacity(0.18)
+                        )
+                } else if isExcluded {
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(Color.red.opacity(0.12))
+                }
+            }
+            .foregroundStyle(isExcluded ? Color.red : Color.primary)
+        }
+        .buttonStyle(.plain)
+        .help(
+            isExcluded
+                ? "⌥点击取消排除"
+                : isIncluded
+                    ? (usesIntersection
+                        ? "交集筛选；点击取消包含；⌥点击排除"
+                        : "并集筛选；点击取消包含；⌥点击排除")
+                    : "点击包含筛选；⌥点击排除"
+        )
+        .contextMenu {
+            Button("仅筛选此标签") {
+                Task { await model.filterToSingleIncludedTag(tag.id) }
+            }
+            Button("排除此标签") {
+                Task { await model.toggleExcludedTagFilter(tag.id) }
+            }
+            Button("重命名…") {
+                renamedTagName = tag.displayName
+                tagPendingRename = tag
+            }
+
+            Divider()
+
+            Button("归档标签", role: .destructive) {
+                tagPendingArchive = tag
+            }
+        }
     }
 
     private func sourceRow(_ source: LibrarySourceSummary) -> some View {
@@ -3796,10 +4112,21 @@ struct LibraryWorkspaceView: View {
                 selection = .source(source.id)
                 Task {
                     await model.selectSource(source.id)
-                    await model.rescan()
+                    if source.kind == .photos {
+                        await model.syncPhotosLibrary(sourceID: source.id)
+                    } else {
+                        await model.rescan()
+                    }
                 }
             }
             .disabled(model.isBusy || source.state != .active)
+
+            if source.kind == .photos && source.state == .active {
+                Button("完整修复扫描…") {
+                    photosSourcePendingFullRepair = source
+                }
+                .disabled(model.isBusy)
+            }
 
             if source.kind == .photos && source.state == .unavailable {
                 Button("连接当前系统图库…") {
@@ -3928,9 +4255,15 @@ struct LibraryWorkspaceView: View {
                                 Label("需要照片访问权限", systemImage: "lock.trianglebadge.exclamationmark")
                             } description: {
                                 Text("请允许 ImageAll 访问照片。Debug App 重新构建后，macOS 可能要求再次授权。")
-                            } actions: {
+                            }                             actions: {
                                 Button("重新检查并同步") {
-                                    Task { await model.connectPhotos() }
+                                    Task {
+                                        if let photosSource = model.sources.first(where: { $0.kind == .photos }) {
+                                            await model.reauthorizeSource(photosSource.id)
+                                        } else {
+                                            await model.connectPhotos()
+                                        }
+                                    }
                                 }
                                 Button("打开照片权限设置…") {
                                     openPhotosPrivacySettings()
@@ -3941,9 +4274,17 @@ struct LibraryWorkspaceView: View {
                                 Label("系统照片图库中没有可访问的照片", systemImage: "photo.on.rectangle")
                             } description: {
                                 Text("ImageAll 只能读取 Mac 的系统照片图库。如果 Photos 当前打开的是另一个图库，请先在 Photos > 设置 > 通用中确认系统照片图库。更改系统图库可能影响 iCloud Photos。")
-                            } actions: {
+                            }                             actions: {
                                 Button("立即同步") {
-                                    Task { await model.connectPhotos() }
+                                    Task {
+                                        if let photosSource = model.sources.first(where: {
+                                            $0.kind == .photos && $0.state == .active
+                                        }) {
+                                            await model.syncPhotosLibrary(sourceID: photosSource.id)
+                                        } else {
+                                            await model.connectPhotos()
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -3967,7 +4308,12 @@ struct LibraryWorkspaceView: View {
                     SinglePhotoView(item: item, model: model)
                         .onAppear { contentFocused = true }
                 } else {
-                    assetGrid
+                    VStack(spacing: 0) {
+                        if model.hasActiveTagFilters, let summary = model.tagFilterSummaryText() {
+                            tagFilterSummaryBar(summary)
+                        }
+                        assetGrid
+                    }
                 }
             }
         case let .failed(error):
@@ -3993,12 +4339,11 @@ struct LibraryWorkspaceView: View {
                         cellFrames: $gridCellFrames,
                         isMarqueeSelecting: $isMarqueeSelecting,
                         currentSelection: model.selectedAssetIDs,
-                        onSelectionChange: { assetIDs, additive, isFinal in
+                        onSelectionChange: { assetIDs, isFinal in
                             contentFocused = true
                             Task {
                                 await model.selectAssets(
                                     assetIDs,
-                                    additive: additive,
                                     shouldRefreshInspector: isFinal
                                 )
                             }
@@ -4046,6 +4391,7 @@ struct LibraryWorkspaceView: View {
                                     }
                             }
                         }
+                        .id(model.assetGridRevision)
                         .padding(LibraryGridLayout.horizontalPadding)
                     }
                 }
@@ -4257,7 +4603,7 @@ struct LibraryWorkspaceView: View {
                 }
             }
 
-            if model.selectedTagFilterIDs.count > 1 {
+            if model.selectedTagFilterIDs.count >= 1 {
                 Divider()
                 Button {
                     Task { await model.setTagMatchMode(.all) }
@@ -4268,6 +4614,13 @@ struct LibraryWorkspaceView: View {
                     Task { await model.setTagMatchMode(.any) }
                 } label: {
                     Label("任一标签（ANY）", systemImage: model.tagMatchMode == .any ? "checkmark" : "circle")
+                }
+            }
+
+            if model.hasActiveTagFilters {
+                Divider()
+                Button("清除标签筛选") {
+                    Task { await model.clearTagFilters() }
                 }
             }
 
@@ -4312,10 +4665,48 @@ struct LibraryWorkspaceView: View {
             }
         } label: {
             Label(
-                activeFilterCount == 0 ? "筛选" : "筛选 \(activeFilterCount)",
+                filterMenuTitle,
                 systemImage: activeFilterCount == 0 ? "line.3.horizontal.decrease.circle" : "line.3.horizontal.decrease.circle.fill"
             )
         }
+    }
+
+    private var filterMenuTitle: String {
+        if let summary = model.tagFilterSummaryText() {
+            return summary
+        }
+        return activeFilterCount == 0 ? "筛选" : "筛选 \(activeFilterCount)"
+    }
+
+    private func tagFilterSummaryBar(_ summary: String) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: "line.3.horizontal.decrease.circle")
+                .foregroundStyle(.secondary)
+            Text(summary)
+                .font(.callout)
+                .lineLimit(2)
+            Spacer(minLength: 8)
+            if model.selectedTagFilterIDs.count >= 1 {
+                Picker("标签关系", selection: Binding(
+                    get: { model.tagMatchMode },
+                    set: { newMode in Task { await model.setTagMatchMode(newMode) } }
+                )) {
+                    Text("或").tag(TagMatchMode.any)
+                    Text("且").tag(TagMatchMode.all)
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .frame(maxWidth: 120)
+            }
+            Button("清除筛选") {
+                Task { await model.clearTagFilters() }
+            }
+            .buttonStyle(.borderless)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(.bar)
+        .overlay(alignment: .bottom) { Divider() }
     }
 
     private var sortMenu: some View {
@@ -4389,6 +4780,7 @@ struct LibraryWorkspaceView: View {
 
     private var activeFilterCount: Int {
         model.selectedTagFilterIDs.count +
+        model.excludedTagFilterIDs.count +
         (model.tagPresence == .any ? 0 : 1) +
         model.selectedAvailabilities.count +
         Self.mediaFormatFilterOptions.filter {
@@ -4410,11 +4802,25 @@ struct LibraryWorkspaceView: View {
     private func noticeBar(_ notice: LibraryWorkspaceNotice) -> some View {
         HStack(spacing: 10) {
             Image(systemName: noticeIcon(notice))
-            Text(Self.noticeText(notice))
-                .font(.caption)
-            Spacer()
-            Button("关闭") { model.dismissNotice() }
-                .buttonStyle(.plain)
+            if case let .tagBatchMutationApplied(count, tagName, action) = notice {
+                Text(Self.tagBatchMutationNoticeText(count: count, tagName: tagName, action: action))
+                    .font(.caption)
+                Spacer()
+                if model.canUndoTagMutation {
+                    Button("撤销") {
+                        Task { await model.undoLastTagMutation() }
+                    }
+                    .buttonStyle(.plain)
+                }
+                Button("关闭") { model.dismissNotice() }
+                    .buttonStyle(.plain)
+            } else {
+                Text(Self.noticeText(notice))
+                    .font(.caption)
+                Spacer()
+                Button("关闭") { model.dismissNotice() }
+                    .buttonStyle(.plain)
+            }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 7)
@@ -4428,7 +4834,9 @@ struct LibraryWorkspaceView: View {
             "line.3.horizontal.decrease.circle"
         case .presetTagsInstalled, .presetTagsAlreadyAvailable,
              .portableExportCompleted, .previewCacheCleared,
-             .personalModelRebuildCompleted, .selectedAssetEmbeddingCached:
+             .personalModelRebuildCompleted, .selectedAssetEmbeddingCached,
+             .tagBatchMutationApplied, .photosAlreadyConnected,
+             .photosSyncQueued, .photosFullRepairQueued:
             "checkmark.circle"
         default:
             "exclamationmark.triangle"
@@ -4453,6 +4861,14 @@ struct LibraryWorkspaceView: View {
             "还需确认 \(positive) 张、标记不属于 \(negative) 张。"
         case let .reviewMutationApplied(count, tagName):
             "已处理 \(count) 条“\(tagName)”建议"
+        case let .tagBatchMutationApplied(count, tagName, action):
+            tagBatchMutationNoticeText(count: count, tagName: tagName, action: action)
+        case .photosAlreadyConnected:
+            "Apple Photos 已连接。"
+        case .photosSyncQueued:
+            "已开始增量同步 Apple Photos。"
+        case .photosFullRepairQueued:
+            "完整修复扫描已在后台开始；扫描期间仍可浏览已有索引。"
         case let .portableExportCompleted(bundleName, recordCount):
             "已导出 \(recordCount) 条记录到“\(bundleName)”。"
         case .portableExportDestinationOverlapsSource:
@@ -4558,31 +4974,18 @@ struct LibraryWorkspaceView: View {
         }
     }
 
-    private func tagDecisionConfirmationTitle(
-        _ pending: LibraryTagDecisionConfirmation?
+    static func tagBatchMutationNoticeText(
+        count: Int,
+        tagName: String,
+        action: LibraryTagMutationFeedbackKind
     ) -> String {
-        guard let pending else { return "确认批量标签操作？" }
-        return switch pending.action {
-        case .accept:
-            "为 \(pending.affectedCount) 张照片确认“\(pending.tagDisplayName)”？"
-        case .reject:
-            "为 \(pending.affectedCount) 张照片拒绝“\(pending.tagDisplayName)”？"
-        case .clear:
-            "清除 \(pending.affectedCount) 张照片的“\(pending.tagDisplayName)”决定？"
+        let verb: String = switch action {
+        case .accepted: "确认"
+        case .rejected: "拒绝"
+        case .cleared: "清除"
+        case .createdAndApplied: "创建并应用"
         }
-    }
-
-    private func tagDecisionConfirmationActionTitle(_ action: LibraryTagDecisionAction) -> String {
-        switch action {
-        case .accept: "确认并应用"
-        case .reject: "拒绝并应用"
-        case .clear: "清除决定"
-        }
-    }
-
-    private func newTagConfirmationTitle(_ pending: LibraryNewTagConfirmation?) -> String {
-        guard let pending else { return "确认批量新建标签？" }
-        return "为 \(pending.affectedCount) 张照片新建“\(pending.tagDisplayName)”？"
+        return "已为 \(count) 张照片\(verb)“\(tagName)”"
     }
 
     private func suggestionConfirmationMessage(_ pending: SuggestionEnqueueConfirmation) -> String {
@@ -4680,7 +5083,7 @@ private struct SinglePhotoView: View {
                         .scaledToFit()
                         .padding(24)
                 } else {
-                    Image(systemName: model.isPhotosSource(item.sourceID) ? "icloud.and.arrow.down" : placeholderIcon)
+                    Image(systemName: emptySymbol)
                         .font(.system(size: 48))
                         .foregroundStyle(.secondary)
                 }
@@ -4698,6 +5101,19 @@ private struct SinglePhotoView: View {
             }
             image = NSImage(data: data)
         }
+    }
+
+    private var emptySymbol: String {
+        if case let .available(assetID) = model.cloudPreviewState, assetID == item.assetID {
+            return "icloud.and.arrow.down"
+        }
+        if case let .downloading(assetID, _) = model.cloudPreviewState, assetID == item.assetID {
+            return "icloud.and.arrow.down"
+        }
+        if case let .failed(assetID) = model.cloudPreviewState, assetID == item.assetID {
+            return "exclamationmark.icloud"
+        }
+        return placeholderIcon
     }
 
     private var placeholderIcon: String {
@@ -4762,6 +5178,7 @@ private struct AssetThumbnailView: View {
     let onSelect: () -> Void
     let onOpen: () -> Void
     @State private var image: NSImage?
+    @State private var isCloudOnly = false
 
     var body: some View {
         GeometryReader { proxy in
@@ -4773,7 +5190,7 @@ private struct AssetThumbnailView: View {
                         .scaledToFill()
                         .frame(width: proxy.size.width, height: proxy.size.height)
                 } else {
-                    Image(systemName: model.isPhotosSource(item.sourceID) ? "icloud.and.arrow.down" : placeholderIcon)
+                    Image(systemName: emptyThumbnailSymbol)
                         .font(.title)
                         .foregroundStyle(.secondary)
                 }
@@ -4816,12 +5233,17 @@ private struct AssetThumbnailView: View {
             onOpen()
         }
         .task(id: thumbnailLoadID) {
-            guard item.availability == .available,
-                  let data = await model.thumbnailData(assetID: item.assetID)
-            else {
-                return
+            image = nil
+            isCloudOnly = false
+            guard item.availability == .available else { return }
+            switch await model.loadThumbnailResult(assetID: item.assetID) {
+            case let .loaded(data):
+                image = NSImage(data: data)
+            case .cloudOnly:
+                isCloudOnly = true
+            case .unavailable:
+                break
             }
-            image = NSImage(data: data)
         }
     }
 
@@ -4836,6 +5258,13 @@ private struct AssetThumbnailView: View {
             assetID: item.assetID,
             usesDownloadedCloudPreview: usesDownloadedCloudPreview
         )
+    }
+
+    private var emptyThumbnailSymbol: String {
+        if isCloudOnly {
+            return "icloud.and.arrow.down"
+        }
+        return placeholderIcon
     }
 
     private var placeholderIcon: String {

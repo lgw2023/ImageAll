@@ -25,6 +25,7 @@ struct TagDecisionFilter: Sendable, Equatable {
 struct AssetPageFilter: Sendable, Equatable {
     var sourceIDs: [UUID] = []
     var tagDecisionFilters: [TagDecisionFilter] = []
+    var excludedTagIDs: [UUID] = []
     var tagMatchMode: TagMatchMode = .all
     var availabilities: [AssetAvailability] = []
     var mediaTypes: [String] = []
@@ -34,6 +35,7 @@ struct AssetPageFilter: Sendable, Equatable {
     init(
         sourceIDs: [UUID] = [],
         tagDecisionFilters: [TagDecisionFilter] = [],
+        excludedTagIDs: [UUID] = [],
         tagMatchMode: TagMatchMode = .all,
         availabilities: [AssetAvailability] = [],
         mediaTypes: [String] = [],
@@ -42,6 +44,7 @@ struct AssetPageFilter: Sendable, Equatable {
     ) {
         self.sourceIDs = sourceIDs
         self.tagDecisionFilters = tagDecisionFilters
+        self.excludedTagIDs = excludedTagIDs
         self.tagMatchMode = tagMatchMode
         self.availabilities = availabilities
         self.mediaTypes = mediaTypes

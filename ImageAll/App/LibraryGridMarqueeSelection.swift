@@ -36,16 +36,28 @@ extension View {
     }
 }
 
-struct LibraryGridMarqueeSelectionOverlay: View {
-    let cellFrames: [UUID: CGRect]
+enum LibraryGridMarqueeSelectionLogic {
+    static func resolvedSelection(
+        baseSelection: Set<UUID>,
+        hitIDs: Set<UUID>,
+        additive: Bool
+    ) -> Set<UUID> {
+        additive ? baseSelection.union(hitIDs) : hitIDs
+    }
+}
+
+struct LibraryGridMarqueeContainer<Content: View>: View {
+    @Binding var cellFrames: [UUID: CGRect]
+    @Binding var isMarqueeSelecting: Bool
     let currentSelection: Set<UUID>
-    @Binding var isActive: Bool
-    let onSelectionChange: (_ assetIDs: Set<UUID>, _ additive: Bool, _ isFinal: Bool) -> Void
+    let onSelectionChange: (_ assetIDs: Set<UUID>, _ isFinal: Bool) -> Void
+    @ViewBuilder var content: () -> Content
 
     @State private var dragStart: CGPoint?
     @State private var dragCurrent: CGPoint?
     @State private var marqueeStarted = false
     @State private var baseSelection: Set<UUID> = []
+    @State private var additiveAtDragStart = false
 
     private var selectionRect: CGRect? {
         guard let dragStart, let dragCurrent else { return nil }
@@ -58,12 +70,12 @@ struct LibraryGridMarqueeSelectionOverlay: View {
     }
 
     var body: some View {
-        GeometryReader { _ in
-            ZStack(alignment: .topLeading) {
-                Color.clear
-                    .contentShape(Rectangle())
-                    .gesture(marqueeDragGesture)
-
+        content()
+            .coordinateSpace(name: LibraryGridCoordinateSpace.name)
+            .onPreferenceChange(LibraryGridCellFramesPreferenceKey.self) { frames in
+                cellFrames = frames
+            }
+            .overlay(alignment: .topLeading) {
                 if marqueeStarted, let selectionRect {
                     Rectangle()
                         .fill(Color.accentColor.opacity(0.12))
@@ -76,7 +88,7 @@ struct LibraryGridMarqueeSelectionOverlay: View {
                         .allowsHitTesting(false)
                 }
             }
-        }
+            .simultaneousGesture(marqueeDragGesture)
     }
 
     private var marqueeDragGesture: some Gesture {
@@ -87,9 +99,12 @@ struct LibraryGridMarqueeSelectionOverlay: View {
                         return
                     }
                     marqueeStarted = true
-                    isActive = true
+                    isMarqueeSelecting = true
                     dragStart = value.startLocation
                     baseSelection = currentSelection
+                    additiveAtDragStart = NSEvent.modifierFlags
+                        .intersection(.deviceIndependentFlagsMask)
+                        .contains(.command)
                 }
                 dragCurrent = value.location
                 applySelection(isFinal: false)
@@ -105,42 +120,20 @@ struct LibraryGridMarqueeSelectionOverlay: View {
     private func applySelection(isFinal: Bool) {
         guard let selectionRect else { return }
         let hitIDs = assetIDsIntersecting(selectionRect, cellFrames: cellFrames)
-        let additive = NSEvent.modifierFlags
-            .intersection(.deviceIndependentFlagsMask)
-            .contains(.command)
-        let nextSelection = additive ? baseSelection.union(hitIDs) : hitIDs
-        onSelectionChange(nextSelection, additive, isFinal)
+        let nextSelection = LibraryGridMarqueeSelectionLogic.resolvedSelection(
+            baseSelection: baseSelection,
+            hitIDs: hitIDs,
+            additive: additiveAtDragStart
+        )
+        onSelectionChange(nextSelection, isFinal)
     }
 
     private func resetMarqueeState() {
         dragStart = nil
         dragCurrent = nil
         marqueeStarted = false
-        isActive = false
-    }
-}
-
-struct LibraryGridMarqueeContainer<Content: View>: View {
-    @Binding var cellFrames: [UUID: CGRect]
-    @Binding var isMarqueeSelecting: Bool
-    let currentSelection: Set<UUID>
-    let onSelectionChange: (_ assetIDs: Set<UUID>, _ additive: Bool, _ isFinal: Bool) -> Void
-    @ViewBuilder var content: () -> Content
-
-    var body: some View {
-        content()
-            .coordinateSpace(name: LibraryGridCoordinateSpace.name)
-            .onPreferenceChange(LibraryGridCellFramesPreferenceKey.self) { frames in
-                cellFrames = frames
-            }
-            .background {
-                LibraryGridMarqueeSelectionOverlay(
-                    cellFrames: cellFrames,
-                    currentSelection: currentSelection,
-                    isActive: $isMarqueeSelecting,
-                    onSelectionChange: onSelectionChange
-                )
-            }
+        isMarqueeSelecting = false
+        additiveAtDragStart = false
     }
 }
 

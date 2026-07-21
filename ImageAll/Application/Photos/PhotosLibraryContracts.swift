@@ -54,6 +54,7 @@ enum PhotosLibraryError: Error, Equatable, Sendable {
 protocol PhotosLibraryAccessPort: Sendable {
     func authorizationState() -> PhotosAuthorizationState
     func requestAuthorization() async -> PhotosAuthorizationState
+    func supportedStaticImageCount() throws -> Int
     func enumerateStaticImages(
         startingAt startOffset: Int,
         batchSize: Int,

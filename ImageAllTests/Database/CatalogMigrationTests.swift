@@ -38,6 +38,94 @@ final class CatalogMigrationTests: XCTestCase {
         XCTAssertEqual(count, 1)
     }
 
+    func testV012RepairsMissingStandardTagBindingAndRestoresTagCreate() throws {
+        let url = try makeTempDatabaseURL()
+        let sourceID = UUID()
+        let assetID = UUID()
+        let seeded = try CatalogDatabase.open(at: url)
+        let repository = CatalogRepository(database: seeded)
+        try DatabaseTestSupport.makeFolderSourceWithFileAsset(
+            repository: repository,
+            sourceID: sourceID,
+            assetID: assetID
+        )
+        try seeded.pool.write { db in
+            try db.execute(sql: "PRAGMA foreign_keys = OFF")
+            try db.execute(sql: "DROP TABLE standard_tag_binding")
+            try db.execute(
+                sql: "DELETE FROM grdb_migrations WHERE identifier = ?",
+                arguments: [CatalogMigrationID.v012RepairStandardTagBinding]
+            )
+            try db.execute(sql: "PRAGMA foreign_keys = ON")
+            XCTAssertFalse(try db.tableExists("standard_tag_binding"))
+        }
+        try seeded.pool.close()
+
+        let repaired = try CatalogDatabase.open(at: url)
+        XCTAssertEqual(try repaired.appliedMigrationIDs(), CatalogMigrationID.knownOrdered)
+        try repaired.pool.read { db in
+            XCTAssertTrue(try db.tableExists("standard_tag_binding"))
+        }
+
+        let tags = GRDBTagCatalogRepository(database: repaired)
+        let listedBefore = try tags.listTags(includeArchived: false)
+        XCTAssertTrue(listedBefore.isEmpty)
+
+        let created = try tags.createTagAndApply(
+            rawName: "老婆",
+            assetIDs: [assetID],
+            decision: .accepted,
+            timestampMs: DatabaseTestSupport.timestampMs
+        )
+        XCTAssertEqual(created.displayName, "老婆")
+        let listedAfter = try tags.listTags(includeArchived: false)
+        XCTAssertEqual(listedAfter.map(\.displayName), ["老婆"])
+        let detail = try GRDBAssetCatalogQueryRepository(database: repaired)
+            .fetchInspectorDetail(assetID: assetID)
+        XCTAssertEqual(
+            detail.tags.first(where: { $0.tagID == created.tagID })?.decision,
+            .accepted
+        )
+    }
+
+    func testV013ClearsPhotosSyncCursorForOneTimeMissingAssetRepair() throws {
+        let url = try makeTempDatabaseURL()
+        let sourceID = UUID()
+        let seeded = try CatalogDatabase.open(at: url)
+        try seeded.pool.write { db in
+            try db.execute(
+                sql: """
+                INSERT INTO source (
+                    id, kind, display_name, bookmark, sync_cursor, state,
+                    created_at_ms, updated_at_ms
+                ) VALUES (?, 'photos', 'Apple Photos', NULL, ?, 'active', ?, ?)
+                """,
+                arguments: [
+                    sourceID.uuidString.lowercased(),
+                    Data("photos-token".utf8),
+                    DatabaseTestSupport.timestampMs,
+                    DatabaseTestSupport.timestampMs,
+                ]
+            )
+            try db.execute(
+                sql: "DELETE FROM grdb_migrations WHERE identifier = ?",
+                arguments: [CatalogMigrationID.v013PhotosMissingAssetRepair]
+            )
+        }
+        try seeded.pool.close()
+
+        let migrated = try CatalogDatabase.open(at: url)
+        XCTAssertEqual(try migrated.appliedMigrationIDs(), CatalogMigrationID.knownOrdered)
+        let cursor = try migrated.pool.read { db in
+            try Data.fetchOne(
+                db,
+                sql: "SELECT sync_cursor FROM source WHERE id = ?",
+                arguments: [sourceID.uuidString.lowercased()]
+            )
+        }
+        XCTAssertNil(cursor)
+    }
+
     func testCurrentCatalogScopeIdentityIsCanonicalAndStableAcrossReopen() throws {
         let url = try makeTempDatabaseURL()
 

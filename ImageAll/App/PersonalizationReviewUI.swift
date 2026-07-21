@@ -385,12 +385,11 @@ struct ReviewQueueContentView: View {
                         cellFrames: $gridCellFrames,
                         isMarqueeSelecting: $isMarqueeSelecting,
                         currentSelection: model.selectedAssetIDs,
-                        onSelectionChange: { assetIDs, additive, isFinal in
+                        onSelectionChange: { assetIDs, isFinal in
                             contentFocused = true
                             Task {
                                 await model.selectAssets(
                                     assetIDs,
-                                    additive: additive,
                                     shouldRefreshInspector: isFinal
                                 )
                             }
@@ -553,6 +552,7 @@ private struct ReviewThumbnailView: View {
     let onSelect: () -> Void
     let onOpen: () -> Void
     @State private var image: NSImage?
+    @State private var isCloudOnly = false
 
     var body: some View {
         GeometryReader { proxy in
@@ -564,7 +564,7 @@ private struct ReviewThumbnailView: View {
                         .scaledToFill()
                         .frame(width: proxy.size.width, height: proxy.size.height)
                 } else {
-                    Image(systemName: "photo")
+                    Image(systemName: emptyThumbnailSymbol)
                         .font(.title)
                         .foregroundStyle(.secondary)
                 }
@@ -610,11 +610,25 @@ private struct ReviewThumbnailView: View {
             onOpen()
         }
         .task(id: item.assetID) {
-            guard item.availability == .available,
-                  let data = await model.thumbnailData(assetID: item.assetID)
-            else { return }
-            image = NSImage(data: data)
+            image = nil
+            isCloudOnly = false
+            guard item.availability == .available else { return }
+            switch await model.loadThumbnailResult(assetID: item.assetID) {
+            case let .loaded(data):
+                image = NSImage(data: data)
+            case .cloudOnly:
+                isCloudOnly = true
+            case .unavailable:
+                break
+            }
         }
+    }
+
+    private var emptyThumbnailSymbol: String {
+        if isCloudOnly {
+            return "icloud.and.arrow.down"
+        }
+        return "photo"
     }
 }
 

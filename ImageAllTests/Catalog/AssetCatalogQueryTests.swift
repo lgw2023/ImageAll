@@ -136,6 +136,36 @@ final class AssetCatalogQueryTests: XCTestCase {
         XCTAssertFalse(anyIDs.contains(fixture.ids.assetOldest))
     }
 
+    func testExcludedTagFilters() throws {
+        let fixture = try CatalogQueryTestSupport.openQueryDatabase()
+
+        let excludeFamilyPage = try fixture.query.fetchAssetPage(
+            AssetPageRequest(
+                filter: AssetPageFilter(excludedTagIDs: [fixture.ids.tagFamily]),
+                sort: .newest,
+                cursor: nil,
+                limit: 50
+            )
+        )
+        let excludeFamilyIDs = Set(excludeFamilyPage.items.map(\.assetID))
+        XCTAssertFalse(excludeFamilyIDs.contains(fixture.ids.assetNewest))
+        XCTAssertFalse(excludeFamilyIDs.contains(fixture.ids.assetMiddle))
+        XCTAssertTrue(excludeFamilyIDs.contains(fixture.ids.assetOldest))
+
+        let taggedExcludeFamilyPage = try fixture.query.fetchAssetPage(
+            AssetPageRequest(
+                filter: AssetPageFilter(
+                    excludedTagIDs: [fixture.ids.tagFamily],
+                    tagPresence: .tagged
+                ),
+                sort: .newest,
+                cursor: nil,
+                limit: 50
+            )
+        )
+        XCTAssertTrue(taggedExcludeFamilyPage.items.isEmpty)
+    }
+
     func testTaggedAndUntaggedPresenceFilters() throws {
         let fixture = try CatalogQueryTestSupport.openQueryDatabase()
         let tagged = try fixture.query.fetchAssetPage(

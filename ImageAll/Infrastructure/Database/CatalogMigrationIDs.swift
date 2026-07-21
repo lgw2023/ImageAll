@@ -12,6 +12,8 @@ enum CatalogMigrationID {
     static let v009AddStandardOntology = "v009_add_standard_ontology"
     static let v010AddStandardPredictions = "v010_add_standard_predictions"
     static let v011AddStandardPredictionProvenance = "v011_add_standard_prediction_provenance"
+    static let v012RepairStandardTagBinding = "v012_repair_standard_tag_binding"
+    static let v013PhotosMissingAssetRepair = "v013_photos_missing_asset_repair"
 
     static let knownOrdered: [String] = [
         v001CreateCatalogCore,
@@ -25,5 +27,7 @@ enum CatalogMigrationID {
         v009AddStandardOntology,
         v010AddStandardPredictions,
         v011AddStandardPredictionProvenance,
+        v012RepairStandardTagBinding,
+        v013PhotosMissingAssetRepair,
     ]
 }

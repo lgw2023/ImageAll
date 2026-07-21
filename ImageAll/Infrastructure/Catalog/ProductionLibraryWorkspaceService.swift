@@ -91,6 +91,26 @@ struct ProductionLibraryWorkspaceService: LibraryWorkspacePort, Sendable {
         try await photosConnection.connect()
     }
 
+    func syncPhotosLibrary(sourceID: UUID) async throws {
+        try photosConnection.syncNow(sourceID: sourceID)
+    }
+
+    func requestPhotosFullRepair(sourceID: UUID) async throws {
+        try photosConnection.requestFullRepair(sourceID: sourceID)
+    }
+
+    func photosLibrarySupportedImageCount() throws -> Int {
+        try photosConnection.supportedStaticImageCount()
+    }
+
+    func photosCatalogAssetCount(sourceID: UUID) throws -> Int {
+        try query.fetchPhotosCatalogAssetCount(sourceID: sourceID)
+    }
+
+    func reactivatePhotosLibrary(sourceID: UUID) async throws {
+        try photosConnection.reactivate(sourceID: sourceID)
+    }
+
     func rebindPhotos(unavailableSourceID: UUID) async throws -> RebindPhotosOutcome {
         try await photosConnection.rebind(unavailableSourceID: unavailableSourceID)
     }

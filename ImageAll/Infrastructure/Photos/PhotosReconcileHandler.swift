@@ -108,7 +108,10 @@ struct PhotosReconcileHandler: LeaseBoundJobHandler, Sendable {
             sourceID = decodedPayload.sourceID
             if checkpoint == nil {
                 let sourceState = try persistedSourceSyncState(sourceID: decodedPayload.sourceID)
-                if let changeHistory, let changeToken = sourceState.changeToken {
+                if let changeHistory,
+                   let changeToken = sourceState.changeToken,
+                   try hasCompletedFullPhotosEnumeration(sourceID: decodedPayload.sourceID)
+                {
                     do {
                         return try executeIncrementalChanges(
                             lease: lease,
@@ -356,6 +359,27 @@ struct PhotosReconcileHandler: LeaseBoundJobHandler, Sendable {
                 throw PhotosReconcileError.sourceUnavailable
             }
             return (row["sync_cursor"], row["dirty_epoch"])
+        }
+    }
+
+    private func hasCompletedFullPhotosEnumeration(sourceID: UUID) throws -> Bool {
+        try database.pool.read { db in
+            try Bool.fetchOne(
+                db,
+                sql: """
+                SELECT EXISTS(
+                    SELECT 1 FROM job
+                    WHERE source_id = ?
+                        AND kind = ?
+                        AND state = 'completed'
+                        AND checkpoint IS NOT NULL
+                )
+                """,
+                arguments: [
+                    sourceID.uuidString.lowercased(),
+                    PhotosReconcileJobFactory.kind,
+                ]
+            ) ?? false
         }
     }
 

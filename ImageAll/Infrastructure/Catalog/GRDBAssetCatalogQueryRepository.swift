@@ -202,6 +202,25 @@ struct GRDBAssetCatalogQueryRepository: AssetCatalogQueryPort, Sendable {
         }
     }
 
+    func fetchPhotosCatalogAssetCount(sourceID: UUID) throws -> Int {
+        try CatalogQueryErrorMapping.perform {
+            try database.pool.read { db in
+                try Int.fetchOne(
+                    db,
+                    sql: """
+                    SELECT COUNT(*)
+                    FROM asset
+                    WHERE source_id = ?
+                        AND locator_kind = 'photos'
+                        AND locator_state = 'current'
+                        AND availability = 'available'
+                    """,
+                    arguments: [CatalogQuerySQLHelpers.lowercaseUUID(sourceID)]
+                ) ?? 0
+            }
+        }
+    }
+
     private func makePageResult(rows: [Row], sort: AssetPageSort, limit: Int) throws -> AssetPageResult {
         let items: [AssetGridItemProjection] = rows.map { row in
             AssetGridItemProjection(
@@ -479,6 +498,20 @@ struct GRDBAssetCatalogQueryRepository: AssetCatalogQueryPort, Sendable {
                     """
                 )
             }
+        }
+
+        for excludedTagID in filter.excludedTagIDs {
+            clauses.append(
+                """
+                NOT EXISTS (
+                    SELECT 1 FROM asset_tag_decision d
+                    WHERE d.asset_id = asset.id
+                        AND d.tag_id = ?
+                        AND d.decision = 'accepted'
+                )
+                """
+            )
+            arguments += [CatalogQuerySQLHelpers.lowercaseUUID(excludedTagID)]
         }
 
         if let searchText = CatalogQuerySQLHelpers.normalizedSearchText(filter.searchText) {

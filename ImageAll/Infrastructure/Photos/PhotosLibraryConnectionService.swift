@@ -259,7 +259,11 @@ struct PhotosLibraryConnectionService: Sendable {
                     sourceID = existingID
                     outcome = .alreadyConnected(sourceID: existingID)
                     try db.execute(
-                        sql: "UPDATE source SET state = 'active', updated_at_ms = ? WHERE id = ?",
+                        sql: """
+                        UPDATE source
+                        SET state = 'active', updated_at_ms = ?
+                        WHERE id = ?
+                        """,
                         arguments: [clock.nowMs, existingIDString]
                     )
                 } else {
@@ -357,6 +361,63 @@ struct PhotosLibraryConnectionService: Sendable {
         }
     }
 
+    func syncNow(sourceID: UUID) throws {
+        try database.pool.write { db in
+            try assertActivePhotosSource(sourceID: sourceID, db: db)
+            try db.execute(
+                sql: "UPDATE source SET updated_at_ms = ? WHERE id = ?",
+                arguments: [clock.nowMs, sourceID.uuidString.lowercased()]
+            )
+            try enqueueIfNeeded(sourceID: sourceID, db: db)
+        }
+    }
+
+    func supportedStaticImageCount() throws -> Int {
+        try access.supportedStaticImageCount()
+    }
+
+    func requestFullRepair(sourceID: UUID) throws {
+        try database.pool.write { db in
+            try assertActivePhotosSource(sourceID: sourceID, db: db)
+            try db.execute(
+                sql: """
+                UPDATE source
+                SET sync_cursor = NULL, updated_at_ms = ?
+                WHERE id = ?
+                """,
+                arguments: [clock.nowMs, sourceID.uuidString.lowercased()]
+            )
+            try enqueueIfNeeded(sourceID: sourceID, db: db)
+        }
+    }
+
+    func reactivate(sourceID: UUID) throws {
+        try database.pool.write { db in
+            let sourceIDString = sourceID.uuidString.lowercased()
+            let isPhotosSource = try Bool.fetchOne(
+                db,
+                sql: """
+                SELECT EXISTS(
+                    SELECT 1 FROM source
+                    WHERE id = ? AND kind = 'photos'
+                        AND state IN ('active', 'authorizationRequired', 'disabled')
+                )
+                """,
+                arguments: [sourceIDString]
+            ) ?? false
+            guard isPhotosSource else { throw PhotosLibraryError.libraryUnavailable }
+            try db.execute(
+                sql: """
+                UPDATE source
+                SET state = 'active', updated_at_ms = ?
+                WHERE id = ?
+                """,
+                arguments: [clock.nowMs, sourceIDString]
+            )
+            try enqueueIfNeeded(sourceID: sourceID, db: db)
+        }
+    }
+
     func enqueueReconcile(sourceID: UUID) throws {
         try database.pool.write { db in
             let isActivePhotosSource = try Bool.fetchOne(
@@ -427,6 +488,19 @@ struct PhotosLibraryConnectionService: Sendable {
     private func enqueueIfNeeded(sourceID: UUID, db: Database) throws {
         try PhotosReconcileJobEnqueuer(clock: clock, idGenerator: idGenerator)
             .enqueueIfNeeded(sourceID: sourceID, db: db)
+    }
+
+    private func assertActivePhotosSource(sourceID: UUID, db: Database) throws {
+        let isActivePhotosSource = try Bool.fetchOne(
+            db,
+            sql: """
+            SELECT EXISTS(
+                SELECT 1 FROM source WHERE id = ? AND kind = 'photos' AND state = 'active'
+            )
+            """,
+            arguments: [sourceID.uuidString.lowercased()]
+        ) ?? false
+        guard isActivePhotosSource else { throw PhotosLibraryError.libraryUnavailable }
     }
 
     private func markExistingSourceAuthorizationRequired() throws {

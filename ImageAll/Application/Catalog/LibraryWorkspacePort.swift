@@ -64,6 +64,14 @@ enum LibraryWorkspaceNotice: Equatable, Sendable {
     case reviewJobConflict
     case insufficientSuggestionSamples(positiveMissing: Int, negativeMissing: Int)
     case reviewMutationApplied(count: Int, tagName: String)
+    case tagBatchMutationApplied(
+        count: Int,
+        tagDisplayName: String,
+        action: LibraryTagMutationFeedbackKind
+    )
+    case photosAlreadyConnected
+    case photosSyncQueued
+    case photosFullRepairQueued
     case portableExportCompleted(bundleName: String, recordCount: Int)
     case portableExportDestinationOverlapsSource
     case portableExportIsolationIndeterminate
@@ -117,22 +125,11 @@ enum LibraryTagDecisionAction: Equatable, Sendable {
     }
 }
 
-struct LibraryTagDecisionConfirmation: Identifiable, Equatable, Sendable {
-    let tagID: UUID
-    let tagDisplayName: String
-    let action: LibraryTagDecisionAction
-    let assetIDs: Set<UUID>
-
-    var id: UUID { tagID }
-    var affectedCount: Int { assetIDs.count }
-}
-
-struct LibraryNewTagConfirmation: Identifiable, Equatable, Sendable {
-    let tagDisplayName: String
-    let assetIDs: Set<UUID>
-
-    var id: String { tagDisplayName }
-    var affectedCount: Int { assetIDs.count }
+enum LibraryTagMutationFeedbackKind: Equatable, Sendable {
+    case accepted
+    case rejected
+    case cleared
+    case createdAndApplied
 }
 
 struct LibrarySinglePhotoNavigationPresentation: Equatable, Sendable {
@@ -176,6 +173,11 @@ protocol LibraryWorkspacePort: Sendable {
     func fetchSources() throws -> [LibrarySourceSummary]
     func connectFolder() async throws -> ConnectFolderOutcome
     func connectPhotos() async throws -> ConnectPhotosOutcome
+    func syncPhotosLibrary(sourceID: UUID) async throws
+    func requestPhotosFullRepair(sourceID: UUID) async throws
+    func photosLibrarySupportedImageCount() throws -> Int
+    func photosCatalogAssetCount(sourceID: UUID) throws -> Int
+    func reactivatePhotosLibrary(sourceID: UUID) async throws
     func rebindPhotos(unavailableSourceID: UUID) async throws -> RebindPhotosOutcome
     func reauthorizeFolder(sourceID: UUID) async throws -> ReauthorizeFolderOutcome
     func disableFolderSource(sourceID: UUID) async throws -> DisableFolderOutcome

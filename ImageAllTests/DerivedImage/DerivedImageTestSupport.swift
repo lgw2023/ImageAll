@@ -31,6 +31,10 @@ enum DerivedImageTestSupport {
             .denied
         }
 
+        func supportedStaticImageCount() throws -> Int {
+            throw PhotosLibraryError.libraryUnavailable
+        }
+
         func enumerateStaticImages(
             startingAt startOffset: Int,
             batchSize: Int,

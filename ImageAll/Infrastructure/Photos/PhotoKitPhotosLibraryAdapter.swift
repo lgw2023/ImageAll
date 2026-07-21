@@ -32,6 +32,21 @@ final class PhotoKitPhotosLibraryAdapter: NSObject, PhotosLibraryAccessPort, Pho
         return mapAuthorization(status)
     }
 
+    func supportedStaticImageCount() throws -> Int {
+        guard authorizationState() == .authorized else {
+            throw PhotosLibraryError.authorizationDenied
+        }
+        guard PHPhotoLibrary.shared().unavailabilityReason == nil else {
+            throw PhotosLibraryError.libraryUnavailable
+        }
+        let options = PHFetchOptions()
+        options.predicate = NSPredicate(
+            format: "mediaType == %d",
+            PHAssetMediaType.image.rawValue
+        )
+        return PHAsset.fetchAssets(with: options).count
+    }
+
     func enumerateStaticImages(
         startingAt startOffset: Int,
         batchSize: Int,
@@ -40,6 +55,9 @@ final class PhotoKitPhotosLibraryAdapter: NSObject, PhotosLibraryAccessPort, Pho
     ) throws {
         guard authorizationState() == .authorized else {
             throw PhotosLibraryError.authorizationDenied
+        }
+        guard PHPhotoLibrary.shared().unavailabilityReason == nil else {
+            throw PhotosLibraryError.libraryUnavailable
         }
         guard batchSize > 0 else { throw PhotosLibraryError.libraryUnavailable }
 
@@ -132,14 +150,14 @@ final class PhotoKitPhotosLibraryAdapter: NSObject, PhotosLibraryAccessPort, Pho
                 let changedIdentifiers = details.insertedLocalIdentifiers
                     .union(details.updatedLocalIdentifiers)
                 let upsertedAssets = metadata(localIdentifiers: changedIdentifiers)
-                let resolvedIdentifiers = Set(upsertedAssets.map { $0.localIdentifier })
-                let deletedIdentifiers = details.deletedLocalIdentifiers
-                    .union(changedIdentifiers.subtracting(resolvedIdentifiers))
-                    .sorted()
+                // Only PhotoKit-reported deletes become missing. Inserts/updates that fail
+                // metadata resolution (empty resources, unsupported UTI, transient cloud
+                // eviction) must not be treated as deletions — full generation remains
+                // the sole unseen → missing convergence path.
                 try onBatch(
-                    PhotosPersistentChangeBatch(
+                    Self.makePersistentChangeBatch(
                         upsertedAssets: upsertedAssets,
-                        deletedLocalIdentifiers: deletedIdentifiers,
+                        deletedLocalIdentifiers: details.deletedLocalIdentifiers,
                         changeToken: try archiveChangeToken(change.changeToken)
                     )
                 )
@@ -149,6 +167,18 @@ final class PhotoKitPhotosLibraryAdapter: NSObject, PhotosLibraryAccessPort, Pho
         } catch {
             throw PhotosLibraryError.changeTokenInvalid
         }
+    }
+
+    static func makePersistentChangeBatch(
+        upsertedAssets: [PhotosAssetMetadata],
+        deletedLocalIdentifiers: Set<String>,
+        changeToken: Data
+    ) -> PhotosPersistentChangeBatch {
+        PhotosPersistentChangeBatch(
+            upsertedAssets: upsertedAssets,
+            deletedLocalIdentifiers: deletedLocalIdentifiers.sorted(),
+            changeToken: changeToken
+        )
     }
 
     func startObservingChanges(_ onChange: @escaping @Sendable () -> Void) {

@@ -2130,7 +2130,7 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertFalse(model.showsFirstUseGuide)
     }
 
-    func testRescanSelectedPhotosSourceRevalidatesAuthorizationBeforeSync() async {
+    func testRescanSelectedPhotosSourceQueuesIncrementalSync() async {
         let sourceID = UUID()
         let source = LibrarySourceSummary(
             id: sourceID,
@@ -2148,10 +2148,116 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         await model.start()
         await waitForCatalogScanToFinish(model)
         await model.selectSource(sourceID)
+        await waitForCatalogScanToFinish(model)
         await model.rescan()
         await waitForCatalogScanToFinish(model)
 
-        XCTAssertEqual(service.photosConnectCallCount, 1)
+        XCTAssertEqual(service.photosSyncCallCount, 3)
+        XCTAssertEqual(service.lastPhotosSyncSourceID, sourceID)
+        XCTAssertEqual(service.photosConnectCallCount, 0)
+    }
+
+    func testSelectPhotosSourceRequestsFullRepairWhenCatalogIsIncomplete() async {
+        let sourceID = UUID()
+        let source = LibrarySourceSummary(
+            id: sourceID,
+            kind: .photos,
+            displayName: "Apple Photos",
+            state: .active
+        )
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: source,
+            reconciledItems: [],
+            startsConnected: true,
+            photosLibrarySupportedImageCount: 120,
+            photosCatalogAssetCount: 40
+        )
+        let model = LibraryWorkspaceModel(service: service)
+
+        await model.start()
+        await waitForCatalogScanToFinish(model)
+        await model.selectSource(sourceID)
+
+        XCTAssertEqual(service.photosFullRepairCallCount, 2)
+        XCTAssertEqual(service.photosSyncCallCount, 0)
+    }
+
+    func testPhotosScanCompletionReloadsSelectedSourceGrid() async {
+        let sourceID = UUID()
+        let partial = Self.makeAsset(sourceID: sourceID, fileName: "icloud.heic")
+        let complete = [
+            partial,
+            Self.makeAsset(sourceID: sourceID, fileName: "local-hdd2.heic"),
+        ]
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: sourceID,
+                kind: .photos,
+                displayName: "Apple Photos",
+                state: .active
+            ),
+            reconciledItems: complete,
+            initialItems: [partial],
+            startsConnected: true,
+            blocksReconcileRuns: true,
+            photosLibrarySupportedImageCount: 2,
+            photosCatalogAssetCount: 2
+        )
+        let model = LibraryWorkspaceModel(
+            service: service,
+            catalogProgressRefreshInterval: .milliseconds(1)
+        )
+
+        await model.start()
+        while !service.hasStartedBlockedReconcile {
+            await Task.yield()
+        }
+        await model.selectSource(sourceID)
+        XCTAssertEqual(
+            model.items.map(\.fileName),
+            ["icloud.heic"],
+            "after selectSource"
+        )
+
+        service.releaseBlockedReconcile()
+        for _ in 0 ..< 10_000 {
+            if model.items.count == 2 { break }
+            await Task.yield()
+        }
+        XCTAssertEqual(
+            model.items.count,
+            2,
+            "after scan completion, got \(model.items.map(\.fileName))"
+        )
+        XCTAssertEqual(
+            Set(model.items.map(\.fileName)),
+            Set(["icloud.heic", "local-hdd2.heic"])
+        )
+    }
+
+    func testSelectPhotosSourceQueuesSyncWithoutReconnecting() async {
+        let sourceID = UUID()
+        let source = LibrarySourceSummary(
+            id: sourceID,
+            kind: .photos,
+            displayName: "Apple Photos",
+            state: .active
+        )
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: source,
+            reconciledItems: [],
+            startsConnected: true
+        )
+        let model = LibraryWorkspaceModel(service: service)
+
+        await model.start()
+        await waitForCatalogScanToFinish(model)
+        await model.selectSource(sourceID)
+
+        XCTAssertTrue(model.selectedSourceIsPhotos)
+        XCTAssertEqual(service.photosSyncCallCount, 2)
+        XCTAssertEqual(service.lastPhotosSyncSourceID, sourceID)
+        XCTAssertEqual(service.photosConnectCallCount, 0)
     }
 
     func testPhotosAuthorizationFailureRefreshesSourceAndShowsAuthorizationNotice() async {
@@ -2282,7 +2388,6 @@ final class LibraryWorkspaceModelTests: XCTestCase {
 
         await model.requestTagDecision(tagID: tag.id, action: .accept)
 
-        XCTAssertNil(model.pendingTagDecisionConfirmation)
         XCTAssertEqual(model.inspectorTags.first?.decision, .accepted)
         XCTAssertEqual(model.items.first?.acceptedTagCount, 1)
         XCTAssertTrue(model.canUndoTagMutation)
@@ -2326,6 +2431,145 @@ final class LibraryWorkspaceModelTests: XCTestCase {
             Set([family.id, print.id])
         )
         XCTAssertTrue(service.lastFilter.tagDecisionFilters.allSatisfy { $0.decision == .accepted })
+    }
+
+    func testIncludedAndExcludedTagFiltersUpdateFilterState() async {
+        let sourceID = UUID()
+        let asset = Self.makeAsset(sourceID: sourceID, fileName: "photo.jpg")
+        let family = TagListItem(id: UUID(), displayName: "Family", state: .active)
+        let work = TagListItem(id: UUID(), displayName: "Work", state: .active)
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(id: sourceID, displayName: "Fixture", state: .active),
+            reconciledItems: [asset],
+            tags: [family, work]
+        )
+        let model = LibraryWorkspaceModel(service: service)
+
+        await model.start()
+        await model.connectFolder()
+        await waitForCatalogScanToFinish(model)
+
+        await model.toggleIncludedTagFilter(family.id)
+        await model.setTagMatchMode(.all)
+        await model.toggleIncludedTagFilter(work.id)
+        await model.toggleExcludedTagFilter(work.id)
+
+        XCTAssertTrue(model.isTagFilterIncluded(family.id))
+        XCTAssertFalse(model.isTagFilterIncluded(work.id))
+        XCTAssertTrue(model.isTagFilterExcluded(work.id))
+        XCTAssertEqual(model.tagMatchMode, .all)
+        XCTAssertEqual(
+            Set(service.lastFilter.tagDecisionFilters.map(\.tagID)),
+            Set([family.id])
+        )
+        XCTAssertEqual(service.lastFilter.excludedTagIDs, [work.id])
+    }
+
+    func testIncludedTagToggleDoesNotChangeGlobalMatchMode() async {
+        let sourceID = UUID()
+        let asset = Self.makeAsset(sourceID: sourceID, fileName: "photo.jpg")
+        let family = TagListItem(id: UUID(), displayName: "Family", state: .active)
+        let work = TagListItem(id: UUID(), displayName: "Work", state: .active)
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(id: sourceID, displayName: "Fixture", state: .active),
+            reconciledItems: [asset],
+            tags: [family, work]
+        )
+        let model = LibraryWorkspaceModel(service: service)
+
+        await model.start()
+        await model.connectFolder()
+        await waitForCatalogScanToFinish(model)
+
+        await model.setTagMatchMode(.all)
+        await model.toggleIncludedTagFilter(family.id)
+        await model.toggleIncludedTagFilter(work.id)
+        XCTAssertEqual(model.tagMatchMode, .all)
+        XCTAssertEqual(model.selectedTagFilterIDs, Set([family.id, work.id]))
+
+        await model.setTagMatchMode(.any)
+        await model.toggleIncludedTagFilter(family.id)
+        await model.toggleIncludedTagFilter(work.id)
+        XCTAssertEqual(model.tagMatchMode, .any)
+        XCTAssertTrue(model.selectedTagFilterIDs.isEmpty)
+    }
+
+    func testFilterToSingleIncludedTagClearsOtherTagFilters() async {
+        let sourceID = UUID()
+        let asset = Self.makeAsset(sourceID: sourceID, fileName: "photo.jpg")
+        let family = TagListItem(id: UUID(), displayName: "Family", state: .active)
+        let work = TagListItem(id: UUID(), displayName: "Work", state: .active)
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(id: sourceID, displayName: "Fixture", state: .active),
+            reconciledItems: [asset],
+            tags: [family, work]
+        )
+        let model = LibraryWorkspaceModel(service: service)
+
+        await model.start()
+        await model.connectFolder()
+        await waitForCatalogScanToFinish(model)
+
+        await model.toggleIncludedTagFilter(family.id)
+        await model.toggleExcludedTagFilter(work.id)
+        await model.setTagMatchMode(.all)
+        await model.filterToSingleIncludedTag(work.id)
+
+        XCTAssertEqual(model.selectedTagFilterIDs, Set([work.id]))
+        XCTAssertTrue(model.excludedTagFilterIDs.isEmpty)
+        XCTAssertEqual(model.tagMatchMode, .all)
+    }
+
+    func testTagFilterSummaryTextFormatsIncludedExcludedAndMatchMode() {
+        let family = TagListItem(id: UUID(), displayName: "Family", state: .active)
+        let work = TagListItem(id: UUID(), displayName: "Work", state: .active)
+        let vacation = TagListItem(id: UUID(), displayName: "Vacation", state: .active)
+
+        XCTAssertEqual(
+            LibraryWorkspaceModel.makeTagFilterSummaryText(
+                tags: [family, work, vacation],
+                includedTagIDs: Set([family.id, work.id]),
+                excludedTagIDs: Set([vacation.id]),
+                matchMode: .any
+            ),
+            "Family 或 Work · 排除 Vacation"
+        )
+        XCTAssertEqual(
+            LibraryWorkspaceModel.makeTagFilterSummaryText(
+                tags: [family, work],
+                includedTagIDs: Set([family.id, work.id]),
+                excludedTagIDs: [],
+                matchMode: .all
+            ),
+            "Family 且 Work"
+        )
+    }
+
+    func testBulkTagDecisionShowsAppliedNotice() async throws {
+        let sourceID = UUID()
+        let first = Self.makeAsset(sourceID: sourceID, fileName: "first.jpg")
+        let second = Self.makeAsset(sourceID: sourceID, fileName: "second.jpg")
+        let family = TagListItem(id: UUID(), displayName: "Family", state: .active)
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(id: sourceID, displayName: "Fixture", state: .active),
+            reconciledItems: [first, second],
+            tags: [family]
+        )
+        let model = LibraryWorkspaceModel(service: service)
+        await model.start()
+        await model.connectFolder()
+        await waitForCatalogScanToFinish(model)
+        await model.selectAsset(first.assetID)
+        await model.selectAsset(second.assetID, additive: true)
+
+        await model.requestTagDecision(tagID: family.id, action: .accept)
+
+        let notice = try XCTUnwrap(model.notice)
+        XCTAssertEqual(
+            notice,
+            .tagBatchMutationApplied(count: 2, tagDisplayName: "Family", action: .accepted)
+        )
+        XCTAssertTrue(model.canUndoTagMutation)
     }
 
     func testTypingSearchDebouncesToLatestText() async {
@@ -2537,7 +2781,7 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertTrue(model.canUndoTagMutation)
     }
 
-    func testBulkNewTagRequestShowsNormalizedNameAndImpactBeforeMutatingCatalog() async throws {
+    func testBulkNewTagRequestAppliesImmediatelyToAllSelectedAssets() async throws {
         let sourceID = UUID()
         let first = Self.makeAsset(sourceID: sourceID, fileName: "first.jpg")
         let second = Self.makeAsset(sourceID: sourceID, fileName: "second.jpg")
@@ -2554,87 +2798,12 @@ final class LibraryWorkspaceModelTests: XCTestCase {
 
         await model.requestCreateAndAcceptTag(named: "  Print  ")
 
-        XCTAssertEqual(service.createTagAndAcceptCallCount, 0)
-        let pending = try XCTUnwrap(model.pendingNewTagConfirmation)
-        XCTAssertEqual(pending.tagDisplayName, "Print")
-        XCTAssertEqual(pending.affectedCount, 2)
-        XCTAssertEqual(pending.assetIDs, Set([first.assetID, second.assetID]))
-    }
-
-    func testConfirmingBulkNewTagAppliesCapturedSelectionOnce() async throws {
-        let sourceID = UUID()
-        let first = Self.makeAsset(sourceID: sourceID, fileName: "first.jpg")
-        let second = Self.makeAsset(sourceID: sourceID, fileName: "second.jpg")
-        let service = FakeLibraryWorkspaceService(
-            connectedSource: LibrarySourceSummary(id: sourceID, displayName: "Fixture", state: .active),
-            reconciledItems: [first, second]
-        )
-        let model = LibraryWorkspaceModel(service: service)
-        await model.start()
-        await model.connectFolder()
-        await waitForCatalogScanToFinish(model)
-        await model.selectAsset(first.assetID)
-        await model.selectAsset(second.assetID, additive: true)
-        await model.requestCreateAndAcceptTag(named: "Print")
-        await model.selectAsset(first.assetID)
-
-        await model.confirmPendingNewTag()
-
-        XCTAssertEqual(service.createTagAndAcceptCallCount, 1)
-        XCTAssertEqual(service.lastCreateTagAssetIDs, Set([first.assetID, second.assetID]))
-        XCTAssertNil(model.pendingNewTagConfirmation)
-        XCTAssertEqual(model.tags.map(\.displayName), ["Print"])
-    }
-
-    func testCancellingBulkNewTagCreatesNoTagOrDecision() async {
-        let sourceID = UUID()
-        let first = Self.makeAsset(sourceID: sourceID, fileName: "first.jpg")
-        let second = Self.makeAsset(sourceID: sourceID, fileName: "second.jpg")
-        let service = FakeLibraryWorkspaceService(
-            connectedSource: LibrarySourceSummary(id: sourceID, displayName: "Fixture", state: .active),
-            reconciledItems: [first, second]
-        )
-        let model = LibraryWorkspaceModel(service: service)
-        await model.start()
-        await model.connectFolder()
-        await waitForCatalogScanToFinish(model)
-        await model.selectAsset(first.assetID)
-        await model.selectAsset(second.assetID, additive: true)
-        await model.requestCreateAndAcceptTag(named: "Print")
-
-        model.cancelPendingNewTag()
-
-        XCTAssertNil(model.pendingNewTagConfirmation)
-        XCTAssertEqual(service.createTagAndAcceptCallCount, 0)
-        XCTAssertTrue(model.tags.isEmpty)
-    }
-
-    func testBulkNewTagConfirmationSurvivesDialogDismissalOrdering() async throws {
-        let sourceID = UUID()
-        let first = Self.makeAsset(sourceID: sourceID, fileName: "first.jpg")
-        let second = Self.makeAsset(sourceID: sourceID, fileName: "second.jpg")
-        let service = FakeLibraryWorkspaceService(
-            connectedSource: LibrarySourceSummary(id: sourceID, displayName: "Fixture", state: .active),
-            reconciledItems: [first, second]
-        )
-        let model = LibraryWorkspaceModel(service: service)
-        await model.start()
-        await model.connectFolder()
-        await waitForCatalogScanToFinish(model)
-        await model.selectAsset(first.assetID)
-        await model.selectAsset(second.assetID, additive: true)
-        await model.requestCreateAndAcceptTag(named: "Print")
-        let captured = try XCTUnwrap(model.pendingNewTagConfirmation)
-
-        model.cancelPendingNewTag()
-        await model.confirmPendingNewTag(captured)
-
         XCTAssertEqual(service.createTagAndAcceptCallCount, 1)
         XCTAssertEqual(service.lastCreateTagAssetIDs, Set([first.assetID, second.assetID]))
         XCTAssertEqual(model.tags.map(\.displayName), ["Print"])
     }
 
-    func testSingleSelectionNewTagRequestAppliesWithoutConfirmation() async {
+    func testSingleSelectionNewTagRequestAppliesImmediately() async {
         let sourceID = UUID()
         let asset = Self.makeAsset(sourceID: sourceID)
         let service = FakeLibraryWorkspaceService(
@@ -2649,7 +2818,6 @@ final class LibraryWorkspaceModelTests: XCTestCase {
 
         await model.requestCreateAndAcceptTag(named: "  Print  ")
 
-        XCTAssertNil(model.pendingNewTagConfirmation)
         XCTAssertEqual(service.createTagAndAcceptCallCount, 1)
         XCTAssertEqual(model.tags.map(\.displayName), ["Print"])
     }
@@ -2766,7 +2934,7 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertEqual(model.selectedAssetIDs, [asset.assetID])
     }
 
-    func testBulkTagDecisionRequestShowsImpactBeforeMutatingCatalog() async throws {
+    func testBulkTagDecisionRequestAppliesImmediatelyToAllSelectedAssets() async throws {
         let sourceID = UUID()
         let first = Self.makeAsset(sourceID: sourceID, fileName: "first.jpg")
         let second = Self.makeAsset(sourceID: sourceID, fileName: "second.jpg")
@@ -2784,37 +2952,8 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         await model.selectAsset(second.assetID, additive: true)
 
         await model.requestTagDecision(tagID: family.id, action: .accept)
-
-        XCTAssertEqual(service.mutateTagCallCount, 0)
-        let pending = try XCTUnwrap(model.pendingTagDecisionConfirmation)
-        XCTAssertEqual(pending.tagID, family.id)
-        XCTAssertEqual(pending.tagDisplayName, "Family")
-        XCTAssertEqual(pending.action, .accept)
-        XCTAssertEqual(pending.affectedCount, 2)
-    }
-
-    func testConfirmingBulkTagDecisionMutatesCapturedSelectionOnce() async throws {
-        let sourceID = UUID()
-        let first = Self.makeAsset(sourceID: sourceID, fileName: "first.jpg")
-        let second = Self.makeAsset(sourceID: sourceID, fileName: "second.jpg")
-        let family = TagListItem(id: UUID(), displayName: "Family", state: .active)
-        let service = FakeLibraryWorkspaceService(
-            connectedSource: LibrarySourceSummary(id: sourceID, displayName: "Fixture", state: .active),
-            reconciledItems: [first, second],
-            tags: [family]
-        )
-        let model = LibraryWorkspaceModel(service: service)
-        await model.start()
-        await model.connectFolder()
-        await waitForCatalogScanToFinish(model)
-        await model.selectAsset(first.assetID)
-        await model.selectAsset(second.assetID, additive: true)
-        await model.requestTagDecision(tagID: family.id, action: .accept)
-
-        await model.confirmPendingTagDecision()
 
         XCTAssertEqual(service.mutateTagCallCount, 1)
-        XCTAssertNil(model.pendingTagDecisionConfirmation)
         XCTAssertEqual(model.inspectorTags.first(where: { $0.id == family.id })?.decision, .accepted)
     }
 
@@ -2850,32 +2989,6 @@ final class LibraryWorkspaceModelTests: XCTestCase {
 
         XCTAssertEqual(review.personalModelRebuildEnqueueCallCount, 1)
         XCTAssertEqual(service.mutateTagCallCount, 1)
-    }
-
-    func testBulkTagConfirmationSurvivesDialogDismissalOrdering() async throws {
-        let sourceID = UUID()
-        let first = Self.makeAsset(sourceID: sourceID, fileName: "first.jpg")
-        let second = Self.makeAsset(sourceID: sourceID, fileName: "second.jpg")
-        let family = TagListItem(id: UUID(), displayName: "Family", state: .active)
-        let service = FakeLibraryWorkspaceService(
-            connectedSource: LibrarySourceSummary(id: sourceID, displayName: "Fixture", state: .active),
-            reconciledItems: [first, second],
-            tags: [family]
-        )
-        let model = LibraryWorkspaceModel(service: service)
-        await model.start()
-        await model.connectFolder()
-        await waitForCatalogScanToFinish(model)
-        await model.selectAsset(first.assetID)
-        await model.selectAsset(second.assetID, additive: true)
-        await model.requestTagDecision(tagID: family.id, action: .reject)
-        let captured = try XCTUnwrap(model.pendingTagDecisionConfirmation)
-
-        model.cancelPendingTagDecision()
-        await model.confirmPendingTagDecision(captured)
-
-        XCTAssertEqual(service.mutateTagCallCount, 1)
-        XCTAssertEqual(model.inspectorTags.first(where: { $0.id == family.id })?.decision, .rejected)
     }
 
     func testInstallPresetTagsAddsMissingCatalogEntriesAndReportsIdempotence() async {
@@ -4129,6 +4242,14 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
     private var storedItems: [AssetGridItemProjection] = []
     private var storedReconcileRunCount = 0
     private var storedPhotosConnectCallCount = 0
+    private var storedPhotosSyncCallCount = 0
+    private var storedPhotosFullRepairCallCount = 0
+    private var storedPhotosReactivateCallCount = 0
+    private var storedLastPhotosSyncSourceID: UUID?
+    private var storedLastPhotosFullRepairSourceID: UUID?
+    private var lastPhotosReactivateSourceID: UUID?
+    private var storedPhotosLibrarySupportedImageCount = 0
+    private var storedPhotosCatalogAssetCount = 0
     private var storedPhotosRebindCallCount = 0
     private var storedPhotosReconcileRunCount = 0
     private var storedReauthorizeCallCount = 0
@@ -4213,7 +4334,9 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
         jobActivityActionFails: Bool = false,
         jobActivityItemsAfterFailedAction: [JobActivityItem]? = nil,
         blockedSearchText: String? = nil,
-        assetPageSize: Int? = nil
+        assetPageSize: Int? = nil,
+        photosLibrarySupportedImageCount: Int = 0,
+        photosCatalogAssetCount: Int = 0
     ) {
         self.connectedSource = connectedSource
         self.reconciledItems = reconciledItems
@@ -4243,6 +4366,8 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
         self.jobActivityItemsAfterFailedAction = jobActivityItemsAfterFailedAction
         self.blockedSearchText = blockedSearchText
         self.assetPageSize = assetPageSize
+        storedPhotosLibrarySupportedImageCount = photosLibrarySupportedImageCount
+        storedPhotosCatalogAssetCount = photosCatalogAssetCount
         storedSources = startsConnected ? [connectedSource] : []
         storedItems = initialItems
         storedTags = tags
@@ -4262,6 +4387,18 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
 
     var photosConnectCallCount: Int {
         lock.withLock { storedPhotosConnectCallCount }
+    }
+
+    var photosSyncCallCount: Int {
+        lock.withLock { storedPhotosSyncCallCount }
+    }
+
+    var photosFullRepairCallCount: Int {
+        lock.withLock { storedPhotosFullRepairCallCount }
+    }
+
+    var lastPhotosSyncSourceID: UUID? {
+        lock.withLock { storedLastPhotosSyncSourceID }
     }
 
     var photosRebindCallCount: Int {
@@ -4465,6 +4602,35 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
         return .connected(sourceID: connectedSource.id)
     }
 
+    func syncPhotosLibrary(sourceID: UUID) async throws {
+        lock.withLock {
+            storedPhotosSyncCallCount += 1
+            storedLastPhotosSyncSourceID = sourceID
+        }
+    }
+
+    func photosLibrarySupportedImageCount() throws -> Int {
+        lock.withLock { storedPhotosLibrarySupportedImageCount }
+    }
+
+    func photosCatalogAssetCount(sourceID _: UUID) throws -> Int {
+        lock.withLock { storedPhotosCatalogAssetCount }
+    }
+
+    func requestPhotosFullRepair(sourceID: UUID) async throws {
+        lock.withLock {
+            storedPhotosFullRepairCallCount += 1
+            storedLastPhotosFullRepairSourceID = sourceID
+        }
+    }
+
+    func reactivatePhotosLibrary(sourceID: UUID) async throws {
+        lock.withLock {
+            storedPhotosReactivateCallCount += 1
+            lastPhotosReactivateSourceID = sourceID
+        }
+    }
+
     func rebindPhotos(unavailableSourceID: UUID) async throws -> RebindPhotosOutcome {
         try lock.withLock {
             guard let reboundSource,
@@ -4573,6 +4739,11 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
             storedLastSort = sort
             let search = filter.searchText?.lowercased()
             let filtered = storedItems.filter { item in
+                if !filter.sourceIDs.isEmpty,
+                   !filter.sourceIDs.contains(item.sourceID)
+                {
+                    return false
+                }
                 if !filter.availabilities.isEmpty,
                    !filter.availabilities.contains(item.availability)
                 {
