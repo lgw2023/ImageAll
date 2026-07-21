@@ -2149,15 +2149,18 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         await waitForCatalogScanToFinish(model)
         await model.selectSource(sourceID)
         await waitForCatalogScanToFinish(model)
+        let syncCountAfterSelect = service.photosSyncCallCount
         await model.rescan()
         await waitForCatalogScanToFinish(model)
 
-        XCTAssertEqual(service.photosSyncCallCount, 3)
+        // start() enqueues one quiet sync; selectSource must not enqueue another.
+        XCTAssertEqual(syncCountAfterSelect, 1)
+        XCTAssertEqual(service.photosSyncCallCount, 2)
         XCTAssertEqual(service.lastPhotosSyncSourceID, sourceID)
         XCTAssertEqual(service.photosConnectCallCount, 0)
     }
 
-    func testSelectPhotosSourceRequestsFullRepairWhenCatalogIsIncomplete() async {
+    func testStartupRequestsFullRepairWhenCatalogIsIncomplete() async {
         let sourceID = UUID()
         let source = LibrarySourceSummary(
             id: sourceID,
@@ -2176,9 +2179,11 @@ final class LibraryWorkspaceModelTests: XCTestCase {
 
         await model.start()
         await waitForCatalogScanToFinish(model)
+        let repairCountAfterStart = service.photosFullRepairCallCount
         await model.selectSource(sourceID)
 
-        XCTAssertEqual(service.photosFullRepairCallCount, 2)
+        XCTAssertEqual(repairCountAfterStart, 1)
+        XCTAssertEqual(service.photosFullRepairCallCount, 1)
         XCTAssertEqual(service.photosSyncCallCount, 0)
     }
 
@@ -2235,7 +2240,7 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         )
     }
 
-    func testSelectPhotosSourceQueuesSyncWithoutReconnecting() async {
+    func testSelectPhotosSourceDoesNotRequeueSync() async {
         let sourceID = UUID()
         let source = LibrarySourceSummary(
             id: sourceID,
@@ -2252,10 +2257,14 @@ final class LibraryWorkspaceModelTests: XCTestCase {
 
         await model.start()
         await waitForCatalogScanToFinish(model)
+        let syncCountAfterStart = service.photosSyncCallCount
+        await model.selectSource(sourceID)
+        await model.selectSource(nil)
         await model.selectSource(sourceID)
 
         XCTAssertTrue(model.selectedSourceIsPhotos)
-        XCTAssertEqual(service.photosSyncCallCount, 2)
+        XCTAssertEqual(syncCountAfterStart, 1)
+        XCTAssertEqual(service.photosSyncCallCount, 1)
         XCTAssertEqual(service.lastPhotosSyncSourceID, sourceID)
         XCTAssertEqual(service.photosConnectCallCount, 0)
     }
@@ -2449,9 +2458,8 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         await model.connectFolder()
         await waitForCatalogScanToFinish(model)
 
-        await model.toggleIncludedTagFilter(family.id)
-        await model.setTagMatchMode(.all)
-        await model.toggleIncludedTagFilter(work.id)
+        await model.toggleIncludedTagFilter(family.id, matchMode: .any)
+        await model.toggleIncludedTagFilter(work.id, matchMode: .all)
         await model.toggleExcludedTagFilter(work.id)
 
         XCTAssertTrue(model.isTagFilterIncluded(family.id))
@@ -2465,7 +2473,7 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertEqual(service.lastFilter.excludedTagIDs, [work.id])
     }
 
-    func testIncludedTagToggleDoesNotChangeGlobalMatchMode() async {
+    func testUnionAndIntersectionTagFiltersSetMatchMode() async {
         let sourceID = UUID()
         let asset = Self.makeAsset(sourceID: sourceID, fileName: "photo.jpg")
         let family = TagListItem(id: UUID(), displayName: "Family", state: .active)
@@ -2481,17 +2489,19 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         await model.connectFolder()
         await waitForCatalogScanToFinish(model)
 
-        await model.setTagMatchMode(.all)
-        await model.toggleIncludedTagFilter(family.id)
-        await model.toggleIncludedTagFilter(work.id)
-        XCTAssertEqual(model.tagMatchMode, .all)
+        await model.toggleIncludedTagFilter(family.id, matchMode: .any)
+        await model.toggleIncludedTagFilter(work.id, matchMode: .any)
+        XCTAssertEqual(model.tagMatchMode, .any)
         XCTAssertEqual(model.selectedTagFilterIDs, Set([family.id, work.id]))
 
-        await model.setTagMatchMode(.any)
-        await model.toggleIncludedTagFilter(family.id)
-        await model.toggleIncludedTagFilter(work.id)
-        XCTAssertEqual(model.tagMatchMode, .any)
+        await model.toggleIncludedTagFilter(family.id, matchMode: .all)
+        await model.toggleIncludedTagFilter(work.id, matchMode: .all)
         XCTAssertTrue(model.selectedTagFilterIDs.isEmpty)
+
+        await model.toggleIncludedTagFilter(family.id, matchMode: .all)
+        await model.toggleIncludedTagFilter(work.id, matchMode: .all)
+        XCTAssertEqual(model.tagMatchMode, .all)
+        XCTAssertEqual(model.selectedTagFilterIDs, Set([family.id, work.id]))
     }
 
     func testFilterToSingleIncludedTagClearsOtherTagFilters() async {

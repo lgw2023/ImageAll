@@ -181,7 +181,6 @@ final class LibraryWorkspaceModel: ObservableObject {
     private var personalizationRunnerTask: Task<Void, Never>?
     private var catalogReconcileTask: Task<Void, Never>?
     private var catalogReconcileRunRequested = false
-    private var photosGridAutoRefreshTask: Task<Void, Never>?
     private var cloudPreviewTask: Task<Void, Never>?
     private var cloudPreviewRequestID: UUID?
     private var localModelSuggestionRequestID: UUID?
@@ -217,7 +216,6 @@ final class LibraryWorkspaceModel: ObservableObject {
 
     deinit {
         searchDebounceTask?.cancel()
-        photosGridAutoRefreshTask?.cancel()
         service.stopCatalogSourceMonitoring()
     }
 
@@ -773,6 +771,9 @@ final class LibraryWorkspaceModel: ObservableObject {
         startCatalogReconcileRunnerIfNeeded()
     }
 
+    /// Startup-only integrity check: enqueue full repair when the catalog is
+    /// clearly incomplete, otherwise a quiet incremental sync. Source switching
+    /// must not re-run this — that caused visible grid flicker.
     private func ensurePhotosLibraryIndexed(sourceID: UUID) async {
         let service = service
         do {
@@ -793,56 +794,8 @@ final class LibraryWorkspaceModel: ObservableObject {
             if enqueuedWork || !isCatalogScanning {
                 startCatalogReconcileRunnerIfNeeded()
             }
-            startPhotosGridAutoRefresh(photosSourceID: sourceID)
         } catch {
-            // Navigation-time sync stays silent; toolbar actions still surface errors.
-        }
-    }
-
-    private func startPhotosGridAutoRefresh(photosSourceID: UUID? = nil) {
-        photosGridAutoRefreshTask?.cancel()
-        photosGridAutoRefreshTask = Task { [weak self] in
-            guard let self else { return }
-            let service = self.service
-            let resolvedSourceID = photosSourceID
-                ?? self.selectedSourceID
-                ?? self.sources.first(where: { $0.kind == .photos && $0.state == .active })?.id
-            guard let resolvedSourceID else { return }
-
-            var lastCatalogCount = -1
-            var sawActiveScan = self.isCatalogScanning || self.catalogReconcileRunRequested
-            while !Task.isCancelled {
-                let scanning = self.isCatalogScanning || self.catalogReconcileRunRequested
-                sawActiveScan = sawActiveScan || scanning
-
-                let shouldTrackCatalog =
-                    self.selectedSourceIsPhotos
-                    || (self.selectedSourceID == nil && self.isPhotosSource(resolvedSourceID))
-                if shouldTrackCatalog,
-                   let catalogCount = try? await Self.offMain({
-                       try service.photosCatalogAssetCount(sourceID: resolvedSourceID)
-                   }),
-                   catalogCount != lastCatalogCount
-                {
-                    lastCatalogCount = catalogCount
-                    await self.loadFirstPage()
-                }
-
-                if sawActiveScan, !scanning {
-                    await self.loadFirstPage()
-                    break
-                }
-
-                if !scanning, !self.selectedSourceIsPhotos, self.selectedSourceID != nil {
-                    break
-                }
-
-                do {
-                    try await Task.sleep(for: self.catalogProgressRefreshInterval)
-                } catch {
-                    return
-                }
-            }
+            // Startup self-heal stays silent; toolbar actions still surface errors.
         }
     }
 
@@ -928,22 +881,9 @@ final class LibraryWorkspaceModel: ObservableObject {
     func selectSource(_ sourceID: UUID?) async {
         guard selectedSourceID != sourceID else { return }
         selectedSourceID = sourceID
-        if let sourceID,
-           isPhotosSource(sourceID),
-           sources.first(where: { $0.id == sourceID })?.state == .active
-        {
-            await ensurePhotosLibraryIndexed(sourceID: sourceID)
-        } else {
-            photosGridAutoRefreshTask?.cancel()
-        }
-        await loadFirstPage()
-        if selectedSourceIsPhotos {
-            startPhotosGridAutoRefresh(photosSourceID: selectedSourceID)
-        } else if selectedSourceID == nil,
-                  sources.contains(where: { $0.kind == .photos && $0.state == .active })
-        {
-            startPhotosGridAutoRefresh()
-        }
+        // Navigation only swaps the visible filter. Photos integrity / sync is
+        // handled once at start() so switching sources stays flicker-free.
+        await loadFirstPage(remountGrid: true)
     }
 
     func loadMoreIfNeeded(currentAssetID: UUID) async {
@@ -2114,7 +2054,7 @@ final class LibraryWorkspaceModel: ObservableObject {
                     if let refreshed = try? await Self.offMain({ try service.fetchSources() }) {
                         self.sources = refreshed
                     }
-                    await self.loadFirstPage()
+                    await self.loadFirstPage(remountGrid: false)
                     await self.refreshReviewState()
                     self.startPersonalizationRunnerIfNeeded()
                 } catch {
@@ -2140,20 +2080,27 @@ final class LibraryWorkspaceModel: ObservableObject {
                 self.startCatalogReconcileRunnerIfNeeded()
             } else {
                 self.isCatalogScanning = false
-                await self.loadFirstPage()
+                await self.loadFirstPage(remountGrid: false)
             }
         }
     }
 
     private func monitorCatalogReconcileProgress() async {
         let service = service
+        // Soft refresh: keep retrying until the first batch appears, then only
+        // occasionally append newer indexed assets — never remount the LazyVGrid.
         var lastPublishedPhotosProgressCompleted = 0
+        var lastSoftReloadAtCompleted = 0
+        var publishedFirstPhotosBatch = !items.isEmpty
         var lastMonitoredSourceID = selectedSourceID
         var hadPhotosProgress = false
+        let softReloadStride = 64
         while !Task.isCancelled {
             if lastMonitoredSourceID != selectedSourceID {
                 lastMonitoredSourceID = selectedSourceID
                 lastPublishedPhotosProgressCompleted = 0
+                lastSoftReloadAtCompleted = 0
+                publishedFirstPhotosBatch = !items.isEmpty
             }
             if let progress = try? await Self.offMain({
                 try service.fetchCatalogReconcileProgress()
@@ -2161,19 +2108,32 @@ final class LibraryWorkspaceModel: ObservableObject {
                 catalogReconcileProgress = progress
                 if progress.sourceKind == .photos {
                     hadPhotosProgress = true
-                    let shouldReloadForPhotosScan =
-                        (selectedSourceIsPhotos || selectedSourceID == nil)
-                        && progress.completed > lastPublishedPhotosProgressCompleted
-                    if shouldReloadForPhotosScan {
-                        await loadFirstPage()
-                        lastPublishedPhotosProgressCompleted = progress.completed
+                    let viewingPhotosScope = selectedSourceIsPhotos || selectedSourceID == nil
+                    if viewingPhotosScope, progress.completed > 0 {
+                        let progressed = progress.completed > lastPublishedPhotosProgressCompleted
+                        if progressed {
+                            lastPublishedPhotosProgressCompleted = progress.completed
+                        }
+                        // Empty grid must keep retrying even when progress stalls,
+                        // otherwise the first publish after a static progress tick is missed.
+                        let waitingForFirstBatch = !publishedFirstPhotosBatch
+                        let shouldSoftReload =
+                            waitingForFirstBatch
+                            || (progressed && progress.completed - lastSoftReloadAtCompleted >= softReloadStride)
+                        if shouldSoftReload {
+                            await loadFirstPage(remountGrid: false)
+                            publishedFirstPhotosBatch = !items.isEmpty
+                            if progressed {
+                                lastSoftReloadAtCompleted = progress.completed
+                            }
+                        }
                     }
                 }
             } else if hadPhotosProgress {
                 hadPhotosProgress = false
                 catalogReconcileProgress = nil
                 if selectedSourceIsPhotos || selectedSourceID == nil {
-                    await loadFirstPage()
+                    await loadFirstPage(remountGrid: false)
                 }
             }
             do {
@@ -2184,7 +2144,7 @@ final class LibraryWorkspaceModel: ObservableObject {
         }
     }
 
-    private func loadFirstPage() async {
+    private func loadFirstPage(remountGrid: Bool = true) async {
         let requestID = UUID()
         assetPageRequestID = requestID
         let service = service
@@ -2197,7 +2157,9 @@ final class LibraryWorkspaceModel: ObservableObject {
             guard assetPageRequestID == requestID else { return }
             items = page.items
             nextCursor = page.nextCursor
-            assetGridRevision += 1
+            if remountGrid {
+                assetGridRevision += 1
+            }
             let hadSelection = !selectedAssetIDs.isEmpty
             let visibleIDs = Set(page.items.map(\.assetID))
             selectedAssetIDs.formIntersection(visibleIDs)
@@ -2242,10 +2204,10 @@ final class LibraryWorkspaceModel: ObservableObject {
     }
 
     func toggleAcceptedTagFilter(_ tagID: UUID) async {
-        await toggleIncludedTagFilter(tagID)
+        await toggleIncludedTagFilter(tagID, matchMode: .any)
     }
 
-    func toggleIncludedTagFilter(_ tagID: UUID) async {
+    func toggleIncludedTagFilter(_ tagID: UUID, matchMode: TagMatchMode = .any) async {
         excludedTagFilterIDs.remove(tagID)
         if selectedTagFilterDecisions[tagID] == .accepted {
             selectedTagFilterDecisions.removeValue(forKey: tagID)
@@ -2254,6 +2216,9 @@ final class LibraryWorkspaceModel: ObservableObject {
             selectedTagFilterDecisions[tagID] = .accepted
             selectedTagFilterIDs.insert(tagID)
             tagPresence = .any
+            // Mode follows the gesture that adds the tag: plain click = union,
+            // ⌘-click = intersection. Removing a tag does not change mode.
+            tagMatchMode = matchMode
         }
         await loadFirstPage()
     }
@@ -4006,10 +3971,12 @@ struct LibraryWorkspaceView: View {
         return Button {
             let flags = NSEvent.modifierFlags.intersection(.deviceIndependentFlagsMask)
             Task {
-                if flags.contains(.option) {
+                if flags.contains(.command), flags.contains(.option) {
                     await model.toggleExcludedTagFilter(tag.id)
+                } else if flags.contains(.command) {
+                    await model.toggleIncludedTagFilter(tag.id, matchMode: .all)
                 } else {
-                    await model.toggleIncludedTagFilter(tag.id)
+                    await model.toggleIncludedTagFilter(tag.id, matchMode: .any)
                 }
             }
         } label: {
@@ -4058,12 +4025,12 @@ struct LibraryWorkspaceView: View {
         .buttonStyle(.plain)
         .help(
             isExcluded
-                ? "⌥点击取消排除"
+                ? "⌘⌥点击取消排除"
                 : isIncluded
                     ? (usesIntersection
-                        ? "交集筛选；点击取消包含；⌥点击排除"
-                        : "并集筛选；点击取消包含；⌥点击排除")
-                    : "点击包含筛选；⌥点击排除"
+                        ? "交集筛选；⌘点击切换；⌘⌥点击排除"
+                        : "并集筛选；⌘点击改为交集；⌘⌥点击排除")
+                    : "点击并集筛选；⌘点击交集筛选；⌘⌥点击排除"
         )
         .contextMenu {
             Button("仅筛选此标签") {
