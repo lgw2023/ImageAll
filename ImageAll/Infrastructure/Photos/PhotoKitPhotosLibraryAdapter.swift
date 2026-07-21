@@ -44,7 +44,15 @@ final class PhotoKitPhotosLibraryAdapter: NSObject, PhotosLibraryAccessPort, Pho
             format: "mediaType == %d",
             PHAssetMediaType.image.rawValue
         )
-        return PHAsset.fetchAssets(with: options).count
+        let result = PHAsset.fetchAssets(with: options)
+        var count = 0
+        result.enumerateObjects { asset, _, _ in
+            // Match catalog upsert: only count assets that resolve to supported still metadata.
+            if self.metadata(for: asset) != nil {
+                count += 1
+            }
+        }
+        return count
     }
 
     func enumerateStaticImages(
@@ -398,6 +406,23 @@ final class PhotoKitPhotosLibraryAdapter: NSObject, PhotosLibraryAccessPort, Pho
     ) -> Bool {
         mediaType == .image
             && supportedTypes.contains(uniformTypeIdentifier.lowercased())
+    }
+
+    /// Counts assets that would be indexable by the same UTI policy as catalog upsert.
+    /// Used by startup repair heuristics and unit tests; production counting must not
+    /// treat every `mediaType == image` asset as supported.
+    static func indexableStaticImageCount(
+        assets: [(mediaType: PHAssetMediaType, uniformTypeIdentifier: String)]
+    ) -> Int {
+        assets.reduce(into: 0) { count, asset in
+            if isSupportedStaticImage(
+                mediaType: asset.mediaType,
+                mediaSubtypes: [],
+                uniformTypeIdentifier: asset.uniformTypeIdentifier
+            ) {
+                count += 1
+            }
+        }
     }
 
     static func makeLocalOnlyImageRequestOptions() -> PHImageRequestOptions {

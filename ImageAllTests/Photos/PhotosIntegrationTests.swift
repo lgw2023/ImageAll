@@ -49,6 +49,24 @@ final class PhotosIntegrationTests: XCTestCase {
         XCTAssertFalse(PhotoKitPhotosLibraryAdapter.makeLocalOnlyFeaturePrintRequestOptions().isNetworkAccessAllowed)
     }
 
+    func testIndexableStaticImageCountMatchesSupportedUTIPolicy() {
+        // Startup full-repair heuristics compare this count to catalog rows.
+        // RAW/GIF/video must not inflate the library side of that ratio.
+        let count = PhotoKitPhotosLibraryAdapter.indexableStaticImageCount(
+            assets: [
+                (.image, "public.heic"),
+                (.image, "public.jpeg"),
+                (.image, "public.png"),
+                (.image, "com.adobe.raw-image"),
+                (.image, "com.compuserve.gif"),
+                (.image, "public.mpeg-4"),
+                (.video, "public.mpeg-4"),
+            ]
+        )
+
+        XCTAssertEqual(count, 3)
+    }
+
     func testPersistentChangeBatchKeepsOnlyExplicitDeletes() {
         let resolved = metadata("photos-a", name: "A.HEIC", type: "public.heic")
         let batch = PhotoKitPhotosLibraryAdapter.makePersistentChangeBatch(
