@@ -2442,6 +2442,69 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertEqual(service.assetPageFetchCallCount, filteredFetchCount + 1)
     }
 
+    func testSelectAssetsReplacesExistingSelection() async {
+        let sourceID = UUID()
+        let first = Self.makeAsset(sourceID: sourceID, fileName: "first.jpg")
+        let second = Self.makeAsset(sourceID: sourceID, fileName: "second.jpg")
+        let third = Self.makeAsset(sourceID: sourceID, fileName: "third.jpg")
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(id: sourceID, displayName: "Fixture", state: .active),
+            reconciledItems: [first, second, third]
+        )
+        let model = LibraryWorkspaceModel(service: service)
+
+        await model.start()
+        await model.connectFolder()
+        await waitForCatalogScanToFinish(model)
+        await model.selectAsset(first.assetID)
+
+        await model.selectAssets([second.assetID, third.assetID])
+
+        XCTAssertEqual(model.selectedAssetIDs, Set([second.assetID, third.assetID]))
+        XCTAssertEqual(model.selectionAnchorIDForTesting, second.assetID)
+    }
+
+    func testSelectAssetsAdditiveUnionsSelection() async {
+        let sourceID = UUID()
+        let first = Self.makeAsset(sourceID: sourceID, fileName: "first.jpg")
+        let second = Self.makeAsset(sourceID: sourceID, fileName: "second.jpg")
+        let third = Self.makeAsset(sourceID: sourceID, fileName: "third.jpg")
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(id: sourceID, displayName: "Fixture", state: .active),
+            reconciledItems: [first, second, third]
+        )
+        let model = LibraryWorkspaceModel(service: service)
+
+        await model.start()
+        await model.connectFolder()
+        await waitForCatalogScanToFinish(model)
+        await model.selectAsset(first.assetID)
+
+        await model.selectAssets([second.assetID, third.assetID], additive: true)
+
+        XCTAssertEqual(model.selectedAssetIDs, Set([first.assetID, second.assetID, third.assetID]))
+    }
+
+    func testSelectAssetsEmptySelectionClearsSelection() async {
+        let sourceID = UUID()
+        let first = Self.makeAsset(sourceID: sourceID, fileName: "first.jpg")
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(id: sourceID, displayName: "Fixture", state: .active),
+            reconciledItems: [first]
+        )
+        let model = LibraryWorkspaceModel(service: service)
+
+        await model.start()
+        await model.connectFolder()
+        await waitForCatalogScanToFinish(model)
+        await model.selectAsset(first.assetID)
+
+        await model.selectAssets([])
+
+        XCTAssertTrue(model.selectedAssetIDs.isEmpty)
+        XCTAssertNil(model.selectionAnchorIDForTesting)
+    }
+
     func testMultiSelectionShowsMixedStateAndCreatesAcceptedTag() async {
         let sourceID = UUID()
         let first = Self.makeAsset(sourceID: sourceID, fileName: "first.jpg")

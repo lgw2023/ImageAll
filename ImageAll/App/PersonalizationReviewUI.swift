@@ -335,6 +335,8 @@ struct ReviewQueueContentView: View {
     let displayName: String
     @FocusState.Binding var contentFocused: Bool
     @State private var gridColumnCount = 1
+    @State private var gridCellFrames: [UUID: CGRect] = [:]
+    @State private var isMarqueeSelecting = false
     @State private var gridScrollTargetID: UUID?
 
     var body: some View {
@@ -379,52 +381,70 @@ struct ReviewQueueContentView: View {
         GeometryReader { proxy in
             ScrollViewReader { scrollProxy in
                 ScrollView {
-                    LazyVGrid(
-                        columns: [
-                            GridItem(
-                                .adaptive(
-                                    minimum: LibraryGridDensity.standard.cellWidthRange.lowerBound,
-                                    maximum: LibraryGridDensity.standard.cellWidthRange.upperBound
-                                ),
-                                spacing: LibraryGridLayout.spacing
-                            ),
-                        ],
-                        spacing: LibraryGridLayout.spacing
-                    ) {
-                        ForEach(model.reviewQueueItems) { item in
-                            ReviewThumbnailView(
-                                item: item,
-                                model: model,
-                                isSelected: model.selectedAssetIDs.contains(item.assetID),
-                                onSelect: {
-                                    contentFocused = true
-                                    let flags = NSEvent.modifierFlags.intersection(.deviceIndependentFlagsMask)
-                                    Task {
-                                        await model.selectAsset(
-                                            item.assetID,
-                                            additive: flags.contains(.command),
-                                            extendRange: flags.contains(.shift)
-                                        )
-                                    }
-                                },
-                                onOpen: {
-                                    contentFocused = true
-                                    Task {
-                                        await model.openSinglePhotoView(assetID: item.assetID)
-                                    }
-                                }
-                            )
-                            .id(item.assetID)
-                            .task {
-                                await model.loadMoreReviewQueueIfNeeded(
-                                    currentAssetID: item.assetID,
-                                    tagID: tagID
+                    LibraryGridMarqueeContainer(
+                        cellFrames: $gridCellFrames,
+                        isMarqueeSelecting: $isMarqueeSelecting,
+                        currentSelection: model.selectedAssetIDs,
+                        onSelectionChange: { assetIDs, additive, isFinal in
+                            contentFocused = true
+                            Task {
+                                await model.selectAssets(
+                                    assetIDs,
+                                    additive: additive,
+                                    shouldRefreshInspector: isFinal
                                 )
                             }
                         }
+                    ) {
+                        LazyVGrid(
+                            columns: [
+                                GridItem(
+                                    .adaptive(
+                                        minimum: LibraryGridDensity.standard.cellWidthRange.lowerBound,
+                                        maximum: LibraryGridDensity.standard.cellWidthRange.upperBound
+                                    ),
+                                    spacing: LibraryGridLayout.spacing
+                                ),
+                            ],
+                            spacing: LibraryGridLayout.spacing
+                        ) {
+                            ForEach(model.reviewQueueItems) { item in
+                                ReviewThumbnailView(
+                                    item: item,
+                                    model: model,
+                                    isSelected: model.selectedAssetIDs.contains(item.assetID),
+                                    onSelect: {
+                                        contentFocused = true
+                                        let flags = NSEvent.modifierFlags.intersection(.deviceIndependentFlagsMask)
+                                        Task {
+                                            await model.selectAsset(
+                                                item.assetID,
+                                                additive: flags.contains(.command),
+                                                extendRange: flags.contains(.shift)
+                                            )
+                                        }
+                                    },
+                                    onOpen: {
+                                        contentFocused = true
+                                        Task {
+                                            await model.openSinglePhotoView(assetID: item.assetID)
+                                        }
+                                    }
+                                )
+                                .libraryGridCellFrameReporter(assetID: item.assetID)
+                                .id(item.assetID)
+                                .task {
+                                    await model.loadMoreReviewQueueIfNeeded(
+                                        currentAssetID: item.assetID,
+                                        tagID: tagID
+                                    )
+                                }
+                            }
+                        }
+                        .padding(LibraryGridLayout.horizontalPadding)
                     }
-                    .padding(LibraryGridLayout.horizontalPadding)
                 }
+                .scrollDisabled(isMarqueeSelecting)
                 .background(Color(nsColor: .windowBackgroundColor))
                 .accessibilityLabel("待审核建议网格")
                 .onAppear {

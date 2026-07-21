@@ -864,6 +864,48 @@ final class LibraryWorkspaceModel: ObservableObject {
         }
     }
 
+    func selectAssets(
+        _ assetIDs: Set<UUID>,
+        additive: Bool = false,
+        shouldRefreshInspector: Bool = true
+    ) async {
+        let visibleIDs = Set(displayedAssetIDsInGridOrder)
+        let normalizedIDs = assetIDs.intersection(visibleIDs)
+
+        if additive {
+            selectedAssetIDs.formUnion(normalizedIDs)
+        } else {
+            selectedAssetIDs = normalizedIDs
+        }
+
+        if let firstSelected = displayedAssetIDsInGridOrder.first(where: { selectedAssetIDs.contains($0) }) {
+            selectionAnchorID = firstSelected
+        } else {
+            selectionAnchorID = nil
+        }
+
+        if selectedAssetIDs.count != 1 {
+            isSinglePhotoPresented = false
+        }
+        resetCloudPreviewIfSelectionChanged()
+        resetLocalModelSuggestionsForSelection()
+
+        guard shouldRefreshInspector else { return }
+
+        let selectionRefreshed = await refreshInspector()
+        if selectionRefreshed, notice == .tagSelectionRefreshFailed {
+            notice = nil
+        }
+    }
+
+    private var displayedAssetIDsInGridOrder: [UUID] {
+        if reviewMode != nil {
+            reviewQueueItems.map(\.assetID)
+        } else {
+            items.map(\.assetID)
+        }
+    }
+
     func requestLocalModelSuggestions() async {
         guard let runtime = localModelSuggestions,
               let assetID = primarySelectedAssetID
@@ -2818,6 +2860,10 @@ extension LibraryWorkspaceModel {
             .reviewActionFailed
         }
     }
+
+#if DEBUG
+    var selectionAnchorIDForTesting: UUID? { selectionAnchorID }
+#endif
 }
 
 private enum LibrarySidebarSelection: Hashable {
@@ -2868,6 +2914,8 @@ struct LibraryWorkspaceView: View {
     @State private var activeSheet: LibraryWorkspaceSheet?
     @State private var commandSearchText = ""
     @State private var gridColumnCount = 1
+    @State private var gridCellFrames: [UUID: CGRect] = [:]
+    @State private var isMarqueeSelecting = false
     @State private var gridScrollTargetID: UUID?
     @State private var layoutState = LibraryWorkspaceLayoutState()
     @FocusState private var newTagFieldFocused: Bool
@@ -3941,49 +3989,67 @@ struct LibraryWorkspaceView: View {
         return GeometryReader { proxy in
             ScrollViewReader { scrollProxy in
                 ScrollView {
-                    LazyVGrid(
-                        columns: [
-                            GridItem(
-                                .adaptive(
-                                    minimum: widthRange.lowerBound,
-                                    maximum: widthRange.upperBound
-                                ),
-                                spacing: LibraryGridLayout.spacing
-                            ),
-                        ],
-                        spacing: LibraryGridLayout.spacing
-                    ) {
-                        ForEach(model.items, id: \.assetID) { item in
-                            AssetThumbnailView(
-                                item: item,
-                                model: model,
-                                isSelected: model.selectedAssetIDs.contains(item.assetID),
-                                onSelect: {
-                                    contentFocused = true
-                                    let flags = NSEvent.modifierFlags.intersection(.deviceIndependentFlagsMask)
-                                    Task {
-                                        await model.selectAsset(
-                                            item.assetID,
-                                            additive: flags.contains(.command),
-                                            extendRange: flags.contains(.shift)
-                                        )
-                                    }
-                                },
-                                onOpen: {
-                                    contentFocused = true
-                                    Task {
-                                        await model.openSinglePhotoView(assetID: item.assetID)
-                                    }
-                                }
-                            )
-                                .id(item.assetID)
-                                .task {
-                                    await model.loadMoreIfNeeded(currentAssetID: item.assetID)
-                                }
+                    LibraryGridMarqueeContainer(
+                        cellFrames: $gridCellFrames,
+                        isMarqueeSelecting: $isMarqueeSelecting,
+                        currentSelection: model.selectedAssetIDs,
+                        onSelectionChange: { assetIDs, additive, isFinal in
+                            contentFocused = true
+                            Task {
+                                await model.selectAssets(
+                                    assetIDs,
+                                    additive: additive,
+                                    shouldRefreshInspector: isFinal
+                                )
+                            }
                         }
+                    ) {
+                        LazyVGrid(
+                            columns: [
+                                GridItem(
+                                    .adaptive(
+                                        minimum: widthRange.lowerBound,
+                                        maximum: widthRange.upperBound
+                                    ),
+                                    spacing: LibraryGridLayout.spacing
+                                ),
+                            ],
+                            spacing: LibraryGridLayout.spacing
+                        ) {
+                            ForEach(model.items, id: \.assetID) { item in
+                                AssetThumbnailView(
+                                    item: item,
+                                    model: model,
+                                    isSelected: model.selectedAssetIDs.contains(item.assetID),
+                                    onSelect: {
+                                        contentFocused = true
+                                        let flags = NSEvent.modifierFlags.intersection(.deviceIndependentFlagsMask)
+                                        Task {
+                                            await model.selectAsset(
+                                                item.assetID,
+                                                additive: flags.contains(.command),
+                                                extendRange: flags.contains(.shift)
+                                            )
+                                        }
+                                    },
+                                    onOpen: {
+                                        contentFocused = true
+                                        Task {
+                                            await model.openSinglePhotoView(assetID: item.assetID)
+                                        }
+                                    }
+                                )
+                                    .libraryGridCellFrameReporter(assetID: item.assetID)
+                                    .id(item.assetID)
+                                    .task {
+                                        await model.loadMoreIfNeeded(currentAssetID: item.assetID)
+                                    }
+                            }
+                        }
+                        .padding(LibraryGridLayout.horizontalPadding)
                     }
-                    .padding(LibraryGridLayout.horizontalPadding)
                 }
+                .scrollDisabled(isMarqueeSelecting)
                 .background(Color(nsColor: .windowBackgroundColor))
                 .accessibilityLabel("照片网格")
                 .onAppear {
