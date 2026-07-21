@@ -52,9 +52,14 @@ final class CatalogMigrationTests: XCTestCase {
         try seeded.pool.write { db in
             try db.execute(sql: "PRAGMA foreign_keys = OFF")
             try db.execute(sql: "DROP TABLE standard_tag_binding")
+            // GRDB rejects replaying an earlier migration while a later one remains
+            // recorded; clear the subsequent repair id so v012→v013 can re-apply.
             try db.execute(
-                sql: "DELETE FROM grdb_migrations WHERE identifier = ?",
-                arguments: [CatalogMigrationID.v012RepairStandardTagBinding]
+                sql: "DELETE FROM grdb_migrations WHERE identifier IN (?, ?)",
+                arguments: [
+                    CatalogMigrationID.v012RepairStandardTagBinding,
+                    CatalogMigrationID.v013PhotosMissingAssetRepair,
+                ]
             )
             try db.execute(sql: "PRAGMA foreign_keys = ON")
             XCTAssertFalse(try db.tableExists("standard_tag_binding"))
