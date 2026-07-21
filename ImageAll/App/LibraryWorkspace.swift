@@ -2336,6 +2336,8 @@ final class LibraryWorkspaceModel: ObservableObject {
     ) async {
         selectedTagFilterDecisions[tagID] = decision
         selectedTagFilterIDs = Set(selectedTagFilterDecisions.keys)
+        // Decision-panel include/reject must not leave the same tag excluded.
+        excludedTagFilterIDs.remove(tagID)
         if decision != nil {
             tagPresence = .any
         }

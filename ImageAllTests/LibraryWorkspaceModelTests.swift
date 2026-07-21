@@ -2473,6 +2473,32 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertEqual(service.lastFilter.excludedTagIDs, [work.id])
     }
 
+    func testSetTagDecisionFilterClearsExcludedStateForSameTag() async {
+        let sourceID = UUID()
+        let asset = Self.makeAsset(sourceID: sourceID, fileName: "photo.jpg")
+        let family = TagListItem(id: UUID(), displayName: "Family", state: .active)
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(id: sourceID, displayName: "Fixture", state: .active),
+            reconciledItems: [asset],
+            tags: [family]
+        )
+        let model = LibraryWorkspaceModel(service: service)
+
+        await model.start()
+        await model.connectFolder()
+        await waitForCatalogScanToFinish(model)
+
+        await model.toggleExcludedTagFilter(family.id)
+        XCTAssertTrue(model.isTagFilterExcluded(family.id))
+
+        await model.setTagDecisionFilter(tagID: family.id, decision: .accepted)
+
+        XCTAssertTrue(model.isTagFilterIncluded(family.id))
+        XCTAssertFalse(model.isTagFilterExcluded(family.id))
+        XCTAssertEqual(service.lastFilter.tagDecisionFilters.map(\.tagID), [family.id])
+        XCTAssertTrue(service.lastFilter.excludedTagIDs.isEmpty)
+    }
+
     func testUnionAndIntersectionTagFiltersSetMatchMode() async {
         let sourceID = UUID()
         let asset = Self.makeAsset(sourceID: sourceID, fileName: "photo.jpg")

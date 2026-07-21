@@ -166,6 +166,24 @@ final class AssetCatalogQueryTests: XCTestCase {
         XCTAssertTrue(taggedExcludeFamilyPage.items.isEmpty)
     }
 
+    func testIncludeAndExcludeSameTagYieldsEmptyPage() throws {
+        let fixture = try CatalogQueryTestSupport.openQueryDatabase()
+        let page = try fixture.query.fetchAssetPage(
+            AssetPageRequest(
+                filter: AssetPageFilter(
+                    tagDecisionFilters: [
+                        TagDecisionFilter(tagID: fixture.ids.tagFamily, decision: .accepted),
+                    ],
+                    excludedTagIDs: [fixture.ids.tagFamily]
+                ),
+                sort: .newest,
+                cursor: nil,
+                limit: 50
+            )
+        )
+        XCTAssertTrue(page.items.isEmpty)
+    }
+
     func testTaggedAndUntaggedPresenceFilters() throws {
         let fixture = try CatalogQueryTestSupport.openQueryDatabase()
         let tagged = try fixture.query.fetchAssetPage(
