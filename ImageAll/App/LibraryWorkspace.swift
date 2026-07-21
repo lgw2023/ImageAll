@@ -2443,6 +2443,7 @@ final class LibraryWorkspaceModel: ObservableObject {
     private func refreshInspector() async -> Bool {
         resetCloudPreviewIfSelectionChanged()
         let assetIDs = Array(selectedAssetIDs)
+        let selectionSnapshot = Set(assetIDs)
         guard !assetIDs.isEmpty else {
             inspectorDetail = nil
             inspectorTags = []
@@ -2458,6 +2459,10 @@ final class LibraryWorkspaceModel: ObservableObject {
                 let detail = try await Self.offMain {
                     try service.fetchInspectorDetail(assetID: assetID)
                 }
+                let pending = try await Self.offMain {
+                    try reviewPort.pendingSuggestionsForAsset(assetID: assetID)
+                }
+                guard selectedAssetIDs == selectionSnapshot else { return false }
                 inspectorDetail = detail
                 inspectorTags = detail.tags
                     .filter { $0.tagState == .active }
@@ -2468,13 +2473,12 @@ final class LibraryWorkspaceModel: ObservableObject {
                             decision: LibraryInspectorTagDecisionState($0.decision)
                         )
                     }
-                assetPendingSuggestions = try await Self.offMain {
-                    try reviewPort.pendingSuggestionsForAsset(assetID: assetID)
-                }
+                assetPendingSuggestions = pending
             } else {
                 let aggregates = try await Self.offMain {
                     try service.selectionAggregate(tagIDs: availableTags.map(\.id), assetIDs: assetIDs)
                 }
+                guard selectedAssetIDs == selectionSnapshot else { return false }
                 let aggregateByTagID = Dictionary(uniqueKeysWithValues: aggregates.map { ($0.tagID, $0) })
                 inspectorDetail = nil
                 assetPendingSuggestions = []
@@ -2499,6 +2503,7 @@ final class LibraryWorkspaceModel: ObservableObject {
             }
             return true
         } catch {
+            guard selectedAssetIDs == selectionSnapshot else { return false }
             inspectorDetail = nil
             inspectorTags = []
             assetPendingSuggestions = []

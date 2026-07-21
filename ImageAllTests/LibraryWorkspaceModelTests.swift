@@ -2759,6 +2759,72 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertNil(model.selectionAnchorIDForTesting)
     }
 
+    func testSelectAssetsWithoutInspectorRefreshKeepsPriorInspectorAndSkipsFetches() async {
+        let sourceID = UUID()
+        let first = Self.makeAsset(sourceID: sourceID, fileName: "first.jpg")
+        let second = Self.makeAsset(sourceID: sourceID, fileName: "second.jpg")
+        let third = Self.makeAsset(sourceID: sourceID, fileName: "third.jpg")
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(id: sourceID, displayName: "Fixture", state: .active),
+            reconciledItems: [first, second, third]
+        )
+        let model = LibraryWorkspaceModel(service: service)
+
+        await model.start()
+        await model.connectFolder()
+        await waitForCatalogScanToFinish(model)
+        await model.selectAsset(first.assetID)
+        let fetchesAfterSelect = service.inspectorDetailFetchCallCount
+        let aggregatesAfterSelect = service.selectionAggregateCallCount
+
+        await model.selectAssets(
+            [second.assetID, third.assetID],
+            shouldRefreshInspector: false
+        )
+
+        XCTAssertEqual(model.selectedAssetIDs, Set([second.assetID, third.assetID]))
+        XCTAssertEqual(model.inspectorDetail?.assetID, first.assetID)
+        XCTAssertEqual(service.inspectorDetailFetchCallCount, fetchesAfterSelect)
+        XCTAssertEqual(service.selectionAggregateCallCount, aggregatesAfterSelect)
+    }
+
+    func testStaleInspectorRefreshDoesNotOverwriteNewerSelection() async {
+        let sourceID = UUID()
+        let first = Self.makeAsset(sourceID: sourceID, fileName: "first.jpg")
+        let second = Self.makeAsset(sourceID: sourceID, fileName: "second.jpg")
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(id: sourceID, displayName: "Fixture", state: .active),
+            reconciledItems: [first, second],
+            blocksInspectorDetailFetches: 1
+        )
+        let model = LibraryWorkspaceModel(service: service)
+
+        await model.start()
+        await model.connectFolder()
+        await waitForCatalogScanToFinish(model)
+
+        let staleSelect = Task {
+            await model.selectAsset(first.assetID)
+        }
+        for _ in 0 ..< 10_000 where !service.hasStartedBlockedInspectorDetailFetch {
+            await Task.yield()
+        }
+        XCTAssertTrue(service.hasStartedBlockedInspectorDetailFetch)
+
+        await model.selectAsset(second.assetID)
+        XCTAssertEqual(model.inspectorDetail?.assetID, second.assetID)
+
+        service.releaseBlockedInspectorDetailFetch()
+        await staleSelect.value
+
+        XCTAssertEqual(model.selectedAssetIDs, [second.assetID])
+        XCTAssertEqual(
+            model.inspectorDetail?.assetID,
+            second.assetID,
+            "stale refresh for first must not overwrite newer selection"
+        )
+    }
+
     func testMarqueeSelectionLogicResolvesAdditiveSelection() {
         let first = UUID()
         let second = UUID()
@@ -4336,6 +4402,11 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
     private let cloudPreviewFailureCount: Int
     private let reconcileGate = DispatchSemaphore(value: 0)
     private var storedHasStartedBlockedReconcile = false
+    private let inspectorDetailGate = DispatchSemaphore(value: 0)
+    private var remainingBlockedInspectorDetailFetches = 0
+    private var storedHasStartedBlockedInspectorDetailFetch = false
+    private var storedInspectorDetailFetchCallCount = 0
+    private var storedSelectionAggregateCallCount = 0
     private var storedCloudPreviewDownloadCallCount = 0
     private var storedCloudPreviewCancellationCount = 0
     private var storedThumbnailLoadCallCount = 0
@@ -4399,7 +4470,8 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
         blockedSearchText: String? = nil,
         assetPageSize: Int? = nil,
         photosLibrarySupportedImageCount: Int = 0,
-        photosCatalogAssetCount: Int = 0
+        photosCatalogAssetCount: Int = 0,
+        blocksInspectorDetailFetches: Int = 0
     ) {
         self.connectedSource = connectedSource
         self.reconciledItems = reconciledItems
@@ -4431,6 +4503,7 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
         self.assetPageSize = assetPageSize
         storedPhotosLibrarySupportedImageCount = photosLibrarySupportedImageCount
         storedPhotosCatalogAssetCount = photosCatalogAssetCount
+        remainingBlockedInspectorDetailFetches = blocksInspectorDetailFetches
         storedSources = startsConnected ? [connectedSource] : []
         storedItems = initialItems
         storedTags = tags
@@ -4440,8 +4513,24 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
         lock.withLock { storedHasStartedBlockedReconcile }
     }
 
+    var hasStartedBlockedInspectorDetailFetch: Bool {
+        lock.withLock { storedHasStartedBlockedInspectorDetailFetch }
+    }
+
+    var inspectorDetailFetchCallCount: Int {
+        lock.withLock { storedInspectorDetailFetchCallCount }
+    }
+
+    var selectionAggregateCallCount: Int {
+        lock.withLock { storedSelectionAggregateCallCount }
+    }
+
     func releaseBlockedReconcile() {
         reconcileGate.signal()
+    }
+
+    func releaseBlockedInspectorDetailFetch() {
+        inspectorDetailGate.signal()
     }
 
     var reconcileRunCount: Int {
@@ -4948,6 +5037,16 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
     }
 
     func fetchInspectorDetail(assetID: UUID) throws -> AssetInspectorDetail {
+        let shouldBlock = lock.withLock { () -> Bool in
+            storedInspectorDetailFetchCallCount += 1
+            guard remainingBlockedInspectorDetailFetches > 0 else { return false }
+            remainingBlockedInspectorDetailFetches -= 1
+            storedHasStartedBlockedInspectorDetailFetch = true
+            return true
+        }
+        if shouldBlock {
+            inspectorDetailGate.wait()
+        }
         if inspectorDetailFails {
             throw FakeWorkspaceError.notFound
         }
@@ -4993,7 +5092,8 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
 
     func selectionAggregate(tagIDs: [UUID], assetIDs: [UUID]) throws -> [TagSelectionAggregate] {
         lock.withLock {
-            tagIDs.map { tagID in
+            storedSelectionAggregateCallCount += 1
+            return tagIDs.map { tagID in
                 let states = assetIDs.map { decisions[$0]?[tagID] ?? .unknown }
                 return TagSelectionAggregate(
                     tagID: tagID,
