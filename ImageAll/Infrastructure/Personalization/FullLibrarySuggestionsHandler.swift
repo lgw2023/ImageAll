@@ -10,6 +10,7 @@ struct FullLibrarySuggestionsHandlerDependencies: Sendable {
     let queue: GRDBJobQueue
     let featureLoader: any SyncFeatureVectorLoading
     let clock: any JobClock
+    var minimumScoreForTag: (@Sendable (UUID) throws -> Double)? = nil
     var publishFailureInjector: (@Sendable () throws -> Void)?
     var beforeEachBatch: (@Sendable (Int) -> Void)?
 }
@@ -95,6 +96,7 @@ struct FullLibrarySuggestionsHandler: LeaseBoundJobHandler, Sendable {
         let catalog = GRDBPersonalizationRepository(database: dependencies.database)
         var firstBatchPublished = state.firstBatchPublished
         let modelRevision = decodedPayload.modelRevision
+        let minimumScore = try dependencies.minimumScoreForTag?(decodedPayload.tagID) ?? 0
 
         guard try review.tagIsActive(decodedPayload.tagID) else {
             return failure(.personalizationTagArchived, checkpoint: checkpoint, progress: nil)
@@ -232,7 +234,7 @@ struct FullLibrarySuggestionsHandler: LeaseBoundJobHandler, Sendable {
                         negativeSamples: scoring.negativeValues,
                         neighborCount: scoring.neighborCount
                     )
-                    if score > 0 {
+                    if score > minimumScore {
                         predictions.append(
                             PredictionRegistration(
                                 assetID: assetID,
@@ -284,7 +286,7 @@ struct FullLibrarySuggestionsHandler: LeaseBoundJobHandler, Sendable {
                             ModelRevisionRegistration(
                                 tagID: decodedPayload.tagID,
                                 revision: modelRevision,
-                                threshold: 0,
+                                threshold: minimumScore,
                                 neighborCount: scoring.neighborCount,
                                 sampleBudgetPerRole: 12,
                                 samples: scoring.sampleRegistrations,

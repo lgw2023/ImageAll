@@ -16,6 +16,8 @@ enum CatalogMigrationID {
     static let v013PhotosMissingAssetRepair = "v013_photos_missing_asset_repair"
     static let v014AddTrainingRunsAndPersonalMultiSlot =
         "v014_add_training_runs_and_personal_multi_slot"
+    static let v015AddSuggestionScoreThresholds =
+        "v015_add_suggestion_score_thresholds"
 
     static let knownOrdered: [String] = [
         v001CreateCatalogCore,
@@ -32,5 +34,6 @@ enum CatalogMigrationID {
         v012RepairStandardTagBinding,
         v013PhotosMissingAssetRepair,
         v014AddTrainingRunsAndPersonalMultiSlot,
+        v015AddSuggestionScoreThresholds,
     ]
 }

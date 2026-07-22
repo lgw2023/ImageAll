@@ -97,6 +97,8 @@ enum CatalogSchemaExpectations {
         "standard_model_revision",
         "standard_prediction",
         "standard_tag_binding",
+        "suggestion_score_threshold_default",
+        "suggestion_score_threshold_override",
         "tag",
         "tag_model",
         "tag_model_revision",
@@ -187,6 +189,17 @@ enum CatalogSchemaExpectations {
             .init(name: "state", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
             .init(name: "created_at_ms", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
             .init(name: "derived_from_concept_id", type: "TEXT", notNull: false, defaultValue: nil, primaryKeyOrder: 0),
+        ],
+        "suggestion_score_threshold_default": [
+            .init(name: "method", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 1),
+            .init(name: "min_score", type: "REAL", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "updated_at_ms", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+        ],
+        "suggestion_score_threshold_override": [
+            .init(name: "tag_id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 1),
+            .init(name: "method", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 2),
+            .init(name: "min_score", type: "REAL", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "updated_at_ms", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
         ],
         "personal_suggestion_model": [
             .init(name: "method", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 1),
@@ -411,6 +424,10 @@ enum CatalogSchemaExpectations {
             .init(from: "tag_id", toTable: "standard_tag_binding", to: "tag_id", onDelete: "CASCADE"),
             .init(from: "standard_pack_id", toTable: "standard_model_revision", to: "standard_pack_id", onDelete: "CASCADE"),
             .init(from: "standard_pack_revision", toTable: "standard_model_revision", to: "standard_pack_revision", onDelete: "CASCADE"),
+        ],
+        "suggestion_score_threshold_default": [],
+        "suggestion_score_threshold_override": [
+            .init(from: "tag_id", toTable: "tag", to: "id", onDelete: "CASCADE"),
         ],
         "personal_suggestion_model": [
             .init(from: "catalog_scope_id", toTable: "catalog_scope", to: "scope_id", onDelete: "CASCADE"),

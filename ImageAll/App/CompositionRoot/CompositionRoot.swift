@@ -95,12 +95,16 @@ struct CompositionRoot {
             downloadedPreviews: derivedImages,
             clock: clock
         )
+        let suggestionThresholds = GRDBSuggestionThresholdRepository(database: runtime.database)
         let personalizationHandler = FullLibrarySuggestionsHandler(
             dependencies: FullLibrarySuggestionsHandlerDependencies(
                 database: runtime.database,
                 queue: runtime.jobQueue,
                 featureLoader: featurePrintService,
-                clock: clock
+                clock: clock,
+                minimumScoreForTag: { tagID in
+                    try suggestionThresholds.effectiveMinScore(tagID: tagID, method: .featureKnn)
+                }
             )
         )
         let assetImages = LibraryAssetImageLoader(
@@ -166,14 +170,24 @@ struct CompositionRoot {
         )
         let catalogScopeID = try? runtime.database.catalogScopeID()
         let appPersonalModelRebuilder: AppPersonalModelRebuildRuntime?
+        let appPersonalAdamWModelRebuilder: AppPersonalModelRebuildRuntime?
         let appPersonalSampleSuggester: AppPersonalSampleSuggestionRuntime?
         let appPersonalTagLibrarySuggester: AppPersonalTagLibrarySuggestionRuntime?
+        let appPersonalAdamWTagLibrarySuggester: AppPersonalTagLibrarySuggestionRuntime?
         if let modelActivationCoordinator, let catalogScopeID {
             appPersonalModelRebuilder = AppPersonalModelRebuildRuntime(
                 expectedCatalogScopeID: catalogScopeID,
                 activationCoordinator: modelActivationCoordinator,
                 cachesDirectory: runtime.paths.cachesDirectory,
-                applicationSupportDirectory: runtime.paths.applicationSupportDirectory
+                applicationSupportDirectory: runtime.paths.applicationSupportDirectory,
+                family: .centroid
+            )
+            appPersonalAdamWModelRebuilder = AppPersonalModelRebuildRuntime(
+                expectedCatalogScopeID: catalogScopeID,
+                activationCoordinator: modelActivationCoordinator,
+                cachesDirectory: runtime.paths.cachesDirectory,
+                applicationSupportDirectory: runtime.paths.applicationSupportDirectory,
+                family: .adamW
             )
             appPersonalSampleSuggester = AppPersonalSampleSuggestionRuntime(
                 expectedCatalogScopeID: catalogScopeID,
@@ -183,12 +197,21 @@ struct CompositionRoot {
             appPersonalTagLibrarySuggester = AppPersonalTagLibrarySuggestionRuntime(
                 expectedCatalogScopeID: catalogScopeID,
                 activationCoordinator: modelActivationCoordinator,
-                applicationSupportDirectory: runtime.paths.applicationSupportDirectory
+                applicationSupportDirectory: runtime.paths.applicationSupportDirectory,
+                family: .centroid
+            )
+            appPersonalAdamWTagLibrarySuggester = AppPersonalTagLibrarySuggestionRuntime(
+                expectedCatalogScopeID: catalogScopeID,
+                activationCoordinator: modelActivationCoordinator,
+                applicationSupportDirectory: runtime.paths.applicationSupportDirectory,
+                family: .adamW
             )
         } else {
             appPersonalModelRebuilder = nil
+            appPersonalAdamWModelRebuilder = nil
             appPersonalSampleSuggester = nil
             appPersonalTagLibrarySuggester = nil
+            appPersonalAdamWTagLibrarySuggester = nil
         }
         let selectedAssetEmbeddingCache: AppSelectedAssetEmbeddingCacheRuntime?
         if let modelActivationCoordinator,
@@ -231,9 +254,13 @@ struct CompositionRoot {
             review: personalizationReview,
             localModelSuggestions: localModelSuggestions,
             appPersonalModelRebuilder: appPersonalModelRebuilder,
+            appPersonalAdamWModelRebuilder: appPersonalAdamWModelRebuilder,
             selectedAssetEmbeddingCache: selectedAssetEmbeddingCache,
             appPersonalSampleSuggester: appPersonalSampleSuggester,
-            appPersonalTagLibrarySuggester: appPersonalTagLibrarySuggester
+            appPersonalTagLibrarySuggester: appPersonalTagLibrarySuggester,
+            appPersonalAdamWTagLibrarySuggester: appPersonalAdamWTagLibrarySuggester,
+            suggestionThresholds: suggestionThresholds,
+            clock: clock
         )
     }
 

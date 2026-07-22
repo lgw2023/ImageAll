@@ -6172,6 +6172,7 @@ private actor FakeAppPersonalTagLibrarySuggester: AppPersonalTagLibrarySuggestin
         tagID: UUID,
         candidates: [PersonalSuggestionCandidate],
         maximumPendingCount _: Int,
+        minimumScore _: Double,
         embedding: @escaping @Sendable (PersonalSuggestionCandidate) async throws -> AppCoreMLEmbedding,
         progress: (@Sendable (Int, Int, Int) -> Void)?
     ) async throws -> AppPersonalTagLibrarySuggestionBatch {
@@ -6266,6 +6267,7 @@ private struct FakePersonalTagLibraryReplacement: Equatable {
     let tagID: UUID
     let hits: [AppPersonalTagLibrarySuggestionHit]
     let expectedCapability: PersonalModelSuggestionCapability
+    let maximumPendingCount: Int
 }
 
 private struct FakeStandardSuggestionReplacement: Equatable {
@@ -6442,13 +6444,16 @@ private final class FakePersonalizationReviewPort: PersonalizationReviewPort, @u
     func personalSuggestionCandidates(
         afterAssetID: UUID?,
         limit: Int,
-        sourceIDs _: [UUID]?
+        sourceIDs _: [UUID]?,
+        excludingDecisionsForTagID: UUID?
     ) throws -> [PersonalSuggestionCandidate] {
         lock.withLock {
+            let decided = excludingDecisionsForTagID.flatMap { decidedAssetIDsProvider?($0) } ?? []
+            let filtered = personalCandidates.filter { !decided.contains($0.assetID) }
             let startIndex = afterAssetID
-                .flatMap { id in personalCandidates.firstIndex(where: { $0.assetID == id }) }
+                .flatMap { id in filtered.firstIndex(where: { $0.assetID == id }) }
                 .map { $0 + 1 } ?? 0
-            return Array(personalCandidates.dropFirst(startIndex).prefix(limit))
+            return Array(filtered.dropFirst(startIndex).prefix(limit))
         }
     }
 
@@ -6478,17 +6483,19 @@ private final class FakePersonalizationReviewPort: PersonalizationReviewPort, @u
     func replacePersonalTagLibrarySuggestions(
         tagID: UUID,
         hits: [AppPersonalTagLibrarySuggestionHit],
-        expectedCapability: PersonalModelSuggestionCapability
+        expectedCapability: PersonalModelSuggestionCapability,
+        maximumPendingCount: Int
     ) throws -> Int {
         lock.withLock {
             storedPersonalTagLibraryReplacements.append(
                 FakePersonalTagLibraryReplacement(
                     tagID: tagID,
                     hits: hits,
-                    expectedCapability: expectedCapability
+                    expectedCapability: expectedCapability,
+                    maximumPendingCount: maximumPendingCount
                 )
             )
-            return hits.count
+            return min(hits.count, maximumPendingCount)
         }
     }
 

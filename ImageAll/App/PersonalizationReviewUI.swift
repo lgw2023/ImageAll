@@ -177,6 +177,11 @@ struct ReviewOverviewView: View {
                     Text(statusText(overview))
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                    TagSuggestionThresholdControls(
+                        model: model,
+                        tagID: overview.id,
+                        displayName: overview.displayName
+                    )
                     if overview.missingPositiveCount > 0 || overview.missingNegativeCount > 0 {
                         Text("还需确认 \(overview.missingPositiveCount) 张、标记不属于 \(overview.missingNegativeCount) 张")
                             .font(.caption)
@@ -238,7 +243,29 @@ struct ReviewOverviewView: View {
                             }
                             .buttonStyle(.bordered)
                             .controlSize(.small)
-                            .help("用当前人脑个人模型打分；可在确认框中选择来源，只保留该标签 Top 100。请先点工具栏人脑图标重建模型。")
+                            .help("用当前人脑质心个人模型打分；可在确认框中选择来源，只保留该标签 Top 100。请先点工具栏人脑图标重建模型。")
+                            .disabled(model.isGeneratingAppPersonalTagLibrarySuggestions)
+                        }
+                        if overview.canGeneratePersonalModel {
+                            Button {
+                                model.requestEnqueueSuggestions(
+                                    tagID: overview.id,
+                                    displayName: overview.displayName,
+                                    mode: overview.canUpdate ? .update : .generate,
+                                    method: .personalAdamW
+                                )
+                            } label: {
+                                if model.isGeneratingAppPersonalTagLibrarySuggestions {
+                                    ProgressView()
+                                        .controlSize(.small)
+                                    Text("超级个人模型扫描中")
+                                } else {
+                                    Label("超级个人模型 Top 100", systemImage: "brain.head.profile.fill")
+                                }
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                            .help("用超级人脑 AdamW 个人模型打分；可在确认框中选择来源，只保留该标签 Top 100。请先点工具栏超级人脑图标训练。")
                             .disabled(model.isGeneratingAppPersonalTagLibrarySuggestions)
                         }
                         if overview.canReview {
@@ -418,6 +445,58 @@ struct ReviewOverviewView: View {
     }
 }
 
+struct TagSuggestionThresholdControls: View {
+    @ObservedObject var model: LibraryWorkspaceModel
+    let tagID: UUID
+    let displayName: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("本标签生效门槛")
+                .font(.caption.weight(.semibold))
+            ForEach(SuggestionScoreThresholdMethod.allCases, id: \.rawValue) { method in
+                HStack(spacing: 8) {
+                    Text(SuggestionScoreThresholdMethodPresentation.displayName(method))
+                        .font(.caption)
+                        .frame(width: 88, alignment: .leading)
+                    Text(String(format: "%.2f", model.effectiveSuggestionMinScore(tagID: tagID, method: method)))
+                        .font(.caption.monospacedDigit())
+                        .frame(width: 44, alignment: .trailing)
+                    Stepper(
+                        "",
+                        value: Binding(
+                            get: {
+                                model.effectiveSuggestionMinScore(tagID: tagID, method: method)
+                            },
+                            set: { newValue in
+                                model.setSuggestionThresholdOverride(
+                                    tagID: tagID,
+                                    method: method,
+                                    minScore: newValue
+                                )
+                            }
+                        ),
+                        in: -1...2,
+                        step: 0.05
+                    )
+                    .labelsHidden()
+                    Button("刷新待审") {
+                        model.prunePendingSuggestionsBelowThreshold(
+                            tagID: tagID,
+                            displayName: displayName,
+                            method: method
+                        )
+                    }
+                    .font(.caption)
+                    .buttonStyle(.borderless)
+                    .help("按当前生效门槛删除本轨低于门槛的 pending，不重跑全库扫描")
+                }
+            }
+        }
+        .padding(.vertical, 2)
+    }
+}
+
 struct SuggestionEnqueueConfirmationSheet: View {
     @ObservedObject var model: LibraryWorkspaceModel
     let pending: SuggestionEnqueueConfirmation
@@ -478,20 +557,25 @@ struct SuggestionEnqueueConfirmationSheet: View {
             "更新“\(pending.displayName)”特征向量建议"
         case (.personalModel, _):
             "用个人模型生成“\(pending.displayName)”建议"
+        case (.personalAdamW, _):
+            "用超级个人模型生成“\(pending.displayName)”建议"
         }
     }
 
     private var message: String {
+        let thresholdText = String(format: "%.2f", pending.effectiveMinScore)
         switch pending.method {
         case .featureKnn:
             switch pending.mode {
             case .generate:
-                return "将用特征向量近邻检查所选来源中已入库的照片，并只保留该标签置信度最高的 100 条待审核建议。训练样本仍来自全部来源；人工标签不会丢失。"
+                return "将用特征向量近邻检查所选来源中已入库的照片，只保留分数高于 \(thresholdText) 且最高的 100 条待审核建议。训练样本仍来自全部来源；人工标签不会丢失。"
             case .update:
-                return "将用最新确认/拒绝样本重新扫描所选来源。只保留 Top 100；人工标签不会改变。"
+                return "将用最新确认/拒绝样本重新扫描所选来源，只保留分数高于 \(thresholdText) 且最高的 100 条；人工标签不会改变。"
             }
         case .personalModel:
-            return "将用当前人脑个人模型扫描所选来源，只保留“\(pending.displayName)”置信度最高的 100 条待审核建议。需要该标签已在人脑模型中；不要求拒绝样本。人工标签不会丢失。"
+            return "将用当前人脑质心个人模型扫描所选来源，只保留分数高于 \(thresholdText) 且最高的 100 条“\(pending.displayName)”待审核建议。需要该标签已在人脑模型中；不要求拒绝样本。人工标签不会丢失。"
+        case .personalAdamW:
+            return "将用当前超级人脑 AdamW 个人模型扫描所选来源，只保留分数高于 \(thresholdText) 且最高的 100 条“\(pending.displayName)”待审核建议。需要该标签已在超级模型中；不要求拒绝样本。人工标签不会丢失。"
         }
     }
 }
@@ -716,6 +800,7 @@ private extension ReviewQueueSuggestionOrigin {
         case .featurePrint: "特征向量"
         case .standardModel: "标准模型"
         case .personalModel: "个人模型"
+        case .personalAdamW: "超级个人模型"
         }
     }
 }
@@ -752,6 +837,14 @@ private struct ReviewThumbnailView: View {
                             .padding(.horizontal, 6)
                             .padding(.vertical, 3)
                             .background(.black.opacity(0.65), in: Capsule())
+                        if item.score.isFinite {
+                            Text(String(format: "%.2f", item.score))
+                                .font(.caption2.monospacedDigit().weight(.semibold))
+                                .foregroundStyle(.white)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 3)
+                                .background(.black.opacity(0.65), in: Capsule())
+                        }
                         Spacer()
                     }
                     .padding(6)
@@ -775,7 +868,7 @@ private struct ReviewThumbnailView: View {
         .accessibilityLabel(item.fileName ?? "照片")
         .accessibilityAddTraits(.isButton)
         .accessibilityValue(
-            "\(isSelected ? "已选择" : "未选择")，\(item.suggestionOrigin.reviewDisplayName)建议"
+            "\(isSelected ? "已选择" : "未选择")，\(item.suggestionOrigin.reviewDisplayName)建议，分数 \(String(format: "%.2f", item.score))"
         )
         .accessibilityHint("选择待审核照片；双击可预览，也可按 P、X 或 U 处理")
         .accessibilityAction {

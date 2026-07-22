@@ -42,6 +42,7 @@ actor AppPersonalModelRebuildRuntime: AppPersonalModelRebuilding {
     private let activationCoordinator: AppModelActivationCoordinator
     private let cachesDirectory: URL
     private let applicationSupportDirectory: URL
+    private let family: AppPersonalLinearHeadFamily
     private var isRebuilding = false
     private var activeCoordinator: AppPersonalModelRebuildCoordinator?
 
@@ -49,12 +50,14 @@ actor AppPersonalModelRebuildRuntime: AppPersonalModelRebuilding {
         expectedCatalogScopeID: String,
         activationCoordinator: AppModelActivationCoordinator,
         cachesDirectory: URL,
-        applicationSupportDirectory: URL
+        applicationSupportDirectory: URL,
+        family: AppPersonalLinearHeadFamily = .centroid
     ) {
         self.expectedCatalogScopeID = expectedCatalogScopeID
         self.activationCoordinator = activationCoordinator
         self.cachesDirectory = cachesDirectory
         self.applicationSupportDirectory = applicationSupportDirectory
+        self.family = family
     }
 
     func rebuild(
@@ -73,7 +76,8 @@ actor AppPersonalModelRebuildRuntime: AppPersonalModelRebuilding {
         let store = AppPersonalLinearHeadStore(
             applicationSupportDirectory: applicationSupportDirectory,
             expectedCatalogScopeID: expectedCatalogScopeID,
-            expectedEncoderIdentity: identity
+            expectedEncoderIdentity: identity,
+            family: family
         )
         _ = await store.start()
         let coordinator = AppPersonalModelRebuildCoordinator(
@@ -86,7 +90,8 @@ actor AppPersonalModelRebuildRuntime: AppPersonalModelRebuilding {
                     service: service
                 )
             ),
-            store: store
+            store: store,
+            family: family
         )
         activeCoordinator = coordinator
         defer { activeCoordinator = nil }
@@ -104,6 +109,7 @@ actor AppPersonalModelRebuildCoordinator {
     private let snapshotSource: any AppPersonalTrainingSnapshotSource
     private let embeddingSource: any AppPersonalTrainingEmbeddingSource
     private let store: AppPersonalLinearHeadStore
+    private let family: AppPersonalLinearHeadFamily
     private var activeTask: Task<AppPersonalLinearHeadIdentity, Error>?
 
     init(
@@ -111,13 +117,15 @@ actor AppPersonalModelRebuildCoordinator {
         encoderIdentity: AppCoreMLModelIdentity,
         snapshotSource: any AppPersonalTrainingSnapshotSource,
         embeddingSource: any AppPersonalTrainingEmbeddingSource,
-        store: AppPersonalLinearHeadStore
+        store: AppPersonalLinearHeadStore,
+        family: AppPersonalLinearHeadFamily = .centroid
     ) {
         self.expectedCatalogScopeID = expectedCatalogScopeID
         self.encoderIdentity = encoderIdentity
         self.snapshotSource = snapshotSource
         self.embeddingSource = embeddingSource
         self.store = store
+        self.family = family
     }
 
     func rebuild() async throws -> AppPersonalLinearHeadIdentity {
@@ -196,10 +204,18 @@ actor AppPersonalModelRebuildCoordinator {
         )
         let artifact: AppPersonalLinearHeadArtifact
         do {
-            artifact = try AppPersonalLinearHeadTrainer.train(
-                snapshot: snapshot,
-                encoderIdentity: encoderIdentity
-            )
+            switch family {
+            case .centroid:
+                artifact = try AppPersonalLinearHeadTrainer.train(
+                    snapshot: snapshot,
+                    encoderIdentity: encoderIdentity
+                )
+            case .adamW:
+                artifact = try AppPersonalAdamWLinearHeadTrainer.train(
+                    snapshot: snapshot,
+                    encoderIdentity: encoderIdentity
+                ).0
+            }
         } catch {
             throw AppPersonalModelRebuildError.invalidSnapshot
         }

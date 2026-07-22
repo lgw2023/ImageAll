@@ -575,7 +575,8 @@ struct GRDBPersonalizationReviewRepository: Sendable {
     func personalSuggestionCandidates(
         afterAssetID: UUID?,
         limit: Int,
-        sourceIDs: [UUID]? = nil
+        sourceIDs: [UUID]? = nil,
+        excludingDecisionsForTagID: UUID? = nil
     ) throws -> [PersonalSuggestionCandidate] {
         guard limit > 0 else { return [] }
         if let sourceIDs, sourceIDs.isEmpty { return [] }
@@ -595,6 +596,15 @@ struct GRDBPersonalizationReviewRepository: Sendable {
             let placeholders = Array(repeating: "?", count: sourceIDs.count).joined(separator: ", ")
             sql += " AND a.source_id IN (\(placeholders))"
             arguments.append(contentsOf: sourceIDs.map { uuid($0) })
+        }
+        if let excludingDecisionsForTagID {
+            sql += """
+             AND NOT EXISTS (
+                SELECT 1 FROM asset_tag_decision d
+                WHERE d.asset_id = a.id AND d.tag_id = ?
+            )
+            """
+            arguments.append(uuid(excludingDecisionsForTagID))
         }
         if let afterAssetID {
             sql += " AND a.id > ?"
@@ -780,16 +790,25 @@ struct GRDBPersonalizationReviewRepository: Sendable {
         tagID: UUID,
         hits: [AppPersonalTagLibrarySuggestionHit],
         expectedCapability: PersonalModelSuggestionCapability,
+        maximumPendingCount: Int,
         createdAtMs: Int64
     ) throws -> Int {
         guard createdAtMs >= 0,
+              maximumPendingCount > 0,
               expectedCapability.tagIDs.contains(tagID),
               Set(hits.map(\.candidate.assetID)).count == hits.count,
               hits.allSatisfy({
-                  $0.candidate.contentRevision > 0 && $0.score.isFinite && $0.score > 0
+                  $0.candidate.contentRevision > 0 && $0.score.isFinite
               })
         else {
             throw PersonalizationReviewError.persistenceFailure
+        }
+        let rankedHits = hits.sorted {
+            if $0.score == $1.score {
+                return $0.candidate.assetID.uuidString.lowercased()
+                    < $1.candidate.assetID.uuidString.lowercased()
+            }
+            return $0.score > $1.score
         }
         return try database.pool.write { db in
             guard try personalCapabilityMatches(expectedCapability, in: db) else {
@@ -823,7 +842,8 @@ struct GRDBPersonalizationReviewRepository: Sendable {
             )
 
             var inserted = 0
-            for hit in hits {
+            for hit in rankedHits {
+                if inserted >= maximumPendingCount { break }
                 let assetOK = try Bool.fetchOne(
                     db,
                     sql: """
@@ -1181,7 +1201,15 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                 AND p.state = 'pendingReview'
                 AND d.asset_id IS NULL\(sourceClause)
             UNION ALL
-            SELECT p.asset_id, p.score, 2 AS origin_rank, 'personalModel' AS suggestion_origin,
+            SELECT p.asset_id, p.score,
+                CASE
+                    WHEN p.method = 'personalAdamW' THEN 3
+                    ELSE 2
+                END AS origin_rank,
+                CASE
+                    WHEN p.method = 'personalAdamW' THEN 'personalAdamW'
+                    ELSE 'personalModel'
+                END AS suggestion_origin,
                 a.file_name, a.availability
             FROM personal_prediction p
             JOIN personal_suggestion_model m ON m.method = p.method
@@ -1255,7 +1283,8 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                     rejectedTagCount: row["rejected_count"],
                     suggestionOrigin: ReviewQueueSuggestionOrigin(
                         rawValue: row["suggestion_origin"]
-                    ) ?? .featurePrint
+                    ) ?? .featurePrint,
+                    score: row["score"]
                 )
             }
             let items = Array(mapped.prefix(limit))
@@ -1281,7 +1310,7 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                 db,
                 sql: """
                 WITH raw_pending_tags AS (
-                    SELECT p.tag_id, 0 AS origin_rank
+                    SELECT p.tag_id, 0 AS origin_rank, CAST(NULL AS TEXT) AS personal_method
                     FROM prediction p
                     JOIN tag_model m
                         ON m.tag_id = p.tag_id
@@ -1298,7 +1327,7 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                         AND p.state = 'pendingReview'
                         AND d.asset_id IS NULL
                     UNION ALL
-                    SELECT p.tag_id, 1 AS origin_rank
+                    SELECT p.tag_id, 1 AS origin_rank, CAST(NULL AS TEXT) AS personal_method
                     FROM standard_prediction p
                     JOIN ontology_pack pack
                         ON pack.standard_pack_id = p.standard_pack_id
@@ -1320,7 +1349,12 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                         AND p.state = 'pendingReview'
                         AND d.asset_id IS NULL
                     UNION ALL
-                    SELECT p.tag_id, 2 AS origin_rank
+                    SELECT p.tag_id,
+                        CASE
+                            WHEN p.method = 'personalAdamW' THEN 3
+                            ELSE 2
+                        END AS origin_rank,
+                        p.method AS personal_method
                     FROM personal_prediction p
                     JOIN personal_suggestion_model m ON m.method = p.method
                     JOIN personal_suggestion_tag pst
@@ -1337,14 +1371,19 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                         AND p.state = 'pendingReview'
                         AND d.asset_id IS NULL
                 ), pending_tags AS (
-                    SELECT tag_id, MAX(origin_rank) AS origin_rank
+                    SELECT tag_id,
+                        MAX(origin_rank) AS origin_rank,
+                        MAX(personal_method) AS personal_method
                     FROM raw_pending_tags
                     GROUP BY tag_id
                 )
                 SELECT p.tag_id, t.name,
-                    CASE p.origin_rank
-                        WHEN 2 THEN 'personalModel'
-                        WHEN 1 THEN 'standardModel'
+                    CASE
+                        WHEN p.origin_rank >= 2
+                            AND p.personal_method = 'personalAdamW'
+                            THEN 'personalAdamW'
+                        WHEN p.origin_rank >= 2 THEN 'personalModel'
+                        WHEN p.origin_rank = 1 THEN 'standardModel'
                         ELSE 'featurePrint'
                     END AS suggestion_origin
                 FROM pending_tags p

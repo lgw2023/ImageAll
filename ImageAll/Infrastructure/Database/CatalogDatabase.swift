@@ -20,6 +20,7 @@ struct CatalogDatabase: Sendable {
         V012RepairStandardTagBindingMigration.register(on: &migrator)
         V013PhotosMissingAssetRepairMigration.register(on: &migrator)
         V014AddTrainingRunsAndPersonalMultiSlotMigration.register(on: &migrator)
+        V015AddSuggestionScoreThresholdsMigration.register(on: &migrator)
         return migrator
     }
 
@@ -994,6 +995,47 @@ enum V014AddTrainingRunsAndPersonalMultiSlotMigration {
                 """
             )
             try db.execute(sql: "PRAGMA foreign_keys = ON")
+        }
+    }
+}
+
+enum V015AddSuggestionScoreThresholdsMigration {
+    static func register(on migrator: inout DatabaseMigrator) {
+        migrator.registerMigration(CatalogMigrationID.v015AddSuggestionScoreThresholds) { db in
+            try db.execute(
+                sql: """
+                CREATE TABLE suggestion_score_threshold_default (
+                    method TEXT PRIMARY KEY CHECK(
+                        method IN ('featureKnn', 'personalCentroid', 'personalAdamW')
+                    ),
+                    min_score REAL NOT NULL,
+                    updated_at_ms INTEGER NOT NULL CHECK(updated_at_ms >= 0)
+                ) STRICT
+                """
+            )
+            try db.execute(
+                sql: """
+                CREATE TABLE suggestion_score_threshold_override (
+                    tag_id TEXT NOT NULL REFERENCES tag(id) ON DELETE CASCADE,
+                    method TEXT NOT NULL CHECK(
+                        method IN ('featureKnn', 'personalCentroid', 'personalAdamW')
+                    ),
+                    min_score REAL NOT NULL,
+                    updated_at_ms INTEGER NOT NULL CHECK(updated_at_ms >= 0),
+                    PRIMARY KEY (tag_id, method)
+                ) STRICT
+                """
+            )
+            try db.execute(
+                sql: """
+                INSERT INTO suggestion_score_threshold_default (
+                    method, min_score, updated_at_ms
+                ) VALUES
+                    ('featureKnn', 0, 0),
+                    ('personalCentroid', 0, 0),
+                    ('personalAdamW', 0, 0)
+                """
+            )
         }
     }
 }

@@ -166,6 +166,7 @@ final class LibraryWorkspaceModel: ObservableObject {
     @Published private(set) var standardLibrarySuggestionState: StandardLibrarySuggestionPresentationState = .idle
     @Published private(set) var standardLibrarySuggestionJobID: UUID?
     @Published private(set) var isRebuildingPersonalModel = false
+    @Published private(set) var isRebuildingPersonalAdamWModel = false
     @Published private(set) var isCachingSelectedAssetEmbedding = false
     @Published private(set) var isGeneratingAppPersonalSampleSuggestions = false
     @Published private(set) var appPersonalSampleSuggestionProgress:
@@ -183,9 +184,13 @@ final class LibraryWorkspaceModel: ObservableObject {
     private let service: any LibraryWorkspacePort
     private let localModelSuggestions: LocalModelSuggestionRuntime?
     private let appPersonalModelRebuilder: (any AppPersonalModelRebuilding)?
+    private let appPersonalAdamWModelRebuilder: (any AppPersonalModelRebuilding)?
     private let selectedAssetEmbeddingCache: (any AppSelectedAssetEmbeddingCaching)?
     private let appPersonalSampleSuggester: (any AppPersonalSampleSuggesting)?
     private let appPersonalTagLibrarySuggester: (any AppPersonalTagLibrarySuggesting)?
+    private let appPersonalAdamWTagLibrarySuggester: (any AppPersonalTagLibrarySuggesting)?
+    private let suggestionThresholds: (any SuggestionThresholdPort)?
+    private let clock: any JobClock
     private var lastTagMutation: LibraryTagUndoRecord?
     fileprivate var lastReviewMutation: ReviewMutationUndoRecord?
     private var personalizationRunnerTask: Task<Void, Never>?
@@ -211,9 +216,13 @@ final class LibraryWorkspaceModel: ObservableObject {
         review: any PersonalizationReviewPort = EmptyPersonalizationReviewPort(),
         localModelSuggestions: LocalModelSuggestionRuntime? = nil,
         appPersonalModelRebuilder: (any AppPersonalModelRebuilding)? = nil,
+        appPersonalAdamWModelRebuilder: (any AppPersonalModelRebuilding)? = nil,
         selectedAssetEmbeddingCache: (any AppSelectedAssetEmbeddingCaching)? = nil,
         appPersonalSampleSuggester: (any AppPersonalSampleSuggesting)? = nil,
         appPersonalTagLibrarySuggester: (any AppPersonalTagLibrarySuggesting)? = nil,
+        appPersonalAdamWTagLibrarySuggester: (any AppPersonalTagLibrarySuggesting)? = nil,
+        suggestionThresholds: (any SuggestionThresholdPort)? = nil,
+        clock: any JobClock = SystemJobClock(),
         catalogProgressRefreshInterval: Duration = .milliseconds(750),
         searchDebounceInterval: Duration = .milliseconds(300)
     ) {
@@ -221,11 +230,107 @@ final class LibraryWorkspaceModel: ObservableObject {
         self.review = review
         self.localModelSuggestions = localModelSuggestions
         self.appPersonalModelRebuilder = appPersonalModelRebuilder
+        self.appPersonalAdamWModelRebuilder = appPersonalAdamWModelRebuilder
         self.selectedAssetEmbeddingCache = selectedAssetEmbeddingCache
         self.appPersonalSampleSuggester = appPersonalSampleSuggester
         self.appPersonalTagLibrarySuggester = appPersonalTagLibrarySuggester
+        self.appPersonalAdamWTagLibrarySuggester = appPersonalAdamWTagLibrarySuggester
+        self.suggestionThresholds = suggestionThresholds
+        self.clock = clock
         self.catalogProgressRefreshInterval = catalogProgressRefreshInterval
         self.searchDebounceInterval = searchDebounceInterval
+    }
+
+    var suggestionThresholdPortForSettings: (any SuggestionThresholdPort)? {
+        suggestionThresholds
+    }
+
+    func suggestionThresholdDefaults() -> SuggestionThresholdDefaults? {
+        guard let suggestionThresholds else { return nil }
+        return try? suggestionThresholds.defaults()
+    }
+
+    func effectiveSuggestionMinScore(
+        tagID: UUID,
+        method: SuggestionScoreThresholdMethod
+    ) -> Double {
+        guard let suggestionThresholds else { return 0 }
+        return (try? suggestionThresholds.effectiveMinScore(tagID: tagID, method: method)) ?? 0
+    }
+
+    func setSuggestionThresholdDefault(
+        method: SuggestionScoreThresholdMethod,
+        minScore: Double
+    ) {
+        guard let suggestionThresholds else { return }
+        do {
+            try suggestionThresholds.setDefault(
+                method: method,
+                minScore: minScore,
+                updatedAtMs: clock.nowMs
+            )
+        } catch {
+            notice = .suggestionThresholdUpdateFailed
+        }
+    }
+
+    func setSuggestionThresholdOverride(
+        tagID: UUID,
+        method: SuggestionScoreThresholdMethod,
+        minScore: Double
+    ) {
+        guard let suggestionThresholds else { return }
+        do {
+            try suggestionThresholds.setOverride(
+                tagID: tagID,
+                method: method,
+                minScore: minScore,
+                updatedAtMs: clock.nowMs
+            )
+        } catch {
+            notice = .suggestionThresholdUpdateFailed
+        }
+    }
+
+    func clearSuggestionThresholdOverride(
+        tagID: UUID,
+        method: SuggestionScoreThresholdMethod
+    ) {
+        guard let suggestionThresholds else { return }
+        do {
+            try suggestionThresholds.clearOverride(tagID: tagID, method: method)
+        } catch {
+            notice = .suggestionThresholdUpdateFailed
+        }
+    }
+
+    func listSuggestionThresholdOverrides() -> [SuggestionTagThresholdOverrideRow] {
+        guard let suggestionThresholds else { return [] }
+        return (try? suggestionThresholds.listTagOverrides()) ?? []
+    }
+
+    func prunePendingSuggestionsBelowThreshold(
+        tagID: UUID,
+        displayName: String,
+        method: SuggestionScoreThresholdMethod
+    ) {
+        guard let suggestionThresholds else { return }
+        do {
+            let minScore = try suggestionThresholds.effectiveMinScore(tagID: tagID, method: method)
+            let deleted = try suggestionThresholds.prunePendingBelowThreshold(
+                tagID: tagID,
+                method: method,
+                minScore: minScore
+            )
+            notice = .suggestionThresholdPruned(
+                tagName: displayName,
+                methodName: SuggestionScoreThresholdMethodPresentation.displayName(method),
+                deletedCount: deleted
+            )
+            Task { await refreshReviewState() }
+        } catch {
+            notice = .suggestionThresholdUpdateFailed
+        }
     }
 
     deinit {
@@ -239,6 +344,10 @@ final class LibraryWorkspaceModel: ObservableObject {
 
     var supportsPersonalModelRebuild: Bool {
         appPersonalModelRebuilder != nil || localModelSuggestions != nil
+    }
+
+    var supportsPersonalAdamWModelRebuild: Bool {
+        appPersonalAdamWModelRebuilder != nil
     }
 
     var supportsSelectedAssetEmbeddingCache: Bool {
@@ -268,6 +377,7 @@ final class LibraryWorkspaceModel: ObservableObject {
             && !isGeneratingAppPersonalSampleSuggestions
             && !isGeneratingAppPersonalTagLibrarySuggestions
             && !isRebuildingPersonalModel
+            && !isRebuildingPersonalAdamWModel
             && !isGeneratingPersonalLibrarySuggestions
             && !isGeneratingStandardLibrarySuggestions
     }
@@ -279,6 +389,19 @@ final class LibraryWorkspaceModel: ObservableObject {
             && !isGeneratingAppPersonalSampleSuggestions
             && !isGeneratingAppPersonalTagLibrarySuggestions
             && !isRebuildingPersonalModel
+            && !isRebuildingPersonalAdamWModel
+            && !isGeneratingPersonalLibrarySuggestions
+            && !isGeneratingStandardLibrarySuggestions
+    }
+
+    func canGenerateAppPersonalAdamWTagLibrarySuggestions(for overview: SuggestionTagOverview) -> Bool {
+        supportsAppPersonalSampleSuggestions
+            && appPersonalAdamWTagLibrarySuggester != nil
+            && overview.canGeneratePersonalModel
+            && !isGeneratingAppPersonalSampleSuggestions
+            && !isGeneratingAppPersonalTagLibrarySuggestions
+            && !isRebuildingPersonalModel
+            && !isRebuildingPersonalAdamWModel
             && !isGeneratingPersonalLibrarySuggestions
             && !isGeneratingStandardLibrarySuggestions
     }
@@ -1537,13 +1660,31 @@ final class LibraryWorkspaceModel: ObservableObject {
     func generateAppPersonalTagLibrarySuggestions(
         tagID: UUID,
         displayName: String,
-        sourceIDs: [UUID]? = nil
+        sourceIDs: [UUID]? = nil,
+        method: SuggestionGenerationMethod = .personalModel
     ) async {
+        guard method == .personalModel || method == .personalAdamW else { return }
         guard let overview = suggestionOverviews.first(where: { $0.id == tagID }),
-              canGenerateAppPersonalTagLibrarySuggestions(for: overview),
-              let suggester = appPersonalTagLibrarySuggester,
               let cache = selectedAssetEmbeddingCache
         else {
+            return
+        }
+        let suggester: any AppPersonalTagLibrarySuggesting
+        let thresholdMethod: SuggestionScoreThresholdMethod
+        switch method {
+        case .personalModel:
+            guard canGenerateAppPersonalTagLibrarySuggestions(for: overview),
+                  let value = appPersonalTagLibrarySuggester
+            else { return }
+            suggester = value
+            thresholdMethod = .personalCentroid
+        case .personalAdamW:
+            guard canGenerateAppPersonalAdamWTagLibrarySuggestions(for: overview),
+                  let value = appPersonalAdamWTagLibrarySuggester
+            else { return }
+            suggester = value
+            thresholdMethod = .personalAdamW
+        case .featureKnn:
             return
         }
 
@@ -1558,10 +1699,13 @@ final class LibraryWorkspaceModel: ObservableObject {
 
         do {
             let candidates = try await resolveAllPersonalSuggestionCandidates(
+                tagID: tagID,
                 sourceIDs: sourceIDs ?? resolvedReviewSourceFilter
             )
             guard !candidates.isEmpty else {
-                notice = .personalTagLibrarySuggestionsNotReady
+                notice = method == .personalAdamW
+                    ? .personalAdamWTagLibrarySuggestionsNotReady
+                    : .personalTagLibrarySuggestionsNotReady
                 personalLibrarySuggestionState = .personalUnavailable
                 return
             }
@@ -1575,10 +1719,15 @@ final class LibraryWorkspaceModel: ObservableObject {
             appPersonalTagLibrarySuggestionProgress = (0, 0, 0, total)
 
             let service = service
+            let minimumScore = effectiveSuggestionMinScore(
+                tagID: tagID,
+                method: thresholdMethod
+            )
             let batch = try await suggester.suggest(
                 tagID: tagID,
                 candidates: candidates,
                 maximumPendingCount: AppPersonalTagLibrarySuggestionLimits.maxPendingSuggestionsPerTag,
+                minimumScore: minimumScore,
                 embedding: { candidate in
                     let result = try await cache.cacheSelectedAsset(
                         assetID: candidate.assetID,
@@ -1613,7 +1762,8 @@ final class LibraryWorkspaceModel: ObservableObject {
                 return try reviewPort.replacePersonalTagLibrarySuggestions(
                     tagID: batch.tagID,
                     hits: batch.hits,
-                    expectedCapability: batch.capability
+                    expectedCapability: batch.capability,
+                    maximumPendingCount: AppPersonalTagLibrarySuggestionLimits.maxPendingSuggestionsPerTag
                 )
             }
 
@@ -1623,30 +1773,48 @@ final class LibraryWorkspaceModel: ObservableObject {
                 suggested: inserted,
                 skipped: batch.skippedCount
             )
-            notice = .personalTagLibrarySuggestionsCompleted(
-                tagName: displayName,
-                checked: batch.checkedCount,
-                suggested: inserted,
-                skipped: batch.skippedCount
-            )
+            if method == .personalAdamW {
+                notice = .personalAdamWTagLibrarySuggestionsCompleted(
+                    tagName: displayName,
+                    checked: batch.checkedCount,
+                    suggested: inserted,
+                    skipped: batch.skippedCount
+                )
+            } else {
+                notice = .personalTagLibrarySuggestionsCompleted(
+                    tagName: displayName,
+                    checked: batch.checkedCount,
+                    suggested: inserted,
+                    skipped: batch.skippedCount
+                )
+            }
         } catch AppPersonalTagLibrarySuggestionError.personalUnavailable {
-            notice = .personalTagLibrarySuggestionsNotReady
+            notice = method == .personalAdamW
+                ? .personalAdamWTagLibrarySuggestionsNotReady
+                : .personalTagLibrarySuggestionsNotReady
             personalLibrarySuggestionState = .personalUnavailable
         } catch AppPersonalTagLibrarySuggestionError.tagNotInPersonalModel {
-            notice = .personalTagLibrarySuggestionsTagNotInModel
+            notice = method == .personalAdamW
+                ? .personalAdamWTagLibrarySuggestionsTagNotInModel
+                : .personalTagLibrarySuggestionsTagNotInModel
             personalLibrarySuggestionState = .personalUnavailable
         } catch AppPersonalTagLibrarySuggestionError.modelUnavailable {
             notice = .personalTagLibrarySuggestionsModelUnavailable
             personalLibrarySuggestionState = .serviceUnavailable
         } catch is CancellationError {
+            notice = nil
             personalLibrarySuggestionState = .idle
         } catch {
-            notice = .personalTagLibrarySuggestionsFailed
+            notice = method == .personalAdamW
+                ? .personalAdamWTagLibrarySuggestionsFailed
+                : .personalTagLibrarySuggestionsFailed
             personalLibrarySuggestionState = .failed
         }
     }
 
+
     private func resolveAllPersonalSuggestionCandidates(
+        tagID: UUID,
         sourceIDs: [UUID]? = nil
     ) async throws -> [PersonalSuggestionCandidate] {
         let reviewPort = review
@@ -1659,7 +1827,8 @@ final class LibraryWorkspaceModel: ObservableObject {
                 try reviewPort.personalSuggestionCandidates(
                     afterAssetID: pageAfter,
                     limit: pageSize,
-                    sourceIDs: sourceIDs
+                    sourceIDs: sourceIDs,
+                    excludingDecisionsForTagID: tagID
                 )
             }
             if page.isEmpty { break }
@@ -1837,10 +2006,11 @@ final class LibraryWorkspaceModel: ObservableObject {
 
     func rebuildPersonalModel() async {
         guard !isRebuildingPersonalModel,
+              !isRebuildingPersonalAdamWModel,
               !isGeneratingPersonalLibrarySuggestions
         else { return }
         if let appPersonalModelRebuilder {
-            await rebuildAppPersonalModel(using: appPersonalModelRebuilder)
+            await rebuildAppPersonalModel(using: appPersonalModelRebuilder, family: .centroid)
             return
         }
         guard let runtime = localModelSuggestions else {
@@ -2054,12 +2224,35 @@ final class LibraryWorkspaceModel: ObservableObject {
         )
     }
 
+    func rebuildPersonalAdamWModel() async {
+        guard !isRebuildingPersonalModel,
+              !isRebuildingPersonalAdamWModel,
+              !isGeneratingPersonalLibrarySuggestions,
+              let rebuilder = appPersonalAdamWModelRebuilder
+        else {
+            if appPersonalAdamWModelRebuilder == nil {
+                notice = .personalModelRebuildServiceUnavailable
+            }
+            return
+        }
+        await rebuildAppPersonalModel(using: rebuilder, family: .adamW)
+    }
+
     private func rebuildAppPersonalModel(
-        using rebuilder: any AppPersonalModelRebuilding
+        using rebuilder: any AppPersonalModelRebuilding,
+        family: AppPersonalLinearHeadFamily
     ) async {
-        isRebuildingPersonalModel = true
+        switch family {
+        case .centroid:
+            isRebuildingPersonalModel = true
+        case .adamW:
+            isRebuildingPersonalAdamWModel = true
+        }
         notice = nil
-        defer { isRebuildingPersonalModel = false }
+        defer {
+            isRebuildingPersonalModel = false
+            isRebuildingPersonalAdamWModel = false
+        }
 
         do {
             let selected = selectedAssetIDs
@@ -2073,7 +2266,9 @@ final class LibraryWorkspaceModel: ObservableObject {
             }
             let snapshot = try await snapshotSource.currentSnapshot()
             guard Self.hasMinimumPersonalTrainingSamples(snapshot) else {
-                notice = .personalModelRebuildNotReady
+                notice = family == .adamW
+                    ? .personalAdamWRebuildNotReady
+                    : .personalModelRebuildNotReady
                 return
             }
             guard await ensurePersonalTrainingSampleEmbeddingsCached(snapshot) else {
@@ -2086,27 +2281,42 @@ final class LibraryWorkspaceModel: ObservableObject {
                     contentRevision: $0.contentRevision
                 )
             }).count
-            notice = .personalModelRebuildCompleted(
-                tagCount: identity.personalTagIDs.count,
-                sampleCount: sampleCount
-            )
+            switch family {
+            case .centroid:
+                notice = .personalModelRebuildCompleted(
+                    tagCount: identity.personalTagIDs.count,
+                    sampleCount: sampleCount
+                )
+            case .adamW:
+                notice = .personalAdamWRebuildCompleted(
+                    tagCount: identity.personalTagIDs.count,
+                    sampleCount: sampleCount
+                )
+            }
         } catch let error as AppPersonalModelRebuildError {
             switch error {
             case .cancelled:
                 notice = nil
             case .invalidSnapshot:
-                notice = .personalModelRebuildNotReady
+                notice = family == .adamW
+                    ? .personalAdamWRebuildNotReady
+                    : .personalModelRebuildNotReady
             case .modelUnavailable:
                 notice = .personalModelRebuildServiceUnavailable
             case .embeddingUnavailable:
                 notice = .personalModelRebuildCacheUnavailable
             case .alreadyRunning, .staleSnapshot:
-                notice = .personalModelRebuildFailed
+                notice = family == .adamW
+                    ? .personalAdamWRebuildFailed
+                    : .personalModelRebuildFailed
             }
         } catch {
-            notice = .personalModelRebuildFailed
+            notice = family == .adamW
+                ? .personalAdamWRebuildFailed
+                : .personalModelRebuildFailed
         }
     }
+
 
     /// Prepares embeddings for the resolved training snapshot samples.
     /// Returns false when preparation failed and `notice` was already set.
@@ -3393,7 +3603,11 @@ extension LibraryWorkspaceModel {
             mode: mode,
             method: method,
             availableSources: available,
-            selectedSourceIDs: selected
+            selectedSourceIDs: selected,
+            effectiveMinScore: effectiveSuggestionMinScore(
+                tagID: tagID,
+                method: method.thresholdMethod
+            )
         )
     }
 
@@ -3434,9 +3648,21 @@ extension LibraryWorkspaceModel {
             await generateAppPersonalTagLibrarySuggestions(
                 tagID: pending.tagID,
                 displayName: pending.displayName,
-                sourceIDs: selectedSourceIDs
+                sourceIDs: selectedSourceIDs,
+                method: .personalModel
             )
             if case .personalTagLibrarySuggestionsCompleted = notice {
+                return true
+            }
+            return false
+        case .personalAdamW:
+            await generateAppPersonalTagLibrarySuggestions(
+                tagID: pending.tagID,
+                displayName: pending.displayName,
+                sourceIDs: selectedSourceIDs,
+                method: .personalAdamW
+            )
+            if case .personalAdamWTagLibrarySuggestionsCompleted = notice {
                 return true
             }
             return false
@@ -3831,9 +4057,29 @@ struct LibraryWorkspaceView: View {
                     }
                     .disabled(
                         model.isRebuildingPersonalModel
+                            || model.isRebuildingPersonalAdamWModel
                             || model.isGeneratingPersonalLibrarySuggestions
                     )
                     .help("有多选时：用选中照片上的全部确认标签训练；无多选时：用全库全部可用确认样本训练。会自动为本批样本补齐本地 embedding（仅用本机预览）")
+                }
+
+                if model.supportsPersonalAdamWModelRebuild {
+                    Button {
+                        Task { await model.rebuildPersonalAdamWModel() }
+                    } label: {
+                        if model.isRebuildingPersonalAdamWModel {
+                            ProgressView()
+                                .controlSize(.small)
+                        } else {
+                            Label("训练超级个人模型", systemImage: "brain.head.profile.fill")
+                        }
+                    }
+                    .disabled(
+                        model.isRebuildingPersonalModel
+                            || model.isRebuildingPersonalAdamWModel
+                            || model.isGeneratingPersonalLibrarySuggestions
+                    )
+                    .help("冻结 DINO + AdamW 线性头，多 epoch / 早停；仍只要正样本。与人脑质心模型并存、互不覆盖。")
                 }
 
                 if model.supportsAppPersonalSampleSuggestions {
@@ -5362,10 +5608,13 @@ struct LibraryWorkspaceView: View {
             "line.3.horizontal.decrease.circle"
         case .presetTagsInstalled, .presetTagsAlreadyAvailable,
              .portableExportCompleted, .previewCacheCleared,
-             .personalModelRebuildCompleted, .selectedAssetEmbeddingCached,
+             .personalModelRebuildCompleted, .personalAdamWRebuildCompleted,
+             .selectedAssetEmbeddingCached,
              .selectedAssetEmbeddingBatchCompleted,
              .personalSampleSuggestionsCompleted,
              .personalTagLibrarySuggestionsCompleted,
+             .personalAdamWTagLibrarySuggestionsCompleted,
+             .suggestionThresholdPruned,
              .tagBatchMutationApplied, .photosAlreadyConnected,
              .photosSyncQueued, .photosFullRepairQueued:
             "checkmark.circle"
@@ -5428,6 +5677,12 @@ struct LibraryWorkspaceView: View {
             "个人模型服务当前不可用；现有模型和标准建议不受影响。"
         case .personalModelRebuildFailed:
             "个人模型重建未完成；现有模型保持不变，请核对样本后重试。"
+        case let .personalAdamWRebuildCompleted(tagCount, sampleCount):
+            "超级个人模型（AdamW）已从 \(tagCount) 个标签的 \(sampleCount) 张人工样本训练并确认生效。"
+        case .personalAdamWRebuildNotReady:
+            "当前范围内尚无可训练标签；超级人脑同样要求每个标签至少 2 张确认样本。"
+        case .personalAdamWRebuildFailed:
+            "超级个人模型训练未完成；现有超级模型保持不变，请核对样本后重试。"
         case .selectedAssetEmbeddingCached:
             "已为当前照片生成身份匹配的本地模型缓存。"
         case let .selectedAssetEmbeddingBatchCompleted(prepared, skipped, cloudOnly, failed):
@@ -5461,6 +5716,18 @@ struct LibraryWorkspaceView: View {
             "App 内模型尚未启用或当前不可用；没有写入建议，浏览和人工标签不受影响。"
         case .personalTagLibrarySuggestionsFailed:
             "个人模型全库建议未完成；现有审核队列保持不变，请稍后重试。"
+        case let .personalAdamWTagLibrarySuggestionsCompleted(tagName, checked, suggested, skipped):
+            "已用超级个人模型扫描 \(checked) 张照片：为“\(tagName)”写入 \(suggested) 条 Top 待审核建议，跳过 \(skipped) 张。"
+        case .personalAdamWTagLibrarySuggestionsNotReady:
+            "当前没有可用的超级个人模型；请先点超级人脑图标训练后再试。"
+        case .personalAdamWTagLibrarySuggestionsTagNotInModel:
+            "当前超级个人模型不包含该标签；请先用超级人脑把该标签纳入训练后再试。"
+        case .personalAdamWTagLibrarySuggestionsFailed:
+            "超级个人模型 Top 100 建议未完成；现有审核队列保持不变，请稍后重试。"
+        case let .suggestionThresholdPruned(tagName, methodName, deletedCount):
+            "已按当前“\(methodName)”门槛刷新“\(tagName)”待审队列，删除 \(deletedCount) 条。"
+        case .suggestionThresholdUpdateFailed:
+            "建议阈值未能保存，请重试。"
         }
     }
 

@@ -26,6 +26,7 @@ protocol AppPersonalTagLibrarySuggesting: Sendable {
         tagID: UUID,
         candidates: [PersonalSuggestionCandidate],
         maximumPendingCount: Int,
+        minimumScore: Double,
         embedding: @escaping @Sendable (PersonalSuggestionCandidate) async throws -> AppCoreMLEmbedding,
         progress: (@Sendable (Int, Int, Int) -> Void)?
     ) async throws -> AppPersonalTagLibrarySuggestionBatch

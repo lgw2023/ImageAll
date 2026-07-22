@@ -26,12 +26,24 @@ struct ImageAllApp: App {
                 presentation: startupModel.presentation,
                 workspaceModel: startupModel.workspaceModel
             )
-            .task {
-                await modelSettingsModel.start()
+            .task { await modelSettingsModel.start() }
+            .onAppear { attachSuggestionThresholdPortIfReady() }
+            .onChange(of: startupModel.workspaceModel != nil) { _, _ in
+                attachSuggestionThresholdPortIfReady()
             }
         }
         Settings {
             AppModelSettingsView(model: modelSettingsModel)
+                .onAppear { attachSuggestionThresholdPortIfReady() }
+                .onChange(of: startupModel.workspaceModel != nil) { _, _ in
+                    attachSuggestionThresholdPortIfReady()
+                }
         }
+    }
+
+    private func attachSuggestionThresholdPortIfReady() {
+        modelSettingsModel.attachSuggestionThresholds(
+            startupModel.workspaceModel?.suggestionThresholdPortForSettings
+        )
     }
 }

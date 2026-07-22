@@ -190,7 +190,13 @@ enum AppPersonalLinearHeadTrainer {
 }
 
 struct AppPersonalLinearHeadModel: Sendable {
+    static let acceptedAlgorithmRevisions: Set<String> = [
+        "positive-centroid-float32-v1",
+        "positive-adamw-float32-v1",
+    ]
+
     let identity: AppPersonalLinearHeadIdentity
+    let algorithmRevision: String
 
     private let parameters: [Parameters]
 
@@ -203,7 +209,7 @@ struct AppPersonalLinearHeadModel: Sendable {
         }
         let personalTagIDs = record.personalTagIDs.compactMap(UUID.init(uuidString:))
         guard record.schemaRevision == 1,
-              record.algorithmRevision == "positive-centroid-float32-v1",
+              Self.acceptedAlgorithmRevisions.contains(record.algorithmRevision),
               let encoderIdentity = record.encoder.identity,
               personalTagIDs.count == record.personalTagIDs.count,
               record.weightsSHA256 == sha256(record.parameters)
@@ -237,6 +243,7 @@ struct AppPersonalLinearHeadModel: Sendable {
             personalTagIDs: personalTagIDs,
             weightsSHA256: record.weightsSHA256
         )
+        algorithmRevision = record.algorithmRevision
         parameters = parsed
     }
 
@@ -311,18 +318,18 @@ struct AppPersonalLinearHeadModel: Sendable {
     }
 }
 
-private struct EmbeddingKey: Hashable {
+struct EmbeddingKey: Hashable {
     let assetID: UUID
     let contentRevision: Int
 }
 
-private struct DecisionKey: Hashable {
+struct DecisionKey: Hashable {
     let assetID: UUID
     let contentRevision: Int
     let tagID: UUID
 }
 
-private struct AppPersonalLinearHeadRecord: Codable {
+struct AppPersonalLinearHeadRecord: Codable {
     let schemaRevision: Int
     let algorithmRevision: String
     let catalogScopeID: String
@@ -334,7 +341,7 @@ private struct AppPersonalLinearHeadRecord: Codable {
     let weightsSHA256: String
 }
 
-private struct AppPersonalLinearHeadEncoderRecord: Codable {
+struct AppPersonalLinearHeadEncoderRecord: Codable {
     let provider: String
     let modelID: String
     let modelRevision: String

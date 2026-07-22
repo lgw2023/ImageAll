@@ -85,6 +85,9 @@ enum LibraryWorkspaceNotice: Equatable, Sendable {
     case personalModelRebuildCacheUnavailable
     case personalModelRebuildServiceUnavailable
     case personalModelRebuildFailed
+    case personalAdamWRebuildCompleted(tagCount: Int, sampleCount: Int)
+    case personalAdamWRebuildNotReady
+    case personalAdamWRebuildFailed
     case selectedAssetEmbeddingCached
     case selectedAssetEmbeddingBatchCompleted(
         prepared: Int,
@@ -113,6 +116,17 @@ enum LibraryWorkspaceNotice: Equatable, Sendable {
     case personalTagLibrarySuggestionsTagNotInModel
     case personalTagLibrarySuggestionsModelUnavailable
     case personalTagLibrarySuggestionsFailed
+    case personalAdamWTagLibrarySuggestionsCompleted(
+        tagName: String,
+        checked: Int,
+        suggested: Int,
+        skipped: Int
+    )
+    case personalAdamWTagLibrarySuggestionsNotReady
+    case personalAdamWTagLibrarySuggestionsTagNotInModel
+    case personalAdamWTagLibrarySuggestionsFailed
+    case suggestionThresholdPruned(tagName: String, methodName: String, deletedCount: Int)
+    case suggestionThresholdUpdateFailed
 }
 
 enum CloudPreviewPresentationState: Equatable, Sendable {

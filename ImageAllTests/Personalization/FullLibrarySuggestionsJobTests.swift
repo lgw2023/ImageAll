@@ -840,6 +840,85 @@ final class FullLibrarySuggestionsJobTests: XCTestCase {
         XCTAssertEqual(item.suggestionOrigin, .personalModel)
     }
 
+    func testPersonalTagLibrarySuggestionsSkipDecidedAssetsWhenSelectingTopN() throws {
+        let fixture = try makeLargeLibraryFixture(assetCount: 12)
+        let review = GRDBPersonalizationReviewRepository(database: fixture.database)
+        let capability = try makePersonalCapability(
+            database: fixture.database,
+            tagIDs: [fixture.tagID],
+            bundleRevision: "bundle-topn"
+        )
+        let undecided = try review.personalSuggestionCandidates(
+            afterAssetID: nil,
+            limit: 100,
+            sourceIDs: nil,
+            excludingDecisionsForTagID: fixture.tagID
+        )
+        XCTAssertGreaterThanOrEqual(undecided.count, 4)
+        XCTAssertTrue(Set(undecided.map(\.assetID)).isDisjoint(with: Set(fixture.positiveIDs)))
+        XCTAssertTrue(Set(undecided.map(\.assetID)).isDisjoint(with: Set(fixture.negativeIDs)))
+
+        // Highest raw scores belong to already-decided training samples. Candidates for
+        // Top-N must come from undecided assets only; decided rows are skipped at insert.
+        let decidedHits = fixture.positiveIDs.prefix(3).enumerated().map { index, assetID in
+            AppPersonalTagLibrarySuggestionHit(
+                candidate: PersonalSuggestionCandidate(assetID: assetID, contentRevision: 1),
+                score: 100.0 - Double(index)
+            )
+        }
+        let undecidedHits = undecided.prefix(4).enumerated().map { index, candidate in
+            AppPersonalTagLibrarySuggestionHit(
+                candidate: candidate,
+                score: 10.0 - Double(index)
+            )
+        }
+
+        try review.activatePersonalSuggestionBundle(capability, activatedAtMs: fixture.cutoffMs)
+        let inserted = try review.replacePersonalTagLibrarySuggestions(
+            tagID: fixture.tagID,
+            hits: decidedHits + undecidedHits,
+            expectedCapability: capability,
+            maximumPendingCount: 3,
+            createdAtMs: fixture.cutoffMs
+        )
+        XCTAssertEqual(inserted, 3)
+
+        let pending = try fixture.database.pool.read { db in
+            try Row.fetchAll(
+                db,
+                sql: """
+                SELECT asset_id, score
+                FROM personal_prediction
+                WHERE tag_id = ? AND state = 'pendingReview'
+                ORDER BY score DESC, asset_id ASC
+                """,
+                arguments: [fixture.tagID.uuidString.lowercased()]
+            )
+        }
+        XCTAssertEqual(pending.count, 3)
+        let pendingIDs = Set(pending.compactMap { row -> UUID? in
+            let assetID: String = row["asset_id"]
+            return UUID(uuidString: assetID)
+        })
+        XCTAssertTrue(pendingIDs.isDisjoint(with: Set(fixture.positiveIDs)))
+        let pendingScores: [Double] = pending.map { row in
+            let score: Double = row["score"]
+            return score
+        }
+        XCTAssertEqual(
+            pendingScores,
+            undecidedHits.prefix(3).map(\.score)
+        )
+
+        let page = try review.fetchReviewQueuePage(
+            tagID: fixture.tagID,
+            cursor: nil,
+            limit: 10
+        )
+        XCTAssertEqual(page.items.count, 3)
+        XCTAssertTrue(page.items.allSatisfy { $0.suggestionOrigin == .personalModel })
+    }
+
     func testPersonalBundleSuggestionIsIncludedInReviewOverviewCounts() throws {
         let fixture = try makeLargeLibraryFixture(assetCount: 8)
         let handler = makeHandler(

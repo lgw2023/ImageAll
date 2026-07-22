@@ -49,6 +49,7 @@ enum ReviewQueueSuggestionOrigin: String, Equatable, Sendable {
     case featurePrint
     case standardModel
     case personalModel
+    case personalAdamW
 }
 
 struct ReviewQueueItemProjection: Identifiable, Equatable, Sendable {
@@ -58,6 +59,7 @@ struct ReviewQueueItemProjection: Identifiable, Equatable, Sendable {
     let acceptedTagCount: Int
     let rejectedTagCount: Int
     let suggestionOrigin: ReviewQueueSuggestionOrigin
+    let score: Double
 
     init(
         assetID: UUID,
@@ -65,7 +67,8 @@ struct ReviewQueueItemProjection: Identifiable, Equatable, Sendable {
         availability: AssetAvailability,
         acceptedTagCount: Int,
         rejectedTagCount: Int,
-        suggestionOrigin: ReviewQueueSuggestionOrigin = .featurePrint
+        suggestionOrigin: ReviewQueueSuggestionOrigin = .featurePrint,
+        score: Double = 0
     ) {
         self.assetID = assetID
         self.fileName = fileName
@@ -73,6 +76,7 @@ struct ReviewQueueItemProjection: Identifiable, Equatable, Sendable {
         self.acceptedTagCount = acceptedTagCount
         self.rejectedTagCount = rejectedTagCount
         self.suggestionOrigin = suggestionOrigin
+        self.score = score
     }
 
     var id: UUID { assetID }
@@ -133,8 +137,10 @@ enum PersonalizationReviewEnqueueMode: Equatable, Sendable {
 enum SuggestionGenerationMethod: Equatable, Sendable {
     /// Feature-vector k-NN over frozen accept/reject samples (writes `prediction`).
     case featureKnn
-    /// Active App personal linear head (writes `personal_prediction`).
+    /// Active App personal centroid linear head (writes `personal_prediction`).
     case personalModel
+    /// Active App personal AdamW linear head (writes `personal_prediction`).
+    case personalAdamW
 }
 
 struct SuggestionEnqueueSourceOption: Identifiable, Equatable, Sendable {
@@ -149,6 +155,7 @@ struct SuggestionEnqueueConfirmation: Identifiable, Equatable, Sendable {
     let method: SuggestionGenerationMethod
     let availableSources: [SuggestionEnqueueSourceOption]
     var selectedSourceIDs: Set<UUID>
+    let effectiveMinScore: Double
 
     init(
         tagID: UUID,
@@ -156,7 +163,8 @@ struct SuggestionEnqueueConfirmation: Identifiable, Equatable, Sendable {
         mode: PersonalizationReviewEnqueueMode,
         method: SuggestionGenerationMethod = .featureKnn,
         availableSources: [SuggestionEnqueueSourceOption],
-        selectedSourceIDs: Set<UUID>
+        selectedSourceIDs: Set<UUID>,
+        effectiveMinScore: Double = 0
     ) {
         self.tagID = tagID
         self.displayName = displayName
@@ -164,6 +172,7 @@ struct SuggestionEnqueueConfirmation: Identifiable, Equatable, Sendable {
         self.method = method
         self.availableSources = availableSources
         self.selectedSourceIDs = selectedSourceIDs
+        self.effectiveMinScore = effectiveMinScore
     }
 
     var id: String { "\(tagID.uuidString.lowercased()):\(method)" }
@@ -211,7 +220,8 @@ protocol PersonalizationReviewPort: Sendable {
     func personalSuggestionCandidates(
         afterAssetID: UUID?,
         limit: Int,
-        sourceIDs: [UUID]?
+        sourceIDs: [UUID]?,
+        excludingDecisionsForTagID: UUID?
     ) throws -> [PersonalSuggestionCandidate]
     func activatePersonalSuggestionBundle(
         _ capability: PersonalModelSuggestionCapability
@@ -221,11 +231,14 @@ protocol PersonalizationReviewPort: Sendable {
         predictions: [PersonalSuggestionPrediction],
         expectedCapability: PersonalModelSuggestionCapability
     ) throws -> Int
-    /// Replaces pending personal-model suggestions for one tag (Top-N already applied by caller).
+    /// Replaces pending personal-model suggestions for one tag.
+    /// Hits should already be above the user threshold and preferably exclude decided assets;
+    /// persistence still skips decided rows and keeps at most `maximumPendingCount`.
     func replacePersonalTagLibrarySuggestions(
         tagID: UUID,
         hits: [AppPersonalTagLibrarySuggestionHit],
-        expectedCapability: PersonalModelSuggestionCapability
+        expectedCapability: PersonalModelSuggestionCapability,
+        maximumPendingCount: Int
     ) throws -> Int
     func replaceStandardSuggestions(
         assetID: UUID,
@@ -289,13 +302,32 @@ extension PersonalizationReviewPort {
         afterAssetID: UUID?,
         limit: Int
     ) throws -> [PersonalSuggestionCandidate] {
-        try personalSuggestionCandidates(afterAssetID: afterAssetID, limit: limit, sourceIDs: nil)
+        try personalSuggestionCandidates(
+            afterAssetID: afterAssetID,
+            limit: limit,
+            sourceIDs: nil,
+            excludingDecisionsForTagID: nil
+        )
+    }
+
+    func personalSuggestionCandidates(
+        afterAssetID: UUID?,
+        limit: Int,
+        sourceIDs: [UUID]?
+    ) throws -> [PersonalSuggestionCandidate] {
+        try personalSuggestionCandidates(
+            afterAssetID: afterAssetID,
+            limit: limit,
+            sourceIDs: sourceIDs,
+            excludingDecisionsForTagID: nil
+        )
     }
 
     func personalSuggestionCandidates(
         afterAssetID _: UUID?,
         limit _: Int,
-        sourceIDs _: [UUID]?
+        sourceIDs _: [UUID]?,
+        excludingDecisionsForTagID _: UUID?
     ) throws -> [PersonalSuggestionCandidate] {
         throw PersonalizationReviewError.persistenceFailure
     }
@@ -317,7 +349,8 @@ extension PersonalizationReviewPort {
     func replacePersonalTagLibrarySuggestions(
         tagID _: UUID,
         hits _: [AppPersonalTagLibrarySuggestionHit],
-        expectedCapability _: PersonalModelSuggestionCapability
+        expectedCapability _: PersonalModelSuggestionCapability,
+        maximumPendingCount _: Int
     ) throws -> Int {
         throw PersonalizationReviewError.persistenceFailure
     }

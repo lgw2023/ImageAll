@@ -4,22 +4,26 @@ actor AppPersonalTagLibrarySuggestionRuntime: AppPersonalTagLibrarySuggesting {
     private let expectedCatalogScopeID: String
     private let activationCoordinator: AppModelActivationCoordinator
     private let applicationSupportDirectory: URL
+    private let family: AppPersonalLinearHeadFamily
     private var isRunning = false
 
     init(
         expectedCatalogScopeID: String,
         activationCoordinator: AppModelActivationCoordinator,
-        applicationSupportDirectory: URL
+        applicationSupportDirectory: URL,
+        family: AppPersonalLinearHeadFamily = .centroid
     ) {
         self.expectedCatalogScopeID = expectedCatalogScopeID
         self.activationCoordinator = activationCoordinator
         self.applicationSupportDirectory = applicationSupportDirectory
+        self.family = family
     }
 
     func suggest(
         tagID: UUID,
         candidates: [PersonalSuggestionCandidate],
         maximumPendingCount: Int,
+        minimumScore: Double,
         embedding: @escaping @Sendable (PersonalSuggestionCandidate) async throws -> AppCoreMLEmbedding,
         progress: (@Sendable (Int, Int, Int) -> Void)?
     ) async throws -> AppPersonalTagLibrarySuggestionBatch {
@@ -29,7 +33,7 @@ actor AppPersonalTagLibrarySuggestionRuntime: AppPersonalTagLibrarySuggesting {
         isRunning = true
         defer { isRunning = false }
 
-        guard maximumPendingCount > 0 else {
+        guard maximumPendingCount > 0, minimumScore.isFinite else {
             throw AppPersonalTagLibrarySuggestionError.identityMismatch
         }
         guard let service = await activationCoordinator.readyService(),
@@ -41,7 +45,8 @@ actor AppPersonalTagLibrarySuggestionRuntime: AppPersonalTagLibrarySuggesting {
         let store = AppPersonalLinearHeadStore(
             applicationSupportDirectory: applicationSupportDirectory,
             expectedCatalogScopeID: expectedCatalogScopeID,
-            expectedEncoderIdentity: encoderIdentity
+            expectedEncoderIdentity: encoderIdentity,
+            family: family
         )
         guard case let .ready(identity) = await store.start() else {
             throw AppPersonalTagLibrarySuggestionError.personalUnavailable
@@ -49,7 +54,10 @@ actor AppPersonalTagLibrarySuggestionRuntime: AppPersonalTagLibrarySuggesting {
         guard identity.personalTagIDs.contains(tagID) else {
             throw AppPersonalTagLibrarySuggestionError.tagNotInPersonalModel
         }
-        let capability = AppPersonalSuggestionCapabilityMapper.capability(from: identity)
+        let capability = AppPersonalSuggestionCapabilityMapper.capability(
+            from: identity,
+            family: family
+        )
 
         var hits: [AppPersonalTagLibrarySuggestionHit] = []
         var skippedCount = 0
@@ -73,8 +81,11 @@ actor AppPersonalTagLibrarySuggestionRuntime: AppPersonalTagLibrarySuggesting {
             }
             let score: Float
             do {
+                // Positive-score / configured threshold: do not pad Top-N with
+                // low-confidence scores just to fill the quota.
                 guard let scored = try await store.score(tagID: tagID, embedding: values),
-                      scored > 0
+                      Double(scored).isFinite,
+                      Double(scored) > minimumScore
                 else {
                     progress?(index + 1, hits.count, skippedCount)
                     continue

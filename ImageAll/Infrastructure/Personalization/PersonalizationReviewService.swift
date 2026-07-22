@@ -134,12 +134,14 @@ struct PersonalizationReviewService: PersonalizationReviewPort, Sendable {
     func personalSuggestionCandidates(
         afterAssetID: UUID?,
         limit: Int,
-        sourceIDs: [UUID]?
+        sourceIDs: [UUID]?,
+        excludingDecisionsForTagID: UUID?
     ) throws -> [PersonalSuggestionCandidate] {
         try review.personalSuggestionCandidates(
             afterAssetID: afterAssetID,
             limit: limit,
-            sourceIDs: sourceIDs
+            sourceIDs: sourceIDs,
+            excludingDecisionsForTagID: excludingDecisionsForTagID
         )
     }
 
@@ -165,12 +167,14 @@ struct PersonalizationReviewService: PersonalizationReviewPort, Sendable {
     func replacePersonalTagLibrarySuggestions(
         tagID: UUID,
         hits: [AppPersonalTagLibrarySuggestionHit],
-        expectedCapability: PersonalModelSuggestionCapability
+        expectedCapability: PersonalModelSuggestionCapability,
+        maximumPendingCount: Int
     ) throws -> Int {
         try review.replacePersonalTagLibrarySuggestions(
             tagID: tagID,
             hits: hits,
             expectedCapability: expectedCapability,
+            maximumPendingCount: maximumPendingCount,
             createdAtMs: clock.nowMs
         )
     }

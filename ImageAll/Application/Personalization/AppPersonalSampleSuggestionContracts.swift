@@ -29,11 +29,24 @@ protocol AppPersonalSampleSuggesting: Sendable {
 enum AppPersonalSuggestionCapabilityMapper {
     static let bundleID = "app.personal.linear-head.v1"
     static let policyRevision = "app-personal-positive-centroid-v1"
+    static let adamWBundleID = "app.personal.adamw-head.v1"
+    static let adamWPolicyRevision = "app-personal-positive-adamw-v1"
 
     static func capability(
-        from identity: AppPersonalLinearHeadIdentity
+        from identity: AppPersonalLinearHeadIdentity,
+        family: AppPersonalLinearHeadFamily = .centroid
     ) -> PersonalModelSuggestionCapability {
-        PersonalModelSuggestionCapability(
+        let bundleID: String
+        let policyRevision: String
+        switch family {
+        case .centroid:
+            bundleID = Self.bundleID
+            policyRevision = Self.policyRevision
+        case .adamW:
+            bundleID = Self.adamWBundleID
+            policyRevision = Self.adamWPolicyRevision
+        }
+        return PersonalModelSuggestionCapability(
             target: PersonalModelSuggestionTarget(
                 catalogScopeID: identity.catalogScopeID,
                 bundleID: bundleID,

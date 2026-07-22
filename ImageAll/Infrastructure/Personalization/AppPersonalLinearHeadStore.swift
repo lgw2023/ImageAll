@@ -20,9 +20,36 @@ enum AppPersonalLinearHeadStoreError: Error, Equatable {
     case unavailable
 }
 
+enum AppPersonalLinearHeadFamily: String, Sendable {
+    case centroid
+    case adamW
+
+    var directoryName: String {
+        switch self {
+        case .centroid: "LinearHead"
+        case .adamW: "AdamWHead"
+        }
+    }
+
+    var acceptedAlgorithmRevisions: Set<String> {
+        switch self {
+        case .centroid: ["positive-centroid-float32-v1"]
+        case .adamW: ["positive-adamw-float32-v1"]
+        }
+    }
+
+    var objectExtension: String {
+        switch self {
+        case .centroid: "personal-head"
+        case .adamW: "personal-adamw-head"
+        }
+    }
+}
+
 actor AppPersonalLinearHeadStore {
     private static let pointerSchemaRevision = 1
 
+    private let family: AppPersonalLinearHeadFamily
     private let applicationSupportDirectory: URL
     private let expectedCatalogScopeID: String
     private let expectedEncoderIdentity: AppCoreMLModelIdentity
@@ -32,8 +59,10 @@ actor AppPersonalLinearHeadStore {
     init(
         applicationSupportDirectory: URL,
         expectedCatalogScopeID: String,
-        expectedEncoderIdentity: AppCoreMLModelIdentity
+        expectedEncoderIdentity: AppCoreMLModelIdentity,
+        family: AppPersonalLinearHeadFamily = .centroid
     ) {
+        self.family = family
         self.applicationSupportDirectory = applicationSupportDirectory
         self.expectedCatalogScopeID = expectedCatalogScopeID
         self.expectedEncoderIdentity = expectedEncoderIdentity
@@ -83,7 +112,7 @@ actor AppPersonalLinearHeadStore {
         } catch {
             throw AppPersonalLinearHeadStoreError.invalidCandidate
         }
-        guard matchesExpectedIdentity(model.identity) else {
+        guard matchesFamily(model) else {
             throw AppPersonalLinearHeadStoreError.identityMismatch
         }
 
@@ -103,7 +132,7 @@ actor AppPersonalLinearHeadStore {
                       artifact: AppPersonalLinearHeadArtifact(encodedData: reloadedData)
                   ),
                   reloadedModel.identity == model.identity,
-                  matchesExpectedIdentity(reloadedModel.identity)
+                  matchesFamily(reloadedModel)
             else {
                 throw AppPersonalLinearHeadStoreError.persistenceFailed
             }
@@ -163,7 +192,9 @@ actor AppPersonalLinearHeadStore {
             let model = try AppPersonalLinearHeadModel(
                 artifact: AppPersonalLinearHeadArtifact(encodedData: artifactData)
             )
-            guard matchesExpectedIdentity(model.identity) else {
+            guard family.acceptedAlgorithmRevisions.contains(model.algorithmRevision),
+                  matchesExpectedIdentity(model.identity)
+            else {
                 return (nil, .unavailable(.identityMismatch))
             }
             return (model, .ready(model.identity))
@@ -175,6 +206,11 @@ actor AppPersonalLinearHeadStore {
     private func matchesExpectedIdentity(_ identity: AppPersonalLinearHeadIdentity) -> Bool {
         identity.catalogScopeID == expectedCatalogScopeID
             && identity.encoderIdentity == expectedEncoderIdentity
+    }
+
+    private func matchesFamily(_ model: AppPersonalLinearHeadModel) -> Bool {
+        family.acceptedAlgorithmRevisions.contains(model.algorithmRevision)
+            && matchesExpectedIdentity(model.identity)
     }
 
     private func ensureStoreDirectories() throws {
@@ -245,7 +281,7 @@ actor AppPersonalLinearHeadStore {
 
     private var storeRoot: URL {
         applicationSupportDirectory.appendingPathComponent(
-            "PersonalModels/LinearHead/v1",
+            "PersonalModels/\(family.directoryName)/v1",
             isDirectory: true
         )
     }
@@ -259,7 +295,7 @@ actor AppPersonalLinearHeadStore {
             applicationSupportDirectory,
             applicationSupportDirectory.appendingPathComponent("PersonalModels", isDirectory: true),
             applicationSupportDirectory.appendingPathComponent(
-                "PersonalModels/LinearHead",
+                "PersonalModels/\(family.directoryName)",
                 isDirectory: true
             ),
             storeRoot,
@@ -272,7 +308,7 @@ actor AppPersonalLinearHeadStore {
     }
 
     private func objectURL(artifactSHA256: String) -> URL {
-        objectsDirectory.appendingPathComponent("\(artifactSHA256).personal-head")
+        objectsDirectory.appendingPathComponent("\(artifactSHA256).\(family.objectExtension)")
     }
 
     private static func sha256(_ data: Data) -> String {
