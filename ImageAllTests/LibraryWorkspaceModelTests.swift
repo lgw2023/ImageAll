@@ -4446,37 +4446,7 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         )
     }
 
-    func testSourceOrderPreferencesInsertDraggedSourceAfterTarget() {
-        let suiteName = "ImageAllTests.SourceDropAfter.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suiteName)!
-        defer { defaults.removePersistentDomain(forName: suiteName) }
-        let first = LibrarySourceSummary(id: UUID(), displayName: "一", state: .active)
-        let second = LibrarySourceSummary(id: UUID(), displayName: "二", state: .active)
-        let third = LibrarySourceSummary(id: UUID(), displayName: "三", state: .active)
-        let preferences = LibrarySourceOrderPreferences(defaults: defaults)
-
-        preferences.move(
-            sourceID: first.id,
-            relativeTo: second.id,
-            placement: .after,
-            in: [first, second, third]
-        )
-
-        XCTAssertEqual(preferences.ordered([first, second, third]).map(\.id), [second.id, first.id, third.id])
-    }
-
-    func testSourceDropPlacementUsesWholeRowAsBeforeAndAfterZones() {
-        XCTAssertEqual(
-            LibrarySourceDropPlacement.resolve(locationY: 8, rowHeight: 40),
-            .before
-        )
-        XCTAssertEqual(
-            LibrarySourceDropPlacement.resolve(locationY: 32, rowHeight: 40),
-            .after
-        )
-    }
-
-    func testSourceOrderPreferencesCanDropDraggedSourceAtListTail() {
+    func testSourceOrderPreferencesMoveListOffsetsToTail() {
         let suiteName = "ImageAllTests.SourceDropTail.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
         defer { defaults.removePersistentDomain(forName: suiteName) }
@@ -4486,13 +4456,71 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         let preferences = LibrarySourceOrderPreferences(defaults: defaults)
 
         preferences.move(
-            sourceID: first.id,
-            relativeTo: third.id,
-            placement: .after,
+            fromOffsets: IndexSet(integer: 0),
+            toOffset: 3,
             in: [first, second, third]
         )
 
         XCTAssertEqual(preferences.ordered([first, second, third]).map(\.id), [second.id, third.id, first.id])
+    }
+
+    func testSourceOrderPreferencesMoveListOffsetsToHead() {
+        let suiteName = "ImageAllTests.SourceMoveOffsets.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let first = LibrarySourceSummary(id: UUID(), displayName: "一", state: .active)
+        let second = LibrarySourceSummary(id: UUID(), displayName: "二", state: .active)
+        let third = LibrarySourceSummary(id: UUID(), displayName: "三", state: .active)
+        let preferences = LibrarySourceOrderPreferences(defaults: defaults)
+
+        preferences.move(
+            fromOffsets: IndexSet(integer: 2),
+            toOffset: 0,
+            in: [first, second, third]
+        )
+
+        XCTAssertEqual(preferences.ordered([first, second, third]).map(\.id), [third.id, first.id, second.id])
+    }
+
+    func testSourceReorderLayoutResolvesHeadGapsAndTailFromRowMidpoints() {
+        let rowFrames = [
+            CGRect(x: 0, y: 0, width: 180, height: 40),
+            CGRect(x: 0, y: 48, width: 180, height: 40),
+            CGRect(x: 0, y: 96, width: 180, height: 40),
+        ]
+
+        XCTAssertEqual(LibrarySourceReorderLayout.destinationOffset(pointerY: 8, rowFrames: rowFrames), 0)
+        XCTAssertEqual(LibrarySourceReorderLayout.destinationOffset(pointerY: 44, rowFrames: rowFrames), 1)
+        XCTAssertEqual(LibrarySourceReorderLayout.destinationOffset(pointerY: 92, rowFrames: rowFrames), 2)
+        XCTAssertEqual(LibrarySourceReorderLayout.destinationOffset(pointerY: 148, rowFrames: rowFrames), 3)
+        XCTAssertEqual(
+            LibrarySourceReorderLayout.destinationOffset(
+                pointerY: 92,
+                rowFrames: [rowFrames[2], rowFrames[0], rowFrames[1]]
+            ),
+            2
+        )
+    }
+
+    func testSourceReorderLayoutResolvesMoveFromGestureEndLocation() {
+        let firstID = UUID()
+        let secondID = UUID()
+        let thirdID = UUID()
+        let rowFrames = [
+            CGRect(x: 0, y: 227, width: 180, height: 40),
+            CGRect(x: 0, y: 275, width: 180, height: 40),
+            CGRect(x: 0, y: 323, width: 180, height: 40),
+        ]
+
+        XCTAssertEqual(
+            LibrarySourceReorderLayout.moveRequest(
+                sourceID: firstID,
+                localPointerY: 93,
+                sourceIDs: [firstID, secondID, thirdID],
+                rowFrames: rowFrames
+            ),
+            LibrarySourceReorderMove(sourceOffset: 0, destinationOffset: 2)
+        )
     }
 
     func testOpeningSelectedOriginalUsesInjectedPreviewOpener() async {

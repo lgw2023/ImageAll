@@ -224,15 +224,6 @@ struct LibraryTagSemanticSection: Identifiable, Equatable, Sendable {
     var id: LibraryTagSemanticGroup { group }
 }
 
-enum LibrarySourceDropPlacement: Equatable, Sendable {
-    case before
-    case after
-
-    static func resolve(locationY: CGFloat, rowHeight: CGFloat) -> Self {
-        locationY < max(rowHeight, 0) / 2 ? .before : .after
-    }
-}
-
 @MainActor
 final class LibrarySourceOrderPreferences {
     private static let defaultKey = "library.sidebar.source-order.v1"
@@ -270,24 +261,64 @@ final class LibrarySourceOrderPreferences {
     }
 
     func move(
-        sourceID: UUID,
-        relativeTo targetID: UUID,
-        placement: LibrarySourceDropPlacement,
+        fromOffsets sourceOffsets: IndexSet,
+        toOffset destination: Int,
         in sources: [LibrarySourceSummary]
     ) {
         var ids = ordered(sources).map(\.id)
-        guard sourceID != targetID,
-              let sourceIndex = ids.firstIndex(of: sourceID)
-        else { return }
-        ids.remove(at: sourceIndex)
-        guard let targetIndex = ids.firstIndex(of: targetID) else { return }
-        let insertionIndex = placement == .before ? targetIndex : targetIndex + 1
-        ids.insert(sourceID, at: insertionIndex)
+        let validOffsets = sourceOffsets.filter { ids.indices.contains($0) }.sorted()
+        guard !validOffsets.isEmpty else { return }
+        let movedIDs = validOffsets.map { ids[$0] }
+        for offset in validOffsets.reversed() {
+            ids.remove(at: offset)
+        }
+        let removedBeforeDestination = validOffsets.filter { $0 < destination }.count
+        let insertionIndex = min(
+            max(destination - removedBeforeDestination, 0),
+            ids.endIndex
+        )
+        ids.insert(contentsOf: movedIDs, at: insertionIndex)
         defaults.set(ids.map(\.uuidString), forKey: key)
     }
 
     private func loadIDs() -> [UUID] {
         (defaults.stringArray(forKey: key) ?? []).compactMap(UUID.init(uuidString:))
+    }
+}
+
+struct LibrarySourceReorderMove: Equatable, Sendable {
+    let sourceOffset: Int
+    let destinationOffset: Int
+}
+
+enum LibrarySourceReorderLayout {
+    static func destinationOffset(pointerY: CGFloat, rowFrames: [CGRect]) -> Int {
+        let framesTopToBottom = rowFrames.sorted { $0.minY < $1.minY }
+        return framesTopToBottom.firstIndex { pointerY < $0.midY } ?? framesTopToBottom.count
+    }
+
+    static func moveRequest(
+        sourceID: UUID,
+        localPointerY: CGFloat,
+        sourceIDs: [UUID],
+        rowFrames: [CGRect]
+    ) -> LibrarySourceReorderMove? {
+        guard rowFrames.count == sourceIDs.count,
+              let sourceOffset = sourceIDs.firstIndex(of: sourceID)
+        else { return nil }
+        let framesTopToBottom = rowFrames.sorted { $0.minY < $1.minY }
+        let pointerY = framesTopToBottom[sourceOffset].minY + localPointerY
+        let destinationOffset = destinationOffset(
+            pointerY: pointerY,
+            rowFrames: framesTopToBottom
+        )
+        guard destinationOffset != sourceOffset,
+              destinationOffset != sourceOffset + 1
+        else { return nil }
+        return LibrarySourceReorderMove(
+            sourceOffset: sourceOffset,
+            destinationOffset: destinationOffset
+        )
     }
 }
 
@@ -499,15 +530,10 @@ final class LibraryWorkspaceModel: ObservableObject {
         sourceOrderRevision &+= 1
     }
 
-    func moveSource(
-        _ sourceID: UUID,
-        relativeTo targetID: UUID,
-        placement: LibrarySourceDropPlacement
-    ) {
+    func moveSources(fromOffsets sourceOffsets: IndexSet, toOffset destination: Int) {
         sourceOrderPreferences.move(
-            sourceID: sourceID,
-            relativeTo: targetID,
-            placement: placement,
+            fromOffsets: sourceOffsets,
+            toOffset: destination,
             in: sources
         )
         sourceOrderRevision &+= 1
@@ -4308,73 +4334,17 @@ private struct LibraryTagFlowLayout: Layout {
     }
 }
 
-private extension UTType {
-    static let imageAllLibrarySource = UTType(exportedAs: "com.gwlee.imageall.library-source")
-}
+private struct LibrarySourceRowFramePreferenceKey: PreferenceKey {
+    static let defaultValue: [UUID: CGRect] = [:]
 
-private struct LibrarySourceDropTarget: Equatable {
-    let sourceID: UUID
-    let placement: LibrarySourceDropPlacement
-}
-
-private struct LibrarySourceDropDelegate: DropDelegate {
-    let targetSourceID: UUID
-    let rowHeight: CGFloat
-    @Binding var draggedSourceID: UUID?
-    @Binding var activeTarget: LibrarySourceDropTarget?
-    let performMove: (UUID, UUID, LibrarySourceDropPlacement) -> Void
-
-    func validateDrop(info: DropInfo) -> Bool {
-        draggedSourceID != nil &&
-            draggedSourceID != targetSourceID &&
-            info.hasItemsConforming(to: [UTType.imageAllLibrarySource.identifier])
-    }
-
-    func dropEntered(info: DropInfo) {
-        updateActiveTarget(for: info)
-    }
-
-    func dropUpdated(info: DropInfo) -> DropProposal? {
-        updateActiveTarget(for: info)
-        return DropProposal(operation: .move)
-    }
-
-    func dropExited(info _: DropInfo) {
-        if activeTarget?.sourceID == targetSourceID {
-            activeTarget = nil
-        }
-    }
-
-    func performDrop(info: DropInfo) -> Bool {
-        guard let draggedSourceID, draggedSourceID != targetSourceID else {
-            activeTarget = nil
-            self.draggedSourceID = nil
-            return false
-        }
-        let placement = LibrarySourceDropPlacement.resolve(
-            locationY: info.location.y,
-            rowHeight: rowHeight
-        )
-        performMove(draggedSourceID, targetSourceID, placement)
-        activeTarget = nil
-        self.draggedSourceID = nil
-        return true
-    }
-
-    private func updateActiveTarget(for info: DropInfo) {
-        guard let draggedSourceID, draggedSourceID != targetSourceID else {
-            activeTarget = nil
-            return
-        }
-        activeTarget = LibrarySourceDropTarget(
-            sourceID: targetSourceID,
-            placement: .resolve(locationY: info.location.y, rowHeight: rowHeight)
-        )
+    static func reduce(value: inout [UUID: CGRect], nextValue: () -> [UUID: CGRect]) {
+        value.merge(nextValue()) { _, latest in latest }
     }
 }
 
 struct LibraryWorkspaceView: View {
     private static let sourceDropRowHeight: CGFloat = 40
+    private static let sourceReorderCoordinateSpace = "library-source-reorder"
     private static let mediaFormatFilterOptions = [
         LibraryMediaFormatFilterOption(title: "JPEG", mediaTypes: [UTType.jpeg.identifier]),
         LibraryMediaFormatFilterOption(title: "PNG", mediaTypes: [UTType.png.identifier]),
@@ -4415,10 +4385,11 @@ struct LibraryWorkspaceView: View {
     @State private var gridColumnCount = 1
     @State private var gridPageItemCount = 1
     @State private var gridCellFrames: [UUID: CGRect] = [:]
+    @State private var sourceRowFrames: [UUID: CGRect] = [:]
+    @State private var draggedSourceID: UUID?
+    @State private var sourceInsertionOffset: Int?
     @State private var isMarqueeSelecting = false
     @State private var gridScrollTargetID: UUID?
-    @State private var draggedSourceID: UUID?
-    @State private var sourceDropTarget: LibrarySourceDropTarget?
     @State private var layoutState = LibraryWorkspaceLayoutState()
     @FocusState private var newTagFieldFocused: Bool
     @FocusState private var contentFocused: Bool
@@ -5232,7 +5203,8 @@ struct LibraryWorkspaceView: View {
     }
 
     private var sidebar: some View {
-        List(selection: $selection) {
+        let orderedSources = model.orderedSources
+        return List(selection: $selection) {
             Section("图库") {
                 Label("全部照片", systemImage: "photo.on.rectangle.angled")
                     .tag(LibrarySidebarSelection.all)
@@ -5250,7 +5222,7 @@ struct LibraryWorkspaceView: View {
                 .tag(LibrarySidebarSelection.reviewSuggestions)
             }
             Section("来源") {
-                ForEach(model.orderedSources) { source in
+                ForEach(orderedSources) { source in
                     sourceRow(source)
                         .frame(
                             maxWidth: .infinity,
@@ -5259,27 +5231,30 @@ struct LibraryWorkspaceView: View {
                             alignment: .leading
                         )
                         .contentShape(Rectangle())
+                        .background {
+                            GeometryReader { proxy in
+                                Color.clear.preference(
+                                    key: LibrarySourceRowFramePreferenceKey.self,
+                                    value: [
+                                        source.id: proxy.frame(
+                                            in: .named(Self.sourceReorderCoordinateSpace)
+                                        ),
+                                    ]
+                                )
+                            }
+                        }
                         .overlay {
-                            sourceDropIndicator(for: source.id)
+                            sourceInsertionIndicator(
+                                for: source.id,
+                                orderedSources: orderedSources
+                            )
                         }
+                        .opacity(draggedSourceID == source.id ? 0.55 : 1)
                         .tag(LibrarySidebarSelection.source(source.id))
-                        .onDrag {
-                            draggedSourceID = source.id
-                            return NSItemProvider(
-                                item: source.id.uuidString as NSString,
-                                typeIdentifier: UTType.imageAllLibrarySource.identifier
-                            )
+                        .onTapGesture {
+                            selection = .source(source.id)
                         }
-                        .onDrop(
-                            of: [UTType.imageAllLibrarySource.identifier],
-                            delegate: LibrarySourceDropDelegate(
-                                targetSourceID: source.id,
-                                rowHeight: Self.sourceDropRowHeight,
-                                draggedSourceID: $draggedSourceID,
-                                activeTarget: $sourceDropTarget,
-                                performMove: model.moveSource(_:relativeTo:placement:)
-                            )
-                        )
+                        .highPriorityGesture(sourceReorderGesture(for: source.id))
                 }
                 Button {
                     Task { await model.connectFolder() }
@@ -5334,8 +5309,76 @@ struct LibraryWorkspaceView: View {
                 .disabled(model.selectedAssetIDs.isEmpty)
             }
         }
+        .coordinateSpace(name: Self.sourceReorderCoordinateSpace)
+        .onPreferenceChange(LibrarySourceRowFramePreferenceKey.self) { frames in
+            sourceRowFrames = frames
+        }
         .listStyle(.sidebar)
         .navigationTitle("ImageAll")
+    }
+
+    private func sourceReorderGesture(for sourceID: UUID) -> some Gesture {
+        DragGesture(
+            minimumDistance: 4,
+            coordinateSpace: .local
+        )
+        .onChanged { value in
+            let orderedSources = model.orderedSources
+            let visibleFrames = sourceRowFrames.values.sorted { $0.minY < $1.minY }
+            guard visibleFrames.count == orderedSources.count else { return }
+            guard let sourceOffset = orderedSources.firstIndex(where: { $0.id == sourceID })
+            else { return }
+            draggedSourceID = sourceID
+            sourceInsertionOffset = LibrarySourceReorderLayout.destinationOffset(
+                pointerY: visibleFrames[sourceOffset].minY + value.location.y,
+                rowFrames: visibleFrames
+            )
+        }
+        .onEnded { value in
+            defer {
+                draggedSourceID = nil
+                sourceInsertionOffset = nil
+            }
+            let orderedSources = model.orderedSources
+            guard let move = LibrarySourceReorderLayout.moveRequest(
+                sourceID: sourceID,
+                localPointerY: value.location.y,
+                sourceIDs: orderedSources.map(\.id),
+                rowFrames: Array(sourceRowFrames.values)
+            ) else { return }
+            model.moveSources(
+                fromOffsets: IndexSet(integer: move.sourceOffset),
+                toOffset: move.destinationOffset
+            )
+        }
+    }
+
+    @ViewBuilder
+    private func sourceInsertionIndicator(
+        for sourceID: UUID,
+        orderedSources: [LibrarySourceSummary]
+    ) -> some View {
+        if let sourceIndex = orderedSources.firstIndex(where: { $0.id == sourceID }) {
+            if sourceInsertionOffset == sourceIndex {
+                VStack(spacing: 0) {
+                    Capsule()
+                        .fill(Color.accentColor)
+                        .frame(height: 3)
+                    Spacer(minLength: 0)
+                }
+                .allowsHitTesting(false)
+            } else if sourceIndex == orderedSources.count - 1,
+                      sourceInsertionOffset == orderedSources.count
+            {
+                VStack(spacing: 0) {
+                    Spacer(minLength: 0)
+                    Capsule()
+                        .fill(Color.accentColor)
+                        .frame(height: 3)
+                }
+                .allowsHitTesting(false)
+            }
+        }
     }
 
     private func tagRow(_ tag: TagListItem) -> some View {
@@ -5499,28 +5542,6 @@ struct LibraryWorkspaceView: View {
                 model.isBusy || source.state == .disabled ||
                 (source.kind == .photos && source.state == .unavailable)
             )
-        }
-    }
-
-    @ViewBuilder
-    private func sourceDropIndicator(for sourceID: UUID) -> some View {
-        if let sourceDropTarget, sourceDropTarget.sourceID == sourceID {
-            ZStack {
-                RoundedRectangle(cornerRadius: 5)
-                    .fill(Color.accentColor.opacity(0.08))
-                VStack(spacing: 0) {
-                    if sourceDropTarget.placement == .after {
-                        Spacer(minLength: 0)
-                    }
-                    Capsule()
-                        .fill(Color.accentColor)
-                        .frame(height: 3)
-                    if sourceDropTarget.placement == .before {
-                        Spacer(minLength: 0)
-                    }
-                }
-            }
-            .allowsHitTesting(false)
         }
     }
 
