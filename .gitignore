@@ -11,9 +11,13 @@ xcuserdata/
 # Xcode build products
 build/
 DerivedData/
+.derivedData-*/
 *.ipa
 *.dSYM.zip
 *.dSYM
+
+# Local agent/WIP scratch snapshots (never commit)
+.wip-*/
 
 # Local user material and compiler profiling output
 user/
