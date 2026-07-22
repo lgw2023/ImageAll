@@ -209,6 +209,12 @@ protocol PersonalizationReviewPort: Sendable {
     func tagOverviews(sourceIDs: [UUID]?) throws -> [SuggestionTagOverview]
     func personalTrainingSnapshot() throws -> PersonalTrainingSnapshot
     func personalTrainingSnapshot(limitingToAssetIDs assetIDs: Set<UUID>) throws -> PersonalTrainingSnapshot
+    /// Tag-scoped training snapshot. Empty `tagIDs` yields an empty snapshot.
+    /// `assetIDs == nil` keeps all eligible assets; non-empty restricts samples to those assets.
+    func personalTrainingSnapshot(
+        limitingToTagIDs tagIDs: Set<UUID>,
+        limitingToAssetIDs assetIDs: Set<UUID>?
+    ) throws -> PersonalTrainingSnapshot
     func enqueuePersonalModelRebuildIfReady() throws -> UUID?
     func fetchReviewQueue(
         tagID: UUID,
@@ -293,6 +299,13 @@ extension PersonalizationReviewPort {
     }
 
     func personalTrainingSnapshot(limitingToAssetIDs _: Set<UUID>) throws -> PersonalTrainingSnapshot {
+        throw PersonalizationReviewError.persistenceFailure
+    }
+
+    func personalTrainingSnapshot(
+        limitingToTagIDs _: Set<UUID>,
+        limitingToAssetIDs _: Set<UUID>?
+    ) throws -> PersonalTrainingSnapshot {
         throw PersonalizationReviewError.persistenceFailure
     }
 

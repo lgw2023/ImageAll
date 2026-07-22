@@ -80,6 +80,27 @@ final class SourceAssetRulesTests: XCTestCase {
         XCTAssertNil(ScanGenerationRules.generationCompletionInferredFromSourceState(.unavailable))
     }
 
+    func testReconcileCleanRequiresMatchingDirtyEpoch() {
+        XCTAssertFalse(
+            ScanGenerationRules.isSourceReconcileClean(
+                dirtyEpoch: 2,
+                lastCompletedJobStartedDirtyEpoch: nil
+            )
+        )
+        XCTAssertFalse(
+            ScanGenerationRules.isSourceReconcileClean(
+                dirtyEpoch: 2,
+                lastCompletedJobStartedDirtyEpoch: 1
+            )
+        )
+        XCTAssertTrue(
+            ScanGenerationRules.isSourceReconcileClean(
+                dirtyEpoch: 2,
+                lastCompletedJobStartedDirtyEpoch: 2
+            )
+        )
+    }
+
     func testUnavailableSourceDoesNotReleaseCurrentLocator() {
         XCTAssertFalse(SourceRules.releasesCurrentLocator(whenSourceBecomes: .unavailable))
     }

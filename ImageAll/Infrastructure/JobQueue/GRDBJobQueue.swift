@@ -220,6 +220,12 @@ struct GRDBJobQueue: JobQueue, Sendable {
         }
     }
 
+    func isSourceReconcileClean(sourceID: UUID) throws -> Bool {
+        try database.pool.read { db in
+            try SourceReconcileFreshnessSQL.isSourceReconcileClean(sourceID: sourceID, db: db)
+        }
+    }
+
     func settleRetryableJobs() throws {
         let nowMs = clock.nowMs
 
@@ -793,5 +799,40 @@ private extension GRDBJobQueue {
         guard db.changesCount == 1 else {
             throw JobQueueError.staleLease(jobID)
         }
+    }
+}
+
+enum SourceReconcileFreshnessSQL {
+    static func isSourceReconcileClean(sourceID: UUID, db: Database) throws -> Bool {
+        guard let row = try Row.fetchOne(
+            db,
+            sql: """
+            SELECT s.dirty_epoch,
+                   (
+                       SELECT j.started_dirty_epoch
+                       FROM job j
+                       WHERE j.source_id = s.id
+                           AND j.kind IN (?, ?)
+                           AND j.state = 'completed'
+                       ORDER BY j.updated_at_ms DESC
+                       LIMIT 1
+                   ) AS last_completed_dirty_epoch
+            FROM source s
+            WHERE s.id = ?
+            """,
+            arguments: [
+                FolderReconcileJobFactory.kind,
+                PhotosReconcileJobFactory.kind,
+                sourceID.uuidString.lowercased(),
+            ]
+        ) else {
+            return false
+        }
+        let dirtyEpoch: Int = row["dirty_epoch"]
+        let lastCompletedDirtyEpoch: Int? = row["last_completed_dirty_epoch"]
+        return ScanGenerationRules.isSourceReconcileClean(
+            dirtyEpoch: dirtyEpoch,
+            lastCompletedJobStartedDirtyEpoch: lastCompletedDirtyEpoch
+        )
     }
 }

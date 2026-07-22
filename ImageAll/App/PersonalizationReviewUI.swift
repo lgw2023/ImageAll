@@ -628,6 +628,7 @@ struct ReviewQueueContentView: View {
             model.toggleSinglePhotoView()
             return .handled
         }
+        .onKeyPress(keys: [.init("a")], action: handleSelectAllKeyPress)
         .onKeyPress(
             keys: [.leftArrow, .rightArrow, .upArrow, .downArrow],
             action: handleNavigationKey
@@ -731,6 +732,19 @@ struct ReviewQueueContentView: View {
     private func handleReviewDefer() -> KeyPress.Result {
         guard contentFocused else { return .ignored }
         Task { await model.deferReviewSelection() }
+        return .handled
+    }
+
+    private func handleSelectAllKeyPress(_ keyPress: KeyPress) -> KeyPress.Result {
+        guard keyPress.modifiers.contains(.command) else { return .ignored }
+        return handleSelectAllKey()
+    }
+
+    private func handleSelectAllKey() -> KeyPress.Result {
+        guard contentFocused, !model.isSinglePhotoPresented, !model.reviewQueueItems.isEmpty else {
+            return .ignored
+        }
+        Task { await model.selectAllVisibleAssets() }
         return .handled
     }
 

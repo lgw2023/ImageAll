@@ -87,6 +87,16 @@ struct PersonalizationReviewService: PersonalizationReviewPort, Sendable {
         try review.personalTrainingSnapshot(limitingToAssetIDs: assetIDs)
     }
 
+    func personalTrainingSnapshot(
+        limitingToTagIDs tagIDs: Set<UUID>,
+        limitingToAssetIDs assetIDs: Set<UUID>?
+    ) throws -> PersonalTrainingSnapshot {
+        try review.personalTrainingSnapshot(
+            limitingToTagIDs: tagIDs,
+            limitingToAssetIDs: assetIDs
+        )
+    }
+
     func enqueuePersonalModelRebuildIfReady() throws -> UUID? {
         guard personalModelRebuildEnabled,
               let payload = try PersonalModelRebuildJobFactory.payload(

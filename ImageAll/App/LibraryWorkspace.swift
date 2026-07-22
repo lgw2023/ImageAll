@@ -940,8 +940,9 @@ final class LibraryWorkspaceModel: ObservableObject {
     }
 
     /// Startup-only integrity check: enqueue full repair when the catalog is
-    /// clearly incomplete, otherwise a quiet incremental sync. Source switching
-    /// must not re-run this — that caused visible grid flicker.
+    /// clearly incomplete, otherwise a quiet incremental sync only when the
+    /// source is not already reconcile-clean. Source switching must not re-run
+    /// this — that caused visible grid flicker.
     private func ensurePhotosLibraryIndexed(sourceID: UUID) async {
         let service = service
         do {
@@ -955,11 +956,16 @@ final class LibraryWorkspaceModel: ObservableObject {
             if needsFullRepair {
                 try await service.requestPhotosFullRepair(sourceID: sourceID)
                 enqueuedWork = true
-            } else if !(isCatalogScanning && catalogReconcileProgress?.sourceKind == .photos) {
-                try await service.syncPhotosLibrary(sourceID: sourceID)
-                enqueuedWork = true
+            } else {
+                let isClean = try await Self.offMain {
+                    try service.sourceIsReconcileClean(sourceID: sourceID)
+                }
+                if !isClean {
+                    try await service.syncPhotosLibrary(sourceID: sourceID)
+                    enqueuedWork = true
+                }
             }
-            if enqueuedWork || !isCatalogScanning {
+            if enqueuedWork {
                 startCatalogReconcileRunnerIfNeeded()
             }
         } catch {
@@ -1245,6 +1251,10 @@ final class LibraryWorkspaceModel: ObservableObject {
         if selectionRefreshed, notice == .tagSelectionRefreshFailed {
             notice = nil
         }
+    }
+
+    func selectAllVisibleAssets(additive: Bool = false) async {
+        await selectAssets(Set(displayedAssetIDsInGridOrder), additive: additive)
     }
 
     private var displayedAssetIDsInGridOrder: [UUID] {
@@ -2255,14 +2265,22 @@ final class LibraryWorkspaceModel: ObservableObject {
         }
 
         do {
+            let trainingTagIDs = Set(
+                selectedTagFilterDecisions.compactMap { $0.value == .accepted ? $0.key : nil }
+            )
+            guard !trainingTagIDs.isEmpty else {
+                notice = family == .adamW
+                    ? .personalAdamWRebuildTagSelectionRequired
+                    : .personalModelRebuildTagSelectionRequired
+                return
+            }
             let selected = selectedAssetIDs
             let review = review
             let snapshotSource = AppPersonalTrainingSnapshotPortSource {
-                if selected.isEmpty {
-                    try review.personalTrainingSnapshot()
-                } else {
-                    try review.personalTrainingSnapshot(limitingToAssetIDs: selected)
-                }
+                try review.personalTrainingSnapshot(
+                    limitingToTagIDs: trainingTagIDs,
+                    limitingToAssetIDs: selected.isEmpty ? nil : selected
+                )
             }
             let snapshot = try await snapshotSource.currentSnapshot()
             guard Self.hasMinimumPersonalTrainingSamples(snapshot) else {
@@ -2686,8 +2704,13 @@ final class LibraryWorkspaceModel: ObservableObject {
     private func startCatalogReconcileRunnerIfNeeded() {
         catalogReconcileRunRequested = true
         guard catalogReconcileTask == nil else { return }
-        isCatalogScanning = true
         let service = service
+        let hasPendingWork = (try? service.hasPendingCatalogReconcileJobs()) ?? true
+        guard hasPendingWork else {
+            catalogReconcileRunRequested = false
+            return
+        }
+        isCatalogScanning = true
         catalogReconcileTask = Task { [weak self] in
             guard let self else { return }
             let progressMonitor = Task { [weak self] in
@@ -2728,8 +2751,13 @@ final class LibraryWorkspaceModel: ObservableObject {
             if self.catalogReconcileRunRequested {
                 self.startCatalogReconcileRunnerIfNeeded()
             } else {
+                if case .failed = self.phase {
+                    // Preserve the visible scan failure instead of letting a
+                    // final empty-page refresh overwrite it with `.content`.
+                } else {
+                    await self.loadFirstPage(remountGrid: false)
+                }
                 self.isCatalogScanning = false
-                await self.loadFirstPage(remountGrid: false)
             }
         }
     }
@@ -3972,6 +4000,7 @@ struct LibraryWorkspaceView: View {
                 .onKeyPress("u") {
                     handleSinglePhotoReviewDeferKey()
                 }
+                .onKeyPress(keys: [.init("a")], action: handleSelectAllKeyPress)
                 .onKeyPress(
                     keys: [.leftArrow, .rightArrow, .upArrow, .downArrow],
                     action: handleGridNavigationKey
@@ -4070,7 +4099,7 @@ struct LibraryWorkspaceView: View {
                             || model.isRebuildingPersonalAdamWModel
                             || model.isGeneratingPersonalLibrarySuggestions
                     )
-                    .help("有多选时：用选中照片上的全部确认标签训练；无多选时：用全库全部可用确认样本训练。会自动为本批样本补齐本地 embedding（仅用本机预览）")
+                    .help("先在左侧选择要训练的标签；有多选时只使用选中照片上这些标签的确认样本，无多选时使用全库这些标签的全部确认样本。会自动为本批样本补齐本地 embedding（仅用本机预览）")
                 }
 
                 if model.supportsPersonalAdamWModelRebuild {
@@ -4089,7 +4118,7 @@ struct LibraryWorkspaceView: View {
                             || model.isRebuildingPersonalAdamWModel
                             || model.isGeneratingPersonalLibrarySuggestions
                     )
-                    .help("冻结 DINO + AdamW 线性头，多 epoch / 早停；仍只要正样本。与人脑质心模型并存、互不覆盖。")
+                    .help("先在左侧选择要训练的标签；冻结 DINO + AdamW 线性头，多 epoch / 早停；仍只要正样本。与人脑质心模型并存、互不覆盖。多选只限样本照片。")
                 }
 
                 if model.supportsAppPersonalSampleSuggestions {
@@ -4590,13 +4619,14 @@ struct LibraryWorkspaceView: View {
                 .keyboardShortcut(.defaultAction)
             }
             shortcutRow("打开命令面板", keys: "⌘K")
+            shortcutRow("全选当前照片", keys: "⌘A")
             shortcutRow("切换单图查看", keys: "Space")
             shortcutRow("返回照片网格", keys: "Esc")
             shortcutRow("移动照片选择", keys: "←  ↑  ↓  →")
             Spacer()
         }
         .padding(24)
-        .frame(width: 420, height: 280)
+        .frame(width: 420, height: 300)
         .onExitCommand {
             activeSheet = nil
         }
@@ -4655,6 +4685,21 @@ struct LibraryWorkspaceView: View {
         case .showKeyboardShortcuts:
             break
         }
+    }
+
+    private func handleSelectAllKeyPress(_ keyPress: KeyPress) -> KeyPress.Result {
+        guard keyPress.modifiers.contains(.command) else { return .ignored }
+        return handleSelectAllKey()
+    }
+
+    private func handleSelectAllKey() -> KeyPress.Result {
+        guard contentFocused, !model.isSinglePhotoPresented else { return .ignored }
+        let hasVisibleItems = model.reviewMode == nil
+            ? !model.items.isEmpty
+            : !model.reviewQueueItems.isEmpty
+        guard hasVisibleItems else { return .ignored }
+        Task { await model.selectAllVisibleAssets() }
+        return .handled
     }
 
     private func handleGridNavigationKey(_ keyPress: KeyPress) -> KeyPress.Result {
@@ -5677,8 +5722,10 @@ struct LibraryWorkspaceView: View {
             "任务操作未完成，已重新读取当前状态。请重试。"
         case let .personalModelRebuildCompleted(tagCount, sampleCount):
             "个人模型已从 \(tagCount) 个标签的 \(sampleCount) 张人工样本重建并确认生效。"
+        case .personalModelRebuildTagSelectionRequired:
+            "请先在左侧选择要训练的标签；不会训练未选中的标签（例如地点类标签可不选）。"
         case .personalModelRebuildNotReady:
-            "当前范围内尚无可训练标签；每个标签至少需要 2 张确认样本（有多选时只计选中照片上的确认标签）。"
+            "所选标签中尚无可训练项；每个标签至少需要 2 张确认样本（有多选时只计选中照片上的确认样本）。"
         case .personalModelRebuildPreviewUnavailable:
             "训练样本中有照片尚未在本机可用；未下载云端原图，也未替换现有个人模型。"
         case .personalModelRebuildCacheUnavailable:
@@ -5689,8 +5736,10 @@ struct LibraryWorkspaceView: View {
             "个人模型重建未完成；现有模型保持不变，请核对样本后重试。"
         case let .personalAdamWRebuildCompleted(tagCount, sampleCount):
             "超级个人模型（AdamW）已从 \(tagCount) 个标签的 \(sampleCount) 张人工样本训练并确认生效。"
+        case .personalAdamWRebuildTagSelectionRequired:
+            "请先在左侧选择要训练的标签；超级人脑不会训练未选中的标签。"
         case .personalAdamWRebuildNotReady:
-            "当前范围内尚无可训练标签；超级人脑同样要求每个标签至少 2 张确认样本。"
+            "所选标签中尚无可训练项；超级人脑同样要求每个标签至少 2 张确认样本。"
         case .personalAdamWRebuildFailed:
             "超级个人模型训练未完成；现有超级模型保持不变，请核对样本后重试。"
         case .selectedAssetEmbeddingCached:

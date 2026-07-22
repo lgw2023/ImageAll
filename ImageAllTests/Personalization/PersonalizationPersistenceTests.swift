@@ -269,4 +269,57 @@ final class PersonalizationPersistenceTests: XCTestCase {
         XCTAssertEqual(historical.decisions.count, 15)
         XCTAssertEqual(Set(historical.decisions.map(\.assetID)), Set(assetIDs))
     }
+
+    func testPersonalTrainingSnapshotLimitingToTagIDsExcludesUnselectedTags() throws {
+        let fixture = try CatalogQueryTestSupport.openQueryDatabase()
+        try fixture.database.pool.write { db in
+            try db.execute(
+                sql: "UPDATE source SET state = 'active' WHERE id = ?",
+                arguments: [fixture.ids.sourceA.uuidString.lowercased()]
+            )
+        }
+        let familyAssets = [fixture.ids.assetNewest, fixture.ids.assetMiddle]
+        let workAssets = [fixture.ids.assetDuplicateTimeA, fixture.ids.assetDuplicateTimeB]
+        _ = try fixture.tags.batchAccept(
+            tagID: fixture.ids.tagFamily,
+            assetIDs: familyAssets,
+            timestampMs: DatabaseTestSupport.timestampMs + 1
+        )
+        _ = try fixture.tags.batchAccept(
+            tagID: fixture.ids.tagWork,
+            assetIDs: workAssets,
+            timestampMs: DatabaseTestSupport.timestampMs + 2
+        )
+
+        let repository = GRDBPersonalizationReviewRepository(database: fixture.database)
+
+        let emptyTags = try repository.personalTrainingSnapshot(
+            limitingToTagIDs: [],
+            limitingToAssetIDs: nil
+        )
+        XCTAssertTrue(emptyTags.personalTagIDs.isEmpty)
+        XCTAssertTrue(emptyTags.decisions.isEmpty)
+
+        let familyOnly = try repository.personalTrainingSnapshot(
+            limitingToTagIDs: [fixture.ids.tagFamily],
+            limitingToAssetIDs: nil
+        )
+        XCTAssertEqual(familyOnly.personalTagIDs, [fixture.ids.tagFamily])
+        XCTAssertEqual(Set(familyOnly.decisions.map(\.assetID)), Set(familyAssets))
+        XCTAssertFalse(familyOnly.decisions.contains { $0.tagID == fixture.ids.tagWork })
+
+        let workOnOneAsset = try repository.personalTrainingSnapshot(
+            limitingToTagIDs: [fixture.ids.tagWork],
+            limitingToAssetIDs: [fixture.ids.assetDuplicateTimeA]
+        )
+        XCTAssertTrue(workOnOneAsset.personalTagIDs.isEmpty)
+        XCTAssertTrue(workOnOneAsset.decisions.isEmpty)
+
+        let workOnBothAssets = try repository.personalTrainingSnapshot(
+            limitingToTagIDs: [fixture.ids.tagWork],
+            limitingToAssetIDs: Set(workAssets)
+        )
+        XCTAssertEqual(workOnBothAssets.personalTagIDs, [fixture.ids.tagWork])
+        XCTAssertEqual(Set(workOnBothAssets.decisions.map(\.assetID)), Set(workAssets))
+    }
 }

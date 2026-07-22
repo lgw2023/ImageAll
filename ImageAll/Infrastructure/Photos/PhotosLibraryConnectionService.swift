@@ -121,6 +121,9 @@ struct PhotosLibraryChangeObserverCoordinator: Sendable {
                 """
             ), let sourceID = UUID(uuidString: sourceIDString)
             else { return false }
+            if try SourceReconcileFreshnessSQL.isSourceReconcileClean(sourceID: sourceID, db: db) {
+                return false
+            }
             try enqueuer.enqueueIfNeeded(sourceID: sourceID, db: db)
             return true
         }) == true

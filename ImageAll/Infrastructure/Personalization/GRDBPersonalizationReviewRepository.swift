@@ -299,15 +299,32 @@ struct GRDBPersonalizationReviewRepository: Sendable {
     }
 
     func personalTrainingSnapshot() throws -> PersonalTrainingSnapshot {
-        try personalTrainingSnapshot(limitingToAssetIDs: nil)
+        try personalTrainingSnapshot(limitingToTagIDs: nil, limitingToAssetIDs: nil)
     }
 
     func personalTrainingSnapshot(limitingToAssetIDs assetIDs: Set<UUID>) throws -> PersonalTrainingSnapshot {
-        try personalTrainingSnapshot(limitingToAssetIDs: Optional(assetIDs))
+        try personalTrainingSnapshot(limitingToTagIDs: nil, limitingToAssetIDs: Optional(assetIDs))
     }
 
-    private func personalTrainingSnapshot(limitingToAssetIDs assetIDs: Set<UUID>?) throws -> PersonalTrainingSnapshot {
+    func personalTrainingSnapshot(
+        limitingToTagIDs tagIDs: Set<UUID>,
+        limitingToAssetIDs assetIDs: Set<UUID>?
+    ) throws -> PersonalTrainingSnapshot {
+        try personalTrainingSnapshot(limitingToTagIDs: Optional(tagIDs), limitingToAssetIDs: assetIDs)
+    }
+
+    private func personalTrainingSnapshot(
+        limitingToTagIDs tagIDs: Set<UUID>?,
+        limitingToAssetIDs assetIDs: Set<UUID>?
+    ) throws -> PersonalTrainingSnapshot {
         let catalogScopeID = try database.catalogScopeID()
+        if let tagIDs, tagIDs.isEmpty {
+            return PersonalTrainingSnapshot(
+                catalogScopeID: catalogScopeID,
+                personalTagIDs: [],
+                decisions: []
+            )
+        }
         if let assetIDs, assetIDs.isEmpty {
             return PersonalTrainingSnapshot(
                 catalogScopeID: catalogScopeID,
@@ -315,6 +332,7 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                 decisions: []
             )
         }
+        let tagIDValues = tagIDs.map { Array($0).map(\.uuidString) }
         let assetIDValues = assetIDs.map { Array($0).map(\.uuidString) }
         return try database.pool.read { db in
             var sql = """
@@ -340,6 +358,13 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                         )
                 """
             var arguments = StatementArguments()
+            if let tagIDValues {
+                let placeholders = Array(repeating: "?", count: tagIDValues.count).joined(separator: ", ")
+                sql += "\n                        AND d.tag_id IN (\(placeholders))"
+                for value in tagIDValues.sorted() {
+                    arguments += [value.lowercased()]
+                }
+            }
             if let assetIDValues {
                 let placeholders = Array(repeating: "?", count: assetIDValues.count).joined(separator: ", ")
                 sql += "\n                        AND d.asset_id IN (\(placeholders))"
@@ -366,7 +391,7 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                     AND decision = 'accepted'
                 ORDER BY tag_id ASC, updated_at_ms DESC, asset_id ASC
                 """
-            // Full-catalog and selection-scoped rebuild both use every eligible accepted sample.
+            // Full-catalog, tag-scoped, and selection-scoped rebuild all use every eligible accepted sample.
             let rows = try Row.fetchAll(db, sql: sql, arguments: arguments)
             let decisions = rows.compactMap { row -> PersonalTrainingDecision? in
                 guard let assetID = UUID(uuidString: row["asset_id"]),
@@ -382,12 +407,12 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                     state: decision == "accepted" ? .manualAccepted : .manualRejected
                 )
             }
-            let tagIDs = Array(Set(decisions.map(\.tagID))).sorted {
+            let resolvedTagIDs = Array(Set(decisions.map(\.tagID))).sorted {
                 $0.uuidString < $1.uuidString
             }
             return PersonalTrainingSnapshot(
                 catalogScopeID: catalogScopeID,
-                personalTagIDs: tagIDs,
+                personalTagIDs: resolvedTagIDs,
                 decisions: decisions
             )
         }

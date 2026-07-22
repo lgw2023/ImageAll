@@ -149,6 +149,14 @@ struct ProductionLibraryWorkspaceService: LibraryWorkspacePort, Sendable {
         }
     }
 
+    func hasPendingCatalogReconcileJobs() throws -> Bool {
+        try queue.hasBlockingReconcileWork(nowMs: clock.nowMs)
+    }
+
+    func sourceIsReconcileClean(sourceID: UUID) throws -> Bool {
+        try queue.isSourceReconcileClean(sourceID: sourceID)
+    }
+
     func fetchCatalogReconcileProgress() throws -> CatalogReconcileProgress? {
         try queue.database.pool.read { db in
             guard let row = try Row.fetchOne(

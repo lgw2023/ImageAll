@@ -1626,20 +1626,24 @@ final class LibraryWorkspaceModelTests: XCTestCase {
                     displayName: "Fixture",
                     state: .active
                 ),
-                reconciledItems: []
+                reconciledItems: [],
+                tags: [TagListItem(id: tagID, displayName: "旅行", state: .active)]
             ),
             review: FakePersonalizationReviewPort(trainingSnapshot: snapshot),
             appPersonalModelRebuilder: rebuilder
         )
 
         XCTAssertTrue(model.supportsPersonalModelRebuild)
+        await model.start()
+        await model.toggleIncludedTagFilter(tagID)
         await model.rebuildPersonalModel()
 
         let rebuildCallCount = await rebuilder.callCount()
         XCTAssertEqual(rebuildCallCount, 1)
         XCTAssertEqual(
             model.notice,
-            .personalModelRebuildCompleted(tagCount: 1, sampleCount: 4)
+            // makePersonalTrainingDecisions seeds 2 accepted + 2 rejected; training uses accepted only.
+            .personalModelRebuildCompleted(tagCount: 1, sampleCount: 2)
         )
         XCTAssertFalse(model.isRebuildingPersonalModel)
     }
@@ -1688,6 +1692,7 @@ final class LibraryWorkspaceModelTests: XCTestCase {
             appPersonalModelRebuilder: rebuilder
         )
         await model.start()
+        await model.toggleIncludedTagFilter(tag.id)
 
         await model.rebuildPersonalModel()
 
@@ -1698,30 +1703,18 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertFalse(model.isRebuildingPersonalModel)
     }
 
-    func testAppPersonalRebuildUsesAcceptedTagsOnSelectedAssetsOnly() async {
+    func testAppPersonalRebuildRequiresIncludedTagFilter() async {
         let sourceID = UUID()
         let tagID = UUID()
-        let selectedAssetIDs = [UUID(), UUID()]
-        let historicalOnlyAssetID = UUID()
-        let selectedAssets = selectedAssetIDs.enumerated().map { index, assetID in
-            Self.makeAsset(
-                sourceID: sourceID,
-                assetID: assetID,
-                fileName: "selected-\(index).png"
-            )
-        }
-        let historicalOnlyAsset = Self.makeAsset(
-            sourceID: sourceID,
-            assetID: historicalOnlyAssetID,
-            fileName: "historical-only.png"
-        )
-        let allAssets = selectedAssets + [historicalOnlyAsset]
+        let assetIDs = [UUID(), UUID()]
         let tag = TagListItem(id: tagID, displayName: "旅行", state: .active)
-        let previewData = Data("program-generated-selected-preview".utf8)
+        let assets = assetIDs.enumerated().map { index, assetID in
+            Self.makeAsset(sourceID: sourceID, assetID: assetID, fileName: "asset-\(index).png")
+        }
         let snapshot = PersonalTrainingSnapshot(
             catalogScopeID: UUID().uuidString.lowercased(),
             personalTagIDs: [tagID],
-            decisions: (selectedAssetIDs + [historicalOnlyAssetID]).map { assetID in
+            decisions: assetIDs.map { assetID in
                 PersonalTrainingDecision(
                     assetID: assetID,
                     contentRevision: 1,
@@ -1730,19 +1723,6 @@ final class LibraryWorkspaceModelTests: XCTestCase {
                 )
             }
         )
-        let service = FakeLibraryWorkspaceService(
-            connectedSource: LibrarySourceSummary(
-                id: sourceID,
-                displayName: "Fixture",
-                state: .active
-            ),
-            reconciledItems: allAssets,
-            tags: [tag],
-            initialItems: allAssets,
-            startsConnected: true,
-            previewData: previewData
-        )
-        let cache = FakeSelectedAssetEmbeddingCache()
         let rebuilder = FakeAppPersonalModelRebuilder(
             result: .success(
                 AppPersonalLinearHeadIdentity(
@@ -1770,12 +1750,120 @@ final class LibraryWorkspaceModelTests: XCTestCase {
             )
         )
         let model = LibraryWorkspaceModel(
+            service: FakeLibraryWorkspaceService(
+                connectedSource: LibrarySourceSummary(
+                    id: sourceID,
+                    displayName: "Fixture",
+                    state: .active
+                ),
+                reconciledItems: assets,
+                tags: [tag],
+                initialItems: assets,
+                startsConnected: true
+            ),
+            review: FakePersonalizationReviewPort(trainingSnapshot: snapshot),
+            appPersonalModelRebuilder: rebuilder
+        )
+        await model.start()
+        XCTAssertTrue(model.selectedTagFilterIDs.isEmpty)
+
+        await model.rebuildPersonalModel()
+
+        let rebuildCallCount = await rebuilder.callCount()
+        XCTAssertEqual(rebuildCallCount, 0)
+        XCTAssertEqual(model.notice, .personalModelRebuildTagSelectionRequired)
+        XCTAssertFalse(model.isRebuildingPersonalModel)
+    }
+
+    func testAppPersonalRebuildUsesAcceptedTagsOnSelectedAssetsOnly() async {
+        let sourceID = UUID()
+        let selectedTagID = UUID()
+        let ignoredTagID = UUID()
+        let selectedAssetIDs = [UUID(), UUID()]
+        let historicalOnlyAssetID = UUID()
+        let selectedAssets = selectedAssetIDs.enumerated().map { index, assetID in
+            Self.makeAsset(
+                sourceID: sourceID,
+                assetID: assetID,
+                fileName: "selected-\(index).png"
+            )
+        }
+        let historicalOnlyAsset = Self.makeAsset(
+            sourceID: sourceID,
+            assetID: historicalOnlyAssetID,
+            fileName: "historical-only.png"
+        )
+        let allAssets = selectedAssets + [historicalOnlyAsset]
+        let selectedTag = TagListItem(id: selectedTagID, displayName: "板栗", state: .active)
+        let ignoredTag = TagListItem(id: ignoredTagID, displayName: "新疆", state: .active)
+        let previewData = Data("program-generated-selected-preview".utf8)
+        let snapshot = PersonalTrainingSnapshot(
+            catalogScopeID: UUID().uuidString.lowercased(),
+            personalTagIDs: [selectedTagID, ignoredTagID],
+            decisions: (selectedAssetIDs + [historicalOnlyAssetID]).flatMap { assetID in
+                [
+                    PersonalTrainingDecision(
+                        assetID: assetID,
+                        contentRevision: 1,
+                        tagID: selectedTagID,
+                        state: .manualAccepted
+                    ),
+                    PersonalTrainingDecision(
+                        assetID: assetID,
+                        contentRevision: 1,
+                        tagID: ignoredTagID,
+                        state: .manualAccepted
+                    ),
+                ]
+            }
+        )
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: sourceID,
+                displayName: "Fixture",
+                state: .active
+            ),
+            reconciledItems: allAssets,
+            tags: [selectedTag, ignoredTag],
+            initialItems: allAssets,
+            startsConnected: true,
+            previewData: previewData
+        )
+        let cache = FakeSelectedAssetEmbeddingCache()
+        let rebuilder = FakeAppPersonalModelRebuilder(
+            result: .success(
+                AppPersonalLinearHeadIdentity(
+                    catalogScopeID: snapshot.catalogScopeID,
+                    decisionSnapshotRevision: String(repeating: "1", count: 64),
+                    labelVocabularyRevision: String(repeating: "2", count: 64),
+                    encoderIdentity: AppCoreMLModelIdentity(
+                        provider: "dinov2",
+                        modelID: "facebook/dinov2-small",
+                        modelRevision: "model-v1",
+                        preprocessingRevision: "preprocessing-v1",
+                        embeddingSemantics: "dinov2-cls-token",
+                        postprocessingRevision: "raw-float32-v1",
+                        elementType: "float32",
+                        elementCount: 384,
+                        sourceModelSHA256: String(repeating: "3", count: 64),
+                        artifactSHA256: String(repeating: "4", count: 64),
+                        manifestSHA256: String(repeating: "5", count: 64),
+                        licenseID: "Apache-2.0",
+                        licenseSHA256: String(repeating: "6", count: 64)
+                    ),
+                    personalTagIDs: [selectedTagID],
+                    weightsSHA256: String(repeating: "7", count: 64)
+                )
+            )
+        )
+        let model = LibraryWorkspaceModel(
             service: service,
             review: FakePersonalizationReviewPort(trainingSnapshot: snapshot),
             appPersonalModelRebuilder: rebuilder,
             selectedAssetEmbeddingCache: cache
         )
         await model.start()
+        await model.toggleIncludedTagFilter(selectedTagID)
         await model.selectAssets(Set(selectedAssetIDs))
 
         await model.rebuildPersonalModel()
@@ -1786,6 +1874,8 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertEqual(service.previewLoadCallCount, 2)
         let rebuildSnapshots = await rebuilder.snapshots()
         XCTAssertEqual(rebuildSnapshots.count, 1)
+        XCTAssertEqual(rebuildSnapshots[0].personalTagIDs, [selectedTagID])
+        XCTAssertFalse(rebuildSnapshots[0].decisions.contains { $0.tagID == ignoredTagID })
         XCTAssertEqual(
             Set(rebuildSnapshots[0].decisions.map(\.assetID)),
             Set(selectedAssetIDs)
@@ -1868,6 +1958,7 @@ final class LibraryWorkspaceModelTests: XCTestCase {
             selectedAssetEmbeddingCache: cache
         )
         await model.start()
+        await model.toggleIncludedTagFilter(tagID)
         XCTAssertTrue(model.selectedAssetIDs.isEmpty)
 
         await model.rebuildPersonalModel()
@@ -1959,6 +2050,7 @@ final class LibraryWorkspaceModelTests: XCTestCase {
             appPersonalModelRebuilder: rebuilder
         )
         await model.start()
+        await model.toggleIncludedTagFilter(tagID)
         await model.selectAsset(selectedAssetID)
 
         await model.rebuildPersonalModel()
@@ -2819,6 +2911,37 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertEqual(service.photosSyncCallCount, 0)
     }
 
+    func testStartupSkipsPhotosSyncWhenSourceIsReconcileClean() async {
+        let sourceID = UUID()
+        let asset = Self.makeAsset(sourceID: sourceID, fileName: "cached.heic")
+        let source = LibrarySourceSummary(
+            id: sourceID,
+            kind: .photos,
+            displayName: "Apple Photos",
+            state: .active
+        )
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: source,
+            reconciledItems: [asset],
+            initialItems: [asset],
+            startsConnected: true,
+            photosLibrarySupportedImageCount: 100,
+            photosCatalogAssetCount: 100,
+            sourceIsReconcileClean: true,
+            hasPendingCatalogReconcileJobs: false
+        )
+        let model = LibraryWorkspaceModel(service: service)
+
+        await model.start()
+
+        XCTAssertEqual(model.phase, .content)
+        XCTAssertEqual(model.items.map(\.assetID), [asset.assetID])
+        XCTAssertFalse(model.isCatalogScanning)
+        XCTAssertEqual(service.photosSyncCallCount, 0)
+        XCTAssertEqual(service.photosFullRepairCallCount, 0)
+        XCTAssertEqual(service.reconcileRunCount, 0)
+    }
+
     func testPhotosScanCompletionReloadsSelectedSourceGrid() async {
         let sourceID = UUID()
         let partial = Self.makeAsset(sourceID: sourceID, fileName: "icloud.heic")
@@ -3415,6 +3538,31 @@ final class LibraryWorkspaceModelTests: XCTestCase {
 
         XCTAssertTrue(model.selectedAssetIDs.isEmpty)
         XCTAssertNil(model.selectionAnchorIDForTesting)
+    }
+
+    func testSelectAllVisibleAssetsSelectsLoadedItemsOnly() async {
+        let sourceID = UUID()
+        let first = Self.makeAsset(sourceID: sourceID, fileName: "first.jpg")
+        let second = Self.makeAsset(sourceID: sourceID, fileName: "second.jpg")
+        let third = Self.makeAsset(sourceID: sourceID, fileName: "third.jpg")
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(id: sourceID, displayName: "Fixture", state: .active),
+            reconciledItems: [first, second, third]
+        )
+        let model = LibraryWorkspaceModel(service: service)
+
+        await model.start()
+        await model.connectFolder()
+        await waitForCatalogScanToFinish(model)
+        await model.selectAsset(first.assetID)
+
+        await model.selectAllVisibleAssets()
+
+        XCTAssertEqual(
+            model.selectedAssetIDs,
+            Set([first.assetID, second.assetID, third.assetID])
+        )
+        XCTAssertEqual(model.selectionAnchorIDForTesting, first.assetID)
     }
 
     func testSelectAssetsWithoutInspectorRefreshKeepsPriorInspectorAndSkipsFetches() async {
@@ -5101,6 +5249,8 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
     private var lastPhotosReactivateSourceID: UUID?
     private var storedPhotosLibrarySupportedImageCount = 0
     private var storedPhotosCatalogAssetCount = 0
+    private var storedSourceIsReconcileClean = false
+    private var storedHasPendingCatalogReconcileJobs = true
     private var storedPhotosRebindCallCount = 0
     private var storedPhotosReconcileRunCount = 0
     private var storedReauthorizeCallCount = 0
@@ -5193,6 +5343,8 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
         assetPageSize: Int? = nil,
         photosLibrarySupportedImageCount: Int = 0,
         photosCatalogAssetCount: Int = 0,
+        sourceIsReconcileClean: Bool = false,
+        hasPendingCatalogReconcileJobs: Bool? = nil,
         blocksInspectorDetailFetches: Int = 0
     ) {
         self.connectedSource = connectedSource
@@ -5225,6 +5377,8 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
         self.assetPageSize = assetPageSize
         storedPhotosLibrarySupportedImageCount = photosLibrarySupportedImageCount
         storedPhotosCatalogAssetCount = photosCatalogAssetCount
+        storedSourceIsReconcileClean = sourceIsReconcileClean
+        storedHasPendingCatalogReconcileJobs = hasPendingCatalogReconcileJobs ?? startsConnected
         remainingBlockedInspectorDetailFetches = blocksInspectorDetailFetches
         storedSources = startsConnected ? [connectedSource] : []
         storedItems = initialItems
@@ -5368,7 +5522,11 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
     }
 
     func triggerFolderMonitoringChange() {
-        lock.withLock { folderMonitoringCallback }?()
+        let callback = lock.withLock {
+            storedHasPendingCatalogReconcileJobs = true
+            return folderMonitoringCallback
+        }
+        callback?()
     }
 
     func fetchPreviewCacheUsage() throws -> DerivedImageCacheUsage {
@@ -5464,7 +5622,10 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
     }
 
     func connectFolder() async throws -> ConnectFolderOutcome {
-        lock.withLock { storedSources = [connectedSource] }
+        lock.withLock {
+            storedSources = [connectedSource]
+            storedHasPendingCatalogReconcileJobs = true
+        }
         return .connected(sourceID: connectedSource.id)
     }
 
@@ -5472,6 +5633,7 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
         lock.withLock {
             storedPhotosConnectCallCount += 1
             storedSources = [connectedSource]
+            storedHasPendingCatalogReconcileJobs = true
         }
         return .connected(sourceID: connectedSource.id)
     }
@@ -5480,6 +5642,7 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
         lock.withLock {
             storedPhotosSyncCallCount += 1
             storedLastPhotosSyncSourceID = sourceID
+            storedHasPendingCatalogReconcileJobs = true
         }
     }
 
@@ -5495,6 +5658,7 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
         lock.withLock {
             storedPhotosFullRepairCallCount += 1
             storedLastPhotosFullRepairSourceID = sourceID
+            storedHasPendingCatalogReconcileJobs = true
         }
     }
 
@@ -5502,6 +5666,7 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
         lock.withLock {
             storedPhotosReactivateCallCount += 1
             lastPhotosReactivateSourceID = sourceID
+            storedHasPendingCatalogReconcileJobs = true
         }
     }
 
@@ -5516,6 +5681,7 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
             }
             storedPhotosRebindCallCount += 1
             storedSources.append(reboundSource)
+            storedHasPendingCatalogReconcileJobs = true
             return .rebound(previousSourceID: unavailableSourceID, sourceID: reboundSource.id)
         }
     }
@@ -5526,6 +5692,7 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
         }
         lock.withLock {
             storedReauthorizeCallCount += 1
+            storedHasPendingCatalogReconcileJobs = true
             storedSources = storedSources.map {
                 guard $0.id == sourceID else { return $0 }
                 return LibrarySourceSummary(id: $0.id, displayName: $0.displayName, state: .active)
@@ -5548,7 +5715,18 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
         return .disabled(sourceID: sourceID)
     }
 
-    func enqueueReconcile(sourceIDs: [UUID]) throws {}
+    func enqueueReconcile(sourceIDs: [UUID]) throws {
+        guard !sourceIDs.isEmpty else { return }
+        lock.withLock { storedHasPendingCatalogReconcileJobs = true }
+    }
+
+    func hasPendingCatalogReconcileJobs() throws -> Bool {
+        lock.withLock { storedHasPendingCatalogReconcileJobs }
+    }
+
+    func sourceIsReconcileClean(sourceID: UUID) throws -> Bool {
+        lock.withLock { storedSourceIsReconcileClean }
+    }
 
     func fetchCatalogReconcileProgress() throws -> CatalogReconcileProgress? {
         catalogReconcileProgress
@@ -5569,6 +5747,7 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
         lock.withLock {
             storedReconcileRunCount += 1
             storedItems = reconciledItems
+            storedHasPendingCatalogReconcileJobs = false
         }
     }
 
@@ -5593,6 +5772,7 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
         lock.withLock {
             storedPhotosReconcileRunCount += 1
             storedItems = reconciledItems
+            storedHasPendingCatalogReconcileJobs = false
         }
     }
 
@@ -6412,8 +6592,42 @@ private final class FakePersonalizationReviewPort: PersonalizationReviewPort, @u
     }
 
     func personalTrainingSnapshot(limitingToAssetIDs assetIDs: Set<UUID>) throws -> PersonalTrainingSnapshot {
+        try personalTrainingSnapshot(limitingToTagIDs: nil, limitingToAssetIDs: assetIDs)
+    }
+
+    func personalTrainingSnapshot(
+        limitingToTagIDs tagIDs: Set<UUID>,
+        limitingToAssetIDs assetIDs: Set<UUID>?
+    ) throws -> PersonalTrainingSnapshot {
+        try personalTrainingSnapshot(limitingToTagIDs: Optional(tagIDs), limitingToAssetIDs: assetIDs)
+    }
+
+    private func personalTrainingSnapshot(
+        limitingToTagIDs tagIDs: Set<UUID>?,
+        limitingToAssetIDs assetIDs: Set<UUID>?
+    ) throws -> PersonalTrainingSnapshot {
         let base = try personalTrainingSnapshot()
-        let scopedDecisions = base.decisions.filter { assetIDs.contains($0.assetID) }
+        if let tagIDs, tagIDs.isEmpty {
+            return PersonalTrainingSnapshot(
+                catalogScopeID: base.catalogScopeID,
+                personalTagIDs: [],
+                decisions: []
+            )
+        }
+        if let assetIDs, assetIDs.isEmpty {
+            return PersonalTrainingSnapshot(
+                catalogScopeID: base.catalogScopeID,
+                personalTagIDs: [],
+                decisions: []
+            )
+        }
+        var scopedDecisions = base.decisions
+        if let tagIDs {
+            scopedDecisions = scopedDecisions.filter { tagIDs.contains($0.tagID) }
+        }
+        if let assetIDs {
+            scopedDecisions = scopedDecisions.filter { assetIDs.contains($0.assetID) }
+        }
         let acceptedCounts = Dictionary(
             grouping: scopedDecisions.filter { $0.state == .manualAccepted },
             by: \.tagID
@@ -6423,13 +6637,15 @@ private final class FakePersonalizationReviewPort: PersonalizationReviewPort, @u
                 count >= 2 ? tagID : nil
             }
         )
-        let decisions = scopedDecisions.filter { trainableTagIDs.contains($0.tagID) }
-        let tagIDs = Array(trainableTagIDs).sorted {
+        let decisions = scopedDecisions.filter {
+            trainableTagIDs.contains($0.tagID) && $0.state == .manualAccepted
+        }
+        let resolvedTagIDs = Array(trainableTagIDs).sorted {
             $0.uuidString.lowercased() < $1.uuidString.lowercased()
         }
         return PersonalTrainingSnapshot(
             catalogScopeID: base.catalogScopeID,
-            personalTagIDs: tagIDs,
+            personalTagIDs: resolvedTagIDs,
             decisions: decisions
         )
     }

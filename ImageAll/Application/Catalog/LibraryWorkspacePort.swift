@@ -80,12 +80,14 @@ enum LibraryWorkspaceNotice: Equatable, Sendable {
     case previewCacheActionFailed
     case jobActivityActionFailed
     case personalModelRebuildCompleted(tagCount: Int, sampleCount: Int)
+    case personalModelRebuildTagSelectionRequired
     case personalModelRebuildNotReady
     case personalModelRebuildPreviewUnavailable
     case personalModelRebuildCacheUnavailable
     case personalModelRebuildServiceUnavailable
     case personalModelRebuildFailed
     case personalAdamWRebuildCompleted(tagCount: Int, sampleCount: Int)
+    case personalAdamWRebuildTagSelectionRequired
     case personalAdamWRebuildNotReady
     case personalAdamWRebuildFailed
     case selectedAssetEmbeddingCached
@@ -220,6 +222,8 @@ protocol LibraryWorkspacePort: Sendable {
     func reauthorizeFolder(sourceID: UUID) async throws -> ReauthorizeFolderOutcome
     func disableFolderSource(sourceID: UUID) async throws -> DisableFolderOutcome
     func enqueueReconcile(sourceIDs: [UUID]) throws
+    func hasPendingCatalogReconcileJobs() throws -> Bool
+    func sourceIsReconcileClean(sourceID: UUID) throws -> Bool
     func fetchCatalogReconcileProgress() throws -> CatalogReconcileProgress?
     func runPendingReconcileJobs() throws
     func runPendingPhotosReconcileJobs() throws
