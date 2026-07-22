@@ -330,9 +330,9 @@ final class PhotoKitPhotosLibraryAdapter: NSObject, PhotosLibraryAccessPort, Pho
 
     static func makeOriginalContentEditingInputRequestOptions() -> PHContentEditingInputRequestOptions {
         let options = PHContentEditingInputRequestOptions()
-        // Opening the original is an explicit user action, so PhotoKit may materialize
-        // an iCloud-backed original. Background thumbnail/feature requests remain local-only.
-        options.isNetworkAccessAllowed = true
+        // Opening in Preview remains local-only. Materializing an iCloud-backed original
+        // requires a separate CloudDownloadGrant and explicit confirmation flow.
+        options.isNetworkAccessAllowed = false
         return options
     }
 

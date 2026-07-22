@@ -107,7 +107,6 @@ enum LibraryAssetDetailText {
         [
             item.fileName ?? "未命名照片",
             "建议来源：\(reviewOriginText(item.suggestionOrigin))",
-            "建议分数：\(String(format: "%.2f", item.score))",
             "标签：已确认 \(item.acceptedTagCount) · 已拒绝 \(item.rejectedTagCount)",
             "状态：\(availabilityText(item.availability))",
         ].joined(separator: "\n")

@@ -4385,6 +4385,26 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertTrue(text.contains("状态：可用"))
     }
 
+    func testReviewHoverDetailKeepsRawSuggestionScoreOutOfUI() {
+        let item = ReviewQueueItemProjection(
+            assetID: UUID(),
+            fileName: "待审核.jpg",
+            availability: .available,
+            acceptedTagCount: 1,
+            rejectedTagCount: 2,
+            suggestionOrigin: .standardModel,
+            score: 0.987_654
+        )
+
+        let text = LibraryAssetDetailText.reviewHoverText(item)
+
+        XCTAssertTrue(text.contains("待审核.jpg"))
+        XCTAssertTrue(text.contains("建议来源：标准模型"))
+        XCTAssertTrue(text.contains("已确认 1 · 已拒绝 2"))
+        XCTAssertFalse(text.contains("0.98"))
+        XCTAssertFalse(text.contains("分数"))
+    }
+
     func testSemanticTagGroupingUsesStableMeaningOrderAndSortsWithinGroup() {
         let tags = [
             TagListItem(id: UUID(), displayName: "文档", state: .active),
