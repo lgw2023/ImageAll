@@ -609,11 +609,12 @@ App 通过 v008 的 `personal_suggestion_model`、`personal_suggestion_tag` 和 
 
 Review Queue 全并行（ADR-039）：Feature Print、质心个人头、AdamW 个人头对同一
 `asset_id + tag_id` 的 pending 建议以 `(asset_id, tag_id, suggestion_origin)` 分行展示并用徽章区分，
-不再折叠为单行。首版仍不展示原始 score；人工确认/拒绝仍按 `asset_tag_decision` 唯一写入，并清除
+不再折叠为单行。ST-P4 / ADR-040 要求展示原始 score；人工确认/拒绝仍按 `asset_tag_decision` 唯一写入，并清除
 该资产该标签下全部 origin 的 pending。任务复用第 12 节既有队列，支持启动恢复、checkpoint、暂停、
 继续、取消、retryable `not_before` 到期唤醒，以及服务恢复后的显式立即重试；失败或 App 重启不回滚
 已提交建议，且不另建第二套后台状态机。全库建议仍只由用户显式触发。权威产品细节见
-[`docs/TRAINING-WORKSPACE-SPEC.md`](TRAINING-WORKSPACE-SPEC.md)。
+[`docs/TRAINING-WORKSPACE-SPEC.md`](TRAINING-WORKSPACE-SPEC.md) 与
+[`docs/SUGGESTION-THRESHOLD-SPEC.md`](SUGGESTION-THRESHOLD-SPEC.md)。
 
 个人模型重训另复用同一持久任务队列：当人工接受、拒绝、撤销、创建并接受标签或归档标签改变当前
 可训练快照时，App 在运行期以 30 秒 `not_before` 防抖入队；冻结 payload 只含 catalog scope、人工决定、
@@ -1185,6 +1186,7 @@ revision 门；cache-only 自动个人重训和独立服务启动已经验收，
 | ADR-037 | 新 embedding 只由用户对当前选中单资产的显式 App 内动作生成并验证持久化 | 已实现 | 先确认共享 Core ML service ready，再复用既有受控 preview；key 绑定精确 catalog/asset/content revision 与完整 identity，发布后 cache-only 回读复核。未启用、iCloud-only 或持久化失败安全停止，不扫描图库、不批量预热；真实 `2 + 2` 人工验证仍需新授权 |
 | ADR-038 | 个人标签三条训练路径统一为可审计 `training_run`，并提供独立「训练工程」工作区 | 规格已起草 | 每次训练记录数据摘要、配置、过程指标与产物指针；AdamW epoch/loss 必须落盘；工具栏快捷入口可保留但必须写 Run；权威细节见 `TRAINING-WORKSPACE-SPEC.md` |
 | ADR-039 | 三轨建议全并行进入 Review Queue；个人质心与 AdamW 多槽激活并存，禁止 singleton 互顶 | 规格已起草 | 队列行身份为 `(asset_id, tag_id, suggestion_origin)`；徽章区分来源；人工决定仍唯一且一次清除该标签全部 origin；磁盘 LinearHead/AdamWHead 与 DB 槽一一对应 |
+| ADR-040 | 三条个人建议路径的进队门槛升级为用户可调的方法默认 + 标签覆盖；训练/重建不自动改阈值 | ST-P1–P8 已批准 | 权威细节见 `SUGGESTION-THRESHOLD-SPEC.md`；`effectiveMinScore = override ?? default`；生成过滤 `score > effectiveMinScore` 后再 Top 100；Review 行展示原始 score |
 
 ## 20. 尚待确认的问题
 

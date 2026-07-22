@@ -137,7 +137,7 @@
 ### 5.3 徽章与排序
 
 - 每行显示单一 origin 徽章（文案见 §9）；
-- 首版仍不展示原始 score / 百分比（延续阶段 3 批准）；对比靠「多行并存 + 徽章」，不靠分数条；
+- **ST-P4 已批准**：队列行必须展示原始 score（服务阈值校准）；废止「首版不展示 score」；对比仍可靠徽章，分数不作跨轨概率比较（见 `SUGGESTION-THRESHOLD-SPEC.md`）；
 - 排序：同一标签内先按 `suggestion_origin` 稳定优先级，再 `score DESC, asset_id ASC`。  
   建议 origin 优先级（可配置常量，须测锁定）：`personalAdamW` → `personalModel` → `featurePrint` →（标准轨另定）。
 
@@ -283,7 +283,7 @@ Feature Print 继续使用 `tag_model` / `prediction`，不写入 `personal_pred
 | **T0** | 本规格 + ARCHITECTURE ADR-038/039 文档提交 | 无代码 | TW-P6/P7 已批准；进入 T1 |
 | **T1** | migration：`training_run` + 个人多槽 schema；读写契约与反例测试 | 无大 UI | 不改 Review 去重 |
 | **T2** | 三方法训练路径写 Run；AdamW `metrics_json` 落盘；激活不再互顶 | 不改工具栏布局大改 | |
-| **T3** | Review 全并行投影、徽章、计数、Inspector；`Identifiable` 含 origin | 不显示 score | |
+| **T3** | Review 全并行投影、徽章、计数、Inspector；`Identifiable` 含 origin | 必须展示 score（ST-P4） | |
 | **T4** | 侧栏训练工程大页：列表 + 详情骨架 + 发起训练收拢 | 无图表大屏、无 evaluation_assignment | 端到端可演示后交 Codex 复审 |
 
 每个切片单独 Cursor 会话与 `docs/cursor-cli-tasks/` 留档；不得与未关联的工作区脏改动混提。
