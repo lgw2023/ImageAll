@@ -137,28 +137,40 @@ enum SuggestionGenerationMethod: Equatable, Sendable {
     case personalModel
 }
 
+struct SuggestionEnqueueSourceOption: Identifiable, Equatable, Sendable {
+    let id: UUID
+    let displayName: String
+}
+
 struct SuggestionEnqueueConfirmation: Identifiable, Equatable, Sendable {
     let tagID: UUID
     let displayName: String
     let mode: PersonalizationReviewEnqueueMode
-    let sourceCount: Int
     let method: SuggestionGenerationMethod
+    let availableSources: [SuggestionEnqueueSourceOption]
+    var selectedSourceIDs: Set<UUID>
 
     init(
         tagID: UUID,
         displayName: String,
         mode: PersonalizationReviewEnqueueMode,
-        sourceCount: Int,
-        method: SuggestionGenerationMethod = .featureKnn
+        method: SuggestionGenerationMethod = .featureKnn,
+        availableSources: [SuggestionEnqueueSourceOption],
+        selectedSourceIDs: Set<UUID>
     ) {
         self.tagID = tagID
         self.displayName = displayName
         self.mode = mode
-        self.sourceCount = sourceCount
         self.method = method
+        self.availableSources = availableSources
+        self.selectedSourceIDs = selectedSourceIDs
     }
 
     var id: String { "\(tagID.uuidString.lowercased()):\(method)" }
+
+    var sourceCount: Int { selectedSourceIDs.count }
+
+    var canStart: Bool { !selectedSourceIDs.isEmpty }
 }
 
 struct PersonalLibrarySuggestionJobProjection: Equatable, Sendable {
@@ -182,20 +194,24 @@ struct StandardLibrarySuggestionJobProjection: Equatable, Sendable {
 }
 
 protocol PersonalizationReviewPort: Sendable {
-    func totalPendingSuggestionCount() throws -> Int
-    func tagOverviews() throws -> [SuggestionTagOverview]
+    /// `sourceIDs == nil` means all active sources; empty means match nothing.
+    func totalPendingSuggestionCount(sourceIDs: [UUID]?) throws -> Int
+    /// Pending counts respect `sourceIDs`; accept/reject sample counts stay catalog-wide.
+    func tagOverviews(sourceIDs: [UUID]?) throws -> [SuggestionTagOverview]
     func personalTrainingSnapshot() throws -> PersonalTrainingSnapshot
     func personalTrainingSnapshot(limitingToAssetIDs assetIDs: Set<UUID>) throws -> PersonalTrainingSnapshot
     func enqueuePersonalModelRebuildIfReady() throws -> UUID?
     func fetchReviewQueue(
         tagID: UUID,
+        sourceIDs: [UUID]?,
         cursor: ReviewQueueCursor?,
         limit: Int
     ) throws -> ReviewQueuePage
     func pendingSuggestionsForAsset(assetID: UUID) throws -> [AssetPendingSuggestion]
     func personalSuggestionCandidates(
         afterAssetID: UUID?,
-        limit: Int
+        limit: Int,
+        sourceIDs: [UUID]?
     ) throws -> [PersonalSuggestionCandidate]
     func activatePersonalSuggestionBundle(
         _ capability: PersonalModelSuggestionCapability
@@ -218,16 +234,20 @@ protocol PersonalizationReviewPort: Sendable {
         expectedTarget: StandardModelSuggestionTarget
     ) throws -> Int
     func invalidatePersonalSuggestionBundle() throws
+    /// `sourceIDs == nil` freezes all active personalization sources at enqueue time.
     func enqueueFullLibrarySuggestions(
         tagID: UUID,
-        mode: PersonalizationReviewEnqueueMode
+        mode: PersonalizationReviewEnqueueMode,
+        sourceIDs: [UUID]?
     ) throws -> UUID
     func enqueuePersonalLibrarySuggestions(
-        capability: PersonalModelSuggestionCapability
+        capability: PersonalModelSuggestionCapability,
+        sourceIDs: [UUID]?
     ) throws -> UUID
     func personalLibrarySuggestionJob() throws -> PersonalLibrarySuggestionJobProjection?
     func enqueueStandardLibrarySuggestions(
-        target: StandardModelSuggestionTarget
+        target: StandardModelSuggestionTarget,
+        sourceIDs: [UUID]?
     ) throws -> UUID
     func standardLibrarySuggestionJob() throws -> StandardLibrarySuggestionJobProjection?
     func pauseSuggestionJob(jobID: UUID) throws
@@ -239,6 +259,22 @@ protocol PersonalizationReviewPort: Sendable {
 }
 
 extension PersonalizationReviewPort {
+    func totalPendingSuggestionCount() throws -> Int {
+        try totalPendingSuggestionCount(sourceIDs: nil)
+    }
+
+    func tagOverviews() throws -> [SuggestionTagOverview] {
+        try tagOverviews(sourceIDs: nil)
+    }
+
+    func fetchReviewQueue(
+        tagID: UUID,
+        cursor: ReviewQueueCursor?,
+        limit: Int
+    ) throws -> ReviewQueuePage {
+        try fetchReviewQueue(tagID: tagID, sourceIDs: nil, cursor: cursor, limit: limit)
+    }
+
     func personalTrainingSnapshot() throws -> PersonalTrainingSnapshot {
         throw PersonalizationReviewError.persistenceFailure
     }
@@ -250,8 +286,16 @@ extension PersonalizationReviewPort {
     func enqueuePersonalModelRebuildIfReady() throws -> UUID? { nil }
 
     func personalSuggestionCandidates(
+        afterAssetID: UUID?,
+        limit: Int
+    ) throws -> [PersonalSuggestionCandidate] {
+        try personalSuggestionCandidates(afterAssetID: afterAssetID, limit: limit, sourceIDs: nil)
+    }
+
+    func personalSuggestionCandidates(
         afterAssetID _: UUID?,
-        limit _: Int
+        limit _: Int,
+        sourceIDs _: [UUID]?
     ) throws -> [PersonalSuggestionCandidate] {
         throw PersonalizationReviewError.persistenceFailure
     }
@@ -292,7 +336,14 @@ extension PersonalizationReviewPort {
     }
 
     func enqueuePersonalLibrarySuggestions(
-        capability _: PersonalModelSuggestionCapability
+        capability: PersonalModelSuggestionCapability
+    ) throws -> UUID {
+        try enqueuePersonalLibrarySuggestions(capability: capability, sourceIDs: nil)
+    }
+
+    func enqueuePersonalLibrarySuggestions(
+        capability _: PersonalModelSuggestionCapability,
+        sourceIDs _: [UUID]?
     ) throws -> UUID {
         throw PersonalizationReviewError.persistenceFailure
     }
@@ -302,9 +353,23 @@ extension PersonalizationReviewPort {
     }
 
     func enqueueStandardLibrarySuggestions(
-        target _: StandardModelSuggestionTarget
+        target: StandardModelSuggestionTarget
+    ) throws -> UUID {
+        try enqueueStandardLibrarySuggestions(target: target, sourceIDs: nil)
+    }
+
+    func enqueueStandardLibrarySuggestions(
+        target _: StandardModelSuggestionTarget,
+        sourceIDs _: [UUID]?
     ) throws -> UUID {
         throw PersonalizationReviewError.persistenceFailure
+    }
+
+    func enqueueFullLibrarySuggestions(
+        tagID: UUID,
+        mode: PersonalizationReviewEnqueueMode
+    ) throws -> UUID {
+        try enqueueFullLibrarySuggestions(tagID: tagID, mode: mode, sourceIDs: nil)
     }
 
     func standardLibrarySuggestionJob() throws -> StandardLibrarySuggestionJobProjection? {
@@ -331,17 +396,26 @@ extension PersonalizationReviewPort {
 }
 
 struct EmptyPersonalizationReviewPort: PersonalizationReviewPort, Sendable {
-    func totalPendingSuggestionCount() throws -> Int { 0 }
-    func tagOverviews() throws -> [SuggestionTagOverview] { [] }
-    func fetchReviewQueue(tagID: UUID, cursor: ReviewQueueCursor?, limit: Int) throws -> ReviewQueuePage {
+    func totalPendingSuggestionCount(sourceIDs _: [UUID]?) throws -> Int { 0 }
+    func tagOverviews(sourceIDs _: [UUID]?) throws -> [SuggestionTagOverview] { [] }
+    func fetchReviewQueue(
+        tagID _: UUID,
+        sourceIDs _: [UUID]?,
+        cursor _: ReviewQueueCursor?,
+        limit _: Int
+    ) throws -> ReviewQueuePage {
         ReviewQueuePage(items: [], nextCursor: nil)
     }
-    func pendingSuggestionsForAsset(assetID: UUID) throws -> [AssetPendingSuggestion] { [] }
-    func enqueueFullLibrarySuggestions(tagID: UUID, mode: PersonalizationReviewEnqueueMode) throws -> UUID {
+    func pendingSuggestionsForAsset(assetID _: UUID) throws -> [AssetPendingSuggestion] { [] }
+    func enqueueFullLibrarySuggestions(
+        tagID _: UUID,
+        mode _: PersonalizationReviewEnqueueMode,
+        sourceIDs _: [UUID]?
+    ) throws -> UUID {
         UUID()
     }
-    func pauseSuggestionJob(jobID: UUID) throws {}
-    func resumeSuggestionJob(jobID: UUID) throws {}
-    func cancelSuggestionJob(jobID: UUID) throws {}
+    func pauseSuggestionJob(jobID _: UUID) throws {}
+    func resumeSuggestionJob(jobID _: UUID) throws {}
+    func cancelSuggestionJob(jobID _: UUID) throws {}
     func runPendingSuggestionJobs(maxSteps: Int? = nil) throws -> Bool { false }
 }

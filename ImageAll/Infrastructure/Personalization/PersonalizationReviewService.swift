@@ -35,15 +35,15 @@ struct PersonalizationReviewService: PersonalizationReviewPort, Sendable {
         GRDBPersonalizationReviewRepository(database: database)
     }
 
-    func totalPendingSuggestionCount() throws -> Int {
-        try review.totalPendingSuggestionCount()
+    func totalPendingSuggestionCount(sourceIDs: [UUID]?) throws -> Int {
+        try review.totalPendingSuggestionCount(sourceIDs: sourceIDs)
     }
 
-    func tagOverviews() throws -> [SuggestionTagOverview] {
+    func tagOverviews(sourceIDs: [UUID]?) throws -> [SuggestionTagOverview] {
         let tags = try tags.listTags(includeArchived: false)
         return try tags.map { tag in
             let samples = try review.sampleCounts(tagID: tag.id)
-            let pending = try review.pendingCount(tagID: tag.id)
+            let pending = try review.pendingCount(tagID: tag.id, sourceIDs: sourceIDs)
             let job = try review.activeSuggestionJob(tagID: tag.id)
             let status = mapTaskStatus(tag: tag, samples: samples, job: job)
             let checkpoint = try job.flatMap { try FullLibrarySuggestionsCodec.checkpoint(from: $0.checkpoint) }
@@ -115,10 +115,16 @@ struct PersonalizationReviewService: PersonalizationReviewPort, Sendable {
 
     func fetchReviewQueue(
         tagID: UUID,
+        sourceIDs: [UUID]?,
         cursor: ReviewQueueCursor?,
         limit: Int
     ) throws -> ReviewQueuePage {
-        try review.fetchReviewQueuePage(tagID: tagID, cursor: cursor, limit: limit)
+        try review.fetchReviewQueuePage(
+            tagID: tagID,
+            sourceIDs: sourceIDs,
+            cursor: cursor,
+            limit: limit
+        )
     }
 
     func pendingSuggestionsForAsset(assetID: UUID) throws -> [AssetPendingSuggestion] {
@@ -127,9 +133,14 @@ struct PersonalizationReviewService: PersonalizationReviewPort, Sendable {
 
     func personalSuggestionCandidates(
         afterAssetID: UUID?,
-        limit: Int
+        limit: Int,
+        sourceIDs: [UUID]?
     ) throws -> [PersonalSuggestionCandidate] {
-        try review.personalSuggestionCandidates(afterAssetID: afterAssetID, limit: limit)
+        try review.personalSuggestionCandidates(
+            afterAssetID: afterAssetID,
+            limit: limit,
+            sourceIDs: sourceIDs
+        )
     }
 
     func activatePersonalSuggestionBundle(
@@ -185,7 +196,8 @@ struct PersonalizationReviewService: PersonalizationReviewPort, Sendable {
 
     func enqueueFullLibrarySuggestions(
         tagID: UUID,
-        mode: PersonalizationReviewEnqueueMode
+        mode: PersonalizationReviewEnqueueMode,
+        sourceIDs: [UUID]?
     ) throws -> UUID {
         _ = mode
         let samples = try review.fetchFrozenSampleIdentities(tagID: tagID)
@@ -202,16 +214,13 @@ struct PersonalizationReviewService: PersonalizationReviewPort, Sendable {
         {
             throw PersonalizationReviewError.activeJobConflict
         }
-        let sourceIDs = try review.activePersonalizationSourceIDs()
-        guard !sourceIDs.isEmpty else {
-            throw PersonalizationReviewError.persistenceFailure
-        }
+        let resolvedSourceIDs = try resolvePersonalizationSourceIDs(sourceIDs)
         let modelRevision = try review.nextModelRevision(tagID: tagID)
         let jobID = UUID()
         let command = try FullLibrarySuggestionsJobEnqueue.makeEnqueueCommand(
             jobID: jobID,
             tagID: tagID,
-            sourceIDs: sourceIDs,
+            sourceIDs: resolvedSourceIDs,
             catalogCutoffMs: clock.nowMs,
             modelRevision: modelRevision,
             frozenPositiveSamples: samples.positives,
@@ -227,7 +236,8 @@ struct PersonalizationReviewService: PersonalizationReviewPort, Sendable {
     }
 
     func enqueuePersonalLibrarySuggestions(
-        capability: PersonalModelSuggestionCapability
+        capability: PersonalModelSuggestionCapability,
+        sourceIDs: [UUID]?
     ) throws -> UUID {
         guard personalLibrarySuggestionsEnabled,
               capability.target.catalogScopeID == (try database.catalogScopeID())
@@ -260,13 +270,10 @@ struct PersonalizationReviewService: PersonalizationReviewPort, Sendable {
                     }
                     return existing.id
                 }
-                let sourceIDs = try review.activePersonalizationSourceIDs(in: db)
-                guard !sourceIDs.isEmpty else {
-                    throw PersonalizationReviewError.persistenceFailure
-                }
+                let resolvedSourceIDs = try resolvePersonalizationSourceIDs(sourceIDs, in: db)
                 let command = try PersonalLibrarySuggestionsJobEnqueue.makeEnqueueCommand(
                     jobID: jobID,
-                    sourceIDs: sourceIDs,
+                    sourceIDs: resolvedSourceIDs,
                     catalogCutoffMs: nowMs,
                     capability: capability,
                     notBeforeMs: nowMs
@@ -304,7 +311,8 @@ struct PersonalizationReviewService: PersonalizationReviewPort, Sendable {
     }
 
     func enqueueStandardLibrarySuggestions(
-        target: StandardModelSuggestionTarget
+        target: StandardModelSuggestionTarget,
+        sourceIDs: [UUID]?
     ) throws -> UUID {
         guard standardLibrarySuggestionsEnabled,
               StandardLibrarySuggestionsCodec.validateTarget(target)
@@ -338,13 +346,10 @@ struct PersonalizationReviewService: PersonalizationReviewPort, Sendable {
                     }
                     return existing.id
                 }
-                let sourceIDs = try review.activePersonalizationSourceIDs(in: db)
-                guard !sourceIDs.isEmpty else {
-                    throw PersonalizationReviewError.persistenceFailure
-                }
+                let resolvedSourceIDs = try resolvePersonalizationSourceIDs(sourceIDs, in: db)
                 let command = try StandardLibrarySuggestionsJobEnqueue.makeEnqueueCommand(
                     jobID: jobID,
-                    sourceIDs: sourceIDs,
+                    sourceIDs: resolvedSourceIDs,
                     catalogCutoffMs: nowMs,
                     target: target,
                     notBeforeMs: nowMs
@@ -485,6 +490,37 @@ struct PersonalizationReviewService: PersonalizationReviewPort, Sendable {
             by: 1_000_000
         )
         return nanoseconds.overflow ? UInt64.max : nanoseconds.partialValue
+    }
+
+    private func resolvePersonalizationSourceIDs(_ requested: [UUID]?) throws -> [UUID] {
+        let active = try review.activePersonalizationSourceIDs()
+        return try resolvePersonalizationSourceIDs(requested, active: active)
+    }
+
+    private func resolvePersonalizationSourceIDs(
+        _ requested: [UUID]?,
+        in db: Database
+    ) throws -> [UUID] {
+        let active = try review.activePersonalizationSourceIDs(in: db)
+        return try resolvePersonalizationSourceIDs(requested, active: active)
+    }
+
+    private func resolvePersonalizationSourceIDs(
+        _ requested: [UUID]?,
+        active: [UUID]
+    ) throws -> [UUID] {
+        let resolved: [UUID]
+        if let requested {
+            let activeSet = Set(active)
+            let requestedSet = Set(requested)
+            resolved = active.filter { requestedSet.contains($0) && activeSet.contains($0) }
+        } else {
+            resolved = active
+        }
+        guard !resolved.isEmpty else {
+            throw PersonalizationReviewError.persistenceFailure
+        }
+        return resolved
     }
 
     private func mapTaskStatus(

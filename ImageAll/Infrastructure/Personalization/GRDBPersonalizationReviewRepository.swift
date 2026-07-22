@@ -27,8 +27,16 @@ private struct MappedStandardSuggestion {
 struct GRDBPersonalizationReviewRepository: Sendable {
     let database: CatalogDatabase
 
-    func totalPendingSuggestionCount() throws -> Int {
-        try database.pool.read { db in
+    func totalPendingSuggestionCount(sourceIDs: [UUID]? = nil) throws -> Int {
+        if let sourceIDs, sourceIDs.isEmpty { return 0 }
+        var sourceClause = ""
+        var sourceArguments: [DatabaseValueConvertible] = []
+        if let sourceIDs {
+            let placeholders = Array(repeating: "?", count: sourceIDs.count).joined(separator: ", ")
+            sourceClause = " AND a.source_id IN (\(placeholders))"
+            sourceArguments = sourceIDs.map { uuid($0) }
+        }
+        return try database.pool.read { db in
             try Int.fetchOne(
                 db,
                 sql: """
@@ -46,7 +54,7 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                         AND a.availability = 'available'
                     LEFT JOIN asset_tag_decision d
                         ON d.asset_id = p.asset_id AND d.tag_id = p.tag_id
-                    WHERE p.state = 'pendingReview' AND d.asset_id IS NULL
+                    WHERE p.state = 'pendingReview' AND d.asset_id IS NULL\(sourceClause)
                     UNION
                     SELECT p.asset_id, p.tag_id
                     FROM standard_prediction p
@@ -66,7 +74,7 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                         AND a.availability = 'available'
                     LEFT JOIN asset_tag_decision d
                         ON d.asset_id = p.asset_id AND d.tag_id = p.tag_id
-                    WHERE p.state = 'pendingReview' AND d.asset_id IS NULL
+                    WHERE p.state = 'pendingReview' AND d.asset_id IS NULL\(sourceClause)
                     UNION
                     SELECT p.asset_id, p.tag_id
                     FROM personal_prediction p
@@ -80,16 +88,27 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                         AND a.availability = 'available'
                     LEFT JOIN asset_tag_decision d
                         ON d.asset_id = p.asset_id AND d.tag_id = p.tag_id
-                    WHERE p.state = 'pendingReview' AND d.asset_id IS NULL
+                    WHERE p.state = 'pendingReview' AND d.asset_id IS NULL\(sourceClause)
                 )
                 SELECT COUNT(*) FROM pending_pairs
-                """
+                """,
+                arguments: StatementArguments(
+                    sourceArguments + sourceArguments + sourceArguments
+                )
             ) ?? 0
         }
     }
 
-    func pendingCount(tagID: UUID) throws -> Int {
-        try database.pool.read { db in
+    func pendingCount(tagID: UUID, sourceIDs: [UUID]? = nil) throws -> Int {
+        if let sourceIDs, sourceIDs.isEmpty { return 0 }
+        var sourceClause = ""
+        var sourceArguments: [DatabaseValueConvertible] = []
+        if let sourceIDs {
+            let placeholders = Array(repeating: "?", count: sourceIDs.count).joined(separator: ", ")
+            sourceClause = " AND a.source_id IN (\(placeholders))"
+            sourceArguments = sourceIDs.map { uuid($0) }
+        }
+        return try database.pool.read { db in
             try Int.fetchOne(
                 db,
                 sql: """
@@ -109,7 +128,7 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                         ON d.asset_id = p.asset_id AND d.tag_id = p.tag_id
                     WHERE p.tag_id = ?
                         AND p.state = 'pendingReview'
-                        AND d.asset_id IS NULL
+                        AND d.asset_id IS NULL\(sourceClause)
                     UNION
                     SELECT p.asset_id, p.tag_id
                     FROM standard_prediction p
@@ -131,7 +150,7 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                         ON d.asset_id = p.asset_id AND d.tag_id = p.tag_id
                     WHERE p.tag_id = ?
                         AND p.state = 'pendingReview'
-                        AND d.asset_id IS NULL
+                        AND d.asset_id IS NULL\(sourceClause)
                     UNION
                     SELECT p.asset_id, p.tag_id
                     FROM personal_prediction p
@@ -147,11 +166,15 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                         ON d.asset_id = p.asset_id AND d.tag_id = p.tag_id
                     WHERE p.tag_id = ?
                         AND p.state = 'pendingReview'
-                        AND d.asset_id IS NULL
+                        AND d.asset_id IS NULL\(sourceClause)
                 )
                 SELECT COUNT(*) FROM pending_pairs
                 """,
-                arguments: [uuid(tagID), uuid(tagID), uuid(tagID)]
+                arguments: StatementArguments(
+                    [uuid(tagID)] + sourceArguments
+                        + [uuid(tagID)] + sourceArguments
+                        + [uuid(tagID)] + sourceArguments
+                )
             ) ?? 0
         }
     }
@@ -549,9 +572,11 @@ struct GRDBPersonalizationReviewRepository: Sendable {
 
     func personalSuggestionCandidates(
         afterAssetID: UUID?,
-        limit: Int
+        limit: Int,
+        sourceIDs: [UUID]? = nil
     ) throws -> [PersonalSuggestionCandidate] {
         guard limit > 0 else { return [] }
+        if let sourceIDs, sourceIDs.isEmpty { return [] }
         var sql = """
         SELECT a.id, a.content_revision
         FROM asset a
@@ -564,6 +589,11 @@ struct GRDBPersonalizationReviewRepository: Sendable {
             )
         """
         var arguments: [DatabaseValueConvertible] = []
+        if let sourceIDs {
+            let placeholders = Array(repeating: "?", count: sourceIDs.count).joined(separator: ", ")
+            sql += " AND a.source_id IN (\(placeholders))"
+            arguments.append(contentsOf: sourceIDs.map { uuid($0) })
+        }
         if let afterAssetID {
             sql += " AND a.id > ?"
             arguments.append(uuid(afterAssetID))
@@ -1080,9 +1110,20 @@ struct GRDBPersonalizationReviewRepository: Sendable {
 
     func fetchReviewQueuePage(
         tagID: UUID,
+        sourceIDs: [UUID]? = nil,
         cursor: ReviewQueueCursor?,
         limit: Int
     ) throws -> ReviewQueuePage {
+        if let sourceIDs, sourceIDs.isEmpty {
+            return ReviewQueuePage(items: [], nextCursor: nil)
+        }
+        var sourceClause = ""
+        var sourceArguments: [DatabaseValueConvertible] = []
+        if let sourceIDs {
+            let placeholders = Array(repeating: "?", count: sourceIDs.count).joined(separator: ", ")
+            sourceClause = " AND a.source_id IN (\(placeholders))"
+            sourceArguments = sourceIDs.map { uuid($0) }
+        }
         var sql = """
         WITH raw_suggestions AS (
             SELECT p.asset_id, p.score, 0 AS origin_rank, 'featurePrint' AS suggestion_origin,
@@ -1101,7 +1142,7 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                 ON d.asset_id = p.asset_id AND d.tag_id = p.tag_id
             WHERE p.tag_id = ?
                 AND p.state = 'pendingReview'
-                AND d.asset_id IS NULL
+                AND d.asset_id IS NULL\(sourceClause)
             UNION ALL
             SELECT p.asset_id, p.score, 1 AS origin_rank, 'standardModel' AS suggestion_origin,
                 a.file_name, a.availability
@@ -1124,7 +1165,7 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                 ON d.asset_id = p.asset_id AND d.tag_id = p.tag_id
             WHERE p.tag_id = ?
                 AND p.state = 'pendingReview'
-                AND d.asset_id IS NULL
+                AND d.asset_id IS NULL\(sourceClause)
             UNION ALL
             SELECT p.asset_id, p.score, 2 AS origin_rank, 'personalModel' AS suggestion_origin,
                 a.file_name, a.availability
@@ -1141,7 +1182,7 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                 ON d.asset_id = p.asset_id AND d.tag_id = p.tag_id
             WHERE p.tag_id = ?
                 AND p.state = 'pendingReview'
-                AND d.asset_id IS NULL
+                AND d.asset_id IS NULL\(sourceClause)
         ), ranked AS (
             SELECT *, ROW_NUMBER() OVER (
                 PARTITION BY asset_id
@@ -1162,7 +1203,10 @@ struct GRDBPersonalizationReviewRepository: Sendable {
         FROM ranked r
         WHERE r.duplicate_rank = 1
         """
-        var arguments: [DatabaseValueConvertible] = [uuid(tagID), uuid(tagID), uuid(tagID)]
+        var arguments: [DatabaseValueConvertible] =
+            [uuid(tagID)] + sourceArguments
+            + [uuid(tagID)] + sourceArguments
+            + [uuid(tagID)] + sourceArguments
         if let cursor {
             let boundary = try ReviewQueueCursorCodec.decodeBoundary(cursor)
             sql += """

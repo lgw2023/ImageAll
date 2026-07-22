@@ -153,6 +153,8 @@ final class LibraryWorkspaceModel: ObservableObject {
     @Published private(set) var reviewMode: ReviewWorkspaceMode?
     @Published private(set) var reviewQueueItems: [ReviewQueueItemProjection] = []
     @Published fileprivate(set) var reviewNextCursor: ReviewQueueCursor?
+    /// `nil` = all active sources; otherwise only the selected subset (may be empty).
+    @Published private(set) var reviewFilterSourceIDs: Set<UUID>?
     @Published var pendingSuggestionConfirmation: SuggestionEnqueueConfirmation?
     @Published private(set) var assetPendingSuggestions: [AssetPendingSuggestion] = []
     @Published private(set) var cloudPreviewState: CloudPreviewPresentationState = .hidden
@@ -1349,8 +1351,12 @@ final class LibraryWorkspaceModel: ObservableObject {
             }
             tags = try await Self.offMain { try service.listTags() }
             let reviewPort = review
+            let sourceIDs = resolvedReviewSourceFilter
             try await Self.offMain {
-                _ = try reviewPort.enqueueStandardLibrarySuggestions(target: capability.target)
+                _ = try reviewPort.enqueueStandardLibrarySuggestions(
+                    target: capability.target,
+                    sourceIDs: sourceIDs
+                )
             }
             await refreshReviewState()
             startPersonalizationRunnerIfNeeded()
@@ -1399,8 +1405,12 @@ final class LibraryWorkspaceModel: ObservableObject {
             )
 
             let reviewPort = review
+            let sourceIDs = resolvedReviewSourceFilter
             try await Self.offMain {
-                _ = try reviewPort.enqueuePersonalLibrarySuggestions(capability: capability)
+                _ = try reviewPort.enqueuePersonalLibrarySuggestions(
+                    capability: capability,
+                    sourceIDs: sourceIDs
+                )
             }
             await refreshReviewState()
             startPersonalizationRunnerIfNeeded()
@@ -1524,7 +1534,11 @@ final class LibraryWorkspaceModel: ObservableObject {
         }
     }
 
-    func generateAppPersonalTagLibrarySuggestions(tagID: UUID, displayName: String) async {
+    func generateAppPersonalTagLibrarySuggestions(
+        tagID: UUID,
+        displayName: String,
+        sourceIDs: [UUID]? = nil
+    ) async {
         guard let overview = suggestionOverviews.first(where: { $0.id == tagID }),
               canGenerateAppPersonalTagLibrarySuggestions(for: overview),
               let suggester = appPersonalTagLibrarySuggester,
@@ -1543,7 +1557,9 @@ final class LibraryWorkspaceModel: ObservableObject {
         }
 
         do {
-            let candidates = try await resolveAllPersonalSuggestionCandidates()
+            let candidates = try await resolveAllPersonalSuggestionCandidates(
+                sourceIDs: sourceIDs ?? resolvedReviewSourceFilter
+            )
             guard !candidates.isEmpty else {
                 notice = .personalTagLibrarySuggestionsNotReady
                 personalLibrarySuggestionState = .personalUnavailable
@@ -1630,7 +1646,9 @@ final class LibraryWorkspaceModel: ObservableObject {
         }
     }
 
-    private func resolveAllPersonalSuggestionCandidates() async throws -> [PersonalSuggestionCandidate] {
+    private func resolveAllPersonalSuggestionCandidates(
+        sourceIDs: [UUID]? = nil
+    ) async throws -> [PersonalSuggestionCandidate] {
         let reviewPort = review
         let pageSize = AppPersonalTagLibrarySuggestionLimits.candidatePageSize
         var candidates: [PersonalSuggestionCandidate] = []
@@ -1640,7 +1658,8 @@ final class LibraryWorkspaceModel: ObservableObject {
             let page = try await Self.offMain {
                 try reviewPort.personalSuggestionCandidates(
                     afterAssetID: pageAfter,
-                    limit: pageSize
+                    limit: pageSize,
+                    sourceIDs: sourceIDs
                 )
             }
             if page.isEmpty { break }
@@ -3029,9 +3048,14 @@ extension LibraryWorkspaceModel {
 
     func refreshReviewState() async {
         let reviewPort = review
+        let sourceFilter = resolvedReviewSourceFilter
         do {
-            pendingSuggestionTotal = try await Self.offMain { try reviewPort.totalPendingSuggestionCount() }
-            suggestionOverviews = try await Self.offMain { try reviewPort.tagOverviews() }
+            pendingSuggestionTotal = try await Self.offMain {
+                try reviewPort.totalPendingSuggestionCount(sourceIDs: sourceFilter)
+            }
+            suggestionOverviews = try await Self.offMain {
+                try reviewPort.tagOverviews(sourceIDs: sourceFilter)
+            }
             let personalJob = try await Self.offMain {
                 try reviewPort.personalLibrarySuggestionJob()
             }
@@ -3206,9 +3230,15 @@ extension LibraryWorkspaceModel {
 
     func loadReviewQueueFirstPage(tagID: UUID) async {
         let reviewPort = review
+        let sourceFilter = resolvedReviewSourceFilter
         do {
             let page = try await Self.offMain {
-                try reviewPort.fetchReviewQueue(tagID: tagID, cursor: nil, limit: 100)
+                try reviewPort.fetchReviewQueue(
+                    tagID: tagID,
+                    sourceIDs: sourceFilter,
+                    cursor: nil,
+                    limit: 100
+                )
             }
             reviewQueueItems = page.items
             reviewNextCursor = page.nextCursor
@@ -3226,13 +3256,79 @@ extension LibraryWorkspaceModel {
         isLoadingMoreReviewQueue = true
         defer { isLoadingMoreReviewQueue = false }
         let reviewPort = review
+        let sourceFilter = resolvedReviewSourceFilter
         do {
             let page = try await Self.offMain {
-                try reviewPort.fetchReviewQueue(tagID: tagID, cursor: cursor, limit: 100)
+                try reviewPort.fetchReviewQueue(
+                    tagID: tagID,
+                    sourceIDs: sourceFilter,
+                    cursor: cursor,
+                    limit: 100
+                )
             }
             reviewQueueItems.append(contentsOf: page.items)
             reviewNextCursor = page.nextCursor
         } catch {}
+    }
+
+    var activeReviewSources: [LibrarySourceSummary] {
+        sources.filter { $0.state == .active }
+    }
+
+    /// `nil` means no source filter (all active). Empty array means match nothing.
+    var resolvedReviewSourceFilter: [UUID]? {
+        guard let selected = reviewFilterSourceIDs else { return nil }
+        let activeIDs = activeReviewSources.map(\.id)
+        return activeIDs.filter(selected.contains)
+    }
+
+    var reviewSourceFilterSummaryText: String {
+        let active = activeReviewSources
+        guard let selected = reviewFilterSourceIDs else {
+            return "显示全部 \(active.count) 个来源的待审核建议"
+        }
+        let names = active.filter { selected.contains($0.id) }.map(\.displayName)
+        if names.isEmpty {
+            return "未选择来源，待审核列表为空"
+        }
+        if names.count == active.count {
+            return "显示全部 \(active.count) 个来源的待审核建议"
+        }
+        return "仅显示：\(names.joined(separator: "、"))"
+    }
+
+    func isReviewSourceIncluded(_ sourceID: UUID) -> Bool {
+        guard let selected = reviewFilterSourceIDs else { return true }
+        return selected.contains(sourceID)
+    }
+
+    func setReviewSourceIncluded(_ sourceID: UUID, _ included: Bool) async {
+        let activeIDs = Set(activeReviewSources.map(\.id))
+        guard activeIDs.contains(sourceID) else { return }
+        var selected = reviewFilterSourceIDs ?? activeIDs
+        if included {
+            selected.insert(sourceID)
+        } else {
+            selected.remove(sourceID)
+        }
+        selected.formIntersection(activeIDs)
+        reviewFilterSourceIDs = selected == activeIDs ? nil : selected
+        await refreshReviewState()
+    }
+
+    func selectAllReviewSources() async {
+        reviewFilterSourceIDs = nil
+        await refreshReviewState()
+    }
+
+    func toggleSuggestionEnqueueSource(_ sourceID: UUID) {
+        guard var pending = pendingSuggestionConfirmation else { return }
+        if pending.selectedSourceIDs.contains(sourceID) {
+            pending.selectedSourceIDs.remove(sourceID)
+        } else {
+            pending.selectedSourceIDs.insert(sourceID)
+        }
+        pendingSuggestionConfirmation = pending
     }
 
     func moveReviewPrimarySelection(
@@ -3277,15 +3373,27 @@ extension LibraryWorkspaceModel {
         tagID: UUID,
         displayName: String,
         mode: PersonalizationReviewEnqueueMode,
-        sourceCount: Int,
         method: SuggestionGenerationMethod = .featureKnn
     ) {
+        let available = activeReviewSources.map {
+            SuggestionEnqueueSourceOption(id: $0.id, displayName: $0.displayName)
+        }
+        guard !available.isEmpty else { return }
+        let selected: Set<UUID>
+        if let filter = reviewFilterSourceIDs {
+            let availableIDs = Set(available.map(\.id))
+            let intersection = filter.intersection(availableIDs)
+            selected = intersection.isEmpty ? availableIDs : intersection
+        } else {
+            selected = Set(available.map(\.id))
+        }
         pendingSuggestionConfirmation = SuggestionEnqueueConfirmation(
             tagID: tagID,
             displayName: displayName,
             mode: mode,
-            sourceCount: sourceCount,
-            method: method
+            method: method,
+            availableSources: available,
+            selectedSourceIDs: selected
         )
     }
 
@@ -3295,14 +3403,22 @@ extension LibraryWorkspaceModel {
         guard let pending = capturedConfirmation ?? pendingSuggestionConfirmation else {
             return false
         }
+        guard pending.canStart else { return false }
         pendingSuggestionConfirmation = nil
+        let selectedSourceIDs = Array(pending.selectedSourceIDs).sorted {
+            $0.uuidString.lowercased() < $1.uuidString.lowercased()
+        }
         switch pending.method {
         case .featureKnn:
             let reviewPort = review
             do {
                 notice = nil
                 _ = try await Self.offMain {
-                    try reviewPort.enqueueFullLibrarySuggestions(tagID: pending.tagID, mode: pending.mode)
+                    try reviewPort.enqueueFullLibrarySuggestions(
+                        tagID: pending.tagID,
+                        mode: pending.mode,
+                        sourceIDs: selectedSourceIDs
+                    )
                 }
                 startPersonalizationRunnerIfNeeded()
                 await refreshReviewState()
@@ -3317,7 +3433,8 @@ extension LibraryWorkspaceModel {
         case .personalModel:
             await generateAppPersonalTagLibrarySuggestions(
                 tagID: pending.tagID,
-                displayName: pending.displayName
+                displayName: pending.displayName,
+                sourceIDs: selectedSourceIDs
             )
             if case .personalTagLibrarySuggestionsCompleted = notice {
                 return true
@@ -3366,8 +3483,7 @@ extension LibraryWorkspaceModel {
         requestEnqueueSuggestions(
             tagID: tagID,
             displayName: overview.displayName,
-            mode: mode,
-            sourceCount: sources.filter { $0.state == .active }.count
+            mode: mode
         )
         return true
     }
@@ -3641,26 +3757,13 @@ struct LibraryWorkspaceView: View {
                     }
             }
         }
-        .confirmationDialog(
-            suggestionConfirmationTitle(model.pendingSuggestionConfirmation),
-            isPresented: Binding(
-                get: { model.pendingSuggestionConfirmation != nil },
-                set: { if !$0 { model.cancelPendingSuggestionEnqueue() } }
-            ),
-            titleVisibility: .visible
-        ) {
-            if let pending = model.pendingSuggestionConfirmation {
-                Button("开始") {
-                    Task { _ = await model.confirmPendingSuggestionEnqueue(pending) }
-                }
-            }
-            Button("取消", role: .cancel) {
-                model.cancelPendingSuggestionEnqueue()
-            }
-        } message: {
-            if let pending = model.pendingSuggestionConfirmation {
-                Text(suggestionConfirmationMessage(pending))
-            }
+        .sheet(
+            item: Binding(
+                get: { model.pendingSuggestionConfirmation },
+                set: { model.pendingSuggestionConfirmation = $0 }
+            )
+        ) { pending in
+            SuggestionEnqueueConfirmationSheet(model: model, pending: pending)
         }
         .searchable(
             text: $searchText,
@@ -5436,18 +5539,6 @@ struct LibraryWorkspaceView: View {
         }
     }
 
-    private func suggestionConfirmationTitle(_ pending: SuggestionEnqueueConfirmation?) -> String {
-        guard let pending else { return "确认建议任务" }
-        switch (pending.method, pending.mode) {
-        case (.featureKnn, .generate):
-            return "生成“\(pending.displayName)”特征向量建议"
-        case (.featureKnn, .update):
-            return "更新“\(pending.displayName)”特征向量建议"
-        case (.personalModel, _):
-            return "用个人模型生成“\(pending.displayName)”建议"
-        }
-    }
-
     static func tagBatchMutationNoticeText(
         count: Int,
         tagName: String,
@@ -5460,20 +5551,6 @@ struct LibraryWorkspaceView: View {
         case .createdAndApplied: "创建并应用"
         }
         return "已为 \(count) 张照片\(verb)“\(tagName)”"
-    }
-
-    private func suggestionConfirmationMessage(_ pending: SuggestionEnqueueConfirmation) -> String {
-        switch pending.method {
-        case .featureKnn:
-            switch pending.mode {
-            case .generate:
-                return "将用特征向量近邻检查 \(pending.sourceCount) 个 active 来源中已入库的照片，并只保留该标签置信度最高的 100 条待审核建议。人工标签不会丢失。"
-            case .update:
-                return "将用最新确认/拒绝样本重新扫描 \(pending.sourceCount) 个 active 来源。只保留 Top 100；人工标签不会改变。"
-            }
-        case .personalModel:
-            return "将用当前人脑个人模型全库扫描，只保留“\(pending.displayName)”置信度最高的 100 条待审核建议（来源标记为个人模型）。需要该标签已在人脑模型中；不要求拒绝样本。人工标签不会丢失。"
-        }
     }
 
     private func errorTitle(_ error: LibraryWorkspaceSafeError) -> String {

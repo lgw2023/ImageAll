@@ -2148,7 +2148,6 @@ final class LibraryWorkspaceModelTests: XCTestCase {
             tagID: tagID,
             displayName: "板栗",
             mode: .generate,
-            sourceCount: 1,
             method: .personalModel
         )
         let confirmed = await model.confirmPendingSuggestionEnqueue()
@@ -4759,7 +4758,8 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         let service = FakeLibraryWorkspaceService(
             connectedSource: LibrarySourceSummary(id: sourceID, displayName: "Fixture", state: .active),
             reconciledItems: [Self.makeAsset(sourceID: sourceID)],
-            tags: [tag]
+            tags: [tag],
+            startsConnected: true
         )
         let review = FakePersonalizationReviewPort(
             overviews: [
@@ -4821,25 +4821,86 @@ final class LibraryWorkspaceModelTests: XCTestCase {
                     displayName: "Fixture",
                     state: .active
                 ),
-                reconciledItems: []
+                reconciledItems: [],
+                startsConnected: true
             ),
             review: review
         )
         let tagID = UUID()
 
+        await model.start()
+
         model.requestEnqueueSuggestions(
             tagID: tagID,
             displayName: "Family",
-            mode: .generate,
-            sourceCount: 1
+            mode: .generate
         )
         let captured = try XCTUnwrap(model.pendingSuggestionConfirmation)
+        XCTAssertEqual(captured.selectedSourceIDs, [sourceID])
         model.cancelPendingSuggestionEnqueue()
 
         let confirmed = await model.confirmPendingSuggestionEnqueue(captured)
 
         XCTAssertTrue(confirmed)
         XCTAssertEqual(review.enqueueCallCount, 1)
+        XCTAssertEqual(review.lastEnqueuedSourceIDs, [sourceID])
+    }
+
+    func testReviewSourceFilterIsPassedToPendingCountsAndQueue() async throws {
+        let tagID = UUID()
+        let review = FakePersonalizationReviewPort(
+            overviews: [
+                SuggestionTagOverview(
+                    id: tagID,
+                    displayName: "Family",
+                    acceptedSampleCount: 4,
+                    rejectedSampleCount: 4,
+                    pendingSuggestionCount: 2,
+                    taskStatus: .completed,
+                    checkedCount: 0,
+                    totalCount: nil,
+                    skippedCount: 0,
+                    missingPositiveCount: 0,
+                    missingNegativeCount: 0,
+                    canGenerate: false,
+                    canUpdate: true,
+                    canGeneratePersonalModel: true,
+                    canReview: true,
+                    canPause: false,
+                    canResume: false,
+                    canCancel: false,
+                    activeJobID: nil
+                ),
+            ]
+        )
+        let sourceID = UUID()
+        let model = LibraryWorkspaceModel(
+            service: FakeLibraryWorkspaceService(
+                connectedSource: LibrarySourceSummary(
+                    id: sourceID,
+                    displayName: "Fixture",
+                    state: .active
+                ),
+                reconciledItems: [],
+                startsConnected: true
+            ),
+            review: review
+        )
+        await model.start()
+
+        await model.refreshReviewState()
+        XCTAssertNil(review.lastPendingCountSourceIDs)
+        XCTAssertNil(review.lastOverviewSourceIDs)
+
+        await model.setReviewSourceIncluded(sourceID, false)
+        XCTAssertEqual(review.lastPendingCountSourceIDs, [])
+        XCTAssertEqual(review.lastOverviewSourceIDs, [])
+
+        await model.enterReviewQueue(tagID: tagID, displayName: "Family")
+        XCTAssertEqual(review.lastQueueSourceIDs, [])
+
+        await model.selectAllReviewSources()
+        XCTAssertNil(review.lastPendingCountSourceIDs)
     }
 
     private func waitForCatalogScanToFinish(_ model: LibraryWorkspaceModel) async {
@@ -6295,16 +6356,33 @@ private final class FakePersonalizationReviewPort: PersonalizationReviewPort, @u
         lock.withLock { storedPersonalModelRebuildEnqueueCallCount }
     }
 
-    func totalPendingSuggestionCount() throws -> Int {
-        lock.withLock { storedQueueItems.count }
-    }
+    private(set) var lastEnqueuedSourceIDs: [UUID]?
+    private(set) var lastPendingCountSourceIDs: [UUID]?
+    private(set) var lastOverviewSourceIDs: [UUID]?
+    private(set) var lastQueueSourceIDs: [UUID]?
 
-    func tagOverviews() throws -> [SuggestionTagOverview] {
-        lock.withLock { storedOverviews }
-    }
-
-    func fetchReviewQueue(tagID: UUID, cursor: ReviewQueueCursor?, limit: Int) throws -> ReviewQueuePage {
+    func totalPendingSuggestionCount(sourceIDs: [UUID]?) throws -> Int {
         lock.withLock {
+            lastPendingCountSourceIDs = sourceIDs
+            return storedQueueItems.count
+        }
+    }
+
+    func tagOverviews(sourceIDs: [UUID]?) throws -> [SuggestionTagOverview] {
+        lock.withLock {
+            lastOverviewSourceIDs = sourceIDs
+            return storedOverviews
+        }
+    }
+
+    func fetchReviewQueue(
+        tagID: UUID,
+        sourceIDs: [UUID]?,
+        cursor: ReviewQueueCursor?,
+        limit: Int
+    ) throws -> ReviewQueuePage {
+        lock.withLock {
+            lastQueueSourceIDs = sourceIDs
             let excluded = decidedAssetIDsProvider?(tagID) ?? []
             let visible = storedQueueItems.filter { !excluded.contains($0.assetID) }
             let startIndex = cursor
@@ -6363,7 +6441,8 @@ private final class FakePersonalizationReviewPort: PersonalizationReviewPort, @u
 
     func personalSuggestionCandidates(
         afterAssetID: UUID?,
-        limit: Int
+        limit: Int,
+        sourceIDs _: [UUID]?
     ) throws -> [PersonalSuggestionCandidate] {
         lock.withLock {
             let startIndex = afterAssetID
@@ -6444,16 +6523,25 @@ private final class FakePersonalizationReviewPort: PersonalizationReviewPort, @u
         }
     }
 
-    func enqueueFullLibrarySuggestions(tagID: UUID, mode: PersonalizationReviewEnqueueMode) throws -> UUID {
-        lock.withLock { enqueueCallCount += 1 }
+    func enqueueFullLibrarySuggestions(
+        tagID: UUID,
+        mode: PersonalizationReviewEnqueueMode,
+        sourceIDs: [UUID]?
+    ) throws -> UUID {
+        lock.withLock {
+            enqueueCallCount += 1
+            lastEnqueuedSourceIDs = sourceIDs
+        }
         return UUID()
     }
 
     func enqueuePersonalLibrarySuggestions(
-        capability: PersonalModelSuggestionCapability
+        capability: PersonalModelSuggestionCapability,
+        sourceIDs: [UUID]?
     ) throws -> UUID {
         lock.withLock {
             let jobID = UUID()
+            lastEnqueuedSourceIDs = sourceIDs
             storedActivatedPersonalCapability = capability
             storedEnqueuedPersonalCapability = capability
             storedPersonalLibraryJob = PersonalLibrarySuggestionJobProjection(
@@ -6470,10 +6558,12 @@ private final class FakePersonalizationReviewPort: PersonalizationReviewPort, @u
     }
 
     func enqueueStandardLibrarySuggestions(
-        target: StandardModelSuggestionTarget
+        target: StandardModelSuggestionTarget,
+        sourceIDs: [UUID]?
     ) throws -> UUID {
         lock.withLock {
             let jobID = UUID()
+            lastEnqueuedSourceIDs = sourceIDs
             storedEnqueuedStandardTarget = target
             storedStandardLibraryJob = StandardLibrarySuggestionJobProjection(
                 id: jobID,

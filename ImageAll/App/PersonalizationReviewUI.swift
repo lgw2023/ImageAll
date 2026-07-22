@@ -12,6 +12,27 @@ struct ReviewOverviewView: View {
 
     var body: some View {
         List {
+            Section("来源筛选") {
+                Text(model.reviewSourceFilterSummaryText)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Button("全选来源") {
+                    Task { await model.selectAllReviewSources() }
+                }
+                .disabled(model.reviewFilterSourceIDs == nil)
+                ForEach(model.activeReviewSources) { source in
+                    Toggle(
+                        source.displayName,
+                        isOn: Binding(
+                            get: { model.isReviewSourceIncluded(source.id) },
+                            set: { included in
+                                Task { await model.setReviewSourceIncluded(source.id, included) }
+                            }
+                        )
+                    )
+                }
+            }
+
             if model.supportsPersonalLibrarySuggestions || model.supportsStandardLibrarySuggestions {
                 Section("本地模型") {
                     VStack(alignment: .leading, spacing: 8) {
@@ -56,7 +77,7 @@ struct ReviewOverviewView: View {
                                     || model.isGeneratingPersonalLibrarySuggestions
                                     || model.isRebuildingPersonalModel
                             )
-                            .help("仅分析当前可本地读取的预览；iCloud 云端照片会跳过，不会批量下载")
+                            .help("按上方来源筛选扫描；仅分析当前可本地读取的预览；iCloud 云端照片会跳过，不会批量下载")
                             if let activity = model.standardLibrarySuggestionJobActivity,
                                !activity.availableActions.isEmpty
                             {
@@ -112,7 +133,7 @@ struct ReviewOverviewView: View {
                             .help(
                                 model.usesAppPersonalSampleSuggestionsPath
                                     ? "有多选时用选中照片（最多 100）；无多选时从库中抽最多 100 张。仅用本机预览；云端未下载照片会跳过"
-                                    : "仅分析当前可本地读取的预览；iCloud 云端照片会跳过，不会批量下载"
+                                    : "按上方来源筛选扫描；仅分析当前可本地读取的预览；iCloud 云端照片会跳过，不会批量下载"
                             )
                             if let activity = model.personalLibrarySuggestionJobActivity,
                                !activity.availableActions.isEmpty
@@ -174,7 +195,6 @@ struct ReviewOverviewView: View {
                                     tagID: overview.id,
                                     displayName: overview.displayName,
                                     mode: .generate,
-                                    sourceCount: model.sources.filter { $0.state == .active }.count,
                                     method: .featureKnn
                                 )
                             } label: {
@@ -182,7 +202,7 @@ struct ReviewOverviewView: View {
                             }
                             .buttonStyle(.bordered)
                             .controlSize(.small)
-                            .help("用确认/拒绝样本做特征向量近邻全库扫描，只保留该标签 Top 100；来源标记为「特征向量」")
+                            .help("用确认/拒绝样本做特征向量近邻扫描；可在确认框中选择来源，只保留该标签 Top 100")
                         }
                         if overview.canUpdate {
                             Button {
@@ -190,7 +210,6 @@ struct ReviewOverviewView: View {
                                     tagID: overview.id,
                                     displayName: overview.displayName,
                                     mode: .update,
-                                    sourceCount: model.sources.filter { $0.state == .active }.count,
                                     method: .featureKnn
                                 )
                             } label: {
@@ -198,7 +217,7 @@ struct ReviewOverviewView: View {
                             }
                             .buttonStyle(.bordered)
                             .controlSize(.small)
-                            .help("用最新确认/拒绝样本重新近邻扫描，只保留该标签 Top 100")
+                            .help("用最新确认/拒绝样本重新近邻扫描；可在确认框中选择来源，只保留该标签 Top 100")
                         }
                         if model.canGenerateAppPersonalTagLibrarySuggestions(for: overview) {
                             Button {
@@ -206,7 +225,6 @@ struct ReviewOverviewView: View {
                                     tagID: overview.id,
                                     displayName: overview.displayName,
                                     mode: overview.canUpdate ? .update : .generate,
-                                    sourceCount: model.sources.filter { $0.state == .active }.count,
                                     method: .personalModel
                                 )
                             } label: {
@@ -220,7 +238,7 @@ struct ReviewOverviewView: View {
                             }
                             .buttonStyle(.bordered)
                             .controlSize(.small)
-                            .help("用当前人脑个人模型全库打分，只保留该标签 Top 100；不要求拒绝样本。来源标记为「个人模型」。请先点工具栏人脑图标重建模型。")
+                            .help("用当前人脑个人模型打分；可在确认框中选择来源，只保留该标签 Top 100。请先点工具栏人脑图标重建模型。")
                             .disabled(model.isGeneratingAppPersonalTagLibrarySuggestions)
                         }
                         if overview.canReview {
@@ -400,6 +418,84 @@ struct ReviewOverviewView: View {
     }
 }
 
+struct SuggestionEnqueueConfirmationSheet: View {
+    @ObservedObject var model: LibraryWorkspaceModel
+    let pending: SuggestionEnqueueConfirmation
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text(title)
+                .font(.headline)
+            Text(message)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Text("扫描来源")
+                .font(.subheadline.weight(.semibold))
+            VStack(alignment: .leading, spacing: 8) {
+                ForEach(pending.availableSources) { source in
+                    Toggle(
+                        source.displayName,
+                        isOn: Binding(
+                            get: { model.pendingSuggestionConfirmation?.selectedSourceIDs.contains(source.id) ?? false },
+                            set: { _ in model.toggleSuggestionEnqueueSource(source.id) }
+                        )
+                    )
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            if !pending.canStart {
+                Text("请至少选择一个来源。")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
+
+            HStack {
+                Spacer()
+                Button("取消") {
+                    model.cancelPendingSuggestionEnqueue()
+                }
+                .keyboardShortcut(.cancelAction)
+                Button("开始") {
+                    let captured = model.pendingSuggestionConfirmation ?? pending
+                    Task { _ = await model.confirmPendingSuggestionEnqueue(captured) }
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(!(model.pendingSuggestionConfirmation?.canStart ?? pending.canStart))
+            }
+        }
+        .padding(24)
+        .frame(minWidth: 420)
+    }
+
+    private var title: String {
+        switch (pending.method, pending.mode) {
+        case (.featureKnn, .generate):
+            "生成“\(pending.displayName)”特征向量建议"
+        case (.featureKnn, .update):
+            "更新“\(pending.displayName)”特征向量建议"
+        case (.personalModel, _):
+            "用个人模型生成“\(pending.displayName)”建议"
+        }
+    }
+
+    private var message: String {
+        switch pending.method {
+        case .featureKnn:
+            switch pending.mode {
+            case .generate:
+                return "将用特征向量近邻检查所选来源中已入库的照片，并只保留该标签置信度最高的 100 条待审核建议。训练样本仍来自全部来源；人工标签不会丢失。"
+            case .update:
+                return "将用最新确认/拒绝样本重新扫描所选来源。只保留 Top 100；人工标签不会改变。"
+            }
+        case .personalModel:
+            return "将用当前人脑个人模型扫描所选来源，只保留“\(pending.displayName)”置信度最高的 100 条待审核建议。需要该标签已在人脑模型中；不要求拒绝样本。人工标签不会丢失。"
+        }
+    }
+}
+
 struct ReviewQueueContentView: View {
     @ObservedObject var model: LibraryWorkspaceModel
     let tagID: UUID
@@ -412,6 +508,12 @@ struct ReviewQueueContentView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            Text(model.reviewSourceFilterSummaryText)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 12)
+                .padding(.top, 6)
             if let overview = model.suggestionOverviews.first(where: { $0.id == tagID }) {
                 Text(statusHeader(overview))
                     .font(.caption)

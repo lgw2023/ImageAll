@@ -1794,6 +1794,127 @@ final class FullLibrarySuggestionsJobTests: XCTestCase {
         XCTAssertEqual(Set(payload.sourceIDs), Set(activeFolderSourceIDs + [photosSourceID]))
     }
 
+    func testEnqueueFullLibrarySuggestionsRespectsRequestedSourceSubset() throws {
+        let fixture = try makeLargeLibraryFixture(assetCount: 4)
+        let photosSourceID = UUID(uuidString: "22000000-0000-4000-8000-0000000000A1")!
+        try fixture.database.pool.write { db in
+            try db.execute(
+                sql: """
+                INSERT INTO source (id, kind, display_name, bookmark, state, created_at_ms, updated_at_ms)
+                VALUES (?, 'photos', 'Apple Photos', NULL, 'active', ?, ?)
+                """,
+                arguments: [
+                    photosSourceID.uuidString.lowercased(),
+                    DatabaseTestSupport.timestampMs,
+                    DatabaseTestSupport.timestampMs,
+                ]
+            )
+        }
+        let service = PersonalizationReviewService(
+            database: fixture.database,
+            queue: fixture.queue,
+            executionCoordinator: makeCoordinator(
+                database: fixture.database,
+                handler: makeHandler(
+                    database: fixture.database,
+                    loader: fixture.loader,
+                    queue: fixture.queue
+                ),
+                queue: fixture.queue
+            ),
+            tags: fixture.tags,
+            clock: FixedJobClock(nowMs: fixture.cutoffMs)
+        )
+
+        let jobID = try service.enqueueFullLibrarySuggestions(
+            tagID: fixture.tagID,
+            mode: .generate,
+            sourceIDs: [photosSourceID]
+        )
+        let payload = try FullLibrarySuggestionsCodec.decodePayload(
+            fixture.queue.fetchJob(id: jobID).payload
+        )
+        XCTAssertEqual(payload.sourceIDs, [photosSourceID])
+    }
+
+    func testPendingCountsAndReviewQueueFilterBySourceIDs() throws {
+        let fixture = try makeLargeLibraryFixture(assetCount: 8, preseedPredictions: 2)
+        let review = GRDBPersonalizationReviewRepository(database: fixture.database)
+        let photosSourceID = UUID(uuidString: "22000000-0000-4000-8000-0000000000A2")!
+        let photosAssetID = UUID(uuidString: "23000000-0000-4000-8000-0000000000A2")!
+        let folderPendingBefore = try review.totalPendingSuggestionCount()
+        XCTAssertGreaterThan(folderPendingBefore, 0)
+
+        try fixture.database.pool.write { db in
+            try db.execute(
+                sql: """
+                INSERT INTO source (id, kind, display_name, bookmark, state, created_at_ms, updated_at_ms)
+                VALUES (?, 'photos', 'Apple Photos', NULL, 'active', ?, ?)
+                """,
+                arguments: [
+                    photosSourceID.uuidString.lowercased(),
+                    DatabaseTestSupport.timestampMs,
+                    DatabaseTestSupport.timestampMs,
+                ]
+            )
+            try db.execute(
+                sql: """
+                INSERT INTO asset (
+                    id, source_id, locator_kind, relative_path, photos_local_identifier,
+                    locator_state, media_type, file_name, content_revision, availability,
+                    record_created_at_ms, record_updated_at_ms
+                ) VALUES (?, ?, 'photos', NULL, ?, 'current', 'public.jpeg', ?, 1, 'available', ?, ?)
+                """,
+                arguments: [
+                    photosAssetID.uuidString.lowercased(),
+                    photosSourceID.uuidString.lowercased(),
+                    "photos-local-\(photosAssetID.uuidString)",
+                    "photo.jpg",
+                    fixture.cutoffMs,
+                    fixture.cutoffMs,
+                ]
+            )
+            try db.execute(
+                sql: """
+                INSERT INTO prediction (
+                    asset_id, tag_id, content_revision, model_revision, score, state, created_at_ms
+                ) VALUES (?, ?, 1, 1, 0.8, 'pendingReview', ?)
+                """,
+                arguments: [
+                    photosAssetID.uuidString.lowercased(),
+                    fixture.tagID.uuidString.lowercased(),
+                    DatabaseTestSupport.timestampMs,
+                ]
+            )
+        }
+
+        XCTAssertEqual(try review.totalPendingSuggestionCount(), folderPendingBefore + 1)
+        XCTAssertEqual(
+            try review.totalPendingSuggestionCount(sourceIDs: [fixture.sourceID]),
+            folderPendingBefore
+        )
+        XCTAssertEqual(try review.totalPendingSuggestionCount(sourceIDs: [photosSourceID]), 1)
+        XCTAssertEqual(try review.totalPendingSuggestionCount(sourceIDs: []), 0)
+        XCTAssertEqual(try review.pendingCount(tagID: fixture.tagID, sourceIDs: [photosSourceID]), 1)
+
+        let photosPage = try review.fetchReviewQueuePage(
+            tagID: fixture.tagID,
+            sourceIDs: [photosSourceID],
+            cursor: nil,
+            limit: 10
+        )
+        XCTAssertEqual(photosPage.items.map(\.assetID), [photosAssetID])
+
+        let folderPage = try review.fetchReviewQueuePage(
+            tagID: fixture.tagID,
+            sourceIDs: [fixture.sourceID],
+            cursor: nil,
+            limit: 10
+        )
+        XCTAssertFalse(folderPage.items.contains(where: { $0.assetID == photosAssetID }))
+        XCTAssertEqual(folderPage.items.count, folderPendingBefore)
+    }
+
     func testFrozenAssetPaginationIncludesPhotosWithoutDuplicatesOrPostCutoffRows() throws {
         let fixture = try makeLargeLibraryFixture(assetCount: 3)
         let review = GRDBPersonalizationReviewRepository(database: fixture.database)
@@ -3697,18 +3818,27 @@ private final class BlockingPersonalizationReviewPort: PersonalizationReviewPort
         return activeWorkers
     }
 
-    func totalPendingSuggestionCount() throws -> Int { 0 }
-    func tagOverviews() throws -> [SuggestionTagOverview] { [] }
-    func fetchReviewQueue(tagID: UUID, cursor: ReviewQueueCursor?, limit: Int) throws -> ReviewQueuePage {
+    func totalPendingSuggestionCount(sourceIDs _: [UUID]?) throws -> Int { 0 }
+    func tagOverviews(sourceIDs _: [UUID]?) throws -> [SuggestionTagOverview] { [] }
+    func fetchReviewQueue(
+        tagID _: UUID,
+        sourceIDs _: [UUID]?,
+        cursor _: ReviewQueueCursor?,
+        limit _: Int
+    ) throws -> ReviewQueuePage {
         ReviewQueuePage(items: [], nextCursor: nil)
     }
-    func pendingSuggestionsForAsset(assetID: UUID) throws -> [AssetPendingSuggestion] { [] }
-    func enqueueFullLibrarySuggestions(tagID: UUID, mode: PersonalizationReviewEnqueueMode) throws -> UUID {
+    func pendingSuggestionsForAsset(assetID _: UUID) throws -> [AssetPendingSuggestion] { [] }
+    func enqueueFullLibrarySuggestions(
+        tagID _: UUID,
+        mode _: PersonalizationReviewEnqueueMode,
+        sourceIDs _: [UUID]?
+    ) throws -> UUID {
         UUID()
     }
-    func pauseSuggestionJob(jobID: UUID) throws {}
-    func resumeSuggestionJob(jobID: UUID) throws {}
-    func cancelSuggestionJob(jobID: UUID) throws {}
+    func pauseSuggestionJob(jobID _: UUID) throws {}
+    func resumeSuggestionJob(jobID _: UUID) throws {}
+    func cancelSuggestionJob(jobID _: UUID) throws {}
 
     func runPendingSuggestionJobs(maxSteps: Int?) throws -> Bool {
         lock.lock()
@@ -3733,16 +3863,25 @@ private final class IdlePersonalizationReviewPort: PersonalizationReviewPort, @u
         lock.withLock { storedRunCount }
     }
 
-    func totalPendingSuggestionCount() throws -> Int { 0 }
-    func tagOverviews() throws -> [SuggestionTagOverview] { [] }
-    func fetchReviewQueue(tagID: UUID, cursor: ReviewQueueCursor?, limit: Int) throws -> ReviewQueuePage {
+    func totalPendingSuggestionCount(sourceIDs _: [UUID]?) throws -> Int { 0 }
+    func tagOverviews(sourceIDs _: [UUID]?) throws -> [SuggestionTagOverview] { [] }
+    func fetchReviewQueue(
+        tagID _: UUID,
+        sourceIDs _: [UUID]?,
+        cursor _: ReviewQueueCursor?,
+        limit _: Int
+    ) throws -> ReviewQueuePage {
         ReviewQueuePage(items: [], nextCursor: nil)
     }
-    func pendingSuggestionsForAsset(assetID: UUID) throws -> [AssetPendingSuggestion] { [] }
-    func enqueueFullLibrarySuggestions(tagID: UUID, mode: PersonalizationReviewEnqueueMode) throws -> UUID { UUID() }
-    func pauseSuggestionJob(jobID: UUID) throws {}
-    func resumeSuggestionJob(jobID: UUID) throws {}
-    func cancelSuggestionJob(jobID: UUID) throws {}
+    func pendingSuggestionsForAsset(assetID _: UUID) throws -> [AssetPendingSuggestion] { [] }
+    func enqueueFullLibrarySuggestions(
+        tagID _: UUID,
+        mode _: PersonalizationReviewEnqueueMode,
+        sourceIDs _: [UUID]?
+    ) throws -> UUID { UUID() }
+    func pauseSuggestionJob(jobID _: UUID) throws {}
+    func resumeSuggestionJob(jobID _: UUID) throws {}
+    func cancelSuggestionJob(jobID _: UUID) throws {}
     func runPendingSuggestionJobs(maxSteps: Int?) throws -> Bool {
         lock.withLock { storedRunCount += 1 }
         return false
