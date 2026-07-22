@@ -224,6 +224,15 @@ struct LibraryTagSemanticSection: Identifiable, Equatable, Sendable {
     var id: LibraryTagSemanticGroup { group }
 }
 
+enum LibrarySourceDropPlacement: Equatable, Sendable {
+    case before
+    case after
+
+    static func resolve(locationY: CGFloat, rowHeight: CGFloat) -> Self {
+        locationY < max(rowHeight, 0) / 2 ? .before : .after
+    }
+}
+
 @MainActor
 final class LibrarySourceOrderPreferences {
     private static let defaultKey = "library.sidebar.source-order.v1"
@@ -257,6 +266,23 @@ final class LibrarySourceOrderPreferences {
         } else {
             ids.append(sourceID)
         }
+        defaults.set(ids.map(\.uuidString), forKey: key)
+    }
+
+    func move(
+        sourceID: UUID,
+        relativeTo targetID: UUID,
+        placement: LibrarySourceDropPlacement,
+        in sources: [LibrarySourceSummary]
+    ) {
+        var ids = ordered(sources).map(\.id)
+        guard sourceID != targetID,
+              let sourceIndex = ids.firstIndex(of: sourceID)
+        else { return }
+        ids.remove(at: sourceIndex)
+        guard let targetIndex = ids.firstIndex(of: targetID) else { return }
+        let insertionIndex = placement == .before ? targetIndex : targetIndex + 1
+        ids.insert(sourceID, at: insertionIndex)
         defaults.set(ids.map(\.uuidString), forKey: key)
     }
 
@@ -468,6 +494,20 @@ final class LibraryWorkspaceModel: ObservableObject {
         sourceOrderPreferences.move(
             sourceID: sourceID,
             before: targetID,
+            in: sources
+        )
+        sourceOrderRevision &+= 1
+    }
+
+    func moveSource(
+        _ sourceID: UUID,
+        relativeTo targetID: UUID,
+        placement: LibrarySourceDropPlacement
+    ) {
+        sourceOrderPreferences.move(
+            sourceID: sourceID,
+            relativeTo: targetID,
+            placement: placement,
             in: sources
         )
         sourceOrderRevision &+= 1
@@ -4268,7 +4308,73 @@ private struct LibraryTagFlowLayout: Layout {
     }
 }
 
+private extension UTType {
+    static let imageAllLibrarySource = UTType(exportedAs: "com.gwlee.imageall.library-source")
+}
+
+private struct LibrarySourceDropTarget: Equatable {
+    let sourceID: UUID
+    let placement: LibrarySourceDropPlacement
+}
+
+private struct LibrarySourceDropDelegate: DropDelegate {
+    let targetSourceID: UUID
+    let rowHeight: CGFloat
+    @Binding var draggedSourceID: UUID?
+    @Binding var activeTarget: LibrarySourceDropTarget?
+    let performMove: (UUID, UUID, LibrarySourceDropPlacement) -> Void
+
+    func validateDrop(info: DropInfo) -> Bool {
+        draggedSourceID != nil &&
+            draggedSourceID != targetSourceID &&
+            info.hasItemsConforming(to: [UTType.imageAllLibrarySource.identifier])
+    }
+
+    func dropEntered(info: DropInfo) {
+        updateActiveTarget(for: info)
+    }
+
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        updateActiveTarget(for: info)
+        return DropProposal(operation: .move)
+    }
+
+    func dropExited(info _: DropInfo) {
+        if activeTarget?.sourceID == targetSourceID {
+            activeTarget = nil
+        }
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        guard let draggedSourceID, draggedSourceID != targetSourceID else {
+            activeTarget = nil
+            self.draggedSourceID = nil
+            return false
+        }
+        let placement = LibrarySourceDropPlacement.resolve(
+            locationY: info.location.y,
+            rowHeight: rowHeight
+        )
+        performMove(draggedSourceID, targetSourceID, placement)
+        activeTarget = nil
+        self.draggedSourceID = nil
+        return true
+    }
+
+    private func updateActiveTarget(for info: DropInfo) {
+        guard let draggedSourceID, draggedSourceID != targetSourceID else {
+            activeTarget = nil
+            return
+        }
+        activeTarget = LibrarySourceDropTarget(
+            sourceID: targetSourceID,
+            placement: .resolve(locationY: info.location.y, rowHeight: rowHeight)
+        )
+    }
+}
+
 struct LibraryWorkspaceView: View {
+    private static let sourceDropRowHeight: CGFloat = 40
     private static let mediaFormatFilterOptions = [
         LibraryMediaFormatFilterOption(title: "JPEG", mediaTypes: [UTType.jpeg.identifier]),
         LibraryMediaFormatFilterOption(title: "PNG", mediaTypes: [UTType.png.identifier]),
@@ -4311,6 +4417,8 @@ struct LibraryWorkspaceView: View {
     @State private var gridCellFrames: [UUID: CGRect] = [:]
     @State private var isMarqueeSelecting = false
     @State private var gridScrollTargetID: UUID?
+    @State private var draggedSourceID: UUID?
+    @State private var sourceDropTarget: LibrarySourceDropTarget?
     @State private var layoutState = LibraryWorkspaceLayoutState()
     @FocusState private var newTagFieldFocused: Bool
     @FocusState private var contentFocused: Bool
@@ -5144,16 +5252,34 @@ struct LibraryWorkspaceView: View {
             Section("来源") {
                 ForEach(model.orderedSources) { source in
                     sourceRow(source)
-                        .tag(LibrarySidebarSelection.source(source.id))
-                        .draggable(source.id.uuidString.lowercased())
-                        .dropDestination(for: String.self) { sourceIDs, _ in
-                            guard let rawSourceID = sourceIDs.first,
-                                  let sourceID = UUID(uuidString: rawSourceID),
-                                  sourceID != source.id
-                            else { return false }
-                            model.moveSource(sourceID, to: source.id)
-                            return true
+                        .frame(
+                            maxWidth: .infinity,
+                            minHeight: Self.sourceDropRowHeight,
+                            maxHeight: Self.sourceDropRowHeight,
+                            alignment: .leading
+                        )
+                        .contentShape(Rectangle())
+                        .overlay {
+                            sourceDropIndicator(for: source.id)
                         }
+                        .tag(LibrarySidebarSelection.source(source.id))
+                        .onDrag {
+                            draggedSourceID = source.id
+                            return NSItemProvider(
+                                item: source.id.uuidString as NSString,
+                                typeIdentifier: UTType.imageAllLibrarySource.identifier
+                            )
+                        }
+                        .onDrop(
+                            of: [UTType.imageAllLibrarySource.identifier],
+                            delegate: LibrarySourceDropDelegate(
+                                targetSourceID: source.id,
+                                rowHeight: Self.sourceDropRowHeight,
+                                draggedSourceID: $draggedSourceID,
+                                activeTarget: $sourceDropTarget,
+                                performMove: model.moveSource(_:relativeTo:placement:)
+                            )
+                        )
                 }
                 Button {
                     Task { await model.connectFolder() }
@@ -5373,6 +5499,28 @@ struct LibraryWorkspaceView: View {
                 model.isBusy || source.state == .disabled ||
                 (source.kind == .photos && source.state == .unavailable)
             )
+        }
+    }
+
+    @ViewBuilder
+    private func sourceDropIndicator(for sourceID: UUID) -> some View {
+        if let sourceDropTarget, sourceDropTarget.sourceID == sourceID {
+            ZStack {
+                RoundedRectangle(cornerRadius: 5)
+                    .fill(Color.accentColor.opacity(0.08))
+                VStack(spacing: 0) {
+                    if sourceDropTarget.placement == .after {
+                        Spacer(minLength: 0)
+                    }
+                    Capsule()
+                        .fill(Color.accentColor)
+                        .frame(height: 3)
+                    if sourceDropTarget.placement == .before {
+                        Spacer(minLength: 0)
+                    }
+                }
+            }
+            .allowsHitTesting(false)
         }
     }
 

@@ -4446,6 +4446,55 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         )
     }
 
+    func testSourceOrderPreferencesInsertDraggedSourceAfterTarget() {
+        let suiteName = "ImageAllTests.SourceDropAfter.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let first = LibrarySourceSummary(id: UUID(), displayName: "一", state: .active)
+        let second = LibrarySourceSummary(id: UUID(), displayName: "二", state: .active)
+        let third = LibrarySourceSummary(id: UUID(), displayName: "三", state: .active)
+        let preferences = LibrarySourceOrderPreferences(defaults: defaults)
+
+        preferences.move(
+            sourceID: first.id,
+            relativeTo: second.id,
+            placement: .after,
+            in: [first, second, third]
+        )
+
+        XCTAssertEqual(preferences.ordered([first, second, third]).map(\.id), [second.id, first.id, third.id])
+    }
+
+    func testSourceDropPlacementUsesWholeRowAsBeforeAndAfterZones() {
+        XCTAssertEqual(
+            LibrarySourceDropPlacement.resolve(locationY: 8, rowHeight: 40),
+            .before
+        )
+        XCTAssertEqual(
+            LibrarySourceDropPlacement.resolve(locationY: 32, rowHeight: 40),
+            .after
+        )
+    }
+
+    func testSourceOrderPreferencesCanDropDraggedSourceAtListTail() {
+        let suiteName = "ImageAllTests.SourceDropTail.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let first = LibrarySourceSummary(id: UUID(), displayName: "一", state: .active)
+        let second = LibrarySourceSummary(id: UUID(), displayName: "二", state: .active)
+        let third = LibrarySourceSummary(id: UUID(), displayName: "三", state: .active)
+        let preferences = LibrarySourceOrderPreferences(defaults: defaults)
+
+        preferences.move(
+            sourceID: first.id,
+            relativeTo: third.id,
+            placement: .after,
+            in: [first, second, third]
+        )
+
+        XCTAssertEqual(preferences.ordered([first, second, third]).map(\.id), [second.id, third.id, first.id])
+    }
+
     func testOpeningSelectedOriginalUsesInjectedPreviewOpener() async {
         let sourceID = UUID()
         let asset = Self.makeAsset(sourceID: sourceID, fileName: "original.jpg")
