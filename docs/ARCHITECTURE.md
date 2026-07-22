@@ -440,7 +440,7 @@ entitlement 不能被解释为允许写入来源树。
 
 文件在解码或生成特征前后各读取一次大小、修改时间和 resource identifier；若两次结果不一致，本次派生结果丢弃并重新排队。resource identifier 变化必须先执行第 8.1 节的身份判定：默认创建新 Asset，不能仅给旧 Asset 增加 Revision。只有身份仍确认是同一 Asset 时，大小、修改时间或已存在的内容指纹变化才递增 `content_revision`。普通对账无法发现“内容被替换但大小、mtime 和 resource identifier 全部被刻意保持”的情况；MVP 将此记录为已知限制，并提供显式“深度验证来源”任务按需计算 SHA-256。
 
-MVP 支持的格式以 ImageIO 能稳定解码的静态图片为准，具体清单在实现阶段通过运行时能力测试冻结。RAW 和视频不进入首个分类闭环。文件夹来源不识别 Live Photo 组合；PhotoKit 来源把 Live Photo 的静态主图作为普通支持图片读取，不读取其视频伴随资源。
+MVP 支持的格式以 Image I/O 能稳定解码的静态图片为主，并按 ADR-041 纳入富士/Adobe 等 camera-raw、JPEG 2000 与静态 GIF；解码级联为 Image I/O → Core Image RAW → LibRaw 兜底。视频、PDF、SVG、Illustrator AI、动画/非 RAW 多帧仍不进入 `available`。文件夹来源不识别 Live Photo 组合；PhotoKit 来源把 Live Photo 的静态主图作为普通支持图片读取，不读取其视频伴随资源。
 
 ### 10.2 Apple Photos 来源
 
@@ -1158,7 +1158,8 @@ revision 门；cache-only 自动个人重训和独立服务启动已经验收，
 | ADR-009 | 文件资产采用保守身份判定 | 已决定 | 宁可要求人工重连，也不把旧标签继承给新文件 |
 | ADR-010 | 首个 migration 只建立核心事实与任务表 | 已决定 | 避免为尚未实现的特征、模型和预测预建 schema |
 | ADR-011 | 阶段 1 使用统一图库、稳定三栏工作台和 Inspector 标签主流程 | 已决定 | 保持大资料库浏览稳定，并为未来 Photos 来源复用同一产品模型 |
-| ADR-012 | 阶段 1 只允许 JPEG、PNG、HEIC/HEIF、TIFF、WebP | 已决定 | 先覆盖主流静态图片；GIF、RAW、PDF、视频明确延后；文件夹不识别 Live Photo 组合，PhotoKit 仅纳入其静态主图 |
+| ADR-012 | 阶段 1 只允许 JPEG、PNG、HEIC/HEIF、TIFF、WebP | 已被 ADR-041 在格式边界上取代 | 原决定先覆盖主流静态图片并延后 GIF/RAW；PDF、视频与 Live Photo 视频轨仍排除；文件夹不识别 Live Photo 组合，PhotoKit 仅纳入其静态主图 |
+| ADR-041 | 扩大静态/RAW 解码：camera-raw + JPEG 2000 + 静态 GIF；Image I/O → Core Image → LibRaw | 已决定 | 权威细节见 `ADR-041-EXPANDED-MEDIA-DECODE.md`；RAW 允许多帧并选主帧；SVG/AI/视频/PDF 仍非 available |
 | ADR-013 | 阶段 1 继续本地开发/自用签名 | 已决定 | 先验证只读文件夹闭环；Developer ID 与 Mac App Store 约束留到发布阶段 |
 | ADR-014 | 阶段 1 后半程改为端到端纵切片优先 | 已决定 | 先交付可运行的连接、扫描、浏览与标注闭环；FSEvents 与活动控制曾按顺序延后，现已分别由切片 W 与阶段 4 关闭，广泛边界测试和辅助设施继续按价值排序 |
 | ADR-015 | 阶段 3 后端原型先于阶段 2 PhotoKit | 已决定 | 先用已完成的文件夹闭环验证自定义标签学习这一核心差异化能力；来源无关 Ports 保留后续 Photos 接入边界 |

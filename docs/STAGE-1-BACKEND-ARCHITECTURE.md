@@ -186,7 +186,7 @@ ImageAll 还必须施加更严格的产品边界：
 | 可识别为图片但产品明确排除的格式 | 创建/更新 Asset，`unsupported` |
 | 声称是支持图片但容器或属性无法读取 | 创建/更新 Asset，`unreadable` |
 
-RAW、动态图片、PDF、视频和 Live Photo 当前都不进入首个闭环。阶段 1 的静态格式允许清单已经冻结为 JPEG、PNG、HEIC/HEIF、TIFF 与 WebP；GIF 明确排除。
+按 ADR-041，批准清单在 JPEG、PNG、HEIC/HEIF、TIFF、WebP 基础上纳入 camera-raw（含富士/Adobe）、JPEG 2000 与静态 GIF；解码级联为 Image I/O → Core Image RAW → LibRaw。动画 GIF、非 RAW 多帧、SVG、Illustrator AI、PDF、视频和 Live Photo 视频轨仍不进入 `available`。
 
 ### 7.2 首轮元数据
 

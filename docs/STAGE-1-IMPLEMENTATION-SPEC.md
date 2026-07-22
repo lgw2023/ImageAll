@@ -26,7 +26,7 @@
 
 1. 只处理用户通过系统选择器授权的 folder Source；
 2. 来源端零写入，不创建 sidecar、隐藏文件或元数据；
-3. JPEG、PNG、HEIC/HEIF、TIFF、WebP 能进入目录库；GIF、RAW、PDF、视频与 Live Photo 不进入支持集；
+3. JPEG、PNG、HEIC/HEIF、TIFF、WebP、JPEG 2000、静态 GIF 与 camera-raw（含富士/Adobe）能进入目录库（ADR-041）；动画 GIF、非 RAW 多帧、SVG、AI、PDF、视频与 Live Photo 视频轨不进入支持集；
 4. 不完整扫描不产生批量 `missing`，离线/失权不释放 locator 或人工标签；
 5. 资产批次、checkpoint、generation 完成和 successor Job 符合单事务契约；
 6. 三类派生缓存按批准尺寸原子发布，只写 ImageAll 自有 Caches；
