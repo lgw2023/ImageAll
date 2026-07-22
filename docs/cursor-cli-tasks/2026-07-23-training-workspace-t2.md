@@ -2,7 +2,7 @@
 
 ## 任务状态
 
-- 状态：Codex 直接实施中（2026-08-13 前临时实施授权）
+- 状态：T2 已完成并由 Codex 自审通过（2026-08-13 前临时实施授权）
 - 开工日期：2026-07-23
 - 当前切片：仅 T2；完成并复审后停止，不进入 T3 / T4
 - Cursor CLI：本切片未使用；无 Cursor session / `system/init.model` 证据
@@ -104,10 +104,79 @@
 - 实现 commit：`Codex <codex@openai.com>`，`feat(codex): ...` 或 `fix(codex): ...`，`Agent-Role: implementation`
 - 禁止 `Co-authored-by`；文档与实现不得混在同一 commit。
 
-## 执行结果（待补记）
+## 执行结果
 
-- `LAUNCH_HEAD`：待文档提交后填写
-- 实现 commit：待填写
-- 测试 / 构建证据：待填写
-- Codex 复审结论：待填写
-- 最终工作区：待填写
+### 基线与提交
+
+- 初次现场审计：`0a76f9bed131ec243eaedb1f09f8c57faf4a3ba2`
+- 审计后并行合入且已推到 `origin/main` 的无冲突提交：
+  `9320db7cd14bb75b397a69c8aed599f7b6f6f0a6`
+  （仅 `.gitignore` 忽略本地 DerivedData / wip 目录）
+- 文档开工提交 / `LAUNCH_HEAD`：
+  `3bc8e13bd370ee636cf0c35038a48633325bc924`
+- T2 实现提交：`b0ffda2ff6bcc636c9068f075c4856aa459ff444`
+- 分支：`main`
+- Cursor CLI：未使用；session ID 与 `system/init.model` 均为 N/A。依据
+  `AGENTS.md` 的临时直接实施授权，本切片由 Codex 实现并以
+  `Agent-Role: implementation` 归属。
+
+### 已交付行为
+
+1. `featureKnn` 的 job 与 Run 在同一事务创建并共享 `job_id`；执行开始写
+   `running`，发布 revision 与 `succeeded` 同事务完成，取消 / 终止失败均
+   留下带 `finished_at_ms` 的不可变 Run。
+2. `personalCentroid` 与 `personalAdamW` 显式重建都写 Run；所用首份样本快照
+   同时作为审计摘要和实际训练输入，训练前后仍做 live snapshot 陈旧检查。
+3. AdamW report 持久化实际 epoch 序号与 validation loss 曲线；新的 repository
+   实例可在进程重启语义下读回。
+4. 成功发布采用同一事务更新对应 method 槽的 `published_run_id` 与 Run 终态；
+   激活改为按 method upsert，只删除当前 method 的标签 / 预测，不删除另一槽。
+5. 失败 Run 保留结构化 `error_code`，不切换任何已发布槽；后续 Run 不删除历史。
+6. 同步修正两项已经落地但测试仍停留在旧契约的夹具：Review projection 允许
+   ADR-040 已要求的 `score`，migration replay 会正确移除并重放 v015 测试表；
+   未修改 v014 / v015 生产 migration。
+
+### 测试与构建证据
+
+- TDD RED：AdamW report 无 `epochMetrics` 时测试编译失败；Feature Run 入队时
+  `0 != 1`；完成 / 取消后 Run 仍为 `queued`；随后逐项最小实现转绿。
+- 测试构建：
+  `xcodebuild build-for-testing -project ImageAll.xcodeproj -scheme ImageAll -configuration Debug -destination 'platform=macOS,arch=arm64' -derivedDataPath /tmp/ImageAll-T2-3bc8e13 CODE_SIGNING_ALLOWED=NO`
+  → exit 0。
+- 直接 XCTest（统一使用
+  `DYLD_INSERT_LIBRARIES=/tmp/ImageAll-T2-3bc8e13/Build/Products/Debug/ImageAll.app/Contents/MacOS/ImageAll.debug.dylib`）：
+  - `FullLibrarySuggestionsJobTests`：66 / 66，exit 0；
+  - `AppPersonalModelRebuildCoordinatorTests`：10 / 10，exit 0；
+  - `AppPersonalAdamWLinearHeadTests`：4 / 4，exit 0；
+  - `TrainingWorkspaceSchemaTests`：4 / 4，exit 0；
+  - `CatalogMigrationTests`：12 / 12，exit 0；
+  - 相关验收合计：96 / 96 通过。
+- 完整直接 XCTest：1082 项；12 个既有、已标注 expected failure，
+  **0 unexpected failure**。预期项来自禁签名直接测试下的 app resource /
+  entitlement 检查、既有跨 migration DDL 面板与一项既有异步 UI 面板；T2
+  五个相关 suite 全绿。没有启动 production App 测试宿主。
+- Debug build：
+  `xcodebuild build -project ImageAll.xcodeproj -scheme ImageAll -configuration Debug -destination 'platform=macOS,arch=arm64' -derivedDataPath /tmp/ImageAll-T2-3bc8e13-build CODE_SIGNING_ALLOWED=NO`
+  → exit 0，`** BUILD SUCCEEDED **`。
+- `git diff --check`：exit 0。
+- 安全审计：新增行无 `/Volumes/HDD2` 或
+  `Photos Library.photoslibrary` 字面量；测试仅用 `/tmp`、临时数据库、合成图像
+  与合成 embedding，未访问或枚举受保护路径。
+
+### Codex 复审结论
+
+- `metrics_json`：AdamW 每个实际 epoch 均落盘有限 validation loss；重启读回通过。
+- 多槽：质心先发布并生成预测后再发布 AdamW，两槽、质心 artifact 指针、
+  `published_run_id` 与质心预测均保留。
+- 失败隔离：后续 AdamW 无效样本 Run 进入 `failed + finished_at_ms`，既有 AdamW
+  与质心发布槽及质心预测不变；Feature 取消进入 `cancelled + finished_at_ms`。
+- 人工事实 / 原图：相关 66 项 Review / Feature Print 回归全绿；实现不读取原图
+  路径来生成 Run 元数据，不改变人工决定优先级。
+- Git：实现归属为 `Codex <codex@openai.com>`、`feat(codex):`、
+  `Agent-Role: implementation`；未 push、未 amend、未改写历史。
+
+### 最终停止位置
+
+**T2 完成，未进入 T3 / T4。** 当前已跟踪工作区在本结果文档提交后应为干净；
+既存且已由 `.gitignore` 排除的 `.derivedData-*` / `.wip-*` 目录未删除、未移动、
+未 stage。
