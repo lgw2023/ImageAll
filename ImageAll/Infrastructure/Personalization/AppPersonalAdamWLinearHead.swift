@@ -26,10 +26,16 @@ struct AppPersonalAdamWTrainingConfig: Equatable, Sendable {
     )
 }
 
+struct AppPersonalAdamWEpochMetric: Equatable, Sendable {
+    let epoch: Int
+    let validationLoss: Float
+}
+
 struct AppPersonalAdamWTrainingReport: Equatable, Sendable {
     let epochsRun: Int
     let bestValidationLoss: Float
     let stoppedEarly: Bool
+    let epochMetrics: [AppPersonalAdamWEpochMetric]
 }
 
 enum AppPersonalAdamWLinearHeadTrainer {
@@ -91,6 +97,7 @@ enum AppPersonalAdamWLinearHeadTrainer {
         var epochsWithoutImprovement = 0
         var epochsRun = 0
         var stoppedEarly = false
+        var epochMetrics: [AppPersonalAdamWEpochMetric] = []
 
         for epoch in 1...config.maxEpochs {
             epochsRun = epoch
@@ -109,6 +116,12 @@ enum AppPersonalAdamWLinearHeadTrainer {
                 tagCount: snapshot.personalTagIDs.count,
                 width: width,
                 parameters: parameters
+            )
+            epochMetrics.append(
+                AppPersonalAdamWEpochMetric(
+                    epoch: epoch,
+                    validationLoss: validationLoss
+                )
             )
             if validationLoss + 1e-7 < bestValidationLoss {
                 bestValidationLoss = validationLoss
@@ -144,7 +157,8 @@ enum AppPersonalAdamWLinearHeadTrainer {
         let report = AppPersonalAdamWTrainingReport(
             epochsRun: epochsRun,
             bestValidationLoss: bestValidationLoss,
-            stoppedEarly: stoppedEarly
+            stoppedEarly: stoppedEarly,
+            epochMetrics: epochMetrics
         )
         return (artifact, report)
     }

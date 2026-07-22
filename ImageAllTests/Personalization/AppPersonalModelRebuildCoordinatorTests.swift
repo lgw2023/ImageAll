@@ -109,6 +109,197 @@ final class AppPersonalModelRebuildCoordinatorTests: XCTestCase {
         XCTAssertEqual(restartedCapability, .ready(identity))
     }
 
+    func testPersonalRuntimesPersistMetricsAndKeepCentroidSlotWhenAdamWPublishes() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let cachesDirectory = root.appendingPathComponent("Caches", isDirectory: true)
+        let applicationSupportDirectory = root.appendingPathComponent(
+            "ApplicationSupport",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(
+            at: root,
+            withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: root) }
+        let database = try CatalogDatabase.open(
+            at: root.appendingPathComponent("catalog.sqlite")
+        )
+        let tag = try GRDBTagCatalogRepository(database: database).createTag(
+            rawName: "AdamW Run",
+            timestampMs: DatabaseTestSupport.timestampMs
+        )
+        let catalogID = try XCTUnwrap(UUID(uuidString: database.catalogScopeID()))
+        let snapshot = makeTrainingSnapshot(
+            catalogScopeID: catalogID.uuidString.lowercased(),
+            tagID: tag.id
+        )
+        let predictionAssetID = try XCTUnwrap(snapshot.decisions.first?.assetID)
+        try DatabaseTestSupport.makeFolderSourceWithFileAsset(
+            repository: CatalogRepository(database: database),
+            assetID: predictionAssetID
+        )
+        let activation = AppModelActivationCoordinator(
+            preferenceStore: InMemoryModelEnablementPreferenceStore(),
+            serviceFactory: {
+                AppCoreMLEmbeddingService(
+                    isEnabled: true,
+                    artifactDirectory: Self.projectArtifactDirectory()
+                )
+            }
+        )
+        guard case .ready = await activation.setEnabled(true),
+              let service = await activation.readyService()
+        else {
+            return XCTFail("expected fixed Core ML artifact to be ready")
+        }
+        let cache = AppCoreMLEmbeddingCache(
+            cachesDirectory: cachesDirectory,
+            service: service
+        )
+        for decision in snapshot.decisions {
+            _ = try cache.embedding(
+                for: generatedImage(decision.assetID),
+                key: AppCoreMLEmbeddingCacheKey(
+                    catalogScopeID: catalogID,
+                    assetID: decision.assetID,
+                    contentRevision: Int64(decision.contentRevision)
+                )
+            )
+        }
+        let centroidRuntime = AppPersonalModelRebuildRuntime(
+            expectedCatalogScopeID: snapshot.catalogScopeID,
+            activationCoordinator: activation,
+            cachesDirectory: cachesDirectory,
+            applicationSupportDirectory: applicationSupportDirectory,
+            family: .centroid,
+            database: database,
+            clock: FixedJobClock(nowMs: DatabaseTestSupport.timestampMs)
+        )
+        let centroidIdentity = try await centroidRuntime.rebuild(
+            snapshotSource: FixedSnapshotSource(snapshot: snapshot)
+        )
+        let review = GRDBPersonalizationReviewRepository(database: database)
+        let centroidCapability = AppPersonalSuggestionCapabilityMapper.capability(
+            from: centroidIdentity,
+            family: .centroid
+        )
+        XCTAssertEqual(
+            try review.replacePersonalSuggestions(
+                candidate: PersonalSuggestionCandidate(
+                    assetID: predictionAssetID,
+                    contentRevision: 1
+                ),
+                predictions: [
+                    PersonalSuggestionPrediction(tagID: tag.id, score: 0.8),
+                ],
+                expectedCapability: centroidCapability,
+                createdAtMs: DatabaseTestSupport.timestampMs
+            ),
+            1
+        )
+        let centroidRun = try XCTUnwrap(
+            GRDBTrainingRunRepository(database: database)
+                .list(method: .personalCentroid)
+                .only
+        )
+        XCTAssertEqual(centroidRun.state, .succeeded)
+        XCTAssertEqual(centroidRun.artifactKind, "personalCentroidHead")
+        XCTAssertEqual(
+            try review.publishedRunID(method: .personalCentroid),
+            centroidRun.id
+        )
+
+        let runtime = AppPersonalModelRebuildRuntime(
+            expectedCatalogScopeID: snapshot.catalogScopeID,
+            activationCoordinator: activation,
+            cachesDirectory: cachesDirectory,
+            applicationSupportDirectory: applicationSupportDirectory,
+            family: .adamW,
+            database: database,
+            clock: FixedJobClock(nowMs: DatabaseTestSupport.timestampMs)
+        )
+
+        _ = try await runtime.rebuild(
+            snapshotSource: FixedSnapshotSource(snapshot: snapshot)
+        )
+
+        let restartedRuns = GRDBTrainingRunRepository(database: database)
+        let run = try XCTUnwrap(restartedRuns.list(method: .personalAdamW).only)
+        XCTAssertEqual(run.state, .succeeded)
+        XCTAssertNotNil(run.finishedAtMs)
+        XCTAssertEqual(run.artifactKind, "personalAdamWHead")
+        XCTAssertTrue(run.artifactRef?.hasPrefix("PersonalModels/AdamWHead/v1/objects/") == true)
+        let metrics = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(run.metricsJSON.utf8)) as? [String: Any]
+        )
+        let epochs = try XCTUnwrap(metrics["epochs"] as? [[String: Any]])
+        XCTAssertFalse(epochs.isEmpty)
+        XCTAssertEqual(epochs.count, metrics["epochsRun"] as? Int)
+        XCTAssertTrue(epochs.allSatisfy { ($0["validationLoss"] as? Double)?.isFinite == true })
+        XCTAssertEqual(
+            try review.publishedRunID(method: .personalAdamW),
+            run.id
+        )
+        XCTAssertEqual(
+            try review.publishedRunID(method: .personalCentroid),
+            centroidRun.id
+        )
+        let centroidPredictionCount = try await database.pool.read { db in
+            try Int.fetchOne(
+                db,
+                sql: """
+                SELECT COUNT(*) FROM personal_prediction
+                WHERE method = 'personalCentroid'
+                    AND asset_id = ?
+                    AND tag_id = ?
+                """,
+                arguments: [
+                    predictionAssetID.uuidString.lowercased(),
+                    tag.id.uuidString.lowercased(),
+                ]
+            ) ?? 0
+        }
+        XCTAssertEqual(centroidPredictionCount, 1)
+
+        let invalidSnapshot = PersonalTrainingSnapshot(
+            catalogScopeID: snapshot.catalogScopeID,
+            personalTagIDs: snapshot.personalTagIDs,
+            decisions: Array(snapshot.decisions.prefix(1))
+        )
+        do {
+            _ = try await runtime.rebuild(
+                snapshotSource: FixedSnapshotSource(snapshot: invalidSnapshot)
+            )
+            XCTFail("expected invalid snapshot to fail")
+        } catch {
+            XCTAssertEqual(error as? AppPersonalModelRebuildError, .invalidSnapshot)
+        }
+        let adamWRuns = try restartedRuns.list(method: .personalAdamW)
+        XCTAssertEqual(adamWRuns.count, 2)
+        let failedRun = try XCTUnwrap(adamWRuns.first(where: { $0.state == .failed }))
+        XCTAssertNotNil(failedRun.finishedAtMs)
+        XCTAssertEqual(failedRun.errorCode, "invalidSnapshot")
+        XCTAssertEqual(try review.publishedRunID(method: .personalAdamW), run.id)
+        XCTAssertEqual(try review.publishedRunID(method: .personalCentroid), centroidRun.id)
+        let retainedCentroidPredictionCount = try await database.pool.read { db in
+            try Int.fetchOne(
+                db,
+                sql: """
+                SELECT COUNT(*) FROM personal_prediction
+                WHERE method = 'personalCentroid'
+                    AND asset_id = ?
+                    AND tag_id = ?
+                """,
+                arguments: [
+                    predictionAssetID.uuidString.lowercased(),
+                    tag.id.uuidString.lowercased(),
+                ]
+            ) ?? 0
+        }
+        XCTAssertEqual(retainedCentroidPredictionCount, 1)
+    }
+
     func testProductionSnapshotSourceReadsManualFactsThroughTheReviewBoundary() async throws {
         let expected = makeTrainingSnapshot()
         let source = AppPersonalTrainingSnapshotPortSource {
@@ -371,9 +562,9 @@ final class AppPersonalModelRebuildCoordinatorTests: XCTestCase {
 
     private func makeTrainingSnapshot(
         catalogScopeID: String = "catalog-fixture",
-        contentRevision: Int = 1
+        contentRevision: Int = 1,
+        tagID: UUID = UUID(uuidString: "10000000-0000-0000-0000-000000000001")!
     ) -> PersonalTrainingSnapshot {
-        let tagID = UUID(uuidString: "10000000-0000-0000-0000-000000000001")!
         let accepted = [
             UUID(uuidString: "20000000-0000-0000-0000-000000000001")!,
             UUID(uuidString: "20000000-0000-0000-0000-000000000002")!,
@@ -455,6 +646,12 @@ final class AppPersonalModelRebuildCoordinatorTests: XCTestCase {
             throw AppPersonalModelRebuildTestError.imageCreationFailed
         }
         return image
+    }
+}
+
+private extension Array {
+    var only: Element? {
+        count == 1 ? self[0] : nil
     }
 }
 

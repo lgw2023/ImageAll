@@ -180,14 +180,18 @@ struct CompositionRoot {
                 activationCoordinator: modelActivationCoordinator,
                 cachesDirectory: runtime.paths.cachesDirectory,
                 applicationSupportDirectory: runtime.paths.applicationSupportDirectory,
-                family: .centroid
+                family: .centroid,
+                database: runtime.database,
+                clock: clock
             )
             appPersonalAdamWModelRebuilder = AppPersonalModelRebuildRuntime(
                 expectedCatalogScopeID: catalogScopeID,
                 activationCoordinator: modelActivationCoordinator,
                 cachesDirectory: runtime.paths.cachesDirectory,
                 applicationSupportDirectory: runtime.paths.applicationSupportDirectory,
-                family: .adamW
+                family: .adamW,
+                database: runtime.database,
+                clock: clock
             )
             appPersonalSampleSuggester = AppPersonalSampleSuggestionRuntime(
                 expectedCatalogScopeID: catalogScopeID,

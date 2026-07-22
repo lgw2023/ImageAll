@@ -30,7 +30,7 @@ enum AppPersonalLinearHeadError: Error, Equatable {
 
 enum AppPersonalLinearHeadTrainer {
     private static let schemaRevision = 1
-    private static let algorithmRevision = "positive-centroid-float32-v1"
+    static let algorithmRevision = "positive-centroid-float32-v1"
 
     static func train(
         snapshot: PersonalModelRebuildSnapshot,

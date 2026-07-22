@@ -94,6 +94,7 @@ struct FullLibrarySuggestionsHandler: LeaseBoundJobHandler, Sendable {
         var state = try FullLibrarySuggestionsCodec.checkpoint(from: checkpoint)
         let review = GRDBPersonalizationReviewRepository(database: dependencies.database)
         let catalog = GRDBPersonalizationRepository(database: dependencies.database)
+        try markTrainingRunRunning(jobID: lease.jobID)
         var firstBatchPublished = state.firstBatchPublished
         let modelRevision = decodedPayload.modelRevision
         let minimumScore = try dependencies.minimumScoreForTag?(decodedPayload.tagID) ?? 0
@@ -161,7 +162,15 @@ struct FullLibrarySuggestionsHandler: LeaseBoundJobHandler, Sendable {
                         progress: progress,
                         leaseDurationMs: leaseDurationMs
                     )
-                ) { _ in }
+                ) { db in
+                    try completeTrainingRun(
+                        jobID: lease.jobID,
+                        payload: decodedPayload,
+                        state: state,
+                        published: false,
+                        on: db
+                    )
+                }
                 lastLeaseRenewedAtMs = dependencies.clock.nowMs
                 if let stop = stopResultIfNeeded(snapshot: snapshot, checkpoint: jobCheckpoint, progress: progress) {
                     return stop
@@ -310,6 +319,15 @@ struct FullLibrarySuggestionsHandler: LeaseBoundJobHandler, Sendable {
                             limit: FullLibrarySuggestionsJobFactory.maxPendingSuggestionsPerTag,
                             on: db
                         )
+                        if completed {
+                            try completeTrainingRun(
+                                jobID: lease.jobID,
+                                payload: decodedPayload,
+                                state: nextState,
+                                published: true,
+                                on: db
+                            )
+                        }
                     }
                     firstBatchPublished = true
                 } else if !predictions.isEmpty {
@@ -335,6 +353,15 @@ struct FullLibrarySuggestionsHandler: LeaseBoundJobHandler, Sendable {
                             limit: FullLibrarySuggestionsJobFactory.maxPendingSuggestionsPerTag,
                             on: db
                         )
+                        if completed {
+                            try completeTrainingRun(
+                                jobID: lease.jobID,
+                                payload: decodedPayload,
+                                state: nextState,
+                                published: true,
+                                on: db
+                            )
+                        }
                     }
                 } else {
                     snapshot = try dependencies.queue.commitLeaseProtectedBatch(
@@ -345,7 +372,17 @@ struct FullLibrarySuggestionsHandler: LeaseBoundJobHandler, Sendable {
                             progress: progress,
                             leaseDurationMs: leaseDurationMs
                         )
-                    ) { _ in }
+                    ) { db in
+                        if completed {
+                            try completeTrainingRun(
+                                jobID: lease.jobID,
+                                payload: decodedPayload,
+                                state: nextState,
+                                published: true,
+                                on: db
+                            )
+                        }
+                    }
                 }
             } catch let error as FeaturePrintError where isRetryableFeatureError(error) {
                 let preservedCheckpoint = try FullLibrarySuggestionsCodec.jobCheckpoint(from: state)
@@ -401,6 +438,57 @@ struct FullLibrarySuggestionsHandler: LeaseBoundJobHandler, Sendable {
             return checkpoint
         }
         return try? FullLibrarySuggestionsCodec.jobCheckpoint(from: .empty)
+    }
+
+    private func markTrainingRunRunning(jobID: UUID) throws {
+        let runs = GRDBTrainingRunRepository(database: dependencies.database)
+        try dependencies.database.pool.write { db in
+            guard let run = try runs.fetch(jobID: jobID, on: db), run.state == .queued else {
+                return
+            }
+            try runs.update(
+                id: run.id,
+                state: .running,
+                startedAtMs: dependencies.clock.nowMs,
+                on: db
+            )
+        }
+    }
+
+    private func completeTrainingRun(
+        jobID: UUID,
+        payload: FullLibrarySuggestionsPayload,
+        state: FullLibrarySuggestionsCheckpoint,
+        published: Bool,
+        on db: Database
+    ) throws {
+        let runs = GRDBTrainingRunRepository(database: dependencies.database)
+        guard let run = try runs.fetch(jobID: jobID, on: db), !run.state.isTerminal else {
+            return
+        }
+        try runs.update(
+            id: run.id,
+            state: .succeeded,
+            finishedAtMs: dependencies.clock.nowMs,
+            metricsJSON: try TrainingRunJSON.encode([
+                "checkedCount": state.checkedCount,
+                "eligibleCount": state.eligibleCount,
+                "suggestedCount": state.suggestedCount,
+                "skippedCount": state.skippedCount,
+            ]),
+            artifactKind: published ? "tagModelRevision" : nil,
+            artifactRef: published
+                ? "tag_model/\(payload.tagID.uuidString.lowercased())/\(payload.modelRevision)"
+                : nil,
+            resultSummaryJSON: try TrainingRunJSON.encode([
+                "published": published,
+                "successfulTagCount": published ? 1 : 0,
+                "positiveSampleCount": payload.frozenPositiveSamples.count,
+                "negativeSampleCount": payload.frozenNegativeSamples.count,
+                "suggestedCount": state.suggestedCount,
+            ]),
+            on: db
+        )
     }
 
     private func retryableFailureWithCommittedState(

@@ -213,7 +213,6 @@ struct PersonalizationReviewService: PersonalizationReviewPort, Sendable {
         mode: PersonalizationReviewEnqueueMode,
         sourceIDs: [UUID]?
     ) throws -> UUID {
-        _ = mode
         let samples = try review.fetchFrozenSampleIdentities(tagID: tagID)
         guard samples.positives.count >= 2, samples.negatives.count >= 2 else {
             let accepted = samples.positives.count
@@ -231,18 +230,61 @@ struct PersonalizationReviewService: PersonalizationReviewPort, Sendable {
         let resolvedSourceIDs = try resolvePersonalizationSourceIDs(sourceIDs)
         let modelRevision = try review.nextModelRevision(tagID: tagID)
         let jobID = UUID()
+        let runID = UUID()
+        let nowMs = clock.nowMs
+        let catalogScopeID = try database.catalogScopeID()
         let command = try FullLibrarySuggestionsJobEnqueue.makeEnqueueCommand(
             jobID: jobID,
             tagID: tagID,
             sourceIDs: resolvedSourceIDs,
-            catalogCutoffMs: clock.nowMs,
+            catalogCutoffMs: nowMs,
             modelRevision: modelRevision,
             frozenPositiveSamples: samples.positives,
             frozenNegativeSamples: samples.negatives,
-            notBeforeMs: clock.nowMs
+            notBeforeMs: nowMs
+        )
+        let run = TrainingRunRecord(
+            id: runID,
+            method: .featureKnn,
+            state: .queued,
+            createdAtMs: nowMs,
+            startedAtMs: nil,
+            finishedAtMs: nil,
+            catalogScopeID: catalogScopeID,
+            jobID: jobID,
+            sampleSummaryJSON: try TrainingRunJSON.encode([
+                "tagCount": 1,
+                "tagIDs": [tagID.uuidString.lowercased()],
+                "positiveCount": samples.positives.count,
+                "negativeCount": samples.negatives.count,
+                "sourceCount": resolvedSourceIDs.count,
+                "scope": "selectedSources",
+            ]),
+            sampleManifestSHA256: nil,
+            configJSON: try TrainingRunJSON.encode([
+                "action": mode == .generate ? "generate" : "update",
+                "provider": "vision.featurePrint",
+                "modelRevision": modelRevision,
+                "minimumPositiveCount": 2,
+                "minimumNegativeCount": 2,
+                "neighborCountMaximum": 3,
+            ]),
+            metricsJSON: "{}",
+            artifactKind: nil,
+            artifactRef: nil,
+            artifactSHA256: nil,
+            resultSummaryJSON: "{}",
+            errorCode: nil
         )
         do {
-            _ = try queue.enqueue(command)
+            try database.pool.write { db in
+                try JobInsertInTransaction.insertPendingJob(
+                    db,
+                    command: command,
+                    nowMs: nowMs
+                )
+                try GRDBTrainingRunRepository(database: database).insert(run, on: db)
+            }
         } catch JobQueueError.activeCoalescingConflict {
             throw PersonalizationReviewError.activeJobConflict
         }
@@ -406,11 +448,13 @@ struct PersonalizationReviewService: PersonalizationReviewPort, Sendable {
     }
 
     func cancelSuggestionJob(jobID: UUID) throws {
-        _ = try queue.applyStateCommand(JobStateCommand(jobID: jobID, operation: .cancel))
+        let snapshot = try queue.applyStateCommand(JobStateCommand(jobID: jobID, operation: .cancel))
+        try synchronizeFeatureTrainingRun(with: snapshot)
     }
 
     func runPendingSuggestionJobs(maxSteps: Int? = nil) throws -> Bool {
         try queue.settleRetryableJobs()
+        try synchronizeTerminalFeatureTrainingRuns()
         if try queue.hasBlockingReconcileWork(nowMs: clock.nowMs) {
             return false
         }
@@ -425,6 +469,7 @@ struct PersonalizationReviewService: PersonalizationReviewPort, Sendable {
             if let maxSteps, steps >= maxSteps { break }
             if try queue.hasBlockingReconcileWork(nowMs: clock.nowMs) { break }
             guard let result = try executionCoordinator.claimAndExecuteOnce(claim) else { break }
+            try synchronizeFeatureTrainingRun(with: result.snapshot)
             didWork = true
             steps += 1
             if result.snapshot.state == .terminalFailed {
@@ -436,6 +481,7 @@ struct PersonalizationReviewService: PersonalizationReviewPort, Sendable {
 
     func runPendingSuggestionJobsAsync(maxSteps: Int? = nil) async throws -> Bool {
         try queue.settleRetryableJobs()
+        try synchronizeTerminalFeatureTrainingRuns()
         if try queue.hasBlockingReconcileWork(nowMs: clock.nowMs) {
             return false
         }
@@ -460,6 +506,7 @@ struct PersonalizationReviewService: PersonalizationReviewPort, Sendable {
             if let maxSteps, steps >= maxSteps { break }
             if try queue.hasBlockingReconcileWork(nowMs: clock.nowMs) { break }
             guard let result = try await executionCoordinator.claimAndExecuteOnceAsync(claim) else { break }
+            try synchronizeFeatureTrainingRun(with: result.snapshot)
             didWork = true
             steps += 1
             if result.snapshot.state == .terminalFailed {
@@ -509,6 +556,75 @@ struct PersonalizationReviewService: PersonalizationReviewPort, Sendable {
     private func resolvePersonalizationSourceIDs(_ requested: [UUID]?) throws -> [UUID] {
         let active = try review.activePersonalizationSourceIDs()
         return try resolvePersonalizationSourceIDs(requested, active: active)
+    }
+
+    private func synchronizeTerminalFeatureTrainingRuns() throws {
+        let jobIDs: [UUID] = try database.pool.read { db in
+            try String.fetchAll(
+                db,
+                sql: """
+                SELECT j.id
+                FROM job j
+                JOIN training_run r ON r.job_id = j.id
+                WHERE r.method = 'featureKnn'
+                    AND r.state IN ('queued', 'running')
+                    AND j.state IN ('completed', 'terminalFailed', 'cancelled')
+                """
+            ).compactMap(UUID.init(uuidString:))
+        }
+        for jobID in jobIDs {
+            try synchronizeFeatureTrainingRun(with: queue.fetchJob(id: jobID))
+        }
+    }
+
+    private func synchronizeFeatureTrainingRun(with snapshot: JobRecordSnapshot) throws {
+        guard snapshot.kind == FullLibrarySuggestionsJobFactory.kind else { return }
+        let runs = GRDBTrainingRunRepository(database: database)
+        try database.pool.write { db in
+            guard let run = try runs.fetch(jobID: snapshot.id, on: db),
+                  !run.state.isTerminal
+            else {
+                return
+            }
+            switch snapshot.state {
+            case .completed:
+                try runs.update(
+                    id: run.id,
+                    state: .succeeded,
+                    finishedAtMs: clock.nowMs,
+                    resultSummaryJSON: try TrainingRunJSON.encode([
+                        "published": run.artifactRef != nil,
+                    ]),
+                    on: db
+                )
+            case .terminalFailed:
+                let errorCode = snapshot.lastErrorCode?.rawValue ?? "attemptsExhausted"
+                try runs.update(
+                    id: run.id,
+                    state: .failed,
+                    finishedAtMs: clock.nowMs,
+                    resultSummaryJSON: try TrainingRunJSON.encode([
+                        "published": false,
+                        "errorCode": errorCode,
+                    ]),
+                    errorCode: errorCode,
+                    on: db
+                )
+            case .cancelled:
+                try runs.update(
+                    id: run.id,
+                    state: .cancelled,
+                    finishedAtMs: clock.nowMs,
+                    resultSummaryJSON: try TrainingRunJSON.encode([
+                        "published": false,
+                        "cancelled": true,
+                    ]),
+                    on: db
+                )
+            case .pending, .running, .paused, .retryableFailed:
+                break
+            }
+        }
     }
 
     private func resolvePersonalizationSourceIDs(

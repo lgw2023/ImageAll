@@ -34,6 +34,9 @@ final class AppPersonalAdamWLinearHeadTests: XCTestCase {
         XCTAssertEqual(model.algorithmRevision, AppPersonalAdamWLinearHeadTrainer.algorithmRevision)
         XCTAssertEqual(model.identity.personalTagIDs, [firstTagID, secondTagID])
         XCTAssertGreaterThan(report.epochsRun, 1)
+        XCTAssertEqual(report.epochMetrics.count, report.epochsRun)
+        XCTAssertEqual(report.epochMetrics.map(\.epoch), Array(1...report.epochsRun))
+        XCTAssertTrue(report.epochMetrics.allSatisfy { $0.validationLoss.isFinite })
         XCTAssertEqual(suggestions.first?.tagID, firstTagID)
         XCTAssertTrue(suggestions.allSatisfy { $0.score.isFinite && $0.score > 0 })
     }

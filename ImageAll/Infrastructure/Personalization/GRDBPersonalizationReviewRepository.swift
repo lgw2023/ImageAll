@@ -650,12 +650,14 @@ struct GRDBPersonalizationReviewRepository: Sendable {
 
     func activatePersonalSuggestionBundle(
         _ capability: PersonalModelSuggestionCapability,
-        activatedAtMs: Int64
+        activatedAtMs: Int64,
+        publishedRunID: UUID? = nil
     ) throws {
         try database.pool.write { db in
             try activatePersonalSuggestionBundle(
                 capability,
                 activatedAtMs: activatedAtMs,
+                publishedRunID: publishedRunID,
                 on: db
             )
         }
@@ -664,6 +666,7 @@ struct GRDBPersonalizationReviewRepository: Sendable {
     func activatePersonalSuggestionBundle(
         _ capability: PersonalModelSuggestionCapability,
         activatedAtMs: Int64,
+        publishedRunID: UUID? = nil,
         on db: Database
     ) throws {
         let target = capability.target
@@ -676,12 +679,33 @@ struct GRDBPersonalizationReviewRepository: Sendable {
         else {
             throw PersonalizationReviewError.persistenceFailure
         }
+        let method = PersonalSuggestionMethod(bundleID: target.bundleID).rawValue
         if try personalCapabilityMatches(capability, in: db) {
+            if let publishedRunID {
+                try db.execute(
+                    sql: """
+                    UPDATE personal_suggestion_model
+                    SET published_run_id = ?, activated_at_ms = ?
+                    WHERE method = ?
+                    """,
+                    arguments: [
+                        publishedRunID.uuidString.lowercased(),
+                        activatedAtMs,
+                        method,
+                    ]
+                )
+                guard db.changesCount == 1 else {
+                    throw PersonalizationReviewError.persistenceFailure
+                }
+            }
             return
         }
-        let method = PersonalSuggestionMethod(bundleID: target.bundleID).rawValue
         try db.execute(
-            sql: "DELETE FROM personal_suggestion_model WHERE method = ?",
+            sql: "DELETE FROM personal_prediction WHERE method = ?",
+            arguments: [method]
+        )
+        try db.execute(
+            sql: "DELETE FROM personal_suggestion_tag WHERE method = ?",
             arguments: [method]
         )
         try db.execute(
@@ -691,14 +715,28 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                 model_revision, preprocessing_revision, element_count,
                 label_vocabulary_revision, weights_sha256, policy_revision, activated_at_ms,
                 published_run_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(method) DO UPDATE SET
+                catalog_scope_id = excluded.catalog_scope_id,
+                bundle_id = excluded.bundle_id,
+                bundle_revision = excluded.bundle_revision,
+                provider = excluded.provider,
+                model_id = excluded.model_id,
+                model_revision = excluded.model_revision,
+                preprocessing_revision = excluded.preprocessing_revision,
+                element_count = excluded.element_count,
+                label_vocabulary_revision = excluded.label_vocabulary_revision,
+                weights_sha256 = excluded.weights_sha256,
+                policy_revision = excluded.policy_revision,
+                activated_at_ms = excluded.activated_at_ms,
+                published_run_id = excluded.published_run_id
             """,
             arguments: [
                 method, target.catalogScopeID, target.bundleID, target.bundleRevision,
                 target.provider, target.modelID, target.modelRevision,
                 target.preprocessingRevision, target.elementCount,
                 target.labelVocabularyRevision, target.weightsSHA256, target.policyRevision,
-                activatedAtMs,
+                activatedAtMs, publishedRunID?.uuidString.lowercased(),
             ]
         )
         for tagID in capability.tagIDs {
@@ -712,6 +750,23 @@ struct GRDBPersonalizationReviewRepository: Sendable {
             guard db.changesCount == 1 else {
                 throw PersonalizationReviewError.persistenceFailure
             }
+        }
+    }
+
+    func publishedRunID(method: PersonalSuggestionMethod) throws -> UUID? {
+        try database.pool.read { db in
+            guard let raw = try String.fetchOne(
+                db,
+                sql: """
+                SELECT published_run_id
+                FROM personal_suggestion_model
+                WHERE method = ?
+                """,
+                arguments: [method.rawValue]
+            ) else {
+                return nil
+            }
+            return UUID(uuidString: raw)
         }
     }
 

@@ -5,6 +5,12 @@ struct GRDBTrainingRunRepository: Sendable {
     let database: CatalogDatabase
 
     func insert(_ run: TrainingRunRecord) throws {
+        try database.pool.write { db in
+            try insert(run, on: db)
+        }
+    }
+
+    func insert(_ run: TrainingRunRecord, on db: Database) throws {
         guard run.createdAtMs >= 0,
               (run.startedAtMs == nil || run.startedAtMs! >= 0),
               (run.finishedAtMs == nil || run.finishedAtMs! >= 0),
@@ -19,35 +25,62 @@ struct GRDBTrainingRunRepository: Sendable {
         else {
             throw PersonalizationReviewError.persistenceFailure
         }
+        try db.execute(
+            sql: """
+            INSERT INTO training_run (
+                id, method, state, created_at_ms, started_at_ms, finished_at_ms,
+                catalog_scope_id, job_id, sample_summary_json, sample_manifest_sha256,
+                config_json, metrics_json, artifact_kind, artifact_ref, artifact_sha256,
+                result_summary_json, error_code
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            arguments: [
+                run.id.uuidString.lowercased(),
+                run.method.rawValue,
+                run.state.rawValue,
+                run.createdAtMs,
+                run.startedAtMs,
+                run.finishedAtMs,
+                run.catalogScopeID,
+                run.jobID?.uuidString.lowercased(),
+                run.sampleSummaryJSON,
+                run.sampleManifestSHA256,
+                run.configJSON,
+                run.metricsJSON,
+                run.artifactKind,
+                run.artifactRef,
+                run.artifactSHA256,
+                run.resultSummaryJSON,
+                run.errorCode,
+            ]
+        )
+    }
+
+    func update(
+        id: UUID,
+        state: TrainingRunState,
+        startedAtMs: Int64? = nil,
+        finishedAtMs: Int64? = nil,
+        metricsJSON: String? = nil,
+        artifactKind: String? = nil,
+        artifactRef: String? = nil,
+        artifactSHA256: String? = nil,
+        resultSummaryJSON: String? = nil,
+        errorCode: String? = nil
+    ) throws {
         try database.pool.write { db in
-            try db.execute(
-                sql: """
-                INSERT INTO training_run (
-                    id, method, state, created_at_ms, started_at_ms, finished_at_ms,
-                    catalog_scope_id, job_id, sample_summary_json, sample_manifest_sha256,
-                    config_json, metrics_json, artifact_kind, artifact_ref, artifact_sha256,
-                    result_summary_json, error_code
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                arguments: [
-                    run.id.uuidString.lowercased(),
-                    run.method.rawValue,
-                    run.state.rawValue,
-                    run.createdAtMs,
-                    run.startedAtMs,
-                    run.finishedAtMs,
-                    run.catalogScopeID,
-                    run.jobID?.uuidString.lowercased(),
-                    run.sampleSummaryJSON,
-                    run.sampleManifestSHA256,
-                    run.configJSON,
-                    run.metricsJSON,
-                    run.artifactKind,
-                    run.artifactRef,
-                    run.artifactSHA256,
-                    run.resultSummaryJSON,
-                    run.errorCode,
-                ]
+            try update(
+                id: id,
+                state: state,
+                startedAtMs: startedAtMs,
+                finishedAtMs: finishedAtMs,
+                metricsJSON: metricsJSON,
+                artifactKind: artifactKind,
+                artifactRef: artifactRef,
+                artifactSHA256: artifactSHA256,
+                resultSummaryJSON: resultSummaryJSON,
+                errorCode: errorCode,
+                on: db
             )
         }
     }
@@ -62,7 +95,8 @@ struct GRDBTrainingRunRepository: Sendable {
         artifactRef: String? = nil,
         artifactSHA256: String? = nil,
         resultSummaryJSON: String? = nil,
-        errorCode: String? = nil
+        errorCode: String? = nil,
+        on db: Database
     ) throws {
         if state.isTerminal {
             guard let finishedAtMs, finishedAtMs >= 0 else {
@@ -80,55 +114,53 @@ struct GRDBTrainingRunRepository: Sendable {
         if let artifactSHA256, !Self.isLowercaseSHA256(artifactSHA256) {
             throw PersonalizationReviewError.persistenceFailure
         }
-        try database.pool.write { db in
-            var sets = ["state = ?"]
-            var arguments: [DatabaseValueConvertible?] = [state.rawValue]
-            if let startedAtMs {
-                sets.append("started_at_ms = ?")
-                arguments.append(startedAtMs)
-            }
-            if let finishedAtMs {
-                sets.append("finished_at_ms = ?")
-                arguments.append(finishedAtMs)
-            } else if !state.isTerminal {
-                sets.append("finished_at_ms = NULL")
-            }
-            if let metricsJSON {
-                sets.append("metrics_json = ?")
-                arguments.append(metricsJSON)
-            }
-            if let artifactKind {
-                sets.append("artifact_kind = ?")
-                arguments.append(artifactKind)
-            }
-            if let artifactRef {
-                sets.append("artifact_ref = ?")
-                arguments.append(artifactRef)
-            }
-            if let artifactSHA256 {
-                sets.append("artifact_sha256 = ?")
-                arguments.append(artifactSHA256)
-            }
-            if let resultSummaryJSON {
-                sets.append("result_summary_json = ?")
-                arguments.append(resultSummaryJSON)
-            }
-            if let errorCode {
-                sets.append("error_code = ?")
-                arguments.append(errorCode)
-            }
-            arguments.append(id.uuidString.lowercased())
-            try db.execute(
-                sql: """
-                UPDATE training_run
-                SET \(sets.joined(separator: ", "))
-                WHERE id = ?
-                """,
-                arguments: StatementArguments(arguments)
-            )
-            guard db.changesCount == 1 else {
-                throw PersonalizationReviewError.persistenceFailure
-            }
+        var sets = ["state = ?"]
+        var arguments: [DatabaseValueConvertible?] = [state.rawValue]
+        if let startedAtMs {
+            sets.append("started_at_ms = ?")
+            arguments.append(startedAtMs)
+        }
+        if let finishedAtMs {
+            sets.append("finished_at_ms = ?")
+            arguments.append(finishedAtMs)
+        } else if !state.isTerminal {
+            sets.append("finished_at_ms = NULL")
+        }
+        if let metricsJSON {
+            sets.append("metrics_json = ?")
+            arguments.append(metricsJSON)
+        }
+        if let artifactKind {
+            sets.append("artifact_kind = ?")
+            arguments.append(artifactKind)
+        }
+        if let artifactRef {
+            sets.append("artifact_ref = ?")
+            arguments.append(artifactRef)
+        }
+        if let artifactSHA256 {
+            sets.append("artifact_sha256 = ?")
+            arguments.append(artifactSHA256)
+        }
+        if let resultSummaryJSON {
+            sets.append("result_summary_json = ?")
+            arguments.append(resultSummaryJSON)
+        }
+        if let errorCode {
+            sets.append("error_code = ?")
+            arguments.append(errorCode)
+        }
+        arguments.append(id.uuidString.lowercased())
+        try db.execute(
+            sql: """
+            UPDATE training_run
+            SET \(sets.joined(separator: ", "))
+            WHERE id = ?
+            """,
+            arguments: StatementArguments(arguments)
+        )
+        guard db.changesCount == 1 else {
+            throw PersonalizationReviewError.persistenceFailure
         }
     }
 
@@ -140,6 +172,20 @@ struct GRDBTrainingRunRepository: Sendable {
                 arguments: [id.uuidString.lowercased()]
             ).flatMap(Self.map)
         }
+    }
+
+    func fetch(jobID: UUID) throws -> TrainingRunRecord? {
+        try database.pool.read { db in
+            try fetch(jobID: jobID, on: db)
+        }
+    }
+
+    func fetch(jobID: UUID, on db: Database) throws -> TrainingRunRecord? {
+        try Row.fetchOne(
+            db,
+            sql: "SELECT * FROM training_run WHERE job_id = ?",
+            arguments: [jobID.uuidString.lowercased()]
+        ).flatMap(Self.map)
     }
 
     func list(
@@ -202,5 +248,18 @@ struct GRDBTrainingRunRepository: Sendable {
         value.count == 64 && value.allSatisfy {
             ("0" ... "9").contains(String($0)) || ("a" ... "f").contains(String($0))
         }
+    }
+}
+
+enum TrainingRunJSON {
+    static func encode(_ object: [String: Any]) throws -> String {
+        guard JSONSerialization.isValidJSONObject(object) else {
+            throw PersonalizationReviewError.persistenceFailure
+        }
+        let data = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+        guard let value = String(data: data, encoding: .utf8) else {
+            throw PersonalizationReviewError.persistenceFailure
+        }
+        return value
     }
 }

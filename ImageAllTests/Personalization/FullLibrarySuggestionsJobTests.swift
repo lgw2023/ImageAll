@@ -1916,6 +1916,139 @@ final class FullLibrarySuggestionsJobTests: XCTestCase {
         XCTAssertEqual(payload.sourceIDs, [photosSourceID])
     }
 
+    func testEnqueueFullLibrarySuggestionsCreatesAuditableFeatureKnnRun() throws {
+        let fixture = try makeLargeLibraryFixture(assetCount: 4)
+        let service = PersonalizationReviewService(
+            database: fixture.database,
+            queue: fixture.queue,
+            executionCoordinator: makeCoordinator(
+                database: fixture.database,
+                handler: makeHandler(
+                    database: fixture.database,
+                    loader: fixture.loader,
+                    queue: fixture.queue
+                ),
+                queue: fixture.queue
+            ),
+            tags: fixture.tags,
+            clock: FixedJobClock(nowMs: fixture.cutoffMs)
+        )
+
+        let jobID = try service.enqueueFullLibrarySuggestions(
+            tagID: fixture.tagID,
+            mode: .generate
+        )
+
+        let runs = try GRDBTrainingRunRepository(database: fixture.database)
+            .list(method: .featureKnn)
+        XCTAssertEqual(runs.count, 1)
+        let run = try XCTUnwrap(runs.first)
+        let payload = try FullLibrarySuggestionsCodec.decodePayload(
+            fixture.queue.fetchJob(id: jobID).payload
+        )
+        XCTAssertEqual(run.state, .queued)
+        XCTAssertEqual(run.jobID, jobID)
+        XCTAssertNil(run.startedAtMs)
+        XCTAssertNil(run.finishedAtMs)
+        let summary = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(run.sampleSummaryJSON.utf8))
+                as? [String: Any]
+        )
+        XCTAssertEqual(summary["positiveCount"] as? Int, payload.frozenPositiveSamples.count)
+        XCTAssertEqual(summary["negativeCount"] as? Int, payload.frozenNegativeSamples.count)
+        XCTAssertNil(summary["path"])
+        XCTAssertNil(summary["bookmark"])
+    }
+
+    func testCompletedFeatureKnnJobPersistsSucceededRunAndArtifactRevision() async throws {
+        let fixture = try makeLargeLibraryFixture(assetCount: 4)
+        let queue = JobTestSupport.makeQueue(
+            database: fixture.database,
+            nowMs: fixture.cutoffMs,
+            retryDelayMs: 0
+        )
+        let handler = FullLibrarySuggestionsHandler(
+            dependencies: FullLibrarySuggestionsHandlerDependencies(
+                database: fixture.database,
+                queue: queue,
+                featureLoader: fixture.loader,
+                clock: FixedJobClock(nowMs: fixture.cutoffMs)
+            )
+        )
+        let service = PersonalizationReviewService(
+            database: fixture.database,
+            queue: queue,
+            executionCoordinator: makeCoordinator(
+                database: fixture.database,
+                handler: handler,
+                queue: queue
+            ),
+            tags: fixture.tags,
+            clock: FixedJobClock(nowMs: fixture.cutoffMs)
+        )
+        let jobID = try service.enqueueFullLibrarySuggestions(
+            tagID: fixture.tagID,
+            mode: .generate
+        )
+
+        let didWork = try await service.runPendingSuggestionJobsAsync()
+        XCTAssertTrue(didWork)
+
+        let run = try XCTUnwrap(
+            GRDBTrainingRunRepository(database: fixture.database).fetch(jobID: jobID)
+        )
+        XCTAssertEqual(run.state, .succeeded)
+        XCTAssertNotNil(run.startedAtMs)
+        XCTAssertEqual(run.finishedAtMs, fixture.cutoffMs)
+        XCTAssertEqual(run.artifactKind, "tagModelRevision")
+        XCTAssertEqual(
+            run.artifactRef,
+            "tag_model/\(fixture.tagID.uuidString.lowercased())/1"
+        )
+        let metrics = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(run.metricsJSON.utf8))
+                as? [String: Any]
+        )
+        XCTAssertGreaterThan(metrics["checkedCount"] as? Int ?? 0, 0)
+        let result = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(run.resultSummaryJSON.utf8))
+                as? [String: Any]
+        )
+        XCTAssertEqual(result["published"] as? Bool, true)
+    }
+
+    func testCancellingQueuedFeatureKnnJobFinishesRunAsCancelled() throws {
+        let fixture = try makeLargeLibraryFixture(assetCount: 4)
+        let service = PersonalizationReviewService(
+            database: fixture.database,
+            queue: fixture.queue,
+            executionCoordinator: makeCoordinator(
+                database: fixture.database,
+                handler: makeHandler(
+                    database: fixture.database,
+                    loader: fixture.loader,
+                    queue: fixture.queue
+                ),
+                queue: fixture.queue
+            ),
+            tags: fixture.tags,
+            clock: FixedJobClock(nowMs: fixture.cutoffMs)
+        )
+        let jobID = try service.enqueueFullLibrarySuggestions(
+            tagID: fixture.tagID,
+            mode: .generate
+        )
+
+        try service.cancelSuggestionJob(jobID: jobID)
+
+        let run = try XCTUnwrap(
+            GRDBTrainingRunRepository(database: fixture.database).fetch(jobID: jobID)
+        )
+        XCTAssertEqual(run.state, .cancelled)
+        XCTAssertEqual(run.finishedAtMs, fixture.cutoffMs)
+        XCTAssertNil(run.artifactRef)
+    }
+
     func testPendingCountsAndReviewQueueFilterBySourceIDs() throws {
         let fixture = try makeLargeLibraryFixture(assetCount: 8, preseedPredictions: 2)
         let review = GRDBPersonalizationReviewRepository(database: fixture.database)
@@ -2534,9 +2667,9 @@ final class FullLibrarySuggestionsJobTests: XCTestCase {
         let page = try review.fetchReviewQueue(tagID: fixture.tagID, cursor: nil, limit: 10)
         XCTAssertEqual(page.items.count, 10)
         XCTAssertNotNil(page.nextCursor)
-        assertProjectionExcludesScoreField(page.items[0])
+        assertProjectionExcludesSensitiveLocatorFields(page.items[0])
         if let cursor = page.nextCursor {
-            assertProjectionExcludesScoreField(cursor)
+            assertProjectionExcludesSensitiveLocatorFields(cursor)
             let cursorMirror = Mirror(reflecting: cursor)
             XCTAssertTrue(cursorMirror.children.contains { $0.label == "token" })
         }
@@ -2547,7 +2680,7 @@ final class FullLibrarySuggestionsJobTests: XCTestCase {
             limit: 10
         )
         XCTAssertFalse(secondPage.items.isEmpty)
-        assertProjectionExcludesScoreField(secondPage.items[0])
+        assertProjectionExcludesSensitiveLocatorFields(secondPage.items[0])
         let secondPageIDs = Set(secondPage.items.map(\.assetID))
         XCTAssertTrue(firstPageIDs.isDisjoint(with: secondPageIDs))
         XCTAssertEqual(
@@ -2558,11 +2691,11 @@ final class FullLibrarySuggestionsJobTests: XCTestCase {
         XCTAssertGreaterThan(total, 10)
     }
 
-    private func assertProjectionExcludesScoreField(_ value: Any) {
+    private func assertProjectionExcludesSensitiveLocatorFields(_ value: Any) {
         let mirror = Mirror(reflecting: value)
         let labels = Set(mirror.children.compactMap(\.label))
         XCTAssertTrue(
-            labels.isDisjoint(with: ["score", "path", "relativePath", "localIdentifier", "photosLocalIdentifier"])
+            labels.isDisjoint(with: ["path", "relativePath", "localIdentifier", "photosLocalIdentifier"])
         )
     }
 
