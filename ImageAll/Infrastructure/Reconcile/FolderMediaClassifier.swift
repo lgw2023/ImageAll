@@ -17,6 +17,27 @@ struct FolderMediaMetadata: Equatable, Sendable {
     let sizeBytes: Int64?
     let modifiedAtNs: Int64?
     let resourceID: Data?
+    let classificationFailureReason: FolderMediaClassificationFailureReason?
+
+    init(
+        mediaType: String,
+        width: Int?,
+        height: Int?,
+        mediaCreatedAtMs: Int64?,
+        sizeBytes: Int64?,
+        modifiedAtNs: Int64?,
+        resourceID: Data?,
+        classificationFailureReason: FolderMediaClassificationFailureReason? = nil
+    ) {
+        self.mediaType = mediaType
+        self.width = width
+        self.height = height
+        self.mediaCreatedAtMs = mediaCreatedAtMs
+        self.sizeBytes = sizeBytes
+        self.modifiedAtNs = modifiedAtNs
+        self.resourceID = resourceID
+        self.classificationFailureReason = classificationFailureReason
+    }
 
     var hasProvenFingerprint: Bool {
         sizeBytes != nil && modifiedAtNs != nil
@@ -25,19 +46,15 @@ struct FolderMediaMetadata: Equatable, Sendable {
 
 struct FolderMediaClassifier: Sendable {
     private let resourceReader: any FolderFileResourceReading
+    private let cascade: MediaDecodeCascade
 
-    init(resourceReader: any FolderFileResourceReading = FoundationFolderFileResourceReader()) {
+    init(
+        resourceReader: any FolderFileResourceReading = FoundationFolderFileResourceReader(),
+        cascade: MediaDecodeCascade = MediaDecodeCascade()
+    ) {
         self.resourceReader = resourceReader
+        self.cascade = cascade
     }
-
-    private static let allowedTypes: Set<String> = [
-        UTType.jpeg.identifier,
-        UTType.png.identifier,
-        UTType.heic.identifier,
-        UTType.heif.identifier,
-        UTType.tiff.identifier,
-        UTType.webP.identifier,
-    ]
 
     func classify(fileURL: URL, fileName: String, relativePath: String? = nil) -> FolderMediaClassification {
         let rel = relativePath ?? fileName
@@ -47,36 +64,49 @@ struct FolderMediaClassifier: Sendable {
         }
 
         let candidateUTI = declaredType.identifier
+        let fingerprint = (
+            sizeBytes: fileSizeBytes(fileURL, relativePath: rel),
+            modifiedAtNs: modifiedAtNs(fileURL, relativePath: rel),
+            resourceID: resourceIdentifier(fileURL)
+        )
+
         guard let source = CGImageSourceCreateWithURL(fileURL as CFURL, nil) else {
-            return .unreadable(
-                FolderMediaMetadata(
-                    mediaType: candidateUTI,
-                    width: nil,
-                    height: nil,
-                    mediaCreatedAtMs: nil,
-                    sizeBytes: fileSizeBytes(fileURL, relativePath: rel),
-                    modifiedAtNs: modifiedAtNs(fileURL, relativePath: rel),
-                    resourceID: resourceIdentifier(fileURL)
-                )
+            return classifyWithCascadeFallback(
+                fileURL: fileURL,
+                candidateUTI: candidateUTI,
+                fingerprint: fingerprint,
+                failureReason: .sourceCreateFailed
             )
         }
 
         let actualType = (CGImageSourceGetType(source) as String?) ?? candidateUTI
+        let isCameraRaw = ApprovedSourceMediaTypes.isCameraRaw(actualType)
+            || ApprovedSourceMediaTypes.isCameraRaw(candidateUTI)
         let count = CGImageSourceGetCount(source)
         if count == 0 {
-            return .unreadable(
-                FolderMediaMetadata(
-                    mediaType: actualType,
-                    width: nil,
-                    height: nil,
-                    mediaCreatedAtMs: nil,
-                    sizeBytes: fileSizeBytes(fileURL, relativePath: rel),
-                    modifiedAtNs: modifiedAtNs(fileURL, relativePath: rel),
-                    resourceID: resourceIdentifier(fileURL)
-                )
+            return classifyWithCascadeFallback(
+                fileURL: fileURL,
+                candidateUTI: actualType,
+                fingerprint: fingerprint,
+                failureReason: .zeroFrames
             )
         }
-        guard count == 1 else {
+
+        if !isCameraRaw {
+            if count != 1 || cascade.isAnimatedStaticDisallowed(source: source, type: actualType) {
+                return .unsupported(
+                    metadataOrFallback(
+                        fileURL: fileURL,
+                        mediaType: actualType,
+                        source: source,
+                        index: 0,
+                        relativePath: rel
+                    )
+                )
+            }
+        }
+
+        guard ApprovedSourceMediaTypes.contains(actualType) || isCameraRaw else {
             return .unsupported(
                 metadataOrFallback(
                     fileURL: fileURL,
@@ -88,48 +118,34 @@ struct FolderMediaClassifier: Sendable {
             )
         }
 
-        if isAnimated(source: source, type: actualType) {
-            return .unsupported(
-                metadataOrFallback(
-                    fileURL: fileURL,
-                    mediaType: actualType,
-                    source: source,
-                    index: 0,
-                    relativePath: rel
-                )
-            )
-        }
-
-        guard Self.allowedTypes.contains(actualType) else {
-            return .unsupported(
-                metadataOrFallback(
-                    fileURL: fileURL,
-                    mediaType: actualType,
-                    source: source,
-                    index: 0,
-                    relativePath: rel
-                )
-            )
-        }
-
+        let frameIndex = cascade.primaryFrameIndex(source: source, isCameraRaw: isCameraRaw)
         guard let metadata = makeMetadata(
             fileURL: fileURL,
             mediaType: actualType,
             source: source,
-            index: 0,
+            index: frameIndex,
             allowNilDimensions: false,
             relativePath: rel
         ), metadata.width != nil, metadata.height != nil
         else {
+            if isCameraRaw {
+                return classifyWithCascadeFallback(
+                    fileURL: fileURL,
+                    candidateUTI: actualType,
+                    fingerprint: fingerprint,
+                    failureReason: .missingDimensions
+                )
+            }
             return .unreadable(
                 FolderMediaMetadata(
                     mediaType: actualType,
                     width: nil,
                     height: nil,
-                    mediaCreatedAtMs: mediaCreatedAtMs(source: source, index: 0),
-                    sizeBytes: fileSizeBytes(fileURL, relativePath: rel),
-                    modifiedAtNs: modifiedAtNs(fileURL, relativePath: rel),
-                    resourceID: resourceIdentifier(fileURL)
+                    mediaCreatedAtMs: mediaCreatedAtMs(source: source, index: frameIndex),
+                    sizeBytes: fingerprint.sizeBytes,
+                    modifiedAtNs: fingerprint.modifiedAtNs,
+                    resourceID: fingerprint.resourceID,
+                    classificationFailureReason: .missingDimensions
                 )
             )
         }
@@ -137,21 +153,39 @@ struct FolderMediaClassifier: Sendable {
         return .available(metadata)
     }
 
-    private func isAnimated(source: CGImageSource, type: String) -> Bool {
-        if type == UTType.gif.identifier {
-            return true
+    private func classifyWithCascadeFallback(
+        fileURL: URL,
+        candidateUTI: String,
+        fingerprint: (sizeBytes: Int64?, modifiedAtNs: Int64?, resourceID: Data?),
+        failureReason: FolderMediaClassificationFailureReason
+    ) -> FolderMediaClassification {
+        let rawLikely = ApprovedSourceMediaTypes.isCameraRaw(candidateUTI)
+            || ApprovedSourceMediaTypes.isLikelyCameraRawFileName(fileURL.lastPathComponent)
+        if rawLikely, let probe = cascade.probeFile(fileURL: fileURL, candidateUTI: candidateUTI) {
+            return .available(
+                FolderMediaMetadata(
+                    mediaType: probe.mediaType,
+                    width: probe.width,
+                    height: probe.height,
+                    mediaCreatedAtMs: nil,
+                    sizeBytes: fingerprint.sizeBytes,
+                    modifiedAtNs: fingerprint.modifiedAtNs,
+                    resourceID: fingerprint.resourceID
+                )
+            )
         }
-        if let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
-           let gif = properties[kCGImagePropertyGIFDictionary] as? [CFString: Any],
-           let loopCount = gif[kCGImagePropertyGIFLoopCount] as? Int,
-           loopCount != 1
-        {
-            return true
-        }
-        if CGImageSourceGetCount(source) > 1 {
-            return true
-        }
-        return false
+        return .unreadable(
+            FolderMediaMetadata(
+                mediaType: candidateUTI,
+                width: nil,
+                height: nil,
+                mediaCreatedAtMs: nil,
+                sizeBytes: fingerprint.sizeBytes,
+                modifiedAtNs: fingerprint.modifiedAtNs,
+                resourceID: fingerprint.resourceID,
+                classificationFailureReason: rawLikely ? .cascadeProbeFailed : failureReason
+            )
+        )
     }
 
     private func metadataOrFallback(

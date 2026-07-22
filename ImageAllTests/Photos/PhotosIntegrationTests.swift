@@ -51,7 +51,7 @@ final class PhotosIntegrationTests: XCTestCase {
 
     func testIndexableStaticImageCountMatchesSupportedUTIPolicy() {
         // Startup full-repair heuristics compare this count to catalog rows.
-        // RAW/GIF/video must not inflate the library side of that ratio.
+        // Video must not inflate the library side of that ratio; RAW/GIF are now approved (ADR-041).
         let count = PhotoKitPhotosLibraryAdapter.indexableStaticImageCount(
             assets: [
                 (.image, "public.heic"),
@@ -64,7 +64,7 @@ final class PhotosIntegrationTests: XCTestCase {
             ]
         )
 
-        XCTAssertEqual(count, 3)
+        XCTAssertEqual(count, 5)
     }
 
     func testPersistentChangeBatchKeepsOnlyExplicitDeletes() {

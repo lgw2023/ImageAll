@@ -22,3 +22,6 @@ user/
 # Swift Package Manager
 .build/
 .swiftpm/xcode/package.xcworkspace/xcuserdata/
+
+# Vendored LibRaw: keep redistributable Dist artifacts; rebuild from tarball via scripts/build_libraw.sh
+Vendor/LibRaw/

@@ -5,48 +5,59 @@ import ImageIO
 import UniformTypeIdentifiers
 
 struct DerivedImageRenderer: Sendable {
-    static let supportedSourceMediaTypes: Set<String> = [
-        UTType.jpeg.identifier,
-        UTType.png.identifier,
-        UTType.heic.identifier,
-        UTType.heif.identifier,
-        UTType.tiff.identifier,
-        UTType.webP.identifier,
-    ]
+    static var supportedSourceMediaTypes: Set<String> {
+        ApprovedSourceMediaTypes.exactIdentifiers
+    }
 
-    private static let allowedTypes: Set<String> = supportedSourceMediaTypes
+    static func isSupportedSourceMediaType(_ mediaType: String) -> Bool {
+        ApprovedSourceMediaTypes.contains(mediaType)
+    }
+
+    private let cascade: MediaDecodeCascade
+
+    init(cascade: MediaDecodeCascade = MediaDecodeCascade()) {
+        self.cascade = cascade
+    }
 
     private static let jpegQuality: CGFloat = 0.85
     private static let sRGB = CGColorSpace(name: CGColorSpace.sRGB)!
 
-    func render(sourceBytes: Data, variant: DerivedImageVariant) throws -> DerivedImageEncodedArtifact {
-        guard let source = CGImageSourceCreateWithData(sourceBytes as CFData, nil) else {
-            throw DerivedImageError.derivedDecodeFailed
-        }
-        guard let type = CGImageSourceGetType(source) as String? else {
-            throw DerivedImageError.derivedDecodeFailed
-        }
-        guard Self.allowedTypes.contains(type) else {
-            throw DerivedImageError.derivedDecodeFailed
-        }
+    func render(
+        sourceBytes: Data,
+        variant: DerivedImageVariant,
+        expectedMediaType: String? = nil
+    ) throws -> DerivedImageEncodedArtifact {
+        let prepared = try cascade.preparedImageIOSource(
+            sourceBytes: sourceBytes,
+            expectedMediaType: expectedMediaType
+        )
+        let source = prepared.source
+        let type = prepared.type
+        let isCameraRaw = ApprovedSourceMediaTypes.isCameraRaw(type)
+            || (expectedMediaType.map(ApprovedSourceMediaTypes.isCameraRaw) ?? false)
         let count = CGImageSourceGetCount(source)
-        guard count == 1 else {
+        guard count > 0 else {
             throw DerivedImageError.derivedDecodeFailed
         }
-        if isAnimated(source: source, type: type) {
+        if !isCameraRaw, cascade.isAnimatedStaticDisallowed(source: source, type: type) {
             throw DerivedImageError.derivedDecodeFailed
         }
+        let frameIndex = cascade.primaryFrameIndex(source: source, isCameraRaw: isCameraRaw)
 
         let thumbOptions: [CFString: Any] = [
             kCGImageSourceCreateThumbnailFromImageAlways: true,
             kCGImageSourceCreateThumbnailWithTransform: true,
             kCGImageSourceShouldCacheImmediately: true,
         ]
-        guard let oriented = CGImageSourceCreateThumbnailAtIndex(source, 0, thumbOptions as CFDictionary) else {
+        guard let oriented = CGImageSourceCreateThumbnailAtIndex(
+            source,
+            frameIndex,
+            thumbOptions as CFDictionary
+        ) else {
             throw DerivedImageError.derivedDecodeFailed
         }
 
-        let sourceHasAlpha = sourceImageHasAlpha(source: source, index: 0)
+        let sourceHasAlpha = sourceImageHasAlpha(source: source, index: frameIndex)
 
         let outputImage: CGImage
         switch variant {
@@ -258,20 +269,6 @@ struct DerivedImageRenderer: Sendable {
             }
         }
         return false
-    }
-
-    private func isAnimated(source: CGImageSource, type: String) -> Bool {
-        if type == UTType.gif.identifier {
-            return true
-        }
-        if let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
-           let gif = properties[kCGImagePropertyGIFDictionary] as? [CFString: Any],
-           let loopCount = gif[kCGImagePropertyGIFLoopCount] as? Int,
-           loopCount != 1
-        {
-            return true
-        }
-        return CGImageSourceGetCount(source) > 1
     }
 }
 

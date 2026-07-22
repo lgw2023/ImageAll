@@ -3906,6 +3906,16 @@ struct LibraryWorkspaceView: View {
         ),
         LibraryMediaFormatFilterOption(title: "TIFF", mediaTypes: [UTType.tiff.identifier]),
         LibraryMediaFormatFilterOption(title: "WebP", mediaTypes: [UTType.webP.identifier]),
+        LibraryMediaFormatFilterOption(title: "JPEG 2000", mediaTypes: [ApprovedSourceMediaTypes.jpeg2000Identifier]),
+        LibraryMediaFormatFilterOption(title: "GIF", mediaTypes: [UTType.gif.identifier]),
+        LibraryMediaFormatFilterOption(
+            title: "RAW",
+            mediaTypes: [
+                ApprovedSourceMediaTypes.fujiRawIdentifier,
+                ApprovedSourceMediaTypes.adobeRawIdentifier,
+                "public.camera-raw-image",
+            ]
+        ),
     ]
 
     @ObservedObject var model: LibraryWorkspaceModel
@@ -5064,7 +5074,7 @@ struct LibraryWorkspaceView: View {
                         ContentUnavailableView {
                             Label("没有支持的照片", systemImage: "photo")
                         } description: {
-                            Text("支持 JPEG、PNG、HEIC/HEIF、TIFF 和 WebP。")
+                            Text("支持 JPEG、PNG、HEIC/HEIF、TIFF、WebP、JPEG 2000、静态 GIF 和 RAW（富士/Adobe 等）。")
                         } actions: {
                             Button("立即重扫") {
                                 Task { await model.rescan() }

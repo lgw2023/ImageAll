@@ -471,7 +471,7 @@ extension DerivedImageAssetGenerationContext {
             && availability == AssetAvailability.available.rawValue
             && sourceKind == SourceKind.folder.rawValue
             && sourceState == SourceState.active.rawValue
-            && DerivedImageRenderer.supportedSourceMediaTypes.contains(mediaType)
+            && DerivedImageRenderer.isSupportedSourceMediaType(mediaType)
             && RelativePathRules.validate(relativePath).isSuccess
             && RelativePathRules.fileName(from: relativePath) == fileName
             && fingerprintSizeBytes > 0

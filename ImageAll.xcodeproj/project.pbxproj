@@ -7,6 +7,12 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+
+		MD0000010000000000000001 /* ApprovedSourceMediaTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = MD0001010000000000000001 /* ApprovedSourceMediaTypes.swift */; };
+		MD0000010000000000000002 /* MediaDecodeCascade.swift in Sources */ = {isa = PBXBuildFile; fileRef = MD0001010000000000000002 /* MediaDecodeCascade.swift */; };
+		MD0000010000000000000003 /* ImageAllLibRawBridge.cpp in Sources */ = {isa = PBXBuildFile; fileRef = MD0001010000000000000003 /* ImageAllLibRawBridge.cpp */; };
+		MD0000010000000000000004 /* libraw_r.a in Frameworks */ = {isa = PBXBuildFile; fileRef = MD0001010000000000000005 /* libraw_r.a */; };
+		MD0000010000000000000101 /* MediaDecodeCascadeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = MD0001010000000000000101 /* MediaDecodeCascadeTests.swift */; };
 		OO0000010000000000000101 /* PhotosIntegrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = OO0001010000000000000101 /* PhotosIntegrationTests.swift */; };
 		OO0000010000000000000001 /* PhotosLibraryContracts.swift in Sources */ = {isa = PBXBuildFile; fileRef = OO0001010000000000000001 /* PhotosLibraryContracts.swift */; };
 		OO0000010000000000000002 /* PhotosLibraryConnectionService.swift in Sources */ = {isa = PBXBuildFile; fileRef = OO0001010000000000000002 /* PhotosLibraryConnectionService.swift */; };
@@ -263,6 +269,13 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+
+		MD0001010000000000000001 /* ApprovedSourceMediaTypes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ApprovedSourceMediaTypes.swift; sourceTree = "<group>"; };
+		MD0001010000000000000002 /* MediaDecodeCascade.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaDecodeCascade.swift; sourceTree = "<group>"; };
+		MD0001010000000000000003 /* ImageAllLibRawBridge.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = ImageAllLibRawBridge.cpp; sourceTree = "<group>"; };
+		MD0001010000000000000004 /* ImageAllLibRawBridge.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ImageAllLibRawBridge.h; sourceTree = "<group>"; };
+		MD0001010000000000000005 /* libraw_r.a */ = {isa = PBXFileReference; lastKnownFileType = archive.ar; name = libraw_r.a; path = Vendor/LibRawDist/lib/libraw_r.a; sourceTree = SOURCE_ROOT; };
+		MD0001010000000000000101 /* MediaDecodeCascadeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaDecodeCascadeTests.swift; sourceTree = "<group>"; };
 		OO0001010000000000000101 /* PhotosIntegrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhotosIntegrationTests.swift; sourceTree = "<group>"; };
 		OO0001010000000000000001 /* PhotosLibraryContracts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhotosLibraryContracts.swift; sourceTree = "<group>"; };
 		OO0001010000000000000002 /* PhotosLibraryConnectionService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhotosLibraryConnectionService.swift; sourceTree = "<group>"; };
@@ -515,6 +528,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				CC0000010000000000000003 /* GRDB in Frameworks */,
+				MD0000010000000000000004 /* libraw_r.a in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -799,6 +813,7 @@
 				CC0006010000000000000003 /* Database */,
 				DD0006010000000000000003 /* JobQueue */,
 				RR0006010000000000000002 /* Reconcile */,
+				MD0006010000000000000001 /* Media */,
 				II0006010000000000000002 /* DerivedImage */,
 			);
 			path = Infrastructure;
@@ -1031,6 +1046,7 @@
 				RR0001010000000000000102 /* FolderReconcileContractTests.swift */,
 				RR0001010000000000000103 /* FolderEnumerationTests.swift */,
 				RR0001010000000000000104 /* FolderMediaClassificationTests.swift */,
+				MD0001010000000000000101 /* MediaDecodeCascadeTests.swift */,
 				RR0001010000000000000105 /* FolderAssetIdentityTests.swift */,
 				RR0001010000000000000106 /* FolderReconcileTransactionTests.swift */,
 				RR0001010000000000000107 /* FolderReconcilePrivacyRegressionTests.swift */,
@@ -1054,6 +1070,18 @@
 				II0001010000000000000004 /* DerivedImageCachePort.swift */,
 			);
 			path = DerivedImage;
+			sourceTree = "<group>";
+		};
+
+		MD0006010000000000000001 /* Media */ = {
+			isa = PBXGroup;
+			children = (
+				MD0001010000000000000001 /* ApprovedSourceMediaTypes.swift */,
+				MD0001010000000000000002 /* MediaDecodeCascade.swift */,
+				MD0001010000000000000003 /* ImageAllLibRawBridge.cpp */,
+				MD0001010000000000000004 /* ImageAllLibRawBridge.h */,
+			);
+			path = Media;
 			sourceTree = "<group>";
 		};
 		II0006010000000000000002 /* DerivedImage */ = {
@@ -1356,6 +1384,9 @@
 				II0000010000000000000005 /* DerivedImageCachePathLayout.swift in Sources */,
 				II0000010000000000000006 /* DerivedImageSecureIO.swift in Sources */,
 				II0000010000000000000007 /* DerivedImageCacheModels.swift in Sources */,
+				MD0000010000000000000001 /* ApprovedSourceMediaTypes.swift in Sources */,
+				MD0000010000000000000002 /* MediaDecodeCascade.swift in Sources */,
+				MD0000010000000000000003 /* ImageAllLibRawBridge.cpp in Sources */,
 				II0000010000000000000008 /* DerivedImageRenderer.swift in Sources */,
 				II0000010000000000000009 /* GRDBDerivedImageCacheRepository.swift in Sources */,
 				II000001000000000000000A /* DerivedImageCacheStore.swift in Sources */,
@@ -1457,6 +1488,7 @@
 			RR0000010000000000000102 /* FolderReconcileContractTests.swift in Sources */,
 			RR0000010000000000000103 /* FolderEnumerationTests.swift in Sources */,
 			RR0000010000000000000104 /* FolderMediaClassificationTests.swift in Sources */,
+			MD0000010000000000000101 /* MediaDecodeCascadeTests.swift in Sources */,
 			RR0000010000000000000105 /* FolderAssetIdentityTests.swift in Sources */,
 			RR0000010000000000000106 /* FolderReconcileTransactionTests.swift in Sources */,
 			RR0000010000000000000107 /* FolderReconcilePrivacyRegressionTests.swift in Sources */,
@@ -1627,6 +1659,21 @@
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_PREVIEWS = YES;
+				HEADER_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(SRCROOT)/Vendor/LibRawDist/include",
+					"$(SRCROOT)/ImageAll/Infrastructure/Media",
+				);
+				LIBRARY_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(SRCROOT)/Vendor/LibRawDist/lib",
+				);
+				OTHER_LDFLAGS = (
+					"$(inherited)",
+					"-lraw_r",
+					"-lc++",
+					"-lz",
+				);
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = ImageAll/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = ImageAll;
@@ -1659,6 +1706,21 @@
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_PREVIEWS = YES;
+				HEADER_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(SRCROOT)/Vendor/LibRawDist/include",
+					"$(SRCROOT)/ImageAll/Infrastructure/Media",
+				);
+				LIBRARY_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(SRCROOT)/Vendor/LibRawDist/lib",
+				);
+				OTHER_LDFLAGS = (
+					"$(inherited)",
+					"-lraw_r",
+					"-lc++",
+					"-lz",
+				);
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = ImageAll/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = ImageAll;

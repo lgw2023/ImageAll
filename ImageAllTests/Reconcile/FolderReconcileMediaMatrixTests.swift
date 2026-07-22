@@ -29,7 +29,7 @@ final class FolderReconcileMediaMatrixTests: XCTestCase {
         XCTAssertEqual(FolderReconcileTestSupport.imageIOActualType(for: cases[2].2), UTType.heic.identifier)
     }
 
-    func testGIFAndBMPUnsupported() throws {
+    func testStaticGIFAvailableAndBMPUnsupported() throws {
         let fixture = FolderReconcileTestSupport.TempFixtureRoot()
         defer { fixture.cleanup() }
         let root = try fixture.makeRoot(label: "unsupported")
@@ -41,8 +41,8 @@ final class FolderReconcileMediaMatrixTests: XCTestCase {
         let bmp = try XCTUnwrap(FolderReconcileTestSupport.minimalBMPData())
         let gifFile = try fixture.writeFile(root: root, relativePath: "a.gif", contents: gif)
         let bmpFile = try fixture.writeFile(root: root, relativePath: "a.bmp", contents: bmp)
-        guard case .unsupported = FolderReconcileTestSupport.classifyMedia(at: gifFile, fileName: "a.gif") else {
-            return XCTFail("gif unsupported")
+        guard case .available = FolderReconcileTestSupport.classifyMedia(at: gifFile, fileName: "a.gif") else {
+            return XCTFail("static gif available")
         }
         guard case .unsupported = FolderReconcileTestSupport.classifyMedia(at: bmpFile, fileName: "a.bmp") else {
             return XCTFail("bmp unsupported")

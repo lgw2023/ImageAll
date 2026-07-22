@@ -109,7 +109,7 @@ final class FolderMediaClassificationTests: XCTestCase {
         XCTAssertNotEqual(metadata.mediaType, UTType.heic.identifier)
     }
 
-    func testGIFUnsupported() throws {
+    func testStaticGIFAvailable() throws {
         let fixture = FolderReconcileTestSupport.TempFixtureRoot()
         defer { fixture.cleanup() }
         let root = try fixture.makeRoot(label: "gif")
@@ -118,10 +118,11 @@ final class FolderMediaClassificationTests: XCTestCase {
             0x21, 0xF9, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x2C, 0x00, 0x00, 0x00, 0x00,
             0x01, 0x00, 0x01, 0x00, 0x00, 0x02, 0x02, 0x4C, 0x01, 0x00, 0x3B,
         ])
-        let file = try fixture.writeFile(root: root, relativePath: "anim.gif", contents: gif)
-        guard case .unsupported = FolderMediaClassifier().classify(fileURL: file, fileName: "anim.gif") else {
-            return XCTFail("gif must be unsupported")
+        let file = try fixture.writeFile(root: root, relativePath: "static.gif", contents: gif)
+        guard case let .available(metadata) = FolderMediaClassifier().classify(fileURL: file, fileName: "static.gif") else {
+            return XCTFail("static gif must be available under ADR-041")
         }
+        XCTAssertEqual(metadata.mediaType, UTType.gif.identifier)
     }
 
     func testPDFWithPDFExtensionIgnored() throws {

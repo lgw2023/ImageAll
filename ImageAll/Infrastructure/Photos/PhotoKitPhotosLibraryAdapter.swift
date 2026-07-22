@@ -13,14 +13,7 @@ final class PhotoKitPhotosLibraryAdapter: NSObject, PhotosLibraryAccessPort, Pho
     private var isObservingChanges = false
     private var onLibraryUnavailable: (@Sendable (PhotosLibraryUnavailabilityReason) -> Void)?
     private var isObservingAvailability = false
-    private static let supportedTypes: Set<String> = [
-        "public.jpeg",
-        "public.png",
-        "public.heic",
-        "public.heif",
-        "public.tiff",
-        "org.webmproject.webp",
-    ]
+
     static let cloudPreviewTargetSize = NSSize(width: 2_048, height: 2_048)
 
     func authorizationState() -> PhotosAuthorizationState {
@@ -405,7 +398,7 @@ final class PhotoKitPhotosLibraryAdapter: NSObject, PhotosLibraryAccessPort, Pho
         uniformTypeIdentifier: String
     ) -> Bool {
         mediaType == .image
-            && supportedTypes.contains(uniformTypeIdentifier.lowercased())
+            && ApprovedSourceMediaTypes.contains(uniformTypeIdentifier)
     }
 
     /// Counts assets that would be indexable by the same UTI policy as catalog upsert.

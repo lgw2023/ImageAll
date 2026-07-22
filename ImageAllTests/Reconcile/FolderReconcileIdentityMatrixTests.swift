@@ -203,13 +203,9 @@ final class FolderReconcileIdentityMatrixTests: XCTestCase {
         let fixture = FolderReconcileTestSupport.TempFixtureRoot()
         defer { fixture.cleanup() }
         let root = try fixture.makeRoot(label: "unsupported")
-        let gif = Data([
-            0x47, 0x49, 0x46, 0x38, 0x39, 0x61, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00,
-            0x21, 0xF9, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x2C, 0x00, 0x00, 0x00, 0x00,
-            0x01, 0x00, 0x01, 0x00, 0x00, 0x02, 0x02, 0x4C, 0x01, 0x00, 0x3B,
-        ])
-        try fixture.writeFile(root: root, relativePath: "a.gif", contents: gif)
-        let (database, sourceID, coordinator, _) = try makeScanHarness(fixture: fixture, label: "unsupported", root: root, relative: "a.gif")
+        let bmp = try XCTUnwrap(FolderReconcileTestSupport.minimalBMPData())
+        try fixture.writeFile(root: root, relativePath: "a.bmp", contents: bmp)
+        let (database, sourceID, coordinator, _) = try makeScanHarness(fixture: fixture, label: "unsupported", root: root, relative: "a.bmp")
         _ = try runOnce(coordinator: coordinator)
         let rows = try FolderReconcileTestSupport.fetchAssetRows(database: database, sourceID: sourceID)
         XCTAssertEqual(rows.count, 1)
