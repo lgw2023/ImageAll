@@ -1646,7 +1646,8 @@ final class LibraryWorkspaceModelTests: XCTestCase {
 
     func testAppPersonalRebuildCacheMissLeavesBrowsingAndManualTagsAvailable() async {
         let sourceID = UUID()
-        let asset = Self.makeAsset(sourceID: sourceID, fileName: "cached-miss.jpg")
+        let assetA = Self.makeAsset(sourceID: sourceID, fileName: "cached-miss-a.jpg")
+        let assetB = Self.makeAsset(sourceID: sourceID, fileName: "cached-miss-b.jpg")
         let tag = TagListItem(id: UUID(), displayName: "旅行", state: .active)
         let service = FakeLibraryWorkspaceService(
             connectedSource: LibrarySourceSummary(
@@ -1654,9 +1655,9 @@ final class LibraryWorkspaceModelTests: XCTestCase {
                 displayName: "Fixture",
                 state: .active
             ),
-            reconciledItems: [asset],
+            reconciledItems: [assetA, assetB],
             tags: [tag],
-            initialItems: [asset],
+            initialItems: [assetA, assetB],
             startsConnected: true
         )
         let rebuilder = FakeAppPersonalModelRebuilder(
@@ -1668,7 +1669,20 @@ final class LibraryWorkspaceModelTests: XCTestCase {
                 trainingSnapshot: PersonalTrainingSnapshot(
                     catalogScopeID: UUID().uuidString.lowercased(),
                     personalTagIDs: [tag.id],
-                    decisions: []
+                    decisions: [
+                        PersonalTrainingDecision(
+                            assetID: assetA.assetID,
+                            contentRevision: 1,
+                            tagID: tag.id,
+                            state: .manualAccepted
+                        ),
+                        PersonalTrainingDecision(
+                            assetID: assetB.assetID,
+                            contentRevision: 1,
+                            tagID: tag.id,
+                            state: .manualAccepted
+                        ),
+                    ]
                 )
             ),
             appPersonalModelRebuilder: rebuilder
@@ -1677,11 +1691,563 @@ final class LibraryWorkspaceModelTests: XCTestCase {
 
         await model.rebuildPersonalModel()
 
-        XCTAssertEqual(model.items.map(\.assetID), [asset.assetID])
+        XCTAssertEqual(Set(model.items.map(\.assetID)), [assetA.assetID, assetB.assetID])
         XCTAssertEqual(model.tags.map(\.id), [tag.id])
         XCTAssertEqual(service.mutateTagCallCount, 0)
         XCTAssertEqual(model.notice, .personalModelRebuildCacheUnavailable)
         XCTAssertFalse(model.isRebuildingPersonalModel)
+    }
+
+    func testAppPersonalRebuildUsesAcceptedTagsOnSelectedAssetsOnly() async {
+        let sourceID = UUID()
+        let tagID = UUID()
+        let selectedAssetIDs = [UUID(), UUID()]
+        let historicalOnlyAssetID = UUID()
+        let selectedAssets = selectedAssetIDs.enumerated().map { index, assetID in
+            Self.makeAsset(
+                sourceID: sourceID,
+                assetID: assetID,
+                fileName: "selected-\(index).png"
+            )
+        }
+        let historicalOnlyAsset = Self.makeAsset(
+            sourceID: sourceID,
+            assetID: historicalOnlyAssetID,
+            fileName: "historical-only.png"
+        )
+        let allAssets = selectedAssets + [historicalOnlyAsset]
+        let tag = TagListItem(id: tagID, displayName: "旅行", state: .active)
+        let previewData = Data("program-generated-selected-preview".utf8)
+        let snapshot = PersonalTrainingSnapshot(
+            catalogScopeID: UUID().uuidString.lowercased(),
+            personalTagIDs: [tagID],
+            decisions: (selectedAssetIDs + [historicalOnlyAssetID]).map { assetID in
+                PersonalTrainingDecision(
+                    assetID: assetID,
+                    contentRevision: 1,
+                    tagID: tagID,
+                    state: .manualAccepted
+                )
+            }
+        )
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: sourceID,
+                displayName: "Fixture",
+                state: .active
+            ),
+            reconciledItems: allAssets,
+            tags: [tag],
+            initialItems: allAssets,
+            startsConnected: true,
+            previewData: previewData
+        )
+        let cache = FakeSelectedAssetEmbeddingCache()
+        let rebuilder = FakeAppPersonalModelRebuilder(
+            result: .success(
+                AppPersonalLinearHeadIdentity(
+                    catalogScopeID: snapshot.catalogScopeID,
+                    decisionSnapshotRevision: String(repeating: "1", count: 64),
+                    labelVocabularyRevision: String(repeating: "2", count: 64),
+                    encoderIdentity: AppCoreMLModelIdentity(
+                        provider: "dinov2",
+                        modelID: "facebook/dinov2-small",
+                        modelRevision: "model-v1",
+                        preprocessingRevision: "preprocessing-v1",
+                        embeddingSemantics: "dinov2-cls-token",
+                        postprocessingRevision: "raw-float32-v1",
+                        elementType: "float32",
+                        elementCount: 384,
+                        sourceModelSHA256: String(repeating: "3", count: 64),
+                        artifactSHA256: String(repeating: "4", count: 64),
+                        manifestSHA256: String(repeating: "5", count: 64),
+                        licenseID: "Apache-2.0",
+                        licenseSHA256: String(repeating: "6", count: 64)
+                    ),
+                    personalTagIDs: [tagID],
+                    weightsSHA256: String(repeating: "7", count: 64)
+                )
+            )
+        )
+        let model = LibraryWorkspaceModel(
+            service: service,
+            review: FakePersonalizationReviewPort(trainingSnapshot: snapshot),
+            appPersonalModelRebuilder: rebuilder,
+            selectedAssetEmbeddingCache: cache
+        )
+        await model.start()
+        await model.selectAssets(Set(selectedAssetIDs))
+
+        await model.rebuildPersonalModel()
+
+        let requests = await cache.requests()
+        XCTAssertEqual(Set(requests.map(\.assetID)), Set(selectedAssetIDs))
+        XCTAssertFalse(requests.map(\.assetID).contains(historicalOnlyAssetID))
+        XCTAssertEqual(service.previewLoadCallCount, 2)
+        let rebuildSnapshots = await rebuilder.snapshots()
+        XCTAssertEqual(rebuildSnapshots.count, 1)
+        XCTAssertEqual(
+            Set(rebuildSnapshots[0].decisions.map(\.assetID)),
+            Set(selectedAssetIDs)
+        )
+        XCTAssertEqual(
+            model.notice,
+            .personalModelRebuildCompleted(tagCount: 1, sampleCount: 2)
+        )
+        XCTAssertFalse(model.isRebuildingPersonalModel)
+    }
+
+    func testAppPersonalRebuildWithoutSelectionUsesHistoricalAcceptedSamples() async {
+        let sourceID = UUID()
+        let tagID = UUID()
+        let historicalAssetIDs = [UUID(), UUID()]
+        let historicalAssets = historicalAssetIDs.enumerated().map { index, assetID in
+            Self.makeAsset(
+                sourceID: sourceID,
+                assetID: assetID,
+                fileName: "historical-\(index).png"
+            )
+        }
+        let tag = TagListItem(id: tagID, displayName: "旅行", state: .active)
+        let previewData = Data("program-generated-historical-preview".utf8)
+        let snapshot = PersonalTrainingSnapshot(
+            catalogScopeID: UUID().uuidString.lowercased(),
+            personalTagIDs: [tagID],
+            decisions: historicalAssetIDs.map { assetID in
+                PersonalTrainingDecision(
+                    assetID: assetID,
+                    contentRevision: 1,
+                    tagID: tagID,
+                    state: .manualAccepted
+                )
+            }
+        )
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: sourceID,
+                displayName: "Fixture",
+                state: .active
+            ),
+            reconciledItems: historicalAssets,
+            tags: [tag],
+            initialItems: historicalAssets,
+            startsConnected: true,
+            previewData: previewData
+        )
+        let cache = FakeSelectedAssetEmbeddingCache()
+        let rebuilder = FakeAppPersonalModelRebuilder(
+            result: .success(
+                AppPersonalLinearHeadIdentity(
+                    catalogScopeID: snapshot.catalogScopeID,
+                    decisionSnapshotRevision: String(repeating: "1", count: 64),
+                    labelVocabularyRevision: String(repeating: "2", count: 64),
+                    encoderIdentity: AppCoreMLModelIdentity(
+                        provider: "dinov2",
+                        modelID: "facebook/dinov2-small",
+                        modelRevision: "model-v1",
+                        preprocessingRevision: "preprocessing-v1",
+                        embeddingSemantics: "dinov2-cls-token",
+                        postprocessingRevision: "raw-float32-v1",
+                        elementType: "float32",
+                        elementCount: 384,
+                        sourceModelSHA256: String(repeating: "3", count: 64),
+                        artifactSHA256: String(repeating: "4", count: 64),
+                        manifestSHA256: String(repeating: "5", count: 64),
+                        licenseID: "Apache-2.0",
+                        licenseSHA256: String(repeating: "6", count: 64)
+                    ),
+                    personalTagIDs: [tagID],
+                    weightsSHA256: String(repeating: "7", count: 64)
+                )
+            )
+        )
+        let model = LibraryWorkspaceModel(
+            service: service,
+            review: FakePersonalizationReviewPort(trainingSnapshot: snapshot),
+            appPersonalModelRebuilder: rebuilder,
+            selectedAssetEmbeddingCache: cache
+        )
+        await model.start()
+        XCTAssertTrue(model.selectedAssetIDs.isEmpty)
+
+        await model.rebuildPersonalModel()
+
+        let requests = await cache.requests()
+        XCTAssertEqual(Set(requests.map(\.assetID)), Set(historicalAssetIDs))
+        let rebuildSnapshots = await rebuilder.snapshots()
+        XCTAssertEqual(rebuildSnapshots.count, 1)
+        XCTAssertEqual(
+            Set(rebuildSnapshots[0].decisions.map(\.assetID)),
+            Set(historicalAssetIDs)
+        )
+        XCTAssertEqual(
+            model.notice,
+            .personalModelRebuildCompleted(tagCount: 1, sampleCount: 2)
+        )
+    }
+
+    func testAppPersonalRebuildSelectedAssetsWithoutEnoughAcceptedTagsStayNotReady() async {
+        let sourceID = UUID()
+        let tagID = UUID()
+        let selectedAssetID = UUID()
+        let historicalAssetIDs = [UUID(), UUID()]
+        let selectedAsset = Self.makeAsset(
+            sourceID: sourceID,
+            assetID: selectedAssetID,
+            fileName: "selected-one.png"
+        )
+        let historicalAssets = historicalAssetIDs.enumerated().map { index, assetID in
+            Self.makeAsset(
+                sourceID: sourceID,
+                assetID: assetID,
+                fileName: "historical-\(index).png"
+            )
+        }
+        let tag = TagListItem(id: tagID, displayName: "旅行", state: .active)
+        let snapshot = PersonalTrainingSnapshot(
+            catalogScopeID: UUID().uuidString.lowercased(),
+            personalTagIDs: [tagID],
+            decisions: (historicalAssetIDs + [selectedAssetID]).map { assetID in
+                PersonalTrainingDecision(
+                    assetID: assetID,
+                    contentRevision: 1,
+                    tagID: tagID,
+                    state: .manualAccepted
+                )
+            }
+        )
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: sourceID,
+                displayName: "Fixture",
+                state: .active
+            ),
+            reconciledItems: historicalAssets + [selectedAsset],
+            tags: [tag],
+            initialItems: historicalAssets + [selectedAsset],
+            startsConnected: true
+        )
+        let rebuilder = FakeAppPersonalModelRebuilder(
+            result: .success(
+                AppPersonalLinearHeadIdentity(
+                    catalogScopeID: snapshot.catalogScopeID,
+                    decisionSnapshotRevision: String(repeating: "1", count: 64),
+                    labelVocabularyRevision: String(repeating: "2", count: 64),
+                    encoderIdentity: AppCoreMLModelIdentity(
+                        provider: "dinov2",
+                        modelID: "facebook/dinov2-small",
+                        modelRevision: "model-v1",
+                        preprocessingRevision: "preprocessing-v1",
+                        embeddingSemantics: "dinov2-cls-token",
+                        postprocessingRevision: "raw-float32-v1",
+                        elementType: "float32",
+                        elementCount: 384,
+                        sourceModelSHA256: String(repeating: "3", count: 64),
+                        artifactSHA256: String(repeating: "4", count: 64),
+                        manifestSHA256: String(repeating: "5", count: 64),
+                        licenseID: "Apache-2.0",
+                        licenseSHA256: String(repeating: "6", count: 64)
+                    ),
+                    personalTagIDs: [tagID],
+                    weightsSHA256: String(repeating: "7", count: 64)
+                )
+            )
+        )
+        let model = LibraryWorkspaceModel(
+            service: service,
+            review: FakePersonalizationReviewPort(trainingSnapshot: snapshot),
+            appPersonalModelRebuilder: rebuilder
+        )
+        await model.start()
+        await model.selectAsset(selectedAssetID)
+
+        await model.rebuildPersonalModel()
+
+        let rebuildCallCount = await rebuilder.callCount()
+        XCTAssertEqual(rebuildCallCount, 0)
+        XCTAssertEqual(model.notice, .personalModelRebuildNotReady)
+    }
+
+    func testAppPersonalSampleSuggestionsUsesLibraryCandidatesWhenNothingSelected() async {
+        let sourceID = UUID()
+        let tagID = UUID(uuidString: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")!
+        let assets = (0..<3).map { index in
+            Self.makeAsset(sourceID: sourceID, fileName: "sample-\(index).png")
+        }
+        let candidates = assets.map {
+            PersonalSuggestionCandidate(assetID: $0.assetID, contentRevision: $0.contentRevision)
+        }
+        let capability = PersonalModelSuggestionCapability(
+            target: PersonalModelSuggestionTarget(
+                catalogScopeID: "catalog-fixture",
+                bundleID: AppPersonalSuggestionCapabilityMapper.bundleID,
+                bundleRevision: String(repeating: "a", count: 64),
+                provider: "dinov2",
+                modelID: "facebook/dinov2-small",
+                modelRevision: "fixture",
+                preprocessingRevision: "fixture",
+                elementCount: 1,
+                labelVocabularyRevision: String(repeating: "b", count: 64),
+                weightsSHA256: String(repeating: "c", count: 64),
+                policyRevision: AppPersonalSuggestionCapabilityMapper.policyRevision
+            ),
+            tagIDs: [tagID]
+        )
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: sourceID,
+                displayName: "Fixture",
+                state: .active
+            ),
+            reconciledItems: assets,
+            tags: [TagListItem(id: tagID, displayName: "旅行", state: .active)],
+            initialItems: assets,
+            startsConnected: true,
+            previewData: Data("sample-preview".utf8)
+        )
+        let review = FakePersonalizationReviewPort(personalCandidates: candidates)
+        let suggester = FakeAppPersonalSampleSuggester(
+            batch: AppPersonalSampleSuggestionBatch(
+                capability: capability,
+                results: [
+                    AppPersonalSampleSuggestionAssetResult(
+                        candidate: candidates[0],
+                        predictions: [PersonalSuggestionPrediction(tagID: tagID, score: 1.25)]
+                    ),
+                    AppPersonalSampleSuggestionAssetResult(
+                        candidate: candidates[1],
+                        predictions: [PersonalSuggestionPrediction(tagID: tagID, score: 0.75)]
+                    ),
+                ],
+                skippedCount: 1
+            )
+        )
+        let cache = FakeSelectedAssetEmbeddingCache()
+        let model = LibraryWorkspaceModel(
+            service: service,
+            review: review,
+            selectedAssetEmbeddingCache: cache,
+            appPersonalSampleSuggester: suggester
+        )
+        await model.start()
+
+        await model.generateAppPersonalSampleSuggestions()
+
+        let requested = await suggester.requestedCandidates()
+        XCTAssertEqual(requested, candidates)
+        XCTAssertEqual(review.activatedPersonalCapability, capability)
+        XCTAssertEqual(review.personalSuggestionReplacements.count, 2)
+        XCTAssertEqual(
+            model.notice,
+            .personalSampleSuggestionsCompleted(checked: 3, suggested: 2, skipped: 1)
+        )
+        XCTAssertEqual(
+            model.personalLibrarySuggestionState,
+            .completed(checked: 3, suggested: 2, skipped: 1)
+        )
+        XCTAssertTrue(model.supportsAppPersonalSampleSuggestions)
+        XCTAssertTrue(model.usesAppPersonalSampleSuggestionsPath)
+    }
+
+    func testAppPersonalTagLibrarySuggestionsWritesTopHitsWithPersonalOriginPath() async {
+        let sourceID = UUID()
+        let tagID = UUID(uuidString: "dddddddd-dddd-4ddd-8ddd-dddddddddddd")!
+        let candidates = (0..<5).map { index in
+            PersonalSuggestionCandidate(
+                assetID: UUID(),
+                contentRevision: index + 1
+            )
+        }
+        let assets = candidates.map {
+            Self.makeAsset(sourceID: sourceID, assetID: $0.assetID, fileName: "\($0.assetID.uuidString).png")
+        }
+        let capability = PersonalModelSuggestionCapability(
+            target: PersonalModelSuggestionTarget(
+                catalogScopeID: "catalog-fixture",
+                bundleID: AppPersonalSuggestionCapabilityMapper.bundleID,
+                bundleRevision: String(repeating: "a", count: 64),
+                provider: "dinov2",
+                modelID: "facebook/dinov2-small",
+                modelRevision: "fixture",
+                preprocessingRevision: "fixture",
+                elementCount: 1,
+                labelVocabularyRevision: String(repeating: "b", count: 64),
+                weightsSHA256: String(repeating: "c", count: 64),
+                policyRevision: AppPersonalSuggestionCapabilityMapper.policyRevision
+            ),
+            tagIDs: [tagID]
+        )
+        let hits = [
+            AppPersonalTagLibrarySuggestionHit(candidate: candidates[0], score: 3.0),
+            AppPersonalTagLibrarySuggestionHit(candidate: candidates[1], score: 2.0),
+        ]
+        let overview = SuggestionTagOverview(
+            id: tagID,
+            displayName: "板栗",
+            acceptedSampleCount: 4,
+            rejectedSampleCount: 0,
+            pendingSuggestionCount: 0,
+            taskStatus: .ready,
+            checkedCount: 0,
+            totalCount: nil,
+            skippedCount: 0,
+            missingPositiveCount: 0,
+            missingNegativeCount: 2,
+            canGenerate: false,
+            canUpdate: false,
+            canGeneratePersonalModel: true,
+            canReview: false,
+            canPause: false,
+            canResume: false,
+            canCancel: false,
+            activeJobID: nil
+        )
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: sourceID,
+                displayName: "Fixture",
+                state: .active
+            ),
+            reconciledItems: assets,
+            tags: [TagListItem(id: tagID, displayName: "板栗", state: .active)],
+            initialItems: assets,
+            startsConnected: true,
+            previewData: Data("tag-library-preview".utf8)
+        )
+        let review = FakePersonalizationReviewPort(
+            overviews: [overview],
+            personalCandidates: candidates
+        )
+        let suggester = FakeAppPersonalTagLibrarySuggester(
+            batch: AppPersonalTagLibrarySuggestionBatch(
+                tagID: tagID,
+                capability: capability,
+                hits: hits,
+                checkedCount: candidates.count,
+                skippedCount: 1
+            )
+        )
+        let model = LibraryWorkspaceModel(
+            service: service,
+            review: review,
+            selectedAssetEmbeddingCache: FakeSelectedAssetEmbeddingCache(),
+            appPersonalSampleSuggester: FakeAppPersonalSampleSuggester(
+                batch: AppPersonalSampleSuggestionBatch(
+                    capability: capability,
+                    results: [],
+                    skippedCount: 0
+                )
+            ),
+            appPersonalTagLibrarySuggester: suggester
+        )
+        await model.start()
+        await model.refreshReviewState()
+
+        XCTAssertTrue(model.canGenerateAppPersonalTagLibrarySuggestions(for: overview))
+        model.requestEnqueueSuggestions(
+            tagID: tagID,
+            displayName: "板栗",
+            mode: .generate,
+            sourceCount: 1,
+            method: .personalModel
+        )
+        let confirmed = await model.confirmPendingSuggestionEnqueue()
+
+        XCTAssertTrue(confirmed)
+        let requested = await suggester.requestedTagIDs()
+        XCTAssertEqual(requested, [tagID])
+        XCTAssertEqual(review.activatedPersonalCapability, capability)
+        XCTAssertEqual(review.personalTagLibraryReplacements.count, 1)
+        XCTAssertEqual(review.personalTagLibraryReplacements[0].hits, hits)
+        XCTAssertEqual(
+            model.notice,
+            .personalTagLibrarySuggestionsCompleted(
+                tagName: "板栗",
+                checked: candidates.count,
+                suggested: hits.count,
+                skipped: 1
+            )
+        )
+    }
+
+    func testAppPersonalSampleSuggestionsPrefersCurrentSelectionUpToOneHundred() async {
+        let sourceID = UUID()
+        let tagID = UUID(uuidString: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")!
+        let assets = (0..<5).map { index in
+            Self.makeAsset(sourceID: sourceID, fileName: "selected-\(index).png")
+        }
+        let libraryCandidates = [
+            PersonalSuggestionCandidate(
+                assetID: UUID(uuidString: "cccccccc-cccc-4ccc-8ccc-cccccccccccc")!,
+                contentRevision: 9
+            ),
+        ]
+        let capability = PersonalModelSuggestionCapability(
+            target: PersonalModelSuggestionTarget(
+                catalogScopeID: "catalog-fixture",
+                bundleID: AppPersonalSuggestionCapabilityMapper.bundleID,
+                bundleRevision: String(repeating: "d", count: 64),
+                provider: "dinov2",
+                modelID: "facebook/dinov2-small",
+                modelRevision: "fixture",
+                preprocessingRevision: "fixture",
+                elementCount: 1,
+                labelVocabularyRevision: String(repeating: "e", count: 64),
+                weightsSHA256: String(repeating: "f", count: 64),
+                policyRevision: AppPersonalSuggestionCapabilityMapper.policyRevision
+            ),
+            tagIDs: [tagID]
+        )
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: sourceID,
+                displayName: "Fixture",
+                state: .active
+            ),
+            reconciledItems: assets,
+            tags: [TagListItem(id: tagID, displayName: "人像", state: .active)],
+            initialItems: assets,
+            startsConnected: true,
+            previewData: Data("selected-preview".utf8)
+        )
+        let review = FakePersonalizationReviewPort(personalCandidates: libraryCandidates)
+        let suggester = FakeAppPersonalSampleSuggester(
+            batch: AppPersonalSampleSuggestionBatch(
+                capability: capability,
+                results: assets.prefix(2).map {
+                    AppPersonalSampleSuggestionAssetResult(
+                        candidate: PersonalSuggestionCandidate(
+                            assetID: $0.assetID,
+                            contentRevision: $0.contentRevision
+                        ),
+                        predictions: [PersonalSuggestionPrediction(tagID: tagID, score: 0.5)]
+                    )
+                },
+                skippedCount: 0
+            )
+        )
+        let cache = FakeSelectedAssetEmbeddingCache()
+        let model = LibraryWorkspaceModel(
+            service: service,
+            review: review,
+            selectedAssetEmbeddingCache: cache,
+            appPersonalSampleSuggester: suggester
+        )
+        await model.start()
+        await model.selectAssets(Set(assets.prefix(2).map(\.assetID)))
+
+        await model.generateAppPersonalSampleSuggestions()
+
+        let requested = await suggester.requestedCandidates()
+        XCTAssertEqual(
+            requested.map(\.assetID),
+            assets.prefix(2).map(\.assetID)
+        )
+        XCTAssertEqual(review.personalSuggestionReplacements.count, 2)
+        XCTAssertNotEqual(
+            requested.map(\.assetID),
+            libraryCandidates.map(\.assetID)
+        )
     }
 
     func testExplicitSelectedAssetEmbeddingCacheReadsOnlyTheCurrentPreview() async {
@@ -1807,22 +2373,26 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertEqual(service.mutateTagCallCount, 0)
     }
 
-    func testSelectedAssetEmbeddingCacheActionRequiresExactlyOneSelection() async {
+    func testSelectedAssetEmbeddingCacheActionAllowsMultiSelectionBatch() async {
         let sourceID = UUID()
         let first = Self.makeAsset(sourceID: sourceID, fileName: "first.png")
         let second = Self.makeAsset(sourceID: sourceID, fileName: "second.png")
-        let model = LibraryWorkspaceModel(
-            service: FakeLibraryWorkspaceService(
-                connectedSource: LibrarySourceSummary(
-                    id: sourceID,
-                    displayName: "Fixture",
-                    state: .active
-                ),
-                reconciledItems: [first, second],
-                initialItems: [first, second],
-                startsConnected: true
+        let previewData = Data("program-generated-preview".utf8)
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: sourceID,
+                displayName: "Fixture",
+                state: .active
             ),
-            selectedAssetEmbeddingCache: FakeSelectedAssetEmbeddingCache()
+            reconciledItems: [first, second],
+            initialItems: [first, second],
+            startsConnected: true,
+            previewData: previewData
+        )
+        let cache = FakeSelectedAssetEmbeddingCache()
+        let model = LibraryWorkspaceModel(
+            service: service,
+            selectedAssetEmbeddingCache: cache
         )
         await model.start()
 
@@ -1830,7 +2400,70 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         await model.selectAsset(first.assetID)
         XCTAssertTrue(model.canCacheSelectedAssetEmbedding)
         await model.selectAsset(second.assetID, additive: true)
-        XCTAssertFalse(model.canCacheSelectedAssetEmbedding)
+        XCTAssertTrue(model.canCacheSelectedAssetEmbedding)
+
+        await model.cacheSelectedAssetEmbedding()
+
+        let requests = await cache.requests()
+        XCTAssertEqual(
+            requests.map(\.assetID),
+            [first.assetID, second.assetID]
+        )
+        XCTAssertEqual(service.previewLoadCallCount, 2)
+        XCTAssertEqual(
+            model.notice,
+            .selectedAssetEmbeddingBatchCompleted(
+                prepared: 2,
+                skipped: 0,
+                cloudOnly: 0,
+                failed: 0
+            )
+        )
+        XCTAssertFalse(model.isCachingSelectedAssetEmbedding)
+        XCTAssertEqual(service.mutateTagCallCount, 0)
+    }
+
+    func testSelectedAssetEmbeddingBatchSkipsIdentityMatchedCacheHitsWithoutRereadingPreview() async {
+        let sourceID = UUID()
+        let first = Self.makeAsset(sourceID: sourceID, fileName: "first.png")
+        let second = Self.makeAsset(sourceID: sourceID, fileName: "second.png")
+        let previewData = Data("program-generated-preview".utf8)
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: sourceID,
+                displayName: "Fixture",
+                state: .active
+            ),
+            reconciledItems: [first, second],
+            initialItems: [first, second],
+            startsConnected: true,
+            previewData: previewData
+        )
+        let cache = FakeSelectedAssetEmbeddingCache()
+        let model = LibraryWorkspaceModel(
+            service: service,
+            selectedAssetEmbeddingCache: cache
+        )
+        await model.start()
+        await model.selectAsset(first.assetID)
+        await model.cacheSelectedAssetEmbedding()
+        XCTAssertEqual(service.previewLoadCallCount, 1)
+
+        await model.selectAsset(second.assetID, additive: true)
+        await model.cacheSelectedAssetEmbedding()
+
+        let requests = await cache.requests()
+        XCTAssertEqual(requests.map(\.assetID), [first.assetID, second.assetID])
+        XCTAssertEqual(service.previewLoadCallCount, 2)
+        XCTAssertEqual(
+            model.notice,
+            .selectedAssetEmbeddingBatchCompleted(
+                prepared: 1,
+                skipped: 1,
+                cloudOnly: 0,
+                failed: 0
+            )
+        )
     }
 
     func testPersonalRebuildWithCloudOnlySampleFailsClosedBeforePublish() async {
@@ -4144,6 +4777,7 @@ final class LibraryWorkspaceModelTests: XCTestCase {
                     missingNegativeCount: 0,
                     canGenerate: true,
                     canUpdate: false,
+                    canGeneratePersonalModel: true,
                     canReview: false,
                     canPause: false,
                     canResume: false,
@@ -4365,12 +4999,13 @@ final class LibraryWorkspaceModelTests: XCTestCase {
 
     private static func makeAsset(
         sourceID: UUID,
+        assetID: UUID = UUID(),
         fileName: String = "sample.jpg",
         mediaType: String = "public.jpeg",
         availability: AssetAvailability = .available
     ) -> AssetGridItemProjection {
         AssetGridItemProjection(
-            assetID: UUID(),
+            assetID: assetID,
             sourceID: sourceID,
             sourceDisplayName: "Fixture",
             sourceState: .active,
@@ -5415,18 +6050,81 @@ private enum FakeWorkspaceError: Error {
 private actor FakeAppPersonalModelRebuilder: AppPersonalModelRebuilding {
     private let result: Result<AppPersonalLinearHeadIdentity, Error>
     private var storedCallCount = 0
+    private var storedSnapshots: [PersonalTrainingSnapshot] = []
 
     init(result: Result<AppPersonalLinearHeadIdentity, Error>) {
         self.result = result
     }
 
-    func rebuild() async throws -> AppPersonalLinearHeadIdentity {
+    func rebuild(
+        snapshotSource: any AppPersonalTrainingSnapshotSource
+    ) async throws -> AppPersonalLinearHeadIdentity {
         storedCallCount += 1
+        storedSnapshots.append(try await snapshotSource.currentSnapshot())
         return try result.get()
     }
 
     func callCount() -> Int {
         storedCallCount
+    }
+
+    func snapshots() -> [PersonalTrainingSnapshot] {
+        storedSnapshots
+    }
+}
+
+private actor FakeAppPersonalSampleSuggester: AppPersonalSampleSuggesting {
+    private let batch: AppPersonalSampleSuggestionBatch
+    private var storedCandidates: [[PersonalSuggestionCandidate]] = []
+
+    init(batch: AppPersonalSampleSuggestionBatch) {
+        self.batch = batch
+    }
+
+    func suggest(
+        candidates: [PersonalSuggestionCandidate],
+        maximumSuggestionsPerAsset _: Int,
+        embedding: @escaping @Sendable (PersonalSuggestionCandidate) async throws -> AppCoreMLEmbedding
+    ) async throws -> AppPersonalSampleSuggestionBatch {
+        storedCandidates.append(candidates)
+        for candidate in candidates {
+            _ = try await embedding(candidate)
+        }
+        return batch
+    }
+
+    func requestedCandidates() -> [PersonalSuggestionCandidate] {
+        storedCandidates.last ?? []
+    }
+}
+
+private actor FakeAppPersonalTagLibrarySuggester: AppPersonalTagLibrarySuggesting {
+    private let batch: AppPersonalTagLibrarySuggestionBatch
+    private var storedTagIDs: [UUID] = []
+    private var storedCandidates: [[PersonalSuggestionCandidate]] = []
+
+    init(batch: AppPersonalTagLibrarySuggestionBatch) {
+        self.batch = batch
+    }
+
+    func suggest(
+        tagID: UUID,
+        candidates: [PersonalSuggestionCandidate],
+        maximumPendingCount _: Int,
+        embedding: @escaping @Sendable (PersonalSuggestionCandidate) async throws -> AppCoreMLEmbedding,
+        progress: (@Sendable (Int, Int, Int) -> Void)?
+    ) async throws -> AppPersonalTagLibrarySuggestionBatch {
+        storedTagIDs.append(tagID)
+        storedCandidates.append(candidates)
+        for (index, candidate) in candidates.enumerated() {
+            _ = try await embedding(candidate)
+            progress?(index + 1, min(index + 1, batch.hits.count), batch.skippedCount)
+        }
+        return batch
+    }
+
+    func requestedTagIDs() -> [UUID] {
+        storedTagIDs
     }
 }
 
@@ -5438,6 +6136,7 @@ private struct SelectedAssetEmbeddingCacheRequest: Equatable {
 
 private actor FakeSelectedAssetEmbeddingCache: AppSelectedAssetEmbeddingCaching {
     private var storedRequests: [SelectedAssetEmbeddingCacheRequest] = []
+    private var cachedKeys: Set<String> = []
     private let failure: Error?
 
     init(failure: Error? = nil) {
@@ -5450,14 +6149,7 @@ private actor FakeSelectedAssetEmbeddingCache: AppSelectedAssetEmbeddingCaching 
         imageData: @escaping @Sendable () async throws -> Data
     ) async throws -> AppCoreMLCachedEmbedding {
         if let failure { throw failure }
-        let data = try await imageData()
-        storedRequests.append(
-            SelectedAssetEmbeddingCacheRequest(
-                assetID: assetID,
-                contentRevision: contentRevision,
-                imageData: data
-            )
-        )
+        let key = "\(assetID.uuidString.lowercased())|\(contentRevision)"
         let identity = AppCoreMLModelIdentity(
             provider: "dinov2",
             modelID: "facebook/dinov2-small",
@@ -5472,6 +6164,23 @@ private actor FakeSelectedAssetEmbeddingCache: AppSelectedAssetEmbeddingCaching 
             manifestSHA256: String(repeating: "3", count: 64),
             licenseID: "Apache-2.0",
             licenseSHA256: String(repeating: "4", count: 64)
+        )
+        if cachedKeys.contains(key) {
+            return AppCoreMLCachedEmbedding(
+                identity: identity,
+                values: [0.5],
+                vectorSHA256: String(repeating: "5", count: 64),
+                origin: .cacheHit
+            )
+        }
+        let data = try await imageData()
+        cachedKeys.insert(key)
+        storedRequests.append(
+            SelectedAssetEmbeddingCacheRequest(
+                assetID: assetID,
+                contentRevision: contentRevision,
+                imageData: data
+            )
         )
         return AppCoreMLCachedEmbedding(
             identity: identity,
@@ -5489,6 +6198,12 @@ private actor FakeSelectedAssetEmbeddingCache: AppSelectedAssetEmbeddingCaching 
 private struct FakePersonalSuggestionReplacement: Equatable {
     let candidate: PersonalSuggestionCandidate
     let predictions: [PersonalSuggestionPrediction]
+    let expectedCapability: PersonalModelSuggestionCapability
+}
+
+private struct FakePersonalTagLibraryReplacement: Equatable {
+    let tagID: UUID
+    let hits: [AppPersonalTagLibrarySuggestionHit]
     let expectedCapability: PersonalModelSuggestionCapability
 }
 
@@ -5511,6 +6226,7 @@ private final class FakePersonalizationReviewPort: PersonalizationReviewPort, @u
     private var storedStandardLibraryJob: StandardLibrarySuggestionJobProjection?
     private var storedPersonalLibraryJob: PersonalLibrarySuggestionJobProjection?
     private var storedPersonalSuggestionReplacements: [FakePersonalSuggestionReplacement] = []
+    private var storedPersonalTagLibraryReplacements: [FakePersonalTagLibraryReplacement] = []
     private var storedStandardSuggestionReplacements: [FakeStandardSuggestionReplacement] = []
     private var storedPersonalSuggestionInvalidationCallCount = 0
     private var storedPersonalModelRebuildEnqueueCallCount = 0
@@ -5563,6 +6279,10 @@ private final class FakePersonalizationReviewPort: PersonalizationReviewPort, @u
         lock.withLock { storedPersonalSuggestionReplacements }
     }
 
+    var personalTagLibraryReplacements: [FakePersonalTagLibraryReplacement] {
+        lock.withLock { storedPersonalTagLibraryReplacements }
+    }
+
     var standardSuggestionReplacements: [FakeStandardSuggestionReplacement] {
         lock.withLock { storedStandardSuggestionReplacements }
     }
@@ -5611,6 +6331,29 @@ private final class FakePersonalizationReviewPort: PersonalizationReviewPort, @u
         return trainingSnapshot
     }
 
+    func personalTrainingSnapshot(limitingToAssetIDs assetIDs: Set<UUID>) throws -> PersonalTrainingSnapshot {
+        let base = try personalTrainingSnapshot()
+        let scopedDecisions = base.decisions.filter { assetIDs.contains($0.assetID) }
+        let acceptedCounts = Dictionary(
+            grouping: scopedDecisions.filter { $0.state == .manualAccepted },
+            by: \.tagID
+        ).mapValues(\.count)
+        let trainableTagIDs = Set(
+            acceptedCounts.compactMap { tagID, count in
+                count >= 2 ? tagID : nil
+            }
+        )
+        let decisions = scopedDecisions.filter { trainableTagIDs.contains($0.tagID) }
+        let tagIDs = Array(trainableTagIDs).sorted {
+            $0.uuidString.lowercased() < $1.uuidString.lowercased()
+        }
+        return PersonalTrainingSnapshot(
+            catalogScopeID: base.catalogScopeID,
+            personalTagIDs: tagIDs,
+            decisions: decisions
+        )
+    }
+
     func enqueuePersonalModelRebuildIfReady() throws -> UUID? {
         lock.withLock {
             storedPersonalModelRebuildEnqueueCallCount += 1
@@ -5653,6 +6396,23 @@ private final class FakePersonalizationReviewPort: PersonalizationReviewPort, @u
         }
     }
 
+    func replacePersonalTagLibrarySuggestions(
+        tagID: UUID,
+        hits: [AppPersonalTagLibrarySuggestionHit],
+        expectedCapability: PersonalModelSuggestionCapability
+    ) throws -> Int {
+        lock.withLock {
+            storedPersonalTagLibraryReplacements.append(
+                FakePersonalTagLibraryReplacement(
+                    tagID: tagID,
+                    hits: hits,
+                    expectedCapability: expectedCapability
+                )
+            )
+            return hits.count
+        }
+    }
+
     func replaceStandardSuggestions(
         assetID: UUID,
         contentRevision: Int,
@@ -5680,6 +6440,7 @@ private final class FakePersonalizationReviewPort: PersonalizationReviewPort, @u
             storedPersonalSuggestionInvalidationCallCount += 1
             storedActivatedPersonalCapability = nil
             storedPersonalSuggestionReplacements = []
+            storedPersonalTagLibraryReplacements = []
         }
     }
 

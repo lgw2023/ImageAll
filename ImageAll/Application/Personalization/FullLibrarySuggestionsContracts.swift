@@ -8,6 +8,8 @@ enum FullLibrarySuggestionsJobFactory {
     static let maxAttempts = 5
     static let priority = -1
     static let scanBatchSize = 100
+    /// Per-tag review queue keeps only the highest-scoring pending suggestions.
+    static let maxPendingSuggestionsPerTag = 100
 
     static func coalescingKey(tagID: UUID) -> String {
         "personalization:\(tagID.uuidString.lowercased())"

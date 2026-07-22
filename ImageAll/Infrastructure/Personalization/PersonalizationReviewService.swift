@@ -54,6 +54,7 @@ struct PersonalizationReviewService: PersonalizationReviewPort, Sendable {
             let samplesReady = missingPositive == 0 && missingNegative == 0
             let canGenerate = !isStandard && samplesReady && !hasModel && job == nil
             let canUpdate = !isStandard && samplesReady && hasModel && job == nil
+            let canGeneratePersonalModel = !isStandard && samples.accepted >= 2 && job == nil
             return SuggestionTagOverview(
                 id: tag.id,
                 displayName: tag.displayName,
@@ -68,6 +69,7 @@ struct PersonalizationReviewService: PersonalizationReviewPort, Sendable {
                 missingNegativeCount: missingNegative,
                 canGenerate: canGenerate,
                 canUpdate: canUpdate,
+                canGeneratePersonalModel: canGeneratePersonalModel,
                 canReview: pending > 0,
                 canPause: job?.state == .running || job?.state == .pending,
                 canResume: job?.state == .paused,
@@ -79,6 +81,10 @@ struct PersonalizationReviewService: PersonalizationReviewPort, Sendable {
 
     func personalTrainingSnapshot() throws -> PersonalTrainingSnapshot {
         try review.personalTrainingSnapshot()
+    }
+
+    func personalTrainingSnapshot(limitingToAssetIDs assetIDs: Set<UUID>) throws -> PersonalTrainingSnapshot {
+        try review.personalTrainingSnapshot(limitingToAssetIDs: assetIDs)
     }
 
     func enqueuePersonalModelRebuildIfReady() throws -> UUID? {
@@ -140,6 +146,19 @@ struct PersonalizationReviewService: PersonalizationReviewPort, Sendable {
         try review.replacePersonalSuggestions(
             candidate: candidate,
             predictions: predictions,
+            expectedCapability: expectedCapability,
+            createdAtMs: clock.nowMs
+        )
+    }
+
+    func replacePersonalTagLibrarySuggestions(
+        tagID: UUID,
+        hits: [AppPersonalTagLibrarySuggestionHit],
+        expectedCapability: PersonalModelSuggestionCapability
+    ) throws -> Int {
+        try review.replacePersonalTagLibrarySuggestions(
+            tagID: tagID,
+            hits: hits,
             expectedCapability: expectedCapability,
             createdAtMs: clock.nowMs
         )

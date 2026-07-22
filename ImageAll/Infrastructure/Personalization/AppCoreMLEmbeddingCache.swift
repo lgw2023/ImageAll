@@ -434,13 +434,6 @@ actor AppSelectedAssetEmbeddingCacheRuntime: AppSelectedAssetEmbeddingCaching {
         guard let service = await activationCoordinator.readyService() else {
             throw AppSelectedAssetEmbeddingCacheError.modelUnavailable
         }
-        let data = try await imageData()
-        guard let source = CGImageSourceCreateWithData(data as CFData, nil),
-              CGImageSourceGetCount(source) == 1,
-              let image = CGImageSourceCreateImageAtIndex(source, 0, nil)
-        else {
-            throw AppSelectedAssetEmbeddingCacheError.invalidImage
-        }
         let key = AppCoreMLEmbeddingCacheKey(
             catalogScopeID: catalogScopeID,
             assetID: assetID,
@@ -450,6 +443,16 @@ actor AppSelectedAssetEmbeddingCacheRuntime: AppSelectedAssetEmbeddingCaching {
             cachesDirectory: cachesDirectory,
             service: service
         )
+        if let hit = try cache.cachedEmbedding(for: key) {
+            return hit
+        }
+        let data = try await imageData()
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil),
+              CGImageSourceGetCount(source) == 1,
+              let image = CGImageSourceCreateImageAtIndex(source, 0, nil)
+        else {
+            throw AppSelectedAssetEmbeddingCacheError.invalidImage
+        }
         let result = try cache.embedding(for: image, key: key)
         guard let persisted = try cache.cachedEmbedding(for: key),
               persisted.identity == result.identity,

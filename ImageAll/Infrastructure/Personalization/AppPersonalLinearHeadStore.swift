@@ -62,6 +62,18 @@ actor AppPersonalLinearHeadStore {
         return try activeModel.suggestions(for: embedding, maximumCount: maximumCount)
     }
 
+    func score(
+        tagID: UUID,
+        embedding: AppCoreMLEmbedding
+    ) throws -> Float? {
+        guard let activeModel,
+              state == .ready(activeModel.identity)
+        else {
+            throw AppPersonalLinearHeadStoreError.unavailable
+        }
+        return try activeModel.score(tagID: tagID, embedding: embedding)
+    }
+
     func publish(
         _ artifact: AppPersonalLinearHeadArtifact
     ) throws -> AppPersonalLinearHeadCapability {

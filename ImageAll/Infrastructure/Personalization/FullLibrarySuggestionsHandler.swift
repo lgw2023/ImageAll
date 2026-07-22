@@ -302,6 +302,12 @@ struct FullLibrarySuggestionsHandler: LeaseBoundJobHandler, Sendable {
                                 on: db
                             )
                         }
+                        try catalog.retainTopPendingPredictions(
+                            tagID: decodedPayload.tagID,
+                            modelRevision: modelRevision,
+                            limit: FullLibrarySuggestionsJobFactory.maxPendingSuggestionsPerTag,
+                            on: db
+                        )
                     }
                     firstBatchPublished = true
                 } else if !predictions.isEmpty {
@@ -319,6 +325,12 @@ struct FullLibrarySuggestionsHandler: LeaseBoundJobHandler, Sendable {
                             modelRevision: modelRevision,
                             predictions: predictions,
                             createdAtMs: createdAtMs,
+                            on: db
+                        )
+                        try catalog.retainTopPendingPredictions(
+                            tagID: decodedPayload.tagID,
+                            modelRevision: modelRevision,
+                            limit: FullLibrarySuggestionsJobFactory.maxPendingSuggestionsPerTag,
                             on: db
                         )
                     }

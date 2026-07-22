@@ -25,15 +25,16 @@ final class AppPersonalModelRebuildCoordinatorTests: XCTestCase {
         let runtime = AppPersonalModelRebuildRuntime(
             expectedCatalogScopeID: catalogScopeID,
             activationCoordinator: activation,
-            snapshotSource: FixedSnapshotSource(
-                snapshot: makeTrainingSnapshot(catalogScopeID: catalogScopeID)
-            ),
             cachesDirectory: cachesDirectory,
             applicationSupportDirectory: applicationSupportDirectory
         )
 
         do {
-            _ = try await runtime.rebuild()
+            _ = try await runtime.rebuild(
+                snapshotSource: FixedSnapshotSource(
+                    snapshot: makeTrainingSnapshot(catalogScopeID: catalogScopeID)
+                )
+            )
             XCTFail("expected disabled model to reject App personal rebuild")
         } catch {
             XCTAssertEqual(error as? AppPersonalModelRebuildError, .modelUnavailable)
@@ -88,12 +89,13 @@ final class AppPersonalModelRebuildCoordinatorTests: XCTestCase {
         let runtime = AppPersonalModelRebuildRuntime(
             expectedCatalogScopeID: snapshot.catalogScopeID,
             activationCoordinator: activation,
-            snapshotSource: FixedSnapshotSource(snapshot: snapshot),
             cachesDirectory: cachesDirectory,
             applicationSupportDirectory: applicationSupportDirectory
         )
 
-        let identity = try await runtime.rebuild()
+        let identity = try await runtime.rebuild(
+            snapshotSource: FixedSnapshotSource(snapshot: snapshot)
+        )
 
         XCTAssertEqual(identity.catalogScopeID, snapshot.catalogScopeID)
         XCTAssertEqual(identity.encoderIdentity, encoderIdentity)
@@ -347,7 +349,7 @@ final class AppPersonalModelRebuildCoordinatorTests: XCTestCase {
         let insufficientSnapshot = PersonalTrainingSnapshot(
             catalogScopeID: completeSnapshot.catalogScopeID,
             personalTagIDs: completeSnapshot.personalTagIDs,
-            decisions: Array(completeSnapshot.decisions.dropLast())
+            decisions: Array(completeSnapshot.decisions.prefix(1))
         )
         let coordinator = AppPersonalModelRebuildCoordinator(
             expectedCatalogScopeID: insufficientSnapshot.catalogScopeID,
@@ -376,10 +378,6 @@ final class AppPersonalModelRebuildCoordinatorTests: XCTestCase {
             UUID(uuidString: "20000000-0000-0000-0000-000000000001")!,
             UUID(uuidString: "20000000-0000-0000-0000-000000000002")!,
         ]
-        let rejected = [
-            UUID(uuidString: "30000000-0000-0000-0000-000000000001")!,
-            UUID(uuidString: "30000000-0000-0000-0000-000000000002")!,
-        ]
         return PersonalTrainingSnapshot(
             catalogScopeID: catalogScopeID,
             personalTagIDs: [tagID],
@@ -390,13 +388,6 @@ final class AppPersonalModelRebuildCoordinatorTests: XCTestCase {
                     tagID: tagID,
                     state: .manualAccepted
                 )
-            } + rejected.map {
-                PersonalTrainingDecision(
-                    assetID: $0,
-                    contentRevision: contentRevision,
-                    tagID: tagID,
-                    state: .manualRejected
-                )
             }
         )
     }
@@ -405,10 +396,10 @@ final class AppPersonalModelRebuildCoordinatorTests: XCTestCase {
         for snapshot: PersonalTrainingSnapshot
     ) -> [UUID: [Float]] {
         Dictionary(
-            uniqueKeysWithValues: snapshot.decisions.map { decision in
+            uniqueKeysWithValues: snapshot.decisions.enumerated().map { index, decision in
                 (
                     decision.assetID,
-                    decision.state == .manualAccepted ? [1, 0] : [0, 1]
+                    index == 0 ? [1, 0] : [0.8, 0.1]
                 )
             }
         )

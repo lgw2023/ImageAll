@@ -40,7 +40,6 @@ struct AppPersonalTrainingEmbeddingCacheSource: AppPersonalTrainingEmbeddingSour
 actor AppPersonalModelRebuildRuntime: AppPersonalModelRebuilding {
     private let expectedCatalogScopeID: String
     private let activationCoordinator: AppModelActivationCoordinator
-    private let snapshotSource: any AppPersonalTrainingSnapshotSource
     private let cachesDirectory: URL
     private let applicationSupportDirectory: URL
     private var isRebuilding = false
@@ -49,18 +48,18 @@ actor AppPersonalModelRebuildRuntime: AppPersonalModelRebuilding {
     init(
         expectedCatalogScopeID: String,
         activationCoordinator: AppModelActivationCoordinator,
-        snapshotSource: any AppPersonalTrainingSnapshotSource,
         cachesDirectory: URL,
         applicationSupportDirectory: URL
     ) {
         self.expectedCatalogScopeID = expectedCatalogScopeID
         self.activationCoordinator = activationCoordinator
-        self.snapshotSource = snapshotSource
         self.cachesDirectory = cachesDirectory
         self.applicationSupportDirectory = applicationSupportDirectory
     }
 
-    func rebuild() async throws -> AppPersonalLinearHeadIdentity {
+    func rebuild(
+        snapshotSource: any AppPersonalTrainingSnapshotSource
+    ) async throws -> AppPersonalLinearHeadIdentity {
         guard !isRebuilding else {
             throw AppPersonalModelRebuildError.alreadyRunning
         }
@@ -99,7 +98,7 @@ actor AppPersonalModelRebuildRuntime: AppPersonalModelRebuilding {
     }
 }
 
-actor AppPersonalModelRebuildCoordinator: AppPersonalModelRebuilding {
+actor AppPersonalModelRebuildCoordinator {
     private let expectedCatalogScopeID: String
     private let encoderIdentity: AppCoreMLModelIdentity
     private let snapshotSource: any AppPersonalTrainingSnapshotSource

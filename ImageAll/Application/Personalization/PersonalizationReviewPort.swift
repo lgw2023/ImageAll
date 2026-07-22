@@ -28,6 +28,8 @@ struct SuggestionTagOverview: Identifiable, Equatable, Sendable {
     let missingNegativeCount: Int
     let canGenerate: Bool
     let canUpdate: Bool
+    /// Personal-model path needs ≥2 accepted samples; negatives are not required.
+    let canGeneratePersonalModel: Bool
     let canReview: Bool
     let canPause: Bool
     let canResume: Bool
@@ -128,13 +130,35 @@ enum PersonalizationReviewEnqueueMode: Equatable, Sendable {
     case update
 }
 
+enum SuggestionGenerationMethod: Equatable, Sendable {
+    /// Feature-vector k-NN over frozen accept/reject samples (writes `prediction`).
+    case featureKnn
+    /// Active App personal linear head (writes `personal_prediction`).
+    case personalModel
+}
+
 struct SuggestionEnqueueConfirmation: Identifiable, Equatable, Sendable {
     let tagID: UUID
     let displayName: String
     let mode: PersonalizationReviewEnqueueMode
     let sourceCount: Int
+    let method: SuggestionGenerationMethod
 
-    var id: UUID { tagID }
+    init(
+        tagID: UUID,
+        displayName: String,
+        mode: PersonalizationReviewEnqueueMode,
+        sourceCount: Int,
+        method: SuggestionGenerationMethod = .featureKnn
+    ) {
+        self.tagID = tagID
+        self.displayName = displayName
+        self.mode = mode
+        self.sourceCount = sourceCount
+        self.method = method
+    }
+
+    var id: String { "\(tagID.uuidString.lowercased()):\(method)" }
 }
 
 struct PersonalLibrarySuggestionJobProjection: Equatable, Sendable {
@@ -161,6 +185,7 @@ protocol PersonalizationReviewPort: Sendable {
     func totalPendingSuggestionCount() throws -> Int
     func tagOverviews() throws -> [SuggestionTagOverview]
     func personalTrainingSnapshot() throws -> PersonalTrainingSnapshot
+    func personalTrainingSnapshot(limitingToAssetIDs assetIDs: Set<UUID>) throws -> PersonalTrainingSnapshot
     func enqueuePersonalModelRebuildIfReady() throws -> UUID?
     func fetchReviewQueue(
         tagID: UUID,
@@ -178,6 +203,12 @@ protocol PersonalizationReviewPort: Sendable {
     func replacePersonalSuggestions(
         candidate: PersonalSuggestionCandidate,
         predictions: [PersonalSuggestionPrediction],
+        expectedCapability: PersonalModelSuggestionCapability
+    ) throws -> Int
+    /// Replaces pending personal-model suggestions for one tag (Top-N already applied by caller).
+    func replacePersonalTagLibrarySuggestions(
+        tagID: UUID,
+        hits: [AppPersonalTagLibrarySuggestionHit],
         expectedCapability: PersonalModelSuggestionCapability
     ) throws -> Int
     func replaceStandardSuggestions(
@@ -212,6 +243,10 @@ extension PersonalizationReviewPort {
         throw PersonalizationReviewError.persistenceFailure
     }
 
+    func personalTrainingSnapshot(limitingToAssetIDs _: Set<UUID>) throws -> PersonalTrainingSnapshot {
+        throw PersonalizationReviewError.persistenceFailure
+    }
+
     func enqueuePersonalModelRebuildIfReady() throws -> UUID? { nil }
 
     func personalSuggestionCandidates(
@@ -230,6 +265,14 @@ extension PersonalizationReviewPort {
     func replacePersonalSuggestions(
         candidate _: PersonalSuggestionCandidate,
         predictions _: [PersonalSuggestionPrediction],
+        expectedCapability _: PersonalModelSuggestionCapability
+    ) throws -> Int {
+        throw PersonalizationReviewError.persistenceFailure
+    }
+
+    func replacePersonalTagLibrarySuggestions(
+        tagID _: UUID,
+        hits _: [AppPersonalTagLibrarySuggestionHit],
         expectedCapability _: PersonalModelSuggestionCapability
     ) throws -> Int {
         throw PersonalizationReviewError.persistenceFailure

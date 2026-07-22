@@ -165,6 +165,12 @@ final class LibraryWorkspaceModel: ObservableObject {
     @Published private(set) var standardLibrarySuggestionJobID: UUID?
     @Published private(set) var isRebuildingPersonalModel = false
     @Published private(set) var isCachingSelectedAssetEmbedding = false
+    @Published private(set) var isGeneratingAppPersonalSampleSuggestions = false
+    @Published private(set) var appPersonalSampleSuggestionProgress:
+        (checked: Int, suggested: Int, skipped: Int, total: Int)?
+    @Published private(set) var isGeneratingAppPersonalTagLibrarySuggestions = false
+    @Published private(set) var appPersonalTagLibrarySuggestionProgress:
+        (checked: Int, suggested: Int, skipped: Int, total: Int)?
     @Published private(set) var isExportingPortableData = false
     @Published private(set) var previewCacheUsage = DerivedImageCacheUsage.zero
     @Published private(set) var isClearingPreviewCache = false
@@ -176,6 +182,8 @@ final class LibraryWorkspaceModel: ObservableObject {
     private let localModelSuggestions: LocalModelSuggestionRuntime?
     private let appPersonalModelRebuilder: (any AppPersonalModelRebuilding)?
     private let selectedAssetEmbeddingCache: (any AppSelectedAssetEmbeddingCaching)?
+    private let appPersonalSampleSuggester: (any AppPersonalSampleSuggesting)?
+    private let appPersonalTagLibrarySuggester: (any AppPersonalTagLibrarySuggesting)?
     private var lastTagMutation: LibraryTagUndoRecord?
     fileprivate var lastReviewMutation: ReviewMutationUndoRecord?
     private var personalizationRunnerTask: Task<Void, Never>?
@@ -202,6 +210,8 @@ final class LibraryWorkspaceModel: ObservableObject {
         localModelSuggestions: LocalModelSuggestionRuntime? = nil,
         appPersonalModelRebuilder: (any AppPersonalModelRebuilding)? = nil,
         selectedAssetEmbeddingCache: (any AppSelectedAssetEmbeddingCaching)? = nil,
+        appPersonalSampleSuggester: (any AppPersonalSampleSuggesting)? = nil,
+        appPersonalTagLibrarySuggester: (any AppPersonalTagLibrarySuggesting)? = nil,
         catalogProgressRefreshInterval: Duration = .milliseconds(750),
         searchDebounceInterval: Duration = .milliseconds(300)
     ) {
@@ -210,6 +220,8 @@ final class LibraryWorkspaceModel: ObservableObject {
         self.localModelSuggestions = localModelSuggestions
         self.appPersonalModelRebuilder = appPersonalModelRebuilder
         self.selectedAssetEmbeddingCache = selectedAssetEmbeddingCache
+        self.appPersonalSampleSuggester = appPersonalSampleSuggester
+        self.appPersonalTagLibrarySuggester = appPersonalTagLibrarySuggester
         self.catalogProgressRefreshInterval = catalogProgressRefreshInterval
         self.searchDebounceInterval = searchDebounceInterval
     }
@@ -233,12 +245,40 @@ final class LibraryWorkspaceModel: ObservableObject {
 
     var canCacheSelectedAssetEmbedding: Bool {
         supportsSelectedAssetEmbeddingCache
-            && selectedAssetIDs.count == 1
+            && !selectedAssetIDs.isEmpty
             && !isCachingSelectedAssetEmbedding
     }
 
     var supportsPersonalLibrarySuggestions: Bool {
-        localModelSuggestions != nil
+        localModelSuggestions != nil || appPersonalSampleSuggester != nil
+    }
+
+    var supportsAppPersonalSampleSuggestions: Bool {
+        appPersonalSampleSuggester != nil && selectedAssetEmbeddingCache != nil
+    }
+
+    var usesAppPersonalSampleSuggestionsPath: Bool {
+        supportsAppPersonalSampleSuggestions && localModelSuggestions == nil
+    }
+
+    var canGenerateAppPersonalSampleSuggestions: Bool {
+        supportsAppPersonalSampleSuggestions
+            && !isGeneratingAppPersonalSampleSuggestions
+            && !isGeneratingAppPersonalTagLibrarySuggestions
+            && !isRebuildingPersonalModel
+            && !isGeneratingPersonalLibrarySuggestions
+            && !isGeneratingStandardLibrarySuggestions
+    }
+
+    func canGenerateAppPersonalTagLibrarySuggestions(for overview: SuggestionTagOverview) -> Bool {
+        supportsAppPersonalSampleSuggestions
+            && appPersonalTagLibrarySuggester != nil
+            && overview.canGeneratePersonalModel
+            && !isGeneratingAppPersonalSampleSuggestions
+            && !isGeneratingAppPersonalTagLibrarySuggestions
+            && !isRebuildingPersonalModel
+            && !isGeneratingPersonalLibrarySuggestions
+            && !isGeneratingStandardLibrarySuggestions
     }
 
     var supportsStandardLibrarySuggestions: Bool {
@@ -246,6 +286,9 @@ final class LibraryWorkspaceModel: ObservableObject {
     }
 
     var isGeneratingPersonalLibrarySuggestions: Bool {
+        if isGeneratingAppPersonalSampleSuggestions || isGeneratingAppPersonalTagLibrarySuggestions {
+            return true
+        }
         switch personalLibrarySuggestionState {
         case .waiting, .running, .paused, .retryableFailure:
             return true
@@ -1324,6 +1367,10 @@ final class LibraryWorkspaceModel: ObservableObject {
     }
 
     func generatePersonalLibrarySuggestions() async {
+        if localModelSuggestions == nil, supportsAppPersonalSampleSuggestions {
+            await generateAppPersonalSampleSuggestions()
+            return
+        }
         guard !isGeneratingPersonalLibrarySuggestions,
               !isRebuildingPersonalModel
         else { return }
@@ -1383,6 +1430,265 @@ final class LibraryWorkspaceModel: ObservableObject {
             personalLibrarySuggestionState = .idle
         } catch {
             personalLibrarySuggestionState = .failed
+        }
+    }
+
+    func generateAppPersonalSampleSuggestions() async {
+        guard canGenerateAppPersonalSampleSuggestions,
+              let suggester = appPersonalSampleSuggester,
+              let cache = selectedAssetEmbeddingCache
+        else {
+            return
+        }
+
+        isGeneratingAppPersonalSampleSuggestions = true
+        appPersonalSampleSuggestionProgress = nil
+        notice = nil
+        personalLibrarySuggestionState = .waiting(checked: 0, suggested: 0, skipped: 0)
+        defer {
+            isGeneratingAppPersonalSampleSuggestions = false
+            appPersonalSampleSuggestionProgress = nil
+        }
+
+        do {
+            let candidates = try await resolveAppPersonalSampleCandidates()
+            guard !candidates.isEmpty else {
+                notice = .personalSampleSuggestionsNotReady
+                personalLibrarySuggestionState = .personalUnavailable
+                return
+            }
+
+            let total = candidates.count
+            personalLibrarySuggestionState = .running(
+                checked: 0,
+                suggested: 0,
+                skipped: 0
+            )
+            appPersonalSampleSuggestionProgress = (0, 0, 0, total)
+
+            let service = service
+            let batch = try await suggester.suggest(
+                candidates: candidates,
+                maximumSuggestionsPerAsset:
+                    AppPersonalSampleSuggestionLimits.defaultMaximumSuggestionsPerAsset,
+                embedding: { candidate in
+                    let result = try await cache.cacheSelectedAsset(
+                        assetID: candidate.assetID,
+                        contentRevision: candidate.contentRevision,
+                        imageData: {
+                            try await service.loadPreview(assetID: candidate.assetID)
+                        }
+                    )
+                    return AppCoreMLEmbedding(identity: result.identity, values: result.values)
+                }
+            )
+
+            let reviewPort = review
+            try await Self.offMain {
+                try reviewPort.activatePersonalSuggestionBundle(batch.capability)
+                for result in batch.results {
+                    _ = try reviewPort.replacePersonalSuggestions(
+                        candidate: result.candidate,
+                        predictions: result.predictions,
+                        expectedCapability: batch.capability
+                    )
+                }
+            }
+
+            let checked = candidates.count
+            let suggested = batch.results.reduce(0) { $0 + $1.predictions.count }
+            let skipped = batch.skippedCount
+            await refreshReviewState()
+            // App 路径不入 job 队列；refresh 会把状态清回 idle，完成后需再写回。
+            personalLibrarySuggestionState = .completed(
+                checked: checked,
+                suggested: suggested,
+                skipped: skipped
+            )
+            notice = .personalSampleSuggestionsCompleted(
+                checked: checked,
+                suggested: suggested,
+                skipped: skipped
+            )
+        } catch AppPersonalSampleSuggestionError.personalUnavailable {
+            notice = .personalSampleSuggestionsNotReady
+            personalLibrarySuggestionState = .personalUnavailable
+        } catch AppPersonalSampleSuggestionError.modelUnavailable {
+            notice = .personalSampleSuggestionsModelUnavailable
+            personalLibrarySuggestionState = .serviceUnavailable
+        } catch is CancellationError {
+            personalLibrarySuggestionState = .idle
+        } catch {
+            notice = .personalSampleSuggestionsFailed
+            personalLibrarySuggestionState = .failed
+        }
+    }
+
+    func generateAppPersonalTagLibrarySuggestions(tagID: UUID, displayName: String) async {
+        guard let overview = suggestionOverviews.first(where: { $0.id == tagID }),
+              canGenerateAppPersonalTagLibrarySuggestions(for: overview),
+              let suggester = appPersonalTagLibrarySuggester,
+              let cache = selectedAssetEmbeddingCache
+        else {
+            return
+        }
+
+        isGeneratingAppPersonalTagLibrarySuggestions = true
+        appPersonalTagLibrarySuggestionProgress = nil
+        notice = nil
+        personalLibrarySuggestionState = .waiting(checked: 0, suggested: 0, skipped: 0)
+        defer {
+            isGeneratingAppPersonalTagLibrarySuggestions = false
+            appPersonalTagLibrarySuggestionProgress = nil
+        }
+
+        do {
+            let candidates = try await resolveAllPersonalSuggestionCandidates()
+            guard !candidates.isEmpty else {
+                notice = .personalTagLibrarySuggestionsNotReady
+                personalLibrarySuggestionState = .personalUnavailable
+                return
+            }
+
+            let total = candidates.count
+            personalLibrarySuggestionState = .running(
+                checked: 0,
+                suggested: 0,
+                skipped: 0
+            )
+            appPersonalTagLibrarySuggestionProgress = (0, 0, 0, total)
+
+            let service = service
+            let batch = try await suggester.suggest(
+                tagID: tagID,
+                candidates: candidates,
+                maximumPendingCount: AppPersonalTagLibrarySuggestionLimits.maxPendingSuggestionsPerTag,
+                embedding: { candidate in
+                    let result = try await cache.cacheSelectedAsset(
+                        assetID: candidate.assetID,
+                        contentRevision: candidate.contentRevision,
+                        imageData: {
+                            try await service.loadPreview(assetID: candidate.assetID)
+                        }
+                    )
+                    return AppCoreMLEmbedding(identity: result.identity, values: result.values)
+                },
+                progress: { [weak self] checked, suggested, skipped in
+                    Task { @MainActor in
+                        guard let self else { return }
+                        self.appPersonalTagLibrarySuggestionProgress = (
+                            checked,
+                            suggested,
+                            skipped,
+                            total
+                        )
+                        self.personalLibrarySuggestionState = .running(
+                            checked: checked,
+                            suggested: suggested,
+                            skipped: skipped
+                        )
+                    }
+                }
+            )
+
+            let reviewPort = review
+            let inserted = try await Self.offMain {
+                try reviewPort.activatePersonalSuggestionBundle(batch.capability)
+                return try reviewPort.replacePersonalTagLibrarySuggestions(
+                    tagID: batch.tagID,
+                    hits: batch.hits,
+                    expectedCapability: batch.capability
+                )
+            }
+
+            await refreshReviewState()
+            personalLibrarySuggestionState = .completed(
+                checked: batch.checkedCount,
+                suggested: inserted,
+                skipped: batch.skippedCount
+            )
+            notice = .personalTagLibrarySuggestionsCompleted(
+                tagName: displayName,
+                checked: batch.checkedCount,
+                suggested: inserted,
+                skipped: batch.skippedCount
+            )
+        } catch AppPersonalTagLibrarySuggestionError.personalUnavailable {
+            notice = .personalTagLibrarySuggestionsNotReady
+            personalLibrarySuggestionState = .personalUnavailable
+        } catch AppPersonalTagLibrarySuggestionError.tagNotInPersonalModel {
+            notice = .personalTagLibrarySuggestionsTagNotInModel
+            personalLibrarySuggestionState = .personalUnavailable
+        } catch AppPersonalTagLibrarySuggestionError.modelUnavailable {
+            notice = .personalTagLibrarySuggestionsModelUnavailable
+            personalLibrarySuggestionState = .serviceUnavailable
+        } catch is CancellationError {
+            personalLibrarySuggestionState = .idle
+        } catch {
+            notice = .personalTagLibrarySuggestionsFailed
+            personalLibrarySuggestionState = .failed
+        }
+    }
+
+    private func resolveAllPersonalSuggestionCandidates() async throws -> [PersonalSuggestionCandidate] {
+        let reviewPort = review
+        let pageSize = AppPersonalTagLibrarySuggestionLimits.candidatePageSize
+        var candidates: [PersonalSuggestionCandidate] = []
+        var afterAssetID: UUID?
+        while true {
+            let pageAfter = afterAssetID
+            let page = try await Self.offMain {
+                try reviewPort.personalSuggestionCandidates(
+                    afterAssetID: pageAfter,
+                    limit: pageSize
+                )
+            }
+            if page.isEmpty { break }
+            candidates.append(contentsOf: page)
+            afterAssetID = page.last?.assetID
+            if page.count < pageSize { break }
+        }
+        return candidates
+    }
+
+    private func resolveAppPersonalSampleCandidates() async throws -> [PersonalSuggestionCandidate] {
+        let limit = AppPersonalSampleSuggestionLimits.defaultSampleCount
+        let selected = selectedAssetIDs
+        if !selected.isEmpty {
+            let orderedIDs = displayedAssetIDsInGridOrder.filter(selected.contains)
+            let remaining = selected.subtracting(orderedIDs).sorted {
+                $0.uuidString.lowercased() < $1.uuidString.lowercased()
+            }
+            let assetIDs = Array((orderedIDs + remaining).prefix(limit))
+            let itemsByID = Dictionary(uniqueKeysWithValues: items.map { ($0.assetID, $0) })
+            let service = service
+            var candidates: [PersonalSuggestionCandidate] = []
+            for assetID in assetIDs {
+                let contentRevision: Int
+                if let item = itemsByID[assetID], item.contentRevision > 0 {
+                    contentRevision = item.contentRevision
+                } else {
+                    let detail = try await Self.offMain {
+                        try service.fetchInspectorDetail(assetID: assetID)
+                    }
+                    guard detail.assetID == assetID, detail.contentRevision > 0 else {
+                        continue
+                    }
+                    contentRevision = detail.contentRevision
+                }
+                candidates.append(
+                    PersonalSuggestionCandidate(
+                        assetID: assetID,
+                        contentRevision: contentRevision
+                    )
+                )
+            }
+            return candidates
+        }
+
+        let reviewPort = review
+        return try await Self.offMain {
+            try reviewPort.personalSuggestionCandidates(afterAssetID: nil, limit: limit)
         }
     }
 
@@ -1641,7 +1947,7 @@ final class LibraryWorkspaceModel: ObservableObject {
     func cacheSelectedAssetEmbedding() async {
         guard !isCachingSelectedAssetEmbedding,
               let cache = selectedAssetEmbeddingCache,
-              let assetID = primarySelectedAssetID
+              !selectedAssetIDs.isEmpty
         else {
             return
         }
@@ -1649,38 +1955,84 @@ final class LibraryWorkspaceModel: ObservableObject {
         notice = nil
         defer { isCachingSelectedAssetEmbedding = false }
 
-        do {
-            let service = service
-            let detail = try await Self.offMain {
-                try service.fetchInspectorDetail(assetID: assetID)
-            }
-            guard detail.assetID == assetID, detail.contentRevision > 0 else {
-                throw AppSelectedAssetEmbeddingCacheError.invalidAsset
-            }
-            let downloadedData: Data?
-            if case let .downloaded(downloadedAssetID, data) = cloudPreviewState,
-               downloadedAssetID == assetID
-            {
-                downloadedData = data
-            } else {
-                downloadedData = nil
-            }
-            _ = try await cache.cacheSelectedAsset(
-                assetID: assetID,
-                contentRevision: detail.contentRevision,
-                imageData: {
-                    if let downloadedData { return downloadedData }
-                    return try await service.loadPreview(assetID: assetID)
-                }
-            )
-            notice = .selectedAssetEmbeddingCached
-        } catch AppSelectedAssetEmbeddingCacheError.modelUnavailable {
-            notice = .selectedAssetEmbeddingModelUnavailable
-        } catch PhotosLibraryError.cloudOnly {
-            notice = .selectedAssetEmbeddingPreviewUnavailable
-        } catch {
-            notice = .selectedAssetEmbeddingFailed
+        let selected = selectedAssetIDs
+        let orderedIDs = displayedAssetIDsInGridOrder.filter(selected.contains)
+        let remaining = selected.subtracting(orderedIDs).sorted {
+            $0.uuidString.lowercased() < $1.uuidString.lowercased()
         }
+        let assetIDs = orderedIDs + remaining
+        let itemsByID = Dictionary(uniqueKeysWithValues: items.map { ($0.assetID, $0) })
+        let service = service
+
+        var prepared = 0
+        var skipped = 0
+        var cloudOnly = 0
+        var failed = 0
+
+        for assetID in assetIDs {
+            do {
+                let contentRevision: Int
+                if let item = itemsByID[assetID], item.contentRevision > 0 {
+                    contentRevision = item.contentRevision
+                } else {
+                    let detail = try await Self.offMain {
+                        try service.fetchInspectorDetail(assetID: assetID)
+                    }
+                    guard detail.assetID == assetID, detail.contentRevision > 0 else {
+                        throw AppSelectedAssetEmbeddingCacheError.invalidAsset
+                    }
+                    contentRevision = detail.contentRevision
+                }
+
+                let downloadedData: Data?
+                if case let .downloaded(downloadedAssetID, data) = cloudPreviewState,
+                   downloadedAssetID == assetID
+                {
+                    downloadedData = data
+                } else {
+                    downloadedData = nil
+                }
+
+                let result = try await cache.cacheSelectedAsset(
+                    assetID: assetID,
+                    contentRevision: contentRevision,
+                    imageData: {
+                        if let downloadedData { return downloadedData }
+                        return try await service.loadPreview(assetID: assetID)
+                    }
+                )
+                if result.origin == .cacheHit {
+                    skipped += 1
+                } else {
+                    prepared += 1
+                }
+            } catch AppSelectedAssetEmbeddingCacheError.modelUnavailable {
+                notice = .selectedAssetEmbeddingModelUnavailable
+                return
+            } catch PhotosLibraryError.cloudOnly {
+                cloudOnly += 1
+            } catch {
+                failed += 1
+            }
+        }
+
+        if assetIDs.count == 1 {
+            if prepared == 1 || skipped == 1 {
+                notice = .selectedAssetEmbeddingCached
+            } else if cloudOnly == 1 {
+                notice = .selectedAssetEmbeddingPreviewUnavailable
+            } else {
+                notice = .selectedAssetEmbeddingFailed
+            }
+            return
+        }
+
+        notice = .selectedAssetEmbeddingBatchCompleted(
+            prepared: prepared,
+            skipped: skipped,
+            cloudOnly: cloudOnly,
+            failed: failed
+        )
     }
 
     private func rebuildAppPersonalModel(
@@ -1691,8 +2043,24 @@ final class LibraryWorkspaceModel: ObservableObject {
         defer { isRebuildingPersonalModel = false }
 
         do {
-            let snapshot = try review.personalTrainingSnapshot()
-            let identity = try await rebuilder.rebuild()
+            let selected = selectedAssetIDs
+            let review = review
+            let snapshotSource = AppPersonalTrainingSnapshotPortSource {
+                if selected.isEmpty {
+                    try review.personalTrainingSnapshot()
+                } else {
+                    try review.personalTrainingSnapshot(limitingToAssetIDs: selected)
+                }
+            }
+            let snapshot = try await snapshotSource.currentSnapshot()
+            guard Self.hasMinimumPersonalTrainingSamples(snapshot) else {
+                notice = .personalModelRebuildNotReady
+                return
+            }
+            guard await ensurePersonalTrainingSampleEmbeddingsCached(snapshot) else {
+                return
+            }
+            let identity = try await rebuilder.rebuild(snapshotSource: snapshotSource)
             let sampleCount = Set(snapshot.decisions.map {
                 PersonalTrainingAssetRevision(
                     assetID: $0.assetID,
@@ -1721,6 +2089,57 @@ final class LibraryWorkspaceModel: ObservableObject {
         }
     }
 
+    /// Prepares embeddings for the resolved training snapshot samples.
+    /// Returns false when preparation failed and `notice` was already set.
+    private func ensurePersonalTrainingSampleEmbeddingsCached(
+        _ snapshot: PersonalTrainingSnapshot
+    ) async -> Bool {
+        guard let cache = selectedAssetEmbeddingCache else {
+            return true
+        }
+        let revisions = Set(snapshot.decisions.map {
+            PersonalTrainingAssetRevision(
+                assetID: $0.assetID,
+                contentRevision: $0.contentRevision
+            )
+        }).sorted(by: PersonalTrainingAssetRevision.isOrderedBefore)
+        guard !revisions.isEmpty else {
+            return true
+        }
+
+        let service = service
+        var cloudOnly = 0
+        var failed = 0
+        for revision in revisions {
+            do {
+                _ = try await cache.cacheSelectedAsset(
+                    assetID: revision.assetID,
+                    contentRevision: revision.contentRevision,
+                    imageData: {
+                        try await service.loadPreview(assetID: revision.assetID)
+                    }
+                )
+            } catch AppSelectedAssetEmbeddingCacheError.modelUnavailable {
+                notice = .selectedAssetEmbeddingModelUnavailable
+                return false
+            } catch PhotosLibraryError.cloudOnly {
+                cloudOnly += 1
+            } catch {
+                failed += 1
+            }
+        }
+
+        if cloudOnly > 0 {
+            notice = .personalModelRebuildPreviewUnavailable
+            return false
+        }
+        if failed > 0 {
+            notice = .personalModelRebuildCacheUnavailable
+            return false
+        }
+        return true
+    }
+
     private struct PersonalTrainingAssetRevision: Hashable {
         let assetID: UUID
         let contentRevision: Int
@@ -1740,11 +2159,12 @@ final class LibraryWorkspaceModel: ObservableObject {
     private static func hasMinimumPersonalTrainingSamples(
         _ snapshot: PersonalTrainingSnapshot
     ) -> Bool {
-        snapshot.personalTagIDs.allSatisfy { tagID in
+        guard !snapshot.personalTagIDs.isEmpty else {
+            return false
+        }
+        return snapshot.personalTagIDs.allSatisfy { tagID in
             snapshot.decisions.filter {
                 $0.tagID == tagID && $0.state == .manualAccepted
-            }.count >= 2 && snapshot.decisions.filter {
-                $0.tagID == tagID && $0.state == .manualRejected
             }.count >= 2
         }
     }
@@ -2857,13 +3277,15 @@ extension LibraryWorkspaceModel {
         tagID: UUID,
         displayName: String,
         mode: PersonalizationReviewEnqueueMode,
-        sourceCount: Int
+        sourceCount: Int,
+        method: SuggestionGenerationMethod = .featureKnn
     ) {
         pendingSuggestionConfirmation = SuggestionEnqueueConfirmation(
             tagID: tagID,
             displayName: displayName,
             mode: mode,
-            sourceCount: sourceCount
+            sourceCount: sourceCount,
+            method: method
         )
     }
 
@@ -2874,20 +3296,32 @@ extension LibraryWorkspaceModel {
             return false
         }
         pendingSuggestionConfirmation = nil
-        let reviewPort = review
-        do {
-            notice = nil
-            _ = try await Self.offMain {
-                try reviewPort.enqueueFullLibrarySuggestions(tagID: pending.tagID, mode: pending.mode)
+        switch pending.method {
+        case .featureKnn:
+            let reviewPort = review
+            do {
+                notice = nil
+                _ = try await Self.offMain {
+                    try reviewPort.enqueueFullLibrarySuggestions(tagID: pending.tagID, mode: pending.mode)
+                }
+                startPersonalizationRunnerIfNeeded()
+                await refreshReviewState()
+                return true
+            } catch let error as PersonalizationReviewError {
+                notice = reviewNotice(for: error)
+                return false
+            } catch {
+                notice = .reviewActionFailed
+                return false
             }
-            startPersonalizationRunnerIfNeeded()
-            await refreshReviewState()
-            return true
-        } catch let error as PersonalizationReviewError {
-            notice = reviewNotice(for: error)
-            return false
-        } catch {
-            notice = .reviewActionFailed
+        case .personalModel:
+            await generateAppPersonalTagLibrarySuggestions(
+                tagID: pending.tagID,
+                displayName: pending.displayName
+            )
+            if case .personalTagLibrarySuggestionsCompleted = notice {
+                return true
+            }
             return false
         }
     }
@@ -3296,7 +3730,22 @@ struct LibraryWorkspaceView: View {
                         model.isRebuildingPersonalModel
                             || model.isGeneratingPersonalLibrarySuggestions
                     )
-                    .help("只使用当前人工确认与拒绝事实及身份匹配的本地 embedding 缓存；不会读取照片")
+                    .help("有多选时：用选中照片上的全部确认标签训练；无多选时：用全库全部可用确认样本训练。会自动为本批样本补齐本地 embedding（仅用本机预览）")
+                }
+
+                if model.supportsAppPersonalSampleSuggestions {
+                    Button {
+                        Task { await model.generateAppPersonalSampleSuggestions() }
+                    } label: {
+                        if model.isGeneratingAppPersonalSampleSuggestions {
+                            ProgressView()
+                                .controlSize(.small)
+                        } else {
+                            Label("抽 100 张生成建议", systemImage: "wand.and.stars")
+                        }
+                    }
+                    .disabled(!model.canGenerateAppPersonalSampleSuggestions)
+                    .help("有多选时：对选中照片（最多 100 张）生成建议；无多选时：从库中抽最多 100 张。写入待审核队列后可用 P 接受 / X 拒绝")
                 }
 
                 if model.supportsSelectedAssetEmbeddingCache {
@@ -3307,11 +3756,11 @@ struct LibraryWorkspaceView: View {
                             ProgressView()
                                 .controlSize(.small)
                         } else {
-                            Label("准备当前照片特征", systemImage: "sparkles")
+                            Label("准备选中照片特征", systemImage: "sparkles")
                         }
                     }
                     .disabled(!model.canCacheSelectedAssetEmbedding)
-                    .help("仅为当前选中的一张照片生成 App 内模型缓存；不会扫描或预热图库")
+                    .help("为当前选中的照片生成或命中跳过本地模型缓存；重建个人模型会按选中/历史样本范围自行准备所需特征")
                 }
 
                 filterMenu
@@ -4811,6 +5260,9 @@ struct LibraryWorkspaceView: View {
         case .presetTagsInstalled, .presetTagsAlreadyAvailable,
              .portableExportCompleted, .previewCacheCleared,
              .personalModelRebuildCompleted, .selectedAssetEmbeddingCached,
+             .selectedAssetEmbeddingBatchCompleted,
+             .personalSampleSuggestionsCompleted,
+             .personalTagLibrarySuggestionsCompleted,
              .tagBatchMutationApplied, .photosAlreadyConnected,
              .photosSyncQueued, .photosFullRepairQueued:
             "checkmark.circle"
@@ -4864,24 +5316,66 @@ struct LibraryWorkspaceView: View {
         case let .personalModelRebuildCompleted(tagCount, sampleCount):
             "个人模型已从 \(tagCount) 个标签的 \(sampleCount) 张人工样本重建并确认生效。"
         case .personalModelRebuildNotReady:
-            "尚无可训练标签；每个标签至少需要 2 张确认和 2 张拒绝样本。"
+            "当前范围内尚无可训练标签；每个标签至少需要 2 张确认样本（有多选时只计选中照片上的确认标签）。"
         case .personalModelRebuildPreviewUnavailable:
             "训练样本中有照片尚未在本机可用；未下载云端原图，也未替换现有个人模型。"
         case .personalModelRebuildCacheUnavailable:
-            "训练样本缺少身份匹配的本地 embedding 缓存；没有读取照片或替换现有个人模型。"
+            "训练样本的本地 embedding 未能准备完成；现有个人模型未替换。可确认本机预览可用后重试重建。"
         case .personalModelRebuildServiceUnavailable:
             "个人模型服务当前不可用；现有模型和标准建议不受影响。"
         case .personalModelRebuildFailed:
             "个人模型重建未完成；现有模型保持不变，请核对样本后重试。"
         case .selectedAssetEmbeddingCached:
             "已为当前照片生成身份匹配的本地模型缓存。"
+        case let .selectedAssetEmbeddingBatchCompleted(prepared, skipped, cloudOnly, failed):
+            selectedAssetEmbeddingBatchNoticeText(
+                prepared: prepared,
+                skipped: skipped,
+                cloudOnly: cloudOnly,
+                failed: failed
+            )
         case .selectedAssetEmbeddingModelUnavailable:
             "App 内模型尚未启用或当前不可用；没有读取照片，浏览和人工标签不受影响。"
         case .selectedAssetEmbeddingPreviewUnavailable:
             "当前照片尚未在本机可用；未自动下载云端原图，浏览和人工标签不受影响。"
         case .selectedAssetEmbeddingFailed:
             "当前照片的本地模型缓存未生成；浏览和人工标签不受影响。"
+        case let .personalSampleSuggestionsCompleted(checked, suggested, skipped):
+            "已抽检 \(checked) 张照片：写入 \(suggested) 条待审核建议，跳过 \(skipped) 张。请打开「待审核建议」按 P 接受 / X 拒绝。"
+        case .personalSampleSuggestionsNotReady:
+            "当前没有可用的个人模型，或抽检候选为空；请先重建个人模型后再试。"
+        case .personalSampleSuggestionsModelUnavailable:
+            "App 内模型尚未启用或当前不可用；没有写入建议，浏览和人工标签不受影响。"
+        case .personalSampleSuggestionsFailed:
+            "抽检建议未完成；现有审核队列保持不变，请稍后重试。"
+        case let .personalTagLibrarySuggestionsCompleted(tagName, checked, suggested, skipped):
+            "已用个人模型扫描 \(checked) 张照片：为“\(tagName)”写入 \(suggested) 条 Top 待审核建议，跳过 \(skipped) 张。"
+        case .personalTagLibrarySuggestionsNotReady:
+            "当前没有可用的个人模型；请先点人脑图标重建后再试。"
+        case .personalTagLibrarySuggestionsTagNotInModel:
+            "当前个人模型不含该标签；请先用该标签的确认样本点人脑重建。"
+        case .personalTagLibrarySuggestionsModelUnavailable:
+            "App 内模型尚未启用或当前不可用；没有写入建议，浏览和人工标签不受影响。"
+        case .personalTagLibrarySuggestionsFailed:
+            "个人模型全库建议未完成；现有审核队列保持不变，请稍后重试。"
         }
+    }
+
+    private static func selectedAssetEmbeddingBatchNoticeText(
+        prepared: Int,
+        skipped: Int,
+        cloudOnly: Int,
+        failed: Int
+    ) -> String {
+        var parts: [String] = []
+        if prepared > 0 { parts.append("新准备 \(prepared) 张") }
+        if skipped > 0 { parts.append("命中跳过 \(skipped) 张") }
+        if cloudOnly > 0 { parts.append("仅云端跳过 \(cloudOnly) 张") }
+        if failed > 0 { parts.append("失败 \(failed) 张") }
+        if parts.isEmpty {
+            return "选中照片特征未准备；浏览和人工标签不受影响。"
+        }
+        return "选中照片特征已处理：\(parts.joined(separator: "，"))。"
     }
 
     private func reviewInspectorActions(tagID: UUID, displayName: String) -> some View {
@@ -4944,9 +5438,13 @@ struct LibraryWorkspaceView: View {
 
     private func suggestionConfirmationTitle(_ pending: SuggestionEnqueueConfirmation?) -> String {
         guard let pending else { return "确认建议任务" }
-        switch pending.mode {
-        case .generate: return "生成“\(pending.displayName)”建议"
-        case .update: return "更新“\(pending.displayName)”建议"
+        switch (pending.method, pending.mode) {
+        case (.featureKnn, .generate):
+            return "生成“\(pending.displayName)”特征向量建议"
+        case (.featureKnn, .update):
+            return "更新“\(pending.displayName)”特征向量建议"
+        case (.personalModel, _):
+            return "用个人模型生成“\(pending.displayName)”建议"
         }
     }
 
@@ -4965,11 +5463,16 @@ struct LibraryWorkspaceView: View {
     }
 
     private func suggestionConfirmationMessage(_ pending: SuggestionEnqueueConfirmation) -> String {
-        switch pending.mode {
-        case .generate:
-            return "将检查 \(pending.sourceCount) 个 active 来源中已入库的照片，并生成待审核建议。"
-        case .update:
-            return "将检查 \(pending.sourceCount) 个 active 来源中已入库的照片。未审核建议会在第一批新结果成功后刷新；人工标签不会改变。"
+        switch pending.method {
+        case .featureKnn:
+            switch pending.mode {
+            case .generate:
+                return "将用特征向量近邻检查 \(pending.sourceCount) 个 active 来源中已入库的照片，并只保留该标签置信度最高的 100 条待审核建议。人工标签不会丢失。"
+            case .update:
+                return "将用最新确认/拒绝样本重新扫描 \(pending.sourceCount) 个 active 来源。只保留 Top 100；人工标签不会改变。"
+            }
+        case .personalModel:
+            return "将用当前人脑个人模型全库扫描，只保留“\(pending.displayName)”置信度最高的 100 条待审核建议（来源标记为个人模型）。需要该标签已在人脑模型中；不要求拒绝样本。人工标签不会丢失。"
         }
     }
 

@@ -407,6 +407,39 @@ struct GRDBPersonalizationRepository: PersonalizationCatalogPort, Sendable {
         }
     }
 
+    /// Keeps only the highest-scoring pending predictions for a tag revision.
+    func retainTopPendingPredictions(
+        tagID: UUID,
+        modelRevision: Int,
+        limit: Int,
+        on db: Database
+    ) throws {
+        guard modelRevision > 0, limit > 0 else {
+            throw PersonalizationCatalogError.invalidInput
+        }
+        let tagKey = Self.uuid(tagID)
+        try db.execute(
+            sql: """
+            DELETE FROM prediction
+            WHERE tag_id = ?
+                AND model_revision = ?
+                AND state = 'pendingReview'
+                AND rowid NOT IN (
+                    SELECT rowid FROM (
+                        SELECT rowid
+                        FROM prediction
+                        WHERE tag_id = ?
+                            AND model_revision = ?
+                            AND state = 'pendingReview'
+                        ORDER BY score DESC, asset_id ASC
+                        LIMIT ?
+                    )
+                )
+            """,
+            arguments: [tagKey, modelRevision, tagKey, modelRevision, limit]
+        )
+    }
+
     func appendPredictions(
         tagID: UUID,
         modelRevision: Int,

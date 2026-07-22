@@ -2013,9 +2013,91 @@ final class FullLibrarySuggestionsJobTests: XCTestCase {
         drainPersonalizationJobs(coordinator: coordinator, maxSteps: 20)
         let facts = try revisionFacts(database: fixture.database, tagID: fixture.tagID)
         XCTAssertEqual(facts.revisionCount, 1)
+        XCTAssertEqual(
+            facts.predictionCount,
+            FullLibrarySuggestionsJobFactory.maxPendingSuggestionsPerTag
+        )
         XCTAssertEqual(facts.predictionCount, facts.positiveCandidateCount)
-        XCTAssertGreaterThan(facts.predictionCount, 0)
         XCTAssertEqual(facts.checkedCount, 520)
+    }
+
+    func testFullLibrarySuggestionsRetainOnlyHighestScoringPendingSuggestions() throws {
+        let fixture = try makeLargeLibraryFixture(assetCount: 250)
+        let handler = makeHandler(database: fixture.database, loader: fixture.loader, queue: fixture.queue)
+        let coordinator = makeCoordinator(database: fixture.database, handler: handler, queue: fixture.queue)
+        _ = try enqueueJob(
+            queue: fixture.queue,
+            tagID: fixture.tagID,
+            sourceIDs: [fixture.sourceID],
+            cutoffMs: fixture.cutoffMs,
+            database: fixture.database
+        )
+        drainPersonalizationJobs(coordinator: coordinator, maxSteps: 20)
+
+        let catalog = GRDBPersonalizationRepository(database: fixture.database)
+        let pending = try catalog.pendingPredictions(
+            tagID: fixture.tagID,
+            limit: FullLibrarySuggestionsJobFactory.maxPendingSuggestionsPerTag
+        )
+        XCTAssertEqual(pending.count, FullLibrarySuggestionsJobFactory.maxPendingSuggestionsPerTag)
+        XCTAssertEqual(
+            try pendingCount(database: fixture.database, tagID: fixture.tagID),
+            FullLibrarySuggestionsJobFactory.maxPendingSuggestionsPerTag
+        )
+
+        // Insert a lower-scoring outlier and a higher-scoring outlier, then prune again.
+        let lowAsset = pending[pending.count / 2].assetID
+        let highAsset = UUID(uuidString: "21000000-0000-4000-8000-0000000000FE")!
+        try fixture.database.pool.write { db in
+            try db.execute(
+                sql: """
+                INSERT INTO asset (
+                    id, source_id, locator_kind, relative_path, photos_local_identifier,
+                    locator_state, media_type, file_name, content_revision, availability,
+                    record_created_at_ms, record_updated_at_ms
+                ) VALUES (?, ?, 'file', 'bulk/high.jpg', NULL, 'current', 'public.jpeg', 'high.jpg', 1, 'available', ?, ?)
+                """,
+                arguments: [
+                    highAsset.uuidString.lowercased(),
+                    fixture.sourceID.uuidString.lowercased(),
+                    fixture.cutoffMs - 1,
+                    fixture.cutoffMs - 1,
+                ]
+            )
+            try catalog.appendPredictions(
+                tagID: fixture.tagID,
+                modelRevision: 1,
+                predictions: [
+                    PredictionRegistration(assetID: highAsset, contentRevision: 1, score: 99.0),
+                ],
+                createdAtMs: DatabaseTestSupport.timestampMs,
+                on: db
+            )
+            try db.execute(
+                sql: """
+                UPDATE prediction
+                SET score = -1
+                WHERE asset_id = ? AND tag_id = ? AND model_revision = 1
+                """,
+                arguments: [lowAsset.uuidString.lowercased(), fixture.tagID.uuidString.lowercased()]
+            )
+            try catalog.retainTopPendingPredictions(
+                tagID: fixture.tagID,
+                modelRevision: 1,
+                limit: FullLibrarySuggestionsJobFactory.maxPendingSuggestionsPerTag,
+                on: db
+            )
+        }
+
+        let retainedIDs = Set(
+            try catalog.pendingPredictions(
+                tagID: fixture.tagID,
+                limit: FullLibrarySuggestionsJobFactory.maxPendingSuggestionsPerTag
+            ).map(\.assetID)
+        )
+        XCTAssertTrue(retainedIDs.contains(highAsset))
+        XCTAssertFalse(retainedIDs.contains(lowAsset))
+        XCTAssertEqual(retainedIDs.count, FullLibrarySuggestionsJobFactory.maxPendingSuggestionsPerTag)
     }
 
     func testFirstBatchTransactionFailureRollsBackAndKeepsOldQueue() throws {

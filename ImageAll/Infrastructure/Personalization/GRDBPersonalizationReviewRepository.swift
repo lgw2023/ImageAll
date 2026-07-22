@@ -274,11 +274,25 @@ struct GRDBPersonalizationReviewRepository: Sendable {
     }
 
     func personalTrainingSnapshot() throws -> PersonalTrainingSnapshot {
+        try personalTrainingSnapshot(limitingToAssetIDs: nil)
+    }
+
+    func personalTrainingSnapshot(limitingToAssetIDs assetIDs: Set<UUID>) throws -> PersonalTrainingSnapshot {
+        try personalTrainingSnapshot(limitingToAssetIDs: Optional(assetIDs))
+    }
+
+    private func personalTrainingSnapshot(limitingToAssetIDs assetIDs: Set<UUID>?) throws -> PersonalTrainingSnapshot {
         let catalogScopeID = try database.catalogScopeID()
+        if let assetIDs, assetIDs.isEmpty {
+            return PersonalTrainingSnapshot(
+                catalogScopeID: catalogScopeID,
+                personalTagIDs: [],
+                decisions: []
+            )
+        }
+        let assetIDValues = assetIDs.map { Array($0).map(\.uuidString) }
         return try database.pool.read { db in
-            let rows = try Row.fetchAll(
-                db,
-                sql: """
+            var sql = """
                 WITH eligible_decisions AS (
                     SELECT
                         d.asset_id,
@@ -299,33 +313,36 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                             (s.kind = 'folder' AND a.locator_kind = 'file')
                             OR (s.kind = 'photos' AND a.locator_kind = 'photos')
                         )
+                """
+            var arguments = StatementArguments()
+            if let assetIDValues {
+                let placeholders = Array(repeating: "?", count: assetIDValues.count).joined(separator: ", ")
+                sql += "\n                        AND d.asset_id IN (\(placeholders))"
+                for value in assetIDValues.sorted() {
+                    arguments += [value.lowercased()]
+                }
+            }
+            sql += """
+
                 ),
                 trainable_tags AS (
                     SELECT tag_id
                     FROM eligible_decisions
                     GROUP BY tag_id
                     HAVING SUM(CASE WHEN decision = 'accepted' THEN 1 ELSE 0 END) >= 2
-                        AND SUM(CASE WHEN decision = 'rejected' THEN 1 ELSE 0 END) >= 2
-                ),
-                ranked AS (
-                    SELECT
-                        asset_id,
-                        content_revision,
-                        tag_id,
-                        decision,
-                        ROW_NUMBER() OVER (
-                            PARTITION BY tag_id, decision
-                            ORDER BY updated_at_ms DESC, asset_id ASC
-                        ) AS role_rank
-                    FROM eligible_decisions
-                    WHERE tag_id IN (SELECT tag_id FROM trainable_tags)
                 )
-                SELECT asset_id, content_revision, tag_id, decision
-                FROM ranked
-                WHERE role_rank <= 12
-                ORDER BY tag_id ASC, decision ASC, role_rank ASC
+                SELECT
+                    asset_id,
+                    content_revision,
+                    tag_id,
+                    decision
+                FROM eligible_decisions
+                WHERE tag_id IN (SELECT tag_id FROM trainable_tags)
+                    AND decision = 'accepted'
+                ORDER BY tag_id ASC, updated_at_ms DESC, asset_id ASC
                 """
-            )
+            // Full-catalog and selection-scoped rebuild both use every eligible accepted sample.
+            let rows = try Row.fetchAll(db, sql: sql, arguments: arguments)
             let decisions = rows.compactMap { row -> PersonalTrainingDecision? in
                 guard let assetID = UUID(uuidString: row["asset_id"]),
                       let tagID = UUID(uuidString: row["tag_id"])
@@ -717,6 +734,101 @@ struct GRDBPersonalizationReviewRepository: Sendable {
             inserted += db.changesCount
         }
         return inserted
+    }
+
+    func replacePersonalTagLibrarySuggestions(
+        tagID: UUID,
+        hits: [AppPersonalTagLibrarySuggestionHit],
+        expectedCapability: PersonalModelSuggestionCapability,
+        createdAtMs: Int64
+    ) throws -> Int {
+        guard createdAtMs >= 0,
+              expectedCapability.tagIDs.contains(tagID),
+              Set(hits.map(\.candidate.assetID)).count == hits.count,
+              hits.allSatisfy({
+                  $0.candidate.contentRevision > 0 && $0.score.isFinite && $0.score > 0
+              })
+        else {
+            throw PersonalizationReviewError.persistenceFailure
+        }
+        return try database.pool.write { db in
+            guard try personalCapabilityMatches(expectedCapability, in: db) else {
+                throw PersonalizationReviewError.persistenceFailure
+            }
+            try db.execute(
+                sql: """
+                INSERT OR IGNORE INTO personal_suggestion_tag (tag_id, model_singleton)
+                SELECT id, 1 FROM tag WHERE id = ? AND state = 'active'
+                """,
+                arguments: [uuid(tagID)]
+            )
+            guard try Bool.fetchOne(
+                db,
+                sql: """
+                SELECT EXISTS(
+                    SELECT 1 FROM personal_suggestion_tag pst
+                    JOIN tag t ON t.id = pst.tag_id AND t.state = 'active'
+                    WHERE pst.tag_id = ?
+                )
+                """,
+                arguments: [uuid(tagID)]
+            ) == true else {
+                throw PersonalizationReviewError.persistenceFailure
+            }
+
+            try db.execute(
+                sql: "DELETE FROM personal_prediction WHERE tag_id = ?",
+                arguments: [uuid(tagID)]
+            )
+
+            var inserted = 0
+            for hit in hits {
+                let assetOK = try Bool.fetchOne(
+                    db,
+                    sql: """
+                    SELECT EXISTS(
+                        SELECT 1
+                        FROM asset a
+                        JOIN source s ON s.id = a.source_id AND s.state = 'active'
+                        WHERE a.id = ?
+                            AND a.content_revision = ?
+                            AND a.locator_state = 'current'
+                            AND a.availability = 'available'
+                            AND (
+                                (s.kind = 'folder' AND a.locator_kind = 'file')
+                                OR (s.kind = 'photos' AND a.locator_kind = 'photos')
+                            )
+                    )
+                    """,
+                    arguments: [uuid(hit.candidate.assetID), hit.candidate.contentRevision]
+                ) ?? false
+                guard assetOK else { continue }
+                try db.execute(
+                    sql: """
+                    INSERT INTO personal_prediction (
+                        asset_id, tag_id, content_revision, score, state, created_at_ms
+                    )
+                    SELECT ?, pst.tag_id, ?, ?, 'pendingReview', ?
+                    FROM personal_suggestion_tag pst
+                    WHERE pst.tag_id = ?
+                        AND NOT EXISTS (
+                            SELECT 1 FROM asset_tag_decision d
+                            WHERE d.asset_id = ? AND d.tag_id = pst.tag_id
+                        )
+                    """,
+                    arguments: [
+                        uuid(hit.candidate.assetID),
+                        hit.candidate.contentRevision,
+                        hit.score,
+                        createdAtMs,
+                        uuid(tagID),
+                        uuid(hit.candidate.assetID),
+                    ]
+                )
+                inserted += db.changesCount
+            }
+            return inserted
+        }
     }
 
     func replaceStandardSuggestions(

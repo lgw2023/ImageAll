@@ -219,7 +219,11 @@
 		CM0000010000000000000007 /* AppPersonalLinearHead.swift in Sources */ = {isa = PBXBuildFile; fileRef = CM0001010000000000000007 /* AppPersonalLinearHead.swift */; };
 		CM0000010000000000000008 /* AppPersonalLinearHeadStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = CM0001010000000000000008 /* AppPersonalLinearHeadStore.swift */; };
 		CM0000010000000000000009 /* AppPersonalModelRebuildContracts.swift in Sources */ = {isa = PBXBuildFile; fileRef = CM0001010000000000000009 /* AppPersonalModelRebuildContracts.swift */; };
+		CM000001000000000000000B /* AppPersonalSampleSuggestionContracts.swift in Sources */ = {isa = PBXBuildFile; fileRef = CM000101000000000000000B /* AppPersonalSampleSuggestionContracts.swift */; };
 		CM000001000000000000000A /* AppPersonalModelRebuildCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = CM000101000000000000000A /* AppPersonalModelRebuildCoordinator.swift */; };
+		CM000001000000000000000C /* AppPersonalSampleSuggestionRuntime.swift in Sources */ = {isa = PBXBuildFile; fileRef = CM000101000000000000000C /* AppPersonalSampleSuggestionRuntime.swift */; };
+		CM000001000000000000000D /* AppPersonalTagLibrarySuggestionContracts.swift in Sources */ = {isa = PBXBuildFile; fileRef = CM000101000000000000000D /* AppPersonalTagLibrarySuggestionContracts.swift */; };
+		CM000001000000000000000E /* AppPersonalTagLibrarySuggestionRuntime.swift in Sources */ = {isa = PBXBuildFile; fileRef = CM000101000000000000000E /* AppPersonalTagLibrarySuggestionRuntime.swift */; };
 		CM0000010000000000000002 /* AppModelActivationContracts.swift in Sources */ = {isa = PBXBuildFile; fileRef = CM0001010000000000000002 /* AppModelActivationContracts.swift */; };
 		CM0000010000000000000003 /* AppModelActivationCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = CM0001010000000000000003 /* AppModelActivationCoordinator.swift */; };
 		CM0000010000000000000004 /* UserDefaultsModelEnablementPreferenceStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = CM0001010000000000000004 /* UserDefaultsModelEnablementPreferenceStore.swift */; };
@@ -464,7 +468,11 @@
 		CM0001010000000000000007 /* AppPersonalLinearHead.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppPersonalLinearHead.swift; sourceTree = "<group>"; };
 		CM0001010000000000000008 /* AppPersonalLinearHeadStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppPersonalLinearHeadStore.swift; sourceTree = "<group>"; };
 		CM0001010000000000000009 /* AppPersonalModelRebuildContracts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppPersonalModelRebuildContracts.swift; sourceTree = "<group>"; };
+		CM000101000000000000000B /* AppPersonalSampleSuggestionContracts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppPersonalSampleSuggestionContracts.swift; sourceTree = "<group>"; };
 		CM000101000000000000000A /* AppPersonalModelRebuildCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppPersonalModelRebuildCoordinator.swift; sourceTree = "<group>"; };
+		CM000101000000000000000C /* AppPersonalSampleSuggestionRuntime.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppPersonalSampleSuggestionRuntime.swift; sourceTree = "<group>"; };
+		CM000101000000000000000D /* AppPersonalTagLibrarySuggestionContracts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppPersonalTagLibrarySuggestionContracts.swift; sourceTree = "<group>"; };
+		CM000101000000000000000E /* AppPersonalTagLibrarySuggestionRuntime.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppPersonalTagLibrarySuggestionRuntime.swift; sourceTree = "<group>"; };
 		CM0001010000000000000002 /* AppModelActivationContracts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModelActivationContracts.swift; sourceTree = "<group>"; };
 		CM0001010000000000000003 /* AppModelActivationCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModelActivationCoordinator.swift; sourceTree = "<group>"; };
 		CM0001010000000000000004 /* UserDefaultsModelEnablementPreferenceStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UserDefaultsModelEnablementPreferenceStore.swift; sourceTree = "<group>"; };
@@ -650,6 +658,8 @@
 			children = (
 				CM0001010000000000000002 /* AppModelActivationContracts.swift */,
 				CM0001010000000000000009 /* AppPersonalModelRebuildContracts.swift */,
+				CM000101000000000000000B /* AppPersonalSampleSuggestionContracts.swift */,
+				CM000101000000000000000D /* AppPersonalTagLibrarySuggestionContracts.swift */,
 				KK0001010000000000000002 /* PersonalizationCatalogPort.swift */,
 				NN0001010000000000000001 /* PersonalizationReviewPort.swift */,
 				NN0001010000000000000002 /* FullLibrarySuggestionsContracts.swift */,
@@ -782,6 +792,8 @@
 				CM0001010000000000000007 /* AppPersonalLinearHead.swift */,
 				CM0001010000000000000008 /* AppPersonalLinearHeadStore.swift */,
 				CM000101000000000000000A /* AppPersonalModelRebuildCoordinator.swift */,
+				CM000101000000000000000C /* AppPersonalSampleSuggestionRuntime.swift */,
+				CM000101000000000000000E /* AppPersonalTagLibrarySuggestionRuntime.swift */,
 				CM0001010000000000000003 /* AppModelActivationCoordinator.swift */,
 				CM0001010000000000000004 /* UserDefaultsModelEnablementPreferenceStore.swift */,
 				MM0001010000000000000001 /* PersonalizedSuggestionService.swift */,
@@ -1205,7 +1217,11 @@
 				CM0000010000000000000007 /* AppPersonalLinearHead.swift in Sources */,
 				CM0000010000000000000008 /* AppPersonalLinearHeadStore.swift in Sources */,
 				CM0000010000000000000009 /* AppPersonalModelRebuildContracts.swift in Sources */,
+				CM000001000000000000000B /* AppPersonalSampleSuggestionContracts.swift in Sources */,
 				CM000001000000000000000A /* AppPersonalModelRebuildCoordinator.swift in Sources */,
+				CM000001000000000000000C /* AppPersonalSampleSuggestionRuntime.swift in Sources */,
+				CM000001000000000000000D /* AppPersonalTagLibrarySuggestionContracts.swift in Sources */,
+				CM000001000000000000000E /* AppPersonalTagLibrarySuggestionRuntime.swift in Sources */,
 				CM0000010000000000000001 /* AppCoreMLEmbeddingService.swift in Sources */,
 				CM0000010000000000000002 /* AppModelActivationContracts.swift in Sources */,
 				CM0000010000000000000003 /* AppModelActivationCoordinator.swift in Sources */,

@@ -190,6 +190,11 @@ final class PersonalizationPersistenceTests: XCTestCase {
             assetIDs: rejected,
             timestampMs: DatabaseTestSupport.timestampMs + 2
         )
+        _ = try fixture.tags.batchAccept(
+            tagID: fixture.ids.tagWork,
+            assetIDs: [fixture.ids.assetNewest],
+            timestampMs: DatabaseTestSupport.timestampMs + 3
+        )
 
         let snapshot = try GRDBPersonalizationReviewRepository(
             database: fixture.database
@@ -207,17 +212,61 @@ final class PersonalizationPersistenceTests: XCTestCase {
                         tagID: fixture.ids.tagFamily,
                         state: .manualAccepted
                     )
-                } + rejected.map {
-                    PersonalTrainingDecision(
-                        assetID: $0,
-                        contentRevision: 1,
-                        tagID: fixture.ids.tagFamily,
-                        state: .manualRejected
-                    )
                 }
             )
         )
+        XCTAssertFalse(snapshot.decisions.contains { $0.state == .manualRejected })
         XCTAssertFalse(snapshot.decisions.contains { $0.tagID == fixture.ids.tagWork })
         XCTAssertFalse(snapshot.decisions.contains { $0.tagID == fixture.ids.tagArchived })
+
+        let scoped = try GRDBPersonalizationReviewRepository(
+            database: fixture.database
+        ).personalTrainingSnapshot(limitingToAssetIDs: Set(accepted.prefix(2)))
+        XCTAssertEqual(scoped.personalTagIDs, [fixture.ids.tagFamily])
+        XCTAssertEqual(Set(scoped.decisions.map(\.assetID)), Set(accepted.prefix(2)))
+
+        let insufficientScope = try GRDBPersonalizationReviewRepository(
+            database: fixture.database
+        ).personalTrainingSnapshot(limitingToAssetIDs: Set(accepted.prefix(1)))
+        XCTAssertTrue(insufficientScope.personalTagIDs.isEmpty)
+        XCTAssertTrue(insufficientScope.decisions.isEmpty)
+    }
+
+    func testPersonalTrainingSnapshotUsesAllAcceptedSamplesWithoutPerTagCap() throws {
+        let url = try DatabaseTestSupport.makeTempDatabaseURL()
+        let database = try CatalogDatabase.open(at: url)
+        let (_, acceptedTagID) = try CatalogQueryTestSupport.seedScaleCatalog(
+            database: database,
+            assetCount: 30
+        )
+        // Even indices are folder/file assets eligible for personal training.
+        let assetIDs = (0..<15).map { CatalogQueryTestSupport.scaleAssetID($0 * 2) }
+        try database.pool.write { db in
+            try db.execute(sql: "DELETE FROM asset_tag_decision")
+            for (index, assetID) in assetIDs.enumerated() {
+                try db.execute(
+                    sql: """
+                    INSERT INTO asset_tag_decision (asset_id, tag_id, decision, updated_at_ms)
+                    VALUES (?, ?, 'accepted', ?)
+                    """,
+                    arguments: [
+                        assetID.uuidString.lowercased(),
+                        acceptedTagID.uuidString.lowercased(),
+                        1_000 + index,
+                    ]
+                )
+            }
+        }
+
+        let repository = GRDBPersonalizationReviewRepository(database: database)
+        let scoped = try repository.personalTrainingSnapshot(limitingToAssetIDs: Set(assetIDs))
+        XCTAssertEqual(scoped.personalTagIDs, [acceptedTagID])
+        XCTAssertEqual(scoped.decisions.count, 15)
+        XCTAssertEqual(Set(scoped.decisions.map(\.assetID)), Set(assetIDs))
+
+        let historical = try repository.personalTrainingSnapshot()
+        XCTAssertEqual(historical.personalTagIDs, [acceptedTagID])
+        XCTAssertEqual(historical.decisions.count, 15)
+        XCTAssertEqual(Set(historical.decisions.map(\.assetID)), Set(assetIDs))
     }
 }

@@ -86,9 +86,33 @@ enum LibraryWorkspaceNotice: Equatable, Sendable {
     case personalModelRebuildServiceUnavailable
     case personalModelRebuildFailed
     case selectedAssetEmbeddingCached
+    case selectedAssetEmbeddingBatchCompleted(
+        prepared: Int,
+        skipped: Int,
+        cloudOnly: Int,
+        failed: Int
+    )
     case selectedAssetEmbeddingModelUnavailable
     case selectedAssetEmbeddingPreviewUnavailable
     case selectedAssetEmbeddingFailed
+    case personalSampleSuggestionsCompleted(
+        checked: Int,
+        suggested: Int,
+        skipped: Int
+    )
+    case personalSampleSuggestionsNotReady
+    case personalSampleSuggestionsModelUnavailable
+    case personalSampleSuggestionsFailed
+    case personalTagLibrarySuggestionsCompleted(
+        tagName: String,
+        checked: Int,
+        suggested: Int,
+        skipped: Int
+    )
+    case personalTagLibrarySuggestionsNotReady
+    case personalTagLibrarySuggestionsTagNotInModel
+    case personalTagLibrarySuggestionsModelUnavailable
+    case personalTagLibrarySuggestionsFailed
 }
 
 enum CloudPreviewPresentationState: Equatable, Sendable {

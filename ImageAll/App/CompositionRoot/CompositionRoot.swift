@@ -166,18 +166,29 @@ struct CompositionRoot {
         )
         let catalogScopeID = try? runtime.database.catalogScopeID()
         let appPersonalModelRebuilder: AppPersonalModelRebuildRuntime?
+        let appPersonalSampleSuggester: AppPersonalSampleSuggestionRuntime?
+        let appPersonalTagLibrarySuggester: AppPersonalTagLibrarySuggestionRuntime?
         if let modelActivationCoordinator, let catalogScopeID {
             appPersonalModelRebuilder = AppPersonalModelRebuildRuntime(
                 expectedCatalogScopeID: catalogScopeID,
                 activationCoordinator: modelActivationCoordinator,
-                snapshotSource: AppPersonalTrainingSnapshotPortSource {
-                    try personalizationReview.personalTrainingSnapshot()
-                },
                 cachesDirectory: runtime.paths.cachesDirectory,
+                applicationSupportDirectory: runtime.paths.applicationSupportDirectory
+            )
+            appPersonalSampleSuggester = AppPersonalSampleSuggestionRuntime(
+                expectedCatalogScopeID: catalogScopeID,
+                activationCoordinator: modelActivationCoordinator,
+                applicationSupportDirectory: runtime.paths.applicationSupportDirectory
+            )
+            appPersonalTagLibrarySuggester = AppPersonalTagLibrarySuggestionRuntime(
+                expectedCatalogScopeID: catalogScopeID,
+                activationCoordinator: modelActivationCoordinator,
                 applicationSupportDirectory: runtime.paths.applicationSupportDirectory
             )
         } else {
             appPersonalModelRebuilder = nil
+            appPersonalSampleSuggester = nil
+            appPersonalTagLibrarySuggester = nil
         }
         let selectedAssetEmbeddingCache: AppSelectedAssetEmbeddingCacheRuntime?
         if let modelActivationCoordinator,
@@ -220,7 +231,9 @@ struct CompositionRoot {
             review: personalizationReview,
             localModelSuggestions: localModelSuggestions,
             appPersonalModelRebuilder: appPersonalModelRebuilder,
-            selectedAssetEmbeddingCache: selectedAssetEmbeddingCache
+            selectedAssetEmbeddingCache: selectedAssetEmbeddingCache,
+            appPersonalSampleSuggester: appPersonalSampleSuggester,
+            appPersonalTagLibrarySuggester: appPersonalTagLibrarySuggester
         )
     }
 

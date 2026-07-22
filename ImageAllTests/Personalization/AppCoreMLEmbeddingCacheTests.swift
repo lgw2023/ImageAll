@@ -48,6 +48,59 @@ final class AppCoreMLEmbeddingCacheTests: XCTestCase {
         XCTAssertEqual(cacheFiles(under: root).count, 1)
     }
 
+    func testSelectedAssetRuntimeSkipsImageLoadOnIdentityMatchedCacheHit() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let catalogID = UUID()
+        let assetID = UUID()
+        let defaults = UserDefaults(
+            suiteName: "AppCoreMLEmbeddingCacheTests.\(UUID().uuidString)"
+        )!
+        let artifactDirectory = projectArtifactDirectory()
+        let coordinator = AppModelActivationCoordinator(
+            preferenceStore: UserDefaultsModelEnablementPreferenceStore(defaults: defaults),
+            serviceFactory: {
+                AppCoreMLEmbeddingService(
+                    isEnabled: true,
+                    artifactDirectory: artifactDirectory
+                )
+            }
+        )
+        guard case let .ready(expectedIdentity) = await coordinator.setEnabled(true) else {
+            return XCTFail("expected fixed Core ML artifact to activate")
+        }
+        let runtime = AppSelectedAssetEmbeddingCacheRuntime(
+            catalogScopeID: catalogID,
+            activationCoordinator: coordinator,
+            cachesDirectory: root
+        )
+        let imageData = try generatedPNGData()
+        _ = try await runtime.cacheSelectedAsset(
+            assetID: assetID,
+            contentRevision: 7,
+            imageData: { imageData }
+        )
+
+        final class ImageLoadCounter: @unchecked Sendable {
+            var count = 0
+        }
+        let imageLoadCounter = ImageLoadCounter()
+        let hit = try await runtime.cacheSelectedAsset(
+            assetID: assetID,
+            contentRevision: 7,
+            imageData: {
+                imageLoadCounter.count += 1
+                return imageData
+            }
+        )
+
+        XCTAssertEqual(hit.origin, .cacheHit)
+        XCTAssertEqual(hit.identity, expectedIdentity)
+        XCTAssertEqual(imageLoadCounter.count, 0)
+        XCTAssertEqual(cacheFiles(under: root).count, 1)
+    }
+
     func testSelectedAssetRuntimeDoesNotReportSuccessWhenCacheCannotPersist() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString)

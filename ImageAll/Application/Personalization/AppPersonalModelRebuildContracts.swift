@@ -10,7 +10,9 @@ enum AppPersonalModelRebuildError: Error, Equatable {
 }
 
 protocol AppPersonalModelRebuilding: Sendable {
-    func rebuild() async throws -> AppPersonalLinearHeadIdentity
+    func rebuild(
+        snapshotSource: any AppPersonalTrainingSnapshotSource
+    ) async throws -> AppPersonalLinearHeadIdentity
 }
 
 protocol AppPersonalTrainingSnapshotSource: Sendable {

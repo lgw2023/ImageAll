@@ -42,7 +42,7 @@ final class AppPersonalLinearHeadTests: XCTestCase {
         XCTAssertTrue(suggestions.allSatisfy { $0.score.isFinite && $0.score > 0 })
     }
 
-    func testTrainingRequiresTwoAcceptedAndTwoRejectedDecisionsPerTag() throws {
+    func testTrainingRequiresTwoAcceptedDecisionsPerTagAndIgnoresRejected() throws {
         let firstTagID = UUID(uuidString: "10000000-0000-0000-0000-000000000001")!
         let secondTagID = UUID(uuidString: "20000000-0000-0000-0000-000000000002")!
         let encoderIdentity = makeEncoderIdentity()
@@ -51,8 +51,32 @@ final class AppPersonalLinearHeadTests: XCTestCase {
             secondTagID: secondTagID,
             encoderIdentity: encoderIdentity
         )
+        let acceptedOnly = PersonalModelRebuildSnapshot(
+            catalogScopeID: complete.catalogScopeID,
+            decisionSnapshotRevision: complete.decisionSnapshotRevision,
+            encoder: complete.encoder,
+            personalTagIDs: complete.personalTagIDs,
+            labelVocabularyRevision: complete.labelVocabularyRevision,
+            embeddings: complete.embeddings,
+            decisions: complete.decisions.filter { $0.state == .manualAccepted }
+        )
+        let acceptedOnlyArtifact = try AppPersonalLinearHeadTrainer.train(
+            snapshot: acceptedOnly,
+            encoderIdentity: encoderIdentity
+        )
+        let acceptedOnlyModel = try AppPersonalLinearHeadModel(artifact: acceptedOnlyArtifact)
+        let suggestions = try acceptedOnlyModel.suggestions(
+            for: AppCoreMLEmbedding(
+                identity: encoderIdentity,
+                values: embedding(first: 1.5, second: 0)
+            ),
+            maximumCount: 2
+        )
+        XCTAssertEqual(suggestions.map(\.tagID), [firstTagID])
+        XCTAssertTrue(suggestions.allSatisfy { $0.score.isFinite && $0.score > 0 })
+
         var removedAccepted = false
-        let decisions = complete.decisions.filter { decision in
+        let decisions = acceptedOnly.decisions.filter { decision in
             if !removedAccepted,
                decision.tagID == firstTagID,
                decision.state == .manualAccepted

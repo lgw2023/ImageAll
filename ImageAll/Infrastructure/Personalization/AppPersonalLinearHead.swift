@@ -30,7 +30,7 @@ enum AppPersonalLinearHeadError: Error, Equatable {
 
 enum AppPersonalLinearHeadTrainer {
     private static let schemaRevision = 1
-    private static let algorithmRevision = "centroid-difference-float32-v1"
+    private static let algorithmRevision = "positive-centroid-float32-v1"
 
     static func train(
         snapshot: PersonalModelRebuildSnapshot,
@@ -56,21 +56,14 @@ enum AppPersonalLinearHeadTrainer {
                 snapshot: snapshot,
                 rows: rows
             )
-            let rejected = try embeddings(
-                for: tagID,
-                state: .manualRejected,
-                snapshot: snapshot,
-                rows: rows
-            )
-            guard accepted.count >= 2, rejected.count >= 2 else {
+            guard accepted.count >= 2 else {
                 throw AppPersonalLinearHeadError.insufficientDecisions
             }
+            // Pure positive prototype: score = μ⁺·x − ½‖μ⁺‖².
+            // Untagged photos are not treated as negatives.
             let positiveMean = mean(accepted, elementCount: encoderIdentity.elementCount)
-            let negativeMean = mean(rejected, elementCount: encoderIdentity.elementCount)
-            let weights = zip(positiveMean, negativeMean).map(-)
-            let bias = -0.5 * (
-                dot(positiveMean, positiveMean) - dot(negativeMean, negativeMean)
-            )
+            let weights = positiveMean
+            let bias = -0.5 * dot(positiveMean, positiveMean)
             append(weights, to: &parameters)
             append([bias], to: &parameters)
         }
@@ -210,7 +203,7 @@ struct AppPersonalLinearHeadModel: Sendable {
         }
         let personalTagIDs = record.personalTagIDs.compactMap(UUID.init(uuidString:))
         guard record.schemaRevision == 1,
-              record.algorithmRevision == "centroid-difference-float32-v1",
+              record.algorithmRevision == "positive-centroid-float32-v1",
               let encoderIdentity = record.encoder.identity,
               personalTagIDs.count == record.personalTagIDs.count,
               record.weightsSHA256 == sha256(record.parameters)
@@ -245,6 +238,27 @@ struct AppPersonalLinearHeadModel: Sendable {
             weightsSHA256: record.weightsSHA256
         )
         parameters = parsed
+    }
+
+    func score(
+        tagID: UUID,
+        embedding: AppCoreMLEmbedding
+    ) throws -> Float? {
+        guard embedding.identity == identity.encoderIdentity else {
+            throw AppPersonalLinearHeadError.identityMismatch
+        }
+        guard embedding.values.count == identity.encoderIdentity.elementCount,
+              embedding.values.allSatisfy(\.isFinite)
+        else {
+            throw AppPersonalLinearHeadError.invalidEmbedding
+        }
+        guard let index = identity.personalTagIDs.firstIndex(of: tagID) else {
+            return nil
+        }
+        let tagParameters = parameters[index]
+        let score = dot(tagParameters.weights, embedding.values) + tagParameters.bias
+        guard score.isFinite else { return nil }
+        return score
     }
 
     func suggestions(
