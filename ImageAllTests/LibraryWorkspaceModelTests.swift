@@ -4306,6 +4306,153 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertEqual(model.items.map(\.assetID), assets.map(\.assetID))
     }
 
+    func testPageNavigationMovesByVisiblePageAndClampsAtGridEdges() async {
+        let sourceID = UUID()
+        let assets = (0 ..< 10).map {
+            Self.makeAsset(sourceID: sourceID, fileName: "photo-\($0).jpg")
+        }
+        let model = LibraryWorkspaceModel(
+            service: FakeLibraryWorkspaceService(
+                connectedSource: LibrarySourceSummary(
+                    id: sourceID,
+                    displayName: "Fixture",
+                    state: .active
+                ),
+                reconciledItems: assets
+            )
+        )
+
+        await model.start()
+        await model.connectFolder()
+        await waitForCatalogScanToFinish(model)
+        await model.selectAsset(assets[1].assetID)
+
+        await model.movePrimarySelection(byPage: .down, pageItemCount: 6)
+        XCTAssertEqual(model.primarySelectedAssetID, assets[7].assetID)
+
+        await model.movePrimarySelection(byPage: .down, pageItemCount: 6)
+        XCTAssertEqual(model.primarySelectedAssetID, assets[9].assetID)
+
+        await model.movePrimarySelection(byPage: .up, pageItemCount: 6)
+        XCTAssertEqual(model.primarySelectedAssetID, assets[3].assetID)
+    }
+
+    func testPageItemCountUsesAdaptiveColumnWidthAndVisibleHeight() {
+        XCTAssertEqual(
+            LibraryGridLayout.pageItemCount(
+                containerWidth: 430,
+                containerHeight: 500,
+                density: .standard
+            ),
+            4
+        )
+        XCTAssertEqual(
+            LibraryGridLayout.pageItemCount(
+                containerWidth: 100,
+                containerHeight: 100,
+                density: .large
+            ),
+            1
+        )
+    }
+
+    func testHoverDetailSummarizesIdentitySourceDimensionsSizeAndDates() {
+        let item = AssetGridItemProjection(
+            assetID: UUID(),
+            sourceID: UUID(),
+            sourceDisplayName: "家庭相册",
+            sourceState: .active,
+            relativePath: "2026/海边.jpg",
+            fileName: "海边.jpg",
+            mediaType: "public.jpeg",
+            mediaCreatedAtMs: 1_752_854_400_000,
+            mediaModifiedAtMs: 1_752_940_800_000,
+            width: 4_032,
+            height: 3_024,
+            availability: .available,
+            contentRevision: 1,
+            acceptedTagCount: 2,
+            rejectedTagCount: 1
+        )
+
+        let text = LibraryAssetDetailText.hoverText(item)
+
+        XCTAssertTrue(text.contains("海边.jpg"))
+        XCTAssertTrue(text.contains("家庭相册"))
+        XCTAssertTrue(text.contains("4,032 × 3,024"))
+        XCTAssertTrue(text.contains("已确认 2 · 已拒绝 1"))
+        XCTAssertTrue(text.contains("拍摄时间"))
+        XCTAssertTrue(text.contains("状态：可用"))
+    }
+
+    func testSemanticTagGroupingUsesStableMeaningOrderAndSortsWithinGroup() {
+        let tags = [
+            TagListItem(id: UUID(), displayName: "文档", state: .active),
+            TagListItem(id: UUID(), displayName: "宠物", state: .active),
+            TagListItem(id: UUID(), displayName: "人像", state: .active),
+            TagListItem(id: UUID(), displayName: "生日", state: .active),
+            TagListItem(id: UUID(), displayName: "建筑", state: .active),
+            TagListItem(id: UUID(), displayName: "美食", state: .active),
+            TagListItem(id: UUID(), displayName: "自定义", state: .active),
+            TagListItem(id: UUID(), displayName: "风景", state: .active),
+        ]
+
+        let groups = LibraryTagSemanticGroup.group(tags)
+
+        XCTAssertEqual(
+            groups.map(\.group),
+            [.people, .placesAndScenes, .activities, .food, .nature, .documents, .other]
+        )
+        XCTAssertEqual(groups[1].tags.map(\.displayName), ["风景", "建筑"])
+        XCTAssertEqual(groups[6].tags.map(\.displayName), ["自定义"])
+    }
+
+    func testSourceOrderPreferencesPersistManualDragOrderAndAppendNewSources() {
+        let suiteName = "ImageAllTests.SourceOrder.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let first = LibrarySourceSummary(id: UUID(), displayName: "一", state: .active)
+        let second = LibrarySourceSummary(id: UUID(), displayName: "二", state: .active)
+        let third = LibrarySourceSummary(id: UUID(), displayName: "三", state: .active)
+        let later = LibrarySourceSummary(id: UUID(), displayName: "四", state: .active)
+
+        let preferences = LibrarySourceOrderPreferences(defaults: defaults)
+        preferences.move(sourceID: third.id, before: first.id, in: [first, second, third])
+
+        let reopened = LibrarySourceOrderPreferences(defaults: defaults)
+        XCTAssertEqual(
+            reopened.ordered([first, second, third, later]).map(\.id),
+            [third.id, first.id, second.id, later.id]
+        )
+    }
+
+    func testOpeningSelectedOriginalUsesInjectedPreviewOpener() async {
+        let sourceID = UUID()
+        let asset = Self.makeAsset(sourceID: sourceID, fileName: "original.jpg")
+        let opener = FakeLibraryOriginalAssetOpener()
+        let model = LibraryWorkspaceModel(
+            service: FakeLibraryWorkspaceService(
+                connectedSource: LibrarySourceSummary(
+                    id: sourceID,
+                    displayName: "Fixture",
+                    state: .active
+                ),
+                reconciledItems: [asset]
+            ),
+            originalAssetOpener: opener
+        )
+        await model.start()
+        await model.connectFolder()
+        await waitForCatalogScanToFinish(model)
+        await model.selectAsset(asset.assetID)
+
+        await model.openSelectedOriginal()
+
+        XCTAssertEqual(opener.openedAssetIDs, [asset.assetID])
+        XCTAssertFalse(model.isOpeningOriginal)
+        XCTAssertNil(model.notice)
+    }
+
     func testAdaptiveGridColumnCountTracksAvailableWidthAndDensity() {
         XCTAssertEqual(
             LibraryGridLayout.columnCount(containerWidth: 900, density: .standard),
@@ -5230,6 +5377,15 @@ final class LibraryWorkspaceModelTests: XCTestCase {
             acceptedTagCount: 0,
             rejectedTagCount: 0
         )
+    }
+}
+
+@MainActor
+private final class FakeLibraryOriginalAssetOpener: LibraryOriginalAssetOpening {
+    private(set) var openedAssetIDs: [UUID] = []
+
+    func openOriginalAsset(assetID: UUID) async throws {
+        openedAssetIDs.append(assetID)
     }
 }
 

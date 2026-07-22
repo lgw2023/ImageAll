@@ -49,6 +49,14 @@ final class PhotosIntegrationTests: XCTestCase {
         XCTAssertFalse(PhotoKitPhotosLibraryAdapter.makeLocalOnlyFeaturePrintRequestOptions().isNetworkAccessAllowed)
     }
 
+    func testPhotoKitOriginalOpenPolicyEnablesNetworkOnlyForExplicitUserAction() {
+        let options = PhotoKitPhotosLibraryAdapter.makeOriginalContentEditingInputRequestOptions()
+
+        XCTAssertTrue(options.isNetworkAccessAllowed)
+        XCTAssertFalse(PhotoKitPhotosLibraryAdapter.makeLocalOnlyImageRequestOptions().isNetworkAccessAllowed)
+        XCTAssertFalse(PhotoKitPhotosLibraryAdapter.makeLocalOnlyFeaturePrintRequestOptions().isNetworkAccessAllowed)
+    }
+
     func testIndexableStaticImageCountMatchesSupportedUTIPolicy() {
         // Startup full-repair heuristics compare this count to catalog rows.
         // Video must not inflate the library side of that ratio; RAW/GIF are now approved (ADR-041).

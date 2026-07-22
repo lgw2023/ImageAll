@@ -45,6 +45,11 @@ enum LibraryGridNavigationDirection: Equatable, Sendable {
     case down
 }
 
+enum LibraryGridPageDirection: Equatable, Sendable {
+    case up
+    case down
+}
+
 enum LibraryGridLayout {
     static let spacing: CGFloat = 8
     static let horizontalPadding: CGFloat = 12
@@ -56,6 +61,208 @@ enum LibraryGridLayout {
         let availableWidth = max(containerWidth - horizontalPadding * 2, 0)
         let minimumWidth = density.cellWidthRange.lowerBound
         return max(Int((availableWidth + spacing) / (minimumWidth + spacing)), 1)
+    }
+
+    static func pageItemCount(
+        containerWidth: CGFloat,
+        containerHeight: CGFloat,
+        density: LibraryGridDensity
+    ) -> Int {
+        let columns = columnCount(containerWidth: containerWidth, density: density)
+        let availableWidth = max(containerWidth - horizontalPadding * 2, 0)
+        let cellWidth = max(
+            (availableWidth - CGFloat(columns - 1) * spacing) / CGFloat(columns),
+            1
+        )
+        let rows = max(Int((max(containerHeight, 0) + spacing) / (cellWidth + spacing)), 1)
+        return columns * rows
+    }
+}
+
+enum LibraryAssetDetailText {
+    static func hoverText(_ item: AssetGridItemProjection) -> String {
+        var lines = [
+            item.fileName ?? "未命名照片",
+            "来源：\(item.sourceDisplayName)",
+        ]
+        if let relativePath = item.relativePath {
+            lines.append("位置：\(relativePath)")
+        }
+        if let width = item.width, let height = item.height {
+            lines.append("尺寸：\(formattedInteger(width)) × \(formattedInteger(height))")
+        }
+        lines.append("格式：\(item.mediaType)")
+        if let createdAt = item.mediaCreatedAtMs {
+            lines.append("拍摄时间：\(formattedDate(milliseconds: createdAt))")
+        }
+        if let modifiedAt = item.mediaModifiedAtMs {
+            lines.append("修改时间：\(formattedDate(milliseconds: modifiedAt))")
+        }
+        lines.append("标签：已确认 \(item.acceptedTagCount) · 已拒绝 \(item.rejectedTagCount)")
+        lines.append("状态：\(availabilityText(item.availability))")
+        return lines.joined(separator: "\n")
+    }
+
+    static func reviewHoverText(_ item: ReviewQueueItemProjection) -> String {
+        [
+            item.fileName ?? "未命名照片",
+            "建议来源：\(reviewOriginText(item.suggestionOrigin))",
+            "建议分数：\(String(format: "%.2f", item.score))",
+            "标签：已确认 \(item.acceptedTagCount) · 已拒绝 \(item.rejectedTagCount)",
+            "状态：\(availabilityText(item.availability))",
+        ].joined(separator: "\n")
+    }
+
+    static func availabilityText(_ availability: AssetAvailability) -> String {
+        switch availability {
+        case .available: "可用"
+        case .missing: "文件缺失"
+        case .unreadable: "不可读取"
+        case .unsupported: "格式不支持"
+        }
+    }
+
+    private static func formattedInteger(_ value: Int) -> String {
+        NumberFormatter.localizedString(from: NSNumber(value: value), number: .decimal)
+    }
+
+    private static func formattedDate(milliseconds: Int64) -> String {
+        Date(timeIntervalSince1970: TimeInterval(milliseconds) / 1_000)
+            .formatted(date: .abbreviated, time: .shortened)
+    }
+
+    private static func reviewOriginText(_ origin: ReviewQueueSuggestionOrigin) -> String {
+        switch origin {
+        case .featurePrint: "特征向量"
+        case .standardModel: "标准模型"
+        case .personalModel: "个人模型"
+        case .personalAdamW: "超级个人模型"
+        }
+    }
+}
+
+enum LibraryTagSemanticGroup: Int, CaseIterable, Identifiable, Sendable {
+    case people
+    case placesAndScenes
+    case activities
+    case food
+    case nature
+    case documents
+    case other
+
+    var id: Int { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .people: "人物与关系"
+        case .placesAndScenes: "地点与场景"
+        case .activities: "活动与事件"
+        case .food: "美食与餐饮"
+        case .nature: "自然与动植物"
+        case .documents: "文档与屏幕"
+        case .other: "物品与其他"
+        }
+    }
+
+    static func group(_ tags: [TagListItem]) -> [LibraryTagSemanticSection] {
+        let classified = Dictionary(grouping: tags) { semanticGroup(for: $0.displayName) }
+        return allCases.map { group in
+            LibraryTagSemanticSection(
+                group: group,
+                tags: (classified[group] ?? []).sorted { lhs, rhs in
+                    let comparison = lhs.displayName.localizedStandardCompare(rhs.displayName)
+                    if comparison == .orderedSame {
+                        return lhs.id.uuidString.lowercased() < rhs.id.uuidString.lowercased()
+                    }
+                    return comparison == .orderedAscending
+                }
+            )
+        }
+    }
+
+    private static func semanticGroup(for name: String) -> LibraryTagSemanticGroup {
+        let normalized = name.folding(
+            options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive],
+            locale: .current
+        )
+        let keywordGroups: [(LibraryTagSemanticGroup, [String])] = [
+            (.people, [
+                "人像", "人物", "肖像", "自拍", "合影", "家人", "家庭", "朋友", "亲友", "儿童", "孩子", "宝宝",
+                "person", "people", "portrait", "selfie", "family", "friend", "child", "baby",
+            ]),
+            (.placesAndScenes, [
+                "旅行", "地点", "城市", "乡村", "街道", "户外", "室内", "环境", "场景", "风景", "海滩", "海边",
+                "山景", "水域", "建筑", "公园", "travel", "place", "city", "street", "outdoor", "indoor", "scene",
+                "landscape", "beach", "mountain", "water", "building", "architecture", "park",
+            ]),
+            (.activities, [
+                "活动", "运动", "聚会", "生日", "节日", "庆典", "婚礼", "演出", "会议", "工作", "课堂", "比赛", "event",
+                "activity", "sport", "party", "birthday", "festival", "holiday", "wedding", "concert", "meeting", "work", "game",
+            ]),
+            (.food, [
+                "美食", "食物", "餐饮", "早餐", "午餐", "晚餐", "菜肴", "饮料", "咖啡", "甜点", "水果", "food",
+                "meal", "breakfast", "lunch", "dinner", "drink", "coffee", "dessert", "fruit",
+            ]),
+            (.nature, [
+                "自然", "动物", "宠物", "猫", "狗", "鸟", "植物", "花卉", "鲜花", "树木", "野生", "animal", "pet",
+                "cat", "dog", "bird", "plant", "flower", "tree", "wildlife", "nature",
+            ]),
+            (.documents, [
+                "截图", "屏幕", "文档", "文件", "票据", "收据", "发票", "二维码", "文字", "表格", "幻灯片",
+                "screenshot", "screen", "document", "receipt", "invoice", "qr", "text", "spreadsheet", "slide",
+            ]),
+        ]
+        return keywordGroups.first { _, keywords in
+            keywords.contains { normalized.localizedCaseInsensitiveContains($0) }
+        }?.0 ?? .other
+    }
+}
+
+struct LibraryTagSemanticSection: Identifiable, Equatable, Sendable {
+    let group: LibraryTagSemanticGroup
+    let tags: [TagListItem]
+
+    var id: LibraryTagSemanticGroup { group }
+}
+
+@MainActor
+final class LibrarySourceOrderPreferences {
+    private static let defaultKey = "library.sidebar.source-order.v1"
+    private let defaults: UserDefaults
+    private let key: String
+
+    init(defaults: UserDefaults = .standard, key: String = defaultKey) {
+        self.defaults = defaults
+        self.key = key
+    }
+
+    func ordered(_ sources: [LibrarySourceSummary]) -> [LibrarySourceSummary] {
+        let byID = Dictionary(uniqueKeysWithValues: sources.map { ($0.id, $0) })
+        let savedIDs = loadIDs()
+        let orderedKnown = savedIDs.compactMap { byID[$0] }
+        let savedSet = Set(savedIDs)
+        let appended = sources.filter { !savedSet.contains($0.id) }
+        return orderedKnown + appended
+    }
+
+    func move(
+        sourceID: UUID,
+        before targetID: UUID?,
+        in sources: [LibrarySourceSummary]
+    ) {
+        var ids = ordered(sources).map(\.id)
+        guard let sourceIndex = ids.firstIndex(of: sourceID) else { return }
+        ids.remove(at: sourceIndex)
+        if let targetID, let targetIndex = ids.firstIndex(of: targetID) {
+            ids.insert(sourceID, at: targetIndex)
+        } else {
+            ids.append(sourceID)
+        }
+        defaults.set(ids.map(\.uuidString), forKey: key)
+    }
+
+    private func loadIDs() -> [UUID] {
+        (defaults.stringArray(forKey: key) ?? []).compactMap(UUID.init(uuidString:))
     }
 }
 
@@ -179,6 +386,8 @@ final class LibraryWorkspaceModel: ObservableObject {
     @Published private(set) var isClearingPreviewCache = false
     @Published private(set) var jobActivityItems: [JobActivityItem] = []
     @Published private(set) var jobActivityActionInFlightIDs: Set<UUID> = []
+    @Published private(set) var sourceOrderRevision = 0
+    @Published private(set) var isOpeningOriginal = false
 
     fileprivate let review: any PersonalizationReviewPort
     private let service: any LibraryWorkspacePort
@@ -190,6 +399,8 @@ final class LibraryWorkspaceModel: ObservableObject {
     private let appPersonalTagLibrarySuggester: (any AppPersonalTagLibrarySuggesting)?
     private let appPersonalAdamWTagLibrarySuggester: (any AppPersonalTagLibrarySuggesting)?
     private let suggestionThresholds: (any SuggestionThresholdPort)?
+    private let originalAssetOpener: any LibraryOriginalAssetOpening
+    private let sourceOrderPreferences: LibrarySourceOrderPreferences
     private let clock: any JobClock
     private var lastTagMutation: LibraryTagUndoRecord?
     fileprivate var lastReviewMutation: ReviewMutationUndoRecord?
@@ -222,6 +433,8 @@ final class LibraryWorkspaceModel: ObservableObject {
         appPersonalTagLibrarySuggester: (any AppPersonalTagLibrarySuggesting)? = nil,
         appPersonalAdamWTagLibrarySuggester: (any AppPersonalTagLibrarySuggesting)? = nil,
         suggestionThresholds: (any SuggestionThresholdPort)? = nil,
+        originalAssetOpener: any LibraryOriginalAssetOpening = UnavailableLibraryOriginalAssetOpener(),
+        sourceOrderPreferences: LibrarySourceOrderPreferences = LibrarySourceOrderPreferences(),
         clock: any JobClock = SystemJobClock(),
         catalogProgressRefreshInterval: Duration = .milliseconds(750),
         searchDebounceInterval: Duration = .milliseconds(300)
@@ -236,6 +449,8 @@ final class LibraryWorkspaceModel: ObservableObject {
         self.appPersonalTagLibrarySuggester = appPersonalTagLibrarySuggester
         self.appPersonalAdamWTagLibrarySuggester = appPersonalAdamWTagLibrarySuggester
         self.suggestionThresholds = suggestionThresholds
+        self.originalAssetOpener = originalAssetOpener
+        self.sourceOrderPreferences = sourceOrderPreferences
         self.clock = clock
         self.catalogProgressRefreshInterval = catalogProgressRefreshInterval
         self.searchDebounceInterval = searchDebounceInterval
@@ -243,6 +458,37 @@ final class LibraryWorkspaceModel: ObservableObject {
 
     var suggestionThresholdPortForSettings: (any SuggestionThresholdPort)? {
         suggestionThresholds
+    }
+
+    var orderedSources: [LibrarySourceSummary] {
+        _ = sourceOrderRevision
+        return sourceOrderPreferences.ordered(sources)
+    }
+
+    func moveSource(_ sourceID: UUID, before targetID: UUID?) {
+        sourceOrderPreferences.move(
+            sourceID: sourceID,
+            before: targetID,
+            in: sources
+        )
+        sourceOrderRevision &+= 1
+    }
+
+    func moveSource(_ sourceID: UUID, to targetID: UUID) {
+        let ordered = orderedSources
+        guard let sourceIndex = ordered.firstIndex(where: { $0.id == sourceID }),
+              let targetIndex = ordered.firstIndex(where: { $0.id == targetID }),
+              sourceIndex != targetIndex
+        else { return }
+        let beforeID: UUID?
+        if sourceIndex < targetIndex {
+            beforeID = ordered.indices.contains(targetIndex + 1)
+                ? ordered[targetIndex + 1].id
+                : nil
+        } else {
+            beforeID = targetID
+        }
+        moveSource(sourceID, before: beforeID)
     }
 
     func suggestionThresholdDefaults() -> SuggestionThresholdDefaults? {
@@ -2507,6 +2753,34 @@ final class LibraryWorkspaceModel: ObservableObject {
         await movePrimarySelection(by: offset)
     }
 
+    func movePrimarySelection(
+        byPage direction: LibraryGridPageDirection,
+        pageItemCount: Int
+    ) async {
+        if primarySelectedAssetID == nil {
+            guard let firstAssetID = items.first?.assetID else { return }
+            await selectAsset(firstAssetID)
+            return
+        }
+        let distance = max(pageItemCount, 1)
+        await movePrimarySelection(by: direction == .down ? distance : -distance)
+    }
+
+    func openSelectedOriginal() async {
+        guard selectedAssetIDs.count == 1,
+              let assetID = primarySelectedAssetID,
+              !isOpeningOriginal
+        else { return }
+        isOpeningOriginal = true
+        defer { isOpeningOriginal = false }
+        do {
+            notice = nil
+            try await originalAssetOpener.openOriginalAsset(assetID: assetID)
+        } catch {
+            notice = .originalOpenFailed
+        }
+    }
+
     func applyTagDecision(tagID: UUID, action: LibraryTagDecisionAction) async {
         let assetIDs = Array(selectedAssetIDs)
         _ = await applyTagDecision(tagID: tagID, action: action, assetIDs: assetIDs)
@@ -3607,6 +3881,17 @@ extension LibraryWorkspaceModel {
         await selectAsset(reviewQueueItems[targetIndex].assetID)
     }
 
+    func moveReviewPrimarySelection(
+        byPage direction: LibraryGridPageDirection,
+        pageItemCount: Int
+    ) async {
+        let distance = max(pageItemCount, 1)
+        await moveReviewPrimarySelection(
+            in: direction == .down ? .right : .left,
+            columnCount: distance
+        )
+    }
+
     func requestEnqueueSuggestions(
         tagID: UUID,
         displayName: String,
@@ -3924,6 +4209,66 @@ private struct LibraryMediaFormatFilterOption {
     let mediaTypes: [String]
 }
 
+private struct LibraryTagFlowLayout: Layout {
+    let horizontalSpacing: CGFloat = 6
+    let verticalSpacing: CGFloat = 6
+
+    func sizeThatFits(
+        proposal: ProposedViewSize,
+        subviews: Subviews,
+        cache _: inout ()
+    ) -> CGSize {
+        let maxWidth = proposal.width ?? .infinity
+        var x: CGFloat = 0
+        var y: CGFloat = 0
+        var rowHeight: CGFloat = 0
+        var usedWidth: CGFloat = 0
+
+        for subview in subviews {
+            let size = subview.sizeThatFits(.unspecified)
+            if x > 0, x + size.width > maxWidth {
+                y += rowHeight + verticalSpacing
+                x = 0
+                rowHeight = 0
+            }
+            usedWidth = max(usedWidth, x + size.width)
+            x += size.width + horizontalSpacing
+            rowHeight = max(rowHeight, size.height)
+        }
+        return CGSize(
+            width: proposal.width ?? usedWidth,
+            height: subviews.isEmpty ? 0 : y + rowHeight
+        )
+    }
+
+    func placeSubviews(
+        in bounds: CGRect,
+        proposal _: ProposedViewSize,
+        subviews: Subviews,
+        cache _: inout ()
+    ) {
+        var x = bounds.minX
+        var y = bounds.minY
+        var rowHeight: CGFloat = 0
+
+        for subview in subviews {
+            let size = subview.sizeThatFits(.unspecified)
+            if x > bounds.minX, x + size.width > bounds.maxX {
+                y += rowHeight + verticalSpacing
+                x = bounds.minX
+                rowHeight = 0
+            }
+            subview.place(
+                at: CGPoint(x: x, y: y),
+                anchor: .topLeading,
+                proposal: ProposedViewSize(size)
+            )
+            x += size.width + horizontalSpacing
+            rowHeight = max(rowHeight, size.height)
+        }
+    }
+}
+
 struct LibraryWorkspaceView: View {
     private static let mediaFormatFilterOptions = [
         LibraryMediaFormatFilterOption(title: "JPEG", mediaTypes: [UTType.jpeg.identifier]),
@@ -3963,6 +4308,7 @@ struct LibraryWorkspaceView: View {
     @State private var activeSheet: LibraryWorkspaceSheet?
     @State private var commandSearchText = ""
     @State private var gridColumnCount = 1
+    @State private var gridPageItemCount = 1
     @State private var gridCellFrames: [UUID: CGRect] = [:]
     @State private var isMarqueeSelecting = false
     @State private var gridScrollTargetID: UUID?
@@ -3976,35 +4322,7 @@ struct LibraryWorkspaceView: View {
             sidebar
                 .navigationSplitViewColumnWidth(min: 180, ideal: 220, max: 300)
         } detail: {
-            content
-                .navigationTitle("全部照片")
-                .focusable()
-                .focused($contentFocused)
-                .focusEffectDisabled()
-                .onKeyPress(.space) {
-                    guard model.primarySelectedAssetID != nil else { return .ignored }
-                    model.toggleSinglePhotoView()
-                    return .handled
-                }
-                .onKeyPress(.escape) {
-                    guard model.isSinglePhotoPresented else { return .ignored }
-                    model.closeSinglePhotoView()
-                    return .handled
-                }
-                .onKeyPress("p") {
-                    handleSinglePhotoReviewDecisionKey(.accept)
-                }
-                .onKeyPress("x") {
-                    handleSinglePhotoReviewDecisionKey(.reject)
-                }
-                .onKeyPress("u") {
-                    handleSinglePhotoReviewDeferKey()
-                }
-                .onKeyPress(keys: [.init("a")], action: handleSelectAllKeyPress)
-                .onKeyPress(
-                    keys: [.leftArrow, .rightArrow, .upArrow, .downArrow],
-                    action: handleGridNavigationKey
-                )
+            keyboardEnabledContent
         }
         .inspector(isPresented: inspectorVisibility) {
             inspector
@@ -4318,6 +4636,33 @@ struct LibraryWorkspaceView: View {
         }
     }
 
+    private var keyboardEnabledContent: some View {
+        content
+            .navigationTitle("全部照片")
+            .focusable()
+            .focused($contentFocused)
+            .focusEffectDisabled()
+            .onKeyPress(.space) {
+                guard model.primarySelectedAssetID != nil else { return .ignored }
+                model.toggleSinglePhotoView()
+                return .handled
+            }
+            .onKeyPress(.escape) {
+                guard model.isSinglePhotoPresented else { return .ignored }
+                model.closeSinglePhotoView()
+                return .handled
+            }
+            .onKeyPress("p") { handleSinglePhotoReviewDecisionKey(.accept) }
+            .onKeyPress("x") { handleSinglePhotoReviewDecisionKey(.reject) }
+            .onKeyPress("u") { handleSinglePhotoReviewDeferKey() }
+            .onKeyPress(keys: [.init("a")], action: handleSelectAllKeyPress)
+            .onKeyPress(
+                keys: [.leftArrow, .rightArrow, .upArrow, .downArrow],
+                action: handleGridNavigationKey
+            )
+            .onKeyPress(keys: [.pageUp, .pageDown], action: handleGridPageNavigationKey)
+    }
+
     private var previewCachePanel: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("预览缓存")
@@ -4623,6 +4968,7 @@ struct LibraryWorkspaceView: View {
             shortcutRow("切换单图查看", keys: "Space")
             shortcutRow("返回照片网格", keys: "Esc")
             shortcutRow("移动照片选择", keys: "←  ↑  ↓  →")
+            shortcutRow("按当前网格页幅翻页", keys: "Page Up / Page Down")
             Spacer()
         }
         .padding(24)
@@ -4734,6 +5080,28 @@ struct LibraryWorkspaceView: View {
         return .handled
     }
 
+    private func handleGridPageNavigationKey(_ keyPress: KeyPress) -> KeyPress.Result {
+        guard contentFocused,
+              !model.isSinglePhotoPresented,
+              model.reviewMode == nil,
+              !model.items.isEmpty
+        else { return .ignored }
+        let direction: LibraryGridPageDirection
+        switch keyPress.key {
+        case .pageUp: direction = .up
+        case .pageDown: direction = .down
+        default: return .ignored
+        }
+        Task {
+            await model.movePrimarySelection(
+                byPage: direction,
+                pageItemCount: gridPageItemCount
+            )
+            gridScrollTargetID = model.primarySelectedAssetID
+        }
+        return .handled
+    }
+
     private func handleSinglePhotoReviewDecisionKey(
         _ action: LibraryTagDecisionAction
     ) -> KeyPress.Result {
@@ -4775,9 +5143,18 @@ struct LibraryWorkspaceView: View {
                 .tag(LibrarySidebarSelection.reviewSuggestions)
             }
             Section("来源") {
-                ForEach(model.sources) { source in
+                ForEach(model.orderedSources) { source in
                     sourceRow(source)
                         .tag(LibrarySidebarSelection.source(source.id))
+                        .draggable(source.id.uuidString.lowercased())
+                        .dropDestination(for: String.self) { sourceIDs, _ in
+                            guard let rawSourceID = sourceIDs.first,
+                                  let sourceID = UUID(uuidString: rawSourceID),
+                                  sourceID != source.id
+                            else { return false }
+                            model.moveSource(sourceID, to: source.id)
+                            return true
+                        }
                 }
                 Button {
                     Task { await model.connectFolder() }
@@ -4800,8 +5177,21 @@ struct LibraryWorkspaceView: View {
                 }
             }
             Section("标签") {
-                ForEach(model.tags, id: \.id) { tag in
-                    tagRow(tag)
+                ForEach(
+                    LibraryTagSemanticGroup.group(model.tags).filter { !$0.tags.isEmpty }
+                ) { section in
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(section.group.displayName)
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                            .textCase(nil)
+                        LibraryTagFlowLayout {
+                            ForEach(section.tags, id: \.id) { tag in
+                                tagRow(tag)
+                            }
+                        }
+                    }
+                    .padding(.vertical, 3)
                 }
                 Button {
                     Task { await model.installPresetTags() }
@@ -4840,13 +5230,13 @@ struct LibraryWorkspaceView: View {
                 }
             }
         } label: {
-            HStack(spacing: 8) {
+            HStack(spacing: 5) {
                 Label {
                     Text(tag.displayName)
+                        .lineLimit(1)
                 } icon: {
                     Image(systemName: isExcluded ? "tag.slash" : "tag")
                 }
-                Spacer(minLength: 0)
                 if isIncluded {
                     if usesIntersection {
                         Text("∩")
@@ -4863,9 +5253,10 @@ struct LibraryWorkspaceView: View {
                         .foregroundStyle(.red)
                 }
             }
-            .padding(.vertical, 3)
-            .padding(.horizontal, 6)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 8)
+            .frame(height: 28)
+            .frame(maxWidth: 180, alignment: .leading)
+            .fixedSize(horizontal: true, vertical: false)
             .contentShape(Rectangle())
             .background {
                 if isIncluded {
@@ -4878,6 +5269,9 @@ struct LibraryWorkspaceView: View {
                 } else if isExcluded {
                     RoundedRectangle(cornerRadius: 6)
                         .fill(Color.red.opacity(0.12))
+                } else {
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(Color(nsColor: .controlBackgroundColor).opacity(0.75))
                 }
             }
             .foregroundStyle(isExcluded ? Color.red : Color.primary)
@@ -4930,7 +5324,7 @@ struct LibraryWorkspaceView: View {
             }
         }
         .accessibilityElement(children: .combine)
-        .help(sourceHelpText(source.state))
+        .help(sourceHelpText(source.state) + "；拖拽可调整来源顺序")
         .contextMenu {
             Button("在图库中查看") {
                 selection = .source(source.id)
@@ -5228,15 +5622,15 @@ struct LibraryWorkspaceView: View {
                 .background(Color(nsColor: .windowBackgroundColor))
                 .accessibilityLabel("照片网格")
                 .onAppear {
-                    updateGridColumnCount(containerWidth: proxy.size.width)
+                    updateGridMetrics(containerSize: proxy.size)
                     contentFocused = true
                     gridScrollTargetID = model.primarySelectedAssetID
                 }
-                .onChange(of: proxy.size.width) { _, width in
-                    updateGridColumnCount(containerWidth: width)
+                .onChange(of: proxy.size) { _, size in
+                    updateGridMetrics(containerSize: size)
                 }
                 .onChange(of: model.gridDensity) { _, _ in
-                    updateGridColumnCount(containerWidth: proxy.size.width)
+                    updateGridMetrics(containerSize: proxy.size)
                 }
                 .onChange(of: gridScrollTargetID) { _, assetID in
                     guard let assetID else { return }
@@ -5247,9 +5641,14 @@ struct LibraryWorkspaceView: View {
         }
     }
 
-    private func updateGridColumnCount(containerWidth: CGFloat) {
+    private func updateGridMetrics(containerSize: CGSize) {
         gridColumnCount = LibraryGridLayout.columnCount(
-            containerWidth: containerWidth,
+            containerWidth: containerSize.width,
+            density: model.gridDensity
+        )
+        gridPageItemCount = LibraryGridLayout.pageItemCount(
+            containerWidth: containerSize.width,
+            containerHeight: containerSize.height,
             density: model.gridDensity
         )
     }
@@ -5276,17 +5675,15 @@ struct LibraryWorkspaceView: View {
                             } else if case let .tagQueue(tagID, displayName) = model.reviewMode {
                                 reviewInspectorActions(tagID: tagID, displayName: displayName)
                             }
+
+                            Divider()
+                            metadata(detail)
                         } else if !model.assetPendingSuggestions.isEmpty {
                             InspectorSuggestionSection(model: model)
                         }
 
                         Divider()
                         tagEditor
-
-                        if let detail = model.inspectorDetail {
-                            Divider()
-                            metadata(detail)
-                        }
                     }
                     .padding(16)
                 }
@@ -5401,7 +5798,39 @@ struct LibraryWorkspaceView: View {
                     value: ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
                 )
             }
+            if let createdAt = detail.mediaCreatedAtMs {
+                LabeledContent(
+                    "拍摄时间",
+                    value: Date(timeIntervalSince1970: TimeInterval(createdAt) / 1_000)
+                        .formatted(date: .abbreviated, time: .shortened)
+                )
+            }
+            if let modifiedAt = detail.mediaModifiedAtMs {
+                LabeledContent(
+                    "修改时间",
+                    value: Date(timeIntervalSince1970: TimeInterval(modifiedAt) / 1_000)
+                        .formatted(date: .abbreviated, time: .shortened)
+                )
+            }
             LabeledContent("状态", value: availabilityText(detail.availability))
+
+            Button {
+                Task { await model.openSelectedOriginal() }
+            } label: {
+                Label(
+                    model.isOpeningOriginal ? "正在打开原图…" : "用“预览”打开原图",
+                    systemImage: "arrow.up.forward.app"
+                )
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.small)
+            .disabled(
+                detail.availability != .available ||
+                    model.selectedAssetIDs.count != 1 ||
+                    model.isOpeningOriginal
+            )
+            .help("以只读定位打开原始照片；文件夹照片和 Apple Photos 均交给 macOS“预览”显示")
+            .padding(.top, 5)
         }
         .font(.caption)
     }
@@ -5787,6 +6216,8 @@ struct LibraryWorkspaceView: View {
             "已按当前“\(methodName)”门槛刷新“\(tagName)”待审队列，删除 \(deletedCount) 条。"
         case .suggestionThresholdUpdateFailed:
             "建议阈值未能保存，请重试。"
+        case .originalOpenFailed:
+            "无法用“预览”打开原图。请确认来源仍可用、授权有效且照片已可从本机读取。"
         }
     }
 
@@ -6108,6 +6539,7 @@ private struct AssetThumbnailView: View {
         .accessibilityAddTraits(.isButton)
         .accessibilityValue(isSelected ? "已选择" : "未选择")
         .accessibilityHint("选择照片；双击或选择后按空格查看单张照片")
+        .help(LibraryAssetDetailText.hoverText(item))
         .accessibilityAction {
             onSelect()
         }

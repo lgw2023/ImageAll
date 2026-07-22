@@ -129,6 +129,25 @@ enum LibraryWorkspaceNotice: Equatable, Sendable {
     case personalAdamWTagLibrarySuggestionsFailed
     case suggestionThresholdPruned(tagName: String, methodName: String, deletedCount: Int)
     case suggestionThresholdUpdateFailed
+    case originalOpenFailed
+}
+
+enum LibraryOriginalAssetOpenError: Error, Equatable, Sendable {
+    case unavailable
+    case unsafeLocator
+    case previewUnavailable
+}
+
+@MainActor
+protocol LibraryOriginalAssetOpening: Sendable {
+    func openOriginalAsset(assetID: UUID) async throws
+}
+
+@MainActor
+struct UnavailableLibraryOriginalAssetOpener: LibraryOriginalAssetOpening {
+    func openOriginalAsset(assetID _: UUID) async throws {
+        throw LibraryOriginalAssetOpenError.unavailable
+    }
 }
 
 enum CloudPreviewPresentationState: Equatable, Sendable {

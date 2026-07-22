@@ -586,6 +586,7 @@ struct ReviewQueueContentView: View {
     let displayName: String
     @FocusState.Binding var contentFocused: Bool
     @State private var gridColumnCount = 1
+    @State private var gridPageItemCount = 1
     @State private var gridCellFrames: [UUID: CGRect] = [:]
     @State private var isMarqueeSelecting = false
     @State private var gridScrollTargetID: UUID?
@@ -633,6 +634,7 @@ struct ReviewQueueContentView: View {
             keys: [.leftArrow, .rightArrow, .upArrow, .downArrow],
             action: handleNavigationKey
         )
+        .onKeyPress(keys: [.pageUp, .pageDown], action: handlePageNavigationKey)
     }
 
     private var reviewGrid: some View {
@@ -707,12 +709,12 @@ struct ReviewQueueContentView: View {
                 .background(Color(nsColor: .windowBackgroundColor))
                 .accessibilityLabel("待审核建议网格")
                 .onAppear {
-                    updateGridColumnCount(containerWidth: proxy.size.width)
+                    updateGridMetrics(containerSize: proxy.size)
                     contentFocused = true
                     gridScrollTargetID = model.primarySelectedAssetID
                 }
-                .onChange(of: proxy.size.width) { _, width in
-                    updateGridColumnCount(containerWidth: width)
+                .onChange(of: proxy.size) { _, size in
+                    updateGridMetrics(containerSize: size)
                 }
                 .onChange(of: gridScrollTargetID) { _, assetID in
                     guard let assetID else { return }
@@ -769,9 +771,35 @@ struct ReviewQueueContentView: View {
         return .handled
     }
 
-    private func updateGridColumnCount(containerWidth: CGFloat) {
+    private func handlePageNavigationKey(_ keyPress: KeyPress) -> KeyPress.Result {
+        guard contentFocused,
+              !model.isSinglePhotoPresented,
+              !model.reviewQueueItems.isEmpty
+        else { return .ignored }
+        let direction: LibraryGridPageDirection
+        switch keyPress.key {
+        case .pageUp: direction = .up
+        case .pageDown: direction = .down
+        default: return .ignored
+        }
+        Task {
+            await model.moveReviewPrimarySelection(
+                byPage: direction,
+                pageItemCount: gridPageItemCount
+            )
+            gridScrollTargetID = model.primarySelectedAssetID
+        }
+        return .handled
+    }
+
+    private func updateGridMetrics(containerSize: CGSize) {
         gridColumnCount = LibraryGridLayout.columnCount(
-            containerWidth: containerWidth,
+            containerWidth: containerSize.width,
+            density: .standard
+        )
+        gridPageItemCount = LibraryGridLayout.pageItemCount(
+            containerWidth: containerSize.width,
+            containerHeight: containerSize.height,
             density: .standard
         )
     }
@@ -885,6 +913,7 @@ private struct ReviewThumbnailView: View {
             "\(isSelected ? "已选择" : "未选择")，\(item.suggestionOrigin.reviewDisplayName)建议，分数 \(String(format: "%.2f", item.score))"
         )
         .accessibilityHint("选择待审核照片；双击可预览，也可按 P、X 或 U 处理")
+        .help(LibraryAssetDetailText.reviewHoverText(item))
         .accessibilityAction {
             onSelect()
         }

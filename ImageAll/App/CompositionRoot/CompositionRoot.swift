@@ -260,6 +260,11 @@ struct CompositionRoot {
             appPersonalTagLibrarySuggester: appPersonalTagLibrarySuggester,
             appPersonalAdamWTagLibrarySuggester: appPersonalAdamWTagLibrarySuggester,
             suggestionThresholds: suggestionThresholds,
+            originalAssetOpener: AppKitLibraryOriginalAssetOpener(
+                database: runtime.database,
+                folderAuthorization: authorization,
+                photosLibrary: photosAccess
+            ),
             clock: clock
         )
     }

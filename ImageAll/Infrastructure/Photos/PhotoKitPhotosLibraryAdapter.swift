@@ -299,6 +299,43 @@ final class PhotoKitPhotosLibraryAdapter: NSObject, PhotosLibraryAccessPort, Pho
         }
     }
 
+    func requestOriginalImageURL(localIdentifier: String) async throws -> URL {
+        guard authorizationState() == .authorized else {
+            throw PhotosLibraryError.authorizationDenied
+        }
+        let fetch = PHAsset.fetchAssets(withLocalIdentifiers: [localIdentifier], options: nil)
+        guard let asset = fetch.firstObject else {
+            throw PhotosLibraryError.libraryUnavailable
+        }
+
+        let options = Self.makeOriginalContentEditingInputRequestOptions()
+        return try await withCheckedThrowingContinuation { continuation in
+            asset.requestContentEditingInput(with: options) { input, info in
+                if let url = input?.fullSizeImageURL {
+                    continuation.resume(returning: url)
+                    return
+                }
+                if let error = info[PHContentEditingInputErrorKey] as? Error {
+                    continuation.resume(throwing: error)
+                    return
+                }
+                if (info[PHContentEditingInputCancelledKey] as? Bool) == true {
+                    continuation.resume(throwing: CancellationError())
+                    return
+                }
+                continuation.resume(throwing: PhotosLibraryError.libraryUnavailable)
+            }
+        }
+    }
+
+    static func makeOriginalContentEditingInputRequestOptions() -> PHContentEditingInputRequestOptions {
+        let options = PHContentEditingInputRequestOptions()
+        // Opening the original is an explicit user action, so PhotoKit may materialize
+        // an iCloud-backed original. Background thumbnail/feature requests remain local-only.
+        options.isNetworkAccessAllowed = true
+        return options
+    }
+
     func requestCloudPreview(
         localIdentifier: String,
         grant _: PhotosCloudDownloadGrant,

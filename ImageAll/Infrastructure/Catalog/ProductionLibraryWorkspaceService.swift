@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import GRDB
 
@@ -324,5 +325,103 @@ struct ProductionLibraryWorkspaceService: LibraryWorkspacePort, Sendable {
 
     func archiveTag(tagID: UUID) throws {
         _ = try tags.archiveTag(tagID: tagID, timestampMs: clock.nowMs)
+    }
+}
+
+private struct LibraryOriginalAssetLocator: Sendable {
+    let sourceID: UUID
+    let sourceKind: SourceKind
+    let locatorKind: AssetLocatorKind
+    let relativePath: String?
+    let photosLocalIdentifier: String?
+    let availability: AssetAvailability
+}
+
+@MainActor
+struct AppKitLibraryOriginalAssetOpener: LibraryOriginalAssetOpening {
+    let database: CatalogDatabase
+    let folderAuthorization: FolderAuthorizationCoordinator
+    let photosLibrary: PhotoKitPhotosLibraryAdapter
+
+    func openOriginalAsset(assetID: UUID) async throws {
+        let locator = try fetchLocator(assetID: assetID)
+        guard locator.availability == .available else {
+            throw LibraryOriginalAssetOpenError.unavailable
+        }
+
+        switch (locator.sourceKind, locator.locatorKind) {
+        case (.folder, .file):
+            guard let relativePath = locator.relativePath,
+                  case let .success(validatedPath) = RelativePathRules.validate(relativePath)
+            else {
+                throw LibraryOriginalAssetOpenError.unsafeLocator
+            }
+            try folderAuthorization.accessFolderSource(sourceID: locator.sourceID) { rootURL in
+                try openWithPreview(rootURL.appendingPathComponent(validatedPath, isDirectory: false))
+            }
+        case (.photos, .photos):
+            guard let localIdentifier = locator.photosLocalIdentifier else {
+                throw LibraryOriginalAssetOpenError.unsafeLocator
+            }
+            let originalURL = try await photosLibrary.requestOriginalImageURL(
+                localIdentifier: localIdentifier
+            )
+            try openWithPreview(originalURL)
+        default:
+            throw LibraryOriginalAssetOpenError.unsafeLocator
+        }
+    }
+
+    private func fetchLocator(assetID: UUID) throws -> LibraryOriginalAssetLocator {
+        try database.pool.read { db in
+            guard let row = try Row.fetchOne(
+                db,
+                sql: """
+                SELECT
+                    asset.source_id,
+                    source.kind AS source_kind,
+                    asset.locator_kind,
+                    asset.relative_path,
+                    asset.photos_local_identifier,
+                    asset.availability
+                FROM asset
+                INNER JOIN source ON source.id = asset.source_id
+                WHERE asset.id = ? AND asset.locator_state = 'current'
+                """,
+                arguments: [assetID.uuidString.lowercased()]
+            ),
+                let sourceID = UUID(uuidString: row["source_id"]),
+                let sourceKind = SourceKind(rawValue: row["source_kind"]),
+                let locatorKind = AssetLocatorKind(rawValue: row["locator_kind"]),
+                let availability = AssetAvailability(rawValue: row["availability"])
+            else {
+                throw LibraryOriginalAssetOpenError.unavailable
+            }
+            return LibraryOriginalAssetLocator(
+                sourceID: sourceID,
+                sourceKind: sourceKind,
+                locatorKind: locatorKind,
+                relativePath: row["relative_path"],
+                photosLocalIdentifier: row["photos_local_identifier"],
+                availability: availability
+            )
+        }
+    }
+
+    private func openWithPreview(_ url: URL) throws {
+        guard let previewURL = NSWorkspace.shared.urlForApplication(
+            withBundleIdentifier: "com.apple.Preview"
+        ) else {
+            throw LibraryOriginalAssetOpenError.previewUnavailable
+        }
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.activates = true
+        configuration.promptsUserIfNeeded = true
+        NSWorkspace.shared.open(
+            [url],
+            withApplicationAt: previewURL,
+            configuration: configuration,
+            completionHandler: nil
+        )
     }
 }
