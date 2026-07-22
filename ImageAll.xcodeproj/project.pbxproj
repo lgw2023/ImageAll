@@ -219,6 +219,9 @@
 		CM0000010000000000000007 /* AppPersonalLinearHead.swift in Sources */ = {isa = PBXBuildFile; fileRef = CM0001010000000000000007 /* AppPersonalLinearHead.swift */; };
 		CM0000010000000000000008 /* AppPersonalLinearHeadStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = CM0001010000000000000008 /* AppPersonalLinearHeadStore.swift */; };
 		CM0000010000000000000009 /* AppPersonalModelRebuildContracts.swift in Sources */ = {isa = PBXBuildFile; fileRef = CM0001010000000000000009 /* AppPersonalModelRebuildContracts.swift */; };
+		TW0000010000000000000001 /* TrainingRunContracts.swift in Sources */ = {isa = PBXBuildFile; fileRef = TW0001010000000000000001 /* TrainingRunContracts.swift */; };
+		TW0000010000000000000002 /* GRDBTrainingRunRepository.swift in Sources */ = {isa = PBXBuildFile; fileRef = TW0001010000000000000002 /* GRDBTrainingRunRepository.swift */; };
+		TW0000010000000000000003 /* TrainingWorkspaceSchemaTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = TW0001010000000000000003 /* TrainingWorkspaceSchemaTests.swift */; };
 		CM000001000000000000000B /* AppPersonalSampleSuggestionContracts.swift in Sources */ = {isa = PBXBuildFile; fileRef = CM000101000000000000000B /* AppPersonalSampleSuggestionContracts.swift */; };
 		CM000001000000000000000A /* AppPersonalModelRebuildCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = CM000101000000000000000A /* AppPersonalModelRebuildCoordinator.swift */; };
 		CM000001000000000000000C /* AppPersonalSampleSuggestionRuntime.swift in Sources */ = {isa = PBXBuildFile; fileRef = CM000101000000000000000C /* AppPersonalSampleSuggestionRuntime.swift */; };
@@ -468,6 +471,9 @@
 		CM0001010000000000000007 /* AppPersonalLinearHead.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppPersonalLinearHead.swift; sourceTree = "<group>"; };
 		CM0001010000000000000008 /* AppPersonalLinearHeadStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppPersonalLinearHeadStore.swift; sourceTree = "<group>"; };
 		CM0001010000000000000009 /* AppPersonalModelRebuildContracts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppPersonalModelRebuildContracts.swift; sourceTree = "<group>"; };
+		TW0001010000000000000001 /* TrainingRunContracts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrainingRunContracts.swift; sourceTree = "<group>"; };
+		TW0001010000000000000002 /* GRDBTrainingRunRepository.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GRDBTrainingRunRepository.swift; sourceTree = "<group>"; };
+		TW0001010000000000000003 /* TrainingWorkspaceSchemaTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrainingWorkspaceSchemaTests.swift; sourceTree = "<group>"; };
 		CM000101000000000000000B /* AppPersonalSampleSuggestionContracts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppPersonalSampleSuggestionContracts.swift; sourceTree = "<group>"; };
 		CM000101000000000000000A /* AppPersonalModelRebuildCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppPersonalModelRebuildCoordinator.swift; sourceTree = "<group>"; };
 		CM000101000000000000000C /* AppPersonalSampleSuggestionRuntime.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppPersonalSampleSuggestionRuntime.swift; sourceTree = "<group>"; };
@@ -660,6 +666,7 @@
 				CM0001010000000000000009 /* AppPersonalModelRebuildContracts.swift */,
 				CM000101000000000000000B /* AppPersonalSampleSuggestionContracts.swift */,
 				CM000101000000000000000D /* AppPersonalTagLibrarySuggestionContracts.swift */,
+				TW0001010000000000000001 /* TrainingRunContracts.swift */,
 				KK0001010000000000000002 /* PersonalizationCatalogPort.swift */,
 				NN0001010000000000000001 /* PersonalizationReviewPort.swift */,
 				NN0001010000000000000002 /* FullLibrarySuggestionsContracts.swift */,
@@ -802,6 +809,7 @@
 				NN000101000000000000000A /* PersonalizationSuggestionRunner.swift */,
 				NN0001010000000000000003 /* PersonalizationReviewService.swift */,
 				NN0001010000000000000004 /* GRDBPersonalizationReviewRepository.swift */,
+				TW0001010000000000000002 /* GRDBTrainingRunRepository.swift */,
 				NN0001010000000000000005 /* FullLibrarySuggestionsHandler.swift */,
 				NN0001010000000000000006 /* FullLibrarySuggestionsJobEnqueue.swift */,
 				NN000101000000000000000C /* PersonalLibrarySuggestionsHandler.swift */,
@@ -855,6 +863,7 @@
 				CC0001010000000000000006 /* DatabaseTestSupport.swift */,
 				CC0001010000000000000007 /* CatalogDatabaseConnectionTests.swift */,
 				CC0001010000000000000008 /* CatalogMigrationTests.swift */,
+				TW0001010000000000000003 /* TrainingWorkspaceSchemaTests.swift */,
 				CC0001010000000000000009 /* CatalogSchemaTests.swift */,
 				CC000101000000000000000A /* CatalogConstraintTests.swift */,
 				CC000101000000000000000B /* CatalogRepositoryTests.swift */,
@@ -1218,6 +1227,7 @@
 				CM0000010000000000000008 /* AppPersonalLinearHeadStore.swift in Sources */,
 				CM0000010000000000000009 /* AppPersonalModelRebuildContracts.swift in Sources */,
 				CM000001000000000000000B /* AppPersonalSampleSuggestionContracts.swift in Sources */,
+				TW0000010000000000000001 /* TrainingRunContracts.swift in Sources */,
 				CM000001000000000000000A /* AppPersonalModelRebuildCoordinator.swift in Sources */,
 				CM000001000000000000000C /* AppPersonalSampleSuggestionRuntime.swift in Sources */,
 				CM000001000000000000000D /* AppPersonalTagLibrarySuggestionContracts.swift in Sources */,
@@ -1341,6 +1351,7 @@
 				NN000001000000000000000A /* PersonalizationSuggestionRunner.swift in Sources */,
 				NN0000010000000000000003 /* PersonalizationReviewService.swift in Sources */,
 				NN0000010000000000000004 /* GRDBPersonalizationReviewRepository.swift in Sources */,
+				TW0000010000000000000002 /* GRDBTrainingRunRepository.swift in Sources */,
 				NN0000010000000000000005 /* FullLibrarySuggestionsHandler.swift in Sources */,
 				NN0000010000000000000006 /* FullLibrarySuggestionsJobEnqueue.swift in Sources */,
 				NN000001000000000000000C /* PersonalLibrarySuggestionsHandler.swift in Sources */,
@@ -1384,6 +1395,7 @@
 				CC0000010000000000000201 /* DatabaseTestSupport.swift in Sources */,
 				CC0000010000000000000202 /* CatalogDatabaseConnectionTests.swift in Sources */,
 				CC0000010000000000000203 /* CatalogMigrationTests.swift in Sources */,
+				TW0000010000000000000003 /* TrainingWorkspaceSchemaTests.swift in Sources */,
 				CC0000010000000000000204 /* CatalogSchemaTests.swift in Sources */,
 				CC0000010000000000000205 /* CatalogConstraintTests.swift in Sources */,
 				CC0000010000000000000206 /* CatalogRepositoryTests.swift in Sources */,

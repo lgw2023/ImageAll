@@ -101,6 +101,7 @@ enum CatalogSchemaExpectations {
         "tag_model",
         "tag_model_revision",
         "tag_model_sample",
+        "training_run",
     ]
 
     static let businessIndexes = [
@@ -127,6 +128,8 @@ enum CatalogSchemaExpectations {
         "standard_prediction_review_rank_idx",
         "tag_model_sample_feature_idx",
         "tag_normalized_name_uq",
+        "training_run_method_created_idx",
+        "training_run_state_created_idx",
     ]
 
     static let columnsByTable: [String: [ColumnExpectation]] = [
@@ -186,7 +189,7 @@ enum CatalogSchemaExpectations {
             .init(name: "derived_from_concept_id", type: "TEXT", notNull: false, defaultValue: nil, primaryKeyOrder: 0),
         ],
         "personal_suggestion_model": [
-            .init(name: "singleton", type: "INTEGER", notNull: false, defaultValue: nil, primaryKeyOrder: 1),
+            .init(name: "method", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 1),
             .init(name: "catalog_scope_id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
             .init(name: "bundle_id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
             .init(name: "bundle_revision", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
@@ -199,18 +202,39 @@ enum CatalogSchemaExpectations {
             .init(name: "weights_sha256", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
             .init(name: "policy_revision", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
             .init(name: "activated_at_ms", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "published_run_id", type: "TEXT", notNull: false, defaultValue: nil, primaryKeyOrder: 0),
         ],
         "personal_suggestion_tag": [
-            .init(name: "tag_id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 1),
-            .init(name: "model_singleton", type: "INTEGER", notNull: true, defaultValue: "1", primaryKeyOrder: 0),
+            .init(name: "method", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 1),
+            .init(name: "tag_id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 2),
         ],
         "personal_prediction": [
-            .init(name: "asset_id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 1),
-            .init(name: "tag_id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 2),
-            .init(name: "content_revision", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 3),
+            .init(name: "method", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 1),
+            .init(name: "asset_id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 2),
+            .init(name: "tag_id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 3),
+            .init(name: "content_revision", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 4),
             .init(name: "score", type: "REAL", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
             .init(name: "state", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
             .init(name: "created_at_ms", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+        ],
+        "training_run": [
+            .init(name: "id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 1),
+            .init(name: "method", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "state", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "created_at_ms", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "started_at_ms", type: "INTEGER", notNull: false, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "finished_at_ms", type: "INTEGER", notNull: false, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "catalog_scope_id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "job_id", type: "TEXT", notNull: false, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "sample_summary_json", type: "TEXT", notNull: true, defaultValue: "'{}'", primaryKeyOrder: 0),
+            .init(name: "sample_manifest_sha256", type: "TEXT", notNull: false, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "config_json", type: "TEXT", notNull: true, defaultValue: "'{}'", primaryKeyOrder: 0),
+            .init(name: "metrics_json", type: "TEXT", notNull: true, defaultValue: "'{}'", primaryKeyOrder: 0),
+            .init(name: "artifact_kind", type: "TEXT", notNull: false, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "artifact_ref", type: "TEXT", notNull: false, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "artifact_sha256", type: "TEXT", notNull: false, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "result_summary_json", type: "TEXT", notNull: true, defaultValue: "'{}'", primaryKeyOrder: 0),
+            .init(name: "error_code", type: "TEXT", notNull: false, defaultValue: nil, primaryKeyOrder: 0),
         ],
         "source": [
             .init(name: "id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 1),
@@ -390,14 +414,20 @@ enum CatalogSchemaExpectations {
         ],
         "personal_suggestion_model": [
             .init(from: "catalog_scope_id", toTable: "catalog_scope", to: "scope_id", onDelete: "CASCADE"),
+            .init(from: "published_run_id", toTable: "training_run", to: "id", onDelete: "SET NULL"),
         ],
         "personal_suggestion_tag": [
+            .init(from: "method", toTable: "personal_suggestion_model", to: "method", onDelete: "CASCADE"),
             .init(from: "tag_id", toTable: "tag", to: "id", onDelete: "CASCADE"),
-            .init(from: "model_singleton", toTable: "personal_suggestion_model", to: "singleton", onDelete: "CASCADE"),
         ],
         "personal_prediction": [
+            .init(from: "method", toTable: "personal_suggestion_tag", to: "method", onDelete: "CASCADE"),
             .init(from: "asset_id", toTable: "asset", to: "id", onDelete: "CASCADE"),
             .init(from: "tag_id", toTable: "personal_suggestion_tag", to: "tag_id", onDelete: "CASCADE"),
+        ],
+        "training_run": [
+            .init(from: "catalog_scope_id", toTable: "catalog_scope", to: "scope_id", onDelete: "CASCADE"),
+            .init(from: "job_id", toTable: "job", to: "id", onDelete: "SET NULL"),
         ],
         "asset": [
             .init(from: "source_id", toTable: "source", to: "id", onDelete: "RESTRICT"),
@@ -466,6 +496,8 @@ enum CatalogSchemaExpectations {
         "job_active_coalescing_uq": "job",
         "personal_prediction_review_rank_idx": "personal_prediction",
         "prediction_review_rank_idx": "prediction",
+        "training_run_method_created_idx": "training_run",
+        "training_run_state_created_idx": "training_run",
         "standard_prediction_review_rank_idx": "standard_prediction",
         "tag_model_sample_feature_idx": "tag_model_sample",
     ]
@@ -700,10 +732,27 @@ enum CatalogSchemaExpectations {
         .init(
             name: "personal_prediction_review_rank_idx",
             keyColumns: [
+                .init(name: "method", descending: false, collation: "BINARY"),
                 .init(name: "tag_id", descending: false, collation: "BINARY"),
                 .init(name: "state", descending: false, collation: "BINARY"),
                 .init(name: "score", descending: true, collation: "BINARY"),
                 .init(name: "asset_id", descending: false, collation: "BINARY"),
+            ],
+            unique: false
+        ),
+        .init(
+            name: "training_run_method_created_idx",
+            keyColumns: [
+                .init(name: "method", descending: false, collation: "BINARY"),
+                .init(name: "created_at_ms", descending: true, collation: "BINARY"),
+            ],
+            unique: false
+        ),
+        .init(
+            name: "training_run_state_created_idx",
+            keyColumns: [
+                .init(name: "state", descending: false, collation: "BINARY"),
+                .init(name: "created_at_ms", descending: true, collation: "BINARY"),
             ],
             unique: false
         ),

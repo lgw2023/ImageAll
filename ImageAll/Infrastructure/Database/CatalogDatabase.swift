@@ -19,6 +19,7 @@ struct CatalogDatabase: Sendable {
         V011AddStandardPredictionProvenanceMigration.register(on: &migrator)
         V012RepairStandardTagBindingMigration.register(on: &migrator)
         V013PhotosMissingAssetRepairMigration.register(on: &migrator)
+        V014AddTrainingRunsAndPersonalMultiSlotMigration.register(on: &migrator)
         return migrator
     }
 
@@ -766,6 +767,233 @@ enum V013PhotosMissingAssetRepairMigration {
                 WHERE kind = 'photos' AND state = 'active'
                 """
             )
+        }
+    }
+}
+
+enum V014AddTrainingRunsAndPersonalMultiSlotMigration {
+    static func register(on migrator: inout DatabaseMigrator) {
+        migrator.registerMigration(CatalogMigrationID.v014AddTrainingRunsAndPersonalMultiSlot) { db in
+            // Idempotent for repair-style replay of earlier migrations that must
+            // clear this id while the multi-slot schema is already present.
+            let modelColumns = try db.columns(in: "personal_suggestion_model").map(\.name)
+            if modelColumns.contains("method"), try db.tableExists("training_run") {
+                return
+            }
+            try db.execute(sql: "PRAGMA foreign_keys = OFF")
+            try db.execute(
+                sql: """
+                CREATE TABLE training_run (
+                    id TEXT PRIMARY KEY CHECK(
+                        length(id) = 36 AND id GLOB '*-*-*-*-*'
+                    ),
+                    method TEXT NOT NULL CHECK(
+                        method IN ('featureKnn', 'personalCentroid', 'personalAdamW')
+                    ),
+                    state TEXT NOT NULL CHECK(
+                        state IN ('queued', 'running', 'succeeded', 'failed', 'cancelled')
+                    ),
+                    created_at_ms INTEGER NOT NULL CHECK(created_at_ms >= 0),
+                    started_at_ms INTEGER CHECK(started_at_ms IS NULL OR started_at_ms >= 0),
+                    finished_at_ms INTEGER CHECK(finished_at_ms IS NULL OR finished_at_ms >= 0),
+                    catalog_scope_id TEXT NOT NULL
+                        REFERENCES catalog_scope(scope_id) ON DELETE CASCADE,
+                    job_id TEXT REFERENCES job(id) ON DELETE SET NULL,
+                    sample_summary_json TEXT NOT NULL DEFAULT '{}' CHECK(
+                        length(sample_summary_json) BETWEEN 2 AND 100000
+                    ),
+                    sample_manifest_sha256 TEXT CHECK(
+                        sample_manifest_sha256 IS NULL
+                        OR (
+                            length(sample_manifest_sha256) = 64
+                            AND sample_manifest_sha256 NOT GLOB '*[^0-9a-f]*'
+                        )
+                    ),
+                    config_json TEXT NOT NULL DEFAULT '{}' CHECK(
+                        length(config_json) BETWEEN 2 AND 100000
+                    ),
+                    metrics_json TEXT NOT NULL DEFAULT '{}' CHECK(
+                        length(metrics_json) BETWEEN 2 AND 5000000
+                    ),
+                    artifact_kind TEXT CHECK(
+                        artifact_kind IS NULL OR length(artifact_kind) BETWEEN 1 AND 200
+                    ),
+                    artifact_ref TEXT CHECK(
+                        artifact_ref IS NULL OR length(artifact_ref) BETWEEN 1 AND 1000
+                    ),
+                    artifact_sha256 TEXT CHECK(
+                        artifact_sha256 IS NULL
+                        OR (
+                            length(artifact_sha256) = 64
+                            AND artifact_sha256 NOT GLOB '*[^0-9a-f]*'
+                        )
+                    ),
+                    result_summary_json TEXT NOT NULL DEFAULT '{}' CHECK(
+                        length(result_summary_json) BETWEEN 2 AND 100000
+                    ),
+                    error_code TEXT CHECK(
+                        error_code IS NULL OR length(error_code) BETWEEN 1 AND 200
+                    ),
+                    CHECK(
+                        (state IN ('queued', 'running') AND finished_at_ms IS NULL)
+                        OR (state IN ('succeeded', 'failed', 'cancelled')
+                            AND finished_at_ms IS NOT NULL)
+                    )
+                ) STRICT
+                """
+            )
+            try db.execute(
+                sql: """
+                CREATE INDEX training_run_method_created_idx ON training_run (
+                    method,
+                    created_at_ms DESC
+                )
+                """
+            )
+            try db.execute(
+                sql: """
+                CREATE INDEX training_run_state_created_idx ON training_run (
+                    state,
+                    created_at_ms DESC
+                )
+                """
+            )
+
+            try db.execute(
+                sql: "ALTER TABLE personal_suggestion_model RENAME TO personal_suggestion_model_v008"
+            )
+            try db.execute(
+                sql: "ALTER TABLE personal_suggestion_tag RENAME TO personal_suggestion_tag_v008"
+            )
+            try db.execute(
+                sql: "ALTER TABLE personal_prediction RENAME TO personal_prediction_v008"
+            )
+            try db.execute(sql: "DROP TRIGGER IF EXISTS personal_suggestion_tag_before_insert")
+
+            try db.execute(
+                sql: """
+                CREATE TABLE personal_suggestion_model (
+                    method TEXT PRIMARY KEY CHECK(
+                        method IN ('personalCentroid', 'personalAdamW')
+                    ),
+                    catalog_scope_id TEXT NOT NULL
+                        REFERENCES catalog_scope(scope_id) ON DELETE CASCADE,
+                    bundle_id TEXT NOT NULL CHECK(length(bundle_id) BETWEEN 1 AND 200),
+                    bundle_revision TEXT NOT NULL CHECK(length(bundle_revision) BETWEEN 1 AND 200),
+                    provider TEXT NOT NULL CHECK(length(provider) BETWEEN 1 AND 200),
+                    model_id TEXT NOT NULL CHECK(length(model_id) BETWEEN 1 AND 300),
+                    model_revision TEXT NOT NULL CHECK(length(model_revision) BETWEEN 1 AND 200),
+                    preprocessing_revision TEXT NOT NULL
+                        CHECK(length(preprocessing_revision) BETWEEN 1 AND 200),
+                    element_count INTEGER NOT NULL CHECK(element_count > 0),
+                    label_vocabulary_revision TEXT NOT NULL CHECK(
+                        length(label_vocabulary_revision) = 64
+                        AND label_vocabulary_revision NOT GLOB '*[^0-9a-f]*'
+                    ),
+                    weights_sha256 TEXT NOT NULL CHECK(
+                        length(weights_sha256) = 64
+                        AND weights_sha256 NOT GLOB '*[^0-9a-f]*'
+                    ),
+                    policy_revision TEXT NOT NULL CHECK(length(policy_revision) BETWEEN 1 AND 200),
+                    activated_at_ms INTEGER NOT NULL CHECK(activated_at_ms >= 0),
+                    published_run_id TEXT REFERENCES training_run(id) ON DELETE SET NULL
+                ) STRICT
+                """
+            )
+            try db.execute(
+                sql: """
+                CREATE TABLE personal_suggestion_tag (
+                    method TEXT NOT NULL REFERENCES personal_suggestion_model(method)
+                        ON DELETE CASCADE,
+                    tag_id TEXT NOT NULL REFERENCES tag(id) ON DELETE CASCADE,
+                    PRIMARY KEY(method, tag_id)
+                ) STRICT
+                """
+            )
+            try db.execute(
+                sql: """
+                CREATE TABLE personal_prediction (
+                    method TEXT NOT NULL,
+                    asset_id TEXT NOT NULL REFERENCES asset(id) ON DELETE CASCADE,
+                    tag_id TEXT NOT NULL,
+                    content_revision INTEGER NOT NULL CHECK(content_revision > 0),
+                    score REAL NOT NULL CHECK(
+                        typeof(score) IN ('real', 'integer')
+                        AND score = score
+                        AND score BETWEEN -1.0e308 AND 1.0e308
+                    ),
+                    state TEXT NOT NULL CHECK(state = 'pendingReview'),
+                    created_at_ms INTEGER NOT NULL CHECK(created_at_ms >= 0),
+                    PRIMARY KEY(method, asset_id, tag_id, content_revision),
+                    FOREIGN KEY(method, tag_id)
+                        REFERENCES personal_suggestion_tag(method, tag_id) ON DELETE CASCADE
+                ) STRICT
+                """
+            )
+            try db.execute(
+                sql: """
+                INSERT INTO personal_suggestion_model (
+                    method, catalog_scope_id, bundle_id, bundle_revision, provider, model_id,
+                    model_revision, preprocessing_revision, element_count,
+                    label_vocabulary_revision, weights_sha256, policy_revision,
+                    activated_at_ms, published_run_id
+                )
+                SELECT
+                    CASE
+                        WHEN bundle_id = 'app.personal.adamw-head.v1' THEN 'personalAdamW'
+                        ELSE 'personalCentroid'
+                    END,
+                    catalog_scope_id, bundle_id, bundle_revision, provider, model_id,
+                    model_revision, preprocessing_revision, element_count,
+                    label_vocabulary_revision, weights_sha256, policy_revision,
+                    activated_at_ms, NULL
+                FROM personal_suggestion_model_v008
+                """
+            )
+            try db.execute(
+                sql: """
+                INSERT INTO personal_suggestion_tag (method, tag_id)
+                SELECT m.method, t.tag_id
+                FROM personal_suggestion_tag_v008 t
+                JOIN personal_suggestion_model m ON 1 = 1
+                """
+            )
+            try db.execute(
+                sql: """
+                INSERT INTO personal_prediction (
+                    method, asset_id, tag_id, content_revision, score, state, created_at_ms
+                )
+                SELECT m.method, p.asset_id, p.tag_id, p.content_revision, p.score, p.state,
+                    p.created_at_ms
+                FROM personal_prediction_v008 p
+                JOIN personal_suggestion_model m ON 1 = 1
+                """
+            )
+            try db.execute(sql: "DROP TABLE personal_prediction_v008")
+            try db.execute(sql: "DROP TABLE personal_suggestion_tag_v008")
+            try db.execute(sql: "DROP TABLE personal_suggestion_model_v008")
+            try db.execute(
+                sql: """
+                CREATE INDEX personal_prediction_review_rank_idx ON personal_prediction (
+                    method,
+                    tag_id,
+                    state,
+                    score DESC,
+                    asset_id
+                )
+                """
+            )
+            try db.execute(
+                sql: """
+                CREATE TRIGGER personal_suggestion_tag_before_insert
+                BEFORE INSERT ON personal_suggestion_tag
+                WHEN EXISTS (SELECT 1 FROM standard_tag_binding WHERE tag_id = NEW.tag_id)
+                BEGIN
+                    SELECT RAISE(ABORT, 'personal suggestion requires personal tag');
+                END
+                """
+            )
+            try db.execute(sql: "PRAGMA foreign_keys = ON")
         }
     }
 }

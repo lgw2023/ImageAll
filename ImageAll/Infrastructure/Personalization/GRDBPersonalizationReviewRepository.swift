@@ -78,8 +78,9 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                     UNION
                     SELECT p.asset_id, p.tag_id
                     FROM personal_prediction p
-                    JOIN personal_suggestion_model m ON m.singleton = 1
-                    JOIN personal_suggestion_tag pst ON pst.tag_id = p.tag_id
+                    JOIN personal_suggestion_model m ON m.method = p.method
+                    JOIN personal_suggestion_tag pst
+                        ON pst.method = p.method AND pst.tag_id = p.tag_id
                     JOIN tag t ON t.id = p.tag_id AND t.state = 'active'
                     JOIN asset a
                         ON a.id = p.asset_id
@@ -154,8 +155,9 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                     UNION
                     SELECT p.asset_id, p.tag_id
                     FROM personal_prediction p
-                    JOIN personal_suggestion_model m ON m.singleton = 1
-                    JOIN personal_suggestion_tag pst ON pst.tag_id = p.tag_id
+                    JOIN personal_suggestion_model m ON m.method = p.method
+                    JOIN personal_suggestion_tag pst
+                        ON pst.method = p.method AND pst.tag_id = p.tag_id
                     JOIN tag t ON t.id = p.tag_id AND t.state = 'active'
                     JOIN asset a
                         ON a.id = p.asset_id
@@ -642,29 +644,35 @@ struct GRDBPersonalizationReviewRepository: Sendable {
         if try personalCapabilityMatches(capability, in: db) {
             return
         }
-        try db.execute(sql: "DELETE FROM personal_suggestion_model")
+        let method = PersonalSuggestionMethod(bundleID: target.bundleID).rawValue
+        try db.execute(
+            sql: "DELETE FROM personal_suggestion_model WHERE method = ?",
+            arguments: [method]
+        )
         try db.execute(
             sql: """
             INSERT INTO personal_suggestion_model (
-                singleton, catalog_scope_id, bundle_id, bundle_revision, provider, model_id,
+                method, catalog_scope_id, bundle_id, bundle_revision, provider, model_id,
                 model_revision, preprocessing_revision, element_count,
-                label_vocabulary_revision, weights_sha256, policy_revision, activated_at_ms
-            ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                label_vocabulary_revision, weights_sha256, policy_revision, activated_at_ms,
+                published_run_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
             """,
             arguments: [
-                target.catalogScopeID, target.bundleID, target.bundleRevision, target.provider,
-                target.modelID, target.modelRevision, target.preprocessingRevision,
-                target.elementCount, target.labelVocabularyRevision, target.weightsSHA256,
-                target.policyRevision, activatedAtMs,
+                method, target.catalogScopeID, target.bundleID, target.bundleRevision,
+                target.provider, target.modelID, target.modelRevision,
+                target.preprocessingRevision, target.elementCount,
+                target.labelVocabularyRevision, target.weightsSHA256, target.policyRevision,
+                activatedAtMs,
             ]
         )
         for tagID in capability.tagIDs {
             try db.execute(
                 sql: """
-                INSERT INTO personal_suggestion_tag (tag_id, model_singleton)
-                SELECT id, 1 FROM tag WHERE id = ? AND state = 'active'
+                INSERT INTO personal_suggestion_tag (method, tag_id)
+                SELECT ?, id FROM tag WHERE id = ? AND state = 'active'
                 """,
-                arguments: [uuid(tagID)]
+                arguments: [method, uuid(tagID)]
             )
             guard db.changesCount == 1 else {
                 throw PersonalizationReviewError.persistenceFailure
@@ -733,9 +741,10 @@ struct GRDBPersonalizationReviewRepository: Sendable {
         else {
             throw PersonalizationReviewError.persistenceFailure
         }
+        let method = PersonalSuggestionMethod(bundleID: expectedCapability.target.bundleID).rawValue
         try db.execute(
-            sql: "DELETE FROM personal_prediction WHERE asset_id = ?",
-            arguments: [uuid(candidate.assetID)]
+            sql: "DELETE FROM personal_prediction WHERE asset_id = ? AND method = ?",
+            arguments: [uuid(candidate.assetID), method]
         )
         var inserted = 0
         for prediction in predictions {
@@ -745,20 +754,21 @@ struct GRDBPersonalizationReviewRepository: Sendable {
             try db.execute(
                 sql: """
                 INSERT INTO personal_prediction (
-                    asset_id, tag_id, content_revision, score, state, created_at_ms
+                    method, asset_id, tag_id, content_revision, score, state, created_at_ms
                 )
-                SELECT ?, pst.tag_id, ?, ?, 'pendingReview', ?
+                SELECT ?, ?, pst.tag_id, ?, ?, 'pendingReview', ?
                 FROM personal_suggestion_tag pst
                 JOIN tag t ON t.id = pst.tag_id AND t.state = 'active'
-                WHERE pst.tag_id = ?
+                WHERE pst.method = ?
+                    AND pst.tag_id = ?
                     AND NOT EXISTS (
                         SELECT 1 FROM asset_tag_decision d
                         WHERE d.asset_id = ? AND d.tag_id = pst.tag_id
                     )
                 """,
                 arguments: [
-                    uuid(candidate.assetID), candidate.contentRevision, prediction.score,
-                    createdAtMs, uuid(prediction.tagID), uuid(candidate.assetID),
+                    method, uuid(candidate.assetID), candidate.contentRevision, prediction.score,
+                    createdAtMs, method, uuid(prediction.tagID), uuid(candidate.assetID),
                 ]
             )
             inserted += db.changesCount
@@ -785,12 +795,13 @@ struct GRDBPersonalizationReviewRepository: Sendable {
             guard try personalCapabilityMatches(expectedCapability, in: db) else {
                 throw PersonalizationReviewError.persistenceFailure
             }
+            let method = PersonalSuggestionMethod(bundleID: expectedCapability.target.bundleID).rawValue
             try db.execute(
                 sql: """
-                INSERT OR IGNORE INTO personal_suggestion_tag (tag_id, model_singleton)
-                SELECT id, 1 FROM tag WHERE id = ? AND state = 'active'
+                INSERT OR IGNORE INTO personal_suggestion_tag (method, tag_id)
+                SELECT ?, id FROM tag WHERE id = ? AND state = 'active'
                 """,
-                arguments: [uuid(tagID)]
+                arguments: [method, uuid(tagID)]
             )
             guard try Bool.fetchOne(
                 db,
@@ -798,17 +809,17 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                 SELECT EXISTS(
                     SELECT 1 FROM personal_suggestion_tag pst
                     JOIN tag t ON t.id = pst.tag_id AND t.state = 'active'
-                    WHERE pst.tag_id = ?
+                    WHERE pst.method = ? AND pst.tag_id = ?
                 )
                 """,
-                arguments: [uuid(tagID)]
+                arguments: [method, uuid(tagID)]
             ) == true else {
                 throw PersonalizationReviewError.persistenceFailure
             }
 
             try db.execute(
-                sql: "DELETE FROM personal_prediction WHERE tag_id = ?",
-                arguments: [uuid(tagID)]
+                sql: "DELETE FROM personal_prediction WHERE tag_id = ? AND method = ?",
+                arguments: [uuid(tagID), method]
             )
 
             var inserted = 0
@@ -836,21 +847,24 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                 try db.execute(
                     sql: """
                     INSERT INTO personal_prediction (
-                        asset_id, tag_id, content_revision, score, state, created_at_ms
+                        method, asset_id, tag_id, content_revision, score, state, created_at_ms
                     )
-                    SELECT ?, pst.tag_id, ?, ?, 'pendingReview', ?
+                    SELECT ?, ?, pst.tag_id, ?, ?, 'pendingReview', ?
                     FROM personal_suggestion_tag pst
-                    WHERE pst.tag_id = ?
+                    WHERE pst.method = ?
+                        AND pst.tag_id = ?
                         AND NOT EXISTS (
                             SELECT 1 FROM asset_tag_decision d
                             WHERE d.asset_id = ? AND d.tag_id = pst.tag_id
                         )
                     """,
                     arguments: [
+                        method,
                         uuid(hit.candidate.assetID),
                         hit.candidate.contentRevision,
                         hit.score,
                         createdAtMs,
+                        method,
                         uuid(tagID),
                         uuid(hit.candidate.assetID),
                     ]
@@ -1170,8 +1184,9 @@ struct GRDBPersonalizationReviewRepository: Sendable {
             SELECT p.asset_id, p.score, 2 AS origin_rank, 'personalModel' AS suggestion_origin,
                 a.file_name, a.availability
             FROM personal_prediction p
-            JOIN personal_suggestion_model m ON m.singleton = 1
-            JOIN personal_suggestion_tag pst ON pst.tag_id = p.tag_id
+            JOIN personal_suggestion_model m ON m.method = p.method
+            JOIN personal_suggestion_tag pst
+                ON pst.method = p.method AND pst.tag_id = p.tag_id
             JOIN tag t ON t.id = p.tag_id AND t.state = 'active'
             JOIN asset a
                 ON a.id = p.asset_id
@@ -1307,8 +1322,9 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                     UNION ALL
                     SELECT p.tag_id, 2 AS origin_rank
                     FROM personal_prediction p
-                    JOIN personal_suggestion_model m ON m.singleton = 1
-                    JOIN personal_suggestion_tag pst ON pst.tag_id = p.tag_id
+                    JOIN personal_suggestion_model m ON m.method = p.method
+                    JOIN personal_suggestion_tag pst
+                        ON pst.method = p.method AND pst.tag_id = p.tag_id
                     JOIN tag t ON t.id = p.tag_id AND t.state = 'active'
                     JOIN asset a
                         ON a.id = p.asset_id
@@ -1531,12 +1547,13 @@ struct GRDBPersonalizationReviewRepository: Sendable {
         in db: Database
     ) throws -> Bool {
         let target = capability.target
+        let method = PersonalSuggestionMethod(bundleID: target.bundleID).rawValue
         let matches = try Bool.fetchOne(
             db,
             sql: """
             SELECT EXISTS(
                 SELECT 1 FROM personal_suggestion_model
-                WHERE singleton = 1
+                WHERE method = ?
                     AND catalog_scope_id = ?
                     AND bundle_id = ?
                     AND bundle_revision = ?
@@ -1551,10 +1568,10 @@ struct GRDBPersonalizationReviewRepository: Sendable {
             )
             """,
             arguments: [
-                target.catalogScopeID, target.bundleID, target.bundleRevision, target.provider,
-                target.modelID, target.modelRevision, target.preprocessingRevision,
-                target.elementCount, target.labelVocabularyRevision, target.weightsSHA256,
-                target.policyRevision,
+                method, target.catalogScopeID, target.bundleID, target.bundleRevision,
+                target.provider, target.modelID, target.modelRevision,
+                target.preprocessingRevision, target.elementCount,
+                target.labelVocabularyRevision, target.weightsSHA256, target.policyRevision,
             ]
         ) ?? false
         guard matches else { return false }
@@ -1564,8 +1581,10 @@ struct GRDBPersonalizationReviewRepository: Sendable {
             SELECT pst.tag_id
             FROM personal_suggestion_tag pst
             JOIN tag t ON t.id = pst.tag_id AND t.state = 'active'
+            WHERE pst.method = ?
             ORDER BY pst.tag_id
-            """
+            """,
+            arguments: [method]
         )
         return tagIDs == capability.tagIDs.map(uuid).sorted()
     }
