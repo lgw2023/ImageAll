@@ -1,9 +1,9 @@
 # ImageAll 训练工程 T3：Review 全并行
 
-> 状态：Codex 直接实施中  
-> 日期：2026-07-23  
-> 权威规格：`docs/TRAINING-WORKSPACE-SPEC.md`、`docs/SUGGESTION-THRESHOLD-SPEC.md`  
-> 架构决策：`docs/ARCHITECTURE.md` ADR-038 / ADR-039 / ADR-040  
+> 状态：Codex 直接实施中
+> 日期：2026-07-23
+> 权威规格：`docs/TRAINING-WORKSPACE-SPEC.md`、`docs/SUGGESTION-THRESHOLD-SPEC.md`
+> 架构决策：`docs/ARCHITECTURE.md` ADR-038 / ADR-039 / ADR-040
 > 上一批准基线：`main@4987882e537f0e68a7e38afbbf9392c82ef62e52`
 
 ## 开工门
@@ -73,4 +73,3 @@ Cursor CLI 未使用；依据 `AGENTS.md` 至 2026-08-13 的临时授权，由 C
 T3 相关测试、完整非宿主回归、Debug build、Git 与照片安全审计通过后，
 创建独立 Codex 实现 commit，再以独立文档 commit 回填证据。完成 T3 复审后，
 才创建新的 T4 留档并进入训练工程大页。
-
