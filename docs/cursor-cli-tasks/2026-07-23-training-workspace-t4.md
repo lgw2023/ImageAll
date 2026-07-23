@@ -1,6 +1,6 @@
 # ImageAll 训练工程 T4：独立工作台
 
-> 状态：Codex 直接实施中
+> 状态：已完成并通过 Codex 独立复审
 > 日期：2026-07-23
 > 权威规格：`docs/TRAINING-WORKSPACE-SPEC.md`
 > 架构决策：`docs/ARCHITECTURE.md` ADR-038 / ADR-039 / ADR-040
@@ -18,7 +18,8 @@
   0 项 unexpected failures；Debug build 成功。
 - 已跟踪工作区干净；忽略目录不清理、不 stage。
 
-本文档提交后的精确 HEAD 是 T4 `LAUNCH_HEAD`。Cursor CLI 未使用；依据
+T4 精确 `LAUNCH_HEAD`：
+`acbebd6420d898f54607e399b7170ee62374721a`。Cursor CLI 未使用；依据
 `AGENTS.md` 至 2026-08-13 的临时授权，由 Codex 直接按 TDD 实施。
 
 ## 产品契约
@@ -90,3 +91,46 @@
 完成训练工程入口、Run 列表/筛选/详情骨架、三槽状态、发起训练收拢以及两项展示前
 审计前置后，创建独立 Codex 实现 commit；随后独立复审并以单独文档 commit 回填
 证据。T4 复审结束即停止，不扩展后续评测或图表能力。
+
+## 实施结果
+
+- 实现提交：
+  `554ddc596e14bbbf817a098dd54489a8dcc07149`
+  `feat(codex): add training engineering workspace`。
+- Sidebar「图库」区已增加「训练工程」；中央区是独立大页，包含统一 Run 列表、
+  四档方法筛选、三槽状态、概览/数据/配置/过程/产物/结果详情和三个发起入口。
+- Application port 与 GRDB 投影在同一读取快照中返回按时间排序的 Run 和三槽状态；
+  质心/AdamW 槽只认可数据库所指 succeeded Run，Feature Print 以 active current
+  revision 为准。
+- AdamW 指标使用 schema v1 的 `evaluationSplit`、样本计数与
+  `evaluationLoss`；小样本明确为 `trainFallback`。历史
+  `validationLoss` 在 UI 中改标为切分口径未记录，避免误称验证损失。
+- Feature Print 样本摘要记录真实范围、requested/resolved source 数与冻结 payload
+  SHA-256；个人模型记录与训练 artifact 相同的 decision snapshot revision。
+- 详情递归过滤 path/bookmark/locator/file name 等字段，并拒绝展示绝对或 URL
+  artifact 引用。
+
+## TDD 与验证证据
+
+- RED：首次构建因缺少 `TrainingWorkspacePort` / slot / snapshot 契约失败；
+  AdamW 旧报告缺少评估口径与样本计数。
+- GREEN：T4 相关
+  `TrainingWorkspaceSchemaTests`、
+  `AppPersonalAdamWLinearHeadTests`、
+  `AppPersonalModelRebuildCoordinatorTests`、
+  `FullLibrarySuggestionsJobTests`、
+  `LibraryWorkspaceModelTests`
+  共 241 / 241 通过，退出码 0。
+- 完整直接 XCTest：1093 项，11 项仓库已标记 expected failures，
+  0 项 unexpected failures；XCTest 因 expected failures 汇总退出码 1。
+- `xcodebuild build-for-testing`：退出码 0，`TEST BUILD SUCCEEDED`。
+- Debug build：退出码 0，`BUILD SUCCEEDED`。
+- `testTrainingWorkspaceViewRendersSelectedRunDetailWithFixtureData` 使用纯 fixture
+  `NSHostingView` 验证大页与选中 Run 详情可渲染；未启动 production App 宿主。
+- `git diff --check` 与受保护路径静态审计：退出码 0。
+
+## 独立复审结论
+
+T4 产品契约与展示前审计前置均满足；未新增/改写 migration，未加入准确率、
+evaluation assignment、图表或云端训练。实现、测试与工程文件归属单一实现提交，
+未访问或写入受保护照片路径。T4 完成，停止在本切片边界。
