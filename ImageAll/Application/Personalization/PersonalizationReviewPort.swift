@@ -12,6 +12,24 @@ enum SuggestionTaskPresentation: String, Equatable, Sendable {
     case cancelled
 }
 
+struct SuggestionOriginCounts: Equatable, Sendable {
+    static let zero = SuggestionOriginCounts(
+        featurePrint: 0,
+        standardModel: 0,
+        personalModel: 0,
+        personalAdamW: 0
+    )
+
+    let featurePrint: Int
+    let standardModel: Int
+    let personalModel: Int
+    let personalAdamW: Int
+
+    var total: Int {
+        featurePrint + standardModel + personalModel + personalAdamW
+    }
+}
+
 struct SuggestionTagOverview: Identifiable, Equatable, Sendable {
     private static let recommendedSampleCountPerRole = 4
 
@@ -20,6 +38,7 @@ struct SuggestionTagOverview: Identifiable, Equatable, Sendable {
     let acceptedSampleCount: Int
     let rejectedSampleCount: Int
     let pendingSuggestionCount: Int
+    var pendingSuggestionCounts: SuggestionOriginCounts = .zero
     let taskStatus: SuggestionTaskPresentation
     let checkedCount: Int
     let totalCount: Int?
@@ -45,11 +64,16 @@ struct SuggestionTagOverview: Identifiable, Equatable, Sendable {
     }
 }
 
-enum ReviewQueueSuggestionOrigin: String, Equatable, Sendable {
+enum ReviewQueueSuggestionOrigin: String, Equatable, Hashable, Sendable {
     case featurePrint
     case standardModel
     case personalModel
     case personalAdamW
+}
+
+struct ReviewQueueItemID: Equatable, Hashable, Sendable {
+    let assetID: UUID
+    let suggestionOrigin: ReviewQueueSuggestionOrigin
 }
 
 struct ReviewQueueItemProjection: Identifiable, Equatable, Sendable {
@@ -79,7 +103,9 @@ struct ReviewQueueItemProjection: Identifiable, Equatable, Sendable {
         self.score = score
     }
 
-    var id: UUID { assetID }
+    var id: ReviewQueueItemID {
+        ReviewQueueItemID(assetID: assetID, suggestionOrigin: suggestionOrigin)
+    }
 }
 
 struct ReviewQueueCursor: Equatable, Sendable, Codable {
@@ -106,7 +132,14 @@ struct AssetPendingSuggestion: Identifiable, Equatable, Sendable {
         self.suggestionOrigin = suggestionOrigin
     }
 
-    var id: UUID { tagID }
+    var id: AssetPendingSuggestionID {
+        AssetPendingSuggestionID(tagID: tagID, suggestionOrigin: suggestionOrigin)
+    }
+}
+
+struct AssetPendingSuggestionID: Equatable, Hashable, Sendable {
+    let tagID: UUID
+    let suggestionOrigin: ReviewQueueSuggestionOrigin
 }
 
 struct PersonalSuggestionCandidate: Equatable, Sendable {

@@ -1362,7 +1362,7 @@ final class FullLibrarySuggestionsJobTests: XCTestCase {
         )
     }
 
-    func testPersonalSuggestionWinsProvenanceWithoutDuplicatingFeaturePrintSuggestion() throws {
+    func testThreePersonalOriginsRemainParallelWithStableIdentityScoreAndCounts() throws {
         let fixture = try makeLargeLibraryFixture(assetCount: 8, preseedPredictions: 1)
         let handler = makeHandler(database: fixture.database, loader: fixture.loader, queue: fixture.queue)
         let service = PersonalizationReviewService(
@@ -1376,10 +1376,16 @@ final class FullLibrarySuggestionsJobTests: XCTestCase {
             tags: fixture.tags,
             clock: FixedJobClock(nowMs: fixture.cutoffMs)
         )
-        let capability = try makePersonalCapability(
+        let centroidCapability = try makePersonalCapability(
             database: fixture.database,
             tagIDs: [fixture.tagID],
             bundleRevision: "bundle-r1"
+        )
+        let adamWCapability = try makePersonalCapability(
+            database: fixture.database,
+            tagIDs: [fixture.tagID],
+            bundleRevision: "bundle-adamw-r1",
+            method: .personalAdamW
         )
         let overlappingAssetID = UUID(
             uuidString: "21000000-0000-4000-8000-000000000005"
@@ -1389,18 +1395,56 @@ final class FullLibrarySuggestionsJobTests: XCTestCase {
                 $0.assetID == overlappingAssetID
             }
         )
-        try service.activatePersonalSuggestionBundle(capability)
+        try service.activatePersonalSuggestionBundle(centroidCapability)
         _ = try service.replacePersonalSuggestions(
             candidate: candidate,
             predictions: [PersonalSuggestionPrediction(tagID: fixture.tagID, score: 0.75)],
-            expectedCapability: capability
+            expectedCapability: centroidCapability
+        )
+        try service.activatePersonalSuggestionBundle(adamWCapability)
+        _ = try service.replacePersonalSuggestions(
+            candidate: candidate,
+            predictions: [PersonalSuggestionPrediction(tagID: fixture.tagID, score: 0.95)],
+            expectedCapability: adamWCapability
         )
 
         let page = try service.fetchReviewQueue(tagID: fixture.tagID, cursor: nil, limit: 10)
-        XCTAssertEqual(page.items.filter { $0.assetID == overlappingAssetID }.count, 1)
+        let overlapping = page.items.filter { $0.assetID == overlappingAssetID }
+        XCTAssertEqual(overlapping.count, 3)
         XCTAssertEqual(
-            page.items.first(where: { $0.assetID == overlappingAssetID })?.suggestionOrigin,
-            .personalModel
+            overlapping.map(\.suggestionOrigin),
+            [.personalAdamW, .personalModel, .featurePrint]
+        )
+        XCTAssertEqual(overlapping.map(\.score), [0.95, 0.75, 0.5])
+        XCTAssertEqual(Set(overlapping.map(\.id)).count, 3)
+        let firstPage = try service.fetchReviewQueue(
+            tagID: fixture.tagID,
+            cursor: nil,
+            limit: 2
+        )
+        let secondPage = try service.fetchReviewQueue(
+            tagID: fixture.tagID,
+            cursor: firstPage.nextCursor,
+            limit: 10
+        )
+        XCTAssertEqual(
+            (firstPage.items + secondPage.items)
+                .filter { $0.assetID == overlappingAssetID }
+                .map(\.suggestionOrigin),
+            [.personalAdamW, .personalModel, .featurePrint]
+        )
+        let overview = try XCTUnwrap(
+            service.tagOverviews().first(where: { $0.id == fixture.tagID })
+        )
+        XCTAssertEqual(overview.pendingSuggestionCount, 3)
+        XCTAssertEqual(
+            overview.pendingSuggestionCounts,
+            SuggestionOriginCounts(
+                featurePrint: 1,
+                standardModel: 0,
+                personalModel: 1,
+                personalAdamW: 1
+            )
         )
         XCTAssertEqual(
             try service.pendingSuggestionsForAsset(assetID: overlappingAssetID),
@@ -1408,11 +1452,68 @@ final class FullLibrarySuggestionsJobTests: XCTestCase {
                 AssetPendingSuggestion(
                     tagID: fixture.tagID,
                     displayName: "Family",
+                    suggestionOrigin: .personalAdamW
+                ),
+                AssetPendingSuggestion(
+                    tagID: fixture.tagID,
+                    displayName: "Family",
                     suggestionOrigin: .personalModel
+                ),
+                AssetPendingSuggestion(
+                    tagID: fixture.tagID,
+                    displayName: "Family",
+                    suggestionOrigin: .featurePrint
                 ),
             ]
         )
-        XCTAssertEqual(try service.totalPendingSuggestionCount(), 1)
+        XCTAssertEqual(try service.totalPendingSuggestionCount(), 3)
+
+        let decision = try fixture.tags.batchReject(
+            tagID: fixture.tagID,
+            assetIDs: [overlappingAssetID],
+            timestampMs: fixture.cutoffMs + 1
+        )
+        XCTAssertTrue(
+            try service.fetchReviewQueue(
+                tagID: fixture.tagID,
+                cursor: nil,
+                limit: 10
+            ).items.isEmpty
+        )
+        XCTAssertTrue(
+            try service.pendingSuggestionsForAsset(assetID: overlappingAssetID).isEmpty
+        )
+        XCTAssertEqual(try service.totalPendingSuggestionCount(), 0)
+        let persistedDecision = try fixture.database.pool.read { db in
+            try String.fetchOne(
+                db,
+                sql: """
+                SELECT decision FROM asset_tag_decision
+                WHERE asset_id = ? AND tag_id = ?
+                """,
+                arguments: [
+                    overlappingAssetID.uuidString.lowercased(),
+                    fixture.tagID.uuidString.lowercased(),
+                ]
+            )
+        }
+        XCTAssertEqual(persistedDecision, "rejected")
+
+        try fixture.tags.restorePriorStates(
+            TagMutationPriorStateSnapshot(
+                tagID: fixture.tagID,
+                priorStates: decision.priorStates
+            ),
+            timestampMs: fixture.cutoffMs + 2
+        )
+        XCTAssertEqual(
+            try service.fetchReviewQueue(
+                tagID: fixture.tagID,
+                cursor: nil,
+                limit: 10
+            ).items.filter { $0.assetID == overlappingAssetID }.count,
+            3
+        )
     }
 
     func testPersistentPersonalLibraryPayloadContainsOnlyCatalogAndBundleFacts() throws {
@@ -2646,7 +2747,7 @@ final class FullLibrarySuggestionsJobTests: XCTestCase {
         XCTAssertFalse(try pendingAssetIDs(database: fixture.database, tagID: fixture.tagID).contains(first))
     }
 
-    func testReviewPortProjectionsExcludeScoreAndSupportPaging() throws {
+    func testReviewPortProjectionsIncludeRawScoreAndSupportPaging() throws {
         let fixture = try makeLargeLibraryFixture(assetCount: 30)
         let handler = makeHandler(database: fixture.database, loader: fixture.loader, queue: fixture.queue)
         let coordinator = makeCoordinator(database: fixture.database, handler: handler, queue: fixture.queue)
@@ -2668,6 +2769,7 @@ final class FullLibrarySuggestionsJobTests: XCTestCase {
         let page = try review.fetchReviewQueue(tagID: fixture.tagID, cursor: nil, limit: 10)
         XCTAssertEqual(page.items.count, 10)
         XCTAssertNotNil(page.nextCursor)
+        XCTAssertTrue(page.items.allSatisfy { $0.score.isFinite && $0.score > 0 })
         assertProjectionExcludesSensitiveLocatorFields(page.items[0])
         if let cursor = page.nextCursor {
             assertProjectionExcludesSensitiveLocatorFields(cursor)
@@ -3732,12 +3834,15 @@ private func seedPersonalSuggestion(
 private func makePersonalCapability(
     database: CatalogDatabase,
     tagIDs: [UUID],
-    bundleRevision: String
+    bundleRevision: String,
+    method: PersonalSuggestionMethod = .personalCentroid
 ) throws -> PersonalModelSuggestionCapability {
     PersonalModelSuggestionCapability(
         target: PersonalModelSuggestionTarget(
             catalogScopeID: try database.catalogScopeID(),
-            bundleID: PersonalSuggestionMethod.linearHeadBundleID,
+            bundleID: method == .personalCentroid
+                ? PersonalSuggestionMethod.linearHeadBundleID
+                : PersonalSuggestionMethod.adamWHeadBundleID,
             bundleRevision: bundleRevision,
             provider: "dinov2",
             modelID: "facebook/dinov2-small",

@@ -135,7 +135,7 @@ enum LibraryAssetDetailText {
         case .featurePrint: "特征向量"
         case .standardModel: "标准模型"
         case .personalModel: "个人模型"
-        case .personalAdamW: "超级个人模型"
+        case .personalAdamW: "超级个人"
         }
     }
 }
@@ -415,6 +415,7 @@ final class LibraryWorkspaceModel: ObservableObject {
     @Published private(set) var suggestionOverviews: [SuggestionTagOverview] = []
     @Published private(set) var reviewMode: ReviewWorkspaceMode?
     @Published private(set) var reviewQueueItems: [ReviewQueueItemProjection] = []
+    @Published private(set) var selectedReviewItemID: ReviewQueueItemID?
     @Published fileprivate(set) var reviewNextCursor: ReviewQueueCursor?
     /// `nil` = all active sources; otherwise only the selected subset (may be empty).
     @Published private(set) var reviewFilterSourceIDs: Set<UUID>?
@@ -760,7 +761,12 @@ final class LibraryWorkspaceModel: ObservableObject {
             return nil
         }
         if case .tagQueue = reviewMode {
-            guard let index = reviewQueueItems.firstIndex(where: { $0.assetID == assetID }) else {
+            guard let index = reviewQueueItems.firstIndex(where: {
+                if let selectedReviewItemID {
+                    return $0.id == selectedReviewItemID
+                }
+                return $0.assetID == assetID
+            }) else {
                 return nil
             }
             return LibrarySinglePhotoNavigationPresentation(
@@ -1519,6 +1525,15 @@ final class LibraryWorkspaceModel: ObservableObject {
             selectedAssetIDs = [assetID]
             selectionAnchorID = assetID
         }
+        if reviewMode != nil {
+            if selectedAssetIDs.count == 1, let selectedAssetID = selectedAssetIDs.first {
+                selectedReviewItemID = reviewQueueItems.first(where: {
+                    $0.assetID == selectedAssetID
+                })?.id
+            } else {
+                selectedReviewItemID = nil
+            }
+        }
         if selectedAssetIDs.count != 1 {
             isSinglePhotoPresented = false
         }
@@ -1549,6 +1564,15 @@ final class LibraryWorkspaceModel: ObservableObject {
         } else {
             selectionAnchorID = nil
         }
+        if reviewMode != nil {
+            if selectedAssetIDs.count == 1, let selectedAssetID = selectedAssetIDs.first {
+                selectedReviewItemID = reviewQueueItems.first(where: {
+                    $0.assetID == selectedAssetID
+                })?.id
+            } else {
+                selectedReviewItemID = nil
+            }
+        }
 
         if selectedAssetIDs.count != 1 {
             isSinglePhotoPresented = false
@@ -1562,6 +1586,12 @@ final class LibraryWorkspaceModel: ObservableObject {
         if selectionRefreshed, notice == .tagSelectionRefreshFailed {
             notice = nil
         }
+    }
+
+    func selectReviewItem(_ itemID: ReviewQueueItemID) async {
+        guard let item = reviewQueueItems.first(where: { $0.id == itemID }) else { return }
+        await selectAsset(item.assetID)
+        selectedReviewItemID = itemID
     }
 
     func selectAllVisibleAssets(additive: Bool = false) async {
@@ -2764,6 +2794,12 @@ final class LibraryWorkspaceModel: ObservableObject {
         isSinglePhotoPresented = true
     }
 
+    func openSinglePhotoView(reviewItemID: ReviewQueueItemID) async {
+        guard reviewQueueItems.contains(where: { $0.id == reviewItemID }) else { return }
+        await selectReviewItem(reviewItemID)
+        isSinglePhotoPresented = true
+    }
+
     func closeSinglePhotoView() {
         isSinglePhotoPresented = false
     }
@@ -3786,6 +3822,7 @@ extension LibraryWorkspaceModel {
     func enterReviewOverview() async {
         reviewMode = .overview
         selectedAssetIDs = []
+        selectedReviewItemID = nil
         isSinglePhotoPresented = false
         await refreshReviewState()
     }
@@ -3793,6 +3830,7 @@ extension LibraryWorkspaceModel {
     func enterReviewQueue(tagID: UUID, displayName: String) async {
         reviewMode = .tagQueue(tagID: tagID, displayName: displayName)
         selectedAssetIDs = []
+        selectedReviewItemID = nil
         isSinglePhotoPresented = false
         await loadReviewQueueFirstPage(tagID: tagID)
     }
@@ -3800,6 +3838,7 @@ extension LibraryWorkspaceModel {
     func exitReviewMode() async {
         reviewMode = nil
         reviewQueueItems = []
+        selectedReviewItemID = nil
         reviewNextCursor = nil
         await loadFirstPage()
         await refreshReviewState()
@@ -3818,9 +3857,26 @@ extension LibraryWorkspaceModel {
                 )
             }
             reviewQueueItems = page.items
+            if let selectedReviewItemID,
+               !reviewQueueItems.contains(where: { $0.id == selectedReviewItemID })
+            {
+                if selectedAssetIDs.count == 1,
+                   let selectedAssetID = selectedAssetIDs.first,
+                   let replacement = reviewQueueItems.first(where: {
+                       $0.assetID == selectedAssetID
+                   })
+                {
+                    self.selectedReviewItemID = replacement.id
+                } else {
+                    self.selectedReviewItemID = nil
+                    selectedAssetIDs = []
+                    isSinglePhotoPresented = false
+                }
+            }
             reviewNextCursor = page.nextCursor
         } catch {
             reviewQueueItems = []
+            selectedReviewItemID = nil
             reviewNextCursor = nil
         }
     }
@@ -3913,9 +3969,9 @@ extension LibraryWorkspaceModel {
         columnCount: Int
     ) async {
         guard case let .tagQueue(tagID, _) = reviewMode else { return }
-        guard let currentID = primarySelectedAssetID else {
-            guard let firstAssetID = reviewQueueItems.first?.assetID else { return }
-            await selectAsset(firstAssetID)
+        guard let currentItemID = selectedReviewItemID else {
+            guard let firstItemID = reviewQueueItems.first?.id else { return }
+            await selectReviewItem(firstItemID)
             return
         }
 
@@ -3928,7 +3984,7 @@ extension LibraryWorkspaceModel {
         }
 
         if offset > 0,
-           let currentIndex = reviewQueueItems.firstIndex(where: { $0.assetID == currentID }),
+           let currentIndex = reviewQueueItems.firstIndex(where: { $0.id == currentItemID }),
            currentIndex + offset >= reviewQueueItems.count,
            let lastLoadedID = reviewQueueItems.last?.assetID
         {
@@ -3938,12 +3994,12 @@ extension LibraryWorkspaceModel {
             )
         }
 
-        guard let currentIndex = reviewQueueItems.firstIndex(where: { $0.assetID == currentID }) else {
+        guard let currentIndex = reviewQueueItems.firstIndex(where: { $0.id == currentItemID }) else {
             return
         }
         let targetIndex = min(max(currentIndex + offset, 0), reviewQueueItems.count - 1)
         guard targetIndex != currentIndex else { return }
-        await selectAsset(reviewQueueItems[targetIndex].assetID)
+        await selectReviewItem(reviewQueueItems[targetIndex].id)
     }
 
     func moveReviewPrimarySelection(
@@ -4130,14 +4186,18 @@ extension LibraryWorkspaceModel {
             notice = .reviewMutationApplied(count: assetIDs.count, tagName: displayName)
             let queueBefore = reviewQueueItems
             let selected = selectedAssetIDs
+            let selectedRow = selectedReviewItemID
             reviewQueueItems.removeAll { selected.contains($0.assetID) }
             if let next = Self.nextReviewQueueSelection(
                 in: reviewQueueItems,
                 afterRemoving: selected,
-                from: queueBefore
+                from: queueBefore,
+                selectedRow: selectedRow
             ) {
-                selectedAssetIDs = [next]
+                selectedReviewItemID = next
+                selectedAssetIDs = [next.assetID]
             } else {
+                selectedReviewItemID = nil
                 selectedAssetIDs = []
                 isSinglePhotoPresented = false
             }
@@ -4151,57 +4211,57 @@ extension LibraryWorkspaceModel {
 
     func deferReviewSelection() async {
         guard case .tagQueue = reviewMode,
-              !selectedAssetIDs.isEmpty,
+              let selectedReviewItemID,
               !reviewQueueItems.isEmpty
         else { return }
-        let selected = selectedAssetIDs
-        if let next = Self.deferredReviewSelection(in: reviewQueueItems, selected: selected) {
-            selectedAssetIDs = next
-            resetCloudPreviewIfSelectionChanged()
-            await refreshInspector()
+        if let next = Self.deferredReviewSelection(
+            in: reviewQueueItems,
+            selectedRow: selectedReviewItemID
+        ) {
+            await selectReviewItem(next)
         }
     }
 
     private static func deferredReviewSelection(
         in queue: [ReviewQueueItemProjection],
-        selected: Set<UUID>
-    ) -> Set<UUID>? {
-        guard let lastSelectedIndex = queue.enumerated()
-            .filter({ selected.contains($0.element.assetID) })
-            .map(\.offset)
-            .max()
+        selectedRow: ReviewQueueItemID
+    ) -> ReviewQueueItemID? {
+        guard let selectedIndex = queue.firstIndex(where: { $0.id == selectedRow })
         else { return nil }
-
-        if let next = queue.enumerated()
-            .first(where: { $0.offset > lastSelectedIndex && !selected.contains($0.element.assetID) }) {
-            return [next.element.assetID]
-        }
-        if let wrap = queue.enumerated()
-            .first(where: { !selected.contains($0.element.assetID) }) {
-            return [wrap.element.assetID]
-        }
-        return nil
+        let nextIndex = queue.index(after: selectedIndex)
+        return nextIndex < queue.endIndex ? queue[nextIndex].id : queue.first?.id
     }
 
     private static func nextReviewQueueSelection(
         in queue: [ReviewQueueItemProjection],
         afterRemoving selected: Set<UUID>,
-        from original: [ReviewQueueItemProjection]
-    ) -> UUID? {
+        from original: [ReviewQueueItemProjection],
+        selectedRow: ReviewQueueItemID?
+    ) -> ReviewQueueItemID? {
+        if let selectedRow,
+           let selectedIndex = original.firstIndex(where: { $0.id == selectedRow }),
+           let next = original.dropFirst(selectedIndex + 1).first(where: { candidate in
+               !selected.contains(candidate.assetID)
+                   && queue.contains(where: { $0.id == candidate.id })
+           }),
+           queue.contains(where: { $0.id == next.id })
+        {
+            return next.id
+        }
         guard let lastSelectedIndex = original.enumerated()
             .filter({ selected.contains($0.element.assetID) })
             .map(\.offset)
             .max()
-        else { return queue.first?.assetID }
+        else { return queue.first?.id }
 
         if let next = original.enumerated()
             .first(where: { $0.offset > lastSelectedIndex && !selected.contains($0.element.assetID) })?
-            .element.assetID,
-            queue.contains(where: { $0.assetID == next })
+            .element.id,
+            queue.contains(where: { $0.id == next })
         {
             return next
         }
-        return queue.first?.assetID
+        return queue.first?.id
     }
 
     func undoLastReviewMutation() async {
@@ -5604,7 +5664,12 @@ struct LibraryWorkspaceView: View {
             } else if case let .tagQueue(tagID, displayName) = model.reviewMode {
                 if model.isSinglePhotoPresented,
                    let assetID = model.primarySelectedAssetID,
-                   let item = model.reviewQueueItems.first(where: { $0.assetID == assetID })
+                   let item = model.reviewQueueItems.first(where: {
+                       if let selectedReviewItemID = model.selectedReviewItemID {
+                           return $0.id == selectedReviewItemID
+                       }
+                       return $0.assetID == assetID
+                   })
                 {
                     SinglePhotoReviewView(item: item, model: model)
                         .onAppear { contentFocused = true }

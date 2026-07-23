@@ -174,6 +174,26 @@ struct ReviewOverviewView: View {
                     Text("已确认 \(overview.acceptedSampleCount) · 已拒绝 \(overview.rejectedSampleCount)")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                    if overview.pendingSuggestionCount > 0 {
+                        HStack(spacing: 6) {
+                            originCountBadge(
+                                "超级个人",
+                                count: overview.pendingSuggestionCounts.personalAdamW
+                            )
+                            originCountBadge(
+                                "个人模型",
+                                count: overview.pendingSuggestionCounts.personalModel
+                            )
+                            originCountBadge(
+                                "特征向量",
+                                count: overview.pendingSuggestionCounts.featurePrint
+                            )
+                            originCountBadge(
+                                "标准模型",
+                                count: overview.pendingSuggestionCounts.standardModel
+                            )
+                        }
+                    }
                     Text(statusText(overview))
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -314,6 +334,18 @@ struct ReviewOverviewView: View {
             ToolbarItem(placement: .navigation) {
                 Button("返回图库", action: onBack)
             }
+        }
+    }
+
+    @ViewBuilder
+    private func originCountBadge(_ title: String, count: Int) -> some View {
+        if count > 0 {
+            Text("\(title) \(count)")
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background(.secondary.opacity(0.12), in: Capsule())
         }
     }
 
@@ -589,7 +621,7 @@ struct ReviewQueueContentView: View {
     @State private var gridPageItemCount = 1
     @State private var gridCellFrames: [UUID: CGRect] = [:]
     @State private var isMarqueeSelecting = false
-    @State private var gridScrollTargetID: UUID?
+    @State private var gridScrollTargetID: ReviewQueueItemID?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -672,28 +704,36 @@ struct ReviewQueueContentView: View {
                                 ReviewThumbnailView(
                                     item: item,
                                     model: model,
-                                    isSelected: model.selectedAssetIDs.contains(item.assetID),
+                                    isSelected: model.selectedReviewItemID == item.id
+                                        || (
+                                            model.selectedReviewItemID == nil
+                                                && model.selectedAssetIDs.contains(item.assetID)
+                                        ),
                                     onSelect: {
                                         guard !isMarqueeSelecting else { return }
                                         contentFocused = true
                                         let flags = NSEvent.modifierFlags.intersection(.deviceIndependentFlagsMask)
                                         Task {
-                                            await model.selectAsset(
-                                                item.assetID,
-                                                additive: flags.contains(.command),
-                                                extendRange: flags.contains(.shift)
-                                            )
+                                            if flags.contains(.command) || flags.contains(.shift) {
+                                                await model.selectAsset(
+                                                    item.assetID,
+                                                    additive: flags.contains(.command),
+                                                    extendRange: flags.contains(.shift)
+                                                )
+                                            } else {
+                                                await model.selectReviewItem(item.id)
+                                            }
                                         }
                                     },
                                     onOpen: {
                                         contentFocused = true
                                         Task {
-                                            await model.openSinglePhotoView(assetID: item.assetID)
+                                            await model.openSinglePhotoView(reviewItemID: item.id)
                                         }
                                     }
                                 )
                                 .libraryGridCellFrameReporter(assetID: item.assetID)
-                                .id(item.assetID)
+                                .id(item.id)
                                 .task {
                                     await model.loadMoreReviewQueueIfNeeded(
                                         currentAssetID: item.assetID,
@@ -711,14 +751,14 @@ struct ReviewQueueContentView: View {
                 .onAppear {
                     updateGridMetrics(containerSize: proxy.size)
                     contentFocused = true
-                    gridScrollTargetID = model.primarySelectedAssetID
+                    gridScrollTargetID = model.selectedReviewItemID
                 }
                 .onChange(of: proxy.size) { _, size in
                     updateGridMetrics(containerSize: size)
                 }
-                .onChange(of: gridScrollTargetID) { _, assetID in
-                    guard let assetID else { return }
-                    scrollProxy.scrollTo(assetID, anchor: .center)
+                .onChange(of: gridScrollTargetID) { _, itemID in
+                    guard let itemID else { return }
+                    scrollProxy.scrollTo(itemID, anchor: .center)
                     gridScrollTargetID = nil
                 }
             }
@@ -766,7 +806,7 @@ struct ReviewQueueContentView: View {
                 in: direction,
                 columnCount: gridColumnCount
             )
-            gridScrollTargetID = model.primarySelectedAssetID
+            gridScrollTargetID = model.selectedReviewItemID
         }
         return .handled
     }
@@ -787,7 +827,7 @@ struct ReviewQueueContentView: View {
                 byPage: direction,
                 pageItemCount: gridPageItemCount
             )
-            gridScrollTargetID = model.primarySelectedAssetID
+            gridScrollTargetID = model.selectedReviewItemID
         }
         return .handled
     }
@@ -842,7 +882,7 @@ private extension ReviewQueueSuggestionOrigin {
         case .featurePrint: "特征向量"
         case .standardModel: "标准模型"
         case .personalModel: "个人模型"
-        case .personalAdamW: "超级个人模型"
+        case .personalAdamW: "超级个人"
         }
     }
 }

@@ -55,7 +55,7 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                     LEFT JOIN asset_tag_decision d
                         ON d.asset_id = p.asset_id AND d.tag_id = p.tag_id
                     WHERE p.state = 'pendingReview' AND d.asset_id IS NULL\(sourceClause)
-                    UNION
+                    UNION ALL
                     SELECT p.asset_id, p.tag_id
                     FROM standard_prediction p
                     JOIN ontology_pack pack
@@ -75,7 +75,7 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                     LEFT JOIN asset_tag_decision d
                         ON d.asset_id = p.asset_id AND d.tag_id = p.tag_id
                     WHERE p.state = 'pendingReview' AND d.asset_id IS NULL\(sourceClause)
-                    UNION
+                    UNION ALL
                     SELECT p.asset_id, p.tag_id
                     FROM personal_prediction p
                     JOIN personal_suggestion_model m ON m.method = p.method
@@ -101,7 +101,14 @@ struct GRDBPersonalizationReviewRepository: Sendable {
     }
 
     func pendingCount(tagID: UUID, sourceIDs: [UUID]? = nil) throws -> Int {
-        if let sourceIDs, sourceIDs.isEmpty { return 0 }
+        try pendingCounts(tagID: tagID, sourceIDs: sourceIDs).total
+    }
+
+    func pendingCounts(
+        tagID: UUID,
+        sourceIDs: [UUID]? = nil
+    ) throws -> SuggestionOriginCounts {
+        if let sourceIDs, sourceIDs.isEmpty { return .zero }
         var sourceClause = ""
         var sourceArguments: [DatabaseValueConvertible] = []
         if let sourceIDs {
@@ -110,11 +117,11 @@ struct GRDBPersonalizationReviewRepository: Sendable {
             sourceArguments = sourceIDs.map { uuid($0) }
         }
         return try database.pool.read { db in
-            try Int.fetchOne(
+            guard let row = try Row.fetchOne(
                 db,
                 sql: """
-                WITH pending_pairs AS (
-                    SELECT p.asset_id, p.tag_id
+                WITH pending_rows AS (
+                    SELECT 'featurePrint' AS suggestion_origin
                     FROM prediction p
                     JOIN tag_model m
                         ON m.tag_id = p.tag_id
@@ -130,8 +137,8 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                     WHERE p.tag_id = ?
                         AND p.state = 'pendingReview'
                         AND d.asset_id IS NULL\(sourceClause)
-                    UNION
-                    SELECT p.asset_id, p.tag_id
+                    UNION ALL
+                    SELECT 'standardModel' AS suggestion_origin
                     FROM standard_prediction p
                     JOIN ontology_pack pack
                         ON pack.standard_pack_id = p.standard_pack_id
@@ -152,8 +159,11 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                     WHERE p.tag_id = ?
                         AND p.state = 'pendingReview'
                         AND d.asset_id IS NULL\(sourceClause)
-                    UNION
-                    SELECT p.asset_id, p.tag_id
+                    UNION ALL
+                    SELECT CASE
+                        WHEN p.method = 'personalAdamW' THEN 'personalAdamW'
+                        ELSE 'personalModel'
+                    END AS suggestion_origin
                     FROM personal_prediction p
                     JOIN personal_suggestion_model m ON m.method = p.method
                     JOIN personal_suggestion_tag pst
@@ -170,14 +180,31 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                         AND p.state = 'pendingReview'
                         AND d.asset_id IS NULL\(sourceClause)
                 )
-                SELECT COUNT(*) FROM pending_pairs
+                SELECT
+                    COALESCE(SUM(CASE WHEN suggestion_origin = 'featurePrint' THEN 1 ELSE 0 END), 0)
+                        AS feature_print_count,
+                    COALESCE(SUM(CASE WHEN suggestion_origin = 'standardModel' THEN 1 ELSE 0 END), 0)
+                        AS standard_model_count,
+                    COALESCE(SUM(CASE WHEN suggestion_origin = 'personalModel' THEN 1 ELSE 0 END), 0)
+                        AS personal_model_count,
+                    COALESCE(SUM(CASE WHEN suggestion_origin = 'personalAdamW' THEN 1 ELSE 0 END), 0)
+                        AS personal_adamw_count
+                FROM pending_rows
                 """,
                 arguments: StatementArguments(
                     [uuid(tagID)] + sourceArguments
                         + [uuid(tagID)] + sourceArguments
                         + [uuid(tagID)] + sourceArguments
                 )
-            ) ?? 0
+            ) else {
+                return .zero
+            }
+            return SuggestionOriginCounts(
+                featurePrint: row["feature_print_count"],
+                standardModel: row["standard_model_count"],
+                personalModel: row["personal_model_count"],
+                personalAdamW: row["personal_adamw_count"]
+            )
         }
     }
 
@@ -1282,7 +1309,7 @@ struct GRDBPersonalizationReviewRepository: Sendable {
         }
         var sql = """
         WITH raw_suggestions AS (
-            SELECT p.asset_id, p.score, 0 AS origin_rank, 'featurePrint' AS suggestion_origin,
+            SELECT p.asset_id, p.score, 1 AS origin_rank, 'featurePrint' AS suggestion_origin,
                 a.file_name, a.availability
             FROM prediction p
             JOIN tag_model m
@@ -1300,7 +1327,7 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                 AND p.state = 'pendingReview'
                 AND d.asset_id IS NULL\(sourceClause)
             UNION ALL
-            SELECT p.asset_id, p.score, 1 AS origin_rank, 'standardModel' AS suggestion_origin,
+            SELECT p.asset_id, p.score, 0 AS origin_rank, 'standardModel' AS suggestion_origin,
                 a.file_name, a.availability
             FROM standard_prediction p
             JOIN ontology_pack pack
@@ -1348,12 +1375,6 @@ struct GRDBPersonalizationReviewRepository: Sendable {
             WHERE p.tag_id = ?
                 AND p.state = 'pendingReview'
                 AND d.asset_id IS NULL\(sourceClause)
-        ), ranked AS (
-            SELECT *, ROW_NUMBER() OVER (
-                PARTITION BY asset_id
-                ORDER BY origin_rank DESC, score DESC
-            ) AS duplicate_rank
-            FROM raw_suggestions
         )
         SELECT r.asset_id, r.score, r.origin_rank, r.suggestion_origin,
             r.file_name, r.availability,
@@ -1365,8 +1386,8 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                 SELECT COUNT(*) FROM asset_tag_decision d
                 WHERE d.asset_id = r.asset_id AND d.decision = 'rejected'
             ) AS rejected_count
-        FROM ranked r
-        WHERE r.duplicate_rank = 1
+        FROM raw_suggestions r
+        WHERE 1 = 1
         """
         var arguments: [DatabaseValueConvertible] =
             [uuid(tagID)] + sourceArguments
@@ -1432,7 +1453,7 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                 db,
                 sql: """
                 WITH raw_pending_tags AS (
-                    SELECT p.tag_id, 0 AS origin_rank, CAST(NULL AS TEXT) AS personal_method
+                    SELECT p.tag_id, 1 AS origin_rank, 'featurePrint' AS suggestion_origin
                     FROM prediction p
                     JOIN tag_model m
                         ON m.tag_id = p.tag_id
@@ -1449,7 +1470,7 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                         AND p.state = 'pendingReview'
                         AND d.asset_id IS NULL
                     UNION ALL
-                    SELECT p.tag_id, 1 AS origin_rank, CAST(NULL AS TEXT) AS personal_method
+                    SELECT p.tag_id, 0 AS origin_rank, 'standardModel' AS suggestion_origin
                     FROM standard_prediction p
                     JOIN ontology_pack pack
                         ON pack.standard_pack_id = p.standard_pack_id
@@ -1476,7 +1497,10 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                             WHEN p.method = 'personalAdamW' THEN 3
                             ELSE 2
                         END AS origin_rank,
-                        p.method AS personal_method
+                        CASE
+                            WHEN p.method = 'personalAdamW' THEN 'personalAdamW'
+                            ELSE 'personalModel'
+                        END AS suggestion_origin
                     FROM personal_prediction p
                     JOIN personal_suggestion_model m ON m.method = p.method
                     JOIN personal_suggestion_tag pst
@@ -1492,25 +1516,11 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                     WHERE p.asset_id = ?
                         AND p.state = 'pendingReview'
                         AND d.asset_id IS NULL
-                ), pending_tags AS (
-                    SELECT tag_id,
-                        MAX(origin_rank) AS origin_rank,
-                        MAX(personal_method) AS personal_method
-                    FROM raw_pending_tags
-                    GROUP BY tag_id
                 )
-                SELECT p.tag_id, t.name,
-                    CASE
-                        WHEN p.origin_rank >= 2
-                            AND p.personal_method = 'personalAdamW'
-                            THEN 'personalAdamW'
-                        WHEN p.origin_rank >= 2 THEN 'personalModel'
-                        WHEN p.origin_rank = 1 THEN 'standardModel'
-                        ELSE 'featurePrint'
-                    END AS suggestion_origin
-                FROM pending_tags p
+                SELECT p.tag_id, t.name, p.suggestion_origin
+                FROM raw_pending_tags p
                 JOIN tag t ON t.id = p.tag_id
-                ORDER BY t.name COLLATE NOCASE ASC, p.tag_id ASC
+                ORDER BY t.name COLLATE NOCASE ASC, p.tag_id ASC, p.origin_rank DESC
                 """,
                 arguments: [uuid(assetID), uuid(assetID), uuid(assetID)]
             ).compactMap { row in

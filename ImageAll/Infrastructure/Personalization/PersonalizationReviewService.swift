@@ -43,7 +43,11 @@ struct PersonalizationReviewService: PersonalizationReviewPort, Sendable {
         let tags = try tags.listTags(includeArchived: false)
         return try tags.map { tag in
             let samples = try review.sampleCounts(tagID: tag.id)
-            let pending = try review.pendingCount(tagID: tag.id, sourceIDs: sourceIDs)
+            let pendingCounts = try review.pendingCounts(
+                tagID: tag.id,
+                sourceIDs: sourceIDs
+            )
+            let pending = pendingCounts.total
             let job = try review.activeSuggestionJob(tagID: tag.id)
             let status = mapTaskStatus(tag: tag, samples: samples, job: job)
             let checkpoint = try job.flatMap { try FullLibrarySuggestionsCodec.checkpoint(from: $0.checkpoint) }
@@ -61,6 +65,7 @@ struct PersonalizationReviewService: PersonalizationReviewPort, Sendable {
                 acceptedSampleCount: samples.accepted,
                 rejectedSampleCount: samples.rejected,
                 pendingSuggestionCount: pending,
+                pendingSuggestionCounts: pendingCounts,
                 taskStatus: status,
                 checkedCount: checkpoint?.checkedCount ?? job?.progress.completed ?? 0,
                 totalCount: job?.progress.total,

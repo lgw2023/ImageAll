@@ -4895,6 +4895,80 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertTrue(model.isSinglePhotoPresented)
     }
 
+    func testDeferReviewSelectionAdvancesAcrossOriginsForTheSameAsset() async {
+        let sourceID = UUID()
+        let tag = TagListItem(id: UUID(), displayName: "Family", state: .active)
+        let shared = Self.makeAsset(sourceID: sourceID, fileName: "shared.jpg")
+        let next = Self.makeAsset(sourceID: sourceID, fileName: "next.jpg")
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: sourceID,
+                displayName: "Fixture",
+                state: .active
+            ),
+            reconciledItems: [shared, next],
+            tags: [tag]
+        )
+        let queueItems = [
+            ReviewQueueItemProjection(
+                assetID: shared.assetID,
+                fileName: shared.fileName,
+                availability: shared.availability,
+                acceptedTagCount: 0,
+                rejectedTagCount: 0,
+                suggestionOrigin: .personalAdamW,
+                score: 0.9
+            ),
+            ReviewQueueItemProjection(
+                assetID: shared.assetID,
+                fileName: shared.fileName,
+                availability: shared.availability,
+                acceptedTagCount: 0,
+                rejectedTagCount: 0,
+                suggestionOrigin: .personalModel,
+                score: 0.8
+            ),
+            ReviewQueueItemProjection(
+                assetID: shared.assetID,
+                fileName: shared.fileName,
+                availability: shared.availability,
+                acceptedTagCount: 0,
+                rejectedTagCount: 0,
+                suggestionOrigin: .featurePrint,
+                score: 0.7
+            ),
+            ReviewQueueItemProjection(
+                assetID: next.assetID,
+                fileName: next.fileName,
+                availability: next.availability,
+                acceptedTagCount: 0,
+                rejectedTagCount: 0,
+                suggestionOrigin: .personalAdamW,
+                score: 0.6
+            ),
+        ]
+        let model = LibraryWorkspaceModel(
+            service: service,
+            review: FakePersonalizationReviewPort(queueItems: queueItems)
+        )
+
+        await model.enterReviewQueue(tagID: tag.id, displayName: tag.displayName)
+        await model.selectReviewItem(queueItems[0].id)
+        await model.deferReviewSelection()
+
+        XCTAssertEqual(model.selectedReviewItemID, queueItems[1].id)
+        XCTAssertEqual(model.selectedAssetIDs, [shared.assetID])
+        XCTAssertEqual(service.mutateTagCallCount, 0)
+        XCTAssertEqual(model.reviewQueueItems.map(\.id), queueItems.map(\.id))
+
+        await model.deferReviewSelection()
+        XCTAssertEqual(model.selectedReviewItemID, queueItems[2].id)
+
+        await model.deferReviewSelection()
+        XCTAssertEqual(model.selectedReviewItemID, queueItems[3].id)
+        XCTAssertEqual(model.selectedAssetIDs, [next.assetID])
+    }
+
     func testReviewQueueGridNavigationMovesByRowsAndColumns() async {
         let sourceID = UUID()
         let tag = TagListItem(id: UUID(), displayName: "Family", state: .active)
