@@ -9,6 +9,10 @@ struct TrainingWorkspaceView: View {
         VStack(spacing: 0) {
             header
             Divider()
+            if let activity = model.trainingWorkspaceActivity {
+                activityBanner(activity)
+                Divider()
+            }
             slotStrip
             Divider()
             HSplitView {
@@ -21,7 +25,7 @@ struct TrainingWorkspaceView: View {
         .navigationTitle("训练工程")
         .accessibilityLabel("训练工程工作台")
         .task {
-            await model.refreshTrainingWorkspace()
+            await model.refreshTrainingWorkspace(presentation: .automatic)
         }
     }
 
@@ -87,6 +91,41 @@ struct TrainingWorkspaceView: View {
         .padding(.vertical, 10)
     }
 
+    private func activityBanner(_ activity: TrainingWorkspaceActivity) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            switch activity.phase {
+            case let .preparingEmbeddings(completed, total):
+                ProgressView(
+                    value: Double(completed),
+                    total: Double(max(total, 1))
+                )
+                .progressViewStyle(.circular)
+                .controlSize(.small)
+            case .preparingSamples, .trainingAndPublishing:
+                ProgressView()
+                    .controlSize(.small)
+            }
+            VStack(alignment: .leading, spacing: 4) {
+                Text(TrainingWorkspaceActivityPresentation.title(activity))
+                    .font(.subheadline.weight(.semibold))
+                Text(TrainingWorkspaceActivityPresentation.detail(activity))
+                    .font(.caption)
+                Text(TrainingWorkspaceActivityPresentation.phase(activity))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text("训练记录创建后会自动出现在下方，无需手动刷新。")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .background(Color.accentColor.opacity(0.08))
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("当前训练状态")
+    }
+
     @ViewBuilder
     private var featurePrintTrainingMenu: some View {
         let trainable = model.suggestionOverviews.filter {
@@ -114,17 +153,22 @@ struct TrainingWorkspaceView: View {
     private var slotStrip: some View {
         HStack(spacing: 10) {
             ForEach(model.trainingSlots) { slot in
+                let isTraining = model.trainingWorkspaceActivity?.method == slot.method
                 VStack(alignment: .leading, spacing: 4) {
                     Text(slot.method.trainingWorkspaceDisplayName)
                         .font(.subheadline.weight(.semibold))
                     Label(
-                        slot.isPublished ? "已就绪" : "尚未训练",
-                        systemImage: slot.isPublished
+                        isTraining ? "训练中" : (slot.isPublished ? "已就绪" : "尚未训练"),
+                        systemImage: isTraining
+                            ? "gearshape.2"
+                            : slot.isPublished
                             ? "checkmark.circle.fill"
                             : "circle.dashed"
                     )
                     .font(.caption)
-                    .foregroundStyle(slot.isPublished ? .green : .secondary)
+                    .foregroundStyle(
+                        isTraining ? Color.blue : (slot.isPublished ? .green : .secondary)
+                    )
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(10)
@@ -144,11 +188,19 @@ struct TrainingWorkspaceView: View {
                 .padding(.vertical, 10)
             Divider()
             if model.trainingRuns.isEmpty {
-                ContentUnavailableView(
-                    "暂无训练记录",
-                    systemImage: "clock.badge.questionmark",
-                    description: Text("从“发起训练”开始；失败和取消的记录也会保留。")
-                )
+                if model.trainingWorkspaceActivity != nil {
+                    ContentUnavailableView(
+                        "正在创建训练记录",
+                        systemImage: "clock.arrow.circlepath",
+                        description: Text("样本准备完成后，当前 Run 会自动显示在这里。")
+                    )
+                } else {
+                    ContentUnavailableView(
+                        "暂无训练记录",
+                        systemImage: "clock.badge.questionmark",
+                        description: Text("从“发起训练”开始；失败和取消的记录也会保留。")
+                    )
+                }
             } else {
                 List(
                     model.trainingRuns,
@@ -269,7 +321,17 @@ struct TrainingWorkspaceInspectorView: View {
         VStack(alignment: .leading, spacing: 12) {
             Text("训练工程")
                 .font(.headline)
-            if let run = model.selectedTrainingRun {
+            if let activity = model.trainingWorkspaceActivity {
+                ProgressView()
+                    .controlSize(.small)
+                Text(TrainingWorkspaceActivityPresentation.title(activity))
+                    .font(.subheadline.weight(.semibold))
+                Text(TrainingWorkspaceActivityPresentation.detail(activity))
+                    .foregroundStyle(.secondary)
+                Text(TrainingWorkspaceActivityPresentation.phase(activity))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else if let run = model.selectedTrainingRun {
                 LabeledContent("方法", value: run.method.trainingWorkspaceDisplayName)
                 LabeledContent("状态", value: run.state.trainingWorkspaceDisplayName)
                 LabeledContent(
@@ -473,6 +535,37 @@ enum TrainingWorkspaceJSONPresentation {
             return array.compactMap { sanitize($0, key: nil) }
         }
         return value
+    }
+}
+
+enum TrainingWorkspaceActivityPresentation {
+    static func title(_ activity: TrainingWorkspaceActivity) -> String {
+        "\(activity.method.trainingWorkspaceDisplayName)正在训练"
+    }
+
+    static func detail(_ activity: TrainingWorkspaceActivity) -> String {
+        let tags = activity.tagNames.isEmpty
+            ? "未命名标签"
+            : activity.tagNames.joined(separator: "、")
+        let scope = switch activity.scope {
+        case .allSources:
+            "所有来源"
+        case let .selectedAssets(count):
+            "当前选择（\(count) 张）"
+        }
+        let samples = activity.sampleCount.map { "\($0) 张" } ?? "正在统计"
+        return "标签：\(tags) · 范围：\(scope) · 样本：\(samples)"
+    }
+
+    static func phase(_ activity: TrainingWorkspaceActivity) -> String {
+        switch activity.phase {
+        case .preparingSamples:
+            "正在读取训练样本"
+        case let .preparingEmbeddings(completed, total):
+            "正在准备本地特征 \(completed) / \(total)"
+        case .trainingAndPublishing:
+            "正在训练并发布模型"
+        }
     }
 }
 

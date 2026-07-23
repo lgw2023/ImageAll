@@ -38,6 +38,30 @@ enum LibraryGridDensity: String, CaseIterable, Sendable {
     }
 }
 
+enum TrainingWorkspaceRefreshPresentation {
+    case userInitiated
+    case automatic
+}
+
+enum TrainingWorkspaceActivityScope: Equatable, Sendable {
+    case allSources
+    case selectedAssets(count: Int)
+}
+
+enum TrainingWorkspaceActivityPhase: Equatable, Sendable {
+    case preparingSamples
+    case preparingEmbeddings(completed: Int, total: Int)
+    case trainingAndPublishing
+}
+
+struct TrainingWorkspaceActivity: Equatable, Sendable {
+    let method: TrainingRunMethod
+    let tagNames: [String]
+    let scope: TrainingWorkspaceActivityScope
+    let sampleCount: Int?
+    let phase: TrainingWorkspaceActivityPhase
+}
+
 enum LibraryGridNavigationDirection: Equatable, Sendable {
     case left
     case right
@@ -458,6 +482,7 @@ final class LibraryWorkspaceModel: ObservableObject {
     @Published private(set) var trainingRunMethodFilter: TrainingRunMethod?
     @Published private(set) var selectedTrainingRunID: UUID?
     @Published private(set) var isRefreshingTrainingWorkspace = false
+    @Published private(set) var trainingWorkspaceActivity: TrainingWorkspaceActivity?
 
     fileprivate let review: any PersonalizationReviewPort
     private let service: any LibraryWorkspacePort
@@ -485,6 +510,7 @@ final class LibraryWorkspaceModel: ObservableObject {
     private var assetPageRequestID: UUID?
     private var selectionAnchorID: UUID?
     private var featureSuggestionCompletionContexts: [UUID: String] = [:]
+    private var isTrainingWorkspaceRefreshInFlight = false
     private var selectedTagFilterDecisions: [UUID: PersistableTagDecision] = [:]
     private var selectedSourceID: UUID?
     private var nextCursor: AssetPageCursor?
@@ -543,10 +569,20 @@ final class LibraryWorkspaceModel: ObservableObject {
         trainingWorkspace != nil
     }
 
-    func refreshTrainingWorkspace() async {
-        guard let trainingWorkspace, !isRefreshingTrainingWorkspace else { return }
-        isRefreshingTrainingWorkspace = true
-        defer { isRefreshingTrainingWorkspace = false }
+    func refreshTrainingWorkspace(
+        presentation: TrainingWorkspaceRefreshPresentation = .userInitiated
+    ) async {
+        guard let trainingWorkspace, !isTrainingWorkspaceRefreshInFlight else { return }
+        isTrainingWorkspaceRefreshInFlight = true
+        if presentation == .userInitiated {
+            isRefreshingTrainingWorkspace = true
+        }
+        defer {
+            isTrainingWorkspaceRefreshInFlight = false
+            if presentation == .userInitiated {
+                isRefreshingTrainingWorkspace = false
+            }
+        }
         let method = trainingRunMethodFilter
         do {
             let snapshot = try await Self.offMain {
@@ -577,7 +613,7 @@ final class LibraryWorkspaceModel: ObservableObject {
     func setTrainingRunMethodFilter(_ method: TrainingRunMethod?) async {
         guard trainingRunMethodFilter != method else { return }
         trainingRunMethodFilter = method
-        await refreshTrainingWorkspace()
+        await refreshTrainingWorkspace(presentation: .automatic)
     }
 
     func selectTrainingRun(_ id: UUID?) {
@@ -2692,6 +2728,7 @@ final class LibraryWorkspaceModel: ObservableObject {
         defer {
             isRebuildingPersonalModel = false
             isRebuildingPersonalAdamWModel = false
+            trainingWorkspaceActivity = nil
         }
 
         do {
@@ -2705,6 +2742,21 @@ final class LibraryWorkspaceModel: ObservableObject {
                 return
             }
             let selected = selectedAssetIDs
+            let method = family.trainingRunMethod
+            let tagNames = tags
+                .filter { trainingTagIDs.contains($0.id) }
+                .map(\.displayName)
+                .sorted()
+            let scope: TrainingWorkspaceActivityScope = selected.isEmpty
+                ? .allSources
+                : .selectedAssets(count: selected.count)
+            trainingWorkspaceActivity = TrainingWorkspaceActivity(
+                method: method,
+                tagNames: tagNames,
+                scope: scope,
+                sampleCount: nil,
+                phase: .preparingSamples
+            )
             let review = review
             let snapshotSource = AppPersonalTrainingSnapshotPortSource {
                 try review.personalTrainingSnapshot(
@@ -2719,16 +2771,32 @@ final class LibraryWorkspaceModel: ObservableObject {
                     : .personalModelRebuildNotReady
                 return
             }
-            guard await ensurePersonalTrainingSampleEmbeddingsCached(snapshot) else {
-                return
-            }
-            let identity = try await rebuilder.rebuild(snapshotSource: snapshotSource)
             let sampleCount = Set(snapshot.decisions.map {
                 PersonalTrainingAssetRevision(
                     assetID: $0.assetID,
                     contentRevision: $0.contentRevision
                 )
             }).count
+            trainingWorkspaceActivity = TrainingWorkspaceActivity(
+                method: method,
+                tagNames: tagNames,
+                scope: scope,
+                sampleCount: sampleCount,
+                phase: .preparingEmbeddings(completed: 0, total: sampleCount)
+            )
+            guard await ensurePersonalTrainingSampleEmbeddingsCached(snapshot) else {
+                return
+            }
+            trainingWorkspaceActivity = TrainingWorkspaceActivity(
+                method: method,
+                tagNames: tagNames,
+                scope: scope,
+                sampleCount: sampleCount,
+                phase: .trainingAndPublishing
+            )
+            let refreshTask = startTrainingWorkspaceAutoRefresh()
+            defer { refreshTask?.cancel() }
+            let identity = try await rebuilder.rebuild(snapshotSource: snapshotSource)
             switch family {
             case .centroid:
                 notice = .personalModelRebuildCompleted(
@@ -2763,9 +2831,22 @@ final class LibraryWorkspaceModel: ObservableObject {
                 ? .personalAdamWRebuildFailed
                 : .personalModelRebuildFailed
         }
-        await refreshTrainingWorkspace()
+        await refreshTrainingWorkspace(presentation: .automatic)
     }
 
+    private func startTrainingWorkspaceAutoRefresh() -> Task<Void, Never>? {
+        guard trainingWorkspace != nil else { return nil }
+        return Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                await self?.refreshTrainingWorkspace(presentation: .automatic)
+                do {
+                    try await Task.sleep(for: .milliseconds(500))
+                } catch {
+                    return
+                }
+            }
+        }
+    }
 
     /// Prepares embeddings for the resolved training snapshot samples.
     /// Returns false when preparation failed and `notice` was already set.
@@ -2788,7 +2869,7 @@ final class LibraryWorkspaceModel: ObservableObject {
         let service = service
         var cloudOnly = 0
         var failed = 0
-        for revision in revisions {
+        for (index, revision) in revisions.enumerated() {
             do {
                 _ = try await cache.cacheSelectedAsset(
                     assetID: revision.assetID,
@@ -2804,6 +2885,18 @@ final class LibraryWorkspaceModel: ObservableObject {
                 cloudOnly += 1
             } catch {
                 failed += 1
+            }
+            if let activity = trainingWorkspaceActivity {
+                trainingWorkspaceActivity = TrainingWorkspaceActivity(
+                    method: activity.method,
+                    tagNames: activity.tagNames,
+                    scope: activity.scope,
+                    sampleCount: activity.sampleCount,
+                    phase: .preparingEmbeddings(
+                        completed: index + 1,
+                        total: revisions.count
+                    )
+                )
             }
         }
 
@@ -4161,7 +4254,7 @@ extension LibraryWorkspaceModel {
                 featureSuggestionCompletionContexts[jobID] = pending.displayName
                 startPersonalizationRunnerIfNeeded()
                 await refreshReviewState()
-                await refreshTrainingWorkspace()
+                await refreshTrainingWorkspace(presentation: .automatic)
                 return true
             } catch let error as PersonalizationReviewError {
                 notice = reviewNotice(for: error)
@@ -4205,7 +4298,7 @@ extension LibraryWorkspaceModel {
         let worker = PersonalizationSuggestionRunner.startLoop(review: reviewPort) { [weak self] in
             guard let self else { return }
             await self.refreshReviewState()
-            await self.refreshTrainingWorkspace()
+            await self.refreshTrainingWorkspace(presentation: .automatic)
             await self.refreshFeatureSuggestionCompletionNotices()
             if case let .tagQueue(tagID, _) = self.reviewMode {
                 await self.loadReviewQueueFirstPage(tagID: tagID)
@@ -5168,7 +5261,7 @@ struct LibraryWorkspaceView: View {
                     await model.enterReviewOverview()
                 case .trainingWorkspace:
                     await model.exitReviewMode()
-                    await model.refreshTrainingWorkspace()
+                    await model.refreshTrainingWorkspace(presentation: .automatic)
                 case let .source(sourceID):
                     await model.exitReviewMode()
                     await model.setTagPresence(.any)

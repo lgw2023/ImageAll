@@ -5085,6 +5085,139 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         )
     }
 
+    func testTrainingWorkspaceAutomaticRefreshDoesNotAnimateManualRefreshControl() async {
+        let workspace = BlockingTrainingWorkspacePort()
+        let model = LibraryWorkspaceModel(
+            service: FakeLibraryWorkspaceService(
+                connectedSource: LibrarySourceSummary(
+                    id: UUID(),
+                    displayName: "Fixture",
+                    state: .active
+                ),
+                reconciledItems: []
+            ),
+            trainingWorkspace: workspace
+        )
+
+        let refresh = Task {
+            await model.refreshTrainingWorkspace(presentation: .automatic)
+        }
+        for _ in 0 ..< 100 where !workspace.didStart {
+            await Task.yield()
+        }
+
+        XCTAssertTrue(workspace.didStart)
+        XCTAssertFalse(
+            model.isRefreshingTrainingWorkspace,
+            "后台轮询不应让手动刷新按钮在图标和进度环之间频闪"
+        )
+
+        workspace.resume()
+        await refresh.value
+    }
+
+    func testPersonalCentroidTrainingPublishesLiveWorkspaceActivityUntilCompletion() async throws {
+        let sourceID = UUID()
+        let tag = TagListItem(id: UUID(), displayName: "板栗", state: .active)
+        let assetIDs = [UUID(), UUID()]
+        let snapshot = PersonalTrainingSnapshot(
+            catalogScopeID: UUID().uuidString.lowercased(),
+            personalTagIDs: [tag.id],
+            decisions: assetIDs.map {
+                PersonalTrainingDecision(
+                    assetID: $0,
+                    contentRevision: 1,
+                    tagID: tag.id,
+                    state: .manualAccepted
+                )
+            }
+        )
+        let rebuilder = BlockingAppPersonalModelRebuilder(
+            result: AppPersonalLinearHeadIdentity(
+                catalogScopeID: snapshot.catalogScopeID,
+                decisionSnapshotRevision: String(repeating: "1", count: 64),
+                labelVocabularyRevision: String(repeating: "2", count: 64),
+                encoderIdentity: AppCoreMLModelIdentity(
+                    provider: "dinov2",
+                    modelID: "facebook/dinov2-small",
+                    modelRevision: "fixture",
+                    preprocessingRevision: "fixture",
+                    embeddingSemantics: "fixture",
+                    postprocessingRevision: "fixture",
+                    elementType: "float32",
+                    elementCount: 1,
+                    sourceModelSHA256: String(repeating: "3", count: 64),
+                    artifactSHA256: String(repeating: "4", count: 64),
+                    manifestSHA256: String(repeating: "5", count: 64),
+                    licenseID: "Apache-2.0",
+                    licenseSHA256: String(repeating: "6", count: 64)
+                ),
+                personalTagIDs: [tag.id],
+                weightsSHA256: String(repeating: "7", count: 64)
+            )
+        )
+        let model = LibraryWorkspaceModel(
+            service: FakeLibraryWorkspaceService(
+                connectedSource: LibrarySourceSummary(
+                    id: sourceID,
+                    displayName: "Fixture",
+                    state: .active
+                ),
+                reconciledItems: [],
+                tags: [tag]
+            ),
+            review: FakePersonalizationReviewPort(trainingSnapshot: snapshot),
+            appPersonalModelRebuilder: rebuilder
+        )
+        await model.start()
+        await model.toggleIncludedTagFilter(tag.id)
+
+        let training = Task { await model.rebuildPersonalModel() }
+        for _ in 0 ..< 100 where !(await rebuilder.didStart()) {
+            await Task.yield()
+        }
+
+        let didStart = await rebuilder.didStart()
+        XCTAssertTrue(didStart)
+        XCTAssertEqual(
+            model.trainingWorkspaceActivity,
+            TrainingWorkspaceActivity(
+                method: .personalCentroid,
+                tagNames: ["板栗"],
+                scope: .allSources,
+                sampleCount: 2,
+                phase: .trainingAndPublishing
+            )
+        )
+
+        await rebuilder.resume()
+        await training.value
+        XCTAssertNil(model.trainingWorkspaceActivity)
+    }
+
+    func testTrainingWorkspaceActivityPresentationExplainsMethodTagsScopeAndProgress() {
+        let activity = TrainingWorkspaceActivity(
+            method: .personalCentroid,
+            tagNames: ["板栗"],
+            scope: .allSources,
+            sampleCount: 2,
+            phase: .preparingEmbeddings(completed: 1, total: 2)
+        )
+
+        XCTAssertEqual(
+            TrainingWorkspaceActivityPresentation.title(activity),
+            "个人模型（质心）正在训练"
+        )
+        XCTAssertEqual(
+            TrainingWorkspaceActivityPresentation.detail(activity),
+            "标签：板栗 · 范围：所有来源 · 样本：2 张"
+        )
+        XCTAssertEqual(
+            TrainingWorkspaceActivityPresentation.phase(activity),
+            "正在准备本地特征 1 / 2"
+        )
+    }
+
     func testTrainingWorkspaceJSONPresentationRedactsProtectedLocatorFields() throws {
         let rendered = try XCTUnwrap(
             TrainingWorkspaceJSONPresentation.pretty(
@@ -6910,6 +7043,36 @@ private actor FakeAppPersonalModelRebuilder: AppPersonalModelRebuilding {
     }
 }
 
+private actor BlockingAppPersonalModelRebuilder: AppPersonalModelRebuilding {
+    private let result: AppPersonalLinearHeadIdentity
+    private var continuation: CheckedContinuation<Void, Never>?
+    private var started = false
+
+    init(result: AppPersonalLinearHeadIdentity) {
+        self.result = result
+    }
+
+    func rebuild(
+        snapshotSource: any AppPersonalTrainingSnapshotSource
+    ) async throws -> AppPersonalLinearHeadIdentity {
+        _ = try await snapshotSource.currentSnapshot()
+        started = true
+        await withCheckedContinuation { continuation in
+            self.continuation = continuation
+        }
+        return result
+    }
+
+    func didStart() -> Bool {
+        started
+    }
+
+    func resume() {
+        continuation?.resume()
+        continuation = nil
+    }
+}
+
 private actor FakeAppPersonalSampleSuggester: AppPersonalSampleSuggesting {
     private let batch: AppPersonalSampleSuggestionBatch
     private var storedCandidates: [[PersonalSuggestionCandidate]] = []
@@ -7083,6 +7246,39 @@ private final class FakeTrainingWorkspacePort: TrainingWorkspacePort, @unchecked
                 slots: slots
             )
         }
+    }
+}
+
+private final class BlockingTrainingWorkspacePort: TrainingWorkspacePort, @unchecked Sendable {
+    private let lock = NSLock()
+    private let release = DispatchSemaphore(value: 0)
+    private var storedDidStart = false
+
+    var didStart: Bool {
+        lock.withLock { storedDidStart }
+    }
+
+    func snapshot(
+        method _: TrainingRunMethod?,
+        limit _: Int
+    ) throws -> TrainingWorkspaceSnapshot {
+        lock.withLock { storedDidStart = true }
+        release.wait()
+        return TrainingWorkspaceSnapshot(
+            runs: [],
+            slots: TrainingRunMethod.allCases.map {
+                TrainingWorkspaceSlot(
+                    method: $0,
+                    isPublished: false,
+                    publishedRunID: nil,
+                    artifactRef: nil
+                )
+            }
+        )
+    }
+
+    func resume() {
+        release.signal()
     }
 }
 
