@@ -1,6 +1,6 @@
 # ImageAll 训练工程 T3：Review 全并行
 
-> 状态：Codex 直接实施中
+> 状态：已完成并通过 Codex 独立复审
 > 日期：2026-07-23
 > 权威规格：`docs/TRAINING-WORKSPACE-SPEC.md`、`docs/SUGGESTION-THRESHOLD-SPEC.md`
 > 架构决策：`docs/ARCHITECTURE.md` ADR-038 / ADR-039 / ADR-040
@@ -18,9 +18,9 @@
   `TrainingWorkspaceSchemaTests` 共 91 / 91 通过。
 - 结论：T2 两项阻塞一致性问题已经关闭，可以进入 T3。
 
-本文档初始提交为 T3 `LAUNCH_HEAD`；实施结果回填时记录精确 commit。
-Cursor CLI 未使用；依据 `AGENTS.md` 至 2026-08-13 的临时授权，由 Codex
-直接按 TDD 实施。
+T3 精确 `LAUNCH_HEAD`：
+`2c93c91f55a944e4ea8353edbcd8d97e82bf2cc6`。Cursor CLI 未使用；
+依据 `AGENTS.md` 至 2026-08-13 的临时授权，由 Codex 直接按 TDD 实施。
 
 ## 产品契约
 
@@ -73,3 +73,33 @@ Cursor CLI 未使用；依据 `AGENTS.md` 至 2026-08-13 的临时授权，由 C
 T3 相关测试、完整非宿主回归、Debug build、Git 与照片安全审计通过后，
 创建独立 Codex 实现 commit，再以独立文档 commit 回填证据。完成 T3 复审后，
 才创建新的 T4 留档并进入训练工程大页。
+
+## 实施与复审结果
+
+- 实现提交：
+  `d5eb7cca4a6ab4e37d2b6bce03f636a407c15bdb`
+  `feat(codex): make review suggestions fully parallel`。
+- 队列、概览、Inspector 均保留同一资产/标签的多来源建议；队列行身份为
+  `asset_id + suggestion_origin`，原始 score 与来源徽章同时展示。
+- 人工确认/拒绝仍写同一资产/标签事实，三个来源随即全部退出待审；「稍后」仅推进
+  复合行选择，不写库。
+- 提交前独立审查发现并修复了键盘导航滚动目标仍使用单一资产 ID 的问题，滚动身份
+  现与 `ForEach` 的复合行身份一致。
+
+### TDD 证据
+
+- RED：三来源重叠用例只返回 AdamW 一行，产生 7 个断言失败；工作区「稍后」用例
+  因缺少复合行选择 API 编译失败。
+- GREEN：
+  `FullLibrarySuggestionsJobTests`、`LibraryWorkspaceModelTests`、
+  `SuggestionThresholdTests` 共 219 / 219 通过，退出码 0。
+- 完整直接 XCTest：1088 项，11 项仓库已标记 expected failures，
+  0 项 unexpected failures；XCTest 因 expected failures 汇总退出码 1。
+- `xcodebuild build-for-testing`：退出码 0，`TEST BUILD SUCCEEDED`。
+- Debug build：退出码 0，`BUILD SUCCEEDED`。
+- `git diff --check`：退出码 0。
+
+### 复审结论
+
+T3 契约全部满足，未修改 migration，未进入 T4 范围，未启动 production App
+宿主，也未访问或写入受保护照片路径。允许从本留档完成提交后的新基线进入 T4。
