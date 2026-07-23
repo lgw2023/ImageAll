@@ -74,6 +74,14 @@ enum LibraryGridPageDirection: Equatable, Sendable {
     case down
 }
 
+enum LibraryBrowsingDestination: Equatable, Sendable {
+    case all
+    case untagged
+    case reviewSuggestions
+    case trainingWorkspace
+    case source(UUID)
+}
+
 enum LibraryGridLayout {
     static let spacing: CGFloat = 8
     static let horizontalPadding: CGFloat = 12
@@ -464,7 +472,9 @@ final class LibraryWorkspaceModel: ObservableObject {
         (checked: Int, suggested: Int, skipped: Int, total: Int)?
     @Published private(set) var isExportingPortableData = false
     @Published private(set) var previewCacheUsage = DerivedImageCacheUsage.zero
+    @Published private(set) var appStorageLocation: AppStorageLocationStatus?
     @Published private(set) var isClearingPreviewCache = false
+    @Published private(set) var isChoosingAppStorageLocation = false
     @Published private(set) var jobActivityItems: [JobActivityItem] = []
     @Published private(set) var jobActivityActionInFlightIDs: Set<UUID> = []
     @Published private(set) var sourceOrderRevision = 0
@@ -508,6 +518,7 @@ final class LibraryWorkspaceModel: ObservableObject {
     private var localModelSuggestionRequestID: UUID?
     private var searchDebounceTask: Task<Void, Never>?
     private var assetPageRequestID: UUID?
+    private var browsingNavigationRequestID: UUID?
     private var selectionAnchorID: UUID?
     private var featureSuggestionCompletionContexts: [UUID: String] = [:]
     private var isTrainingWorkspaceRefreshInFlight = false
@@ -921,6 +932,23 @@ final class LibraryWorkspaceModel: ObservableObject {
         return isPhotosSource(selectedSourceID)
     }
 
+    var browsingTitle: String {
+        if reviewMode != nil {
+            return "待审核建议"
+        }
+        if let selectedSourceID,
+           let source = sources.first(where: { $0.id == selectedSourceID })
+        {
+            return source.displayName
+        }
+        return tagPresence == .untagged ? "无标签" : "全部照片"
+    }
+
+    var selectionSummaryTitle: String {
+        let count = selectedAssetIDs.count
+        return count == 1 ? "已选择 1 张照片" : "已选择 \(count) 张照片"
+    }
+
     var selectedPhotosSourceNeedsAuthorization: Bool {
         guard let selectedSourceID else { return false }
         return sources.first(where: { $0.id == selectedSourceID })?.state == .authorizationRequired
@@ -1124,8 +1152,28 @@ final class LibraryWorkspaceModel: ObservableObject {
             previewCacheUsage = try await Self.offMain {
                 try service.fetchPreviewCacheUsage()
             }
+            appStorageLocation = service.fetchAppStorageLocation()
         } catch {
             notice = .previewCacheActionFailed
+        }
+    }
+
+    func chooseExternalAppStorageLocation() async {
+        guard !isChoosingAppStorageLocation else { return }
+        isChoosingAppStorageLocation = true
+        notice = nil
+        defer { isChoosingAppStorageLocation = false }
+
+        do {
+            switch try await service.chooseExternalAppStorageLocation() {
+            case .cancelled:
+                return
+            case let .restartRequired(status):
+                appStorageLocation = status
+                notice = .appStorageLocationRequiresRestart
+            }
+        } catch {
+            notice = .appStorageLocationActionFailed
         }
     }
 
@@ -1498,6 +1546,52 @@ final class LibraryWorkspaceModel: ObservableObject {
         // Navigation only swaps the visible filter. Photos integrity / sync is
         // handled once at start() so switching sources stays flicker-free.
         await loadFirstPage(remountGrid: true)
+    }
+
+    func beginBrowsingNavigation() -> UUID {
+        let requestID = UUID()
+        browsingNavigationRequestID = requestID
+        // Invalidate a page query started by the prior sidebar selection even
+        // before the newest navigation task gets scheduled on the main actor.
+        assetPageRequestID = UUID()
+        return requestID
+    }
+
+    func navigate(
+        to destination: LibraryBrowsingDestination,
+        requestID: UUID
+    ) async {
+        guard browsingNavigationRequestID == requestID else { return }
+
+        switch destination {
+        case .reviewSuggestions:
+            await enterReviewOverview()
+        case .trainingWorkspace:
+            clearReviewModeState()
+            guard browsingNavigationRequestID == requestID else { return }
+            await refreshTrainingWorkspace(presentation: .automatic)
+        case .all, .untagged, .source:
+            clearReviewModeState()
+            switch destination {
+            case .all:
+                selectedSourceID = nil
+                tagPresence = .any
+            case .untagged:
+                selectedSourceID = nil
+                tagPresence = .untagged
+                selectedTagFilterDecisions = [:]
+                selectedTagFilterIDs = []
+                excludedTagFilterIDs = []
+            case let .source(sourceID):
+                selectedSourceID = sourceID
+                tagPresence = .any
+            case .reviewSuggestions, .trainingWorkspace:
+                break
+            }
+            await loadFirstPage(remountGrid: true)
+            guard browsingNavigationRequestID == requestID else { return }
+            await refreshReviewState()
+        }
     }
 
     func loadMoreIfNeeded(currentAssetID: UUID) async {
@@ -2486,7 +2580,16 @@ final class LibraryWorkspaceModel: ObservableObject {
               !isGeneratingPersonalLibrarySuggestions
         else { return }
         if let appPersonalModelRebuilder {
-            await rebuildAppPersonalModel(using: appPersonalModelRebuilder, family: .centroid)
+            await rebuildAppPersonalModel(
+                using: appPersonalModelRebuilder,
+                family: .centroid,
+                trainingTagIDs: Set(
+                    selectedTagFilterDecisions.compactMap {
+                        $0.value == .accepted ? $0.key : nil
+                    }
+                ),
+                selectedAssetIDs: selectedAssetIDs
+            )
             return
         }
         guard let runtime = localModelSuggestions else {
@@ -2609,6 +2712,25 @@ final class LibraryWorkspaceModel: ObservableObject {
         }
     }
 
+    func rebuildPersonalModel(tagIDs: Set<UUID>, assetIDs: Set<UUID>) async {
+        guard !isRebuildingPersonalModel,
+              !isRebuildingPersonalAdamWModel,
+              !isGeneratingPersonalLibrarySuggestions,
+              let rebuilder = appPersonalModelRebuilder
+        else {
+            if appPersonalModelRebuilder == nil {
+                notice = .personalModelRebuildServiceUnavailable
+            }
+            return
+        }
+        await rebuildAppPersonalModel(
+            using: rebuilder,
+            family: .centroid,
+            trainingTagIDs: tagIDs,
+            selectedAssetIDs: assetIDs
+        )
+    }
+
     func cacheSelectedAssetEmbedding() async {
         guard !isCachingSelectedAssetEmbedding,
               let cache = selectedAssetEmbeddingCache,
@@ -2711,12 +2833,42 @@ final class LibraryWorkspaceModel: ObservableObject {
             }
             return
         }
-        await rebuildAppPersonalModel(using: rebuilder, family: .adamW)
+        await rebuildAppPersonalModel(
+            using: rebuilder,
+            family: .adamW,
+            trainingTagIDs: Set(
+                selectedTagFilterDecisions.compactMap {
+                    $0.value == .accepted ? $0.key : nil
+                }
+            ),
+            selectedAssetIDs: selectedAssetIDs
+        )
+    }
+
+    func rebuildPersonalAdamWModel(tagIDs: Set<UUID>, assetIDs: Set<UUID>) async {
+        guard !isRebuildingPersonalModel,
+              !isRebuildingPersonalAdamWModel,
+              !isGeneratingPersonalLibrarySuggestions,
+              let rebuilder = appPersonalAdamWModelRebuilder
+        else {
+            if appPersonalAdamWModelRebuilder == nil {
+                notice = .personalModelRebuildServiceUnavailable
+            }
+            return
+        }
+        await rebuildAppPersonalModel(
+            using: rebuilder,
+            family: .adamW,
+            trainingTagIDs: tagIDs,
+            selectedAssetIDs: assetIDs
+        )
     }
 
     private func rebuildAppPersonalModel(
         using rebuilder: any AppPersonalModelRebuilding,
-        family: AppPersonalLinearHeadFamily
+        family: AppPersonalLinearHeadFamily,
+        trainingTagIDs requestedTrainingTagIDs: Set<UUID>,
+        selectedAssetIDs: Set<UUID>
     ) async {
         switch family {
         case .centroid:
@@ -2732,24 +2884,22 @@ final class LibraryWorkspaceModel: ObservableObject {
         }
 
         do {
-            let trainingTagIDs = Set(
-                selectedTagFilterDecisions.compactMap { $0.value == .accepted ? $0.key : nil }
-            )
+            let activeTagIDs = Set(tags.filter { $0.state == .active }.map(\.id))
+            let trainingTagIDs = requestedTrainingTagIDs.intersection(activeTagIDs)
             guard !trainingTagIDs.isEmpty else {
                 notice = family == .adamW
                     ? .personalAdamWRebuildTagSelectionRequired
                     : .personalModelRebuildTagSelectionRequired
                 return
             }
-            let selected = selectedAssetIDs
             let method = family.trainingRunMethod
             let tagNames = tags
                 .filter { trainingTagIDs.contains($0.id) }
                 .map(\.displayName)
                 .sorted()
-            let scope: TrainingWorkspaceActivityScope = selected.isEmpty
+            let scope: TrainingWorkspaceActivityScope = selectedAssetIDs.isEmpty
                 ? .allSources
-                : .selectedAssets(count: selected.count)
+                : .selectedAssets(count: selectedAssetIDs.count)
             trainingWorkspaceActivity = TrainingWorkspaceActivity(
                 method: method,
                 tagNames: tagNames,
@@ -2761,7 +2911,7 @@ final class LibraryWorkspaceModel: ObservableObject {
             let snapshotSource = AppPersonalTrainingSnapshotPortSource {
                 try review.personalTrainingSnapshot(
                     limitingToTagIDs: trainingTagIDs,
-                    limitingToAssetIDs: selected.isEmpty ? nil : selected
+                    limitingToAssetIDs: selectedAssetIDs.isEmpty ? nil : selectedAssetIDs
                 )
             }
             let snapshot = try await snapshotSource.currentSnapshot()
@@ -4019,12 +4169,16 @@ extension LibraryWorkspaceModel {
     }
 
     func exitReviewMode() async {
+        clearReviewModeState()
+        await loadFirstPage()
+        await refreshReviewState()
+    }
+
+    private func clearReviewModeState() {
         reviewMode = nil
         reviewQueueItems = []
         selectedReviewItemID = nil
         reviewNextCursor = nil
-        await loadFirstPage()
-        await refreshReviewState()
     }
 
     func loadReviewQueueFirstPage(tagID: UUID) async {
@@ -5012,7 +5166,7 @@ struct LibraryWorkspaceView: View {
 
     private var libraryKeyboardEnabledContent: some View {
         content
-            .navigationTitle("全部照片")
+            .navigationTitle(model.browsingTitle)
             .focusable()
             .focused($contentFocused)
             .focusEffectDisabled()
@@ -5039,12 +5193,64 @@ struct LibraryWorkspaceView: View {
 
     private var previewCachePanel: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("预览缓存")
+            Text("应用存储与预览缓存")
                 .font(.headline)
             LabeledContent("条目", value: "\(model.previewCacheUsage.entryCount)")
             LabeledContent(
                 "已登记用量",
                 value: formattedByteCount(model.previewCacheUsage.registeredBytes)
+            )
+            if let location = model.appStorageLocation {
+                LabeledContent(
+                    "存储位置",
+                    value: location.usesExternalStorage ? "外置磁盘" : "内置磁盘"
+                )
+                Text("应用资料")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text(location.applicationSupportDirectoryURL.path)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                Text("全部缓存")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text(location.cachesDirectoryURL.path)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                if location.requiresRestart,
+                   let root = location.preferredExternalRootURL
+                {
+                    Text("重启后应用资料")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text(
+                        UserDefaultsAppStorageLocationStore
+                            .applicationSupportDirectory(under: root).path
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                    Text("重启后全部缓存")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text(
+                        UserDefaultsAppStorageLocationStore
+                            .cacheDirectory(under: root).path
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                }
+            }
+            Button {
+                Task { await model.chooseExternalAppStorageLocation() }
+            } label: {
+                Label("选择外置应用存储位置…", systemImage: "externaldrive.badge.plus")
+            }
+            .disabled(
+                model.isChoosingAppStorageLocation || model.isClearingPreviewCache
             )
             Divider()
             Button("清理预览缓存", role: .destructive) {
@@ -5055,7 +5261,7 @@ struct LibraryWorkspaceView: View {
             )
         }
         .padding()
-        .frame(width: 280)
+        .frame(width: 380)
         .confirmationDialog(
             "清理预览缓存？",
             isPresented: $showPreviewCacheClearConfirmation,
@@ -5247,26 +5453,21 @@ struct LibraryWorkspaceView: View {
         }
         .task { await model.start() }
         .onChange(of: selection) { _, newValue in
+            let destination: LibraryBrowsingDestination = switch newValue {
+            case .all, .none:
+                .all
+            case .untagged:
+                .untagged
+            case .reviewSuggestions:
+                .reviewSuggestions
+            case .trainingWorkspace:
+                .trainingWorkspace
+            case let .source(sourceID):
+                .source(sourceID)
+            }
+            let requestID = model.beginBrowsingNavigation()
             Task {
-                switch newValue {
-                case .all, .none:
-                    await model.exitReviewMode()
-                    await model.setTagPresence(.any)
-                    await model.selectSource(nil)
-                case .untagged:
-                    await model.exitReviewMode()
-                    await model.selectSource(nil)
-                    await model.setTagPresence(.untagged)
-                case .reviewSuggestions:
-                    await model.enterReviewOverview()
-                case .trainingWorkspace:
-                    await model.exitReviewMode()
-                    await model.refreshTrainingWorkspace(presentation: .automatic)
-                case let .source(sourceID):
-                    await model.exitReviewMode()
-                    await model.setTagPresence(.any)
-                    await model.selectSource(sourceID)
-                }
+                await model.navigate(to: destination, requestID: requestID)
             }
         }
     }
@@ -6152,7 +6353,7 @@ struct LibraryWorkspaceView: View {
             } else {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 18) {
-                        Text(model.selectedAssetIDs.count == 1 ? "1 张照片" : "\(model.selectedAssetIDs.count) 张照片")
+                        Text(model.selectionSummaryTitle)
                             .font(.headline)
 
                         if let detail = model.inspectorDetail {
@@ -6580,6 +6781,7 @@ struct LibraryWorkspaceView: View {
             "line.3.horizontal.decrease.circle"
         case .presetTagsInstalled, .presetTagsAlreadyAvailable,
              .portableExportCompleted, .previewCacheCleared,
+             .appStorageLocationRequiresRestart,
              .personalModelRebuildCompleted, .personalAdamWRebuildCompleted,
              .selectedAssetEmbeddingCached,
              .selectedAssetEmbeddingBatchCompleted,
@@ -6636,6 +6838,10 @@ struct LibraryWorkspaceView: View {
                 : "已清理 \(removedEntries) 个预览缓存条目。"
         case .previewCacheActionFailed:
             "预览缓存操作未完成。原照片、人工标签和个性化数据没有被修改。"
+        case .appStorageLocationRequiresRestart:
+            "外置应用存储位置已保存；重新启动 ImageAll 后会迁移现有资料与全部缓存。"
+        case .appStorageLocationActionFailed:
+            "外置应用存储位置未更改。请确认所选目录可写且不是软链接或文件包。"
         case .jobActivityActionFailed:
             "任务操作未完成，已重新读取当前状态。请重试。"
         case let .personalModelRebuildCompleted(tagCount, sampleCount):

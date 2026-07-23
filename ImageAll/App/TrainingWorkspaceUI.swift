@@ -4,6 +4,8 @@ import SwiftUI
 struct TrainingWorkspaceView: View {
     @ObservedObject var model: LibraryWorkspaceModel
     let onReturnToLibrary: () -> Void
+    @State private var isPresentingTrainingSetup = false
+    @State private var pendingLaunchRequest: TrainingWorkspaceLaunchRequest?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -27,48 +29,30 @@ struct TrainingWorkspaceView: View {
         .task {
             await model.refreshTrainingWorkspace(presentation: .automatic)
         }
+        .sheet(
+            isPresented: $isPresentingTrainingSetup,
+            onDismiss: performPendingLaunch
+        ) {
+            TrainingWorkspaceLaunchSheet(model: model) { request in
+                pendingLaunchRequest = request
+                isPresentingTrainingSetup = false
+            }
+        }
     }
 
     private var header: some View {
         HStack(spacing: 12) {
-            Menu {
-                featurePrintTrainingMenu
-                Divider()
-                Button("个人模型（质心）") {
-                    Task { await model.rebuildPersonalModel() }
-                }
-                .disabled(!model.supportsPersonalModelRebuild)
-                Button("超级个人（AdamW）") {
-                    Task { await model.rebuildPersonalAdamWModel() }
-                }
-                .disabled(!model.supportsPersonalAdamWModelRebuild)
+            Button {
+                isPresentingTrainingSetup = true
             } label: {
-                Label("发起训练", systemImage: "play.fill")
+                Label("新建训练任务…", systemImage: "plus")
             }
-            .menuStyle(.borderedButton)
+            .buttonStyle(.borderedProminent)
             .disabled(
                 model.isRebuildingPersonalModel
                     || model.isRebuildingPersonalAdamWModel
                     || model.isGeneratingPersonalLibrarySuggestions
             )
-
-            Picker(
-                "方法筛选",
-                selection: Binding(
-                    get: { model.trainingRunMethodFilter },
-                    set: { method in
-                        Task { await model.setTrainingRunMethodFilter(method) }
-                    }
-                )
-            ) {
-                Text("全部").tag(Optional<TrainingRunMethod>.none)
-                ForEach(TrainingRunMethod.allCases, id: \.self) { method in
-                    Text(method.trainingWorkspaceDisplayName)
-                        .tag(Optional(method))
-                }
-            }
-            .pickerStyle(.menu)
-            .fixedSize()
 
             Button {
                 Task { await model.refreshTrainingWorkspace() }
@@ -89,6 +73,41 @@ struct TrainingWorkspaceView: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
+    }
+
+    private func performPendingLaunch() {
+        guard let request = pendingLaunchRequest else { return }
+        pendingLaunchRequest = nil
+        switch request {
+        case let .feature(tagID, displayName, mode):
+            Task {
+                await model.setTrainingRunMethodFilter(nil)
+                model.requestEnqueueSuggestions(
+                    tagID: tagID,
+                    displayName: displayName,
+                    mode: mode,
+                    method: .featureKnn
+                )
+            }
+        case let .personal(method, tagIDs, assetIDs):
+            Task {
+                await model.setTrainingRunMethodFilter(nil)
+                switch method {
+                case .personalCentroid:
+                    await model.rebuildPersonalModel(
+                        tagIDs: tagIDs,
+                        assetIDs: assetIDs
+                    )
+                case .personalAdamW:
+                    await model.rebuildPersonalAdamWModel(
+                        tagIDs: tagIDs,
+                        assetIDs: assetIDs
+                    )
+                case .featureKnn:
+                    break
+                }
+            }
+        }
     }
 
     private func activityBanner(_ activity: TrainingWorkspaceActivity) -> some View {
@@ -126,37 +145,17 @@ struct TrainingWorkspaceView: View {
         .accessibilityLabel("当前训练状态")
     }
 
-    @ViewBuilder
-    private var featurePrintTrainingMenu: some View {
-        let trainable = model.suggestionOverviews.filter {
-            $0.canGenerate || $0.canUpdate
-        }
-        if trainable.isEmpty {
-            Button("特征向量：样本不足") {}
-                .disabled(true)
-        } else {
-            Menu("特征向量近邻") {
-                ForEach(trainable) { overview in
-                    Button(overview.displayName) {
-                        model.requestEnqueueSuggestions(
-                            tagID: overview.id,
-                            displayName: overview.displayName,
-                            mode: overview.canUpdate ? .update : .generate,
-                            method: .featureKnn
-                        )
-                    }
-                }
-            }
-        }
-    }
-
     private var slotStrip: some View {
         HStack(spacing: 10) {
             ForEach(model.trainingSlots) { slot in
                 let isTraining = model.trainingWorkspaceActivity?.method == slot.method
+                let presentation = TrainingWorkspaceMethodPresentation(method: slot.method)
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(slot.method.trainingWorkspaceDisplayName)
+                    Label(presentation.shortTitle, systemImage: presentation.systemImage)
                         .font(.subheadline.weight(.semibold))
+                    Text(presentation.technicalName)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
                     Label(
                         isTraining ? "训练中" : (slot.isPublished ? "已就绪" : "尚未训练"),
                         systemImage: isTraining
@@ -182,23 +181,47 @@ struct TrainingWorkspaceView: View {
 
     private var runList: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Text("训练记录")
-                .font(.headline)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 10)
+            HStack(spacing: 8) {
+                Text("训练记录")
+                    .font(.headline)
+                Spacer()
+                Text("显示")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Picker(
+                    "训练记录显示范围",
+                    selection: Binding(
+                        get: { model.trainingRunMethodFilter },
+                        set: { method in
+                            Task { await model.setTrainingRunMethodFilter(method) }
+                        }
+                    )
+                ) {
+                    Text("全部记录").tag(Optional<TrainingRunMethod>.none)
+                    ForEach(TrainingRunMethod.allCases, id: \.self) { method in
+                        Text(TrainingWorkspaceMethodPresentation(method: method).shortTitle)
+                            .tag(Optional(method))
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.menu)
+                .fixedSize()
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
             Divider()
             if model.trainingRuns.isEmpty {
                 if model.trainingWorkspaceActivity != nil {
                     ContentUnavailableView(
                         "正在创建训练记录",
                         systemImage: "clock.arrow.circlepath",
-                        description: Text("样本准备完成后，当前 Run 会自动显示在这里。")
+                        description: Text("样本准备完成后，当前训练会自动显示在这里。")
                     )
                 } else {
                     ContentUnavailableView(
                         "暂无训练记录",
                         systemImage: "clock.badge.questionmark",
-                        description: Text("从“发起训练”开始；失败和取消的记录也会保留。")
+                        description: Text("从“新建训练任务”开始；失败和取消的记录也会保留。")
                     )
                 }
             } else {
@@ -213,7 +236,7 @@ struct TrainingWorkspaceView: View {
                         .tag(run.id)
                 }
                 .listStyle(.sidebar)
-                .accessibilityLabel("训练 Run 列表")
+                .accessibilityLabel("训练记录列表")
             }
         }
     }
@@ -221,12 +244,16 @@ struct TrainingWorkspaceView: View {
     @ViewBuilder
     private var detail: some View {
         if let run = model.selectedTrainingRun {
+            let presentation = TrainingWorkspaceMethodPresentation(method: run.method)
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
                     HStack(alignment: .firstTextBaseline) {
                         VStack(alignment: .leading, spacing: 4) {
-                            Text(run.method.trainingWorkspaceDisplayName)
+                            Text(presentation.shortTitle)
                                 .font(.title2.weight(.semibold))
+                            Text(presentation.technicalName)
+                                .font(.callout)
+                                .foregroundStyle(.secondary)
                             Text(run.id.uuidString.lowercased())
                                 .font(.caption.monospaced())
                                 .foregroundStyle(.secondary)
@@ -242,7 +269,8 @@ struct TrainingWorkspaceView: View {
                             )
                     }
                     TrainingWorkspaceDetailSection("概览") {
-                        LabeledContent("方法", value: run.method.trainingWorkspaceDisplayName)
+                        LabeledContent("任务", value: presentation.shortTitle)
+                        LabeledContent("技术方法", value: presentation.technicalName)
                         LabeledContent("状态", value: run.state.trainingWorkspaceDisplayName)
                         LabeledContent(
                             "创建时间",
@@ -303,13 +331,389 @@ struct TrainingWorkspaceView: View {
                 }
                 .padding(20)
             }
-            .accessibilityLabel("训练 Run 详情")
+            .accessibilityLabel("训练记录详情")
         } else {
             ContentUnavailableView {
                 Label("选择一条训练记录", systemImage: "list.bullet.rectangle")
             } description: {
                 Text("这里会展示概览、数据、配置、过程、产物和结果。三种建议可以同时进入待审核队列。")
             }
+        }
+    }
+}
+
+private enum TrainingWorkspaceLaunchRequest {
+    case feature(
+        tagID: UUID,
+        displayName: String,
+        mode: PersonalizationReviewEnqueueMode
+    )
+    case personal(
+        method: TrainingRunMethod,
+        tagIDs: Set<UUID>,
+        assetIDs: Set<UUID>
+    )
+}
+
+private enum TrainingWorkspacePhotoScopeChoice: Hashable {
+    case allSources
+    case currentSelection
+}
+
+private struct TrainingWorkspaceLaunchSheet: View {
+    @ObservedObject var model: LibraryWorkspaceModel
+    let onLaunch: (TrainingWorkspaceLaunchRequest) -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var selectedMethod: TrainingRunMethod
+    @State private var selectedFeatureTagID: UUID?
+    @State private var selectedPersonalTagIDs: Set<UUID>
+    @State private var photoScopeChoice: TrainingWorkspacePhotoScopeChoice = .allSources
+
+    init(
+        model: LibraryWorkspaceModel,
+        onLaunch: @escaping (TrainingWorkspaceLaunchRequest) -> Void
+    ) {
+        self.model = model
+        self.onLaunch = onLaunch
+
+        let featureOptions = model.suggestionOverviews.filter {
+            $0.canGenerate || $0.canUpdate
+        }
+        let personalOptions = model.suggestionOverviews.filter(\.canGeneratePersonalModel)
+        let initialMethod: TrainingRunMethod
+        if !featureOptions.isEmpty, !model.activeReviewSources.isEmpty {
+            initialMethod = .featureKnn
+        } else if model.supportsPersonalModelRebuild, !personalOptions.isEmpty {
+            initialMethod = .personalCentroid
+        } else if model.supportsPersonalAdamWModelRebuild, !personalOptions.isEmpty {
+            initialMethod = .personalAdamW
+        } else {
+            initialMethod = .featureKnn
+        }
+
+        _selectedMethod = State(initialValue: initialMethod)
+        _selectedFeatureTagID = State(initialValue: featureOptions.first?.id)
+        _selectedPersonalTagIDs = State(
+            initialValue: personalOptions.count == 1
+                ? Set([personalOptions[0].id])
+                : []
+        )
+    }
+
+    private var featureOptions: [SuggestionTagOverview] {
+        model.suggestionOverviews.filter { $0.canGenerate || $0.canUpdate }
+    }
+
+    private var personalOptions: [SuggestionTagOverview] {
+        model.suggestionOverviews.filter(\.canGeneratePersonalModel)
+    }
+
+    private var selectedTagNames: [String] {
+        switch selectedMethod {
+        case .featureKnn:
+            featureOptions
+                .filter { $0.id == selectedFeatureTagID }
+                .map(\.displayName)
+        case .personalCentroid, .personalAdamW:
+            personalOptions
+                .filter { selectedPersonalTagIDs.contains($0.id) }
+                .map(\.displayName)
+        }
+    }
+
+    private var selectedAssetIDs: Set<UUID> {
+        photoScopeChoice == .currentSelection ? model.selectedAssetIDs : []
+    }
+
+    private var launchSummary: TrainingWorkspaceLaunchSummary {
+        TrainingWorkspaceLaunchSummary(
+            method: selectedMethod,
+            tagNames: selectedTagNames,
+            photoScope: selectedAssetIDs.isEmpty
+                ? .allSources
+                : .selectedAssets(count: selectedAssetIDs.count)
+        )
+    }
+
+    private var canLaunch: Bool {
+        guard isMethodAvailable(selectedMethod) else { return false }
+        switch selectedMethod {
+        case .featureKnn:
+            return selectedFeatureTagID != nil
+        case .personalCentroid, .personalAdamW:
+            return !selectedPersonalTagIDs.isEmpty
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            VStack(alignment: .leading, spacing: 5) {
+                Text("新建训练任务")
+                    .font(.title2.weight(.semibold))
+                Text("先选择你想完成的事情。算法名称保留为技术说明，不再作为操作入口。")
+                    .foregroundStyle(.secondary)
+            }
+
+            methodChooser
+
+            GroupBox {
+                configuration
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            } label: {
+                Label("选择标签和照片范围", systemImage: "slider.horizontal.3")
+                    .font(.headline)
+            }
+
+            GroupBox {
+                confirmationSummary
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            } label: {
+                Label("启动前确认", systemImage: "checklist")
+                    .font(.headline)
+            }
+
+            HStack {
+                Button("取消", role: .cancel) {
+                    dismiss()
+                }
+                Spacer()
+                Button(launchButtonTitle) {
+                    launch()
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(!canLaunch)
+            }
+        }
+        .padding(24)
+        .frame(width: 760)
+        .frame(minHeight: 610)
+        .accessibilityLabel("新建训练任务")
+    }
+
+    private var methodChooser: some View {
+        HStack(alignment: .top, spacing: 12) {
+            ForEach(TrainingRunMethod.allCases, id: \.self) { method in
+                let presentation = TrainingWorkspaceMethodPresentation(method: method)
+                let isSelected = selectedMethod == method
+                let isAvailable = isMethodAvailable(method)
+                Button {
+                    selectedMethod = method
+                } label: {
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack(alignment: .top) {
+                            Image(systemName: presentation.systemImage)
+                                .font(.title3)
+                                .foregroundStyle(isSelected ? Color.accentColor : .secondary)
+                            Spacer()
+                            Image(
+                                systemName: isSelected
+                                    ? "checkmark.circle.fill"
+                                    : "circle"
+                            )
+                            .foregroundStyle(isSelected ? Color.accentColor : .secondary)
+                        }
+                        Text(presentation.title)
+                            .font(.headline)
+                            .foregroundStyle(.primary)
+                        Text("技术：\(presentation.technicalName)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Text(presentation.detail)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Spacer(minLength: 0)
+                        Label(
+                            isAvailable ? presentation.requirement : unavailableText(method),
+                            systemImage: isAvailable
+                                ? "checkmark.seal"
+                                : "exclamationmark.triangle"
+                        )
+                        .font(.caption2)
+                        .foregroundStyle(isAvailable ? Color.secondary : .orange)
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 178, alignment: .topLeading)
+                    .padding(12)
+                    .background(
+                        isSelected
+                            ? Color.accentColor.opacity(0.10)
+                            : Color.secondary.opacity(0.06),
+                        in: RoundedRectangle(cornerRadius: 10)
+                    )
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 10)
+                            .stroke(
+                                isSelected
+                                    ? Color.accentColor
+                                    : Color.secondary.opacity(0.20),
+                                lineWidth: isSelected ? 2 : 1
+                            )
+                    }
+                }
+                .buttonStyle(.plain)
+                .disabled(!isAvailable)
+                .accessibilityLabel(
+                    "\(presentation.title)，\(presentation.technicalName)"
+                )
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var configuration: some View {
+        switch selectedMethod {
+        case .featureKnn:
+            VStack(alignment: .leading, spacing: 12) {
+                Picker("要寻找哪种标签的相似照片？", selection: $selectedFeatureTagID) {
+                    ForEach(featureOptions) { overview in
+                        Text(
+                            "\(overview.displayName)（属于 \(overview.acceptedSampleCount) / 不属于 \(overview.rejectedSampleCount)）"
+                        )
+                        .tag(Optional(overview.id))
+                    }
+                }
+                .pickerStyle(.menu)
+                Text("下一步可以选择要扫描的照片来源，并确认建议阈值。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        case .personalCentroid, .personalAdamW:
+            VStack(alignment: .leading, spacing: 12) {
+                Text("要训练哪些标签？")
+                    .font(.subheadline.weight(.semibold))
+                if personalOptions.isEmpty {
+                    Label(
+                        "还没有达到最低样本要求的标签。",
+                        systemImage: "exclamationmark.triangle"
+                    )
+                    .foregroundStyle(.orange)
+                } else {
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: 8) {
+                            ForEach(personalOptions) { overview in
+                                Toggle(
+                                    isOn: Binding(
+                                        get: {
+                                            selectedPersonalTagIDs.contains(overview.id)
+                                        },
+                                        set: { isSelected in
+                                            if isSelected {
+                                                selectedPersonalTagIDs.insert(overview.id)
+                                            } else {
+                                                selectedPersonalTagIDs.remove(overview.id)
+                                            }
+                                        }
+                                    )
+                                ) {
+                                    HStack {
+                                        Text(overview.displayName)
+                                        Spacer()
+                                        Text("已确认 \(overview.acceptedSampleCount) 张")
+                                            .foregroundStyle(.secondary)
+                                    }
+                                }
+                                .toggleStyle(.checkbox)
+                            }
+                        }
+                    }
+                    .frame(maxHeight: 116)
+                }
+
+                Divider()
+                Picker("使用哪些照片？", selection: $photoScopeChoice) {
+                    Text("所有来源中的已确认照片")
+                        .tag(TrainingWorkspacePhotoScopeChoice.allSources)
+                    if !model.selectedAssetIDs.isEmpty {
+                        Text("当前在图库中选择的 \(model.selectedAssetIDs.count) 张照片")
+                            .tag(TrainingWorkspacePhotoScopeChoice.currentSelection)
+                    }
+                }
+                .pickerStyle(.radioGroup)
+                Text("默认使用所有来源；只有你在这里明确选择时，才会限制为图库中的当前选择。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private var confirmationSummary: some View {
+        Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 7) {
+            summaryRow("任务", launchSummary.methodText)
+            summaryRow("标签", launchSummary.tagText)
+            summaryRow(
+                "照片范围",
+                selectedMethod == .featureKnn
+                    ? "下一步选择要扫描的照片来源"
+                    : launchSummary.photoScopeText
+            )
+            summaryRow("最低要求", launchSummary.requirementText)
+        }
+    }
+
+    private func summaryRow(_ label: String, _ value: String) -> some View {
+        GridRow {
+            Text(label)
+                .foregroundStyle(.secondary)
+            Text(value)
+                .textSelection(.enabled)
+        }
+    }
+
+    private var launchButtonTitle: String {
+        selectedMethod == .featureKnn
+            ? "下一步：选择照片来源"
+            : "开始训练"
+    }
+
+    private func isMethodAvailable(_ method: TrainingRunMethod) -> Bool {
+        switch method {
+        case .featureKnn:
+            !featureOptions.isEmpty && !model.activeReviewSources.isEmpty
+        case .personalCentroid:
+            model.supportsPersonalModelRebuild && !personalOptions.isEmpty
+        case .personalAdamW:
+            model.supportsPersonalAdamWModelRebuild && !personalOptions.isEmpty
+        }
+    }
+
+    private func unavailableText(_ method: TrainingRunMethod) -> String {
+        switch method {
+        case .featureKnn:
+            if model.activeReviewSources.isEmpty {
+                return "需要至少一个可用照片来源"
+            }
+            return "需要至少 2 个属于、2 个不属于"
+        case .personalCentroid, .personalAdamW:
+            if personalOptions.isEmpty {
+                return "需要至少一个有 2 张已确认照片的标签"
+            }
+            return "当前设备尚未提供此训练能力"
+        }
+    }
+
+    private func launch() {
+        switch selectedMethod {
+        case .featureKnn:
+            guard let overview = featureOptions.first(where: {
+                $0.id == selectedFeatureTagID
+            }) else { return }
+            onLaunch(
+                .feature(
+                    tagID: overview.id,
+                    displayName: overview.displayName,
+                    mode: overview.canUpdate ? .update : .generate
+                )
+            )
+        case .personalCentroid, .personalAdamW:
+            guard !selectedPersonalTagIDs.isEmpty else { return }
+            onLaunch(
+                .personal(
+                    method: selectedMethod,
+                    tagIDs: selectedPersonalTagIDs,
+                    assetIDs: selectedAssetIDs
+                )
+            )
         }
     }
 }
@@ -332,27 +736,29 @@ struct TrainingWorkspaceInspectorView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else if let run = model.selectedTrainingRun {
-                LabeledContent("方法", value: run.method.trainingWorkspaceDisplayName)
+                let presentation = TrainingWorkspaceMethodPresentation(method: run.method)
+                LabeledContent("任务", value: presentation.shortTitle)
+                LabeledContent("技术方法", value: presentation.technicalName)
                 LabeledContent("状态", value: run.state.trainingWorkspaceDisplayName)
                 LabeledContent(
                     "创建",
                     value: TrainingWorkspaceDateFormatter.string(run.createdAtMs)
                 )
-                Text("Run \(run.id.uuidString.lowercased())")
+                Text("训练编号 \(run.id.uuidString.lowercased())")
                     .font(.caption.monospaced())
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
             } else {
-                Text("从工作台选择一条 Run，或发起一次训练。")
+                Text("从工作台选择一条训练记录，或新建训练任务。")
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }
             Divider()
             Text("样本门槛")
                 .font(.subheadline.weight(.semibold))
-            Text("特征向量：每标签至少 2 个确认 + 2 个不属于。")
-            Text("个人模型与超级个人：每标签至少 2 个确认，不强制负例。")
-            Text("训练结果不会覆盖人工标签；三种建议可在 Review 中并行出现。")
+            Text("相似照片：每个标签至少 2 个属于、2 个不属于。")
+            Text("快速与增强个人模型：每个标签至少 2 个已确认样本。")
+            Text("训练结果不会覆盖人工标签；三种建议可以在待审核区同时出现。")
                 .foregroundStyle(.secondary)
         }
         .font(.callout)
@@ -361,19 +767,115 @@ struct TrainingWorkspaceInspectorView: View {
     }
 }
 
+struct TrainingWorkspaceMethodPresentation: Equatable {
+    let method: TrainingRunMethod
+    let title: String
+    let shortTitle: String
+    let technicalName: String
+    let detail: String
+    let requirement: String
+    let systemImage: String
+
+    init(method: TrainingRunMethod) {
+        self = switch method {
+        case .featureKnn:
+            Self(
+                method: method,
+                title: "为标签寻找相似照片",
+                shortTitle: "相似照片",
+                technicalName: "特征向量近邻",
+                detail: "用已确认属于和不属于该标签的照片作参考，找出新的相似照片并送去审核。",
+                requirement: "每个标签至少 2 个属于、2 个不属于",
+                systemImage: "sparkle.magnifyingglass"
+            )
+        case .personalCentroid:
+            Self(
+                method: method,
+                title: "更新快速个人模型",
+                shortTitle: "快速个人模型",
+                technicalName: "质心模型",
+                detail: "快速汇总你确认过的标签样本，适合日常更新。",
+                requirement: "每个标签至少 2 个已确认样本",
+                systemImage: "brain.head.profile"
+            )
+        case .personalAdamW:
+            Self(
+                method: method,
+                title: "训练增强个人模型",
+                shortTitle: "增强个人模型",
+                technicalName: "AdamW 线性模型",
+                detail: "进行更充分的本机训练，适合样本较多时获得更细致的个人结果。",
+                requirement: "每个标签至少 2 个已确认样本",
+                systemImage: "brain.head.profile.fill"
+            )
+        }
+    }
+
+    init(
+        method: TrainingRunMethod,
+        title: String,
+        shortTitle: String,
+        technicalName: String,
+        detail: String,
+        requirement: String,
+        systemImage: String
+    ) {
+        self.method = method
+        self.title = title
+        self.shortTitle = shortTitle
+        self.technicalName = technicalName
+        self.detail = detail
+        self.requirement = requirement
+        self.systemImage = systemImage
+    }
+}
+
+struct TrainingWorkspaceLaunchSummary: Equatable {
+    let method: TrainingRunMethod
+    let tagNames: [String]
+    let photoScope: TrainingWorkspaceActivityScope
+
+    var methodText: String {
+        let presentation = TrainingWorkspaceMethodPresentation(method: method)
+        return "\(presentation.shortTitle)（\(presentation.technicalName)）"
+    }
+
+    var tagText: String {
+        let names = tagNames.sorted()
+        return names.isEmpty ? "尚未选择" : names.joined(separator: "、")
+    }
+
+    var photoScopeText: String {
+        switch photoScope {
+        case .allSources:
+            "所有来源中的已确认样本"
+        case let .selectedAssets(count):
+            "当前选择的 \(count) 张照片"
+        }
+    }
+
+    var requirementText: String {
+        TrainingWorkspaceMethodPresentation(method: method).requirement
+    }
+}
+
 private struct TrainingWorkspaceRunRow: View {
     let run: TrainingRunRecord
 
     var body: some View {
+        let presentation = TrainingWorkspaceMethodPresentation(method: run.method)
         VStack(alignment: .leading, spacing: 5) {
             HStack {
-                Text(run.method.trainingWorkspaceDisplayName)
+                Text(presentation.shortTitle)
                     .font(.subheadline.weight(.semibold))
                 Spacer()
                 Text(run.state.trainingWorkspaceDisplayName)
                     .font(.caption2.weight(.semibold))
                     .foregroundStyle(run.state.trainingWorkspaceTint)
             }
+            Text(presentation.technicalName)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
             Text(TrainingWorkspaceDateFormatter.string(run.createdAtMs))
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -416,11 +918,18 @@ private struct TrainingWorkspaceJSONSection: View {
     let emptyText: String
 
     var body: some View {
-        TrainingWorkspaceDetailSection(title) {
+        DisclosureGroup {
             Text(TrainingWorkspaceJSONPresentation.pretty(json) ?? emptyText)
                 .font(.caption.monospaced())
                 .foregroundStyle(.secondary)
+                .padding(.top, 8)
+                .textSelection(.enabled)
+        } label: {
+            Label("\(title) · 技术详情", systemImage: "curlybraces")
+                .font(.headline)
         }
+        .padding(12)
+        .background(.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
     }
 }
 
@@ -432,11 +941,13 @@ private struct TrainingWorkspaceMetricsSection: View {
             if let summary = TrainingWorkspaceJSONPresentation.metricsSummary(json) {
                 Text(summary)
                     .font(.callout)
-                Divider()
             }
-            Text(TrainingWorkspaceJSONPresentation.prettyMetrics(json) ?? "没有过程指标")
-                .font(.caption.monospaced())
-                .foregroundStyle(.secondary)
+            DisclosureGroup("查看原始训练指标") {
+                Text(TrainingWorkspaceJSONPresentation.prettyMetrics(json) ?? "没有过程指标")
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+                    .padding(.top, 6)
+            }
         }
     }
 }
@@ -540,7 +1051,7 @@ enum TrainingWorkspaceJSONPresentation {
 
 enum TrainingWorkspaceActivityPresentation {
     static func title(_ activity: TrainingWorkspaceActivity) -> String {
-        "\(activity.method.trainingWorkspaceDisplayName)正在训练"
+        "\(TrainingWorkspaceMethodPresentation(method: activity.method).shortTitle)正在训练"
     }
 
     static func detail(_ activity: TrainingWorkspaceActivity) -> String {
@@ -565,16 +1076,6 @@ enum TrainingWorkspaceActivityPresentation {
             "正在准备本地特征 \(completed) / \(total)"
         case .trainingAndPublishing:
             "正在训练并发布模型"
-        }
-    }
-}
-
-private extension TrainingRunMethod {
-    var trainingWorkspaceDisplayName: String {
-        switch self {
-        case .featureKnn: "特征向量近邻"
-        case .personalCentroid: "个人模型（质心）"
-        case .personalAdamW: "超级个人（AdamW）"
         }
     }
 }

@@ -87,6 +87,13 @@ struct CompositionRoot {
             sourceAccess: sourceAccess,
             clock: clock
         )
+        let appStorageLocationController = AppStorageLocationController(
+            picker: AppKitFolderDirectoryPicker(),
+            store: UserDefaultsAppStorageLocationStore(
+                bookmarks: FoundationAppStorageBookmarkAdapter()
+            ),
+            activeStatus: runtime.paths.storageLocationStatus
+        )
         let featurePrintService = FeaturePrintCacheService(
             database: runtime.database,
             cachesDirectory: runtime.paths.cachesDirectory,
@@ -246,6 +253,7 @@ struct CompositionRoot {
             assetImages: assetImages,
             personalizationReview: personalizationReview,
             derivedImageCache: derivedImages,
+            appStorageLocationController: appStorageLocationController,
             portableExportDestinationPicker: AppKitPortableExportDestinationPicker(),
             portableExportSourceIsolation: PortableExportSourceIsolationValidator(
                 sourceRepository: sourceRepository,

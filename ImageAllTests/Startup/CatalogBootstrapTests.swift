@@ -108,6 +108,29 @@ final class CatalogBootstrapTests: XCTestCase {
         )
     }
 
+    func testCurrentSchemaInCleanWALModeStartsWithoutPersistedSidecars() throws {
+        let root = try StartupTestSupport.makeTempRoot(testCase: self)
+        let paths = try StartupTestSupport.resolvedPaths(root: root)
+        let seededDatabase = try StartupTestSupport.seedCurrentSchemaDatabase(
+            at: paths.catalogDatabaseURL
+        )
+        try seededDatabase.pool.close()
+        try CatalogDatabaseSidecarHelpers.removeSidecarsIfPresent(
+            at: paths.catalogDatabaseURL
+        )
+        XCTAssertFalse(
+            CatalogDatabaseSidecarHelpers.hasSidecars(at: paths.catalogDatabaseURL)
+        )
+
+        let dependencies = StartupTestSupport.makeDependencies(root: root)
+        let result = CatalogBootstrapCoordinator(dependencies: dependencies).bootstrap()
+
+        guard case let .ready(token) = result else {
+            return XCTFail("Expected clean WAL database to start, got \(result)")
+        }
+        try token.close()
+    }
+
     func testFutureSchemaDoesNotRecoverOrBecomeReady() throws {
         let root = try StartupTestSupport.makeTempRoot(testCase: self)
         let paths = try StartupTestSupport.resolvedPaths(root: root)

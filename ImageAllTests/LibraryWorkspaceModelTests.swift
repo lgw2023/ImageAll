@@ -252,6 +252,45 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertFalse(model.isClearingPreviewCache)
     }
 
+    func testExternalAppStorageSelectionPublishesRestartRequirement() async {
+        let internalSupport = URL(
+            fileURLWithPath: "/Library/Application Support/ImageAll",
+            isDirectory: true
+        )
+        let internalCaches = URL(
+            fileURLWithPath: "/Library/Caches/ImageAll",
+            isDirectory: true
+        )
+        let externalRoot = URL(
+            fileURLWithPath: "/Volumes/SSD1",
+            isDirectory: true
+        )
+        let pendingStatus = AppStorageLocationStatus(
+            applicationSupportDirectoryURL: internalSupport,
+            cachesDirectoryURL: internalCaches,
+            preferredExternalRootURL: externalRoot,
+            usesExternalStorage: false,
+            requiresRestart: true
+        )
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: UUID(),
+                displayName: "Fixture",
+                state: .active
+            ),
+            reconciledItems: [],
+            previewCacheLocationSelectionResult: .restartRequired(pendingStatus)
+        )
+        let model = LibraryWorkspaceModel(service: service)
+
+        await model.chooseExternalAppStorageLocation()
+
+        XCTAssertEqual(service.previewCacheLocationSelectionCallCount, 1)
+        XCTAssertEqual(model.appStorageLocation, pendingStatus)
+        XCTAssertEqual(model.notice, .appStorageLocationRequiresRestart)
+        XCTAssertFalse(model.isChoosingAppStorageLocation)
+    }
+
     func testJobActivityActionRefreshesRowsAfterSuccess() async {
         let jobID = UUID()
         let service = FakeLibraryWorkspaceService(
@@ -2927,6 +2966,88 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertEqual(service.photosConnectCallCount, 0)
     }
 
+    func testLatestSidebarNavigationWinsWhenEarlierSourceTaskStartsLate() async {
+        let folderSourceID = UUID()
+        let photosSourceID = UUID()
+        let folderAsset = Self.makeAsset(
+            sourceID: folderSourceID,
+            fileName: "folder.jpg"
+        )
+        let photosAsset = Self.makeAsset(
+            sourceID: photosSourceID,
+            fileName: "photos.heic"
+        )
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: photosSourceID,
+                kind: .photos,
+                displayName: "Apple Photos",
+                state: .active
+            ),
+            reconciledItems: [folderAsset, photosAsset],
+            initialItems: [folderAsset, photosAsset],
+            startsConnected: true,
+            photosLibrarySupportedImageCount: 1,
+            photosCatalogAssetCount: 1,
+            sourceIsReconcileClean: true,
+            hasPendingCatalogReconcileJobs: false
+        )
+        let model = LibraryWorkspaceModel(service: service)
+
+        await model.start()
+        let staleRequest = model.beginBrowsingNavigation()
+        let latestRequest = model.beginBrowsingNavigation()
+
+        await model.navigate(
+            to: .source(photosSourceID),
+            requestID: latestRequest
+        )
+        let fetchCountAfterLatestNavigation = service.assetPageFetchCallCount
+        await model.navigate(
+            to: .source(folderSourceID),
+            requestID: staleRequest
+        )
+
+        XCTAssertEqual(model.items.map(\.assetID), [photosAsset.assetID])
+        XCTAssertEqual(
+            service.assetPageFetchCallCount,
+            fetchCountAfterLatestNavigation,
+            "a stale sidebar task must not issue another source query"
+        )
+    }
+
+    func testPhotosNavigationPublishesSourceTitleAndExplicitSelectionCount() async {
+        let photosSourceID = UUID()
+        let photosAsset = Self.makeAsset(
+            sourceID: photosSourceID,
+            fileName: "photos.heic"
+        )
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: photosSourceID,
+                kind: .photos,
+                displayName: "Apple Photos",
+                state: .active
+            ),
+            reconciledItems: [photosAsset],
+            initialItems: [photosAsset],
+            startsConnected: true,
+            photosLibrarySupportedImageCount: 1,
+            photosCatalogAssetCount: 1,
+            sourceIsReconcileClean: true,
+            hasPendingCatalogReconcileJobs: false
+        )
+        let model = LibraryWorkspaceModel(service: service)
+
+        await model.start()
+        let requestID = model.beginBrowsingNavigation()
+        await model.navigate(to: .source(photosSourceID), requestID: requestID)
+        await model.selectAsset(photosAsset.assetID)
+
+        XCTAssertEqual(model.browsingTitle, "Apple Photos")
+        XCTAssertEqual(model.selectionSummaryTitle, "已选择 1 张照片")
+    }
+
     func testStartupRequestsFullRepairWhenCatalogIsIncomplete() async {
         let sourceID = UUID()
         let source = LibrarySourceSummary(
@@ -5195,6 +5316,96 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertNil(model.trainingWorkspaceActivity)
     }
 
+    func testTrainingWorkspaceStartsPersonalModelWithExplicitTagsAndPhotoScope() async throws {
+        let sourceID = UUID()
+        let hiddenFilterTag = TagListItem(id: UUID(), displayName: "旧筛选", state: .active)
+        let requestedTag = TagListItem(id: UUID(), displayName: "板栗", state: .active)
+        let hiddenAssetIDs = [UUID(), UUID()]
+        let requestedAssetIDs = [UUID(), UUID()]
+        let snapshot = PersonalTrainingSnapshot(
+            catalogScopeID: UUID().uuidString.lowercased(),
+            personalTagIDs: [hiddenFilterTag.id, requestedTag.id],
+            decisions: [
+                (hiddenFilterTag.id, hiddenAssetIDs[0]),
+                (hiddenFilterTag.id, hiddenAssetIDs[1]),
+                (requestedTag.id, requestedAssetIDs[0]),
+                (requestedTag.id, requestedAssetIDs[1]),
+            ].map { tagID, assetID in
+                PersonalTrainingDecision(
+                    assetID: assetID,
+                    contentRevision: 1,
+                    tagID: tagID,
+                    state: .manualAccepted
+                )
+            }
+        )
+        let rebuilder = BlockingAppPersonalModelRebuilder(
+            result: AppPersonalLinearHeadIdentity(
+                catalogScopeID: snapshot.catalogScopeID,
+                decisionSnapshotRevision: String(repeating: "1", count: 64),
+                labelVocabularyRevision: String(repeating: "2", count: 64),
+                encoderIdentity: AppCoreMLModelIdentity(
+                    provider: "dinov2",
+                    modelID: "facebook/dinov2-small",
+                    modelRevision: "fixture",
+                    preprocessingRevision: "fixture",
+                    embeddingSemantics: "fixture",
+                    postprocessingRevision: "fixture",
+                    elementType: "float32",
+                    elementCount: 1,
+                    sourceModelSHA256: String(repeating: "3", count: 64),
+                    artifactSHA256: String(repeating: "4", count: 64),
+                    manifestSHA256: String(repeating: "5", count: 64),
+                    licenseID: "Apache-2.0",
+                    licenseSHA256: String(repeating: "6", count: 64)
+                ),
+                personalTagIDs: [requestedTag.id],
+                weightsSHA256: String(repeating: "7", count: 64)
+            )
+        )
+        let model = LibraryWorkspaceModel(
+            service: FakeLibraryWorkspaceService(
+                connectedSource: LibrarySourceSummary(
+                    id: sourceID,
+                    displayName: "Fixture",
+                    state: .active
+                ),
+                reconciledItems: [],
+                tags: [hiddenFilterTag, requestedTag]
+            ),
+            review: FakePersonalizationReviewPort(trainingSnapshot: snapshot),
+            appPersonalModelRebuilder: rebuilder
+        )
+        await model.start()
+        await model.toggleIncludedTagFilter(hiddenFilterTag.id)
+
+        let training = Task {
+            await model.rebuildPersonalModel(
+                tagIDs: [requestedTag.id],
+                assetIDs: Set(requestedAssetIDs)
+            )
+        }
+        for _ in 0 ..< 100 where !(await rebuilder.didStart()) {
+            await Task.yield()
+        }
+
+        let didStart = await rebuilder.didStart()
+        XCTAssertTrue(didStart)
+        XCTAssertEqual(
+            model.trainingWorkspaceActivity,
+            TrainingWorkspaceActivity(
+                method: .personalCentroid,
+                tagNames: ["板栗"],
+                scope: .selectedAssets(count: 2),
+                sampleCount: 2,
+                phase: .trainingAndPublishing
+            )
+        )
+
+        await rebuilder.resume()
+        await training.value
+    }
+
     func testTrainingWorkspaceActivityPresentationExplainsMethodTagsScopeAndProgress() {
         let activity = TrainingWorkspaceActivity(
             method: .personalCentroid,
@@ -5206,7 +5417,7 @@ final class LibraryWorkspaceModelTests: XCTestCase {
 
         XCTAssertEqual(
             TrainingWorkspaceActivityPresentation.title(activity),
-            "个人模型（质心）正在训练"
+            "快速个人模型正在训练"
         )
         XCTAssertEqual(
             TrainingWorkspaceActivityPresentation.detail(activity),
@@ -5216,6 +5427,58 @@ final class LibraryWorkspaceModelTests: XCTestCase {
             TrainingWorkspaceActivityPresentation.phase(activity),
             "正在准备本地特征 1 / 2"
         )
+    }
+
+    func testTrainingWorkspaceMethodPresentationLeadsWithUserGoals() {
+        XCTAssertEqual(
+            TrainingWorkspaceMethodPresentation(method: .featureKnn),
+            TrainingWorkspaceMethodPresentation(
+                method: .featureKnn,
+                title: "为标签寻找相似照片",
+                shortTitle: "相似照片",
+                technicalName: "特征向量近邻",
+                detail: "用已确认属于和不属于该标签的照片作参考，找出新的相似照片并送去审核。",
+                requirement: "每个标签至少 2 个属于、2 个不属于",
+                systemImage: "sparkle.magnifyingglass"
+            )
+        )
+        XCTAssertEqual(
+            TrainingWorkspaceMethodPresentation(method: .personalCentroid),
+            TrainingWorkspaceMethodPresentation(
+                method: .personalCentroid,
+                title: "更新快速个人模型",
+                shortTitle: "快速个人模型",
+                technicalName: "质心模型",
+                detail: "快速汇总你确认过的标签样本，适合日常更新。",
+                requirement: "每个标签至少 2 个已确认样本",
+                systemImage: "brain.head.profile"
+            )
+        )
+        XCTAssertEqual(
+            TrainingWorkspaceMethodPresentation(method: .personalAdamW),
+            TrainingWorkspaceMethodPresentation(
+                method: .personalAdamW,
+                title: "训练增强个人模型",
+                shortTitle: "增强个人模型",
+                technicalName: "AdamW 线性模型",
+                detail: "进行更充分的本机训练，适合样本较多时获得更细致的个人结果。",
+                requirement: "每个标签至少 2 个已确认样本",
+                systemImage: "brain.head.profile.fill"
+            )
+        )
+    }
+
+    func testTrainingWorkspaceLaunchSummaryConfirmsMethodTagsAndPhotoScope() {
+        let summary = TrainingWorkspaceLaunchSummary(
+            method: .personalCentroid,
+            tagNames: ["猫", "板栗"],
+            photoScope: .selectedAssets(count: 12)
+        )
+
+        XCTAssertEqual(summary.methodText, "快速个人模型（质心模型）")
+        XCTAssertEqual(summary.tagText, "板栗、猫")
+        XCTAssertEqual(summary.photoScopeText, "当前选择的 12 张照片")
+        XCTAssertEqual(summary.requirementText, "每个标签至少 2 个已确认样本")
     }
 
     func testTrainingWorkspaceJSONPresentationRedactsProtectedLocatorFields() throws {
@@ -6031,6 +6294,8 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
     private var storedPreviewCacheUsage: DerivedImageCacheUsage
     private let previewCacheClearResult: DerivedImageCacheClearResult?
     private let previewCacheClearFails: Bool
+    private let previewCacheLocationSelectionResult: AppStorageLocationSelectionResult
+    private var storedPreviewCacheLocationSelectionCallCount = 0
     private let jobActivityActionFails: Bool
     private let jobActivityItemsAfterFailedAction: [JobActivityItem]?
     private let blockedSearchText: String?
@@ -6065,6 +6330,7 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
         previewCacheUsage: DerivedImageCacheUsage = .zero,
         previewCacheClearResult: DerivedImageCacheClearResult? = nil,
         previewCacheClearFails: Bool = false,
+        previewCacheLocationSelectionResult: AppStorageLocationSelectionResult = .cancelled,
         jobActivityItems: [JobActivityItem] = [],
         jobActivityActionFails: Bool = false,
         jobActivityItemsAfterFailedAction: [JobActivityItem]? = nil,
@@ -6099,6 +6365,7 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
         storedPreviewCacheUsage = previewCacheUsage
         self.previewCacheClearResult = previewCacheClearResult
         self.previewCacheClearFails = previewCacheClearFails
+        self.previewCacheLocationSelectionResult = previewCacheLocationSelectionResult
         storedJobActivityItems = jobActivityItems
         self.jobActivityActionFails = jobActivityActionFails
         self.jobActivityItemsAfterFailedAction = jobActivityItemsAfterFailedAction
@@ -6214,6 +6481,10 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
         lock.withLock { storedPreviewCacheClearCallCount }
     }
 
+    var previewCacheLocationSelectionCallCount: Int {
+        lock.withLock { storedPreviewCacheLocationSelectionCallCount }
+    }
+
     var createTagAndAcceptCallCount: Int {
         lock.withLock { storedCreateTagAndAcceptCallCount }
     }
@@ -6274,6 +6545,35 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
             storedPreviewCacheUsage = .zero
             return previewCacheClearResult
         }
+    }
+
+    func fetchAppStorageLocation() -> AppStorageLocationStatus {
+        switch previewCacheLocationSelectionResult {
+        case .cancelled:
+            AppStorageLocationStatus(
+                applicationSupportDirectoryURL: URL(
+                    fileURLWithPath: "/Library/Application Support/ImageAll",
+                    isDirectory: true
+                ),
+                cachesDirectoryURL: URL(
+                    fileURLWithPath: "/Library/Caches/ImageAll",
+                    isDirectory: true
+                ),
+                preferredExternalRootURL: nil,
+                usesExternalStorage: false,
+                requiresRestart: false
+            )
+        case let .restartRequired(status):
+            status
+        }
+    }
+
+    @MainActor
+    func chooseExternalAppStorageLocation() async throws -> AppStorageLocationSelectionResult {
+        lock.withLock {
+            storedPreviewCacheLocationSelectionCallCount += 1
+        }
+        return previewCacheLocationSelectionResult
     }
 
     func fetchJobActivity() throws -> [JobActivityItem] {

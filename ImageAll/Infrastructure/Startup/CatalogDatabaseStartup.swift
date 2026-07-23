@@ -28,33 +28,7 @@ extension CatalogDatabase {
 
         do {
             return try withReadonlyQueue(at: url) { db in
-                do {
-                    try performQuickCheck(on: db)
-                } catch {
-                    return .integrityFailed
-                }
-
-                let applied = try readAppliedMigrationIDs(from: db)
-                if applied.isEmpty {
-                    return .knownOldPrefix(applied: [])
-                }
-
-                let known = CatalogMigrationID.knownOrdered
-                let knownSet = Set(known)
-                let unknown = applied.filter { !knownSet.contains($0) }.sorted()
-                if !unknown.isEmpty {
-                    return .unsupportedSchema
-                }
-
-                let expectedPrefix = Array(known.prefix(applied.count))
-                if applied != expectedPrefix {
-                    return .unsupportedSchema
-                }
-
-                if applied == known {
-                    return .currentSchema
-                }
-                return .knownOldPrefix(applied: applied)
+                try classifyFormalDatabase(db)
             }
         } catch let error as CatalogSnapshotError {
             if case .futureMigrationHistory = error {
@@ -64,6 +38,73 @@ extension CatalogDatabase {
         } catch {
             return .integrityFailed
         }
+    }
+
+    /// The bootstrap coordinator calls this only after acquiring the catalog
+    /// process lock. A writable pool lets SQLite recreate a missing clean WAL
+    /// sidecar before the same read-only classification used for snapshots.
+    static func inspectFormalDatabaseForStartup(
+        at url: URL,
+        fileManager: FileManager = .default
+    ) throws -> FormalDatabaseInspection {
+        guard fileManager.fileExists(atPath: url.path) else {
+            return .missing
+        }
+
+        let database: CatalogDatabase
+        do {
+            database = try openWithoutMigration(at: url)
+        } catch {
+            return .integrityFailed
+        }
+        defer {
+            try? database.pool.close()
+        }
+
+        do {
+            return try database.pool.read { db in
+                try classifyFormalDatabase(db)
+            }
+        } catch let error as CatalogDatabaseError {
+            if case .futureSchema = error {
+                return .unsupportedSchema
+            }
+            return .integrityFailed
+        } catch {
+            return .integrityFailed
+        }
+    }
+
+    private static func classifyFormalDatabase(
+        _ db: Database
+    ) throws -> FormalDatabaseInspection {
+        do {
+            try performQuickCheck(on: db)
+        } catch {
+            return .integrityFailed
+        }
+
+        let applied = try readAppliedMigrationIDs(from: db)
+        if applied.isEmpty {
+            return .knownOldPrefix(applied: [])
+        }
+
+        let known = CatalogMigrationID.knownOrdered
+        let knownSet = Set(known)
+        let unknown = applied.filter { !knownSet.contains($0) }.sorted()
+        if !unknown.isEmpty {
+            return .unsupportedSchema
+        }
+
+        let expectedPrefix = Array(known.prefix(applied.count))
+        if applied != expectedPrefix {
+            return .unsupportedSchema
+        }
+
+        if applied == known {
+            return .currentSchema
+        }
+        return .knownOldPrefix(applied: applied)
     }
 
     static func openCurrentSchema(at url: URL) throws -> CatalogDatabase {

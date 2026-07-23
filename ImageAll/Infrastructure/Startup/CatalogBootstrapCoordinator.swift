@@ -191,7 +191,9 @@ struct CatalogBootstrapCoordinator: Sendable {
         let inspection: FormalDatabaseInspection
         do {
             dependencies.blockingWorkProbe?(.inspect)
-            inspection = try CatalogDatabase.inspectFormalDatabase(at: paths.catalogDatabaseURL)
+            inspection = try CatalogDatabase.inspectFormalDatabaseForStartup(
+                at: paths.catalogDatabaseURL
+            )
             dependencies.callLog?.record(.inspect)
             dependencies.onStage?(.catalog)
         } catch {

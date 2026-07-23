@@ -35,3 +35,9 @@ struct AppKitFolderDirectoryPicker: FolderDirectoryPickerPort {
         return panel
     }
 }
+
+extension AppKitFolderDirectoryPicker: AppStorageRootPicking {
+    func pickCacheRoot() -> URL? {
+        pickDirectory()
+    }
+}

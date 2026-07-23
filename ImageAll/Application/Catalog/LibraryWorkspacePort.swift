@@ -49,6 +49,11 @@ enum LibraryWorkspaceSafeError: String, Equatable, Sendable {
     case catalogFailed
 }
 
+enum AppStorageLocationSelectionResult: Equatable, Sendable {
+    case cancelled
+    case restartRequired(AppStorageLocationStatus)
+}
+
 enum LibraryWorkspaceNotice: Equatable, Sendable {
     case selectionHiddenByFilter
     case presetTagsInstalled(createdCount: Int)
@@ -78,6 +83,8 @@ enum LibraryWorkspaceNotice: Equatable, Sendable {
     case portableExportFailed
     case previewCacheCleared(removedEntries: Int, partialReclaim: Bool)
     case previewCacheActionFailed
+    case appStorageLocationRequiresRestart
+    case appStorageLocationActionFailed
     case jobActivityActionFailed
     case personalModelRebuildCompleted(tagCount: Int, sampleCount: Int)
     case personalModelRebuildTagSelectionRequired
@@ -235,6 +242,9 @@ protocol LibraryWorkspacePort: Sendable {
     func exportPortableUserData(to parentDirectoryURL: URL) throws -> PortableCatalogExportResult
     func fetchPreviewCacheUsage() throws -> DerivedImageCacheUsage
     func clearPreviewCache() async throws -> DerivedImageCacheClearResult
+    func fetchAppStorageLocation() -> AppStorageLocationStatus
+    @MainActor
+    func chooseExternalAppStorageLocation() async throws -> AppStorageLocationSelectionResult
     func fetchJobActivity() throws -> [JobActivityItem]
     func applyJobActivityAction(_ action: JobActivityAction, jobID: UUID) throws
     func fetchSources() throws -> [LibrarySourceSummary]
@@ -290,4 +300,27 @@ protocol LibraryWorkspacePort: Sendable {
 extension LibraryWorkspacePort {
     func startCatalogSourceMonitoring(onChange: @escaping @Sendable () -> Void) throws {}
     func stopCatalogSourceMonitoring() {}
+
+    func fetchAppStorageLocation() -> AppStorageLocationStatus {
+        let applicationSupport = FileManager.default.urls(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask
+        )[0].appendingPathComponent("ImageAll", isDirectory: true)
+        let directory = FileManager.default.urls(
+            for: .cachesDirectory,
+            in: .userDomainMask
+        )[0].appendingPathComponent("ImageAll", isDirectory: true)
+        return AppStorageLocationStatus(
+            applicationSupportDirectoryURL: applicationSupport,
+            cachesDirectoryURL: directory,
+            preferredExternalRootURL: nil,
+            usesExternalStorage: false,
+            requiresRestart: false
+        )
+    }
+
+    @MainActor
+    func chooseExternalAppStorageLocation() async throws -> AppStorageLocationSelectionResult {
+        .cancelled
+    }
 }

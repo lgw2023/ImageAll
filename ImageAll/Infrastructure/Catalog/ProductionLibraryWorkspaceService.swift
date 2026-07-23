@@ -19,6 +19,7 @@ struct ProductionLibraryWorkspaceService: LibraryWorkspacePort, Sendable {
     let assetImages: LibraryAssetImageLoader
     let personalizationReview: PersonalizationReviewService
     let derivedImageCache: DerivedImageCacheService
+    let appStorageLocationController: AppStorageLocationController
     let portableExportDestinationPicker: any PortableExportDestinationPicking
     let portableExportSourceIsolation: PortableExportSourceIsolationValidator
     let portableExporter: PortableCatalogExporter
@@ -59,6 +60,15 @@ struct ProductionLibraryWorkspaceService: LibraryWorkspacePort, Sendable {
 
     func clearPreviewCache() async throws -> DerivedImageCacheClearResult {
         try await derivedImageCache.clearCache()
+    }
+
+    func fetchAppStorageLocation() -> AppStorageLocationStatus {
+        appStorageLocationController.activeStatus
+    }
+
+    @MainActor
+    func chooseExternalAppStorageLocation() async throws -> AppStorageLocationSelectionResult {
+        try await appStorageLocationController.chooseExternalLocation()
     }
 
     func fetchJobActivity() throws -> [JobActivityItem] {
