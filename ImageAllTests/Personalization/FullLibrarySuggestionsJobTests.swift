@@ -2015,6 +2015,16 @@ final class FullLibrarySuggestionsJobTests: XCTestCase {
             fixture.queue.fetchJob(id: jobID).payload
         )
         XCTAssertEqual(payload.sourceIDs, [photosSourceID])
+        let run = try XCTUnwrap(
+            GRDBTrainingRunRepository(database: fixture.database).fetch(jobID: jobID)
+        )
+        let summary = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(run.sampleSummaryJSON.utf8))
+                as? [String: Any]
+        )
+        XCTAssertEqual(summary["scopeKind"] as? String, "selectedSources")
+        XCTAssertEqual(summary["requestedSourceCount"] as? Int, 1)
+        XCTAssertEqual(summary["resolvedSourceCount"] as? Int, 1)
     }
 
     func testEnqueueFullLibrarySuggestionsCreatesAuditableFeatureKnnRun() throws {
@@ -2057,6 +2067,10 @@ final class FullLibrarySuggestionsJobTests: XCTestCase {
         )
         XCTAssertEqual(summary["positiveCount"] as? Int, payload.frozenPositiveSamples.count)
         XCTAssertEqual(summary["negativeCount"] as? Int, payload.frozenNegativeSamples.count)
+        XCTAssertEqual(summary["scopeKind"] as? String, "allActiveSources")
+        XCTAssertEqual(summary["requestedSourceCount"] as? Int, 0)
+        XCTAssertEqual(summary["resolvedSourceCount"] as? Int, payload.sourceIDs.count)
+        XCTAssertEqual((summary["snapshotRevision"] as? String)?.count, 64)
         XCTAssertNil(summary["path"])
         XCTAssertNil(summary["bookmark"])
     }

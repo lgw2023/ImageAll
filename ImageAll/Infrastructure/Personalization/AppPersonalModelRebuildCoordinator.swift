@@ -248,6 +248,9 @@ actor AppPersonalModelRebuildRuntime: AppPersonalModelRebuilding {
         })
         return try AppPersonalTrainingRunJSON.object([
             "scope": "resolvedSnapshot",
+            "scopeKind": "resolvedSnapshot",
+            "decisionSnapshotRevision":
+                AppPersonalTrainingSnapshotAudit.decisionRevision(snapshot),
             "tagCount": snapshot.personalTagIDs.count,
             "sampleCount": samples.count,
             "perTag": tags,
@@ -508,13 +511,17 @@ actor AppPersonalModelRebuildCoordinator {
         report: AppPersonalAdamWTrainingReport
     ) throws -> String {
         try AppPersonalTrainingRunJSON.object([
+            "schemaVersion": 1,
             "epochsRun": report.epochsRun,
-            "bestValidationLoss": report.bestValidationLoss,
+            "bestEvaluationLoss": report.bestEvaluationLoss,
             "stoppedEarly": report.stoppedEarly,
+            "evaluationSplit": report.evaluationSplit.rawValue,
+            "trainSampleCount": report.trainSampleCount,
+            "validationSampleCount": report.validationSampleCount,
             "epochs": report.epochMetrics.map {
                 [
                     "epoch": $0.epoch,
-                    "validationLoss": $0.validationLoss,
+                    "evaluationLoss": $0.evaluationLoss,
                 ] as [String: Any]
             },
         ])
@@ -525,19 +532,7 @@ actor AppPersonalModelRebuildCoordinator {
     }
 
     private static func decisionSnapshotRevision(_ snapshot: PersonalTrainingSnapshot) -> String {
-        let decisions = snapshot.decisions.sorted { lhs, rhs in
-            decisionKey(lhs) < decisionKey(rhs)
-        }
-        let lines = ["catalog|\(snapshot.catalogScopeID)"]
-            + snapshot.personalTagIDs.map { "tag|\($0.uuidString.lowercased())" }.sorted()
-            + decisions.map {
-                "decision|\($0.assetID.uuidString.lowercased())|\($0.contentRevision)|\($0.tagID.uuidString.lowercased())|\($0.state.rawValue)"
-            }
-        return sha256(lines.joined(separator: "\n"))
-    }
-
-    private static func decisionKey(_ decision: PersonalTrainingDecision) -> String {
-        "\(decision.tagID.uuidString.lowercased())|\(decision.assetID.uuidString.lowercased())|\(decision.contentRevision)|\(decision.state.rawValue)"
+        AppPersonalTrainingSnapshotAudit.decisionRevision(snapshot)
     }
 
     private static func sha256(_ value: String) -> String {
@@ -557,6 +552,26 @@ actor AppPersonalModelRebuildCoordinator {
                 ? lhs.contentRevision < rhs.contentRevision
                 : lhsID < rhsID
         }
+    }
+}
+
+private enum AppPersonalTrainingSnapshotAudit {
+    static func decisionRevision(_ snapshot: PersonalTrainingSnapshot) -> String {
+        let decisions = snapshot.decisions.sorted { lhs, rhs in
+            decisionKey(lhs) < decisionKey(rhs)
+        }
+        let lines = ["catalog|\(snapshot.catalogScopeID)"]
+            + snapshot.personalTagIDs.map { "tag|\($0.uuidString.lowercased())" }.sorted()
+            + decisions.map {
+                "decision|\($0.assetID.uuidString.lowercased())|\($0.contentRevision)|\($0.tagID.uuidString.lowercased())|\($0.state.rawValue)"
+            }
+        return SHA256.hash(data: Data(lines.joined(separator: "\n").utf8))
+            .map { String(format: "%02x", $0) }
+            .joined()
+    }
+
+    private static func decisionKey(_ decision: PersonalTrainingDecision) -> String {
+        "\(decision.tagID.uuidString.lowercased())|\(decision.assetID.uuidString.lowercased())|\(decision.contentRevision)|\(decision.state.rawValue)"
     }
 }
 

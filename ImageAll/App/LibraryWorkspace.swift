@@ -445,9 +445,23 @@ final class LibraryWorkspaceModel: ObservableObject {
     @Published private(set) var jobActivityActionInFlightIDs: Set<UUID> = []
     @Published private(set) var sourceOrderRevision = 0
     @Published private(set) var isOpeningOriginal = false
+    @Published private(set) var trainingRuns: [TrainingRunRecord] = []
+    @Published private(set) var trainingSlots: [TrainingWorkspaceSlot] =
+        TrainingRunMethod.allCases.map {
+            TrainingWorkspaceSlot(
+                method: $0,
+                isPublished: false,
+                publishedRunID: nil,
+                artifactRef: nil
+            )
+        }
+    @Published private(set) var trainingRunMethodFilter: TrainingRunMethod?
+    @Published private(set) var selectedTrainingRunID: UUID?
+    @Published private(set) var isRefreshingTrainingWorkspace = false
 
     fileprivate let review: any PersonalizationReviewPort
     private let service: any LibraryWorkspacePort
+    private let trainingWorkspace: (any TrainingWorkspacePort)?
     private let localModelSuggestions: LocalModelSuggestionRuntime?
     private let appPersonalModelRebuilder: (any AppPersonalModelRebuilding)?
     private let appPersonalAdamWModelRebuilder: (any AppPersonalModelRebuilding)?
@@ -482,6 +496,7 @@ final class LibraryWorkspaceModel: ObservableObject {
     init(
         service: any LibraryWorkspacePort,
         review: any PersonalizationReviewPort = EmptyPersonalizationReviewPort(),
+        trainingWorkspace: (any TrainingWorkspacePort)? = nil,
         localModelSuggestions: LocalModelSuggestionRuntime? = nil,
         appPersonalModelRebuilder: (any AppPersonalModelRebuilding)? = nil,
         appPersonalAdamWModelRebuilder: (any AppPersonalModelRebuilding)? = nil,
@@ -498,6 +513,7 @@ final class LibraryWorkspaceModel: ObservableObject {
     ) {
         self.service = service
         self.review = review
+        self.trainingWorkspace = trainingWorkspace
         self.localModelSuggestions = localModelSuggestions
         self.appPersonalModelRebuilder = appPersonalModelRebuilder
         self.appPersonalAdamWModelRebuilder = appPersonalAdamWModelRebuilder
@@ -515,6 +531,57 @@ final class LibraryWorkspaceModel: ObservableObject {
 
     var suggestionThresholdPortForSettings: (any SuggestionThresholdPort)? {
         suggestionThresholds
+    }
+
+    var selectedTrainingRun: TrainingRunRecord? {
+        guard let selectedTrainingRunID else { return nil }
+        return trainingRuns.first(where: { $0.id == selectedTrainingRunID })
+    }
+
+    var supportsTrainingWorkspace: Bool {
+        trainingWorkspace != nil
+    }
+
+    func refreshTrainingWorkspace() async {
+        guard let trainingWorkspace, !isRefreshingTrainingWorkspace else { return }
+        isRefreshingTrainingWorkspace = true
+        defer { isRefreshingTrainingWorkspace = false }
+        let method = trainingRunMethodFilter
+        do {
+            let snapshot = try await Self.offMain {
+                try trainingWorkspace.snapshot(method: method, limit: 200)
+            }
+            trainingRuns = snapshot.runs
+            trainingSlots = snapshot.slots
+            if let selectedTrainingRunID,
+               trainingRuns.contains(where: { $0.id == selectedTrainingRunID })
+            {
+                return
+            }
+            selectedTrainingRunID = trainingRuns.first?.id
+        } catch {
+            trainingRuns = []
+            trainingSlots = TrainingRunMethod.allCases.map {
+                TrainingWorkspaceSlot(
+                    method: $0,
+                    isPublished: false,
+                    publishedRunID: nil,
+                    artifactRef: nil
+                )
+            }
+            selectedTrainingRunID = nil
+        }
+    }
+
+    func setTrainingRunMethodFilter(_ method: TrainingRunMethod?) async {
+        guard trainingRunMethodFilter != method else { return }
+        trainingRunMethodFilter = method
+        await refreshTrainingWorkspace()
+    }
+
+    func selectTrainingRun(_ id: UUID?) {
+        guard id == nil || trainingRuns.contains(where: { $0.id == id }) else { return }
+        selectedTrainingRunID = id
     }
 
     var orderedSources: [LibrarySourceSummary] {
@@ -2674,6 +2741,7 @@ final class LibraryWorkspaceModel: ObservableObject {
                 ? .personalAdamWRebuildFailed
                 : .personalModelRebuildFailed
         }
+        await refreshTrainingWorkspace()
     }
 
 
@@ -4070,6 +4138,7 @@ extension LibraryWorkspaceModel {
                 }
                 startPersonalizationRunnerIfNeeded()
                 await refreshReviewState()
+                await refreshTrainingWorkspace()
                 return true
             } catch let error as PersonalizationReviewError {
                 notice = reviewNotice(for: error)
@@ -4113,6 +4182,7 @@ extension LibraryWorkspaceModel {
         let worker = PersonalizationSuggestionRunner.startLoop(review: reviewPort) { [weak self] in
             guard let self else { return }
             await self.refreshReviewState()
+            await self.refreshTrainingWorkspace()
             if case let .tagQueue(tagID, _) = self.reviewMode {
                 await self.loadReviewQueueFirstPage(tagID: tagID)
             }
@@ -4319,6 +4389,7 @@ private enum LibrarySidebarSelection: Hashable {
     case all
     case untagged
     case reviewSuggestions
+    case trainingWorkspace
     case source(UUID)
 }
 
@@ -4463,7 +4534,7 @@ struct LibraryWorkspaceView: View {
             keyboardEnabledContent
         }
         .inspector(isPresented: inspectorVisibility) {
-            inspector
+            workspaceInspector
                 .inspectorColumnWidth(min: 240, ideal: 300, max: 380)
         }
         .frame(minWidth: 640, minHeight: 560)
@@ -4774,7 +4845,26 @@ struct LibraryWorkspaceView: View {
         }
     }
 
+    @ViewBuilder
+    private var workspaceInspector: some View {
+        if selection == .trainingWorkspace {
+            TrainingWorkspaceInspectorView(model: model)
+        } else {
+            inspector
+        }
+    }
+
+    @ViewBuilder
     private var keyboardEnabledContent: some View {
+        if selection == .trainingWorkspace {
+            content
+                .navigationTitle("训练工程")
+        } else {
+            libraryKeyboardEnabledContent
+        }
+    }
+
+    private var libraryKeyboardEnabledContent: some View {
         content
             .navigationTitle("全部照片")
             .focusable()
@@ -5023,6 +5113,9 @@ struct LibraryWorkspaceView: View {
                     await model.setTagPresence(.untagged)
                 case .reviewSuggestions:
                     await model.enterReviewOverview()
+                case .trainingWorkspace:
+                    await model.exitReviewMode()
+                    await model.refreshTrainingWorkspace()
                 case let .source(sourceID):
                     await model.exitReviewMode()
                     await model.setTagPresence(.any)
@@ -5280,6 +5373,8 @@ struct LibraryWorkspaceView: View {
                     }
                 }
                 .tag(LibrarySidebarSelection.reviewSuggestions)
+                Label("训练工程", systemImage: "hammer")
+                    .tag(LibrarySidebarSelection.trainingWorkspace)
             }
             Section("来源") {
                 ForEach(orderedSources) { source in
@@ -5607,6 +5702,20 @@ struct LibraryWorkspaceView: View {
 
     @ViewBuilder
     private var content: some View {
+        if selection == .trainingWorkspace {
+            TrainingWorkspaceView(
+                model: model,
+                onReturnToLibrary: {
+                    selection = .all
+                }
+            )
+        } else {
+            libraryContent
+        }
+    }
+
+    @ViewBuilder
+    private var libraryContent: some View {
         switch model.phase {
         case .loading:
             ProgressView("正在打开图库…")

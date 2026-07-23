@@ -204,6 +204,7 @@
 		JJ0000010000000000000001 /* LibraryWorkspacePort.swift in Sources */ = {isa = PBXBuildFile; fileRef = JJ0001010000000000000001 /* LibraryWorkspacePort.swift */; };
 		JJ0000010000000000000002 /* LibraryWorkspace.swift in Sources */ = {isa = PBXBuildFile; fileRef = JJ0001010000000000000002 /* LibraryWorkspace.swift */; };
 		PP0000010000000000000001 /* LibraryGridMarqueeSelection.swift in Sources */ = {isa = PBXBuildFile; fileRef = PP0001010000000000000001 /* LibraryGridMarqueeSelection.swift */; };
+		A40000010000000000000001 /* TrainingWorkspaceUI.swift in Sources */ = {isa = PBXBuildFile; fileRef = A40001010000000000000001 /* TrainingWorkspaceUI.swift */; };
 		JJ0000010000000000000003 /* ProductionLibraryWorkspaceService.swift in Sources */ = {isa = PBXBuildFile; fileRef = JJ0001010000000000000003 /* ProductionLibraryWorkspaceService.swift */; };
 		KK0000010000000000000101 /* PersonalizationPersistenceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = KK0001010000000000000101 /* PersonalizationPersistenceTests.swift */; };
 		KK0000010000000000000001 /* V004AddPersonalizationMigration.swift in Sources */ = {isa = PBXBuildFile; fileRef = KK0001010000000000000001 /* V004AddPersonalizationMigration.swift */; };
@@ -468,6 +469,7 @@
 		JJ0001010000000000000001 /* LibraryWorkspacePort.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryWorkspacePort.swift; sourceTree = "<group>"; };
 		JJ0001010000000000000002 /* LibraryWorkspace.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryWorkspace.swift; sourceTree = "<group>"; };
 		PP0001010000000000000001 /* LibraryGridMarqueeSelection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryGridMarqueeSelection.swift; sourceTree = "<group>"; };
+		A40001010000000000000001 /* TrainingWorkspaceUI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrainingWorkspaceUI.swift; sourceTree = "<group>"; };
 		JJ0001010000000000000003 /* ProductionLibraryWorkspaceService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProductionLibraryWorkspaceService.swift; sourceTree = "<group>"; };
 		KK0001010000000000000101 /* PersonalizationPersistenceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersonalizationPersistenceTests.swift; sourceTree = "<group>"; };
 		KK0001010000000000000001 /* V004AddPersonalizationMigration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = V004AddPersonalizationMigration.swift; sourceTree = "<group>"; };
@@ -665,6 +667,7 @@
 				JJ0001010000000000000002 /* LibraryWorkspace.swift */,
 				PP0001010000000000000001 /* LibraryGridMarqueeSelection.swift */,
 				NN0001010000000000000008 /* PersonalizationReviewUI.swift */,
+				A40001010000000000000001 /* TrainingWorkspaceUI.swift */,
 				AA0006010000000000000007 /* CompositionRoot */,
 			);
 			path = App;
@@ -1295,6 +1298,7 @@
 				AA0000010000000000000002 /* RootView.swift in Sources */,
 				JJ0000010000000000000002 /* LibraryWorkspace.swift in Sources */,
 				PP0000010000000000000001 /* LibraryGridMarqueeSelection.swift in Sources */,
+				A40000010000000000000001 /* TrainingWorkspaceUI.swift in Sources */,
 				AA0000010000000000000003 /* CompositionRoot.swift in Sources */,
 				AA0000010000000000000006 /* CatalogStartupModel.swift in Sources */,
 				AA0000010000000000000004 /* CatalogStartupState.swift in Sources */,

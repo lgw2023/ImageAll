@@ -36,9 +36,70 @@ final class AppPersonalAdamWLinearHeadTests: XCTestCase {
         XCTAssertGreaterThan(report.epochsRun, 1)
         XCTAssertEqual(report.epochMetrics.count, report.epochsRun)
         XCTAssertEqual(report.epochMetrics.map(\.epoch), Array(1...report.epochsRun))
-        XCTAssertTrue(report.epochMetrics.allSatisfy { $0.validationLoss.isFinite })
+        XCTAssertTrue(report.epochMetrics.allSatisfy { $0.evaluationLoss.isFinite })
+        XCTAssertEqual(report.evaluationSplit, .trainFallback)
+        XCTAssertEqual(report.trainSampleCount, 4)
+        XCTAssertEqual(report.validationSampleCount, 0)
         XCTAssertEqual(suggestions.first?.tagID, firstTagID)
         XCTAssertTrue(suggestions.allSatisfy { $0.score.isFinite && $0.score > 0 })
+    }
+
+    func testAdamWReportIdentifiesValidationEvaluationSplit() throws {
+        let firstTagID = UUID(uuidString: "10000000-0000-0000-0000-000000000001")!
+        let secondTagID = UUID(uuidString: "20000000-0000-0000-0000-000000000002")!
+        let encoderIdentity = makeEncoderIdentity()
+        let base = makeSnapshot(
+            firstTagID: firstTagID,
+            secondTagID: secondTagID,
+            encoderIdentity: encoderIdentity
+        )
+        let extraAssetIDs = [
+            UUID(uuidString: "70000000-0000-0000-0000-000000000007")!,
+            UUID(uuidString: "80000000-0000-0000-0000-000000000008")!,
+        ]
+        let snapshot = PersonalModelRebuildSnapshot(
+            catalogScopeID: base.catalogScopeID,
+            decisionSnapshotRevision: base.decisionSnapshotRevision,
+            encoder: base.encoder,
+            personalTagIDs: base.personalTagIDs,
+            labelVocabularyRevision: base.labelVocabularyRevision,
+            embeddings: base.embeddings + [
+                PersonalTrainingEmbeddingRow(
+                    assetID: extraAssetIDs[0],
+                    contentRevision: 1,
+                    values: embedding(first: 1.2, second: 0)
+                ),
+                PersonalTrainingEmbeddingRow(
+                    assetID: extraAssetIDs[1],
+                    contentRevision: 1,
+                    values: embedding(first: 0, second: 1.2)
+                ),
+            ],
+            decisions: base.decisions + [
+                PersonalTrainingDecision(
+                    assetID: extraAssetIDs[0],
+                    contentRevision: 1,
+                    tagID: firstTagID,
+                    state: .manualAccepted
+                ),
+                PersonalTrainingDecision(
+                    assetID: extraAssetIDs[1],
+                    contentRevision: 1,
+                    tagID: secondTagID,
+                    state: .manualAccepted
+                ),
+            ]
+        )
+
+        let report = try AppPersonalAdamWLinearHeadTrainer.train(
+            snapshot: snapshot,
+            encoderIdentity: encoderIdentity
+        ).1
+
+        XCTAssertEqual(report.evaluationSplit, .validation)
+        XCTAssertEqual(report.trainSampleCount, 5)
+        XCTAssertEqual(report.validationSampleCount, 1)
+        XCTAssertTrue(report.epochMetrics.allSatisfy { $0.evaluationLoss.isFinite })
     }
 
     func testAdamWTrainingIsDeterministicForFixedSeed() throws {

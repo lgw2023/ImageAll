@@ -26,15 +26,23 @@ struct AppPersonalAdamWTrainingConfig: Equatable, Sendable {
     )
 }
 
+enum AppPersonalAdamWEvaluationSplit: String, Equatable, Sendable {
+    case validation
+    case trainFallback
+}
+
 struct AppPersonalAdamWEpochMetric: Equatable, Sendable {
     let epoch: Int
-    let validationLoss: Float
+    let evaluationLoss: Float
 }
 
 struct AppPersonalAdamWTrainingReport: Equatable, Sendable {
     let epochsRun: Int
-    let bestValidationLoss: Float
+    let bestEvaluationLoss: Float
     let stoppedEarly: Bool
+    let evaluationSplit: AppPersonalAdamWEvaluationSplit
+    let trainSampleCount: Int
+    let validationSampleCount: Int
     let epochMetrics: [AppPersonalAdamWEpochMetric]
 }
 
@@ -93,7 +101,7 @@ enum AppPersonalAdamWLinearHeadTrainer {
         var moment1 = [Float](repeating: 0, count: parameters.count)
         var moment2 = [Float](repeating: 0, count: parameters.count)
         var bestParameters = parameters
-        var bestValidationLoss = Float.greatestFiniteMagnitude
+        var bestEvaluationLoss = Float.greatestFiniteMagnitude
         var epochsWithoutImprovement = 0
         var epochsRun = 0
         var stoppedEarly = false
@@ -111,7 +119,7 @@ enum AppPersonalAdamWLinearHeadTrainer {
                 step: epoch,
                 config: config
             )
-            let validationLoss = meanBCE(
+            let evaluationLoss = meanBCE(
                 samples: split.validation.isEmpty ? split.train : split.validation,
                 tagCount: snapshot.personalTagIDs.count,
                 width: width,
@@ -120,11 +128,11 @@ enum AppPersonalAdamWLinearHeadTrainer {
             epochMetrics.append(
                 AppPersonalAdamWEpochMetric(
                     epoch: epoch,
-                    validationLoss: validationLoss
+                    evaluationLoss: evaluationLoss
                 )
             )
-            if validationLoss + 1e-7 < bestValidationLoss {
-                bestValidationLoss = validationLoss
+            if evaluationLoss + 1e-7 < bestEvaluationLoss {
+                bestEvaluationLoss = evaluationLoss
                 bestParameters = parameters
                 epochsWithoutImprovement = 0
             } else {
@@ -156,8 +164,11 @@ enum AppPersonalAdamWLinearHeadTrainer {
         let artifact = AppPersonalLinearHeadArtifact(encodedData: try encoder.encode(record))
         let report = AppPersonalAdamWTrainingReport(
             epochsRun: epochsRun,
-            bestValidationLoss: bestValidationLoss,
+            bestEvaluationLoss: bestEvaluationLoss,
             stoppedEarly: stoppedEarly,
+            evaluationSplit: split.validation.isEmpty ? .trainFallback : .validation,
+            trainSampleCount: split.train.count,
+            validationSampleCount: split.validation.count,
             epochMetrics: epochMetrics
         )
         return (artifact, report)

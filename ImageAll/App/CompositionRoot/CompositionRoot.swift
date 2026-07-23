@@ -259,6 +259,9 @@ struct CompositionRoot {
         return LibraryWorkspaceModel(
             service: service,
             review: personalizationReview,
+            trainingWorkspace: GRDBTrainingWorkspaceRepository(
+                database: runtime.database
+            ),
             localModelSuggestions: localModelSuggestions,
             appPersonalModelRebuilder: appPersonalModelRebuilder,
             appPersonalAdamWModelRebuilder: appPersonalAdamWModelRebuilder,

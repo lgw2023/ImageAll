@@ -353,6 +353,98 @@ final class TrainingWorkspaceSchemaTests: XCTestCase {
         XCTAssertTrue(try runs.list(method: .featureKnn).isEmpty)
     }
 
+    func testTrainingWorkspaceSnapshotFiltersRunsAndReportsThreePublishedSlots() throws {
+        let database = try CatalogDatabase.open(at: makeTempDatabaseURL())
+        let scopeID = try database.catalogScopeID()
+        let tags = GRDBTagCatalogRepository(database: database)
+        let tag = try tags.createTag(
+            rawName: "Workspace",
+            timestampMs: DatabaseTestSupport.timestampMs
+        )
+        let runs = GRDBTrainingRunRepository(database: database)
+        let featureRun = try insertSucceededRun(
+            runs: runs,
+            method: .featureKnn,
+            createdAtMs: 100,
+            scopeID: scopeID,
+            artifactRef: "tag_model/\(tag.id.uuidString.lowercased())/1"
+        )
+        let centroidRun = try insertSucceededRun(
+            runs: runs,
+            method: .personalCentroid,
+            createdAtMs: 300,
+            scopeID: scopeID,
+            artifactRef: "PersonalModels/LinearHead/v1/objects/centroid.json"
+        )
+        let adamWRun = try insertSucceededRun(
+            runs: runs,
+            method: .personalAdamW,
+            createdAtMs: 200,
+            scopeID: scopeID,
+            artifactRef: "PersonalModels/AdamWHead/v1/objects/adamw.json"
+        )
+        try database.pool.write { db in
+            try db.execute(
+                sql: """
+                INSERT INTO tag_model_revision (
+                    tag_id, revision, provider, request_revision, preprocessing_revision,
+                    threshold, positive_count, negative_count, neighbor_count,
+                    sample_budget_per_role, created_at_ms
+                ) VALUES (?, 1, 'vision-feature-print', 1, 1, 0, 2, 2, 2, 12, 100)
+                """,
+                arguments: [tag.id.uuidString.lowercased()]
+            )
+            try db.execute(
+                sql: """
+                INSERT INTO tag_model (tag_id, current_revision, updated_at_ms)
+                VALUES (?, 1, 100)
+                """,
+                arguments: [tag.id.uuidString.lowercased()]
+            )
+        }
+        let review = GRDBPersonalizationReviewRepository(database: database)
+        try review.activatePersonalSuggestionBundle(
+            personalCapability(
+                method: .personalCentroid,
+                scopeID: scopeID,
+                tagID: tag.id,
+                revision: "centroid-workspace",
+                sha: String(repeating: "b", count: 64)
+            ),
+            activatedAtMs: 300,
+            publishedRunID: centroidRun
+        )
+        try review.activatePersonalSuggestionBundle(
+            personalCapability(
+                method: .personalAdamW,
+                scopeID: scopeID,
+                tagID: tag.id,
+                revision: "adamw-workspace",
+                sha: String(repeating: "c", count: 64)
+            ),
+            activatedAtMs: 200,
+            publishedRunID: adamWRun
+        )
+
+        let workspace = GRDBTrainingWorkspaceRepository(database: database)
+        let snapshot = try workspace.snapshot(method: nil, limit: 50)
+
+        XCTAssertEqual(snapshot.runs.map(\.id), [centroidRun, adamWRun, featureRun])
+        XCTAssertEqual(
+            snapshot.slots.map(\.method),
+            [.featureKnn, .personalCentroid, .personalAdamW]
+        )
+        XCTAssertTrue(snapshot.slots.allSatisfy(\.isPublished))
+        XCTAssertEqual(
+            snapshot.slots.first(where: { $0.method == .personalCentroid })?.publishedRunID,
+            centroidRun
+        )
+        XCTAssertEqual(
+            try workspace.snapshot(method: .personalAdamW, limit: 50).runs.map(\.id),
+            [adamWRun]
+        )
+    }
+
     private func makePublishedPersonalSlotsFixture() throws -> PersonalSlotsFixture {
         let database = try CatalogDatabase.open(at: makeTempDatabaseURL())
         let sourceID = UUID()
@@ -402,6 +494,38 @@ final class TrainingWorkspaceSchemaTests: XCTestCase {
             createdAtMs: 13
         )
         return fixture
+    }
+
+    private func insertSucceededRun(
+        runs: GRDBTrainingRunRepository,
+        method: TrainingRunMethod,
+        createdAtMs: Int64,
+        scopeID: String,
+        artifactRef: String
+    ) throws -> UUID {
+        let id = UUID()
+        try runs.insert(
+            TrainingRunRecord(
+                id: id,
+                method: method,
+                state: .succeeded,
+                createdAtMs: createdAtMs,
+                startedAtMs: createdAtMs,
+                finishedAtMs: createdAtMs + 1,
+                catalogScopeID: scopeID,
+                jobID: nil,
+                sampleSummaryJSON: "{}",
+                sampleManifestSHA256: nil,
+                configJSON: "{}",
+                metricsJSON: "{}",
+                artifactKind: "testArtifact",
+                artifactRef: artifactRef,
+                artifactSHA256: String(repeating: "a", count: 64),
+                resultSummaryJSON: #"{"published":true}"#,
+                errorCode: nil
+            )
+        )
+        return id
     }
 
     private func personalCapability(

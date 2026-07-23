@@ -222,7 +222,7 @@ final class AppPersonalModelRebuildCoordinatorTests: XCTestCase {
             clock: FixedJobClock(nowMs: DatabaseTestSupport.timestampMs)
         )
 
-        _ = try await runtime.rebuild(
+        let adamWIdentity = try await runtime.rebuild(
             snapshotSource: FixedSnapshotSource(snapshot: snapshot)
         )
 
@@ -238,7 +238,20 @@ final class AppPersonalModelRebuildCoordinatorTests: XCTestCase {
         let epochs = try XCTUnwrap(metrics["epochs"] as? [[String: Any]])
         XCTAssertFalse(epochs.isEmpty)
         XCTAssertEqual(epochs.count, metrics["epochsRun"] as? Int)
-        XCTAssertTrue(epochs.allSatisfy { ($0["validationLoss"] as? Double)?.isFinite == true })
+        XCTAssertEqual(metrics["schemaVersion"] as? Int, 1)
+        XCTAssertEqual(metrics["evaluationSplit"] as? String, "trainFallback")
+        XCTAssertEqual(metrics["trainSampleCount"] as? Int, 2)
+        XCTAssertEqual(metrics["validationSampleCount"] as? Int, 0)
+        XCTAssertTrue(epochs.allSatisfy { ($0["evaluationLoss"] as? Double)?.isFinite == true })
+        let sampleSummary = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(run.sampleSummaryJSON.utf8))
+                as? [String: Any]
+        )
+        XCTAssertEqual(sampleSummary["scopeKind"] as? String, "resolvedSnapshot")
+        XCTAssertEqual(
+            sampleSummary["decisionSnapshotRevision"] as? String,
+            adamWIdentity.decisionSnapshotRevision
+        )
         XCTAssertEqual(
             try review.publishedRunID(method: .personalAdamW),
             run.id

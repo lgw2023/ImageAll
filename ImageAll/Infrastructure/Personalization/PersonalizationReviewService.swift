@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import GRDB
 
@@ -233,6 +234,9 @@ struct PersonalizationReviewService: PersonalizationReviewPort, Sendable {
             throw PersonalizationReviewError.activeJobConflict
         }
         let resolvedSourceIDs = try resolvePersonalizationSourceIDs(sourceIDs)
+        let allActiveSourceIDs = try resolvePersonalizationSourceIDs(nil)
+        let usesAllActiveSources = sourceIDs == nil
+            || Set(resolvedSourceIDs) == Set(allActiveSourceIDs)
         let modelRevision = try review.nextModelRevision(tagID: tagID)
         let jobID = UUID()
         let runID = UUID()
@@ -263,7 +267,13 @@ struct PersonalizationReviewService: PersonalizationReviewPort, Sendable {
                 "positiveCount": samples.positives.count,
                 "negativeCount": samples.negatives.count,
                 "sourceCount": resolvedSourceIDs.count,
-                "scope": "selectedSources",
+                "scope": usesAllActiveSources ? "allActiveSources" : "selectedSources",
+                "scopeKind": usesAllActiveSources ? "allActiveSources" : "selectedSources",
+                "requestedSourceCount": usesAllActiveSources ? 0 : (sourceIDs?.count ?? 0),
+                "resolvedSourceCount": resolvedSourceIDs.count,
+                "snapshotRevision": SHA256.hash(data: command.payload)
+                    .map { String(format: "%02x", $0) }
+                    .joined(),
             ]),
             sampleManifestSHA256: nil,
             configJSON: try TrainingRunJSON.encode([

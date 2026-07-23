@@ -194,20 +194,29 @@ struct GRDBTrainingRunRepository: Sendable {
     ) throws -> [TrainingRunRecord] {
         guard limit > 0 else { return [] }
         return try database.pool.read { db in
-            var sql = "SELECT * FROM training_run"
-            var arguments: [DatabaseValueConvertible] = []
-            if let method {
-                sql += " WHERE method = ?"
-                arguments.append(method.rawValue)
-            }
-            sql += " ORDER BY created_at_ms DESC, id ASC LIMIT ?"
-            arguments.append(limit)
-            return try Row.fetchAll(db, sql: sql, arguments: StatementArguments(arguments))
-                .compactMap(Self.map)
+            try list(method: method, limit: limit, on: db)
         }
     }
 
-    private static func map(_ row: Row) -> TrainingRunRecord? {
+    func list(
+        method: TrainingRunMethod?,
+        limit: Int,
+        on db: Database
+    ) throws -> [TrainingRunRecord] {
+        guard limit > 0 else { return [] }
+        var sql = "SELECT * FROM training_run"
+        var arguments: [DatabaseValueConvertible] = []
+        if let method {
+            sql += " WHERE method = ?"
+            arguments.append(method.rawValue)
+        }
+        sql += " ORDER BY created_at_ms DESC, id ASC LIMIT ?"
+        arguments.append(limit)
+        return try Row.fetchAll(db, sql: sql, arguments: StatementArguments(arguments))
+            .compactMap(Self.map)
+    }
+
+    fileprivate static func map(_ row: Row) -> TrainingRunRecord? {
         guard let id = UUID(uuidString: row["id"]),
               let method = TrainingRunMethod(rawValue: row["method"]),
               let state = TrainingRunState(rawValue: row["state"])
@@ -247,6 +256,87 @@ struct GRDBTrainingRunRepository: Sendable {
     private static func isLowercaseSHA256(_ value: String) -> Bool {
         value.count == 64 && value.allSatisfy {
             ("0" ... "9").contains(String($0)) || ("a" ... "f").contains(String($0))
+        }
+    }
+}
+
+struct GRDBTrainingWorkspaceRepository: TrainingWorkspacePort, Sendable {
+    let database: CatalogDatabase
+
+    func snapshot(
+        method: TrainingRunMethod?,
+        limit: Int = 200
+    ) throws -> TrainingWorkspaceSnapshot {
+        try database.pool.read { db in
+            let runs = try GRDBTrainingRunRepository(database: database)
+                .list(method: method, limit: limit, on: db)
+            let featurePublished = try Bool.fetchOne(
+                db,
+                sql: """
+                SELECT EXISTS(
+                    SELECT 1
+                    FROM tag_model m
+                    JOIN tag t ON t.id = m.tag_id AND t.state = 'active'
+                    JOIN tag_model_revision r
+                        ON r.tag_id = m.tag_id AND r.revision = m.current_revision
+                )
+                """
+            ) == true
+            let featureRow = try Row.fetchOne(
+                db,
+                sql: """
+                SELECT id, artifact_ref
+                FROM training_run
+                WHERE method = 'featureKnn'
+                    AND state = 'succeeded'
+                    AND artifact_ref IS NOT NULL
+                ORDER BY created_at_ms DESC, id ASC
+                LIMIT 1
+                """
+            )
+            var slots = [
+                TrainingWorkspaceSlot(
+                    method: .featureKnn,
+                    isPublished: featurePublished,
+                    publishedRunID: featurePublished
+                        ? featureRow
+                            .flatMap { row -> String? in row["id"] }
+                            .flatMap(UUID.init(uuidString:))
+                        : nil,
+                    artifactRef: featurePublished
+                        ? featureRow.flatMap { row -> String? in row["artifact_ref"] }
+                        : nil
+                ),
+            ]
+            for (method, personalMethod) in [
+                (TrainingRunMethod.personalCentroid, PersonalSuggestionMethod.personalCentroid),
+                (TrainingRunMethod.personalAdamW, PersonalSuggestionMethod.personalAdamW),
+            ] {
+                let row = try Row.fetchOne(
+                    db,
+                    sql: """
+                    SELECT r.id, r.artifact_ref
+                    FROM personal_suggestion_model m
+                    JOIN training_run r ON r.id = m.published_run_id
+                    WHERE m.method = ?
+                        AND r.method = ?
+                        AND r.state = 'succeeded'
+                        AND r.artifact_ref IS NOT NULL
+                    """,
+                    arguments: [personalMethod.rawValue, method.rawValue]
+                )
+                slots.append(
+                    TrainingWorkspaceSlot(
+                        method: method,
+                        isPublished: row != nil,
+                        publishedRunID: row
+                            .flatMap { value -> String? in value["id"] }
+                            .flatMap(UUID.init(uuidString:)),
+                        artifactRef: row.flatMap { value -> String? in value["artifact_ref"] }
+                    )
+                )
+            }
+            return TrainingWorkspaceSnapshot(runs: runs, slots: slots)
         }
     }
 }

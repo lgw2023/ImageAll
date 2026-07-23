@@ -1,4 +1,5 @@
 import Foundation
+import SwiftUI
 import XCTest
 @testable import ImageAll
 
@@ -4969,6 +4970,172 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertEqual(model.selectedAssetIDs, [next.assetID])
     }
 
+    func testTrainingWorkspaceRefreshFiltersRunsAndFallsBackSelection() async {
+        func run(
+            _ id: UUID,
+            method: TrainingRunMethod,
+            createdAtMs: Int64
+        ) -> TrainingRunRecord {
+            TrainingRunRecord(
+                id: id,
+                method: method,
+                state: .succeeded,
+                createdAtMs: createdAtMs,
+                startedAtMs: createdAtMs,
+                finishedAtMs: createdAtMs + 1,
+                catalogScopeID: "scope",
+                jobID: nil,
+                sampleSummaryJSON: "{}",
+                sampleManifestSHA256: nil,
+                configJSON: "{}",
+                metricsJSON: "{}",
+                artifactKind: "fixture",
+                artifactRef: "fixture/\(id.uuidString.lowercased())",
+                artifactSHA256: String(repeating: "a", count: 64),
+                resultSummaryJSON: #"{"published":true}"#,
+                errorCode: nil
+            )
+        }
+        let centroidID = UUID()
+        let adamWID = UUID()
+        let featureID = UUID()
+        let runs = [
+            run(centroidID, method: .personalCentroid, createdAtMs: 300),
+            run(adamWID, method: .personalAdamW, createdAtMs: 200),
+            run(featureID, method: .featureKnn, createdAtMs: 100),
+        ]
+        let slots = TrainingRunMethod.allCases.map {
+            TrainingWorkspaceSlot(
+                method: $0,
+                isPublished: $0 != .featureKnn,
+                publishedRunID: $0 == .personalCentroid ? centroidID : nil,
+                artifactRef: nil
+            )
+        }
+        let workspace = FakeTrainingWorkspacePort(runs: runs, slots: slots)
+        let model = LibraryWorkspaceModel(
+            service: FakeLibraryWorkspaceService(
+                connectedSource: LibrarySourceSummary(
+                    id: UUID(),
+                    displayName: "Fixture",
+                    state: .active
+                ),
+                reconciledItems: []
+            ),
+            trainingWorkspace: workspace
+        )
+
+        await model.refreshTrainingWorkspace()
+
+        XCTAssertEqual(model.trainingRuns.map(\.id), [centroidID, adamWID, featureID])
+        XCTAssertEqual(model.selectedTrainingRunID, centroidID)
+        XCTAssertEqual(model.trainingSlots, slots)
+
+        model.selectTrainingRun(featureID)
+        await model.setTrainingRunMethodFilter(.personalAdamW)
+
+        XCTAssertEqual(model.trainingRunMethodFilter, .personalAdamW)
+        XCTAssertEqual(model.trainingRuns.map(\.id), [adamWID])
+        XCTAssertEqual(model.selectedTrainingRunID, adamWID)
+        XCTAssertEqual(
+            workspace.requestedMethods,
+            [Optional<TrainingRunMethod>.none, .personalAdamW]
+        )
+    }
+
+    func testTrainingWorkspaceJSONPresentationRedactsProtectedLocatorFields() throws {
+        let rendered = try XCTUnwrap(
+            TrainingWorkspaceJSONPresentation.pretty(
+                #"{"scopeKind":"allActiveSources","path":"/protected/example.jpg","nested":{"bookmark":"secret","sampleCount":4}}"#
+            )
+        )
+
+        XCTAssertTrue(rendered.contains("scopeKind"))
+        XCTAssertTrue(rendered.contains("sampleCount"))
+        XCTAssertFalse(rendered.contains("/protected/example.jpg"))
+        XCTAssertFalse(rendered.lowercased().contains("bookmark"))
+        let legacyMetrics = #"{"bestValidationLoss":0.2,"epochs":[{"validationLoss":0.3}]}"#
+        XCTAssertTrue(
+            try XCTUnwrap(
+                TrainingWorkspaceJSONPresentation.metricsSummary(legacyMetrics)
+            ).contains("切分未记录")
+        )
+        XCTAssertFalse(
+            try XCTUnwrap(
+                TrainingWorkspaceJSONPresentation.prettyMetrics(legacyMetrics)
+            ).contains("validationLoss")
+        )
+        XCTAssertNil(
+            TrainingWorkspaceJSONPresentation.safeArtifactReference(
+                "/protected/model.json"
+            )
+        )
+        XCTAssertEqual(
+            TrainingWorkspaceJSONPresentation.safeArtifactReference(
+                "PersonalModels/AdamWHead/v1/objects/model.json"
+            ),
+            "PersonalModels/AdamWHead/v1/objects/model.json"
+        )
+    }
+
+    func testTrainingWorkspaceViewRendersSelectedRunDetailWithFixtureData() async {
+        let run = TrainingRunRecord(
+            id: UUID(),
+            method: .personalAdamW,
+            state: .succeeded,
+            createdAtMs: 100,
+            startedAtMs: 101,
+            finishedAtMs: 102,
+            catalogScopeID: "fixture-scope",
+            jobID: nil,
+            sampleSummaryJSON: #"{"scopeKind":"resolvedSnapshot","sampleCount":4}"#,
+            sampleManifestSHA256: nil,
+            configJSON: #"{"maxEpochs":10}"#,
+            metricsJSON: #"{"schemaVersion":1,"evaluationSplit":"trainFallback","trainSampleCount":4,"validationSampleCount":0,"epochs":[]}"#,
+            artifactKind: "personalAdamWHead",
+            artifactRef: "PersonalModels/AdamWHead/v1/objects/fixture.json",
+            artifactSHA256: String(repeating: "a", count: 64),
+            resultSummaryJSON: #"{"published":true}"#,
+            errorCode: nil
+        )
+        let workspace = FakeTrainingWorkspacePort(
+            runs: [run],
+            slots: TrainingRunMethod.allCases.map {
+                TrainingWorkspaceSlot(
+                    method: $0,
+                    isPublished: $0 == .personalAdamW,
+                    publishedRunID: $0 == .personalAdamW ? run.id : nil,
+                    artifactRef: nil
+                )
+            }
+        )
+        let model = LibraryWorkspaceModel(
+            service: FakeLibraryWorkspaceService(
+                connectedSource: LibrarySourceSummary(
+                    id: UUID(),
+                    displayName: "Fixture",
+                    state: .active
+                ),
+                reconciledItems: []
+            ),
+            trainingWorkspace: workspace
+        )
+        await model.refreshTrainingWorkspace()
+
+        let host = NSHostingView(
+            rootView: TrainingWorkspaceView(
+                model: model,
+                onReturnToLibrary: {}
+            )
+            .frame(width: 900, height: 650)
+        )
+        host.layoutSubtreeIfNeeded()
+
+        XCTAssertEqual(model.selectedTrainingRunID, run.id)
+        XCTAssertGreaterThan(host.fittingSize.width, 0)
+        XCTAssertGreaterThan(host.fittingSize.height, 0)
+    }
+
     func testReviewQueueGridNavigationMovesByRowsAndColumns() async {
         let sourceID = UUID()
         let tag = TagListItem(id: UUID(), displayName: "Family", state: .active)
@@ -6782,6 +6949,39 @@ private struct FakeStandardSuggestionReplacement: Equatable {
     let contentRevision: Int
     let suggestions: [LocalModelSuggestion]
     let expectedTarget: StandardModelSuggestionTarget
+}
+
+private final class FakeTrainingWorkspacePort: TrainingWorkspacePort, @unchecked Sendable {
+    private let lock = NSLock()
+    private let runs: [TrainingRunRecord]
+    private let slots: [TrainingWorkspaceSlot]
+    private var storedRequestedMethods: [TrainingRunMethod?] = []
+
+    init(runs: [TrainingRunRecord], slots: [TrainingWorkspaceSlot]) {
+        self.runs = runs
+        self.slots = slots
+    }
+
+    var requestedMethods: [TrainingRunMethod?] {
+        lock.withLock { storedRequestedMethods }
+    }
+
+    func snapshot(
+        method: TrainingRunMethod?,
+        limit: Int
+    ) throws -> TrainingWorkspaceSnapshot {
+        lock.withLock {
+            storedRequestedMethods.append(method)
+            return TrainingWorkspaceSnapshot(
+                runs: Array(
+                    runs
+                        .filter { method == nil || $0.method == method }
+                        .prefix(limit)
+                ),
+                slots: slots
+            )
+        }
+    }
 }
 
 private final class FakePersonalizationReviewPort: PersonalizationReviewPort, @unchecked Sendable {

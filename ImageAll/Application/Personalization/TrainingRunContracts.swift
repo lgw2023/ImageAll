@@ -62,3 +62,24 @@ struct TrainingRunRecord: Equatable, Sendable, Identifiable {
     let resultSummaryJSON: String
     let errorCode: String?
 }
+
+struct TrainingWorkspaceSlot: Equatable, Sendable, Identifiable {
+    let method: TrainingRunMethod
+    let isPublished: Bool
+    let publishedRunID: UUID?
+    let artifactRef: String?
+
+    var id: TrainingRunMethod { method }
+}
+
+struct TrainingWorkspaceSnapshot: Equatable, Sendable {
+    let runs: [TrainingRunRecord]
+    let slots: [TrainingWorkspaceSlot]
+}
+
+protocol TrainingWorkspacePort: Sendable {
+    func snapshot(
+        method: TrainingRunMethod?,
+        limit: Int
+    ) throws -> TrainingWorkspaceSnapshot
+}
