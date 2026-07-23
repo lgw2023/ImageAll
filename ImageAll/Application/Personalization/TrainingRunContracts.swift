@@ -8,12 +8,14 @@ enum PersonalSuggestionMethod: String, Equatable, Sendable, CaseIterable {
     static let linearHeadBundleID = "app.personal.linear-head.v1"
     static let adamWHeadBundleID = "app.personal.adamw-head.v1"
 
-    init(bundleID: String) {
+    init?(bundleID: String) {
         switch bundleID {
+        case Self.linearHeadBundleID:
+            self = .personalCentroid
         case Self.adamWHeadBundleID:
             self = .personalAdamW
         default:
-            self = .personalCentroid
+            return nil
         }
     }
 }

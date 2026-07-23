@@ -204,8 +204,8 @@ struct PersonalizationReviewService: PersonalizationReviewPort, Sendable {
         )
     }
 
-    func invalidatePersonalSuggestionBundle() throws {
-        try review.invalidatePersonalSuggestionBundle()
+    func invalidateAllPersonalSuggestionBundles() throws {
+        try review.invalidateAllPersonalSuggestionBundles()
     }
 
     func enqueueFullLibrarySuggestions(
@@ -588,37 +588,40 @@ struct PersonalizationReviewService: PersonalizationReviewPort, Sendable {
             }
             switch snapshot.state {
             case .completed:
+                var result = try TrainingRunJSON.decodeObject(run.resultSummaryJSON)
+                result["published"] = run.artifactRef != nil
+                result["partial"] = false
                 try runs.update(
                     id: run.id,
                     state: .succeeded,
                     finishedAtMs: clock.nowMs,
-                    resultSummaryJSON: try TrainingRunJSON.encode([
-                        "published": run.artifactRef != nil,
-                    ]),
+                    resultSummaryJSON: try TrainingRunJSON.encode(result),
                     on: db
                 )
             case .terminalFailed:
                 let errorCode = snapshot.lastErrorCode?.rawValue ?? "attemptsExhausted"
+                var result = try TrainingRunJSON.decodeObject(run.resultSummaryJSON)
+                result["published"] = run.artifactRef != nil
+                result["partial"] = run.artifactRef != nil
+                result["errorCode"] = errorCode
                 try runs.update(
                     id: run.id,
                     state: .failed,
                     finishedAtMs: clock.nowMs,
-                    resultSummaryJSON: try TrainingRunJSON.encode([
-                        "published": false,
-                        "errorCode": errorCode,
-                    ]),
+                    resultSummaryJSON: try TrainingRunJSON.encode(result),
                     errorCode: errorCode,
                     on: db
                 )
             case .cancelled:
+                var result = try TrainingRunJSON.decodeObject(run.resultSummaryJSON)
+                result["published"] = run.artifactRef != nil
+                result["partial"] = run.artifactRef != nil
+                result["cancelled"] = true
                 try runs.update(
                     id: run.id,
                     state: .cancelled,
                     finishedAtMs: clock.nowMs,
-                    resultSummaryJSON: try TrainingRunJSON.encode([
-                        "published": false,
-                        "cancelled": true,
-                    ]),
+                    resultSummaryJSON: try TrainingRunJSON.encode(result),
                     on: db
                 )
             case .pending, .running, .paused, .retryableFailed:

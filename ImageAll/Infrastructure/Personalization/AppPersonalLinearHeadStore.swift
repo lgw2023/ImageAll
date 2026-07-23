@@ -20,6 +20,11 @@ enum AppPersonalLinearHeadStoreError: Error, Equatable {
     case unavailable
 }
 
+struct AppPersonalLinearHeadStagedArtifact: Equatable, Sendable {
+    let identity: AppPersonalLinearHeadIdentity
+    let artifactSHA256: String
+}
+
 enum AppPersonalLinearHeadFamily: String, Sendable {
     case centroid
     case adamW
@@ -75,6 +80,30 @@ actor AppPersonalLinearHeadStore {
         return state
     }
 
+    func start(publishedArtifactSHA256: String?) -> AppPersonalLinearHeadCapability {
+        do {
+            guard let publishedArtifactSHA256 else {
+                try clearActivePointer()
+                activeModel = nil
+                state = .unavailable(.artifactMissing)
+                return state
+            }
+            return try activate(artifactSHA256: publishedArtifactSHA256)
+        } catch let error as AppPersonalLinearHeadStoreError {
+            activeModel = nil
+            state = switch error {
+            case .identityMismatch: .unavailable(.identityMismatch)
+            case .invalidCandidate, .persistenceFailed, .unavailable:
+                .unavailable(.artifactInvalid)
+            }
+            return state
+        } catch {
+            activeModel = nil
+            state = .unavailable(.artifactInvalid)
+            return state
+        }
+    }
+
     func capability() -> AppPersonalLinearHeadCapability {
         state
     }
@@ -106,6 +135,13 @@ actor AppPersonalLinearHeadStore {
     func publish(
         _ artifact: AppPersonalLinearHeadArtifact
     ) throws -> AppPersonalLinearHeadCapability {
+        let staged = try stage(artifact)
+        return try activate(artifactSHA256: staged.artifactSHA256)
+    }
+
+    func stage(
+        _ artifact: AppPersonalLinearHeadArtifact
+    ) throws -> AppPersonalLinearHeadStagedArtifact {
         let model: AppPersonalLinearHeadModel
         do {
             model = try AppPersonalLinearHeadModel(artifact: artifact)
@@ -136,6 +172,30 @@ actor AppPersonalLinearHeadStore {
             else {
                 throw AppPersonalLinearHeadStoreError.persistenceFailed
             }
+            return AppPersonalLinearHeadStagedArtifact(
+                identity: reloadedModel.identity,
+                artifactSHA256: artifactSHA256
+            )
+        } catch {
+            throw AppPersonalLinearHeadStoreError.persistenceFailed
+        }
+    }
+
+    func activate(artifactSHA256: String) throws -> AppPersonalLinearHeadCapability {
+        guard Self.isLowercaseSHA256(artifactSHA256) else {
+            throw AppPersonalLinearHeadStoreError.invalidCandidate
+        }
+        do {
+            try ensureStoreDirectories()
+            let artifactData = try readRegularFile(at: objectURL(artifactSHA256: artifactSHA256))
+            guard Self.sha256(artifactData) == artifactSHA256,
+                  let model = try? AppPersonalLinearHeadModel(
+                      artifact: AppPersonalLinearHeadArtifact(encodedData: artifactData)
+                  ),
+                  matchesFamily(model)
+            else {
+                throw AppPersonalLinearHeadStoreError.identityMismatch
+            }
             let pointer = ActivePointer(
                 schemaRevision: Self.pointerSchemaRevision,
                 artifactSHA256: artifactSHA256
@@ -147,17 +207,28 @@ actor AppPersonalLinearHeadStore {
             guard DerivedImageSecureIO.isRegularFile(at: activePointerURL) else {
                 throw AppPersonalLinearHeadStoreError.persistenceFailed
             }
+        } catch let error as AppPersonalLinearHeadStoreError {
+            throw error
         } catch {
             throw AppPersonalLinearHeadStoreError.persistenceFailed
         }
-
         let loaded = loadActive()
-        guard loaded.capability == .ready(model.identity) else {
+        guard case .ready = loaded.capability else {
             throw AppPersonalLinearHeadStoreError.persistenceFailed
         }
         activeModel = loaded.model
         state = loaded.capability
         return state
+    }
+
+    private func clearActivePointer() throws {
+        guard FileManager.default.fileExists(atPath: activePointerURL.path) else { return }
+        guard try requireRegularFileOrMissing(at: activePointerURL) else { return }
+        do {
+            try FileManager.default.removeItem(at: activePointerURL)
+        } catch {
+            throw AppPersonalLinearHeadStoreError.persistenceFailed
+        }
     }
 
     private func loadActive() -> (

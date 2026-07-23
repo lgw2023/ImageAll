@@ -252,7 +252,7 @@ protocol PersonalizationReviewPort: Sendable {
         suggestions: [LocalModelSuggestion],
         expectedTarget: StandardModelSuggestionTarget
     ) throws -> Int
-    func invalidatePersonalSuggestionBundle() throws
+    func invalidateAllPersonalSuggestionBundles() throws
     /// `sourceIDs == nil` freezes all active personalization sources at enqueue time.
     func enqueueFullLibrarySuggestions(
         tagID: UUID,
@@ -368,7 +368,7 @@ extension PersonalizationReviewPort {
         throw PersonalizationReviewError.persistenceFailure
     }
 
-    func invalidatePersonalSuggestionBundle() throws {
+    func invalidateAllPersonalSuggestionBundles() throws {
         throw PersonalizationReviewError.persistenceFailure
     }
 

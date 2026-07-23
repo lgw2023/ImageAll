@@ -45,6 +45,7 @@ actor AppPersonalModelRebuildRuntime: AppPersonalModelRebuilding {
     private let family: AppPersonalLinearHeadFamily
     private let database: CatalogDatabase?
     private let clock: any JobClock
+    private let beforeDatabasePublish: (@Sendable () throws -> Void)?
     private var isRebuilding = false
     private var activeCoordinator: AppPersonalModelRebuildCoordinator?
 
@@ -55,7 +56,8 @@ actor AppPersonalModelRebuildRuntime: AppPersonalModelRebuilding {
         applicationSupportDirectory: URL,
         family: AppPersonalLinearHeadFamily = .centroid,
         database: CatalogDatabase? = nil,
-        clock: any JobClock = SystemJobClock()
+        clock: any JobClock = SystemJobClock(),
+        beforeDatabasePublish: (@Sendable () throws -> Void)? = nil
     ) {
         self.expectedCatalogScopeID = expectedCatalogScopeID
         self.activationCoordinator = activationCoordinator
@@ -64,6 +66,7 @@ actor AppPersonalModelRebuildRuntime: AppPersonalModelRebuilding {
         self.family = family
         self.database = database
         self.clock = clock
+        self.beforeDatabasePublish = beforeDatabasePublish
     }
 
     func rebuild(
@@ -91,7 +94,6 @@ actor AppPersonalModelRebuildRuntime: AppPersonalModelRebuilding {
             expectedEncoderIdentity: identity,
             family: family
         )
-        _ = await store.start()
         let coordinator = AppPersonalModelRebuildCoordinator(
             expectedCatalogScopeID: expectedCatalogScopeID,
             encoderIdentity: identity,
@@ -108,7 +110,26 @@ actor AppPersonalModelRebuildRuntime: AppPersonalModelRebuilding {
         activeCoordinator = coordinator
         defer { activeCoordinator = nil }
         do {
-            let execution = try await coordinator.rebuildExecution()
+            if let database {
+                let review = GRDBPersonalizationReviewRepository(database: database)
+                let publishedArtifactSHA256 = try review.publishedArtifactSHA256(
+                    method: family.personalSuggestionMethod
+                )
+                if publishedArtifactSHA256 == nil,
+                   try review.usesLegacyActivePointer(method: family.personalSuggestionMethod)
+                {
+                    _ = await store.start()
+                } else {
+                    _ = await store.start(
+                        publishedArtifactSHA256: publishedArtifactSHA256
+                    )
+                }
+            } else {
+                _ = await store.start()
+            }
+            let execution = try await coordinator.rebuildExecution(
+                activateImmediately: database == nil
+            )
             if let database, let runID {
                 let finishedAtMs = clock.nowMs
                 let capability = AppPersonalSuggestionCapabilityMapper.capability(
@@ -121,6 +142,7 @@ actor AppPersonalModelRebuildRuntime: AppPersonalModelRebuilding {
                     snapshot: source
                 )
                 try await database.pool.write { db in
+                    try beforeDatabasePublish?()
                     try review.activatePersonalSuggestionBundle(
                         capability,
                         activatedAtMs: finishedAtMs,
@@ -139,6 +161,9 @@ actor AppPersonalModelRebuildRuntime: AppPersonalModelRebuilding {
                         on: db
                     )
                 }
+                _ = await store.start(
+                    publishedArtifactSHA256: execution.artifactSHA256
+                )
             }
             return execution.identity
         } catch {
@@ -348,12 +373,14 @@ actor AppPersonalModelRebuildCoordinator {
         try await rebuildExecution().identity
     }
 
-    func rebuildExecution() async throws -> AppPersonalModelRebuildExecution {
+    func rebuildExecution(
+        activateImmediately: Bool = true
+    ) async throws -> AppPersonalModelRebuildExecution {
         guard activeTask == nil else {
             throw AppPersonalModelRebuildError.alreadyRunning
         }
         let task = Task {
-            try await self.performRebuild()
+            try await self.performRebuild(activateImmediately: activateImmediately)
         }
         activeTask = task
         defer { activeTask = nil }
@@ -368,7 +395,9 @@ actor AppPersonalModelRebuildCoordinator {
         activeTask?.cancel()
     }
 
-    private func performRebuild() async throws -> AppPersonalModelRebuildExecution {
+    private func performRebuild(
+        activateImmediately: Bool
+    ) async throws -> AppPersonalModelRebuildExecution {
         try Task.checkCancellation()
         let source = try await snapshotSource.currentSnapshot()
         try Task.checkCancellation()
@@ -453,17 +482,25 @@ actor AppPersonalModelRebuildCoordinator {
         else {
             throw AppPersonalModelRebuildError.staleSnapshot
         }
-        let capability = try await store.publish(artifact)
-        guard case let .ready(identity) = capability else {
-            throw AppPersonalModelRebuildError.invalidSnapshot
+        let staged = try await store.stage(artifact)
+        let identity: AppPersonalLinearHeadIdentity
+        if activateImmediately {
+            let capability = try await store.activate(
+                artifactSHA256: staged.artifactSHA256
+            )
+            guard case let .ready(activeIdentity) = capability else {
+                throw AppPersonalModelRebuildError.invalidSnapshot
+            }
+            identity = activeIdentity
+        } else {
+            identity = staged.identity
         }
-        let artifactSHA256 = Self.sha256(artifact.encodedData)
         return AppPersonalModelRebuildExecution(
             identity: identity,
             metricsJSON: metricsJSON,
             artifactKind: family.artifactKind,
-            artifactRef: family.artifactRef(sha256: artifactSHA256),
-            artifactSHA256: artifactSHA256
+            artifactRef: family.artifactRef(sha256: staged.artifactSHA256),
+            artifactSHA256: staged.artifactSHA256
         )
     }
 
@@ -509,12 +546,6 @@ actor AppPersonalModelRebuildCoordinator {
             .joined()
     }
 
-    private static func sha256(_ value: Data) -> String {
-        SHA256.hash(data: value)
-            .map { String(format: "%02x", $0) }
-            .joined()
-    }
-
     private struct AssetRevision: Hashable {
         let assetID: UUID
         let contentRevision: Int
@@ -550,7 +581,14 @@ private enum AppPersonalTrainingRunJSON {
     }
 }
 
-private extension AppPersonalLinearHeadFamily {
+extension AppPersonalLinearHeadFamily {
+    var personalSuggestionMethod: PersonalSuggestionMethod {
+        switch self {
+        case .centroid: .personalCentroid
+        case .adamW: .personalAdamW
+        }
+    }
+
     var trainingRunMethod: TrainingRunMethod {
         switch self {
         case .centroid: .personalCentroid

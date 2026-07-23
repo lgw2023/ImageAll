@@ -5,18 +5,21 @@ actor AppPersonalTagLibrarySuggestionRuntime: AppPersonalTagLibrarySuggesting {
     private let activationCoordinator: AppModelActivationCoordinator
     private let applicationSupportDirectory: URL
     private let family: AppPersonalLinearHeadFamily
+    private let database: CatalogDatabase?
     private var isRunning = false
 
     init(
         expectedCatalogScopeID: String,
         activationCoordinator: AppModelActivationCoordinator,
         applicationSupportDirectory: URL,
-        family: AppPersonalLinearHeadFamily = .centroid
+        family: AppPersonalLinearHeadFamily = .centroid,
+        database: CatalogDatabase? = nil
     ) {
         self.expectedCatalogScopeID = expectedCatalogScopeID
         self.activationCoordinator = activationCoordinator
         self.applicationSupportDirectory = applicationSupportDirectory
         self.family = family
+        self.database = database
     }
 
     func suggest(
@@ -48,7 +51,25 @@ actor AppPersonalTagLibrarySuggestionRuntime: AppPersonalTagLibrarySuggesting {
             expectedEncoderIdentity: encoderIdentity,
             family: family
         )
-        guard case let .ready(identity) = await store.start() else {
+        let storeCapability: AppPersonalLinearHeadCapability
+        if let database {
+            let review = GRDBPersonalizationReviewRepository(database: database)
+            let artifactSHA256 = try review.publishedArtifactSHA256(
+                method: family.personalSuggestionMethod
+            )
+            if artifactSHA256 == nil,
+               try review.usesLegacyActivePointer(method: family.personalSuggestionMethod)
+            {
+                storeCapability = await store.start()
+            } else {
+                storeCapability = await store.start(
+                    publishedArtifactSHA256: artifactSHA256
+                )
+            }
+        } else {
+            storeCapability = await store.start()
+        }
+        guard case let .ready(identity) = storeCapability else {
             throw AppPersonalTagLibrarySuggestionError.personalUnavailable
         }
         guard identity.personalTagIDs.contains(tagID) else {

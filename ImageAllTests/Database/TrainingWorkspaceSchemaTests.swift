@@ -3,6 +3,10 @@ import XCTest
 @testable import ImageAll
 
 final class TrainingWorkspaceSchemaTests: XCTestCase {
+    func testUnknownPersonalBundleIDDoesNotDefaultToCentroid() {
+        XCTAssertNil(PersonalSuggestionMethod(bundleID: "app.personal.unknown.v1"))
+    }
+
     func testFreshDatabaseIncludesTrainingRunAndMultiSlotPersonalTables() throws {
         let url = try makeTempDatabaseURL()
         let database = try CatalogDatabase.open(at: url)
@@ -254,6 +258,56 @@ final class TrainingWorkspaceSchemaTests: XCTestCase {
         }
     }
 
+    func testRetrainingCentroidKeepsAdamWSlotAndPredictionUnchanged() throws {
+        let fixture = try makePublishedPersonalSlotsFixture()
+        let before = try personalMethodState(
+            fixture,
+            method: .personalAdamW
+        )
+        let centroidV2 = personalCapability(
+            method: .personalCentroid,
+            scopeID: try fixture.database.catalogScopeID(),
+            tagID: fixture.tagID,
+            revision: "centroid-v2",
+            sha: String(repeating: "d", count: 64)
+        )
+
+        try fixture.review.activatePersonalSuggestionBundle(
+            centroidV2,
+            activatedAtMs: 20
+        )
+
+        XCTAssertEqual(
+            try personalMethodState(fixture, method: .personalAdamW),
+            before
+        )
+    }
+
+    func testRetrainingAdamWKeepsCentroidSlotAndPredictionUnchanged() throws {
+        let fixture = try makePublishedPersonalSlotsFixture()
+        let before = try personalMethodState(
+            fixture,
+            method: .personalCentroid
+        )
+        let adamWV2 = personalCapability(
+            method: .personalAdamW,
+            scopeID: try fixture.database.catalogScopeID(),
+            tagID: fixture.tagID,
+            revision: "adamw-v2",
+            sha: String(repeating: "e", count: 64)
+        )
+
+        try fixture.review.activatePersonalSuggestionBundle(
+            adamWV2,
+            activatedAtMs: 21
+        )
+
+        XCTAssertEqual(
+            try personalMethodState(fixture, method: .personalCentroid),
+            before
+        )
+    }
+
     func testTrainingRunRoundTripPersistsMetricsJSON() throws {
         let url = try makeTempDatabaseURL()
         let database = try CatalogDatabase.open(at: url)
@@ -298,4 +352,149 @@ final class TrainingWorkspaceSchemaTests: XCTestCase {
         XCTAssertEqual(try runs.list(method: .personalAdamW).map(\.id), [runID])
         XCTAssertTrue(try runs.list(method: .featureKnn).isEmpty)
     }
+
+    private func makePublishedPersonalSlotsFixture() throws -> PersonalSlotsFixture {
+        let database = try CatalogDatabase.open(at: makeTempDatabaseURL())
+        let sourceID = UUID()
+        let assetID = UUID()
+        try DatabaseTestSupport.makeFolderSourceWithFileAsset(
+            repository: CatalogRepository(database: database),
+            sourceID: sourceID,
+            assetID: assetID
+        )
+        let tag = try GRDBTagCatalogRepository(database: database).createTag(
+            rawName: "Retrain Isolation",
+            timestampMs: DatabaseTestSupport.timestampMs
+        )
+        let fixture = PersonalSlotsFixture(
+            database: database,
+            review: GRDBPersonalizationReviewRepository(database: database),
+            assetID: assetID,
+            tagID: tag.id
+        )
+        let scopeID = try database.catalogScopeID()
+        let centroid = personalCapability(
+            method: .personalCentroid,
+            scopeID: scopeID,
+            tagID: tag.id,
+            revision: "centroid-v1",
+            sha: String(repeating: "b", count: 64)
+        )
+        let adamW = personalCapability(
+            method: .personalAdamW,
+            scopeID: scopeID,
+            tagID: tag.id,
+            revision: "adamw-v1",
+            sha: String(repeating: "c", count: 64)
+        )
+        try fixture.review.activatePersonalSuggestionBundle(centroid, activatedAtMs: 10)
+        _ = try fixture.review.replacePersonalSuggestions(
+            candidate: PersonalSuggestionCandidate(assetID: assetID, contentRevision: 1),
+            predictions: [PersonalSuggestionPrediction(tagID: tag.id, score: 0.8)],
+            expectedCapability: centroid,
+            createdAtMs: 11
+        )
+        try fixture.review.activatePersonalSuggestionBundle(adamW, activatedAtMs: 12)
+        _ = try fixture.review.replacePersonalSuggestions(
+            candidate: PersonalSuggestionCandidate(assetID: assetID, contentRevision: 1),
+            predictions: [PersonalSuggestionPrediction(tagID: tag.id, score: 0.7)],
+            expectedCapability: adamW,
+            createdAtMs: 13
+        )
+        return fixture
+    }
+
+    private func personalCapability(
+        method: PersonalSuggestionMethod,
+        scopeID: String,
+        tagID: UUID,
+        revision: String,
+        sha: String
+    ) -> PersonalModelSuggestionCapability {
+        PersonalModelSuggestionCapability(
+            target: PersonalModelSuggestionTarget(
+                catalogScopeID: scopeID,
+                bundleID: method == .personalCentroid
+                    ? PersonalSuggestionMethod.linearHeadBundleID
+                    : PersonalSuggestionMethod.adamWHeadBundleID,
+                bundleRevision: revision,
+                provider: "coreml",
+                modelID: "dino",
+                modelRevision: "1",
+                preprocessingRevision: "p1",
+                elementCount: 768,
+                labelVocabularyRevision: sha,
+                weightsSHA256: sha,
+                policyRevision: "\(revision)-policy"
+            ),
+            tagIDs: [tagID]
+        )
+    }
+
+    private func personalMethodState(
+        _ fixture: PersonalSlotsFixture,
+        method: PersonalSuggestionMethod
+    ) throws -> PersonalMethodState {
+        try fixture.database.pool.read { db in
+            let row = try XCTUnwrap(
+                Row.fetchOne(
+                    db,
+                    sql: """
+                    SELECT bundle_revision, weights_sha256, activated_at_ms, published_run_id
+                    FROM personal_suggestion_model
+                    WHERE method = ?
+                    """,
+                    arguments: [method.rawValue]
+                )
+            )
+            let tagCount = try Int.fetchOne(
+                db,
+                sql: "SELECT COUNT(*) FROM personal_suggestion_tag WHERE method = ?",
+                arguments: [method.rawValue]
+            ) ?? 0
+            let predictionCount = try Int.fetchOne(
+                db,
+                sql: "SELECT COUNT(*) FROM personal_prediction WHERE method = ?",
+                arguments: [method.rawValue]
+            ) ?? 0
+            let predictionScore = try Double.fetchOne(
+                db,
+                sql: """
+                SELECT score FROM personal_prediction
+                WHERE method = ? AND asset_id = ? AND tag_id = ?
+                """,
+                arguments: [
+                    method.rawValue,
+                    fixture.assetID.uuidString.lowercased(),
+                    fixture.tagID.uuidString.lowercased(),
+                ]
+            )
+            return PersonalMethodState(
+                bundleRevision: row["bundle_revision"],
+                weightsSHA256: row["weights_sha256"],
+                activatedAtMs: row["activated_at_ms"],
+                publishedRunID: row["published_run_id"],
+                tagCount: tagCount,
+                predictionCount: predictionCount,
+                predictionScore: predictionScore
+            )
+        }
+    }
+}
+
+private struct PersonalSlotsFixture {
+    let database: CatalogDatabase
+    let review: GRDBPersonalizationReviewRepository
+    let assetID: UUID
+    let tagID: UUID
+}
+
+private struct PersonalMethodState: Equatable {
+    let bundleRevision: String
+    let weightsSHA256: String
+    let activatedAtMs: Int64
+    let publishedRunID: String?
+    let tagCount: Int
+    let predictionCount: Int
+    let predictionScore: Double?
 }

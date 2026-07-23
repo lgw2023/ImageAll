@@ -795,7 +795,10 @@ final class PersonalizedSuggestionServiceTests: XCTestCase {
             let target = try XCTUnwrap(json["target"] as? [String: Any])
             XCTAssertEqual(target["track"] as? String, "personal")
             XCTAssertEqual(target["catalog_scope_id"] as? String, "catalog-fixture")
-            XCTAssertEqual(target["bundle_id"] as? String, "personal-fixture")
+            XCTAssertEqual(
+                target["bundle_id"] as? String,
+                PersonalSuggestionMethod.linearHeadBundleID
+            )
             XCTAssertEqual(target["provider"] as? String, "dinov2")
             XCTAssertEqual(target["model_id"] as? String, "facebook/dinov2-small")
             XCTAssertEqual(target["model_revision"] as? String, "model-v1")
@@ -816,6 +819,7 @@ final class PersonalizedSuggestionServiceTests: XCTestCase {
                 try personalSuggestionResponseData(
                     requestID: "request-fixture",
                     tagID: tagID,
+                    bundleID: PersonalSuggestionMethod.linearHeadBundleID,
                     bundleRevision: "bundle-v1"
                 )
             )
@@ -832,7 +836,7 @@ final class PersonalizedSuggestionServiceTests: XCTestCase {
             target: .personal(
                 PersonalModelSuggestionTarget(
                     catalogScopeID: "catalog-fixture",
-                    bundleID: "personal-fixture",
+                    bundleID: PersonalSuggestionMethod.linearHeadBundleID,
                     bundleRevision: "bundle-v1",
                     provider: "dinov2",
                     modelID: "facebook/dinov2-small",
@@ -946,7 +950,7 @@ final class PersonalizedSuggestionServiceTests: XCTestCase {
                 target: .personal(
                     PersonalModelSuggestionTarget(
                         catalogScopeID: "catalog-fixture",
-                        bundleID: "personal-fixture",
+                        bundleID: PersonalSuggestionMethod.linearHeadBundleID,
                         bundleRevision: "bundle-v1",
                         provider: "dinov2",
                         modelID: "facebook/dinov2-small",
@@ -1185,6 +1189,7 @@ private func requestBodyData(_ request: URLRequest) throws -> Data {
 private func personalSuggestionResponseData(
     requestID: String,
     tagID: UUID,
+    bundleID: String = "personal-fixture",
     bundleRevision: String
 ) throws -> Data {
     try JSONSerialization.data(
@@ -1197,7 +1202,7 @@ private func personalSuggestionResponseData(
                 "score": 1.25,
                 "recommended_state": "suggested",
                 "catalog_scope_id": "catalog-fixture",
-                "bundle_id": "personal-fixture",
+                "bundle_id": bundleID,
                 "bundle_revision": bundleRevision,
                 "provider": "dinov2",
                 "model_id": "facebook/dinov2-small",

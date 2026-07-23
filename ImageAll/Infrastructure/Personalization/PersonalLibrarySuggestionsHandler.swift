@@ -440,7 +440,7 @@ private extension PersonalLibrarySuggestionsHandler {
                 leaseDurationMs: leaseDurationMs
             )
         ) { db in
-            try review.invalidatePersonalSuggestionBundle(on: db)
+            try review.invalidateAllPersonalSuggestionBundles(on: db)
         }
         return settledResult(snapshot: snapshot)
     }

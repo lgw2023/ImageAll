@@ -196,19 +196,22 @@ struct CompositionRoot {
             appPersonalSampleSuggester = AppPersonalSampleSuggestionRuntime(
                 expectedCatalogScopeID: catalogScopeID,
                 activationCoordinator: modelActivationCoordinator,
-                applicationSupportDirectory: runtime.paths.applicationSupportDirectory
+                applicationSupportDirectory: runtime.paths.applicationSupportDirectory,
+                database: runtime.database
             )
             appPersonalTagLibrarySuggester = AppPersonalTagLibrarySuggestionRuntime(
                 expectedCatalogScopeID: catalogScopeID,
                 activationCoordinator: modelActivationCoordinator,
                 applicationSupportDirectory: runtime.paths.applicationSupportDirectory,
-                family: .centroid
+                family: .centroid,
+                database: runtime.database
             )
             appPersonalAdamWTagLibrarySuggester = AppPersonalTagLibrarySuggestionRuntime(
                 expectedCatalogScopeID: catalogScopeID,
                 activationCoordinator: modelActivationCoordinator,
                 applicationSupportDirectory: runtime.paths.applicationSupportDirectory,
-                family: .adamW
+                family: .adamW,
+                database: runtime.database
             )
         } else {
             appPersonalModelRebuilder = nil

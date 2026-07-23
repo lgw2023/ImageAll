@@ -679,7 +679,9 @@ struct GRDBPersonalizationReviewRepository: Sendable {
         else {
             throw PersonalizationReviewError.persistenceFailure
         }
-        let method = PersonalSuggestionMethod(bundleID: target.bundleID).rawValue
+        guard let method = PersonalSuggestionMethod(bundleID: target.bundleID)?.rawValue else {
+            throw PersonalizationReviewError.persistenceFailure
+        }
         if try personalCapabilityMatches(capability, in: db) {
             if let publishedRunID {
                 try db.execute(
@@ -770,6 +772,38 @@ struct GRDBPersonalizationReviewRepository: Sendable {
         }
     }
 
+    func publishedArtifactSHA256(method: PersonalSuggestionMethod) throws -> String? {
+        try database.pool.read { db in
+            try String.fetchOne(
+                db,
+                sql: """
+                SELECT r.artifact_sha256
+                FROM personal_suggestion_model m
+                JOIN training_run r ON r.id = m.published_run_id
+                WHERE m.method = ?
+                    AND r.method = ?
+                    AND r.state = 'succeeded'
+                """,
+                arguments: [method.rawValue, method.rawValue]
+            )
+        }
+    }
+
+    func usesLegacyActivePointer(method: PersonalSuggestionMethod) throws -> Bool {
+        try database.pool.read { db in
+            try Bool.fetchOne(
+                db,
+                sql: """
+                SELECT EXISTS(
+                    SELECT 1 FROM personal_suggestion_model
+                    WHERE method = ? AND published_run_id IS NULL
+                )
+                """,
+                arguments: [method.rawValue]
+            ) == true
+        }
+    }
+
     func replacePersonalSuggestions(
         candidate: PersonalSuggestionCandidate,
         predictions: [PersonalSuggestionPrediction],
@@ -831,7 +865,11 @@ struct GRDBPersonalizationReviewRepository: Sendable {
         else {
             throw PersonalizationReviewError.persistenceFailure
         }
-        let method = PersonalSuggestionMethod(bundleID: expectedCapability.target.bundleID).rawValue
+        guard let method = PersonalSuggestionMethod(
+            bundleID: expectedCapability.target.bundleID
+        )?.rawValue else {
+            throw PersonalizationReviewError.persistenceFailure
+        }
         try db.execute(
             sql: "DELETE FROM personal_prediction WHERE asset_id = ? AND method = ?",
             arguments: [uuid(candidate.assetID), method]
@@ -894,7 +932,11 @@ struct GRDBPersonalizationReviewRepository: Sendable {
             guard try personalCapabilityMatches(expectedCapability, in: db) else {
                 throw PersonalizationReviewError.persistenceFailure
             }
-            let method = PersonalSuggestionMethod(bundleID: expectedCapability.target.bundleID).rawValue
+            guard let method = PersonalSuggestionMethod(
+                bundleID: expectedCapability.target.bundleID
+            )?.rawValue else {
+                throw PersonalizationReviewError.persistenceFailure
+            }
             try db.execute(
                 sql: """
                 INSERT OR IGNORE INTO personal_suggestion_tag (method, tag_id)
@@ -1204,13 +1246,13 @@ struct GRDBPersonalizationReviewRepository: Sendable {
         return inserted
     }
 
-    func invalidatePersonalSuggestionBundle() throws {
+    func invalidateAllPersonalSuggestionBundles() throws {
         try database.pool.write { db in
-            try invalidatePersonalSuggestionBundle(on: db)
+            try invalidateAllPersonalSuggestionBundles(on: db)
         }
     }
 
-    func invalidatePersonalSuggestionBundle(on db: Database) throws {
+    func invalidateAllPersonalSuggestionBundles(on db: Database) throws {
         try db.execute(sql: "DELETE FROM personal_suggestion_model")
     }
 
@@ -1666,7 +1708,9 @@ struct GRDBPersonalizationReviewRepository: Sendable {
         in db: Database
     ) throws -> Bool {
         let target = capability.target
-        let method = PersonalSuggestionMethod(bundleID: target.bundleID).rawValue
+        guard let method = PersonalSuggestionMethod(bundleID: target.bundleID)?.rawValue else {
+            return false
+        }
         let matches = try Bool.fetchOne(
             db,
             sql: """

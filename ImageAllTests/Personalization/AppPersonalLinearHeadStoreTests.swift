@@ -34,6 +34,51 @@ final class AppPersonalLinearHeadStoreTests: XCTestCase {
         XCTAssertEqual(restartedCapability, .ready(identity))
     }
 
+    func testDatabasePublishedArtifactReconcilesActivePointerAfterStaging() async throws {
+        let applicationSupportDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: applicationSupportDirectory) }
+        let encoderIdentity = makeEncoderIdentity()
+        let firstSnapshot = makeSnapshot(encoderIdentity: encoderIdentity)
+        let secondSnapshot = makeSnapshot(
+            encoderIdentity: encoderIdentity,
+            decisionSnapshotRevision: String(repeating: "c", count: 64)
+        )
+        let firstArtifact = try AppPersonalLinearHeadTrainer.train(
+            snapshot: firstSnapshot,
+            encoderIdentity: encoderIdentity
+        )
+        let secondArtifact = try AppPersonalLinearHeadTrainer.train(
+            snapshot: secondSnapshot,
+            encoderIdentity: encoderIdentity
+        )
+        let firstIdentity = try AppPersonalLinearHeadModel(artifact: firstArtifact).identity
+        let secondIdentity = try AppPersonalLinearHeadModel(artifact: secondArtifact).identity
+        let store = AppPersonalLinearHeadStore(
+            applicationSupportDirectory: applicationSupportDirectory,
+            expectedCatalogScopeID: firstSnapshot.catalogScopeID,
+            expectedEncoderIdentity: encoderIdentity
+        )
+        _ = try await store.publish(firstArtifact)
+
+        let staged = try await store.stage(secondArtifact)
+
+        let stagedCapability = await store.capability()
+        XCTAssertEqual(stagedCapability, .ready(firstIdentity))
+        XCTAssertEqual(staged.identity, secondIdentity)
+        let reconciledCapability = await store.start(
+            publishedArtifactSHA256: staged.artifactSHA256
+        )
+        XCTAssertEqual(reconciledCapability, .ready(secondIdentity))
+        let restarted = AppPersonalLinearHeadStore(
+            applicationSupportDirectory: applicationSupportDirectory,
+            expectedCatalogScopeID: firstSnapshot.catalogScopeID,
+            expectedEncoderIdentity: encoderIdentity
+        )
+        let restartedCapability = await restarted.start()
+        XCTAssertEqual(restartedCapability, .ready(secondIdentity))
+    }
+
     func testPublicationFailureKeepsThePreviousActiveCapability() async throws {
         let applicationSupportDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)

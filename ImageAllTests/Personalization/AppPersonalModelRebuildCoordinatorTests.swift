@@ -2,6 +2,8 @@ import CoreGraphics
 import XCTest
 @testable import ImageAll
 
+private struct InjectedPersonalPublishFailure: Error {}
+
 final class AppPersonalModelRebuildCoordinatorTests: XCTestCase {
     func testAppRuntimeWithoutReadyModelCreatesNoCacheOrHeadState() async throws {
         let root = FileManager.default.temporaryDirectory
@@ -298,6 +300,133 @@ final class AppPersonalModelRebuildCoordinatorTests: XCTestCase {
             ) ?? 0
         }
         XCTAssertEqual(retainedCentroidPredictionCount, 1)
+    }
+
+    func testDatabasePublishFailureAfterObjectWriteKeepsPublishedModelAcrossRestart() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let cachesDirectory = root.appendingPathComponent("Caches", isDirectory: true)
+        let applicationSupportDirectory = root.appendingPathComponent(
+            "ApplicationSupport",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let database = try CatalogDatabase.open(at: root.appendingPathComponent("catalog.sqlite"))
+        let tag = try GRDBTagCatalogRepository(database: database).createTag(
+            rawName: "Atomic Publish",
+            timestampMs: DatabaseTestSupport.timestampMs
+        )
+        let catalogID = try XCTUnwrap(UUID(uuidString: database.catalogScopeID()))
+        let oldSnapshot = makeTrainingSnapshot(
+            catalogScopeID: catalogID.uuidString.lowercased(),
+            contentRevision: 1,
+            tagID: tag.id
+        )
+        let candidateSnapshot = makeTrainingSnapshot(
+            catalogScopeID: catalogID.uuidString.lowercased(),
+            contentRevision: 2,
+            tagID: tag.id
+        )
+        let activation = AppModelActivationCoordinator(
+            preferenceStore: InMemoryModelEnablementPreferenceStore(),
+            serviceFactory: {
+                AppCoreMLEmbeddingService(
+                    isEnabled: true,
+                    artifactDirectory: Self.projectArtifactDirectory()
+                )
+            }
+        )
+        guard case let .ready(encoderIdentity) = await activation.setEnabled(true),
+              let service = await activation.readyService()
+        else {
+            return XCTFail("expected fixed Core ML artifact to be ready")
+        }
+        let cache = AppCoreMLEmbeddingCache(cachesDirectory: cachesDirectory, service: service)
+        for snapshot in [oldSnapshot, candidateSnapshot] {
+            for decision in snapshot.decisions {
+                _ = try cache.embedding(
+                    for: generatedImage(decision.assetID),
+                    key: AppCoreMLEmbeddingCacheKey(
+                        catalogScopeID: catalogID,
+                        assetID: decision.assetID,
+                        contentRevision: Int64(decision.contentRevision)
+                    )
+                )
+            }
+        }
+        let oldRuntime = AppPersonalModelRebuildRuntime(
+            expectedCatalogScopeID: oldSnapshot.catalogScopeID,
+            activationCoordinator: activation,
+            cachesDirectory: cachesDirectory,
+            applicationSupportDirectory: applicationSupportDirectory,
+            family: .centroid,
+            database: database,
+            clock: FixedJobClock(nowMs: DatabaseTestSupport.timestampMs)
+        )
+        let oldIdentity = try await oldRuntime.rebuild(
+            snapshotSource: FixedSnapshotSource(snapshot: oldSnapshot)
+        )
+        let review = GRDBPersonalizationReviewRepository(database: database)
+        let oldRunID = try XCTUnwrap(review.publishedRunID(method: .personalCentroid))
+        let oldArtifactSHA256 = try XCTUnwrap(
+            review.publishedArtifactSHA256(method: .personalCentroid)
+        )
+        let failingRuntime = AppPersonalModelRebuildRuntime(
+            expectedCatalogScopeID: candidateSnapshot.catalogScopeID,
+            activationCoordinator: activation,
+            cachesDirectory: cachesDirectory,
+            applicationSupportDirectory: applicationSupportDirectory,
+            family: .centroid,
+            database: database,
+            clock: FixedJobClock(nowMs: DatabaseTestSupport.timestampMs + 1),
+            beforeDatabasePublish: { throw InjectedPersonalPublishFailure() }
+        )
+
+        do {
+            _ = try await failingRuntime.rebuild(
+                snapshotSource: FixedSnapshotSource(snapshot: candidateSnapshot)
+            )
+            XCTFail("expected injected database publication failure")
+        } catch is InjectedPersonalPublishFailure {
+            // Expected.
+        }
+
+        XCTAssertEqual(try review.publishedRunID(method: .personalCentroid), oldRunID)
+        XCTAssertEqual(
+            try review.publishedArtifactSHA256(method: .personalCentroid),
+            oldArtifactSHA256
+        )
+        let runs = try GRDBTrainingRunRepository(database: database)
+            .list(method: .personalCentroid)
+        XCTAssertEqual(runs.count, 2)
+        XCTAssertEqual(runs.filter { $0.state == .succeeded }.count, 1)
+        XCTAssertEqual(runs.filter { $0.state == .failed }.count, 1)
+        let objectsDirectory = applicationSupportDirectory.appendingPathComponent(
+            "PersonalModels/LinearHead/v1/objects",
+            isDirectory: true
+        )
+        let objectNames = try FileManager.default.contentsOfDirectory(atPath: objectsDirectory.path)
+        XCTAssertEqual(objectNames.count, 2)
+
+        let diskStateBeforeRestart = AppPersonalLinearHeadStore(
+            applicationSupportDirectory: applicationSupportDirectory,
+            expectedCatalogScopeID: oldSnapshot.catalogScopeID,
+            expectedEncoderIdentity: encoderIdentity
+        )
+        let diskCapability = await diskStateBeforeRestart.start()
+        XCTAssertEqual(diskCapability, .ready(oldIdentity))
+        let restarted = AppPersonalLinearHeadStore(
+            applicationSupportDirectory: applicationSupportDirectory,
+            expectedCatalogScopeID: oldSnapshot.catalogScopeID,
+            expectedEncoderIdentity: encoderIdentity
+        )
+        let restartedCapability = await restarted.start(
+            publishedArtifactSHA256: try review.publishedArtifactSHA256(
+                method: .personalCentroid
+            )
+        )
+        XCTAssertEqual(restartedCapability, .ready(oldIdentity))
     }
 
     func testProductionSnapshotSourceReadsManualFactsThroughTheReviewBoundary() async throws {

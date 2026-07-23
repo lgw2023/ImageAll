@@ -4,16 +4,19 @@ actor AppPersonalSampleSuggestionRuntime: AppPersonalSampleSuggesting {
     private let expectedCatalogScopeID: String
     private let activationCoordinator: AppModelActivationCoordinator
     private let applicationSupportDirectory: URL
+    private let database: CatalogDatabase?
     private var isRunning = false
 
     init(
         expectedCatalogScopeID: String,
         activationCoordinator: AppModelActivationCoordinator,
-        applicationSupportDirectory: URL
+        applicationSupportDirectory: URL,
+        database: CatalogDatabase? = nil
     ) {
         self.expectedCatalogScopeID = expectedCatalogScopeID
         self.activationCoordinator = activationCoordinator
         self.applicationSupportDirectory = applicationSupportDirectory
+        self.database = database
     }
 
     func suggest(
@@ -41,7 +44,25 @@ actor AppPersonalSampleSuggestionRuntime: AppPersonalSampleSuggesting {
             expectedCatalogScopeID: expectedCatalogScopeID,
             expectedEncoderIdentity: encoderIdentity
         )
-        guard case let .ready(identity) = await store.start() else {
+        let storeCapability: AppPersonalLinearHeadCapability
+        if let database {
+            let review = GRDBPersonalizationReviewRepository(database: database)
+            let artifactSHA256 = try review.publishedArtifactSHA256(
+                method: .personalCentroid
+            )
+            if artifactSHA256 == nil,
+               try review.usesLegacyActivePointer(method: .personalCentroid)
+            {
+                storeCapability = await store.start()
+            } else {
+                storeCapability = await store.start(
+                    publishedArtifactSHA256: artifactSHA256
+                )
+            }
+        } else {
+            storeCapability = await store.start()
+        }
+        guard case let .ready(identity) = storeCapability else {
             throw AppPersonalSampleSuggestionError.personalUnavailable
         }
         let capability = AppPersonalSuggestionCapabilityMapper.capability(from: identity)

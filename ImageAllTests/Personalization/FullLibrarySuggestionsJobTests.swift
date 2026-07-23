@@ -2015,6 +2015,7 @@ final class FullLibrarySuggestionsJobTests: XCTestCase {
                 as? [String: Any]
         )
         XCTAssertEqual(result["published"] as? Bool, true)
+        XCTAssertEqual(result["partial"] as? Bool, false)
     }
 
     func testCancellingQueuedFeatureKnnJobFinishesRunAsCancelled() throws {
@@ -2852,33 +2853,80 @@ final class FullLibrarySuggestionsJobTests: XCTestCase {
         XCTAssertLessThan(paused.progress.completed, 150)
     }
 
-    func testCancelAfterFirstBatchRetainsPartialSuggestions() throws {
+    func testCancelAfterFirstBatchRetainsPartialSuggestionsAndAuditsPublishedRun() throws {
         let fixture = try makeLargeLibraryFixture(assetCount: 120)
+        let queue = JobTestSupport.makeQueue(
+            database: fixture.database,
+            nowMs: fixture.cutoffMs,
+            retryDelayMs: 0
+        )
         var dependencies = makeHandlerDependencies(
             database: fixture.database,
             loader: fixture.loader,
-            queue: fixture.queue
+            queue: queue
         )
         let batchCounter = BatchCounter()
-        let capturedJobID = try enqueueJob(
-            queue: fixture.queue,
-            tagID: fixture.tagID,
-            sourceIDs: [fixture.sourceID],
-            cutoffMs: fixture.cutoffMs,
-            database: fixture.database
-        ).id
+        let capturedJobID = LockedUUIDBox()
         dependencies.beforeEachBatch = { _ in
-            if batchCounter.increment() == 2 {
-                _ = try? fixture.queue.applyStateCommand(
-                    JobStateCommand(jobID: capturedJobID, operation: .cancel)
+            if batchCounter.increment() == 2, let jobID = capturedJobID.value {
+                _ = try? queue.applyStateCommand(
+                    JobStateCommand(jobID: jobID, operation: .cancel)
                 )
             }
         }
         let handler = FullLibrarySuggestionsHandler(dependencies: dependencies)
-        let coordinator = makeCoordinator(database: fixture.database, handler: handler, queue: fixture.queue)
-        _ = try coordinator.claimAndExecuteOnce(personalizationClaim())
+        let coordinator = makeCoordinator(database: fixture.database, handler: handler, queue: queue)
+        let service = PersonalizationReviewService(
+            database: fixture.database,
+            queue: queue,
+            executionCoordinator: coordinator,
+            tags: fixture.tags,
+            clock: FixedJobClock(nowMs: fixture.cutoffMs)
+        )
+        capturedJobID.value = try service.enqueueFullLibrarySuggestions(
+            tagID: fixture.tagID,
+            mode: .generate,
+            sourceIDs: [fixture.sourceID]
+        )
+
+        XCTAssertTrue(try service.runPendingSuggestionJobs(maxSteps: 1))
+
+        let jobID = try XCTUnwrap(capturedJobID.value)
+        let job = try queue.fetchJob(id: jobID)
+        let checkpoint = try FullLibrarySuggestionsCodec.checkpoint(
+            from: XCTUnwrap(job.checkpoint)
+        )
+        XCTAssertEqual(job.state, .cancelled)
+        XCTAssertTrue(checkpoint.firstBatchPublished)
         let retained = try pendingCount(database: fixture.database, tagID: fixture.tagID)
         XCTAssertGreaterThan(retained, 0)
+
+        let run = try XCTUnwrap(
+            GRDBTrainingRunRepository(database: fixture.database).fetch(jobID: jobID)
+        )
+        XCTAssertEqual(run.state, .cancelled)
+        XCTAssertEqual(run.finishedAtMs, fixture.cutoffMs)
+        XCTAssertEqual(run.artifactKind, "tagModelRevision")
+        XCTAssertEqual(
+            run.artifactRef,
+            "tag_model/\(fixture.tagID.uuidString.lowercased())/1"
+        )
+        let metrics = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(run.metricsJSON.utf8))
+                as? [String: Any]
+        )
+        XCTAssertEqual(metrics["checkedCount"] as? Int, checkpoint.checkedCount)
+        XCTAssertEqual(metrics["eligibleCount"] as? Int, checkpoint.eligibleCount)
+        XCTAssertEqual(metrics["suggestedCount"] as? Int, checkpoint.suggestedCount)
+        XCTAssertEqual(metrics["skippedCount"] as? Int, checkpoint.skippedCount)
+        let result = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(run.resultSummaryJSON.utf8))
+                as? [String: Any]
+        )
+        XCTAssertEqual(result["published"] as? Bool, true)
+        XCTAssertEqual(result["partial"] as? Bool, true)
+        XCTAssertEqual(result["cancelled"] as? Bool, true)
+        XCTAssertEqual(result["suggestedCount"] as? Int, checkpoint.suggestedCount)
     }
 
     func testCacheUnsafePathFailureIsRetryableAndPreservesCheckpoint() throws {
@@ -3470,7 +3518,7 @@ private actor RecordingCachedPersonalRebuildClient: LocalModelSuggestionClient {
         let capability = PersonalModelSuggestionCapability(
             target: PersonalModelSuggestionTarget(
                 catalogScopeID: snapshot.catalogScopeID,
-                bundleID: "personal-cache-only",
+                bundleID: PersonalSuggestionMethod.linearHeadBundleID,
                 bundleRevision: "bundle-cache-only-r1",
                 provider: snapshot.encoder.provider,
                 modelID: snapshot.encoder.modelID,
@@ -3689,7 +3737,7 @@ private func makePersonalCapability(
     PersonalModelSuggestionCapability(
         target: PersonalModelSuggestionTarget(
             catalogScopeID: try database.catalogScopeID(),
-            bundleID: "personal-bundle",
+            bundleID: PersonalSuggestionMethod.linearHeadBundleID,
             bundleRevision: bundleRevision,
             provider: "dinov2",
             modelID: "facebook/dinov2-small",
@@ -4241,6 +4289,24 @@ private final class BatchCounter: @unchecked Sendable {
         defer { lock.unlock() }
         value += 1
         return value
+    }
+}
+
+private final class LockedUUIDBox: @unchecked Sendable {
+    private var storedValue: UUID?
+    private let lock = NSLock()
+
+    var value: UUID? {
+        get {
+            lock.lock()
+            defer { lock.unlock() }
+            return storedValue
+        }
+        set {
+            lock.lock()
+            defer { lock.unlock() }
+            storedValue = newValue
+        }
     }
 }
 

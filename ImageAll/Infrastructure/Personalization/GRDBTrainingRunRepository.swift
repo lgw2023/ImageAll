@@ -262,4 +262,13 @@ enum TrainingRunJSON {
         }
         return value
     }
+
+    static func decodeObject(_ value: String) throws -> [String: Any] {
+        guard let object = try JSONSerialization.jsonObject(with: Data(value.utf8))
+            as? [String: Any]
+        else {
+            throw PersonalizationReviewError.persistenceFailure
+        }
+        return object
+    }
 }

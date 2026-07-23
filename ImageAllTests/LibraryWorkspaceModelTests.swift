@@ -1499,7 +1499,7 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         let rebuiltCapability = PersonalModelSuggestionCapability(
             target: PersonalModelSuggestionTarget(
                 catalogScopeID: "catalog-fixture",
-                bundleID: "personal-fixture",
+                bundleID: PersonalSuggestionMethod.linearHeadBundleID,
                 bundleRevision: "bundle-v2",
                 provider: encoder.provider,
                 modelID: encoder.modelID,
@@ -1515,7 +1515,7 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         let existingCapability = PersonalModelSuggestionCapability(
             target: PersonalModelSuggestionTarget(
                 catalogScopeID: "catalog-fixture",
-                bundleID: "personal-fixture",
+                bundleID: PersonalSuggestionMethod.linearHeadBundleID,
                 bundleRevision: "bundle-v1",
                 provider: encoder.provider,
                 modelID: encoder.modelID,
@@ -5357,7 +5357,7 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         PersonalModelSuggestionCapability(
             target: PersonalModelSuggestionTarget(
                 catalogScopeID: catalogScopeID,
-                bundleID: "personal-fixture",
+                bundleID: PersonalSuggestionMethod.linearHeadBundleID,
                 bundleRevision: "bundle-v1",
                 provider: "dinov2",
                 modelID: "facebook/dinov2-small",
@@ -5432,7 +5432,7 @@ final class LibraryWorkspaceModelTests: XCTestCase {
             score: 1.25,
             recommendedState: .suggested,
             catalogScopeID: "catalog-fixture",
-            bundleID: "personal-fixture",
+            bundleID: PersonalSuggestionMethod.linearHeadBundleID,
             bundleRevision: bundleRevision,
             standardPackID: nil,
             standardPackRevision: nil,
@@ -6990,7 +6990,7 @@ private final class FakePersonalizationReviewPort: PersonalizationReviewPort, @u
         }
     }
 
-    func invalidatePersonalSuggestionBundle() throws {
+    func invalidateAllPersonalSuggestionBundles() throws {
         lock.withLock {
             storedPersonalSuggestionInvalidationCallCount += 1
             storedActivatedPersonalCapability = nil

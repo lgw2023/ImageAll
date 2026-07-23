@@ -1836,7 +1836,7 @@ final class LibraryWorkspaceModel: ObservableObject {
             guard case let .available(capability) = availability else {
                 let reviewPort = review
                 try await Self.offMain {
-                    try reviewPort.invalidatePersonalSuggestionBundle()
+                    try reviewPort.invalidateAllPersonalSuggestionBundles()
                 }
                 await refreshReviewState()
                 personalLibrarySuggestionState = .personalUnavailable
@@ -2204,7 +2204,7 @@ final class LibraryWorkspaceModel: ObservableObject {
     private func invalidatePersonalLibrarySuggestionBundle() async {
         let reviewPort = review
         try? await Self.offMain {
-            try reviewPort.invalidatePersonalSuggestionBundle()
+            try reviewPort.invalidateAllPersonalSuggestionBundles()
         }
         await refreshReviewState()
     }

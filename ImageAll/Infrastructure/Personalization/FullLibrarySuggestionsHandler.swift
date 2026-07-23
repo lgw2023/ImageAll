@@ -264,7 +264,7 @@ struct FullLibrarySuggestionsHandler: LeaseBoundJobHandler, Sendable {
                 }
             }
 
-            var nextState = FullLibrarySuggestionsCheckpoint(
+            let nextState = FullLibrarySuggestionsCheckpoint(
                 lastAssetID: batch.last,
                 firstBatchPublished: true,
                 modelRevision: modelRevision,
@@ -327,6 +327,13 @@ struct FullLibrarySuggestionsHandler: LeaseBoundJobHandler, Sendable {
                                 published: true,
                                 on: db
                             )
+                        } else {
+                            try recordPartialTrainingRunPublication(
+                                jobID: lease.jobID,
+                                payload: decodedPayload,
+                                state: nextState,
+                                on: db
+                            )
                         }
                     }
                     firstBatchPublished = true
@@ -361,6 +368,13 @@ struct FullLibrarySuggestionsHandler: LeaseBoundJobHandler, Sendable {
                                 published: true,
                                 on: db
                             )
+                        } else {
+                            try recordPartialTrainingRunPublication(
+                                jobID: lease.jobID,
+                                payload: decodedPayload,
+                                state: nextState,
+                                on: db
+                            )
                         }
                     }
                 } else {
@@ -379,6 +393,13 @@ struct FullLibrarySuggestionsHandler: LeaseBoundJobHandler, Sendable {
                                 payload: decodedPayload,
                                 state: nextState,
                                 published: true,
+                                on: db
+                            )
+                        } else {
+                            try recordPartialTrainingRunPublication(
+                                jobID: lease.jobID,
+                                payload: decodedPayload,
+                                state: nextState,
                                 on: db
                             )
                         }
@@ -480,15 +501,64 @@ struct FullLibrarySuggestionsHandler: LeaseBoundJobHandler, Sendable {
             artifactRef: published
                 ? "tag_model/\(payload.tagID.uuidString.lowercased())/\(payload.modelRevision)"
                 : nil,
-            resultSummaryJSON: try TrainingRunJSON.encode([
-                "published": published,
-                "successfulTagCount": published ? 1 : 0,
-                "positiveSampleCount": payload.frozenPositiveSamples.count,
-                "negativeSampleCount": payload.frozenNegativeSamples.count,
-                "suggestedCount": state.suggestedCount,
-            ]),
+            resultSummaryJSON: try trainingRunResultSummary(
+                payload: payload,
+                state: state,
+                published: published,
+                partial: false
+            ),
             on: db
         )
+    }
+
+    private func recordPartialTrainingRunPublication(
+        jobID: UUID,
+        payload: FullLibrarySuggestionsPayload,
+        state: FullLibrarySuggestionsCheckpoint,
+        on db: Database
+    ) throws {
+        let runs = GRDBTrainingRunRepository(database: dependencies.database)
+        guard let run = try runs.fetch(jobID: jobID, on: db), !run.state.isTerminal else {
+            return
+        }
+        try runs.update(
+            id: run.id,
+            state: .running,
+            metricsJSON: try TrainingRunJSON.encode([
+                "checkedCount": state.checkedCount,
+                "eligibleCount": state.eligibleCount,
+                "suggestedCount": state.suggestedCount,
+                "skippedCount": state.skippedCount,
+            ]),
+            artifactKind: "tagModelRevision",
+            artifactRef: "tag_model/\(payload.tagID.uuidString.lowercased())/\(payload.modelRevision)",
+            resultSummaryJSON: try trainingRunResultSummary(
+                payload: payload,
+                state: state,
+                published: true,
+                partial: true
+            ),
+            on: db
+        )
+    }
+
+    private func trainingRunResultSummary(
+        payload: FullLibrarySuggestionsPayload,
+        state: FullLibrarySuggestionsCheckpoint,
+        published: Bool,
+        partial: Bool
+    ) throws -> String {
+        try TrainingRunJSON.encode([
+            "published": published,
+            "partial": partial,
+            "successfulTagCount": published ? 1 : 0,
+            "positiveSampleCount": payload.frozenPositiveSamples.count,
+            "negativeSampleCount": payload.frozenNegativeSamples.count,
+            "checkedCount": state.checkedCount,
+            "eligibleCount": state.eligibleCount,
+            "suggestedCount": state.suggestedCount,
+            "skippedCount": state.skippedCount,
+        ])
     }
 
     private func retryableFailureWithCommittedState(
