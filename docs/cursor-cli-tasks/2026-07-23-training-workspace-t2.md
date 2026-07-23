@@ -2,7 +2,7 @@
 
 ## 任务状态
 
-- 状态：T2 已完成并由 Codex 自审通过（2026-08-13 前临时实施授权）
+- 状态：T2 复审指出的两项阻塞一致性问题已返修；等待复审，不进入 T3 / T4
 - 开工日期：2026-07-23
 - 当前切片：仅 T2；完成并复审后停止，不进入 T3 / T4
 - Cursor CLI：本切片未使用；无 Cursor session / `system/init.model` 证据
@@ -54,8 +54,9 @@
 ### 质心 / AdamW
 
 - 样本和缓存预检通过、真正开始训练时创建 Run；Run 随即从 `queued` 进入 `running`。
-- 成功发布磁盘 artifact 后，只激活对应 method 槽，并把该槽的 `published_run_id` 指向本 Run。
-- 槽激活与 Run 成功终态使用同一数据库事务；失败或取消不得修改另一方法槽、另一方法预测或 Feature Print 表。
+- 先写不可变 artifact 对象，不修改磁盘活动指针；数据库是唯一发布事实来源。
+- 对应 method 槽的激活、`published_run_id` 与 Run 成功终态使用同一数据库事务；事务提交后再由数据库 artifact 引用校正磁盘活动指针，启动 / 加载时重复校正。
+- 数据库提交前失败或取消不得切换任何活动指针，也不得修改另一方法槽、另一方法预测或 Feature Print 表。
 - AdamW `metrics_json` 持久化逐 epoch validation loss 曲线；进程重启后通过 `GRDBTrainingRunRepository.fetch` 读回。
 
 ## 当前范围
@@ -180,3 +181,79 @@
 **T2 完成，未进入 T3 / T4。** 当前已跟踪工作区在本结果文档提交后应为干净；
 既存且已由 `.gitignore` 排除的 `.derivedData-*` / `.wip-*` 目录未删除、未移动、
 未 stage。
+
+## 2026-07-23 复审返修
+
+### 复审结论与返修基线
+
+- 外部复审读取 `b0ffda2ff6bcc636c9068f075c4856aa459ff444` 与本留档的
+  首次关闭提交 `cfbfd1cb91053af2e707e24e23a8db788c95398d` 后，确认两项
+  T3 前阻塞问题：Feature Print 渐进发布与 Run 终态相反；个人模型磁盘活动指针
+  先于数据库发布事实切换。
+- 本次返修开工 HEAD：`cfbfd1cb91053af2e707e24e23a8db788c95398d`；分支
+  `main`；开工时 `HEAD == origin/main` 且已跟踪工作区干净。
+- 返修实现提交：`fa9715aa6e74490a8777c6f8e8d0e5e57acb281d`，作者
+  `Codex <codex@openai.com>`，主题
+  `fix(codex): repair training publication consistency`，trailer
+  `Agent-Role: implementation`。
+- Cursor CLI 未使用；session ID 与 `system/init.model` 仍为 N/A。未 push、未
+  amend、未改写历史。
+
+### TDD 证据
+
+1. Feature Print RED：把两批任务的既有取消测试提升为经
+   `PersonalizationReviewService` 执行的 Run 审计测试；首批发布后取消时，1 项测试
+   产生 9 个断言失败，证明 Run 缺失 artifact、发布标志和实际计数。GREEN 后 Run
+   保持 `cancelled + finished_at_ms`，同时持久化
+   `published=true`、`partial=true`、实际 revision 指针和 checkpoint 计数。
+2. 个人模型 RED：新增“不可变对象写入后、数据库提交前故障”的注入测试；初始编译
+   因缺少 staged publish、数据库 artifact 查询和数据库驱动启动 API 而失败。
+   GREEN 后故障 Run 为 `failed`，数据库槽和磁盘活动指针均保持旧模型；重建 store
+   后仍从数据库发布 artifact 加载旧模型。
+3. 新增同 method 成功重训隔离测试：Centroid v1 → v2 不改变 AdamW；AdamW v1
+   → v2 不改变 Centroid。另锁定未知 bundle ID 必须拒绝，不再默认映射质心。
+
+### 最小实现
+
+- Feature Print 每个非最终批次把 revision、artifact 和累计计数与建议发布放在同一
+  lease-protected 数据库事务中；成功把 `partial` 改为 `false`，取消 / 终止失败保留
+  已发布的 `published=true, partial=true` 和累计计数。
+- 质心 / AdamW store 拆成 `stage` 与 `activate`：训练只先写内容寻址的不可变对象；
+  method 槽、`published_run_id` 和 succeeded Run 在一个数据库事务中提交；随后按
+  数据库 Run 的 `artifact_sha256` 重建 `active.json`。建议运行时和重建运行时每次
+  加载均以数据库槽为准校正指针；v014 迁移且尚无 `published_run_id` 的旧槽保留一次
+  明确的 legacy pointer 兼容路径。
+- 原全局删除 API 改名为 `invalidateAllPersonalSuggestionBundles`，使破坏范围在调用点
+  显式可见；未知 `bundleID` fail closed。未改变该既有全局失效行为本身。
+
+### 返修验证
+
+- 测试构建：
+  `xcodebuild build-for-testing -project ImageAll.xcodeproj -scheme ImageAll -configuration Debug -destination 'platform=macOS,arch=arm64' -derivedDataPath /tmp/ImageAll-T2-repair-cfbfd1 CODE_SIGNING_ALLOWED=NO`
+  → exit 0，`** TEST BUILD SUCCEEDED **`。
+- 定向直接 XCTest 使用
+  `DYLD_INSERT_LIBRARIES=/tmp/ImageAll-T2-repair-cfbfd1/Build/Products/Debug/ImageAll.app/Contents/MacOS/ImageAll.debug.dylib`；
+  `FullLibrarySuggestionsJobTests` 66 / 66、
+  `AppPersonalModelRebuildCoordinatorTests` 11 / 11、
+  `AppPersonalLinearHeadStoreTests` 7 / 7、
+  `TrainingWorkspaceSchemaTests` 7 / 7、
+  `PersonalizedSuggestionServiceTests` 18 / 18、
+  `LibraryWorkspaceModelTests` 147 / 147、
+  `AppPersonalAdamWLinearHeadTests` 4 / 4、
+  `PersonalizationPersistenceTests` 7 / 7；合计 267 / 267，均 exit 0。
+- 完整直接 XCTest：1087 项，11 个明确标注的 expected failure，
+  **0 unexpected failure**；xctest 因 expected failure 汇总返回 exit 1。未启动
+  production App 测试宿主。
+- Debug build：
+  `xcodebuild build -project ImageAll.xcodeproj -scheme ImageAll -configuration Debug -destination 'platform=macOS,arch=arm64' -derivedDataPath /tmp/ImageAll-T2-repair-cfbfd1-build CODE_SIGNING_ALLOWED=NO`
+  → exit 0，`** BUILD SUCCEEDED **`。
+- `git diff --check` → exit 0；返修文件无 `/Volumes/HDD2`、
+  `Photos Library.photoslibrary` 或 `.photoslibrary` 字面量；未修改 migration，未访问、
+  枚举或写入受保护照片路径。
+
+### 明确延期与停止位置
+
+- AdamW `evaluationSplit` / `trainFallback` 指标语义、真实 `scopeKind`、
+  `snapshotRevision` / manifest hash 在 T4 展示指标前补齐，不混入本次阻塞返修。
+- expected-failure 逐项责任清单在正式 CI 接入前建立。
+- **T2 复审返修完成，未进入 T3 / T4；等待复审后再开新切片。**
