@@ -3729,6 +3729,47 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertEqual(model.selectionAnchorIDForTesting, first.assetID)
     }
 
+    func testReviewQueueShiftSelectionUsesReviewQueueOrder() async {
+        let sourceID = UUID()
+        let tag = TagListItem(id: UUID(), displayName: "Family", state: .active)
+        let assets = (0 ..< 4).map {
+            Self.makeAsset(sourceID: sourceID, fileName: "item-\($0).jpg")
+        }
+        let queueItems = assets.map {
+            ReviewQueueItemProjection(
+                assetID: $0.assetID,
+                fileName: $0.fileName,
+                availability: $0.availability,
+                acceptedTagCount: 0,
+                rejectedTagCount: 0
+            )
+        }
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: sourceID,
+                displayName: "Fixture",
+                state: .active
+            ),
+            reconciledItems: assets,
+            tags: [tag]
+        )
+        let model = LibraryWorkspaceModel(
+            service: service,
+            review: FakePersonalizationReviewPort(queueItems: queueItems)
+        )
+
+        await model.enterReviewQueue(tagID: tag.id, displayName: tag.displayName)
+        await model.selectReviewItem(queueItems[1].id)
+        await model.selectAsset(assets[3].assetID, extendRange: true)
+
+        XCTAssertEqual(
+            model.selectedAssetIDs,
+            Set(assets[1 ... 3].map(\.assetID))
+        )
+        XCTAssertEqual(model.selectionAnchorIDForTesting, assets[1].assetID)
+        XCTAssertNil(model.selectedReviewItemID)
+    }
+
     func testSelectAssetsWithoutInspectorRefreshKeepsPriorInspectorAndSkipsFetches() async {
         let sourceID = UUID()
         let first = Self.makeAsset(sourceID: sourceID, fileName: "first.jpg")
@@ -5019,6 +5060,93 @@ final class LibraryWorkspaceModelTests: XCTestCase {
             try service.selectionAggregate(tagIDs: [tag.id], assetIDs: assets.map(\.assetID)).first?.unknownCount,
             3
         )
+    }
+
+    func testSelectAllReviewRejectionUsesSingleMutationForEveryVisibleAsset() async {
+        let sourceID = UUID()
+        let tag = TagListItem(id: UUID(), displayName: "Family", state: .active)
+        let assets = (0 ..< 3).map {
+            Self.makeAsset(sourceID: sourceID, fileName: "item-\($0).jpg")
+        }
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: sourceID,
+                displayName: "Fixture",
+                state: .active
+            ),
+            reconciledItems: assets,
+            tags: [tag]
+        )
+        let review = FakePersonalizationReviewPort(
+            queueItems: assets.map {
+                ReviewQueueItemProjection(
+                    assetID: $0.assetID,
+                    fileName: $0.fileName,
+                    availability: $0.availability,
+                    acceptedTagCount: 0,
+                    rejectedTagCount: 0
+                )
+            }
+        )
+        let model = LibraryWorkspaceModel(service: service, review: review)
+
+        await model.enterReviewQueue(tagID: tag.id, displayName: tag.displayName)
+        await model.selectAllVisibleAssets()
+        await model.applyReviewDecision(action: .reject)
+
+        XCTAssertEqual(service.mutateTagCallCount, 1)
+        XCTAssertEqual(
+            try service.selectionAggregate(
+                tagIDs: [tag.id],
+                assetIDs: assets.map(\.assetID)
+            ).first?.rejectedCount,
+            assets.count
+        )
+        XCTAssertEqual(model.notice, .reviewMutationApplied(count: 3, tagName: "Family"))
+    }
+
+    func testMarqueeStyleReviewSelectionAcceptanceMutatesEverySelectedAsset() async {
+        let sourceID = UUID()
+        let tag = TagListItem(id: UUID(), displayName: "Family", state: .active)
+        let assets = (0 ..< 4).map {
+            Self.makeAsset(sourceID: sourceID, fileName: "item-\($0).jpg")
+        }
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: sourceID,
+                displayName: "Fixture",
+                state: .active
+            ),
+            reconciledItems: assets,
+            tags: [tag]
+        )
+        let review = FakePersonalizationReviewPort(
+            queueItems: assets.map {
+                ReviewQueueItemProjection(
+                    assetID: $0.assetID,
+                    fileName: $0.fileName,
+                    availability: $0.availability,
+                    acceptedTagCount: 0,
+                    rejectedTagCount: 0
+                )
+            }
+        )
+        let model = LibraryWorkspaceModel(service: service, review: review)
+        let marqueeSelection = Set(assets[1 ... 2].map(\.assetID))
+
+        await model.enterReviewQueue(tagID: tag.id, displayName: tag.displayName)
+        await model.selectAssets(marqueeSelection)
+        await model.applyReviewDecision(action: .accept)
+
+        XCTAssertEqual(service.mutateTagCallCount, 1)
+        XCTAssertEqual(
+            try service.selectionAggregate(
+                tagIDs: [tag.id],
+                assetIDs: Array(marqueeSelection)
+            ).first?.acceptedCount,
+            marqueeSelection.count
+        )
+        XCTAssertEqual(model.notice, .reviewMutationApplied(count: 2, tagName: "Family"))
     }
 
     func testDeferReviewSelectionAdvancesPreviewAndInspectorWithoutReorderingQueue() async {

@@ -1723,13 +1723,14 @@ final class LibraryWorkspaceModel: ObservableObject {
         additive: Bool = false,
         extendRange: Bool = false
     ) async {
+        let orderedAssetIDs = displayedAssetIDsInGridOrder
         if extendRange,
            let anchorID = selectionAnchorID,
-           let anchorIndex = items.firstIndex(where: { $0.assetID == anchorID }),
-           let targetIndex = items.firstIndex(where: { $0.assetID == assetID })
+           let anchorIndex = orderedAssetIDs.firstIndex(of: anchorID),
+           let targetIndex = orderedAssetIDs.firstIndex(of: assetID)
         {
             let range = min(anchorIndex, targetIndex) ... max(anchorIndex, targetIndex)
-            let rangeIDs = Set(range.map { items[$0].assetID })
+            let rangeIDs = Set(range.map { orderedAssetIDs[$0] })
             selectedAssetIDs = additive ? selectedAssetIDs.union(rangeIDs) : rangeIDs
         } else if additive {
             if selectedAssetIDs.contains(assetID) {
@@ -5180,8 +5181,8 @@ struct LibraryWorkspaceView: View {
                 model.closeSinglePhotoView()
                 return .handled
             }
-            .onKeyPress("p") { handleSinglePhotoReviewDecisionKey(.accept) }
-            .onKeyPress("x") { handleSinglePhotoReviewDecisionKey(.reject) }
+            .onKeyPress("p") { handleReviewDecisionKey(.accept) }
+            .onKeyPress("x") { handleReviewDecisionKey(.reject) }
             .onKeyPress("u") { handleSinglePhotoReviewDeferKey() }
             .onKeyPress(keys: [.init("a")], action: handleSelectAllKeyPress)
             .onKeyPress(
@@ -5680,11 +5681,10 @@ struct LibraryWorkspaceView: View {
         return .handled
     }
 
-    private func handleSinglePhotoReviewDecisionKey(
+    private func handleReviewDecisionKey(
         _ action: LibraryTagDecisionAction
     ) -> KeyPress.Result {
         guard contentFocused,
-              model.isSinglePhotoPresented,
               model.reviewMode != nil,
               !model.selectedAssetIDs.isEmpty
         else { return .ignored }
