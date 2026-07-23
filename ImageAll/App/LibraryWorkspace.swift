@@ -484,6 +484,7 @@ final class LibraryWorkspaceModel: ObservableObject {
     private var searchDebounceTask: Task<Void, Never>?
     private var assetPageRequestID: UUID?
     private var selectionAnchorID: UUID?
+    private var featureSuggestionCompletionContexts: [UUID: String] = [:]
     private var selectedTagFilterDecisions: [UUID: PersistableTagDecision] = [:]
     private var selectedSourceID: UUID?
     private var nextCursor: AssetPageCursor?
@@ -635,6 +636,25 @@ final class LibraryWorkspaceModel: ObservableObject {
     ) -> Double {
         guard let suggestionThresholds else { return 0 }
         return (try? suggestionThresholds.effectiveMinScore(tagID: tagID, method: method)) ?? 0
+    }
+
+    func suggestionThresholdReferences(
+        tagID: UUID
+    ) async -> [SuggestionScoreThresholdMethod: SuggestionThresholdReference] {
+        guard let suggestionThresholds else { return [:] }
+        return (try? await Self.offMain {
+            var references:
+                [SuggestionScoreThresholdMethod: SuggestionThresholdReference] = [:]
+            for method in SuggestionScoreThresholdMethod.allCases {
+                if let reference = try suggestionThresholds.referenceSuggestion(
+                    tagID: tagID,
+                    method: method
+                ) {
+                    references[method] = reference
+                }
+            }
+            return references
+        }) ?? [:]
     }
 
     func setSuggestionThresholdDefault(
@@ -2194,15 +2214,17 @@ final class LibraryWorkspaceModel: ObservableObject {
             if method == .personalAdamW {
                 notice = .personalAdamWTagLibrarySuggestionsCompleted(
                     tagName: displayName,
-                    checked: batch.checkedCount,
-                    suggested: inserted,
+                    candidates: batch.checkedCount,
+                    aboveThreshold: batch.aboveThresholdCount,
+                    inserted: inserted,
                     skipped: batch.skippedCount
                 )
             } else {
                 notice = .personalTagLibrarySuggestionsCompleted(
                     tagName: displayName,
-                    checked: batch.checkedCount,
-                    suggested: inserted,
+                    candidates: batch.checkedCount,
+                    aboveThreshold: batch.aboveThresholdCount,
+                    inserted: inserted,
                     skipped: batch.skippedCount
                 )
             }
@@ -4129,13 +4151,14 @@ extension LibraryWorkspaceModel {
             let reviewPort = review
             do {
                 notice = nil
-                _ = try await Self.offMain {
+                let jobID = try await Self.offMain {
                     try reviewPort.enqueueFullLibrarySuggestions(
                         tagID: pending.tagID,
                         mode: pending.mode,
                         sourceIDs: selectedSourceIDs
                     )
                 }
+                featureSuggestionCompletionContexts[jobID] = pending.displayName
                 startPersonalizationRunnerIfNeeded()
                 await refreshReviewState()
                 await refreshTrainingWorkspace()
@@ -4183,13 +4206,43 @@ extension LibraryWorkspaceModel {
             guard let self else { return }
             await self.refreshReviewState()
             await self.refreshTrainingWorkspace()
+            await self.refreshFeatureSuggestionCompletionNotices()
             if case let .tagQueue(tagID, _) = self.reviewMode {
                 await self.loadReviewQueueFirstPage(tagID: tagID)
             }
         }
         personalizationRunnerTask = Task { [weak self] in
             await worker.value
-            self?.personalizationRunnerTask = nil
+            guard let self else { return }
+            await self.refreshFeatureSuggestionCompletionNotices()
+            self.personalizationRunnerTask = nil
+        }
+    }
+
+    private func refreshFeatureSuggestionCompletionNotices() async {
+        let pendingContexts = featureSuggestionCompletionContexts
+        guard !pendingContexts.isEmpty else { return }
+        let reviewPort = review
+        for (jobID, tagName) in pendingContexts {
+            guard let completion = try? await Self.offMain({
+                try reviewPort.featureSuggestionJob(jobID: jobID)
+            }) else {
+                continue
+            }
+            switch completion.state {
+            case .completed:
+                notice = .featureKnnSuggestionsCompleted(
+                    tagName: tagName,
+                    candidates: completion.candidateCount,
+                    aboveThreshold: completion.aboveThresholdCount,
+                    skipped: completion.skippedCount
+                )
+                featureSuggestionCompletionContexts.removeValue(forKey: jobID)
+            case .terminalFailed, .cancelled:
+                featureSuggestionCompletionContexts.removeValue(forKey: jobID)
+            case .pending, .running, .paused, .retryableFailed:
+                break
+            }
         }
     }
 
@@ -6438,6 +6491,7 @@ struct LibraryWorkspaceView: View {
              .selectedAssetEmbeddingCached,
              .selectedAssetEmbeddingBatchCompleted,
              .personalSampleSuggestionsCompleted,
+             .featureKnnSuggestionsCompleted,
              .personalTagLibrarySuggestionsCompleted,
              .personalAdamWTagLibrarySuggestionsCompleted,
              .suggestionThresholdPruned,
@@ -6536,8 +6590,21 @@ struct LibraryWorkspaceView: View {
             "App 内模型尚未启用或当前不可用；没有写入建议，浏览和人工标签不受影响。"
         case .personalSampleSuggestionsFailed:
             "抽检建议未完成；现有审核队列保持不变，请稍后重试。"
-        case let .personalTagLibrarySuggestionsCompleted(tagName, checked, suggested, skipped):
-            "已用个人模型扫描 \(checked) 张照片：为“\(tagName)”写入 \(suggested) 条 Top 待审核建议，跳过 \(skipped) 张。"
+        case let .featureKnnSuggestionsCompleted(
+            tagName,
+            candidates,
+            aboveThreshold,
+            skipped
+        ):
+            "特征向量“\(tagName)”生成完成：高于阈值 \(aboveThreshold) 条 / 候选 \(candidates) 条，跳过 \(skipped) 条。"
+        case let .personalTagLibrarySuggestionsCompleted(
+            tagName,
+            candidates,
+            aboveThreshold,
+            inserted,
+            skipped
+        ):
+            "个人模型“\(tagName)”生成完成：高于阈值 \(aboveThreshold) 条 / 候选 \(candidates) 条，实际写入 \(inserted) 条，跳过 \(skipped) 条。"
         case .personalTagLibrarySuggestionsNotReady:
             "当前没有可用的个人模型；请先点人脑图标重建后再试。"
         case .personalTagLibrarySuggestionsTagNotInModel:
@@ -6546,8 +6613,14 @@ struct LibraryWorkspaceView: View {
             "App 内模型尚未启用或当前不可用；没有写入建议，浏览和人工标签不受影响。"
         case .personalTagLibrarySuggestionsFailed:
             "个人模型全库建议未完成；现有审核队列保持不变，请稍后重试。"
-        case let .personalAdamWTagLibrarySuggestionsCompleted(tagName, checked, suggested, skipped):
-            "已用超级个人模型扫描 \(checked) 张照片：为“\(tagName)”写入 \(suggested) 条 Top 待审核建议，跳过 \(skipped) 张。"
+        case let .personalAdamWTagLibrarySuggestionsCompleted(
+            tagName,
+            candidates,
+            aboveThreshold,
+            inserted,
+            skipped
+        ):
+            "超级个人模型“\(tagName)”生成完成：高于阈值 \(aboveThreshold) 条 / 候选 \(candidates) 条，实际写入 \(inserted) 条，跳过 \(skipped) 条。"
         case .personalAdamWTagLibrarySuggestionsNotReady:
             "当前没有可用的超级个人模型；请先点超级人脑图标训练后再试。"
         case .personalAdamWTagLibrarySuggestionsTagNotInModel:

@@ -141,6 +141,7 @@ actor AppPersonalTagLibrarySuggestionRuntime: AppPersonalTagLibrarySuggesting {
             capability: capability,
             hits: retained,
             checkedCount: candidates.count,
+            aboveThresholdCount: hits.count,
             skippedCount: skippedCount
         )
     }

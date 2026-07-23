@@ -6,6 +6,8 @@ final class AppModelSettingsModel: ObservableObject {
     @Published private(set) var state: AppModelActivationState
     @Published private(set) var suggestionDefaults = SuggestionThresholdDefaults.factory
     @Published private(set) var suggestionOverrides: [SuggestionTagThresholdOverrideRow] = []
+    @Published private(set) var suggestionReferences:
+        [UUID: [SuggestionScoreThresholdMethod: SuggestionThresholdReference]] = [:]
     @Published private(set) var hasSuggestionThresholdPort = false
 
     private let coordinator: AppModelActivationCoordinator
@@ -29,10 +31,29 @@ final class AppModelSettingsModel: ObservableObject {
         guard let suggestionThresholds else {
             suggestionDefaults = .factory
             suggestionOverrides = []
+            suggestionReferences = [:]
             return
         }
         suggestionDefaults = (try? suggestionThresholds.defaults()) ?? .factory
-        suggestionOverrides = (try? suggestionThresholds.listTagOverrides()) ?? []
+        let rows = (try? suggestionThresholds.listTagOverrides()) ?? []
+        suggestionOverrides = rows
+        var referencesByTag:
+            [UUID: [SuggestionScoreThresholdMethod: SuggestionThresholdReference]] = [:]
+        for row in rows {
+            var references: [SuggestionScoreThresholdMethod: SuggestionThresholdReference] = [:]
+            for method in SuggestionScoreThresholdMethod.allCases {
+                if let reference = try? suggestionThresholds.referenceSuggestion(
+                    tagID: row.tagID,
+                    method: method
+                ) {
+                    references[method] = reference
+                }
+            }
+            if !references.isEmpty {
+                referencesByTag[row.tagID] = references
+            }
+        }
+        suggestionReferences = referencesByTag
     }
 
     func setSuggestionDefault(method: SuggestionScoreThresholdMethod, minScore: Double) {
@@ -64,6 +85,45 @@ final class AppModelSettingsModel: ObservableObject {
             guard self.operationID == currentOperationID else { return }
             self.state = finalState
         }
+    }
+
+    func setSuggestionOverride(
+        tagID: UUID,
+        method: SuggestionScoreThresholdMethod,
+        minScore: Double
+    ) {
+        guard let suggestionThresholds, minScore.isFinite else { return }
+        let nowMs = Int64(Date().timeIntervalSince1970 * 1000)
+        do {
+            try suggestionThresholds.setOverride(
+                tagID: tagID,
+                method: method,
+                minScore: minScore,
+                updatedAtMs: nowMs
+            )
+            refreshSuggestionThresholds()
+        } catch {}
+    }
+
+    func suggestionReference(
+        tagID: UUID,
+        method: SuggestionScoreThresholdMethod
+    ) -> SuggestionThresholdReference? {
+        suggestionReferences[tagID]?[method]
+    }
+
+    func applySuggestionReference(
+        tagID: UUID,
+        method: SuggestionScoreThresholdMethod
+    ) {
+        guard let reference = suggestionReference(tagID: tagID, method: method) else {
+            return
+        }
+        setSuggestionOverride(
+            tagID: tagID,
+            method: method,
+            minScore: reference.minScore
+        )
     }
 
     func start() async {
@@ -167,7 +227,7 @@ struct AppModelSettingsView: View {
         LabeledContent(title) {
             HStack(spacing: 8) {
                 Text(String(format: "%.2f", value)).monospacedDigit().frame(minWidth: 48, alignment: .trailing)
-                Stepper("", value: Binding(get: { value }, set: { onChange($0) }), in: -1...2, step: 0.05).labelsHidden()
+                Stepper("", value: Binding(get: { value }, set: { onChange($0) }), step: 0.05).labelsHidden()
             }
         }
     }
@@ -176,6 +236,15 @@ struct AppModelSettingsView: View {
 private struct SuggestionThresholdOverridesSheet: View {
     @ObservedObject var model: AppModelSettingsModel
     @Environment(\.dismiss) private var dismiss
+    @State private var searchText = ""
+
+    private var filteredRows: [SuggestionTagThresholdOverrideRow] {
+        guard !searchText.isEmpty else { return model.suggestionOverrides }
+        return model.suggestionOverrides.filter {
+            $0.displayName.localizedCaseInsensitiveContains(searchText)
+        }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
@@ -183,32 +252,89 @@ private struct SuggestionThresholdOverridesSheet: View {
                 Spacer()
                 Button("完成") { dismiss() }.keyboardShortcut(.defaultAction)
             }
-            Text("空表示继承方法默认；清除后恢复默认。").font(.caption).foregroundStyle(.secondary)
+            Text("每个标签、每种方法独立设置；清除后继承方法默认。参考值只来自同轨近期拒绝分数，必须点“采用”才会生效。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            TextField("搜索标签", text: $searchText)
+                .textFieldStyle(.roundedBorder)
             if model.suggestionOverrides.isEmpty {
-                Text("当前没有标签覆盖。").foregroundStyle(.secondary)
+                Text("当前没有可设置的活动标签。").foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+            } else if filteredRows.isEmpty {
+                ContentUnavailableView.search(text: searchText)
             } else {
-                List(model.suggestionOverrides) { row in
+                List(filteredRows) { row in
                     VStack(alignment: .leading, spacing: 8) {
                         Text(row.displayName).font(.headline)
                         ForEach(SuggestionScoreThresholdMethod.allCases, id: \.rawValue) { method in
-                            HStack {
-                                Text(SuggestionScoreThresholdMethodPresentation.displayName(method))
-                                Spacer()
-                                if let value = row.overrides[method] {
-                                    Text(String(format: "%.2f", value)).monospacedDigit()
-                                    Button("清除") { model.clearSuggestionOverride(tagID: row.tagID, method: method) }
+                            VStack(alignment: .leading, spacing: 4) {
+                                HStack {
+                                    Text(SuggestionScoreThresholdMethodPresentation.displayName(method))
+                                        .frame(width: 88, alignment: .leading)
+                                    Text(String(format: "%.2f", row.overrides[method] ?? model.suggestionDefaults[method]))
+                                        .monospacedDigit()
+                                    Stepper(
+                                        "",
+                                        value: Binding(
+                                            get: {
+                                                row.overrides[method]
+                                                    ?? model.suggestionDefaults[method]
+                                            },
+                                            set: {
+                                                model.setSuggestionOverride(
+                                                    tagID: row.tagID,
+                                                    method: method,
+                                                    minScore: $0
+                                                )
+                                            }
+                                        ),
+                                        step: 0.05
+                                    )
+                                    .labelsHidden()
+                                    if row.overrides[method] != nil {
+                                        Button("继承默认") {
+                                            model.clearSuggestionOverride(
+                                                tagID: row.tagID,
+                                                method: method
+                                            )
+                                        }
                                         .buttonStyle(.borderless)
-                                } else {
-                                    Text("继承默认").foregroundStyle(.secondary)
+                                    }
                                 }
-                            }.font(.caption)
+                                if let reference = model.suggestionReference(
+                                    tagID: row.tagID,
+                                    method: method
+                                ) {
+                                    HStack {
+                                        Text(
+                                            "参考建议："
+                                                + String(format: "%.2f", reference.minScore)
+                                                + "（最近 "
+                                                + String(reference.rejectedSampleCount)
+                                                + " 个拒绝分数的第 90 百分位）"
+                                        )
+                                        .foregroundStyle(.secondary)
+                                        Button("采用") {
+                                            model.applySuggestionReference(
+                                                tagID: row.tagID,
+                                                method: method
+                                            )
+                                        }
+                                        .buttonStyle(.borderless)
+                                    }
+                                } else {
+                                    Text("暂无参考建议；至少需要 5 个可追溯的同轨拒绝分数。")
+                                        .foregroundStyle(.tertiary)
+                                }
+                            }
+                            .font(.caption)
                         }
                     }.padding(.vertical, 4)
                 }
             }
         }
         .padding(16)
-        .frame(minWidth: 420, minHeight: 360)
+        .frame(minWidth: 560, minHeight: 480)
     }
 }

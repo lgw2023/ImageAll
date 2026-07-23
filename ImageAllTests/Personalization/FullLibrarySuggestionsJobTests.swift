@@ -2131,6 +2131,11 @@ final class FullLibrarySuggestionsJobTests: XCTestCase {
         )
         XCTAssertEqual(result["published"] as? Bool, true)
         XCTAssertEqual(result["partial"] as? Bool, false)
+        let completion = try XCTUnwrap(service.featureSuggestionJob(jobID: jobID))
+        XCTAssertEqual(completion.state, .completed)
+        XCTAssertEqual(completion.candidateCount, metrics["eligibleCount"] as? Int)
+        XCTAssertEqual(completion.aboveThresholdCount, metrics["suggestedCount"] as? Int)
+        XCTAssertEqual(completion.skippedCount, metrics["skippedCount"] as? Int)
     }
 
     func testCancellingQueuedFeatureKnnJobFinishesRunAsCancelled() throws {

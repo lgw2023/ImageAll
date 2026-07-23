@@ -2217,6 +2217,7 @@ final class LibraryWorkspaceModelTests: XCTestCase {
                 capability: capability,
                 hits: hits,
                 checkedCount: candidates.count,
+                aboveThresholdCount: 3,
                 skippedCount: 1
             )
         )
@@ -2255,8 +2256,49 @@ final class LibraryWorkspaceModelTests: XCTestCase {
             model.notice,
             .personalTagLibrarySuggestionsCompleted(
                 tagName: "板栗",
-                checked: candidates.count,
-                suggested: hits.count,
+                candidates: candidates.count,
+                aboveThreshold: 3,
+                inserted: hits.count,
+                skipped: 1
+            )
+        )
+
+        let adamWReview = FakePersonalizationReviewPort(
+            overviews: [overview],
+            personalCandidates: candidates
+        )
+        let adamWModel = LibraryWorkspaceModel(
+            service: service,
+            review: adamWReview,
+            selectedAssetEmbeddingCache: FakeSelectedAssetEmbeddingCache(),
+            appPersonalSampleSuggester: FakeAppPersonalSampleSuggester(
+                batch: AppPersonalSampleSuggestionBatch(
+                    capability: capability,
+                    results: [],
+                    skippedCount: 0
+                )
+            ),
+            appPersonalAdamWTagLibrarySuggester: suggester
+        )
+        await adamWModel.start()
+        await adamWModel.refreshReviewState()
+
+        adamWModel.requestEnqueueSuggestions(
+            tagID: tagID,
+            displayName: "板栗",
+            mode: .generate,
+            method: .personalAdamW
+        )
+        let adamWConfirmed = await adamWModel.confirmPendingSuggestionEnqueue()
+
+        XCTAssertTrue(adamWConfirmed)
+        XCTAssertEqual(
+            adamWModel.notice,
+            .personalAdamWTagLibrarySuggestionsCompleted(
+                tagName: "板栗",
+                candidates: candidates.count,
+                aboveThreshold: 3,
+                inserted: hits.count,
                 skipped: 1
             )
         )
@@ -5444,6 +5486,66 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertFalse(PersonalizationSuggestionRunner.isWorkerInFlight)
     }
 
+    func testFeatureSuggestionCompletionNoticeUsesPersistedThresholdCounts() async {
+        let sourceID = UUID()
+        let tag = TagListItem(id: UUID(), displayName: "Family", state: .active)
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(id: sourceID, displayName: "Fixture", state: .active),
+            reconciledItems: [],
+            tags: [tag],
+            startsConnected: true
+        )
+        let review = FakePersonalizationReviewPort(
+            overviews: [
+                SuggestionTagOverview(
+                    id: tag.id,
+                    displayName: tag.displayName,
+                    acceptedSampleCount: 4,
+                    rejectedSampleCount: 4,
+                    pendingSuggestionCount: 0,
+                    taskStatus: .ready,
+                    checkedCount: 0,
+                    totalCount: nil,
+                    skippedCount: 0,
+                    missingPositiveCount: 0,
+                    missingNegativeCount: 0,
+                    canGenerate: true,
+                    canUpdate: false,
+                    canGeneratePersonalModel: true,
+                    canReview: false,
+                    canPause: false,
+                    canResume: false,
+                    canCancel: false,
+                    activeJobID: nil
+                ),
+            ],
+            featureCompletion: (candidates: 12, aboveThreshold: 4, skipped: 3)
+        )
+        let model = LibraryWorkspaceModel(service: service, review: review)
+
+        await model.start()
+        model.requestEnqueueSuggestions(
+            tagID: tag.id,
+            displayName: tag.displayName,
+            mode: .generate
+        )
+        let confirmed = await model.confirmPendingSuggestionEnqueue()
+        XCTAssertTrue(confirmed)
+        for _ in 0 ..< 100 where model.notice == nil {
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
+
+        XCTAssertEqual(
+            model.notice,
+            .featureKnnSuggestionsCompleted(
+                tagName: "Family",
+                candidates: 12,
+                aboveThreshold: 4,
+                skipped: 3
+            )
+        )
+    }
+
     func testConfirmSuggestionEnqueueUsesCapturedConfirmationAfterDialogDismissal() async throws {
         let review = FakePersonalizationReviewPort()
         let sourceID = UUID()
@@ -6995,6 +7097,7 @@ private final class FakePersonalizationReviewPort: PersonalizationReviewPort, @u
     private var storedEnqueuedStandardTarget: StandardModelSuggestionTarget?
     private var storedStandardLibraryJob: StandardLibrarySuggestionJobProjection?
     private var storedPersonalLibraryJob: PersonalLibrarySuggestionJobProjection?
+    private var storedFeatureSuggestionJob: FeatureSuggestionJobProjection?
     private var storedPersonalSuggestionReplacements: [FakePersonalSuggestionReplacement] = []
     private var storedPersonalTagLibraryReplacements: [FakePersonalTagLibraryReplacement] = []
     private var storedStandardSuggestionReplacements: [FakeStandardSuggestionReplacement] = []
@@ -7003,6 +7106,8 @@ private final class FakePersonalizationReviewPort: PersonalizationReviewPort, @u
     private let queuePageSize: Int?
     private let trainingSnapshot: PersonalTrainingSnapshot?
     private let standardSuggestionReplacementFails: Bool
+    private let featureCompletion:
+        (candidates: Int, aboveThreshold: Int, skipped: Int)?
     var decidedAssetIDsProvider: (@Sendable (UUID) -> Set<UUID>)?
     let blocksRunPendingJobs: Bool
     private let pendingJobsBlocker = DispatchSemaphore(value: 0)
@@ -7019,7 +7124,8 @@ private final class FakePersonalizationReviewPort: PersonalizationReviewPort, @u
         trainingSnapshot: PersonalTrainingSnapshot? = nil,
         standardSuggestionReplacementFails: Bool = false,
         blocksRunPendingJobs: Bool = false,
-        queuePageSize: Int? = nil
+        queuePageSize: Int? = nil,
+        featureCompletion: (candidates: Int, aboveThreshold: Int, skipped: Int)? = nil
     ) {
         storedOverviews = overviews
         storedQueueItems = queueItems
@@ -7029,6 +7135,7 @@ private final class FakePersonalizationReviewPort: PersonalizationReviewPort, @u
         storedStandardLibraryJob = standardLibraryJob
         self.trainingSnapshot = trainingSnapshot
         self.standardSuggestionReplacementFails = standardSuggestionReplacementFails
+        self.featureCompletion = featureCompletion
         self.blocksRunPendingJobs = blocksRunPendingJobs
         self.queuePageSize = queuePageSize
     }
@@ -7279,10 +7386,27 @@ private final class FakePersonalizationReviewPort: PersonalizationReviewPort, @u
         sourceIDs: [UUID]?
     ) throws -> UUID {
         lock.withLock {
+            let jobID = UUID()
             enqueueCallCount += 1
             lastEnqueuedSourceIDs = sourceIDs
+            if featureCompletion != nil {
+                storedFeatureSuggestionJob = FeatureSuggestionJobProjection(
+                    id: jobID,
+                    state: .pending,
+                    candidateCount: 0,
+                    aboveThresholdCount: 0,
+                    skippedCount: 0
+                )
+            }
+            return jobID
         }
-        return UUID()
+    }
+
+    func featureSuggestionJob(jobID: UUID) throws -> FeatureSuggestionJobProjection? {
+        lock.withLock {
+            guard storedFeatureSuggestionJob?.id == jobID else { return nil }
+            return storedFeatureSuggestionJob
+        }
     }
 
     func enqueuePersonalLibrarySuggestions(
@@ -7341,11 +7465,27 @@ private final class FakePersonalizationReviewPort: PersonalizationReviewPort, @u
     func cancelSuggestionJob(jobID: UUID) throws {}
 
     func runPendingSuggestionJobs(maxSteps: Int?) throws -> Bool {
-        lock.withLock { runPendingJobsCallCount += 1 }
+        let didWork = lock.withLock {
+            runPendingJobsCallCount += 1
+            guard let featureCompletion,
+                  let job = storedFeatureSuggestionJob,
+                  !job.state.isTerminal
+            else {
+                return false
+            }
+            storedFeatureSuggestionJob = FeatureSuggestionJobProjection(
+                id: job.id,
+                state: .completed,
+                candidateCount: featureCompletion.candidates,
+                aboveThresholdCount: featureCompletion.aboveThreshold,
+                skippedCount: featureCompletion.skipped
+            )
+            return true
+        }
         if blocksRunPendingJobs {
             _ = pendingJobsBlocker.wait(timeout: .now() + 5)
         }
-        return false
+        return didWork
     }
 
     func releaseBlockedPendingJobs() {

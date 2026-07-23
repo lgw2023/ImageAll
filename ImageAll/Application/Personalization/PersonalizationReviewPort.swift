@@ -235,6 +235,14 @@ struct StandardLibrarySuggestionJobProjection: Equatable, Sendable {
     let lastErrorCode: JobSafeErrorCode?
 }
 
+struct FeatureSuggestionJobProjection: Equatable, Sendable {
+    let id: UUID
+    let state: JobState
+    let candidateCount: Int
+    let aboveThresholdCount: Int
+    let skippedCount: Int
+}
+
 protocol PersonalizationReviewPort: Sendable {
     /// `sourceIDs == nil` means all active sources; empty means match nothing.
     func totalPendingSuggestionCount(sourceIDs: [UUID]?) throws -> Int
@@ -292,6 +300,7 @@ protocol PersonalizationReviewPort: Sendable {
         mode: PersonalizationReviewEnqueueMode,
         sourceIDs: [UUID]?
     ) throws -> UUID
+    func featureSuggestionJob(jobID: UUID) throws -> FeatureSuggestionJobProjection?
     func enqueuePersonalLibrarySuggestions(
         capability: PersonalModelSuggestionCapability,
         sourceIDs: [UUID]?
@@ -449,6 +458,10 @@ extension PersonalizationReviewPort {
         mode: PersonalizationReviewEnqueueMode
     ) throws -> UUID {
         try enqueueFullLibrarySuggestions(tagID: tagID, mode: mode, sourceIDs: nil)
+    }
+
+    func featureSuggestionJob(jobID _: UUID) throws -> FeatureSuggestionJobProjection? {
+        nil
     }
 
     func standardLibrarySuggestionJob() throws -> StandardLibrarySuggestionJobProjection? {

@@ -306,6 +306,21 @@ struct PersonalizationReviewService: PersonalizationReviewPort, Sendable {
         return jobID
     }
 
+    func featureSuggestionJob(jobID: UUID) throws -> FeatureSuggestionJobProjection? {
+        let job = try queue.fetchJob(id: jobID)
+        guard job.kind == FullLibrarySuggestionsJobFactory.kind else {
+            return nil
+        }
+        let checkpoint = try FullLibrarySuggestionsCodec.checkpoint(from: job.checkpoint)
+        return FeatureSuggestionJobProjection(
+            id: job.id,
+            state: job.state,
+            candidateCount: checkpoint.eligibleCount,
+            aboveThresholdCount: checkpoint.suggestedCount,
+            skippedCount: checkpoint.skippedCount
+        )
+    }
+
     func enqueuePersonalLibrarySuggestions(
         capability: PersonalModelSuggestionCapability,
         sourceIDs: [UUID]?

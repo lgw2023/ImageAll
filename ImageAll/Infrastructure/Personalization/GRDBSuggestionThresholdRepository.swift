@@ -123,28 +123,103 @@ struct GRDBSuggestionThresholdRepository: SuggestionThresholdPort {
         return try defaults()[method]
     }
 
+    func referenceSuggestion(
+        tagID: UUID,
+        method: SuggestionScoreThresholdMethod
+    ) throws -> SuggestionThresholdReference? {
+        let scores = try database.pool.read { db in
+            switch method {
+            case .featureKnn:
+                return try Double.fetchAll(
+                    db,
+                    sql: """
+                    WITH ranked AS (
+                        SELECT d.asset_id, d.updated_at_ms, p.score,
+                            ROW_NUMBER() OVER (
+                                PARTITION BY d.asset_id
+                                ORDER BY p.created_at_ms DESC,
+                                    p.model_revision DESC,
+                                    p.content_revision DESC
+                            ) AS score_rank
+                        FROM asset_tag_decision d
+                        JOIN prediction p
+                            ON p.asset_id = d.asset_id
+                            AND p.tag_id = d.tag_id
+                            AND p.created_at_ms <= d.updated_at_ms
+                        WHERE d.tag_id = ? AND d.decision = 'rejected'
+                    )
+                    SELECT score
+                    FROM ranked
+                    WHERE score_rank = 1
+                    ORDER BY updated_at_ms DESC, asset_id ASC
+                    LIMIT 20
+                    """,
+                    arguments: [uuid(tagID)]
+                )
+            case .personalCentroid, .personalAdamW:
+                return try Double.fetchAll(
+                    db,
+                    sql: """
+                    WITH ranked AS (
+                        SELECT d.asset_id, d.updated_at_ms, p.score,
+                            ROW_NUMBER() OVER (
+                                PARTITION BY d.asset_id
+                                ORDER BY p.created_at_ms DESC,
+                                    p.content_revision DESC
+                            ) AS score_rank
+                        FROM asset_tag_decision d
+                        JOIN personal_prediction p
+                            ON p.asset_id = d.asset_id
+                            AND p.tag_id = d.tag_id
+                            AND p.method = ?
+                            AND p.created_at_ms <= d.updated_at_ms
+                        WHERE d.tag_id = ? AND d.decision = 'rejected'
+                    )
+                    SELECT score
+                    FROM ranked
+                    WHERE score_rank = 1
+                    ORDER BY updated_at_ms DESC, asset_id ASC
+                    LIMIT 20
+                    """,
+                    arguments: [method.rawValue, uuid(tagID)]
+                )
+            }
+        }
+        let finiteScores = scores.filter(\.isFinite)
+        guard finiteScores.count >= 5 else { return nil }
+        let sorted = finiteScores.sorted()
+        let nearestRank = Int(ceil(Double(sorted.count) * 0.9))
+        return SuggestionThresholdReference(
+            minScore: sorted[max(0, nearestRank - 1)],
+            rejectedSampleCount: finiteScores.count
+        )
+    }
+
     func listTagOverrides() throws -> [SuggestionTagThresholdOverrideRow] {
         try database.pool.read { db in
             let rows = try Row.fetchAll(
                 db,
                 sql: """
-                SELECT o.tag_id, t.name, o.method, o.min_score
-                FROM suggestion_score_threshold_override o
-                JOIN tag t ON t.id = o.tag_id AND t.state = 'active'
-                ORDER BY t.normalized_name ASC, o.method ASC
+                SELECT t.id AS tag_id, t.name, o.method, o.min_score
+                FROM tag t
+                LEFT JOIN suggestion_score_threshold_override o ON o.tag_id = t.id
+                WHERE t.state = 'active'
+                ORDER BY t.normalized_name ASC, t.id ASC, o.method ASC
                 """
             )
             var byTag: [UUID: (name: String, overrides: [SuggestionScoreThresholdMethod: Double])] = [:]
             for row in rows {
                 guard let tagID = UUID(uuidString: row["tag_id"]) else { continue }
-                let methodRaw: String = row["method"]
-                guard let method = SuggestionScoreThresholdMethod(rawValue: methodRaw) else {
-                    continue
-                }
-                let score: Double = row["min_score"]
                 let name: String = row["name"]
                 var entry = byTag[tagID] ?? (name: name, overrides: [:])
-                entry.overrides[method] = score
+                let methodRaw: String? = row["method"]
+                let score: Double? = row["min_score"]
+                if let methodRaw,
+                   let method = SuggestionScoreThresholdMethod(rawValue: methodRaw),
+                   let score
+                {
+                    entry.overrides[method] = score
+                }
                 byTag[tagID] = entry
             }
             return byTag.keys.sorted {

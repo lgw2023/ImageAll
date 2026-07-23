@@ -200,7 +200,8 @@ struct ReviewOverviewView: View {
                     TagSuggestionThresholdControls(
                         model: model,
                         tagID: overview.id,
-                        displayName: overview.displayName
+                        displayName: overview.displayName,
+                        rejectedSampleCount: overview.rejectedSampleCount
                     )
                     if overview.missingPositiveCount > 0 || overview.missingNegativeCount > 0 {
                         Text("还需确认 \(overview.missingPositiveCount) 张、标记不属于 \(overview.missingNegativeCount) 张")
@@ -481,51 +482,83 @@ struct TagSuggestionThresholdControls: View {
     @ObservedObject var model: LibraryWorkspaceModel
     let tagID: UUID
     let displayName: String
+    let rejectedSampleCount: Int
+    @State private var references:
+        [SuggestionScoreThresholdMethod: SuggestionThresholdReference] = [:]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text("本标签生效门槛")
                 .font(.caption.weight(.semibold))
             ForEach(SuggestionScoreThresholdMethod.allCases, id: \.rawValue) { method in
-                HStack(spacing: 8) {
-                    Text(SuggestionScoreThresholdMethodPresentation.displayName(method))
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack(spacing: 8) {
+                        Text(SuggestionScoreThresholdMethodPresentation.displayName(method))
+                            .font(.caption)
+                            .frame(width: 88, alignment: .leading)
+                        Text(String(format: "%.2f", model.effectiveSuggestionMinScore(tagID: tagID, method: method)))
+                            .font(.caption.monospacedDigit())
+                            .frame(width: 44, alignment: .trailing)
+                        Stepper(
+                            "",
+                            value: Binding(
+                                get: {
+                                    model.effectiveSuggestionMinScore(tagID: tagID, method: method)
+                                },
+                                set: { newValue in
+                                    model.setSuggestionThresholdOverride(
+                                        tagID: tagID,
+                                        method: method,
+                                        minScore: newValue
+                                    )
+                                }
+                            ),
+                            step: 0.05
+                        )
+                        .labelsHidden()
+                        Button("刷新待审") {
+                            model.prunePendingSuggestionsBelowThreshold(
+                                tagID: tagID,
+                                displayName: displayName,
+                                method: method
+                            )
+                        }
                         .font(.caption)
-                        .frame(width: 88, alignment: .leading)
-                    Text(String(format: "%.2f", model.effectiveSuggestionMinScore(tagID: tagID, method: method)))
-                        .font(.caption.monospacedDigit())
-                        .frame(width: 44, alignment: .trailing)
-                    Stepper(
-                        "",
-                        value: Binding(
-                            get: {
-                                model.effectiveSuggestionMinScore(tagID: tagID, method: method)
-                            },
-                            set: { newValue in
+                        .buttonStyle(.borderless)
+                        .help("按当前生效门槛删除本轨低于门槛的 pending，不重跑全库扫描")
+                    }
+                    if let reference = references[method] {
+                        HStack(spacing: 6) {
+                            Text(
+                                "参考 "
+                                    + String(format: "%.2f", reference.minScore)
+                                    + " · "
+                                    + String(reference.rejectedSampleCount)
+                                    + " 个近期拒绝样本"
+                            )
+                            .foregroundStyle(.secondary)
+                            Button("采用") {
                                 model.setSuggestionThresholdOverride(
                                     tagID: tagID,
                                     method: method,
-                                    minScore: newValue
+                                    minScore: reference.minScore
                                 )
                             }
-                        ),
-                        in: -1...2,
-                        step: 0.05
-                    )
-                    .labelsHidden()
-                    Button("刷新待审") {
-                        model.prunePendingSuggestionsBelowThreshold(
-                            tagID: tagID,
-                            displayName: displayName,
-                            method: method
-                        )
+                            .buttonStyle(.borderless)
+                        }
+                        .font(.caption2)
+                    } else {
+                        Text("暂无参考建议 · 至少需要 5 个可追溯的同轨拒绝分数")
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
                     }
-                    .font(.caption)
-                    .buttonStyle(.borderless)
-                    .help("按当前生效门槛删除本轨低于门槛的 pending，不重跑全库扫描")
                 }
             }
         }
         .padding(.vertical, 2)
+        .task(id: "\(tagID.uuidString.lowercased()):\(rejectedSampleCount)") {
+            references = await model.suggestionThresholdReferences(tagID: tagID)
+        }
     }
 }
 

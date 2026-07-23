@@ -53,6 +53,22 @@ final class SuggestionThresholdTests: XCTestCase {
         )
     }
 
+    func testTagOverrideListIncludesActiveTagsBeforeTheyHaveOverrides() throws {
+        let fixture = try makeTagFixture()
+        let thresholds = GRDBSuggestionThresholdRepository(database: fixture.database)
+
+        XCTAssertEqual(
+            try thresholds.listTagOverrides(),
+            [
+                SuggestionTagThresholdOverrideRow(
+                    tagID: fixture.tagID,
+                    displayName: "板栗",
+                    overrides: [:]
+                ),
+            ]
+        )
+    }
+
     func testPrunePendingBelowThresholdOnlyRemovesMatchingMethodRows() throws {
         let fixture = try makeTagFixture()
         let thresholds = GRDBSuggestionThresholdRepository(database: fixture.database)
@@ -174,6 +190,167 @@ final class SuggestionThresholdTests: XCTestCase {
         }
     }
 
+    func testReferenceSuggestionUsesLatestTwentyRejectedScoresWithoutCrossingMethods() throws {
+        let fixture = try makeTagFixture(assetCount: 25)
+        let thresholds = GRDBSuggestionThresholdRepository(database: fixture.database)
+        try fixture.database.pool.write { db in
+            try db.execute(
+                sql: """
+                INSERT INTO tag_model_revision (
+                    tag_id, revision, provider, request_revision, preprocessing_revision,
+                    threshold, positive_count, negative_count, neighbor_count,
+                    sample_budget_per_role, created_at_ms
+                ) VALUES (?, 1, 'vision-feature-print', 1, 1, 0, 2, 2, 2, 12, 1)
+                """,
+                arguments: [fixture.tagID.uuidString.lowercased()]
+            )
+            try db.execute(
+                sql: """
+                INSERT INTO personal_suggestion_model (
+                    method, catalog_scope_id, bundle_id, bundle_revision, provider, model_id,
+                    model_revision, preprocessing_revision, element_count,
+                    label_vocabulary_revision, weights_sha256, policy_revision, activated_at_ms
+                ) VALUES (
+                    'personalCentroid', ?, 'app.personal.linear-head.v1', '1', 'app', 'head',
+                    '1', '1', 4, ?, ?, 'policy', 1
+                )
+                """,
+                arguments: [
+                    fixture.scopeID,
+                    String(repeating: "b", count: 64),
+                    String(repeating: "c", count: 64),
+                ]
+            )
+            try db.execute(
+                sql: """
+                INSERT INTO personal_suggestion_tag (method, tag_id)
+                VALUES ('personalCentroid', ?)
+                """,
+                arguments: [fixture.tagID.uuidString.lowercased()]
+            )
+            for (index, assetID) in fixture.assetIDs.enumerated() {
+                let decidedAt = Int64(100 + index)
+                try db.execute(
+                    sql: """
+                    INSERT INTO prediction (
+                        asset_id, tag_id, content_revision, model_revision,
+                        score, state, created_at_ms
+                    ) VALUES (?, ?, 1, 1, ?, 'pendingReview', ?)
+                    """,
+                    arguments: [
+                        assetID.uuidString.lowercased(),
+                        fixture.tagID.uuidString.lowercased(),
+                        Double(index + 1) / 10,
+                        decidedAt - 1,
+                    ]
+                )
+                try db.execute(
+                    sql: """
+                    INSERT INTO personal_prediction (
+                        method, asset_id, tag_id, content_revision,
+                        score, state, created_at_ms
+                    ) VALUES ('personalCentroid', ?, ?, 1, ?, 'pendingReview', ?)
+                    """,
+                    arguments: [
+                        assetID.uuidString.lowercased(),
+                        fixture.tagID.uuidString.lowercased(),
+                        Double(index + 1),
+                        decidedAt - 1,
+                    ]
+                )
+                try db.execute(
+                    sql: """
+                    INSERT INTO asset_tag_decision (
+                        asset_id, tag_id, decision, updated_at_ms
+                    ) VALUES (?, ?, 'rejected', ?)
+                    """,
+                    arguments: [
+                        assetID.uuidString.lowercased(),
+                        fixture.tagID.uuidString.lowercased(),
+                        decidedAt,
+                    ]
+                )
+            }
+        }
+
+        XCTAssertEqual(
+            try thresholds.referenceSuggestion(
+                tagID: fixture.tagID,
+                method: .featureKnn
+            ),
+            SuggestionThresholdReference(
+                minScore: Double(23) / 10,
+                rejectedSampleCount: 20
+            )
+        )
+        XCTAssertEqual(
+            try thresholds.referenceSuggestion(
+                tagID: fixture.tagID,
+                method: .personalCentroid
+            ),
+            SuggestionThresholdReference(minScore: 23, rejectedSampleCount: 20)
+        )
+        XCTAssertNil(
+            try thresholds.referenceSuggestion(
+                tagID: fixture.tagID,
+                method: .personalAdamW
+            )
+        )
+    }
+
+    func testReferenceSuggestionRequiresFiveTraceableRejectedScores() throws {
+        let fixture = try makeTagFixture(assetCount: 4)
+        let thresholds = GRDBSuggestionThresholdRepository(database: fixture.database)
+        try fixture.database.pool.write { db in
+            try db.execute(
+                sql: """
+                INSERT INTO tag_model_revision (
+                    tag_id, revision, provider, request_revision, preprocessing_revision,
+                    threshold, positive_count, negative_count, neighbor_count,
+                    sample_budget_per_role, created_at_ms
+                ) VALUES (?, 1, 'vision-feature-print', 1, 1, 0, 2, 2, 2, 12, 1)
+                """,
+                arguments: [fixture.tagID.uuidString.lowercased()]
+            )
+            for (index, assetID) in fixture.assetIDs.enumerated() {
+                let decidedAt = Int64(100 + index)
+                try db.execute(
+                    sql: """
+                    INSERT INTO prediction (
+                        asset_id, tag_id, content_revision, model_revision,
+                        score, state, created_at_ms
+                    ) VALUES (?, ?, 1, 1, ?, 'pendingReview', ?)
+                    """,
+                    arguments: [
+                        assetID.uuidString.lowercased(),
+                        fixture.tagID.uuidString.lowercased(),
+                        Double(index + 1) / 10,
+                        decidedAt - 1,
+                    ]
+                )
+                try db.execute(
+                    sql: """
+                    INSERT INTO asset_tag_decision (
+                        asset_id, tag_id, decision, updated_at_ms
+                    ) VALUES (?, ?, 'rejected', ?)
+                    """,
+                    arguments: [
+                        assetID.uuidString.lowercased(),
+                        fixture.tagID.uuidString.lowercased(),
+                        decidedAt,
+                    ]
+                )
+            }
+        }
+
+        XCTAssertNil(
+            try thresholds.referenceSuggestion(
+                tagID: fixture.tagID,
+                method: .featureKnn
+            )
+        )
+    }
+
     private struct TagFixture {
         let database: CatalogDatabase
         let scopeID: String
@@ -181,7 +358,7 @@ final class SuggestionThresholdTests: XCTestCase {
         let assetIDs: [UUID]
     }
 
-    private func makeTagFixture() throws -> TagFixture {
+    private func makeTagFixture(assetCount: Int = 2) throws -> TagFixture {
         let url = try makeTempDatabaseURL()
         let database = try CatalogDatabase.open(at: url)
         let scopeID = try database.pool.read { db in
@@ -189,7 +366,7 @@ final class SuggestionThresholdTests: XCTestCase {
         }
         let tagID = UUID()
         let sourceID = UUID()
-        let assetIDs = [UUID(), UUID()]
+        let assetIDs = (0 ..< assetCount).map { _ in UUID() }
         try database.pool.write { db in
             try db.execute(
                 sql: """

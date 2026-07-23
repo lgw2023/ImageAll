@@ -293,6 +293,52 @@ final class AppModelActivationCoordinatorTests: XCTestCase {
         XCTAssertEqual(updatedFactory.callCount, 1)
     }
 
+    @MainActor
+    func testSettingsShowsReferenceWithoutApplyingUntilUserConfirms() {
+        let tagID = UUID()
+        let thresholds = FakeSuggestionThresholdPort(
+            rows: [
+                SuggestionTagThresholdOverrideRow(
+                    tagID: tagID,
+                    displayName: "板栗",
+                    overrides: [:]
+                ),
+            ],
+            references: [
+                tagID: [
+                    .featureKnn: SuggestionThresholdReference(
+                        minScore: 0.42,
+                        rejectedSampleCount: 8
+                    ),
+                ],
+            ]
+        )
+        let store = UserDefaultsModelEnablementPreferenceStore(
+            defaults: makeIsolatedUserDefaults()
+        )
+        let factory = ModelServiceFactoryRecorder()
+        let model = AppModelSettingsModel(
+            coordinator: AppModelActivationCoordinator(
+                preferenceStore: store,
+                serviceFactory: factory.makeMissingService
+            )
+        )
+
+        model.attachSuggestionThresholds(thresholds)
+
+        XCTAssertEqual(model.suggestionOverrides.first?.tagID, tagID)
+        XCTAssertEqual(
+            model.suggestionReference(tagID: tagID, method: .featureKnn),
+            SuggestionThresholdReference(minScore: 0.42, rejectedSampleCount: 8)
+        )
+        XCTAssertNil(thresholds.overrideValue(tagID: tagID, method: .featureKnn))
+
+        model.applySuggestionReference(tagID: tagID, method: .featureKnn)
+
+        XCTAssertEqual(thresholds.overrideValue(tagID: tagID, method: .featureKnn), 0.42)
+        XCTAssertEqual(model.suggestionOverrides.first?.overrides[.featureKnn], 0.42)
+    }
+
     private func makeIsolatedUserDefaults() -> UserDefaults {
         let suiteName = "AppModelActivationCoordinatorTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
@@ -381,5 +427,103 @@ private final class ModelServiceFactoryRecorder: @unchecked Sendable {
 
     func release() {
         releaseSemaphore.signal()
+    }
+}
+
+private final class FakeSuggestionThresholdPort: SuggestionThresholdPort, @unchecked Sendable {
+    private let lock = NSLock()
+    private var rows: [SuggestionTagThresholdOverrideRow]
+    private let references: [UUID: [SuggestionScoreThresholdMethod: SuggestionThresholdReference]]
+
+    init(
+        rows: [SuggestionTagThresholdOverrideRow],
+        references: [UUID: [SuggestionScoreThresholdMethod: SuggestionThresholdReference]]
+    ) {
+        self.rows = rows
+        self.references = references
+    }
+
+    func defaults() throws -> SuggestionThresholdDefaults { .factory }
+
+    func setDefault(
+        method _: SuggestionScoreThresholdMethod,
+        minScore _: Double,
+        updatedAtMs _: Int64
+    ) throws {}
+
+    func overrideMinScore(
+        tagID: UUID,
+        method: SuggestionScoreThresholdMethod
+    ) throws -> Double? {
+        overrideValue(tagID: tagID, method: method)
+    }
+
+    func setOverride(
+        tagID: UUID,
+        method: SuggestionScoreThresholdMethod,
+        minScore: Double,
+        updatedAtMs _: Int64
+    ) throws {
+        lock.withLock {
+            guard let index = rows.firstIndex(where: { $0.tagID == tagID }) else { return }
+            var overrides = rows[index].overrides
+            overrides[method] = minScore
+            rows[index] = SuggestionTagThresholdOverrideRow(
+                tagID: rows[index].tagID,
+                displayName: rows[index].displayName,
+                overrides: overrides
+            )
+        }
+    }
+
+    func clearOverride(
+        tagID: UUID,
+        method: SuggestionScoreThresholdMethod
+    ) throws {
+        lock.withLock {
+            guard let index = rows.firstIndex(where: { $0.tagID == tagID }) else { return }
+            var overrides = rows[index].overrides
+            overrides.removeValue(forKey: method)
+            rows[index] = SuggestionTagThresholdOverrideRow(
+                tagID: rows[index].tagID,
+                displayName: rows[index].displayName,
+                overrides: overrides
+            )
+        }
+    }
+
+    func effectiveMinScore(
+        tagID: UUID,
+        method: SuggestionScoreThresholdMethod
+    ) throws -> Double {
+        overrideValue(tagID: tagID, method: method) ?? 0
+    }
+
+    func referenceSuggestion(
+        tagID: UUID,
+        method: SuggestionScoreThresholdMethod
+    ) throws -> SuggestionThresholdReference? {
+        references[tagID]?[method]
+    }
+
+    func listTagOverrides() throws -> [SuggestionTagThresholdOverrideRow] {
+        lock.withLock { rows }
+    }
+
+    func prunePendingBelowThreshold(
+        tagID _: UUID,
+        method _: SuggestionScoreThresholdMethod,
+        minScore _: Double
+    ) throws -> Int {
+        0
+    }
+
+    func overrideValue(
+        tagID: UUID,
+        method: SuggestionScoreThresholdMethod
+    ) -> Double? {
+        lock.withLock {
+            rows.first(where: { $0.tagID == tagID })?.overrides[method]
+        }
     }
 }

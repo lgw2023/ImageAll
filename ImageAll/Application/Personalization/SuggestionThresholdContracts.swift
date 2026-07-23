@@ -48,6 +48,11 @@ struct SuggestionTagThresholdOverrideRow: Equatable, Sendable, Identifiable {
     var id: UUID { tagID }
 }
 
+struct SuggestionThresholdReference: Equatable, Sendable {
+    let minScore: Double
+    let rejectedSampleCount: Int
+}
+
 protocol SuggestionThresholdPort: Sendable {
     func defaults() throws -> SuggestionThresholdDefaults
     func setDefault(
@@ -73,6 +78,12 @@ protocol SuggestionThresholdPort: Sendable {
         tagID: UUID,
         method: SuggestionScoreThresholdMethod
     ) throws -> Double
+    /// Read-only 90th-percentile reference from the latest traceable rejected scores.
+    /// Returns nil until at least five same-tag, same-method scores are available.
+    func referenceSuggestion(
+        tagID: UUID,
+        method: SuggestionScoreThresholdMethod
+    ) throws -> SuggestionThresholdReference?
     func listTagOverrides() throws -> [SuggestionTagThresholdOverrideRow]
     /// Deletes pending suggestions with `score <= minScore` for one tag + method.
     /// Does not rescan the library. Returns deleted row count.

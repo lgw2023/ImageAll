@@ -18,7 +18,24 @@ struct AppPersonalTagLibrarySuggestionBatch: Equatable, Sendable {
     let capability: PersonalModelSuggestionCapability
     let hits: [AppPersonalTagLibrarySuggestionHit]
     let checkedCount: Int
+    let aboveThresholdCount: Int
     let skippedCount: Int
+
+    init(
+        tagID: UUID,
+        capability: PersonalModelSuggestionCapability,
+        hits: [AppPersonalTagLibrarySuggestionHit],
+        checkedCount: Int,
+        aboveThresholdCount: Int? = nil,
+        skippedCount: Int
+    ) {
+        self.tagID = tagID
+        self.capability = capability
+        self.hits = hits
+        self.checkedCount = checkedCount
+        self.aboveThresholdCount = aboveThresholdCount ?? hits.count
+        self.skippedCount = skippedCount
+    }
 }
 
 protocol AppPersonalTagLibrarySuggesting: Sendable {

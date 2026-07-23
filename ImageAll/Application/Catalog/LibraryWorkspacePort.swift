@@ -108,10 +108,17 @@ enum LibraryWorkspaceNotice: Equatable, Sendable {
     case personalSampleSuggestionsNotReady
     case personalSampleSuggestionsModelUnavailable
     case personalSampleSuggestionsFailed
+    case featureKnnSuggestionsCompleted(
+        tagName: String,
+        candidates: Int,
+        aboveThreshold: Int,
+        skipped: Int
+    )
     case personalTagLibrarySuggestionsCompleted(
         tagName: String,
-        checked: Int,
-        suggested: Int,
+        candidates: Int,
+        aboveThreshold: Int,
+        inserted: Int,
         skipped: Int
     )
     case personalTagLibrarySuggestionsNotReady
@@ -120,8 +127,9 @@ enum LibraryWorkspaceNotice: Equatable, Sendable {
     case personalTagLibrarySuggestionsFailed
     case personalAdamWTagLibrarySuggestionsCompleted(
         tagName: String,
-        checked: Int,
-        suggested: Int,
+        candidates: Int,
+        aboveThreshold: Int,
+        inserted: Int,
         skipped: Int
     )
     case personalAdamWTagLibrarySuggestionsNotReady
