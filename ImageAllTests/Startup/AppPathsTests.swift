@@ -386,6 +386,129 @@ final class AppPathsTests: XCTestCase {
             XCTAssertEqual(error as? AppPathsError, .pathNotDirectory)
         }
     }
+
+    func testExternalMigrationProgressIsMonotonicAndReachesCompleted() throws {
+        let root = try StartupTestSupport.makeTempRoot(testCase: self)
+        let internalSupport = root
+            .appendingPathComponent("Library/Application Support/ImageAll", isDirectory: true)
+        let internalCaches = root
+            .appendingPathComponent("Library/Caches/ImageAll", isDirectory: true)
+        let externalRoot = root.appendingPathComponent("SSD1", isDirectory: true)
+        try FileManager.default.createDirectory(at: externalRoot, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(
+            at: internalSupport.appendingPathComponent("Catalog", isDirectory: true),
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.createDirectory(
+            at: internalCaches.appendingPathComponent("DerivedImages", isDirectory: true),
+            withIntermediateDirectories: true
+        )
+        try Data("catalog-bytes".utf8).write(
+            to: internalSupport.appendingPathComponent("Catalog/ImageAll.sqlite")
+        )
+        try Data("thumb-a".utf8).write(
+            to: internalCaches.appendingPathComponent("DerivedImages/a.bin")
+        )
+        try Data("thumb-b-longer".utf8).write(
+            to: internalCaches.appendingPathComponent("DerivedImages/b.bin")
+        )
+
+        let suiteName = "AppPathsTests.migration-progress.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let store = UserDefaultsAppStorageLocationStore(
+            defaults: defaults,
+            bookmarks: FakeAppStorageBookmarkPort()
+        )
+        store.commit(try store.prepareExternalRoot(externalRoot))
+
+        let progressBox = MigrationProgressBox()
+        let resolution = try store.resolve(
+            internalApplicationSupportDirectory: internalSupport,
+            internalCachesDirectory: internalCaches,
+            onProgress: { progress in
+                progressBox.append(progress)
+            }
+        )
+        resolution.accessLease?.stop()
+
+        let events = progressBox.events
+        XCTAssertFalse(events.isEmpty)
+        XCTAssertEqual(events.first?.phase, .preparing)
+        XCTAssertEqual(events.last?.phase, .completed)
+        XCTAssertGreaterThan(events.last?.totalBytes ?? 0, 0)
+        XCTAssertGreaterThanOrEqual(events.last?.bytesCopied ?? 0, events.last?.totalBytes ?? 1)
+
+        var previousBytes: Int64 = -1
+        var previousFiles = -1
+        for event in events {
+            XCTAssertGreaterThanOrEqual(event.bytesCopied, previousBytes)
+            XCTAssertGreaterThanOrEqual(event.filesCopied, previousFiles)
+            previousBytes = event.bytesCopied
+            previousFiles = event.filesCopied
+            XCTAssertGreaterThanOrEqual(event.fractionCompleted, 0)
+            XCTAssertLessThanOrEqual(event.fractionCompleted, 1)
+        }
+        XCTAssertTrue(events.contains(where: { $0.phase == .copyingApplicationSupport }))
+        XCTAssertTrue(events.contains(where: { $0.phase == .mergingCaches }))
+    }
+
+    func testExternalMigrationCancelFailsClosedBeforeCompletionMarker() throws {
+        let root = try StartupTestSupport.makeTempRoot(testCase: self)
+        let internalSupport = root
+            .appendingPathComponent("Library/Application Support/ImageAll", isDirectory: true)
+        let internalCaches = root
+            .appendingPathComponent("Library/Caches/ImageAll", isDirectory: true)
+        let externalRoot = root.appendingPathComponent("SSD1", isDirectory: true)
+        try FileManager.default.createDirectory(at: externalRoot, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(
+            at: internalSupport.appendingPathComponent("Catalog", isDirectory: true),
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.createDirectory(
+            at: internalCaches.appendingPathComponent("DerivedImages", isDirectory: true),
+            withIntermediateDirectories: true
+        )
+        try Data("catalog".utf8).write(
+            to: internalSupport.appendingPathComponent("Catalog/ImageAll.sqlite")
+        )
+        for index in 0 ..< 20 {
+            try Data("cache-\(index)".utf8).write(
+                to: internalCaches.appendingPathComponent("DerivedImages/\(index).bin")
+            )
+        }
+
+        let suiteName = "AppPathsTests.migration-cancel.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let store = UserDefaultsAppStorageLocationStore(
+            defaults: defaults,
+            bookmarks: FakeAppStorageBookmarkPort()
+        )
+        store.commit(try store.prepareExternalRoot(externalRoot))
+
+        let cancelAfter = 3
+        let counter = MigrationEventCounter()
+        XCTAssertThrowsError(
+            try store.resolve(
+                internalApplicationSupportDirectory: internalSupport,
+                internalCachesDirectory: internalCaches,
+                onProgress: { _ in
+                    counter.increment()
+                },
+                isCancelled: {
+                    counter.value >= cancelAfter
+                }
+            )
+        ) { error in
+            XCTAssertEqual(error as? AppStorageLocationError, .cancelled)
+        }
+
+        let marker = UserDefaultsAppStorageLocationStore
+            .applicationSupportDirectory(under: externalRoot)
+            .appendingPathComponent("Runtime/external-storage-v1.complete")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
+    }
 }
 
 @MainActor
@@ -394,6 +517,32 @@ private struct FakeAppStorageRootPicker: AppStorageRootPicking {
 
     func pickCacheRoot() -> URL? {
         selectedURL
+    }
+}
+
+private final class MigrationProgressBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: [ExternalAppStorageMigrationProgress] = []
+
+    var events: [ExternalAppStorageMigrationProgress] {
+        lock.withLock { stored }
+    }
+
+    func append(_ progress: ExternalAppStorageMigrationProgress) {
+        lock.withLock { stored.append(progress) }
+    }
+}
+
+private final class MigrationEventCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored = 0
+
+    var value: Int {
+        lock.withLock { stored }
+    }
+
+    func increment() {
+        lock.withLock { stored += 1 }
     }
 }
 

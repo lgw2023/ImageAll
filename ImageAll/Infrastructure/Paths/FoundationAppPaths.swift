@@ -2,14 +2,20 @@ import Foundation
 
 struct FoundationAppPathsResolver: AppPathsResolving {
     private let storageLocationStore: UserDefaultsAppStorageLocationStore
+    private let onMigrationProgress: (@Sendable (ExternalAppStorageMigrationProgress) -> Void)?
+    private let isMigrationCancelled: (@Sendable () -> Bool)?
 
     init(
         storageLocationStore: UserDefaultsAppStorageLocationStore =
             UserDefaultsAppStorageLocationStore(
                 bookmarks: FoundationAppStorageBookmarkAdapter()
-            )
+            ),
+        onMigrationProgress: (@Sendable (ExternalAppStorageMigrationProgress) -> Void)? = nil,
+        isMigrationCancelled: (@Sendable () -> Bool)? = nil
     ) {
         self.storageLocationStore = storageLocationStore
+        self.onMigrationProgress = onMigrationProgress
+        self.isMigrationCancelled = isMigrationCancelled
     }
 
     func resolve() throws -> AppPaths {
@@ -25,7 +31,9 @@ struct FoundationAppPathsResolver: AppPathsResolving {
         )
         let storage = try storageLocationStore.resolve(
             internalApplicationSupportDirectory: internalApplicationSupportDirectory,
-            internalCachesDirectory: internalCachesDirectory
+            internalCachesDirectory: internalCachesDirectory,
+            onProgress: onMigrationProgress,
+            isCancelled: isMigrationCancelled
         )
 
         let applicationSupportDirectory = storage.applicationSupportDirectory
@@ -152,6 +160,7 @@ enum AppStorageLocationError: Error, Equatable, Sendable {
     case bookmarkCreationFailed
     case migrationFailed
     case conflictingDestination
+    case cancelled
 }
 
 protocol AppStorageBookmarkPort: Sendable {
@@ -301,7 +310,9 @@ final class UserDefaultsAppStorageLocationStore: @unchecked Sendable {
 
     func resolve(
         internalApplicationSupportDirectory: URL,
-        internalCachesDirectory: URL
+        internalCachesDirectory: URL,
+        onProgress: (@Sendable (ExternalAppStorageMigrationProgress) -> Void)? = nil,
+        isCancelled: (@Sendable () -> Bool)? = nil
     ) throws -> AppStorageLocationResolution {
         guard let bookmark = savedBookmark else {
             return internalResolution(
@@ -335,7 +346,9 @@ final class UserDefaultsAppStorageLocationStore: @unchecked Sendable {
                 internalApplicationSupportDirectory:
                     internalApplicationSupportDirectory.standardizedFileURL,
                 internalCachesDirectory: internalCachesDirectory.standardizedFileURL,
-                externalRoot: root
+                externalRoot: root,
+                onProgress: onProgress,
+                isCancelled: isCancelled
             )
             promoteLegacyPreferenceIfNeeded(bookmark: bookmark, resolvedRoot: root)
             let lease = AppStorageSecurityScopeLease(bookmarks: bookmarks, url: root)
@@ -472,17 +485,43 @@ private struct ExternalAppStorageMigrator {
     func prepare(
         internalApplicationSupportDirectory: URL,
         internalCachesDirectory: URL,
-        externalRoot: URL
+        externalRoot: URL,
+        onProgress: (@Sendable (ExternalAppStorageMigrationProgress) -> Void)? = nil,
+        isCancelled: (@Sendable () -> Bool)? = nil
     ) throws -> ExternalAppStorageLayout {
+        var progress = ExternalAppStorageMigrationProgress.zero
+        func report(_ update: (inout ExternalAppStorageMigrationProgress) -> Void) throws {
+            if isCancelled?() == true {
+                progress.phase = .cancelled
+                onProgress?(progress)
+                throw AppStorageLocationError.cancelled
+            }
+            update(&progress)
+            onProgress?(progress)
+        }
+
+        try report { $0.phase = .preparing }
+
         let support = UserDefaultsAppStorageLocationStore.applicationSupportDirectory(
             under: externalRoot
         )
         let caches = UserDefaultsAppStorageLocationStore.cacheDirectory(under: externalRoot)
 
+        let supportEstimate = estimateWorkload(at: internalApplicationSupportDirectory)
+        let cacheEstimate = estimateWorkload(at: internalCachesDirectory)
+        try report {
+            $0.totalBytes = supportEstimate.bytes + cacheEstimate.bytes
+            $0.totalFiles = supportEstimate.files + cacheEstimate.files
+        }
+
         try ensureDirectory(at: support.deletingLastPathComponent())
+        try report { $0.phase = .copyingApplicationSupport }
         try migrateApplicationSupportIfNeeded(
             source: internalApplicationSupportDirectory,
-            destination: support
+            destination: support,
+            estimatedBytes: supportEstimate.bytes,
+            estimatedFiles: supportEstimate.files,
+            report: report
         )
         try ensureDirectory(at: support)
 
@@ -492,16 +531,30 @@ private struct ExternalAppStorageMigrator {
             .appendingPathComponent("Runtime", isDirectory: true)
             .appendingPathComponent("external-storage-v1.complete")
         if !fileManager.fileExists(atPath: completionMarker.path) {
+            try report { $0.phase = .convergingSQLite }
             try convergeCopiedSQLiteIfPresent(
                 at: support.appendingPathComponent("Catalog/ImageAll.sqlite")
             )
-            try mergeCacheDirectory(source: internalCachesDirectory, destination: caches)
+            try report { $0.phase = .mergingCaches }
+            try mergeCacheDirectory(
+                source: internalCachesDirectory,
+                destination: caches,
+                report: report
+            )
+            try report { $0.phase = .writingCompletionMarker }
             try ensureDirectory(at: completionMarker.deletingLastPathComponent())
             do {
                 try Data("v1\n".utf8).write(to: completionMarker, options: .atomic)
             } catch {
+                try report { $0.phase = .failed }
                 throw AppStorageLocationError.migrationFailed
             }
+        }
+
+        try report {
+            $0.phase = .completed
+            $0.bytesCopied = max($0.bytesCopied, $0.totalBytes)
+            $0.filesCopied = max($0.filesCopied, $0.totalFiles)
         }
 
         return ExternalAppStorageLayout(
@@ -512,7 +565,10 @@ private struct ExternalAppStorageMigrator {
 
     private func migrateApplicationSupportIfNeeded(
         source: URL,
-        destination: URL
+        destination: URL,
+        estimatedBytes: Int64,
+        estimatedFiles: Int,
+        report: (@escaping ((inout ExternalAppStorageMigrationProgress) -> Void) throws -> Void)
     ) throws {
         if fileManager.fileExists(atPath: destination.path) {
             try validateDirectory(destination)
@@ -524,6 +580,10 @@ private struct ExternalAppStorageMigrator {
                 ) else {
                     throw AppStorageLocationError.conflictingDestination
                 }
+                try report {
+                    $0.bytesCopied += estimatedBytes
+                    $0.filesCopied += estimatedFiles
+                }
                 return
             }
             try fileManager.removeItem(at: destination)
@@ -534,6 +594,7 @@ private struct ExternalAppStorageMigrator {
             return
         }
         try validateDirectory(source)
+        try report { _ in }
 
         let staging = destination.deletingLastPathComponent().appendingPathComponent(
             ".ImageAll.migration-\(operationIDProvider().uuidString.lowercased())",
@@ -547,6 +608,10 @@ private struct ExternalAppStorageMigrator {
             try fileManager.copyItem(at: source, to: staging)
             try verifyDirectoryCopy(source: source, destination: staging)
             try fileManager.moveItem(at: staging, to: destination)
+            try report {
+                $0.bytesCopied += estimatedBytes
+                $0.filesCopied += estimatedFiles
+            }
         } catch let error as AppStorageLocationError {
             if fileManager.fileExists(atPath: staging.path) {
                 try? fileManager.removeItem(at: staging)
@@ -560,7 +625,11 @@ private struct ExternalAppStorageMigrator {
         }
     }
 
-    private func mergeCacheDirectory(source: URL, destination: URL) throws {
+    private func mergeCacheDirectory(
+        source: URL,
+        destination: URL,
+        report: (@escaping ((inout ExternalAppStorageMigrationProgress) -> Void) throws -> Void)
+    ) throws {
         guard fileManager.fileExists(atPath: source.path) else {
             try ensureDirectory(at: destination)
             return
@@ -575,6 +644,7 @@ private struct ExternalAppStorageMigrator {
                 .isRegularFileKey,
                 .isSymbolicLinkKey,
                 .isAliasFileKey,
+                .fileSizeKey,
             ],
             options: [.skipsHiddenFiles]
         ) else {
@@ -582,6 +652,7 @@ private struct ExternalAppStorageMigrator {
         }
 
         for case let sourceItem as URL in enumerator {
+            try report { _ in }
             let relativePath = String(sourceItem.path.dropFirst(source.path.count + 1))
             let destinationItem = destination.appendingPathComponent(relativePath)
             let values = try sourceItem.resourceValues(
@@ -590,6 +661,7 @@ private struct ExternalAppStorageMigrator {
                     .isRegularFileKey,
                     .isSymbolicLinkKey,
                     .isAliasFileKey,
+                    .fileSizeKey,
                 ]
             )
             guard values.isSymbolicLink != true, values.isAliasFile != true else {
@@ -602,8 +674,52 @@ private struct ExternalAppStorageMigrator {
                     source: sourceItem,
                     destination: destinationItem
                 )
+                let fileBytes = Int64(values.fileSize ?? 0)
+                try report {
+                    $0.bytesCopied += fileBytes
+                    $0.filesCopied += 1
+                }
             }
         }
+    }
+
+    private func estimateWorkload(at root: URL) -> (bytes: Int64, files: Int) {
+        guard fileManager.fileExists(atPath: root.path),
+              let enumerator = fileManager.enumerator(
+                at: root,
+                includingPropertiesForKeys: [
+                    .isRegularFileKey,
+                    .fileSizeKey,
+                    .isSymbolicLinkKey,
+                    .isAliasFileKey,
+                ],
+                options: [.skipsHiddenFiles]
+              )
+        else {
+            return (0, 0)
+        }
+        var bytes: Int64 = 0
+        var files = 0
+        for case let item as URL in enumerator {
+            guard let values = try? item.resourceValues(
+                forKeys: [
+                    .isRegularFileKey,
+                    .fileSizeKey,
+                    .isSymbolicLinkKey,
+                    .isAliasFileKey,
+                ]
+            ) else {
+                continue
+            }
+            guard values.isSymbolicLink != true, values.isAliasFile != true else {
+                continue
+            }
+            if values.isRegularFile == true {
+                files += 1
+                bytes += Int64(values.fileSize ?? 0)
+            }
+        }
+        return (bytes, files)
     }
 
     private func convergeCopiedSQLiteIfPresent(at databaseURL: URL) throws {

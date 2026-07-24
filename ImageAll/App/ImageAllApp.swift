@@ -28,7 +28,13 @@ struct ImageAllApp: App {
         WindowGroup {
             RootView(
                 presentation: startupModel.presentation,
-                workspaceModel: startupModel.workspaceModel
+                workspaceModel: startupModel.workspaceModel,
+                onCancelStorageMigration: {
+                    startupModel.cancelStorageMigration()
+                },
+                onRetryBootstrap: {
+                    startupModel.retryBootstrap()
+                }
             )
             .task { await modelSettingsModel.start() }
             .onAppear { attachSettingsPortsIfReady() }

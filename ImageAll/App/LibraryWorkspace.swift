@@ -5740,6 +5740,23 @@ struct LibraryWorkspaceView: View {
                     "存储位置",
                     value: location.usesExternalStorage ? "外置磁盘" : "内置磁盘"
                 )
+                if location.requiresRestart {
+                    Text("状态：待重启迁移")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                    Text("已保存外置根位置。重新启动 ImageAll 后会显示迁移任务与进度，并在目录库打开前完成整包迁移。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else if location.usesExternalStorage {
+                    Text("状态：外置存储已生效")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text("状态：使用内置 Application Support / Caches")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
                 Text("应用资料")
                     .font(.caption)
                     .foregroundStyle(.secondary)

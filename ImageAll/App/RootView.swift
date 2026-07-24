@@ -3,13 +3,19 @@ import SwiftUI
 struct RootView: View {
     let presentation: StartupPresentation
     let workspaceModel: LibraryWorkspaceModel?
+    var onCancelStorageMigration: (() -> Void)?
+    var onRetryBootstrap: (() -> Void)?
 
     init(
         presentation: StartupPresentation,
-        workspaceModel: LibraryWorkspaceModel? = nil
+        workspaceModel: LibraryWorkspaceModel? = nil,
+        onCancelStorageMigration: (() -> Void)? = nil,
+        onRetryBootstrap: (() -> Void)? = nil
     ) {
         self.presentation = presentation
         self.workspaceModel = workspaceModel
+        self.onCancelStorageMigration = onCancelStorageMigration
+        self.onRetryBootstrap = onRetryBootstrap
     }
 
     var body: some View {
@@ -28,14 +34,66 @@ struct RootView: View {
     private var startupStatus: some View {
         VStack(spacing: 12) {
             Text(presentation.productName).font(.title)
-            ProgressView()
-                .opacity(isStarting ? 1 : 0)
+            if let migration = presentation.storageMigrationProgress,
+               migration.phase != .completed
+            {
+                storageMigrationPanel(migration)
+            } else {
+                ProgressView()
+                    .opacity(isStarting ? 1 : 0)
+            }
             Text(presentation.catalogState.displayToken)
                 .font(.body.monospaced())
                 .accessibilityIdentifier("catalogStateToken")
+            if case .catalogUnavailable = presentation.catalogState {
+                Button("重试启动") {
+                    onRetryBootstrap?()
+                }
+                .accessibilityIdentifier("startupRetryButton")
+            }
         }
         .padding(24)
         .frame(minWidth: 420, minHeight: 240)
+    }
+
+    private func storageMigrationPanel(
+        _ migration: ExternalAppStorageMigrationProgress
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("应用存储迁移")
+                .font(.headline)
+            Text(migration.statusText)
+                .foregroundStyle(.secondary)
+            ProgressView(value: migration.fractionCompleted)
+                .accessibilityIdentifier("storageMigrationProgress")
+            Text(migrationProgressCaption(migration))
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.secondary)
+            if isStarting, migration.phase != .cancelled, migration.phase != .failed {
+                Button("取消迁移") {
+                    onCancelStorageMigration?()
+                }
+                .accessibilityIdentifier("storageMigrationCancelButton")
+            }
+        }
+        .frame(maxWidth: 360, alignment: .leading)
+    }
+
+    private func migrationProgressCaption(
+        _ migration: ExternalAppStorageMigrationProgress
+    ) -> String {
+        if migration.totalBytes > 0 {
+            return "\(formattedBytes(migration.bytesCopied)) / \(formattedBytes(migration.totalBytes))"
+                + " · \(migration.filesCopied)/\(migration.totalFiles) 个文件"
+        }
+        if migration.totalFiles > 0 {
+            return "\(migration.filesCopied)/\(migration.totalFiles) 个文件"
+        }
+        return migration.statusText
+    }
+
+    private func formattedBytes(_ value: Int64) -> String {
+        ByteCountFormatter.string(fromByteCount: value, countStyle: .file)
     }
 
     private var isStarting: Bool {
