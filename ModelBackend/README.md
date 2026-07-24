@@ -127,7 +127,8 @@ uv run imageall-validate-standard-pack \
 激活模型。校验通过只证明 pack 契约完整，不等于批准其许可证、准确率、阈值校准或生产使用。
 
 生产 standard 候选还要通过独立 evidence verifier。仓库内 Places365 报告只记录公开来源元数据，不含
-权重或图片，并应稳定保持 `research`：
+权重或图片，并应稳定保持 `research`。该候选已于 2026-07-24 **产品拒绝**作生产包；报告继续用于
+复现 fail-closed 判定，不得据此开启下载、转换或 App 接入：
 
 ```bash
 uv run imageall-verify-standard-admission \

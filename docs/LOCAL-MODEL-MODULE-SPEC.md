@@ -1,6 +1,6 @@
 # ImageAll 可选本地模型模块实施规格
 
-> 状态：Python/HTTP 开发验证链、DINOv2 Core ML 转换/资源证据及既有双轨实验契约已实现；正式部署方向已切换为 App 容器内 Swift/Core ML，固定 artifact tracer、App 内启用选择、版本化 embedding cache、资源生命周期、个人线性 head、managed artifact、生产只读 adapter、显式原生重建与当前选中单资产 cache 填充均已实现；Places365 官方权重字节已复核，许可、公开数据和生产准入仍待后续门
+> 状态：Python/HTTP 开发验证链、DINOv2 Core ML 转换/资源证据及既有双轨实验契约已实现；正式部署方向已切换为 App 容器内 Swift/Core ML，固定 artifact tracer、App 内启用选择、版本化 embedding cache、资源生命周期、个人线性 head、managed artifact、生产只读 adapter、显式原生重建与当前选中单资产 cache 填充均已实现；Places365 官方权重字节已复核，**2026-07-24 已产品拒绝作生产包候选**（许可/公开数据门永久不适用）
 > 日期：2026-07-20
 > 开工基线：`main@14c3890b8c83c87a6f603c8900dfaabb3179ea6c`
 > 范围：正式 App 内 Core ML 推理/个人线性 head，以及仅供转换、离线评测和开发验证的独立 Python 工具；不包含 Python/HTTP/helper/XPC 用户运行依赖或生产准确率承诺
@@ -199,7 +199,7 @@ backbone。训练产物必须记录 encoder、模型 revision、预处理 revisi
 
 | 候选 | 职责 | 准入状态 |
 |---|---|---|
-| Places365 ResNet18 | 标准场景标签、场景属性和 ontology mapping 的首个 tracer 候选 | `research`；上游 commit 与官方字节 SHA 已复核，权重许可版本、公开评测和 Core ML 门未关闭 |
+| Places365 ResNet18 | 标准场景标签、场景属性和 ontology mapping 的历史研究候选 | **产品拒绝**（2026-07-24）；归档 `research`；不得评测/转换/进 App；下一生产候选须另选 |
 | DINOv2-small | 个人标签冻结 embedding | 固定 revision 的 PyTorch/Core ML 开发验证、FP16 artifact、App 内 Swift 加载/启用选择/版本化 embedding cache、跨实例发布、256 MiB 预算和旧 identity 清理均已实现；Swift/Accelerate 个人线性 head、App Application Support managed artifact、生产只读 adapter、显式原生重建与当前选中单资产 cache 填充均已实现；真实 `2 + 2` 人工小批待精确只读授权 |
 | SigLIP2 B/32 256 | 开放词表与标准概念候选评测 | 固定 revision 官方仓库约 1.55 GB，直接首包路径已由只读资源预筛拒绝；保留 teacher 研究候选 |
 | SegFormer-B0 ADE20K | 水域、天空、道路等标准标签的区域证据 | 研究候选，不单独决定标签 |
@@ -656,13 +656,13 @@ Swift client 对 available/unavailable 形状、嵌套 provider 字段与两个 
 
 ## 7. 后续切片
 
-生产 standard 模型的完整状态机、Places365 候选档案、suggested-only 质量门和资源门见
+生产 standard 模型的完整状态机、Places365 归档档案、suggested-only 质量门和资源门见
 [`STANDARD-MODEL-ADMISSION-SPEC.md`](./STANDARD-MODEL-ADMISSION-SPEC.md)。当前先实现不下载模型的
-离线证据 verifier 已由 `1699138` 实现；只有官方权重字节、许可和公开数据 manifest verified 后，才另起
-benchmark runner。Places365 官方主页的 academic research/education 表述与未标版本 CC BY 当前不足以
-证明产品分发许可，因此候选保持 `research`，不下载权重或数据。
+离线证据 verifier 已由 `1699138` 实现。Places365 因未标版本 CC BY 与 academic research/education
+用途冲突，已于 2026-07-24 **正式拒绝**作生产包；不得再为其补许可或下载验证数据。下一生产候选须另开
+产品决策后再跑 benchmark runner。
 
-1. 标准场景 tracer：fixture 级闭环、完整 package capability 握手、v009 ontology/model identity、v010 standard prediction/Review Queue、显式 Inspector 发布、v011 祖先 DAG 展开与 standard 全库持久任务已完成；生产准入规格已冻结，Places365 ResNet18 当前为 `research`，实际评测、转换和批准仍待完成；
+1. 标准场景 tracer：fixture 级闭环、完整 package capability 握手、v009 ontology/model identity、v010 standard prediction/Review Queue、显式 Inspector 发布、v011 祖先 DAG 展开与 standard 全库持久任务已完成；生产准入规格已冻结，Places365 ResNet18 **已产品拒绝**，下一生产标准场景包待另选候选；
 2. 个人训练：独立 CLI 与 App 用户触发的版本化 embedding/decision 快照、同步重建、原子发布和热重载
    已完成；后端版本化 embedding 持久缓存与 Swift 重建请求采用均已完成；personal 全库建议
    已通过持久 job/checkpoint、启动恢复、pause/resume/cancel 和 retryable 到期唤醒进入现有 Review

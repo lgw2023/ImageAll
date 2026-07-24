@@ -58,7 +58,17 @@
   "public_validation_dataset": {
     "blocker_manifest": "ModelBackend/research/manifests/places365-public-validation-20260720.json",
     "manifest_verified": false,
-    "status": "missing",
-    "reason": "No fixed, license-reviewed public validation image manifest has been approved yet."
+    "status": "permanently_inapplicable",
+    "reason": "Owner product rejection on 2026-07-24 closed the Places365 public-validation path; no Places2/Places365 evaluation dataset will be approved for production admission."
+  },
+  "product_disposition": {
+    "decided_utc": "2026-07-24",
+    "decision": "rejected_as_production_candidate",
+    "admission_machine_status": "research",
+    "may_progress_to_evaluation_ready": false,
+    "may_generate_standard_pack": false,
+    "may_enter_app_bundle": false,
+    "authority": "docs/STANDARD-MODEL-ADMISSION-SPEC.md §2.4",
+    "reason": "Owner formally rejected Places365 ResNet18 as the first production standard pack candidate. Keep archival research evidence only; select a new candidate with versioned redistribution-clear licenses and a license-reviewed public validation set."
   }
 }

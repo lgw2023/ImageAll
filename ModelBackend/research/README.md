@@ -9,7 +9,8 @@ This directory contains explicit, immutable inputs and reproducible evidence for
 - Public-validation blocker manifest: `manifests/places365-public-validation-20260720.json`
 - The original `.pth.tar` is intentionally ignored by Git and must never be added to the Xcode project or an App bundle.
 - The input tree was moved from `/Volumes/SSD1/places365-evidence/` without downloading again and made read-only.
-- Loading is prohibited while the candidate remains `research`. If the license and public-data gates later close, use only an isolated temporary directory and `torch.load(..., weights_only=True)`; never fall back to unrestricted pickle loading.
-- The public-validation blocker manifest intentionally contains no dataset identity or items. It records that no fixed, license-reviewed public validation dataset is approved; it must not be presented as evaluation evidence.
+- **Product disposition (2026-07-24):** the project owner formally rejected Places365 ResNet18 as a production standard pack candidate. Admission reports remain `research`; do not reopen license/data gates, load the checkpoint, convert Core ML, or ship this candidate. Keep the archival evidence only.
+- The public-validation blocker manifest records that Places365 validation is **permanently inapplicable** after that rejection. It must not be presented as evaluation evidence or filled with Places2/Places365 images.
+- A future production scene pack requires a **new** candidate with versioned, redistribution-clear licenses and a separately reviewed public validation set.
 
 Python/uv tooling under `ModelBackend` is limited to conversion, offline evaluation, and development validation. Production inference runs in the App process through Swift/Core ML.

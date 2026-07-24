@@ -6,7 +6,7 @@
     "model_id": "csailvision/places365-resnet18",
     "preprocessing_revision": "places365-resnet18-center-crop-v1"
   },
-  "status": "missing",
+  "status": "permanently_inapplicable",
   "manifest_verified": false,
   "approved_for_automated_use": false,
   "dataset": {
@@ -34,8 +34,13 @@
     "standard_pack_generation_allowed": false,
     "protected_hdd2_data_allowed": false
   },
+  "product_disposition": {
+    "decided_utc": "2026-07-24",
+    "decision": "rejected_as_production_candidate",
+    "reason": "Owner formally rejected Places365 ResNet18 as a production standard pack candidate. This public-validation gate is permanently inapplicable for that candidate and must not be reopened by filling in Places2/Places365 images."
+  },
   "decision": {
     "admission_state": "research",
-    "reason": "No fixed, license-reviewed public validation dataset or deterministic item manifest has been approved. This blocker manifest is evidence of the missing gate and is not an evaluation dataset manifest."
+    "reason": "Places365 public validation is permanently inapplicable after the 2026-07-24 product rejection. This blocker manifest is archival evidence, not an evaluation dataset manifest."
   }
 }
