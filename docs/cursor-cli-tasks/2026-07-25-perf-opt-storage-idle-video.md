@@ -1,9 +1,9 @@
 # Cursor CLI 任务：性能优化（存储迁移进度 / 非图片不入库 / 空闲预热）
 
 - **任务 ID：** `perf-opt-storage-idle-video`
-- **状态：** 产品契约已锁定；切片 A 可在交互会话实施，B/C 待后续独立 session
+- **状态：** 切片 A/B/C 均已实现并提交；本交接单可关闭
 - **权威交接单：** [`docs/PERF-OPT-STORAGE-IDLE-VIDEO-HANDOFF.md`](../PERF-OPT-STORAGE-IDLE-VIDEO-HANDOFF.md)
-- **上一批准基线：** `main@f00cf256`（handoff 撰写时）；正式 CLI 开工以含本文档的 Codex commit 为准
+- **上一批准基线：** `main@f00cf256`（handoff 撰写时）
 
 ## 锁定决策（不得改写）
 
