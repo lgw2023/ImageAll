@@ -441,6 +441,65 @@ struct LibraryWorkspaceCommandItem: Identifiable, Equatable {
     var id: LibraryWorkspaceCommand { command }
 }
 
+/// Limits concurrent grid thumbnail loads so sidebar navigation and inspector
+/// fetches stay responsive while a catalog scan keeps cells visible.
+private actor LibraryThumbnailLoadGate {
+    private var available: Int
+    private var waiters: [Waiter] = []
+
+    private struct Waiter {
+        let id: UUID
+        let continuation: CheckedContinuation<Void, Error>
+    }
+
+    init(limit: Int) {
+        precondition(limit > 0)
+        available = limit
+    }
+
+    func withPermit<T: Sendable>(
+        _ operation: @Sendable () async throws -> T
+    ) async throws -> T {
+        try await acquire()
+        defer { release() }
+        return try await operation()
+    }
+
+    private func acquire() async throws {
+        // Check before taking a slot. After a waiter is resumed it already owns
+        // the permit; throwing here would leak it because withPermit has not
+        // installed its defer-release yet.
+        try Task.checkCancellation()
+        if available > 0 {
+            available -= 1
+            return
+        }
+        let waiterID = UUID()
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                waiters.append(Waiter(id: waiterID, continuation: continuation))
+            }
+        } onCancel: {
+            Task { await self.cancelWaiter(id: waiterID) }
+        }
+    }
+
+    private func cancelWaiter(id: UUID) {
+        guard let index = waiters.firstIndex(where: { $0.id == id }) else { return }
+        let waiter = waiters.remove(at: index)
+        waiter.continuation.resume(throwing: CancellationError())
+    }
+
+    private func release() {
+        if let waiter = waiters.first {
+            waiters.removeFirst()
+            waiter.continuation.resume()
+        } else {
+            available += 1
+        }
+    }
+}
+
 enum AssetThumbnailLoadResult: Equatable, Sendable {
     case loaded(Data)
     case cloudOnly
@@ -557,6 +616,8 @@ final class LibraryWorkspaceModel: ObservableObject {
     private var thumbnailCacheVersions: [UUID: Int] = [:]
     private var thumbnailCacheOrder: [UUID] = []
     private let thumbnailCacheCapacity = 3_000
+    private let thumbnailLoadGate: LibraryThumbnailLoadGate
+    private var thumbnailLoadEpoch = 0
     private var browsingNavigationRequestID: UUID?
     private var selectionAnchorID: UUID?
     private var featureSuggestionCompletionContexts: [UUID: String] = [:]
@@ -587,7 +648,8 @@ final class LibraryWorkspaceModel: ObservableObject {
         tagGroupCollapsePreferences: LibraryTagGroupCollapsePreferences = LibraryTagGroupCollapsePreferences(),
         clock: any JobClock = SystemJobClock(),
         catalogProgressRefreshInterval: Duration = .milliseconds(750),
-        searchDebounceInterval: Duration = .milliseconds(300)
+        searchDebounceInterval: Duration = .milliseconds(300),
+        thumbnailLoadConcurrencyLimit: Int = 4
     ) {
         self.service = service
         self.review = review
@@ -606,6 +668,7 @@ final class LibraryWorkspaceModel: ObservableObject {
         self.clock = clock
         self.catalogProgressRefreshInterval = catalogProgressRefreshInterval
         self.searchDebounceInterval = searchDebounceInterval
+        self.thumbnailLoadGate = LibraryThumbnailLoadGate(limit: thumbnailLoadConcurrencyLimit)
     }
 
     var suggestionThresholdPortForSettings: (any SuggestionThresholdPort)? {
@@ -1168,6 +1231,7 @@ final class LibraryWorkspaceModel: ObservableObject {
             notice = .backgroundScanFailed
         }
         await reload(runPendingJobs: false)
+        await restoreDefaultSourceAuthorizations()
         for source in sources where source.kind == .photos && source.state == .active {
             await ensurePhotosLibraryIndexed(sourceID: source.id)
         }
@@ -1610,6 +1674,7 @@ final class LibraryWorkspaceModel: ObservableObject {
         // Invalidate a page query started by the prior sidebar selection even
         // before the newest navigation task gets scheduled on the main actor.
         assetPageRequestID = UUID()
+        thumbnailLoadEpoch &+= 1
         return requestID
     }
 
@@ -1677,6 +1742,18 @@ final class LibraryWorkspaceModel: ObservableObject {
         }
     }
 
+    /// Soft-restores existing source authorizations (Photos TCC + folder bookmarks)
+    /// without presenting pickers for every source.
+    private func restoreDefaultSourceAuthorizations() async {
+        do {
+            try await service.restoreDefaultSourceAuthorizations()
+            let service = service
+            sources = try await Self.offMain { try service.fetchSources() }
+        } catch {
+            // Keep previous source list; user can still reauthorize manually.
+        }
+    }
+
     func thumbnailData(assetID: UUID) async -> Data? {
         if let cached = cachedThumbnailData(for: assetID) {
             return cached
@@ -1720,8 +1797,16 @@ final class LibraryWorkspaceModel: ObservableObject {
             rememberThumbnailData(data, for: assetID)
             return .loaded(data)
         }
+        let service = service
+        let loadEpoch = thumbnailLoadEpoch
         do {
-            let data = try await service.loadThumbnail(assetID: assetID)
+            let data = try await thumbnailLoadGate.withPermit {
+                try Task.checkCancellation()
+                return try await service.loadThumbnail(assetID: assetID)
+            }
+            guard loadEpoch == thumbnailLoadEpoch else {
+                return .cancelled
+            }
             rememberThumbnailData(data, for: assetID)
             return .loaded(data)
         } catch is CancellationError {
@@ -1764,7 +1849,9 @@ final class LibraryWorkspaceModel: ObservableObject {
             case .failed:
                 attempt += 1
                 if attempt >= maxAttempts {
-                    return .unavailable
+                    // Stay retryable for the visible-cell loop; only definitive
+                    // eligibility/auth failures settle as `.unavailable`.
+                    return .failed
                 }
                 let delayNanoseconds = UInt64(
                     min(50_000_000.0 * pow(2.0, Double(attempt - 1)), 1_200_000_000.0)
@@ -3708,7 +3795,9 @@ final class LibraryWorkspaceModel: ObservableObject {
             repeat {
                 self.catalogReconcileRunRequested = false
                 do {
-                    try await Self.offMain {
+                    // Keep catalog reconcile below interactive QoS so sidebar
+                    // navigation and thumbnail reads stay responsive mid-scan.
+                    try await Self.offMain(priority: .utility) {
                         try service.runPendingReconcileJobs()
                         try service.runPendingPhotosReconcileJobs()
                     }
@@ -3753,54 +3842,55 @@ final class LibraryWorkspaceModel: ObservableObject {
 
     private func monitorCatalogReconcileProgress() async {
         let service = service
-        // Soft refresh: keep retrying until the first batch appears, then only
-        // occasionally append newer indexed assets — never remount the LazyVGrid.
-        var lastPublishedPhotosProgressCompleted = 0
+        // Soft refresh for Photos *and* folder scans: keep retrying until the
+        // first batch appears, then only occasionally append newer indexed
+        // assets — never remount the LazyVGrid.
+        var lastPublishedProgressCompleted = 0
         var lastSoftReloadAtCompleted = 0
-        var publishedFirstPhotosBatch = !items.isEmpty
+        var publishedFirstBatch = !items.isEmpty
         var lastMonitoredSourceID = selectedSourceID
-        var hadPhotosProgress = false
+        var hadCatalogProgress = false
+        var lastProgressSourceID: UUID?
         let softReloadStride = 64
         while !Task.isCancelled {
             if lastMonitoredSourceID != selectedSourceID {
                 lastMonitoredSourceID = selectedSourceID
-                lastPublishedPhotosProgressCompleted = 0
+                lastPublishedProgressCompleted = 0
                 lastSoftReloadAtCompleted = 0
-                publishedFirstPhotosBatch = !items.isEmpty
+                publishedFirstBatch = !items.isEmpty
             }
             if let progress = try? await Self.offMain({
                 try service.fetchCatalogReconcileProgress()
             }) {
                 catalogReconcileProgress = progress
-                if progress.sourceKind == .photos {
-                    hadPhotosProgress = true
-                    let viewingPhotosScope = selectedSourceIsPhotos || selectedSourceID == nil
-                    if viewingPhotosScope, progress.completed > 0 {
-                        let progressed = progress.completed > lastPublishedPhotosProgressCompleted
+                hadCatalogProgress = true
+                lastProgressSourceID = progress.sourceID
+                if isViewingCatalogProgressScope(progress), progress.completed > 0 {
+                    let progressed = progress.completed > lastPublishedProgressCompleted
+                    if progressed {
+                        lastPublishedProgressCompleted = progress.completed
+                    }
+                    // Empty grid must keep retrying even when progress stalls,
+                    // otherwise the first publish after a static progress tick is missed.
+                    let waitingForFirstBatch = !publishedFirstBatch
+                    let shouldSoftReload =
+                        waitingForFirstBatch
+                        || (progressed && progress.completed - lastSoftReloadAtCompleted >= softReloadStride)
+                    if shouldSoftReload {
+                        await loadFirstPage(remountGrid: false)
+                        publishedFirstBatch = !items.isEmpty
                         if progressed {
-                            lastPublishedPhotosProgressCompleted = progress.completed
-                        }
-                        // Empty grid must keep retrying even when progress stalls,
-                        // otherwise the first publish after a static progress tick is missed.
-                        let waitingForFirstBatch = !publishedFirstPhotosBatch
-                        let shouldSoftReload =
-                            waitingForFirstBatch
-                            || (progressed && progress.completed - lastSoftReloadAtCompleted >= softReloadStride)
-                        if shouldSoftReload {
-                            await loadFirstPage(remountGrid: false)
-                            publishedFirstPhotosBatch = !items.isEmpty
-                            if progressed {
-                                lastSoftReloadAtCompleted = progress.completed
-                            }
+                            lastSoftReloadAtCompleted = progress.completed
                         }
                     }
                 }
-            } else if hadPhotosProgress {
-                hadPhotosProgress = false
+            } else if hadCatalogProgress {
+                hadCatalogProgress = false
                 catalogReconcileProgress = nil
-                if selectedSourceIsPhotos || selectedSourceID == nil {
+                if isViewingCompletedCatalogProgressScope(sourceID: lastProgressSourceID) {
                     await loadFirstPage(remountGrid: false)
                 }
+                lastProgressSourceID = nil
             }
             do {
                 try await Task.sleep(for: catalogProgressRefreshInterval)
@@ -3808,6 +3898,42 @@ final class LibraryWorkspaceModel: ObservableObject {
                 return
             }
         }
+    }
+
+    /// Soft-reload only when the user is looking at the scanning scope (or "全部").
+    private func isViewingCatalogProgressScope(_ progress: CatalogReconcileProgress) -> Bool {
+        if selectedSourceID == nil {
+            return true
+        }
+        switch progress.sourceKind {
+        case .photos:
+            return selectedSourceIsPhotos
+        case .folder:
+            if let scanningID = progress.sourceID {
+                return selectedSourceID == scanningID
+            }
+            guard let selected = sources.first(where: { $0.id == selectedSourceID }) else {
+                return false
+            }
+            return selected.displayName == progress.sourceDisplayName
+        }
+    }
+
+    private func isViewingCompletedCatalogProgressScope(sourceID: UUID?) -> Bool {
+        if selectedSourceID == nil {
+            return true
+        }
+        if let sourceID {
+            if let selected = sources.first(where: { $0.id == selectedSourceID }),
+               selected.kind == .photos,
+               let completed = sources.first(where: { $0.id == sourceID }),
+               completed.kind == .photos
+            {
+                return true
+            }
+            return selectedSourceID == sourceID
+        }
+        return selectedSourceIsPhotos
     }
 
     private func loadFirstPage(remountGrid: Bool = true) async {
@@ -3843,6 +3969,11 @@ final class LibraryWorkspaceModel: ObservableObject {
                 if hadSelection {
                     notice = .selectionHiddenByFilter
                 }
+            } else if selectedAssetIDs.count == 1,
+                      let selectedAssetID = selectedAssetIDs.first,
+                      inspectorDetail?.assetID != selectedAssetID
+            {
+                _ = await refreshInspector()
             }
             phase = .content
         } catch {
@@ -4143,10 +4274,10 @@ final class LibraryWorkspaceModel: ObservableObject {
         let availableTags = tags
         do {
             if assetIDs.count == 1, let assetID = assetIDs.first {
-                let detail = try await Self.offMain {
+                let detail = try await Self.offMain(priority: .high) {
                     try service.fetchInspectorDetail(assetID: assetID)
                 }
-                let pending = try await Self.offMain {
+                let pending = try await Self.offMain(priority: .high) {
                     try reviewPort.pendingSuggestionsForAsset(assetID: assetID)
                 }
                 guard selectedAssetIDs == selectionSnapshot else { return false }
@@ -4221,9 +4352,10 @@ final class LibraryWorkspaceModel: ObservableObject {
     }
 
     private static func offMain<T: Sendable>(
+        priority: TaskPriority = .userInitiated,
         _ operation: @escaping @Sendable () throws -> T
     ) async throws -> T {
-        try await Task.detached(priority: .userInitiated, operation: operation).value
+        try await Task.detached(priority: priority, operation: operation).value
     }
 
     private func resetCloudPreviewIfSelectionChanged() {
@@ -6129,7 +6261,7 @@ struct LibraryWorkspaceView: View {
                         .onTapGesture {
                             selection = .source(source.id)
                         }
-                        .highPriorityGesture(sourceReorderGesture(for: source.id))
+                        .simultaneousGesture(sourceReorderGesture(for: source.id))
                 }
                 Button {
                     Task { await model.connectFolder() }
@@ -6252,7 +6384,7 @@ struct LibraryWorkspaceView: View {
 
     private func sourceReorderGesture(for sourceID: UUID) -> some Gesture {
         DragGesture(
-            minimumDistance: 4,
+            minimumDistance: 12,
             coordinateSpace: .local
         )
         .onChanged { value in
@@ -7700,9 +7832,11 @@ private struct AssetThumbnailView: View {
     }
 
     private func loadGridThumbnailWhileVisible() async {
-        image = nil
         isCloudOnly = false
-        guard item.availability == .available else { return }
+        guard item.availability == .available else {
+            image = nil
+            return
+        }
 
         if let cached = model.cachedThumbnailData(for: item.assetID),
            let cachedImage = LibraryGridThumbnailImageFactory.image(from: cached)
@@ -7732,8 +7866,24 @@ private struct AssetThumbnailView: View {
                 return
             case .unavailable:
                 return
-            case .cancelled, .failed:
+            case .cancelled:
+                if Task.isCancelled {
+                    return
+                }
+                // Remount/scroll cancellation — retry briefly while still visible.
                 try? await Task.sleep(nanoseconds: 120_000_000)
+                if Task.isCancelled {
+                    return
+                }
+            case .failed:
+                // Exhausted transient retries. Stop hammering the loader so
+                // sidebar navigation stays responsive; scrolling away and back
+                // remounts the cell task and tries again.
+                transientAttempts += 1
+                if transientAttempts >= 2 {
+                    return
+                }
+                try? await Task.sleep(nanoseconds: 250_000_000)
             }
         }
     }

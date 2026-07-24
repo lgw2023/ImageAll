@@ -424,6 +424,7 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         let asset = Self.makeAsset(sourceID: sourceID, fileName: "first-photo.jpg")
         let progress = CatalogReconcileProgress(
             sourceKind: .photos,
+            sourceID: sourceID,
             sourceDisplayName: "Apple Photos",
             completed: 200,
             total: 9_480
@@ -456,6 +457,106 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertTrue(model.isCatalogScanning)
         service.releaseBlockedReconcile()
         await waitForCatalogScanToFinish(model)
+    }
+
+    func testBackgroundFolderScanPublishesProgressAndFirstBatchBeforeCompletion() async {
+        let sourceID = UUID()
+        let asset = Self.makeAsset(sourceID: sourceID, fileName: "first-folder.jpg")
+        let progress = CatalogReconcileProgress(
+            sourceKind: .folder,
+            sourceID: sourceID,
+            sourceDisplayName: "2026",
+            completed: 200,
+            total: nil
+        )
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: sourceID,
+                kind: .folder,
+                displayName: "2026",
+                state: .active
+            ),
+            reconciledItems: [asset],
+            startsConnected: true,
+            blocksReconcileRuns: true,
+            catalogReconcileProgress: progress
+        )
+        let model = LibraryWorkspaceModel(
+            service: service,
+            catalogProgressRefreshInterval: .milliseconds(1)
+        )
+
+        await model.start()
+        while !service.hasStartedBlockedReconcile {
+            await Task.yield()
+        }
+        await model.selectSource(sourceID)
+        service.publishReconciledItems()
+        await waitForCatalogProgress(progress, model: model)
+        await waitForItems([asset.assetID], model: model)
+
+        XCTAssertTrue(model.isCatalogScanning)
+        service.releaseBlockedReconcile()
+        await waitForCatalogScanToFinish(model)
+    }
+
+    func testSelectOtherFolderSourceWhileScanBlockedUpdatesGrid() async {
+        let scanningID = UUID()
+        let downloadsID = UUID()
+        let downloadsAsset = Self.makeAsset(sourceID: downloadsID, fileName: "dl.jpg")
+        let scanningAsset = Self.makeAsset(sourceID: scanningID, fileName: "scan.jpg")
+        let progress = CatalogReconcileProgress(
+            sourceKind: .folder,
+            sourceID: scanningID,
+            sourceDisplayName: "2026",
+            completed: 50,
+            total: nil
+        )
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: scanningID,
+                kind: .folder,
+                displayName: "2026",
+                state: .active
+            ),
+            reconciledItems: [downloadsAsset, scanningAsset],
+            initialItems: [downloadsAsset, scanningAsset],
+            startsConnected: true,
+            additionalSources: [
+                LibrarySourceSummary(
+                    id: downloadsID,
+                    kind: .folder,
+                    displayName: "Downloads",
+                    state: .active
+                ),
+            ],
+            blocksReconcileRuns: true,
+            catalogReconcileProgress: progress
+        )
+        let model = LibraryWorkspaceModel(
+            service: service,
+            catalogProgressRefreshInterval: .milliseconds(1)
+        )
+
+        let startup = Task { await model.start() }
+        while !service.hasStartedBlockedReconcile {
+            await Task.yield()
+        }
+        await waitForItems(
+            [downloadsAsset.assetID, scanningAsset.assetID],
+            model: model
+        )
+
+        await model.selectSource(downloadsID)
+        XCTAssertEqual(model.browsingTitle, "Downloads")
+        await waitForItems([downloadsAsset.assetID], model: model)
+        XCTAssertTrue(model.isCatalogScanning)
+
+        service.releaseBlockedReconcile()
+        await startup.value
+        await waitForCatalogScanToFinish(model)
+        XCTAssertEqual(model.browsingTitle, "Downloads")
+        await waitForItems([downloadsAsset.assetID], model: model)
     }
 
     func testConnectPhotosRunsPhotosReconcileAndLoadsUnifiedGrid() async {
@@ -601,7 +702,9 @@ final class LibraryWorkspaceModelTests: XCTestCase {
             thumbnailData: Data("thumb".utf8),
             thumbnailCancelOnCall: 1
         )
-        let model = LibraryWorkspaceModel(service: service)
+        let model = LibraryWorkspaceModel(
+            service: service
+        )
         await model.start()
 
         let result = await model.loadThumbnailResult(assetID: asset.assetID)
@@ -628,7 +731,9 @@ final class LibraryWorkspaceModelTests: XCTestCase {
             thumbnailFailureCount: 2,
             thumbnailFailureError: PhotosLibraryError.libraryUnavailable
         )
-        let model = LibraryWorkspaceModel(service: service)
+        let model = LibraryWorkspaceModel(
+            service: service
+        )
         await model.start()
 
         let result = await model.loadThumbnailResultWithRetry(assetID: asset.assetID, maxAttempts: 4)
@@ -638,7 +743,7 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertEqual(model.cachedThumbnailData(for: asset.assetID), payload)
     }
 
-    func testThumbnailExhaustedTransientFailuresBecomeUnavailable() async {
+    func testThumbnailExhaustedTransientFailuresRemainRetryable() async {
         let sourceID = UUID()
         let asset = Self.makeAsset(sourceID: sourceID, fileName: "fail-thumb.jpg")
         let service = FakeLibraryWorkspaceService(
@@ -654,13 +759,54 @@ final class LibraryWorkspaceModelTests: XCTestCase {
             thumbnailFailureCount: 8,
             thumbnailFailureError: PhotosLibraryError.libraryUnavailable
         )
-        let model = LibraryWorkspaceModel(service: service)
+        let model = LibraryWorkspaceModel(
+            service: service
+        )
         await model.start()
 
         let result = await model.loadThumbnailResultWithRetry(assetID: asset.assetID, maxAttempts: 3)
 
-        XCTAssertEqual(result, .unavailable)
+        XCTAssertEqual(result, .failed)
         XCTAssertEqual(service.thumbnailLoadCallCount, 3)
+    }
+
+
+    func testRestoreDefaultSourceAuthorizationsActivatesAuthorizationRequiredSources() async {
+        let folderID = UUID()
+        let photosID = UUID()
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: folderID,
+                kind: .folder,
+                displayName: "Folder",
+                state: .authorizationRequired
+            ),
+            reconciledItems: [],
+            initialItems: [],
+            startsConnected: true,
+            additionalSources: [
+                LibrarySourceSummary(
+                    id: photosID,
+                    kind: .photos,
+                    displayName: "Apple Photos",
+                    state: .authorizationRequired
+                ),
+            ]
+        )
+        let model = LibraryWorkspaceModel(
+            service: service
+        )
+        await model.start()
+
+        XCTAssertEqual(
+            model.sources.first(where: { $0.id == folderID })?.state,
+            .active
+        )
+        XCTAssertEqual(
+            model.sources.first(where: { $0.id == photosID })?.state,
+            .active
+        )
+        XCTAssertGreaterThanOrEqual(service.restoreDefaultSourceAuthorizationsCallCount, 1)
     }
 
     func testCachedThumbnailSurvivesSoftFirstPageRefresh() async {
@@ -679,7 +825,9 @@ final class LibraryWorkspaceModelTests: XCTestCase {
             startsConnected: true,
             thumbnailData: payload
         )
-        let model = LibraryWorkspaceModel(service: service)
+        let model = LibraryWorkspaceModel(
+            service: service
+        )
         await model.start()
 
         let first = await model.loadThumbnailResult(assetID: asset.assetID)
@@ -709,7 +857,9 @@ final class LibraryWorkspaceModelTests: XCTestCase {
             thumbnailFailureCount: 5,
             thumbnailFailureError: PhotosLibraryError.authorizationDenied
         )
-        let model = LibraryWorkspaceModel(service: service)
+        let model = LibraryWorkspaceModel(
+            service: service
+        )
         await model.start()
 
         let single = await model.loadThumbnailResult(assetID: asset.assetID)
@@ -718,6 +868,183 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertEqual(single, .unavailable)
         XCTAssertEqual(retried, .unavailable)
         XCTAssertEqual(service.thumbnailLoadCallCount, 2)
+    }
+
+    func testGridThumbnailLoadsRespectConcurrencyLimit() async {
+        let sourceID = UUID()
+        let assets = (0 ..< 12).map {
+            Self.makeAsset(sourceID: sourceID, fileName: "thumb-\($0).jpg")
+        }
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: sourceID,
+                kind: .folder,
+                displayName: "Fixture",
+                state: .active
+            ),
+            reconciledItems: assets,
+            initialItems: assets,
+            startsConnected: true,
+            thumbnailData: Data("thumb".utf8),
+            thumbnailLoadDelayNanoseconds: 80_000_000
+        )
+        let model = LibraryWorkspaceModel(
+            service: service,
+            thumbnailLoadConcurrencyLimit: 4
+        )
+        await model.start()
+
+        await withTaskGroup(of: Void.self) { group in
+            for asset in assets {
+                group.addTask {
+                    _ = await model.loadThumbnailResult(assetID: asset.assetID)
+                }
+            }
+        }
+
+        XCTAssertEqual(service.thumbnailLoadCallCount, assets.count)
+        XCTAssertLessThanOrEqual(service.peakConcurrentThumbnailLoads, 4)
+        XCTAssertGreaterThan(service.peakConcurrentThumbnailLoads, 1)
+    }
+
+    func testCancelledThumbnailWaitersDoNotStarveLaterLoads() async {
+        let sourceID = UUID()
+        let assets = (0 ..< 6).map {
+            Self.makeAsset(sourceID: sourceID, fileName: "wait-\($0).jpg")
+        }
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: sourceID,
+                kind: .folder,
+                displayName: "Fixture",
+                state: .active
+            ),
+            reconciledItems: assets,
+            initialItems: assets,
+            startsConnected: true,
+            thumbnailData: Data("thumb".utf8),
+            thumbnailLoadDelayNanoseconds: 120_000_000
+        )
+        let model = LibraryWorkspaceModel(
+            service: service,
+            thumbnailLoadConcurrencyLimit: 2
+        )
+        await model.start()
+
+        let cancelled = assets.prefix(3).map { asset in
+            Task {
+                await model.loadThumbnailResult(assetID: asset.assetID)
+            }
+        }
+        for task in cancelled {
+            task.cancel()
+        }
+        for task in cancelled {
+            _ = await task.value
+        }
+
+        let completedAsset = assets[5]
+        let result = await model.loadThumbnailResult(assetID: completedAsset.assetID)
+
+        XCTAssertEqual(result, .loaded(Data("thumb".utf8)))
+        XCTAssertGreaterThanOrEqual(service.thumbnailLoadCallCount, 1)
+    }
+
+    func testSoftReloadDuringScanKeepsSingleSelectionInspectorDetail() async {
+        let sourceID = UUID()
+        let first = Self.makeAsset(sourceID: sourceID, fileName: "first.jpg")
+        let second = Self.makeAsset(sourceID: sourceID, fileName: "second.jpg")
+        let progress = CatalogReconcileProgress(
+            sourceKind: .folder,
+            sourceID: sourceID,
+            sourceDisplayName: "Fixture",
+            completed: 64,
+            total: 256
+        )
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: sourceID,
+                kind: .folder,
+                displayName: "Fixture",
+                state: .active
+            ),
+            reconciledItems: [first, second],
+            initialItems: [first],
+            startsConnected: true,
+            blocksReconcileRuns: true,
+            catalogReconcileProgress: progress
+        )
+        let model = LibraryWorkspaceModel(
+            service: service,
+            catalogProgressRefreshInterval: .milliseconds(1),
+            thumbnailLoadConcurrencyLimit: 4
+        )
+
+        await model.start()
+        while !service.hasStartedBlockedReconcile {
+            await Task.yield()
+        }
+        await model.selectSource(sourceID)
+        await waitForItems([first.assetID], model: model)
+        await model.selectAsset(first.assetID)
+        XCTAssertEqual(model.inspectorDetail?.assetID, first.assetID)
+
+        service.publishReconciledItems()
+        await waitForItems([first.assetID, second.assetID], model: model)
+
+        XCTAssertEqual(model.selectedAssetIDs, [first.assetID])
+        XCTAssertEqual(model.inspectorDetail?.assetID, first.assetID)
+        XCTAssertEqual(model.inspectorTags.count, model.tags.count)
+    }
+
+    func testSelectAssetRefreshesInspectorWhileThumbnailLoadsAreContended() async {
+        let sourceID = UUID()
+        let assets = (0 ..< 8).map {
+            Self.makeAsset(sourceID: sourceID, fileName: "busy-\($0).jpg")
+        }
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: sourceID,
+                kind: .folder,
+                displayName: "Fixture",
+                state: .active
+            ),
+            reconciledItems: assets,
+            initialItems: assets,
+            startsConnected: true,
+            thumbnailData: Data("thumb".utf8),
+            thumbnailLoadDelayNanoseconds: 150_000_000
+        )
+        let model = LibraryWorkspaceModel(
+            service: service,
+            thumbnailLoadConcurrencyLimit: 2
+        )
+        await model.start()
+
+        let contention = Task {
+            await withTaskGroup(of: Void.self) { group in
+                for asset in assets.dropLast() {
+                    group.addTask {
+                        _ = await model.loadThumbnailResultWithRetry(
+                            assetID: asset.assetID,
+                            maxAttempts: 1
+                        )
+                    }
+                }
+            }
+        }
+
+        for _ in 0 ..< 200 where service.peakConcurrentThumbnailLoads < 2 {
+            await Task.yield()
+        }
+
+        await model.selectAsset(assets.last!.assetID)
+
+        XCTAssertEqual(model.primarySelectedAssetID, assets.last!.assetID)
+        XCTAssertEqual(model.inspectorDetail?.assetID, assets.last!.assetID)
+
+        contention.cancel()
+        _ = await contention.value
     }
 
     func testCloudPreviewFailureCanRetryTheCurrentAsset() async {
@@ -6678,6 +7005,9 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
     private var storedCloudPreviewDownloadCallCount = 0
     private var storedCloudPreviewCancellationCount = 0
     private var storedThumbnailLoadCallCount = 0
+    private var storedActiveThumbnailLoads = 0
+    private var storedPeakConcurrentThumbnailLoads = 0
+    private let thumbnailLoadDelayNanoseconds: UInt64
     private var storedPreviewLoadCallCount = 0
     private var storedPortableExportCallCount = 0
     private var storedPreviewCacheClearCallCount = 0
@@ -6707,6 +7037,8 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
     private let assetPageSize: Int?
     private let assetPageFetchGate = DispatchSemaphore(value: 0)
     private var storedHasStartedBlockedAssetPageFetch = false
+    private var storedRestoreDefaultSourceAuthorizationsCallCount = 0
+    private let additionalSources: [LibrarySourceSummary]
 
     init(
         connectedSource: LibrarySourceSummary,
@@ -6719,6 +7051,7 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
         sourceMutationFails: Bool = false,
         initialItems: [AssetGridItemProjection] = [],
         startsConnected: Bool = false,
+        additionalSources: [LibrarySourceSummary] = [],
         blocksReconcileRuns: Bool = false,
         photosAuthorizationFails: Bool = false,
         reboundSource: LibrarySourceSummary? = nil,
@@ -6729,6 +7062,7 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
         thumbnailFailureCount: Int = 0,
         thumbnailFailureError: Error = PhotosLibraryError.libraryUnavailable,
         thumbnailCancelOnCall: Int? = nil,
+        thumbnailLoadDelayNanoseconds: UInt64 = 0,
         cloudPreviewData: Data = Data(),
         cloudPreviewProgress: [Double] = [],
         cloudPreviewFailureCount: Int = 0,
@@ -6768,6 +7102,7 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
         self.thumbnailFailureCount = thumbnailFailureCount
         self.thumbnailFailureError = thumbnailFailureError
         self.thumbnailCancelOnCall = thumbnailCancelOnCall
+        self.thumbnailLoadDelayNanoseconds = thumbnailLoadDelayNanoseconds
         storedRemainingThumbnailFailures = thumbnailFailureCount
         self.cloudPreviewData = cloudPreviewData
         self.cloudPreviewProgress = cloudPreviewProgress
@@ -6790,7 +7125,8 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
         storedSourceIsReconcileClean = sourceIsReconcileClean
         storedHasPendingCatalogReconcileJobs = hasPendingCatalogReconcileJobs ?? startsConnected
         remainingBlockedInspectorDetailFetches = blocksInspectorDetailFetches
-        storedSources = startsConnected ? [connectedSource] : []
+        self.additionalSources = additionalSources
+        storedSources = startsConnected ? [connectedSource] + additionalSources : []
         storedItems = initialItems
         storedTags = tags.map { tag in
             TagListItem(
@@ -6842,6 +7178,10 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
 
     var photosConnectCallCount: Int {
         lock.withLock { storedPhotosConnectCallCount }
+    }
+
+    var restoreDefaultSourceAuthorizationsCallCount: Int {
+        lock.withLock { storedRestoreDefaultSourceAuthorizationsCallCount }
     }
 
     var photosSyncCallCount: Int {
@@ -6898,6 +7238,10 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
 
     var thumbnailLoadCallCount: Int {
         lock.withLock { storedThumbnailLoadCallCount }
+    }
+
+    var peakConcurrentThumbnailLoads: Int {
+        lock.withLock { storedPeakConcurrentThumbnailLoads }
     }
 
     var previewLoadCallCount: Int {
@@ -7127,6 +7471,32 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
             storedPhotosReactivateCallCount += 1
             lastPhotosReactivateSourceID = sourceID
             storedHasPendingCatalogReconcileJobs = true
+            storedSources = storedSources.map { source in
+                guard source.id == sourceID else { return source }
+                return LibrarySourceSummary(
+                    id: source.id,
+                    kind: source.kind,
+                    displayName: source.displayName,
+                    state: .active
+                )
+            }
+        }
+    }
+
+    func restoreDefaultSourceAuthorizations() async throws {
+        lock.withLock {
+            storedRestoreDefaultSourceAuthorizationsCallCount += 1
+            storedSources = storedSources.map { source in
+                guard source.state == .authorizationRequired else {
+                    return source
+                }
+                return LibrarySourceSummary(
+                    id: source.id,
+                    kind: source.kind,
+                    displayName: source.displayName,
+                    state: .active
+                )
+            }
         }
     }
 
@@ -7301,7 +7671,19 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
     func loadThumbnail(assetID: UUID) async throws -> Data {
         let callCount = lock.withLock { () -> Int in
             storedThumbnailLoadCallCount += 1
+            storedActiveThumbnailLoads += 1
+            storedPeakConcurrentThumbnailLoads = max(
+                storedPeakConcurrentThumbnailLoads,
+                storedActiveThumbnailLoads
+            )
             return storedThumbnailLoadCallCount
+        }
+        defer {
+            lock.withLock { storedActiveThumbnailLoads -= 1 }
+        }
+        if thumbnailLoadDelayNanoseconds > 0 {
+            try await Task.sleep(nanoseconds: thumbnailLoadDelayNanoseconds)
+            try Task.checkCancellation()
         }
         if let thumbnailCancelOnCall,
            callCount == thumbnailCancelOnCall,

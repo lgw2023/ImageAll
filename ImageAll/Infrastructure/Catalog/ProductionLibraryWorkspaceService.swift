@@ -122,6 +122,25 @@ struct ProductionLibraryWorkspaceService: LibraryWorkspacePort, Sendable {
         try photosConnection.reactivate(sourceID: sourceID)
     }
 
+    func restoreDefaultSourceAuthorizations() async throws {
+        // Only soft-reactivate existing authorizationRequired sources.
+        // Do not call photos connect() here — that can kick off heavy library
+        // work during startup and freeze sidebar navigation.
+        for source in try photosConnection.fetchSources()
+            where source.kind == .photos && source.state == .authorizationRequired
+        {
+            try? photosConnection.reactivate(sourceID: source.id)
+        }
+
+        let folderSources = try sourceRepository.fetchAllFolderSources()
+        for source in folderSources where source.state == .authorizationRequired {
+            _ = try? authorization.attemptRestoreFolderAuthorization(sourceID: source.id)
+        }
+        // Restore security-scoped sessions for reads without enqueueing a
+        // full-library reconcile for every newly activated folder source.
+        try folderSourceMonitor.synchronize(enqueueInitialReconciles: false)
+    }
+
     func rebindPhotos(unavailableSourceID: UUID) async throws -> RebindPhotosOutcome {
         try await photosConnection.rebind(unavailableSourceID: unavailableSourceID)
     }
@@ -173,7 +192,7 @@ struct ProductionLibraryWorkspaceService: LibraryWorkspacePort, Sendable {
             guard let row = try Row.fetchOne(
                 db,
                 sql: """
-                SELECT job.kind, job.progress_completed, job.progress_total,
+                SELECT job.kind, job.source_id, job.progress_completed, job.progress_total,
                        source.display_name
                 FROM job
                 LEFT JOIN source ON source.id = job.source_id
@@ -195,8 +214,10 @@ struct ProductionLibraryWorkspaceService: LibraryWorkspacePort, Sendable {
                 return nil
             }
             let kind: String = row["kind"]
+            let sourceIDString: String? = row["source_id"]
             return CatalogReconcileProgress(
                 sourceKind: kind == PhotosReconcileJobFactory.kind ? .photos : .folder,
+                sourceID: sourceIDString.flatMap(UUID.init(uuidString:)),
                 sourceDisplayName: row["display_name"],
                 completed: row["progress_completed"],
                 total: row["progress_total"]

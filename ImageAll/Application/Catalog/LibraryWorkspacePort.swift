@@ -21,9 +21,25 @@ struct LibrarySourceSummary: Identifiable, Equatable, Sendable {
 
 struct CatalogReconcileProgress: Equatable, Sendable {
     let sourceKind: SourceKind
+    /// Scanning source id when known; used to soft-reload only the visible scope.
+    let sourceID: UUID?
     let sourceDisplayName: String?
     let completed: Int
     let total: Int?
+
+    init(
+        sourceKind: SourceKind,
+        sourceID: UUID? = nil,
+        sourceDisplayName: String?,
+        completed: Int,
+        total: Int?
+    ) {
+        self.sourceKind = sourceKind
+        self.sourceID = sourceID
+        self.sourceDisplayName = sourceDisplayName
+        self.completed = completed
+        self.total = total
+    }
 }
 
 enum ConnectPhotosOutcome: Equatable, Sendable {
@@ -258,6 +274,9 @@ protocol LibraryWorkspacePort: Sendable {
     func photosLibrarySupportedImageCount() throws -> Int
     func photosCatalogAssetCount(sourceID: UUID) throws -> Int
     func reactivatePhotosLibrary(sourceID: UUID) async throws
+    /// Restores authorization for existing sources when it can be done without a picker:
+    /// Photos TCC + bookmark probe for folders marked `authorizationRequired`.
+    func restoreDefaultSourceAuthorizations() async throws
     func rebindPhotos(unavailableSourceID: UUID) async throws -> RebindPhotosOutcome
     func reauthorizeFolder(sourceID: UUID) async throws -> ReauthorizeFolderOutcome
     func disableFolderSource(sourceID: UUID) async throws -> DisableFolderOutcome

@@ -999,9 +999,11 @@ private struct ReviewThumbnailView: View {
     }
 
     private func loadReviewThumbnailWhileVisible() async {
-        image = nil
         isCloudOnly = false
-        guard item.availability == .available else { return }
+        guard item.availability == .available else {
+            image = nil
+            return
+        }
 
         if let cached = model.cachedThumbnailData(for: item.assetID),
            let cachedImage = LibraryGridThumbnailImageFactory.image(from: cached)
@@ -1010,6 +1012,7 @@ private struct ReviewThumbnailView: View {
             return
         }
 
+        var transientAttempts = 0
         while !Task.isCancelled {
             switch await model.loadThumbnailResultWithRetry(assetID: item.assetID) {
             case let .loaded(data):
@@ -1019,6 +1022,10 @@ private struct ReviewThumbnailView: View {
                     image = decoded
                     return
                 }
+                transientAttempts += 1
+                if transientAttempts >= 4 {
+                    return
+                }
                 try? await Task.sleep(nanoseconds: 80_000_000)
             case .cloudOnly:
                 guard !Task.isCancelled else { return }
@@ -1026,8 +1033,14 @@ private struct ReviewThumbnailView: View {
                 return
             case .unavailable:
                 return
-            case .cancelled, .failed:
+            case .cancelled:
                 try? await Task.sleep(nanoseconds: 120_000_000)
+            case .failed:
+                transientAttempts += 1
+                if transientAttempts >= 2 {
+                    return
+                }
+                try? await Task.sleep(nanoseconds: 250_000_000)
             }
         }
     }

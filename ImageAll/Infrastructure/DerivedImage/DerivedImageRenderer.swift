@@ -22,6 +22,16 @@ struct DerivedImageRenderer: Sendable {
     private static let jpegQuality: CGFloat = 0.85
     private static let sRGB = CGColorSpace(name: CGColorSpace.sRGB)!
 
+    /// Upper bound passed to ImageIO before aspect-fill/fit. Slightly above the
+    /// final variant size so orientation + crop still have enough source pixels.
+    static func thumbnailMaxPixelSize(for variant: DerivedImageVariant) -> Int {
+        switch variant {
+        case .gridSmall: return 512
+        case .gridRegular: return 1_024
+        case .preview: return 2_048
+        }
+    }
+
     func render(
         sourceBytes: Data,
         variant: DerivedImageVariant,
@@ -44,10 +54,13 @@ struct DerivedImageRenderer: Sendable {
         }
         let frameIndex = cascade.primaryFrameIndex(source: source, isCameraRaw: isCameraRaw)
 
+        // Cap decode size before crop/fit so concurrent grid loads do not full-decode
+        // multi‑megapixel originals into memory (a common cause of blank thumbnails).
         let thumbOptions: [CFString: Any] = [
             kCGImageSourceCreateThumbnailFromImageAlways: true,
             kCGImageSourceCreateThumbnailWithTransform: true,
             kCGImageSourceShouldCacheImmediately: true,
+            kCGImageSourceThumbnailMaxPixelSize: Self.thumbnailMaxPixelSize(for: variant),
         ]
         guard let oriented = CGImageSourceCreateThumbnailAtIndex(
             source,

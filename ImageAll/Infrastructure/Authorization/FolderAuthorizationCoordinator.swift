@@ -141,6 +141,33 @@ struct FolderAuthorizationCoordinator: FolderAuthorizationCommandPort {
         return .disabled(sourceID: sourceID)
     }
 
+    /// Silently probes an existing bookmark for sources in
+    /// `authorizationRequired` (or offline `unavailable` that may have returned).
+    /// Returns true when access is restored to active. Does not present a picker.
+    func attemptRestoreFolderAuthorization(sourceID: UUID) throws -> Bool {
+        let source = try requireFolderSource(id: sourceID)
+        switch source.state {
+        case .active:
+            return true
+        case .disabled:
+            return false
+        case .unavailable, .authorizationRequired:
+            break
+        }
+
+        do {
+            _ = try resolveAccess(source: source) { _ in () }
+            try dependencies.repository.updateSourceState(
+                sourceID: sourceID,
+                state: .active,
+                nowMs: dependencies.clock.nowMs
+            )
+            return true
+        } catch {
+            return false
+        }
+    }
+
     func accessFolderSource<T>(
         sourceID: UUID,
         perform: (URL) throws -> T

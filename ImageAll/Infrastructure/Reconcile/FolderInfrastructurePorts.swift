@@ -362,7 +362,7 @@ final class FolderSourceMonitoringCoordinator: @unchecked Sendable {
         try synchronize()
     }
 
-    func synchronize() throws {
+    func synchronize(enqueueInitialReconciles: Bool = true) throws {
         let activeSources = try repository.fetchAllFolderSources().filter { $0.state == .active }
         let activeIDs = Set(activeSources.map(\.id))
         let removedSessions = lock.withLock { () -> [Session] in
@@ -383,6 +383,10 @@ final class FolderSourceMonitoringCoordinator: @unchecked Sendable {
                     removed?.stop()
                     continue
                 }
+                // Soft auth restore may activate many large folders at once. Keep
+                // security-scoped sessions alive for reads, but skip the initial
+                // reconcile storm that freezes sidebar navigation.
+                guard enqueueInitialReconciles else { continue }
                 if try dirtyTrigger.enqueueInitialReconcile(sourceID: source.id) {
                     notifyChange()
                 }
