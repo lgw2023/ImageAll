@@ -127,6 +127,10 @@ final class FolderDirectoryEnumerationSession: @unchecked Sendable {
                 return .unsafeRelativePath
             }
 
+            if ApprovedSourceMediaTypes.shouldSkipNonImageFileName(fileName) {
+                return .ignored
+            }
+
             return .candidateFile(relativePath: relativePath, fileName: fileName)
         }
 

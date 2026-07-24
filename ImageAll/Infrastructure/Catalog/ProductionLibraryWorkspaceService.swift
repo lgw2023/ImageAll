@@ -71,6 +71,10 @@ struct ProductionLibraryWorkspaceService: LibraryWorkspacePort, Sendable {
         try await appStorageLocationController.chooseExternalLocation()
     }
 
+    func purgeExcludedVideoAssets() throws -> CatalogExcludedVideoPurgeResult {
+        try CatalogExcludedVideoPurger.purge(in: sourceRepository.database)
+    }
+
     func fetchJobActivity() throws -> [JobActivityItem] {
         try queue.fetchActivityItems()
     }
@@ -385,6 +389,62 @@ struct ProductionLibraryWorkspaceService: LibraryWorkspacePort, Sendable {
 
     func deleteTagGroup(groupID: UUID) throws {
         try tags.deleteTagGroup(groupID: groupID, timestampMs: clock.nowMs)
+    }
+}
+
+enum CatalogExcludedVideoPurger {
+    static func purge(in database: CatalogDatabase) throws -> CatalogExcludedVideoPurgeResult {
+        try database.pool.write { db in
+            let rows = try Row.fetchAll(
+                db,
+                sql: """
+                SELECT id, media_type, file_name
+                FROM asset
+                """
+            )
+            var assetIDs: [String] = []
+            assetIDs.reserveCapacity(rows.count)
+            for row in rows {
+                let mediaType: String = row["media_type"]
+                let fileName: String? = row["file_name"]
+                if ApprovedSourceMediaTypes.isExcludedVideoAsset(
+                    mediaType: mediaType,
+                    fileName: fileName
+                ) {
+                    assetIDs.append(row["id"])
+                }
+            }
+            guard !assetIDs.isEmpty else {
+                return CatalogExcludedVideoPurgeResult(
+                    removedAssetCount: 0,
+                    removedDecisionCount: 0
+                )
+            }
+
+            var removedDecisions = 0
+            for assetID in assetIDs {
+                let decisionCount = try Int.fetchOne(
+                    db,
+                    sql: "SELECT COUNT(*) FROM asset_tag_decision WHERE asset_id = ?",
+                    arguments: [assetID]
+                ) ?? 0
+                if decisionCount > 0 {
+                    try db.execute(
+                        sql: "DELETE FROM asset_tag_decision WHERE asset_id = ?",
+                        arguments: [assetID]
+                    )
+                    removedDecisions += decisionCount
+                }
+                try db.execute(
+                    sql: "DELETE FROM asset WHERE id = ?",
+                    arguments: [assetID]
+                )
+            }
+            return CatalogExcludedVideoPurgeResult(
+                removedAssetCount: assetIDs.count,
+                removedDecisionCount: removedDecisions
+            )
+        }
     }
 }
 

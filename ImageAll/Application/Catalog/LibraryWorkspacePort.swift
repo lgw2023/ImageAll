@@ -70,6 +70,11 @@ enum AppStorageLocationSelectionResult: Equatable, Sendable {
     case restartRequired(AppStorageLocationStatus)
 }
 
+struct CatalogExcludedVideoPurgeResult: Equatable, Sendable {
+    let removedAssetCount: Int
+    let removedDecisionCount: Int
+}
+
 enum LibraryWorkspaceNotice: Equatable, Sendable {
     case selectionHiddenByFilter
     case presetTagsInstalled(createdCount: Int)
@@ -264,6 +269,7 @@ protocol LibraryWorkspacePort: Sendable {
     func fetchAppStorageLocation() -> AppStorageLocationStatus
     @MainActor
     func chooseExternalAppStorageLocation() async throws -> AppStorageLocationSelectionResult
+    func purgeExcludedVideoAssets() throws -> CatalogExcludedVideoPurgeResult
     func fetchJobActivity() throws -> [JobActivityItem]
     func applyJobActivityAction(_ action: JobActivityAction, jobID: UUID) throws
     func fetchSources() throws -> [LibrarySourceSummary]
@@ -349,5 +355,9 @@ extension LibraryWorkspacePort {
     @MainActor
     func chooseExternalAppStorageLocation() async throws -> AppStorageLocationSelectionResult {
         .cancelled
+    }
+
+    func purgeExcludedVideoAssets() throws -> CatalogExcludedVideoPurgeResult {
+        CatalogExcludedVideoPurgeResult(removedAssetCount: 0, removedDecisionCount: 0)
     }
 }

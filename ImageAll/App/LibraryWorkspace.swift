@@ -1231,6 +1231,7 @@ final class LibraryWorkspaceModel: ObservableObject {
             notice = .backgroundScanFailed
         }
         await reload(runPendingJobs: false)
+        await purgeExcludedVideoAssetsIfNeeded()
         await restoreDefaultSourceAuthorizations()
         for source in sources where source.kind == .photos && source.state == .active {
             await ensurePhotosLibraryIndexed(sourceID: source.id)
@@ -1239,6 +1240,20 @@ final class LibraryWorkspaceModel: ObservableObject {
             startCatalogReconcileRunnerIfNeeded()
         }
         startPersonalizationRunnerIfNeeded()
+    }
+
+    private func purgeExcludedVideoAssetsIfNeeded() async {
+        let service = service
+        do {
+            let result = try await Self.offMain {
+                try service.purgeExcludedVideoAssets()
+            }
+            if result.removedAssetCount > 0 {
+                await reload(runPendingJobs: false)
+            }
+        } catch {
+            // Best-effort cleanup; browsing remains available.
+        }
     }
 
     func exportPortableUserData() async {

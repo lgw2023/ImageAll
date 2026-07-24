@@ -156,6 +156,110 @@ final class FolderEnumerationTests: XCTestCase {
         XCTAssertEqual(candidates, ["real.png"])
     }
 
+    func testVideoAndNonImageFilesSkippedBeforeCandidate() throws {
+        let fixture = FolderReconcileTestSupport.TempFixtureRoot()
+        defer { fixture.cleanup() }
+        let root = try fixture.makeRoot(label: "nonimage")
+        _ = try fixture.writeFile(
+            root: root,
+            relativePath: "keep.png",
+            contents: FolderReconcileTestSupport.minimalPNGData()
+        )
+        _ = try fixture.writeFile(root: root, relativePath: "clip.mov", contents: Data("mov".utf8))
+        _ = try fixture.writeFile(root: root, relativePath: "clip.mp4", contents: Data("mp4".utf8))
+        _ = try fixture.writeFile(root: root, relativePath: "notes.txt", contents: Data("txt".utf8))
+        var candidates: [String] = []
+        var ignored = 0
+        let session = FolderDirectoryEnumerator(rootURL: root).makeSession()
+        while let entry = try session.nextEntry() {
+            switch entry {
+            case let .candidateFile(path, _):
+                candidates.append(path)
+            case .ignored:
+                ignored += 1
+            case .unsafeRelativePath:
+                XCTFail("unexpected unsafe path")
+            }
+        }
+        XCTAssertEqual(Set(candidates), ["keep.png"])
+        XCTAssertGreaterThanOrEqual(ignored, 3)
+    }
+
+    func testPurgeRemovesVideoAssetsAndTagDecisionsOnly() throws {
+        let url = try makeTempDatabaseURL()
+        let database = try CatalogDatabase.open(at: url)
+        let sourceID = UUID()
+        let imageID = UUID()
+        let videoID = UUID()
+        let tagID = UUID()
+        let now = Int64(1_700_000_000_000)
+        try FolderReconcileTestSupport.seedActiveFolderSource(
+            database: database,
+            sourceID: sourceID,
+            bookmark: Data("bookmark".utf8)
+        )
+        try database.pool.write { db in
+            try db.execute(
+                sql: """
+                INSERT INTO asset (
+                    id, source_id, locator_kind, relative_path, photos_local_identifier,
+                    locator_state, file_name, media_type, width, height,
+                    media_created_at_ms, media_modified_at_ms, content_revision,
+                    last_seen_generation, availability, record_created_at_ms, record_updated_at_ms
+                ) VALUES
+                (?, ?, 'file', 'keep.png', NULL, 'current', 'keep.png', 'public.jpeg',
+                 10, 10, NULL, NULL, 1, 1, 'available', ?, ?),
+                (?, ?, 'file', 'clip.mov', NULL, 'current', 'clip.mov', 'com.apple.quicktime-movie',
+                 NULL, NULL, NULL, NULL, 1, 1, 'unsupported', ?, ?)
+                """,
+                arguments: [
+                    imageID.uuidString.lowercased(), sourceID.uuidString.lowercased(), now, now,
+                    videoID.uuidString.lowercased(), sourceID.uuidString.lowercased(), now, now,
+                ]
+            )
+            try db.execute(
+                sql: """
+                INSERT INTO tag (id, name, normalized_name, state, created_at_ms, updated_at_ms, group_id)
+                VALUES (?, '家庭', '家庭', 'active', ?, ?, ?)
+                """,
+                arguments: [
+                    tagID.uuidString.lowercased(),
+                    now,
+                    now,
+                    TagGroupSeed.classify(displayName: "家庭").id.uuidString.lowercased(),
+                ]
+            )
+            try db.execute(
+                sql: """
+                INSERT INTO asset_tag_decision (asset_id, tag_id, decision, updated_at_ms)
+                VALUES (?, ?, 'accepted', ?), (?, ?, 'accepted', ?)
+                """,
+                arguments: [
+                    imageID.uuidString.lowercased(), tagID.uuidString.lowercased(), now,
+                    videoID.uuidString.lowercased(), tagID.uuidString.lowercased(), now,
+                ]
+            )
+        }
+
+        let result = try CatalogExcludedVideoPurger.purge(in: database)
+        XCTAssertEqual(result.removedAssetCount, 1)
+        XCTAssertEqual(result.removedDecisionCount, 1)
+
+        let remaining = try database.pool.read { db -> (Int, Int, Int) in
+            let assets = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM asset") ?? -1
+            let decisions = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM asset_tag_decision") ?? -1
+            let videoLeft = try Int.fetchOne(
+                db,
+                sql: "SELECT COUNT(*) FROM asset WHERE id = ?",
+                arguments: [videoID.uuidString.lowercased()]
+            ) ?? -1
+            return (assets, decisions, videoLeft)
+        }
+        XCTAssertEqual(remaining.0, 1)
+        XCTAssertEqual(remaining.1, 1)
+        XCTAssertEqual(remaining.2, 0)
+    }
+
     func testScopeStartStopPairedOnSuccess() throws {
         let url = try makeTempDatabaseURL()
         let database = try CatalogDatabase.open(at: url)
