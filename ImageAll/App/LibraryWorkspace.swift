@@ -568,6 +568,7 @@ final class LibraryWorkspaceModel: ObservableObject {
     @Published private(set) var appStorageLocation: AppStorageLocationStatus?
     @Published private(set) var isClearingPreviewCache = false
     @Published private(set) var isChoosingAppStorageLocation = false
+    @Published private(set) var isIdleThumbnailPrewarmEnabled: Bool
     @Published private(set) var jobActivityItems: [JobActivityItem] = []
     @Published private(set) var jobActivityActionInFlightIDs: Set<UUID> = []
     @Published private(set) var sourceOrderRevision = 0
@@ -618,6 +619,13 @@ final class LibraryWorkspaceModel: ObservableObject {
     private let thumbnailCacheCapacity = 3_000
     private let thumbnailLoadGate: LibraryThumbnailLoadGate
     private var thumbnailLoadEpoch = 0
+    private let idleThumbnailPrewarmPreferenceStore: any IdleThumbnailPrewarmPreferenceStore
+    private let idlePrewarmClock: any IdlePrewarmClock
+    private let idlePrewarmThresholdSeconds: TimeInterval
+    private let idlePrewarmMonitorTickSeconds: TimeInterval
+    private let idlePrewarmInstallEventMonitor: Bool
+    private var idleThumbnailPrewarmController: IdleThumbnailPrewarmController?
+    private var idlePrewarmGeneration = 0
     private var browsingNavigationRequestID: UUID?
     private var selectionAnchorID: UUID?
     private var featureSuggestionCompletionContexts: [UUID: String] = [:]
@@ -649,7 +657,13 @@ final class LibraryWorkspaceModel: ObservableObject {
         clock: any JobClock = SystemJobClock(),
         catalogProgressRefreshInterval: Duration = .milliseconds(750),
         searchDebounceInterval: Duration = .milliseconds(300),
-        thumbnailLoadConcurrencyLimit: Int = 4
+        thumbnailLoadConcurrencyLimit: Int = 4,
+        idleThumbnailPrewarmPreferenceStore: any IdleThumbnailPrewarmPreferenceStore =
+            UserDefaultsIdleThumbnailPrewarmPreferenceStore(),
+        idlePrewarmClock: any IdlePrewarmClock = SystemIdlePrewarmClock(),
+        idlePrewarmThresholdSeconds: TimeInterval = IdleThumbnailPrewarmDefaults.idleThresholdSeconds,
+        idlePrewarmMonitorTickSeconds: TimeInterval = IdleThumbnailPrewarmDefaults.monitorTickSeconds,
+        idlePrewarmInstallEventMonitor: Bool = true
     ) {
         self.service = service
         self.review = review
@@ -657,6 +671,12 @@ final class LibraryWorkspaceModel: ObservableObject {
         self.localModelSuggestions = localModelSuggestions
         self.appPersonalModelRebuilder = appPersonalModelRebuilder
         self.appPersonalAdamWModelRebuilder = appPersonalAdamWModelRebuilder
+        self.idleThumbnailPrewarmPreferenceStore = idleThumbnailPrewarmPreferenceStore
+        self.idlePrewarmClock = idlePrewarmClock
+        self.idlePrewarmThresholdSeconds = idlePrewarmThresholdSeconds
+        self.idlePrewarmMonitorTickSeconds = idlePrewarmMonitorTickSeconds
+        self.idlePrewarmInstallEventMonitor = idlePrewarmInstallEventMonitor
+        isIdleThumbnailPrewarmEnabled = idleThumbnailPrewarmPreferenceStore.isEnabled
         self.selectedAssetEmbeddingCache = selectedAssetEmbeddingCache
         self.appPersonalSampleSuggester = appPersonalSampleSuggester
         self.appPersonalTagLibrarySuggester = appPersonalTagLibrarySuggester
@@ -1240,6 +1260,68 @@ final class LibraryWorkspaceModel: ObservableObject {
             startCatalogReconcileRunnerIfNeeded()
         }
         startPersonalizationRunnerIfNeeded()
+        startIdleThumbnailPrewarmIfNeeded()
+    }
+
+    func setIdleThumbnailPrewarmEnabled(_ enabled: Bool) {
+        idleThumbnailPrewarmPreferenceStore.isEnabled = enabled
+        isIdleThumbnailPrewarmEnabled = enabled
+        idleThumbnailPrewarmController?.isEnabled = enabled
+    }
+
+    func noteUserInteractionForIdlePrewarm() {
+        idleThumbnailPrewarmController?.noteUserInteraction()
+    }
+
+    func evaluateIdleThumbnailPrewarmForTesting() {
+        idleThumbnailPrewarmController?.evaluateIdleState()
+    }
+
+    var isIdleThumbnailPrewarmingForTesting: Bool {
+        idleThumbnailPrewarmController?.isPrewarming == true
+    }
+
+    private func startIdleThumbnailPrewarmIfNeeded() {
+        guard idleThumbnailPrewarmController == nil else { return }
+        let controller = IdleThumbnailPrewarmController(
+            preferenceStore: idleThumbnailPrewarmPreferenceStore,
+            clock: idlePrewarmClock,
+            idleThresholdSeconds: idlePrewarmThresholdSeconds,
+            monitorTickSeconds: idlePrewarmMonitorTickSeconds,
+            installEventMonitor: idlePrewarmInstallEventMonitor
+        ) { [weak self] generation in
+            await self?.runIdleThumbnailPrewarm(generation: generation)
+        }
+        idleThumbnailPrewarmController = controller
+        isIdleThumbnailPrewarmEnabled = idleThumbnailPrewarmPreferenceStore.isEnabled
+        controller.start()
+    }
+
+    private func runIdleThumbnailPrewarm(generation: Int) async {
+        idlePrewarmGeneration = generation
+        let assetIDs = items.map(\.assetID)
+        for assetID in assetIDs {
+            if Task.isCancelled { return }
+            guard idleThumbnailPrewarmController?.currentPrewarmGeneration == generation else {
+                return
+            }
+            guard cachedThumbnailData(for: assetID) == nil else { continue }
+            await warmGridThumbnailForIdlePrewarm(assetID: assetID, generation: generation)
+        }
+    }
+
+    private func warmGridThumbnailForIdlePrewarm(assetID: UUID, generation: Int) async {
+        guard cachedThumbnailData(for: assetID) == nil else { return }
+        guard idleThumbnailPrewarmController?.currentPrewarmGeneration == generation else { return }
+        let service = service
+        do {
+            try Task.checkCancellation()
+            let data = try await service.loadThumbnail(assetID: assetID)
+            guard idleThumbnailPrewarmController?.currentPrewarmGeneration == generation else { return }
+            rememberThumbnailData(data, for: assetID)
+        } catch {
+            // Best-effort; browsing remains available.
+        }
     }
 
     private func purgeExcludedVideoAssetsIfNeeded() async {
@@ -5973,7 +6055,11 @@ struct LibraryWorkspaceView: View {
             }
         }
         .task { await model.start() }
+        .onChange(of: searchText) { _, _ in
+            model.noteUserInteractionForIdlePrewarm()
+        }
         .onChange(of: selection) { _, newValue in
+            model.noteUserInteractionForIdlePrewarm()
             let destination: LibraryBrowsingDestination = switch newValue {
             case .all, .none:
                 .all

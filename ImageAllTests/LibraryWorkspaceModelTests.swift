@@ -6950,7 +6950,7 @@ private final class FakeLibraryOriginalAssetOpener: LibraryOriginalAssetOpening 
     }
 }
 
-private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecked Sendable {
+final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecked Sendable {
     private let lock = NSLock()
     private let connectedSource: LibrarySourceSummary
     private let reconciledItems: [AssetGridItemProjection]

@@ -171,6 +171,7 @@ final class AppModelSettingsModel: ObservableObject {
 
 struct AppModelSettingsView: View {
     @ObservedObject var model: AppModelSettingsModel
+    @ObservedObject var idlePrewarmSettings: IdleThumbnailPrewarmSettingsModel
     @State private var showingOverrides = false
 
     var body: some View {
@@ -191,6 +192,20 @@ struct AppModelSettingsView: View {
                 LabeledContent("运行方式", value: model.runtimeText)
                 Text(model.detailText)
                     .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Section("性能") {
+                Toggle(
+                    "空闲时预生成缩略图",
+                    isOn: Binding(
+                        get: { idlePrewarmSettings.isEnabled },
+                        set: { idlePrewarmSettings.setEnabled($0) }
+                    )
+                )
+                .accessibilityIdentifier("idleThumbnailPrewarmToggle")
+                Text("默认开启。连续 3 分钟无操作后，会在后台为当前列表预热网格缩略图；任意操作立即让路给浏览。")
+                    .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -218,9 +233,12 @@ struct AppModelSettingsView: View {
         }
         .formStyle(.grouped)
         .padding(12)
-        .frame(width: 480, height: model.hasSuggestionThresholdPort ? 460 : 300)
+        .frame(width: 480, height: model.hasSuggestionThresholdPort ? 540 : 380)
         .sheet(isPresented: $showingOverrides) { SuggestionThresholdOverridesSheet(model: model) }
-        .onAppear { model.refreshSuggestionThresholds() }
+        .onAppear {
+            model.refreshSuggestionThresholds()
+            idlePrewarmSettings.refresh()
+        }
     }
 
     private func thresholdStepper(title: String, value: Double, onChange: @escaping (Double) -> Void) -> some View {
