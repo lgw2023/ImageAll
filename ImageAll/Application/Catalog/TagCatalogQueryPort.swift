@@ -2,6 +2,7 @@ import Foundation
 
 protocol TagCatalogQueryPort: Sendable {
     func listTags(includeArchived: Bool) throws -> [TagListItem]
+    func listTagGroups() throws -> [TagGroupListItem]
     func selectionAggregate(tagIDs: [UUID], assetIDs: [UUID]) throws -> [TagSelectionAggregate]
 }
 

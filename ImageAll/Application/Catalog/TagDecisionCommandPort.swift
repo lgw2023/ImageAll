@@ -13,4 +13,8 @@ protocol TagDecisionCommandPort: Sendable {
         timestampMs: Int64
     ) throws -> TagCreateAndApplyResult
     func restorePriorStates(_ snapshot: TagMutationPriorStateSnapshot, timestampMs: Int64) throws
+    func moveTag(tagID: UUID, toGroupID: UUID, timestampMs: Int64) throws -> TagListItem
+    func createTagGroup(rawName: String, timestampMs: Int64) throws -> TagGroupListItem
+    func renameTagGroup(groupID: UUID, rawName: String, timestampMs: Int64) throws -> TagGroupListItem
+    func deleteTagGroup(groupID: UUID, timestampMs: Int64) throws
 }

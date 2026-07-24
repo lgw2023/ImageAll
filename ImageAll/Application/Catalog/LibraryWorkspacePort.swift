@@ -60,6 +60,9 @@ enum LibraryWorkspaceNotice: Equatable, Sendable {
     case presetTagsAlreadyAvailable
     case invalidTagName
     case duplicateTag
+    case invalidTagGroupName
+    case duplicateTagGroup
+    case systemTagGroupProtected
     case tagMutationFailed
     case tagSelectionRefreshFailed
     case sourceActionFailed
@@ -277,6 +280,7 @@ protocol LibraryWorkspacePort: Sendable {
         onProgress: @escaping @Sendable (Double) -> Void
     ) async throws -> Data
     func listTags() throws -> [TagListItem]
+    func listTagGroups() throws -> [TagGroupListItem]
     func installPresetTags() throws -> TagPresetInstallResult
     func installStandardOntologyPackage(
         _ package: StandardOntologyPackageInput
@@ -295,6 +299,10 @@ protocol LibraryWorkspacePort: Sendable {
     ) throws -> TagCreateAndApplyResult
     func renameTag(tagID: UUID, rawName: String) throws -> TagListItem
     func archiveTag(tagID: UUID) throws
+    func moveTag(tagID: UUID, toGroupID: UUID) throws -> TagListItem
+    func createTagGroup(rawName: String) throws -> TagGroupListItem
+    func renameTagGroup(groupID: UUID, rawName: String) throws -> TagGroupListItem
+    func deleteTagGroup(groupID: UUID) throws
 }
 
 extension LibraryWorkspacePort {

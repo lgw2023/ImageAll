@@ -120,7 +120,8 @@ struct CompositionRoot {
             photosImages: photosAccess,
             cloudPreviews: photosAccess,
             downloadedPreviews: derivedImages,
-            photoThumbnails: derivedImages
+            photoThumbnails: derivedImages,
+            limits: .default
         )
         let localModelSuggestions: LocalModelSuggestionRuntime?
         localModelSuggestions = makeLocalModelSuggestionRuntime()

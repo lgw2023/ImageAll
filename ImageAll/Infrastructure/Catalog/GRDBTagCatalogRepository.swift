@@ -11,7 +11,8 @@ struct GRDBTagCatalogRepository: TagCatalogQueryPort, TagDecisionCommandPort, St
                 let sql: String
                 if includeArchived {
                     sql = """
-                    SELECT tag.id, tag.name, tag.state
+                    SELECT tag.id, tag.name, tag.state,
+                        coalesce(tag.group_id, ?) AS group_id
                     FROM tag
                     LEFT JOIN standard_tag_binding binding ON binding.tag_id = tag.id
                     LEFT JOIN ontology_concept concept
@@ -22,7 +23,8 @@ struct GRDBTagCatalogRepository: TagCatalogQueryPort, TagDecisionCommandPort, St
                     """
                 } else {
                     sql = """
-                    SELECT tag.id, tag.name, tag.state
+                    SELECT tag.id, tag.name, tag.state,
+                        coalesce(tag.group_id, ?) AS group_id
                     FROM tag
                     LEFT JOIN standard_tag_binding binding ON binding.tag_id = tag.id
                     LEFT JOIN ontology_concept concept
@@ -33,11 +35,35 @@ struct GRDBTagCatalogRepository: TagCatalogQueryPort, TagDecisionCommandPort, St
                     ORDER BY coalesce(concept.normalized_name, tag.normalized_name) COLLATE BINARY, tag.id
                     """
                 }
-                return try Row.fetchAll(db, sql: sql).map { row in
+                let fallbackGroup = TagGroupSeed.other.id.uuidString.lowercased()
+                return try Row.fetchAll(db, sql: sql, arguments: [fallbackGroup]).map { row in
                     TagListItem(
                         id: UUID(uuidString: row["id"])!,
                         displayName: row["name"],
-                        state: TagState(rawValue: row["state"]) ?? .active
+                        state: TagState(rawValue: row["state"]) ?? .active,
+                        groupID: UUID(uuidString: row["group_id"]) ?? TagGroupSeed.other.id
+                    )
+                }
+            }
+        }
+    }
+
+    func listTagGroups() throws -> [TagGroupListItem] {
+        try CatalogQueryErrorMapping.perform {
+            try database.pool.read { db in
+                try Row.fetchAll(
+                    db,
+                    sql: """
+                    SELECT id, name, sort_order, is_system
+                    FROM tag_group
+                    ORDER BY sort_order ASC, id ASC
+                    """
+                ).map { row in
+                    TagGroupListItem(
+                        id: UUID(uuidString: row["id"])!,
+                        displayName: row["name"],
+                        sortOrder: row["sort_order"],
+                        isSystem: (row["is_system"] as Int64) != 0
                     )
                 }
             }
@@ -258,8 +284,9 @@ struct GRDBTagCatalogRepository: TagCatalogQueryPort, TagDecisionCommandPort, St
                     )
                     try db.execute(
                         sql: """
-                        INSERT INTO tag (id, name, normalized_name, state, created_at_ms, updated_at_ms)
-                        VALUES (?, ?, ?, 'active', ?, ?)
+                        INSERT INTO tag (
+                            id, name, normalized_name, state, created_at_ms, updated_at_ms, group_id
+                        ) VALUES (?, ?, ?, 'active', ?, ?, ?)
                         """,
                         arguments: [
                             tagID.uuidString.lowercased(),
@@ -267,6 +294,7 @@ struct GRDBTagCatalogRepository: TagCatalogQueryPort, TagDecisionCommandPort, St
                             standardTagStorageKey(tagID: tagID),
                             timestampMs,
                             timestampMs,
+                            TagGroupSeed.classify(displayName: concept.displayName).id.uuidString.lowercased(),
                         ]
                     )
                 }
@@ -302,8 +330,9 @@ struct GRDBTagCatalogRepository: TagCatalogQueryPort, TagDecisionCommandPort, St
                 do {
                     try db.execute(
                         sql: """
-                        INSERT INTO tag (id, name, normalized_name, state, created_at_ms, updated_at_ms)
-                        VALUES (?, ?, ?, 'active', ?, ?)
+                        INSERT INTO tag (
+                            id, name, normalized_name, state, created_at_ms, updated_at_ms, group_id
+                        ) VALUES (?, ?, ?, 'active', ?, ?, ?)
                         """,
                         arguments: [
                             CatalogQuerySQLHelpers.lowercaseUUID(tag.id),
@@ -311,6 +340,7 @@ struct GRDBTagCatalogRepository: TagCatalogQueryPort, TagDecisionCommandPort, St
                             tag.normalizedName,
                             timestampMs,
                             timestampMs,
+                            TagGroupSeed.classify(displayName: tag.displayName).id.uuidString.lowercased(),
                         ]
                     )
                 } catch let error as DatabaseError where error.resultCode == .SQLITE_CONSTRAINT {
@@ -343,8 +373,9 @@ struct GRDBTagCatalogRepository: TagCatalogQueryPort, TagDecisionCommandPort, St
                     do {
                         try db.execute(
                             sql: """
-                            INSERT INTO tag (id, name, normalized_name, state, created_at_ms, updated_at_ms)
-                            VALUES (?, ?, ?, 'active', ?, ?)
+                            INSERT INTO tag (
+                                id, name, normalized_name, state, created_at_ms, updated_at_ms, group_id
+                            ) VALUES (?, ?, ?, 'active', ?, ?, ?)
                             """,
                             arguments: [
                                 CatalogQuerySQLHelpers.lowercaseUUID(tag.id),
@@ -352,6 +383,7 @@ struct GRDBTagCatalogRepository: TagCatalogQueryPort, TagDecisionCommandPort, St
                                 tag.normalizedName,
                                 timestampMs,
                                 timestampMs,
+                                TagGroupSeed.classify(displayName: tag.displayName).id.uuidString.lowercased(),
                             ]
                         )
                     } catch let error as DatabaseError where error.resultCode == .SQLITE_CONSTRAINT {
@@ -434,6 +466,160 @@ struct GRDBTagCatalogRepository: TagCatalogQueryPort, TagDecisionCommandPort, St
         }
     }
 
+    func moveTag(tagID: UUID, toGroupID: UUID, timestampMs: Int64) throws -> TagListItem {
+        try CatalogQueryErrorMapping.perform {
+            try database.pool.write { db in
+                guard try tagExists(db, tagID: tagID) else {
+                    throw CatalogQueryError.notFound
+                }
+                guard try tagGroupExists(db, groupID: toGroupID) else {
+                    throw CatalogQueryError.notFound
+                }
+                try db.execute(
+                    sql: """
+                    UPDATE tag
+                    SET group_id = ?, updated_at_ms = ?
+                    WHERE id = ?
+                    """,
+                    arguments: [
+                        CatalogQuerySQLHelpers.lowercaseUUID(toGroupID),
+                        timestampMs,
+                        CatalogQuerySQLHelpers.lowercaseUUID(tagID),
+                    ]
+                )
+                return try fetchTagListItem(db, tagID: tagID)
+            }
+        }
+    }
+
+    func createTagGroup(rawName: String, timestampMs: Int64) throws -> TagGroupListItem {
+        try CatalogQueryErrorMapping.perform {
+            try database.pool.write { db in
+                let existing = try fetchExistingGroups(db)
+                let nextSort = (existing.map(\.sortOrder).max() ?? -1) + 1
+                let created: TagGroup
+                switch TagGroupRules.createGroup(
+                    rawName: rawName,
+                    existingGroups: existing,
+                    sortOrder: nextSort
+                ) {
+                case let .success(group):
+                    created = group
+                case let .failure(error):
+                    throw mapDomainError(error)
+                }
+
+                do {
+                    try db.execute(
+                        sql: """
+                        INSERT INTO tag_group (
+                            id, name, sort_order, is_system, created_at_ms, updated_at_ms
+                        ) VALUES (?, ?, ?, 0, ?, ?)
+                        """,
+                        arguments: [
+                            CatalogQuerySQLHelpers.lowercaseUUID(created.id),
+                            created.displayName,
+                            created.sortOrder,
+                            timestampMs,
+                            timestampMs,
+                        ]
+                    )
+                } catch let error as DatabaseError where error.resultCode == .SQLITE_CONSTRAINT {
+                    throw CatalogQueryError.duplicateTag
+                } catch {
+                    throw CatalogQueryError.persistenceFailure
+                }
+                return TagGroupListItem(
+                    id: created.id,
+                    displayName: created.displayName,
+                    sortOrder: created.sortOrder,
+                    isSystem: false
+                )
+            }
+        }
+    }
+
+    func renameTagGroup(groupID: UUID, rawName: String, timestampMs: Int64) throws -> TagGroupListItem {
+        try CatalogQueryErrorMapping.perform {
+            try database.pool.write { db in
+                let existing = try fetchExistingGroups(db)
+                guard let current = existing.first(where: { $0.id == groupID }) else {
+                    throw CatalogQueryError.notFound
+                }
+                let renamed: TagGroup
+                switch TagGroupRules.renameGroup(current, rawName: rawName, existingGroups: existing) {
+                case let .success(group):
+                    renamed = group
+                case .failure(.invalidStateTransition):
+                    throw CatalogQueryError.systemGroupProtected
+                case let .failure(error):
+                    throw mapDomainError(error)
+                }
+                do {
+                    try db.execute(
+                        sql: """
+                        UPDATE tag_group
+                        SET name = ?, updated_at_ms = ?
+                        WHERE id = ?
+                        """,
+                        arguments: [
+                            renamed.displayName,
+                            timestampMs,
+                            CatalogQuerySQLHelpers.lowercaseUUID(groupID),
+                        ]
+                    )
+                } catch let error as DatabaseError where error.resultCode == .SQLITE_CONSTRAINT {
+                    throw CatalogQueryError.duplicateTag
+                } catch {
+                    throw CatalogQueryError.persistenceFailure
+                }
+                return TagGroupListItem(
+                    id: renamed.id,
+                    displayName: renamed.displayName,
+                    sortOrder: renamed.sortOrder,
+                    isSystem: renamed.isSystem
+                )
+            }
+        }
+    }
+
+    func deleteTagGroup(groupID: UUID, timestampMs: Int64) throws {
+        try CatalogQueryErrorMapping.perform {
+            try database.pool.write { db in
+                let existing = try fetchExistingGroups(db)
+                guard let current = existing.first(where: { $0.id == groupID }) else {
+                    throw CatalogQueryError.notFound
+                }
+                switch TagGroupRules.deleteGroup(current) {
+                case .success:
+                    break
+                case .failure(.invalidStateTransition):
+                    throw CatalogQueryError.systemGroupProtected
+                case let .failure(error):
+                    throw mapDomainError(error)
+                }
+
+                let fallbackGroupID = TagGroupSeed.other.id
+                try db.execute(
+                    sql: """
+                    UPDATE tag
+                    SET group_id = ?, updated_at_ms = ?
+                    WHERE group_id = ?
+                    """,
+                    arguments: [
+                        CatalogQuerySQLHelpers.lowercaseUUID(fallbackGroupID),
+                        timestampMs,
+                        CatalogQuerySQLHelpers.lowercaseUUID(groupID),
+                    ]
+                )
+                try db.execute(
+                    sql: "DELETE FROM tag_group WHERE id = ?",
+                    arguments: [CatalogQuerySQLHelpers.lowercaseUUID(groupID)]
+                )
+            }
+        }
+    }
+
     func batchAccept(tagID: UUID, assetIDs: [UUID], timestampMs: Int64) throws -> TagMutationResult {
         try applyBatchDecision(tagID: tagID, assetIDs: assetIDs, decision: .accepted, timestampMs: timestampMs)
     }
@@ -496,8 +682,9 @@ struct GRDBTagCatalogRepository: TagCatalogQueryPort, TagDecisionCommandPort, St
                 do {
                     try db.execute(
                         sql: """
-                        INSERT INTO tag (id, name, normalized_name, state, created_at_ms, updated_at_ms)
-                        VALUES (?, ?, ?, 'active', ?, ?)
+                        INSERT INTO tag (
+                            id, name, normalized_name, state, created_at_ms, updated_at_ms, group_id
+                        ) VALUES (?, ?, ?, 'active', ?, ?, ?)
                         """,
                         arguments: [
                             CatalogQuerySQLHelpers.lowercaseUUID(tag.id),
@@ -505,6 +692,7 @@ struct GRDBTagCatalogRepository: TagCatalogQueryPort, TagDecisionCommandPort, St
                             tag.normalizedName,
                             timestampMs,
                             timestampMs,
+                            TagGroupSeed.classify(displayName: tag.displayName).id.uuidString.lowercased(),
                         ]
                     )
                 } catch let error as DatabaseError where error.resultCode == .SQLITE_CONSTRAINT {
@@ -934,7 +1122,7 @@ struct GRDBTagCatalogRepository: TagCatalogQueryPort, TagDecisionCommandPort, St
         try Row.fetchAll(
             db,
             sql: """
-            SELECT id, name, state
+            SELECT id, name, state, coalesce(group_id, ?) AS group_id
             FROM standard_tag_binding binding
             JOIN tag ON tag.id = binding.tag_id
             JOIN ontology_concept concept
@@ -944,12 +1132,17 @@ struct GRDBTagCatalogRepository: TagCatalogQueryPort, TagDecisionCommandPort, St
             WHERE binding.ontology_id = ? AND binding.ontology_revision = ?
             ORDER BY concept.normalized_name COLLATE BINARY, tag.id
             """,
-            arguments: [ontologyID, ontologyRevision]
+            arguments: [
+                TagGroupSeed.other.id.uuidString.lowercased(),
+                ontologyID,
+                ontologyRevision,
+            ]
         ).map { row in
             TagListItem(
                 id: UUID(uuidString: row["id"])!,
                 displayName: row["name"],
-                state: TagState(rawValue: row["state"]) ?? .active
+                state: TagState(rawValue: row["state"]) ?? .active,
+                groupID: UUID(uuidString: row["group_id"]) ?? TagGroupSeed.other.id
             )
         }
     }
@@ -982,6 +1175,63 @@ struct GRDBTagCatalogRepository: TagCatalogQueryPort, TagDecisionCommandPort, St
         default:
             .persistenceFailure
         }
+    }
+
+    private func fetchTagListItem(_ db: Database, tagID: UUID) throws -> TagListItem {
+        guard let row = try Row.fetchOne(
+            db,
+            sql: """
+            SELECT id, name, state, coalesce(group_id, ?) AS group_id
+            FROM tag
+            WHERE id = ?
+            """,
+            arguments: [
+                TagGroupSeed.other.id.uuidString.lowercased(),
+                CatalogQuerySQLHelpers.lowercaseUUID(tagID),
+            ]
+        ) else {
+            throw CatalogQueryError.notFound
+        }
+        return TagListItem(
+            id: UUID(uuidString: row["id"])!,
+            displayName: row["name"],
+            state: TagState(rawValue: row["state"]) ?? .active,
+            groupID: UUID(uuidString: row["group_id"]) ?? TagGroupSeed.other.id
+        )
+    }
+
+    private func fetchExistingGroups(_ db: Database) throws -> [TagGroup] {
+        try Row.fetchAll(
+            db,
+            sql: """
+            SELECT id, name, sort_order, is_system
+            FROM tag_group
+            ORDER BY sort_order ASC, id ASC
+            """
+        ).map { row in
+            TagGroup(
+                id: UUID(uuidString: row["id"])!,
+                displayName: row["name"],
+                sortOrder: row["sort_order"],
+                isSystem: (row["is_system"] as Int64) != 0
+            )
+        }
+    }
+
+    private func tagExists(_ db: Database, tagID: UUID) throws -> Bool {
+        try Bool.fetchOne(
+            db,
+            sql: "SELECT EXISTS(SELECT 1 FROM tag WHERE id = ?)",
+            arguments: [CatalogQuerySQLHelpers.lowercaseUUID(tagID)]
+        ) ?? false
+    }
+
+    private func tagGroupExists(_ db: Database, groupID: UUID) throws -> Bool {
+        try Bool.fetchOne(
+            db,
+            sql: "SELECT EXISTS(SELECT 1 FROM tag_group WHERE id = ?)",
+            arguments: [CatalogQuerySQLHelpers.lowercaseUUID(groupID)]
+        ) ?? false
     }
 }
 

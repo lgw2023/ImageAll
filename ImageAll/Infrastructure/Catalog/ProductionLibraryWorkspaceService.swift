@@ -269,6 +269,10 @@ struct ProductionLibraryWorkspaceService: LibraryWorkspacePort, Sendable {
         try tags.listTags(includeArchived: false)
     }
 
+    func listTagGroups() throws -> [TagGroupListItem] {
+        try tags.listTagGroups()
+    }
+
     func installPresetTags() throws -> TagPresetInstallResult {
         let created = try tags.createMissingTags(
             rawNames: TagPresetCatalog.starterDisplayNames,
@@ -276,7 +280,12 @@ struct ProductionLibraryWorkspaceService: LibraryWorkspacePort, Sendable {
         )
         return TagPresetInstallResult(
             createdTags: created.map {
-                TagListItem(id: $0.id, displayName: $0.displayName, state: $0.state)
+                TagListItem(
+                    id: $0.id,
+                    displayName: $0.displayName,
+                    state: $0.state,
+                    groupID: TagGroupSeed.classify(displayName: $0.displayName).id
+                )
             }
         )
     }
@@ -329,12 +338,32 @@ struct ProductionLibraryWorkspaceService: LibraryWorkspacePort, Sendable {
     }
 
     func renameTag(tagID: UUID, rawName: String) throws -> TagListItem {
-        let tag = try tags.renameTag(tagID: tagID, rawName: rawName, timestampMs: clock.nowMs)
-        return TagListItem(id: tag.id, displayName: tag.displayName, state: tag.state)
+        _ = try tags.renameTag(tagID: tagID, rawName: rawName, timestampMs: clock.nowMs)
+        let listed = try tags.listTags(includeArchived: true)
+        guard let item = listed.first(where: { $0.id == tagID }) else {
+            throw CatalogQueryError.notFound
+        }
+        return item
     }
 
     func archiveTag(tagID: UUID) throws {
         _ = try tags.archiveTag(tagID: tagID, timestampMs: clock.nowMs)
+    }
+
+    func moveTag(tagID: UUID, toGroupID: UUID) throws -> TagListItem {
+        try tags.moveTag(tagID: tagID, toGroupID: toGroupID, timestampMs: clock.nowMs)
+    }
+
+    func createTagGroup(rawName: String) throws -> TagGroupListItem {
+        try tags.createTagGroup(rawName: rawName, timestampMs: clock.nowMs)
+    }
+
+    func renameTagGroup(groupID: UUID, rawName: String) throws -> TagGroupListItem {
+        try tags.renameTagGroup(groupID: groupID, rawName: rawName, timestampMs: clock.nowMs)
+    }
+
+    func deleteTagGroup(groupID: UUID) throws {
+        try tags.deleteTagGroup(groupID: groupID, timestampMs: clock.nowMs)
     }
 }
 

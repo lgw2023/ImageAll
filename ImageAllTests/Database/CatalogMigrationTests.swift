@@ -54,15 +54,21 @@ final class CatalogMigrationTests: XCTestCase {
             try db.execute(sql: "DROP TABLE standard_tag_binding")
             try db.execute(sql: "DROP TABLE suggestion_score_threshold_override")
             try db.execute(sql: "DROP TABLE suggestion_score_threshold_default")
+            try db.execute(sql: "DROP TABLE IF EXISTS tag_group")
+            try db.execute(sql: "DROP INDEX IF EXISTS tag_group_id_idx")
+            if try db.columns(in: "tag").contains(where: { $0.name == "group_id" }) {
+                try Self.stripTagGroupColumn(db)
+            }
             // GRDB rejects replaying an earlier migration while a later one remains
             // recorded; clear the subsequent repair id so v012→v013 can re-apply.
             try db.execute(
-                sql: "DELETE FROM grdb_migrations WHERE identifier IN (?, ?, ?, ?)",
+                sql: "DELETE FROM grdb_migrations WHERE identifier IN (?, ?, ?, ?, ?)",
                 arguments: [
                     CatalogMigrationID.v012RepairStandardTagBinding,
                     CatalogMigrationID.v013PhotosMissingAssetRepair,
                     CatalogMigrationID.v014AddTrainingRunsAndPersonalMultiSlot,
                     CatalogMigrationID.v015AddSuggestionScoreThresholds,
+                    CatalogMigrationID.v016AddTagGroups,
                 ]
             )
             try db.execute(sql: "PRAGMA foreign_keys = ON")
@@ -102,6 +108,7 @@ final class CatalogMigrationTests: XCTestCase {
         let sourceID = UUID()
         let seeded = try CatalogDatabase.open(at: url)
         try seeded.pool.write { db in
+            try db.execute(sql: "PRAGMA foreign_keys = OFF")
             try db.execute(
                 sql: """
                 INSERT INTO source (
@@ -118,14 +125,21 @@ final class CatalogMigrationTests: XCTestCase {
             )
             try db.execute(sql: "DROP TABLE suggestion_score_threshold_override")
             try db.execute(sql: "DROP TABLE suggestion_score_threshold_default")
+            try db.execute(sql: "DROP TABLE IF EXISTS tag_group")
+            try db.execute(sql: "DROP INDEX IF EXISTS tag_group_id_idx")
+            if try db.columns(in: "tag").contains(where: { $0.name == "group_id" }) {
+                try Self.stripTagGroupColumn(db)
+            }
             try db.execute(
-                sql: "DELETE FROM grdb_migrations WHERE identifier IN (?, ?, ?)",
+                sql: "DELETE FROM grdb_migrations WHERE identifier IN (?, ?, ?, ?)",
                 arguments: [
                     CatalogMigrationID.v013PhotosMissingAssetRepair,
                     CatalogMigrationID.v014AddTrainingRunsAndPersonalMultiSlot,
                     CatalogMigrationID.v015AddSuggestionScoreThresholds,
+                    CatalogMigrationID.v016AddTagGroups,
                 ]
             )
+            try db.execute(sql: "PRAGMA foreign_keys = ON")
         }
         try seeded.pool.close()
 
@@ -139,6 +153,101 @@ final class CatalogMigrationTests: XCTestCase {
             )
         }
         XCTAssertNil(cursor)
+    }
+
+    func testV016SeedsSystemTagGroupsAndClassifiesExistingTags() throws {
+        let url = try makeTempDatabaseURL()
+        let seeded = try CatalogDatabase.open(at: url)
+        try seeded.pool.write { db in
+            try db.execute(sql: "PRAGMA foreign_keys = OFF")
+            try db.execute(sql: "DROP TABLE IF EXISTS tag_group")
+            try db.execute(sql: "DROP INDEX IF EXISTS tag_group_id_idx")
+            if try db.columns(in: "tag").contains(where: { $0.name == "group_id" }) {
+                try Self.stripTagGroupColumn(db)
+            }
+            try db.execute(
+                sql: "DELETE FROM grdb_migrations WHERE identifier = ?",
+                arguments: [CatalogMigrationID.v016AddTagGroups]
+            )
+            try db.execute(
+                sql: """
+                INSERT INTO tag (
+                    id, name, normalized_name, state, created_at_ms, updated_at_ms
+                ) VALUES (?, '美食', '美食', 'active', ?, ?), (?, '自定义', '自定义', 'active', ?, ?)
+                """,
+                arguments: [
+                    DatabaseTestSupport.lowercaseUUIDString(),
+                    DatabaseTestSupport.timestampMs,
+                    DatabaseTestSupport.timestampMs,
+                    DatabaseTestSupport.lowercaseUUIDString(),
+                    DatabaseTestSupport.timestampMs,
+                    DatabaseTestSupport.timestampMs,
+                ]
+            )
+            try db.execute(sql: "PRAGMA foreign_keys = ON")
+        }
+        try seeded.pool.close()
+
+        let database = try CatalogDatabase.open(at: url)
+        let tags = GRDBTagCatalogRepository(database: database)
+
+        let groups = try tags.listTagGroups()
+        XCTAssertEqual(groups.map(\.displayName), TagGroupSeed.allCases.map(\.displayName))
+        XCTAssertTrue(groups.allSatisfy(\.isSystem))
+
+        let listed = try tags.listTags(includeArchived: false)
+        XCTAssertEqual(
+            listed.first(where: { $0.displayName == "美食" })?.groupID,
+            TagGroupSeed.food.id
+        )
+        XCTAssertEqual(
+            listed.first(where: { $0.displayName == "自定义" })?.groupID,
+            TagGroupSeed.other.id
+        )
+
+        let food = try XCTUnwrap(listed.first(where: { $0.displayName == "美食" }))
+        let custom = try XCTUnwrap(listed.first(where: { $0.displayName == "自定义" }))
+
+        let moved = try tags.moveTag(
+            tagID: food.id,
+            toGroupID: TagGroupSeed.nature.id,
+            timestampMs: DatabaseTestSupport.timestampMs
+        )
+        XCTAssertEqual(moved.groupID, TagGroupSeed.nature.id)
+
+        let customGroup = try tags.createTagGroup(
+            rawName: "旅行专题",
+            timestampMs: DatabaseTestSupport.timestampMs
+        )
+        XCTAssertFalse(customGroup.isSystem)
+        _ = try tags.moveTag(
+            tagID: custom.id,
+            toGroupID: customGroup.id,
+            timestampMs: DatabaseTestSupport.timestampMs
+        )
+        try tags.deleteTagGroup(groupID: customGroup.id, timestampMs: DatabaseTestSupport.timestampMs)
+        let afterDelete = try tags.listTags(includeArchived: false)
+        XCTAssertEqual(
+            afterDelete.first(where: { $0.id == custom.id })?.groupID,
+            TagGroupSeed.other.id
+        )
+        XCTAssertThrowsError(
+            try tags.deleteTagGroup(
+                groupID: TagGroupSeed.food.id,
+                timestampMs: DatabaseTestSupport.timestampMs
+            )
+        ) { error in
+            XCTAssertEqual(error as? CatalogQueryError, .systemGroupProtected)
+        }
+        XCTAssertThrowsError(
+            try tags.renameTagGroup(
+                groupID: TagGroupSeed.food.id,
+                rawName: "不可改",
+                timestampMs: DatabaseTestSupport.timestampMs
+            )
+        ) { error in
+            XCTAssertEqual(error as? CatalogQueryError, .systemGroupProtected)
+        }
     }
 
     func testCurrentCatalogScopeIdentityIsCanonicalAndStableAcrossReopen() throws {
@@ -503,6 +612,45 @@ final class CatalogMigrationTests: XCTestCase {
         XCTAssertTrue(dump.contains("CREATE TABLE source"))
         XCTAssertTrue(dump.contains("index:asset_current_file_locator_uq"))
         XCTAssertTrue(dump.contains("<null>"))
+    }
+
+    /// Rebuild `tag` without `group_id` so v016 can re-apply cleanly in replay tests.
+    private static func stripTagGroupColumn(_ db: Database) throws {
+        try db.execute(sql: "DROP INDEX IF EXISTS tag_group_id_idx")
+        try db.execute(
+            sql: """
+            CREATE TABLE tag_without_group (
+                id TEXT NOT NULL PRIMARY KEY,
+                name TEXT NOT NULL CHECK(length(name) > 0),
+                normalized_name TEXT NOT NULL CHECK(length(normalized_name) > 0),
+                state TEXT NOT NULL DEFAULT 'active' CHECK(state IN ('active', 'archived')),
+                created_at_ms INTEGER NOT NULL,
+                updated_at_ms INTEGER NOT NULL,
+                CHECK(
+                    length(id) = 36
+                    AND id = lower(id)
+                    AND id GLOB '????????-????-????-????-????????????'
+                )
+            ) STRICT
+            """
+        )
+        try db.execute(
+            sql: """
+            INSERT INTO tag_without_group (
+                id, name, normalized_name, state, created_at_ms, updated_at_ms
+            )
+            SELECT id, name, normalized_name, state, created_at_ms, updated_at_ms
+            FROM tag
+            """
+        )
+        try db.execute(sql: "DROP TABLE tag")
+        try db.execute(sql: "ALTER TABLE tag_without_group RENAME TO tag")
+        try db.execute(
+            sql: """
+            CREATE UNIQUE INDEX tag_normalized_name_uq
+            ON tag(normalized_name COLLATE BINARY)
+            """
+        )
     }
 }
 

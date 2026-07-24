@@ -994,16 +994,40 @@ private struct ReviewThumbnailView: View {
             onOpen()
         }
         .task(id: item.assetID) {
-            image = nil
-            isCloudOnly = false
-            guard item.availability == .available else { return }
-            switch await model.loadThumbnailResult(assetID: item.assetID) {
+            await loadReviewThumbnailWhileVisible()
+        }
+    }
+
+    private func loadReviewThumbnailWhileVisible() async {
+        image = nil
+        isCloudOnly = false
+        guard item.availability == .available else { return }
+
+        if let cached = model.cachedThumbnailData(for: item.assetID),
+           let cachedImage = LibraryGridThumbnailImageFactory.image(from: cached)
+        {
+            image = cachedImage
+            return
+        }
+
+        while !Task.isCancelled {
+            switch await model.loadThumbnailResultWithRetry(assetID: item.assetID) {
             case let .loaded(data):
-                image = NSImage(data: data)
+                guard !Task.isCancelled else { return }
+                if let decoded = LibraryGridThumbnailImageFactory.image(from: data) {
+                    model.rememberThumbnailData(data, for: item.assetID)
+                    image = decoded
+                    return
+                }
+                try? await Task.sleep(nanoseconds: 80_000_000)
             case .cloudOnly:
+                guard !Task.isCancelled else { return }
                 isCloudOnly = true
+                return
             case .unavailable:
-                break
+                return
+            case .cancelled, .failed:
+                try? await Task.sleep(nanoseconds: 120_000_000)
             }
         }
     }

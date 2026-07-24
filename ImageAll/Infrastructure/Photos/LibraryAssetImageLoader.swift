@@ -1,6 +1,31 @@
 import Foundation
 import GRDB
 
+struct LibraryAssetImageLoadLimits: Equatable, Sendable {
+    var maximumConcurrentGridLoads: Int
+    var maximumConcurrentPreviewLoads: Int
+
+    static let `default` = LibraryAssetImageLoadLimits(
+        maximumConcurrentGridLoads: 16,
+        maximumConcurrentPreviewLoads: 4
+    )
+
+    init(maximumConcurrentGridLoads: Int, maximumConcurrentPreviewLoads: Int) {
+        precondition(maximumConcurrentGridLoads > 0)
+        precondition(maximumConcurrentPreviewLoads > 0)
+        self.maximumConcurrentGridLoads = maximumConcurrentGridLoads
+        self.maximumConcurrentPreviewLoads = maximumConcurrentPreviewLoads
+    }
+
+    /// Backward-compatible single-pool initializer used by older call sites and tests.
+    init(maximumConcurrentLoads: Int) {
+        self.init(
+            maximumConcurrentGridLoads: maximumConcurrentLoads,
+            maximumConcurrentPreviewLoads: max(1, maximumConcurrentLoads / 2)
+        )
+    }
+}
+
 struct LibraryAssetImageLoader: Sendable {
     let database: CatalogDatabase
     let fileImages: any DerivedImageCachePort
@@ -9,6 +34,7 @@ struct LibraryAssetImageLoader: Sendable {
     let downloadedPreviews: (any DownloadedPreviewCachePort)?
     let photoThumbnails: (any PhotoThumbnailCachePort)?
     private let loadCoordinator: LibraryAssetImageLoadCoordinator
+    private let inFlight: LibraryAssetImageInFlightCoordinator
 
     init(
         database: CatalogDatabase,
@@ -17,7 +43,8 @@ struct LibraryAssetImageLoader: Sendable {
         cloudPreviews: (any PhotosCloudPreviewPort)? = nil,
         downloadedPreviews: (any DownloadedPreviewCachePort)? = nil,
         photoThumbnails: (any PhotoThumbnailCachePort)? = nil,
-        maximumConcurrentLoads: Int = 4
+        maximumConcurrentLoads: Int = LibraryAssetImageLoadLimits.default.maximumConcurrentGridLoads,
+        limits: LibraryAssetImageLoadLimits? = nil
     ) {
         self.database = database
         self.fileImages = fileImages
@@ -25,14 +52,21 @@ struct LibraryAssetImageLoader: Sendable {
         self.cloudPreviews = cloudPreviews
         self.downloadedPreviews = downloadedPreviews
         self.photoThumbnails = photoThumbnails
-        loadCoordinator = LibraryAssetImageLoadCoordinator(
-            maximumConcurrentLoads: maximumConcurrentLoads
+        let resolvedLimits = limits ?? LibraryAssetImageLoadLimits(
+            maximumConcurrentGridLoads: maximumConcurrentLoads,
+            maximumConcurrentPreviewLoads: LibraryAssetImageLoadLimits.default.maximumConcurrentPreviewLoads
         )
+        loadCoordinator = LibraryAssetImageLoadCoordinator(limits: resolvedLimits)
+        inFlight = LibraryAssetImageInFlightCoordinator()
     }
 
     func load(assetID: UUID, variant: PhotosImageVariant) async throws -> Data {
-        try await loadCoordinator.run { [self] in
-            try await loadWithoutConcurrencyLimit(assetID: assetID, variant: variant)
+        // Acquire on the caller's task so SwiftUI/task cancellation removes waiters.
+        // Coalesce afterwards so remounted cells can still share one decode/fetch.
+        try await loadCoordinator.run(lane: .lane(for: variant)) { [self] in
+            try await inFlight.run(assetID: assetID, variant: variant) { [self] in
+                try await loadWithoutConcurrencyLimit(assetID: assetID, variant: variant)
+            }
         }
     }
 
@@ -40,7 +74,7 @@ struct LibraryAssetImageLoader: Sendable {
         assetID: UUID,
         onProgress: @escaping @Sendable (Double) -> Void
     ) async throws -> Data {
-        try await loadCoordinator.run { [self] in
+        try await loadCoordinator.run(lane: .preview) { [self] in
             guard let cloudPreviews, let downloadedPreviews else {
                 throw PhotosLibraryError.libraryUnavailable
             }
@@ -134,40 +168,141 @@ struct LibraryAssetImageLoader: Sendable {
     }
 }
 
-private actor LibraryAssetImageLoadCoordinator {
-    private let maximumConcurrentLoads: Int
-    private var activeLoads = 0
-    private var waiters: [CheckedContinuation<Void, Never>] = []
+enum LibraryAssetImageLoadLane: Hashable, Sendable {
+    case grid
+    case preview
 
-    init(maximumConcurrentLoads: Int) {
-        precondition(maximumConcurrentLoads > 0)
-        self.maximumConcurrentLoads = maximumConcurrentLoads
+    static func lane(for variant: PhotosImageVariant) -> LibraryAssetImageLoadLane {
+        switch variant {
+        case .grid: .grid
+        case .preview: .preview
+        }
+    }
+}
+
+/// Cancellation-safe bounded concurrency gate with independent grid/preview lanes.
+actor LibraryAssetImageLoadCoordinator {
+    private struct Waiter {
+        let id: UUID
+        let continuation: CheckedContinuation<Void, Error>
+    }
+
+    private let limits: LibraryAssetImageLoadLimits
+    private var activeGridLoads = 0
+    private var activePreviewLoads = 0
+    private var gridWaiters: [Waiter] = []
+    private var previewWaiters: [Waiter] = []
+
+    init(limits: LibraryAssetImageLoadLimits) {
+        self.limits = limits
     }
 
     func run<T: Sendable>(
+        lane: LibraryAssetImageLoadLane,
         _ operation: @Sendable () async throws -> T
     ) async throws -> T {
-        await acquire()
-        defer { release() }
-        try Task.checkCancellation()
-        return try await operation()
+        try await acquire(lane: lane)
+        do {
+            try Task.checkCancellation()
+            let value = try await operation()
+            release(lane: lane)
+            return value
+        } catch {
+            release(lane: lane)
+            throw error
+        }
     }
 
-    private func acquire() async {
-        if activeLoads < maximumConcurrentLoads {
-            activeLoads += 1
+    private func acquire(lane: LibraryAssetImageLoadLane) async throws {
+        if tryTakeSlot(lane: lane) {
             return
         }
-        await withCheckedContinuation { continuation in
-            waiters.append(continuation)
+        let waiterID = UUID()
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                appendWaiter(Waiter(id: waiterID, continuation: continuation), lane: lane)
+            }
+        } onCancel: {
+            Task { await self.cancelWaiter(id: waiterID, lane: lane) }
         }
     }
 
-    private func release() {
-        if waiters.isEmpty {
-            activeLoads -= 1
-        } else {
-            waiters.removeFirst().resume()
+    private func release(lane: LibraryAssetImageLoadLane) {
+        switch lane {
+        case .grid:
+            if let next = gridWaiters.first {
+                gridWaiters.removeFirst()
+                next.continuation.resume(returning: ())
+            } else {
+                activeGridLoads = max(0, activeGridLoads - 1)
+            }
+        case .preview:
+            if let next = previewWaiters.first {
+                previewWaiters.removeFirst()
+                next.continuation.resume(returning: ())
+            } else {
+                activePreviewLoads = max(0, activePreviewLoads - 1)
+            }
         }
+    }
+
+    private func tryTakeSlot(lane: LibraryAssetImageLoadLane) -> Bool {
+        switch lane {
+        case .grid:
+            guard activeGridLoads < limits.maximumConcurrentGridLoads else { return false }
+            activeGridLoads += 1
+            return true
+        case .preview:
+            guard activePreviewLoads < limits.maximumConcurrentPreviewLoads else { return false }
+            activePreviewLoads += 1
+            return true
+        }
+    }
+
+    private func appendWaiter(_ waiter: Waiter, lane: LibraryAssetImageLoadLane) {
+        switch lane {
+        case .grid: gridWaiters.append(waiter)
+        case .preview: previewWaiters.append(waiter)
+        }
+    }
+
+    private func cancelWaiter(id: UUID, lane: LibraryAssetImageLoadLane) {
+        switch lane {
+        case .grid:
+            guard let index = gridWaiters.firstIndex(where: { $0.id == id }) else { return }
+            let waiter = gridWaiters.remove(at: index)
+            waiter.continuation.resume(throwing: CancellationError())
+        case .preview:
+            guard let index = previewWaiters.firstIndex(where: { $0.id == id }) else { return }
+            let waiter = previewWaiters.remove(at: index)
+            waiter.continuation.resume(throwing: CancellationError())
+        }
+    }
+}
+
+/// Coalesces concurrent loads for the same asset/variant so Lazy grid remounts share one fetch.
+actor LibraryAssetImageInFlightCoordinator {
+    private struct Key: Hashable, Sendable {
+        let assetID: UUID
+        let variant: PhotosImageVariant
+    }
+
+    private var tasks: [Key: Task<Data, Error>] = [:]
+
+    func run(
+        assetID: UUID,
+        variant: PhotosImageVariant,
+        operation: @Sendable @escaping () async throws -> Data
+    ) async throws -> Data {
+        let key = Key(assetID: assetID, variant: variant)
+        if let existing = tasks[key] {
+            return try await existing.value
+        }
+        let task = Task {
+            try await operation()
+        }
+        tasks[key] = task
+        defer { tasks[key] = nil }
+        return try await task.value
     }
 }

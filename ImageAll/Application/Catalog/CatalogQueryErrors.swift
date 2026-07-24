@@ -10,4 +10,5 @@ enum CatalogQueryError: Error, Equatable, Sendable {
     case duplicateTag
     case invalidTagName
     case persistenceFailure
+    case systemGroupProtected
 }

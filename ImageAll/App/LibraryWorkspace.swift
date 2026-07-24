@@ -1,6 +1,7 @@
 import AppKit
 import CryptoKit
 import Foundation
+import ImageIO
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -183,24 +184,26 @@ enum LibraryTagSemanticGroup: Int, CaseIterable, Identifiable, Sendable {
 
     var id: Int { rawValue }
 
-    var displayName: String {
+    var displayName: String { seed.displayName }
+
+    var seed: TagGroupSeed {
         switch self {
-        case .people: "人物与关系"
-        case .placesAndScenes: "地点与场景"
-        case .activities: "活动与事件"
-        case .food: "美食与餐饮"
-        case .nature: "自然与动植物"
-        case .documents: "文档与屏幕"
-        case .other: "物品与其他"
+        case .people: .people
+        case .placesAndScenes: .placesAndScenes
+        case .activities: .activities
+        case .food: .food
+        case .nature: .nature
+        case .documents: .documents
+        case .other: .other
         }
     }
 
     static func group(_ tags: [TagListItem]) -> [LibraryTagSemanticSection] {
-        let classified = Dictionary(grouping: tags) { semanticGroup(for: $0.displayName) }
-        return allCases.map { group in
+        let classified = Dictionary(grouping: tags) { TagGroupSeed.classify(displayName: $0.displayName) }
+        return TagGroupSeed.allCases.map { seed in
             LibraryTagSemanticSection(
-                group: group,
-                tags: (classified[group] ?? []).sorted { lhs, rhs in
+                group: LibraryTagSemanticGroup(rawValue: seed.rawValue) ?? .other,
+                tags: (classified[seed] ?? []).sorted { lhs, rhs in
                     let comparison = lhs.displayName.localizedStandardCompare(rhs.displayName)
                     if comparison == .orderedSame {
                         return lhs.id.uuidString.lowercased() < rhs.id.uuidString.lowercased()
@@ -210,43 +213,6 @@ enum LibraryTagSemanticGroup: Int, CaseIterable, Identifiable, Sendable {
             )
         }
     }
-
-    private static func semanticGroup(for name: String) -> LibraryTagSemanticGroup {
-        let normalized = name.folding(
-            options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive],
-            locale: .current
-        )
-        let keywordGroups: [(LibraryTagSemanticGroup, [String])] = [
-            (.people, [
-                "人像", "人物", "肖像", "自拍", "合影", "家人", "家庭", "朋友", "亲友", "儿童", "孩子", "宝宝",
-                "person", "people", "portrait", "selfie", "family", "friend", "child", "baby",
-            ]),
-            (.placesAndScenes, [
-                "旅行", "地点", "城市", "乡村", "街道", "户外", "室内", "环境", "场景", "风景", "海滩", "海边",
-                "山景", "水域", "建筑", "公园", "travel", "place", "city", "street", "outdoor", "indoor", "scene",
-                "landscape", "beach", "mountain", "water", "building", "architecture", "park",
-            ]),
-            (.activities, [
-                "活动", "运动", "聚会", "生日", "节日", "庆典", "婚礼", "演出", "会议", "工作", "课堂", "比赛", "event",
-                "activity", "sport", "party", "birthday", "festival", "holiday", "wedding", "concert", "meeting", "work", "game",
-            ]),
-            (.food, [
-                "美食", "食物", "餐饮", "早餐", "午餐", "晚餐", "菜肴", "饮料", "咖啡", "甜点", "水果", "food",
-                "meal", "breakfast", "lunch", "dinner", "drink", "coffee", "dessert", "fruit",
-            ]),
-            (.nature, [
-                "自然", "动物", "宠物", "猫", "狗", "鸟", "植物", "花卉", "鲜花", "树木", "野生", "animal", "pet",
-                "cat", "dog", "bird", "plant", "flower", "tree", "wildlife", "nature",
-            ]),
-            (.documents, [
-                "截图", "屏幕", "文档", "文件", "票据", "收据", "发票", "二维码", "文字", "表格", "幻灯片",
-                "screenshot", "screen", "document", "receipt", "invoice", "qr", "text", "spreadsheet", "slide",
-            ]),
-        ]
-        return keywordGroups.first { _, keywords in
-            keywords.contains { normalized.localizedCaseInsensitiveContains($0) }
-        }?.0 ?? .other
-    }
 }
 
 struct LibraryTagSemanticSection: Identifiable, Equatable, Sendable {
@@ -254,6 +220,67 @@ struct LibraryTagSemanticSection: Identifiable, Equatable, Sendable {
     let tags: [TagListItem]
 
     var id: LibraryTagSemanticGroup { group }
+}
+
+struct LibraryTagGroupSection: Identifiable, Equatable, Sendable {
+    let group: TagGroupListItem
+    let tags: [TagListItem]
+
+    var id: UUID { group.id }
+
+    static func build(
+        groups: [TagGroupListItem],
+        tags: [TagListItem]
+    ) -> [LibraryTagGroupSection] {
+        let classified = Dictionary(grouping: tags, by: \.groupID)
+        return groups.map { group in
+            LibraryTagGroupSection(
+                group: group,
+                tags: (classified[group.id] ?? []).sorted { lhs, rhs in
+                    let comparison = lhs.displayName.localizedStandardCompare(rhs.displayName)
+                    if comparison == .orderedSame {
+                        return lhs.id.uuidString.lowercased() < rhs.id.uuidString.lowercased()
+                    }
+                    return comparison == .orderedAscending
+                }
+            )
+        }
+    }
+}
+
+@MainActor
+final class LibraryTagGroupCollapsePreferences {
+    private static let defaultKey = "library.sidebar.tag-group-collapse.v1"
+    private let defaults: UserDefaults
+    private let key: String
+
+    init(defaults: UserDefaults = .standard, key: String = defaultKey) {
+        self.defaults = defaults
+        self.key = key
+    }
+
+    func isCollapsed(_ groupID: UUID) -> Bool {
+        collapsedIDs().contains(groupID.uuidString.lowercased())
+    }
+
+    func setCollapsed(_ groupID: UUID, collapsed: Bool) {
+        var ids = collapsedIDs()
+        let token = groupID.uuidString.lowercased()
+        if collapsed {
+            ids.insert(token)
+        } else {
+            ids.remove(token)
+        }
+        defaults.set(Array(ids).sorted(), forKey: key)
+    }
+
+    func toggle(_ groupID: UUID) {
+        setCollapsed(groupID, collapsed: !isCollapsed(groupID))
+    }
+
+    private func collapsedIDs() -> Set<String> {
+        Set(defaults.stringArray(forKey: key) ?? [])
+    }
 }
 
 @MainActor
@@ -417,7 +444,12 @@ struct LibraryWorkspaceCommandItem: Identifiable, Equatable {
 enum AssetThumbnailLoadResult: Equatable, Sendable {
     case loaded(Data)
     case cloudOnly
+    /// Definitive failure for the current catalog facts (authorization, missing asset, etc.).
     case unavailable
+    /// Task or waiter was cancelled; caller must not settle the cell as permanently blank.
+    case cancelled
+    /// Transient decode/I/O/PhotoKit failure that should be retried while the cell stays visible.
+    case failed
 }
 
 @MainActor
@@ -430,6 +462,8 @@ final class LibraryWorkspaceModel: ObservableObject {
     @Published private(set) var inspectorDetail: AssetInspectorDetail?
     @Published private(set) var inspectorTags: [LibraryInspectorTagPresentation] = []
     @Published private(set) var tags: [TagListItem] = []
+    @Published private(set) var tagGroups: [TagGroupListItem] = []
+    @Published private(set) var tagGroupCollapseRevision = 0
     @Published private(set) var searchText = ""
     @Published private(set) var selectedTagFilterIDs: Set<UUID> = []
     @Published private(set) var excludedTagFilterIDs: Set<UUID> = []
@@ -507,6 +541,7 @@ final class LibraryWorkspaceModel: ObservableObject {
     private let suggestionThresholds: (any SuggestionThresholdPort)?
     private let originalAssetOpener: any LibraryOriginalAssetOpening
     private let sourceOrderPreferences: LibrarySourceOrderPreferences
+    private let tagGroupCollapsePreferences: LibraryTagGroupCollapsePreferences
     private let clock: any JobClock
     private var lastTagMutation: LibraryTagUndoRecord?
     fileprivate var lastReviewMutation: ReviewMutationUndoRecord?
@@ -518,6 +553,10 @@ final class LibraryWorkspaceModel: ObservableObject {
     private var localModelSuggestionRequestID: UUID?
     private var searchDebounceTask: Task<Void, Never>?
     private var assetPageRequestID: UUID?
+    private var thumbnailDataCache: [UUID: Data] = [:]
+    private var thumbnailCacheVersions: [UUID: Int] = [:]
+    private var thumbnailCacheOrder: [UUID] = []
+    private let thumbnailCacheCapacity = 3_000
     private var browsingNavigationRequestID: UUID?
     private var selectionAnchorID: UUID?
     private var featureSuggestionCompletionContexts: [UUID: String] = [:]
@@ -545,6 +584,7 @@ final class LibraryWorkspaceModel: ObservableObject {
         suggestionThresholds: (any SuggestionThresholdPort)? = nil,
         originalAssetOpener: any LibraryOriginalAssetOpening = UnavailableLibraryOriginalAssetOpener(),
         sourceOrderPreferences: LibrarySourceOrderPreferences = LibrarySourceOrderPreferences(),
+        tagGroupCollapsePreferences: LibraryTagGroupCollapsePreferences = LibraryTagGroupCollapsePreferences(),
         clock: any JobClock = SystemJobClock(),
         catalogProgressRefreshInterval: Duration = .milliseconds(750),
         searchDebounceInterval: Duration = .milliseconds(300)
@@ -562,6 +602,7 @@ final class LibraryWorkspaceModel: ObservableObject {
         self.suggestionThresholds = suggestionThresholds
         self.originalAssetOpener = originalAssetOpener
         self.sourceOrderPreferences = sourceOrderPreferences
+        self.tagGroupCollapsePreferences = tagGroupCollapsePreferences
         self.clock = clock
         self.catalogProgressRefreshInterval = catalogProgressRefreshInterval
         self.searchDebounceInterval = searchDebounceInterval
@@ -635,6 +676,21 @@ final class LibraryWorkspaceModel: ObservableObject {
     var orderedSources: [LibrarySourceSummary] {
         _ = sourceOrderRevision
         return sourceOrderPreferences.ordered(sources)
+    }
+
+    var tagGroupSections: [LibraryTagGroupSection] {
+        _ = tagGroupCollapseRevision
+        return LibraryTagGroupSection.build(groups: tagGroups, tags: tags)
+    }
+
+    func isTagGroupCollapsed(_ groupID: UUID) -> Bool {
+        _ = tagGroupCollapseRevision
+        return tagGroupCollapsePreferences.isCollapsed(groupID)
+    }
+
+    func toggleTagGroupCollapsed(_ groupID: UUID) {
+        tagGroupCollapsePreferences.toggle(groupID)
+        tagGroupCollapseRevision &+= 1
     }
 
     func moveSource(_ sourceID: UUID, before targetID: UUID?) {
@@ -1622,24 +1678,112 @@ final class LibraryWorkspaceModel: ObservableObject {
     }
 
     func thumbnailData(assetID: UUID) async -> Data? {
+        if let cached = cachedThumbnailData(for: assetID) {
+            return cached
+        }
         if case let .loaded(data) = await loadThumbnailResult(assetID: assetID) {
+            rememberThumbnailData(data, for: assetID)
             return data
         }
         return nil
     }
 
+    func cachedThumbnailData(for assetID: UUID) -> Data? {
+        thumbnailDataCache[assetID]
+    }
+
+    func thumbnailCacheVersion(for assetID: UUID) -> Int {
+        thumbnailCacheVersions[assetID, default: 0]
+    }
+
+    func rememberThumbnailData(_ data: Data, for assetID: UUID) {
+        guard !data.isEmpty else { return }
+        if thumbnailDataCache[assetID] == data { return }
+        thumbnailDataCache[assetID] = data
+        thumbnailCacheVersions[assetID, default: 0] &+= 1
+        thumbnailCacheOrder.removeAll { $0 == assetID }
+        thumbnailCacheOrder.append(assetID)
+        while thumbnailCacheOrder.count > thumbnailCacheCapacity {
+            let evicted = thumbnailCacheOrder.removeFirst()
+            thumbnailDataCache.removeValue(forKey: evicted)
+            thumbnailCacheVersions.removeValue(forKey: evicted)
+        }
+    }
+
     func loadThumbnailResult(assetID: UUID) async -> AssetThumbnailLoadResult {
+        if let cached = cachedThumbnailData(for: assetID) {
+            return .loaded(cached)
+        }
         if case let .downloaded(downloadedAssetID, data) = cloudPreviewState,
            downloadedAssetID == assetID
         {
+            rememberThumbnailData(data, for: assetID)
             return .loaded(data)
         }
         do {
-            return .loaded(try await service.loadThumbnail(assetID: assetID))
+            let data = try await service.loadThumbnail(assetID: assetID)
+            rememberThumbnailData(data, for: assetID)
+            return .loaded(data)
+        } catch is CancellationError {
+            return .cancelled
         } catch PhotosLibraryError.cloudOnly {
             return .cloudOnly
-        } catch {
+        } catch PhotosLibraryError.authorizationDenied,
+                PhotosLibraryError.authorizationRestricted
+        {
             return .unavailable
+        } catch DerivedImageError.derivedAssetNotFound,
+                DerivedImageError.derivedAssetIneligible,
+                DerivedImageError.derivedAuthorizationRequired
+        {
+            return .unavailable
+        } catch {
+            return .failed
+        }
+    }
+
+    /// Retries transient thumbnail failures while the requesting SwiftUI task remains active.
+    /// Cancellation settles as `.cancelled` without being promoted to a permanent blank state.
+    func loadThumbnailResultWithRetry(
+        assetID: UUID,
+        maxAttempts: Int = 8
+    ) async -> AssetThumbnailLoadResult {
+        if let cached = cachedThumbnailData(for: assetID) {
+            return .loaded(cached)
+        }
+        precondition(maxAttempts > 0)
+        var attempt = 0
+        while true {
+            if Task.isCancelled {
+                return .cancelled
+            }
+            let result = await loadThumbnailResult(assetID: assetID)
+            switch result {
+            case .loaded, .cloudOnly, .unavailable, .cancelled:
+                return result
+            case .failed:
+                attempt += 1
+                if attempt >= maxAttempts {
+                    return .unavailable
+                }
+                let delayNanoseconds = UInt64(
+                    min(50_000_000.0 * pow(2.0, Double(attempt - 1)), 1_200_000_000.0)
+                )
+                do {
+                    try await Task.sleep(nanoseconds: delayNanoseconds)
+                } catch is CancellationError {
+                    return .cancelled
+                } catch {
+                    return .cancelled
+                }
+            }
+        }
+    }
+
+    func warmGridThumbnail(for assetID: UUID) async {
+        guard cachedThumbnailData(for: assetID) == nil else { return }
+        if case let .loaded(data) = await loadThumbnailResultWithRetry(assetID: assetID) {
+            rememberThumbnailData(data, for: assetID)
         }
     }
 
@@ -1650,6 +1794,9 @@ final class LibraryWorkspaceModel: ObservableObject {
                cloudPreviewState.assetID == assetID
             {
                 cloudPreviewState = .hidden
+            }
+            Task { [weak self] in
+                await self?.warmGridThumbnail(for: assetID)
             }
             return data
         } catch PhotosLibraryError.cloudOnly {
@@ -1852,6 +1999,7 @@ final class LibraryWorkspaceModel: ObservableObject {
                 try service.installStandardOntologyPackage(package)
             }
             tags = try await Self.offMain { try service.listTags() }
+            tagGroups = try await Self.offMain { try service.listTagGroups() }
             guard localModelSuggestionRequestID == requestID,
                   primarySelectedAssetID == assetID
             else {
@@ -2042,6 +2190,7 @@ final class LibraryWorkspaceModel: ObservableObject {
                 try service.installStandardOntologyPackage(package)
             }
             tags = try await Self.offMain { try service.listTags() }
+            tagGroups = try await Self.offMain { try service.listTagGroups() }
             let reviewPort = review
             let sourceIDs = resolvedReviewSourceFilter
             try await Self.offMain {
@@ -3293,7 +3442,12 @@ final class LibraryWorkspaceModel: ObservableObject {
             let snapshot = result.restoreSnapshot()
             lastTagMutation = LibraryTagUndoRecord(snapshot: snapshot, appliedDecision: .accepted)
             applyGridDecision(snapshot: snapshot, newDecision: .accepted)
-            tags.append(TagListItem(id: result.tagID, displayName: result.displayName, state: .active))
+            tags.append(TagListItem(
+                id: result.tagID,
+                displayName: result.displayName,
+                state: .active,
+                groupID: TagGroupSeed.classify(displayName: result.displayName).id
+            ))
             tags.sort { $0.displayName.localizedStandardCompare($1.displayName) == .orderedAscending }
             await enqueueAutomaticPersonalModelRebuildIfReady()
             if tagPresence != .any || !TagNameNormalizer.trimUnicodeWhiteSpace(searchText).isEmpty {
@@ -3384,12 +3538,138 @@ final class LibraryWorkspaceModel: ObservableObject {
         }
     }
 
+    func moveTag(_ tagID: UUID, toGroupID: UUID) async -> Bool {
+        guard let previous = prepareMoveTag(tagID, toGroupID: toGroupID) else {
+            return false
+        }
+        return await persistMoveTag(tagID, toGroupID: toGroupID, previous: previous)
+    }
+
+    /// Synchronously applies a move in memory so drop targets can return success immediately.
+    @discardableResult
+    func acceptAndEnqueueMoveTag(_ tagID: UUID, toGroupID: UUID) -> Bool {
+        guard let previous = prepareMoveTag(tagID, toGroupID: toGroupID) else {
+            return false
+        }
+        Task { _ = await self.persistMoveTag(tagID, toGroupID: toGroupID, previous: previous) }
+        return true
+    }
+
+    private func prepareMoveTag(_ tagID: UUID, toGroupID: UUID) -> TagListItem? {
+        guard tagGroups.contains(where: { $0.id == toGroupID }),
+              let index = tags.firstIndex(where: { $0.id == tagID })
+        else {
+            return nil
+        }
+        let current = tags[index]
+        guard current.groupID != toGroupID else {
+            return nil
+        }
+        notice = nil
+        tags[index] = TagListItem(
+            id: current.id,
+            displayName: current.displayName,
+            state: current.state,
+            groupID: toGroupID
+        )
+        return current
+    }
+
+    private func persistMoveTag(
+        _ tagID: UUID,
+        toGroupID: UUID,
+        previous: TagListItem
+    ) async -> Bool {
+        let service = service
+        do {
+            let moved = try await Self.offMain {
+                try service.moveTag(tagID: tagID, toGroupID: toGroupID)
+            }
+            if let index = tags.firstIndex(where: { $0.id == tagID }) {
+                tags[index] = moved
+            } else {
+                tags.append(moved)
+            }
+            return true
+        } catch {
+            if let index = tags.firstIndex(where: { $0.id == tagID }) {
+                tags[index] = previous
+            }
+            notice = tagGroupNotice(for: error)
+            return false
+        }
+    }
+
+    func createTagGroup(named rawName: String) async -> Bool {
+        let service = service
+        do {
+            notice = nil
+            let created = try await Self.offMain {
+                try service.createTagGroup(rawName: rawName)
+            }
+            tagGroups.append(created)
+            tagGroups.sort {
+                if $0.sortOrder != $1.sortOrder {
+                    return $0.sortOrder < $1.sortOrder
+                }
+                return $0.id.uuidString.lowercased() < $1.id.uuidString.lowercased()
+            }
+            return true
+        } catch {
+            notice = tagGroupNotice(for: error)
+            return false
+        }
+    }
+
+    func renameTagGroup(_ groupID: UUID, to rawName: String) async -> Bool {
+        let service = service
+        do {
+            notice = nil
+            let renamed = try await Self.offMain {
+                try service.renameTagGroup(groupID: groupID, rawName: rawName)
+            }
+            guard let index = tagGroups.firstIndex(where: { $0.id == groupID }) else {
+                notice = .tagMutationFailed
+                return false
+            }
+            tagGroups[index] = renamed
+            return true
+        } catch {
+            notice = tagGroupNotice(for: error)
+            return false
+        }
+    }
+
+    func deleteTagGroup(_ groupID: UUID) async -> Bool {
+        let service = service
+        do {
+            notice = nil
+            try await Self.offMain { try service.deleteTagGroup(groupID: groupID) }
+            tagGroups.removeAll { $0.id == groupID }
+            let fallback = TagGroupSeed.other.id
+            tags = tags.map { tag in
+                guard tag.groupID == groupID else { return tag }
+                return TagListItem(
+                    id: tag.id,
+                    displayName: tag.displayName,
+                    state: tag.state,
+                    groupID: fallback
+                )
+            }
+            return true
+        } catch {
+            notice = tagGroupNotice(for: error)
+            return false
+        }
+    }
+
     private func reload(runPendingJobs: Bool) async {
         phase = .loading
         let service = service
         do {
             sources = try await Self.offMain { try service.fetchSources() }
             tags = try await Self.offMain { try service.listTags() }
+            tagGroups = try await Self.offMain { try service.listTagGroups() }
         } catch {
             phase = .failed(.catalogFailed)
             return
@@ -3541,6 +3821,12 @@ final class LibraryWorkspaceModel: ObservableObject {
                 try service.fetchAssetPage(filter: filter, sort: sort, cursor: nil)
             }
             guard assetPageRequestID == requestID else { return }
+            if !remountGrid,
+               page.items == items,
+               page.nextCursor == nextCursor
+            {
+                return
+            }
             items = page.items
             nextCursor = page.nextCursor
             if remountGrid {
@@ -3767,6 +4053,19 @@ final class LibraryWorkspaceModel: ObservableObject {
             .invalidTagName
         case .duplicateTag:
             .duplicateTag
+        default:
+            .tagMutationFailed
+        }
+    }
+
+    private func tagGroupNotice(for error: Error) -> LibraryWorkspaceNotice {
+        switch error as? CatalogQueryError {
+        case .invalidTagName:
+            .invalidTagGroupName
+        case .duplicateTag:
+            .duplicateTagGroup
+        case .systemGroupProtected:
+            .systemTagGroupProtected
         default:
             .tagMutationFailed
         }
@@ -4808,6 +5107,12 @@ struct LibraryWorkspaceView: View {
     @State private var tagPendingRename: TagListItem?
     @State private var renamedTagName = ""
     @State private var tagPendingArchive: TagListItem?
+    @State private var tagGroupPendingRename: TagGroupListItem?
+    @State private var renamedTagGroupName = ""
+    @State private var tagGroupPendingDelete: TagGroupListItem?
+    @State private var showCreateTagGroupAlert = false
+    @State private var newTagGroupName = ""
+    @State private var tagDropTargetGroupID: UUID?
     @State private var showPhotosConnectionExplanation = false
     @State private var showPreviewCachePanel = false
     @State private var showPreviewCacheClearConfirmation = false
@@ -5420,6 +5725,74 @@ struct LibraryWorkspaceView: View {
         } message: { tag in
             Text("为“\(tag.displayName)”输入新名称。现有人工标签决定会保留。")
         }
+        .alert(
+            "新建分组",
+            isPresented: $showCreateTagGroupAlert
+        ) {
+            TextField("分组名称", text: $newTagGroupName)
+            Button("创建") {
+                let candidate = newTagGroupName
+                newTagGroupName = ""
+                showCreateTagGroupAlert = false
+                Task { _ = await model.createTagGroup(named: candidate) }
+            }
+            .disabled(TagNameNormalizer.trimUnicodeWhiteSpace(newTagGroupName).isEmpty)
+            Button("取消", role: .cancel) {
+                newTagGroupName = ""
+                showCreateTagGroupAlert = false
+            }
+        } message: {
+            Text("创建一个可折叠的标签分组，之后可把标签拖入该组。")
+        }
+        .alert(
+            "重命名分组",
+            isPresented: Binding(
+                get: { tagGroupPendingRename != nil },
+                set: {
+                    if !$0 {
+                        tagGroupPendingRename = nil
+                        renamedTagGroupName = ""
+                    }
+                }
+            ),
+            presenting: tagGroupPendingRename
+        ) { group in
+            TextField("分组名称", text: $renamedTagGroupName)
+            Button("重命名") {
+                let candidate = renamedTagGroupName
+                let groupID = group.id
+                tagGroupPendingRename = nil
+                renamedTagGroupName = ""
+                Task { _ = await model.renameTagGroup(groupID, to: candidate) }
+            }
+            .disabled(TagNameNormalizer.trimUnicodeWhiteSpace(renamedTagGroupName).isEmpty)
+            Button("取消", role: .cancel) {
+                tagGroupPendingRename = nil
+                renamedTagGroupName = ""
+            }
+        } message: { group in
+            Text("为“\(group.displayName)”输入新名称。")
+        }
+        .confirmationDialog(
+            tagGroupPendingDelete.map { "删除“\($0.displayName)”分组？" } ?? "删除分组？",
+            isPresented: Binding(
+                get: { tagGroupPendingDelete != nil },
+                set: { if !$0 { tagGroupPendingDelete = nil } }
+            ),
+            titleVisibility: .visible,
+            presenting: tagGroupPendingDelete
+        ) { group in
+            Button("删除分组", role: .destructive) {
+                let groupID = group.id
+                tagGroupPendingDelete = nil
+                Task { _ = await model.deleteTagGroup(groupID) }
+            }
+            Button("取消", role: .cancel) {
+                tagGroupPendingDelete = nil
+            }
+        } message: { _ in
+            Text("组内标签会移到「\(TagGroupSeed.other.displayName)」。系统默认分组不可删除。")
+        }
         .confirmationDialog(
             tagPendingArchive.map { "归档“\($0.displayName)”标签？" } ?? "归档标签？",
             isPresented: Binding(
@@ -5779,22 +6152,80 @@ struct LibraryWorkspaceView: View {
                 }
             }
             Section("标签") {
-                ForEach(
-                    LibraryTagSemanticGroup.group(model.tags).filter { !$0.tags.isEmpty }
-                ) { section in
+                ForEach(model.tagGroupSections) { section in
+                    let isCollapsed = model.isTagGroupCollapsed(section.group.id)
                     VStack(alignment: .leading, spacing: 6) {
-                        Text(section.group.displayName)
-                            .font(.caption2.weight(.semibold))
-                            .foregroundStyle(.secondary)
-                            .textCase(nil)
-                        LibraryTagFlowLayout {
-                            ForEach(section.tags, id: \.id) { tag in
-                                tagRow(tag)
+                        Button {
+                            model.toggleTagGroupCollapsed(section.group.id)
+                        } label: {
+                            HStack(spacing: 4) {
+                                Image(systemName: isCollapsed ? "chevron.right" : "chevron.down")
+                                    .font(.caption2.weight(.semibold))
+                                    .foregroundStyle(.secondary)
+                                    .frame(width: 10)
+                                Text(section.group.displayName)
+                                    .font(.caption2.weight(.semibold))
+                                    .foregroundStyle(.secondary)
+                                    .textCase(nil)
+                                if !section.tags.isEmpty {
+                                    Text("\(section.tags.count)")
+                                        .font(.caption2)
+                                        .foregroundStyle(.tertiary)
+                                }
+                                Spacer(minLength: 0)
+                            }
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .contextMenu {
+                            if !section.group.isSystem {
+                                Button("重命名分组…") {
+                                    renamedTagGroupName = section.group.displayName
+                                    tagGroupPendingRename = section.group
+                                }
+                                Button("删除分组", role: .destructive) {
+                                    tagGroupPendingDelete = section.group
+                                }
+                            }
+                        }
+
+                        if !isCollapsed {
+                            LibraryTagFlowLayout {
+                                ForEach(section.tags, id: \.id) { tag in
+                                    tagRow(tag)
+                                        .draggable(tag.id.uuidString)
+                                }
                             }
                         }
                     }
                     .padding(.vertical, 3)
+                    .padding(4)
+                    .background {
+                        if tagDropTargetGroupID == section.group.id {
+                            RoundedRectangle(cornerRadius: 8)
+                                .fill(Color.accentColor.opacity(0.12))
+                        }
+                    }
+                    .dropDestination(for: String.self) { items, _ in
+                        tagDropTargetGroupID = nil
+                        guard let raw = items.first,
+                              let tagID = UUID(uuidString: raw)
+                        else {
+                            return false
+                        }
+                        return model.acceptAndEnqueueMoveTag(tagID, toGroupID: section.group.id)
+                    } isTargeted: { targeted in
+                        tagDropTargetGroupID = targeted ? section.group.id : nil
+                    }
                 }
+                Button {
+                    newTagGroupName = ""
+                    showCreateTagGroupAlert = true
+                } label: {
+                    Label("新建分组…", systemImage: "folder.badge.plus")
+                }
+                .buttonStyle(.plain)
+                .disabled(model.isBusy)
                 Button {
                     Task { await model.installPresetTags() }
                 } label: {
@@ -6805,6 +7236,9 @@ struct LibraryWorkspaceView: View {
         case .presetTagsAlreadyAvailable: "常用标签已经齐全；未修改照片或人工标签。"
         case .invalidTagName: "标签名称无效。"
         case .duplicateTag: "已有同名标签。"
+        case .invalidTagGroupName: "分组名称无效。"
+        case .duplicateTagGroup: "已有同名分组。"
+        case .systemTagGroupProtected: "系统默认分组不可修改或删除。"
         case .tagMutationFailed: "标签操作未保存，请重试。"
         case .tagSelectionRefreshFailed: "标签已保存，但当前选择刷新失败；请重新选择照片后继续。"
         case .sourceActionFailed: "来源操作未完成。原照片没有被修改，请重试。"
@@ -7261,16 +7695,45 @@ private struct AssetThumbnailView: View {
             onOpen()
         }
         .task(id: thumbnailLoadID) {
-            image = nil
-            isCloudOnly = false
-            guard item.availability == .available else { return }
-            switch await model.loadThumbnailResult(assetID: item.assetID) {
+            await loadGridThumbnailWhileVisible()
+        }
+    }
+
+    private func loadGridThumbnailWhileVisible() async {
+        image = nil
+        isCloudOnly = false
+        guard item.availability == .available else { return }
+
+        if let cached = model.cachedThumbnailData(for: item.assetID),
+           let cachedImage = LibraryGridThumbnailImageFactory.image(from: cached)
+        {
+            image = cachedImage
+            return
+        }
+
+        var transientAttempts = 0
+        while !Task.isCancelled {
+            switch await model.loadThumbnailResultWithRetry(assetID: item.assetID) {
             case let .loaded(data):
-                image = NSImage(data: data)
+                guard !Task.isCancelled else { return }
+                if let decoded = LibraryGridThumbnailImageFactory.image(from: data) {
+                    model.rememberThumbnailData(data, for: item.assetID)
+                    image = decoded
+                    return
+                }
+                transientAttempts += 1
+                if transientAttempts >= 4 {
+                    return
+                }
+                try? await Task.sleep(nanoseconds: 80_000_000)
             case .cloudOnly:
+                guard !Task.isCancelled else { return }
                 isCloudOnly = true
+                return
             case .unavailable:
-                break
+                return
+            case .cancelled, .failed:
+                try? await Task.sleep(nanoseconds: 120_000_000)
             }
         }
     }
@@ -7284,7 +7747,8 @@ private struct AssetThumbnailView: View {
         }
         return AssetThumbnailLoadID(
             assetID: item.assetID,
-            usesDownloadedCloudPreview: usesDownloadedCloudPreview
+            usesDownloadedCloudPreview: usesDownloadedCloudPreview,
+            cacheVersion: model.thumbnailCacheVersion(for: item.assetID)
         )
     }
 
@@ -7308,6 +7772,25 @@ private struct AssetThumbnailView: View {
 private struct AssetThumbnailLoadID: Hashable {
     let assetID: UUID
     let usesDownloadedCloudPreview: Bool
+    let cacheVersion: Int
+}
+
+enum LibraryGridThumbnailImageFactory {
+    static func image(from data: Data) -> NSImage? {
+        guard !data.isEmpty else { return nil }
+        if let image = NSImage(data: data) {
+            return image
+        }
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil),
+              let cgImage = CGImageSourceCreateImageAtIndex(source, 0, nil)
+        else {
+            return nil
+        }
+        return NSImage(
+            cgImage: cgImage,
+            size: NSSize(width: cgImage.width, height: cgImage.height)
+        )
+    }
 }
 
 private struct InspectorPreview: View {

@@ -585,6 +585,141 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertEqual(service.cloudPreviewDownloadCallCount, 1)
     }
 
+    func testThumbnailCancellationIsNotSettledAsUnavailable() async {
+        let sourceID = UUID()
+        let asset = Self.makeAsset(sourceID: sourceID, fileName: "cancel-thumb.jpg")
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: sourceID,
+                kind: .folder,
+                displayName: "Fixture",
+                state: .active
+            ),
+            reconciledItems: [asset],
+            initialItems: [asset],
+            startsConnected: true,
+            thumbnailData: Data("thumb".utf8),
+            thumbnailCancelOnCall: 1
+        )
+        let model = LibraryWorkspaceModel(service: service)
+        await model.start()
+
+        let result = await model.loadThumbnailResult(assetID: asset.assetID)
+
+        XCTAssertEqual(result, .cancelled)
+        XCTAssertEqual(service.thumbnailLoadCallCount, 1)
+    }
+
+    func testThumbnailTransientFailuresRetryUntilSuccess() async {
+        let sourceID = UUID()
+        let asset = Self.makeAsset(sourceID: sourceID, fileName: "retry-thumb.jpg")
+        let payload = Data("recovered-thumb".utf8)
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: sourceID,
+                kind: .folder,
+                displayName: "Fixture",
+                state: .active
+            ),
+            reconciledItems: [asset],
+            initialItems: [asset],
+            startsConnected: true,
+            thumbnailData: payload,
+            thumbnailFailureCount: 2,
+            thumbnailFailureError: PhotosLibraryError.libraryUnavailable
+        )
+        let model = LibraryWorkspaceModel(service: service)
+        await model.start()
+
+        let result = await model.loadThumbnailResultWithRetry(assetID: asset.assetID, maxAttempts: 4)
+
+        XCTAssertEqual(result, .loaded(payload))
+        XCTAssertEqual(service.thumbnailLoadCallCount, 3)
+        XCTAssertEqual(model.cachedThumbnailData(for: asset.assetID), payload)
+    }
+
+    func testThumbnailExhaustedTransientFailuresBecomeUnavailable() async {
+        let sourceID = UUID()
+        let asset = Self.makeAsset(sourceID: sourceID, fileName: "fail-thumb.jpg")
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: sourceID,
+                kind: .folder,
+                displayName: "Fixture",
+                state: .active
+            ),
+            reconciledItems: [asset],
+            initialItems: [asset],
+            startsConnected: true,
+            thumbnailFailureCount: 8,
+            thumbnailFailureError: PhotosLibraryError.libraryUnavailable
+        )
+        let model = LibraryWorkspaceModel(service: service)
+        await model.start()
+
+        let result = await model.loadThumbnailResultWithRetry(assetID: asset.assetID, maxAttempts: 3)
+
+        XCTAssertEqual(result, .unavailable)
+        XCTAssertEqual(service.thumbnailLoadCallCount, 3)
+    }
+
+    func testCachedThumbnailSurvivesSoftFirstPageRefresh() async {
+        let sourceID = UUID()
+        let asset = Self.makeAsset(sourceID: sourceID, fileName: "cached-thumb.jpg")
+        let payload = Data("cached-thumb".utf8)
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: sourceID,
+                kind: .folder,
+                displayName: "Fixture",
+                state: .active
+            ),
+            reconciledItems: [asset],
+            initialItems: [asset],
+            startsConnected: true,
+            thumbnailData: payload
+        )
+        let model = LibraryWorkspaceModel(service: service)
+        await model.start()
+
+        let first = await model.loadThumbnailResult(assetID: asset.assetID)
+        XCTAssertEqual(first, .loaded(payload))
+        XCTAssertEqual(service.thumbnailLoadCallCount, 1)
+
+        await model.applySearchText("")
+        let second = await model.loadThumbnailResult(assetID: asset.assetID)
+
+        XCTAssertEqual(second, .loaded(payload))
+        XCTAssertEqual(service.thumbnailLoadCallCount, 1)
+    }
+
+    func testThumbnailAuthorizationFailuresAreUnavailableWithoutRetry() async {
+        let sourceID = UUID()
+        let asset = Self.makeAsset(sourceID: sourceID, fileName: "denied-thumb.jpg")
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: sourceID,
+                kind: .photos,
+                displayName: "Apple Photos",
+                state: .active
+            ),
+            reconciledItems: [asset],
+            initialItems: [asset],
+            startsConnected: true,
+            thumbnailFailureCount: 5,
+            thumbnailFailureError: PhotosLibraryError.authorizationDenied
+        )
+        let model = LibraryWorkspaceModel(service: service)
+        await model.start()
+
+        let single = await model.loadThumbnailResult(assetID: asset.assetID)
+        let retried = await model.loadThumbnailResultWithRetry(assetID: asset.assetID, maxAttempts: 4)
+
+        XCTAssertEqual(single, .unavailable)
+        XCTAssertEqual(retried, .unavailable)
+        XCTAssertEqual(service.thumbnailLoadCallCount, 2)
+    }
+
     func testCloudPreviewFailureCanRetryTheCurrentAsset() async {
         let sourceID = UUID()
         let asset = Self.makeAsset(sourceID: sourceID, fileName: "retry-cloud.jpg")
@@ -4632,6 +4767,141 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertEqual(groups[6].tags.map(\.displayName), ["自定义"])
     }
 
+    func testPersistedTagGroupSectionsKeepMembershipAndIncludeEmptyGroups() {
+        let foodTag = TagListItem(
+            id: UUID(),
+            displayName: "板栗",
+            state: .active,
+            groupID: TagGroupSeed.food.id
+        )
+        let sections = LibraryTagGroupSection.build(
+            groups: TagGroupSeed.allCases.map {
+                TagGroupListItem(
+                    id: $0.id,
+                    displayName: $0.displayName,
+                    sortOrder: $0.sortOrder,
+                    isSystem: true
+                )
+            },
+            tags: [foodTag]
+        )
+        XCTAssertEqual(sections.count, TagGroupSeed.allCases.count)
+        XCTAssertEqual(
+            sections.first(where: { $0.group.id == TagGroupSeed.food.id })?.tags.map(\.id),
+            [foodTag.id]
+        )
+        XCTAssertTrue(
+            sections.first(where: { $0.group.id == TagGroupSeed.people.id })?.tags.isEmpty == true
+        )
+    }
+
+    @MainActor
+    func testTagGroupCollapsePreferencesPersistToggleState() {
+        let suiteName = "ImageAllTests.TagGroupCollapse.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let preferences = LibraryTagGroupCollapsePreferences(defaults: defaults)
+        let groupID = TagGroupSeed.food.id
+        XCTAssertFalse(preferences.isCollapsed(groupID))
+        preferences.toggle(groupID)
+        XCTAssertTrue(preferences.isCollapsed(groupID))
+        let reopened = LibraryTagGroupCollapsePreferences(defaults: defaults)
+        XCTAssertTrue(reopened.isCollapsed(groupID))
+    }
+
+    @MainActor
+    func testMoveTagUpdatesPersistedGroupMembership() async {
+        let source = LibrarySourceSummary(id: UUID(), displayName: "图库", state: .active)
+        let tag = TagListItem(
+            id: UUID(),
+            displayName: "食物",
+            state: .active,
+            groupID: TagGroupSeed.food.id
+        )
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: source,
+            reconciledItems: [],
+            tags: [tag],
+            startsConnected: true
+        )
+        let model = LibraryWorkspaceModel(service: service)
+        await model.start()
+        XCTAssertEqual(model.tags.first?.groupID, TagGroupSeed.food.id)
+
+        let moved = await model.moveTag(tag.id, toGroupID: TagGroupSeed.other.id)
+        XCTAssertTrue(moved)
+        XCTAssertEqual(model.tags.first?.groupID, TagGroupSeed.other.id)
+    }
+
+    @MainActor
+    func testAcceptAndEnqueueMoveTagAppliesOptimisticMembership() async {
+        let source = LibrarySourceSummary(id: UUID(), displayName: "图库", state: .active)
+        let tag = TagListItem(
+            id: UUID(),
+            displayName: "食物",
+            state: .active,
+            groupID: TagGroupSeed.food.id
+        )
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: source,
+            reconciledItems: [],
+            tags: [tag],
+            startsConnected: true
+        )
+        let model = LibraryWorkspaceModel(service: service)
+        await model.start()
+
+        XCTAssertTrue(model.acceptAndEnqueueMoveTag(tag.id, toGroupID: TagGroupSeed.other.id))
+        XCTAssertEqual(model.tags.first?.groupID, TagGroupSeed.other.id)
+
+        // Allow the enqueued persistence task to settle.
+        await Task.yield()
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        XCTAssertEqual(model.tags.first?.groupID, TagGroupSeed.other.id)
+        XCTAssertNil(model.notice)
+    }
+
+    @MainActor
+    func testCreateRenameDeleteCustomTagGroupRoundTrip() async {
+        let source = LibrarySourceSummary(id: UUID(), displayName: "图库", state: .active)
+        let tag = TagListItem(
+            id: UUID(),
+            displayName: "自定义",
+            state: .active,
+            groupID: TagGroupSeed.other.id
+        )
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: source,
+            reconciledItems: [],
+            tags: [tag],
+            startsConnected: true
+        )
+        let model = LibraryWorkspaceModel(service: service)
+        await model.start()
+
+        let created = await model.createTagGroup(named: "旅行专题")
+        XCTAssertTrue(created)
+        guard let customID = model.tagGroups.first(where: { $0.displayName == "旅行专题" })?.id else {
+            return XCTFail("expected custom tag group")
+        }
+        let renamed = await model.renameTagGroup(customID, to: "行程专题")
+        XCTAssertTrue(renamed)
+        XCTAssertEqual(
+            model.tagGroups.first(where: { $0.id == customID })?.displayName,
+            "行程专题"
+        )
+        let moved = await model.moveTag(tag.id, toGroupID: customID)
+        XCTAssertTrue(moved)
+        let deleted = await model.deleteTagGroup(customID)
+        XCTAssertTrue(deleted)
+        XCTAssertNil(model.tagGroups.first(where: { $0.id == customID }))
+        XCTAssertEqual(model.tags.first?.groupID, TagGroupSeed.other.id)
+
+        let renameSystem = await model.renameTagGroup(TagGroupSeed.food.id, to: "不可改")
+        XCTAssertFalse(renameSystem)
+        XCTAssertEqual(model.notice, .systemTagGroupProtected)
+    }
+
     func testSourceOrderPreferencesPersistManualDragOrderAndAppendNewSources() {
         let suiteName = "ImageAllTests.SourceOrder.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
@@ -6389,9 +6659,15 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
     private let catalogReconcileProgress: CatalogReconcileProgress?
     private let previewError: PhotosLibraryError?
     private let previewData: Data
+    private let thumbnailData: Data
+    private let thumbnailFailureCount: Int
+    private let thumbnailFailureError: Error
+    private let thumbnailCancelOnCall: Int?
     private let cloudPreviewData: Data
     private let cloudPreviewProgress: [Double]
     private let cloudPreviewFailureCount: Int
+    private var storedRemainingThumbnailFailures: Int
+    private var storedThumbnailCancelConsumed = false
     private let reconcileGate = DispatchSemaphore(value: 0)
     private var storedHasStartedBlockedReconcile = false
     private let inspectorDetailGate = DispatchSemaphore(value: 0)
@@ -6413,6 +6689,7 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
     private var storedJobActivityActionCallCount = 0
     private var folderMonitoringCallback: (@Sendable () -> Void)?
     private var storedTags: [TagListItem]
+    private var storedTagGroups: [TagGroupListItem]
     private var storedStandardOntologyInstallCallCount = 0
     private var decisions: [UUID: [UUID: TagDecisionQueryState]] = [:]
     private let exportParentURL: URL?
@@ -6448,6 +6725,10 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
         catalogReconcileProgress: CatalogReconcileProgress? = nil,
         previewError: PhotosLibraryError? = nil,
         previewData: Data = Data(),
+        thumbnailData: Data = Data(),
+        thumbnailFailureCount: Int = 0,
+        thumbnailFailureError: Error = PhotosLibraryError.libraryUnavailable,
+        thumbnailCancelOnCall: Int? = nil,
         cloudPreviewData: Data = Data(),
         cloudPreviewProgress: [Double] = [],
         cloudPreviewFailureCount: Int = 0,
@@ -6483,6 +6764,11 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
         self.catalogReconcileProgress = catalogReconcileProgress
         self.previewError = previewError
         self.previewData = previewData
+        self.thumbnailData = thumbnailData
+        self.thumbnailFailureCount = thumbnailFailureCount
+        self.thumbnailFailureError = thumbnailFailureError
+        self.thumbnailCancelOnCall = thumbnailCancelOnCall
+        storedRemainingThumbnailFailures = thumbnailFailureCount
         self.cloudPreviewData = cloudPreviewData
         self.cloudPreviewProgress = cloudPreviewProgress
         self.cloudPreviewFailureCount = cloudPreviewFailureCount
@@ -6506,7 +6792,24 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
         remainingBlockedInspectorDetailFetches = blocksInspectorDetailFetches
         storedSources = startsConnected ? [connectedSource] : []
         storedItems = initialItems
-        storedTags = tags
+        storedTags = tags.map { tag in
+            TagListItem(
+                id: tag.id,
+                displayName: tag.displayName,
+                state: tag.state,
+                groupID: tag.groupID == TagGroupSeed.other.id
+                    ? TagGroupSeed.classify(displayName: tag.displayName).id
+                    : tag.groupID
+            )
+        }
+        storedTagGroups = TagGroupSeed.allCases.map {
+            TagGroupListItem(
+                id: $0.id,
+                displayName: $0.displayName,
+                sortOrder: $0.sortOrder,
+                isSystem: true
+            )
+        }
     }
 
     var hasStartedBlockedReconcile: Bool {
@@ -6996,8 +7299,29 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
     }
 
     func loadThumbnail(assetID: UUID) async throws -> Data {
-        lock.withLock { storedThumbnailLoadCallCount += 1 }
-        return Data()
+        let callCount = lock.withLock { () -> Int in
+            storedThumbnailLoadCallCount += 1
+            return storedThumbnailLoadCallCount
+        }
+        if let thumbnailCancelOnCall,
+           callCount == thumbnailCancelOnCall,
+           lock.withLock({
+               guard !storedThumbnailCancelConsumed else { return false }
+               storedThumbnailCancelConsumed = true
+               return true
+           })
+        {
+            throw CancellationError()
+        }
+        let shouldFail = lock.withLock { () -> Bool in
+            guard storedRemainingThumbnailFailures > 0 else { return false }
+            storedRemainingThumbnailFailures -= 1
+            return true
+        }
+        if shouldFail {
+            throw thumbnailFailureError
+        }
+        return thumbnailData
     }
 
     func loadPreview(assetID: UUID) async throws -> Data {
@@ -7039,12 +7363,21 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
         lock.withLock { storedTags }
     }
 
+    func listTagGroups() throws -> [TagGroupListItem] {
+        lock.withLock { storedTagGroups }
+    }
+
     func installPresetTags() throws -> TagPresetInstallResult {
         lock.withLock {
             let existingNames = Set(storedTags.map(\.displayName))
             let created: [TagListItem] = TagPresetCatalog.starterDisplayNames.compactMap { displayName in
                 guard !existingNames.contains(displayName) else { return nil }
-                return TagListItem(id: UUID(), displayName: displayName, state: .active)
+                return TagListItem(
+                    id: UUID(),
+                    displayName: displayName,
+                    state: .active,
+                    groupID: TagGroupSeed.classify(displayName: displayName).id
+                )
             }
             storedTags.append(contentsOf: created)
             return TagPresetInstallResult(createdTags: created)
@@ -7203,7 +7536,12 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
         return lock.withLock {
             storedCreateTagAndAcceptCallCount += 1
             storedLastCreateTagAssetIDs = Set(assetIDs)
-            let tag = TagListItem(id: UUID(), displayName: rawName, state: .active)
+            let tag = TagListItem(
+                id: UUID(),
+                displayName: rawName,
+                state: .active,
+                groupID: TagGroupSeed.classify(displayName: rawName).id
+            )
             storedTags.append(tag)
             for assetID in assetIDs {
                 decisions[assetID, default: [:]][tag.id] = .accepted
@@ -7225,7 +7563,13 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
             guard let index = storedTags.firstIndex(where: { $0.id == tagID }) else {
                 throw FakeWorkspaceError.notFound
             }
-            let renamed = TagListItem(id: tagID, displayName: rawName, state: .active)
+            let current = storedTags[index]
+            let renamed = TagListItem(
+                id: tagID,
+                displayName: rawName,
+                state: .active,
+                groupID: current.groupID
+            )
             storedTags[index] = renamed
             return renamed
         }
@@ -7237,6 +7581,99 @@ private final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecke
         }
         lock.withLock {
             storedTags.removeAll { $0.id == tagID }
+        }
+    }
+
+    func moveTag(tagID: UUID, toGroupID: UUID) throws -> TagListItem {
+        if tagMutationFails {
+            throw FakeWorkspaceError.tagMutationFailed
+        }
+        return try lock.withLock {
+            guard storedTagGroups.contains(where: { $0.id == toGroupID }) else {
+                throw FakeWorkspaceError.notFound
+            }
+            guard let index = storedTags.firstIndex(where: { $0.id == tagID }) else {
+                throw FakeWorkspaceError.notFound
+            }
+            let current = storedTags[index]
+            let moved = TagListItem(
+                id: current.id,
+                displayName: current.displayName,
+                state: current.state,
+                groupID: toGroupID
+            )
+            storedTags[index] = moved
+            return moved
+        }
+    }
+
+    func createTagGroup(rawName: String) throws -> TagGroupListItem {
+        if tagMutationFails {
+            throw FakeWorkspaceError.tagMutationFailed
+        }
+        return try lock.withLock {
+            if storedTagGroups.contains(where: {
+                $0.displayName.caseInsensitiveCompare(rawName) == .orderedSame
+            }) {
+                throw CatalogQueryError.duplicateTag
+            }
+            let nextSort = (storedTagGroups.map(\.sortOrder).max() ?? -1) + 1
+            let created = TagGroupListItem(
+                id: UUID(),
+                displayName: rawName,
+                sortOrder: nextSort,
+                isSystem: false
+            )
+            storedTagGroups.append(created)
+            return created
+        }
+    }
+
+    func renameTagGroup(groupID: UUID, rawName: String) throws -> TagGroupListItem {
+        if tagMutationFails {
+            throw FakeWorkspaceError.tagMutationFailed
+        }
+        return try lock.withLock {
+            guard let index = storedTagGroups.firstIndex(where: { $0.id == groupID }) else {
+                throw FakeWorkspaceError.notFound
+            }
+            let current = storedTagGroups[index]
+            guard !current.isSystem else {
+                throw CatalogQueryError.systemGroupProtected
+            }
+            let renamed = TagGroupListItem(
+                id: current.id,
+                displayName: rawName,
+                sortOrder: current.sortOrder,
+                isSystem: current.isSystem
+            )
+            storedTagGroups[index] = renamed
+            return renamed
+        }
+    }
+
+    func deleteTagGroup(groupID: UUID) throws {
+        if tagMutationFails {
+            throw FakeWorkspaceError.tagMutationFailed
+        }
+        try lock.withLock {
+            guard let group = storedTagGroups.first(where: { $0.id == groupID }) else {
+                throw FakeWorkspaceError.notFound
+            }
+            guard !group.isSystem else {
+                throw CatalogQueryError.systemGroupProtected
+            }
+            storedTagGroups.removeAll { $0.id == groupID }
+            let fallback = TagGroupSeed.other.id
+            storedTags = storedTags.map { tag in
+                guard tag.groupID == groupID else { return tag }
+                return TagListItem(
+                    id: tag.id,
+                    displayName: tag.displayName,
+                    state: tag.state,
+                    groupID: fallback
+                )
+            }
         }
     }
 

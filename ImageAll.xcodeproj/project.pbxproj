@@ -45,9 +45,11 @@
 		BB0000010000000000000003 /* Source.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0001010000000000000003 /* Source.swift */; };
 		BB0000010000000000000004 /* Asset.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0001010000000000000004 /* Asset.swift */; };
 		BB0000010000000000000005 /* Tag.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0001010000000000000005 /* Tag.swift */; };
+		BB0000010000000000000013 /* TagGroup.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0001010000000000000013 /* TagGroup.swift */; };
 		BB0000010000000000000006 /* LocatorIdentity.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0001010000000000000006 /* LocatorIdentity.swift */; };
 		BB0000010000000000000007 /* TagNameNormalizer.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0001010000000000000007 /* TagNameNormalizer.swift */; };
 		BB0000010000000000000008 /* TagCatalogRules.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0001010000000000000008 /* TagCatalogRules.swift */; };
+		BB0000010000000000000014 /* TagGroupRules.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0001010000000000000014 /* TagGroupRules.swift */; };
 		BB0000010000000000000009 /* TagDecisionRules.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0001010000000000000009 /* TagDecisionRules.swift */; };
 		BB000001000000000000000A /* SourceRules.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB000101000000000000000A /* SourceRules.swift */; };
 		BB000001000000000000000B /* AssetRevisionRules.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB000101000000000000000B /* AssetRevisionRules.swift */; };
@@ -312,9 +314,11 @@
 		BB0001010000000000000003 /* Source.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Source.swift; sourceTree = "<group>"; };
 		BB0001010000000000000004 /* Asset.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Asset.swift; sourceTree = "<group>"; };
 		BB0001010000000000000005 /* Tag.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Tag.swift; sourceTree = "<group>"; };
+		BB0001010000000000000013 /* TagGroup.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TagGroup.swift; sourceTree = "<group>"; };
 		BB0001010000000000000006 /* LocatorIdentity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocatorIdentity.swift; sourceTree = "<group>"; };
 		BB0001010000000000000007 /* TagNameNormalizer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TagNameNormalizer.swift; sourceTree = "<group>"; };
 		BB0001010000000000000008 /* TagCatalogRules.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TagCatalogRules.swift; sourceTree = "<group>"; };
+		BB0001010000000000000014 /* TagGroupRules.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TagGroupRules.swift; sourceTree = "<group>"; };
 		BB0001010000000000000009 /* TagDecisionRules.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TagDecisionRules.swift; sourceTree = "<group>"; };
 		BB000101000000000000000A /* SourceRules.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SourceRules.swift; sourceTree = "<group>"; };
 		BB000101000000000000000B /* AssetRevisionRules.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AssetRevisionRules.swift; sourceTree = "<group>"; };
@@ -770,6 +774,7 @@
 				BB0001010000000000000003 /* Source.swift */,
 				BB0001010000000000000004 /* Asset.swift */,
 				BB0001010000000000000005 /* Tag.swift */,
+				BB0001010000000000000013 /* TagGroup.swift */,
 				BB0001010000000000000006 /* LocatorIdentity.swift */,
 			);
 			path = Models;
@@ -780,6 +785,7 @@
 			children = (
 				BB0001010000000000000007 /* TagNameNormalizer.swift */,
 				BB0001010000000000000008 /* TagCatalogRules.swift */,
+				BB0001010000000000000014 /* TagGroupRules.swift */,
 				BB0001010000000000000009 /* TagDecisionRules.swift */,
 				BB000101000000000000000A /* SourceRules.swift */,
 				BB000101000000000000000B /* AssetRevisionRules.swift */,
@@ -1314,9 +1320,11 @@
 				BB0000010000000000000003 /* Source.swift in Sources */,
 				BB0000010000000000000004 /* Asset.swift in Sources */,
 				BB0000010000000000000005 /* Tag.swift in Sources */,
+				BB0000010000000000000013 /* TagGroup.swift in Sources */,
 				BB0000010000000000000006 /* LocatorIdentity.swift in Sources */,
 				BB0000010000000000000007 /* TagNameNormalizer.swift in Sources */,
 				BB0000010000000000000008 /* TagCatalogRules.swift in Sources */,
+				BB0000010000000000000014 /* TagGroupRules.swift in Sources */,
 				BB0000010000000000000009 /* TagDecisionRules.swift in Sources */,
 				BB000001000000000000000A /* SourceRules.swift in Sources */,
 				BB000001000000000000000B /* AssetRevisionRules.swift in Sources */,

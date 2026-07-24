@@ -4,6 +4,26 @@ struct TagListItem: Sendable, Equatable {
     let id: UUID
     let displayName: String
     let state: TagState
+    let groupID: UUID
+
+    init(
+        id: UUID,
+        displayName: String,
+        state: TagState,
+        groupID: UUID = TagGroupSeed.other.id
+    ) {
+        self.id = id
+        self.displayName = displayName
+        self.state = state
+        self.groupID = groupID
+    }
+}
+
+struct TagGroupListItem: Sendable, Equatable, Identifiable {
+    let id: UUID
+    let displayName: String
+    let sortOrder: Int
+    let isSystem: Bool
 }
 
 enum TagPresetCatalog {

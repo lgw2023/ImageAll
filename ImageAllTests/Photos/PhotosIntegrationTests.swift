@@ -1909,10 +1909,15 @@ final class PhotosIntegrationTests: XCTestCase {
         }
         let probe = ConcurrentLoadProbe()
         let files = ConcurrencyProbingFakeDerivedImageCache(probe: probe)
+        let limits = LibraryAssetImageLoadLimits(
+            maximumConcurrentGridLoads: 4,
+            maximumConcurrentPreviewLoads: 2
+        )
         let loader = LibraryAssetImageLoader(
             database: database,
             fileImages: files,
-            photosImages: FakePhotosLibraryAccess(state: .authorized)
+            photosImages: FakePhotosLibraryAccess(state: .authorized),
+            limits: limits
         )
 
         let loaded = try await withThrowingTaskGroup(of: Data.self) { group in
@@ -1930,7 +1935,161 @@ final class PhotosIntegrationTests: XCTestCase {
 
         XCTAssertEqual(loaded.count, assetIDs.count)
         let peakConcurrentLoads = await probe.peakConcurrentLoads
-        XCTAssertLessThanOrEqual(peakConcurrentLoads, 4)
+        XCTAssertLessThanOrEqual(peakConcurrentLoads, limits.maximumConcurrentGridLoads)
+    }
+
+    func testCancelledGridWaitersDoNotConsumeConcurrencySlots() async throws {
+        let database = try FolderAuthorizationTestSupport.makeDatabase()
+        let sourceID = UUID()
+        let assetIDs = (0 ..< 6).map { _ in UUID() }
+        try await database.pool.write { db in
+            try db.execute(
+                sql: """
+                INSERT INTO source (id, kind, display_name, bookmark, state, created_at_ms, updated_at_ms)
+                VALUES (?, 'folder', 'Fixture', ?, 'active', ?, ?)
+                """,
+                arguments: [
+                    sourceID.uuidString.lowercased(), Data([1]),
+                    DatabaseTestSupport.timestampMs, DatabaseTestSupport.timestampMs,
+                ]
+            )
+            for (index, assetID) in assetIDs.enumerated() {
+                try db.execute(
+                    sql: """
+                    INSERT INTO asset (
+                        id, source_id, locator_kind, relative_path, photos_local_identifier,
+                        media_type, availability, record_created_at_ms, record_updated_at_ms, file_name
+                    ) VALUES (?, ?, 'file', ?, NULL, 'public.jpeg', 'available', ?, ?, ?)
+                    """,
+                    arguments: [
+                        assetID.uuidString.lowercased(), sourceID.uuidString.lowercased(),
+                        "image-\(index).jpg", DatabaseTestSupport.timestampMs,
+                        DatabaseTestSupport.timestampMs, "image-\(index).jpg",
+                    ]
+                )
+            }
+        }
+        let probe = ConcurrentLoadProbe()
+        let files = GateableConcurrencyProbingFakeDerivedImageCache(probe: probe)
+        let loader = LibraryAssetImageLoader(
+            database: database,
+            fileImages: files,
+            photosImages: FakePhotosLibraryAccess(state: .authorized),
+            limits: LibraryAssetImageLoadLimits(
+                maximumConcurrentGridLoads: 2,
+                maximumConcurrentPreviewLoads: 1
+            )
+        )
+
+        let blockers = Array(assetIDs.prefix(2))
+        let cancelled = Array(assetIDs.dropFirst(2).prefix(2))
+        let survivors = Array(assetIDs.suffix(2))
+
+        let blockerTasks = blockers.map { assetID in
+            Task {
+                try await loader.load(assetID: assetID, variant: .grid)
+            }
+        }
+        await files.waitUntilActiveCount(2)
+
+        let cancelledTasks = cancelled.map { assetID in
+            Task {
+                try await loader.load(assetID: assetID, variant: .grid)
+            }
+        }
+        // Give waiters time to park behind the two active slots.
+        try await Task.sleep(nanoseconds: 50_000_000)
+        for task in cancelledTasks {
+            task.cancel()
+        }
+        for task in cancelledTasks {
+            do {
+                _ = try await task.value
+                XCTFail("expected cancelled waiter to throw CancellationError")
+            } catch is CancellationError {
+                // Expected.
+            } catch {
+                XCTFail("unexpected error: \(error)")
+            }
+        }
+
+        await files.releaseAll()
+        for task in blockerTasks {
+            _ = try await task.value
+        }
+
+        let survivorPayloads = try await withThrowingTaskGroup(of: Data.self) { group in
+            for assetID in survivors {
+                group.addTask {
+                    try await loader.load(assetID: assetID, variant: .grid)
+                }
+            }
+            var results: [Data] = []
+            for try await result in group {
+                results.append(result)
+            }
+            return results
+        }
+
+        XCTAssertEqual(survivorPayloads.count, survivors.count)
+        let peakConcurrentLoads = await probe.peakConcurrentLoads
+        XCTAssertLessThanOrEqual(peakConcurrentLoads, 2)
+        // Two blockers + two survivors; cancelled waiters must not start work.
+        XCTAssertEqual(files.currentStartedCount, 4)
+    }
+
+    func testDuplicateInFlightGridLoadsShareOneUnderlyingFetch() async throws {
+        let database = try FolderAuthorizationTestSupport.makeDatabase()
+        let sourceID = UUID()
+        let assetID = UUID()
+        try await database.pool.write { db in
+            try db.execute(
+                sql: """
+                INSERT INTO source (id, kind, display_name, bookmark, state, created_at_ms, updated_at_ms)
+                VALUES (?, 'folder', 'Fixture', ?, 'active', ?, ?)
+                """,
+                arguments: [
+                    sourceID.uuidString.lowercased(), Data([1]),
+                    DatabaseTestSupport.timestampMs, DatabaseTestSupport.timestampMs,
+                ]
+            )
+            try db.execute(
+                sql: """
+                INSERT INTO asset (
+                    id, source_id, locator_kind, relative_path, photos_local_identifier,
+                    media_type, availability, record_created_at_ms, record_updated_at_ms, file_name
+                ) VALUES (?, ?, 'file', 'dup.jpg', NULL, 'public.jpeg', 'available', ?, ?, 'dup.jpg')
+                """,
+                arguments: [
+                    assetID.uuidString.lowercased(), sourceID.uuidString.lowercased(),
+                    DatabaseTestSupport.timestampMs, DatabaseTestSupport.timestampMs,
+                ]
+            )
+        }
+        let probe = ConcurrentLoadProbe()
+        let files = GateableConcurrencyProbingFakeDerivedImageCache(probe: probe)
+        let loader = LibraryAssetImageLoader(
+            database: database,
+            fileImages: files,
+            photosImages: FakePhotosLibraryAccess(state: .authorized),
+            limits: LibraryAssetImageLoadLimits(
+                maximumConcurrentGridLoads: 8,
+                maximumConcurrentPreviewLoads: 2
+            )
+        )
+
+        async let first = loader.load(assetID: assetID, variant: .grid)
+        await files.waitUntilActiveCount(1)
+        async let second = loader.load(assetID: assetID, variant: .grid)
+        async let third = loader.load(assetID: assetID, variant: .grid)
+        await Task.yield()
+        await files.releaseAll()
+        let payloads = try await [first, second, third]
+
+        XCTAssertEqual(payloads.count, 3)
+        XCTAssertEqual(files.currentStartedCount, 1)
+        let peakConcurrentLoads = await probe.peakConcurrentLoads
+        XCTAssertEqual(peakConcurrentLoads, 1)
     }
 
     private func availabilityByName(_ database: CatalogDatabase) async throws -> [String: AssetAvailability] {
@@ -2455,6 +2614,98 @@ private struct ConcurrencyProbingFakeDerivedImageCache: DerivedImageCachePort, S
             await probe.end()
             throw error
         }
+    }
+
+    func performMaintenance() async throws -> DerivedImageMaintenanceResult {
+        DerivedImageMaintenanceResult(
+            removedEntries: 0,
+            removedObjects: 0,
+            removedBytes: 0,
+            unsafeObjects: 0
+        )
+    }
+
+    func cacheUsage() throws -> DerivedImageCacheUsage { .zero }
+
+    func clearCache() async throws -> DerivedImageCacheClearResult {
+        DerivedImageCacheClearResult(
+            removedEntries: 0,
+            registeredBytesInvalidated: 0,
+            removedObjects: 0,
+            removedBytes: 0,
+            partialReclaim: false
+        )
+    }
+}
+
+private final class GateableConcurrencyProbingFakeDerivedImageCache: DerivedImageCachePort, @unchecked Sendable {
+    let probe: ConcurrentLoadProbe
+    private let lock = NSLock()
+    private var hold = true
+    private var activeCount = 0
+    private(set) var startedCount = 0
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    init(probe: ConcurrentLoadProbe) {
+        self.probe = probe
+    }
+
+    func waitUntilActiveCount(_ count: Int) async {
+        while true {
+            let ready = lock.withLock { activeCount >= count }
+            if ready { return }
+            await Task.yield()
+        }
+    }
+
+    func releaseAll() {
+        let pending: [CheckedContinuation<Void, Never>] = lock.withLock {
+            hold = false
+            let pending = waiters
+            waiters.removeAll()
+            return pending
+        }
+        for waiter in pending {
+            waiter.resume()
+        }
+    }
+
+    var currentStartedCount: Int {
+        lock.withLock { startedCount }
+    }
+
+    func loadOrGenerate(_ request: DerivedImageRequest) async throws -> DerivedImagePayload {
+        let shouldHold = lock.withLock { () -> Bool in
+            startedCount += 1
+            activeCount += 1
+            return hold
+        }
+        await probe.begin()
+        if shouldHold {
+            await withCheckedContinuation { continuation in
+                lock.withLock {
+                    if hold {
+                        waiters.append(continuation)
+                    } else {
+                        continuation.resume()
+                    }
+                }
+            }
+        }
+        lock.withLock { activeCount -= 1 }
+        await probe.end()
+        return DerivedImagePayload(
+            entryID: UUID(),
+            assetID: request.assetID,
+            contentRevision: 1,
+            representationVersion: DerivedImageRepresentationVersion.production,
+            variant: request.variant,
+            storageFormat: .jpeg,
+            pixelWidth: 1,
+            pixelHeight: 1,
+            encodedBytes: Data([1]),
+            origin: .cacheHit
+        )
     }
 
     func performMaintenance() async throws -> DerivedImageMaintenanceResult {

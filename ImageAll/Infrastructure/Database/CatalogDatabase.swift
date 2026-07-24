@@ -21,6 +21,7 @@ struct CatalogDatabase: Sendable {
         V013PhotosMissingAssetRepairMigration.register(on: &migrator)
         V014AddTrainingRunsAndPersonalMultiSlotMigration.register(on: &migrator)
         V015AddSuggestionScoreThresholdsMigration.register(on: &migrator)
+        V016AddTagGroupsMigration.register(on: &migrator)
         return migrator
     }
 
@@ -1034,6 +1035,94 @@ enum V015AddSuggestionScoreThresholdsMigration {
                     ('featureKnn', 0, 0),
                     ('personalCentroid', 0, 0),
                     ('personalAdamW', 0, 0)
+                """
+            )
+        }
+    }
+}
+
+enum V016AddTagGroupsMigration {
+    static func register(on migrator: inout DatabaseMigrator) {
+        migrator.registerMigration(CatalogMigrationID.v016AddTagGroups) { db in
+            try db.execute(
+                sql: """
+                CREATE TABLE tag_group (
+                    id TEXT NOT NULL PRIMARY KEY,
+                    name TEXT NOT NULL CHECK(length(name) > 0),
+                    sort_order INTEGER NOT NULL CHECK(sort_order >= 0),
+                    is_system INTEGER NOT NULL CHECK(is_system IN (0, 1)),
+                    created_at_ms INTEGER NOT NULL CHECK(created_at_ms >= 0),
+                    updated_at_ms INTEGER NOT NULL CHECK(updated_at_ms >= 0),
+                    CHECK(
+                        length(id) = 36
+                        AND id = lower(id)
+                        AND id GLOB '????????-????-????-????-????????????'
+                    )
+                ) STRICT
+                """
+            )
+            try db.execute(
+                sql: """
+                CREATE UNIQUE INDEX tag_group_name_uq
+                ON tag_group(name COLLATE NOCASE)
+                """
+            )
+            try db.execute(
+                sql: """
+                CREATE INDEX tag_group_sort_idx
+                ON tag_group(sort_order, id)
+                """
+            )
+
+            let seedTimestampMs: Int64 = 0
+            for seed in TagGroupSeed.allCases {
+                try db.execute(
+                    sql: """
+                    INSERT INTO tag_group (
+                        id, name, sort_order, is_system, created_at_ms, updated_at_ms
+                    ) VALUES (?, ?, ?, 1, ?, ?)
+                    """,
+                    arguments: [
+                        seed.id.uuidString.lowercased(),
+                        seed.displayName,
+                        seed.sortOrder,
+                        seedTimestampMs,
+                        seedTimestampMs,
+                    ]
+                )
+            }
+
+            try db.execute(
+                sql: """
+                ALTER TABLE tag ADD COLUMN group_id TEXT
+                    REFERENCES tag_group(id) ON DELETE RESTRICT
+                """
+            )
+
+            let existingTags = try Row.fetchAll(db, sql: "SELECT id, name FROM tag")
+            for row in existingTags {
+                let tagID: String = row["id"]
+                let name: String = row["name"]
+                let groupID = TagGroupSeed.classify(displayName: name).id.uuidString.lowercased()
+                try db.execute(
+                    sql: "UPDATE tag SET group_id = ? WHERE id = ?",
+                    arguments: [groupID, tagID]
+                )
+            }
+
+            try db.execute(
+                sql: """
+                UPDATE tag
+                SET group_id = ?
+                WHERE group_id IS NULL
+                """,
+                arguments: [TagGroupSeed.other.id.uuidString.lowercased()]
+            )
+
+            try db.execute(
+                sql: """
+                CREATE INDEX tag_group_id_idx
+                ON tag(group_id, id)
                 """
             )
         }

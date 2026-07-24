@@ -18,7 +18,10 @@ enum DerivedImageTestSupport {
             database: database,
             fileImages: fileImages,
             photosImages: UnavailablePhotosLibraryAccess(),
-            maximumConcurrentLoads: maximumConcurrentLoads
+            limits: LibraryAssetImageLoadLimits(
+                maximumConcurrentGridLoads: maximumConcurrentLoads,
+                maximumConcurrentPreviewLoads: max(1, maximumConcurrentLoads / 2)
+            )
         )
     }
 
