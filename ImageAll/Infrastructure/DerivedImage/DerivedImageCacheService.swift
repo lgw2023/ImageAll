@@ -345,12 +345,206 @@ final class DerivedImageCacheService: DerivedImageCachePort, DownloadedPreviewCa
             throw DerivedImageError.derivedAssetIneligible
         }
 
+        // Prefer deriving grid thumbnails from an already-cached preview on SSD.
+        // Folder sources on spinning disks often have preview hits from inspector
+        // browsing while gridRegular is still cold; re-reading originals from HDD
+        // for every visible cell stalls the grid behind a tiny concurrency gate.
+        if let derived = try await materializeFromCachedLargerVariantIfPossible(
+            request: request,
+            context: context,
+            session: session,
+            replacementCandidate: replacementCandidate
+        ) {
+            return derived
+        }
+
         return try await generateFresh(
             request: request,
             context: context,
             session: session,
             replacementCandidate: replacementCandidate
         )
+    }
+
+    /// Builds a smaller grid variant from a larger cached derived image without
+    /// touching the original source file (no security-scope / HDD read).
+    private func materializeFromCachedLargerVariantIfPossible(
+        request: DerivedImageRequest,
+        context: DerivedImageAssetGenerationContext,
+        session: DerivedImageAnchoredCacheSession,
+        replacementCandidate: DerivedImageCacheEntryRow?
+    ) async throws -> DerivedImagePayload? {
+        let donorVariants: [DerivedImageVariant]
+        switch request.variant {
+        case .gridSmall:
+            donorVariants = [.gridRegular, .preview]
+        case .gridRegular:
+            donorVariants = [.preview]
+        case .preview:
+            return nil
+        }
+
+        for donorVariant in donorVariants {
+            guard let entry = try repository.fetchEntry(
+                assetID: context.assetID,
+                contentRevision: context.contentRevision,
+                representationVersion: DerivedImageRepresentationVersion.production,
+                variant: donorVariant
+            ) else {
+                continue
+            }
+
+            switch try validateHit(entry: entry, session: session) {
+            case let .valid(payload):
+                return try await publishRenderedVariant(
+                    sourceBytes: payload.encodedBytes,
+                    request: request,
+                    context: context,
+                    session: session,
+                    replacementCandidate: replacementCandidate
+                )
+            case let .invalid(candidate):
+                try repository.deleteEntry(id: candidate.id)
+                _ = try? store.deleteObjectDuringEviction(
+                    entryID: candidate.id,
+                    format: candidate.storageFormat,
+                    session: session
+                )
+            }
+        }
+        return nil
+    }
+
+    private func publishRenderedVariant(
+        sourceBytes: Data,
+        request: DerivedImageRequest,
+        context: DerivedImageAssetGenerationContext,
+        session: DerivedImageAnchoredCacheSession,
+        replacementCandidate: DerivedImageCacheEntryRow?
+    ) async throws -> DerivedImagePayload {
+        let stagingName = DerivedImageCachePathLayout.stagingFileName()
+        operationGate.beginGeneration(stagingName: stagingName)
+        defer { operationGate.endGeneration(stagingName: stagingName) }
+
+        let artifact = try renderer.render(sourceBytes: sourceBytes, variant: request.variant)
+        guard artifact.byteSize > 0 else {
+            throw DerivedImageError.derivedEncodeFailed
+        }
+        guard let incomingBytes = UInt64(exactly: artifact.byteSize) else {
+            throw DerivedImageError.derivedInsufficientSpace
+        }
+        if incomingBytes > DerivedImageQuotaPolicy.publishedQuotaBytes {
+            throw DerivedImageError.derivedInsufficientSpace
+        }
+
+        do {
+            try await evictIfNeeded(incomingBytes: incomingBytes, session: session)
+        } catch DerivedImageError.derivedInsufficientSpace
+            where request.persistence == .memoryFallbackAllowed
+        {
+            return DerivedImagePayload(
+                entryID: UUID(),
+                assetID: context.assetID,
+                contentRevision: context.contentRevision,
+                representationVersion: DerivedImageRepresentationVersion.production,
+                variant: request.variant,
+                storageFormat: artifact.storageFormat,
+                pixelWidth: artifact.pixelWidth,
+                pixelHeight: artifact.pixelHeight,
+                encodedBytes: artifact.bytes,
+                origin: .memoryOnly
+            )
+        }
+
+        if faultInjector.shouldFault(at: .dbPublish) {
+            throw DerivedImageError.derivedCachePersistenceFailed
+        }
+
+        let entryID = UUID()
+        _ = try store.publish(
+            artifact: artifact,
+            entryID: entryID,
+            format: artifact.storageFormat,
+            stagingName: stagingName,
+            session: session
+        )
+
+        finalPublishCheckpoint.blockAfterFinalObjectPublished(
+            entryID: entryID,
+            storageFormat: artifact.storageFormat,
+            stagingName: stagingName
+        )
+
+        let nowMs = clock.nowMs
+        let entry = DerivedImageCacheEntryRow(
+            id: entryID,
+            assetID: context.assetID,
+            contentRevision: context.contentRevision,
+            representationVersion: DerivedImageRepresentationVersion.production,
+            variant: request.variant,
+            storageFormat: artifact.storageFormat,
+            pixelWidth: artifact.pixelWidth,
+            pixelHeight: artifact.pixelHeight,
+            byteSize: artifact.byteSize,
+            encodedSHA256: artifact.sha256,
+            createdAtMs: nowMs,
+            lastAccessedAtMs: nowMs
+        )
+
+        let outcome = try repository.publishEntryReplacingKey(
+            entry: entry,
+            expected: context,
+            replacementCandidateID: replacementCandidate?.id
+        )
+        switch outcome {
+        case .sourceChanged:
+            try? store.deleteObjectDuringEviction(
+                entryID: entryID,
+                format: artifact.storageFormat,
+                session: session
+            )
+            throw DerivedImageError.derivedSourceChanged
+        case let .lostRaceToExisting(winner):
+            try? store.deleteObjectDuringEviction(
+                entryID: entryID,
+                format: artifact.storageFormat,
+                session: session
+            )
+            switch try validateHit(entry: winner, session: session) {
+            case let .valid(payload):
+                return payload
+            case let .invalid(candidate):
+                return try await publishRenderedVariant(
+                    sourceBytes: sourceBytes,
+                    request: request,
+                    context: context,
+                    session: session,
+                    replacementCandidate: candidate
+                )
+            }
+        case let .published(replacedEntry):
+            if let replacedEntry {
+                let shouldFaultOldDelete = faultInjector.shouldFault(at: .oldObjectDelete)
+                if !shouldFaultOldDelete {
+                    try? session.deleteObject(
+                        entryID: replacedEntry.id,
+                        format: replacedEntry.storageFormat
+                    )
+                }
+            }
+            return DerivedImagePayload(
+                entryID: entry.id,
+                assetID: entry.assetID,
+                contentRevision: entry.contentRevision,
+                representationVersion: entry.representationVersion,
+                variant: entry.variant,
+                storageFormat: entry.storageFormat,
+                pixelWidth: entry.pixelWidth,
+                pixelHeight: entry.pixelHeight,
+                encodedBytes: artifact.bytes,
+                origin: .generated
+            )
+        }
     }
 
     private func storePhotoImageInternal(

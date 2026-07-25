@@ -53,6 +53,45 @@ final class DerivedImageCacheHitAndConcurrencyTests: XCTestCase {
         )
     }
 
+    func testGridRegularMaterializesFromCachedPreviewWithoutRereadingSource() async throws {
+        let env = try DerivedImageTestSupport.TempEnvironment(label: "preview-to-grid")
+        defer { env.cleanup() }
+        let fileURL = try env.seedAvailableAsset()
+        let (service, bookmarkPort) = env.makeService(
+            volumeReader: DerivedImageTestSupport.generousVolume
+        )
+
+        let preview = try await service.loadOrGenerate(
+            DerivedImageRequest(assetID: env.assetID, variant: .preview)
+        )
+        XCTAssertEqual(preview.origin, .generated)
+        let scopeAfterPreview = bookmarkPort.scopeStartCount
+
+        // Simulate a cold grid after inspector browsing already cached preview,
+        // with the original file no longer readable (HDD unmounted / deleted).
+        try FileManager.default.removeItem(at: fileURL)
+
+        let grid = try await service.loadOrGenerate(
+            DerivedImageRequest(assetID: env.assetID, variant: .gridRegular)
+        )
+        XCTAssertEqual(grid.origin, .generated)
+        XCTAssertEqual(grid.pixelWidth, 512)
+        XCTAssertEqual(grid.pixelHeight, 512)
+        XCTAssertFalse(grid.encodedBytes.isEmpty)
+        XCTAssertEqual(
+            bookmarkPort.scopeStartCount,
+            scopeAfterPreview,
+            "gridRegular must reuse cached preview bytes without reopening the source root"
+        )
+
+        let gridHit = try await service.loadOrGenerate(
+            DerivedImageRequest(assetID: env.assetID, variant: .gridRegular)
+        )
+        XCTAssertEqual(gridHit.origin, .cacheHit)
+        XCTAssertEqual(gridHit.entryID, grid.entryID)
+        XCTAssertTrue(env.finalObjectExists(entryID: grid.entryID, format: grid.storageFormat))
+    }
+
     func testMissingCacheObjectDeletesEntryAndRebuilds() async throws {
         try await assertInvalidHitRebuilds(
             label: "missing-object",
