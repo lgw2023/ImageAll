@@ -617,6 +617,12 @@ struct GRDBFolderReconcileRepository: FolderReconcileBatchPort, Sendable {
                     : existing.contentRevision
                 return .retain(contentRevision: revision)
             }
+            // Volume remounts rewrite fileResourceIdentifier while size/mtime stay
+            // identical. Retain the asset and refresh the fingerprint instead of
+            // treating every path as a brand-new file.
+            if !fingerprintChanged(existing: existing, observation: observation) {
+                return .retain(contentRevision: existing.contentRevision)
+            }
             return .replace(newAssetID: UUID())
         }
 

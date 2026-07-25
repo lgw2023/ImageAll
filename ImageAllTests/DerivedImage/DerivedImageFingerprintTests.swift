@@ -26,6 +26,46 @@ final class DerivedImageFingerprintTests: XCTestCase {
         XCTAssertEqual(count, 0)
     }
 
+    func testCatalogResourceIDRemountDriftStillGeneratesWhenSizeAndMtimeMatch() async throws {
+        let env = try DerivedImageTestSupport.TempEnvironment(label: "rid-remount")
+        defer { env.cleanup() }
+        let fileURL = try env.seedAvailableAsset()
+        let staleResourceID = Data([0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x11, 0x22, 0x33])
+        let liveResourceID = try await env.database.pool.read { db -> Data? in
+            try Data.fetchOne(
+                db,
+                sql: "SELECT resource_id FROM file_fingerprint WHERE asset_id = ?",
+                arguments: [env.assetID.uuidString.lowercased()]
+            )
+        }
+        XCTAssertNotNil(liveResourceID)
+        XCTAssertNotEqual(liveResourceID, staleResourceID)
+        try await env.database.pool.write { db in
+            try db.execute(
+                sql: "UPDATE file_fingerprint SET resource_id = ? WHERE asset_id = ?",
+                arguments: [staleResourceID, env.assetID.uuidString.lowercased()]
+            )
+        }
+
+        let pinnedReader = try await env.pinnedSeedFingerprintReader(for: fileURL)
+        let (service, _) = env.makeService(
+            sourceReader: DerivedImageSourceReader(fileResourceReader: pinnedReader),
+            volumeReader: DerivedImageTestSupport.generousVolume
+        )
+        let payload = try await service.loadOrGenerate(
+            DerivedImageRequest(assetID: env.assetID, variant: .gridRegular)
+        )
+        XCTAssertFalse(payload.encodedBytes.isEmpty)
+        let count = try await env.database.pool.read { db in
+            try Int.fetchOne(
+                db,
+                sql: "SELECT COUNT(*) FROM derived_image_cache_entry WHERE asset_id = ?",
+                arguments: [env.assetID.uuidString.lowercased()]
+            ) ?? 0
+        }
+        XCTAssertEqual(count, 1)
+    }
+
     func testCorruptCacheEntryRebuildsWithoutChangingAsset() async throws {
         let env = try DerivedImageTestSupport.TempEnvironment(label: "corrupt-cache")
         defer { env.cleanup() }

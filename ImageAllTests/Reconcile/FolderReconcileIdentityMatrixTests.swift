@@ -83,6 +83,42 @@ final class FolderReconcileIdentityMatrixTests: XCTestCase {
         XCTAssertEqual(rows.first { $0.locatorState == "current" }?.tagCount, 0)
     }
 
+    func testResourceIDOnlyRemountDriftRetainsAssetAndRefreshesFingerprint() throws {
+        let fixture = FolderReconcileTestSupport.TempFixtureRoot()
+        defer { fixture.cleanup() }
+        let root = try fixture.makeRoot(label: "rid-remount")
+        try fixture.writeFile(root: root, relativePath: "a.png", contents: FolderReconcileTestSupport.minimalPNGData())
+        let (database, sourceID, coordinator, queue) = try makeScanHarness(
+            fixture: fixture,
+            label: "rid-remount",
+            root: root
+        )
+        _ = try runOnce(coordinator: coordinator)
+        let first = try FolderReconcileTestSupport.fetchAssetRows(database: database, sourceID: sourceID)[0]
+        let staleResourceID = Data([0xCA, 0xFE, 0xBA, 0xBE, 0x10, 0x20, 0x30, 0x40])
+        XCTAssertNotEqual(first.resourceID, staleResourceID)
+        try database.pool.write { db in
+            try db.execute(
+                sql: "UPDATE file_fingerprint SET resource_id = ? WHERE asset_id = ?",
+                arguments: [staleResourceID, first.id.lowercased()]
+            )
+        }
+        try FolderReconcileTestSupport.seedActiveTag(database: database, assetID: first.id, label: "keep")
+        _ = try FolderReconcileTestSupport.enqueueReconcileJob(queue: queue, sourceID: sourceID, jobID: UUID())
+        _ = try runOnce(coordinator: coordinator, owner: "w2")
+        let rows = try FolderReconcileTestSupport.fetchAssetRows(database: database, sourceID: sourceID)
+        XCTAssertEqual(rows.filter { $0.locatorState == "historical" }.count, 0)
+        XCTAssertEqual(rows.filter { $0.locatorState == "current" }.count, 1)
+        let current = try XCTUnwrap(rows.first { $0.locatorState == "current" })
+        XCTAssertEqual(current.id, first.id)
+        XCTAssertEqual(current.contentRevision, 1)
+        XCTAssertEqual(current.tagCount, 1)
+        XCTAssertEqual(current.sizeBytes, first.sizeBytes)
+        XCTAssertEqual(current.modifiedAtNs, first.modifiedAtNs)
+        XCTAssertNotEqual(current.resourceID, staleResourceID)
+        XCTAssertEqual(current.resourceID, first.resourceID)
+    }
+
     func testDualNilResourceIDRetainsAssetOnRescan() throws {
         let url = try makeTempDatabaseURL()
         let database = try CatalogDatabase.open(at: url)

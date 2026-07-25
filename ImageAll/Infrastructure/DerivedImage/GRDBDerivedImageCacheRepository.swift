@@ -478,10 +478,13 @@ extension DerivedImageAssetGenerationContext {
             && fingerprintModifiedAtNs >= 0
     }
 
+    /// Catalog compatibility for generation uses stable content facts only.
+    /// `resource_id` is best-effort and can change across volume remounts while
+    /// size/mtime stay identical; mid-open stability still compares resource IDs
+    /// between the same file-descriptor read in `generateFresh`.
     func matchesHandleFacts(_ opened: DerivedImageOpenedFingerprint) -> Bool {
         opened.sizeBytes == fingerprintSizeBytes
             && opened.modifiedAtNs == fingerprintModifiedAtNs
-            && opened.resourceID == fingerprintResourceID
     }
 
     func matches(_ opened: DerivedImageOpenedFingerprint) -> Bool {
