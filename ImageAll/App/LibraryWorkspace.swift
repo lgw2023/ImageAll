@@ -569,6 +569,7 @@ final class LibraryWorkspaceModel: ObservableObject {
     @Published private(set) var isClearingPreviewCache = false
     @Published private(set) var isChoosingAppStorageLocation = false
     @Published private(set) var isIdleThumbnailPrewarmEnabled: Bool
+    @Published private(set) var sourceThumbnailPrewarmProgress: SourceThumbnailPrewarmProgress?
     @Published private(set) var jobActivityItems: [JobActivityItem] = []
     @Published private(set) var jobActivityActionInFlightIDs: Set<UUID> = []
     @Published private(set) var sourceOrderRevision = 0
@@ -626,6 +627,8 @@ final class LibraryWorkspaceModel: ObservableObject {
     private let idlePrewarmInstallEventMonitor: Bool
     private var idleThumbnailPrewarmController: IdleThumbnailPrewarmController?
     private var idlePrewarmGeneration = 0
+    private var sourceThumbnailPrewarmTask: Task<Void, Never>?
+    private var sourceThumbnailPrewarmGeneration = 0
     private var browsingNavigationRequestID: UUID?
     private var selectionAnchorID: UUID?
     private var featureSuggestionCompletionContexts: [UUID: String] = [:]
@@ -1322,6 +1325,141 @@ final class LibraryWorkspaceModel: ObservableObject {
         } catch {
             // Best-effort; browsing remains available.
         }
+    }
+
+    var isPrewarmingSourceThumbnails: Bool {
+        sourceThumbnailPrewarmProgress != nil
+    }
+
+    func prewarmSourceThumbnails(sourceID: UUID) {
+        guard !isPrewarmingSourceThumbnails else { return }
+        guard canStartSourceThumbnailPrewarm(sourceID: sourceID) else { return }
+        sourceThumbnailPrewarmTask = Task(priority: .utility) { [weak self] in
+            await self?.runSourceThumbnailPrewarm(sourceID: sourceID)
+        }
+    }
+
+    func cancelSourceThumbnailPrewarm() {
+        guard let progress = sourceThumbnailPrewarmProgress else { return }
+        sourceThumbnailPrewarmGeneration += 1
+        sourceThumbnailPrewarmTask?.cancel()
+        sourceThumbnailPrewarmTask = nil
+        sourceThumbnailPrewarmProgress = nil
+        notice = .sourceThumbnailPrewarmCancelled(
+            sourceDisplayName: progress.sourceDisplayName,
+            completed: progress.completed,
+            total: progress.total
+        )
+    }
+
+    private func canStartSourceThumbnailPrewarm(sourceID: UUID) -> Bool {
+        guard let source = sources.first(where: { $0.id == sourceID }) else { return false }
+        guard source.state == .active || source.state == .unavailable else { return false }
+
+        noteUserInteractionForIdlePrewarm()
+        notice = nil
+        sourceThumbnailPrewarmGeneration += 1
+        sourceThumbnailPrewarmProgress = SourceThumbnailPrewarmProgress(
+            sourceID: sourceID,
+            sourceDisplayName: source.displayName,
+            completed: 0,
+            total: 0,
+            warmed: 0,
+            failed: 0
+        )
+        return true
+    }
+
+    private func runSourceThumbnailPrewarm(sourceID: UUID) async {
+        let generation = sourceThumbnailPrewarmGeneration
+        let sourceDisplayName = sourceThumbnailPrewarmProgress?.sourceDisplayName
+            ?? sources.first(where: { $0.id == sourceID })?.displayName
+            ?? "来源"
+        let service = service
+        defer {
+            if sourceThumbnailPrewarmGeneration == generation {
+                sourceThumbnailPrewarmTask = nil
+                sourceThumbnailPrewarmProgress = nil
+            }
+        }
+
+        var assetIDs: [UUID] = []
+        do {
+            var cursor: AssetPageCursor?
+            // Match the workspace "no search" filter shape (empty string, not nil).
+            let filter = AssetPageFilter(sourceIDs: [sourceID], searchText: "")
+            var pageCount = 0
+            repeat {
+                guard sourceThumbnailPrewarmGeneration == generation, !Task.isCancelled else { return }
+                pageCount += 1
+                // Safety cap: production pages are 100 items; this bounds pathological cursors.
+                guard pageCount <= 100_000 else { break }
+                let page = try service.fetchAssetPage(
+                    filter: filter,
+                    sort: .newest,
+                    cursor: cursor
+                )
+                // Fail closed on a stuck cursor so a bad page implementation cannot spin forever.
+                if page.items.isEmpty {
+                    break
+                }
+                assetIDs.append(contentsOf: page.items.map(\.assetID))
+                let next = page.nextCursor
+                if next == cursor {
+                    break
+                }
+                cursor = next
+            } while cursor != nil
+        } catch {
+            guard sourceThumbnailPrewarmGeneration == generation else { return }
+            notice = .sourceThumbnailPrewarmFailed
+            return
+        }
+
+        guard sourceThumbnailPrewarmGeneration == generation else { return }
+        sourceThumbnailPrewarmProgress = SourceThumbnailPrewarmProgress(
+            sourceID: sourceID,
+            sourceDisplayName: sourceDisplayName,
+            completed: 0,
+            total: assetIDs.count,
+            warmed: 0,
+            failed: 0
+        )
+
+        var warmed = 0
+        var failed = 0
+        for (index, assetID) in assetIDs.enumerated() {
+            guard sourceThumbnailPrewarmGeneration == generation, !Task.isCancelled else { return }
+            do {
+                try Task.checkCancellation()
+                let data = try await service.loadThumbnail(assetID: assetID)
+                guard sourceThumbnailPrewarmGeneration == generation else { return }
+                rememberThumbnailData(data, for: assetID)
+                warmed += 1
+            } catch is CancellationError {
+                return
+            } catch {
+                guard sourceThumbnailPrewarmGeneration == generation else { return }
+                failed += 1
+            }
+            guard sourceThumbnailPrewarmGeneration == generation else { return }
+            sourceThumbnailPrewarmProgress = SourceThumbnailPrewarmProgress(
+                sourceID: sourceID,
+                sourceDisplayName: sourceDisplayName,
+                completed: index + 1,
+                total: assetIDs.count,
+                warmed: warmed,
+                failed: failed
+            )
+        }
+
+        guard sourceThumbnailPrewarmGeneration == generation else { return }
+        notice = .sourceThumbnailPrewarmCompleted(
+            sourceDisplayName: sourceDisplayName,
+            warmed: warmed,
+            failed: failed,
+            total: assetIDs.count
+        )
     }
 
     private func purgeExcludedVideoAssetsIfNeeded() async {
@@ -5445,6 +5583,32 @@ struct LibraryWorkspaceView: View {
                     .accessibilityLabel(catalogProgressTitle(model.catalogReconcileProgress))
                 }
 
+                if let progress = model.sourceThumbnailPrewarmProgress {
+                    HStack(spacing: 6) {
+                        if progress.total > 0 {
+                            ProgressView(
+                                value: Double(progress.completed),
+                                total: Double(progress.total)
+                            )
+                            .frame(width: 42)
+                            .controlSize(.small)
+                        } else {
+                            ProgressView()
+                                .controlSize(.small)
+                        }
+                        Text(sourceThumbnailPrewarmTitle(progress))
+                            .font(.caption)
+                            .lineLimit(1)
+                        Button("取消") {
+                            model.cancelSourceThumbnailPrewarm()
+                        }
+                        .controlSize(.small)
+                    }
+                    .accessibilityElement(children: .combine)
+                    .accessibilityIdentifier("sourceThumbnailPrewarmProgress")
+                    .accessibilityLabel(sourceThumbnailPrewarmTitle(progress))
+                }
+
                 if model.supportsPersonalModelRebuild {
                     Button {
                         Task { await model.rebuildPersonalModel() }
@@ -6693,6 +6857,15 @@ struct LibraryWorkspaceView: View {
             }
             .disabled(model.isBusy || source.state != .active)
 
+            Button("预热缩略图缓存") {
+                model.prewarmSourceThumbnails(sourceID: source.id)
+            }
+            .disabled(
+                model.isPrewarmingSourceThumbnails
+                    || source.state == .disabled
+                    || source.state == .authorizationRequired
+            )
+
             if source.kind == .photos && source.state == .active {
                 Button("完整修复扫描…") {
                     photosSourcePendingFullRepair = source
@@ -7377,6 +7550,13 @@ struct LibraryWorkspaceView: View {
         return "正在扫描 \(source)"
     }
 
+    private func sourceThumbnailPrewarmTitle(_ progress: SourceThumbnailPrewarmProgress) -> String {
+        if progress.total > 0 {
+            return "预热 \(progress.sourceDisplayName) \(progress.completed.formatted()) / \(progress.total.formatted())"
+        }
+        return "正在列出 \(progress.sourceDisplayName)…"
+    }
+
     private func availabilityFilterButton(
         _ availability: AssetAvailability,
         title: String
@@ -7462,6 +7642,8 @@ struct LibraryWorkspaceView: View {
             "line.3.horizontal.decrease.circle"
         case .presetTagsInstalled, .presetTagsAlreadyAvailable,
              .portableExportCompleted, .previewCacheCleared,
+             .sourceThumbnailPrewarmCompleted,
+             .sourceThumbnailPrewarmCancelled,
              .appStorageLocationRequiresRestart,
              .personalModelRebuildCompleted, .personalAdamWRebuildCompleted,
              .selectedAssetEmbeddingCached,
@@ -7522,6 +7704,16 @@ struct LibraryWorkspaceView: View {
                 : "已清理 \(removedEntries) 个预览缓存条目。"
         case .previewCacheActionFailed:
             "预览缓存操作未完成。原照片、人工标签和个性化数据没有被修改。"
+        case let .sourceThumbnailPrewarmCompleted(sourceDisplayName, warmed, failed, total):
+            if failed == 0 {
+                "已为“\(sourceDisplayName)”预热 \(warmed)/\(total) 张缩略图到磁盘缓存。"
+            } else {
+                "已为“\(sourceDisplayName)”预热 \(warmed)/\(total) 张缩略图（失败 \(failed) 张）；已写入磁盘的条目可跨启动复用。"
+            }
+        case let .sourceThumbnailPrewarmCancelled(sourceDisplayName, completed, total):
+            "已取消“\(sourceDisplayName)”缩略图预热（\(completed)/\(total)）。已写入磁盘的条目仍会保留。"
+        case .sourceThumbnailPrewarmFailed:
+            "来源缩略图预热未能开始。浏览和已有缓存不受影响，请稍后重试。"
         case .appStorageLocationRequiresRestart:
             "外置应用存储位置已保存；重新启动 ImageAll 后会迁移现有资料与全部缓存。"
         case .appStorageLocationActionFailed:

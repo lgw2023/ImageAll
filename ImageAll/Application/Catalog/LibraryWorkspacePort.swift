@@ -75,6 +75,20 @@ struct CatalogExcludedVideoPurgeResult: Equatable, Sendable {
     let removedDecisionCount: Int
 }
 
+struct SourceThumbnailPrewarmProgress: Equatable, Sendable {
+    let sourceID: UUID
+    let sourceDisplayName: String
+    let completed: Int
+    let total: Int
+    let warmed: Int
+    let failed: Int
+
+    var fractionCompleted: Double {
+        guard total > 0 else { return 0 }
+        return min(1, Double(completed) / Double(total))
+    }
+}
+
 enum LibraryWorkspaceNotice: Equatable, Sendable {
     case selectionHiddenByFilter
     case presetTagsInstalled(createdCount: Int)
@@ -107,6 +121,18 @@ enum LibraryWorkspaceNotice: Equatable, Sendable {
     case portableExportFailed
     case previewCacheCleared(removedEntries: Int, partialReclaim: Bool)
     case previewCacheActionFailed
+    case sourceThumbnailPrewarmCompleted(
+        sourceDisplayName: String,
+        warmed: Int,
+        failed: Int,
+        total: Int
+    )
+    case sourceThumbnailPrewarmCancelled(
+        sourceDisplayName: String,
+        completed: Int,
+        total: Int
+    )
+    case sourceThumbnailPrewarmFailed
     case appStorageLocationRequiresRestart
     case appStorageLocationActionFailed
     case jobActivityActionFailed

@@ -250,6 +250,7 @@
 		IP0000010000000000000003 /* IdleThumbnailPrewarmController.swift in Sources */ = {isa = PBXBuildFile; fileRef = IP0001010000000000000003 /* IdleThumbnailPrewarmController.swift */; };
 		IP0000010000000000000004 /* IdleThumbnailPrewarmSettingsModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = IP0001010000000000000004 /* IdleThumbnailPrewarmSettingsModel.swift */; };
 		IP0000010000000000000101 /* IdleThumbnailPrewarmTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = IP0001010000000000000101 /* IdleThumbnailPrewarmTests.swift */; };
+		IP0000010000000000000102 /* SourceThumbnailPrewarmTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = IP0001010000000000000102 /* SourceThumbnailPrewarmTests.swift */; };
 		CM0000010000000000000201 /* DINOv2Small in Resources */ = {isa = PBXBuildFile; fileRef = CM0001010000000000000201 /* DINOv2Small */; };
 		NN0000010000000000000001 /* PersonalizationReviewPort.swift in Sources */ = {isa = PBXBuildFile; fileRef = NN0001010000000000000001 /* PersonalizationReviewPort.swift */; };
 		NN0000010000000000000002 /* FullLibrarySuggestionsContracts.swift in Sources */ = {isa = PBXBuildFile; fileRef = NN0001010000000000000002 /* FullLibrarySuggestionsContracts.swift */; };
@@ -522,6 +523,7 @@
 		IP0001010000000000000003 /* IdleThumbnailPrewarmController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IdleThumbnailPrewarmController.swift; sourceTree = "<group>"; };
 		IP0001010000000000000004 /* IdleThumbnailPrewarmSettingsModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IdleThumbnailPrewarmSettingsModel.swift; sourceTree = "<group>"; };
 		IP0001010000000000000101 /* IdleThumbnailPrewarmTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IdleThumbnailPrewarmTests.swift; sourceTree = "<group>"; };
+		IP0001010000000000000102 /* SourceThumbnailPrewarmTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SourceThumbnailPrewarmTests.swift; sourceTree = "<group>"; };
 		CM0001010000000000000201 /* DINOv2Small */ = {isa = PBXFileReference; lastKnownFileType = folder; path = Resources/Models/DINOv2Small; sourceTree = "<group>"; };
 		NN0001010000000000000001 /* PersonalizationReviewPort.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersonalizationReviewPort.swift; sourceTree = "<group>"; };
 		NN0001010000000000000002 /* FullLibrarySuggestionsContracts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FullLibrarySuggestionsContracts.swift; sourceTree = "<group>"; };
@@ -590,6 +592,7 @@
 				OO0006010000000000000003 /* Photos */,
 				JJ0001010000000000000101 /* LibraryWorkspaceModelTests.swift */,
 				IP0001010000000000000101 /* IdleThumbnailPrewarmTests.swift */,
+				IP0001010000000000000102 /* SourceThumbnailPrewarmTests.swift */,
 				KK0006010000000000000003 /* Personalization */,
 				AA0006010000000000000008 /* Startup */,
 				HH0006010000000000000003 /* Authorization */,
@@ -1462,6 +1465,7 @@
 				ST0000010000000000000003 /* SuggestionThresholdTests.swift in Sources */,
 				JJ0000010000000000000101 /* LibraryWorkspaceModelTests.swift in Sources */,
 				IP0000010000000000000101 /* IdleThumbnailPrewarmTests.swift in Sources */,
+				IP0000010000000000000102 /* SourceThumbnailPrewarmTests.swift in Sources */,
 				AA0000010000000000000005 /* CompositionRootTests.swift in Sources */,
 				EE0000010000000000000101 /* StartupTestSupport.swift in Sources */,
 				EE0000010000000000000102 /* AppPathsTests.swift in Sources */,

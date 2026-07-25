@@ -7613,7 +7613,7 @@ final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecked Sendab
         sort: AssetPageSort,
         cursor: AssetPageCursor?
     ) throws -> AssetPageResult {
-        if filter.searchText == blockedSearchText {
+        if let blockedSearchText, filter.searchText == blockedSearchText {
             lock.withLock { storedHasStartedBlockedAssetPageFetch = true }
             assetPageFetchGate.wait()
         }
@@ -7647,9 +7647,17 @@ final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecked Sendab
                     assetID
                 }
             }
-            let startIndex = cursorAssetID
-                .flatMap { id in filtered.firstIndex(where: { $0.assetID == id }) }
-                .map { $0 + 1 } ?? 0
+            // If a cursor asset disappeared from the filtered set, stop instead of
+            // restarting at offset 0 (which would infinite-loop callers).
+            let startIndex: Int
+            if let cursorAssetID {
+                guard let index = filtered.firstIndex(where: { $0.assetID == cursorAssetID }) else {
+                    return AssetPageResult(items: [], nextCursor: nil)
+                }
+                startIndex = index + 1
+            } else {
+                startIndex = 0
+            }
             let pageItems = Array(
                 filtered.dropFirst(startIndex).prefix(assetPageSize ?? filtered.count)
             )
