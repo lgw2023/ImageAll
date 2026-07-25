@@ -145,3 +145,112 @@ struct LibraryGridMarqueeContainer<Content: View>: View {
         additiveAtDragStart = false
     }
 }
+
+private struct LibraryGridPageKeyHandlingModifier: ViewModifier {
+    let isEnabled: Bool
+    let onPageKey: (LibraryGridPageDirection) -> Void
+
+    func body(content: Content) -> some View {
+        content.background {
+            LibraryGridPageKeyMonitor(isEnabled: isEnabled, onPageKey: onPageKey)
+        }
+    }
+}
+
+private struct LibraryGridPageKeyMonitor: NSViewRepresentable {
+    let isEnabled: Bool
+    let onPageKey: (LibraryGridPageDirection) -> Void
+
+    func makeNSView(context: Context) -> PageKeyMonitorView {
+        PageKeyMonitorView()
+    }
+
+    func updateNSView(_ nsView: PageKeyMonitorView, context: Context) {
+        nsView.configure(isEnabled: isEnabled, onPageKey: onPageKey)
+    }
+
+    final class PageKeyMonitorView: NSView {
+        private var monitor: Any?
+        private var isEnabled = false
+        private var onPageKey: ((LibraryGridPageDirection) -> Void)?
+
+        deinit {
+            removeMonitor()
+        }
+
+        func configure(
+            isEnabled: Bool,
+            onPageKey: @escaping (LibraryGridPageDirection) -> Void
+        ) {
+            self.isEnabled = isEnabled
+            self.onPageKey = onPageKey
+            if isEnabled {
+                installMonitorIfNeeded()
+            } else {
+                removeMonitor()
+            }
+        }
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            if window == nil {
+                removeMonitor()
+            } else if isEnabled {
+                installMonitorIfNeeded()
+            }
+        }
+
+        private func installMonitorIfNeeded() {
+            guard monitor == nil, window != nil else { return }
+            monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+                guard let self, self.isEnabled, self.shouldHandle(event) else { return event }
+                switch event.keyCode {
+                case 116:
+                    self.onPageKey?(.up)
+                    return nil
+                case 121:
+                    self.onPageKey?(.down)
+                    return nil
+                default:
+                    return event
+                }
+            }
+        }
+
+        private func removeMonitor() {
+            if let monitor {
+                NSEvent.removeMonitor(monitor)
+                self.monitor = nil
+            }
+        }
+
+        private func shouldHandle(_ event: NSEvent) -> Bool {
+            guard let eventWindow = event.window,
+                  let hostWindow = window,
+                  eventWindow === hostWindow
+            else { return false }
+            guard let responder = eventWindow.firstResponder else { return true }
+            if responder is NSTextView
+                || responder is NSTextField
+                || responder is NSSearchField
+            {
+                return false
+            }
+            return true
+        }
+    }
+}
+
+extension View {
+    func libraryGridPageKeyHandling(
+        isEnabled: Bool,
+        onPageKey: @escaping (LibraryGridPageDirection) -> Void
+    ) -> some View {
+        modifier(
+            LibraryGridPageKeyHandlingModifier(
+                isEnabled: isEnabled,
+                onPageKey: onPageKey
+            )
+        )
+    }
+}

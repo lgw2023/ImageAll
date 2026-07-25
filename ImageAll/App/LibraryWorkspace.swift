@@ -5887,7 +5887,6 @@ struct LibraryWorkspaceView: View {
                 keys: [.leftArrow, .rightArrow, .upArrow, .downArrow],
                 action: handleGridNavigationKey
             )
-            .onKeyPress(keys: [.pageUp, .pageDown], action: handleGridPageNavigationKey)
     }
 
     private var previewCachePanel: some View {
@@ -6446,18 +6445,15 @@ struct LibraryWorkspaceView: View {
         return .handled
     }
 
-    private func handleGridPageNavigationKey(_ keyPress: KeyPress) -> KeyPress.Result {
-        guard contentFocused,
-              !model.isSinglePhotoPresented,
-              model.reviewMode == nil,
-              !model.items.isEmpty
-        else { return .ignored }
-        let direction: LibraryGridPageDirection
-        switch keyPress.key {
-        case .pageUp: direction = .up
-        case .pageDown: direction = .down
-        default: return .ignored
-        }
+    private var gridPageKeyHandlingEnabled: Bool {
+        !model.isSinglePhotoPresented
+            && model.reviewMode == nil
+            && !model.items.isEmpty
+    }
+
+    private func handleGridPageNavigation(_ direction: LibraryGridPageDirection) {
+        guard gridPageKeyHandlingEnabled else { return }
+        contentFocused = true
         Task {
             await model.movePrimarySelection(
                 byPage: direction,
@@ -6465,7 +6461,6 @@ struct LibraryWorkspaceView: View {
             )
             gridScrollTargetID = model.primarySelectedAssetID
         }
-        return .handled
     }
 
     private func handleReviewDecisionKey(
@@ -7162,6 +7157,10 @@ struct LibraryWorkspaceView: View {
                     }
                 }
                 .scrollDisabled(isMarqueeSelecting)
+                .libraryGridPageKeyHandling(
+                    isEnabled: gridPageKeyHandlingEnabled,
+                    onPageKey: handleGridPageNavigation
+                )
                 .background(Color(nsColor: .windowBackgroundColor))
                 .accessibilityLabel("照片网格")
                 .onAppear {

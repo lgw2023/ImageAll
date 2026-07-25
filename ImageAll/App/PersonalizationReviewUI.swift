@@ -699,7 +699,6 @@ struct ReviewQueueContentView: View {
             keys: [.leftArrow, .rightArrow, .upArrow, .downArrow],
             action: handleNavigationKey
         )
-        .onKeyPress(keys: [.pageUp, .pageDown], action: handlePageNavigationKey)
     }
 
     private var reviewGrid: some View {
@@ -779,6 +778,10 @@ struct ReviewQueueContentView: View {
                     }
                 }
                 .scrollDisabled(isMarqueeSelecting)
+                .libraryGridPageKeyHandling(
+                    isEnabled: reviewPageKeyHandlingEnabled,
+                    onPageKey: handleReviewPageNavigation
+                )
                 .background(Color(nsColor: .windowBackgroundColor))
                 .accessibilityLabel("待审核建议网格")
                 .onAppear {
@@ -844,17 +847,13 @@ struct ReviewQueueContentView: View {
         return .handled
     }
 
-    private func handlePageNavigationKey(_ keyPress: KeyPress) -> KeyPress.Result {
-        guard contentFocused,
-              !model.isSinglePhotoPresented,
-              !model.reviewQueueItems.isEmpty
-        else { return .ignored }
-        let direction: LibraryGridPageDirection
-        switch keyPress.key {
-        case .pageUp: direction = .up
-        case .pageDown: direction = .down
-        default: return .ignored
-        }
+    private var reviewPageKeyHandlingEnabled: Bool {
+        !model.isSinglePhotoPresented && !model.reviewQueueItems.isEmpty
+    }
+
+    private func handleReviewPageNavigation(_ direction: LibraryGridPageDirection) {
+        guard reviewPageKeyHandlingEnabled else { return }
+        contentFocused = true
         Task {
             await model.moveReviewPrimarySelection(
                 byPage: direction,
@@ -862,7 +861,6 @@ struct ReviewQueueContentView: View {
             )
             gridScrollTargetID = model.selectedReviewItemID
         }
-        return .handled
     }
 
     private func updateGridMetrics(containerSize: CGSize) {
