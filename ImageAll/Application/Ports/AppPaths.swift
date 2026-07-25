@@ -140,4 +140,20 @@ enum AppPathsError: Error, Equatable, Sendable {
 protocol AppPathsResolving: Sendable {
     func resolve() throws -> AppPaths
     func ensureRequiredDirectories(for paths: AppPaths) throws
+
+    /// Returns a resolver that reports external-storage migration progress and honors cancel.
+    /// Default is a no-op identity; production `FoundationAppPathsResolver` preserves its store.
+    func resolvingWithMigrationHooks(
+        onProgress: (@Sendable (ExternalAppStorageMigrationProgress) -> Void)?,
+        isCancelled: (@Sendable () -> Bool)?
+    ) -> any AppPathsResolving
+}
+
+extension AppPathsResolving {
+    func resolvingWithMigrationHooks(
+        onProgress _: (@Sendable (ExternalAppStorageMigrationProgress) -> Void)?,
+        isCancelled _: (@Sendable () -> Bool)?
+    ) -> any AppPathsResolving {
+        self
+    }
 }

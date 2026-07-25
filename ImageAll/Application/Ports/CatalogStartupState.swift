@@ -18,6 +18,7 @@ enum CatalogUnavailableReason: Equatable, Sendable {
     case publicationFailed
     case finalOpenFailed
     case recoveryFailed
+    case storageMigrationCancelled
 }
 
 enum CatalogStartupOutcome: Equatable, Sendable {

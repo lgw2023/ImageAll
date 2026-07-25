@@ -18,6 +18,17 @@ struct FoundationAppPathsResolver: AppPathsResolving {
         self.isMigrationCancelled = isMigrationCancelled
     }
 
+    func resolvingWithMigrationHooks(
+        onProgress: (@Sendable (ExternalAppStorageMigrationProgress) -> Void)?,
+        isCancelled: (@Sendable () -> Bool)?
+    ) -> any AppPathsResolving {
+        FoundationAppPathsResolver(
+            storageLocationStore: storageLocationStore,
+            onMigrationProgress: onProgress,
+            isMigrationCancelled: isCancelled
+        )
+    }
+
     func resolve() throws -> AppPaths {
         let internalApplicationSupportDirectory = try resolveDirectory(
             for: .applicationSupportDirectory,

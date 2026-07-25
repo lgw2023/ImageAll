@@ -10,7 +10,8 @@ final class CatalogStartupModel: ObservableObject {
     private var bootstrapDependencies: CatalogBootstrapDependencies
     private let workspaceFactory: @MainActor (CatalogRuntimeToken) -> LibraryWorkspaceModel?
     private let logger = Logger(subsystem: "com.imageall.app", category: "CatalogStartup")
-    private let migrationCancelFlag = MigrationCancelFlag()
+    private var migrationCancelFlag = MigrationCancelFlag()
+    private var bootstrapGeneration = 0
 
     init(
         dependencies: CatalogBootstrapDependencies,
@@ -27,8 +28,14 @@ final class CatalogStartupModel: ObservableObject {
     }
 
     func startBootstrap(dependencies: CatalogBootstrapDependencies) {
+        // Invalidate any in-flight bootstrap/migration before starting a new generation.
+        migrationCancelFlag.cancel()
+        let cancelFlag = MigrationCancelFlag()
+        migrationCancelFlag = cancelFlag
+        bootstrapGeneration += 1
+        let generation = bootstrapGeneration
+
         bootstrapDependencies = dependencies
-        migrationCancelFlag.reset()
         presentation = StartupPresentation(
             productName: presentation.productName,
             foundationReady: true,
@@ -39,27 +46,32 @@ final class CatalogStartupModel: ObservableObject {
         var stageDependencies = dependencies
         stageDependencies.onStage = { [weak self] stage in
             Task { @MainActor in
-                self?.updateStage(stage)
+                guard let self, generation == self.bootstrapGeneration else { return }
+                self.updateStage(stage)
             }
         }
-        if dependencies.pathsResolver is FoundationAppPathsResolver {
-            let cancelFlag = migrationCancelFlag
-            stageDependencies.pathsResolver = FoundationAppPathsResolver(
-                onMigrationProgress: { [weak self] progress in
-                    Task { @MainActor in
-                        self?.updateMigrationProgress(progress)
-                    }
-                },
-                isMigrationCancelled: {
-                    cancelFlag.isCancelled
+        stageDependencies.pathsResolver = dependencies.pathsResolver.resolvingWithMigrationHooks(
+            onProgress: { [weak self] progress in
+                Task { @MainActor in
+                    guard let self, generation == self.bootstrapGeneration else { return }
+                    self.updateMigrationProgress(progress)
                 }
-            )
-        }
+            },
+            isCancelled: {
+                cancelFlag.isCancelled
+            }
+        )
 
         Task.detached(priority: .userInitiated) {
             let coordinator = CatalogBootstrapCoordinator(dependencies: stageDependencies)
             let result = coordinator.bootstrap()
             await MainActor.run {
+                guard generation == self.bootstrapGeneration else {
+                    if case let .ready(token) = result {
+                        try? token.close()
+                    }
+                    return
+                }
                 self.applyBootstrapResult(result)
             }
         }
@@ -129,10 +141,32 @@ final class CatalogStartupModel: ObservableObject {
                 productName: presentation.productName,
                 foundationReady: true,
                 catalogState: .catalogUnavailable(reason),
-                storageMigrationProgress: presentation.storageMigrationProgress
+                storageMigrationProgress: Self.normalizedUnavailableMigrationProgress(
+                    reason: reason,
+                    current: presentation.storageMigrationProgress
+                )
             )
             logger.info("catalogState=catalogUnavailable reason=\(Self.reasonToken(reason), privacy: .public)")
         }
+    }
+
+    private static func normalizedUnavailableMigrationProgress(
+        reason: CatalogUnavailableReason,
+        current: ExternalAppStorageMigrationProgress?
+    ) -> ExternalAppStorageMigrationProgress? {
+        guard var progress = current else { return nil }
+        switch reason {
+        case .storageMigrationCancelled:
+            progress.phase = .cancelled
+        default:
+            if progress.phase != .cancelled,
+               progress.phase != .failed,
+               progress.phase != .completed
+            {
+                progress.phase = .failed
+            }
+        }
+        return progress
     }
 
     private static func reasonToken(_ reason: CatalogUnavailableReason) -> String {
@@ -145,8 +179,8 @@ final class CatalogStartupModel: ObservableObject {
             return "schemaUnsupported"
         case .integrityFailed:
             return "integrityFailed"
-        case .insufficientSpace:
-            return "insufficientSpace"
+        case let .insufficientSpace(requiredBytes):
+            return "insufficientSpace:\(requiredBytes)"
         case .snapshotFailed:
             return "snapshotFailed"
         case .migrationFailed:
@@ -157,6 +191,8 @@ final class CatalogStartupModel: ObservableObject {
             return "finalOpenFailed"
         case .recoveryFailed:
             return "recoveryFailed"
+        case .storageMigrationCancelled:
+            return "storageMigrationCancelled"
         }
     }
 }
@@ -171,10 +207,6 @@ private final class MigrationCancelFlag: @unchecked Sendable {
 
     func cancel() {
         lock.withLock { cancelled = true }
-    }
-
-    func reset() {
-        lock.withLock { cancelled = false }
     }
 }
 
@@ -198,12 +230,14 @@ extension CatalogStartupOutcome {
         case .lockIOFailed: return "lockIOFailed"
         case .schemaUnsupported: return "schemaUnsupported"
         case .integrityFailed: return "integrityFailed"
-        case .insufficientSpace: return "insufficientSpace"
+        case let .insufficientSpace(requiredBytes):
+            return "insufficientSpace:\(requiredBytes)"
         case .snapshotFailed: return "snapshotFailed"
         case .migrationFailed: return "migrationFailed"
         case .publicationFailed: return "publicationFailed"
         case .finalOpenFailed: return "finalOpenFailed"
         case .recoveryFailed: return "recoveryFailed"
+        case .storageMigrationCancelled: return "storageMigrationCancelled"
         }
     }
 }

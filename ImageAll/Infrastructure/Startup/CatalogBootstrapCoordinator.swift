@@ -168,6 +168,8 @@ struct CatalogBootstrapCoordinator: Sendable {
             try dependencies.pathsResolver.ensureRequiredDirectories(for: paths)
             dependencies.callLog?.record(.paths)
             dependencies.onStage?(.paths)
+        } catch let error as AppStorageLocationError where error == .cancelled {
+            return .unavailable(.storageMigrationCancelled)
         } catch {
             return .unavailable(.pathsFailed)
         }
