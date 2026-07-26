@@ -652,7 +652,7 @@ struct ReviewQueueContentView: View {
     @FocusState.Binding var contentFocused: Bool
     @State private var gridColumnCount = 1
     @State private var gridPageItemCount = 1
-    @State private var gridCellFrames: [UUID: CGRect] = [:]
+    @State private var gridCellFrames = LibraryGridCellFrameStore()
     @State private var isMarqueeSelecting = false
     @State private var gridScrollTargetID: ReviewQueueItemID?
 
@@ -706,7 +706,7 @@ struct ReviewQueueContentView: View {
             ScrollViewReader { scrollProxy in
                 ScrollView {
                     LibraryGridMarqueeContainer(
-                        cellFrames: $gridCellFrames,
+                        cellFrames: gridCellFrames,
                         isMarqueeSelecting: $isMarqueeSelecting,
                         viewportHeight: proxy.size.height,
                         currentSelection: model.selectedAssetIDs,

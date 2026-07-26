@@ -4893,10 +4893,14 @@ extension LibraryWorkspaceModel {
     }
 
     func enterReviewQueue(tagID: UUID, displayName: String) async {
-        reviewMode = .tagQueue(tagID: tagID, displayName: displayName)
+        reviewQueueItems = []
+        reviewNextCursor = nil
         selectedAssetIDs = []
         selectedReviewItemID = nil
         isSinglePhotoPresented = false
+        reviewMode = .tagQueue(tagID: tagID, displayName: displayName)
+        // Let the overview List finish tearing down before the first review-grid layout pass.
+        await Task.yield()
         await loadReviewQueueFirstPage(tagID: tagID)
     }
 
@@ -5553,7 +5557,7 @@ struct LibraryWorkspaceView: View {
     @State private var commandSearchText = ""
     @State private var gridColumnCount = 1
     @State private var gridPageItemCount = 1
-    @State private var gridCellFrames: [UUID: CGRect] = [:]
+    @State private var gridCellFrames = LibraryGridCellFrameStore()
     @State private var sourceRowFrames: [UUID: CGRect] = [:]
     @State private var draggedSourceID: UUID?
     @State private var sourceInsertionOffset: Int?
@@ -7160,7 +7164,7 @@ struct LibraryWorkspaceView: View {
             ScrollViewReader { scrollProxy in
                 ScrollView {
                     LibraryGridMarqueeContainer(
-                        cellFrames: $gridCellFrames,
+                        cellFrames: gridCellFrames,
                         isMarqueeSelecting: $isMarqueeSelecting,
                         viewportHeight: proxy.size.height,
                         currentSelection: model.selectedAssetIDs,

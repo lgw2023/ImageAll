@@ -4546,6 +4546,66 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         )
     }
 
+    @MainActor
+    func testMarqueeCellFrameStoreSkipsIdenticalPreferenceUpdates() {
+        let store = LibraryGridCellFrameStore()
+        let assetID = UUID()
+        let frames = [assetID: CGRect(x: 0, y: 0, width: 80, height: 80)]
+        store.replaceFrames(frames)
+        XCTAssertEqual(store.frames, frames)
+        store.replaceFrames(frames)
+        XCTAssertEqual(store.frames, frames)
+        let updated = [assetID: CGRect(x: 1, y: 0, width: 80, height: 80)]
+        store.replaceFrames(updated)
+        XCTAssertEqual(store.frames, updated)
+    }
+
+    func testEnterReviewQueueClearsStaleItemsBeforeLoading() async {
+        let sourceID = UUID()
+        let tag = TagListItem(id: UUID(), displayName: "雪豹", state: .active)
+        let stale = ReviewQueueItemProjection(
+            assetID: UUID(),
+            fileName: "stale.jpg",
+            availability: .available,
+            acceptedTagCount: 0,
+            rejectedTagCount: 0,
+            suggestionOrigin: .featurePrint,
+            score: 0.1
+        )
+        let fresh = ReviewQueueItemProjection(
+            assetID: UUID(),
+            fileName: "fresh.jpg",
+            availability: .available,
+            acceptedTagCount: 1,
+            rejectedTagCount: 0,
+            suggestionOrigin: .personalModel,
+            score: 0.9
+        )
+        let review = FakePersonalizationReviewPort(queueItems: [stale])
+        let model = LibraryWorkspaceModel(
+            service: FakeLibraryWorkspaceService(
+                connectedSource: LibrarySourceSummary(
+                    id: sourceID,
+                    displayName: "Fixture",
+                    state: .active
+                ),
+                reconciledItems: [],
+                tags: [tag]
+            ),
+            review: review
+        )
+
+        await model.enterReviewQueue(tagID: tag.id, displayName: tag.displayName)
+        XCTAssertEqual(model.reviewQueueItems.map(\.assetID), [stale.assetID])
+
+        review.replaceQueueItems([fresh])
+        await model.enterReviewQueue(tagID: tag.id, displayName: tag.displayName)
+
+        XCTAssertEqual(model.reviewMode, .tagQueue(tagID: tag.id, displayName: "雪豹"))
+        XCTAssertEqual(model.reviewQueueItems.map(\.assetID), [fresh.assetID])
+        XCTAssertFalse(model.reviewQueueItems.contains(where: { $0.assetID == stale.assetID }))
+    }
+
     func testMultiSelectionShowsMixedStateAndCreatesAcceptedTag() async {
         let sourceID = UUID()
         let first = Self.makeAsset(sourceID: sourceID, fileName: "first.jpg")
@@ -8784,6 +8844,10 @@ private final class FakePersonalizationReviewPort: PersonalizationReviewPort, @u
         self.featureCompletion = featureCompletion
         self.blocksRunPendingJobs = blocksRunPendingJobs
         self.queuePageSize = queuePageSize
+    }
+
+    func replaceQueueItems(_ items: [ReviewQueueItemProjection]) {
+        lock.withLock { storedQueueItems = items }
     }
 
     var activatedPersonalCapability: PersonalModelSuggestionCapability? {

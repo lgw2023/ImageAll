@@ -52,8 +52,21 @@ enum LibraryGridMarqueeSelectionLogic {
     }
 }
 
+/// Stores cell frames for marquee hit-testing without publishing.
+/// Preference updates must not write `@State` dictionaries, or SwiftUI can enter a
+/// layout feedback loop (especially when opening a fresh review grid of ~100 cells).
+@MainActor
+final class LibraryGridCellFrameStore {
+    private(set) var frames: [UUID: CGRect] = [:]
+
+    func replaceFrames(_ frames: [UUID: CGRect]) {
+        guard self.frames != frames else { return }
+        self.frames = frames
+    }
+}
+
 struct LibraryGridMarqueeContainer<Content: View>: View {
-    @Binding var cellFrames: [UUID: CGRect]
+    let cellFrames: LibraryGridCellFrameStore
     @Binding var isMarqueeSelecting: Bool
     let viewportHeight: CGFloat
     let currentSelection: Set<UUID>
@@ -80,7 +93,7 @@ struct LibraryGridMarqueeContainer<Content: View>: View {
         content()
             .coordinateSpace(name: LibraryGridCoordinateSpace.name)
             .onPreferenceChange(LibraryGridCellFramesPreferenceKey.self) { frames in
-                cellFrames = frames
+                cellFrames.replaceFrames(frames)
             }
             .frame(maxWidth: .infinity, minHeight: max(viewportHeight, 1), alignment: .topLeading)
             .contentShape(Rectangle())
@@ -127,7 +140,7 @@ struct LibraryGridMarqueeContainer<Content: View>: View {
         guard let selectionRect else { return }
         let hitIDs = LibraryGridMarqueeSelectionLogic.assetIDsIntersecting(
             selectionRect,
-            cellFrames: cellFrames
+            cellFrames: cellFrames.frames
         )
         let nextSelection = LibraryGridMarqueeSelectionLogic.resolvedSelection(
             baseSelection: baseSelection,
