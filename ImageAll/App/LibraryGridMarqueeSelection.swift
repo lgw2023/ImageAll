@@ -69,6 +69,8 @@ struct LibraryGridMarqueeContainer<Content: View>: View {
     let cellFrames: LibraryGridCellFrameStore
     @Binding var isMarqueeSelecting: Bool
     let viewportHeight: CGFloat
+    /// Stable content width from the outer viewport (not ScrollView's post-scroller width).
+    let contentWidth: CGFloat
     let currentSelection: Set<UUID>
     let onSelectionChange: (_ assetIDs: Set<UUID>, _ isFinal: Bool) -> Void
     @ViewBuilder var content: () -> Content
@@ -95,7 +97,8 @@ struct LibraryGridMarqueeContainer<Content: View>: View {
             .onPreferenceChange(LibraryGridCellFramesPreferenceKey.self) { frames in
                 cellFrames.replaceFrames(frames)
             }
-            .frame(maxWidth: .infinity, minHeight: max(viewportHeight, 1), alignment: .topLeading)
+            .frame(width: max(contentWidth, 1), alignment: .topLeading)
+            .frame(minHeight: max(viewportHeight, 1), alignment: .topLeading)
             .contentShape(Rectangle())
             .simultaneousGesture(marqueeDragGesture)
             .overlay(alignment: .topLeading) {

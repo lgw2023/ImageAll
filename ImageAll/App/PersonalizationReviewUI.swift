@@ -703,12 +703,14 @@ struct ReviewQueueContentView: View {
 
     private var reviewGrid: some View {
         GeometryReader { proxy in
+            let layoutWidth = LibraryGridLayout.layoutWidth(containerWidth: proxy.size.width)
             ScrollViewReader { scrollProxy in
                 ScrollView {
                     LibraryGridMarqueeContainer(
                         cellFrames: gridCellFrames,
                         isMarqueeSelecting: $isMarqueeSelecting,
                         viewportHeight: proxy.size.height,
+                        contentWidth: layoutWidth,
                         currentSelection: model.selectedAssetIDs,
                         onSelectionChange: { assetIDs, isFinal in
                             contentFocused = true
@@ -721,15 +723,10 @@ struct ReviewQueueContentView: View {
                         }
                     ) {
                         LazyVGrid(
-                            columns: [
-                                GridItem(
-                                    .adaptive(
-                                        minimum: LibraryGridDensity.standard.cellWidthRange.lowerBound,
-                                        maximum: LibraryGridDensity.standard.cellWidthRange.upperBound
-                                    ),
-                                    spacing: LibraryGridLayout.spacing
-                                ),
-                            ],
+                            columns: LibraryGridLayout.gridItems(
+                                containerWidth: proxy.size.width,
+                                density: .standard
+                            ),
                             spacing: LibraryGridLayout.spacing
                         ) {
                             ForEach(model.reviewQueueItems) { item in

@@ -86,14 +86,44 @@ enum LibraryBrowsingDestination: Equatable, Sendable {
 enum LibraryGridLayout {
     static let spacing: CGFloat = 8
     static let horizontalPadding: CGFloat = 12
+    /// Keep a stable trailing gutter so column/cell math never depends on whether
+    /// AppKit has currently materialized a legacy vertical scroller.
+    static let verticalScrollerReservedWidth: CGFloat = 16
+
+    static func layoutWidth(containerWidth: CGFloat) -> CGFloat {
+        max(containerWidth - verticalScrollerReservedWidth, 0)
+    }
 
     static func columnCount(
         containerWidth: CGFloat,
         density: LibraryGridDensity
     ) -> Int {
-        let availableWidth = max(containerWidth - horizontalPadding * 2, 0)
+        let availableWidth = max(layoutWidth(containerWidth: containerWidth) - horizontalPadding * 2, 0)
         let minimumWidth = density.cellWidthRange.lowerBound
         return max(Int((availableWidth + spacing) / (minimumWidth + spacing)), 1)
+    }
+
+    static func cellWidth(
+        containerWidth: CGFloat,
+        density: LibraryGridDensity
+    ) -> CGFloat {
+        let columns = columnCount(containerWidth: containerWidth, density: density)
+        let availableWidth = max(layoutWidth(containerWidth: containerWidth) - horizontalPadding * 2, 0)
+        return max(
+            (availableWidth - CGFloat(columns - 1) * spacing) / CGFloat(columns),
+            1
+        )
+    }
+
+    static func gridItems(
+        containerWidth: CGFloat,
+        density: LibraryGridDensity
+    ) -> [GridItem] {
+        let width = cellWidth(containerWidth: containerWidth, density: density)
+        return Array(
+            repeating: GridItem(.fixed(width), spacing: spacing),
+            count: columnCount(containerWidth: containerWidth, density: density)
+        )
     }
 
     static func pageItemCount(
@@ -102,12 +132,8 @@ enum LibraryGridLayout {
         density: LibraryGridDensity
     ) -> Int {
         let columns = columnCount(containerWidth: containerWidth, density: density)
-        let availableWidth = max(containerWidth - horizontalPadding * 2, 0)
-        let cellWidth = max(
-            (availableWidth - CGFloat(columns - 1) * spacing) / CGFloat(columns),
-            1
-        )
-        let rows = max(Int((max(containerHeight, 0) + spacing) / (cellWidth + spacing)), 1)
+        let width = cellWidth(containerWidth: containerWidth, density: density)
+        let rows = max(Int((max(containerHeight, 0) + spacing) / (width + spacing)), 1)
         return columns * rows
     }
 }
@@ -7159,14 +7185,15 @@ struct LibraryWorkspaceView: View {
     }
 
     private var assetGrid: some View {
-        let widthRange = model.gridDensity.cellWidthRange
-        return GeometryReader { proxy in
+        GeometryReader { proxy in
+            let layoutWidth = LibraryGridLayout.layoutWidth(containerWidth: proxy.size.width)
             ScrollViewReader { scrollProxy in
                 ScrollView {
                     LibraryGridMarqueeContainer(
                         cellFrames: gridCellFrames,
                         isMarqueeSelecting: $isMarqueeSelecting,
                         viewportHeight: proxy.size.height,
+                        contentWidth: layoutWidth,
                         currentSelection: model.selectedAssetIDs,
                         onSelectionChange: { assetIDs, isFinal in
                             contentFocused = true
@@ -7179,15 +7206,10 @@ struct LibraryWorkspaceView: View {
                         }
                     ) {
                         LazyVGrid(
-                            columns: [
-                                GridItem(
-                                    .adaptive(
-                                        minimum: widthRange.lowerBound,
-                                        maximum: widthRange.upperBound
-                                    ),
-                                    spacing: LibraryGridLayout.spacing
-                                ),
-                            ],
+                            columns: LibraryGridLayout.gridItems(
+                                containerWidth: proxy.size.width,
+                                density: model.gridDensity
+                            ),
                             spacing: LibraryGridLayout.spacing
                         ) {
                             ForEach(model.items, id: \.assetID) { item in

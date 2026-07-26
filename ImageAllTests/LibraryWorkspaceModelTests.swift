@@ -5622,6 +5622,75 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         )
     }
 
+    func testGridLayoutReservesScrollerGutterAndKeepsFixedColumnsStable() {
+        let containerWidth: CGFloat = 856
+        let density = LibraryGridDensity.standard
+        let layoutWidth = LibraryGridLayout.layoutWidth(containerWidth: containerWidth)
+        XCTAssertEqual(
+            layoutWidth,
+            containerWidth - LibraryGridLayout.verticalScrollerReservedWidth
+        )
+
+        let columns = LibraryGridLayout.columnCount(
+            containerWidth: containerWidth,
+            density: density
+        )
+        let cellWidth = LibraryGridLayout.cellWidth(
+            containerWidth: containerWidth,
+            density: density
+        )
+        let items = LibraryGridLayout.gridItems(
+            containerWidth: containerWidth,
+            density: density
+        )
+        XCTAssertEqual(items.count, columns)
+        XCTAssertGreaterThan(columns, 1)
+        XCTAssertEqual(
+            cellWidth * CGFloat(columns) + LibraryGridLayout.spacing * CGFloat(columns - 1)
+                + LibraryGridLayout.horizontalPadding * 2,
+            layoutWidth,
+            accuracy: 0.001
+        )
+
+        // A typical legacy scroller width used to be fed back into adaptive column
+        // math and flip the grid between N and N-1 columns. Layout derived from the
+        // outer container must stay put across that delta.
+        let scrollerDelta = LibraryGridLayout.verticalScrollerReservedWidth
+        let naiveShrunkAvailable =
+            containerWidth - scrollerDelta - LibraryGridLayout.horizontalPadding * 2
+        let naiveFullAvailable =
+            containerWidth - LibraryGridLayout.horizontalPadding * 2
+        let minimumWidth = density.cellWidthRange.lowerBound
+        let naiveFullColumns = max(
+            Int(
+                (naiveFullAvailable + LibraryGridLayout.spacing)
+                    / (minimumWidth + LibraryGridLayout.spacing)
+            ),
+            1
+        )
+        let naiveShrunkColumns = max(
+            Int(
+                (naiveShrunkAvailable + LibraryGridLayout.spacing)
+                    / (minimumWidth + LibraryGridLayout.spacing)
+            ),
+            1
+        )
+        XCTAssertNotEqual(
+            naiveFullColumns,
+            naiveShrunkColumns,
+            "Fixture width must sit on a scroller-sensitive column boundary"
+        )
+        XCTAssertEqual(
+            LibraryGridLayout.columnCount(containerWidth: containerWidth, density: density),
+            columns
+        )
+        XCTAssertEqual(
+            LibraryGridLayout.cellWidth(containerWidth: containerWidth, density: density),
+            cellWidth,
+            accuracy: 0.001
+        )
+    }
+
     func testNarrowingWorkspaceCollapsesInspectorBeforeSidebar() {
         var layout = LibraryWorkspaceLayoutState()
 
