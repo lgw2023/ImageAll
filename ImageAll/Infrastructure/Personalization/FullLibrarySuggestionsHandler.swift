@@ -11,6 +11,9 @@ struct FullLibrarySuggestionsHandlerDependencies: Sendable {
     let featureLoader: any SyncFeatureVectorLoading
     let clock: any JobClock
     var minimumScoreForTag: (@Sendable (UUID) throws -> Double)? = nil
+    var maxPendingSuggestionsPerTag: @Sendable () -> Int = {
+        FullLibrarySuggestionsJobFactory.maxPendingSuggestionsPerTag
+    }
     var publishFailureInjector: (@Sendable () throws -> Void)?
     var beforeEachBatch: (@Sendable (Int) -> Void)?
 }
@@ -105,7 +108,8 @@ struct FullLibrarySuggestionsHandler: LeaseBoundJobHandler, Sendable {
 
         let total = try review.frozenAssetTotal(
             sourceIDs: decodedPayload.sourceIDs,
-            catalogCutoffMs: decodedPayload.catalogCutoffMs
+            catalogCutoffMs: decodedPayload.catalogCutoffMs,
+            excludingDecisionsForTagID: decodedPayload.tagID
         )
         let heartbeatIntervalMs = max(1, leaseDurationMs / 2)
         var lastLeaseRenewedAtMs = dependencies.clock.nowMs
@@ -149,7 +153,8 @@ struct FullLibrarySuggestionsHandler: LeaseBoundJobHandler, Sendable {
                 sourceIDs: decodedPayload.sourceIDs,
                 catalogCutoffMs: decodedPayload.catalogCutoffMs,
                 afterAssetID: state.lastAssetID,
-                limit: FullLibrarySuggestionsJobFactory.scanBatchSize
+                limit: FullLibrarySuggestionsJobFactory.scanBatchSize,
+                excludingDecisionsForTagID: decodedPayload.tagID
             )
             if batch.isEmpty {
                 let jobCheckpoint = try FullLibrarySuggestionsCodec.jobCheckpoint(from: state)
@@ -316,7 +321,7 @@ struct FullLibrarySuggestionsHandler: LeaseBoundJobHandler, Sendable {
                         try catalog.retainTopPendingPredictions(
                             tagID: decodedPayload.tagID,
                             modelRevision: modelRevision,
-                            limit: FullLibrarySuggestionsJobFactory.maxPendingSuggestionsPerTag,
+                            limit: dependencies.maxPendingSuggestionsPerTag(),
                             on: db
                         )
                         if completed {
@@ -357,7 +362,7 @@ struct FullLibrarySuggestionsHandler: LeaseBoundJobHandler, Sendable {
                         try catalog.retainTopPendingPredictions(
                             tagID: decodedPayload.tagID,
                             modelRevision: modelRevision,
-                            limit: FullLibrarySuggestionsJobFactory.maxPendingSuggestionsPerTag,
+                            limit: dependencies.maxPendingSuggestionsPerTag(),
                             on: db
                         )
                         if completed {

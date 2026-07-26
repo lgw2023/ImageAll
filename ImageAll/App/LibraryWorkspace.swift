@@ -17,25 +17,72 @@ private struct ReviewMutationUndoRecord {
     let affectedCount: Int
 }
 
-enum LibraryGridDensity: String, CaseIterable, Sendable {
-    case compact
-    case standard
-    case large
+enum LibraryGridDensity: Int, CaseIterable, Sendable {
+    case micro = 0
+    case fine = 1
+    case compact = 2
+    case standard = 3
+    case large = 4
+    case extraLarge = 5
+    case huge = 6
+    case massive = 7
+    case giant = 8
+
+    static let `default`: Self = .standard
 
     var displayName: String {
         switch self {
+        case .micro: "微缩"
+        case .fine: "精细"
         case .compact: "紧凑"
         case .standard: "标准"
         case .large: "大图"
+        case .extraLarge: "较大"
+        case .huge: "很大"
+        case .massive: "特大"
+        case .giant: "巨大"
         }
     }
 
     var cellWidthRange: ClosedRange<CGFloat> {
-        switch self {
-        case .compact: 96 ... 160
-        case .standard: 132 ... 220
-        case .large: 180 ... 300
+        let bounds = Self.cellWidthBounds[rawValue]
+        return bounds.lower ... bounds.upper
+    }
+
+    /// Preserves the existing compact / standard / large anchors and extends
+    /// downward by 8/11 and upward by 15/11 per step.
+    private static let cellWidthBounds: [(lower: CGFloat, upper: CGFloat)] = [
+        (51, 84),
+        (70, 116),
+        (96, 160),
+        (132, 220),
+        (180, 300),
+        (245, 409),
+        (334, 558),
+        (455, 761),
+        (620, 1038),
+    ]
+}
+
+struct LibraryGridDensityPicker: View {
+    @Binding var selection: LibraryGridDensity
+    var help: String
+
+    init(selection: Binding<LibraryGridDensity>, help: String = "调整照片网格缩略图大小") {
+        _selection = selection
+        self.help = help
+    }
+
+    var body: some View {
+        Picker("缩略图大小", selection: $selection) {
+            ForEach(LibraryGridDensity.allCases, id: \.self) { density in
+                Text(density.displayName).tag(density)
+            }
         }
+        .pickerStyle(.menu)
+        .fixedSize()
+        .accessibilityLabel("缩略图大小")
+        .help(help)
     }
 }
 
@@ -557,7 +604,7 @@ final class LibraryWorkspaceModel: ObservableObject {
     @Published private(set) var selectedAvailabilities: [AssetAvailability] = []
     @Published private(set) var selectedMediaTypes: [String] = []
     @Published private(set) var sort: AssetPageSort = .newest
-    @Published private(set) var gridDensity: LibraryGridDensity = .standard
+    @Published private(set) var gridDensity: LibraryGridDensity = .default
     @Published private(set) var notice: LibraryWorkspaceNotice?
     @Published private(set) var pendingSuggestionTotal = 0
     @Published private(set) var isCatalogScanning = false
@@ -595,6 +642,7 @@ final class LibraryWorkspaceModel: ObservableObject {
     @Published private(set) var isClearingPreviewCache = false
     @Published private(set) var isChoosingAppStorageLocation = false
     @Published private(set) var isIdleThumbnailPrewarmEnabled: Bool
+    @Published private(set) var maxPendingSuggestionsPerTag: Int
     @Published private(set) var sourceThumbnailPrewarmProgress: SourceThumbnailPrewarmProgress?
     @Published private(set) var jobActivityItems: [JobActivityItem] = []
     @Published private(set) var jobActivityActionInFlightIDs: Set<UUID> = []
@@ -647,6 +695,7 @@ final class LibraryWorkspaceModel: ObservableObject {
     private let thumbnailLoadGate: LibraryThumbnailLoadGate
     private var thumbnailLoadEpoch = 0
     private let idleThumbnailPrewarmPreferenceStore: any IdleThumbnailPrewarmPreferenceStore
+    private let pendingSuggestionCountPreferences: any PendingSuggestionCountPreferenceStore
     private let idlePrewarmClock: any IdlePrewarmClock
     private let idlePrewarmThresholdSeconds: TimeInterval
     private let idlePrewarmMonitorTickSeconds: TimeInterval
@@ -657,7 +706,12 @@ final class LibraryWorkspaceModel: ObservableObject {
     private var sourceThumbnailPrewarmGeneration = 0
     private var browsingNavigationRequestID: UUID?
     private var selectionAnchorID: UUID?
-    private var featureSuggestionCompletionContexts: [UUID: String] = [:]
+    private struct FeatureSuggestionCompletionContext: Equatable {
+        let tagID: UUID
+        let displayName: String
+    }
+
+    private var featureSuggestionCompletionContexts: [UUID: FeatureSuggestionCompletionContext] = [:]
     private var isTrainingWorkspaceRefreshInFlight = false
     private var selectedTagFilterDecisions: [UUID: PersistableTagDecision] = [:]
     private var selectedSourceID: UUID?
@@ -680,6 +734,8 @@ final class LibraryWorkspaceModel: ObservableObject {
         appPersonalTagLibrarySuggester: (any AppPersonalTagLibrarySuggesting)? = nil,
         appPersonalAdamWTagLibrarySuggester: (any AppPersonalTagLibrarySuggesting)? = nil,
         suggestionThresholds: (any SuggestionThresholdPort)? = nil,
+        pendingSuggestionCountPreferences: any PendingSuggestionCountPreferenceStore =
+            UserDefaultsPendingSuggestionCountPreferenceStore(),
         originalAssetOpener: any LibraryOriginalAssetOpening = UnavailableLibraryOriginalAssetOpener(),
         sourceOrderPreferences: LibrarySourceOrderPreferences = LibrarySourceOrderPreferences(),
         tagGroupCollapsePreferences: LibraryTagGroupCollapsePreferences = LibraryTagGroupCollapsePreferences(),
@@ -706,11 +762,13 @@ final class LibraryWorkspaceModel: ObservableObject {
         self.idlePrewarmMonitorTickSeconds = idlePrewarmMonitorTickSeconds
         self.idlePrewarmInstallEventMonitor = idlePrewarmInstallEventMonitor
         isIdleThumbnailPrewarmEnabled = idleThumbnailPrewarmPreferenceStore.isEnabled
+        maxPendingSuggestionsPerTag = pendingSuggestionCountPreferences.maxPendingSuggestionsPerTag
         self.selectedAssetEmbeddingCache = selectedAssetEmbeddingCache
         self.appPersonalSampleSuggester = appPersonalSampleSuggester
         self.appPersonalTagLibrarySuggester = appPersonalTagLibrarySuggester
         self.appPersonalAdamWTagLibrarySuggester = appPersonalAdamWTagLibrarySuggester
         self.suggestionThresholds = suggestionThresholds
+        self.pendingSuggestionCountPreferences = pendingSuggestionCountPreferences
         self.originalAssetOpener = originalAssetOpener
         self.sourceOrderPreferences = sourceOrderPreferences
         self.tagGroupCollapsePreferences = tagGroupCollapsePreferences
@@ -838,6 +896,11 @@ final class LibraryWorkspaceModel: ObservableObject {
             beforeID = targetID
         }
         moveSource(sourceID, before: beforeID)
+    }
+
+    func setMaxPendingSuggestionsPerTag(_ count: Int) {
+        pendingSuggestionCountPreferences.maxPendingSuggestionsPerTag = count
+        maxPendingSuggestionsPerTag = pendingSuggestionCountPreferences.maxPendingSuggestionsPerTag
     }
 
     func suggestionThresholdDefaults() -> SuggestionThresholdDefaults? {
@@ -2683,11 +2746,12 @@ final class LibraryWorkspaceModel: ObservableObject {
             )
 
             let reviewPort = review
-            try await Self.offMain {
+            let inserted = try await Self.offMain {
                 // Activate and persist per tag: each personal model is single-tag.
                 for capability in batch.capabilities {
                     try reviewPort.activatePersonalSuggestionBundle(capability)
                 }
+                var inserted = 0
                 for result in batch.results {
                     let predictionsByTag = Dictionary(
                         grouping: result.predictions,
@@ -2700,28 +2764,28 @@ final class LibraryWorkspaceModel: ObservableObject {
                         else {
                             continue
                         }
-                        _ = try reviewPort.replacePersonalSuggestions(
+                        inserted += try reviewPort.replacePersonalSuggestions(
                             candidate: result.candidate,
                             predictions: predictions,
                             expectedCapability: capability
                         )
                     }
                 }
+                return inserted
             }
 
             let checked = candidates.count
-            let suggested = batch.results.reduce(0) { $0 + $1.predictions.count }
             let skipped = batch.skippedCount
             await refreshReviewState()
             // App 路径不入 job 队列；refresh 会把状态清回 idle，完成后需再写回。
             personalLibrarySuggestionState = .completed(
                 checked: checked,
-                suggested: suggested,
+                suggested: inserted,
                 skipped: skipped
             )
             notice = .personalSampleSuggestionsCompleted(
                 checked: checked,
-                suggested: suggested,
+                suggested: inserted,
                 skipped: skipped
             )
         } catch AppPersonalSampleSuggestionError.personalUnavailable {
@@ -2745,9 +2809,16 @@ final class LibraryWorkspaceModel: ObservableObject {
         method: SuggestionGenerationMethod = .personalModel
     ) async {
         guard method == .personalModel || method == .personalAdamW else { return }
-        guard let overview = suggestionOverviews.first(where: { $0.id == tagID }),
-              let cache = selectedAssetEmbeddingCache
-        else {
+        guard let overview = suggestionOverviews.first(where: { $0.id == tagID }) else {
+            notice = method == .personalAdamW
+                ? .personalAdamWTagLibrarySuggestionsNotReady
+                : .personalTagLibrarySuggestionsNotReady
+            personalLibrarySuggestionState = .personalUnavailable
+            return
+        }
+        guard let cache = selectedAssetEmbeddingCache else {
+            notice = .personalTagLibrarySuggestionsModelUnavailable
+            personalLibrarySuggestionState = .serviceUnavailable
             return
         }
         let suggester: any AppPersonalTagLibrarySuggesting
@@ -2756,13 +2827,23 @@ final class LibraryWorkspaceModel: ObservableObject {
         case .personalModel:
             guard canGenerateAppPersonalTagLibrarySuggestions(for: overview),
                   let value = appPersonalTagLibrarySuggester
-            else { return }
+            else {
+                notice = .personalTagLibrarySuggestionsNotReady
+                personalLibrarySuggestionState = .personalUnavailable
+                return
+            }
             suggester = value
             thresholdMethod = .personalCentroid
         case .personalAdamW:
             guard canGenerateAppPersonalAdamWTagLibrarySuggestions(for: overview),
                   let value = appPersonalAdamWTagLibrarySuggester
-            else { return }
+            else {
+                notice = appPersonalAdamWTagLibrarySuggester == nil
+                    ? .personalAdamWTagLibrarySuggestionsNotReady
+                    : .personalAdamWTagLibrarySuggestionsTagNotInModel
+                personalLibrarySuggestionState = .personalUnavailable
+                return
+            }
             suggester = value
             thresholdMethod = .personalAdamW
         case .featureKnn:
@@ -2804,10 +2885,11 @@ final class LibraryWorkspaceModel: ObservableObject {
                 tagID: tagID,
                 method: thresholdMethod
             )
+            let maximumPendingCount = maxPendingSuggestionsPerTag
             let batch = try await suggester.suggest(
                 tagID: tagID,
                 candidates: candidates,
-                maximumPendingCount: AppPersonalTagLibrarySuggestionLimits.maxPendingSuggestionsPerTag,
+                maximumPendingCount: maximumPendingCount,
                 minimumScore: minimumScore,
                 embedding: { candidate in
                     let result = try await cache.cacheSelectedAsset(
@@ -2844,7 +2926,7 @@ final class LibraryWorkspaceModel: ObservableObject {
                     tagID: batch.tagID,
                     hits: batch.hits,
                     expectedCapability: batch.capability,
-                    maximumPendingCount: AppPersonalTagLibrarySuggestionLimits.maxPendingSuggestionsPerTag
+                    maximumPendingCount: maximumPendingCount
                 )
             }
 
@@ -2923,7 +3005,7 @@ final class LibraryWorkspaceModel: ObservableObject {
     }
 
     private func resolveAppPersonalSampleCandidates() async throws -> [PersonalSuggestionCandidate] {
-        let limit = AppPersonalSampleSuggestionLimits.defaultSampleCount
+        let limit = maxPendingSuggestionsPerTag
         let selected = selectedAssetIDs
         if !selected.isEmpty {
             let orderedIDs = displayedAssetIDsInGridOrder.filter(selected.contains)
@@ -5140,7 +5222,8 @@ extension LibraryWorkspaceModel {
             effectiveMinScore: effectiveSuggestionMinScore(
                 tagID: tagID,
                 method: method.thresholdMethod
-            )
+            ),
+            maxPendingSuggestionsPerTag: maxPendingSuggestionsPerTag
         )
     }
 
@@ -5167,7 +5250,10 @@ extension LibraryWorkspaceModel {
                         sourceIDs: selectedSourceIDs
                     )
                 }
-                featureSuggestionCompletionContexts[jobID] = pending.displayName
+                featureSuggestionCompletionContexts[jobID] = FeatureSuggestionCompletionContext(
+                    tagID: pending.tagID,
+                    displayName: pending.displayName
+                )
                 startPersonalizationRunnerIfNeeded()
                 await refreshReviewState()
                 await refreshTrainingWorkspace(presentation: .automatic)
@@ -5186,7 +5272,13 @@ extension LibraryWorkspaceModel {
                 sourceIDs: selectedSourceIDs,
                 method: .personalModel
             )
-            if case .personalTagLibrarySuggestionsCompleted = notice {
+            if case let .personalTagLibrarySuggestionsCompleted(_, _, _, inserted, _) = notice {
+                if inserted > 0, reviewMode == .overview {
+                    await enterReviewQueue(
+                        tagID: pending.tagID,
+                        displayName: pending.displayName
+                    )
+                }
                 return true
             }
             return false
@@ -5197,7 +5289,13 @@ extension LibraryWorkspaceModel {
                 sourceIDs: selectedSourceIDs,
                 method: .personalAdamW
             )
-            if case .personalAdamWTagLibrarySuggestionsCompleted = notice {
+            if case let .personalAdamWTagLibrarySuggestionsCompleted(_, _, _, inserted, _) = notice {
+                if inserted > 0, reviewMode == .overview {
+                    await enterReviewQueue(
+                        tagID: pending.tagID,
+                        displayName: pending.displayName
+                    )
+                }
                 return true
             }
             return false
@@ -5232,7 +5330,7 @@ extension LibraryWorkspaceModel {
         let pendingContexts = featureSuggestionCompletionContexts
         guard !pendingContexts.isEmpty else { return }
         let reviewPort = review
-        for (jobID, tagName) in pendingContexts {
+        for (jobID, context) in pendingContexts {
             guard let completion = try? await Self.offMain({
                 try reviewPort.featureSuggestionJob(jobID: jobID)
             }) else {
@@ -5240,13 +5338,23 @@ extension LibraryWorkspaceModel {
             }
             switch completion.state {
             case .completed:
+                let pendingCount = suggestionOverviews.first(where: {
+                    $0.id == context.tagID
+                })?.pendingSuggestionCount ?? 0
                 notice = .featureKnnSuggestionsCompleted(
-                    tagName: tagName,
+                    tagName: context.displayName,
                     candidates: completion.candidateCount,
                     aboveThreshold: completion.aboveThresholdCount,
+                    reviewable: pendingCount,
                     skipped: completion.skippedCount
                 )
                 featureSuggestionCompletionContexts.removeValue(forKey: jobID)
+                if pendingCount > 0, reviewMode == .overview {
+                    await enterReviewQueue(
+                        tagID: context.tagID,
+                        displayName: context.displayName
+                    )
+                }
             case .terminalFailed, .cancelled:
                 featureSuggestionCompletionContexts.removeValue(forKey: jobID)
             case .pending, .running, .paused, .retryableFailed:
@@ -5750,11 +5858,18 @@ struct LibraryWorkspaceView: View {
                             ProgressView()
                                 .controlSize(.small)
                         } else {
-                            Label("抽 100 张生成建议", systemImage: "wand.and.stars")
+                            Label(
+                                "抽 \(model.maxPendingSuggestionsPerTag) 张生成建议",
+                                systemImage: "wand.and.stars"
+                            )
                         }
                     }
                     .disabled(!model.canGenerateAppPersonalSampleSuggestions)
-                    .help("有多选时：对选中照片（最多 100 张）生成建议；无多选时：从库中抽最多 100 张。写入待审核队列后可用 P 接受 / X 拒绝")
+                    .help(
+                        "有多选时：对选中照片（最多 \(model.maxPendingSuggestionsPerTag) 张）生成建议；"
+                            + "无多选时：从库中抽最多 \(model.maxPendingSuggestionsPerTag) 张。"
+                            + "写入待审核队列后可用 P 接受 / X 拒绝"
+                    )
                 }
 
                 if model.supportsSelectedAssetEmbeddingCache {
@@ -5776,21 +5891,12 @@ struct LibraryWorkspaceView: View {
                 sortMenu
 
                 if !model.items.isEmpty, model.reviewMode == nil {
-                    Picker(
-                        "缩略图大小",
+                    LibraryGridDensityPicker(
                         selection: Binding(
                             get: { model.gridDensity },
                             set: { model.setGridDensity($0) }
                         )
-                    ) {
-                        ForEach(LibraryGridDensity.allCases, id: \.self) { density in
-                            Text(density.displayName).tag(density)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-                    .fixedSize()
-                    .accessibilityLabel("缩略图大小")
-                    .help("调整照片网格缩略图大小")
+                    )
                 }
 
                 Button {
@@ -7848,7 +7954,11 @@ struct LibraryWorkspaceView: View {
         case .selectedAssetEmbeddingFailed:
             "当前照片的本地模型缓存未生成；浏览和人工标签不受影响。"
         case let .personalSampleSuggestionsCompleted(checked, suggested, skipped):
-            "已抽检 \(checked) 张照片：写入 \(suggested) 条待审核建议，跳过 \(skipped) 张。请打开「待审核建议」按 P 接受 / X 拒绝。"
+            if suggested > 0 {
+                "已抽检 \(checked) 张照片：写入 \(suggested) 条待审核建议，跳过 \(skipped) 张。请打开「待审核建议」按 P 接受 / X 拒绝。"
+            } else {
+                "已抽检 \(checked) 张照片：没有新的待审核建议（命中照片此前已审核过），跳过 \(skipped) 张。"
+            }
         case .personalSampleSuggestionsNotReady:
             "当前没有可用的个人模型，或抽检候选为空；请先重建个人模型后再试。"
         case .personalSampleSuggestionsModelUnavailable:
@@ -7859,9 +7969,10 @@ struct LibraryWorkspaceView: View {
             tagName,
             candidates,
             aboveThreshold,
+            reviewable,
             skipped
         ):
-            "特征向量“\(tagName)”生成完成：高于阈值 \(aboveThreshold) 条 / 候选 \(candidates) 条，跳过 \(skipped) 条。"
+            "特征向量“\(tagName)”生成完成：高于阈值 \(aboveThreshold) 条 / 候选 \(candidates) 条，当前待审核 \(reviewable) 条，跳过 \(skipped) 条。"
         case let .personalTagLibrarySuggestionsCompleted(
             tagName,
             candidates,
@@ -7891,7 +8002,7 @@ struct LibraryWorkspaceView: View {
         case .personalAdamWTagLibrarySuggestionsTagNotInModel:
             "当前超级个人模型不包含该标签；请先用超级人脑把该标签纳入训练后再试。"
         case .personalAdamWTagLibrarySuggestionsFailed:
-            "超级个人模型 Top 100 建议未完成；现有审核队列保持不变，请稍后重试。"
+            "超级个人模型建议未完成；现有审核队列保持不变，请稍后重试。"
         case let .suggestionThresholdPruned(tagName, methodName, deletedCount):
             "已按当前“\(methodName)”门槛刷新“\(tagName)”待审队列，删除 \(deletedCount) 条。"
         case .suggestionThresholdUpdateFailed:

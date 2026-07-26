@@ -2498,6 +2498,21 @@ final class FullLibrarySuggestionsJobTests: XCTestCase {
         )
     }
 
+    func testPendingSuggestionCountPreferenceStoreDefaultsAndClamps() {
+        let suiteName = "PendingSuggestionCountPreferenceStore.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let store = UserDefaultsPendingSuggestionCountPreferenceStore(defaults: defaults)
+
+        XCTAssertEqual(store.maxPendingSuggestionsPerTag, PendingSuggestionGenerationLimits.defaultMaxCount)
+        store.maxPendingSuggestionsPerTag = 750
+        XCTAssertEqual(store.maxPendingSuggestionsPerTag, 750)
+        store.maxPendingSuggestionsPerTag = 0
+        XCTAssertEqual(store.maxPendingSuggestionsPerTag, PendingSuggestionGenerationLimits.minCount)
+        store.maxPendingSuggestionsPerTag = 999_999
+        XCTAssertEqual(store.maxPendingSuggestionsPerTag, PendingSuggestionGenerationLimits.maxCount)
+    }
+
     func testScansMoreThanFiveHundredAssetsInSingleRevisionWithoutDuplicateCursor() throws {
         let fixture = try makeLargeLibraryFixture(assetCount: 520)
         let handler = makeHandler(database: fixture.database, loader: fixture.loader, queue: fixture.queue)
@@ -2517,12 +2532,19 @@ final class FullLibrarySuggestionsJobTests: XCTestCase {
             FullLibrarySuggestionsJobFactory.maxPendingSuggestionsPerTag
         )
         XCTAssertEqual(facts.predictionCount, facts.positiveCandidateCount)
-        XCTAssertEqual(facts.checkedCount, 520)
+        // Decided training samples are excluded from the scan candidate pool.
+        XCTAssertEqual(facts.checkedCount, 516)
     }
 
     func testFullLibrarySuggestionsRetainOnlyHighestScoringPendingSuggestions() throws {
+        let retentionLimit = 100
         let fixture = try makeLargeLibraryFixture(assetCount: 250)
-        let handler = makeHandler(database: fixture.database, loader: fixture.loader, queue: fixture.queue)
+        let handler = makeHandler(
+            database: fixture.database,
+            loader: fixture.loader,
+            queue: fixture.queue,
+            maxPendingSuggestionsPerTag: retentionLimit
+        )
         let coordinator = makeCoordinator(database: fixture.database, handler: handler, queue: fixture.queue)
         _ = try enqueueJob(
             queue: fixture.queue,
@@ -2536,12 +2558,12 @@ final class FullLibrarySuggestionsJobTests: XCTestCase {
         let catalog = GRDBPersonalizationRepository(database: fixture.database)
         let pending = try catalog.pendingPredictions(
             tagID: fixture.tagID,
-            limit: FullLibrarySuggestionsJobFactory.maxPendingSuggestionsPerTag
+            limit: retentionLimit
         )
-        XCTAssertEqual(pending.count, FullLibrarySuggestionsJobFactory.maxPendingSuggestionsPerTag)
+        XCTAssertEqual(pending.count, retentionLimit)
         XCTAssertEqual(
             try pendingCount(database: fixture.database, tagID: fixture.tagID),
-            FullLibrarySuggestionsJobFactory.maxPendingSuggestionsPerTag
+            retentionLimit
         )
 
         // Insert a lower-scoring outlier and a higher-scoring outlier, then prune again.
@@ -2583,7 +2605,7 @@ final class FullLibrarySuggestionsJobTests: XCTestCase {
             try catalog.retainTopPendingPredictions(
                 tagID: fixture.tagID,
                 modelRevision: 1,
-                limit: FullLibrarySuggestionsJobFactory.maxPendingSuggestionsPerTag,
+                limit: retentionLimit,
                 on: db
             )
         }
@@ -2591,12 +2613,115 @@ final class FullLibrarySuggestionsJobTests: XCTestCase {
         let retainedIDs = Set(
             try catalog.pendingPredictions(
                 tagID: fixture.tagID,
-                limit: FullLibrarySuggestionsJobFactory.maxPendingSuggestionsPerTag
+                limit: retentionLimit
             ).map(\.assetID)
         )
         XCTAssertTrue(retainedIDs.contains(highAsset))
         XCTAssertFalse(retainedIDs.contains(lowAsset))
-        XCTAssertEqual(retainedIDs.count, FullLibrarySuggestionsJobFactory.maxPendingSuggestionsPerTag)
+        XCTAssertEqual(retainedIDs.count, retentionLimit)
+    }
+
+    func testRetainTopPendingPredictionsDoesNotLetDecidedRowsConsumeSlots() throws {
+        let fixture = try makeLargeLibraryFixture(assetCount: 8, preseedPredictions: 2)
+        let catalog = GRDBPersonalizationRepository(database: fixture.database)
+        let decidedHigh = fixture.positiveIDs[0]
+        let existingPending = try catalog.pendingPredictions(tagID: fixture.tagID, limit: 10)
+        XCTAssertGreaterThanOrEqual(existingPending.count, 2)
+        let undecidedA = existingPending[0].assetID
+        let undecidedB = existingPending[1].assetID
+
+        try fixture.database.pool.write { db in
+            try db.execute(
+                sql: """
+                UPDATE prediction
+                SET score = 0.4
+                WHERE asset_id = ? AND tag_id = ?
+                """,
+                arguments: [
+                    undecidedA.uuidString.lowercased(),
+                    fixture.tagID.uuidString.lowercased(),
+                ]
+            )
+            try db.execute(
+                sql: """
+                UPDATE prediction
+                SET score = 0.3
+                WHERE asset_id = ? AND tag_id = ?
+                """,
+                arguments: [
+                    undecidedB.uuidString.lowercased(),
+                    fixture.tagID.uuidString.lowercased(),
+                ]
+            )
+            // Simulate a previously reviewed high-score zombie that must not take a Top-N slot.
+            try db.execute(
+                sql: """
+                INSERT INTO prediction (
+                    asset_id, tag_id, content_revision, model_revision, score, state, created_at_ms
+                ) VALUES (?, ?, 1, 1, 0.99, 'pendingReview', ?)
+                """,
+                arguments: [
+                    decidedHigh.uuidString.lowercased(),
+                    fixture.tagID.uuidString.lowercased(),
+                    fixture.cutoffMs,
+                ]
+            )
+            try catalog.retainTopPendingPredictions(
+                tagID: fixture.tagID,
+                modelRevision: 1,
+                limit: 1,
+                on: db
+            )
+        }
+
+        let pending = try catalog.pendingPredictions(tagID: fixture.tagID, limit: 10)
+        XCTAssertEqual(pending.map(\.assetID), [undecidedA])
+        let zombieStillPresent = try fixture.database.pool.read { db in
+            try Bool.fetchOne(
+                db,
+                sql: """
+                SELECT EXISTS(
+                    SELECT 1 FROM prediction
+                    WHERE asset_id = ? AND tag_id = ? AND model_revision = 1
+                )
+                """,
+                arguments: [
+                    decidedHigh.uuidString.lowercased(),
+                    fixture.tagID.uuidString.lowercased(),
+                ]
+            )
+        }
+        XCTAssertEqual(zombieStillPresent, true)
+    }
+
+    func testFrozenAssetBatchExcludesAssetsWithTagDecisions() throws {
+        let fixture = try makeLargeLibraryFixture(assetCount: 8)
+        let review = GRDBPersonalizationReviewRepository(database: fixture.database)
+        let all = try review.frozenAssetBatch(
+            sourceIDs: [fixture.sourceID],
+            catalogCutoffMs: fixture.cutoffMs,
+            afterAssetID: nil,
+            limit: 1_000
+        )
+        let undecided = try review.frozenAssetBatch(
+            sourceIDs: [fixture.sourceID],
+            catalogCutoffMs: fixture.cutoffMs,
+            afterAssetID: nil,
+            limit: 1_000,
+            excludingDecisionsForTagID: fixture.tagID
+        )
+        XCTAssertFalse(undecided.isEmpty)
+        XCTAssertTrue(Set(undecided).isDisjoint(with: Set(fixture.positiveIDs)))
+        XCTAssertTrue(Set(undecided).isDisjoint(with: Set(fixture.negativeIDs)))
+        XCTAssertEqual(
+            try review.frozenAssetTotal(
+                sourceIDs: [fixture.sourceID],
+                catalogCutoffMs: fixture.cutoffMs,
+                excludingDecisionsForTagID: fixture.tagID
+            ),
+            undecided.count
+        )
+        XCTAssertLessThan(undecided.count, all.count)
     }
 
     func testFirstBatchTransactionFailureRollsBackAndKeepsOldQueue() throws {
@@ -2643,7 +2768,8 @@ final class FullLibrarySuggestionsJobTests: XCTestCase {
         drainPersonalizationJobs(coordinator: coordinator, maxSteps: 2)
         let facts = try revisionFacts(database: fixture.database, tagID: fixture.tagID)
         XCTAssertEqual(facts.revisionCount, 1)
-        XCTAssertEqual(facts.checkedCount, 250)
+        // Decided training samples are excluded from the scan candidate pool.
+        XCTAssertEqual(facts.checkedCount, 246)
     }
 
     func testCancelRetainsPublishedSuggestions() throws {
@@ -2937,7 +3063,8 @@ final class FullLibrarySuggestionsJobTests: XCTestCase {
 
         let completed = try queue.fetchJob(id: job.id)
         XCTAssertEqual(completed.state, .completed)
-        XCTAssertEqual(completed.progress, JobProgress(completed: 8, total: 8))
+        // 8 bulk assets minus 4 decided training samples.
+        XCTAssertEqual(completed.progress, JobProgress(completed: 4, total: 4))
     }
 
     func testSlowFeatureHeartbeatHonorsPauseDuringSamplePreparation() throws {
@@ -2984,7 +3111,8 @@ final class FullLibrarySuggestionsJobTests: XCTestCase {
 
         let paused = try queue.fetchJob(id: job.id)
         XCTAssertEqual(paused.state, .paused)
-        XCTAssertEqual(paused.progress, JobProgress(completed: 0, total: 8))
+        // Total reflects undecided candidates only (8 - 4 decided samples).
+        XCTAssertEqual(paused.progress, JobProgress(completed: 0, total: 4))
     }
 
     func testPauseAfterFirstBatchStopsWithPartialProgress() throws {
@@ -3121,11 +3249,18 @@ final class FullLibrarySuggestionsJobTests: XCTestCase {
                 try String.fetchOne(
                     db,
                     sql: """
-                    SELECT id FROM asset
-                    WHERE source_id = ? AND id LIKE '21000000-%'
-                    ORDER BY id ASC LIMIT 1
+                    SELECT a.id FROM asset a
+                    WHERE a.source_id = ? AND a.id LIKE '21000000-%'
+                      AND NOT EXISTS (
+                        SELECT 1 FROM asset_tag_decision d
+                        WHERE d.asset_id = a.id AND d.tag_id = ?
+                      )
+                    ORDER BY a.id ASC LIMIT 1
                     """,
-                    arguments: [fixture.sourceID.uuidString.lowercased()]
+                    arguments: [
+                        fixture.sourceID.uuidString.lowercased(),
+                        fixture.tagID.uuidString.lowercased(),
+                    ]
                 )
             }.flatMap(UUID.init(uuidString:))
         )
@@ -3154,7 +3289,8 @@ final class FullLibrarySuggestionsJobTests: XCTestCase {
         let facts = try revisionFacts(database: fixture.database, tagID: fixture.tagID)
         let pending = try pendingAssetIDs(database: fixture.database, tagID: fixture.tagID)
         XCTAssertFalse(pending.contains(modifiedAsset))
-        XCTAssertEqual(facts.checkedCount, 12)
+        // 12 bulk assets minus 4 decided training samples.
+        XCTAssertEqual(facts.checkedCount, 8)
         XCTAssertGreaterThanOrEqual(facts.skippedCount, 1)
     }
 
@@ -3250,7 +3386,8 @@ final class FullLibrarySuggestionsJobTests: XCTestCase {
         }
         drainPersonalizationJobs(coordinator: coordinator, maxSteps: 3)
         let facts = try revisionFacts(database: fixture.database, tagID: fixture.tagID)
-        XCTAssertEqual(facts.checkedCount, 20)
+        // Frozen total excludes decided training samples at enqueue.
+        XCTAssertEqual(facts.checkedCount, 16)
         XCTAssertGreaterThan(facts.skippedCount, 0)
         XCTAssertEqual(try pendingCount(database: fixture.database, tagID: fixture.tagID), 0)
     }
@@ -3317,7 +3454,8 @@ final class FullLibrarySuggestionsJobTests: XCTestCase {
         failureLoader.failOnBatch = nil
         drainPersonalizationJobs(coordinator: failureCoordinator, maxSteps: 5, queue: fixture.queue)
         let recoveredFacts = try revisionFacts(database: fixture.database, tagID: fixture.tagID)
-        XCTAssertEqual(recoveredFacts.checkedCount, 120)
+        // 120 bulk assets minus 4 decided training samples.
+        XCTAssertEqual(recoveredFacts.checkedCount, 116)
         let recoveredPredictions = Set(try pendingAssetIDs(database: fixture.database, tagID: fixture.tagID))
         XCTAssertEqual(recoveredPredictions, referencePredictions)
     }
@@ -4427,25 +4565,29 @@ private struct StubSyncFeatureVectorLoader: SyncFeatureVectorLoading {
 private func makeHandlerDependencies(
     database: CatalogDatabase,
     loader: any SyncFeatureVectorLoading,
-    queue: GRDBJobQueue
+    queue: GRDBJobQueue,
+    maxPendingSuggestionsPerTag: Int = FullLibrarySuggestionsJobFactory.maxPendingSuggestionsPerTag
 ) -> FullLibrarySuggestionsHandlerDependencies {
     FullLibrarySuggestionsHandlerDependencies(
         database: database,
         queue: queue,
         featureLoader: loader,
-        clock: FixedJobClock(nowMs: DatabaseTestSupport.timestampMs)
+        clock: FixedJobClock(nowMs: DatabaseTestSupport.timestampMs),
+        maxPendingSuggestionsPerTag: { maxPendingSuggestionsPerTag }
     )
 }
 
 private func makeHandler(
     database: CatalogDatabase,
     loader: any SyncFeatureVectorLoading,
-    queue: GRDBJobQueue
+    queue: GRDBJobQueue,
+    maxPendingSuggestionsPerTag: Int = FullLibrarySuggestionsJobFactory.maxPendingSuggestionsPerTag
 ) -> FullLibrarySuggestionsHandler {
     FullLibrarySuggestionsHandler(dependencies: makeHandlerDependencies(
         database: database,
         loader: loader,
-        queue: queue
+        queue: queue,
+        maxPendingSuggestionsPerTag: maxPendingSuggestionsPerTag
     ))
 }
 

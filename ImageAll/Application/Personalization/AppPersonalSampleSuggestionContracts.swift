@@ -93,6 +93,6 @@ enum AppPersonalSuggestionCapabilityMapper {
 }
 
 enum AppPersonalSampleSuggestionLimits {
-    static let defaultSampleCount = 100
+    static let defaultSampleCount = PendingSuggestionGenerationLimits.defaultMaxCount
     static let defaultMaximumSuggestionsPerAsset = 5
 }

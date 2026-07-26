@@ -5620,6 +5620,32 @@ final class LibraryWorkspaceModelTests: XCTestCase {
             LibraryGridLayout.columnCount(containerWidth: 100, density: .large),
             1
         )
+        XCTAssertGreaterThan(
+            LibraryGridLayout.columnCount(containerWidth: 900, density: .micro),
+            LibraryGridLayout.columnCount(containerWidth: 900, density: .giant)
+        )
+    }
+
+    func testLibraryGridDensityProvidesNineMonotonicTiersAnchoredToExistingSizes() {
+        XCTAssertEqual(LibraryGridDensity.allCases.count, 9)
+        XCTAssertEqual(LibraryGridDensity.default, .standard)
+
+        let lowers = LibraryGridDensity.allCases.map(\.cellWidthRange.lowerBound)
+        let uppers = LibraryGridDensity.allCases.map(\.cellWidthRange.upperBound)
+        zip(lowers, lowers.dropFirst()).forEach { previous, next in
+            XCTAssertLessThan(previous, next)
+        }
+        zip(uppers, uppers.dropFirst()).forEach { previous, next in
+            XCTAssertLessThan(previous, next)
+        }
+
+        XCTAssertEqual(LibraryGridDensity.compact.cellWidthRange, 96 ... 160)
+        XCTAssertEqual(LibraryGridDensity.standard.cellWidthRange, 132 ... 220)
+        XCTAssertEqual(LibraryGridDensity.large.cellWidthRange, 180 ... 300)
+        XCTAssertEqual(LibraryGridDensity.micro.cellWidthRange, 51 ... 84)
+        XCTAssertEqual(LibraryGridDensity.fine.cellWidthRange, 70 ... 116)
+        XCTAssertEqual(LibraryGridDensity.extraLarge.cellWidthRange, 245 ... 409)
+        XCTAssertEqual(LibraryGridDensity.giant.cellWidthRange, 620 ... 1038)
     }
 
     func testGridLayoutReservesScrollerGutterAndKeepsFixedColumnsStable() {
@@ -5862,16 +5888,11 @@ final class LibraryWorkspaceModelTests: XCTestCase {
 
         XCTAssertEqual(model.gridDensity, .standard)
 
-        model.setGridDensity(.compact)
+        model.setGridDensity(.micro)
+        XCTAssertEqual(model.gridDensity, .micro)
 
-        XCTAssertEqual(model.gridDensity, .compact)
-        XCTAssertEqual(model.items.map(\.assetID), [first.assetID, second.assetID])
-        XCTAssertEqual(model.selectedAssetIDs, [second.assetID])
-        XCTAssertTrue(model.isSinglePhotoPresented)
-
-        model.setGridDensity(.large)
-
-        XCTAssertEqual(model.gridDensity, .large)
+        model.setGridDensity(.giant)
+        XCTAssertEqual(model.gridDensity, .giant)
         XCTAssertEqual(model.items.map(\.assetID), [first.assetID, second.assetID])
         XCTAssertEqual(model.selectedAssetIDs, [second.assetID])
         XCTAssertTrue(model.isSinglePhotoPresented)
@@ -6986,9 +7007,169 @@ final class LibraryWorkspaceModelTests: XCTestCase {
                 tagName: "Family",
                 candidates: 12,
                 aboveThreshold: 4,
+                reviewable: 0,
                 skipped: 3
             )
         )
+    }
+
+    func testFeatureSuggestionCompletionOpensReviewQueueFromOverview() async {
+        let sourceID = UUID()
+        let tag = TagListItem(id: UUID(), displayName: "Family", state: .active)
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(id: sourceID, displayName: "Fixture", state: .active),
+            reconciledItems: [],
+            tags: [tag],
+            startsConnected: true
+        )
+        let review = FakePersonalizationReviewPort(
+            overviews: [
+                SuggestionTagOverview(
+                    id: tag.id,
+                    displayName: tag.displayName,
+                    acceptedSampleCount: 4,
+                    rejectedSampleCount: 4,
+                    pendingSuggestionCount: 4,
+                    taskStatus: .ready,
+                    checkedCount: 0,
+                    totalCount: nil,
+                    skippedCount: 0,
+                    missingPositiveCount: 0,
+                    missingNegativeCount: 0,
+                    canGenerate: true,
+                    canUpdate: false,
+                    canGeneratePersonalModel: true,
+                    canReview: true,
+                    canPause: false,
+                    canResume: false,
+                    canCancel: false,
+                    activeJobID: nil
+                ),
+            ],
+            featureCompletion: (candidates: 12, aboveThreshold: 4, skipped: 3)
+        )
+        let model = LibraryWorkspaceModel(service: service, review: review)
+
+        await model.start()
+        await model.enterReviewOverview()
+        model.requestEnqueueSuggestions(
+            tagID: tag.id,
+            displayName: tag.displayName,
+            mode: .generate
+        )
+        let confirmed = await model.confirmPendingSuggestionEnqueue()
+        XCTAssertTrue(confirmed)
+        for _ in 0 ..< 100 where model.reviewMode != .tagQueue(tagID: tag.id, displayName: tag.displayName) {
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
+
+        XCTAssertEqual(model.reviewMode, .tagQueue(tagID: tag.id, displayName: tag.displayName))
+    }
+
+    func testPersonalModelSuggestionEnqueueOpensReviewQueueFromOverview() async {
+        let sourceID = UUID()
+        let tagID = UUID(uuidString: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee")!
+        let candidates = (0..<3).map { index in
+            PersonalSuggestionCandidate(
+                assetID: UUID(),
+                contentRevision: index + 1
+            )
+        }
+        let capability = PersonalModelSuggestionCapability(
+            target: PersonalModelSuggestionTarget(
+                catalogScopeID: "catalog-fixture",
+                bundleID: AppPersonalSuggestionCapabilityMapper.bundleID,
+                bundleRevision: String(repeating: "a", count: 64),
+                provider: "dinov2",
+                modelID: "facebook/dinov2-small",
+                modelRevision: "fixture",
+                preprocessingRevision: "fixture",
+                elementCount: 1,
+                labelVocabularyRevision: String(repeating: "b", count: 64),
+                weightsSHA256: String(repeating: "c", count: 64),
+                policyRevision: AppPersonalSuggestionCapabilityMapper.policyRevision
+            ),
+            tagIDs: [tagID]
+        )
+        let hits = [
+            AppPersonalTagLibrarySuggestionHit(candidate: candidates[0], score: 3.0),
+            AppPersonalTagLibrarySuggestionHit(candidate: candidates[1], score: 2.0),
+        ]
+        let overview = SuggestionTagOverview(
+            id: tagID,
+            displayName: "Family",
+            acceptedSampleCount: 4,
+            rejectedSampleCount: 0,
+            pendingSuggestionCount: 0,
+            taskStatus: .ready,
+            checkedCount: 0,
+            totalCount: nil,
+            skippedCount: 0,
+            missingPositiveCount: 0,
+            missingNegativeCount: 2,
+            canGenerate: false,
+            canUpdate: false,
+            canGeneratePersonalModel: true,
+            canReview: false,
+            canPause: false,
+            canResume: false,
+            canCancel: false,
+            activeJobID: nil
+        )
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: sourceID,
+                displayName: "Fixture",
+                state: .active
+            ),
+            reconciledItems: candidates.map {
+                Self.makeAsset(sourceID: sourceID, assetID: $0.assetID, fileName: "\($0.assetID.uuidString).png")
+            },
+            tags: [TagListItem(id: tagID, displayName: "Family", state: .active)],
+            startsConnected: true,
+            previewData: Data("tag-library-preview".utf8)
+        )
+        let review = FakePersonalizationReviewPort(
+            overviews: [overview],
+            personalCandidates: candidates
+        )
+        let suggester = FakeAppPersonalTagLibrarySuggester(
+            batch: AppPersonalTagLibrarySuggestionBatch(
+                tagID: tagID,
+                capability: capability,
+                hits: hits,
+                checkedCount: candidates.count,
+                aboveThresholdCount: 2,
+                skippedCount: 0
+            )
+        )
+        let model = LibraryWorkspaceModel(
+            service: service,
+            review: review,
+            selectedAssetEmbeddingCache: FakeSelectedAssetEmbeddingCache(),
+            appPersonalSampleSuggester: FakeAppPersonalSampleSuggester(
+                batch: AppPersonalSampleSuggestionBatch(
+                    capability: capability,
+                    results: [],
+                    skippedCount: 0
+                )
+            ),
+            appPersonalTagLibrarySuggester: suggester
+        )
+
+        await model.start()
+        await model.refreshReviewState()
+        await model.enterReviewOverview()
+        model.requestEnqueueSuggestions(
+            tagID: tagID,
+            displayName: "Family",
+            mode: .generate,
+            method: .personalModel
+        )
+        let confirmed = await model.confirmPendingSuggestionEnqueue()
+
+        XCTAssertTrue(confirmed)
+        XCTAssertEqual(model.reviewMode, .tagQueue(tagID: tagID, displayName: "Family"))
     }
 
     func testConfirmSuggestionEnqueueUsesCapturedConfirmationAfterDialogDismissal() async throws {

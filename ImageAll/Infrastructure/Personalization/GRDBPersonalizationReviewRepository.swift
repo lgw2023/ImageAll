@@ -567,12 +567,23 @@ struct GRDBPersonalizationReviewRepository: Sendable {
         sourceIDs: [UUID],
         catalogCutoffMs: Int64,
         afterAssetID: UUID?,
-        limit: Int
+        limit: Int,
+        excludingDecisionsForTagID: UUID? = nil
     ) throws -> [UUID] {
         guard !sourceIDs.isEmpty, limit > 0 else { return [] }
         let placeholders = Array(repeating: "?", count: sourceIDs.count).joined(separator: ", ")
         var arguments: [DatabaseValueConvertible] = sourceIDs.map { uuid($0) }
         arguments.append(catalogCutoffMs)
+        var decisionClause = ""
+        if let excludingDecisionsForTagID {
+            decisionClause = """
+                AND NOT EXISTS (
+                    SELECT 1 FROM asset_tag_decision d
+                    WHERE d.asset_id = a.id AND d.tag_id = ?
+                )
+                """
+            arguments.append(uuid(excludingDecisionsForTagID))
+        }
         var afterClause = ""
         if let afterAssetID {
             afterClause = "AND a.id > ?"
@@ -592,6 +603,7 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                         OR (s.kind = 'photos' AND a.locator_kind = 'photos')
                     )
                     AND a.record_created_at_ms <= ?
+                    \(decisionClause)
                     \(afterClause)
                 ORDER BY a.id ASC
                 LIMIT ?
@@ -603,10 +615,23 @@ struct GRDBPersonalizationReviewRepository: Sendable {
 
     func frozenAssetTotal(
         sourceIDs: [UUID],
-        catalogCutoffMs: Int64
+        catalogCutoffMs: Int64,
+        excludingDecisionsForTagID: UUID? = nil
     ) throws -> Int {
         guard !sourceIDs.isEmpty else { return 0 }
         let placeholders = Array(repeating: "?", count: sourceIDs.count).joined(separator: ", ")
+        var arguments: [DatabaseValueConvertible] = sourceIDs.map { uuid($0) }
+        arguments.append(catalogCutoffMs)
+        var decisionClause = ""
+        if let excludingDecisionsForTagID {
+            decisionClause = """
+                AND NOT EXISTS (
+                    SELECT 1 FROM asset_tag_decision d
+                    WHERE d.asset_id = a.id AND d.tag_id = ?
+                )
+                """
+            arguments.append(uuid(excludingDecisionsForTagID))
+        }
         return try database.pool.read { db in
             try Int.fetchOne(
                 db,
@@ -620,8 +645,9 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                         OR (s.kind = 'photos' AND a.locator_kind = 'photos')
                     )
                     AND a.record_created_at_ms <= ?
+                    \(decisionClause)
                 """,
-                arguments: StatementArguments(sourceIDs.map { uuid($0) } + [catalogCutoffMs])
+                arguments: StatementArguments(arguments)
             ) ?? 0
         }
     }
@@ -1054,9 +1080,22 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                 arguments: [uuid(tagID), method]
             )
 
+            // Ranked hits may still include decided assets from callers that did not
+            // pre-filter; never let them consume Top-N slots.
             var inserted = 0
             for hit in rankedHits {
                 if inserted >= maximumPendingCount { break }
+                let alreadyDecided = try Bool.fetchOne(
+                    db,
+                    sql: """
+                    SELECT EXISTS(
+                        SELECT 1 FROM asset_tag_decision
+                        WHERE asset_id = ? AND tag_id = ?
+                    )
+                    """,
+                    arguments: [uuid(hit.candidate.assetID), uuid(tagID)]
+                ) ?? false
+                if alreadyDecided { continue }
                 let assetOK = try Bool.fetchOne(
                     db,
                     sql: """

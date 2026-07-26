@@ -1,5 +1,47 @@
 import Foundation
 
+enum PendingSuggestionGenerationLimits {
+    static let defaultMaxCount = 500
+    static let minCount = 1
+    static let maxCount = 10_000
+}
+
+protocol PendingSuggestionCountPreferenceStore: Sendable {
+    var maxPendingSuggestionsPerTag: Int { get nonmutating set }
+}
+
+final class UserDefaultsPendingSuggestionCountPreferenceStore:
+    PendingSuggestionCountPreferenceStore,
+    @unchecked Sendable
+{
+    private static let key = "library.review.max-pending-suggestions-per-tag.v1"
+
+    private let defaults: UserDefaults
+
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+    }
+
+    var maxPendingSuggestionsPerTag: Int {
+        get {
+            guard defaults.object(forKey: Self.key) != nil else {
+                return PendingSuggestionGenerationLimits.defaultMaxCount
+            }
+            return Self.clamp(defaults.integer(forKey: Self.key))
+        }
+        set {
+            defaults.set(Self.clamp(newValue), forKey: Self.key)
+        }
+    }
+
+    private static func clamp(_ value: Int) -> Int {
+        min(
+            max(value, PendingSuggestionGenerationLimits.minCount),
+            PendingSuggestionGenerationLimits.maxCount
+        )
+    }
+}
+
 enum FullLibrarySuggestionsJobFactory {
     static let kind = "personalization.fullLibrarySuggestions"
     static let payloadVersion = 1
@@ -9,7 +51,7 @@ enum FullLibrarySuggestionsJobFactory {
     static let priority = -1
     static let scanBatchSize = 100
     /// Per-tag review queue keeps only the highest-scoring pending suggestions.
-    static let maxPendingSuggestionsPerTag = 100
+    static let maxPendingSuggestionsPerTag = PendingSuggestionGenerationLimits.defaultMaxCount
 
     static func coalescingKey(tagID: UUID) -> String {
         "personalization:\(tagID.uuidString.lowercased())"

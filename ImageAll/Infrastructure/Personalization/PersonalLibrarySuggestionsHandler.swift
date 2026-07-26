@@ -117,11 +117,13 @@ private extension PersonalLibrarySuggestionsHandler {
         leaseDurationMs: Int64
     ) async throws -> JobHandlerExecutionResult {
         let review = GRDBPersonalizationReviewRepository(database: dependencies.database)
+        let exclusionTagID = payload.capability.tagIDs.first
         let total: Int
         do {
             total = try review.frozenAssetTotal(
                 sourceIDs: payload.sourceIDs,
-                catalogCutoffMs: payload.catalogCutoffMs
+                catalogCutoffMs: payload.catalogCutoffMs,
+                excludingDecisionsForTagID: exclusionTagID
             )
         } catch {
             return retryableFailure(
@@ -152,7 +154,8 @@ private extension PersonalLibrarySuggestionsHandler {
                     sourceIDs: payload.sourceIDs,
                     catalogCutoffMs: payload.catalogCutoffMs,
                     afterAssetID: state.lastAssetID,
-                    limit: 1
+                    limit: 1,
+                    excludingDecisionsForTagID: exclusionTagID
                 )
                 guard let assetID = batch.first else {
                     let finalized = checkpoint(
@@ -273,6 +276,7 @@ private extension PersonalLibrarySuggestionsHandler {
                   tagID: tagID,
                   assetID: assetID
               ),
+              !context.hasDecision,
               context.recordUpdatedAtMs <= payload.catalogCutoffMs,
               context.locatorState == AssetLocatorState.current.rawValue,
               context.sourceState == SourceState.active.rawValue,

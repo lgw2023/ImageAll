@@ -10,344 +10,297 @@ struct ReviewOverviewView: View {
     let onOpenQueue: (UUID, String) -> Void
     let onBack: () -> Void
 
+    private var showsLocalModelPanel: Bool {
+        model.supportsPersonalLibrarySuggestions || model.supportsStandardLibrarySuggestions
+    }
+
     var body: some View {
-        List {
-            Section("来源筛选") {
-                Text(model.reviewSourceFilterSummaryText)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Button("全选来源") {
-                    Task { await model.selectAllReviewSources() }
+        VStack(spacing: 0) {
+            ReviewOverviewHeader(model: model, onBack: onBack)
+            Divider()
+            if model.suggestionOverviews.isEmpty, !showsLocalModelPanel {
+                ContentUnavailableView {
+                    Label("暂无待审核标签", systemImage: "sparkles")
+                } description: {
+                    Text("先在图库中为照片打标签并积累确认/拒绝样本，再回来生成建议。")
+                } actions: {
+                    Button("返回图库", action: onBack)
+                        .buttonStyle(.borderedProminent)
                 }
-                .disabled(model.reviewFilterSourceIDs == nil)
-                ForEach(model.activeReviewSources) { source in
-                    Toggle(
-                        source.displayName,
-                        isOn: Binding(
-                            get: { model.isReviewSourceIncluded(source.id) },
-                            set: { included in
-                                Task { await model.setReviewSourceIncluded(source.id, included) }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                HSplitView {
+                    if showsLocalModelPanel {
+                        ReviewLocalModelPanel(model: model)
+                            .frame(minWidth: 248, idealWidth: 288, maxWidth: 320)
+                    }
+                    ScrollView {
+                        LazyVGrid(
+                            columns: [
+                                GridItem(
+                                    .adaptive(minimum: 320, maximum: 460),
+                                    spacing: 12,
+                                    alignment: .top
+                                ),
+                            ],
+                            alignment: .leading,
+                            spacing: 12
+                        ) {
+                            ForEach(model.suggestionOverviews) { overview in
+                                ReviewTagOverviewCard(
+                                    model: model,
+                                    overview: overview,
+                                    onOpenQueue: onOpenQueue
+                                )
                             }
-                        )
-                    )
+                        }
+                        .padding(16)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .frame(minWidth: 360, maxWidth: .infinity, maxHeight: .infinity)
                 }
-            }
-
-            if model.supportsPersonalLibrarySuggestions || model.supportsStandardLibrarySuggestions {
-                Section("本地模型") {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text(localModelServiceStatusText)
-                            .font(.caption)
-                            .foregroundStyle(localModelServiceStatusColor)
-                        Button {
-                            Task { await model.refreshLocalModelServiceHealth() }
-                        } label: {
-                            if model.localModelServiceHealthState == .checking {
-                                HStack(spacing: 8) {
-                                    ProgressView().controlSize(.small)
-                                    Text("正在检查本地服务")
-                                }
-                            } else {
-                                Label("刷新服务状态", systemImage: "arrow.clockwise")
-                            }
-                        }
-                        .disabled(model.localModelServiceHealthState == .checking)
-                        .help("只检查本机回环服务，不会启动服务或下载模型")
-
-                        Divider()
-
-                        if model.supportsStandardLibrarySuggestions {
-                            Text(standardLibraryStatusText)
-                                .font(.caption)
-                                .foregroundStyle(standardLibraryStatusColor)
-                            Button {
-                                Task { await model.generateStandardLibrarySuggestions() }
-                            } label: {
-                                if model.isGeneratingStandardLibrarySuggestions {
-                                    HStack(spacing: 8) {
-                                        ProgressView().controlSize(.small)
-                                        Text("正在扫描全库")
-                                    }
-                                } else {
-                                    Label("用标准模型扫描全库", systemImage: "sparkles.rectangle.stack")
-                                }
-                            }
-                            .disabled(
-                                model.isGeneratingStandardLibrarySuggestions
-                                    || model.isGeneratingPersonalLibrarySuggestions
-                                    || model.isRebuildingPersonalModel
-                            )
-                            .help("按上方来源筛选扫描；仅分析当前可本地读取的预览；iCloud 云端照片会跳过，不会批量下载")
-                            if let activity = model.standardLibrarySuggestionJobActivity,
-                               !activity.availableActions.isEmpty
-                            {
-                                HStack {
-                                    ForEach(activity.availableActions, id: \.self) { action in
-                                        Button(
-                                            personalLibraryActionTitle(action),
-                                            role: action == .cancel ? .destructive : nil
-                                        ) {
-                                            Task {
-                                                await model.applyStandardLibrarySuggestionAction(action)
-                                            }
-                                        }
-                                        .disabled(model.isApplyingJobActivityAction(activity.id))
-                                    }
-                                }
-                                .buttonStyle(.link)
-                            }
-                        }
-
-                        if model.supportsPersonalLibrarySuggestions {
-                            Divider()
-
-                            Text(personalLibraryStatusText)
-                                .font(.caption)
-                                .foregroundStyle(personalLibraryStatusColor)
-                            Button {
-                                Task { await model.generatePersonalLibrarySuggestions() }
-                            } label: {
-                                if model.isGeneratingPersonalLibrarySuggestions {
-                                    HStack(spacing: 8) {
-                                        ProgressView().controlSize(.small)
-                                        Text(
-                                            model.usesAppPersonalSampleSuggestionsPath
-                                                ? "正在抽检最多 100 张"
-                                                : "正在扫描全库"
-                                        )
-                                    }
-                                } else {
-                                    Label(
-                                        model.usesAppPersonalSampleSuggestionsPath
-                                            ? "用个人模型抽 100 张生成建议"
-                                            : "用个人模型扫描全库",
-                                        systemImage: "brain.head.profile"
-                                    )
-                                }
-                            }
-                            .disabled(
-                                model.isGeneratingPersonalLibrarySuggestions
-                                    || model.isGeneratingStandardLibrarySuggestions
-                                    || model.isRebuildingPersonalModel
-                            )
-                            .help(
-                                model.usesAppPersonalSampleSuggestionsPath
-                                    ? "有多选时用选中照片（最多 100）；无多选时从库中抽最多 100 张。仅用本机预览；云端未下载照片会跳过"
-                                    : "按上方来源筛选扫描；仅分析当前可本地读取的预览；iCloud 云端照片会跳过，不会批量下载"
-                            )
-                            if let activity = model.personalLibrarySuggestionJobActivity,
-                               !activity.availableActions.isEmpty
-                            {
-                                HStack {
-                                    ForEach(activity.availableActions, id: \.self) { action in
-                                        Button(
-                                            personalLibraryActionTitle(action),
-                                            role: action == .cancel ? .destructive : nil
-                                        ) {
-                                            Task {
-                                                await model.applyPersonalLibrarySuggestionAction(action)
-                                            }
-                                        }
-                                        .disabled(model.isApplyingJobActivityAction(activity.id))
-                                    }
-                                }
-                                .buttonStyle(.link)
-                            }
-                        }
-                    }
-                    .padding(.vertical, 4)
-                }
-            }
-            ForEach(model.suggestionOverviews) { overview in
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack {
-                        Text(overview.displayName).font(.headline)
-                        Spacer()
-                        if overview.pendingSuggestionCount > 0 {
-                            Text("\(overview.pendingSuggestionCount)")
-                                .font(.caption)
-                                .padding(.horizontal, 8)
-                                .padding(.vertical, 2)
-                                .background(.secondary.opacity(0.15), in: Capsule())
-                        }
-                    }
-                    Text("已确认 \(overview.acceptedSampleCount) · 已拒绝 \(overview.rejectedSampleCount)")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    if overview.pendingSuggestionCount > 0 {
-                        HStack(spacing: 6) {
-                            originCountBadge(
-                                "超级个人",
-                                count: overview.pendingSuggestionCounts.personalAdamW
-                            )
-                            originCountBadge(
-                                "个人模型",
-                                count: overview.pendingSuggestionCounts.personalModel
-                            )
-                            originCountBadge(
-                                "特征向量",
-                                count: overview.pendingSuggestionCounts.featurePrint
-                            )
-                            originCountBadge(
-                                "标准模型",
-                                count: overview.pendingSuggestionCounts.standardModel
-                            )
-                        }
-                    }
-                    Text(statusText(overview))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    TagSuggestionThresholdControls(
-                        model: model,
-                        tagID: overview.id,
-                        displayName: overview.displayName,
-                        rejectedSampleCount: overview.rejectedSampleCount
-                    )
-                    if overview.missingPositiveCount > 0 || overview.missingNegativeCount > 0 {
-                        Text("还需确认 \(overview.missingPositiveCount) 张、标记不属于 \(overview.missingNegativeCount) 张")
-                            .font(.caption)
-                            .foregroundStyle(.orange)
-                    } else if overview.recommendedPositiveSampleGap > 0
-                        || overview.recommendedNegativeSampleGap > 0
-                    {
-                        Text("样本已可用；建议正反样本各至少 4 张，并尽量覆盖不同内容（当前 \(overview.acceptedSampleCount)/\(overview.rejectedSampleCount)）")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    HStack(spacing: 8) {
-                        if overview.canGenerate {
-                            Button {
-                                model.requestEnqueueSuggestions(
-                                    tagID: overview.id,
-                                    displayName: overview.displayName,
-                                    mode: .generate,
-                                    method: .featureKnn
-                                )
-                            } label: {
-                                Label("特征向量 Top 100", systemImage: "wand.and.stars")
-                            }
-                            .buttonStyle(.bordered)
-                            .controlSize(.small)
-                            .help("用确认/拒绝样本做特征向量近邻扫描；可在确认框中选择来源，只保留该标签 Top 100")
-                        }
-                        if overview.canUpdate {
-                            Button {
-                                model.requestEnqueueSuggestions(
-                                    tagID: overview.id,
-                                    displayName: overview.displayName,
-                                    mode: .update,
-                                    method: .featureKnn
-                                )
-                            } label: {
-                                Label("更新特征向量 Top 100", systemImage: "arrow.triangle.2.circlepath")
-                            }
-                            .buttonStyle(.bordered)
-                            .controlSize(.small)
-                            .help("用最新确认/拒绝样本重新近邻扫描；可在确认框中选择来源，只保留该标签 Top 100")
-                        }
-                        if model.canGenerateAppPersonalTagLibrarySuggestions(for: overview) {
-                            Button {
-                                model.requestEnqueueSuggestions(
-                                    tagID: overview.id,
-                                    displayName: overview.displayName,
-                                    mode: overview.canUpdate ? .update : .generate,
-                                    method: .personalModel
-                                )
-                            } label: {
-                                if model.isGeneratingAppPersonalTagLibrarySuggestions {
-                                    ProgressView()
-                                        .controlSize(.small)
-                                    Text("个人模型扫描中")
-                                } else {
-                                    Label("个人模型 Top 100", systemImage: "brain.head.profile")
-                                }
-                            }
-                            .buttonStyle(.bordered)
-                            .controlSize(.small)
-                            .help("用当前人脑质心个人模型打分；可在确认框中选择来源，只保留该标签 Top 100。请先点工具栏人脑图标重建模型。")
-                            .disabled(model.isGeneratingAppPersonalTagLibrarySuggestions)
-                        }
-                        if overview.canGeneratePersonalModel {
-                            Button {
-                                model.requestEnqueueSuggestions(
-                                    tagID: overview.id,
-                                    displayName: overview.displayName,
-                                    mode: overview.canUpdate ? .update : .generate,
-                                    method: .personalAdamW
-                                )
-                            } label: {
-                                if model.isGeneratingAppPersonalTagLibrarySuggestions {
-                                    ProgressView()
-                                        .controlSize(.small)
-                                    Text("超级个人模型扫描中")
-                                } else {
-                                    Label("超级个人模型 Top 100", systemImage: "brain.head.profile.fill")
-                                }
-                            }
-                            .buttonStyle(.bordered)
-                            .controlSize(.small)
-                            .help("用超级人脑 AdamW 个人模型打分；可在确认框中选择来源，只保留该标签 Top 100。请先点工具栏超级人脑图标训练。")
-                            .disabled(model.isGeneratingAppPersonalTagLibrarySuggestions)
-                        }
-                        if overview.canReview {
-                            Button {
-                                onOpenQueue(overview.id, overview.displayName)
-                            } label: {
-                                Label("审核建议", systemImage: "checklist")
-                            }
-                            .buttonStyle(.borderedProminent)
-                            .controlSize(.small)
-                        }
-                        if overview.canPause, let jobID = overview.activeJobID {
-                            Button {
-                                Task { await model.pauseSuggestionJob(jobID) }
-                            } label: {
-                                Label("暂停", systemImage: "pause.fill")
-                            }
-                            .buttonStyle(.bordered)
-                            .controlSize(.small)
-                        }
-                        if overview.canResume, let jobID = overview.activeJobID {
-                            Button {
-                                Task { await model.resumeSuggestionJob(jobID) }
-                            } label: {
-                                Label("继续", systemImage: "play.fill")
-                            }
-                            .buttonStyle(.bordered)
-                            .controlSize(.small)
-                        }
-                        if overview.canCancel, let jobID = overview.activeJobID {
-                            Button(role: .destructive) {
-                                Task { await model.cancelSuggestionJob(jobID) }
-                            } label: {
-                                Label("取消", systemImage: "xmark")
-                            }
-                            .buttonStyle(.bordered)
-                            .controlSize(.small)
-                        }
-                    }
-                }
-                .padding(.vertical, 4)
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .navigationTitle("待审核建议")
-        .toolbar {
-            ToolbarItem(placement: .navigation) {
-                Button("返回图库", action: onBack)
+        .sheet(
+            item: Binding(
+                get: { model.pendingSuggestionConfirmation },
+                set: { model.pendingSuggestionConfirmation = $0 }
+            )
+        ) { pending in
+            SuggestionEnqueueConfirmationSheet(model: model, pending: pending)
+        }
+    }
+}
+
+private struct ReviewOverviewHeader: View {
+    @ObservedObject var model: LibraryWorkspaceModel
+    let onBack: () -> Void
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Button("返回图库", systemImage: "photo.on.rectangle", action: onBack)
+
+            Divider()
+                .frame(height: 18)
+
+            ReviewSourceFilterMenu(model: model)
+
+            Spacer(minLength: 12)
+
+            HStack(spacing: 8) {
+                Text("每标签上限")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Stepper(
+                    value: Binding(
+                        get: { model.maxPendingSuggestionsPerTag },
+                        set: { model.setMaxPendingSuggestionsPerTag($0) }
+                    ),
+                    in: PendingSuggestionGenerationLimits.minCount
+                        ... PendingSuggestionGenerationLimits.maxCount,
+                    step: 50
+                ) {
+                    Text("\(model.maxPendingSuggestionsPerTag)")
+                        .font(.caption.monospacedDigit())
+                        .frame(minWidth: 40, alignment: .trailing)
+                }
+                .help("特征向量、个人模型、超级个人模型与抽检路径均按此上限保留分数最高的待审核建议。")
             }
+
+            if model.pendingSuggestionTotal > 0 {
+                Text("\(model.pendingSuggestionTotal) 条待审")
+                    .font(.caption.weight(.semibold))
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 4)
+                    .background(.secondary.opacity(0.12), in: Capsule())
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+    }
+}
+
+private struct ReviewSourceFilterMenu: View {
+    @ObservedObject var model: LibraryWorkspaceModel
+
+    var body: some View {
+        Menu {
+            Button("全选来源") {
+                Task { await model.selectAllReviewSources() }
+            }
+            .disabled(model.reviewFilterSourceIDs == nil)
+            Divider()
+            ForEach(model.activeReviewSources) { source in
+                Toggle(
+                    source.displayName,
+                    isOn: Binding(
+                        get: { model.isReviewSourceIncluded(source.id) },
+                        set: { included in
+                            Task { await model.setReviewSourceIncluded(source.id, included) }
+                        }
+                    )
+                )
+            }
+        } label: {
+            Label {
+                Text(model.reviewSourceFilterSummaryText)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            } icon: {
+                Image(systemName: "folder.badge.gearshape")
+            }
+            .font(.subheadline)
+            .frame(maxWidth: 360, alignment: .leading)
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize(horizontal: false, vertical: true)
+        .help("控制建议生成与待审列表的扫描范围；与侧栏「浏览某一来源」相互独立。")
+    }
+}
+
+private struct ReviewLocalModelPanel: View {
+    @ObservedObject var model: LibraryWorkspaceModel
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                Label("本地模型", systemImage: "cpu")
+                    .font(.headline)
+
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(localModelServiceStatusText)
+                        .font(.caption)
+                        .foregroundStyle(localModelServiceStatusColor)
+                    Button {
+                        Task { await model.refreshLocalModelServiceHealth() }
+                    } label: {
+                        if model.localModelServiceHealthState == .checking {
+                            HStack(spacing: 8) {
+                                ProgressView().controlSize(.small)
+                                Text("正在检查")
+                            }
+                        } else {
+                            Label("刷新服务状态", systemImage: "arrow.clockwise")
+                        }
+                    }
+                    .disabled(model.localModelServiceHealthState == .checking)
+                    .help("只检查本机回环服务，不会启动服务或下载模型")
+                }
+                .padding(12)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 10))
+
+                if model.supportsStandardLibrarySuggestions {
+                    localModelActionCard(
+                        title: "标准模型",
+                        statusText: standardLibraryStatusText,
+                        statusColor: standardLibraryStatusColor,
+                        actionTitle: model.isGeneratingStandardLibrarySuggestions
+                            ? "正在扫描全库"
+                            : "扫描全库",
+                        actionIcon: "sparkles.rectangle.stack",
+                        isRunning: model.isGeneratingStandardLibrarySuggestions,
+                        isDisabled:
+                            model.isGeneratingStandardLibrarySuggestions
+                            || model.isGeneratingPersonalLibrarySuggestions
+                            || model.isRebuildingPersonalModel,
+                        help: "按顶部来源筛选扫描；仅分析当前可本地读取的预览；iCloud 云端照片会跳过",
+                        action: { Task { await model.generateStandardLibrarySuggestions() } },
+                        jobActivity: model.standardLibrarySuggestionJobActivity,
+                        applyAction: { await model.applyStandardLibrarySuggestionAction($0) }
+                    )
+                }
+
+                if model.supportsPersonalLibrarySuggestions {
+                    localModelActionCard(
+                        title: "个人模型",
+                        statusText: personalLibraryStatusText,
+                        statusColor: personalLibraryStatusColor,
+                        actionTitle: personalLibraryActionTitle,
+                        actionIcon: "brain.head.profile",
+                        isRunning: model.isGeneratingPersonalLibrarySuggestions,
+                        isDisabled:
+                            model.isGeneratingPersonalLibrarySuggestions
+                            || model.isGeneratingStandardLibrarySuggestions
+                            || model.isRebuildingPersonalModel,
+                        help: personalLibraryActionHelp,
+                        action: { Task { await model.generatePersonalLibrarySuggestions() } },
+                        jobActivity: model.personalLibrarySuggestionJobActivity,
+                        applyAction: { await model.applyPersonalLibrarySuggestionAction($0) }
+                    )
+                }
+            }
+            .padding(12)
         }
     }
 
-    @ViewBuilder
-    private func originCountBadge(_ title: String, count: Int) -> some View {
-        if count > 0 {
-            Text("\(title) \(count)")
-                .font(.caption2.weight(.semibold))
-                .foregroundStyle(.secondary)
-                .padding(.horizontal, 6)
-                .padding(.vertical, 2)
-                .background(.secondary.opacity(0.12), in: Capsule())
+    private var personalLibraryActionTitle: String {
+        if model.isGeneratingPersonalLibrarySuggestions {
+            return model.usesAppPersonalSampleSuggestionsPath ? "抽检中…" : "扫描中…"
         }
+        return model.usesAppPersonalSampleSuggestionsPath
+            ? "抽 \(model.maxPendingSuggestionsPerTag) 张"
+            : "扫描全库"
+    }
+
+    private var personalLibraryActionHelp: String {
+        model.usesAppPersonalSampleSuggestionsPath
+            ? "有多选时用选中照片；无多选时从库中抽样。仅用本机预览；云端未下载照片会跳过"
+            : "按顶部来源筛选扫描；仅分析当前可本地读取的预览；iCloud 云端照片会跳过"
+    }
+
+    @ViewBuilder
+    private func localModelActionCard(
+        title: String,
+        statusText: String,
+        statusColor: Color,
+        actionTitle: String,
+        actionIcon: String,
+        isRunning: Bool,
+        isDisabled: Bool,
+        help: String,
+        action: @escaping () -> Void,
+        jobActivity: JobActivityItem?,
+        applyAction: @escaping (JobActivityAction) async -> Void
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title)
+                .font(.subheadline.weight(.semibold))
+            Text(statusText)
+                .font(.caption)
+                .foregroundStyle(statusColor)
+                .fixedSize(horizontal: false, vertical: true)
+            Button(action: action) {
+                if isRunning {
+                    HStack(spacing: 8) {
+                        ProgressView().controlSize(.small)
+                        Text(actionTitle)
+                    }
+                } else {
+                    Label(actionTitle, systemImage: actionIcon)
+                }
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.small)
+            .disabled(isDisabled)
+            .help(help)
+            if let jobActivity, !jobActivity.availableActions.isEmpty {
+                HStack(spacing: 8) {
+                    ForEach(jobActivity.availableActions, id: \.self) { jobAction in
+                        Button(reviewJobActionTitle(jobAction), role: jobAction == .cancel ? .destructive : nil) {
+                            Task { await applyAction(jobAction) }
+                        }
+                        .font(.caption)
+                        .disabled(model.isApplyingJobActivityAction(jobActivity.id))
+                    }
+                }
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 10))
     }
 
     private var localModelServiceStatusText: String {
@@ -357,24 +310,20 @@ struct ReviewOverviewView: View {
         case .checking:
             "正在检查本地模型服务…"
         case let .ready(serviceVersion, provider):
-            "服务已就绪 · \(provider.provider) / \(provider.modelID) · v\(serviceVersion)"
+            "已就绪 · \(provider.provider) / \(provider.modelID) · v\(serviceVersion)"
         case let .degraded(serviceVersion):
-            "服务已连接，但尚未加载模型 · v\(serviceVersion)"
+            "已连接，模型未加载 · v\(serviceVersion)"
         case .unavailable:
-            "本地模型服务未运行；现有照片、标签和 Feature Print 不受影响。"
+            "服务未运行；现有照片、标签和 Feature Print 不受影响。"
         }
     }
 
     private var localModelServiceStatusColor: Color {
         switch model.localModelServiceHealthState {
-        case .ready:
-            .green
-        case .degraded:
-            .orange
-        case .unavailable:
-            .red
-        case .unchecked, .checking:
-            .secondary
+        case .ready: .green
+        case .degraded: .orange
+        case .unavailable: .red
+        case .unchecked, .checking: .secondary
         }
     }
 
@@ -382,101 +331,329 @@ struct ReviewOverviewView: View {
         switch model.personalLibrarySuggestionState {
         case .idle:
             model.usesAppPersonalSampleSuggestionsPath
-                ? "从当前个人模型抽最多 100 张照片生成建议，加入现有审核队列。"
-                : "把当前个人 DINO 模型的建议加入现有审核队列。"
+                ? "抽检最多 \(model.maxPendingSuggestionsPerTag) 张加入审核队列。"
+                : "把当前个人模型建议加入审核队列。"
         case let .waiting(checked, suggested, skipped):
-            "等待扫描 · 已检查 \(checked) 张 · 建议 \(suggested) 条 · 跳过 \(skipped) 张"
+            "等待 · 已检 \(checked) · 建议 \(suggested) · 跳过 \(skipped)"
         case let .running(checked, suggested, skipped):
-            "已检查 \(checked) 张 · 建议 \(suggested) 条 · 跳过 \(skipped) 张"
+            "已检 \(checked) · 建议 \(suggested) · 跳过 \(skipped)"
         case let .paused(checked, suggested, skipped):
-            "扫描已暂停 · 已检查 \(checked) 张 · 建议 \(suggested) 条 · 跳过 \(skipped) 张"
+            "已暂停 · 已检 \(checked) · 建议 \(suggested) · 跳过 \(skipped)"
         case let .retryableFailure(checked, suggested, skipped):
-            "本地服务暂时不可用，任务将重试 · 已检查 \(checked) 张 · 建议 \(suggested) 条 · 跳过 \(skipped) 张"
+            "将重试 · 已检 \(checked) · 建议 \(suggested) · 跳过 \(skipped)"
         case let .completed(checked, suggested, skipped):
-            "扫描完成：检查 \(checked) 张，加入 \(suggested) 条建议，跳过 \(skipped) 张。"
+            "完成 · 检 \(checked) · 写入 \(suggested) · 跳过 \(skipped)"
         case let .cancelled(checked, suggested, skipped):
-            "扫描已取消：检查 \(checked) 张，加入 \(suggested) 条建议，跳过 \(skipped) 张。"
+            "已取消 · 检 \(checked) · 写入 \(suggested) · 跳过 \(skipped)"
         case .personalUnavailable:
-            "当前目录没有可用的个人模型，请先重建个人模型。"
+            "无可用个人模型，请先重建。"
         case .serviceUnavailable:
-            "本地模型服务不可用；现有照片、标签和 Feature Print 建议不受影响。"
+            "本地服务不可用。"
         case .failed:
-            "模型身份或结果未通过校验，personal 建议已安全忽略。"
+            "结果未通过校验，已安全忽略。"
         }
     }
 
     private var standardLibraryStatusText: String {
         switch model.standardLibrarySuggestionState {
         case .idle:
-            "把当前标准模型的建议加入现有审核队列。"
+            "把标准模型建议加入审核队列。"
         case let .waiting(checked, suggested, skipped):
-            "等待标准扫描 · 已检查 \(checked) 张 · 建议 \(suggested) 条 · 跳过 \(skipped) 张"
+            "等待 · 已检 \(checked) · 建议 \(suggested) · 跳过 \(skipped)"
         case let .running(checked, suggested, skipped):
-            "标准扫描 · 已检查 \(checked) 张 · 建议 \(suggested) 条 · 跳过 \(skipped) 张"
+            "已检 \(checked) · 建议 \(suggested) · 跳过 \(skipped)"
         case let .paused(checked, suggested, skipped):
-            "标准扫描已暂停 · 已检查 \(checked) 张 · 建议 \(suggested) 条 · 跳过 \(skipped) 张"
+            "已暂停 · 已检 \(checked) · 建议 \(suggested) · 跳过 \(skipped)"
         case let .retryableFailure(checked, suggested, skipped):
-            "本地服务暂时不可用，标准任务将重试 · 已检查 \(checked) 张 · 建议 \(suggested) 条 · 跳过 \(skipped) 张"
+            "将重试 · 已检 \(checked) · 建议 \(suggested) · 跳过 \(skipped)"
         case let .completed(checked, suggested, skipped):
-            "标准扫描完成：检查 \(checked) 张，加入 \(suggested) 条建议，跳过 \(skipped) 张。"
+            "完成 · 检 \(checked) · 写入 \(suggested) · 跳过 \(skipped)"
         case let .cancelled(checked, suggested, skipped):
-            "标准扫描已取消：检查 \(checked) 张，加入 \(suggested) 条建议，跳过 \(skipped) 张。"
+            "已取消 · 检 \(checked) · 写入 \(suggested) · 跳过 \(skipped)"
         case .serviceUnavailable:
-            "本地模型服务不可用；现有照片、标签和建议不受影响。"
+            "本地服务不可用。"
         case .failed:
-            "标准模型身份或结果未通过校验，结果已安全忽略。"
+            "结果未通过校验，已安全忽略。"
         }
     }
 
     private var standardLibraryStatusColor: Color {
         switch model.standardLibrarySuggestionState {
-        case .failed, .serviceUnavailable, .retryableFailure:
-            .red
-        case .paused:
-            .orange
-        default:
-            .secondary
+        case .failed, .serviceUnavailable, .retryableFailure: .red
+        case .paused: .orange
+        default: .secondary
         }
     }
 
     private var personalLibraryStatusColor: Color {
         switch model.personalLibrarySuggestionState {
-        case .failed, .serviceUnavailable, .retryableFailure:
-            .red
-        case .personalUnavailable, .paused:
-            .orange
-        default:
-            .secondary
-        }
-    }
-
-    private func personalLibraryActionTitle(_ action: JobActivityAction) -> String {
-        switch action {
-        case .pause: "暂停"
-        case .resume: "继续"
-        case .cancel: "取消"
-        }
-    }
-
-    private func statusText(_ overview: SuggestionTagOverview) -> String {
-        switch overview.taskStatus {
-        case .notReady: "样本不足"
-        case .ready: "可生成建议"
-        case .waiting: "等待运行"
-        case .running:
-            if let total = overview.totalCount, total > 0 {
-                "正在分析 \(overview.checkedCount)/\(total)，跳过 \(overview.skippedCount)"
-            } else {
-                "正在分析"
-            }
-        case .paused: "已暂停"
-        case .retryableFailure: "暂时失败，将重试"
-        case .completed: overview.pendingSuggestionCount > 0 ? "有待审核建议" : "本轮已完成"
-        case .terminalFailure: "任务失败"
-        case .cancelled: "已取消"
+        case .failed, .serviceUnavailable, .retryableFailure: .red
+        case .personalUnavailable, .paused: .orange
+        default: .secondary
         }
     }
 }
+
+private struct ReviewTagOverviewCard: View {
+    @ObservedObject var model: LibraryWorkspaceModel
+    let overview: SuggestionTagOverview
+    let onOpenQueue: (UUID, String) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(overview.displayName)
+                    .font(.headline)
+                    .lineLimit(2)
+                Spacer(minLength: 8)
+                if overview.pendingSuggestionCount > 0 {
+                    Text("\(overview.pendingSuggestionCount)")
+                        .font(.caption.weight(.semibold))
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(Color.accentColor.opacity(0.15), in: Capsule())
+                }
+            }
+
+            HStack(spacing: 12) {
+                Text("已确认 \(overview.acceptedSampleCount)")
+                Text("已拒绝 \(overview.rejectedSampleCount)")
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+
+            if overview.pendingSuggestionCount > 0 {
+                ReviewOriginCountBadges(
+                    counts: overview.pendingSuggestionCounts,
+                    onOpenQueue: { onOpenQueue(overview.id, overview.displayName) }
+                )
+            }
+
+            Text(reviewTagStatusText(overview))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            TagSuggestionThresholdControls(
+                model: model,
+                tagID: overview.id,
+                displayName: overview.displayName,
+                rejectedSampleCount: overview.rejectedSampleCount
+            )
+
+            if overview.missingPositiveCount > 0 || overview.missingNegativeCount > 0 {
+                Text("还需确认 \(overview.missingPositiveCount) 张、拒绝 \(overview.missingNegativeCount) 张")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            } else if overview.recommendedPositiveSampleGap > 0
+                || overview.recommendedNegativeSampleGap > 0
+            {
+                Text("建议正反样本各至少 4 张（当前 \(overview.acceptedSampleCount)/\(overview.rejectedSampleCount)）")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+
+            Divider()
+
+            if overview.canReview {
+                Button {
+                    onOpenQueue(overview.id, overview.displayName)
+                } label: {
+                    Label("审核建议", systemImage: "checklist")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.regular)
+            }
+
+            ReviewTagGenerateActions(model: model, overview: overview)
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.background, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .strokeBorder(.quaternary, lineWidth: 1)
+        }
+    }
+}
+
+private struct ReviewOriginCountBadges: View {
+    let counts: SuggestionOriginCounts
+    let onOpenQueue: () -> Void
+
+    var body: some View {
+        HStack(spacing: 6) {
+            originBadge("超级个人", count: counts.personalAdamW)
+            originBadge("个人模型", count: counts.personalModel)
+            originBadge("特征向量", count: counts.featurePrint)
+            originBadge("标准模型", count: counts.standardModel)
+        }
+    }
+
+    @ViewBuilder
+    private func originBadge(_ title: String, count: Int) -> some View {
+        if count > 0 {
+            Button(action: onOpenQueue) {
+                Text("\(title) \(count)")
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(.secondary.opacity(0.1), in: Capsule())
+            }
+            .buttonStyle(.plain)
+            .help("打开待审核队列")
+        }
+    }
+}
+
+private struct ReviewTagGenerateActions: View {
+    @ObservedObject var model: LibraryWorkspaceModel
+    let overview: SuggestionTagOverview
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if overview.canGenerate || overview.canUpdate {
+                Text("生成建议")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+            }
+            LazyVGrid(
+                columns: [GridItem(.adaptive(minimum: 140, maximum: 220), spacing: 6, alignment: .leading)],
+                alignment: .leading,
+                spacing: 6
+            ) {
+                if overview.canGenerate {
+                    generateButton(
+                        title: "特征向量 Top \(model.maxPendingSuggestionsPerTag)",
+                        icon: "wand.and.stars",
+                        method: .featureKnn,
+                        mode: .generate
+                    )
+                }
+                if overview.canUpdate {
+                    generateButton(
+                        title: "更新特征向量",
+                        icon: "arrow.triangle.2.circlepath",
+                        method: .featureKnn,
+                        mode: .update
+                    )
+                }
+                if model.canGenerateAppPersonalTagLibrarySuggestions(for: overview) {
+                    generateButton(
+                        title: "个人模型 Top \(model.maxPendingSuggestionsPerTag)",
+                        icon: "brain.head.profile",
+                        method: .personalModel,
+                        mode: overview.canUpdate ? .update : .generate,
+                        isBusy: model.isGeneratingAppPersonalTagLibrarySuggestions
+                    )
+                    .disabled(model.isGeneratingAppPersonalTagLibrarySuggestions)
+                }
+                if model.canGenerateAppPersonalAdamWTagLibrarySuggestions(for: overview) {
+                    generateButton(
+                        title: "超级个人 Top \(model.maxPendingSuggestionsPerTag)",
+                        icon: "brain.head.profile.fill",
+                        method: .personalAdamW,
+                        mode: overview.canUpdate ? .update : .generate,
+                        isBusy: model.isGeneratingAppPersonalTagLibrarySuggestions
+                    )
+                    .disabled(model.isGeneratingAppPersonalTagLibrarySuggestions)
+                }
+            }
+
+            if overview.canPause || overview.canResume || overview.canCancel,
+               let jobID = overview.activeJobID
+            {
+                HStack(spacing: 8) {
+                    if overview.canPause {
+                        Button {
+                            Task { await model.pauseSuggestionJob(jobID) }
+                        } label: {
+                            Label("暂停", systemImage: "pause.fill")
+                        }
+                        .controlSize(.small)
+                    }
+                    if overview.canResume {
+                        Button {
+                            Task { await model.resumeSuggestionJob(jobID) }
+                        } label: {
+                            Label("继续", systemImage: "play.fill")
+                        }
+                        .controlSize(.small)
+                    }
+                    if overview.canCancel {
+                        Button(role: .destructive) {
+                            Task { await model.cancelSuggestionJob(jobID) }
+                        } label: {
+                            Label("取消", systemImage: "xmark")
+                        }
+                        .controlSize(.small)
+                    }
+                }
+                .buttonStyle(.bordered)
+            }
+        }
+    }
+
+    private func generateButton(
+        title: String,
+        icon: String,
+        method: SuggestionGenerationMethod,
+        mode: PersonalizationReviewEnqueueMode,
+        isBusy: Bool = false
+    ) -> some View {
+        Button {
+            model.requestEnqueueSuggestions(
+                tagID: overview.id,
+                displayName: overview.displayName,
+                mode: mode,
+                method: method
+            )
+        } label: {
+            if isBusy {
+                HStack(spacing: 6) {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("扫描中…")
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                Label(title, systemImage: icon)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+    }
+}
+
+private func reviewJobActionTitle(_ action: JobActivityAction) -> String {
+    switch action {
+    case .pause: "暂停"
+    case .resume: "继续"
+    case .cancel: "取消"
+    }
+}
+
+private func reviewTagStatusText(_ overview: SuggestionTagOverview) -> String {
+    switch overview.taskStatus {
+    case .notReady: "样本不足"
+    case .ready: "可生成建议"
+    case .waiting: "等待运行"
+    case .running:
+        if let total = overview.totalCount, total > 0 {
+            "正在分析 \(overview.checkedCount)/\(total)，跳过 \(overview.skippedCount)"
+        } else {
+            "正在分析"
+        }
+    case .paused: "已暂停"
+    case .retryableFailure: "暂时失败，将重试"
+    case .completed: overview.pendingSuggestionCount > 0 ? "有待审核建议" : "本轮已完成"
+    case .terminalFailure: "任务失败"
+    case .cancelled: "已取消"
+    }
+}
+
 
 struct TagSuggestionThresholdControls: View {
     @ObservedObject var model: LibraryWorkspaceModel
@@ -488,17 +665,19 @@ struct TagSuggestionThresholdControls: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("本标签生效门槛")
+            Text("生效门槛")
                 .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
             ForEach(SuggestionScoreThresholdMethod.allCases, id: \.rawValue) { method in
-                VStack(alignment: .leading, spacing: 3) {
-                    HStack(spacing: 8) {
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 6) {
                         Text(SuggestionScoreThresholdMethodPresentation.displayName(method))
-                            .font(.caption)
-                            .frame(width: 88, alignment: .leading)
+                            .font(.caption2)
+                            .frame(width: 72, alignment: .leading)
+                            .lineLimit(1)
                         Text(String(format: "%.2f", model.effectiveSuggestionMinScore(tagID: tagID, method: method)))
-                            .font(.caption.monospacedDigit())
-                            .frame(width: 44, alignment: .trailing)
+                            .font(.caption2.monospacedDigit())
+                            .frame(width: 36, alignment: .trailing)
                         Stepper(
                             "",
                             value: Binding(
@@ -516,25 +695,26 @@ struct TagSuggestionThresholdControls: View {
                             step: 0.05
                         )
                         .labelsHidden()
-                        Button("刷新待审") {
+                        .controlSize(.mini)
+                        Button("刷新") {
                             model.prunePendingSuggestionsBelowThreshold(
                                 tagID: tagID,
                                 displayName: displayName,
                                 method: method
                             )
                         }
-                        .font(.caption)
+                        .font(.caption2)
                         .buttonStyle(.borderless)
                         .help("按当前生效门槛删除本轨低于门槛的 pending，不重跑全库扫描")
                     }
                     if let reference = references[method] {
-                        HStack(spacing: 6) {
+                        HStack(spacing: 4) {
                             Text(
                                 "参考 "
                                     + String(format: "%.2f", reference.minScore)
                                     + " · "
                                     + String(reference.rejectedSampleCount)
-                                    + " 个近期拒绝样本"
+                                    + " 拒绝"
                             )
                             .foregroundStyle(.secondary)
                             Button("采用") {
@@ -547,10 +727,6 @@ struct TagSuggestionThresholdControls: View {
                             .buttonStyle(.borderless)
                         }
                         .font(.caption2)
-                    } else {
-                        Text("暂无参考建议 · 至少需要 5 个可追溯的同轨拒绝分数")
-                            .font(.caption2)
-                            .foregroundStyle(.tertiary)
                     }
                 }
             }
@@ -629,18 +805,19 @@ struct SuggestionEnqueueConfirmationSheet: View {
 
     private var message: String {
         let thresholdText = String(format: "%.2f", pending.effectiveMinScore)
+        let limitText = String(pending.maxPendingSuggestionsPerTag)
         switch pending.method {
         case .featureKnn:
             switch pending.mode {
             case .generate:
-                return "将用特征向量近邻检查所选来源中已入库的照片，只保留分数高于 \(thresholdText) 且最高的 100 条待审核建议。训练样本仍来自全部来源；人工标签不会丢失。"
+                return "将用特征向量近邻检查所选来源中已入库的照片，只保留分数高于 \(thresholdText) 且最高的 \(limitText) 条待审核建议。训练样本仍来自全部来源；人工标签不会丢失。"
             case .update:
-                return "将用最新确认/拒绝样本重新扫描所选来源，只保留分数高于 \(thresholdText) 且最高的 100 条；人工标签不会改变。"
+                return "将用最新确认/拒绝样本重新扫描所选来源，只保留分数高于 \(thresholdText) 且最高的 \(limitText) 条；人工标签不会改变。"
             }
         case .personalModel:
-            return "将用当前人脑质心个人模型扫描所选来源，只保留分数高于 \(thresholdText) 且最高的 100 条“\(pending.displayName)”待审核建议。需要该标签已在人脑模型中；不要求拒绝样本。人工标签不会丢失。"
+            return "将用当前人脑质心个人模型扫描所选来源，只保留分数高于 \(thresholdText) 且最高的 \(limitText) 条“\(pending.displayName)”待审核建议。需要该标签已在人脑模型中；不要求拒绝样本。人工标签不会丢失。"
         case .personalAdamW:
-            return "将用当前超级人脑 AdamW 个人模型扫描所选来源，只保留分数高于 \(thresholdText) 且最高的 100 条“\(pending.displayName)”待审核建议。需要该标签已在超级模型中；不要求拒绝样本。人工标签不会丢失。"
+            return "将用当前超级人脑 AdamW 个人模型扫描所选来源，只保留分数高于 \(thresholdText) 且最高的 \(limitText) 条“\(pending.displayName)”待审核建议。需要该标签已在超级模型中；不要求拒绝样本。人工标签不会丢失。"
         }
     }
 }
@@ -658,20 +835,28 @@ struct ReviewQueueContentView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            Text(model.reviewSourceFilterSummaryText)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 12)
-                .padding(.top, 6)
-            if let overview = model.suggestionOverviews.first(where: { $0.id == tagID }) {
-                Text(statusHeader(overview))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 6)
+            HStack(spacing: 8) {
+                ReviewSourceFilterMenu(model: model)
+                if let overview = model.suggestionOverviews.first(where: { $0.id == tagID }) {
+                    Text(statusHeader(overview))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 0)
+                if !model.reviewQueueItems.isEmpty {
+                    LibraryGridDensityPicker(
+                        selection: Binding(
+                            get: { model.gridDensity },
+                            set: { model.setGridDensity($0) }
+                        ),
+                        help: "调整待审核建议网格缩略图大小"
+                    )
+                }
             }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            Divider()
             if model.reviewQueueItems.isEmpty {
                 ContentUnavailableView {
                     Label(emptyTitle, systemImage: "sparkles")
@@ -725,7 +910,7 @@ struct ReviewQueueContentView: View {
                         LazyVGrid(
                             columns: LibraryGridLayout.gridItems(
                                 containerWidth: proxy.size.width,
-                                density: .standard
+                                density: model.gridDensity
                             ),
                             spacing: LibraryGridLayout.spacing
                         ) {
@@ -788,6 +973,9 @@ struct ReviewQueueContentView: View {
                 }
                 .onChange(of: proxy.size) { _, size in
                     updateGridMetrics(containerSize: size)
+                }
+                .onChange(of: model.gridDensity) { _, _ in
+                    updateGridMetrics(containerSize: proxy.size)
                 }
                 .onChange(of: gridScrollTargetID) { _, itemID in
                     guard let itemID else { return }
@@ -863,12 +1051,12 @@ struct ReviewQueueContentView: View {
     private func updateGridMetrics(containerSize: CGSize) {
         gridColumnCount = LibraryGridLayout.columnCount(
             containerWidth: containerSize.width,
-            density: .standard
+            density: model.gridDensity
         )
         gridPageItemCount = LibraryGridLayout.pageItemCount(
             containerWidth: containerSize.width,
             containerHeight: containerSize.height,
-            density: .standard
+            density: model.gridDensity
         )
     }
 

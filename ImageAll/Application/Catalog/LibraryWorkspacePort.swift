@@ -169,6 +169,7 @@ enum LibraryWorkspaceNotice: Equatable, Sendable {
         tagName: String,
         candidates: Int,
         aboveThreshold: Int,
+        reviewable: Int,
         skipped: Int
     )
     case personalTagLibrarySuggestionsCompleted(

@@ -447,31 +447,49 @@ private struct TrainingWorkspaceLaunchSheet: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 20) {
-            VStack(alignment: .leading, spacing: 5) {
+        VStack(spacing: 0) {
+            VStack(alignment: .leading, spacing: 6) {
                 Text("新建训练任务")
                     .font(.title2.weight(.semibold))
                 Text("先选择你想完成的事情。算法名称保留为技术说明，不再作为操作入口。")
                     .foregroundStyle(.secondary)
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 28)
+            .padding(.top, 24)
+            .padding(.bottom, 18)
 
-            methodChooser
+            Divider()
 
-            GroupBox {
-                configuration
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            } label: {
-                Label("选择标签和照片范围", systemImage: "slider.horizontal.3")
-                    .font(.headline)
+            HStack(alignment: .top, spacing: 0) {
+                ScrollView {
+                    methodSidebar
+                        .padding(20)
+                }
+                .frame(width: 300)
+                .background(Color(nsColor: .windowBackgroundColor))
+
+                Divider()
+
+                VStack(alignment: .leading, spacing: 0) {
+                    ScrollView {
+                        configurationPanel
+                            .padding(.horizontal, 24)
+                            .padding(.top, 24)
+                            .padding(.bottom, 16)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+                    confirmationPanel
+                        .padding(.horizontal, 24)
+                        .padding(.top, 12)
+                        .padding(.bottom, 16)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             }
+            .frame(maxHeight: .infinity)
 
-            GroupBox {
-                confirmationSummary
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            } label: {
-                Label("启动前确认", systemImage: "checklist")
-                    .font(.headline)
-            }
+            Divider()
 
             HStack {
                 Button("取消", role: .cancel) {
@@ -482,81 +500,118 @@ private struct TrainingWorkspaceLaunchSheet: View {
                     launch()
                 }
                 .buttonStyle(.borderedProminent)
+                .controlSize(.large)
                 .disabled(!canLaunch)
             }
+            .padding(.horizontal, 28)
+            .padding(.top, 16)
+            .padding(.bottom, 22)
+            .background(Color(nsColor: .windowBackgroundColor))
         }
-        .padding(24)
-        .frame(width: 760)
-        .frame(minHeight: 610)
+        .frame(width: 980, height: 740)
         .accessibilityLabel("新建训练任务")
     }
 
-    private var methodChooser: some View {
-        HStack(alignment: .top, spacing: 12) {
-            ForEach(TrainingRunMethod.allCases, id: \.self) { method in
-                let presentation = TrainingWorkspaceMethodPresentation(method: method)
-                let isSelected = selectedMethod == method
-                let isAvailable = isMethodAvailable(method)
-                Button {
-                    selectedMethod = method
-                } label: {
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack(alignment: .top) {
-                            Image(systemName: presentation.systemImage)
-                                .font(.title3)
-                                .foregroundStyle(isSelected ? Color.accentColor : .secondary)
-                            Spacer()
-                            Image(
-                                systemName: isSelected
-                                    ? "checkmark.circle.fill"
-                                    : "circle"
-                            )
-                            .foregroundStyle(isSelected ? Color.accentColor : .secondary)
-                        }
-                        Text(presentation.title)
-                            .font(.headline)
-                            .foregroundStyle(.primary)
-                        Text("技术：\(presentation.technicalName)")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        Text(presentation.detail)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                        Spacer(minLength: 0)
-                        Label(
-                            isAvailable ? presentation.requirement : unavailableText(method),
-                            systemImage: isAvailable
-                                ? "checkmark.seal"
-                                : "exclamationmark.triangle"
-                        )
-                        .font(.caption2)
-                        .foregroundStyle(isAvailable ? Color.secondary : .orange)
-                    }
-                    .frame(maxWidth: .infinity, minHeight: 178, alignment: .topLeading)
-                    .padding(12)
-                    .background(
-                        isSelected
-                            ? Color.accentColor.opacity(0.10)
-                            : Color.secondary.opacity(0.06),
-                        in: RoundedRectangle(cornerRadius: 10)
-                    )
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 10)
-                            .stroke(
-                                isSelected
-                                    ? Color.accentColor
-                                    : Color.secondary.opacity(0.20),
-                                lineWidth: isSelected ? 2 : 1
-                            )
-                    }
+    private var methodSidebar: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("任务类型")
+                .font(.headline)
+            VStack(spacing: 10) {
+                ForEach(TrainingRunMethod.allCases, id: \.self) { method in
+                    methodSidebarCard(method)
                 }
-                .buttonStyle(.plain)
-                .disabled(!isAvailable)
-                .accessibilityLabel(
-                    "\(presentation.title)，\(presentation.technicalName)"
-                )
             }
+        }
+        .frame(maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    private func methodSidebarCard(_ method: TrainingRunMethod) -> some View {
+        let presentation = TrainingWorkspaceMethodPresentation(method: method)
+        let isSelected = selectedMethod == method
+        let isAvailable = isMethodAvailable(method)
+        return Button {
+            selectedMethod = method
+        } label: {
+            HStack(alignment: .top, spacing: 12) {
+                Image(systemName: presentation.systemImage)
+                    .font(.title3)
+                    .foregroundStyle(isSelected ? Color.accentColor : .secondary)
+                    .frame(width: 28)
+
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(alignment: .firstTextBaseline) {
+                        Text(presentation.title)
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(.primary)
+                            .multilineTextAlignment(.leading)
+                        Spacer(minLength: 8)
+                        Image(
+                            systemName: isSelected
+                                ? "checkmark.circle.fill"
+                                : "circle"
+                        )
+                        .foregroundStyle(isSelected ? Color.accentColor : .secondary)
+                    }
+                    Text("技术：\(presentation.technicalName)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text(presentation.detail)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Label(
+                        isAvailable ? presentation.requirement : unavailableText(method),
+                        systemImage: isAvailable
+                            ? "checkmark.seal"
+                            : "exclamationmark.triangle"
+                    )
+                    .font(.caption2)
+                    .foregroundStyle(isAvailable ? Color.secondary : .orange)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+            .padding(12)
+            .background(
+                isSelected
+                    ? Color.accentColor.opacity(0.10)
+                    : Color.secondary.opacity(0.06),
+                in: RoundedRectangle(cornerRadius: 10)
+            )
+            .overlay {
+                RoundedRectangle(cornerRadius: 10)
+                    .stroke(
+                        isSelected
+                            ? Color.accentColor
+                            : Color.secondary.opacity(0.20),
+                        lineWidth: isSelected ? 2 : 1
+                    )
+            }
+        }
+        .buttonStyle(.plain)
+        .disabled(!isAvailable)
+        .accessibilityLabel(
+            "\(presentation.title)，\(presentation.technicalName)"
+        )
+    }
+
+    private var configurationPanel: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Label("选择标签和照片范围", systemImage: "slider.horizontal.3")
+                .font(.headline)
+            configuration
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private var confirmationPanel: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Divider()
+            Label("启动前确认", systemImage: "checklist")
+                .font(.headline)
+            confirmationSummary
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(14)
+                .background(Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 10))
         }
     }
 
@@ -593,7 +648,7 @@ private struct TrainingWorkspaceLaunchSheet: View {
                     .foregroundStyle(.orange)
                 } else {
                     ScrollView {
-                        LazyVStack(alignment: .leading, spacing: 8) {
+                        LazyVStack(alignment: .leading, spacing: 6) {
                             ForEach(personalOptions) { overview in
                                 Toggle(
                                     isOn: Binding(
@@ -609,18 +664,34 @@ private struct TrainingWorkspaceLaunchSheet: View {
                                         }
                                     )
                                 ) {
-                                    HStack {
+                                    HStack(spacing: 12) {
                                         Text(overview.displayName)
+                                            .frame(minWidth: 120, alignment: .leading)
                                         Spacer()
                                         Text("已确认 \(overview.acceptedSampleCount) 张")
                                             .foregroundStyle(.secondary)
+                                            .monospacedDigit()
                                     }
                                 }
                                 .toggleStyle(.checkbox)
+                                .padding(.vertical, 4)
+                                .padding(.horizontal, 8)
+                                .background(
+                                    selectedPersonalTagIDs.contains(overview.id)
+                                        ? Color.accentColor.opacity(0.08)
+                                        : Color.clear,
+                                    in: RoundedRectangle(cornerRadius: 6)
+                                )
                             }
                         }
+                        .padding(.vertical, 4)
                     }
-                    .frame(maxHeight: 116)
+                    .frame(minHeight: 220, maxHeight: 260)
+                    .background(Color.secondary.opacity(0.04), in: RoundedRectangle(cornerRadius: 8))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 8)
+                            .stroke(Color.secondary.opacity(0.15), lineWidth: 1)
+                    }
                 }
 
                 Divider()

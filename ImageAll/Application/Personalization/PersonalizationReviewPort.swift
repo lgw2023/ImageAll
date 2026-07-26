@@ -189,6 +189,7 @@ struct SuggestionEnqueueConfirmation: Identifiable, Equatable, Sendable {
     let availableSources: [SuggestionEnqueueSourceOption]
     var selectedSourceIDs: Set<UUID>
     let effectiveMinScore: Double
+    let maxPendingSuggestionsPerTag: Int
 
     init(
         tagID: UUID,
@@ -197,7 +198,8 @@ struct SuggestionEnqueueConfirmation: Identifiable, Equatable, Sendable {
         method: SuggestionGenerationMethod = .featureKnn,
         availableSources: [SuggestionEnqueueSourceOption],
         selectedSourceIDs: Set<UUID>,
-        effectiveMinScore: Double = 0
+        effectiveMinScore: Double = 0,
+        maxPendingSuggestionsPerTag: Int = PendingSuggestionGenerationLimits.defaultMaxCount
     ) {
         self.tagID = tagID
         self.displayName = displayName
@@ -206,6 +208,7 @@ struct SuggestionEnqueueConfirmation: Identifiable, Equatable, Sendable {
         self.availableSources = availableSources
         self.selectedSourceIDs = selectedSourceIDs
         self.effectiveMinScore = effectiveMinScore
+        self.maxPendingSuggestionsPerTag = maxPendingSuggestionsPerTag
     }
 
     var id: String { "\(tagID.uuidString.lowercased()):\(method)" }

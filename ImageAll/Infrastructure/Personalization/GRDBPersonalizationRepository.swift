@@ -407,7 +407,9 @@ struct GRDBPersonalizationRepository: PersonalizationCatalogPort, Sendable {
         }
     }
 
-    /// Keeps only the highest-scoring pending predictions for a tag revision.
+    /// Keeps only the highest-scoring *undecided* pending predictions for a tag revision.
+    /// Already-reviewed rows do not consume Top-N slots (and are left in place so undo can
+    /// restore queue membership). Lower-scoring undecided rows outside the limit are deleted.
     func retainTopPendingPredictions(
         tagID: UUID,
         modelRevision: Int,
@@ -424,14 +426,21 @@ struct GRDBPersonalizationRepository: PersonalizationCatalogPort, Sendable {
             WHERE tag_id = ?
                 AND model_revision = ?
                 AND state = 'pendingReview'
+                AND NOT EXISTS (
+                    SELECT 1 FROM asset_tag_decision d
+                    WHERE d.asset_id = prediction.asset_id AND d.tag_id = prediction.tag_id
+                )
                 AND rowid NOT IN (
                     SELECT rowid FROM (
-                        SELECT rowid
-                        FROM prediction
-                        WHERE tag_id = ?
-                            AND model_revision = ?
-                            AND state = 'pendingReview'
-                        ORDER BY score DESC, asset_id ASC
+                        SELECT p.rowid
+                        FROM prediction p
+                        LEFT JOIN asset_tag_decision d
+                            ON d.asset_id = p.asset_id AND d.tag_id = p.tag_id
+                        WHERE p.tag_id = ?
+                            AND p.model_revision = ?
+                            AND p.state = 'pendingReview'
+                            AND d.asset_id IS NULL
+                        ORDER BY p.score DESC, p.asset_id ASC
                         LIMIT ?
                     )
                 )
