@@ -12,20 +12,43 @@ enum PersonalModelRebuildJobFactory {
 
     static func coalescingKey(
         catalogScopeID: String,
+        tagID: UUID,
         decisionSnapshotRevision: String
     ) -> String {
-        "personalization:personal-rebuild:\(catalogScopeID):\(decisionSnapshotRevision)"
+        "personalization:personal-rebuild:\(catalogScopeID):\(tagID.uuidString.lowercased()):\(decisionSnapshotRevision)"
+    }
+
+    /// One single-tag rebuild job payload per personal tag with enough decisions.
+    static func payloads(
+        from snapshot: PersonalTrainingSnapshot
+    ) throws -> [PersonalModelRebuildJobPayload] {
+        let orderedTagIDs = snapshot.personalTagIDs.sorted {
+            $0.uuidString.lowercased() < $1.uuidString.lowercased()
+        }
+        var result: [PersonalModelRebuildJobPayload] = []
+        for tagID in orderedTagIDs {
+            let scoped = PersonalTrainingSnapshot(
+                catalogScopeID: snapshot.catalogScopeID,
+                personalTagIDs: [tagID],
+                decisions: snapshot.decisions.filter { $0.tagID == tagID }
+            )
+            if let payload = try payload(from: scoped) {
+                result.append(payload)
+            }
+        }
+        return result
     }
 
     static func payload(
         from snapshot: PersonalTrainingSnapshot
     ) throws -> PersonalModelRebuildJobPayload? {
-        guard !snapshot.personalTagIDs.isEmpty, !snapshot.decisions.isEmpty else {
+        // Personal models are single-tag; multi-tag snapshots must be split first.
+        guard snapshot.personalTagIDs.count == 1,
+              !snapshot.decisions.isEmpty
+        else {
             return nil
         }
-        let tagIDs = snapshot.personalTagIDs.sorted {
-            $0.uuidString.lowercased() < $1.uuidString.lowercased()
-        }
+        let tagIDs = snapshot.personalTagIDs
         let decisions = snapshot.decisions.sorted(by: decisionIsOrderedBefore)
         let embeddingKeys = Array(Set(decisions.map {
             PersonalTrainingEmbeddingCacheKey(
@@ -111,7 +134,7 @@ enum PersonalModelRebuildJobCodec {
                 == payload.catalogScopeID
             && isLowercaseSHA256(payload.decisionSnapshotRevision)
             && isLowercaseSHA256(payload.labelVocabularyRevision)
-            && !payload.personalTagIDs.isEmpty
+            && payload.personalTagIDs.count == 1
             && Set(payload.personalTagIDs).count == payload.personalTagIDs.count
             && !payload.embeddingKeys.isEmpty
             && keyIdentitySet.count == payload.embeddingKeys.count
@@ -143,7 +166,12 @@ enum PersonalModelRebuildJobEnqueue {
         payload: PersonalModelRebuildJobPayload,
         notBeforeMs: Int64
     ) throws -> EnqueueJobCommand {
-        EnqueueJobCommand(
+        guard payload.personalTagIDs.count == 1,
+              let tagID = payload.personalTagIDs.first
+        else {
+            throw PersonalModelRebuildJobCodecError.invalidPayload
+        }
+        return EnqueueJobCommand(
             id: jobID,
             kind: PersonalModelRebuildJobFactory.kind,
             payloadVersion: PersonalModelRebuildJobFactory.payloadVersion,
@@ -151,6 +179,7 @@ enum PersonalModelRebuildJobEnqueue {
             sourceID: nil,
             coalescingKey: PersonalModelRebuildJobFactory.coalescingKey(
                 catalogScopeID: payload.catalogScopeID,
+                tagID: tagID,
                 decisionSnapshotRevision: payload.decisionSnapshotRevision
             ),
             priority: PersonalModelRebuildJobFactory.priority,
@@ -259,8 +288,7 @@ enum PersonalLibrarySuggestionsCodec {
             && isLowercaseSHA256(target.labelVocabularyRevision)
             && isLowercaseSHA256(target.weightsSHA256)
             && !target.policyRevision.isEmpty
-            && !capability.tagIDs.isEmpty
-            && Set(capability.tagIDs).count == capability.tagIDs.count
+            && capability.tagIDs.count == 1
     }
 
     private static func isLowercaseSHA256(_ value: String) -> Bool {

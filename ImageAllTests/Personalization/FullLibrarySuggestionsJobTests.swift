@@ -61,6 +61,51 @@ final class FullLibrarySuggestionsJobTests: XCTestCase {
         }
     }
 
+    func testPersonalModelRebuildFactorySplitsMultiTagSnapshotIntoSingleTagJobs() throws {
+        let tagA = UUID(uuidString: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")!
+        let tagB = UUID(uuidString: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")!
+        let assetA1 = UUID(uuidString: "11111111-1111-4111-8111-111111111111")!
+        let assetA2 = UUID(uuidString: "22222222-2222-4222-8222-222222222222")!
+        let assetB1 = UUID(uuidString: "33333333-3333-4333-8333-333333333333")!
+        let assetB2 = UUID(uuidString: "44444444-4444-4444-8444-444444444444")!
+        let catalogScopeID = "60000000-0000-4000-8000-000000000006"
+        let snapshot = PersonalTrainingSnapshot(
+            catalogScopeID: catalogScopeID,
+            personalTagIDs: [tagA, tagB],
+            decisions: [
+                PersonalTrainingDecision(
+                    assetID: assetA1, contentRevision: 1, tagID: tagA, state: .manualAccepted
+                ),
+                PersonalTrainingDecision(
+                    assetID: assetA2, contentRevision: 1, tagID: tagA, state: .manualAccepted
+                ),
+                PersonalTrainingDecision(
+                    assetID: assetB1, contentRevision: 1, tagID: tagB, state: .manualAccepted
+                ),
+                PersonalTrainingDecision(
+                    assetID: assetB2, contentRevision: 1, tagID: tagB, state: .manualAccepted
+                ),
+            ]
+        )
+
+        XCTAssertNil(try PersonalModelRebuildJobFactory.payload(from: snapshot))
+        let payloads = try PersonalModelRebuildJobFactory.payloads(from: snapshot)
+        XCTAssertEqual(payloads.count, 2)
+        XCTAssertEqual(payloads.map(\.personalTagIDs), [[tagA], [tagB]])
+        XCTAssertEqual(
+            Set(payloads.map(\.decisions.count)),
+            [2]
+        )
+        let keys = Set(payloads.map {
+            PersonalModelRebuildJobFactory.coalescingKey(
+                catalogScopeID: $0.catalogScopeID,
+                tagID: $0.personalTagIDs[0],
+                decisionSnapshotRevision: $0.decisionSnapshotRevision
+            )
+        })
+        XCTAssertEqual(keys.count, 2)
+    }
+
     func testPersonalRebuildJobPublishesOnlyFromCacheAndActivatesCapability() async throws {
         let fixture = try makeLargeLibraryFixture(assetCount: 8)
         let enqueueService = makePersonalModelRebuildReviewService(
@@ -1554,7 +1599,7 @@ final class FullLibrarySuggestionsJobTests: XCTestCase {
         let fixture = try makeLargeLibraryFixture(assetCount: 1)
         let capability = try makePersonalCapability(
             database: fixture.database,
-            tagIDs: [fixture.tagID, UUID()],
+            tagIDs: [fixture.tagID],
             bundleRevision: "bundle-r1"
         )
         let checkpoint = PersonalLibrarySuggestionsCheckpoint(

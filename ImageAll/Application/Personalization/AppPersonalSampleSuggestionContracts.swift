@@ -13,9 +13,36 @@ struct AppPersonalSampleSuggestionAssetResult: Equatable, Sendable {
 }
 
 struct AppPersonalSampleSuggestionBatch: Equatable, Sendable {
-    let capability: PersonalModelSuggestionCapability
+    /// One single-tag capability per active personal model used in this batch.
+    let capabilities: [PersonalModelSuggestionCapability]
     let results: [AppPersonalSampleSuggestionAssetResult]
     let skippedCount: Int
+
+    /// Convenience for single-tag call sites and fixtures.
+    var capability: PersonalModelSuggestionCapability {
+        get {
+            precondition(!capabilities.isEmpty, "sample suggestion batch requires capabilities")
+            return capabilities[0]
+        }
+    }
+
+    init(
+        capability: PersonalModelSuggestionCapability,
+        results: [AppPersonalSampleSuggestionAssetResult],
+        skippedCount: Int
+    ) {
+        self.init(capabilities: [capability], results: results, skippedCount: skippedCount)
+    }
+
+    init(
+        capabilities: [PersonalModelSuggestionCapability],
+        results: [AppPersonalSampleSuggestionAssetResult],
+        skippedCount: Int
+    ) {
+        self.capabilities = capabilities
+        self.results = results
+        self.skippedCount = skippedCount
+    }
 }
 
 protocol AppPersonalSampleSuggesting: Sendable {

@@ -3,14 +3,9 @@ import XCTest
 
 final class AppPersonalLinearHeadTests: XCTestCase {
     func testSyntheticDecisionsTrainReloadAndSuggestAStableKnownTag() throws {
-        let firstTagID = UUID(uuidString: "10000000-0000-0000-0000-000000000001")!
-        let secondTagID = UUID(uuidString: "20000000-0000-0000-0000-000000000002")!
+        let tagID = UUID(uuidString: "10000000-0000-0000-0000-000000000001")!
         let encoderIdentity = makeEncoderIdentity()
-        let snapshot = makeSnapshot(
-            firstTagID: firstTagID,
-            secondTagID: secondTagID,
-            encoderIdentity: encoderIdentity
-        )
+        let snapshot = makeSnapshot(tagID: tagID, encoderIdentity: encoderIdentity)
 
         let artifact = try AppPersonalLinearHeadTrainer.train(
             snapshot: snapshot,
@@ -36,21 +31,40 @@ final class AppPersonalLinearHeadTests: XCTestCase {
             snapshot.decisionSnapshotRevision
         )
         XCTAssertEqual(model.identity.encoderIdentity, encoderIdentity)
-        XCTAssertEqual(model.identity.personalTagIDs, [firstTagID, secondTagID])
+        XCTAssertEqual(model.identity.personalTagIDs, [tagID])
         XCTAssertEqual(model.identity.weightsSHA256.count, 64)
-        XCTAssertEqual(suggestions.map(\.tagID), [firstTagID])
+        XCTAssertEqual(suggestions.map(\.tagID), [tagID])
         XCTAssertTrue(suggestions.allSatisfy { $0.score.isFinite && $0.score > 0 })
     }
 
-    func testTrainingRequiresTwoAcceptedDecisionsPerTagAndIgnoresRejected() throws {
+    func testTrainingRequiresExactlyOneTag() throws {
         let firstTagID = UUID(uuidString: "10000000-0000-0000-0000-000000000001")!
         let secondTagID = UUID(uuidString: "20000000-0000-0000-0000-000000000002")!
         let encoderIdentity = makeEncoderIdentity()
-        let complete = makeSnapshot(
-            firstTagID: firstTagID,
-            secondTagID: secondTagID,
-            encoderIdentity: encoderIdentity
+        let single = makeSnapshot(tagID: firstTagID, encoderIdentity: encoderIdentity)
+        let multi = PersonalModelRebuildSnapshot(
+            catalogScopeID: single.catalogScopeID,
+            decisionSnapshotRevision: single.decisionSnapshotRevision,
+            encoder: single.encoder,
+            personalTagIDs: [firstTagID, secondTagID],
+            labelVocabularyRevision: single.labelVocabularyRevision,
+            embeddings: single.embeddings,
+            decisions: single.decisions
         )
+        XCTAssertThrowsError(
+            try AppPersonalLinearHeadTrainer.train(
+                snapshot: multi,
+                encoderIdentity: encoderIdentity
+            )
+        ) { error in
+            XCTAssertEqual(error as? AppPersonalLinearHeadError, .invalidSnapshot)
+        }
+    }
+
+    func testTrainingRequiresTwoAcceptedDecisionsPerTagAndIgnoresRejected() throws {
+        let tagID = UUID(uuidString: "10000000-0000-0000-0000-000000000001")!
+        let encoderIdentity = makeEncoderIdentity()
+        let complete = makeSnapshot(tagID: tagID, encoderIdentity: encoderIdentity)
         let acceptedOnly = PersonalModelRebuildSnapshot(
             catalogScopeID: complete.catalogScopeID,
             decisionSnapshotRevision: complete.decisionSnapshotRevision,
@@ -72,15 +86,12 @@ final class AppPersonalLinearHeadTests: XCTestCase {
             ),
             maximumCount: 2
         )
-        XCTAssertEqual(suggestions.map(\.tagID), [firstTagID])
+        XCTAssertEqual(suggestions.map(\.tagID), [tagID])
         XCTAssertTrue(suggestions.allSatisfy { $0.score.isFinite && $0.score > 0 })
 
         var removedAccepted = false
         let decisions = acceptedOnly.decisions.filter { decision in
-            if !removedAccepted,
-               decision.tagID == firstTagID,
-               decision.state == .manualAccepted
-            {
+            if !removedAccepted, decision.state == .manualAccepted {
                 removedAccepted = true
                 return false
             }
@@ -107,14 +118,9 @@ final class AppPersonalLinearHeadTests: XCTestCase {
     }
 
     func testReloadRejectsTamperedParameterBytes() throws {
-        let firstTagID = UUID(uuidString: "10000000-0000-0000-0000-000000000001")!
-        let secondTagID = UUID(uuidString: "20000000-0000-0000-0000-000000000002")!
+        let tagID = UUID(uuidString: "10000000-0000-0000-0000-000000000001")!
         let encoderIdentity = makeEncoderIdentity()
-        let snapshot = makeSnapshot(
-            firstTagID: firstTagID,
-            secondTagID: secondTagID,
-            encoderIdentity: encoderIdentity
-        )
+        let snapshot = makeSnapshot(tagID: tagID, encoderIdentity: encoderIdentity)
         let artifact = try AppPersonalLinearHeadTrainer.train(
             snapshot: snapshot,
             encoderIdentity: encoderIdentity
@@ -137,16 +143,11 @@ final class AppPersonalLinearHeadTests: XCTestCase {
     }
 
     func testInferenceRejectsACompleteEncoderIdentityMismatch() throws {
-        let firstTagID = UUID(uuidString: "10000000-0000-0000-0000-000000000001")!
-        let secondTagID = UUID(uuidString: "20000000-0000-0000-0000-000000000002")!
+        let tagID = UUID(uuidString: "10000000-0000-0000-0000-000000000001")!
         let encoderIdentity = makeEncoderIdentity()
         let model = try AppPersonalLinearHeadModel(
             artifact: AppPersonalLinearHeadTrainer.train(
-                snapshot: makeSnapshot(
-                    firstTagID: firstTagID,
-                    secondTagID: secondTagID,
-                    encoderIdentity: encoderIdentity
-                ),
+                snapshot: makeSnapshot(tagID: tagID, encoderIdentity: encoderIdentity),
                 encoderIdentity: encoderIdentity
             )
         )
@@ -180,14 +181,9 @@ final class AppPersonalLinearHeadTests: XCTestCase {
     }
 
     func testTrainingRejectsDuplicateAssetRevisionTagDecisions() throws {
-        let firstTagID = UUID(uuidString: "10000000-0000-0000-0000-000000000001")!
-        let secondTagID = UUID(uuidString: "20000000-0000-0000-0000-000000000002")!
+        let tagID = UUID(uuidString: "10000000-0000-0000-0000-000000000001")!
         let encoderIdentity = makeEncoderIdentity()
-        let complete = makeSnapshot(
-            firstTagID: firstTagID,
-            secondTagID: secondTagID,
-            encoderIdentity: encoderIdentity
-        )
+        let complete = makeSnapshot(tagID: tagID, encoderIdentity: encoderIdentity)
         let duplicated = PersonalModelRebuildSnapshot(
             catalogScopeID: complete.catalogScopeID,
             decisionSnapshotRevision: complete.decisionSnapshotRevision,
@@ -227,8 +223,7 @@ final class AppPersonalLinearHeadTests: XCTestCase {
     }
 
     private func makeSnapshot(
-        firstTagID: UUID,
-        secondTagID: UUID,
+        tagID: UUID,
         encoderIdentity: AppCoreMLModelIdentity
     ) -> PersonalModelRebuildSnapshot {
         let assetIDs = [
@@ -250,27 +245,13 @@ final class AppPersonalLinearHeadTests: XCTestCase {
                 values: embedding
             )
         }
-        let decisions = assetIDs.enumerated().flatMap { index, assetID in
-            let firstState: PersonalTrainingDecisionState = index < 2
-                ? .manualAccepted
-                : .manualRejected
-            let secondState: PersonalTrainingDecisionState = index < 2
-                ? .manualRejected
-                : .manualAccepted
-            return [
-                PersonalTrainingDecision(
-                    assetID: assetID,
-                    contentRevision: 1,
-                    tagID: firstTagID,
-                    state: firstState
-                ),
-                PersonalTrainingDecision(
-                    assetID: assetID,
-                    contentRevision: 1,
-                    tagID: secondTagID,
-                    state: secondState
-                ),
-            ]
+        let decisions = assetIDs.enumerated().map { index, assetID in
+            PersonalTrainingDecision(
+                assetID: assetID,
+                contentRevision: 1,
+                tagID: tagID,
+                state: index < 2 ? .manualAccepted : .manualRejected
+            )
         }
         return PersonalModelRebuildSnapshot(
             catalogScopeID: "70000000-0000-0000-0000-000000000007",
@@ -282,7 +263,7 @@ final class AppPersonalLinearHeadTests: XCTestCase {
                 preprocessingRevision: encoderIdentity.preprocessingRevision,
                 elementCount: encoderIdentity.elementCount
             ),
-            personalTagIDs: [firstTagID, secondTagID],
+            personalTagIDs: [tagID],
             labelVocabularyRevision: String(repeating: "b", count: 64),
             embeddings: rows,
             decisions: decisions

@@ -74,8 +74,7 @@ enum AppPersonalAdamWLinearHeadTrainer {
               !snapshot.catalogScopeID.isEmpty,
               isLowercaseSHA256(snapshot.decisionSnapshotRevision),
               isLowercaseSHA256(snapshot.labelVocabularyRevision),
-              !snapshot.personalTagIDs.isEmpty,
-              Set(snapshot.personalTagIDs).count == snapshot.personalTagIDs.count
+              snapshot.personalTagIDs.count == 1
         else {
             throw AppPersonalLinearHeadError.invalidSnapshot
         }

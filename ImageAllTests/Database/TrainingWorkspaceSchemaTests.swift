@@ -15,10 +15,13 @@ final class TrainingWorkspaceSchemaTests: XCTestCase {
             XCTAssertTrue(try db.tableExists("training_run"))
             let modelColumns = try db.columns(in: "personal_suggestion_model").map(\.name)
             XCTAssertEqual(modelColumns.first, "method")
+            XCTAssertTrue(modelColumns.contains("tag_id"))
             XCTAssertTrue(modelColumns.contains("published_run_id"))
             XCTAssertFalse(modelColumns.contains("singleton"))
             let predictionColumns = try db.columns(in: "personal_prediction").map(\.name)
             XCTAssertEqual(predictionColumns.first, "method")
+            let runColumns = try db.columns(in: "training_run").map(\.name)
+            XCTAssertTrue(runColumns.contains("tag_id"))
         }
     }
 
@@ -255,6 +258,192 @@ final class TrainingWorkspaceSchemaTests: XCTestCase {
                 """
             )
             XCTAssertEqual(centroidWeights, centroidSHA)
+        }
+    }
+
+    func testActivatingSecondTagDoesNotWipeFirstTagPredictions() throws {
+        let url = try makeTempDatabaseURL()
+        let database = try CatalogDatabase.open(at: url)
+        let sourceID = UUID()
+        let assetID = UUID()
+        let firstTagID = UUID()
+        let secondTagID = UUID()
+        try DatabaseTestSupport.makeFolderSourceWithFileAsset(
+            repository: CatalogRepository(database: database),
+            sourceID: sourceID,
+            assetID: assetID
+        )
+        try database.pool.write { db in
+            for (tagID, name) in [(firstTagID, "板栗"), (secondTagID, "雪豹")] {
+                try db.execute(
+                    sql: """
+                    INSERT INTO tag (
+                        id, name, normalized_name, state, created_at_ms, updated_at_ms
+                    ) VALUES (?, ?, ?, 'active', ?, ?)
+                    """,
+                    arguments: [
+                        tagID.uuidString.lowercased(),
+                        name,
+                        name,
+                        DatabaseTestSupport.timestampMs,
+                        DatabaseTestSupport.timestampMs,
+                    ]
+                )
+            }
+        }
+        let scopeID = try database.catalogScopeID()
+        let review = GRDBPersonalizationReviewRepository(database: database)
+        let first = PersonalModelSuggestionCapability(
+            target: PersonalModelSuggestionTarget(
+                catalogScopeID: scopeID,
+                bundleID: PersonalSuggestionMethod.linearHeadBundleID,
+                bundleRevision: "first",
+                provider: "coreml",
+                modelID: "dino",
+                modelRevision: "1",
+                preprocessingRevision: "p1",
+                elementCount: 768,
+                labelVocabularyRevision: String(repeating: "a", count: 64),
+                weightsSHA256: String(repeating: "a", count: 64),
+                policyRevision: "policy"
+            ),
+            tagIDs: [firstTagID]
+        )
+        let second = PersonalModelSuggestionCapability(
+            target: PersonalModelSuggestionTarget(
+                catalogScopeID: scopeID,
+                bundleID: PersonalSuggestionMethod.linearHeadBundleID,
+                bundleRevision: "second",
+                provider: "coreml",
+                modelID: "dino",
+                modelRevision: "1",
+                preprocessingRevision: "p1",
+                elementCount: 768,
+                labelVocabularyRevision: String(repeating: "b", count: 64),
+                weightsSHA256: String(repeating: "b", count: 64),
+                policyRevision: "policy"
+            ),
+            tagIDs: [secondTagID]
+        )
+        try review.activatePersonalSuggestionBundle(first, activatedAtMs: 10)
+        _ = try review.replacePersonalSuggestions(
+            candidate: PersonalSuggestionCandidate(assetID: assetID, contentRevision: 1),
+            predictions: [PersonalSuggestionPrediction(tagID: firstTagID, score: 0.9)],
+            expectedCapability: first,
+            createdAtMs: 11
+        )
+        try review.activatePersonalSuggestionBundle(second, activatedAtMs: 12)
+
+        try database.pool.read { db in
+            let tags = try String.fetchAll(
+                db,
+                sql: """
+                SELECT tag_id FROM personal_suggestion_model
+                WHERE method = 'personalCentroid'
+                ORDER BY tag_id
+                """
+            )
+            XCTAssertEqual(
+                tags,
+                [firstTagID, secondTagID].map { $0.uuidString.lowercased() }.sorted()
+            )
+            let firstPredictions = try Int.fetchOne(
+                db,
+                sql: """
+                SELECT COUNT(*) FROM personal_prediction
+                WHERE method = 'personalCentroid' AND tag_id = ?
+                """,
+                arguments: [firstTagID.uuidString.lowercased()]
+            )
+            XCTAssertEqual(firstPredictions, 1)
+        }
+    }
+
+    func testV017MigratesSingleChestnutModelToPerTagSlot() throws {
+        let url = try makeTempDatabaseURL()
+        var config = Configuration()
+        config.prepareDatabase { db in
+            try db.execute(sql: "PRAGMA foreign_keys = ON")
+        }
+        let pool = try DatabasePool(path: url.path, configuration: config)
+        var migrator = DatabaseMigrator()
+        for register in [
+            V001CreateCatalogCoreMigration.register,
+            V002AddStage1CatalogQuerySupportMigration.register,
+            V003AddDerivedImageCacheMigration.register,
+            V004AddPersonalizationMigration.register,
+            V005AddCatalogScaleIndexesMigration.register,
+            V006AddAssetTextSearchMigration.register,
+            V007AddCatalogScopeIdentityMigration.register,
+            V008AddPersonalModelSuggestionsMigration.register,
+            V009AddStandardOntologyMigration.register,
+            V010AddStandardPredictionsMigration.register,
+            V011AddStandardPredictionProvenanceMigration.register,
+            V012RepairStandardTagBindingMigration.register,
+            V013PhotosMissingAssetRepairMigration.register,
+            V014AddTrainingRunsAndPersonalMultiSlotMigration.register,
+            V015AddSuggestionScoreThresholdsMigration.register,
+            V016AddTagGroupsMigration.register,
+        ] as [(inout DatabaseMigrator) -> Void] {
+            register(&migrator)
+        }
+        try migrator.migrate(pool)
+
+        let scopeID = try pool.read { db in
+            try String.fetchOne(db, sql: "SELECT scope_id FROM catalog_scope WHERE singleton = 1")
+        }!
+        let tagID = UUID()
+        let sha = String(repeating: "e", count: 64)
+        try pool.write { db in
+            try db.execute(
+                sql: """
+                INSERT INTO tag (
+                    id, name, normalized_name, state, created_at_ms, updated_at_ms, group_id
+                ) VALUES (?, '板栗', '板栗', 'active', ?, ?, ?)
+                """,
+                arguments: [
+                    tagID.uuidString.lowercased(),
+                    DatabaseTestSupport.timestampMs,
+                    DatabaseTestSupport.timestampMs,
+                    TagGroupSeed.classify(displayName: "板栗").id.uuidString.lowercased(),
+                ]
+            )
+            try db.execute(
+                sql: """
+                INSERT INTO personal_suggestion_model (
+                    method, catalog_scope_id, bundle_id, bundle_revision, provider, model_id,
+                    model_revision, preprocessing_revision, element_count,
+                    label_vocabulary_revision, weights_sha256, policy_revision, activated_at_ms
+                ) VALUES (
+                    'personalCentroid', ?, 'app.personal.linear-head.v1', 'rev', 'coreml', 'm',
+                    '1', 'p', 768, ?, ?, 'policy', ?
+                )
+                """,
+                arguments: [scopeID, sha, sha, DatabaseTestSupport.timestampMs]
+            )
+            try db.execute(
+                sql: """
+                INSERT INTO personal_suggestion_tag (method, tag_id) VALUES ('personalCentroid', ?)
+                """,
+                arguments: [tagID.uuidString.lowercased()]
+            )
+        }
+
+        V017PerTagPersonalSuggestionModelsMigration.register(on: &migrator)
+        try migrator.migrate(pool)
+
+        try pool.read { db in
+            let rows = try Row.fetchAll(
+                db,
+                sql: """
+                SELECT method, tag_id, weights_sha256, published_run_id
+                FROM personal_suggestion_model
+                """
+            )
+            XCTAssertEqual(rows.count, 1)
+            XCTAssertEqual(rows[0]["method"] as String, "personalCentroid")
+            XCTAssertEqual(rows[0]["tag_id"] as String, tagID.uuidString.lowercased())
+            XCTAssertEqual(rows[0]["weights_sha256"] as String, sha)
         }
     }
 

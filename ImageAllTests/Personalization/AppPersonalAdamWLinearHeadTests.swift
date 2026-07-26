@@ -2,15 +2,10 @@ import XCTest
 @testable import ImageAll
 
 final class AppPersonalAdamWLinearHeadTests: XCTestCase {
-    func testAdamWTrainsReloadAndRanksKnownTagAboveOther() throws {
-        let firstTagID = UUID(uuidString: "10000000-0000-0000-0000-000000000001")!
-        let secondTagID = UUID(uuidString: "20000000-0000-0000-0000-000000000002")!
+    func testAdamWTrainsReloadAndRanksKnownTag() throws {
+        let tagID = UUID(uuidString: "10000000-0000-0000-0000-000000000001")!
         let encoderIdentity = makeEncoderIdentity()
-        let snapshot = makeSnapshot(
-            firstTagID: firstTagID,
-            secondTagID: secondTagID,
-            encoderIdentity: encoderIdentity
-        )
+        let snapshot = makeSnapshot(tagID: tagID, encoderIdentity: encoderIdentity)
 
         var config = AppPersonalAdamWTrainingConfig.default
         config.maxEpochs = 80
@@ -32,7 +27,7 @@ final class AppPersonalAdamWLinearHeadTests: XCTestCase {
         )
 
         XCTAssertEqual(model.algorithmRevision, AppPersonalAdamWLinearHeadTrainer.algorithmRevision)
-        XCTAssertEqual(model.identity.personalTagIDs, [firstTagID, secondTagID])
+        XCTAssertEqual(model.identity.personalTagIDs, [tagID])
         XCTAssertGreaterThan(report.epochsRun, 1)
         XCTAssertEqual(report.epochMetrics.count, report.epochsRun)
         XCTAssertEqual(report.epochMetrics.map(\.epoch), Array(1...report.epochsRun))
@@ -40,19 +35,14 @@ final class AppPersonalAdamWLinearHeadTests: XCTestCase {
         XCTAssertEqual(report.evaluationSplit, .trainFallback)
         XCTAssertEqual(report.trainSampleCount, 4)
         XCTAssertEqual(report.validationSampleCount, 0)
-        XCTAssertEqual(suggestions.first?.tagID, firstTagID)
+        XCTAssertEqual(suggestions.first?.tagID, tagID)
         XCTAssertTrue(suggestions.allSatisfy { $0.score.isFinite && $0.score > 0 })
     }
 
     func testAdamWReportIdentifiesValidationEvaluationSplit() throws {
-        let firstTagID = UUID(uuidString: "10000000-0000-0000-0000-000000000001")!
-        let secondTagID = UUID(uuidString: "20000000-0000-0000-0000-000000000002")!
+        let tagID = UUID(uuidString: "10000000-0000-0000-0000-000000000001")!
         let encoderIdentity = makeEncoderIdentity()
-        let base = makeSnapshot(
-            firstTagID: firstTagID,
-            secondTagID: secondTagID,
-            encoderIdentity: encoderIdentity
-        )
+        let base = makeSnapshot(tagID: tagID, encoderIdentity: encoderIdentity)
         let extraAssetIDs = [
             UUID(uuidString: "70000000-0000-0000-0000-000000000007")!,
             UUID(uuidString: "80000000-0000-0000-0000-000000000008")!,
@@ -72,20 +62,20 @@ final class AppPersonalAdamWLinearHeadTests: XCTestCase {
                 PersonalTrainingEmbeddingRow(
                     assetID: extraAssetIDs[1],
                     contentRevision: 1,
-                    values: embedding(first: 0, second: 1.2)
+                    values: embedding(first: 1.1, second: 0)
                 ),
             ],
             decisions: base.decisions + [
                 PersonalTrainingDecision(
                     assetID: extraAssetIDs[0],
                     contentRevision: 1,
-                    tagID: firstTagID,
+                    tagID: tagID,
                     state: .manualAccepted
                 ),
                 PersonalTrainingDecision(
                     assetID: extraAssetIDs[1],
                     contentRevision: 1,
-                    tagID: secondTagID,
+                    tagID: tagID,
                     state: .manualAccepted
                 ),
             ]
@@ -103,14 +93,9 @@ final class AppPersonalAdamWLinearHeadTests: XCTestCase {
     }
 
     func testAdamWTrainingIsDeterministicForFixedSeed() throws {
-        let firstTagID = UUID(uuidString: "10000000-0000-0000-0000-000000000001")!
-        let secondTagID = UUID(uuidString: "20000000-0000-0000-0000-000000000002")!
+        let tagID = UUID(uuidString: "10000000-0000-0000-0000-000000000001")!
         let encoderIdentity = makeEncoderIdentity()
-        let snapshot = makeSnapshot(
-            firstTagID: firstTagID,
-            secondTagID: secondTagID,
-            encoderIdentity: encoderIdentity
-        )
+        let snapshot = makeSnapshot(tagID: tagID, encoderIdentity: encoderIdentity)
         var config = AppPersonalAdamWTrainingConfig.default
         config.maxEpochs = 40
         config.patience = 40
@@ -131,20 +116,14 @@ final class AppPersonalAdamWLinearHeadTests: XCTestCase {
     }
 
     func testAdamWRequiresTwoAcceptedDecisionsPerTag() throws {
-        let firstTagID = UUID(uuidString: "10000000-0000-0000-0000-000000000001")!
-        let secondTagID = UUID(uuidString: "20000000-0000-0000-0000-000000000002")!
+        let tagID = UUID(uuidString: "10000000-0000-0000-0000-000000000001")!
         let encoderIdentity = makeEncoderIdentity()
-        let complete = makeSnapshot(
-            firstTagID: firstTagID,
-            secondTagID: secondTagID,
-            encoderIdentity: encoderIdentity
-        )
-        var removed = false
+        let complete = makeSnapshot(tagID: tagID, encoderIdentity: encoderIdentity)
+        var keptAccepted = 0
         let decisions = complete.decisions.filter { decision in
-            if !removed, decision.tagID == firstTagID {
-                removed = true
-                return false
-            }
+            guard decision.state == .manualAccepted else { return true }
+            if keptAccepted >= 1 { return false }
+            keptAccepted += 1
             return true
         }
         let insufficient = PersonalModelRebuildSnapshot(
@@ -166,15 +145,34 @@ final class AppPersonalAdamWLinearHeadTests: XCTestCase {
         }
     }
 
-    func testCentroidAndAdamWStoresDoNotShareActivePointer() async throws {
+    func testAdamWRejectsMultiTagSnapshot() throws {
         let firstTagID = UUID(uuidString: "10000000-0000-0000-0000-000000000001")!
         let secondTagID = UUID(uuidString: "20000000-0000-0000-0000-000000000002")!
         let encoderIdentity = makeEncoderIdentity()
-        let snapshot = makeSnapshot(
-            firstTagID: firstTagID,
-            secondTagID: secondTagID,
-            encoderIdentity: encoderIdentity
+        let single = makeSnapshot(tagID: firstTagID, encoderIdentity: encoderIdentity)
+        let multi = PersonalModelRebuildSnapshot(
+            catalogScopeID: single.catalogScopeID,
+            decisionSnapshotRevision: single.decisionSnapshotRevision,
+            encoder: single.encoder,
+            personalTagIDs: [firstTagID, secondTagID],
+            labelVocabularyRevision: single.labelVocabularyRevision,
+            embeddings: single.embeddings,
+            decisions: single.decisions
         )
+        XCTAssertThrowsError(
+            try AppPersonalAdamWLinearHeadTrainer.train(
+                snapshot: multi,
+                encoderIdentity: encoderIdentity
+            )
+        ) { error in
+            XCTAssertEqual(error as? AppPersonalLinearHeadError, .invalidSnapshot)
+        }
+    }
+
+    func testCentroidAndAdamWStoresDoNotShareActivePointer() async throws {
+        let tagID = UUID(uuidString: "10000000-0000-0000-0000-000000000001")!
+        let encoderIdentity = makeEncoderIdentity()
+        let snapshot = makeSnapshot(tagID: tagID, encoderIdentity: encoderIdentity)
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -236,8 +234,7 @@ final class AppPersonalAdamWLinearHeadTests: XCTestCase {
     }
 
     private func makeSnapshot(
-        firstTagID: UUID,
-        secondTagID: UUID,
+        tagID: UUID,
         encoderIdentity: AppCoreMLModelIdentity
     ) -> PersonalModelRebuildSnapshot {
         let assetIDs = [
@@ -249,8 +246,8 @@ final class AppPersonalAdamWLinearHeadTests: XCTestCase {
         let values = [
             embedding(first: 2, second: 0),
             embedding(first: 1, second: 0),
-            embedding(first: 0, second: 2),
-            embedding(first: 0, second: 1),
+            embedding(first: 1.5, second: 0),
+            embedding(first: 0.8, second: 0),
         ]
         let rows = zip(assetIDs, values).map { assetID, embedding in
             PersonalTrainingEmbeddingRow(
@@ -259,37 +256,19 @@ final class AppPersonalAdamWLinearHeadTests: XCTestCase {
                 values: embedding
             )
         }
-        let decisions = [
+        let decisions = assetIDs.map { assetID in
             PersonalTrainingDecision(
-                assetID: assetIDs[0],
+                assetID: assetID,
                 contentRevision: 1,
-                tagID: firstTagID,
+                tagID: tagID,
                 state: .manualAccepted
-            ),
-            PersonalTrainingDecision(
-                assetID: assetIDs[1],
-                contentRevision: 1,
-                tagID: firstTagID,
-                state: .manualAccepted
-            ),
-            PersonalTrainingDecision(
-                assetID: assetIDs[2],
-                contentRevision: 1,
-                tagID: secondTagID,
-                state: .manualAccepted
-            ),
-            PersonalTrainingDecision(
-                assetID: assetIDs[3],
-                contentRevision: 1,
-                tagID: secondTagID,
-                state: .manualAccepted
-            ),
-        ]
+            )
+        }
         return PersonalModelRebuildSnapshot(
             catalogScopeID: "11111111-1111-1111-1111-111111111111",
             decisionSnapshotRevision: String(repeating: "a", count: 64),
             encoder: PersonalTrainingEncoderIdentity(encoderIdentity),
-            personalTagIDs: [firstTagID, secondTagID],
+            personalTagIDs: [tagID],
             labelVocabularyRevision: String(repeating: "b", count: 64),
             embeddings: rows,
             decisions: decisions

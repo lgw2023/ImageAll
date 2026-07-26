@@ -29,10 +29,10 @@ struct GRDBTrainingRunRepository: Sendable {
             sql: """
             INSERT INTO training_run (
                 id, method, state, created_at_ms, started_at_ms, finished_at_ms,
-                catalog_scope_id, job_id, sample_summary_json, sample_manifest_sha256,
+                catalog_scope_id, job_id, tag_id, sample_summary_json, sample_manifest_sha256,
                 config_json, metrics_json, artifact_kind, artifact_ref, artifact_sha256,
                 result_summary_json, error_code
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             arguments: [
                 run.id.uuidString.lowercased(),
@@ -43,6 +43,7 @@ struct GRDBTrainingRunRepository: Sendable {
                 run.finishedAtMs,
                 run.catalogScopeID,
                 run.jobID?.uuidString.lowercased(),
+                run.tagID?.uuidString.lowercased(),
                 run.sampleSummaryJSON,
                 run.sampleManifestSHA256,
                 run.configJSON,
@@ -227,6 +228,10 @@ struct GRDBTrainingRunRepository: Sendable {
             guard let raw: String = row["job_id"] else { return nil }
             return UUID(uuidString: raw)
         }()
+        let tagID: UUID? = {
+            guard let raw: String = row["tag_id"] else { return nil }
+            return UUID(uuidString: raw)
+        }()
         return TrainingRunRecord(
             id: id,
             method: method,
@@ -236,6 +241,7 @@ struct GRDBTrainingRunRepository: Sendable {
             finishedAtMs: row["finished_at_ms"],
             catalogScopeID: row["catalog_scope_id"],
             jobID: jobID,
+            tagID: tagID,
             sampleSummaryJSON: row["sample_summary_json"],
             sampleManifestSHA256: row["sample_manifest_sha256"],
             configJSON: row["config_json"],
@@ -322,13 +328,29 @@ struct GRDBTrainingWorkspaceRepository: TrainingWorkspacePort, Sendable {
                         AND r.method = ?
                         AND r.state = 'succeeded'
                         AND r.artifact_ref IS NOT NULL
+                    ORDER BY m.activated_at_ms DESC, m.tag_id ASC
+                    LIMIT 1
                     """,
                     arguments: [personalMethod.rawValue, method.rawValue]
                 )
+                let anyPublished = try Bool.fetchOne(
+                    db,
+                    sql: """
+                    SELECT EXISTS(
+                        SELECT 1
+                        FROM personal_suggestion_model m
+                        JOIN training_run r ON r.id = m.published_run_id
+                        WHERE m.method = ?
+                            AND r.method = ?
+                            AND r.state = 'succeeded'
+                    )
+                    """,
+                    arguments: [personalMethod.rawValue, method.rawValue]
+                ) == true
                 slots.append(
                     TrainingWorkspaceSlot(
                         method: method,
-                        isPublished: row != nil,
+                        isPublished: anyPublished,
                         publishedRunID: row
                             .flatMap { value -> String? in value["id"] }
                             .flatMap(UUID.init(uuidString:)),

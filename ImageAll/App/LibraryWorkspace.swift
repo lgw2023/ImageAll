@@ -2658,13 +2658,28 @@ final class LibraryWorkspaceModel: ObservableObject {
 
             let reviewPort = review
             try await Self.offMain {
-                try reviewPort.activatePersonalSuggestionBundle(batch.capability)
+                // Activate and persist per tag: each personal model is single-tag.
+                for capability in batch.capabilities {
+                    try reviewPort.activatePersonalSuggestionBundle(capability)
+                }
                 for result in batch.results {
-                    _ = try reviewPort.replacePersonalSuggestions(
-                        candidate: result.candidate,
-                        predictions: result.predictions,
-                        expectedCapability: batch.capability
+                    let predictionsByTag = Dictionary(
+                        grouping: result.predictions,
+                        by: \.tagID
                     )
+                    for capability in batch.capabilities {
+                        guard let tagID = capability.tagIDs.first,
+                              let predictions = predictionsByTag[tagID],
+                              !predictions.isEmpty
+                        else {
+                            continue
+                        }
+                        _ = try reviewPort.replacePersonalSuggestions(
+                            candidate: result.candidate,
+                            predictions: predictions,
+                            expectedCapability: capability
+                        )
+                    }
                 }
             }
 
@@ -2947,8 +2962,8 @@ final class LibraryWorkspaceModel: ObservableObject {
               isLowercaseSHA256(target.labelVocabularyRevision),
               isLowercaseSHA256(target.weightsSHA256),
               !target.policyRevision.isEmpty,
-              !capability.tagIDs.isEmpty,
-              Set(capability.tagIDs).count == capability.tagIDs.count,
+              // Personal models are published/scored per tag.
+              capability.tagIDs.count == 1,
               Set(capability.tagIDs).isSubset(of: activeTagIDs)
         else {
             throw LocalModelSuggestionClientError.identityMismatch
@@ -3365,88 +3380,138 @@ final class LibraryWorkspaceModel: ObservableObject {
                 return
             }
             let method = family.trainingRunMethod
-            let tagNames = tags
-                .filter { trainingTagIDs.contains($0.id) }
-                .map(\.displayName)
-                .sorted()
+            let orderedTagIDs = trainingTagIDs.sorted {
+                $0.uuidString.lowercased() < $1.uuidString.lowercased()
+            }
             let scope: TrainingWorkspaceActivityScope = selectedAssetIDs.isEmpty
                 ? .allSources
                 : .selectedAssets(count: selectedAssetIDs.count)
-            trainingWorkspaceActivity = TrainingWorkspaceActivity(
-                method: method,
-                tagNames: tagNames,
-                scope: scope,
-                sampleCount: nil,
-                phase: .preparingSamples
-            )
             let review = review
-            let snapshotSource = AppPersonalTrainingSnapshotPortSource {
-                try review.personalTrainingSnapshot(
-                    limitingToTagIDs: trainingTagIDs,
-                    limitingToAssetIDs: selectedAssetIDs.isEmpty ? nil : selectedAssetIDs
-                )
-            }
-            let snapshot = try await snapshotSource.currentSnapshot()
-            guard Self.hasMinimumPersonalTrainingSamples(snapshot) else {
-                notice = family == .adamW
-                    ? .personalAdamWRebuildNotReady
-                    : .personalModelRebuildNotReady
-                return
-            }
-            let sampleCount = Set(snapshot.decisions.map {
-                PersonalTrainingAssetRevision(
-                    assetID: $0.assetID,
-                    contentRevision: $0.contentRevision
-                )
-            }).count
-            trainingWorkspaceActivity = TrainingWorkspaceActivity(
-                method: method,
-                tagNames: tagNames,
-                scope: scope,
-                sampleCount: sampleCount,
-                phase: .preparingEmbeddings(completed: 0, total: sampleCount)
-            )
-            guard await ensurePersonalTrainingSampleEmbeddingsCached(snapshot) else {
-                return
-            }
-            trainingWorkspaceActivity = TrainingWorkspaceActivity(
-                method: method,
-                tagNames: tagNames,
-                scope: scope,
-                sampleCount: sampleCount,
-                phase: .trainingAndPublishing
-            )
             let refreshTask = startTrainingWorkspaceAutoRefresh()
             defer { refreshTask?.cancel() }
-            let identity = try await rebuilder.rebuild(snapshotSource: snapshotSource)
-            switch family {
-            case .centroid:
-                notice = .personalModelRebuildCompleted(
-                    tagCount: identity.personalTagIDs.count,
-                    sampleCount: sampleCount
+            // One selected tag => one independent training_run / 训练工程.
+            // Tags queue sequentially through the rebuilder but never share a
+            // multi-tag snapshot; failure/skip of one tag does not unwind others.
+            var totalSampleCount = 0
+            var trainedTagCount = 0
+            var skippedNotReadyCount = 0
+            var failedTagCount = 0
+            var cancelled = false
+            var lastFailureNotice: LibraryWorkspaceNotice?
+            for tagID in orderedTagIDs {
+                let currentTagName = tags.first(where: { $0.id == tagID })?.displayName
+                    ?? tagID.uuidString
+                trainingWorkspaceActivity = TrainingWorkspaceActivity(
+                    method: method,
+                    tagNames: [currentTagName],
+                    scope: scope,
+                    sampleCount: nil,
+                    phase: .preparingSamples
                 )
-            case .adamW:
-                notice = .personalAdamWRebuildCompleted(
-                    tagCount: identity.personalTagIDs.count,
-                    sampleCount: sampleCount
+                let singleTagIDs: Set<UUID> = [tagID]
+                let snapshotSource = AppPersonalTrainingSnapshotPortSource {
+                    try review.personalTrainingSnapshot(
+                        limitingToTagIDs: singleTagIDs,
+                        limitingToAssetIDs: selectedAssetIDs.isEmpty ? nil : selectedAssetIDs
+                    )
+                }
+                let snapshot: PersonalTrainingSnapshot
+                do {
+                    snapshot = try await snapshotSource.currentSnapshot()
+                } catch {
+                    failedTagCount += 1
+                    lastFailureNotice = family == .adamW
+                        ? .personalAdamWRebuildFailed
+                        : .personalModelRebuildFailed
+                    continue
+                }
+                guard Self.hasMinimumPersonalTrainingSamples(snapshot) else {
+                    skippedNotReadyCount += 1
+                    continue
+                }
+                let sampleCount = Set(snapshot.decisions.map {
+                    PersonalTrainingAssetRevision(
+                        assetID: $0.assetID,
+                        contentRevision: $0.contentRevision
+                    )
+                }).count
+                trainingWorkspaceActivity = TrainingWorkspaceActivity(
+                    method: method,
+                    tagNames: [currentTagName],
+                    scope: scope,
+                    sampleCount: sampleCount,
+                    phase: .preparingEmbeddings(completed: 0, total: sampleCount)
                 )
+                guard await ensurePersonalTrainingSampleEmbeddingsCached(snapshot) else {
+                    // ensurePersonalTrainingSampleEmbeddingsCached already set notice.
+                    failedTagCount += 1
+                    lastFailureNotice = notice
+                    notice = nil
+                    continue
+                }
+                trainingWorkspaceActivity = TrainingWorkspaceActivity(
+                    method: method,
+                    tagNames: [currentTagName],
+                    scope: scope,
+                    sampleCount: sampleCount,
+                    phase: .trainingAndPublishing
+                )
+                do {
+                    _ = try await rebuilder.rebuild(snapshotSource: snapshotSource)
+                    totalSampleCount += sampleCount
+                    trainedTagCount += 1
+                } catch let error as AppPersonalModelRebuildError {
+                    switch error {
+                    case .cancelled:
+                        cancelled = true
+                    case .invalidSnapshot:
+                        skippedNotReadyCount += 1
+                    case .modelUnavailable:
+                        failedTagCount += 1
+                        lastFailureNotice = .personalModelRebuildServiceUnavailable
+                    case .embeddingUnavailable:
+                        failedTagCount += 1
+                        lastFailureNotice = .personalModelRebuildCacheUnavailable
+                    case .alreadyRunning, .staleSnapshot:
+                        failedTagCount += 1
+                        lastFailureNotice = family == .adamW
+                            ? .personalAdamWRebuildFailed
+                            : .personalModelRebuildFailed
+                    }
+                    if cancelled { break }
+                } catch is CancellationError {
+                    cancelled = true
+                    break
+                } catch {
+                    failedTagCount += 1
+                    lastFailureNotice = family == .adamW
+                        ? .personalAdamWRebuildFailed
+                        : .personalModelRebuildFailed
+                }
             }
-        } catch let error as AppPersonalModelRebuildError {
-            switch error {
-            case .cancelled:
+            if cancelled {
                 notice = nil
-            case .invalidSnapshot:
+            } else if trainedTagCount > 0 {
+                switch family {
+                case .centroid:
+                    notice = .personalModelRebuildCompleted(
+                        tagCount: trainedTagCount,
+                        sampleCount: totalSampleCount
+                    )
+                case .adamW:
+                    notice = .personalAdamWRebuildCompleted(
+                        tagCount: trainedTagCount,
+                        sampleCount: totalSampleCount
+                    )
+                }
+            } else if skippedNotReadyCount > 0, failedTagCount == 0 {
                 notice = family == .adamW
                     ? .personalAdamWRebuildNotReady
                     : .personalModelRebuildNotReady
-            case .modelUnavailable:
-                notice = .personalModelRebuildServiceUnavailable
-            case .embeddingUnavailable:
-                notice = .personalModelRebuildCacheUnavailable
-            case .alreadyRunning, .staleSnapshot:
-                notice = family == .adamW
+            } else {
+                notice = lastFailureNotice ?? (family == .adamW
                     ? .personalAdamWRebuildFailed
-                    : .personalModelRebuildFailed
+                    : .personalModelRebuildFailed)
             }
         } catch {
             notice = family == .adamW

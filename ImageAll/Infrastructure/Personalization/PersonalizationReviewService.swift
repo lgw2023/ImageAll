@@ -104,29 +104,35 @@ struct PersonalizationReviewService: PersonalizationReviewPort, Sendable {
     }
 
     func enqueuePersonalModelRebuildIfReady() throws -> UUID? {
-        guard personalModelRebuildEnabled,
-              let payload = try PersonalModelRebuildJobFactory.payload(
-                  from: review.personalTrainingSnapshot()
-              )
-        else {
-            return nil
-        }
+        guard personalModelRebuildEnabled else { return nil }
+        let payloads = try PersonalModelRebuildJobFactory.payloads(
+            from: review.personalTrainingSnapshot()
+        )
+        guard !payloads.isEmpty else { return nil }
         let scheduled = clock.nowMs.addingReportingOverflow(
             PersonalModelRebuildJobFactory.debounceDelayMs
         )
         guard !scheduled.overflow else {
             throw PersonalizationReviewError.persistenceFailure
         }
-        let command = try PersonalModelRebuildJobEnqueue.makeEnqueueCommand(
-            jobID: UUID(),
-            payload: payload,
-            notBeforeMs: scheduled.partialValue
-        )
-        do {
-            return try queue.enqueue(command).id
-        } catch let JobQueueError.activeCoalescingConflict(existingJobID) {
-            return existingJobID
+        var firstJobID: UUID?
+        for payload in payloads {
+            let command = try PersonalModelRebuildJobEnqueue.makeEnqueueCommand(
+                jobID: UUID(),
+                payload: payload,
+                notBeforeMs: scheduled.partialValue
+            )
+            let jobID: UUID
+            do {
+                jobID = try queue.enqueue(command).id
+            } catch let JobQueueError.activeCoalescingConflict(existingJobID) {
+                jobID = existingJobID
+            }
+            if firstJobID == nil {
+                firstJobID = jobID
+            }
         }
+        return firstJobID
     }
 
     func fetchReviewQueue(

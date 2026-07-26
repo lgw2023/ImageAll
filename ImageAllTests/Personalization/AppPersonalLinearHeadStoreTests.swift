@@ -108,15 +108,31 @@ final class AppPersonalLinearHeadStoreTests: XCTestCase {
             "PersonalModels/LinearHead/v1",
             isDirectory: true
         )
-        try FileManager.default.setAttributes(
-            [.posixPermissions: 0o500],
-            ofItemAtPath: storeRoot.path
-        )
-        defer {
-            try? FileManager.default.setAttributes(
-                [.posixPermissions: 0o700],
-                ofItemAtPath: storeRoot.path
+        let tagDirectory = storeRoot
+            .appendingPathComponent("tags", isDirectory: true)
+            .appendingPathComponent(
+                firstIdentity.personalTagIDs[0].uuidString.lowercased(),
+                isDirectory: true
             )
+        let readOnlyPaths = [
+            storeRoot,
+            storeRoot.appendingPathComponent("objects", isDirectory: true),
+            storeRoot.appendingPathComponent("tags", isDirectory: true),
+            tagDirectory,
+        ]
+        for path in readOnlyPaths {
+            try FileManager.default.setAttributes(
+                [.posixPermissions: 0o500],
+                ofItemAtPath: path.path
+            )
+        }
+        defer {
+            for path in readOnlyPaths {
+                try? FileManager.default.setAttributes(
+                    [.posixPermissions: 0o700],
+                    ofItemAtPath: path.path
+                )
+            }
         }
 
         do {
@@ -127,6 +143,58 @@ final class AppPersonalLinearHeadStoreTests: XCTestCase {
         }
         let capability = await store.capability()
         XCTAssertEqual(capability, .ready(firstIdentity))
+    }
+
+    func testCorruptPointerForOneTagDoesNotDisableHealthySiblingTag() async throws {
+        let applicationSupportDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: applicationSupportDirectory) }
+        let encoderIdentity = makeEncoderIdentity()
+        let healthyTagID = UUID(uuidString: "10000000-0000-0000-0000-000000000001")!
+        let brokenTagID = UUID(uuidString: "10000000-0000-0000-0000-000000000099")!
+        let healthySnapshot = makeSnapshot(
+            encoderIdentity: encoderIdentity,
+            tagID: healthyTagID
+        )
+        let healthyArtifact = try AppPersonalLinearHeadTrainer.train(
+            snapshot: healthySnapshot,
+            encoderIdentity: encoderIdentity
+        )
+        let healthyIdentity = try AppPersonalLinearHeadModel(artifact: healthyArtifact).identity
+        let store = AppPersonalLinearHeadStore(
+            applicationSupportDirectory: applicationSupportDirectory,
+            expectedCatalogScopeID: healthySnapshot.catalogScopeID,
+            expectedEncoderIdentity: encoderIdentity
+        )
+        _ = try await store.publish(healthyArtifact)
+
+        let brokenPointerDirectory = applicationSupportDirectory.appendingPathComponent(
+            "PersonalModels/LinearHead/v1/tags/\(brokenTagID.uuidString.lowercased())",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(
+            at: brokenPointerDirectory,
+            withIntermediateDirectories: true
+        )
+        try Data("{}".utf8).write(
+            to: brokenPointerDirectory.appendingPathComponent("active.json"),
+            options: .atomic
+        )
+
+        let restarted = AppPersonalLinearHeadStore(
+            applicationSupportDirectory: applicationSupportDirectory,
+            expectedCatalogScopeID: healthySnapshot.catalogScopeID,
+            expectedEncoderIdentity: encoderIdentity
+        )
+        let capability = await restarted.start()
+        XCTAssertEqual(capability, .ready(healthyIdentity))
+        let identities = await restarted.identities()
+        XCTAssertEqual(identities.map(\.personalTagIDs), [[healthyTagID]])
+        let suggestions = try await restarted.suggestions(
+            for: AppCoreMLEmbedding(identity: encoderIdentity, values: embedding(first: 3)),
+            maximumCount: 1
+        )
+        XCTAssertEqual(suggestions.map(\.tagID), [healthyTagID])
     }
 
     func testCorruptActivePointerDegradesAndCannotInfer() async throws {
@@ -145,8 +213,9 @@ final class AppPersonalLinearHeadStoreTests: XCTestCase {
             expectedEncoderIdentity: encoderIdentity
         )
         _ = try await store.publish(artifact)
+        let tagID = try AppPersonalLinearHeadModel(artifact: artifact).identity.personalTagIDs[0]
         let activePointer = applicationSupportDirectory.appendingPathComponent(
-            "PersonalModels/LinearHead/v1/active.json"
+            "PersonalModels/LinearHead/v1/tags/\(tagID.uuidString.lowercased())/active.json"
         )
         try Data("{}".utf8).write(to: activePointer, options: .atomic)
 
@@ -358,9 +427,9 @@ final class AppPersonalLinearHeadStoreTests: XCTestCase {
     private func makeSnapshot(
         encoderIdentity: AppCoreMLModelIdentity,
         decisionSnapshotRevision: String = String(repeating: "a", count: 64),
-        catalogScopeID: String = "60000000-0000-0000-0000-000000000006"
+        catalogScopeID: String = "60000000-0000-0000-0000-000000000006",
+        tagID: UUID = UUID(uuidString: "10000000-0000-0000-0000-000000000001")!
     ) -> PersonalModelRebuildSnapshot {
-        let tagID = UUID(uuidString: "10000000-0000-0000-0000-000000000001")!
         let assetIDs = [
             UUID(uuidString: "20000000-0000-0000-0000-000000000002")!,
             UUID(uuidString: "30000000-0000-0000-0000-000000000003")!,

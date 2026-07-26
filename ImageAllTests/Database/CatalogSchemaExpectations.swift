@@ -100,6 +100,7 @@ enum CatalogSchemaExpectations {
         "suggestion_score_threshold_default",
         "suggestion_score_threshold_override",
         "tag",
+        "tag_group",
         "tag_model",
         "tag_model_revision",
         "tag_model_sample",
@@ -128,6 +129,9 @@ enum CatalogSchemaExpectations {
         "personal_prediction_review_rank_idx",
         "prediction_review_rank_idx",
         "standard_prediction_review_rank_idx",
+        "tag_group_id_idx",
+        "tag_group_name_uq",
+        "tag_group_sort_idx",
         "tag_model_sample_feature_idx",
         "tag_normalized_name_uq",
         "training_run_method_created_idx",
@@ -203,6 +207,7 @@ enum CatalogSchemaExpectations {
         ],
         "personal_suggestion_model": [
             .init(name: "method", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 1),
+            .init(name: "tag_id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 2),
             .init(name: "catalog_scope_id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
             .init(name: "bundle_id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
             .init(name: "bundle_revision", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
@@ -248,6 +253,7 @@ enum CatalogSchemaExpectations {
             .init(name: "artifact_sha256", type: "TEXT", notNull: false, defaultValue: nil, primaryKeyOrder: 0),
             .init(name: "result_summary_json", type: "TEXT", notNull: true, defaultValue: "'{}'", primaryKeyOrder: 0),
             .init(name: "error_code", type: "TEXT", notNull: false, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "tag_id", type: "TEXT", notNull: false, defaultValue: nil, primaryKeyOrder: 0),
         ],
         "source": [
             .init(name: "id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 1),
@@ -292,6 +298,15 @@ enum CatalogSchemaExpectations {
             .init(name: "name", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
             .init(name: "normalized_name", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
             .init(name: "state", type: "TEXT", notNull: true, defaultValue: "'active'", primaryKeyOrder: 0),
+            .init(name: "created_at_ms", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "updated_at_ms", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "group_id", type: "TEXT", notNull: false, defaultValue: nil, primaryKeyOrder: 0),
+        ],
+        "tag_group": [
+            .init(name: "id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 1),
+            .init(name: "name", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "sort_order", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "is_system", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
             .init(name: "created_at_ms", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
             .init(name: "updated_at_ms", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
         ],
@@ -430,12 +445,13 @@ enum CatalogSchemaExpectations {
             .init(from: "tag_id", toTable: "tag", to: "id", onDelete: "CASCADE"),
         ],
         "personal_suggestion_model": [
+            .init(from: "tag_id", toTable: "tag", to: "id", onDelete: "CASCADE"),
             .init(from: "catalog_scope_id", toTable: "catalog_scope", to: "scope_id", onDelete: "CASCADE"),
             .init(from: "published_run_id", toTable: "training_run", to: "id", onDelete: "SET NULL"),
         ],
         "personal_suggestion_tag": [
             .init(from: "method", toTable: "personal_suggestion_model", to: "method", onDelete: "CASCADE"),
-            .init(from: "tag_id", toTable: "tag", to: "id", onDelete: "CASCADE"),
+            .init(from: "tag_id", toTable: "personal_suggestion_model", to: "tag_id", onDelete: "CASCADE"),
         ],
         "personal_prediction": [
             .init(from: "method", toTable: "personal_suggestion_tag", to: "method", onDelete: "CASCADE"),
@@ -445,6 +461,7 @@ enum CatalogSchemaExpectations {
         "training_run": [
             .init(from: "catalog_scope_id", toTable: "catalog_scope", to: "scope_id", onDelete: "CASCADE"),
             .init(from: "job_id", toTable: "job", to: "id", onDelete: "SET NULL"),
+            .init(from: "tag_id", toTable: "tag", to: "id", onDelete: "SET NULL"),
         ],
         "asset": [
             .init(from: "source_id", toTable: "source", to: "id", onDelete: "RESTRICT"),
@@ -458,7 +475,10 @@ enum CatalogSchemaExpectations {
         "file_fingerprint": [
             .init(from: "asset_id", toTable: "asset", to: "id", onDelete: "CASCADE"),
         ],
-        "tag": [],
+        "tag": [
+            .init(from: "group_id", toTable: "tag_group", to: "id", onDelete: "RESTRICT"),
+        ],
+        "tag_group": [],
         "asset_tag_decision": [
             .init(from: "asset_id", toTable: "asset", to: "id", onDelete: "RESTRICT"),
             .init(from: "tag_id", toTable: "tag", to: "id", onDelete: "RESTRICT"),
@@ -503,6 +523,9 @@ enum CatalogSchemaExpectations {
         "asset_generation_missing_idx": "asset",
         "asset_source_availability_idx": "asset",
         "tag_normalized_name_uq": "tag",
+        "tag_group_id_idx": "tag",
+        "tag_group_name_uq": "tag_group",
+        "tag_group_sort_idx": "tag_group",
         "decision_tag_idx": "asset_tag_decision",
         "derived_image_cache_key_uq": "derived_image_cache_entry",
         "derived_image_cache_lru_idx": "derived_image_cache_entry",
@@ -754,6 +777,29 @@ enum CatalogSchemaExpectations {
                 .init(name: "state", descending: false, collation: "BINARY"),
                 .init(name: "score", descending: true, collation: "BINARY"),
                 .init(name: "asset_id", descending: false, collation: "BINARY"),
+            ],
+            unique: false
+        ),
+        .init(
+            name: "tag_group_name_uq",
+            keyColumns: [
+                .init(name: "name", descending: false, collation: "NOCASE"),
+            ],
+            unique: true
+        ),
+        .init(
+            name: "tag_group_sort_idx",
+            keyColumns: [
+                .init(name: "sort_order", descending: false, collation: "BINARY"),
+                .init(name: "id", descending: false, collation: "BINARY"),
+            ],
+            unique: false
+        ),
+        .init(
+            name: "tag_group_id_idx",
+            keyColumns: [
+                .init(name: "group_id", descending: false, collation: "BINARY"),
+                .init(name: "id", descending: false, collation: "BINARY"),
             ],
             unique: false
         ),

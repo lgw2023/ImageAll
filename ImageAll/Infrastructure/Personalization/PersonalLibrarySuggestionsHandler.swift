@@ -890,7 +890,9 @@ struct PersonalModelRebuildJobHandler: AsyncLeaseBoundJobHandler, Sendable {
         }
 
         do {
-            guard try currentPayload() == frozen else {
+            guard frozen.personalTagIDs.count == 1,
+                  try currentPayload(matching: frozen) == frozen
+            else {
                 return completed()
             }
             let encoder: PersonalTrainingEncoderIdentity
@@ -953,7 +955,7 @@ struct PersonalModelRebuildJobHandler: AsyncLeaseBoundJobHandler, Sendable {
                 throw classify(error)
             }
 
-            guard try currentPayload() == frozen else {
+            guard try currentPayload(matching: frozen) == frozen else {
                 return completed()
             }
             try GRDBPersonalizationReviewRepository(database: dependencies.database)
@@ -987,10 +989,20 @@ private extension PersonalModelRebuildJobHandler {
         case serviceUnavailable
     }
 
-    func currentPayload() throws -> PersonalModelRebuildJobPayload? {
-        try PersonalModelRebuildJobFactory.payload(
+    func currentPayload(
+        matching frozen: PersonalModelRebuildJobPayload
+    ) throws -> PersonalModelRebuildJobPayload? {
+        guard let tagID = frozen.personalTagIDs.first,
+              frozen.personalTagIDs.count == 1
+        else {
+            return nil
+        }
+        return try PersonalModelRebuildJobFactory.payload(
             from: GRDBPersonalizationReviewRepository(database: dependencies.database)
-                .personalTrainingSnapshot()
+                .personalTrainingSnapshot(
+                    limitingToTagIDs: [tagID],
+                    limitingToAssetIDs: nil
+                )
         )
     }
 

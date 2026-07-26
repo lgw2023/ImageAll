@@ -1473,7 +1473,7 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         let asset = Self.makeAsset(sourceID: sourceID, fileName: "personal-library.jpg")
         let tag = TagListItem(id: UUID(), displayName: "旅行", state: .active)
         let secondTag = TagListItem(id: UUID(), displayName: "家人", state: .active)
-        let capability = Self.makePersonalCapability(tagIDs: [tag.id, secondTag.id])
+        let capability = Self.makePersonalCapability(tagIDs: [tag.id])
         let service = FakeLibraryWorkspaceService(
             connectedSource: LibrarySourceSummary(
                 id: sourceID,
@@ -2560,6 +2560,201 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         let rebuildCallCount = await rebuilder.callCount()
         XCTAssertEqual(rebuildCallCount, 0)
         XCTAssertEqual(model.notice, .personalModelRebuildNotReady)
+    }
+
+    func testAppPersonalMultiTagRebuildTrainsReadyTagsIndependentlyAndSkipsUnready() async {
+        let sourceID = UUID()
+        let readyTagID = UUID(uuidString: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")!
+        let unreadyTagID = UUID(uuidString: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")!
+        let readyAssets = [
+            UUID(uuidString: "11111111-1111-4111-8111-111111111111")!,
+            UUID(uuidString: "22222222-2222-4222-8222-222222222222")!,
+        ]
+        let unreadyAsset = UUID(uuidString: "33333333-3333-4333-8333-333333333333")!
+        let items = (readyAssets + [unreadyAsset]).enumerated().map { index, assetID in
+            Self.makeAsset(
+                sourceID: sourceID,
+                assetID: assetID,
+                fileName: "multi-\(index).png"
+            )
+        }
+        let catalogScopeID = UUID().uuidString.lowercased()
+        let snapshot = PersonalTrainingSnapshot(
+            catalogScopeID: catalogScopeID,
+            personalTagIDs: [readyTagID, unreadyTagID],
+            decisions: [
+                PersonalTrainingDecision(
+                    assetID: readyAssets[0],
+                    contentRevision: 1,
+                    tagID: readyTagID,
+                    state: .manualAccepted
+                ),
+                PersonalTrainingDecision(
+                    assetID: readyAssets[1],
+                    contentRevision: 1,
+                    tagID: readyTagID,
+                    state: .manualAccepted
+                ),
+                PersonalTrainingDecision(
+                    assetID: unreadyAsset,
+                    contentRevision: 1,
+                    tagID: unreadyTagID,
+                    state: .manualAccepted
+                ),
+            ]
+        )
+        let encoderIdentity = AppCoreMLModelIdentity(
+            provider: "dinov2",
+            modelID: "facebook/dinov2-small",
+            modelRevision: "model-v1",
+            preprocessingRevision: "preprocessing-v1",
+            embeddingSemantics: "dinov2-cls-token",
+            postprocessingRevision: "raw-float32-v1",
+            elementType: "float32",
+            elementCount: 384,
+            sourceModelSHA256: String(repeating: "3", count: 64),
+            artifactSHA256: String(repeating: "4", count: 64),
+            manifestSHA256: String(repeating: "5", count: 64),
+            licenseID: "Apache-2.0",
+            licenseSHA256: String(repeating: "6", count: 64)
+        )
+        let rebuilder = FakeAppPersonalModelRebuilder(
+            result: .success(
+                AppPersonalLinearHeadIdentity(
+                    catalogScopeID: catalogScopeID,
+                    decisionSnapshotRevision: String(repeating: "1", count: 64),
+                    labelVocabularyRevision: String(repeating: "2", count: 64),
+                    encoderIdentity: encoderIdentity,
+                    personalTagIDs: [readyTagID],
+                    weightsSHA256: String(repeating: "7", count: 64)
+                )
+            )
+        )
+        let model = LibraryWorkspaceModel(
+            service: FakeLibraryWorkspaceService(
+                connectedSource: LibrarySourceSummary(
+                    id: sourceID,
+                    displayName: "Fixture",
+                    state: .active
+                ),
+                reconciledItems: items,
+                tags: [
+                    TagListItem(id: readyTagID, displayName: "板栗", state: .active),
+                    TagListItem(id: unreadyTagID, displayName: "旅行", state: .active),
+                ],
+                initialItems: items,
+                startsConnected: true
+            ),
+            review: FakePersonalizationReviewPort(trainingSnapshot: snapshot),
+            appPersonalModelRebuilder: rebuilder
+        )
+        await model.start()
+        await model.toggleIncludedTagFilter(readyTagID)
+        await model.toggleIncludedTagFilter(unreadyTagID)
+
+        await model.rebuildPersonalModel()
+
+        let rebuildCallCount = await rebuilder.callCount()
+        let snapshots = await rebuilder.snapshots()
+        XCTAssertEqual(rebuildCallCount, 1)
+        XCTAssertEqual(snapshots.map(\.personalTagIDs), [[readyTagID]])
+        XCTAssertEqual(
+            model.notice,
+            .personalModelRebuildCompleted(tagCount: 1, sampleCount: 2)
+        )
+    }
+
+    func testAppPersonalSampleSuggestionsPersistsEachTagCapabilityIndependently() async {
+        let sourceID = UUID()
+        let tagA = UUID(uuidString: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")!
+        let tagB = UUID(uuidString: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")!
+        let asset = Self.makeAsset(sourceID: sourceID, fileName: "sample-multi.png")
+        let candidate = PersonalSuggestionCandidate(
+            assetID: asset.assetID,
+            contentRevision: asset.contentRevision
+        )
+        let capabilityA = PersonalModelSuggestionCapability(
+            target: PersonalModelSuggestionTarget(
+                catalogScopeID: "catalog-fixture",
+                bundleID: AppPersonalSuggestionCapabilityMapper.bundleID,
+                bundleRevision: String(repeating: "a", count: 64),
+                provider: "dinov2",
+                modelID: "facebook/dinov2-small",
+                modelRevision: "fixture",
+                preprocessingRevision: "fixture",
+                elementCount: 1,
+                labelVocabularyRevision: String(repeating: "b", count: 64),
+                weightsSHA256: String(repeating: "c", count: 64),
+                policyRevision: AppPersonalSuggestionCapabilityMapper.policyRevision
+            ),
+            tagIDs: [tagA]
+        )
+        let capabilityB = PersonalModelSuggestionCapability(
+            target: PersonalModelSuggestionTarget(
+                catalogScopeID: "catalog-fixture",
+                bundleID: AppPersonalSuggestionCapabilityMapper.bundleID,
+                bundleRevision: String(repeating: "d", count: 64),
+                provider: "dinov2",
+                modelID: "facebook/dinov2-small",
+                modelRevision: "fixture",
+                preprocessingRevision: "fixture",
+                elementCount: 1,
+                labelVocabularyRevision: String(repeating: "e", count: 64),
+                weightsSHA256: String(repeating: "f", count: 64),
+                policyRevision: AppPersonalSuggestionCapabilityMapper.policyRevision
+            ),
+            tagIDs: [tagB]
+        )
+        let review = FakePersonalizationReviewPort(personalCandidates: [candidate])
+        let suggester = FakeAppPersonalSampleSuggester(
+            batch: AppPersonalSampleSuggestionBatch(
+                capabilities: [capabilityA, capabilityB],
+                results: [
+                    AppPersonalSampleSuggestionAssetResult(
+                        candidate: candidate,
+                        predictions: [
+                            PersonalSuggestionPrediction(tagID: tagA, score: 1.25),
+                            PersonalSuggestionPrediction(tagID: tagB, score: 0.75),
+                        ]
+                    ),
+                ],
+                skippedCount: 0
+            )
+        )
+        let model = LibraryWorkspaceModel(
+            service: FakeLibraryWorkspaceService(
+                connectedSource: LibrarySourceSummary(
+                    id: sourceID,
+                    displayName: "Fixture",
+                    state: .active
+                ),
+                reconciledItems: [asset],
+                tags: [
+                    TagListItem(id: tagA, displayName: "板栗", state: .active),
+                    TagListItem(id: tagB, displayName: "旅行", state: .active),
+                ],
+                initialItems: [asset],
+                startsConnected: true,
+                previewData: Data("sample-preview".utf8)
+            ),
+            review: review,
+            selectedAssetEmbeddingCache: FakeSelectedAssetEmbeddingCache(),
+            appPersonalSampleSuggester: suggester
+        )
+        await model.start()
+
+        await model.generateAppPersonalSampleSuggestions()
+
+        XCTAssertEqual(review.activatedPersonalCapabilities, [capabilityA, capabilityB])
+        XCTAssertEqual(review.personalSuggestionReplacements.count, 2)
+        XCTAssertEqual(
+            review.personalSuggestionReplacements.map(\.expectedCapability),
+            [capabilityA, capabilityB]
+        )
+        XCTAssertEqual(
+            review.personalSuggestionReplacements.map { $0.predictions.map(\.tagID) },
+            [[tagA], [tagB]]
+        )
     }
 
     func testAppPersonalSampleSuggestionsUsesLibraryCandidatesWhenNothingSelected() async {
@@ -8543,7 +8738,7 @@ private final class FakePersonalizationReviewPort: PersonalizationReviewPort, @u
     private var storedQueueItems: [ReviewQueueItemProjection]
     private var storedPendingByAsset: [UUID: [AssetPendingSuggestion]]
     private let personalCandidates: [PersonalSuggestionCandidate]
-    private var storedActivatedPersonalCapability: PersonalModelSuggestionCapability?
+    private var storedActivatedPersonalCapabilities: [PersonalModelSuggestionCapability] = []
     private var storedEnqueuedPersonalCapability: PersonalModelSuggestionCapability?
     private var storedEnqueuedStandardTarget: StandardModelSuggestionTarget?
     private var storedStandardLibraryJob: StandardLibrarySuggestionJobProjection?
@@ -8592,7 +8787,11 @@ private final class FakePersonalizationReviewPort: PersonalizationReviewPort, @u
     }
 
     var activatedPersonalCapability: PersonalModelSuggestionCapability? {
-        lock.withLock { storedActivatedPersonalCapability }
+        lock.withLock { storedActivatedPersonalCapabilities.last }
+    }
+
+    var activatedPersonalCapabilities: [PersonalModelSuggestionCapability] {
+        lock.withLock { storedActivatedPersonalCapabilities }
     }
 
     var enqueuedPersonalCapability: PersonalModelSuggestionCapability? {
@@ -8761,7 +8960,7 @@ private final class FakePersonalizationReviewPort: PersonalizationReviewPort, @u
     func activatePersonalSuggestionBundle(
         _ capability: PersonalModelSuggestionCapability
     ) throws {
-        lock.withLock { storedActivatedPersonalCapability = capability }
+        lock.withLock { storedActivatedPersonalCapabilities.append(capability) }
     }
 
     func replacePersonalSuggestions(
@@ -8825,7 +9024,7 @@ private final class FakePersonalizationReviewPort: PersonalizationReviewPort, @u
     func invalidateAllPersonalSuggestionBundles() throws {
         lock.withLock {
             storedPersonalSuggestionInvalidationCallCount += 1
-            storedActivatedPersonalCapability = nil
+            storedActivatedPersonalCapabilities = []
             storedPersonalSuggestionReplacements = []
             storedPersonalTagLibraryReplacements = []
         }
@@ -8867,7 +9066,7 @@ private final class FakePersonalizationReviewPort: PersonalizationReviewPort, @u
         lock.withLock {
             let jobID = UUID()
             lastEnqueuedSourceIDs = sourceIDs
-            storedActivatedPersonalCapability = capability
+            storedActivatedPersonalCapabilities = [capability]
             storedEnqueuedPersonalCapability = capability
             storedPersonalLibraryJob = PersonalLibrarySuggestionJobProjection(
                 id: jobID,

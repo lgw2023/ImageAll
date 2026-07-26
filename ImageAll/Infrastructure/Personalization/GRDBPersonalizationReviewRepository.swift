@@ -78,7 +78,8 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                     UNION ALL
                     SELECT p.asset_id, p.tag_id
                     FROM personal_prediction p
-                    JOIN personal_suggestion_model m ON m.method = p.method
+                    JOIN personal_suggestion_model m
+                        ON m.method = p.method AND m.tag_id = p.tag_id
                     JOIN personal_suggestion_tag pst
                         ON pst.method = p.method AND pst.tag_id = p.tag_id
                     JOIN tag t ON t.id = p.tag_id AND t.state = 'active'
@@ -165,7 +166,8 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                         ELSE 'personalModel'
                     END AS suggestion_origin
                     FROM personal_prediction p
-                    JOIN personal_suggestion_model m ON m.method = p.method
+                    JOIN personal_suggestion_model m
+                        ON m.method = p.method AND m.tag_id = p.tag_id
                     JOIN personal_suggestion_tag pst
                         ON pst.method = p.method AND pst.tag_id = p.tag_id
                     JOIN tag t ON t.id = p.tag_id AND t.state = 'active'
@@ -698,8 +700,8 @@ struct GRDBPersonalizationReviewRepository: Sendable {
     ) throws {
         let target = capability.target
         guard activatedAtMs >= 0,
-              !capability.tagIDs.isEmpty,
-              Set(capability.tagIDs).count == capability.tagIDs.count,
+              capability.tagIDs.count == 1,
+              let tagID = capability.tagIDs.first,
               target.elementCount > 0,
               isLowercaseSHA256(target.labelVocabularyRevision),
               isLowercaseSHA256(target.weightsSHA256)
@@ -709,18 +711,20 @@ struct GRDBPersonalizationReviewRepository: Sendable {
         guard let method = PersonalSuggestionMethod(bundleID: target.bundleID)?.rawValue else {
             throw PersonalizationReviewError.persistenceFailure
         }
+        let tagKey = uuid(tagID)
         if try personalCapabilityMatches(capability, in: db) {
             if let publishedRunID {
                 try db.execute(
                     sql: """
                     UPDATE personal_suggestion_model
                     SET published_run_id = ?, activated_at_ms = ?
-                    WHERE method = ?
+                    WHERE method = ? AND tag_id = ?
                     """,
                     arguments: [
                         publishedRunID.uuidString.lowercased(),
                         activatedAtMs,
                         method,
+                        tagKey,
                     ]
                 )
                 guard db.changesCount == 1 else {
@@ -730,55 +734,63 @@ struct GRDBPersonalizationReviewRepository: Sendable {
             return
         }
         try db.execute(
-            sql: "DELETE FROM personal_prediction WHERE method = ?",
-            arguments: [method]
+            sql: "DELETE FROM personal_prediction WHERE method = ? AND tag_id = ?",
+            arguments: [method, tagKey]
         )
         try db.execute(
-            sql: "DELETE FROM personal_suggestion_tag WHERE method = ?",
-            arguments: [method]
+            sql: "DELETE FROM personal_suggestion_tag WHERE method = ? AND tag_id = ?",
+            arguments: [method, tagKey]
+        )
+        try db.execute(
+            sql: """
+            DELETE FROM personal_suggestion_model
+            WHERE method = ? AND tag_id = ?
+            """,
+            arguments: [method, tagKey]
         )
         try db.execute(
             sql: """
             INSERT INTO personal_suggestion_model (
-                method, catalog_scope_id, bundle_id, bundle_revision, provider, model_id,
+                method, tag_id, catalog_scope_id, bundle_id, bundle_revision, provider, model_id,
                 model_revision, preprocessing_revision, element_count,
                 label_vocabulary_revision, weights_sha256, policy_revision, activated_at_ms,
                 published_run_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(method) DO UPDATE SET
-                catalog_scope_id = excluded.catalog_scope_id,
-                bundle_id = excluded.bundle_id,
-                bundle_revision = excluded.bundle_revision,
-                provider = excluded.provider,
-                model_id = excluded.model_id,
-                model_revision = excluded.model_revision,
-                preprocessing_revision = excluded.preprocessing_revision,
-                element_count = excluded.element_count,
-                label_vocabulary_revision = excluded.label_vocabulary_revision,
-                weights_sha256 = excluded.weights_sha256,
-                policy_revision = excluded.policy_revision,
-                activated_at_ms = excluded.activated_at_ms,
-                published_run_id = excluded.published_run_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             arguments: [
-                method, target.catalogScopeID, target.bundleID, target.bundleRevision,
+                method, tagKey, target.catalogScopeID, target.bundleID, target.bundleRevision,
                 target.provider, target.modelID, target.modelRevision,
                 target.preprocessingRevision, target.elementCount,
                 target.labelVocabularyRevision, target.weightsSHA256, target.policyRevision,
                 activatedAtMs, publishedRunID?.uuidString.lowercased(),
             ]
         )
-        for tagID in capability.tagIDs {
-            try db.execute(
+        try db.execute(
+            sql: """
+            INSERT INTO personal_suggestion_tag (method, tag_id)
+            SELECT ?, id FROM tag WHERE id = ? AND state = 'active'
+            """,
+            arguments: [method, tagKey]
+        )
+        guard db.changesCount == 1 else {
+            throw PersonalizationReviewError.persistenceFailure
+        }
+    }
+
+    func publishedRunID(method: PersonalSuggestionMethod, tagID: UUID) throws -> UUID? {
+        try database.pool.read { db in
+            guard let raw = try String.fetchOne(
+                db,
                 sql: """
-                INSERT INTO personal_suggestion_tag (method, tag_id)
-                SELECT ?, id FROM tag WHERE id = ? AND state = 'active'
+                SELECT published_run_id
+                FROM personal_suggestion_model
+                WHERE method = ? AND tag_id = ?
                 """,
-                arguments: [method, uuid(tagID)]
-            )
-            guard db.changesCount == 1 else {
-                throw PersonalizationReviewError.persistenceFailure
+                arguments: [method.rawValue, uuid(tagID)]
+            ) else {
+                return nil
             }
+            return UUID(uuidString: raw)
         }
     }
 
@@ -790,6 +802,9 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                 SELECT published_run_id
                 FROM personal_suggestion_model
                 WHERE method = ?
+                    AND published_run_id IS NOT NULL
+                ORDER BY activated_at_ms DESC, tag_id ASC
+                LIMIT 1
                 """,
                 arguments: [method.rawValue]
             ) else {
@@ -799,7 +814,7 @@ struct GRDBPersonalizationReviewRepository: Sendable {
         }
     }
 
-    func publishedArtifactSHA256(method: PersonalSuggestionMethod) throws -> String? {
+    func publishedArtifactSHA256(method: PersonalSuggestionMethod, tagID: UUID) throws -> String? {
         try database.pool.read { db in
             try String.fetchOne(
                 db,
@@ -808,12 +823,46 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                 FROM personal_suggestion_model m
                 JOIN training_run r ON r.id = m.published_run_id
                 WHERE m.method = ?
+                    AND m.tag_id = ?
                     AND r.method = ?
                     AND r.state = 'succeeded'
                 """,
-                arguments: [method.rawValue, method.rawValue]
+                arguments: [method.rawValue, uuid(tagID), method.rawValue]
             )
         }
+    }
+
+    func publishedArtifactSHA256s(method: PersonalSuggestionMethod) throws -> [UUID: String] {
+        try database.pool.read { db in
+            let rows = try Row.fetchAll(
+                db,
+                sql: """
+                SELECT m.tag_id, r.artifact_sha256
+                FROM personal_suggestion_model m
+                JOIN training_run r ON r.id = m.published_run_id
+                WHERE m.method = ?
+                    AND r.method = ?
+                    AND r.state = 'succeeded'
+                    AND r.artifact_sha256 IS NOT NULL
+                ORDER BY m.tag_id
+                """,
+                arguments: [method.rawValue, method.rawValue]
+            )
+            var result: [UUID: String] = [:]
+            for row in rows {
+                guard let tagID = UUID(uuidString: row["tag_id"]),
+                      let sha: String = row["artifact_sha256"]
+                else { continue }
+                result[tagID] = sha
+            }
+            return result
+        }
+    }
+
+    func publishedArtifactSHA256(method: PersonalSuggestionMethod) throws -> String? {
+        let all = try publishedArtifactSHA256s(method: method)
+        guard all.count == 1, let only = all.values.first else { return nil }
+        return only
     }
 
     func usesLegacyActivePointer(method: PersonalSuggestionMethod) throws -> Bool {
@@ -827,6 +876,21 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                 )
                 """,
                 arguments: [method.rawValue]
+            ) == true
+        }
+    }
+
+    func usesLegacyActivePointer(method: PersonalSuggestionMethod, tagID: UUID) throws -> Bool {
+        try database.pool.read { db in
+            try Bool.fetchOne(
+                db,
+                sql: """
+                SELECT EXISTS(
+                    SELECT 1 FROM personal_suggestion_model
+                    WHERE method = ? AND tag_id = ? AND published_run_id IS NULL
+                )
+                """,
+                arguments: [method.rawValue, uuid(tagID)]
             ) == true
         }
     }
@@ -897,10 +961,15 @@ struct GRDBPersonalizationReviewRepository: Sendable {
         )?.rawValue else {
             throw PersonalizationReviewError.persistenceFailure
         }
-        try db.execute(
-            sql: "DELETE FROM personal_prediction WHERE asset_id = ? AND method = ?",
-            arguments: [uuid(candidate.assetID), method]
-        )
+        for tagID in expectedCapability.tagIDs {
+            try db.execute(
+                sql: """
+                DELETE FROM personal_prediction
+                WHERE asset_id = ? AND method = ? AND tag_id = ?
+                """,
+                arguments: [uuid(candidate.assetID), method, uuid(tagID)]
+            )
+        }
         var inserted = 0
         for prediction in predictions {
             guard expectedCapability.tagIDs.contains(prediction.tagID) else {
@@ -964,20 +1033,15 @@ struct GRDBPersonalizationReviewRepository: Sendable {
             )?.rawValue else {
                 throw PersonalizationReviewError.persistenceFailure
             }
-            try db.execute(
-                sql: """
-                INSERT OR IGNORE INTO personal_suggestion_tag (method, tag_id)
-                SELECT ?, id FROM tag WHERE id = ? AND state = 'active'
-                """,
-                arguments: [method, uuid(tagID)]
-            )
             guard try Bool.fetchOne(
                 db,
                 sql: """
                 SELECT EXISTS(
-                    SELECT 1 FROM personal_suggestion_tag pst
+                    SELECT 1 FROM personal_suggestion_model psm
+                    JOIN personal_suggestion_tag pst
+                        ON pst.method = psm.method AND pst.tag_id = psm.tag_id
                     JOIN tag t ON t.id = pst.tag_id AND t.state = 'active'
-                    WHERE pst.method = ? AND pst.tag_id = ?
+                    WHERE psm.method = ? AND psm.tag_id = ?
                 )
                 """,
                 arguments: [method, uuid(tagID)]
@@ -1361,7 +1425,8 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                 END AS suggestion_origin,
                 a.file_name, a.availability
             FROM personal_prediction p
-            JOIN personal_suggestion_model m ON m.method = p.method
+            JOIN personal_suggestion_model m
+                ON m.method = p.method AND m.tag_id = p.tag_id
             JOIN personal_suggestion_tag pst
                 ON pst.method = p.method AND pst.tag_id = p.tag_id
             JOIN tag t ON t.id = p.tag_id AND t.state = 'active'
@@ -1502,7 +1567,8 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                             ELSE 'personalModel'
                         END AS suggestion_origin
                     FROM personal_prediction p
-                    JOIN personal_suggestion_model m ON m.method = p.method
+                    JOIN personal_suggestion_model m
+                        ON m.method = p.method AND m.tag_id = p.tag_id
                     JOIN personal_suggestion_tag pst
                         ON pst.method = p.method AND pst.tag_id = p.tag_id
                     JOIN tag t ON t.id = p.tag_id AND t.state = 'active'
@@ -1718,48 +1784,43 @@ struct GRDBPersonalizationReviewRepository: Sendable {
         in db: Database
     ) throws -> Bool {
         let target = capability.target
-        guard let method = PersonalSuggestionMethod(bundleID: target.bundleID)?.rawValue else {
+        guard capability.tagIDs.count == 1,
+              let tagID = capability.tagIDs.first,
+              let method = PersonalSuggestionMethod(bundleID: target.bundleID)?.rawValue
+        else {
             return false
         }
-        let matches = try Bool.fetchOne(
+        return try Bool.fetchOne(
             db,
             sql: """
             SELECT EXISTS(
-                SELECT 1 FROM personal_suggestion_model
-                WHERE method = ?
-                    AND catalog_scope_id = ?
-                    AND bundle_id = ?
-                    AND bundle_revision = ?
-                    AND provider = ?
-                    AND model_id = ?
-                    AND model_revision = ?
-                    AND preprocessing_revision = ?
-                    AND element_count = ?
-                    AND label_vocabulary_revision = ?
-                    AND weights_sha256 = ?
-                    AND policy_revision = ?
+                SELECT 1
+                FROM personal_suggestion_model psm
+                JOIN personal_suggestion_tag pst
+                    ON pst.method = psm.method AND pst.tag_id = psm.tag_id
+                JOIN tag t ON t.id = psm.tag_id AND t.state = 'active'
+                WHERE psm.method = ?
+                    AND psm.tag_id = ?
+                    AND psm.catalog_scope_id = ?
+                    AND psm.bundle_id = ?
+                    AND psm.bundle_revision = ?
+                    AND psm.provider = ?
+                    AND psm.model_id = ?
+                    AND psm.model_revision = ?
+                    AND psm.preprocessing_revision = ?
+                    AND psm.element_count = ?
+                    AND psm.label_vocabulary_revision = ?
+                    AND psm.weights_sha256 = ?
+                    AND psm.policy_revision = ?
             )
             """,
             arguments: [
-                method, target.catalogScopeID, target.bundleID, target.bundleRevision,
+                method, uuid(tagID), target.catalogScopeID, target.bundleID, target.bundleRevision,
                 target.provider, target.modelID, target.modelRevision,
                 target.preprocessingRevision, target.elementCount,
                 target.labelVocabularyRevision, target.weightsSHA256, target.policyRevision,
             ]
         ) ?? false
-        guard matches else { return false }
-        let tagIDs = try String.fetchAll(
-            db,
-            sql: """
-            SELECT pst.tag_id
-            FROM personal_suggestion_tag pst
-            JOIN tag t ON t.id = pst.tag_id AND t.state = 'active'
-            WHERE pst.method = ?
-            ORDER BY pst.tag_id
-            """,
-            arguments: [method]
-        )
-        return tagIDs == capability.tagIDs.map(uuid).sorted()
     }
 }
 

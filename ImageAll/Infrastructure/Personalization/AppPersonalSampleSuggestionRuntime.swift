@@ -47,25 +47,28 @@ actor AppPersonalSampleSuggestionRuntime: AppPersonalSampleSuggesting {
         let storeCapability: AppPersonalLinearHeadCapability
         if let database {
             let review = GRDBPersonalizationReviewRepository(database: database)
-            let artifactSHA256 = try review.publishedArtifactSHA256(
-                method: .personalCentroid
-            )
-            if artifactSHA256 == nil,
+            let published = try review.publishedArtifactSHA256s(method: .personalCentroid)
+            if published.isEmpty,
                try review.usesLegacyActivePointer(method: .personalCentroid)
             {
                 storeCapability = await store.start()
             } else {
-                storeCapability = await store.start(
-                    publishedArtifactSHA256: artifactSHA256
-                )
+                storeCapability = await store.start(publishedArtifacts: published)
             }
         } else {
             storeCapability = await store.start()
         }
-        guard case let .ready(identity) = storeCapability else {
+        guard case .ready = storeCapability else {
             throw AppPersonalSampleSuggestionError.personalUnavailable
         }
-        let capability = AppPersonalSuggestionCapabilityMapper.capability(from: identity)
+        let identities = await store.identities()
+        guard !identities.isEmpty else {
+            throw AppPersonalSampleSuggestionError.personalUnavailable
+        }
+        // Each active model is single-tag; persist/match capability per tag.
+        let capabilities = identities.map {
+            AppPersonalSuggestionCapabilityMapper.capability(from: $0)
+        }
 
         var results: [AppPersonalSampleSuggestionAssetResult] = []
         var skippedCount = 0
@@ -84,16 +87,31 @@ actor AppPersonalSampleSuggestionRuntime: AppPersonalSampleSuggesting {
                 skippedCount += 1
                 continue
             }
-            let suggestions: [AppPersonalLinearHeadSuggestion]
-            do {
-                suggestions = try await store.suggestions(
-                    for: values,
-                    maximumCount: maximumSuggestionsPerAsset
-                )
-            } catch {
-                skippedCount += 1
-                continue
+            // Score each tag model independently, then take the global top-N.
+            var perTag: [AppPersonalLinearHeadSuggestion] = []
+            for identity in identities {
+                guard let tagID = identity.personalTagIDs.first else { continue }
+                do {
+                    guard let score = try await store.score(tagID: tagID, embedding: values)
+                    else { continue }
+                    perTag.append(
+                        AppPersonalLinearHeadSuggestion(tagID: tagID, score: score)
+                    )
+                } catch {
+                    continue
+                }
             }
+            let suggestions = Array(
+                perTag
+                    .sorted {
+                        if $0.score == $1.score {
+                            return $0.tagID.uuidString.lowercased()
+                                < $1.tagID.uuidString.lowercased()
+                        }
+                        return $0.score > $1.score
+                    }
+                    .prefix(maximumSuggestionsPerAsset)
+            )
             guard !suggestions.isEmpty else {
                 skippedCount += 1
                 continue
@@ -109,7 +127,7 @@ actor AppPersonalSampleSuggestionRuntime: AppPersonalSampleSuggesting {
         }
 
         return AppPersonalSampleSuggestionBatch(
-            capability: capability,
+            capabilities: capabilities,
             results: results,
             skippedCount: skippedCount
         )

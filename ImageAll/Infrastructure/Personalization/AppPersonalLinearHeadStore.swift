@@ -58,7 +58,7 @@ actor AppPersonalLinearHeadStore {
     private let applicationSupportDirectory: URL
     private let expectedCatalogScopeID: String
     private let expectedEncoderIdentity: AppCoreMLModelIdentity
-    private var activeModel: AppPersonalLinearHeadModel?
+    private var activeModels: [UUID: AppPersonalLinearHeadModel] = [:]
     private var state: AppPersonalLinearHeadCapability = .unavailable(.artifactMissing)
 
     init(
@@ -74,8 +74,9 @@ actor AppPersonalLinearHeadStore {
     }
 
     func start() -> AppPersonalLinearHeadCapability {
-        let loaded = loadActive()
-        activeModel = loaded.model
+        migrateLegacyActivePointerIfNeeded()
+        let loaded = loadAllActive()
+        activeModels = loaded.models
         state = loaded.capability
         return state
     }
@@ -83,14 +84,11 @@ actor AppPersonalLinearHeadStore {
     func start(publishedArtifactSHA256: String?) -> AppPersonalLinearHeadCapability {
         do {
             guard let publishedArtifactSHA256 else {
-                try clearActivePointer()
-                activeModel = nil
-                state = .unavailable(.artifactMissing)
-                return state
+                return start()
             }
+            _ = start()
             return try activate(artifactSHA256: publishedArtifactSHA256)
         } catch let error as AppPersonalLinearHeadStoreError {
-            activeModel = nil
             state = switch error {
             case .identityMismatch: .unavailable(.identityMismatch)
             case .invalidCandidate, .persistenceFailed, .unavailable:
@@ -98,38 +96,103 @@ actor AppPersonalLinearHeadStore {
             }
             return state
         } catch {
-            activeModel = nil
             state = .unavailable(.artifactInvalid)
             return state
         }
+    }
+
+    func start(publishedArtifacts: [UUID: String]) -> AppPersonalLinearHeadCapability {
+        migrateLegacyActivePointerIfNeeded()
+        guard !publishedArtifacts.isEmpty else {
+            do {
+                try clearAllActivePointers()
+            } catch {
+                // Best-effort clear; fall through to unavailable.
+            }
+            activeModels = [:]
+            state = .unavailable(.artifactMissing)
+            return state
+        }
+        var models: [UUID: AppPersonalLinearHeadModel] = [:]
+        for (_, sha) in publishedArtifacts.sorted(by: {
+            $0.key.uuidString.lowercased() < $1.key.uuidString.lowercased()
+        }) {
+            do {
+                _ = try activate(artifactSHA256: sha)
+                if case let .ready(identity) = state,
+                   let tagID = identity.personalTagIDs.first,
+                   let model = activeModels[tagID]
+                {
+                    models[tagID] = model
+                }
+            } catch {
+                // Skip a single bad published artifact; keep other tags usable.
+                continue
+            }
+        }
+        do {
+            try removeActivePointers(except: Set(models.keys))
+        } catch {
+            // Pointer cleanup is best-effort; in-memory models remain authoritative.
+        }
+        activeModels = models
+        if models.isEmpty {
+            state = .unavailable(.artifactMissing)
+        } else {
+            let sorted = models.values.map(\.identity).sorted {
+                $0.personalTagIDs[0].uuidString.lowercased()
+                    < $1.personalTagIDs[0].uuidString.lowercased()
+            }
+            state = .ready(sorted[0])
+        }
+        return state
     }
 
     func capability() -> AppPersonalLinearHeadCapability {
         state
     }
 
+    func identities() -> [AppPersonalLinearHeadIdentity] {
+        activeModels.values.map(\.identity).sorted {
+            $0.personalTagIDs[0].uuidString.lowercased()
+                < $1.personalTagIDs[0].uuidString.lowercased()
+        }
+    }
+
     func suggestions(
         for embedding: AppCoreMLEmbedding,
         maximumCount: Int
     ) throws -> [AppPersonalLinearHeadSuggestion] {
-        guard let activeModel,
-              state == .ready(activeModel.identity)
-        else {
+        guard !activeModels.isEmpty else {
             throw AppPersonalLinearHeadStoreError.unavailable
         }
-        return try activeModel.suggestions(for: embedding, maximumCount: maximumCount)
+        var combined: [AppPersonalLinearHeadSuggestion] = []
+        for model in activeModels.values {
+            combined.append(
+                contentsOf: try model.suggestions(for: embedding, maximumCount: maximumCount)
+            )
+        }
+        return Array(
+            combined
+                .sorted {
+                    if $0.score == $1.score {
+                        return $0.tagID.uuidString.lowercased()
+                            < $1.tagID.uuidString.lowercased()
+                    }
+                    return $0.score > $1.score
+                }
+                .prefix(maximumCount)
+        )
     }
 
     func score(
         tagID: UUID,
         embedding: AppCoreMLEmbedding
     ) throws -> Float? {
-        guard let activeModel,
-              state == .ready(activeModel.identity)
-        else {
+        guard let model = activeModels[tagID] else {
             throw AppPersonalLinearHeadStoreError.unavailable
         }
-        return try activeModel.score(tagID: tagID, embedding: embedding)
+        return try model.score(tagID: tagID, embedding: embedding)
     }
 
     func publish(
@@ -148,7 +211,9 @@ actor AppPersonalLinearHeadStore {
         } catch {
             throw AppPersonalLinearHeadStoreError.invalidCandidate
         }
-        guard matchesFamily(model) else {
+        guard matchesFamily(model),
+              model.identity.personalTagIDs.count == 1
+        else {
             throw AppPersonalLinearHeadStoreError.identityMismatch
         }
 
@@ -192,7 +257,9 @@ actor AppPersonalLinearHeadStore {
                   let model = try? AppPersonalLinearHeadModel(
                       artifact: AppPersonalLinearHeadArtifact(encodedData: artifactData)
                   ),
-                  matchesFamily(model)
+                  matchesFamily(model),
+                  model.identity.personalTagIDs.count == 1,
+                  let tagID = model.identity.personalTagIDs.first
             else {
                 throw AppPersonalLinearHeadStoreError.identityMismatch
             }
@@ -202,76 +269,162 @@ actor AppPersonalLinearHeadStore {
             )
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.sortedKeys]
-            try requireRegularFileOrMissing(at: activePointerURL)
-            try encoder.encode(pointer).write(to: activePointerURL, options: .atomic)
-            guard DerivedImageSecureIO.isRegularFile(at: activePointerURL) else {
+            let pointerURL = activePointerURL(for: tagID)
+            try FileManager.default.createDirectory(
+                at: pointerURL.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try requireRegularFileOrMissing(at: pointerURL)
+            try encoder.encode(pointer).write(to: pointerURL, options: .atomic)
+            guard DerivedImageSecureIO.isRegularFile(at: pointerURL) else {
                 throw AppPersonalLinearHeadStoreError.persistenceFailed
             }
+            activeModels[tagID] = model
+            state = .ready(model.identity)
+            return state
         } catch let error as AppPersonalLinearHeadStoreError {
             throw error
         } catch {
             throw AppPersonalLinearHeadStoreError.persistenceFailed
         }
-        let loaded = loadActive()
-        guard case .ready = loaded.capability else {
-            throw AppPersonalLinearHeadStoreError.persistenceFailed
-        }
-        activeModel = loaded.model
-        state = loaded.capability
-        return state
     }
 
-    private func clearActivePointer() throws {
-        guard FileManager.default.fileExists(atPath: activePointerURL.path) else { return }
-        guard try requireRegularFileOrMissing(at: activePointerURL) else { return }
+    private func clearAllActivePointers() throws {
+        try removeActivePointers(except: [])
+    }
+
+    private func removeActivePointers(except keepTagIDs: Set<UUID>) throws {
+        migrateLegacyActivePointerIfNeeded()
+        let tagsRoot = tagsDirectory
+        guard FileManager.default.fileExists(atPath: tagsRoot.path) else {
+            try clearLegacyRootPointer()
+            return
+        }
+        let keep = Set(keepTagIDs.map { $0.uuidString.lowercased() })
+        let contents = try FileManager.default.contentsOfDirectory(
+            at: tagsRoot,
+            includingPropertiesForKeys: nil
+        )
+        for directory in contents where directory.hasDirectoryPath {
+            let tagKey = directory.lastPathComponent.lowercased()
+            guard !keep.contains(tagKey) else { continue }
+            let pointer = directory.appendingPathComponent("active.json")
+            if FileManager.default.fileExists(atPath: pointer.path) {
+                try FileManager.default.removeItem(at: pointer)
+            }
+        }
+        try clearLegacyRootPointer()
+    }
+
+    private func clearLegacyRootPointer() throws {
+        guard FileManager.default.fileExists(atPath: legacyActivePointerURL.path) else { return }
+        guard try requireRegularFileOrMissing(at: legacyActivePointerURL) else { return }
+        try FileManager.default.removeItem(at: legacyActivePointerURL)
+    }
+
+    private func migrateLegacyActivePointerIfNeeded() {
+        guard FileManager.default.fileExists(atPath: legacyActivePointerURL.path) else { return }
         do {
-            try FileManager.default.removeItem(at: activePointerURL)
+            let pointerData = try readRegularFile(at: legacyActivePointerURL)
+            let pointer = try JSONDecoder().decode(ActivePointer.self, from: pointerData)
+            guard pointer.schemaRevision == Self.pointerSchemaRevision,
+                  Self.isLowercaseSHA256(pointer.artifactSHA256)
+            else { return }
+            let artifactData = try readRegularFile(
+                at: objectURL(artifactSHA256: pointer.artifactSHA256)
+            )
+            guard Self.sha256(artifactData) == pointer.artifactSHA256 else { return }
+            let model = try AppPersonalLinearHeadModel(
+                artifact: AppPersonalLinearHeadArtifact(encodedData: artifactData)
+            )
+            guard model.identity.personalTagIDs.count == 1,
+                  let tagID = model.identity.personalTagIDs.first
+            else { return }
+            let destination = activePointerURL(for: tagID)
+            try FileManager.default.createDirectory(
+                at: destination.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            if !FileManager.default.fileExists(atPath: destination.path) {
+                try pointerData.write(to: destination, options: .atomic)
+            }
+            try FileManager.default.removeItem(at: legacyActivePointerURL)
         } catch {
-            throw AppPersonalLinearHeadStoreError.persistenceFailed
+            return
         }
     }
 
-    private func loadActive() -> (
-        model: AppPersonalLinearHeadModel?,
+    private func loadAllActive() -> (
+        models: [UUID: AppPersonalLinearHeadModel],
         capability: AppPersonalLinearHeadCapability
     ) {
         switch storeDirectoryReadState() {
         case .missing:
-            return (nil, .unavailable(.artifactMissing))
+            return ([:], .unavailable(.artifactMissing))
         case .invalid:
-            return (nil, .unavailable(.artifactInvalid))
+            return ([:], .unavailable(.artifactInvalid))
         case .ready:
             break
         }
-        guard FileManager.default.fileExists(atPath: activePointerURL.path) else {
-            return (nil, .unavailable(.artifactMissing))
+        var models: [UUID: AppPersonalLinearHeadModel] = [:]
+        var emptyFailure: AppPersonalLinearHeadCapabilityFailure?
+        let tagsRoot = tagsDirectory
+        if FileManager.default.fileExists(atPath: tagsRoot.path),
+           let contents = try? FileManager.default.contentsOfDirectory(
+               at: tagsRoot,
+               includingPropertiesForKeys: nil
+           )
+        {
+            for directory in contents where directory.hasDirectoryPath {
+                let pointerURL = directory.appendingPathComponent("active.json")
+                guard FileManager.default.fileExists(atPath: pointerURL.path) else { continue }
+                do {
+                    let pointerData = try readRegularFile(at: pointerURL)
+                    let pointer = try JSONDecoder().decode(ActivePointer.self, from: pointerData)
+                    guard pointer.schemaRevision == Self.pointerSchemaRevision,
+                          Self.isLowercaseSHA256(pointer.artifactSHA256)
+                    else {
+                        emptyFailure = .artifactInvalid
+                        continue
+                    }
+                    let artifactData = try readRegularFile(
+                        at: objectURL(artifactSHA256: pointer.artifactSHA256)
+                    )
+                    guard Self.sha256(artifactData) == pointer.artifactSHA256 else {
+                        emptyFailure = .artifactInvalid
+                        continue
+                    }
+                    let model = try AppPersonalLinearHeadModel(
+                        artifact: AppPersonalLinearHeadArtifact(encodedData: artifactData)
+                    )
+                    guard family.acceptedAlgorithmRevisions.contains(model.algorithmRevision),
+                          model.identity.personalTagIDs.count == 1,
+                          let tagID = model.identity.personalTagIDs.first,
+                          tagID.uuidString.lowercased() == directory.lastPathComponent.lowercased()
+                    else {
+                        emptyFailure = .artifactInvalid
+                        continue
+                    }
+                    guard matchesExpectedIdentity(model.identity) else {
+                        emptyFailure = .identityMismatch
+                        continue
+                    }
+                    models[tagID] = model
+                } catch {
+                    // One corrupt tag pointer must not disable other healthy tags.
+                    emptyFailure = .artifactInvalid
+                    continue
+                }
+            }
         }
-        do {
-            let pointerData = try readRegularFile(at: activePointerURL)
-            let pointer = try JSONDecoder().decode(ActivePointer.self, from: pointerData)
-            guard pointer.schemaRevision == Self.pointerSchemaRevision,
-                  Self.isLowercaseSHA256(pointer.artifactSHA256)
-            else {
-                return (nil, .unavailable(.artifactInvalid))
-            }
-            let artifactData = try readRegularFile(
-                at: objectURL(artifactSHA256: pointer.artifactSHA256)
-            )
-            guard Self.sha256(artifactData) == pointer.artifactSHA256 else {
-                return (nil, .unavailable(.artifactInvalid))
-            }
-            let model = try AppPersonalLinearHeadModel(
-                artifact: AppPersonalLinearHeadArtifact(encodedData: artifactData)
-            )
-            guard family.acceptedAlgorithmRevisions.contains(model.algorithmRevision),
-                  matchesExpectedIdentity(model.identity)
-            else {
-                return (nil, .unavailable(.identityMismatch))
-            }
-            return (model, .ready(model.identity))
-        } catch {
-            return (nil, .unavailable(.artifactInvalid))
+        if models.isEmpty {
+            return ([:], .unavailable(emptyFailure ?? .artifactMissing))
         }
+        let sorted = models.values.map(\.identity).sorted {
+            $0.personalTagIDs[0].uuidString.lowercased()
+                < $1.personalTagIDs[0].uuidString.lowercased()
+        }
+        return (models, .ready(sorted[0]))
     }
 
     private func matchesExpectedIdentity(_ identity: AppPersonalLinearHeadIdentity) -> Bool {
@@ -361,6 +514,10 @@ actor AppPersonalLinearHeadStore {
         storeRoot.appendingPathComponent("objects", isDirectory: true)
     }
 
+    private var tagsDirectory: URL {
+        storeRoot.appendingPathComponent("tags", isDirectory: true)
+    }
+
     private var storeDirectoryChain: [URL] {
         [
             applicationSupportDirectory,
@@ -371,11 +528,18 @@ actor AppPersonalLinearHeadStore {
             ),
             storeRoot,
             objectsDirectory,
+            tagsDirectory,
         ]
     }
 
-    private var activePointerURL: URL {
+    private var legacyActivePointerURL: URL {
         storeRoot.appendingPathComponent("active.json")
+    }
+
+    private func activePointerURL(for tagID: UUID) -> URL {
+        tagsDirectory
+            .appendingPathComponent(tagID.uuidString.lowercased(), isDirectory: true)
+            .appendingPathComponent("active.json")
     }
 
     private func objectURL(artifactSHA256: String) -> URL {

@@ -177,6 +177,9 @@ final class V002MigrationTests: XCTestCase {
                 "standard_tag_binding",
                 "standard_prediction",
                 "training_run",
+                "suggestion_score_threshold_default",
+                "suggestion_score_threshold_override",
+                "tag_group",
             ].contains($0)
         }
         let v001Dump = try v001Only.pool.read { db in
@@ -194,7 +197,7 @@ final class V002MigrationTests: XCTestCase {
                 .filter { CatalogSchemaExpectations.businessTables.contains($0.name) || $0.name == "grdb_migrations" }
         }
 
-        for table in v001EraTables where table != "asset" {
+        for table in v001EraTables where table != "asset" && table != "tag" {
             let v001SQL = try v001Only.pool.read { db in
                 try String.fetchOne(db, sql: "SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = ?", arguments: [table])
             }

@@ -55,28 +55,40 @@ actor AppPersonalTagLibrarySuggestionRuntime: AppPersonalTagLibrarySuggesting {
         if let database {
             let review = GRDBPersonalizationReviewRepository(database: database)
             let artifactSHA256 = try review.publishedArtifactSHA256(
-                method: family.personalSuggestionMethod
+                method: family.personalSuggestionMethod,
+                tagID: tagID
             )
             if artifactSHA256 == nil,
-               try review.usesLegacyActivePointer(method: family.personalSuggestionMethod)
+               try review.usesLegacyActivePointer(
+                   method: family.personalSuggestionMethod,
+                   tagID: tagID
+               )
             {
+                // Legacy pointers load all active tag models; match the requested
+                // tag via identities(), not the store's primary ready identity
+                // (which is only the lexicographically first loaded tag).
                 storeCapability = await store.start()
-            } else {
+            } else if let artifactSHA256 {
                 storeCapability = await store.start(
-                    publishedArtifactSHA256: artifactSHA256
+                    publishedArtifacts: [tagID: artifactSHA256]
                 )
+            } else {
+                throw AppPersonalTagLibrarySuggestionError.tagNotInPersonalModel
             }
         } else {
             storeCapability = await store.start()
         }
-        guard case let .ready(identity) = storeCapability else {
+        guard case .ready = storeCapability else {
             throw AppPersonalTagLibrarySuggestionError.personalUnavailable
         }
-        guard identity.personalTagIDs.contains(tagID) else {
+        let identities = await store.identities()
+        guard let matchedIdentity = identities.first(where: {
+            $0.personalTagIDs == [tagID]
+        }) else {
             throw AppPersonalTagLibrarySuggestionError.tagNotInPersonalModel
         }
         let capability = AppPersonalSuggestionCapabilityMapper.capability(
-            from: identity,
+            from: matchedIdentity,
             family: family
         )
 

@@ -112,15 +112,16 @@ final class SuggestionThresholdTests: XCTestCase {
             try db.execute(
                 sql: """
                 INSERT INTO personal_suggestion_model (
-                    method, catalog_scope_id, bundle_id, bundle_revision, provider, model_id,
+                    method, tag_id, catalog_scope_id, bundle_id, bundle_revision, provider, model_id,
                     model_revision, preprocessing_revision, element_count,
                     label_vocabulary_revision, weights_sha256, policy_revision, activated_at_ms
                 ) VALUES (
-                    'personalCentroid', ?, 'app.personal.linear-head.v1', '1', 'app', 'head',
+                    'personalCentroid', ?, ?, 'app.personal.linear-head.v1', '1', 'app', 'head',
                     '1', '1', 4, ?, ?, 'policy', ?
                 )
                 """,
                 arguments: [
+                    fixture.tagID.uuidString.lowercased(),
                     fixture.scopeID,
                     String(repeating: "b", count: 64),
                     String(repeating: "c", count: 64),
@@ -207,15 +208,16 @@ final class SuggestionThresholdTests: XCTestCase {
             try db.execute(
                 sql: """
                 INSERT INTO personal_suggestion_model (
-                    method, catalog_scope_id, bundle_id, bundle_revision, provider, model_id,
+                    method, tag_id, catalog_scope_id, bundle_id, bundle_revision, provider, model_id,
                     model_revision, preprocessing_revision, element_count,
                     label_vocabulary_revision, weights_sha256, policy_revision, activated_at_ms
                 ) VALUES (
-                    'personalCentroid', ?, 'app.personal.linear-head.v1', '1', 'app', 'head',
+                    'personalCentroid', ?, ?, 'app.personal.linear-head.v1', '1', 'app', 'head',
                     '1', '1', 4, ?, ?, 'policy', 1
                 )
                 """,
                 arguments: [
+                    fixture.tagID.uuidString.lowercased(),
                     fixture.scopeID,
                     String(repeating: "b", count: 64),
                     String(repeating: "c", count: 64),

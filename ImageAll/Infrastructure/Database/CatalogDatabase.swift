@@ -22,6 +22,7 @@ struct CatalogDatabase: Sendable {
         V014AddTrainingRunsAndPersonalMultiSlotMigration.register(on: &migrator)
         V015AddSuggestionScoreThresholdsMigration.register(on: &migrator)
         V016AddTagGroupsMigration.register(on: &migrator)
+        V017PerTagPersonalSuggestionModelsMigration.register(on: &migrator)
         return migrator
     }
 
@@ -1037,6 +1038,213 @@ enum V015AddSuggestionScoreThresholdsMigration {
                     ('personalAdamW', 0, 0)
                 """
             )
+        }
+    }
+}
+
+enum V017PerTagPersonalSuggestionModelsMigration {
+    static func register(on migrator: inout DatabaseMigrator) {
+        migrator.registerMigration(CatalogMigrationID.v017PerTagPersonalSuggestionModels) { db in
+            let modelColumns = try db.columns(in: "personal_suggestion_model").map(\.name)
+            if modelColumns.contains("tag_id") {
+                return
+            }
+
+            try db.execute(sql: "PRAGMA foreign_keys = OFF")
+            try db.execute(
+                sql: "ALTER TABLE personal_suggestion_model RENAME TO personal_suggestion_model_v014"
+            )
+            try db.execute(
+                sql: "ALTER TABLE personal_suggestion_tag RENAME TO personal_suggestion_tag_v014"
+            )
+            try db.execute(
+                sql: "ALTER TABLE personal_prediction RENAME TO personal_prediction_v014"
+            )
+            try db.execute(sql: "DROP TRIGGER IF EXISTS personal_suggestion_tag_before_insert")
+            try db.execute(sql: "DROP INDEX IF EXISTS personal_prediction_review_rank_idx")
+
+            try db.execute(
+                sql: """
+                CREATE TABLE personal_suggestion_model (
+                    method TEXT NOT NULL CHECK(
+                        method IN ('personalCentroid', 'personalAdamW')
+                    ),
+                    tag_id TEXT NOT NULL REFERENCES tag(id) ON DELETE CASCADE,
+                    catalog_scope_id TEXT NOT NULL
+                        REFERENCES catalog_scope(scope_id) ON DELETE CASCADE,
+                    bundle_id TEXT NOT NULL CHECK(length(bundle_id) BETWEEN 1 AND 200),
+                    bundle_revision TEXT NOT NULL CHECK(length(bundle_revision) BETWEEN 1 AND 200),
+                    provider TEXT NOT NULL CHECK(length(provider) BETWEEN 1 AND 200),
+                    model_id TEXT NOT NULL CHECK(length(model_id) BETWEEN 1 AND 300),
+                    model_revision TEXT NOT NULL CHECK(length(model_revision) BETWEEN 1 AND 200),
+                    preprocessing_revision TEXT NOT NULL
+                        CHECK(length(preprocessing_revision) BETWEEN 1 AND 200),
+                    element_count INTEGER NOT NULL CHECK(element_count > 0),
+                    label_vocabulary_revision TEXT NOT NULL CHECK(
+                        length(label_vocabulary_revision) = 64
+                        AND label_vocabulary_revision NOT GLOB '*[^0-9a-f]*'
+                    ),
+                    weights_sha256 TEXT NOT NULL CHECK(
+                        length(weights_sha256) = 64
+                        AND weights_sha256 NOT GLOB '*[^0-9a-f]*'
+                    ),
+                    policy_revision TEXT NOT NULL CHECK(length(policy_revision) BETWEEN 1 AND 200),
+                    activated_at_ms INTEGER NOT NULL CHECK(activated_at_ms >= 0),
+                    published_run_id TEXT REFERENCES training_run(id) ON DELETE SET NULL,
+                    PRIMARY KEY(method, tag_id)
+                ) STRICT
+                """
+            )
+            try db.execute(
+                sql: """
+                CREATE TABLE personal_suggestion_tag (
+                    method TEXT NOT NULL,
+                    tag_id TEXT NOT NULL,
+                    PRIMARY KEY(method, tag_id),
+                    FOREIGN KEY(method, tag_id)
+                        REFERENCES personal_suggestion_model(method, tag_id) ON DELETE CASCADE
+                ) STRICT
+                """
+            )
+            try db.execute(
+                sql: """
+                CREATE TABLE personal_prediction (
+                    method TEXT NOT NULL,
+                    asset_id TEXT NOT NULL REFERENCES asset(id) ON DELETE CASCADE,
+                    tag_id TEXT NOT NULL,
+                    content_revision INTEGER NOT NULL CHECK(content_revision > 0),
+                    score REAL NOT NULL CHECK(
+                        typeof(score) IN ('real', 'integer')
+                        AND score = score
+                        AND score BETWEEN -1.0e308 AND 1.0e308
+                    ),
+                    state TEXT NOT NULL CHECK(state = 'pendingReview'),
+                    created_at_ms INTEGER NOT NULL CHECK(created_at_ms >= 0),
+                    PRIMARY KEY(method, asset_id, tag_id, content_revision),
+                    FOREIGN KEY(method, tag_id)
+                        REFERENCES personal_suggestion_tag(method, tag_id) ON DELETE CASCADE
+                ) STRICT
+                """
+            )
+
+            let chestnutID = try String.fetchOne(
+                db,
+                sql: """
+                SELECT id FROM tag
+                WHERE name = '板栗' OR normalized_name = '板栗'
+                ORDER BY id
+                LIMIT 1
+                """
+            )
+            let oldMethods = try Row.fetchAll(
+                db,
+                sql: "SELECT * FROM personal_suggestion_model_v014"
+            )
+            for model in oldMethods {
+                let method: String = model["method"]
+                let tagRows = try String.fetchAll(
+                    db,
+                    sql: """
+                    SELECT tag_id FROM personal_suggestion_tag_v014
+                    WHERE method = ?
+                    ORDER BY tag_id
+                    """,
+                    arguments: [method]
+                )
+                let preservedTagIDs: [String]
+                if tagRows.count == 1 {
+                    preservedTagIDs = tagRows
+                } else if let chestnutID, tagRows.contains(chestnutID) {
+                    // Multi-tag shared heads are unstable; keep only 板栗 and
+                    // drop published_run_id so a single-tag artifact must be
+                    // republished before suggestions resume.
+                    preservedTagIDs = [chestnutID]
+                } else {
+                    preservedTagIDs = []
+                }
+                for tagID in preservedTagIDs {
+                    let keepPublishedRun = tagRows.count == 1
+                    try db.execute(
+                        sql: """
+                        INSERT INTO personal_suggestion_model (
+                            method, tag_id, catalog_scope_id, bundle_id, bundle_revision,
+                            provider, model_id, model_revision, preprocessing_revision,
+                            element_count, label_vocabulary_revision, weights_sha256,
+                            policy_revision, activated_at_ms, published_run_id
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        arguments: [
+                            method,
+                            tagID,
+                            model["catalog_scope_id"] as String,
+                            model["bundle_id"] as String,
+                            model["bundle_revision"] as String,
+                            model["provider"] as String,
+                            model["model_id"] as String,
+                            model["model_revision"] as String,
+                            model["preprocessing_revision"] as String,
+                            model["element_count"] as Int64,
+                            model["label_vocabulary_revision"] as String,
+                            model["weights_sha256"] as String,
+                            model["policy_revision"] as String,
+                            model["activated_at_ms"] as Int64,
+                            keepPublishedRun ? model["published_run_id"] as String? : nil,
+                        ]
+                    )
+                    try db.execute(
+                        sql: """
+                        INSERT INTO personal_suggestion_tag (method, tag_id)
+                        VALUES (?, ?)
+                        """,
+                        arguments: [method, tagID]
+                    )
+                    try db.execute(
+                        sql: """
+                        INSERT INTO personal_prediction (
+                            method, asset_id, tag_id, content_revision, score, state, created_at_ms
+                        )
+                        SELECT method, asset_id, tag_id, content_revision, score, state, created_at_ms
+                        FROM personal_prediction_v014
+                        WHERE method = ? AND tag_id = ?
+                        """,
+                        arguments: [method, tagID]
+                    )
+                }
+            }
+
+            try db.execute(sql: "DROP TABLE personal_prediction_v014")
+            try db.execute(sql: "DROP TABLE personal_suggestion_tag_v014")
+            try db.execute(sql: "DROP TABLE personal_suggestion_model_v014")
+            try db.execute(
+                sql: """
+                CREATE INDEX personal_prediction_review_rank_idx ON personal_prediction (
+                    method,
+                    tag_id,
+                    state,
+                    score DESC,
+                    asset_id
+                )
+                """
+            )
+            try db.execute(
+                sql: """
+                CREATE TRIGGER personal_suggestion_tag_before_insert
+                BEFORE INSERT ON personal_suggestion_tag
+                WHEN EXISTS (SELECT 1 FROM standard_tag_binding WHERE tag_id = NEW.tag_id)
+                BEGIN
+                    SELECT RAISE(ABORT, 'personal suggestion requires personal tag');
+                END
+                """
+            )
+            if try !db.columns(in: "training_run").map(\.name).contains("tag_id") {
+                try db.execute(
+                    sql: """
+                    ALTER TABLE training_run ADD COLUMN tag_id TEXT
+                        REFERENCES tag(id) ON DELETE SET NULL
+                    """
+                )
+            }
+            try db.execute(sql: "PRAGMA foreign_keys = ON")
         }
     }
 }

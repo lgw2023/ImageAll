@@ -52,6 +52,7 @@ struct TrainingRunRecord: Equatable, Sendable, Identifiable {
     let finishedAtMs: Int64?
     let catalogScopeID: String
     let jobID: UUID?
+    let tagID: UUID?
     let sampleSummaryJSON: String
     let sampleManifestSHA256: String?
     let configJSON: String
@@ -61,6 +62,46 @@ struct TrainingRunRecord: Equatable, Sendable, Identifiable {
     let artifactSHA256: String?
     let resultSummaryJSON: String
     let errorCode: String?
+
+    init(
+        id: UUID,
+        method: TrainingRunMethod,
+        state: TrainingRunState,
+        createdAtMs: Int64,
+        startedAtMs: Int64?,
+        finishedAtMs: Int64?,
+        catalogScopeID: String,
+        jobID: UUID?,
+        tagID: UUID? = nil,
+        sampleSummaryJSON: String,
+        sampleManifestSHA256: String?,
+        configJSON: String,
+        metricsJSON: String,
+        artifactKind: String?,
+        artifactRef: String?,
+        artifactSHA256: String?,
+        resultSummaryJSON: String,
+        errorCode: String?
+    ) {
+        self.id = id
+        self.method = method
+        self.state = state
+        self.createdAtMs = createdAtMs
+        self.startedAtMs = startedAtMs
+        self.finishedAtMs = finishedAtMs
+        self.catalogScopeID = catalogScopeID
+        self.jobID = jobID
+        self.tagID = tagID
+        self.sampleSummaryJSON = sampleSummaryJSON
+        self.sampleManifestSHA256 = sampleManifestSHA256
+        self.configJSON = configJSON
+        self.metricsJSON = metricsJSON
+        self.artifactKind = artifactKind
+        self.artifactRef = artifactRef
+        self.artifactSHA256 = artifactSHA256
+        self.resultSummaryJSON = resultSummaryJSON
+        self.errorCode = errorCode
+    }
 }
 
 struct TrainingWorkspaceSlot: Equatable, Sendable, Identifiable {

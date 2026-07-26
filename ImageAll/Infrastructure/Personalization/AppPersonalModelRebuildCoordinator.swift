@@ -112,17 +112,15 @@ actor AppPersonalModelRebuildRuntime: AppPersonalModelRebuilding {
         do {
             if let database {
                 let review = GRDBPersonalizationReviewRepository(database: database)
-                let publishedArtifactSHA256 = try review.publishedArtifactSHA256(
+                let published = try review.publishedArtifactSHA256s(
                     method: family.personalSuggestionMethod
                 )
-                if publishedArtifactSHA256 == nil,
+                if published.isEmpty,
                    try review.usesLegacyActivePointer(method: family.personalSuggestionMethod)
                 {
                     _ = await store.start()
                 } else {
-                    _ = await store.start(
-                        publishedArtifactSHA256: publishedArtifactSHA256
-                    )
+                    _ = await store.start(publishedArtifacts: published)
                 }
             } else {
                 _ = await store.start()
@@ -207,6 +205,9 @@ actor AppPersonalModelRebuildRuntime: AppPersonalModelRebuilding {
                     finishedAtMs: nil,
                     catalogScopeID: expectedCatalogScopeID,
                     jobID: nil,
+                    tagID: snapshot.personalTagIDs.count == 1
+                        ? snapshot.personalTagIDs.first
+                        : nil,
                     sampleSummaryJSON: try Self.sampleSummary(snapshot: snapshot),
                     sampleManifestSHA256: nil,
                     configJSON: try Self.configJSON(family: family),

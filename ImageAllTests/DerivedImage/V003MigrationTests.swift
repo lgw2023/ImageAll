@@ -497,9 +497,14 @@ final class V003MigrationTests: XCTestCase {
             "standard_model_revision", "standard_tag_binding",
             "standard_prediction",
             "training_run",
+            "suggestion_score_threshold_default",
+            "suggestion_score_threshold_override",
+            "tag_group",
         ])
         for table in CatalogSchemaExpectations.businessTables
-            where table != "derived_image_cache_entry" && !laterTables.contains(table)
+            where table != "derived_image_cache_entry"
+                && table != "tag"
+                && !laterTables.contains(table)
         {
             let baselineSQL = try v002Pool.read { db in
                 try String.fetchOne(db, sql: "SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = ?", arguments: [table])

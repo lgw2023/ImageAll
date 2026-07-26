@@ -582,6 +582,9 @@ private struct TrainingWorkspaceLaunchSheet: View {
             VStack(alignment: .leading, spacing: 12) {
                 Text("要训练哪些标签？")
                     .font(.subheadline.weight(.semibold))
+                Text("每个标签会独立训练、独立发布；多选即启动多次互不影响的训练。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 if personalOptions.isEmpty {
                     Label(
                         "还没有达到最低样本要求的标签。",
@@ -794,7 +797,7 @@ struct TrainingWorkspaceMethodPresentation: Equatable {
                 title: "更新快速个人模型",
                 shortTitle: "快速个人模型",
                 technicalName: "质心模型",
-                detail: "快速汇总你确认过的标签样本，适合日常更新。",
+                detail: "为每个选中标签单独训练一个快速个人模型；互不影响，可单独回滚。",
                 requirement: "每个标签至少 2 个已确认样本",
                 systemImage: "brain.head.profile"
             )
@@ -804,7 +807,7 @@ struct TrainingWorkspaceMethodPresentation: Equatable {
                 title: "训练增强个人模型",
                 shortTitle: "增强个人模型",
                 technicalName: "AdamW 线性模型",
-                detail: "进行更充分的本机训练，适合样本较多时获得更细致的个人结果。",
+                detail: "为每个选中标签单独做更充分的本机训练；标签之间互不影响。",
                 requirement: "每个标签至少 2 个已确认样本",
                 systemImage: "brain.head.profile.fill"
             )
