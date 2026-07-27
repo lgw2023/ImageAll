@@ -188,4 +188,4 @@ Quarantine 根位于 App 容器内（Application Support），按 source/asset �
 
 ## 11. 停止位置（当前）
 
-S0–S3 已交付（含 S2/S3 复审加固）。**S4 已授权实施**（文件夹 quarantine 回收站 + 倒计时 + 恢复 + purge Job）；仍不含 Photos 写入。S4 完成前不得进入 S5 PhotoKit mutation。
+S0–S4 已交付（含 S2/S3 复审加固与 S4 文件夹 quarantine 回收站）。下一授权切片为 **S5**（Photos PhotoKit 回收/恢复/永久删 + 对账；统一回收站 UI）。未授权进入 S5 前不得调用 PhotoKit mutation。
