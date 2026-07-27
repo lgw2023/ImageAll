@@ -1,5 +1,29 @@
 import Foundation
 
+public enum RemoteTagState: String, Codable, Sendable, Equatable {
+    case active
+    case archived
+}
+
+public struct RemoteTagSummary: Codable, Sendable, Equatable, Identifiable {
+    public let id: UUID
+    public let displayName: String
+    public let state: RemoteTagState
+    public let groupID: UUID
+
+    public init(
+        id: UUID,
+        displayName: String,
+        state: RemoteTagState,
+        groupID: UUID
+    ) {
+        self.id = id
+        self.displayName = displayName
+        self.state = state
+        self.groupID = groupID
+    }
+}
+
 public enum RemoteTagDecisionAction: String, Codable, Sendable, Equatable {
     case accept
     case reject

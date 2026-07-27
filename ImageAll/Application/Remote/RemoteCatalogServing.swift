@@ -4,6 +4,7 @@ import Foundation
 /// `LibraryWorkspacePort` and away from UI state machines.
 protocol RemoteCatalogServing: Sendable {
     func fetchSources() throws -> [LibrarySourceSummary]
+    func listTags() throws -> [TagListItem]
     func fetchAssetPage(
         filter: AssetPageFilter,
         sort: AssetPageSort,

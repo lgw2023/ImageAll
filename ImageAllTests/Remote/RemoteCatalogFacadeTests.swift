@@ -16,6 +16,14 @@ final class RemoteCatalogFacadeTests: XCTestCase {
                     state: .active
                 ),
             ],
+            tags: [
+                TagListItem(
+                    id: UUID(uuidString: "cccccccc-cccc-cccc-cccc-cccccccccccc")!,
+                    displayName: "风景",
+                    state: .active,
+                    groupID: UUID(uuidString: "dddddddd-dddd-dddd-dddd-dddddddddddd")!
+                ),
+            ],
             items: [
                 AssetGridItemProjection(
                     assetID: assetID,
@@ -51,6 +59,10 @@ final class RemoteCatalogFacadeTests: XCTestCase {
         XCTAssertEqual(sources.count, 1)
         XCTAssertEqual(sources[0].displayName, "Archive")
         XCTAssertEqual(sources[0].kind, .folder)
+
+        let tags = try await facade.fetchTags()
+        XCTAssertEqual(tags.count, 1)
+        XCTAssertEqual(tags[0].displayName, "风景")
 
         let page = try await facade.fetchAssets(RemoteAssetPageRequest(limit: 10))
         XCTAssertEqual(page.items.count, 1)
@@ -163,6 +175,7 @@ final class RemoteCatalogFacadeTests: XCTestCase {
 private final class RemoteCatalogServingStub: RemoteCatalogServing, @unchecked Sendable {
     private let lock = NSLock()
     private let sources: [LibrarySourceSummary]
+    private let tags: [TagListItem]
     private let items: [AssetGridItemProjection]
     private let mutateResult: TagMutationPriorStateSnapshot
     private var storedMutateCallCount = 0
@@ -182,6 +195,7 @@ private final class RemoteCatalogServingStub: RemoteCatalogServing, @unchecked S
 
     init(
         sources: [LibrarySourceSummary] = [],
+        tags: [TagListItem] = [],
         items: [AssetGridItemProjection] = [],
         mutateResult: TagMutationPriorStateSnapshot = TagMutationPriorStateSnapshot(
             tagID: UUID(),
@@ -189,12 +203,17 @@ private final class RemoteCatalogServingStub: RemoteCatalogServing, @unchecked S
         )
     ) {
         self.sources = sources
+        self.tags = tags
         self.items = items
         self.mutateResult = mutateResult
     }
 
     func fetchSources() throws -> [LibrarySourceSummary] {
         sources
+    }
+
+    func listTags() throws -> [TagListItem] {
+        tags
     }
 
     func fetchAssetPage(

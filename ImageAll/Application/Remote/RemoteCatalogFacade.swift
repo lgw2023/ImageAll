@@ -48,6 +48,10 @@ actor RemoteCatalogFacade {
         try catalog.fetchSources().map(Self.mapSource)
     }
 
+    func fetchTags() throws -> [RemoteTagSummary] {
+        try catalog.listTags().map(Self.mapTag)
+    }
+
     func fetchAssets(_ request: RemoteAssetPageRequest) throws -> RemoteAssetPage {
         let limit = max(1, min(request.limit, 200))
         let cursor = try Self.decodeCursor(request.cursor)
@@ -124,6 +128,15 @@ actor RemoteCatalogFacade {
                 case .authorizationRequired: .authorizationRequired
                 }
             }()
+        )
+    }
+
+    private static func mapTag(_ tag: TagListItem) -> RemoteTagSummary {
+        RemoteTagSummary(
+            id: tag.id,
+            displayName: tag.displayName,
+            state: tag.state == .archived ? .archived : .active,
+            groupID: tag.groupID
         )
     }
 

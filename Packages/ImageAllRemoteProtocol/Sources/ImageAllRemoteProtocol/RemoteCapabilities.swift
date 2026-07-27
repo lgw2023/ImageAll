@@ -7,6 +7,7 @@ public enum RemoteProtocolVersion {
 
 public enum RemoteCapability: String, Codable, Sendable, Hashable, CaseIterable {
     case sources
+    case tags
     case assetPages
     case thumbnails
     case tagDecisions

@@ -262,6 +262,9 @@ actor RemoteHTTPServer {
             case ("GET", RemoteHTTPPaths.sources):
                 let payload = try await facade.fetchSources()
                 await respondJSON(connection, status: 200, value: payload)
+            case ("GET", RemoteHTTPPaths.tags):
+                let payload = try await facade.fetchTags()
+                await respondJSON(connection, status: 200, value: payload)
             case ("GET", RemoteHTTPPaths.assets):
                 let request = Self.parseAssetPageRequest(query: query)
                 let payload = try await facade.fetchAssets(request)

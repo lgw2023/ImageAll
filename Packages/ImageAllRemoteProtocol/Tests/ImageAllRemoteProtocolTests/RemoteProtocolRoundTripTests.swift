@@ -14,8 +14,18 @@ final class RemoteProtocolRoundTripTests: XCTestCase {
     func testCapabilitiesRoundTrip() throws {
         let original = RemoteCapabilities(
             hostAppVersion: "1.0.0-test",
-            capabilities: [.sources, .assetPages, .thumbnails, .tagDecisions],
+            capabilities: [.sources, .tags, .assetPages, .thumbnails, .tagDecisions],
             listenPort: 8787
+        )
+        try assertRoundTrip(original)
+    }
+
+    func testTagSummaryRoundTrip() throws {
+        let original = RemoteTagSummary(
+            id: UUID(uuidString: "55555555-5555-5555-5555-555555555555")!,
+            displayName: "风景",
+            state: .active,
+            groupID: UUID(uuidString: "66666666-6666-6666-6666-666666666666")!
         )
         try assertRoundTrip(original)
     }

@@ -21,6 +21,7 @@ public struct RemoteAPIError: Codable, Sendable, Equatable, Error {
 public enum RemoteHTTPPaths {
     public static let capabilities = "/v1/capabilities"
     public static let sources = "/v1/sources"
+    public static let tags = "/v1/tags"
     public static let assets = "/v1/assets"
     public static let tagDecisionsBatch = "/v1/tag-decisions/batch"
 

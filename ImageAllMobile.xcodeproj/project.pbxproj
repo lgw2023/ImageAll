@@ -1,0 +1,296 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 56;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		MB0000010000000000000001 /* ImageAllMobileApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = MB0001010000000000000001 /* ImageAllMobileApp.swift */; };
+		MB0000010000000000000002 /* RemoteCompanionModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = MB0001010000000000000002 /* RemoteCompanionModel.swift */; };
+		MB0000010000000000000003 /* RemoteCompanionViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = MB0001010000000000000003 /* RemoteCompanionViews.swift */; };
+		MB0000010000000000000004 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = MB0001010000000000000004 /* Assets.xcassets */; };
+		MB0000010000000000000005 /* ImageAllRemoteClient in Frameworks */ = {isa = PBXBuildFile; productRef = MB0003010000000000000001 /* ImageAllRemoteClient */; };
+		MB0000010000000000000006 /* ImageAllRemoteProtocol in Frameworks */ = {isa = PBXBuildFile; productRef = MB0003010000000000000002 /* ImageAllRemoteProtocol */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		MB0001010000000000000001 /* ImageAllMobileApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImageAllMobileApp.swift; sourceTree = "<group>"; };
+		MB0001010000000000000002 /* RemoteCompanionModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteCompanionModel.swift; sourceTree = "<group>"; };
+		MB0001010000000000000003 /* RemoteCompanionViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteCompanionViews.swift; sourceTree = "<group>"; };
+		MB0001010000000000000004 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		MB0001010000000000000005 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		MB0001010000000000000006 /* ImageAllMobile.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ImageAllMobile.app; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		MB0002010000000000000001 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				MB0000010000000000000005 /* ImageAllRemoteClient in Frameworks */,
+				MB0000010000000000000006 /* ImageAllRemoteProtocol in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		MB0004010000000000000001 = {
+			isa = PBXGroup;
+			children = (
+				MB0004010000000000000002 /* ImageAllMobile */,
+				MB0004010000000000000004 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		MB0004010000000000000002 /* ImageAllMobile */ = {
+			isa = PBXGroup;
+			children = (
+				MB0004010000000000000003 /* App */,
+				MB0001010000000000000004 /* Assets.xcassets */,
+				MB0001010000000000000005 /* Info.plist */,
+			);
+			path = ImageAllMobile;
+			sourceTree = "<group>";
+		};
+		MB0004010000000000000003 /* App */ = {
+			isa = PBXGroup;
+			children = (
+				MB0001010000000000000001 /* ImageAllMobileApp.swift */,
+				MB0001010000000000000002 /* RemoteCompanionModel.swift */,
+				MB0001010000000000000003 /* RemoteCompanionViews.swift */,
+			);
+			path = App;
+			sourceTree = "<group>";
+		};
+		MB0004010000000000000004 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				MB0001010000000000000006 /* ImageAllMobile.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		MB0005010000000000000001 /* ImageAllMobile */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = MB0007010000000000000001 /* Build configuration list for PBXNativeTarget "ImageAllMobile" */;
+			buildPhases = (
+				MB0006010000000000000001 /* Sources */,
+				MB0002010000000000000001 /* Frameworks */,
+				MB0006010000000000000002 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = ImageAllMobile;
+			packageProductDependencies = (
+				MB0003010000000000000001 /* ImageAllRemoteClient */,
+				MB0003010000000000000002 /* ImageAllRemoteProtocol */,
+			);
+			productName = ImageAllMobile;
+			productReference = MB0001010000000000000006 /* ImageAllMobile.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		MB0008010000000000000001 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 1600;
+				LastUpgradeCheck = 1600;
+				TargetAttributes = {
+					MB0005010000000000000001 = {
+						CreatedOnToolsVersion = 16.0;
+					};
+				};
+			};
+			buildConfigurationList = MB0007010000000000000002 /* Build configuration list for PBXProject "ImageAllMobile" */;
+			compatibilityVersion = "Xcode 15.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = MB0004010000000000000001;
+			packageReferences = (
+				MB0009010000000000000001 /* XCLocalSwiftPackageReference "Packages/ImageAllRemoteClient" */,
+				MB0009010000000000000002 /* XCLocalSwiftPackageReference "Packages/ImageAllRemoteProtocol" */,
+			);
+			productRefGroup = MB0004010000000000000004 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				MB0005010000000000000001 /* ImageAllMobile */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		MB0006010000000000000002 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				MB0000010000000000000004 /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		MB0006010000000000000001 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				MB0000010000000000000001 /* ImageAllMobileApp.swift in Sources */,
+				MB0000010000000000000002 /* RemoteCompanionModel.swift in Sources */,
+				MB0000010000000000000003 /* RemoteCompanionViews.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		MB000A010000000000000001 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_TESTABILITY = YES;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 6.0;
+			};
+			name = Debug;
+		};
+		MB000A010000000000000002 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_VERSION = 6.0;
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		MB000A010000000000000003 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 962554J6D3;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = ImageAllMobile/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.gwlee.ImageAllMobile;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		MB000A010000000000000004 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 962554J6D3;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = ImageAllMobile/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.gwlee.ImageAllMobile;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		MB0007010000000000000001 /* Build configuration list for PBXNativeTarget "ImageAllMobile" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				MB000A010000000000000003 /* Debug */,
+				MB000A010000000000000004 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		MB0007010000000000000002 /* Build configuration list for PBXProject "ImageAllMobile" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				MB000A010000000000000001 /* Debug */,
+				MB000A010000000000000002 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		MB0009010000000000000001 /* XCLocalSwiftPackageReference "Packages/ImageAllRemoteClient" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = Packages/ImageAllRemoteClient;
+		};
+		MB0009010000000000000002 /* XCLocalSwiftPackageReference "Packages/ImageAllRemoteProtocol" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = Packages/ImageAllRemoteProtocol;
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		MB0003010000000000000001 /* ImageAllRemoteClient */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = MB0009010000000000000001 /* XCLocalSwiftPackageReference "Packages/ImageAllRemoteClient" */;
+			productName = ImageAllRemoteClient;
+		};
+		MB0003010000000000000002 /* ImageAllRemoteProtocol */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = MB0009010000000000000002 /* XCLocalSwiftPackageReference "Packages/ImageAllRemoteProtocol" */;
+			productName = ImageAllRemoteProtocol;
+		};
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = MB0008010000000000000001 /* Project object */;
+}

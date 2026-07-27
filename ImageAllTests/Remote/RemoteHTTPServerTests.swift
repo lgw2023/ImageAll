@@ -35,12 +35,7 @@ final class RemoteHTTPServerTests: XCTestCase {
 
     func testParserRejectsDuplicateContentLength() {
         let bytes = Data(
-            """
-            POST /v1/tag-decisions:batch HTTP/1.1\r
-            Content-Length: 0\r
-            Content-Length: 1\r
-            \r
-            """.utf8
+            "POST /v1/tag-decisions/batch HTTP/1.1\r\nContent-Length: 0\r\nContent-Length: 1\r\n\r\n".utf8
         )
 
         guard case let .rejected(status, _) = RemoteHTTPServer.parseRequest(
@@ -54,13 +49,7 @@ final class RemoteHTTPServerTests: XCTestCase {
 
     func testParserRejectsUnsupportedTransferEncoding() {
         let bytes = Data(
-            """
-            POST /v1/tag-decisions:batch HTTP/1.1\r
-            Transfer-Encoding: chunked\r
-            \r
-            0\r
-            \r
-            """.utf8
+            "POST /v1/tag-decisions/batch HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n".utf8
         )
 
         guard case let .rejected(status, _) = RemoteHTTPServer.parseRequest(
@@ -143,6 +132,8 @@ final class RemoteHTTPServerTests: XCTestCase {
 
 private struct RemoteHTTPServerTestCatalog: RemoteCatalogServing {
     func fetchSources() throws -> [LibrarySourceSummary] { [] }
+
+    func listTags() throws -> [TagListItem] { [] }
 
     func fetchAssetPage(
         filter: AssetPageFilter,
