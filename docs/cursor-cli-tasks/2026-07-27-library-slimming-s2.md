@@ -3,15 +3,15 @@
 ## 状态
 
 - 任务 ID：`library-slimming-s2`
-- 状态：Ready（待实施）
+- 状态：Delivered（等待 Codex 复审）
 - 权威交接单：`docs/CURSOR-LIBRARY-SLIMMING-S2-HANDOFF.md`
 - 上一批准基线：`a9cef7e41dfc33084afd58fa8d3cfe6729bca8dc`
-- 开工 HEAD：`<LAUNCH_HEAD>`（本记录与交接单文档提交后的 `git rev-parse HEAD`）
-- 交付 commit：（实施后补记）
+- 开工 HEAD：`f47478698b2cf4f7540d2c803e396d1d4977e53f`
+- 交付 commit：`5752bc1603c5e607ca9deee985beba57947e557b`
 
 ## 开工 HEAD
 
-文档交接提交后的 `git rev-parse HEAD`（本记录与交接单一并提交后即为该值）。
+`f47478698b2cf4f7540d2c803e396d1d4977e53f`（S2 handoff 文档提交）
 
 ## 完整任务正文
 
@@ -31,4 +31,11 @@ S2 实现 + 测试 + Debug build 通过并完成本地 implementation commit；�
 
 ## 结果（实施后补记）
 
-（待填）
+- 开工 HEAD：`f47478698b2cf4f7540d2c803e396d1d4977e53f`
+- 交付 commit：`5752bc1603c5e607ca9deee985beba57947e557b`
+- Author / trailer：`Codex <codex@openai.com>` / `Agent-Role: implementation`（临时授权期内直接实施，至 2026-08-13）
+- 定向测试：`xcodebuild test … -only-testing:NearDuplicateSceneClusteringTests,IdenticalDuplicateDetectionTests,LibraryWorkspaceModelTests/testImmediateBrowsingPresentationForLibrarySlimmingClearsReviewWithoutGalleryFilter` → **TEST SUCCEEDED**（11 项）
+- Debug build：随测试宿主构建通过（`.derivedData-threshold`）
+- 工作区：仅残留本任务记录待补记（随后 docs commit）
+- 未 push
+- 未进入 S3（种子入口 / 对比 UX）或回收站
