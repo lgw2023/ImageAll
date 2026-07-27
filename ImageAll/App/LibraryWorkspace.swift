@@ -671,6 +671,12 @@ final class LibraryWorkspaceModel: ObservableObject {
     @Published private(set) var isAnalyzingLibrarySlimming = false
     @Published private(set) var librarySlimmingStatusMessage: String?
     @Published private(set) var librarySlimmingScanProgress: LibrarySlimmingScanProgress?
+    @Published private(set) var librarySlimmingAnalyzeMode: LibrarySlimmingAnalyzeMode = .catalog
+    @Published private(set) var librarySlimmingSeedAssetIDs: [UUID] = []
+    @Published private(set) var selectedLibrarySlimmingMemberIDs: Set<UUID> = []
+    /// Bumped when toolbar asks the sidebar view to switch into 图库瘦身.
+    @Published private(set) var librarySlimmingNavigationNonce = UUID()
+    private var shouldAutoAnalyzeLibrarySlimmingSeeds = false
 
     fileprivate let review: any PersonalizationReviewPort
     private let service: any LibraryWorkspacePort
@@ -814,24 +820,117 @@ final class LibraryWorkspaceModel: ObservableObject {
 
     func selectLibrarySlimmingCluster(_ clusterID: UUID?) {
         selectedLibrarySlimmingClusterID = clusterID
+        selectedLibrarySlimmingMemberIDs = []
     }
 
-    func analyzeLibrarySlimming() async {
+    func selectLibrarySlimmingMember(_ assetID: UUID, additive: Bool) {
+        guard let cluster = selectedLibrarySlimmingCluster,
+              cluster.memberAssetIDs.contains(assetID)
+        else { return }
+        if additive {
+            if selectedLibrarySlimmingMemberIDs.contains(assetID) {
+                selectedLibrarySlimmingMemberIDs.remove(assetID)
+            } else {
+                selectedLibrarySlimmingMemberIDs.insert(assetID)
+            }
+        } else {
+            selectedLibrarySlimmingMemberIDs = [assetID]
+        }
+    }
+
+    var librarySlimmingComparisonAssetIDs: [UUID] {
+        guard let cluster = selectedLibrarySlimmingCluster else { return [] }
+        let ordered = cluster.memberAssetIDs.filter { selectedLibrarySlimmingMemberIDs.contains($0) }
+        return Array(ordered.prefix(4))
+    }
+
+    var canFindLibrarySlimmingFromSelection: Bool {
+        supportsLibrarySlimming && !selectedAssetIDs.isEmpty && !isAnalyzingLibrarySlimming
+    }
+
+    var hasLibrarySlimmingFilterScope: Bool {
+        hasActiveTagFilters
+            || selectedSourceID != nil
+            || !selectedAvailabilities.isEmpty
+            || !selectedMediaTypes.isEmpty
+            || tagPresence != .any
+            || !TagNameNormalizer.trimUnicodeWhiteSpace(searchText).isEmpty
+    }
+
+    func findLibrarySlimmingFromSelection() async {
+        guard canFindLibrarySlimmingFromSelection else { return }
+        librarySlimmingSeedAssetIDs = selectedAssetIDs.sorted {
+            $0.uuidString.lowercased() < $1.uuidString.lowercased()
+        }
+        librarySlimmingAnalyzeMode = .seeds
+        shouldAutoAnalyzeLibrarySlimmingSeeds = true
+        librarySlimmingNavigationNonce = UUID()
+    }
+
+    func consumePendingLibrarySlimmingSeedAnalyzeIfNeeded() async {
+        guard shouldAutoAnalyzeLibrarySlimmingSeeds else { return }
+        shouldAutoAnalyzeLibrarySlimmingSeeds = false
+        await analyzeLibrarySlimming(mode: .seeds)
+    }
+
+    func analyzeLibrarySlimming(mode: LibrarySlimmingAnalyzeMode? = nil) async {
         guard let librarySlimming, !isAnalyzingLibrarySlimming else { return }
+        let resolvedMode = mode ?? librarySlimmingAnalyzeMode
+        librarySlimmingAnalyzeMode = resolvedMode
         isAnalyzingLibrarySlimming = true
         librarySlimmingStatusMessage = "正在分析相同与相似照片…"
         librarySlimmingScanProgress = nil
+        selectedLibrarySlimmingMemberIDs = []
         defer {
             isAnalyzingLibrarySlimming = false
             librarySlimmingScanProgress = nil
         }
         do {
-            let result = try await Self.offMain {
-                try librarySlimming.scanCatalog { progress in
-                    Task { @MainActor in
-                        self.librarySlimmingScanProgress = progress
-                        self.librarySlimmingStatusMessage = progress.caption
-                    }
+            let progressHandler: LibrarySlimmingScanProgressHandler = { [weak self] progress in
+                Task { @MainActor in
+                    self?.librarySlimmingScanProgress = progress
+                    self?.librarySlimmingStatusMessage = progress.caption
+                }
+            }
+            let scanPort = librarySlimming
+            let workspaceService = service
+            let result: LibrarySlimmingScanResult
+            switch resolvedMode {
+            case .catalog:
+                result = try await Self.offMain {
+                    try scanPort.scanCatalog(onProgress: progressHandler)
+                }
+            case .currentFilter:
+                let filter = currentFilter
+                let pageSort = sort
+                result = try await Self.offMain {
+                    let assetIDs = try Self.listAllAssetIDs(
+                        service: workspaceService,
+                        filter: filter,
+                        sort: pageSort
+                    )
+                    return try scanPort.scan(assetIDs: assetIDs, onProgress: progressHandler)
+                }
+            case .seeds:
+                let seeds = librarySlimmingSeedAssetIDs
+                guard !seeds.isEmpty else {
+                    librarySlimmingStatusMessage = "请先在图库中选择种子照片。"
+                    return
+                }
+                let narrowed = hasLibrarySlimmingFilterScope
+                let filter = narrowed ? currentFilter : AssetPageFilter(availabilities: [.available])
+                let pageSort = narrowed ? sort : AssetPageSort.newest
+                result = try await Self.offMain {
+                    let universe = try Self.listAllAssetIDs(
+                        service: workspaceService,
+                        filter: filter,
+                        sort: pageSort
+                    )
+                    return try scanPort.scanSeeds(
+                        seedAssetIDs: seeds,
+                        universeAssetIDs: universe,
+                        onProgress: progressHandler
+                    )
                 }
             }
             librarySlimmingClusters = result.clusters.map(LibrarySlimmingClusterPresentation.init)
@@ -856,6 +955,21 @@ final class LibraryWorkspaceModel: ObservableObject {
         } catch {
             librarySlimmingStatusMessage = "分析失败：\(error.localizedDescription)"
         }
+    }
+
+    nonisolated private static func listAllAssetIDs(
+        service: any LibraryWorkspacePort,
+        filter: AssetPageFilter,
+        sort: AssetPageSort
+    ) throws -> [UUID] {
+        var ids: [UUID] = []
+        var cursor: AssetPageCursor?
+        repeat {
+            let page = try service.fetchAssetPage(filter: filter, sort: sort, cursor: cursor)
+            ids.append(contentsOf: page.items.map(\.assetID))
+            cursor = page.nextCursor
+        } while cursor != nil
+        return ids
     }
 
     func refreshTrainingWorkspace(
@@ -2102,6 +2216,8 @@ final class LibraryWorkspaceModel: ObservableObject {
         case .librarySlimming:
             clearReviewModeState()
             guard browsingNavigationRequestID == requestID else { return }
+            await consumePendingLibrarySlimmingSeedAnalyzeIfNeeded()
+
         case .all, .untagged, .source:
             clearReviewModeState()
             applyGalleryBrowsingFilters(for: destination)
@@ -6006,6 +6122,16 @@ struct LibraryWorkspaceView: View {
                     .help("为当前选中的照片生成或命中跳过本地模型缓存；重建个人模型会按选中/历史样本范围自行准备所需特征")
                 }
 
+                if model.supportsLibrarySlimming {
+                    Button {
+                        Task { await model.findLibrarySlimmingFromSelection() }
+                    } label: {
+                        Label("在图库瘦身中查找", systemImage: "square.stack.3d.up")
+                    }
+                    .disabled(!model.canFindLibrarySlimmingFromSelection)
+                    .help("以当前多选为种子，在图库（或当前筛选）中查找相同与相似照片")
+                }
+
                 filterMenu
                 sortMenu
 
@@ -6583,6 +6709,13 @@ struct LibraryWorkspaceView: View {
             let requestID = model.beginBrowsingNavigation()
             Task {
                 await model.navigate(to: destination, requestID: requestID)
+            }
+        }
+        .onChange(of: model.librarySlimmingNavigationNonce) { _, _ in
+            if selection != .librarySlimming {
+                selection = .librarySlimming
+            } else {
+                Task { await model.consumePendingLibrarySlimmingSeedAnalyzeIfNeeded() }
             }
         }
     }

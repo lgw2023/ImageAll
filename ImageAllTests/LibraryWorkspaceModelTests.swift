@@ -3815,6 +3815,76 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertTrue(model.supportsLibrarySlimming)
     }
 
+    func testFindLibrarySlimmingFromSelectionCapturesSeedsAndRequestsNavigation() async {
+        let sourceID = UUID()
+        let assetA = Self.makeAsset(sourceID: sourceID, fileName: "a.jpg")
+        let assetB = Self.makeAsset(sourceID: sourceID, fileName: "b.jpg")
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: sourceID,
+                displayName: "Fixture",
+                state: .active
+            ),
+            reconciledItems: [assetA, assetB],
+            initialItems: [assetA, assetB]
+        )
+        let stub = StubLibrarySlimmingScanPort()
+        let model = LibraryWorkspaceModel(service: service, librarySlimming: stub)
+        await model.start()
+        await model.connectFolder()
+        await waitForCatalogScanToFinish(model)
+        await model.selectAssets(Set([assetA.assetID, assetB.assetID]), additive: false)
+        XCTAssertEqual(model.selectedAssetIDs, Set([assetA.assetID, assetB.assetID]))
+
+        let before = model.librarySlimmingNavigationNonce
+        await model.findLibrarySlimmingFromSelection()
+
+        XCTAssertNotEqual(model.librarySlimmingNavigationNonce, before)
+        XCTAssertEqual(Set(model.librarySlimmingSeedAssetIDs), Set([assetA.assetID, assetB.assetID]))
+        XCTAssertEqual(model.librarySlimmingAnalyzeMode, .seeds)
+    }
+
+    func testLibrarySlimmingMemberMultiSelectTracksComparisonIDs() async {
+        let sourceID = UUID()
+        let asset = Self.makeAsset(sourceID: sourceID, fileName: "gallery.jpg")
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: sourceID,
+                displayName: "Fixture",
+                state: .active
+            ),
+            reconciledItems: [asset],
+            initialItems: [asset]
+        )
+        let a = UUID(uuidString: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")!
+        let b = UUID(uuidString: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")!
+        let c = UUID(uuidString: "cccccccc-cccc-4ccc-8ccc-cccccccccccc")!
+        let cluster = SlimmingCluster(
+            id: UUID(),
+            kind: .nearDuplicateScene,
+            memberAssetIDs: [a, b, c],
+            representativeAssetID: a,
+            score: 0.95,
+            modelIdentity: .featurePrintOnly
+        )
+        let stub = StubLibrarySlimmingScanPort()
+        stub.seedClusters = [cluster]
+        let model = LibraryWorkspaceModel(service: service, librarySlimming: stub)
+        await model.start()
+        await model.connectFolder()
+        await waitForCatalogScanToFinish(model)
+        await model.selectAssets(Set([asset.assetID]), additive: false)
+        await model.findLibrarySlimmingFromSelection()
+        await model.analyzeLibrarySlimming(mode: .seeds)
+
+        XCTAssertEqual(model.librarySlimmingClusters.count, 1)
+        model.selectLibrarySlimmingCluster(model.librarySlimmingClusters[0].id)
+        model.selectLibrarySlimmingMember(a, additive: false)
+        model.selectLibrarySlimmingMember(b, additive: true)
+        XCTAssertEqual(model.selectedLibrarySlimmingMemberIDs, Set([a, b]))
+        XCTAssertEqual(model.librarySlimmingComparisonAssetIDs, [a, b])
+    }
+
     func testStaleReviewNavigationDoesNotResurrectAfterNewerGalleryNavigate() async {
         let sourceID = UUID()
         let asset = Self.makeAsset(sourceID: sourceID, fileName: "gallery.jpg")
@@ -7592,11 +7662,17 @@ private final class FakeLibraryOriginalAssetOpener: LibraryOriginalAssetOpening 
     }
 }
 
-private struct StubLibrarySlimmingScanPort: LibrarySlimmingScanPort {
+private final class StubLibrarySlimmingScanPort: LibrarySlimmingScanPort, @unchecked Sendable {
+    var lastScanAssetIDs: [UUID] = []
+    var lastSeedAssetIDs: [UUID] = []
+    var lastUniverseAssetIDs: [UUID] = []
+    var seedClusters: [SlimmingCluster] = []
+
     func scan(
         assetIDs: [UUID],
         onProgress: LibrarySlimmingScanProgressHandler?
     ) throws -> LibrarySlimmingScanResult {
+        lastScanAssetIDs = assetIDs
         onProgress?(
             LibrarySlimmingScanProgress(phase: .clustering, completed: 1, total: 1)
         )
@@ -7610,6 +7686,24 @@ private struct StubLibrarySlimmingScanPort: LibrarySlimmingScanPort {
 
     func scanCatalog(onProgress: LibrarySlimmingScanProgressHandler?) throws -> LibrarySlimmingScanResult {
         try scan(assetIDs: [], onProgress: onProgress)
+    }
+
+    func scanSeeds(
+        seedAssetIDs: [UUID],
+        universeAssetIDs: [UUID],
+        onProgress: LibrarySlimmingScanProgressHandler?
+    ) throws -> LibrarySlimmingScanResult {
+        lastSeedAssetIDs = seedAssetIDs
+        lastUniverseAssetIDs = universeAssetIDs
+        onProgress?(
+            LibrarySlimmingScanProgress(phase: .clustering, completed: 1, total: 1)
+        )
+        return LibrarySlimmingScanResult(
+            clusters: seedClusters,
+            pendingAnalysisAssetIDs: [],
+            analyzedAssetCount: universeAssetIDs.count,
+            policyVersion: NearDuplicateScenePolicy.policyVersion
+        )
     }
 }
 

@@ -169,6 +169,15 @@ extension SlimmingEmbeddingLoading {
 
 typealias LibrarySlimmingScanProgressHandler = @Sendable (LibrarySlimmingScanProgress) -> Void
 
+enum LibrarySlimmingAnalyzeMode: String, Sendable, Equatable {
+    /// Closed-world scan of all available catalog assets.
+    case catalog
+    /// Closed-world scan of a caller-resolved filter universe (tag/source/search).
+    case currentFilter
+    /// Seeds as queries against a search universe (catalog or narrowed).
+    case seeds
+}
+
 protocol LibrarySlimmingScanPort: Sendable {
     /// Clusters the given assets. Incomplete fingerprints / vectors become pending.
     func scan(
@@ -178,6 +187,14 @@ protocol LibrarySlimmingScanPort: Sendable {
 
     /// Scans all current available catalog assets (deterministic UUID order).
     func scanCatalog(onProgress: LibrarySlimmingScanProgressHandler?) throws -> LibrarySlimmingScanResult
+
+    /// Uses `seedAssetIDs` as queries against `universeAssetIDs` (full catalog or narrowed).
+    /// Hits are merged with seeds into clusters. Must not reduce to closed-world `scan(seeds)`.
+    func scanSeeds(
+        seedAssetIDs: [UUID],
+        universeAssetIDs: [UUID],
+        onProgress: LibrarySlimmingScanProgressHandler?
+    ) throws -> LibrarySlimmingScanResult
 }
 
 extension LibrarySlimmingScanPort {
@@ -187,5 +204,13 @@ extension LibrarySlimmingScanPort {
 
     func scanCatalog() throws -> LibrarySlimmingScanResult {
         try scanCatalog(onProgress: nil)
+    }
+
+    func scanSeeds(seedAssetIDs: [UUID], universeAssetIDs: [UUID]) throws -> LibrarySlimmingScanResult {
+        try scanSeeds(
+            seedAssetIDs: seedAssetIDs,
+            universeAssetIDs: universeAssetIDs,
+            onProgress: nil
+        )
     }
 }

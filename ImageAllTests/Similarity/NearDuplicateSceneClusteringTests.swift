@@ -205,6 +205,72 @@ final class NearDuplicateSceneClusteringTests: XCTestCase {
         XCTAssertLessThanOrEqual(budgets.embeddingGenerations, 12)
     }
 
+    func testSeedQueryRetrievesUniverseNeighborNotJustSeedClosure() throws {
+        let seed = UUID(uuidString: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")!
+        let hit = UUID(uuidString: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")!
+        let distractor = UUID(uuidString: "cccccccc-cccc-4ccc-8ccc-cccccccccccc")!
+
+        let featurePrints: [UUID: [Float]] = [
+            seed: [1, 0, 0],
+            hit: [0.99, 0.01, 0],
+            distractor: [0, 1, 0],
+        ]
+        let embeddings: [UUID: [Float]] = [
+            seed: [1, 0],
+            hit: [0.99, 0.01],
+            distractor: [0, 1],
+        ]
+
+        let clusters = NearDuplicateSceneClusterService().clusterAroundSeeds(
+            seedAssetIDs: [seed],
+            featurePrints: featurePrints,
+            embeddings: embeddings,
+            modelIdentity: sceneModelIdentity
+        )
+        XCTAssertEqual(clusters.count, 1)
+        XCTAssertEqual(Set(clusters[0].memberAssetIDs), Set([seed, hit]))
+        XCTAssertFalse(clusters[0].memberAssetIDs.contains(distractor))
+    }
+
+    func testScanSeedsUsesUniverseNotSeedOnlyClosure() throws {
+        let seed = UUID(uuidString: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")!
+        let hit = UUID(uuidString: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")!
+        let distractor = UUID(uuidString: "cccccccc-cccc-4ccc-8ccc-cccccccccccc")!
+
+        let env = try SimilarityTestSupport.Environment(label: #function)
+        defer { env.cleanup() }
+
+        let scan = LibrarySlimmingScanService(
+            database: env.database,
+            identicalScan: IdenticalDuplicateClusterService(database: env.database),
+            fingerprintCompletion: nil,
+            featureLoader: DictionarySlimmingFeatureLoader(vectors: [
+                seed: [1, 0, 0],
+                hit: [0.99, 0.01, 0],
+                distractor: [0, 1, 0],
+            ]),
+            embeddingLoader: DictionarySlimmingEmbeddingLoader(
+                vectors: [
+                    seed: [1, 0],
+                    hit: [0.99, 0.01],
+                    distractor: [0, 1],
+                ],
+                modelIdentity: sceneModelIdentity
+            )
+        )
+
+        // Seed-only closed world would never see `hit`.
+        let seedOnly = try scan.scan(assetIDs: [seed])
+        XCTAssertTrue(seedOnly.clusters.isEmpty)
+
+        let seeded = try scan.scanSeeds(
+            seedAssetIDs: [seed],
+            universeAssetIDs: [seed, hit, distractor]
+        )
+        XCTAssertEqual(seeded.clusters.count, 1)
+        XCTAssertEqual(Set(seeded.clusters[0].memberAssetIDs), Set([seed, hit]))
+    }
+
     func testCosineAndL2Helpers() {
         XCTAssertEqual(
             SimilarityVectorMath.cosineSimilarity([1, 0], [1, 0])!,

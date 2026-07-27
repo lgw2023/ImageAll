@@ -80,6 +80,74 @@ struct NearDuplicateSceneClusterService: Sendable {
         return clusters.sorted(by: Self.clusterSort)
     }
 
+    /// Query-style clustering: each seed retrieves similar neighbors from the universe maps.
+    /// Only clusters that contain at least one seed and one other member are returned.
+    func clusterAroundSeeds(
+        seedAssetIDs: [UUID],
+        featurePrints: [UUID: [Float]],
+        embeddings: [UUID: [Float]],
+        modelIdentity: SlimmingVectorModelIdentity
+    ) -> [SlimmingCluster] {
+        let seeds = Array(Set(seedAssetIDs))
+            .filter { featurePrints[$0] != nil && embeddings[$0] != nil }
+            .sorted { $0.uuidString.lowercased() < $1.uuidString.lowercased() }
+        let candidates = featurePrints.keys
+            .filter { embeddings[$0] != nil && !seeds.contains($0) }
+            .sorted { $0.uuidString.lowercased() < $1.uuidString.lowercased() }
+        guard !seeds.isEmpty, !candidates.isEmpty else { return [] }
+
+        let topK = NearDuplicateScenePolicy.featurePrintRecallTopK
+        let maxL2 = NearDuplicateScenePolicy.featurePrintMaxL2Distance
+        let minCosine = NearDuplicateScenePolicy.dinoCosineMinSimilarity
+
+        var claimed = Set<UUID>()
+        var clusters: [SlimmingCluster] = []
+
+        for seed in seeds {
+            guard !claimed.contains(seed),
+                  let seedFP = featurePrints[seed],
+                  let seedEmb = embeddings[seed]
+            else { continue }
+
+            var neighbors: [(id: UUID, distance: Double, cosine: Double)] = []
+            for candidate in candidates where !claimed.contains(candidate) {
+                guard let candidateFP = featurePrints[candidate],
+                      let distance = SimilarityVectorMath.l2Distance(seedFP, candidateFP),
+                      distance <= maxL2,
+                      let candidateEmb = embeddings[candidate],
+                      let cosine = SimilarityVectorMath.cosineSimilarity(seedEmb, candidateEmb),
+                      cosine >= minCosine
+                else { continue }
+                neighbors.append((candidate, distance, cosine))
+            }
+            neighbors.sort {
+                if $0.distance != $1.distance { return $0.distance < $1.distance }
+                if $0.cosine != $1.cosine { return $0.cosine > $1.cosine }
+                return $0.id.uuidString.lowercased() < $1.id.uuidString.lowercased()
+            }
+            let hits = neighbors.prefix(topK).map(\.id)
+            guard !hits.isEmpty else { continue }
+
+            let members = ([seed] + hits).sorted {
+                $0.uuidString.lowercased() < $1.uuidString.lowercased()
+            }
+            let score = neighbors.prefix(topK).map(\.cosine).min() ?? minCosine
+            for id in members { claimed.insert(id) }
+            clusters.append(
+                SlimmingCluster(
+                    id: Self.stableClusterID(kind: .nearDuplicateScene, members: members),
+                    kind: .nearDuplicateScene,
+                    memberAssetIDs: members,
+                    representativeAssetID: members[0],
+                    score: score,
+                    modelIdentity: modelIdentity
+                )
+            )
+        }
+
+        return clusters.sorted(by: Self.clusterSort)
+    }
+
     static func nonOverlappingMaximalCliques(
         ids: [UUID],
         adjacency: [UUID: Set<UUID>]

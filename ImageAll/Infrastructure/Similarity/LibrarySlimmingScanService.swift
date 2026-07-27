@@ -35,6 +35,82 @@ struct LibrarySlimmingScanService: LibrarySlimmingScanPort {
         return try scan(assetIDs: assetIDs, onProgress: onProgress)
     }
 
+    func scanSeeds(
+        seedAssetIDs: [UUID],
+        universeAssetIDs: [UUID],
+        onProgress: LibrarySlimmingScanProgressHandler? = nil
+    ) throws -> LibrarySlimmingScanResult {
+        let seeds = Array(Set(seedAssetIDs)).sorted {
+            $0.uuidString.lowercased() < $1.uuidString.lowercased()
+        }
+        let universe = Array(Set(universeAssetIDs).union(seeds)).sorted {
+            $0.uuidString.lowercased() < $1.uuidString.lowercased()
+        }
+        guard !seeds.isEmpty else {
+            return LibrarySlimmingScanResult(
+                clusters: [],
+                pendingAnalysisAssetIDs: [],
+                analyzedAssetCount: 0,
+                policyVersion: NearDuplicateScenePolicy.policyVersion
+            )
+        }
+
+        (featureLoader as? SlimmingBudgetResetting)?
+            .resetScanBudgets(forAssetCount: universe.count)
+        (embeddingLoader as? SlimmingBudgetResetting)?
+            .resetScanBudgets(forAssetCount: universe.count)
+
+        try prepareFingerprints(assetIDs: universe, onProgress: onProgress)
+
+        onProgress?(
+            LibrarySlimmingScanProgress(phase: .clustering, completed: 0, total: 1)
+        )
+
+        let seedSet = Set(seeds)
+        let identical = try identicalScan.clusterIdenticalDuplicates(assetIDs: universe)
+        let identicalWithSeeds = identical.filter { cluster in
+            cluster.memberAssetIDs.contains(where: seedSet.contains)
+        }
+        var claimed = Set<UUID>()
+        for cluster in identicalWithSeeds {
+            claimed.formUnion(cluster.memberAssetIDs)
+        }
+
+        let vectorCandidates = universe.filter { !claimed.contains($0) }
+        let (featurePrints, embeddings, pending) = try loadVectors(
+            assetIDs: vectorCandidates,
+            onProgress: onProgress
+        )
+
+        let sceneModelIdentity = embeddingLoader.embeddingModelIdentity()
+            ?? .featurePrintOnly
+        let sceneClusters = NearDuplicateSceneClusterService().clusterAroundSeeds(
+            seedAssetIDs: seeds.filter { !claimed.contains($0) },
+            featurePrints: featurePrints,
+            embeddings: embeddings,
+            modelIdentity: sceneModelIdentity
+        )
+
+        let identicalMapped = mapIdenticalClusters(identicalWithSeeds)
+        onProgress?(
+            LibrarySlimmingScanProgress(phase: .clustering, completed: 1, total: 1)
+        )
+
+        let seedPending = seeds.filter { seed in
+            pending.contains(seed) || (!claimed.contains(seed)
+                && featurePrints[seed] == nil)
+        }
+        let clusters = (identicalMapped + sceneClusters).sorted(by: Self.clusterSort)
+        return LibrarySlimmingScanResult(
+            clusters: clusters,
+            pendingAnalysisAssetIDs: Array(Set(seedPending)).sorted {
+                $0.uuidString.lowercased() < $1.uuidString.lowercased()
+            },
+            analyzedAssetCount: universe.count,
+            policyVersion: NearDuplicateScenePolicy.policyVersion
+        )
+    }
+
     func scan(
         assetIDs: [UUID],
         onProgress: LibrarySlimmingScanProgressHandler? = nil
@@ -56,39 +132,7 @@ struct LibrarySlimmingScanService: LibrarySlimmingScanPort {
             )
         }
 
-        if let fingerprintCompletion {
-            let total = uniqueIDs.count
-            for (index, assetID) in uniqueIDs.enumerated() {
-                onProgress?(
-                    LibrarySlimmingScanProgress(
-                        phase: .preparingFingerprints,
-                        completed: index,
-                        total: total
-                    )
-                )
-                do {
-                    _ = try fingerprintCompletion.completeFolderAsset(assetID: assetID)
-                } catch FingerprintCompletionError.ineligible,
-                        FingerprintCompletionError.notFound,
-                        FingerprintCompletionError.sourceUnavailable,
-                        FingerprintCompletionError.authorizationRequired,
-                        FingerprintCompletionError.decodeFailed,
-                        FingerprintCompletionError.sourceChanged,
-                        FingerprintCompletionError.persistenceFailed
-                {
-                    continue
-                } catch {
-                    continue
-                }
-            }
-            onProgress?(
-                LibrarySlimmingScanProgress(
-                    phase: .preparingFingerprints,
-                    completed: total,
-                    total: total
-                )
-            )
-        }
+        try prepareFingerprints(assetIDs: uniqueIDs, onProgress: onProgress)
 
         onProgress?(
             LibrarySlimmingScanProgress(phase: .clustering, completed: 0, total: 1)
@@ -100,12 +144,83 @@ struct LibrarySlimmingScanService: LibrarySlimmingScanPort {
         }
 
         let vectorCandidates = uniqueIDs.filter { !claimed.contains($0) }
+        let (featurePrints, embeddings, pending) = try loadVectors(
+            assetIDs: vectorCandidates,
+            onProgress: onProgress
+        )
+
+        let sceneModelIdentity = embeddingLoader.embeddingModelIdentity()
+            ?? .featurePrintOnly
+        let sceneClusters = NearDuplicateSceneClusterService().cluster(
+            featurePrints: featurePrints,
+            embeddings: embeddings,
+            modelIdentity: sceneModelIdentity
+        )
+
+        let identicalMapped = mapIdenticalClusters(identical)
+        onProgress?(
+            LibrarySlimmingScanProgress(phase: .clustering, completed: 1, total: 1)
+        )
+
+        let clusters = (identicalMapped + sceneClusters).sorted(by: Self.clusterSort)
+        return LibrarySlimmingScanResult(
+            clusters: clusters,
+            pendingAnalysisAssetIDs: pending.sorted {
+                $0.uuidString.lowercased() < $1.uuidString.lowercased()
+            },
+            analyzedAssetCount: uniqueIDs.count,
+            policyVersion: NearDuplicateScenePolicy.policyVersion
+        )
+    }
+
+    private func prepareFingerprints(
+        assetIDs: [UUID],
+        onProgress: LibrarySlimmingScanProgressHandler?
+    ) throws {
+        guard let fingerprintCompletion else { return }
+        let total = assetIDs.count
+        for (index, assetID) in assetIDs.enumerated() {
+            onProgress?(
+                LibrarySlimmingScanProgress(
+                    phase: .preparingFingerprints,
+                    completed: index,
+                    total: total
+                )
+            )
+            do {
+                _ = try fingerprintCompletion.completeFolderAsset(assetID: assetID)
+            } catch FingerprintCompletionError.ineligible,
+                    FingerprintCompletionError.notFound,
+                    FingerprintCompletionError.sourceUnavailable,
+                    FingerprintCompletionError.authorizationRequired,
+                    FingerprintCompletionError.decodeFailed,
+                    FingerprintCompletionError.sourceChanged,
+                    FingerprintCompletionError.persistenceFailed
+            {
+                continue
+            } catch {
+                continue
+            }
+        }
+        onProgress?(
+            LibrarySlimmingScanProgress(
+                phase: .preparingFingerprints,
+                completed: total,
+                total: total
+            )
+        )
+    }
+
+    private func loadVectors(
+        assetIDs: [UUID],
+        onProgress: LibrarySlimmingScanProgressHandler?
+    ) throws -> (featurePrints: [UUID: [Float]], embeddings: [UUID: [Float]], pending: [UUID]) {
         var pending: [UUID] = []
         var featurePrints: [UUID: [Float]] = [:]
         var embeddings: [UUID: [Float]] = [:]
 
-        let vectorTotal = vectorCandidates.count
-        for (index, assetID) in vectorCandidates.enumerated() {
+        let vectorTotal = assetIDs.count
+        for (index, assetID) in assetIDs.enumerated() {
             onProgress?(
                 LibrarySlimmingScanProgress(
                     phase: .loadingFeaturePrints,
@@ -127,7 +242,7 @@ struct LibrarySlimmingScanService: LibrarySlimmingScanPort {
             )
         )
 
-        let embeddingCandidates = vectorCandidates.filter { !pending.contains($0) }
+        let embeddingCandidates = assetIDs.filter { !pending.contains($0) }
         let embeddingTotal = embeddingCandidates.count
         for (index, assetID) in embeddingCandidates.enumerated() {
             onProgress?(
@@ -150,15 +265,12 @@ struct LibrarySlimmingScanService: LibrarySlimmingScanPort {
                 total: embeddingTotal
             )
         )
+        return (featurePrints, embeddings, pending)
+    }
 
-        let sceneModelIdentity = embeddingLoader.embeddingModelIdentity()
-            ?? .featurePrintOnly
-        let sceneClusters = NearDuplicateSceneClusterService().cluster(
-            featurePrints: featurePrints,
-            embeddings: embeddings,
-            modelIdentity: sceneModelIdentity
-        )
-
+    private func mapIdenticalClusters(
+        _ identical: [IdenticalDuplicateCluster]
+    ) -> [SlimmingCluster] {
         let identicalModelIdentity = SlimmingVectorModelIdentity(
             featurePrintProvider: nil,
             featurePrintRequestRevision: nil,
@@ -170,7 +282,7 @@ struct LibrarySlimmingScanService: LibrarySlimmingScanPort {
             perceptualAlgoVersion: IdenticalDuplicatePolicy.perceptualAlgoVersion,
             policyVersion: NearDuplicateScenePolicy.policyVersion
         )
-        let identicalMapped = identical.map { cluster -> SlimmingCluster in
+        return identical.map { cluster -> SlimmingCluster in
             let kind: SlimmingClusterKind = switch cluster.kind {
             case .byteIdentical: .byteIdentical
             case .perceptualDuplicate: .perceptualDuplicate
@@ -193,20 +305,6 @@ struct LibrarySlimmingScanService: LibrarySlimmingScanPort {
                 modelIdentity: identicalModelIdentity
             )
         }
-
-        onProgress?(
-            LibrarySlimmingScanProgress(phase: .clustering, completed: 1, total: 1)
-        )
-
-        let clusters = (identicalMapped + sceneClusters).sorted(by: Self.clusterSort)
-        return LibrarySlimmingScanResult(
-            clusters: clusters,
-            pendingAnalysisAssetIDs: pending.sorted {
-                $0.uuidString.lowercased() < $1.uuidString.lowercased()
-            },
-            analyzedAssetCount: uniqueIDs.count,
-            policyVersion: NearDuplicateScenePolicy.policyVersion
-        )
     }
 
     private static func clusterSort(_ lhs: SlimmingCluster, _ rhs: SlimmingCluster) -> Bool {

@@ -71,9 +71,9 @@ struct LibrarySlimmingWorkspaceView: View {
     private var header: some View {
         HStack(spacing: 12) {
             Button {
-                Task { await model.analyzeLibrarySlimming() }
+                Task { await model.analyzeLibrarySlimming(mode: .catalog) }
             } label: {
-                if model.isAnalyzingLibrarySlimming {
+                if model.isAnalyzingLibrarySlimming, model.librarySlimmingAnalyzeMode == .catalog {
                     ProgressView()
                         .controlSize(.small)
                     Text("分析中…")
@@ -84,6 +84,30 @@ struct LibrarySlimmingWorkspaceView: View {
             .buttonStyle(.borderedProminent)
             .disabled(model.isAnalyzingLibrarySlimming || !model.supportsLibrarySlimming)
 
+            Button {
+                Task { await model.analyzeLibrarySlimming(mode: .currentFilter) }
+            } label: {
+                Label("分析当前筛选", systemImage: "line.3.horizontal.decrease.circle")
+            }
+            .disabled(
+                model.isAnalyzingLibrarySlimming
+                    || !model.supportsLibrarySlimming
+                    || !model.hasLibrarySlimmingFilterScope
+            )
+            .help("使用主图库当前标签/来源/搜索筛选作为分析宇宙")
+
+            if !model.librarySlimmingSeedAssetIDs.isEmpty {
+                Button {
+                    Task { await model.analyzeLibrarySlimming(mode: .seeds) }
+                } label: {
+                    Label(
+                        "按种子查找 (\(model.librarySlimmingSeedAssetIDs.count))",
+                        systemImage: "target"
+                    )
+                }
+                .disabled(model.isAnalyzingLibrarySlimming || !model.supportsLibrarySlimming)
+            }
+
             if model.librarySlimmingPendingCount > 0 {
                 Text("待分析 \(model.librarySlimmingPendingCount) 张")
                     .foregroundStyle(.secondary)
@@ -91,6 +115,10 @@ struct LibrarySlimmingWorkspaceView: View {
             }
 
             Spacer()
+
+            Text(modeCaption)
+                .foregroundStyle(.tertiary)
+                .font(.caption)
 
             Text("只读浏览 · 回收站即将推出")
                 .foregroundStyle(.tertiary)
@@ -102,6 +130,14 @@ struct LibrarySlimmingWorkspaceView: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
+    }
+
+    private var modeCaption: String {
+        switch model.librarySlimmingAnalyzeMode {
+        case .catalog: "模式：当前库"
+        case .currentFilter: "模式：当前筛选"
+        case .seeds: "模式：种子检索"
+        }
     }
 
     private func progressBanner(_ progress: LibrarySlimmingScanProgress) -> some View {
@@ -133,7 +169,7 @@ struct LibrarySlimmingWorkspaceView: View {
                 ContentUnavailableView {
                     Label("尚未分析", systemImage: "square.stack.3d.up")
                 } description: {
-                    Text("点击「分析当前库」查找相同与相似照片。缺失向量的照片会显示为待分析，不会伪装成无相似。")
+                    Text("可分析当前库、当前筛选，或从图库多选后「在图库瘦身中查找」。缺失向量会显示为待分析。")
                 }
             } else {
                 List(selection: Binding(
@@ -178,10 +214,17 @@ struct LibrarySlimmingWorkspaceView: View {
                     .padding(.horizontal, 16)
                     .padding(.top, 12)
 
-                    Text("成员 \(cluster.memberAssetIDs.count) · 只读预览")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal, 16)
+                    Text(
+                        "成员 \(cluster.memberAssetIDs.count) · 已选 \(model.selectedLibrarySlimmingMemberIDs.count) · ⌘点击多选对比"
+                    )
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 16)
+
+                    if model.librarySlimmingComparisonAssetIDs.count >= 2 {
+                        comparisonStrip
+                            .padding(.horizontal, 16)
+                    }
 
                     ScrollView {
                         LazyVGrid(
@@ -192,7 +235,15 @@ struct LibrarySlimmingWorkspaceView: View {
                             spacing: LibraryGridLayout.spacing
                         ) {
                             ForEach(cluster.memberAssetIDs, id: \.self) { assetID in
-                                SlimmingThumbnailCell(model: model, assetID: assetID)
+                                SlimmingThumbnailCell(
+                                    model: model,
+                                    assetID: assetID,
+                                    isSelected: model.selectedLibrarySlimmingMemberIDs.contains(assetID)
+                                )
+                                .onTapGesture {
+                                    let additive = NSEvent.modifierFlags.contains(.command)
+                                    model.selectLibrarySlimmingMember(assetID, additive: additive)
+                                }
                             }
                         }
                         .padding(LibraryGridLayout.horizontalPadding)
@@ -205,6 +256,17 @@ struct LibrarySlimmingWorkspaceView: View {
             }
         }
     }
+
+    private var comparisonStrip: some View {
+        HStack(alignment: .top, spacing: 12) {
+            ForEach(model.librarySlimmingComparisonAssetIDs, id: \.self) { assetID in
+                SlimmingPreviewCell(model: model, assetID: assetID)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 220)
+            }
+        }
+        .accessibilityLabel("簇内对比预览")
+    }
 }
 
 struct LibrarySlimmingInspectorView: View {
@@ -214,13 +276,17 @@ struct LibrarySlimmingInspectorView: View {
         VStack(alignment: .leading, spacing: 12) {
             Text("图库瘦身")
                 .font(.headline)
-            Text("查找相同（字节/感知）与相似（场景）照片。本页只读；移入回收站将在后续版本提供。")
+            Text("查找相同（字节/感知）与相似（场景）照片。支持当前库、当前筛选与种子检索；本页只读，移入回收站将在后续版本提供。")
                 .font(.callout)
                 .foregroundStyle(.secondary)
+            if !model.librarySlimmingSeedAssetIDs.isEmpty {
+                LabeledContent("种子", value: "\(model.librarySlimmingSeedAssetIDs.count) 张")
+            }
             if let cluster = model.selectedLibrarySlimmingCluster {
                 Divider()
                 LabeledContent("类型", value: cluster.kindTitle)
                 LabeledContent("成员", value: "\(cluster.memberAssetIDs.count)")
+                LabeledContent("已选对比", value: "\(model.selectedLibrarySlimmingMemberIDs.count)")
                 LabeledContent("分数", value: cluster.scoreCaption)
             }
             if model.librarySlimmingPendingCount > 0 {
@@ -239,6 +305,7 @@ struct LibrarySlimmingInspectorView: View {
 private struct SlimmingThumbnailCell: View {
     @ObservedObject var model: LibraryWorkspaceModel
     let assetID: UUID
+    var isSelected: Bool = false
     @State private var image: NSImage?
 
     var body: some View {
@@ -256,8 +323,39 @@ private struct SlimmingThumbnailCell: View {
         }
         .frame(minWidth: 80, minHeight: 80)
         .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .strokeBorder(isSelected ? Color.accentColor : Color.clear, lineWidth: 3)
+        )
         .task(id: assetID) {
             let data = await model.thumbnailData(assetID: assetID)
+            if let data {
+                image = LibraryGridThumbnailImageFactory.image(from: data)
+            }
+        }
+    }
+}
+
+private struct SlimmingPreviewCell: View {
+    @ObservedObject var model: LibraryWorkspaceModel
+    let assetID: UUID
+    @State private var image: NSImage?
+
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(Color.secondary.opacity(0.1))
+            if let image {
+                Image(nsImage: image)
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+            } else {
+                ProgressView()
+            }
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .task(id: assetID) {
+            let data = await model.previewData(assetID: assetID)
             if let data {
                 image = LibraryGridThumbnailImageFactory.image(from: data)
             }
