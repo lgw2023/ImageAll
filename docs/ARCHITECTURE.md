@@ -51,7 +51,8 @@ MVP 的核心闭环是：
 - 初次索引可耗时，但必须可暂停、可恢复；
 - 后续只处理新增或变化的资产；
 - 内存使用不能随全部资产数量线性增长；
-- 原图不可复制进应用目录作为长期存储。
+- 原图默认不可复制进应用目录作为长期存储；唯一例外是 ADR-044 Photos「相同」检测按需下载并保存的
+  校验原始内容。
 
 ## 3. 目标与非目标
 
@@ -115,10 +116,11 @@ flowchart LR
     Photos["Apple Photos / iCloud Photos"] -->|"PhotoKit"| App
     App --> Catalog["应用目录库 SQLite"]
     App --> Cache["可重建缓存"]
+    App -. "ADR-044 窄例外" .-> Originals["长期 Photos 原图\nApplication Support"]
     App --> Export["标签与配置导出文件"]
     App -. "可选；Swift 直接加载 Core ML" .-> Models["App 容器内模型\n标准标签 / 个人标签"]
 
-    Catalog -. "不保存原图" .-> Folders
+    Catalog -. "不保存文件夹原图" .-> Folders
     Catalog -. "用标识符关联" .-> Photos
 ```
 
@@ -127,7 +129,7 @@ flowchart LR
 - 文件资产通过来源根目录与相对路径定位，并用资源标识符和内容指纹判定身份；
 - Photos 资产通过 `PHAsset.localIdentifier` 定位；
 - 两种资产都映射成统一的 `Asset`；
-- 原图留在原来源，应用只保存元数据和派生数据。
+- 文件夹原图留在原来源；Photos 原图也默认留在原来源。ADR-044 相同检测是唯一长期副本例外。
 
 ## 6. 总体架构
 
@@ -467,7 +469,10 @@ ADR-044 增加一个窄例外：Photos「相同」检测遇到 iCloud-only 资�
 高质量原始内容，并原子保存到 Application Support 的 `Photos Originals/v1` 作为长期可用产品数据。
 长期对象不进入派生预览 LRU，索引绑定 asset、content revision、Photos local identifier、字节数和
 SHA-256；身份或校验不一致即 fail closed。该授权不扩展到普通建议、批量预览或其它分析任务，也不授权
-写回 Photos。受保护真实图库上的云下载 smoke 仍需 `LOCAL-TEST-DATA-SAFETY.md` 规定的单次授权。
+写回 Photos。长期对象默认无限期保留，不按 TTL 或容量自动淘汰；用户可在存储面板查看独立用量并经
+二次确认清除全部，运行中或待运行分析拒绝清理。清理只删除安全校验通过的 App 副本与索引，不删除
+Photos 资产、人工标签、指纹或分析结果；以后分析可重新下载。受保护真实图库上的云下载 smoke 仍需
+`LOCAL-TEST-DATA-SAFETY.md` 规定的单次授权。
 
 原生 macOS 当前 SDK 将 `PHAuthorizationStatusLimited` 标为 iOS-only，因此 MVP 不假设持续 Photos Source 存在“受限照片库”授权。`PhotosPicker` 的 `Transferable` 选择结果也不作为可持续增量索引的 Locator。若未来要支持只选少量 Photos 资产并跨启动保留，必须先单独验证标识和数据保留契约。
 
@@ -871,6 +876,7 @@ FTS 只是可重建的查询加速结构，必须由 migration 回填和 Asset i
 - 使用专门的测试 Photos Library 验证授权、iCloud-only 资源、库暂时不可用和变化历史；
 - 验证 iCloud 下载边界：Inspector 当前单图显式动作只产生标准预览；ADR-044 Photos「相同」检测
   可隐式获取原始内容并进入长期 Application Support 对象；其它路径保持 local-only；
+- 验证长期原图用量、运行中分析拒绝清理、用户全量清理不影响 Photos/标签/指纹/分析结果，以及后续按需重下；
 - 外置盘扫描中拔出、重连和改名；
 - 应用强制退出后的任务恢复；
 - 10 万级目录下的网格滚动、筛选和后台索引并行体验；
@@ -1198,7 +1204,7 @@ revision 门；cache-only 自动个人重训和独立服务启动已经验收，
 | ADR-040 | 三条个人建议路径的进队门槛升级为用户可调的方法默认 + 标签覆盖；训练/重建不自动改阈值 | ST1–ST4 已实现 | 权威细节见 `SUGGESTION-THRESHOLD-SPEC.md`；`effectiveMinScore = override ?? default`；生成过滤 `score > effectiveMinScore` 后再 Top 100；Review 行展示原始 score；同标签同方法的近期拒绝分数只生成需人工采用的参考值，三轨完成通知展示高于阈值数与候选数 |
 | ADR-042 | 正式拒绝 Places365 ResNet18 作为生产 standard 包候选 | 已决定（2026-07-24） | 未标版本 CC BY 与 academic research/education 用途冲突；不伪造 CC-BY-4.0；公开验证门永久不适用；归档 `research` 证据；下一标准场景包须另选许可清晰的新候选 |
 | ADR-043 | Mac Host + 原生 iOS Companion；R0 Host 仅 Debug 可启用 | R0 已加固，R1+ 待实施 | Mac 保持唯一权威；协议同仓；当前请求上限、鉴权和内存幂等只服务开发，Release 在配对、TLS 与持久幂等完成前硬关闭 |
-| ADR-044 | 图库瘦身双轨回收、跨来源相同检测、Photos 原图长期保存与可恢复大库分析 | S0–S8 已交付（2026-07-27） | 用户确认后才回收；iCloud-only 相同检测可隐式下载原始内容；分析冻结成员集并支持暂停、续跑、启动恢复和最多 3 轮自动补全 |
+| ADR-044 | 图库瘦身双轨回收、跨来源相同检测、Photos 原图长期保存与可恢复大库分析 | S0–S8 已交付；授权真实云下载 smoke 已通过（2026-07-27） | 用户确认后才回收；iCloud-only 相同检测可隐式下载原始内容；长期副本默认无限期保留并可手动全量清理；分析冻结成员集并支持暂停、续跑、启动恢复和最多 3 轮自动补全 |
 
 ## 20. 尚待确认的问题
 
