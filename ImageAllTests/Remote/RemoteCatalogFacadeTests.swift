@@ -92,6 +92,52 @@ final class RemoteCatalogFacadeTests: XCTestCase {
         XCTAssertEqual(catalog.mutateCallCount, 1)
     }
 
+    func testAssetPagePassesRequestedLimitToCatalogWithoutSkipping() async throws {
+        let catalog = RemoteCatalogServingStub()
+        let facade = RemoteCatalogFacade(
+            catalog: catalog,
+            hostAppVersion: "1.0.0",
+            listenPort: 8787
+        )
+
+        _ = try await facade.fetchAssets(RemoteAssetPageRequest(limit: 60))
+
+        XCTAssertEqual(catalog.lastRequestedLimit, 60)
+    }
+
+    func testReusingOperationIDForDifferentMutationIsConflict() async throws {
+        let catalog = RemoteCatalogServingStub()
+        let facade = RemoteCatalogFacade(
+            catalog: catalog,
+            hostAppVersion: "1.0.0",
+            listenPort: 8787
+        )
+        let operationID = UUID()
+        _ = try await facade.applyTagDecision(
+            RemoteBatchTagDecisionRequest(
+                operationID: operationID,
+                tagID: UUID(),
+                assetIDs: [UUID()],
+                action: .accept
+            )
+        )
+
+        do {
+            _ = try await facade.applyTagDecision(
+                RemoteBatchTagDecisionRequest(
+                    operationID: operationID,
+                    tagID: UUID(),
+                    assetIDs: [UUID()],
+                    action: .reject
+                )
+            )
+            XCTFail("expected conflict")
+        } catch let error as RemoteAPIError {
+            XCTAssertEqual(error.code, .conflict)
+        }
+        XCTAssertEqual(catalog.mutateCallCount, 1)
+    }
+
     func testRejectsEmptyAssetIDs() async throws {
         let facade = RemoteCatalogFacade(
             catalog: RemoteCatalogServingStub(),
@@ -120,11 +166,18 @@ private final class RemoteCatalogServingStub: RemoteCatalogServing, @unchecked S
     private let items: [AssetGridItemProjection]
     private let mutateResult: TagMutationPriorStateSnapshot
     private var storedMutateCallCount = 0
+    private var storedLastRequestedLimit: Int?
 
     var mutateCallCount: Int {
         lock.lock()
         defer { lock.unlock() }
         return storedMutateCallCount
+    }
+
+    var lastRequestedLimit: Int? {
+        lock.lock()
+        defer { lock.unlock() }
+        return storedLastRequestedLimit
     }
 
     init(
@@ -147,11 +200,15 @@ private final class RemoteCatalogServingStub: RemoteCatalogServing, @unchecked S
     func fetchAssetPage(
         filter: AssetPageFilter,
         sort: AssetPageSort,
-        cursor: AssetPageCursor?
+        cursor: AssetPageCursor?,
+        limit: Int
     ) throws -> AssetPageResult {
         _ = filter
         _ = sort
         _ = cursor
+        lock.lock()
+        storedLastRequestedLimit = limit
+        lock.unlock()
         return AssetPageResult(items: items, nextCursor: nil)
     }
 

@@ -7,7 +7,8 @@ protocol RemoteCatalogServing: Sendable {
     func fetchAssetPage(
         filter: AssetPageFilter,
         sort: AssetPageSort,
-        cursor: AssetPageCursor?
+        cursor: AssetPageCursor?,
+        limit: Int
     ) throws -> AssetPageResult
     func loadThumbnail(assetID: UUID) async throws -> Data
     func mutateTag(

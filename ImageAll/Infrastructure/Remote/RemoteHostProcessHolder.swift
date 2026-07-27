@@ -34,8 +34,9 @@ enum RemoteHostProcessHolder {
         }
 
         let defaults = UserDefaults.standard
-        let port = UInt16(defaults.object(forKey: portKey) as? Int ?? Int(RemoteHTTPServer.defaultPort))
-            ?? RemoteHTTPServer.defaultPort
+        let configuredPort = defaults.object(forKey: portKey) as? Int
+            ?? Int(RemoteHTTPServer.defaultPort)
+        let port = UInt16(exactly: configuredPort) ?? RemoteHTTPServer.defaultPort
         let token = existingOrCreateToken(defaults: defaults)
         let facade = RemoteCatalogFacade(
             catalog: catalog,
@@ -57,14 +58,22 @@ enum RemoteHostProcessHolder {
     }
 
     static func isEnabled() -> Bool {
+#if DEBUG
         if ProcessInfo.processInfo.environment["IMAGEALL_REMOTE_HOST"] == "1" {
             return true
         }
         return UserDefaults.standard.bool(forKey: enabledKey)
+#else
+        return false
+#endif
     }
 
     static func currentAccessToken() -> String? {
+#if DEBUG
         UserDefaults.standard.string(forKey: tokenKey)
+#else
+        nil
+#endif
     }
 
     private static func existingOrCreateToken(defaults: UserDefaults) -> String {

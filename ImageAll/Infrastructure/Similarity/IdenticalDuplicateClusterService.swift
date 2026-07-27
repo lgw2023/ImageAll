@@ -33,57 +33,36 @@ struct IdenticalDuplicateClusterService: IdenticalDuplicateScanPort {
             )
         }
 
-        // 2) Perceptual duplicates among remaining assets (union-find on Hamming ≤ τ).
+        // 2) Perceptual duplicates among remaining assets. A dHash match only
+        // produces a candidate; every pair in a deletion-grade cluster must
+        // also pass normalized RGB and aspect-ratio verification.
         let remaining = records.filter { !claimed.contains($0.assetID) }
         guard remaining.count >= 2 else {
             return clusters.sorted(by: Self.clusterSort)
         }
 
-        var parent = Dictionary(uniqueKeysWithValues: remaining.map { ($0.assetID, $0.assetID) })
-        var rank: [UUID: Int] = Dictionary(uniqueKeysWithValues: remaining.map { ($0.assetID, 0) })
-
-        func find(_ id: UUID) -> UUID {
-            var current = id
-            while parent[current] != current {
-                let next = parent[current]!
-                parent[current] = parent[next]
-                current = next
-            }
-            return current
-        }
-        func union(_ a: UUID, _ b: UUID) {
-            let ra = find(a)
-            let rb = find(b)
-            guard ra != rb else { return }
-            let rankA = rank[ra] ?? 0
-            let rankB = rank[rb] ?? 0
-            if rankA < rankB {
-                parent[ra] = rb
-            } else if rankA > rankB {
-                parent[rb] = ra
-            } else {
-                parent[rb] = ra
-                rank[ra] = rankA + 1
-            }
-        }
-
         let threshold = IdenticalDuplicatePolicy.perceptualDuplicateMaxHammingDistance
-        for i in 0..<remaining.count {
-            for j in (i + 1)..<remaining.count {
-                let left = remaining[i]
-                let right = remaining[j]
-                let distance = PerceptualImageHash.hammingDistance(left.dHash, right.dHash)
-                if distance <= threshold {
-                    union(left.assetID, right.assetID)
+        var unassigned = remaining.sorted {
+            $0.assetID.uuidString.lowercased() < $1.assetID.uuidString.lowercased()
+        }
+        while let first = unassigned.first {
+            unassigned.removeFirst()
+            var group = [first]
+            var retained: [FingerprintRecord] = []
+            for candidate in unassigned {
+                if group.allSatisfy({
+                    Self.isVerifiedPerceptualDuplicate(
+                        $0,
+                        candidate,
+                        hammingThreshold: threshold
+                    )
+                }) {
+                    group.append(candidate)
+                } else {
+                    retained.append(candidate)
                 }
             }
-        }
-
-        var groups: [UUID: [FingerprintRecord]] = [:]
-        for record in remaining {
-            groups[find(record.assetID), default: []].append(record)
-        }
-        for (_, group) in groups {
+            unassigned = retained
             guard group.count >= 2 else { continue }
             let members = group.map(\.assetID).sorted { $0.uuidString.lowercased() < $1.uuidString.lowercased() }
             var maxDistance = 0
@@ -123,6 +102,27 @@ struct IdenticalDuplicateClusterService: IdenticalDuplicateScanPort {
         let assetID: UUID
         let sha256: Data
         let dHash: UInt64
+        let verificationSignature: Data
+        let pixelWidth: Int
+        let pixelHeight: Int
+    }
+
+    private static func isVerifiedPerceptualDuplicate(
+        _ left: FingerprintRecord,
+        _ right: FingerprintRecord,
+        hammingThreshold: Int
+    ) -> Bool {
+        guard PerceptualImageHash.hammingDistance(left.dHash, right.dHash) <= hammingThreshold else {
+            return false
+        }
+        return PerceptualImageHash.verificationMatches(
+            leftSignature: left.verificationSignature,
+            leftWidth: left.pixelWidth,
+            leftHeight: left.pixelHeight,
+            rightSignature: right.verificationSignature,
+            rightWidth: right.pixelWidth,
+            rightHeight: right.pixelHeight
+        )
     }
 
     private func loadRecords(assetIDs: [UUID]) throws -> [FingerprintRecord] {
@@ -132,12 +132,20 @@ struct IdenticalDuplicateClusterService: IdenticalDuplicateScanPort {
             let rows = try Row.fetchAll(
                 db,
                 sql: """
-                SELECT f.asset_id, f.sha256, p.perceptual_hash
-                FROM file_fingerprint f
-                JOIN asset_similarity_fingerprint p ON p.asset_id = f.asset_id
-                JOIN asset a ON a.id = f.asset_id
-                WHERE f.asset_id IN (\(placeholders))
-                  AND f.sha256 IS NOT NULL
+                SELECT
+                    p.asset_id,
+                    p.content_sha256,
+                    p.perceptual_hash,
+                    p.verification_signature,
+                    p.pixel_width,
+                    p.pixel_height
+                FROM asset_similarity_fingerprint p
+                JOIN asset a ON a.id = p.asset_id
+                WHERE p.asset_id IN (\(placeholders))
+                  AND p.content_sha256 IS NOT NULL
+                  AND p.verification_signature IS NOT NULL
+                  AND p.pixel_width IS NOT NULL
+                  AND p.pixel_height IS NOT NULL
                   AND p.algo_version = ?
                   AND p.content_revision = a.content_revision
                 """,
@@ -145,14 +153,27 @@ struct IdenticalDuplicateClusterService: IdenticalDuplicateScanPort {
             )
             return rows.compactMap { row -> FingerprintRecord? in
                 guard let assetID = UUID(uuidString: row["asset_id"]),
-                      let sha256: Data = row["sha256"],
+                      let sha256: Data = row["content_sha256"],
                       sha256.count == 32,
                       let perceptual: Data = row["perceptual_hash"],
-                      let hashValue = PerceptualImageHash.decodeHash(perceptual)
+                      let hashValue = PerceptualImageHash.decodeHash(perceptual),
+                      let verification: Data = row["verification_signature"],
+                      verification.count == 768,
+                      let pixelWidth: Int = row["pixel_width"],
+                      let pixelHeight: Int = row["pixel_height"],
+                      pixelWidth > 0,
+                      pixelHeight > 0
                 else {
                     return nil
                 }
-                return FingerprintRecord(assetID: assetID, sha256: sha256, dHash: hashValue)
+                return FingerprintRecord(
+                    assetID: assetID,
+                    sha256: sha256,
+                    dHash: hashValue,
+                    verificationSignature: verification,
+                    pixelWidth: pixelWidth,
+                    pixelHeight: pixelHeight
+                )
             }
         }
     }

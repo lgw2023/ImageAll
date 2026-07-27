@@ -3,9 +3,25 @@ import ImageAllRemoteProtocol
 import Network
 import os
 
+struct RemoteHTTPParsedRequest: Sendable {
+    let method: String
+    let pathAndQuery: String
+    let headers: [String: String]
+    let body: Data
+}
+
+enum RemoteHTTPRequestParseResult: Sendable {
+    case incomplete
+    case request(RemoteHTTPParsedRequest)
+    case rejected(status: Int, error: RemoteAPIError)
+}
+
 /// Minimal HTTP/1.1 listener for the auxiliary iOS companion. Default off.
 actor RemoteHTTPServer {
     static let defaultPort: UInt16 = 8787
+    static let maximumRequestBytes = 256 * 1_024
+    static let maximumHeaderBytes = 32 * 1_024
+    static let requestTimeout: Duration = .seconds(15)
 
     private let facade: RemoteCatalogFacade
     private let accessToken: String
@@ -61,6 +77,10 @@ actor RemoteHTTPServer {
 
     private func handle(connection: NWConnection) {
         connection.start(queue: .global(qos: .utility))
+        Task {
+            try? await Task.sleep(for: Self.requestTimeout)
+            connection.cancel()
+        }
         receiveRequest(on: connection, buffer: Data())
     }
 
@@ -80,58 +100,145 @@ actor RemoteHTTPServer {
                 if let data, !data.isEmpty {
                     next.append(data)
                 }
-                if let headerEnd = next.range(of: Data("\r\n\r\n".utf8)) {
-                    let headerData = next.subdata(in: next.startIndex..<headerEnd.lowerBound)
-                    let bodyStart = headerEnd.upperBound
-                    guard let headerText = String(data: headerData, encoding: .utf8) else {
-                        await self.respond(connection, status: 400, error: .init(code: .badRequest, message: "invalid headers"))
-                        return
-                    }
-                    let lines = headerText.split(separator: "\r\n", omittingEmptySubsequences: false)
-                    guard let requestLine = lines.first else {
-                        await self.respond(connection, status: 400, error: .init(code: .badRequest, message: "missing request line"))
-                        return
-                    }
-                    let parts = requestLine.split(separator: " ")
-                    guard parts.count >= 2 else {
-                        await self.respond(connection, status: 400, error: .init(code: .badRequest, message: "malformed request line"))
-                        return
-                    }
-                    let method = String(parts[0])
-                    let pathAndQuery = String(parts[1])
-                    var headers: [String: String] = [:]
-                    for line in lines.dropFirst() {
-                        guard let sep = line.firstIndex(of: ":") else { continue }
-                        let key = line[..<sep].trimmingCharacters(in: .whitespaces).lowercased()
-                        let value = line[line.index(after: sep)...].trimmingCharacters(in: .whitespaces)
-                        headers[key] = value
-                    }
-                    let contentLength = Int(headers["content-length"] ?? "0") ?? 0
-                    let body = next.subdata(in: bodyStart..<min(bodyStart + contentLength, next.endIndex))
-                    if body.count < contentLength, !isComplete {
-                        await self.receiveRequest(on: connection, buffer: next)
-                        return
-                    }
+                switch Self.parseRequest(buffer: next, isComplete: isComplete) {
+                case .incomplete:
+                    await self.receiveRequest(on: connection, buffer: next)
+                case let .rejected(status, apiError):
+                    await self.respond(connection, status: status, error: apiError)
+                case let .request(request):
                     await self.route(
                         connection: connection,
-                        method: method,
-                        pathAndQuery: pathAndQuery,
-                        headers: headers,
-                        body: body
+                        method: request.method,
+                        pathAndQuery: request.pathAndQuery,
+                        headers: request.headers,
+                        body: request.body
                     )
-                    return
                 }
-                if isComplete {
-                    connection.cancel()
-                    return
-                }
-                if next.count > 256 * 1024 {
-                    await self.respond(connection, status: 413, error: .init(code: .badRequest, message: "request too large"))
-                    return
-                }
-                await self.receiveRequest(on: connection, buffer: next)
             }
         }
+    }
+
+    static func parseRequest(
+        buffer: Data,
+        isComplete: Bool
+    ) -> RemoteHTTPRequestParseResult {
+        guard buffer.count <= maximumRequestBytes else {
+            return .rejected(
+                status: 413,
+                error: .init(code: .badRequest, message: "request too large")
+            )
+        }
+        guard let headerEnd = buffer.range(of: Data("\r\n\r\n".utf8)) else {
+            if buffer.count > maximumHeaderBytes {
+                return .rejected(
+                    status: 413,
+                    error: .init(code: .badRequest, message: "headers too large")
+                )
+            }
+            return isComplete
+                ? .rejected(
+                    status: 400,
+                    error: .init(code: .badRequest, message: "incomplete headers")
+                )
+                : .incomplete
+        }
+        guard headerEnd.upperBound <= maximumHeaderBytes else {
+            return .rejected(
+                status: 413,
+                error: .init(code: .badRequest, message: "headers too large")
+            )
+        }
+        let headerData = buffer.subdata(in: buffer.startIndex..<headerEnd.lowerBound)
+        guard let headerText = String(data: headerData, encoding: .utf8) else {
+            return .rejected(
+                status: 400,
+                error: .init(code: .badRequest, message: "invalid headers")
+            )
+        }
+        let lines = headerText.split(separator: "\r\n", omittingEmptySubsequences: false)
+        guard let requestLine = lines.first else {
+            return .rejected(
+                status: 400,
+                error: .init(code: .badRequest, message: "missing request line")
+            )
+        }
+        let parts = requestLine.split(separator: " ")
+        guard parts.count == 3,
+              parts[2] == "HTTP/1.1" || parts[2] == "HTTP/1.0"
+        else {
+            return .rejected(
+                status: 400,
+                error: .init(code: .badRequest, message: "malformed request line")
+            )
+        }
+        var headers: [String: String] = [:]
+        for line in lines.dropFirst() {
+            guard let separator = line.firstIndex(of: ":") else {
+                return .rejected(
+                    status: 400,
+                    error: .init(code: .badRequest, message: "malformed header")
+                )
+            }
+            let key = line[..<separator].trimmingCharacters(in: .whitespaces).lowercased()
+            let value = line[line.index(after: separator)...].trimmingCharacters(in: .whitespaces)
+            guard !key.isEmpty, headers[key] == nil else {
+                return .rejected(
+                    status: 400,
+                    error: .init(code: .badRequest, message: "duplicate or empty header")
+                )
+            }
+            headers[key] = value
+        }
+        guard headers["transfer-encoding"] == nil else {
+            return .rejected(
+                status: 400,
+                error: .init(code: .badRequest, message: "transfer-encoding is unsupported")
+            )
+        }
+
+        let contentLength: Int
+        if let rawLength = headers["content-length"] {
+            guard let parsed = Int(rawLength), parsed >= 0 else {
+                return .rejected(
+                    status: 400,
+                    error: .init(code: .badRequest, message: "invalid content-length")
+                )
+            }
+            contentLength = parsed
+        } else {
+            contentLength = 0
+        }
+        let bodyStart = headerEnd.upperBound
+        guard contentLength <= maximumRequestBytes - bodyStart else {
+            return .rejected(
+                status: 413,
+                error: .init(code: .badRequest, message: "request too large")
+            )
+        }
+        let availableBodyBytes = buffer.count - bodyStart
+        guard availableBodyBytes >= contentLength else {
+            return isComplete
+                ? .rejected(
+                    status: 400,
+                    error: .init(code: .badRequest, message: "incomplete body")
+                )
+                : .incomplete
+        }
+        guard availableBodyBytes == contentLength else {
+            return .rejected(
+                status: 400,
+                error: .init(code: .badRequest, message: "unexpected trailing bytes")
+            )
+        }
+        let bodyEnd = bodyStart + contentLength
+        return .request(
+            RemoteHTTPParsedRequest(
+                method: String(parts[0]),
+                pathAndQuery: String(parts[1]),
+                headers: headers,
+                body: buffer.subdata(in: bodyStart..<bodyEnd)
+            )
+        )
     }
 
     private func route(
@@ -189,10 +296,11 @@ actor RemoteHTTPServer {
             }()
             await respond(connection, status: status, error: api)
         } catch {
+            logger.error("Remote route failed: \(String(describing: error), privacy: .private)")
             await respond(
                 connection,
                 status: 500,
-                error: .init(code: .internalError, message: String(describing: error))
+                error: .init(code: .internalError, message: "internal server error")
             )
         }
     }

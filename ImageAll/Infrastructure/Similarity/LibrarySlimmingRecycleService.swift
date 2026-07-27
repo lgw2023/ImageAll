@@ -660,11 +660,10 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
         case (true, false):
             try markFailed(entryID: entry.id, code: "interruptedBeforeMove")
         case (true, true):
-            try quarantineIO.deleteQuarantineObject(
-                quarantineRootURL: quarantineRootURL,
-                quarantineRelativePath: quarantinePath
-            )
-            try markFailed(entryID: entry.id, code: "interruptedDuplicate")
+            // The original path may have been recreated after the move completed.
+            // Keep both objects: deleting either side would make an ambiguous crash
+            // recovery destructive. The user can resolve the retained conflict.
+            try markFailed(entryID: entry.id, code: "interruptedConflict")
         case (false, false):
             try markFailed(entryID: entry.id, code: "interruptedMissingBoth")
         }

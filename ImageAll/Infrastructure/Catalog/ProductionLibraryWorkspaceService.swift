@@ -289,6 +289,22 @@ struct ProductionLibraryWorkspaceService: LibraryWorkspacePort, RemoteCatalogSer
         )
     }
 
+    func fetchAssetPage(
+        filter: AssetPageFilter,
+        sort: AssetPageSort,
+        cursor: AssetPageCursor?,
+        limit: Int
+    ) throws -> AssetPageResult {
+        try query.fetchAssetPage(
+            AssetPageRequest(
+                filter: filter,
+                sort: sort,
+                cursor: cursor,
+                limit: limit
+            )
+        )
+    }
+
     func loadThumbnail(assetID: UUID) async throws -> Data {
         try await assetImages.load(assetID: assetID, variant: .grid)
     }

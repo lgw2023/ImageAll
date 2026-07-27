@@ -6,6 +6,8 @@ struct FingerprintCompletionService: FingerprintCompletionPort {
     let database: CatalogDatabase
     let sourceAccess: FolderReconcileSourceAccessService
     let sourceReader: DerivedImageSourceReader
+    let photosOriginals: (any PhotosOriginalContentPort)?
+    let photosOriginalCache: PhotosOriginalCacheService?
     let clock: any JobClock
     let assetRepository: GRDBDerivedImageCacheRepository
 
@@ -13,14 +15,27 @@ struct FingerprintCompletionService: FingerprintCompletionPort {
         database: CatalogDatabase,
         sourceAccess: FolderReconcileSourceAccessService,
         sourceReader: DerivedImageSourceReader = DerivedImageSourceReader(),
+        photosOriginals: (any PhotosOriginalContentPort)? = nil,
+        photosOriginalCache: PhotosOriginalCacheService? = nil,
         clock: any JobClock,
         assetRepository: GRDBDerivedImageCacheRepository? = nil
     ) {
         self.database = database
         self.sourceAccess = sourceAccess
         self.sourceReader = sourceReader
+        self.photosOriginals = photosOriginals
+        self.photosOriginalCache = photosOriginalCache
         self.clock = clock
         self.assetRepository = assetRepository ?? GRDBDerivedImageCacheRepository(database: database)
+    }
+
+    func completeAsset(assetID: UUID) throws -> AssetContentFingerprint {
+        switch try loadLocatorKind(assetID: assetID) {
+        case .file:
+            return try completeFolderAsset(assetID: assetID)
+        case .photos:
+            return try completePhotosAsset(assetID: assetID)
+        }
     }
 
     func completeFolderAsset(assetID: UUID) throws -> AssetContentFingerprint {
@@ -68,16 +83,16 @@ struct FingerprintCompletionService: FingerprintCompletionPort {
         }
 
         let sha256 = Data(SHA256.hash(data: bytes))
-        let perceptual: Data
+        let analysis: PerceptualImageAnalysis
         do {
-            let hash = try PerceptualImageHash.dHash64(
+            analysis = try PerceptualImageHash.analyze(
                 sourceBytes: bytes,
                 expectedMediaType: context.mediaType
             )
-            perceptual = PerceptualImageHash.encodeHash(hash)
         } catch {
             throw FingerprintCompletionError.decodeFailed
         }
+        let perceptual = PerceptualImageHash.encodeHash(analysis.dHash)
 
         let nowMs = clock.nowMs
         do {
@@ -89,6 +104,9 @@ struct FingerprintCompletionService: FingerprintCompletionPort {
                 expectedResourceID: context.fingerprintResourceID,
                 sha256: sha256,
                 perceptualHash: perceptual,
+                verificationSignature: analysis.verificationSignature,
+                pixelWidth: analysis.pixelWidth,
+                pixelHeight: analysis.pixelHeight,
                 nowMs: nowMs
             )
         } catch let error as FingerprintCompletionError {
@@ -102,6 +120,9 @@ struct FingerprintCompletionService: FingerprintCompletionPort {
             contentRevision: context.contentRevision,
             sha256: sha256,
             perceptualHash: perceptual,
+            verificationSignature: analysis.verificationSignature,
+            pixelWidth: analysis.pixelWidth,
+            pixelHeight: analysis.pixelHeight,
             perceptualAlgoVersion: IdenticalDuplicatePolicy.perceptualAlgoVersion
         )
     }
@@ -127,7 +148,33 @@ struct FingerprintCompletionService: FingerprintCompletionPort {
         return results
     }
 
+    func completePendingAssets(limit: Int) throws -> [AssetContentFingerprint] {
+        let capped = max(0, limit)
+        guard capped > 0 else { return [] }
+        let pendingIDs = try listPendingAssetIDs(limit: capped, folderOnly: false)
+        var results: [AssetContentFingerprint] = []
+        results.reserveCapacity(pendingIDs.count)
+        for assetID in pendingIDs {
+            do {
+                results.append(try completeAsset(assetID: assetID))
+            } catch FingerprintCompletionError.ineligible,
+                    FingerprintCompletionError.notFound,
+                    FingerprintCompletionError.sourceChanged,
+                    FingerprintCompletionError.sourceUnavailable,
+                    FingerprintCompletionError.authorizationRequired,
+                    FingerprintCompletionError.decodeFailed
+            {
+                continue
+            }
+        }
+        return results
+    }
+
     private func listPendingAssetIDs(limit: Int) throws -> [UUID] {
+        try listPendingAssetIDs(limit: limit, folderOnly: true)
+    }
+
+    private func listPendingAssetIDs(limit: Int, folderOnly: Bool) throws -> [UUID] {
         try database.pool.read { db in
             let rows = try Row.fetchAll(
                 db,
@@ -135,24 +182,74 @@ struct FingerprintCompletionService: FingerprintCompletionPort {
                 SELECT a.id AS asset_id
                 FROM asset a
                 JOIN source s ON s.id = a.source_id
-                JOIN file_fingerprint f ON f.asset_id = a.id
                 LEFT JOIN asset_similarity_fingerprint p
                     ON p.asset_id = a.id
                     AND p.content_revision = a.content_revision
                     AND p.algo_version = ?
-                WHERE a.locator_kind = 'file'
-                  AND a.locator_state = 'current'
+                LEFT JOIN file_fingerprint f ON f.asset_id = a.id
+                WHERE a.locator_state = 'current'
                   AND a.availability = 'available'
-                  AND s.kind = 'folder'
                   AND s.state = 'active'
-                  AND (f.sha256 IS NULL OR p.asset_id IS NULL)
+                  AND (
+                    (
+                        a.locator_kind = 'file'
+                        AND s.kind = 'folder'
+                        AND f.asset_id IS NOT NULL
+                    )
+                    OR (
+                        ? = 0
+                        AND a.locator_kind = 'photos'
+                        AND s.kind = 'photos'
+                        AND a.photos_local_identifier IS NOT NULL
+                    )
+                  )
+                  AND (
+                    p.asset_id IS NULL
+                    OR p.content_sha256 IS NULL
+                    OR p.verification_signature IS NULL
+                  )
                 ORDER BY a.id
                 LIMIT ?
                 """,
-                arguments: [IdenticalDuplicatePolicy.perceptualAlgoVersion, limit]
+                arguments: [
+                    IdenticalDuplicatePolicy.perceptualAlgoVersion,
+                    folderOnly ? 1 : 0,
+                    limit,
+                ]
             )
             return rows.compactMap { row in
                 UUID(uuidString: row["asset_id"])
+            }
+        }
+    }
+
+    private enum CompletionLocatorKind {
+        case file
+        case photos
+    }
+
+    private func loadLocatorKind(assetID: UUID) throws -> CompletionLocatorKind {
+        try database.pool.read { db in
+            guard let raw: String = try String.fetchOne(
+                db,
+                sql: """
+                SELECT locator_kind
+                FROM asset
+                WHERE id = ?
+                  AND locator_state = 'current'
+                  AND availability = 'available'
+                """,
+                arguments: [assetID.uuidString.lowercased()]
+            ) else {
+                throw FingerprintCompletionError.notFound
+            }
+            switch raw {
+            case AssetLocatorKind.file.rawValue:
+                return .file
+            case AssetLocatorKind.photos.rawValue:
+                return .photos
+            default:
+                throw FingerprintCompletionError.ineligible
             }
         }
     }
@@ -165,11 +262,20 @@ struct FingerprintCompletionService: FingerprintCompletionPort {
             guard let row = try Row.fetchOne(
                 db,
                 sql: """
-                SELECT f.sha256, p.perceptual_hash, p.algo_version, p.content_revision
-                FROM file_fingerprint f
-                JOIN asset_similarity_fingerprint p ON p.asset_id = f.asset_id
-                WHERE f.asset_id = ?
-                  AND f.sha256 IS NOT NULL
+                SELECT
+                    p.content_sha256,
+                    p.perceptual_hash,
+                    p.verification_signature,
+                    p.pixel_width,
+                    p.pixel_height,
+                    p.algo_version,
+                    p.content_revision
+                FROM asset_similarity_fingerprint p
+                WHERE p.asset_id = ?
+                  AND p.content_sha256 IS NOT NULL
+                  AND p.verification_signature IS NOT NULL
+                  AND p.pixel_width IS NOT NULL
+                  AND p.pixel_height IS NOT NULL
                   AND p.content_revision = ?
                   AND p.algo_version = ?
                 """,
@@ -181,16 +287,205 @@ struct FingerprintCompletionService: FingerprintCompletionPort {
             ) else {
                 return nil
             }
-            let sha256: Data = row["sha256"]
+            let sha256: Data = row["content_sha256"]
             let perceptual: Data = row["perceptual_hash"]
+            let verification: Data = row["verification_signature"]
+            let pixelWidth: Int = row["pixel_width"]
+            let pixelHeight: Int = row["pixel_height"]
             let algo: String = row["algo_version"]
-            guard sha256.count == 32, perceptual.count == 8 else { return nil }
+            guard sha256.count == 32,
+                  perceptual.count == 8,
+                  verification.count == 768,
+                  pixelWidth > 0,
+                  pixelHeight > 0
+            else {
+                return nil
+            }
             return AssetContentFingerprint(
                 assetID: assetID,
                 contentRevision: contentRevision,
                 sha256: sha256,
                 perceptualHash: perceptual,
+                verificationSignature: verification,
+                pixelWidth: pixelWidth,
+                pixelHeight: pixelHeight,
                 perceptualAlgoVersion: algo
+            )
+        }
+    }
+
+    private struct PhotosCompletionContext {
+        let localIdentifier: String
+        let contentRevision: Int
+        let mediaType: String
+    }
+
+    private func completePhotosAsset(assetID: UUID) throws -> AssetContentFingerprint {
+        let context = try loadPhotosContext(assetID: assetID)
+        if let existing = try loadCompletedFingerprint(
+            assetID: assetID,
+            contentRevision: context.contentRevision
+        ) {
+            return existing
+        }
+        guard let photosOriginals, let photosOriginalCache else {
+            throw FingerprintCompletionError.ineligible
+        }
+
+        let bytes: Data
+        do {
+            if let cached = try photosOriginalCache.load(
+                assetID: assetID,
+                contentRevision: context.contentRevision,
+                localIdentifier: context.localIdentifier
+            ) {
+                bytes = cached
+            } else {
+                let downloaded = try photosOriginals.requestOriginalImageData(
+                    localIdentifier: context.localIdentifier
+                )
+                guard !downloaded.isEmpty else {
+                    throw FingerprintCompletionError.sourceUnavailable
+                }
+                bytes = try photosOriginalCache.store(
+                    assetID: assetID,
+                    contentRevision: context.contentRevision,
+                    localIdentifier: context.localIdentifier,
+                    mediaType: context.mediaType,
+                    sourceBytes: downloaded
+                )
+            }
+        } catch let error as FingerprintCompletionError {
+            throw error
+        } catch let error as PhotosLibraryError {
+            switch error {
+            case .authorizationDenied, .authorizationRestricted:
+                throw FingerprintCompletionError.authorizationRequired
+            case .libraryUnavailable, .cloudOnly, .changeTokenInvalid, .persistenceFailure:
+                throw FingerprintCompletionError.sourceUnavailable
+            }
+        } catch {
+            throw FingerprintCompletionError.persistenceFailed
+        }
+
+        let sha256 = Data(SHA256.hash(data: bytes))
+        let analysis: PerceptualImageAnalysis
+        do {
+            analysis = try PerceptualImageHash.analyze(
+                sourceBytes: bytes,
+                expectedMediaType: context.mediaType
+            )
+        } catch {
+            throw FingerprintCompletionError.decodeFailed
+        }
+        let perceptual = PerceptualImageHash.encodeHash(analysis.dHash)
+        do {
+            try persistPhotosFingerprint(
+                assetID: assetID,
+                context: context,
+                sha256: sha256,
+                perceptualHash: perceptual,
+                verificationSignature: analysis.verificationSignature,
+                pixelWidth: analysis.pixelWidth,
+                pixelHeight: analysis.pixelHeight
+            )
+        } catch let error as FingerprintCompletionError {
+            throw error
+        } catch {
+            throw FingerprintCompletionError.persistenceFailed
+        }
+        return AssetContentFingerprint(
+            assetID: assetID,
+            contentRevision: context.contentRevision,
+            sha256: sha256,
+            perceptualHash: perceptual,
+            verificationSignature: analysis.verificationSignature,
+            pixelWidth: analysis.pixelWidth,
+            pixelHeight: analysis.pixelHeight,
+            perceptualAlgoVersion: IdenticalDuplicatePolicy.perceptualAlgoVersion
+        )
+    }
+
+    private func loadPhotosContext(assetID: UUID) throws -> PhotosCompletionContext {
+        try database.pool.read { db in
+            guard let row = try Row.fetchOne(
+                db,
+                sql: """
+                SELECT
+                    a.photos_local_identifier,
+                    a.content_revision,
+                    a.media_type
+                FROM asset a
+                JOIN source s ON s.id = a.source_id
+                WHERE a.id = ?
+                  AND a.locator_kind = 'photos'
+                  AND a.locator_state = 'current'
+                  AND a.availability = 'available'
+                  AND s.kind = 'photos'
+                  AND s.state = 'active'
+                """,
+                arguments: [assetID.uuidString.lowercased()]
+            ),
+                let localIdentifier: String = row["photos_local_identifier"]
+            else {
+                throw FingerprintCompletionError.ineligible
+            }
+            return PhotosCompletionContext(
+                localIdentifier: localIdentifier,
+                contentRevision: row["content_revision"],
+                mediaType: row["media_type"]
+            )
+        }
+    }
+
+    private func persistPhotosFingerprint(
+        assetID: UUID,
+        context: PhotosCompletionContext,
+        sha256: Data,
+        perceptualHash: Data,
+        verificationSignature: Data,
+        pixelWidth: Int,
+        pixelHeight: Int
+    ) throws {
+        try database.pool.write { db in
+            let current = try Bool.fetchOne(
+                db,
+                sql: """
+                SELECT EXISTS(
+                    SELECT 1
+                    FROM asset a
+                    JOIN source s ON s.id = a.source_id
+                    WHERE a.id = ?
+                      AND a.photos_local_identifier = ?
+                      AND a.content_revision = ?
+                      AND a.media_type = ?
+                      AND a.locator_kind = 'photos'
+                      AND a.locator_state = 'current'
+                      AND a.availability = 'available'
+                      AND s.kind = 'photos'
+                      AND s.state = 'active'
+                )
+                """,
+                arguments: [
+                    assetID.uuidString.lowercased(),
+                    context.localIdentifier,
+                    context.contentRevision,
+                    context.mediaType,
+                ]
+            ) ?? false
+            guard current else {
+                throw FingerprintCompletionError.sourceChanged
+            }
+            try upsertSimilarityFingerprint(
+                db: db,
+                assetID: assetID,
+                contentRevision: context.contentRevision,
+                sha256: sha256,
+                perceptualHash: perceptualHash,
+                verificationSignature: verificationSignature,
+                pixelWidth: pixelWidth,
+                pixelHeight: pixelHeight,
+                nowMs: clock.nowMs
             )
         }
     }
@@ -203,6 +498,9 @@ struct FingerprintCompletionService: FingerprintCompletionPort {
         expectedResourceID: Data?,
         sha256: Data,
         perceptualHash: Data,
+        verificationSignature: Data,
+        pixelWidth: Int,
+        pixelHeight: Int,
         nowMs: Int64
     ) throws {
         try database.pool.write { db in
@@ -231,27 +529,319 @@ struct FingerprintCompletionService: FingerprintCompletionPort {
                 throw FingerprintCompletionError.sourceChanged
             }
 
-            try db.execute(
+            try upsertSimilarityFingerprint(
+                db: db,
+                assetID: assetID,
+                contentRevision: contentRevision,
+                sha256: sha256,
+                perceptualHash: perceptualHash,
+                verificationSignature: verificationSignature,
+                pixelWidth: pixelWidth,
+                pixelHeight: pixelHeight,
+                nowMs: nowMs
+            )
+        }
+    }
+
+    private func upsertSimilarityFingerprint(
+        db: Database,
+        assetID: UUID,
+        contentRevision: Int,
+        sha256: Data,
+        perceptualHash: Data,
+        verificationSignature: Data,
+        pixelWidth: Int,
+        pixelHeight: Int,
+        nowMs: Int64
+    ) throws {
+        try db.execute(
+            sql: """
+            INSERT INTO asset_similarity_fingerprint (
+                asset_id, content_revision, algo_version, perceptual_hash,
+                created_at_ms, updated_at_ms, content_sha256,
+                verification_signature, pixel_width, pixel_height
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(asset_id) DO UPDATE SET
+                content_revision = excluded.content_revision,
+                algo_version = excluded.algo_version,
+                perceptual_hash = excluded.perceptual_hash,
+                content_sha256 = excluded.content_sha256,
+                verification_signature = excluded.verification_signature,
+                pixel_width = excluded.pixel_width,
+                pixel_height = excluded.pixel_height,
+                updated_at_ms = excluded.updated_at_ms
+            """,
+            arguments: [
+                assetID.uuidString.lowercased(),
+                contentRevision,
+                IdenticalDuplicatePolicy.perceptualAlgoVersion,
+                perceptualHash,
+                nowMs,
+                nowMs,
+                sha256,
+                verificationSignature,
+                pixelWidth,
+                pixelHeight,
+            ]
+        )
+    }
+}
+
+enum PhotosOriginalCacheError: Error, Equatable {
+    case unsafePath
+    case persistenceFailed
+    case assetChanged
+    case previewWriteRejected
+}
+
+/// App-owned, non-evicting cache for full Photos still bytes used by exact
+/// detection. It lives under Application Support rather than the disposable
+/// preview cache.
+struct PhotosOriginalCacheService: Sendable {
+    let database: CatalogDatabase
+    let rootURL: URL
+    let clock: any JobClock
+
+    func load(
+        assetID: UUID,
+        contentRevision: Int,
+        localIdentifier: String
+    ) throws -> Data? {
+        guard let row = try database.pool.read({ db in
+            try Row.fetchOne(
+                db,
                 sql: """
-                INSERT INTO asset_similarity_fingerprint (
-                    asset_id, content_revision, algo_version, perceptual_hash,
-                    created_at_ms, updated_at_ms
-                ) VALUES (?, ?, ?, ?, ?, ?)
-                ON CONFLICT(asset_id) DO UPDATE SET
-                    content_revision = excluded.content_revision,
-                    algo_version = excluded.algo_version,
-                    perceptual_hash = excluded.perceptual_hash,
-                    updated_at_ms = excluded.updated_at_ms
+                SELECT
+                    c.object_name,
+                    c.byte_size,
+                    c.encoded_sha256
+                FROM photos_original_cache_entry c
+                JOIN asset a ON a.id = c.asset_id
+                JOIN source s ON s.id = a.source_id
+                WHERE c.asset_id = ?
+                  AND c.content_revision = ?
+                  AND c.photos_local_identifier = ?
+                  AND a.content_revision = c.content_revision
+                  AND a.photos_local_identifier = c.photos_local_identifier
+                  AND a.locator_kind = 'photos'
+                  AND a.locator_state = 'current'
+                  AND a.availability = 'available'
+                  AND s.kind = 'photos'
+                  AND s.state = 'active'
                 """,
                 arguments: [
                     assetID.uuidString.lowercased(),
                     contentRevision,
-                    IdenticalDuplicatePolicy.perceptualAlgoVersion,
-                    perceptualHash,
-                    nowMs,
-                    nowMs,
+                    localIdentifier,
                 ]
             )
+        }) else {
+            return nil
         }
+        let objectName: String = row["object_name"]
+        let expectedSize: Int64 = row["byte_size"]
+        let expectedSHA: Data = row["encoded_sha256"]
+        let objectURL = try validatedObjectURL(objectName: objectName)
+        guard let bytes = try? Data(contentsOf: objectURL),
+              Int64(bytes.count) == expectedSize,
+              Data(SHA256.hash(data: bytes)) == expectedSHA
+        else {
+            try invalidate(assetID: assetID, objectURL: objectURL)
+            return nil
+        }
+        return bytes
+    }
+
+    func store(
+        assetID: UUID,
+        contentRevision: Int,
+        localIdentifier: String,
+        mediaType: String,
+        sourceBytes: Data
+    ) throws -> Data {
+        guard !sourceBytes.isEmpty else {
+            throw PhotosOriginalCacheError.persistenceFailed
+        }
+        try ensureRoot()
+        let objectName = UUID().uuidString.lowercased()
+        let objectURL = try validatedObjectURL(objectName: objectName)
+        do {
+            try sourceBytes.write(to: objectURL, options: [.atomic])
+        } catch {
+            throw PhotosOriginalCacheError.persistenceFailed
+        }
+        let encodedSHA = Data(SHA256.hash(data: sourceBytes))
+        var replacedObjectName: String?
+        do {
+            try database.pool.write { db in
+                let current = try Bool.fetchOne(
+                    db,
+                    sql: """
+                    SELECT EXISTS(
+                        SELECT 1
+                        FROM asset a
+                        JOIN source s ON s.id = a.source_id
+                        WHERE a.id = ?
+                          AND a.content_revision = ?
+                          AND a.photos_local_identifier = ?
+                          AND a.media_type = ?
+                          AND a.locator_kind = 'photos'
+                          AND a.locator_state = 'current'
+                          AND a.availability = 'available'
+                          AND s.kind = 'photos'
+                          AND s.state = 'active'
+                    )
+                    """,
+                    arguments: [
+                        assetID.uuidString.lowercased(),
+                        contentRevision,
+                        localIdentifier,
+                        mediaType,
+                    ]
+                ) ?? false
+                guard current else {
+                    throw PhotosOriginalCacheError.assetChanged
+                }
+                replacedObjectName = try String.fetchOne(
+                    db,
+                    sql: "SELECT object_name FROM photos_original_cache_entry WHERE asset_id = ?",
+                    arguments: [assetID.uuidString.lowercased()]
+                )
+                try db.execute(
+                    sql: """
+                    INSERT INTO photos_original_cache_entry (
+                        asset_id, content_revision, photos_local_identifier,
+                        object_name, media_type,
+                        byte_size, encoded_sha256, created_at_ms, updated_at_ms
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(asset_id) DO UPDATE SET
+                        content_revision = excluded.content_revision,
+                        photos_local_identifier = excluded.photos_local_identifier,
+                        object_name = excluded.object_name,
+                        media_type = excluded.media_type,
+                        byte_size = excluded.byte_size,
+                        encoded_sha256 = excluded.encoded_sha256,
+                        updated_at_ms = excluded.updated_at_ms
+                    """,
+                    arguments: [
+                        assetID.uuidString.lowercased(),
+                        contentRevision,
+                        localIdentifier,
+                        objectName,
+                        mediaType,
+                        Int64(sourceBytes.count),
+                        encodedSHA,
+                        clock.nowMs,
+                        clock.nowMs,
+                    ]
+                )
+            }
+        } catch {
+            try? FileManager.default.removeItem(at: objectURL)
+            throw error
+        }
+        if let replacedObjectName, replacedObjectName != objectName,
+           let oldURL = try? validatedObjectURL(objectName: replacedObjectName)
+        {
+            try? FileManager.default.removeItem(at: oldURL)
+        }
+        return sourceBytes
+    }
+
+    private func ensureRoot() throws {
+        do {
+            try FileManager.default.createDirectory(
+                at: rootURL,
+                withIntermediateDirectories: true
+            )
+            let values = try rootURL.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+            guard values.isDirectory == true, values.isSymbolicLink != true else {
+                throw PhotosOriginalCacheError.unsafePath
+            }
+        } catch let error as PhotosOriginalCacheError {
+            throw error
+        } catch {
+            throw PhotosOriginalCacheError.persistenceFailed
+        }
+    }
+
+    private func validatedObjectURL(objectName: String) throws -> URL {
+        guard let uuid = UUID(uuidString: objectName),
+              objectName == uuid.uuidString.lowercased()
+        else {
+            throw PhotosOriginalCacheError.unsafePath
+        }
+        let standardizedRoot = rootURL.standardizedFileURL
+        let candidate = standardizedRoot.appendingPathComponent(objectName, isDirectory: false)
+            .standardizedFileURL
+        guard candidate.deletingLastPathComponent() == standardizedRoot else {
+            throw PhotosOriginalCacheError.unsafePath
+        }
+        return candidate
+    }
+
+    private func invalidate(assetID: UUID, objectURL: URL) throws {
+        try database.pool.write { db in
+            try db.execute(
+                sql: "DELETE FROM photos_original_cache_entry WHERE asset_id = ?",
+                arguments: [assetID.uuidString.lowercased()]
+            )
+        }
+        try? FileManager.default.removeItem(at: objectURL)
+    }
+}
+
+extension PhotosOriginalCacheService: DownloadedPreviewCachePort {
+    func loadDownloadedPreview(assetID: UUID) throws -> Data? {
+        guard let context: (Int, String) = try database.pool.read({ db in
+            guard let row = try Row.fetchOne(
+                db,
+                sql: """
+                SELECT content_revision, photos_local_identifier
+                FROM asset
+                WHERE id = ?
+                  AND photos_local_identifier IS NOT NULL
+                """,
+                arguments: [assetID.uuidString.lowercased()]
+            ), let localIdentifier: String = row["photos_local_identifier"] else {
+                return nil
+            }
+            return (row["content_revision"], localIdentifier)
+        }) else {
+            return nil
+        }
+        return try load(
+            assetID: assetID,
+            contentRevision: context.0,
+            localIdentifier: context.1
+        )
+    }
+
+    func storeDownloadedPreview(assetID: UUID, sourceBytes: Data) async throws -> Data {
+        _ = assetID
+        _ = sourceBytes
+        // This conformance is deliberately read-only for Feature Print input
+        // loading. Preview bytes are transformed and must never masquerade as
+        // the durable full original used by exact duplicate detection.
+        throw PhotosOriginalCacheError.previewWriteRejected
+    }
+}
+
+/// Read-through composition for feature generation: prefer the durable full
+/// Photos original when present, preserve the existing disposable preview as a
+/// fallback, and route all preview writes only to the disposable cache.
+struct PrioritizedDownloadedPreviewCache: DownloadedPreviewCachePort {
+    let primary: any DownloadedPreviewCachePort
+    let fallback: any DownloadedPreviewCachePort
+
+    func loadDownloadedPreview(assetID: UUID) throws -> Data? {
+        if let primaryBytes = try primary.loadDownloadedPreview(assetID: assetID) {
+            return primaryBytes
+        }
+        return try fallback.loadDownloadedPreview(assetID: assetID)
+    }
+
+    func storeDownloadedPreview(assetID: UUID, sourceBytes: Data) async throws -> Data {
+        try await fallback.storeDownloadedPreview(assetID: assetID, sourceBytes: sourceBytes)
     }
 }

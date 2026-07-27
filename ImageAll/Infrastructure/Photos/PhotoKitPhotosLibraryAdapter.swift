@@ -4,7 +4,8 @@ import Photos
 
 final class PhotoKitPhotosLibraryAdapter: NSObject, PhotosLibraryAccessPort, PhotosChangeHistoryPort,
     PhotosChangeObserverPort, PhotosLibraryAvailabilityObserverPort, PhotosCloudPreviewPort,
-    PhotosFeaturePrintImagePort, PHPhotoLibraryChangeObserver, PHPhotoLibraryAvailabilityObserver,
+    PhotosOriginalContentPort, PhotosFeaturePrintImagePort, PHPhotoLibraryChangeObserver,
+    PHPhotoLibraryAvailabilityObserver,
     @unchecked Sendable
 {
     private let imageManager = PHCachingImageManager()
@@ -382,6 +383,39 @@ final class PhotoKitPhotosLibraryAdapter: NSObject, PhotosLibraryAccessPort, Pho
         } onCancel: {
             cancellation.cancel()
         }
+    }
+
+    func requestOriginalImageData(localIdentifier: String) throws -> Data {
+        guard authorizationState() == .authorized else {
+            throw PhotosLibraryError.authorizationDenied
+        }
+        let fetch = PHAsset.fetchAssets(withLocalIdentifiers: [localIdentifier], options: nil)
+        guard let asset = fetch.firstObject else {
+            throw PhotosLibraryError.libraryUnavailable
+        }
+        let options = PHImageRequestOptions()
+        options.version = .original
+        options.deliveryMode = .highQualityFormat
+        options.isSynchronous = true
+        options.isNetworkAccessAllowed = true
+        let result = SynchronousImageResult()
+        imageManager.requestImageDataAndOrientation(for: asset, options: options) {
+            data,
+            _,
+            _,
+            info in
+            if let data {
+                result.set(.success(data))
+            } else if let error = info?[PHImageErrorKey] as? Error {
+                result.set(.failure(error))
+            } else {
+                result.set(.failure(PhotosLibraryError.libraryUnavailable))
+            }
+        }
+        guard let value = result.value else {
+            throw PhotosLibraryError.libraryUnavailable
+        }
+        return try value.get()
     }
 
     func requestLocalFeatureImage(localIdentifier: String) throws -> Data {

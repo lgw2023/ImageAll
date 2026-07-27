@@ -70,6 +70,9 @@ struct JobSafeErrorCode: Sendable, Equatable, Hashable {
     static let photosSourceUnavailable = JobSafeErrorCode(unchecked: "photosSourceUnavailable")
     static let photosPersistenceFailure = JobSafeErrorCode(unchecked: "photosPersistenceFailure")
     static let librarySlimmingPurgeFailed = JobSafeErrorCode(unchecked: "librarySlimmingPurgeFailed")
+    static let librarySlimmingAnalysisFailed = JobSafeErrorCode(
+        unchecked: "librarySlimmingAnalysisFailed"
+    )
 
     private init(unchecked rawValue: String) {
         self.rawValue = rawValue

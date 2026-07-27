@@ -309,7 +309,7 @@ struct LibrarySlimmingScanService: LibrarySlimmingScanPort {
                 )
             )
             do {
-                _ = try fingerprintCompletion.completeFolderAsset(assetID: assetID)
+                _ = try fingerprintCompletion.completeAsset(assetID: assetID)
             } catch FingerprintCompletionError.ineligible,
                     FingerprintCompletionError.notFound,
                     FingerprintCompletionError.sourceUnavailable,
@@ -534,5 +534,556 @@ struct DictionarySlimmingEmbeddingLoader: SlimmingEmbeddingLoading {
 
     func embedding(assetID: UUID) throws -> [Float]? {
         vectors[assetID]
+    }
+}
+
+struct LibrarySlimmingAnalysisJobSnapshot: Sendable, Equatable {
+    let jobID: UUID
+    let state: JobState
+    let controlRequest: JobControlRequest
+    let progress: JobProgress
+    let result: LibrarySlimmingScanResult?
+}
+
+protocol LibrarySlimmingAnalysisJobPort: Sendable {
+    func enqueue(
+        mode: LibrarySlimmingAnalyzeMode,
+        assetIDs: [UUID],
+        seedAssetIDs: [UUID]
+    ) throws -> LibrarySlimmingAnalysisJobSnapshot
+    func runPending() throws
+    func pause(jobID: UUID) throws -> LibrarySlimmingAnalysisJobSnapshot
+    func resume(jobID: UUID) throws -> LibrarySlimmingAnalysisJobSnapshot
+    func snapshot(jobID: UUID) throws -> LibrarySlimmingAnalysisJobSnapshot
+    func latestActiveOrCompleted() throws -> LibrarySlimmingAnalysisJobSnapshot?
+}
+
+enum LibrarySlimmingAnalysisJobFactory {
+    static let kind = "librarySlimming.analysis.v1"
+    static let payloadVersion = 1
+    static let checkpointVersion = 1
+    static let priority = 10
+    static let maxAttempts = 5
+    static let fingerprintBatchSize = 1
+    static let vectorBatchSize = 16
+    static let automaticCompletionPasses = 3
+    static let leaseDurationMs: Int64 = 10 * 60 * 1_000
+
+    struct Payload: Codable, Sendable, Equatable {
+        let mode: LibrarySlimmingAnalyzeMode
+    }
+
+    enum Phase: String, Codable, Sendable {
+        case fingerprints
+        case vectors
+        case clustering
+    }
+
+    struct Checkpoint: Codable, Sendable, Equatable {
+        var phase: Phase
+        var nextOrdinal: Int
+        var completionPass: Int
+        var completedFloor: Int
+    }
+
+    static func makeCommand(
+        jobID: UUID,
+        mode: LibrarySlimmingAnalyzeMode,
+        notBeforeMs: Int64
+    ) throws -> EnqueueJobCommand {
+        EnqueueJobCommand(
+            id: jobID,
+            kind: kind,
+            payloadVersion: payloadVersion,
+            payload: try JSONEncoder().encode(Payload(mode: mode)),
+            sourceID: nil,
+            coalescingKey: kind,
+            priority: priority,
+            maxAttempts: maxAttempts,
+            notBeforeMs: notBeforeMs
+        )
+    }
+
+    static func decodePayload(_ data: Data) throws -> Payload {
+        try JSONDecoder().decode(Payload.self, from: data)
+    }
+
+    static func decodeCheckpoint(_ checkpoint: JobCheckpoint?) throws -> Checkpoint {
+        guard let checkpoint else {
+            return Checkpoint(
+                phase: .fingerprints,
+                nextOrdinal: 0,
+                completionPass: 1,
+                completedFloor: 0
+            )
+        }
+        guard checkpoint.version == checkpointVersion else {
+            throw JobQueueError.unsupportedCheckpointVersion(
+                kind: kind,
+                version: checkpoint.version
+            )
+        }
+        return try JSONDecoder().decode(Checkpoint.self, from: checkpoint.data)
+    }
+
+    static func encodeCheckpoint(_ value: Checkpoint) throws -> JobCheckpoint {
+        JobCheckpoint(version: checkpointVersion, data: try JSONEncoder().encode(value))
+    }
+}
+
+struct LibrarySlimmingAnalysisService: LibrarySlimmingAnalysisJobPort {
+    let database: CatalogDatabase
+    let queue: GRDBJobQueue
+    let clock: any JobClock
+    private let coordinator: JobExecutionCoordinator
+
+    init(
+        database: CatalogDatabase,
+        queue: GRDBJobQueue,
+        fingerprintCompletion: any FingerprintCompletionPort,
+        featureLoader: any SlimmingFeatureVectorLoading,
+        embeddingLoader: any SlimmingEmbeddingLoading,
+        scanner: any LibrarySlimmingScanPort,
+        clock: any JobClock
+    ) {
+        self.database = database
+        self.queue = queue
+        self.clock = clock
+        let handler = LibrarySlimmingAnalysisHandler(
+            database: database,
+            queue: queue,
+            fingerprintCompletion: fingerprintCompletion,
+            featureLoader: featureLoader,
+            embeddingLoader: embeddingLoader,
+            scanner: scanner,
+            clock: clock
+        )
+        coordinator = JobExecutionCoordinator(
+            queue: queue,
+            registry: MultiJobHandlerRegistry(handlers: [handler]),
+            leaseContextProvider: GRDBJobLeaseContextProvider(queue: queue)
+        )
+    }
+
+    func enqueue(
+        mode: LibrarySlimmingAnalyzeMode,
+        assetIDs: [UUID],
+        seedAssetIDs: [UUID]
+    ) throws -> LibrarySlimmingAnalysisJobSnapshot {
+        let seeds = Set(seedAssetIDs)
+        let members = Array(Set(assetIDs).union(seeds)).sorted {
+            $0.uuidString.lowercased() < $1.uuidString.lowercased()
+        }
+        guard !members.isEmpty else {
+            throw FingerprintCompletionError.notFound
+        }
+        let jobID = UUID()
+        let nowMs = clock.nowMs
+        let command = try LibrarySlimmingAnalysisJobFactory.makeCommand(
+            jobID: jobID,
+            mode: mode,
+            notBeforeMs: nowMs
+        )
+        try database.pool.write { db in
+            // The resumable job and its frozen analysis universe are one
+            // durable unit. A crash must never expose a claimable empty job.
+            try JobInsertInTransaction.insertPendingJob(db, command: command, nowMs: nowMs)
+            for (ordinal, assetID) in members.enumerated() {
+                try db.execute(
+                    sql: """
+                    INSERT INTO library_slimming_scan_member (
+                        job_id, asset_id, ordinal, is_seed
+                    ) VALUES (?, ?, ?, ?)
+                    """,
+                    arguments: [
+                        jobID.uuidString.lowercased(),
+                        assetID.uuidString.lowercased(),
+                        ordinal,
+                        seeds.contains(assetID) ? 1 : 0,
+                    ]
+                )
+            }
+        }
+        return try snapshot(jobID: jobID)
+    }
+
+    func runPending() throws {
+        try queue.settleRetryableJobs()
+        let claim = ClaimNextInput(
+            owner: "imageall-library-slimming-analysis-\(UUID().uuidString.lowercased())",
+            leaseDurationMs: LibrarySlimmingAnalysisJobFactory.leaseDurationMs,
+            allowedKinds: [LibrarySlimmingAnalysisJobFactory.kind]
+        )
+        while let execution = try coordinator.claimAndExecuteOnce(claim) {
+            if execution.snapshot.state == .paused
+                || execution.snapshot.state == .terminalFailed
+                || execution.snapshot.state == .cancelled
+            {
+                break
+            }
+        }
+    }
+
+    func pause(jobID: UUID) throws -> LibrarySlimmingAnalysisJobSnapshot {
+        _ = try queue.applyStateCommand(
+            JobStateCommand(jobID: jobID, operation: .pause)
+        )
+        return try snapshot(jobID: jobID)
+    }
+
+    func resume(jobID: UUID) throws -> LibrarySlimmingAnalysisJobSnapshot {
+        _ = try queue.applyStateCommand(
+            JobStateCommand(
+                jobID: jobID,
+                operation: .resume(notBeforeMs: clock.nowMs)
+            )
+        )
+        return try snapshot(jobID: jobID)
+    }
+
+    func snapshot(jobID: UUID) throws -> LibrarySlimmingAnalysisJobSnapshot {
+        let job = try queue.fetchJob(id: jobID)
+        let result = try database.pool.read { db -> LibrarySlimmingScanResult? in
+            guard let data: Data = try Data.fetchOne(
+                db,
+                sql: "SELECT result_json FROM library_slimming_scan_result WHERE job_id = ?",
+                arguments: [jobID.uuidString.lowercased()]
+            ) else {
+                return nil
+            }
+            return try JSONDecoder().decode(LibrarySlimmingScanResult.self, from: data)
+        }
+        return LibrarySlimmingAnalysisJobSnapshot(
+            jobID: job.id,
+            state: job.state,
+            controlRequest: job.controlRequest,
+            progress: job.progress,
+            result: result
+        )
+    }
+
+    func latestActiveOrCompleted() throws -> LibrarySlimmingAnalysisJobSnapshot? {
+        let jobID = try database.pool.read { db -> UUID? in
+            guard let raw: String = try String.fetchOne(
+                db,
+                sql: """
+                SELECT id
+                FROM job
+                WHERE kind = ?
+                ORDER BY
+                    CASE WHEN state IN ('pending', 'running', 'paused', 'retryableFailed')
+                        THEN 0 ELSE 1 END,
+                    updated_at_ms DESC,
+                    id DESC
+                LIMIT 1
+                """,
+                arguments: [LibrarySlimmingAnalysisJobFactory.kind]
+            ) else {
+                return nil
+            }
+            return UUID(uuidString: raw)
+        }
+        guard let jobID else { return nil }
+        return try snapshot(jobID: jobID)
+    }
+}
+
+private struct LibrarySlimmingAnalysisHandler: LeaseBoundJobHandler {
+    let database: CatalogDatabase
+    let queue: GRDBJobQueue
+    let fingerprintCompletion: any FingerprintCompletionPort
+    let featureLoader: any SlimmingFeatureVectorLoading
+    let embeddingLoader: any SlimmingEmbeddingLoading
+    let scanner: any LibrarySlimmingScanPort
+    let clock: any JobClock
+
+    var kind: String { LibrarySlimmingAnalysisJobFactory.kind }
+    var supportedPayloadVersions: Set<Int> { [LibrarySlimmingAnalysisJobFactory.payloadVersion] }
+    var supportedCheckpointVersions: Set<Int> {
+        [LibrarySlimmingAnalysisJobFactory.checkpointVersion]
+    }
+
+    func execute(
+        payloadVersion: Int,
+        payload: Data,
+        checkpoint: JobCheckpoint?
+    ) -> JobHandlerExecutionResult {
+        failure(checkpoint: checkpoint)
+    }
+
+    func execute(
+        lease: JobLeaseToken,
+        payloadVersion: Int,
+        payload: Data,
+        checkpoint: JobCheckpoint?,
+        context: JobLeaseExecutionContext
+    ) throws -> JobHandlerExecutionResult {
+        _ = context
+        guard payloadVersion == LibrarySlimmingAnalysisJobFactory.payloadVersion else {
+            return failure(checkpoint: checkpoint)
+        }
+        do {
+            let payload = try LibrarySlimmingAnalysisJobFactory.decodePayload(payload)
+            var state = try LibrarySlimmingAnalysisJobFactory.decodeCheckpoint(checkpoint)
+            let total = try memberCount(jobID: lease.jobID)
+            let progressTotal = total * 2 + 1
+
+            while true {
+                if try hasControlRequest(jobID: lease.jobID) {
+                    return JobHandlerExecutionResult(
+                        outcome: .continue,
+                        checkpoint: try LibrarySlimmingAnalysisJobFactory.encodeCheckpoint(state),
+                        progress: progress(state: state, total: total, progressTotal: progressTotal)
+                    )
+                }
+                switch state.phase {
+                case .fingerprints:
+                    let batch = try memberBatch(
+                        jobID: lease.jobID,
+                        fromOrdinal: state.nextOrdinal,
+                        limit: LibrarySlimmingAnalysisJobFactory.fingerprintBatchSize
+                    )
+                    if batch.isEmpty {
+                        state.phase = .vectors
+                        state.nextOrdinal = 0
+                        continue
+                    }
+                    for member in batch {
+                        _ = try? fingerprintCompletion.completeAsset(assetID: member.assetID)
+                    }
+                    state.nextOrdinal = (batch.last?.ordinal ?? state.nextOrdinal) + 1
+                    if let settled = try commitProgress(
+                        lease: lease,
+                        state: state,
+                        total: total,
+                        progressTotal: progressTotal
+                    ) {
+                        return settled
+                    }
+                case .vectors:
+                    let batch = try memberBatch(
+                        jobID: lease.jobID,
+                        fromOrdinal: state.nextOrdinal,
+                        limit: LibrarySlimmingAnalysisJobFactory.vectorBatchSize
+                    )
+                    if batch.isEmpty {
+                        state.phase = .clustering
+                        state.nextOrdinal = 0
+                        continue
+                    }
+                    (featureLoader as? SlimmingBudgetResetting)?
+                        .resetScanBudgets(forAssetCount: batch.count)
+                    (embeddingLoader as? SlimmingBudgetResetting)?
+                        .resetScanBudgets(forAssetCount: batch.count)
+                    for member in batch {
+                        guard (try? featureLoader.featureVector(assetID: member.assetID)) != nil else {
+                            continue
+                        }
+                        _ = try? embeddingLoader.embedding(assetID: member.assetID)
+                    }
+                    state.nextOrdinal = (batch.last?.ordinal ?? state.nextOrdinal) + 1
+                    if let settled = try commitProgress(
+                        lease: lease,
+                        state: state,
+                        total: total,
+                        progressTotal: progressTotal
+                    ) {
+                        return settled
+                    }
+                case .clustering:
+                    let members = try allMembers(jobID: lease.jobID)
+                    let assetIDs = members.map(\.assetID)
+                    let seeds = members.filter(\.isSeed).map(\.assetID)
+                    let result: LibrarySlimmingScanResult
+                    if payload.mode == .seeds {
+                        result = try scanner.scanSeeds(
+                            seedAssetIDs: seeds,
+                            universeAssetIDs: assetIDs,
+                            onProgress: nil
+                        )
+                    } else {
+                        result = try scanner.scan(assetIDs: assetIDs, onProgress: nil)
+                    }
+                    if !result.pendingAnalysisAssetIDs.isEmpty,
+                       state.completionPass
+                        < LibrarySlimmingAnalysisJobFactory.automaticCompletionPasses
+                    {
+                        state = .init(
+                            phase: .fingerprints,
+                            nextOrdinal: 0,
+                            completionPass: state.completionPass + 1,
+                            completedFloor: total * 2
+                        )
+                        if let settled = try commitProgress(
+                            lease: lease,
+                            state: state,
+                            total: total,
+                            progressTotal: progressTotal
+                        ) {
+                            return settled
+                        }
+                        continue
+                    }
+                    let encodedResult = try JSONEncoder().encode(result)
+                    let finalCheckpoint = try LibrarySlimmingAnalysisJobFactory.encodeCheckpoint(state)
+                    let finalProgress = JobProgress(
+                        completed: progressTotal,
+                        total: progressTotal
+                    )
+                    _ = try queue.commitLeaseProtectedBatch(
+                        input: SafeBatchCommitInput(
+                            lease: lease,
+                            outcome: .completed,
+                            checkpoint: finalCheckpoint,
+                            progress: finalProgress,
+                            leaseDurationMs: LibrarySlimmingAnalysisJobFactory.leaseDurationMs
+                        )
+                    ) { db in
+                        try db.execute(
+                            sql: """
+                            INSERT INTO library_slimming_scan_result (
+                                job_id, result_json, updated_at_ms
+                            ) VALUES (?, ?, ?)
+                            ON CONFLICT(job_id) DO UPDATE SET
+                                result_json = excluded.result_json,
+                                updated_at_ms = excluded.updated_at_ms
+                            """,
+                            arguments: [
+                                lease.jobID.uuidString.lowercased(),
+                                encodedResult,
+                                clock.nowMs,
+                            ]
+                        )
+                    }
+                    return JobHandlerExecutionResult(
+                        outcome: .completed,
+                        checkpoint: finalCheckpoint,
+                        progress: finalProgress,
+                        settledByHandler: true
+                    )
+                }
+            }
+        } catch {
+            let persisted = try? queue.fetchJob(id: lease.jobID)
+            return JobHandlerExecutionResult(
+                outcome: .retryableFailure(code: .librarySlimmingAnalysisFailed),
+                checkpoint: persisted?.checkpoint ?? checkpoint,
+                progress: persisted?.progress ?? JobProgress(completed: 0, total: nil)
+            )
+        }
+    }
+
+    private struct Member {
+        let ordinal: Int
+        let assetID: UUID
+        let isSeed: Bool
+    }
+
+    private func memberCount(jobID: UUID) throws -> Int {
+        try database.pool.read { db in
+            try Int.fetchOne(
+                db,
+                sql: "SELECT COUNT(*) FROM library_slimming_scan_member WHERE job_id = ?",
+                arguments: [jobID.uuidString.lowercased()]
+            ) ?? 0
+        }
+    }
+
+    private func memberBatch(jobID: UUID, fromOrdinal: Int, limit: Int) throws -> [Member] {
+        try database.pool.read { db in
+            let rows = try Row.fetchAll(
+                db,
+                sql: """
+                SELECT ordinal, asset_id, is_seed
+                FROM library_slimming_scan_member
+                WHERE job_id = ? AND ordinal >= ?
+                ORDER BY ordinal
+                LIMIT ?
+                """,
+                arguments: [jobID.uuidString.lowercased(), fromOrdinal, limit]
+            )
+            return rows.compactMap(Self.member)
+        }
+    }
+
+    private func allMembers(jobID: UUID) throws -> [Member] {
+        try database.pool.read { db in
+            try Row.fetchAll(
+                db,
+                sql: """
+                SELECT ordinal, asset_id, is_seed
+                FROM library_slimming_scan_member
+                WHERE job_id = ?
+                ORDER BY ordinal
+                """,
+                arguments: [jobID.uuidString.lowercased()]
+            ).compactMap(Self.member)
+        }
+    }
+
+    private static func member(_ row: Row) -> Member? {
+        guard let assetID = UUID(uuidString: row["asset_id"]) else { return nil }
+        return Member(
+            ordinal: row["ordinal"],
+            assetID: assetID,
+            isSeed: (row["is_seed"] as Int) == 1
+        )
+    }
+
+    private func hasControlRequest(jobID: UUID) throws -> Bool {
+        try queue.fetchJob(id: jobID).controlRequest != .none
+    }
+
+    private func progress(
+        state: LibrarySlimmingAnalysisJobFactory.Checkpoint,
+        total: Int,
+        progressTotal: Int
+    ) -> JobProgress {
+        let completed: Int = switch state.phase {
+        case .fingerprints:
+            min(state.nextOrdinal, total)
+        case .vectors:
+            total + min(state.nextOrdinal, total)
+        case .clustering:
+            total * 2
+        }
+        return JobProgress(
+            completed: max(state.completedFloor, completed),
+            total: progressTotal
+        )
+    }
+
+    private func commitProgress(
+        lease: JobLeaseToken,
+        state: LibrarySlimmingAnalysisJobFactory.Checkpoint,
+        total: Int,
+        progressTotal: Int
+    ) throws -> JobHandlerExecutionResult? {
+        let checkpoint = try LibrarySlimmingAnalysisJobFactory.encodeCheckpoint(state)
+        let progress = progress(state: state, total: total, progressTotal: progressTotal)
+        let snapshot = try queue.submitSafeBatch(
+            SafeBatchCommitInput(
+                lease: lease,
+                outcome: .continue,
+                checkpoint: checkpoint,
+                progress: progress,
+                leaseDurationMs: LibrarySlimmingAnalysisJobFactory.leaseDurationMs
+            )
+        )
+        guard snapshot.state != .running else { return nil }
+        return JobHandlerExecutionResult(
+            outcome: .continue,
+            checkpoint: checkpoint,
+            progress: progress,
+            settledByHandler: true
+        )
+    }
+
+    private func failure(checkpoint: JobCheckpoint?) -> JobHandlerExecutionResult {
+        JobHandlerExecutionResult(
+            outcome: .nonRetryableFailure(code: .librarySlimmingAnalysisFailed),
+            checkpoint: checkpoint,
+            progress: JobProgress(completed: 0, total: nil)
+        )
     }
 }

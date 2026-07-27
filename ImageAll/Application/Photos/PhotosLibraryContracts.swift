@@ -100,6 +100,13 @@ protocol PhotosCloudPreviewPort: Sendable {
     ) async throws -> Data
 }
 
+/// Full-resolution still bytes used by durable local analysis. Production
+/// PhotoKit access is network-enabled so iCloud-only assets are materialized
+/// without an extra per-item prompt after Photos authorization.
+protocol PhotosOriginalContentPort: Sendable {
+    func requestOriginalImageData(localIdentifier: String) throws -> Data
+}
+
 protocol PhotosFeaturePrintImagePort: Sendable {
     func requestLocalFeatureImage(localIdentifier: String) throws -> Data
 }

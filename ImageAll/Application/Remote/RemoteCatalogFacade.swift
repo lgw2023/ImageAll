@@ -3,10 +3,29 @@ import ImageAllRemoteProtocol
 
 /// Thin mapping/facade over a narrow catalog surface. Does not touch UI state machines.
 actor RemoteCatalogFacade {
+    private struct AppliedOperation: Sendable {
+        let tagID: UUID
+        let assetIDs: [UUID]
+        let action: RemoteTagDecisionAction
+        let response: RemoteBatchTagDecisionResponse
+
+        func matches(_ request: RemoteBatchTagDecisionRequest) -> Bool {
+            tagID == request.tagID
+                && action == request.action
+                && assetIDs == Self.canonicalAssetIDs(request.assetIDs)
+        }
+
+        private static func canonicalAssetIDs(_ ids: [UUID]) -> [UUID] {
+            Array(Set(ids)).sorted {
+                $0.uuidString.lowercased() < $1.uuidString.lowercased()
+            }
+        }
+    }
+
     private let catalog: any RemoteCatalogServing
     private let hostAppVersion: String
     private let listenPort: Int
-    private var appliedOperations: [UUID: RemoteBatchTagDecisionResponse] = [:]
+    private var appliedOperations: [UUID: AppliedOperation] = [:]
 
     init(
         catalog: any RemoteCatalogServing,
@@ -38,12 +57,11 @@ actor RemoteCatalogFacade {
                 searchText: request.searchText
             ),
             sort: Self.mapSort(request.sort),
-            cursor: cursor
+            cursor: cursor,
+            limit: limit
         )
-        // Existing port ignores limit; R0 returns the page as-is and truncates for safety.
-        let items = Array(page.items.prefix(limit))
         return RemoteAssetPage(
-            items: items.map(Self.mapAsset),
+            items: page.items.map(Self.mapAsset),
             nextCursor: try Self.encodeCursor(page.nextCursor)
         )
     }
@@ -57,9 +75,15 @@ actor RemoteCatalogFacade {
         _ request: RemoteBatchTagDecisionRequest
     ) throws -> RemoteBatchTagDecisionResponse {
         if let replayed = appliedOperations[request.operationID] {
+            guard replayed.matches(request) else {
+                throw RemoteAPIError(
+                    code: .conflict,
+                    message: "operationID was already used for a different mutation"
+                )
+            }
             return RemoteBatchTagDecisionResponse(
-                operationID: replayed.operationID,
-                appliedAssetCount: replayed.appliedAssetCount,
+                operationID: replayed.response.operationID,
+                appliedAssetCount: replayed.response.appliedAssetCount,
                 replayed: true
             )
         }
@@ -76,7 +100,14 @@ actor RemoteCatalogFacade {
             appliedAssetCount: snapshot.priorStates.count,
             replayed: false
         )
-        appliedOperations[request.operationID] = response
+        appliedOperations[request.operationID] = AppliedOperation(
+            tagID: request.tagID,
+            assetIDs: Array(Set(request.assetIDs)).sorted {
+                $0.uuidString.lowercased() < $1.uuidString.lowercased()
+            },
+            action: request.action,
+            response: response
+        )
         return response
     }
 

@@ -110,6 +110,16 @@ struct CompositionRoot {
             sourceAccess: sourceAccess,
             clock: clock
         )
+        let photosOriginalCache = PhotosOriginalCacheService(
+            database: runtime.database,
+            rootURL: runtime.paths.applicationSupportDirectory
+                .appendingPathComponent("Photos Originals/v1", isDirectory: true),
+            clock: clock
+        )
+        let featureInputImages = PrioritizedDownloadedPreviewCache(
+            primary: photosOriginalCache,
+            fallback: derivedImages
+        )
         let appStorageLocationController = AppStorageLocationController(
             picker: AppKitFolderDirectoryPicker(),
             store: UserDefaultsAppStorageLocationStore(
@@ -122,7 +132,7 @@ struct CompositionRoot {
             cachesDirectory: runtime.paths.cachesDirectory,
             sourceAccess: sourceAccess,
             photosImages: photosAccess,
-            downloadedPreviews: derivedImages,
+            downloadedPreviews: featureInputImages,
             clock: clock
         )
         let suggestionThresholds = GRDBSuggestionThresholdRepository(database: runtime.database)
@@ -307,13 +317,15 @@ struct CompositionRoot {
         let fingerprintCompletion = FingerprintCompletionService(
             database: runtime.database,
             sourceAccess: sourceAccess,
+            photosOriginals: photosAccess,
+            photosOriginalCache: photosOriginalCache,
             clock: clock
         )
         let featurePrintInputLoader = LibraryFeaturePrintInputLoader(
             database: runtime.database,
             sourceAccess: sourceAccess,
             photosImages: photosAccess,
-            downloadedPreviews: derivedImages
+            downloadedPreviews: featureInputImages
         )
         let slimmingEmbeddingService = makeAppCoreMLEmbeddingService(isEnabled: true)
         let slimmingEmbeddingLoader: CatalogSlimmingEmbeddingLoader?
@@ -330,13 +342,26 @@ struct CompositionRoot {
             slimmingEmbeddingLoader = nil
         }
         let slimmingThresholdStore = UserDefaultsNearDuplicateSceneThresholdStore()
+        let slimmingFeatureLoader = BudgetedFeaturePrintSlimmingLoader(service: featurePrintService)
+        let optionalSlimmingEmbeddingLoader = OptionalSlimmingEmbeddingLoader(
+            base: slimmingEmbeddingLoader
+        )
         let librarySlimming = LibrarySlimmingScanService(
             database: runtime.database,
             identicalScan: IdenticalDuplicateClusterService(database: runtime.database),
             fingerprintCompletion: fingerprintCompletion,
-            featureLoader: BudgetedFeaturePrintSlimmingLoader(service: featurePrintService),
-            embeddingLoader: OptionalSlimmingEmbeddingLoader(base: slimmingEmbeddingLoader),
+            featureLoader: slimmingFeatureLoader,
+            embeddingLoader: optionalSlimmingEmbeddingLoader,
             thresholdReader: slimmingThresholdStore
+        )
+        let librarySlimmingAnalysis = LibrarySlimmingAnalysisService(
+            database: runtime.database,
+            queue: runtime.jobQueue,
+            fingerprintCompletion: fingerprintCompletion,
+            featureLoader: slimmingFeatureLoader,
+            embeddingLoader: optionalSlimmingEmbeddingLoader,
+            scanner: librarySlimming,
+            clock: clock
         )
         return LibraryWorkspaceModel(
             service: service,
@@ -345,6 +370,7 @@ struct CompositionRoot {
                 database: runtime.database
             ),
             librarySlimming: librarySlimming,
+            librarySlimmingAnalysis: librarySlimmingAnalysis,
             librarySlimmingRecycle: librarySlimmingRecycle,
             librarySlimmingMutationAuthorization: librarySlimmingMutationAuthorization,
             librarySlimmingThresholds: slimmingThresholdStore,

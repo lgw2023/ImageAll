@@ -139,7 +139,11 @@ struct LibrarySlimmingWorkspaceView: View {
                 }
             }
             .buttonStyle(.borderedProminent)
-            .disabled(model.isAnalyzingLibrarySlimming || !model.supportsLibrarySlimming)
+            .disabled(
+                model.isAnalyzingLibrarySlimming
+                    || model.canResumeLibrarySlimmingAnalysis
+                    || !model.supportsLibrarySlimming
+            )
 
             Button {
                 Task { await model.analyzeLibrarySlimming(mode: .currentFilter) }
@@ -148,6 +152,7 @@ struct LibrarySlimmingWorkspaceView: View {
             }
             .disabled(
                 model.isAnalyzingLibrarySlimming
+                    || model.canResumeLibrarySlimmingAnalysis
                     || !model.supportsLibrarySlimming
                     || !model.hasLibrarySlimmingFilterScope
             )
@@ -162,7 +167,28 @@ struct LibrarySlimmingWorkspaceView: View {
                         systemImage: "target"
                     )
                 }
-                .disabled(model.isAnalyzingLibrarySlimming || !model.supportsLibrarySlimming)
+                .disabled(
+                    model.isAnalyzingLibrarySlimming
+                        || model.canResumeLibrarySlimmingAnalysis
+                        || !model.supportsLibrarySlimming
+                )
+            }
+
+            if model.canPauseLibrarySlimmingAnalysis {
+                Button {
+                    Task { await model.pauseLibrarySlimmingAnalysis() }
+                } label: {
+                    Label("暂停", systemImage: "pause.fill")
+                }
+                .help("在当前照片处理完成后的安全边界暂停")
+            } else if model.canResumeLibrarySlimmingAnalysis {
+                Button {
+                    Task { await model.resumeLibrarySlimmingAnalysis() }
+                } label: {
+                    Label("继续", systemImage: "play.fill")
+                }
+                .buttonStyle(.borderedProminent)
+                .help("从已保存进度继续，并自动补全剩余照片")
             }
 
             if model.librarySlimmingPendingCount > 0 {

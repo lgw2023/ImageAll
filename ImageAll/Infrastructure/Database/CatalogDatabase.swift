@@ -27,6 +27,7 @@ struct CatalogDatabase: Sendable {
         V019AddLibrarySlimmingRecycleMigration.register(on: &migrator)
         V020HardenLibrarySlimmingRecycleMigration.register(on: &migrator)
         V021AddPhotosRecycleIdentifierMigration.register(on: &migrator)
+        V022HardenLibrarySlimmingAnalysisMigration.register(on: &migrator)
         return migrator
     }
 
@@ -1822,6 +1823,78 @@ enum V021AddPhotosRecycleIdentifierMigration {
                 CREATE INDEX recycle_entry_purge_due_idx
                 ON recycle_entry(purge_after_ms, id)
                 WHERE state = 'recycled'
+                """
+            )
+        }
+    }
+}
+
+enum V022HardenLibrarySlimmingAnalysisMigration {
+    static func register(on migrator: inout DatabaseMigrator) {
+        migrator.registerMigration(CatalogMigrationID.v022HardenLibrarySlimmingAnalysis) { db in
+            try db.execute(
+                sql: """
+                ALTER TABLE asset_similarity_fingerprint
+                ADD COLUMN content_sha256 BLOB
+                CHECK(content_sha256 IS NULL OR length(content_sha256) = 32)
+                """
+            )
+            try db.execute(
+                sql: """
+                ALTER TABLE asset_similarity_fingerprint
+                ADD COLUMN verification_signature BLOB
+                CHECK(verification_signature IS NULL OR length(verification_signature) = 768)
+                """
+            )
+            try db.execute(
+                sql: """
+                ALTER TABLE asset_similarity_fingerprint
+                ADD COLUMN pixel_width INTEGER
+                CHECK(pixel_width IS NULL OR pixel_width > 0)
+                """
+            )
+            try db.execute(
+                sql: """
+                ALTER TABLE asset_similarity_fingerprint
+                ADD COLUMN pixel_height INTEGER
+                CHECK(pixel_height IS NULL OR pixel_height > 0)
+                """
+            )
+            try db.execute(
+                sql: """
+                CREATE TABLE photos_original_cache_entry (
+                    asset_id TEXT NOT NULL PRIMARY KEY REFERENCES asset(id) ON DELETE CASCADE,
+                    content_revision INTEGER NOT NULL CHECK(content_revision >= 1),
+                    photos_local_identifier TEXT NOT NULL
+                        CHECK(length(photos_local_identifier) > 0),
+                    object_name TEXT NOT NULL UNIQUE CHECK(length(object_name) = 36),
+                    media_type TEXT NOT NULL CHECK(length(media_type) > 0),
+                    byte_size INTEGER NOT NULL CHECK(byte_size > 0),
+                    encoded_sha256 BLOB NOT NULL CHECK(length(encoded_sha256) = 32),
+                    created_at_ms INTEGER NOT NULL CHECK(created_at_ms >= 0),
+                    updated_at_ms INTEGER NOT NULL CHECK(updated_at_ms >= 0)
+                ) STRICT
+                """
+            )
+            try db.execute(
+                sql: """
+                CREATE TABLE library_slimming_scan_member (
+                    job_id TEXT NOT NULL REFERENCES job(id) ON DELETE CASCADE,
+                    asset_id TEXT NOT NULL REFERENCES asset(id) ON DELETE CASCADE,
+                    ordinal INTEGER NOT NULL CHECK(ordinal >= 0),
+                    is_seed INTEGER NOT NULL DEFAULT 0 CHECK(is_seed IN (0, 1)),
+                    PRIMARY KEY(job_id, asset_id),
+                    UNIQUE(job_id, ordinal)
+                ) STRICT
+                """
+            )
+            try db.execute(
+                sql: """
+                CREATE TABLE library_slimming_scan_result (
+                    job_id TEXT NOT NULL PRIMARY KEY REFERENCES job(id) ON DELETE CASCADE,
+                    result_json BLOB NOT NULL CHECK(length(result_json) > 0),
+                    updated_at_ms INTEGER NOT NULL CHECK(updated_at_ms >= 0)
+                ) STRICT
                 """
             )
         }

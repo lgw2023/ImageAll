@@ -109,7 +109,7 @@ enum SlimmingScanBudgetPolicy {
     }
 }
 
-struct SlimmingVectorModelIdentity: Sendable, Equatable {
+struct SlimmingVectorModelIdentity: Sendable, Equatable, Codable {
     let featurePrintProvider: String?
     let featurePrintRequestRevision: Int?
     let featurePrintPreprocessingRevision: Int?
@@ -161,13 +161,13 @@ struct SlimmingVectorModelIdentity: Sendable, Equatable {
     }
 }
 
-enum SlimmingClusterKind: String, Sendable, Equatable {
+enum SlimmingClusterKind: String, Sendable, Equatable, Codable {
     case byteIdentical
     case perceptualDuplicate
     case nearDuplicateScene
 }
 
-struct SlimmingCluster: Sendable, Equatable, Identifiable {
+struct SlimmingCluster: Sendable, Equatable, Identifiable, Codable {
     let id: UUID
     let kind: SlimmingClusterKind
     let memberAssetIDs: [UUID]
@@ -209,7 +209,7 @@ struct LibrarySlimmingScanProgress: Sendable, Equatable {
     }
 }
 
-struct LibrarySlimmingScanResult: Sendable, Equatable {
+struct LibrarySlimmingScanResult: Sendable, Equatable, Codable {
     let clusters: [SlimmingCluster]
     let pendingAnalysisAssetIDs: [UUID]
     let analyzedAssetCount: Int
@@ -239,7 +239,7 @@ extension SlimmingEmbeddingLoading {
 
 typealias LibrarySlimmingScanProgressHandler = @Sendable (LibrarySlimmingScanProgress) -> Void
 
-enum LibrarySlimmingAnalyzeMode: String, Sendable, Equatable {
+enum LibrarySlimmingAnalyzeMode: String, Sendable, Equatable, Codable {
     /// Closed-world scan of all available catalog assets.
     case catalog
     /// Closed-world scan of a caller-resolved filter universe (tag/source/search).

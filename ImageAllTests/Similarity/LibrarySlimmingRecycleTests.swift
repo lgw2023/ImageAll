@@ -636,6 +636,49 @@ final class LibrarySlimmingRecycleTests: XCTestCase {
         XCTAssertEqual(try service.listRecycledEntries().map(\.id), [entry.id])
     }
 
+    func testRecoveryRetainsQuarantineWhenOriginalPathWasRecreated() throws {
+        let env = try RecycleTestEnv(label: #function)
+        defer { env.cleanup() }
+        let originalBytes = Data("original-before-interruption".utf8)
+        let replacementBytes = Data("replacement-after-interruption".utf8)
+        let seeded = try env.seedAsset(
+            relativePath: "recovery/recreated.jpg",
+            contents: originalBytes
+        )
+        let service = env.makeRecycleService()
+        _ = try service.moveFolderAssetsToRecycle(assetIDs: [seeded.assetID])
+        let entry = try XCTUnwrap(try service.listRecycledEntries().first)
+        let quarantineURL = env.quarantineRoot.appendingPathComponent(
+            try XCTUnwrap(entry.quarantineRelativePath)
+        )
+        try replacementBytes.write(to: seeded.fileURL)
+        try env.database.pool.write { db in
+            try db.execute(
+                sql: "UPDATE recycle_entry SET state = 'pending' WHERE id = ?",
+                arguments: [entry.id.uuidString.lowercased()]
+            )
+            try db.execute(
+                sql: "UPDATE asset SET availability = 'available' WHERE id = ?",
+                arguments: [seeded.assetID.uuidString.lowercased()]
+            )
+        }
+
+        let recovered = try service.recoverInterruptedOperations()
+
+        XCTAssertEqual(recovered, 1)
+        XCTAssertEqual(try Data(contentsOf: seeded.fileURL), replacementBytes)
+        XCTAssertEqual(try Data(contentsOf: quarantineURL), originalBytes)
+        let row = try env.database.pool.read { db in
+            try Row.fetchOne(
+                db,
+                sql: "SELECT state, error_code FROM recycle_entry WHERE id = ?",
+                arguments: [entry.id.uuidString.lowercased()]
+            )
+        }
+        XCTAssertEqual(row?["state"] as String?, RecycleEntryState.failed.rawValue)
+        XCTAssertEqual(row?["error_code"] as String?, "interruptedConflict")
+    }
+
     func testRecoveryFinalizesRestoreInterruptedAfterFilesystemSuccess() throws {
         let env = try RecycleTestEnv(label: #function)
         defer { env.cleanup() }

@@ -3,9 +3,9 @@ import Foundation
 /// Versioned policy for S1 identical / perceptual-duplicate clustering.
 enum IdenticalDuplicatePolicy {
     /// Difference-hash algorithm identity persisted in `asset_similarity_fingerprint.algo_version`.
-    static let perceptualAlgoVersion = "dhash-v1"
+    static let perceptualAlgoVersion = "dhash-rgbverify-v2"
 
-    /// Maximum Hamming distance (inclusive) for `perceptualDuplicate` under `dhash-v1`.
+    /// Maximum Hamming distance (inclusive) for the dHash candidate stage.
     static let perceptualDuplicateMaxHammingDistance = 8
 }
 
@@ -38,14 +38,24 @@ struct AssetContentFingerprint: Sendable, Equatable {
     let contentRevision: Int
     let sha256: Data
     let perceptualHash: Data
+    let verificationSignature: Data
+    let pixelWidth: Int
+    let pixelHeight: Int
     let perceptualAlgoVersion: String
 }
 
 protocol FingerprintCompletionPort: Sendable {
-    /// Completes SHA-256 + perceptual hash for one folder asset. Idempotent when facts unchanged.
+    /// Completes durable content + perceptual verification for one folder or
+    /// Photos asset. Photos originals are implicitly materialized and cached.
+    func completeAsset(assetID: UUID) throws -> AssetContentFingerprint
+
+    /// Backward-compatible folder-only entry point.
     func completeFolderAsset(assetID: UUID) throws -> AssetContentFingerprint
 
-    /// Completes up to `limit` eligible folder assets that still need SHA-256 or current perceptual hash.
+    /// Completes up to `limit` eligible assets that still need current analysis.
+    func completePendingAssets(limit: Int) throws -> [AssetContentFingerprint]
+
+    /// Backward-compatible folder-only batch entry point.
     func completePendingFolderAssets(limit: Int) throws -> [AssetContentFingerprint]
 }
 

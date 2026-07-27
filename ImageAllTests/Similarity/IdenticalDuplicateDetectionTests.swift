@@ -88,15 +88,125 @@ final class IdenticalDuplicateDetectionTests: XCTestCase {
         XCTAssertTrue(clusters.isEmpty)
     }
 
-    func testPhotosLocatorAssetIsIneligible() throws {
+    func testDifferentSolidColorsDoNotBecomeDeletionGradeDuplicates() throws {
+        let env = try SimilarityTestSupport.Environment(label: #function)
+        defer { env.cleanup() }
+
+        let red = try XCTUnwrap(
+            SimilarityTestSupport.solidImageData(red: 230, green: 20, blue: 20, uti: .jpeg)
+        )
+        let blue = try XCTUnwrap(
+            SimilarityTestSupport.solidImageData(red: 20, green: 20, blue: 230, uti: .jpeg)
+        )
+        let a = try env.seedAsset(relativePath: "red.jpg", contents: red)
+        let b = try env.seedAsset(relativePath: "blue.jpg", contents: blue)
+        let completion = env.makeCompletionService()
+        let fa = try completion.completeFolderAsset(assetID: a.assetID)
+        let fb = try completion.completeFolderAsset(assetID: b.assetID)
+        XCTAssertEqual(fa.perceptualHash, fb.perceptualHash, "fixture must exercise a dHash collision")
+
+        let clusters = try IdenticalDuplicateClusterService(database: env.database)
+            .clusterIdenticalDuplicates(assetIDs: [a.assetID, b.assetID])
+
+        XCTAssertTrue(clusters.isEmpty)
+    }
+
+    func testPhotosCloudOriginalIsDurablyCachedAndClustersAcrossSources() throws {
         let env = try SimilarityTestSupport.Environment(label: #function)
         defer { env.cleanup() }
         let photosAssetID = try env.seedPhotosAsset()
-        let completion = env.makeCompletionService()
-        XCTAssertThrowsError(try completion.completeFolderAsset(assetID: photosAssetID)) { error in
-            let typed = error as? FingerprintCompletionError
-            XCTAssertTrue(typed == .ineligible || typed == .notFound, "got \(String(describing: typed))")
+        let bytes = try XCTUnwrap(SimilarityTestSupport.patternedImageData(seed: 77, uti: .png))
+        let folderAsset = try env.seedAsset(
+            relativePath: "same-as-photos.png",
+            contents: bytes,
+            mediaType: "public.png"
+        )
+        let photos = SimilarityPhotosOriginalStub(bytes: bytes)
+        let completion = env.makeCompletionService(photosOriginals: photos)
+
+        let photoFingerprint = try completion.completeAsset(assetID: photosAssetID)
+        let folderFingerprint = try completion.completeAsset(assetID: folderAsset.assetID)
+
+        XCTAssertEqual(photoFingerprint.sha256, folderFingerprint.sha256)
+        XCTAssertEqual(photos.requestCount, 1)
+        let clusters = try IdenticalDuplicateClusterService(database: env.database)
+            .clusterIdenticalDuplicates(assetIDs: [photosAssetID, folderAsset.assetID])
+        XCTAssertEqual(clusters.map(\.kind), [.byteIdentical])
+
+        try env.database.pool.write { db in
+            try db.execute(
+                sql: "DELETE FROM asset_similarity_fingerprint WHERE asset_id = ?",
+                arguments: [photosAssetID.uuidString.lowercased()]
+            )
         }
+        photos.bytes = nil
+        _ = try completion.completeAsset(assetID: photosAssetID)
+        XCTAssertEqual(photos.requestCount, 1, "second completion must use the durable local original")
+    }
+
+    func testDurablePhotosOriginalCacheRejectsPreviewWrites() async throws {
+        let env = try SimilarityTestSupport.Environment(label: #function)
+        defer { env.cleanup() }
+        let photosAssetID = try env.seedPhotosAsset()
+        let cache = PhotosOriginalCacheService(
+            database: env.database,
+            rootURL: env.root.appendingPathComponent("Photos Originals", isDirectory: true),
+            clock: FixedJobClock(nowMs: FolderReconcileTestSupport.baseTimeMs)
+        )
+
+        do {
+            _ = try await cache.storeDownloadedPreview(
+                assetID: photosAssetID,
+                sourceBytes: Data("preview-only".utf8)
+            )
+            XCTFail("preview bytes must never be persisted as a durable original")
+        } catch PhotosOriginalCacheError.previewWriteRejected {
+            // Expected: the protocol conformance is read-only.
+        }
+    }
+
+    func testDurablePhotosOriginalCacheRejectsChangedPhotoLocator() throws {
+        let env = try SimilarityTestSupport.Environment(label: #function)
+        defer { env.cleanup() }
+        let photosAssetID = try env.seedPhotosAsset()
+        let cache = PhotosOriginalCacheService(
+            database: env.database,
+            rootURL: env.root.appendingPathComponent("Photos Originals", isDirectory: true),
+            clock: FixedJobClock(nowMs: FolderReconcileTestSupport.baseTimeMs)
+        )
+
+        XCTAssertThrowsError(
+            try cache.store(
+                assetID: photosAssetID,
+                contentRevision: 1,
+                localIdentifier: "stale-photo-identifier",
+                mediaType: "public.jpeg",
+                sourceBytes: Data("full-original".utf8)
+            )
+        ) { error in
+            XCTAssertEqual(error as? PhotosOriginalCacheError, .assetChanged)
+        }
+    }
+
+    func testPrioritizedPreviewCacheReadsDurableOriginalAndWritesDisposableFallback() async throws {
+        let assetID = UUID()
+        let original = Data("durable-original".utf8)
+        let preview = Data("disposable-preview".utf8)
+        let primary = SimilarityDownloadedPreviewCacheStub(loaded: original)
+        let fallback = SimilarityDownloadedPreviewCacheStub(loaded: preview)
+        let cache = PrioritizedDownloadedPreviewCache(primary: primary, fallback: fallback)
+
+        XCTAssertEqual(try cache.loadDownloadedPreview(assetID: assetID), original)
+        XCTAssertEqual(primary.loadCount, 1)
+        XCTAssertEqual(fallback.loadCount, 0)
+
+        let storedPreview = try await cache.storeDownloadedPreview(
+            assetID: assetID,
+            sourceBytes: preview
+        )
+        XCTAssertEqual(storedPreview, preview)
+        XCTAssertEqual(primary.storeCount, 0)
+        XCTAssertEqual(fallback.storeCount, 1)
     }
 
     func testV018MigrationAppliedOnFreshDatabase() throws {
@@ -108,6 +218,83 @@ final class IdenticalDuplicateDetectionTests: XCTestCase {
         try database.pool.read { db in
             XCTAssertTrue(try db.tableExists("asset_similarity_fingerprint"))
         }
+    }
+
+    func testLibraryAnalysisJobPausesResumesAndPersistsAutomaticCompletion() throws {
+        let env = try SimilarityTestSupport.Environment(label: #function)
+        defer { env.cleanup() }
+        let bytes = try XCTUnwrap(SimilarityTestSupport.patternedImageData(seed: 91, uti: .png))
+        let left = try env.seedAsset(relativePath: "job-left.png", contents: bytes, mediaType: "public.png")
+        let right = try env.seedAsset(relativePath: "job-right.png", contents: bytes, mediaType: "public.png")
+        let completion = env.makeCompletionService()
+        let featureLoader = DictionarySlimmingFeatureLoader(vectors: [:])
+        let embeddingLoader = DictionarySlimmingEmbeddingLoader(vectors: [:])
+        let scanner = LibrarySlimmingScanService(
+            database: env.database,
+            identicalScan: IdenticalDuplicateClusterService(database: env.database),
+            fingerprintCompletion: completion,
+            featureLoader: featureLoader,
+            embeddingLoader: embeddingLoader
+        )
+        let queue = JobTestSupport.makeQueue(database: env.database)
+        let analysis = LibrarySlimmingAnalysisService(
+            database: env.database,
+            queue: queue,
+            fingerprintCompletion: completion,
+            featureLoader: featureLoader,
+            embeddingLoader: embeddingLoader,
+            scanner: scanner,
+            clock: FixedJobClock(nowMs: JobTestSupport.baseTimeMs)
+        )
+
+        let enqueued = try analysis.enqueue(
+            mode: .catalog,
+            assetIDs: [left.assetID, right.assetID],
+            seedAssetIDs: []
+        )
+        XCTAssertEqual(enqueued.state, .pending)
+        XCTAssertEqual(try analysis.pause(jobID: enqueued.jobID).state, .paused)
+        XCTAssertEqual(try analysis.resume(jobID: enqueued.jobID).state, .pending)
+
+        try analysis.runPending()
+
+        let finished = try analysis.snapshot(jobID: enqueued.jobID)
+        XCTAssertEqual(finished.state, .completed)
+        XCTAssertEqual(finished.result?.clusters.map(\.kind), [.byteIdentical])
+        XCTAssertEqual(finished.result?.pendingAnalysisAssetIDs, [])
+    }
+}
+
+private final class SimilarityDownloadedPreviewCacheStub: DownloadedPreviewCachePort,
+    @unchecked Sendable
+{
+    private let lock = NSLock()
+    private let loaded: Data?
+    private var storedLoadCount = 0
+    private var storedStoreCount = 0
+
+    init(loaded: Data?) {
+        self.loaded = loaded
+    }
+
+    var loadCount: Int {
+        lock.withLock { storedLoadCount }
+    }
+
+    var storeCount: Int {
+        lock.withLock { storedStoreCount }
+    }
+
+    func loadDownloadedPreview(assetID: UUID) throws -> Data? {
+        _ = assetID
+        lock.withLock { storedLoadCount += 1 }
+        return loaded
+    }
+
+    func storeDownloadedPreview(assetID: UUID, sourceBytes: Data) async throws -> Data {
+        _ = assetID
+        lock.withLock { storedStoreCount += 1 }
+        return sourceBytes
     }
 }
 
@@ -141,7 +328,9 @@ enum SimilarityTestSupport {
             try? FileManager.default.removeItem(at: root)
         }
 
-        func makeCompletionService() -> FingerprintCompletionService {
+        func makeCompletionService(
+            photosOriginals: (any PhotosOriginalContentPort)? = nil
+        ) -> FingerprintCompletionService {
             let bookmarkPort = FolderReconcileTestSupport.TestBookmarkPort(
                 rootByBookmark: [bookmark: sourceRoot]
             )
@@ -154,6 +343,12 @@ enum SimilarityTestSupport {
             return FingerprintCompletionService(
                 database: database,
                 sourceAccess: sourceAccess,
+                photosOriginals: photosOriginals,
+                photosOriginalCache: PhotosOriginalCacheService(
+                    database: database,
+                    rootURL: root.appendingPathComponent("Photos Originals", isDirectory: true),
+                    clock: FixedJobClock(nowMs: FolderReconcileTestSupport.baseTimeMs)
+                ),
                 clock: FixedJobClock(nowMs: FolderReconcileTestSupport.baseTimeMs)
             )
         }
@@ -311,5 +506,73 @@ enum SimilarityTestSupport {
         CGImageDestinationAddImage(dest, image, props as CFDictionary)
         guard CGImageDestinationFinalize(dest) else { return nil }
         return data as Data
+    }
+
+    static func solidImageData(
+        red: UInt8,
+        green: UInt8,
+        blue: UInt8,
+        uti: UTType,
+        width: Int = 64,
+        height: Int = 64
+    ) -> Data? {
+        var pixels = [UInt8](repeating: 0, count: width * height * 4)
+        for offset in stride(from: 0, to: pixels.count, by: 4) {
+            pixels[offset] = red
+            pixels[offset + 1] = green
+            pixels[offset + 2] = blue
+            pixels[offset + 3] = 255
+        }
+        let provider = CGDataProvider(data: Data(pixels) as CFData)!
+        let image = CGImage(
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bitsPerPixel: 32,
+            bytesPerRow: width * 4,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
+            provider: provider,
+            decode: nil,
+            shouldInterpolate: false,
+            intent: .defaultIntent
+        )!
+        let data = NSMutableData()
+        guard let destination = CGImageDestinationCreateWithData(
+            data,
+            uti.identifier as CFString,
+            1,
+            nil
+        ) else {
+            return nil
+        }
+        CGImageDestinationAddImage(destination, image, nil)
+        guard CGImageDestinationFinalize(destination) else { return nil }
+        return data as Data
+    }
+}
+
+private final class SimilarityPhotosOriginalStub: PhotosOriginalContentPort, @unchecked Sendable {
+    private let lock = NSLock()
+    var bytes: Data?
+    private var storedRequestCount = 0
+
+    init(bytes: Data?) {
+        self.bytes = bytes
+    }
+
+    var requestCount: Int {
+        lock.withLock { storedRequestCount }
+    }
+
+    func requestOriginalImageData(localIdentifier: String) throws -> Data {
+        _ = localIdentifier
+        return try lock.withLock {
+            storedRequestCount += 1
+            guard let bytes else {
+                throw PhotosLibraryError.libraryUnavailable
+            }
+            return bytes
+        }
     }
 }
