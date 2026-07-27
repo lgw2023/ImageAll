@@ -6565,7 +6565,7 @@ struct LibraryWorkspaceView: View {
             }
             Button("取消", role: .cancel) {}
         } message: {
-            Text("ImageAll 会只读访问静态照片和元数据，在自身容器保存索引、标签和缓存；不会修改、移动或删除 Apple Photos 中的照片。iCloud 原图不会自动下载。")
+            Text("ImageAll 平时只读访问静态照片和元数据，在自身容器保存索引、标签和缓存；只有你在“图库瘦身”中明确确认时，才会经系统 Photos 将所选照片移入“最近删除”。iCloud 原图不会自动下载。")
         }
         .confirmationDialog(
             photosSourcePendingFullRepair.map { "对“\($0.displayName)”执行完整修复扫描？" } ?? "完整修复扫描？",
