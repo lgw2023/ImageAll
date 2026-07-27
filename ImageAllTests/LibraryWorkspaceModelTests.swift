@@ -3885,6 +3885,164 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertEqual(model.librarySlimmingComparisonAssetIDs, [a, b])
     }
 
+    func testAnalyzeLibrarySlimmingCurrentFilterUsesResolvedAssetIDs() async {
+        let sourceID = UUID()
+        let assetA = Self.makeAsset(sourceID: sourceID, fileName: "beach-a.jpg")
+        let assetB = Self.makeAsset(sourceID: sourceID, fileName: "mountain-b.jpg")
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: sourceID,
+                displayName: "Fixture",
+                state: .active
+            ),
+            reconciledItems: [assetA, assetB],
+            initialItems: [assetA, assetB]
+        )
+        let stub = StubLibrarySlimmingScanPort()
+        let model = LibraryWorkspaceModel(service: service, librarySlimming: stub)
+        await model.start()
+        await model.connectFolder()
+        await waitForCatalogScanToFinish(model)
+        await model.applySearchText("beach")
+
+        await model.analyzeLibrarySlimming(mode: .currentFilter)
+
+        XCTAssertEqual(stub.lastScanAssetIDs, [assetA.assetID])
+        XCTAssertTrue(model.hasCompletedLibrarySlimmingScan)
+    }
+
+    func testLibrarySlimmingFilterScopeSummaryIncludesSidebarAndSearch() async {
+        let sourceID = UUID()
+        let asset = Self.makeAsset(sourceID: sourceID, fileName: "gallery.jpg")
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: sourceID,
+                displayName: "Fixture",
+                state: .active
+            ),
+            reconciledItems: [asset],
+            initialItems: [asset]
+        )
+        let model = LibraryWorkspaceModel(service: service, librarySlimming: StubLibrarySlimmingScanPort())
+        await model.start()
+        await model.connectFolder()
+        await waitForCatalogScanToFinish(model)
+        await model.setTagPresence(.untagged)
+        await model.applySearchText("sunset")
+
+        let summary = model.librarySlimmingFilterScopeSummary
+        XCTAssertTrue(summary.contains("无标签"))
+        XCTAssertTrue(summary.contains("sunset"))
+    }
+
+    func testLibrarySlimmingEmptyScanShowsCompletedState() async {
+        let sourceID = UUID()
+        let asset = Self.makeAsset(sourceID: sourceID, fileName: "solo.jpg")
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: sourceID,
+                displayName: "Fixture",
+                state: .active
+            ),
+            reconciledItems: [asset],
+            initialItems: [asset]
+        )
+        let stub = StubLibrarySlimmingScanPort()
+        stub.seedClusters = []
+        let model = LibraryWorkspaceModel(service: service, librarySlimming: stub)
+        await model.start()
+        await model.connectFolder()
+        await waitForCatalogScanToFinish(model)
+
+        await model.analyzeLibrarySlimming(mode: .catalog)
+
+        XCTAssertTrue(model.hasCompletedLibrarySlimmingScan)
+        XCTAssertTrue(model.librarySlimmingClusters.isEmpty)
+        XCTAssertEqual(
+            model.librarySlimmingStatusMessage,
+            "已分析 0 张，未发现相同或相似簇。"
+        )
+    }
+
+    func testLibrarySlimmingComparisonIncludesAllSelectedMembers() async {
+        let sourceID = UUID()
+        let asset = Self.makeAsset(sourceID: sourceID, fileName: "gallery.jpg")
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: sourceID,
+                displayName: "Fixture",
+                state: .active
+            ),
+            reconciledItems: [asset],
+            initialItems: [asset]
+        )
+        let members = [
+            UUID(uuidString: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")!,
+            UUID(uuidString: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")!,
+            UUID(uuidString: "cccccccc-cccc-4ccc-8ccc-cccccccccccc")!,
+            UUID(uuidString: "dddddddd-dddd-4ddd-8ddd-dddddddddddd")!,
+            UUID(uuidString: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee")!,
+        ]
+        let cluster = SlimmingCluster(
+            id: UUID(),
+            kind: .nearDuplicateScene,
+            memberAssetIDs: members,
+            representativeAssetID: members[0],
+            score: 0.95,
+            modelIdentity: .featurePrintOnly
+        )
+        let stub = StubLibrarySlimmingScanPort()
+        stub.seedClusters = [cluster]
+        let model = LibraryWorkspaceModel(service: service, librarySlimming: stub)
+        await model.start()
+        await model.connectFolder()
+        await waitForCatalogScanToFinish(model)
+        await model.selectAssets(Set([asset.assetID]), additive: false)
+        await model.findLibrarySlimmingFromSelection()
+        await model.analyzeLibrarySlimming(mode: .seeds)
+
+        model.selectLibrarySlimmingCluster(model.librarySlimmingClusters[0].id)
+        model.selectLibrarySlimmingMember(members[0], additive: false)
+        for member in members.dropFirst() {
+            model.selectLibrarySlimmingMember(member, additive: true)
+        }
+
+        XCTAssertEqual(model.librarySlimmingComparisonAssetIDs, members)
+    }
+
+    func testPendingSeedAnalyzeCancelledWhenNavigationSuperseded() async {
+        let sourceID = UUID()
+        let assetA = Self.makeAsset(sourceID: sourceID, fileName: "a.jpg")
+        let assetB = Self.makeAsset(sourceID: sourceID, fileName: "b.jpg")
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: sourceID,
+                displayName: "Fixture",
+                state: .active
+            ),
+            reconciledItems: [assetA, assetB],
+            initialItems: [assetA, assetB]
+        )
+        let stub = StubLibrarySlimmingScanPort()
+        let model = LibraryWorkspaceModel(service: service, librarySlimming: stub)
+        await model.start()
+        await model.connectFolder()
+        await waitForCatalogScanToFinish(model)
+        await model.selectAssets(Set([assetA.assetID]), additive: false)
+
+        await model.findLibrarySlimmingFromSelection()
+        let slimmingRequest = model.beginBrowsingNavigation()
+        model.bindPendingLibrarySlimmingSeedAnalyzeIfNeeded(to: slimmingRequest)
+
+        let galleryRequest = model.beginBrowsingNavigation()
+        model.cancelPendingLibrarySlimmingSeedAnalyze()
+        await model.navigate(to: .all, requestID: galleryRequest)
+        await model.navigate(to: .librarySlimming, requestID: slimmingRequest)
+
+        XCTAssertTrue(stub.lastSeedAssetIDs.isEmpty)
+        XCTAssertFalse(model.isAnalyzingLibrarySlimming)
+    }
+
     func testStaleReviewNavigationDoesNotResurrectAfterNewerGalleryNavigate() async {
         let sourceID = UUID()
         let asset = Self.makeAsset(sourceID: sourceID, fileName: "gallery.jpg")

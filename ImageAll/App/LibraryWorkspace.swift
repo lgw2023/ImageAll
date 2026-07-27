@@ -674,9 +674,11 @@ final class LibraryWorkspaceModel: ObservableObject {
     @Published private(set) var librarySlimmingAnalyzeMode: LibrarySlimmingAnalyzeMode = .catalog
     @Published private(set) var librarySlimmingSeedAssetIDs: [UUID] = []
     @Published private(set) var selectedLibrarySlimmingMemberIDs: Set<UUID> = []
+    @Published private(set) var hasCompletedLibrarySlimmingScan = false
     /// Bumped when toolbar asks the sidebar view to switch into 图库瘦身.
     @Published private(set) var librarySlimmingNavigationNonce = UUID()
     private var shouldAutoAnalyzeLibrarySlimmingSeeds = false
+    private var librarySlimmingSeedAnalyzeNavigationRequestID: UUID?
 
     fileprivate let review: any PersonalizationReviewPort
     private let service: any LibraryWorkspacePort
@@ -840,21 +842,47 @@ final class LibraryWorkspaceModel: ObservableObject {
 
     var librarySlimmingComparisonAssetIDs: [UUID] {
         guard let cluster = selectedLibrarySlimmingCluster else { return [] }
-        let ordered = cluster.memberAssetIDs.filter { selectedLibrarySlimmingMemberIDs.contains($0) }
-        return Array(ordered.prefix(4))
+        return cluster.memberAssetIDs.filter { selectedLibrarySlimmingMemberIDs.contains($0) }
     }
 
     var canFindLibrarySlimmingFromSelection: Bool {
         supportsLibrarySlimming && !selectedAssetIDs.isEmpty && !isAnalyzingLibrarySlimming
     }
 
+    /// Sidebar destination plus gallery filters always define a scan universe for current-filter analysis.
     var hasLibrarySlimmingFilterScope: Bool {
-        hasActiveTagFilters
+        true
+    }
+
+    /// Whether seed lookup should search a narrowed universe instead of the full available catalog.
+    var hasNarrowedLibrarySlimmingUniverse: Bool {
+        tagPresence != .any
             || selectedSourceID != nil
+            || hasActiveTagFilters
             || !selectedAvailabilities.isEmpty
             || !selectedMediaTypes.isEmpty
-            || tagPresence != .any
             || !TagNameNormalizer.trimUnicodeWhiteSpace(searchText).isEmpty
+    }
+
+    var librarySlimmingFilterScopeSummary: String {
+        var parts: [String] = [browsingTitle]
+        if let tagSummary = tagFilterSummaryText() {
+            parts.append(tagSummary)
+        }
+        let trimmedSearch = TagNameNormalizer.trimUnicodeWhiteSpace(searchText)
+        if !trimmedSearch.isEmpty {
+            parts.append("搜索「\(trimmedSearch)」")
+        }
+        if !selectedAvailabilities.isEmpty {
+            let names = selectedAvailabilities
+                .map(LibraryAssetDetailText.availabilityText)
+                .joined(separator: "、")
+            parts.append("可用性：\(names)")
+        }
+        if !selectedMediaTypes.isEmpty {
+            parts.append("格式筛选")
+        }
+        return parts.joined(separator: " · ")
     }
 
     func findLibrarySlimmingFromSelection() async {
@@ -867,9 +895,27 @@ final class LibraryWorkspaceModel: ObservableObject {
         librarySlimmingNavigationNonce = UUID()
     }
 
-    func consumePendingLibrarySlimmingSeedAnalyzeIfNeeded() async {
+    func bindPendingLibrarySlimmingSeedAnalyzeIfNeeded(to navigationRequestID: UUID) {
         guard shouldAutoAnalyzeLibrarySlimmingSeeds else { return }
+        librarySlimmingSeedAnalyzeNavigationRequestID = navigationRequestID
+    }
+
+    func cancelPendingLibrarySlimmingSeedAnalyze() {
         shouldAutoAnalyzeLibrarySlimmingSeeds = false
+        librarySlimmingSeedAnalyzeNavigationRequestID = nil
+    }
+
+    func consumePendingLibrarySlimmingSeedAnalyzeIfNeeded(
+        navigationRequestID: UUID? = nil
+    ) async {
+        if let navigationRequestID {
+            guard shouldAutoAnalyzeLibrarySlimmingSeeds,
+                  librarySlimmingSeedAnalyzeNavigationRequestID == navigationRequestID
+            else { return }
+        } else {
+            guard shouldAutoAnalyzeLibrarySlimmingSeeds else { return }
+        }
+        cancelPendingLibrarySlimmingSeedAnalyze()
         await analyzeLibrarySlimming(mode: .seeds)
     }
 
@@ -878,6 +924,7 @@ final class LibraryWorkspaceModel: ObservableObject {
         let resolvedMode = mode ?? librarySlimmingAnalyzeMode
         librarySlimmingAnalyzeMode = resolvedMode
         isAnalyzingLibrarySlimming = true
+        hasCompletedLibrarySlimmingScan = false
         librarySlimmingStatusMessage = "正在分析相同与相似照片…"
         librarySlimmingScanProgress = nil
         selectedLibrarySlimmingMemberIDs = []
@@ -917,7 +964,7 @@ final class LibraryWorkspaceModel: ObservableObject {
                     librarySlimmingStatusMessage = "请先在图库中选择种子照片。"
                     return
                 }
-                let narrowed = hasLibrarySlimmingFilterScope
+                let narrowed = hasNarrowedLibrarySlimmingUniverse
                 let filter = narrowed ? currentFilter : AssetPageFilter(availabilities: [.available])
                 let pageSort = narrowed ? sort : AssetPageSort.newest
                 result = try await Self.offMain {
@@ -935,6 +982,7 @@ final class LibraryWorkspaceModel: ObservableObject {
             }
             librarySlimmingClusters = result.clusters.map(LibrarySlimmingClusterPresentation.init)
             librarySlimmingPendingCount = result.pendingAnalysisAssetIDs.count
+            hasCompletedLibrarySlimmingScan = true
             if let first = librarySlimmingClusters.first {
                 selectedLibrarySlimmingClusterID = first.id
             } else {
@@ -2204,21 +2252,26 @@ final class LibraryWorkspaceModel: ObservableObject {
 
         switch destination {
         case .reviewSuggestions:
+            cancelPendingLibrarySlimmingSeedAnalyze()
             // Re-check before mutating: a newer sidebar selection may have
             // invalidated this request between the top guard and this case.
             guard browsingNavigationRequestID == requestID else { return }
             await enterReviewOverview()
             guard browsingNavigationRequestID == requestID else { return }
         case .trainingWorkspace:
+            cancelPendingLibrarySlimmingSeedAnalyze()
             clearReviewModeState()
             guard browsingNavigationRequestID == requestID else { return }
             await refreshTrainingWorkspace(presentation: .automatic)
         case .librarySlimming:
             clearReviewModeState()
             guard browsingNavigationRequestID == requestID else { return }
-            await consumePendingLibrarySlimmingSeedAnalyzeIfNeeded()
+            await consumePendingLibrarySlimmingSeedAnalyzeIfNeeded(
+                navigationRequestID: requestID
+            )
 
         case .all, .untagged, .source:
+            cancelPendingLibrarySlimmingSeedAnalyze()
             clearReviewModeState()
             applyGalleryBrowsingFilters(for: destination)
             await loadFirstPage(remountGrid: true)
@@ -6707,6 +6760,11 @@ struct LibraryWorkspaceView: View {
             }
             model.applyImmediateBrowsingPresentation(for: destination)
             let requestID = model.beginBrowsingNavigation()
+            if destination == .librarySlimming {
+                model.bindPendingLibrarySlimmingSeedAnalyzeIfNeeded(to: requestID)
+            } else {
+                model.cancelPendingLibrarySlimmingSeedAnalyze()
+            }
             Task {
                 await model.navigate(to: destination, requestID: requestID)
             }

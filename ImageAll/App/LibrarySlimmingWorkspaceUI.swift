@@ -94,7 +94,7 @@ struct LibrarySlimmingWorkspaceView: View {
                     || !model.supportsLibrarySlimming
                     || !model.hasLibrarySlimmingFilterScope
             )
-            .help("使用主图库当前标签/来源/搜索筛选作为分析宇宙")
+            .help("使用侧栏目的地与图库当前标签/来源/搜索筛选作为分析宇宙")
 
             if !model.librarySlimmingSeedAssetIDs.isEmpty {
                 Button {
@@ -115,6 +115,16 @@ struct LibrarySlimmingWorkspaceView: View {
             }
 
             Spacer()
+
+            if model.librarySlimmingAnalyzeMode == .currentFilter
+                || model.librarySlimmingAnalyzeMode == .seeds
+            {
+                Text(model.librarySlimmingFilterScopeSummary)
+                    .foregroundStyle(.tertiary)
+                    .font(.caption)
+                    .lineLimit(2)
+                    .help("当前筛选范围")
+            }
 
             Text(modeCaption)
                 .foregroundStyle(.tertiary)
@@ -166,10 +176,18 @@ struct LibrarySlimmingWorkspaceView: View {
     private var clusterList: some View {
         Group {
             if model.librarySlimmingClusters.isEmpty {
-                ContentUnavailableView {
-                    Label("尚未分析", systemImage: "square.stack.3d.up")
-                } description: {
-                    Text("可分析当前库、当前筛选，或从图库多选后「在图库瘦身中查找」。缺失向量会显示为待分析。")
+                if model.hasCompletedLibrarySlimmingScan {
+                    ContentUnavailableView {
+                        Label("无相似结果", systemImage: "checkmark.circle")
+                    } description: {
+                        Text("本次分析未发现相同或相似簇。可尝试扩大筛选范围、更换种子，或等待待分析照片补全向量。")
+                    }
+                } else {
+                    ContentUnavailableView {
+                        Label("尚未分析", systemImage: "square.stack.3d.up")
+                    } description: {
+                        Text("可分析当前库、当前筛选，或从图库多选后「在图库瘦身中查找」。缺失向量会显示为待分析。")
+                    }
                 }
             } else {
                 List(selection: Binding(
@@ -241,13 +259,22 @@ struct LibrarySlimmingWorkspaceView: View {
                                     isSelected: model.selectedLibrarySlimmingMemberIDs.contains(assetID)
                                 )
                                 .onTapGesture {
-                                    let additive = NSEvent.modifierFlags.contains(.command)
-                                    model.selectLibrarySlimmingMember(assetID, additive: additive)
+                                    let flags = NSEvent.modifierFlags.intersection(.deviceIndependentFlagsMask)
+                                    model.selectLibrarySlimmingMember(
+                                        assetID,
+                                        additive: flags.contains(.command)
+                                    )
                                 }
                             }
                         }
                         .padding(LibraryGridLayout.horizontalPadding)
                     }
+                }
+            } else if model.librarySlimmingClusters.isEmpty, model.hasCompletedLibrarySlimmingScan {
+                ContentUnavailableView {
+                    Label("无相似结果", systemImage: "checkmark.circle")
+                } description: {
+                    Text("本次分析未发现相同或相似簇。")
                 }
             } else if model.librarySlimmingClusters.isEmpty {
                 Color.clear
@@ -258,11 +285,12 @@ struct LibrarySlimmingWorkspaceView: View {
     }
 
     private var comparisonStrip: some View {
-        HStack(alignment: .top, spacing: 12) {
-            ForEach(model.librarySlimmingComparisonAssetIDs, id: \.self) { assetID in
-                SlimmingPreviewCell(model: model, assetID: assetID)
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 220)
+        ScrollView(.horizontal, showsIndicators: true) {
+            HStack(alignment: .top, spacing: 12) {
+                ForEach(model.librarySlimmingComparisonAssetIDs, id: \.self) { assetID in
+                    SlimmingPreviewCell(model: model, assetID: assetID)
+                        .frame(width: 280, height: 220)
+                }
             }
         }
         .accessibilityLabel("簇内对比预览")
@@ -281,6 +309,11 @@ struct LibrarySlimmingInspectorView: View {
                 .foregroundStyle(.secondary)
             if !model.librarySlimmingSeedAssetIDs.isEmpty {
                 LabeledContent("种子", value: "\(model.librarySlimmingSeedAssetIDs.count) 张")
+            }
+            if model.librarySlimmingAnalyzeMode == .currentFilter
+                || model.librarySlimmingAnalyzeMode == .seeds
+            {
+                LabeledContent("筛选", value: model.librarySlimmingFilterScopeSummary)
             }
             if let cluster = model.selectedLibrarySlimmingCluster {
                 Divider()

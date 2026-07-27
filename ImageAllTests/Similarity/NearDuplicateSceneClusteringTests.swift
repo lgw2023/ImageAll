@@ -271,6 +271,34 @@ final class NearDuplicateSceneClusteringTests: XCTestCase {
         XCTAssertEqual(Set(seeded.clusters[0].memberAssetIDs), Set([seed, hit]))
     }
 
+    func testSeedQueryAllowsSharedNeighborAcrossSeedClusters() {
+        let seedA = UUID(uuidString: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")!
+        let seedB = UUID(uuidString: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")!
+        let hit = UUID(uuidString: "cccccccc-cccc-4ccc-8ccc-cccccccccccc")!
+
+        let featurePrints: [UUID: [Float]] = [
+            seedA: [1, 0, 0],
+            seedB: [0.99, 0.01, 0],
+            hit: [0.995, 0.005, 0],
+        ]
+        let embeddings: [UUID: [Float]] = [
+            seedA: [1, 0],
+            seedB: [0.99, 0.01],
+            hit: [0.995, 0.005],
+        ]
+
+        let clusters = NearDuplicateSceneClusterService().clusterAroundSeeds(
+            seedAssetIDs: [seedA, seedB],
+            featurePrints: featurePrints,
+            embeddings: embeddings,
+            modelIdentity: sceneModelIdentity
+        )
+        XCTAssertEqual(clusters.count, 2)
+        for cluster in clusters {
+            XCTAssertTrue(cluster.memberAssetIDs.contains(hit))
+        }
+    }
+
     func testCosineAndL2Helpers() {
         XCTAssertEqual(
             SimilarityVectorMath.cosineSimilarity([1, 0], [1, 0])!,

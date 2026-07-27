@@ -80,8 +80,8 @@ struct NearDuplicateSceneClusterService: Sendable {
         return clusters.sorted(by: Self.clusterSort)
     }
 
-    /// Query-style clustering: each seed retrieves similar neighbors from the universe maps.
-    /// Only clusters that contain at least one seed and one other member are returned.
+    /// Query-style clustering: each seed independently retrieves similar neighbors.
+    /// The same universe member may appear in multiple seed clusters.
     func clusterAroundSeeds(
         seedAssetIDs: [UUID],
         featurePrints: [UUID: [Float]],
@@ -100,17 +100,15 @@ struct NearDuplicateSceneClusterService: Sendable {
         let maxL2 = NearDuplicateScenePolicy.featurePrintMaxL2Distance
         let minCosine = NearDuplicateScenePolicy.dinoCosineMinSimilarity
 
-        var claimed = Set<UUID>()
         var clusters: [SlimmingCluster] = []
 
         for seed in seeds {
-            guard !claimed.contains(seed),
-                  let seedFP = featurePrints[seed],
+            guard let seedFP = featurePrints[seed],
                   let seedEmb = embeddings[seed]
             else { continue }
 
             var neighbors: [(id: UUID, distance: Double, cosine: Double)] = []
-            for candidate in candidates where !claimed.contains(candidate) {
+            for candidate in candidates {
                 guard let candidateFP = featurePrints[candidate],
                       let distance = SimilarityVectorMath.l2Distance(seedFP, candidateFP),
                       distance <= maxL2,
@@ -132,7 +130,6 @@ struct NearDuplicateSceneClusterService: Sendable {
                 $0.uuidString.lowercased() < $1.uuidString.lowercased()
             }
             let score = neighbors.prefix(topK).map(\.cosine).min() ?? minCosine
-            for id in members { claimed.insert(id) }
             clusters.append(
                 SlimmingCluster(
                     id: Self.stableClusterID(kind: .nearDuplicateScene, members: members),
