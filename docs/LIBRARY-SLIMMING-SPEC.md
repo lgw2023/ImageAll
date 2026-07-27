@@ -128,13 +128,13 @@ Quarantine 根位于 App 容器内（Application Support），按 source/asset �
 - 倒计时按条目独立；不足 24h 显示小时，否则显示天。
 - 批量恢复/永久删除需二次确认，文案含数量与不可撤销警告（仅永久删除）。
 
-## 6. 数据模型（逻辑，实施时落 V005）
+## 6. 数据模型（逻辑）
 
-逻辑实体（名称为契约，非强制最终 SQL 标识符）：
+逻辑实体（名称为契约，非强制最终 SQL 标识符）。仓库 migration 序号在撰写规格时已用到 v017，因此 S1 起实际 DDL 使用 **v018+**，不再使用文内早期草稿的 “V005” 称呼。
 
 - `recycle_entry`：id, asset_id, source_kind(`file`/`photos`), trashed_at_ms, purge_after_ms, state(`pending`/`recycled`/`restored`/`purged`/`failed`), quarantine_relative_path?, photos_local_identifier?, error_code?
-- `asset_similarity_fingerprint`：asset_id, content_revision, algo_version, sha256?, perceptual_hash?, …
-- `similarity_cluster_run` / `similarity_cluster_member`：一次分析 run 的簇与成员、档位、分数、模型身份
+- `asset_similarity_fingerprint`：asset_id, content_revision, algo_version, perceptual_hash（S1）；字节哈希继续写既有 `file_fingerprint.sha256`
+- `similarity_cluster_run` / `similarity_cluster_member`：一次分析 run 的簇与成员、档位、分数、模型身份（S2+）
 
 具体 DDL、CHECK、STRICT 与 FD 安全细节在切片交接单中冻结；本规格只锁语义。
 
