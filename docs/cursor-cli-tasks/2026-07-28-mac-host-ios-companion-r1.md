@@ -30,7 +30,7 @@ R1：模拟器/设备可连接本机 Debug Host，浏览网格并提交标签决
 ## 结果（实施后补记）
 
 - 开工 HEAD：`f9642cef36f1a963f078aa5fbea5eb94f857a676`
-- 交付 commit：见实现提交（本文件在同一实现提交内更新）
+- 交付 commit：`e7c9ec5df9563623239a0db07a1d596be8d45152`
 - Package 测试：
   - `cd Packages/ImageAllRemoteProtocol && swift test` → **6 passed**
   - `cd Packages/ImageAllRemoteClient && swift test` → **4 passed**
