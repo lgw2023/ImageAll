@@ -302,7 +302,7 @@ struct CompositionRoot {
             database: runtime.database,
             identicalScan: IdenticalDuplicateClusterService(database: runtime.database),
             fingerprintCompletion: fingerprintCompletion,
-            featureLoader: FeaturePrintSlimmingVectorLoader(service: featurePrintService),
+            featureLoader: BudgetedFeaturePrintSlimmingLoader(service: featurePrintService),
             embeddingLoader: OptionalSlimmingEmbeddingLoader(base: slimmingEmbeddingLoader)
         )
         return LibraryWorkspaceModel(

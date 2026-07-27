@@ -3,13 +3,15 @@ import Foundation
 import ImageIO
 
 /// Loads or generates DINOv2 embeddings for slimming scans, with a per-scan generation budget.
-final class CatalogSlimmingEmbeddingLoader: SlimmingEmbeddingLoading, @unchecked Sendable {
+final class CatalogSlimmingEmbeddingLoader: SlimmingEmbeddingLoading, SlimmingBudgetResetting,
+    @unchecked Sendable
+{
     private let catalogScopeID: UUID
     private let cachesDirectory: URL
     private let inputLoader: any FeaturePrintInputLoading
     private let serviceProvider: @Sendable () -> AppCoreMLEmbeddingService?
-    private let generationBudget: Int
     private let lock = NSLock()
+    private var generationBudget = 0
     private var generationsUsed = 0
 
     init(
@@ -17,7 +19,7 @@ final class CatalogSlimmingEmbeddingLoader: SlimmingEmbeddingLoading, @unchecked
         cachesDirectory: URL,
         inputLoader: any FeaturePrintInputLoading,
         serviceProvider: @escaping @Sendable () -> AppCoreMLEmbeddingService?,
-        generationBudget: Int = NearDuplicateScenePolicy.maxEmbeddingGenerationsPerScan
+        generationBudget: Int = 0
     ) {
         self.catalogScopeID = catalogScopeID
         self.cachesDirectory = cachesDirectory
@@ -26,10 +28,31 @@ final class CatalogSlimmingEmbeddingLoader: SlimmingEmbeddingLoading, @unchecked
         self.generationBudget = max(0, generationBudget)
     }
 
-    func resetGenerationBudget() {
+    func resetScanBudgets(forAssetCount assetCount: Int) {
+        let budgets = SlimmingScanBudgetPolicy.budgets(forAssetCount: assetCount)
         lock.lock()
+        generationBudget = budgets.embeddingGenerations
         generationsUsed = 0
         lock.unlock()
+    }
+
+    func embeddingModelIdentity() -> SlimmingVectorModelIdentity? {
+        guard let service = serviceProvider(),
+              case let .ready(identity) = service.availability
+        else {
+            return nil
+        }
+        return SlimmingVectorModelIdentity(
+            featurePrintProvider: PersonalizationConstants.provider,
+            featurePrintRequestRevision: PersonalizationConstants.requestRevision,
+            featurePrintPreprocessingRevision: PersonalizationConstants.preprocessingRevision,
+            embeddingProvider: identity.provider,
+            embeddingModelID: identity.modelID,
+            embeddingModelRevision: identity.modelRevision,
+            embeddingPreprocessingRevision: identity.preprocessingRevision,
+            perceptualAlgoVersion: nil,
+            policyVersion: NearDuplicateScenePolicy.policyVersion
+        )
     }
 
     func embedding(assetID: UUID) throws -> [Float]? {

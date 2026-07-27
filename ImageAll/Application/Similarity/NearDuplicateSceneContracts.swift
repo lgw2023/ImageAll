@@ -12,12 +12,83 @@ enum NearDuplicateScenePolicy {
 
     /// DINOv2 cosine similarity threshold (inclusive) for `nearDuplicateScene`.
     static let dinoCosineMinSimilarity = 0.88
+}
 
-    /// Cap embedding generations per scan so the S2 sync path stays interactive.
-    static let maxEmbeddingGenerationsPerScan = 48
+/// Hardware-scaled per-scan generation caps (cache hits never consume budget).
+enum SlimmingScanBudgetPolicy {
+    struct Budgets: Sendable, Equatable {
+        let featurePrintGenerations: Int
+        let embeddingGenerations: Int
+    }
 
-    /// Cap catalog assets considered by a full-library S2 scan.
-    static let defaultCatalogScanLimit = 200
+    static func budgets(forAssetCount assetCount: Int) -> Budgets {
+        let cappedAssets = max(0, assetCount)
+        let memoryGB = ProcessInfo.processInfo.physicalMemory / (1_024 * 1_024 * 1_024)
+        let cores = ProcessInfo.processInfo.activeProcessorCount
+
+        let memoryTier = min(max(Int(memoryGB / 8), 1), 4)
+        let coreTier = min(max(cores / 4, 1), 3)
+        let scale = memoryTier + coreTier - 1
+
+        let fpCap = min(cappedAssets, 96 * scale)
+        let embeddingCap = min(cappedAssets, 64 * scale)
+        return Budgets(
+            featurePrintGenerations: cappedAssets == 0 ? 0 : max(fpCap, min(cappedAssets, 96)),
+            embeddingGenerations: cappedAssets == 0 ? 0 : max(embeddingCap, min(cappedAssets, 64))
+        )
+    }
+}
+
+struct SlimmingVectorModelIdentity: Sendable, Equatable {
+    let featurePrintProvider: String?
+    let featurePrintRequestRevision: Int?
+    let featurePrintPreprocessingRevision: Int?
+    let embeddingProvider: String?
+    let embeddingModelID: String?
+    let embeddingModelRevision: String?
+    let embeddingPreprocessingRevision: String?
+    let perceptualAlgoVersion: String?
+    let policyVersion: String
+
+    static let featurePrintOnly = SlimmingVectorModelIdentity(
+        featurePrintProvider: PersonalizationConstants.provider,
+        featurePrintRequestRevision: PersonalizationConstants.requestRevision,
+        featurePrintPreprocessingRevision: PersonalizationConstants.preprocessingRevision,
+        embeddingProvider: nil,
+        embeddingModelID: nil,
+        embeddingModelRevision: nil,
+        embeddingPreprocessingRevision: nil,
+        perceptualAlgoVersion: nil,
+        policyVersion: NearDuplicateScenePolicy.policyVersion
+    )
+
+    var revisionCaption: String {
+        var parts: [String] = []
+        if let featurePrintProvider,
+           let featurePrintRequestRevision
+        {
+            var fp = "fp:\(featurePrintProvider)/r\(featurePrintRequestRevision)"
+            if let featurePrintPreprocessingRevision {
+                fp += "/p\(featurePrintPreprocessingRevision)"
+            }
+            parts.append(fp)
+        }
+        if let embeddingProvider,
+           let embeddingModelID,
+           let embeddingModelRevision
+        {
+            var dino = "dino:\(embeddingProvider)/\(embeddingModelID)/\(embeddingModelRevision)"
+            if let embeddingPreprocessingRevision {
+                dino += "/prep\(embeddingPreprocessingRevision)"
+            }
+            parts.append(dino)
+        }
+        if let perceptualAlgoVersion {
+            parts.append("dup:\(perceptualAlgoVersion)")
+        }
+        parts.append("policy:\(policyVersion)")
+        return parts.joined(separator: ";")
+    }
 }
 
 enum SlimmingClusterKind: String, Sendable, Equatable {
@@ -32,9 +103,40 @@ struct SlimmingCluster: Sendable, Equatable, Identifiable {
     let memberAssetIDs: [UUID]
     /// Stable pick: lexicographically smallest UUID among members.
     let representativeAssetID: UUID
-    /// Higher is better. byteIdentical → 1.0; perceptual → 1 - maxHamming/64; scene → max pairwise cosine.
+    /// Higher is better. byteIdentical → 1.0; perceptual → 1 - maxHamming/64; scene → min pairwise cosine.
     let score: Double
-    let scoreVersion: String
+    let modelIdentity: SlimmingVectorModelIdentity
+}
+
+struct LibrarySlimmingScanProgress: Sendable, Equatable {
+    enum Phase: String, Sendable, Equatable {
+        case preparingFingerprints
+        case loadingFeaturePrints
+        case loadingEmbeddings
+        case clustering
+    }
+
+    let phase: Phase
+    let completed: Int
+    let total: Int
+
+    var caption: String {
+        switch phase {
+        case .preparingFingerprints:
+            "补全内容指纹 \(completed)/\(total)"
+        case .loadingFeaturePrints:
+            "加载 Feature Print \(completed)/\(total)"
+        case .loadingEmbeddings:
+            "加载 DINOv2 向量 \(completed)/\(total)"
+        case .clustering:
+            "聚类分析 \(completed)/\(total)"
+        }
+    }
+
+    var fraction: Double {
+        guard total > 0 else { return 0 }
+        return Double(completed) / Double(total)
+    }
 }
 
 struct LibrarySlimmingScanResult: Sendable, Equatable {
@@ -44,20 +146,46 @@ struct LibrarySlimmingScanResult: Sendable, Equatable {
     let policyVersion: String
 }
 
+protocol SlimmingBudgetResetting: Sendable {
+    func resetScanBudgets(forAssetCount assetCount: Int)
+}
+
 protocol SlimmingFeatureVectorLoading: Sendable {
-    /// Returns Feature Print float32 values, or `nil` when unavailable / ineligible.
+    /// Returns Feature Print float32 values, or `nil` when unavailable / ineligible / budget exhausted.
     func featureVector(assetID: UUID) throws -> [Float]?
 }
 
 protocol SlimmingEmbeddingLoading: Sendable {
-    /// Returns DINOv2 embedding values, or `nil` when unavailable / ineligible.
+    /// Returns DINOv2 embedding values, or `nil` when unavailable / ineligible / budget exhausted.
     func embedding(assetID: UUID) throws -> [Float]?
+
+    /// When implemented, supplies encoder identity for cluster provenance.
+    func embeddingModelIdentity() -> SlimmingVectorModelIdentity?
 }
+
+extension SlimmingEmbeddingLoading {
+    func embeddingModelIdentity() -> SlimmingVectorModelIdentity? { nil }
+}
+
+typealias LibrarySlimmingScanProgressHandler = @Sendable (LibrarySlimmingScanProgress) -> Void
 
 protocol LibrarySlimmingScanPort: Sendable {
     /// Clusters the given assets. Incomplete fingerprints / vectors become pending.
-    func scan(assetIDs: [UUID]) throws -> LibrarySlimmingScanResult
+    func scan(
+        assetIDs: [UUID],
+        onProgress: LibrarySlimmingScanProgressHandler?
+    ) throws -> LibrarySlimmingScanResult
 
-    /// Scans up to `limit` current available catalog assets (deterministic UUID order).
-    func scanCatalog(limit: Int) throws -> LibrarySlimmingScanResult
+    /// Scans all current available catalog assets (deterministic UUID order).
+    func scanCatalog(onProgress: LibrarySlimmingScanProgressHandler?) throws -> LibrarySlimmingScanResult
+}
+
+extension LibrarySlimmingScanPort {
+    func scan(assetIDs: [UUID]) throws -> LibrarySlimmingScanResult {
+        try scan(assetIDs: assetIDs, onProgress: nil)
+    }
+
+    func scanCatalog() throws -> LibrarySlimmingScanResult {
+        try scanCatalog(onProgress: nil)
+    }
 }

@@ -7593,8 +7593,14 @@ private final class FakeLibraryOriginalAssetOpener: LibraryOriginalAssetOpening 
 }
 
 private struct StubLibrarySlimmingScanPort: LibrarySlimmingScanPort {
-    func scan(assetIDs: [UUID]) throws -> LibrarySlimmingScanResult {
-        LibrarySlimmingScanResult(
+    func scan(
+        assetIDs: [UUID],
+        onProgress: LibrarySlimmingScanProgressHandler?
+    ) throws -> LibrarySlimmingScanResult {
+        onProgress?(
+            LibrarySlimmingScanProgress(phase: .clustering, completed: 1, total: 1)
+        )
+        return LibrarySlimmingScanResult(
             clusters: [],
             pendingAnalysisAssetIDs: [],
             analyzedAssetCount: assetIDs.count,
@@ -7602,8 +7608,8 @@ private struct StubLibrarySlimmingScanPort: LibrarySlimmingScanPort {
         )
     }
 
-    func scanCatalog(limit: Int) throws -> LibrarySlimmingScanResult {
-        try scan(assetIDs: [])
+    func scanCatalog(onProgress: LibrarySlimmingScanProgressHandler?) throws -> LibrarySlimmingScanResult {
+        try scan(assetIDs: [], onProgress: onProgress)
     }
 }
 

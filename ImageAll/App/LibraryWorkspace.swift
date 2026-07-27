@@ -670,6 +670,7 @@ final class LibraryWorkspaceModel: ObservableObject {
     @Published private(set) var librarySlimmingPendingCount = 0
     @Published private(set) var isAnalyzingLibrarySlimming = false
     @Published private(set) var librarySlimmingStatusMessage: String?
+    @Published private(set) var librarySlimmingScanProgress: LibrarySlimmingScanProgress?
 
     fileprivate let review: any PersonalizationReviewPort
     private let service: any LibraryWorkspacePort
@@ -819,12 +820,19 @@ final class LibraryWorkspaceModel: ObservableObject {
         guard let librarySlimming, !isAnalyzingLibrarySlimming else { return }
         isAnalyzingLibrarySlimming = true
         librarySlimmingStatusMessage = "正在分析相同与相似照片…"
-        defer { isAnalyzingLibrarySlimming = false }
+        librarySlimmingScanProgress = nil
+        defer {
+            isAnalyzingLibrarySlimming = false
+            librarySlimmingScanProgress = nil
+        }
         do {
             let result = try await Self.offMain {
-                try librarySlimming.scanCatalog(
-                    limit: NearDuplicateScenePolicy.defaultCatalogScanLimit
-                )
+                try librarySlimming.scanCatalog { progress in
+                    Task { @MainActor in
+                        self.librarySlimmingScanProgress = progress
+                        self.librarySlimmingStatusMessage = progress.caption
+                    }
+                }
             }
             librarySlimmingClusters = result.clusters.map(LibrarySlimmingClusterPresentation.init)
             librarySlimmingPendingCount = result.pendingAnalysisAssetIDs.count
@@ -2094,9 +2102,6 @@ final class LibraryWorkspaceModel: ObservableObject {
         case .librarySlimming:
             clearReviewModeState()
             guard browsingNavigationRequestID == requestID else { return }
-            if librarySlimmingClusters.isEmpty, supportsLibrarySlimming {
-                await analyzeLibrarySlimming()
-            }
         case .all, .untagged, .source:
             clearReviewModeState()
             applyGalleryBrowsingFilters(for: destination)

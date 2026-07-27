@@ -95,4 +95,9 @@ enum PersonalizedSuggestionScoringCore {
 
 protocol SyncFeatureVectorLoading: Sendable {
     func loadOrGenerateSync(assetID: UUID) throws -> FeatureVectorPayload
+    func loadCachedSync(assetID: UUID) throws -> FeatureVectorPayload?
+}
+
+extension SyncFeatureVectorLoading {
+    func loadCachedSync(assetID: UUID) throws -> FeatureVectorPayload? { nil }
 }

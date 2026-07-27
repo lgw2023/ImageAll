@@ -7,7 +7,7 @@ struct LibrarySlimmingClusterPresentation: Identifiable, Equatable, Sendable {
     let memberAssetIDs: [UUID]
     let representativeAssetID: UUID
     let score: Double
-    let scoreVersion: String
+    let modelIdentity: SlimmingVectorModelIdentity
 
     var kindTitle: String {
         switch kind {
@@ -20,11 +20,15 @@ struct LibrarySlimmingClusterPresentation: Identifiable, Equatable, Sendable {
     var scoreCaption: String {
         switch kind {
         case .byteIdentical:
-            "SHA-256 一致"
+            "SHA-256 一致 · \(modelIdentity.revisionCaption)"
         case .perceptualDuplicate:
-            String(format: "感知相近 · %.0f%%", score * 100)
+            String(
+                format: "感知相近 · %.0f%% · %@",
+                score * 100,
+                modelIdentity.revisionCaption
+            )
         case .nearDuplicateScene:
-            String(format: "DINOv2 %.2f · %@", score, scoreVersion)
+            String(format: "DINOv2 %.2f · %@", score, modelIdentity.revisionCaption)
         }
     }
 
@@ -34,7 +38,7 @@ struct LibrarySlimmingClusterPresentation: Identifiable, Equatable, Sendable {
         memberAssetIDs = cluster.memberAssetIDs
         representativeAssetID = cluster.representativeAssetID
         score = cluster.score
-        scoreVersion = cluster.scoreVersion
+        modelIdentity = cluster.modelIdentity
     }
 }
 
@@ -46,7 +50,10 @@ struct LibrarySlimmingWorkspaceView: View {
         VStack(spacing: 0) {
             header
             Divider()
-            if let message = model.librarySlimmingStatusMessage {
+            if model.isAnalyzingLibrarySlimming, let progress = model.librarySlimmingScanProgress {
+                progressBanner(progress)
+                Divider()
+            } else if let message = model.librarySlimmingStatusMessage {
                 statusBanner(message)
                 Divider()
             }
@@ -95,6 +102,20 @@ struct LibrarySlimmingWorkspaceView: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
+    }
+
+    private func progressBanner(_ progress: LibrarySlimmingScanProgress) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(progress.caption)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+            ProgressView(value: progress.fraction)
+                .progressViewStyle(.linear)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
+        .accessibilityLabel(progress.caption)
     }
 
     private func statusBanner(_ message: String) -> some View {

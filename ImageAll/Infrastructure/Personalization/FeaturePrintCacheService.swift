@@ -489,6 +489,22 @@ final class FeaturePrintCacheService: FeatureVectorLoading, SyncFeatureVectorLoa
         try loadOrGenerateSyncThrowing(assetID: assetID)
     }
 
+    func loadCachedSync(assetID: UUID) throws -> FeatureVectorPayload? {
+        let identity = try inputLoader.resolveIdentity(assetID: assetID)
+        guard let registration = try repository.featureRegistration(identity: identity),
+              let vectorData = try store.read(registration: registration)
+        else {
+            return nil
+        }
+        return FeatureVectorPayload(
+            identity: identity,
+            elementCount: registration.elementCount,
+            vectorData: vectorData,
+            vectorSHA256: registration.vectorSHA256,
+            origin: .cacheHit
+        )
+    }
+
     private func loadOrGenerateSyncThrowing(assetID: UUID) throws -> FeatureVectorPayload {
         do {
             let identity = try inputLoader.resolveIdentity(assetID: assetID)

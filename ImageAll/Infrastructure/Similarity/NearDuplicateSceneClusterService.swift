@@ -1,50 +1,23 @@
 import CryptoKit
 import Foundation
 
-/// Feature Print Top-K / radius recall + DINOv2 cosine refine → `nearDuplicateScene` clusters.
+/// Feature Print Top-K / radius recall + DINOv2 cosine refine → complete-linkage `nearDuplicateScene` cliques.
 struct NearDuplicateSceneClusterService: Sendable {
     func cluster(
         featurePrints: [UUID: [Float]],
-        embeddings: [UUID: [Float]]
+        embeddings: [UUID: [Float]],
+        modelIdentity: SlimmingVectorModelIdentity
     ) -> [SlimmingCluster] {
         let ids = featurePrints.keys
             .filter { embeddings[$0] != nil }
             .sorted { $0.uuidString.lowercased() < $1.uuidString.lowercased() }
         guard ids.count >= 2 else { return [] }
 
-        var parent = Dictionary(uniqueKeysWithValues: ids.map { ($0, $0) })
-        var rank: [UUID: Int] = Dictionary(uniqueKeysWithValues: ids.map { ($0, 0) })
-
-        func find(_ id: UUID) -> UUID {
-            var current = id
-            while parent[current] != current {
-                let next = parent[current]!
-                parent[current] = parent[next]
-                current = next
-            }
-            return current
-        }
-        func union(_ a: UUID, _ b: UUID) {
-            let ra = find(a)
-            let rb = find(b)
-            guard ra != rb else { return }
-            let rankA = rank[ra] ?? 0
-            let rankB = rank[rb] ?? 0
-            if rankA < rankB {
-                parent[ra] = rb
-            } else if rankA > rankB {
-                parent[rb] = ra
-            } else {
-                parent[rb] = ra
-                rank[ra] = rankA + 1
-            }
-        }
-
         let topK = NearDuplicateScenePolicy.featurePrintRecallTopK
         let maxL2 = NearDuplicateScenePolicy.featurePrintMaxL2Distance
         let minCosine = NearDuplicateScenePolicy.dinoCosineMinSimilarity
-        var acceptedEdges: Set<EdgeKey> = []
 
+        var recallEdges: Set<EdgeKey> = []
         for i in 0..<ids.count {
             let leftID = ids[i]
             guard let leftFP = featurePrints[leftID] else { continue }
@@ -63,37 +36,32 @@ struct NearDuplicateSceneClusterService: Sendable {
                 return $0.id.uuidString.lowercased() < $1.id.uuidString.lowercased()
             }
             for neighbor in neighbors.prefix(topK) {
-                let edge = EdgeKey(leftID, neighbor.id)
-                guard !acceptedEdges.contains(edge) else { continue }
-                guard let leftEmb = embeddings[leftID],
-                      let rightEmb = embeddings[neighbor.id],
-                      let cosine = SimilarityVectorMath.cosineSimilarity(leftEmb, rightEmb),
-                      cosine >= minCosine
-                else { continue }
-                acceptedEdges.insert(edge)
-                union(leftID, neighbor.id)
+                recallEdges.insert(EdgeKey(leftID, neighbor.id))
             }
         }
 
-        var groups: [UUID: [UUID]] = [:]
-        for id in ids {
-            groups[find(id), default: []].append(id)
+        var adjacency: [UUID: Set<UUID>] = Dictionary(uniqueKeysWithValues: ids.map { ($0, []) })
+        for edge in recallEdges {
+            guard let leftEmb = embeddings[edge.a],
+                  let rightEmb = embeddings[edge.b],
+                  let cosine = SimilarityVectorMath.cosineSimilarity(leftEmb, rightEmb),
+                  cosine >= minCosine
+            else { continue }
+            adjacency[edge.a, default: []].insert(edge.b)
+            adjacency[edge.b, default: []].insert(edge.a)
         }
 
+        let cliques = Self.nonOverlappingMaximalCliques(ids: ids, adjacency: adjacency)
         var clusters: [SlimmingCluster] = []
-        for (_, membersUnordered) in groups {
-            guard membersUnordered.count >= 2 else { continue }
-            let members = membersUnordered.sorted {
-                $0.uuidString.lowercased() < $1.uuidString.lowercased()
-            }
-            var maxCosine = 0.0
+        for members in cliques {
+            var minCosineInCluster = 1.0
             for i in 0..<members.count {
                 for j in (i + 1)..<members.count {
                     if let cosine = SimilarityVectorMath.cosineSimilarity(
                         embeddings[members[i]]!,
                         embeddings[members[j]]!
                     ) {
-                        maxCosine = max(maxCosine, cosine)
+                        minCosineInCluster = min(minCosineInCluster, cosine)
                     }
                 }
             }
@@ -103,13 +71,51 @@ struct NearDuplicateSceneClusterService: Sendable {
                     kind: .nearDuplicateScene,
                     memberAssetIDs: members,
                     representativeAssetID: members[0],
-                    score: maxCosine,
-                    scoreVersion: NearDuplicateScenePolicy.policyVersion
+                    score: minCosineInCluster,
+                    modelIdentity: modelIdentity
                 )
             )
         }
 
         return clusters.sorted(by: Self.clusterSort)
+    }
+
+    static func nonOverlappingMaximalCliques(
+        ids: [UUID],
+        adjacency: [UUID: Set<UUID>]
+    ) -> [[UUID]] {
+        var remaining = ids
+        var cliques: [[UUID]] = []
+        while true {
+            guard let clique = Self.largestClique(in: remaining, adjacency: adjacency),
+                  clique.count >= 2
+            else {
+                break
+            }
+            cliques.append(clique)
+            let cliqueSet = Set(clique)
+            remaining.removeAll { cliqueSet.contains($0) }
+        }
+        return cliques
+    }
+
+    static func largestClique(in ids: [UUID], adjacency: [UUID: Set<UUID>]) -> [UUID]? {
+        var best: [UUID] = []
+        for seed in ids {
+            var clique = [seed]
+            for candidate in ids where candidate != seed {
+                if clique.allSatisfy({ adjacency[$0]?.contains(candidate) == true }) {
+                    clique.append(candidate)
+                }
+            }
+            let sorted = clique.sorted {
+                $0.uuidString.lowercased() < $1.uuidString.lowercased()
+            }
+            if sorted.count > best.count {
+                best = sorted
+            }
+        }
+        return best.isEmpty ? nil : best
     }
 
     static func stableClusterID(kind: SlimmingClusterKind, members: [UUID]) -> UUID {
