@@ -664,8 +664,6 @@ private struct ExternalAppStorageMigrator {
 
         for case let sourceItem as URL in enumerator {
             try report { _ in }
-            let relativePath = String(sourceItem.path.dropFirst(source.path.count + 1))
-            let destinationItem = destination.appendingPathComponent(relativePath)
             let values = try sourceItem.resourceValues(
                 forKeys: [
                     .isDirectoryKey,
@@ -678,6 +676,8 @@ private struct ExternalAppStorageMigrator {
             guard values.isSymbolicLink != true, values.isAliasFile != true else {
                 throw AppStorageLocationError.migrationFailed
             }
+            let relativePath = try relativePath(of: sourceItem, under: source)
+            let destinationItem = destination.appendingPathComponent(relativePath)
             if values.isDirectory == true {
                 try ensureDirectory(at: destinationItem)
             } else if values.isRegularFile == true {
@@ -806,8 +806,6 @@ private struct ExternalAppStorageMigrator {
         }
 
         for case let sourceItem as URL in enumerator {
-            let relativePath = String(sourceItem.path.dropFirst(source.path.count + 1))
-            let destinationItem = destination.appendingPathComponent(relativePath)
             let values = try sourceItem.resourceValues(
                 forKeys: [
                     .isDirectoryKey,
@@ -819,6 +817,8 @@ private struct ExternalAppStorageMigrator {
             guard values.isSymbolicLink != true, values.isAliasFile != true else {
                 throw AppStorageLocationError.migrationFailed
             }
+            let relativePath = try relativePath(of: sourceItem, under: source)
+            let destinationItem = destination.appendingPathComponent(relativePath)
             if values.isDirectory == true {
                 try validateDirectory(destinationItem)
             } else if values.isRegularFile == true {
@@ -829,6 +829,22 @@ private struct ExternalAppStorageMigrator {
                 }
             }
         }
+    }
+
+    private func relativePath(of item: URL, under root: URL) throws -> String {
+        let resolvedRoot = root.resolvingSymlinksInPath().standardizedFileURL.path
+        let resolvedItem = item.resolvingSymlinksInPath().standardizedFileURL.path
+        let prefix = resolvedRoot.hasSuffix("/") ? resolvedRoot : resolvedRoot + "/"
+        guard resolvedItem.hasPrefix(prefix) else {
+            throw AppStorageLocationError.migrationFailed
+        }
+        let relative = String(resolvedItem.dropFirst(prefix.count))
+        guard !relative.isEmpty,
+              case .success = RelativePathRules.validate(relative)
+        else {
+            throw AppStorageLocationError.migrationFailed
+        }
+        return relative
     }
 
     private func filesMatch(_ lhs: URL, _ rhs: URL) throws -> Bool {

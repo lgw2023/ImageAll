@@ -1,4 +1,5 @@
 import CryptoKit
+import Darwin
 import Foundation
 import GRDB
 import XCTest
@@ -18,6 +19,13 @@ final class LibrarySlimmingRecycleTests: XCTestCase {
         XCTAssertEqual(
             RecycleCountdownFormatter.text(purgeAfterMs: now - 1, nowMs: now),
             "即将永久删除"
+        )
+        XCTAssertEqual(
+            RecycleCountdownFormatter.recordCleanupText(
+                cleanupAfterMs: now + LibrarySlimmingRecyclePolicy.dayMs * 3,
+                nowMs: now
+            ),
+            "ImageAll 将在 3 天后清理此记录"
         )
     }
 
@@ -404,6 +412,98 @@ final class LibrarySlimmingRecycleTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: quarantineURL), bytes)
     }
 
+    func testCrossVolumeRoundTripPreservesFileMetadata() throws {
+        let env = try RecycleTestEnv(label: #function)
+        defer { env.cleanup() }
+        let seeded = try env.seedAsset(
+            relativePath: "metadata/preserved.jpg",
+            contents: Data("metadata".utf8)
+        )
+        XCTAssertEqual(chmod(seeded.fileURL.path, mode_t(0o640)), 0)
+        let attributeName = "com.imageall.recycle-test"
+        let attributeValue = Data("finder-metadata".utf8)
+        try setExtendedAttribute(
+            attributeValue,
+            name: attributeName,
+            at: seeded.fileURL
+        )
+        let originalAttributes = try FileManager.default.attributesOfItem(
+            atPath: seeded.fileURL.path
+        )
+        let originalModifiedAt = try XCTUnwrap(
+            originalAttributes[.modificationDate] as? Date
+        )
+
+        var service = env.makeRecycleService()
+        service.quarantineIO.forceCrossVolumeCopy = true
+        _ = try service.moveFolderAssetsToRecycle(assetIDs: [seeded.assetID])
+        let entry = try XCTUnwrap(try service.listRecycledEntries().first)
+        let quarantineURL = env.quarantineRoot.appendingPathComponent(
+            try XCTUnwrap(entry.quarantineRelativePath)
+        )
+
+        let quarantineAttributes = try FileManager.default.attributesOfItem(
+            atPath: quarantineURL.path
+        )
+        XCTAssertEqual(
+            (quarantineAttributes[.posixPermissions] as? NSNumber)?.intValue,
+            0o640
+        )
+        XCTAssertEqual(
+            try extendedAttribute(name: attributeName, at: quarantineURL),
+            attributeValue
+        )
+        XCTAssertEqual(
+            try XCTUnwrap(quarantineAttributes[.modificationDate] as? Date)
+                .timeIntervalSince1970,
+            originalModifiedAt.timeIntervalSince1970,
+            accuracy: 0.001
+        )
+
+        try service.restore(entryID: entry.id)
+
+        let restoredAttributes = try FileManager.default.attributesOfItem(
+            atPath: seeded.fileURL.path
+        )
+        XCTAssertEqual(
+            (restoredAttributes[.posixPermissions] as? NSNumber)?.intValue,
+            0o640
+        )
+        XCTAssertEqual(
+            try extendedAttribute(name: attributeName, at: seeded.fileURL),
+            attributeValue
+        )
+        XCTAssertEqual(
+            try XCTUnwrap(restoredAttributes[.modificationDate] as? Date)
+                .timeIntervalSince1970,
+            originalModifiedAt.timeIntervalSince1970,
+            accuracy: 0.001
+        )
+    }
+
+    func testCrossVolumeCopyFailsClosedWhenSourceChangesDuringCopy() throws {
+        let env = try RecycleTestEnv(label: #function)
+        defer { env.cleanup() }
+        let original = Data("copy-start".utf8)
+        let replacement = Data("changed-during-copy".utf8)
+        let seeded = try env.seedAsset(
+            relativePath: "concurrent/changed.jpg",
+            contents: original
+        )
+        var service = env.makeRecycleService()
+        service.quarantineIO.forceCrossVolumeCopy = true
+        service.quarantineIO.beforeSourceFinalVerification = {
+            try? replacement.write(to: seeded.fileURL)
+        }
+
+        let outcome = try service.moveFolderAssetsToRecycle(assetIDs: [seeded.assetID])
+
+        XCTAssertEqual(outcome.failedAssetIDs, [seeded.assetID])
+        XCTAssertTrue(outcome.recycledEntryIDs.isEmpty)
+        XCTAssertEqual(try Data(contentsOf: seeded.fileURL), replacement)
+        XCTAssertTrue(try service.listRecycledEntries().isEmpty)
+    }
+
     func testRecycleFailsClosedWhenFileChangedAfterCatalogScan() throws {
         let env = try RecycleTestEnv(label: #function)
         defer { env.cleanup() }
@@ -676,6 +776,41 @@ final class LibrarySlimmingRecycleTests: XCTestCase {
         XCTAssertTrue(fake.movedToRecentlyDeleted.isEmpty)
     }
 
+    func testPhotosPendingRecoveryFinalizesWhenSystemAssetIsNoLongerAvailable() throws {
+        let env = try RecycleTestEnv(label: #function)
+        defer { env.cleanup() }
+        let photosID = try env.seedPhotosAsset(localIdentifier: "pending-id")
+        let fake = FakePhotosLibraryMutationPort()
+        fake.presenceByID["pending-id"] = .available
+        let service = env.makeRecycleService(photosMutation: fake)
+        _ = try service.moveAssetsToRecycle(assetIDs: [photosID])
+        let entry = try XCTUnwrap(try service.listRecycledEntries().first)
+        try env.database.pool.write { db in
+            try db.execute(
+                sql: "UPDATE recycle_entry SET state = 'pending' WHERE id = ?",
+                arguments: [entry.id.uuidString.lowercased()]
+            )
+            try db.execute(
+                sql: "UPDATE asset SET availability = 'available' WHERE id = ?",
+                arguments: [photosID.uuidString.lowercased()]
+            )
+        }
+
+        let recovered = try service.recoverInterruptedOperations()
+
+        XCTAssertEqual(recovered, 1)
+        XCTAssertEqual(try service.listRecycledEntries().map(\.id), [entry.id])
+        XCTAssertEqual(fake.movedToRecentlyDeleted, ["pending-id"])
+        let availability = try env.database.pool.read { db in
+            try String.fetchOne(
+                db,
+                sql: "SELECT availability FROM asset WHERE id = ?",
+                arguments: [photosID.uuidString.lowercased()]
+            )
+        }
+        XCTAssertEqual(availability, AssetAvailability.recycled.rawValue)
+    }
+
     func testPhotosReconcileMarksRestoredWhenAvailableAgain() throws {
         let env = try RecycleTestEnv(label: #function)
         defer { env.cleanup() }
@@ -717,7 +852,7 @@ final class LibrarySlimmingRecycleTests: XCTestCase {
         XCTAssertEqual(try service.listRecycledEntries().count, 1)
     }
 
-    func testPhotosPurgeCallsPermanentDelete() throws {
+    func testPhotosPurgeIsManagedBySystemPhotos() throws {
         let env = try RecycleTestEnv(label: #function)
         defer { env.cleanup() }
         let photosID = try env.seedPhotosAsset(localIdentifier: "purge-id")
@@ -726,9 +861,13 @@ final class LibrarySlimmingRecycleTests: XCTestCase {
         let service = env.makeRecycleService(photosMutation: fake)
         _ = try service.moveAssetsToRecycle(assetIDs: [photosID])
         let entry = try XCTUnwrap(try service.listRecycledEntries().first)
-        try service.purgeNow(entryID: entry.id)
-        XCTAssertEqual(fake.permanentlyDeleted, ["purge-id"])
-        XCTAssertTrue(try service.listRecycledEntries().isEmpty)
+        XCTAssertThrowsError(try service.purgeNow(entryID: entry.id)) { error in
+            XCTAssertEqual(
+                error as? LibrarySlimmingRecycleError,
+                .photosManagedBySystem
+            )
+        }
+        XCTAssertEqual(try service.listRecycledEntries().map(\.id), [entry.id])
         let assetCount = try env.database.pool.read { db in
             try Int.fetchOne(
                 db,
@@ -736,7 +875,30 @@ final class LibrarySlimmingRecycleTests: XCTestCase {
                 arguments: [photosID.uuidString.lowercased()]
             ) ?? 0
         }
-        XCTAssertEqual(assetCount, 0)
+        XCTAssertEqual(assetCount, 1)
+    }
+
+    func testPhotosInterruptedPurgeReturnsToRecycleBinWithoutSystemMutation() throws {
+        let env = try RecycleTestEnv(label: #function)
+        defer { env.cleanup() }
+        let photosID = try env.seedPhotosAsset(localIdentifier: "interrupted-purge-id")
+        let fake = FakePhotosLibraryMutationPort()
+        fake.presenceByID["interrupted-purge-id"] = .available
+        let service = env.makeRecycleService(photosMutation: fake)
+        _ = try service.moveAssetsToRecycle(assetIDs: [photosID])
+        let entry = try XCTUnwrap(try service.listRecycledEntries().first)
+        try env.database.pool.write { db in
+            try db.execute(
+                sql: "UPDATE recycle_entry SET state = 'purging' WHERE id = ?",
+                arguments: [entry.id.uuidString.lowercased()]
+            )
+        }
+
+        let recovered = try service.recoverInterruptedOperations()
+
+        XCTAssertEqual(recovered, 1)
+        XCTAssertEqual(try service.listRecycledEntries().map(\.id), [entry.id])
+        XCTAssertEqual(fake.movedToRecentlyDeleted, ["interrupted-purge-id"])
     }
 
     func testPhotosReconcilePurgesMissingAfterExpiry() throws {
@@ -1022,7 +1184,6 @@ private final class FakePhotosLibraryMutationPort: PhotosLibraryMutationPort, @u
     var authorization: PhotosAuthorizationState = .authorized
     var presenceByID: [String: PhotosAssetPresence] = [:]
     private(set) var movedToRecentlyDeleted: [String] = []
-    private(set) var permanentlyDeleted: [String] = []
 
     func authorizationState() -> PhotosAuthorizationState {
         authorization
@@ -1052,16 +1213,54 @@ private final class FakePhotosLibraryMutationPort: PhotosLibraryMutationPort, @u
         return presenceByID[localIdentifier] ?? .missing
     }
 
-    func permanentlyDeleteFromRecentlyDeleted(localIdentifiers: [String]) throws {
-        guard authorization == .authorized else {
-            throw PhotosLibraryMutationError.authorizationDenied
-        }
-        for id in localIdentifiers {
-            guard presenceByID[id] == .recentlyDeleted || presenceByID[id] == .missing else {
-                throw PhotosLibraryMutationError.assetNotFound
+}
+
+private func setExtendedAttribute(_ data: Data, name: String, at url: URL) throws {
+    let result = url.path.withCString { path in
+        name.withCString { attributeName in
+            data.withUnsafeBytes { bytes in
+                setxattr(
+                    path,
+                    attributeName,
+                    bytes.baseAddress,
+                    bytes.count,
+                    0,
+                    0
+                )
             }
-            permanentlyDeleted.append(id)
-            presenceByID[id] = .missing
         }
     }
+    guard result == 0 else {
+        throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+    }
+}
+
+private func extendedAttribute(name: String, at url: URL) throws -> Data {
+    let size = url.path.withCString { path in
+        name.withCString { attributeName in
+            getxattr(path, attributeName, nil, 0, 0, 0)
+        }
+    }
+    guard size >= 0 else {
+        throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+    }
+    var data = Data(count: size)
+    let readCount = data.withUnsafeMutableBytes { bytes in
+        url.path.withCString { path in
+            name.withCString { attributeName in
+                getxattr(
+                    path,
+                    attributeName,
+                    bytes.baseAddress,
+                    bytes.count,
+                    0,
+                    0
+                )
+            }
+        }
+    }
+    guard readCount == size else {
+        throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+    }
+    return data
 }

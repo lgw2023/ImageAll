@@ -99,7 +99,9 @@ struct LibrarySlimmingWorkspaceView: View {
             }
             Button("取消", role: .cancel) {}
         } message: {
-            Text("选中的文件夹照片将移入应用回收站，默认 30 天后永久删除；期间可恢复。Photos 资产会跳过。")
+            Text(
+                "文件夹照片将移入 ImageAll 回收站，默认保留 30 天；Photos 资产将由 macOS 移入系统「最近删除」，恢复和永久删除均由「照片」App 管理。"
+            )
         }
         .confirmationDialog(
             "立即永久删除",
@@ -367,7 +369,9 @@ struct LibrarySlimmingWorkspaceView: View {
                 ContentUnavailableView {
                     Label("回收站为空", systemImage: "trash")
                 } description: {
-                    Text("从分析结果中多选照片并移入回收站。默认保留 30 天，可恢复或立即永久删除。")
+                    Text(
+                        "文件夹照片由 ImageAll 保留 30 天；Photos 资产遵循 macOS「照片」App 的删除与恢复规则。"
+                    )
                 }
             } else {
                 List(model.librarySlimmingRecycleEntries) { entry in
@@ -386,25 +390,41 @@ struct LibrarySlimmingWorkspaceView: View {
                             Text(entry.sourceKind == .file ? "文件夹" : "Photos")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
-                            Text(
-                                RecycleCountdownFormatter.text(
-                                    purgeAfterMs: entry.purgeAfterMs,
-                                    nowMs: Int64(Date().timeIntervalSince1970 * 1000)
+                            if entry.sourceKind == .photos {
+                                Text(
+                                    RecycleCountdownFormatter.recordCleanupText(
+                                        cleanupAfterMs: entry.purgeAfterMs,
+                                        nowMs: Int64(Date().timeIntervalSince1970 * 1000)
+                                    )
                                 )
-                            )
-                            .font(.caption)
-                            .foregroundStyle(.orange)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                Text("实际保留期限与永久删除由「照片」App 管理")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            } else {
+                                Text(
+                                    RecycleCountdownFormatter.text(
+                                        purgeAfterMs: entry.purgeAfterMs,
+                                        nowMs: Int64(Date().timeIntervalSince1970 * 1000)
+                                    )
+                                )
+                                .font(.caption)
+                                .foregroundStyle(.orange)
+                            }
                         }
                         Spacer()
                         VStack(spacing: 8) {
-                            Button("恢复") {
+                            Button(entry.sourceKind == .photos ? "恢复说明" : "恢复") {
                                 Task { await model.restoreLibrarySlimmingRecycleEntry(entry.id) }
                             }
                             .disabled(model.isMutatingLibrarySlimmingRecycle)
-                            Button("立即删除", role: .destructive) {
-                                confirmPurgeEntryID = entry.id
+                            if entry.sourceKind == .file {
+                                Button("立即删除", role: .destructive) {
+                                    confirmPurgeEntryID = entry.id
+                                }
+                                .disabled(model.isMutatingLibrarySlimmingRecycle)
                             }
-                            .disabled(model.isMutatingLibrarySlimmingRecycle)
                         }
                     }
                     .padding(.vertical, 4)
@@ -421,7 +441,9 @@ struct LibrarySlimmingInspectorView: View {
         VStack(alignment: .leading, spacing: 12) {
             Text("图库瘦身")
                 .font(.headline)
-            Text("查找相同与相似照片，确认后可将文件夹资产移入回收站（30 天后永久删除）。Photos 删除将在后续版本提供。")
+            Text(
+                "查找相同与相似照片。文件夹资产使用 ImageAll 的 30 天回收机制；Photos 资产使用 macOS「照片」App 的系统删除与恢复机制。"
+            )
                 .font(.callout)
                 .foregroundStyle(.secondary)
             if !model.librarySlimmingSeedAssetIDs.isEmpty {

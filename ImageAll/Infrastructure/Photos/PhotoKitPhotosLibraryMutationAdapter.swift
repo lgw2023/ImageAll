@@ -45,32 +45,7 @@ final class PhotoKitPhotosLibraryMutationAdapter: PhotosLibraryMutationPort, @un
         if live.count > 0 {
             return .available
         }
-        if recentlyDeletedAsset(localIdentifier: identifier) != nil {
-            return .recentlyDeleted
-        }
         return .missing
-    }
-
-    func permanentlyDeleteFromRecentlyDeleted(localIdentifiers: [String]) throws {
-        try requireAuthorized()
-        let identifiers = normalized(localIdentifiers)
-        guard !identifiers.isEmpty else { return }
-        var assets: [PHAsset] = []
-        for identifier in identifiers {
-            if let asset = recentlyDeletedAsset(localIdentifier: identifier) {
-                assets.append(asset)
-            }
-        }
-        guard !assets.isEmpty else {
-            throw PhotosLibraryMutationError.assetNotFound
-        }
-        do {
-            try PHPhotoLibrary.shared().performChangesAndWait {
-                PHAssetChangeRequest.deleteAssets(assets as NSArray)
-            }
-        } catch {
-            throw PhotosLibraryMutationError.changeFailed
-        }
     }
 
     private func requireAuthorized() throws {
@@ -90,26 +65,6 @@ final class PhotoKitPhotosLibraryMutationAdapter: PhotosLibraryMutationPort, @un
         localIdentifiers
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
-    }
-
-    private func recentlyDeletedAsset(localIdentifier: String) -> PHAsset? {
-        // macOS PhotoKit does not expose `.smartAlbumRecentlyDeleted`; use the
-        // documented-adjacent raw subtype used by the system Recently Deleted album.
-        guard let recentlyDeletedSubtype = PHAssetCollectionSubtype(rawValue: 1_000_000_201) else {
-            return nil
-        }
-        let collections = PHAssetCollection.fetchAssetCollections(
-            with: .smartAlbum,
-            subtype: recentlyDeletedSubtype,
-            options: nil
-        )
-        guard let album = collections.firstObject else {
-            return nil
-        }
-        let options = PHFetchOptions()
-        options.predicate = NSPredicate(format: "localIdentifier == %@", localIdentifier)
-        let fetch = PHAsset.fetchAssets(in: album, options: options)
-        return fetch.firstObject
     }
 
     private func mapAuthorization(_ status: PHAuthorizationStatus) -> PhotosAuthorizationState {

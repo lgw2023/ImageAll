@@ -5,16 +5,23 @@ import XCTest
 
 final class FolderAuthorizationEntitlementPanelTests: XCTestCase {
     func testProductionEntitlementsContainApprovedSandboxCapabilities() throws {
-        guard let task = SecTaskCreateFromSelf(nil) else {
-            XCTFail("Unable to create security task for host entitlements")
-            return
+        let task = SecTaskCreateFromSelf(nil)
+        let sourceEntitlements = try Self.loadSourceEntitlements()
+
+        func entitlement(_ key: String) -> Any? {
+            if let task,
+               let value = SecTaskCopyValueForEntitlement(task, key as CFString, nil)
+            {
+                return value
+            }
+            // The standard test command deliberately disables code signing.
+            // In that host there is no embedded entitlement blob, so validate
+            // the production entitlement plist instead.
+            return sourceEntitlements[key]
         }
 
         func boolEntitlement(_ key: String) -> Bool? {
-            guard let value = SecTaskCopyValueForEntitlement(task, key as CFString, nil) else {
-                return nil
-            }
-            return (value as? NSNumber)?.boolValue
+            (entitlement(key) as? NSNumber)?.boolValue
         }
 
         XCTAssertEqual(boolEntitlement("com.apple.security.app-sandbox"), true)
@@ -22,13 +29,7 @@ final class FolderAuthorizationEntitlementPanelTests: XCTestCase {
         XCTAssertEqual(boolEntitlement("com.apple.security.files.bookmarks.app-scope"), true)
         XCTAssertEqual(boolEntitlement("com.apple.security.network.client"), true)
         XCTAssertEqual(boolEntitlement("com.apple.security.network.server"), true)
-        XCTAssertNil(
-            SecTaskCopyValueForEntitlement(
-                task,
-                "com.apple.security.files.user-selected.read-only" as CFString,
-                nil
-            )
-        )
+        XCTAssertNil(entitlement("com.apple.security.files.user-selected.read-only"))
     }
 
     @MainActor
@@ -82,5 +83,23 @@ final class FolderAuthorizationEntitlementPanelTests: XCTestCase {
         XCTAssertNil(picker.pickDirectory())
         XCTAssertTrue(tracker.factoryCalled)
         XCTAssertTrue(tracker.modalCalled)
+    }
+
+    private static func loadSourceEntitlements() throws -> [String: Any] {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let url = repositoryRoot.appendingPathComponent(
+            "ImageAll/ImageAll.entitlements"
+        )
+        let data = try Data(contentsOf: url)
+        return try XCTUnwrap(
+            PropertyListSerialization.propertyList(
+                from: data,
+                options: [],
+                format: nil
+            ) as? [String: Any]
+        )
     }
 }

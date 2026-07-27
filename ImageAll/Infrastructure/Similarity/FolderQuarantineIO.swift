@@ -33,6 +33,8 @@ struct FolderQuarantineExpectedIdentity: Sendable, Equatable {
 struct FolderQuarantineIO: Sendable {
     /// When true, always use copy+verify+unlink even on the same device (tests).
     var forceCrossVolumeCopy: Bool = false
+    /// Deterministic test seam for a writer racing the final source check.
+    var beforeSourceFinalVerification: @Sendable () -> Void = {}
 
     func ensureQuarantineRoot(at url: URL) throws {
         try DerivedImageSecureIO.ensureDirectory(at: url)
@@ -416,10 +418,23 @@ struct FolderQuarantineIO: Sendable {
             }
         }
 
-        try copyBytes(sourceFD: sourceFD, destFD: destFD)
-        guard fsync(destFD) == 0 else {
+        guard flock(sourceFD, LOCK_EX | LOCK_NB) == 0 else {
+            throw FolderQuarantineIOError.verificationFailed
+        }
+        defer { flock(sourceFD, LOCK_UN) }
+
+        guard lseek(sourceFD, 0, SEEK_SET) >= 0,
+              lseek(destFD, 0, SEEK_SET) >= 0,
+              fcopyfile(
+                sourceFD,
+                destFD,
+                nil,
+                copyfile_flags_t(COPYFILE_ALL | COPYFILE_NOCACHE)
+              ) == 0
+        else {
             throw FolderQuarantineIOError.ioFailure
         }
+        try synchronizeFile(fd: destFD)
 
         let written = try DerivedImageSecureIO.fstatatEntry(
             directoryFD: destParentFD,
@@ -446,37 +461,56 @@ struct FolderQuarantineIO: Sendable {
             throw FolderQuarantineIOError.verificationFailed
         }
 
+        try synchronizeDirectory(fd: destParentFD)
+        beforeSourceFinalVerification()
+        try requireOpenFileUnchanged(
+            fd: sourceFD,
+            openedStat: sourceStat,
+            expectedDigest: expectedDigest
+        )
         try requirePathStillReferencesOpenFile(
             parentFD: sourceParentFD,
             name: sourceName,
             openedStat: sourceStat
         )
-        // Only unlink source after verified copy.
+        // Only unlink after the metadata-complete destination is durable and the
+        // still-open source has been rehashed under an advisory exclusive lock.
         try DerivedImageSecureIO.unlinkatEntry(directoryFD: sourceParentFD, name: sourceName)
+        try synchronizeDirectory(fd: sourceParentFD)
         keepDestination = true
     }
 
-    private func copyBytes(sourceFD: Int32, destFD: Int32) throws {
-        guard lseek(sourceFD, 0, SEEK_SET) >= 0 else {
+    private func synchronizeFile(fd: Int32) throws {
+        if fcntl(fd, F_FULLFSYNC) == 0 {
+            return
+        }
+        guard fsync(fd) == 0 else {
             throw FolderQuarantineIOError.ioFailure
         }
-        var buffer = [UInt8](repeating: 0, count: 64 * 1024)
-        while true {
-            let n = buffer.withUnsafeMutableBytes { raw in
-                read(sourceFD, raw.baseAddress, raw.count)
-            }
-            if n == 0 { break }
-            if n < 0 { throw FolderQuarantineIOError.ioFailure }
-            var offset = 0
-            while offset < n {
-                let written = buffer.withUnsafeBytes { raw in
-                    write(destFD, raw.baseAddress!.advanced(by: offset), n - offset)
-                }
-                if written <= 0 {
-                    throw FolderQuarantineIOError.ioFailure
-                }
-                offset += written
-            }
+    }
+
+    private func synchronizeDirectory(fd: Int32) throws {
+        guard fsync(fd) == 0 else {
+            throw FolderQuarantineIOError.ioFailure
+        }
+    }
+
+    private func requireOpenFileUnchanged(
+        fd: Int32,
+        openedStat: Darwin.stat,
+        expectedDigest: Data
+    ) throws {
+        var currentStat = Darwin.stat()
+        guard fstat(fd, &currentStat) == 0,
+              (currentStat.st_mode & S_IFMT) == S_IFREG,
+              currentStat.st_dev == openedStat.st_dev,
+              currentStat.st_ino == openedStat.st_ino,
+              currentStat.st_size == openedStat.st_size,
+              modificationTimeNanoseconds(currentStat)
+                == modificationTimeNanoseconds(openedStat),
+              try hashFile(fd: fd) == expectedDigest
+        else {
+            throw FolderQuarantineIOError.verificationFailed
         }
     }
 
@@ -506,7 +540,10 @@ struct FolderQuarantineIO: Sendable {
         guard fstatat(parentFD, name, &pathStat, AT_SYMLINK_NOFOLLOW) == 0,
               (pathStat.st_mode & S_IFMT) == S_IFREG,
               pathStat.st_dev == openedStat.st_dev,
-              pathStat.st_ino == openedStat.st_ino
+              pathStat.st_ino == openedStat.st_ino,
+              pathStat.st_size == openedStat.st_size,
+              modificationTimeNanoseconds(pathStat)
+                == modificationTimeNanoseconds(openedStat)
         else {
             throw FolderQuarantineIOError.verificationFailed
         }

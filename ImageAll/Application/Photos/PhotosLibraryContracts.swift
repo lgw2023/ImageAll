@@ -104,7 +104,11 @@ protocol PhotosFeaturePrintImagePort: Sendable {
     func requestLocalFeatureImage(localIdentifier: String) throws -> Data
 }
 
-/// Presence of a Photos asset relative to the system library / Recently Deleted.
+/// Public PhotoKit visibility of a Photos asset.
+///
+/// Production PhotoKit can only distinguish an asset that is available in the
+/// library from one that is no longer returned. `recentlyDeleted` is retained
+/// for deterministic service tests and non-PhotoKit adapters.
 enum PhotosAssetPresence: Equatable, Sendable {
     case available
     case recentlyDeleted
@@ -126,5 +130,4 @@ protocol PhotosLibraryMutationPort: Sendable {
     func requestAuthorization() async -> PhotosAuthorizationState
     func moveToRecentlyDeleted(localIdentifiers: [String]) throws
     func presence(localIdentifier: String) throws -> PhotosAssetPresence
-    func permanentlyDeleteFromRecentlyDeleted(localIdentifiers: [String]) throws
 }

@@ -423,13 +423,22 @@ final class AppPathsTests: XCTestCase {
         store.commit(try store.prepareExternalRoot(externalRoot))
 
         let progressBox = MigrationProgressBox()
-        let resolution = try store.resolve(
-            internalApplicationSupportDirectory: internalSupport,
-            internalCachesDirectory: internalCaches,
-            onProgress: { progress in
-                progressBox.append(progress)
-            }
-        )
+        let resolution: AppStorageLocationResolution
+        do {
+            resolution = try store.resolve(
+                internalApplicationSupportDirectory: internalSupport,
+                internalCachesDirectory: internalCaches,
+                onProgress: { progress in
+                    progressBox.append(progress)
+                }
+            )
+        } catch {
+            XCTFail(
+                "migration failed with \(error); phases: "
+                    + progressBox.events.map(\.phase.rawValue).joined(separator: ", ")
+            )
+            return
+        }
         resolution.accessLease?.stop()
 
         let events = progressBox.events

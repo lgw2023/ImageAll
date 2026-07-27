@@ -57,8 +57,11 @@ final class CatalogMigrationTests: XCTestCase {
                 arguments: [writableBookmark, sourceID.uuidString.lowercased()]
             )
             try db.execute(
-                sql: "DELETE FROM grdb_migrations WHERE identifier = ?",
-                arguments: [CatalogMigrationID.v021AddPhotosRecycleIdentifier]
+                sql: "DELETE FROM grdb_migrations WHERE identifier IN (?, ?)",
+                arguments: [
+                    CatalogMigrationID.v020HardenLibrarySlimmingRecycle,
+                    CatalogMigrationID.v021AddPhotosRecycleIdentifier,
+                ]
             )
         }
         try legacy.pool.close()
@@ -108,7 +111,7 @@ final class CatalogMigrationTests: XCTestCase {
             try db.execute(sql: "DROP TABLE IF EXISTS recycle_entry")
             try db.execute(sql: "DROP TABLE IF EXISTS source_mutation_authorization")
             try db.execute(
-                sql: "DELETE FROM grdb_migrations WHERE identifier IN (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                sql: "DELETE FROM grdb_migrations WHERE identifier IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 arguments: [
                     CatalogMigrationID.v012RepairStandardTagBinding,
                     CatalogMigrationID.v013PhotosMissingAssetRepair,
@@ -185,7 +188,7 @@ final class CatalogMigrationTests: XCTestCase {
             try db.execute(sql: "DROP TABLE IF EXISTS recycle_entry")
             try db.execute(sql: "DROP TABLE IF EXISTS source_mutation_authorization")
             try db.execute(
-                sql: "DELETE FROM grdb_migrations WHERE identifier IN (?, ?, ?, ?, ?, ?, ?, ?)",
+                sql: "DELETE FROM grdb_migrations WHERE identifier IN (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 arguments: [
                     CatalogMigrationID.v013PhotosMissingAssetRepair,
                     CatalogMigrationID.v014AddTrainingRunsAndPersonalMultiSlot,
@@ -228,7 +231,7 @@ final class CatalogMigrationTests: XCTestCase {
             try db.execute(sql: "DROP TABLE IF EXISTS recycle_entry")
             try db.execute(sql: "DROP TABLE IF EXISTS source_mutation_authorization")
             try db.execute(
-                sql: "DELETE FROM grdb_migrations WHERE identifier IN (?, ?, ?, ?, ?)",
+                sql: "DELETE FROM grdb_migrations WHERE identifier IN (?, ?, ?, ?, ?, ?)",
                 arguments: [
                     CatalogMigrationID.v016AddTagGroups,
                     CatalogMigrationID.v017PerTagPersonalSuggestionModels,

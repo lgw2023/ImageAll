@@ -239,7 +239,16 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
                     converged += 1
                 }
             case .recentlyDeleted:
-                continue
+                if entry.purgeAfterMs <= clock.nowMs {
+                    try transitionEntry(
+                        entryID: entry.id,
+                        from: .recycled,
+                        to: .purging,
+                        errorCode: nil
+                    )
+                    try finalizePurged(entry)
+                    converged += 1
+                }
             }
         }
         return converged
@@ -584,51 +593,7 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
     }
 
     private func purgePhotosEntry(_ snapshot: EntrySnapshot) throws {
-        guard let localIdentifier = snapshot.photosLocalIdentifier else {
-            throw LibrarySlimmingRecycleError.invalidState
-        }
-        try transitionEntry(
-            entryID: snapshot.id,
-            from: .recycled,
-            to: .purging,
-            errorCode: nil
-        )
-        if let photosMutation {
-            do {
-                try photosMutation.permanentlyDeleteFromRecentlyDeleted(
-                    localIdentifiers: [localIdentifier]
-                )
-            } catch PhotosLibraryMutationError.assetNotFound {
-                // Already gone from Recently Deleted — converge catalog.
-            } catch PhotosLibraryMutationError.authorizationDenied,
-                    PhotosLibraryMutationError.authorizationRestricted,
-                    PhotosLibraryMutationError.notDetermined
-            {
-                try? transitionEntry(
-                    entryID: snapshot.id,
-                    from: .purging,
-                    to: .recycled,
-                    errorCode: "photosAuthorizationRequired"
-                )
-                throw LibrarySlimmingRecycleError.photosAuthorizationRequired
-            } catch {
-                // Prefer catalog convergence when system presence is already missing.
-                if let presence = try? photosMutation.presence(localIdentifier: localIdentifier),
-                   presence == .missing
-                {
-                    // continue to finalize
-                } else {
-                    try? transitionEntry(
-                        entryID: snapshot.id,
-                        from: .purging,
-                        to: .recycled,
-                        errorCode: "photosMutationFailed"
-                    )
-                    throw LibrarySlimmingRecycleError.photosMutationFailed
-                }
-            }
-        }
-        try finalizePurged(snapshot)
+        throw LibrarySlimmingRecycleError.photosManagedBySystem
     }
 
     private func markFailed(entryID: UUID, code: String) throws {
@@ -646,7 +611,29 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
 
     private func recoverPending(_ entry: EntrySnapshot) throws {
         if entry.sourceKind == .photos {
-            try markFailed(entryID: entry.id, code: "interruptedPhotosPending")
+            guard let localIdentifier = entry.photosLocalIdentifier,
+                  let photosMutation
+            else {
+                try markFailed(entryID: entry.id, code: "interruptedPhotosPending")
+                return
+            }
+            let presence: PhotosAssetPresence
+            do {
+                presence = try photosMutation.presence(localIdentifier: localIdentifier)
+            } catch PhotosLibraryMutationError.authorizationDenied,
+                    PhotosLibraryMutationError.authorizationRestricted,
+                    PhotosLibraryMutationError.notDetermined
+            {
+                throw LibrarySlimmingRecycleError.photosAuthorizationRequired
+            } catch {
+                throw LibrarySlimmingRecycleError.photosMutationFailed
+            }
+            switch presence {
+            case .available:
+                try markFailed(entryID: entry.id, code: "interruptedBeforePhotosMove")
+            case .recentlyDeleted, .missing:
+                try finalizeRecycled(entry)
+            }
             return
         }
         guard let quarantinePath = entry.quarantineRelativePath,
@@ -828,30 +815,12 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
 
     private func recoverPurging(_ entry: EntrySnapshot) throws {
         if entry.sourceKind == .photos {
-            if let localIdentifier = entry.photosLocalIdentifier,
-               let photosMutation
-            {
-                do {
-                    try photosMutation.permanentlyDeleteFromRecentlyDeleted(
-                        localIdentifiers: [localIdentifier]
-                    )
-                } catch PhotosLibraryMutationError.assetNotFound {
-                    // Already gone.
-                } catch {
-                    if let presence = try? photosMutation.presence(localIdentifier: localIdentifier),
-                       presence != .missing
-                    {
-                        try? transitionEntry(
-                            entryID: entry.id,
-                            from: .purging,
-                            to: .recycled,
-                            errorCode: "photosMutationFailed"
-                        )
-                        throw LibrarySlimmingRecycleError.photosMutationFailed
-                    }
-                }
-            }
-            try finalizePurged(entry)
+            try transitionEntry(
+                entryID: entry.id,
+                from: .purging,
+                to: .recycled,
+                errorCode: "photosManagedBySystem"
+            )
             return
         }
         if let quarantinePath = entry.quarantineRelativePath {

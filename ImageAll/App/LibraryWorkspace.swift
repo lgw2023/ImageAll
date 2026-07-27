@@ -1128,6 +1128,9 @@ final class LibraryWorkspaceModel: ObservableObject {
             }
             librarySlimmingStatusMessage = "已永久删除"
             await refreshLibrarySlimmingRecycleEntries()
+        } catch LibrarySlimmingRecycleError.photosManagedBySystem {
+            librarySlimmingStatusMessage =
+                "Photos 资产的恢复和永久删除由系统「照片」App 管理"
         } catch {
             librarySlimmingStatusMessage = "永久删除失败：\(error.localizedDescription)"
         }

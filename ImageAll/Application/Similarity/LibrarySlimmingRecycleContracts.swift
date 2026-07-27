@@ -53,6 +53,24 @@ enum RecycleCountdownFormatter {
         let days = max(1, (remaining + LibrarySlimmingRecyclePolicy.dayMs - 1) / LibrarySlimmingRecyclePolicy.dayMs)
         return "\(days) 天后永久删除"
     }
+
+    static func recordCleanupText(cleanupAfterMs: Int64, nowMs: Int64) -> String {
+        let remaining = cleanupAfterMs - nowMs
+        if remaining <= 0 {
+            return "ImageAll 即将清理此记录"
+        }
+        let hourMs: Int64 = 60 * 60 * 1_000
+        if remaining < LibrarySlimmingRecyclePolicy.dayMs {
+            let hours = max(1, (remaining + hourMs - 1) / hourMs)
+            return "ImageAll 将在 \(hours) 小时后清理此记录"
+        }
+        let days = max(
+            1,
+            (remaining + LibrarySlimmingRecyclePolicy.dayMs - 1)
+                / LibrarySlimmingRecyclePolicy.dayMs
+        )
+        return "ImageAll 将在 \(days) 天后清理此记录"
+    }
 }
 
 enum LibrarySlimmingRecycleError: Error, Equatable, Sendable {
@@ -62,6 +80,7 @@ enum LibrarySlimmingRecycleError: Error, Equatable, Sendable {
     case mutationAuthorizationRequired
     case photosAuthorizationRequired
     case photosRestoreRequiresPhotosApp
+    case photosManagedBySystem
     case photosMutationFailed
     case restoreConflict
     case ioFailure
