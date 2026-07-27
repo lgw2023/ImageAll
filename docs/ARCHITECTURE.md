@@ -77,7 +77,7 @@ MVP 的核心闭环是：
 - 除 ADR-042「图库瘦身」用户确认的回收站 / 到期清理路径外，不修改、移动或删除来源中的原图；
 - 不直接读取 `.photoslibrary` 包内部文件；
 - 不向 Apple Photos 写入任意关键词；Photos 回收/恢复/永久删除仅允许经 PhotoKit，且仅限瘦身回收站路径；
-- 不在 MVP 中实现 iPhone/iPad 客户端；
+- MVP 主产品仍为原生 macOS；iPhone/iPad Companion 按 ADR-043 作为辅助客户端分切片推进，不阻塞 Mac 主路径；
 - 不在 MVP 中实现人脸身份识别、OCR、GPS 语义或相册关系推理；
 - 不自动合并或静默删除重复图片；相同/相似仅供用户确认后的瘦身处置（ADR-042）；
 - 不把 NAS、SMB/NFS 目录或其他网络文件系统作为受支持的 MVP 来源；
