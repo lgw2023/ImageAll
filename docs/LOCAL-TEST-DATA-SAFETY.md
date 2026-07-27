@@ -43,9 +43,14 @@
 - 不得遍历、解析或依赖 `.photoslibrary` 包内部结构；
 - 不得由工具自动打开、切换、修复或设为 System Photo Library；
 - 是否切换或打开该图库由用户在 Photos 中显式操作；
-- 不调用删除、编辑、导入、关键词写入或其他 Photos 写入 API；
-- 对受保护真实图库的 smoke 默认禁止触发 iCloud 网络下载；如某项验收必须下载 iCloud-only 资源，须取得单独的 `CloudDownloadGrant` 和用户确认，并在开始前说明 Photos 可能产生系统管理的本地缓存与磁盘占用；
-- PhotoKit 没有供本产品使用的独立只读 access level，因此 `.readWrite` 授权不等于写入许可；评审必须证明生产 target 没有 Photos mutation API 调用路径；
+- 受保护真实图库的默认 smoke 不调用删除、编辑、导入、关键词写入或其他 Photos 写入 API；ADR-044
+  已实现的用户确认软删除能力不构成在该图库上运行删除 smoke 的授权；
+- 对受保护真实图库的 smoke 默认禁止触发 iCloud 网络下载；如某项验收必须下载 iCloud-only 资源，须取得单独的 `CloudDownloadGrant` 和用户确认，并在开始前说明 Photos 可能产生系统管理的本地缓存，
+  且 ImageAll「相同检测」会在 App Application Support 长期保留一份校验过的原始图像及占用磁盘；
+- 项目所有者批准的“相同检测隐式下载并长期保存”是**产品行为决策**，不自动授权当前开发任务对
+  HDD2 真实图库执行或验证该行为；每次真实 smoke 仍需单独的 `CloudDownloadGrant`；
+- PhotoKit 没有供本产品使用的独立只读 access level，因此 `.readWrite` 授权不等于本次测试的写入许可；
+  评审必须证明除 ADR-044 用户确认的瘦身软删除路径外没有 Photos mutation API 调用；
 - 专门的可丢弃测试 Photos Library 仍用于故障和边界测试；此真实图库只作为额外的只读人工 smoke 来源。
 
 自动化宿主测试还必须把“启动 App”本身视为一次 Photos 访问：即使 `xcodebuild test` 只选择与 Photos
@@ -69,7 +74,7 @@ App 测试宿主；宿主无关测试使用隔离的直接 test bundle，privacy
 
 任何需要验证删除、移动、权限错误、文件损坏或图库修复的测试，都必须使用独立创建、明确可丢弃的小型 fixture 或专用测试图库。
 
-ADR-042「图库瘦身」批准的产品侧回收站/永久删除能力**不构成**对本节受保护路径的测试或自动化授权。即便生产 App 已实现瘦身回收，针对 `/Volumes/HDD2` 受保护年份文件夹或真实 Photos Library 的删除、移动、PhotoKit 删除验证，仍须另行取得项目所有者针对该次具体操作的书面授权；默认验证面始终是可丢弃 fixture。
+ADR-044「图库瘦身」批准的产品侧回收站/永久删除能力**不构成**对本节受保护路径的测试或自动化授权。即便生产 App 已实现瘦身回收，针对 `/Volumes/HDD2` 受保护年份文件夹或真实 Photos Library 的删除、移动、PhotoKit 删除验证，仍须另行取得项目所有者针对该次具体操作的书面授权；默认验证面始终是可丢弃 fixture。
 
 ## 4. 允许的数据流
 
@@ -82,6 +87,7 @@ ImageAll 解码/索引流程
         |
         +--> App 容器内事实库
         +--> App Caches 内可重建派生数据
+        +--> 经单次 CloudDownloadGrant 后，App Application Support 内的长期 Photos 原图
         +--> 聚合测试证据
 
 禁止任何反向写入受保护来源

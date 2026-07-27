@@ -2,7 +2,7 @@
 
 > 状态：Ready  
 > 日期：2026-07-27  
-> 权威规格：[`LIBRARY-SLIMMING-SPEC.md`](LIBRARY-SLIMMING-SPEC.md) §7 S1；[`ADR-042-LIBRARY-SLIMMING-AND-RECYCLE.md`](ADR-042-LIBRARY-SLIMMING-AND-RECYCLE.md)  
+> 权威规格：[`LIBRARY-SLIMMING-SPEC.md`](LIBRARY-SLIMMING-SPEC.md) §7 S1；[`ADR-044-LIBRARY-SLIMMING-AND-RECYCLE.md`](ADR-044-LIBRARY-SLIMMING-AND-RECYCLE.md)
 > 上一批准基线：`main@8b8eba0a1efbe41b235938cb8b37c10708bc3163`（S0 文档）  
 > 角色：临时授权期内可由本会话直接实施；交付 commit 使用实施身份与 `Agent-Role: implementation`
 

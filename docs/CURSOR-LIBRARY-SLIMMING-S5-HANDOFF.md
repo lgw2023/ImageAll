@@ -2,11 +2,11 @@
 
 > 状态：Closed（原 S5 交付后，经 2026-07-27 所有者确认与 Codex 复审完成契约修正）
 > 日期：2026-07-27  
-> 权威规格：[`LIBRARY-SLIMMING-SPEC.md`](LIBRARY-SLIMMING-SPEC.md) §5.2 / §5.3 / §7 S5；[`ADR-042-LIBRARY-SLIMMING-AND-RECYCLE.md`](ADR-042-LIBRARY-SLIMMING-AND-RECYCLE.md)  
+> 权威规格：[`LIBRARY-SLIMMING-SPEC.md`](LIBRARY-SLIMMING-SPEC.md) §5.2 / §5.3 / §7 S5；[`ADR-044-LIBRARY-SLIMMING-AND-RECYCLE.md`](ADR-044-LIBRARY-SLIMMING-AND-RECYCLE.md)
 > 上一批准基线：`main@3e44f622e203bc6e3a1da0b71925575384e09fc9`（含 S4 交付与 recycle 安全硬化）  
 > 角色：临时授权期内可由本会话直接实施；交付 commit 使用实施身份与 `Agent-Role: implementation`
 
-> 复审纠偏：本交接单早期版本错误地假设可用未公开 subtype 枚举系统「最近删除」并再次调用删除实现永久删除。该契约已被撤销；权威语义以 ADR-042 与 `LIBRARY-SLIMMING-SPEC.md` 当前版本为准。修正实现 commits：`f181fed1`、`11ad55e7`。
+> 复审纠偏：本交接单早期版本错误地假设可用未公开 subtype 枚举系统「最近删除」并再次调用删除实现永久删除。该契约已被撤销；权威语义以 ADR-044 与 `LIBRARY-SLIMMING-SPEC.md` 当前版本为准。修正实现 commits：`f181fed1`、`11ad55e7`。
 
 ## 1. 范围
 

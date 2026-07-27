@@ -12,7 +12,7 @@ ImageAll 是一款本地优先的原生 macOS 图片管理与个性化多标签�
 1. 用户选择的普通文件夹，包括外置磁盘上的多 TB 图片档案；
 2. 当前 Mac 的 Apple Photos 照片库。
 
-除 ADR-042 图库瘦身中由用户明确确认的受限回收路径外，应用不搬运、不修改原图。它在自己的 SQLite 目录库中保存资产索引、标签定义、人工确认/拒绝记录、视觉特征版本和模型预测。标签能力分为两条并行轨道：公开世界知识对应版本化的标准标签及公共模型，可以在用户尚未积累标注时提供带来源的自动标签；个人关系、用途和偏好对应用户自定义标签，只能随用户正负反馈逐步学习。人工决定永远优先，任何模型结果都不得伪装或覆盖人工事实。
+除 ADR-044 图库瘦身中由用户明确确认的受限回收路径外，应用不搬运、不修改原图。它在自己的 SQLite 目录库中保存资产索引、标签定义、人工确认/拒绝记录、视觉特征版本和模型预测。标签能力分为两条并行轨道：公开世界知识对应版本化的标准标签及公共模型，可以在用户尚未积累标注时提供带来源的自动标签；个人关系、用途和偏好对应用户自定义标签，只能随用户正负反馈逐步学习。人工决定永远优先，任何模型结果都不得伪装或覆盖人工事实。
 
 MVP 的核心闭环是：
 
@@ -28,7 +28,7 @@ MVP 的核心闭环是：
 公共模型的准确率、标准标签覆盖率和本地部署成本必须按 provider 与版本独立评测，不能把某个
 模型的输出当作无版本的世界事实。现有 Vision Feature Print 继续作为个性化轻量基线。
 
-首版不做云端服务、不写回 Apple Photos 关键词、不训练端到端神经网络。原图在索引/分析/导出路径上保持只读；**唯一**允许移动/删除原图的产品路径是「图库瘦身」用户确认后的回收站流程（见 ADR-042），不包含静默去重或其它功能顺带删图。
+首版不做云端服务、不写回 Apple Photos 关键词、不训练端到端神经网络。原图在索引/分析/导出路径上保持只读；**唯一**允许移动/删除原图的产品路径是「图库瘦身」用户确认后的回收站流程（见 ADR-044），不包含静默去重或其它功能顺带删图。
 
 ## 2. 背景与问题定义
 
@@ -74,12 +74,12 @@ MVP 的核心闭环是：
 
 - 不托管或同步原图；
 - 不依赖账号、服务器或互联网才能使用；
-- 除 ADR-042「图库瘦身」用户确认的文件夹回收/清理或 Photos 系统软删除路径外，不修改、移动或删除来源中的原图；
+- 除 ADR-044「图库瘦身」用户确认的文件夹回收/清理或 Photos 系统软删除路径外，不修改、移动或删除来源中的原图；
 - 不直接读取 `.photoslibrary` 包内部文件；
 - 不向 Apple Photos 写入任意关键词；仅图库瘦身可在用户确认后经公开 PhotoKit 把资产移入系统「最近删除」，恢复与永久删除由 macOS「照片」App 管理；
 - MVP 主产品仍为原生 macOS；iPhone/iPad Companion 按 ADR-043 作为辅助客户端分切片推进，不阻塞 Mac 主路径；
 - 不在 MVP 中实现人脸身份识别、OCR、GPS 语义或相册关系推理；
-- 不自动合并或静默删除重复图片；相同/相似仅供用户确认后的瘦身处置（ADR-042）；
+- 不自动合并或静默删除重复图片；相同/相似仅供用户确认后的瘦身处置（ADR-044）；
 - 不把 NAS、SMB/NFS 目录或其他网络文件系统作为受支持的 MVP 来源；
 - 不在 MVP 中自动导入或恢复可移植导出；导出格式先保证可检查和可演进；
 - 不在 MVP 中训练或微调整个视觉神经网络；
@@ -94,7 +94,7 @@ MVP 的核心闭环是：
 
 ## 4. 架构原则
 
-1. **原图默认只读**：任何索引、分析或导出失败都不能损坏用户资产。唯一例外是 ADR-042 图库瘦身中经用户确认后，将文件夹资产移入 ImageAll 回收站并恢复/清理，或把 Photos 资产经公开 PhotoKit 移入系统「最近删除」；Photos 的恢复与永久删除仍由 macOS「照片」App 管理。该例外不得被其它子系统复用。
+1. **原图默认只读**：任何索引、分析或导出失败都不能损坏用户资产。唯一例外是 ADR-044 图库瘦身中经用户确认后，将文件夹资产移入 ImageAll 回收站并恢复/清理，或把 Photos 资产经公开 PhotoKit 移入系统「最近删除」；Photos 的恢复与永久删除仍由 macOS「照片」App 管理。该例外不得被其它子系统复用。
 2. **用户决定优先**：人工接受和人工拒绝均是持久事实，模型不得覆盖。
 3. **来源无关**：领域层不依赖文件路径或 `PHAsset`；来源差异留在适配层。
 4. **派生数据可重建**：缩略图、视觉特征和预测都可以删除后重新生成。
@@ -459,9 +459,15 @@ PhotoKit 报告资产更新，或其 `modificationDate`、像素尺寸、媒体�
 
 MVP 已冻结为 macOS 15+ 并采用 persistent change history；change token 无效或无法证明连续历史时，回退为可恢复的完整 generation。PhotoKit change observer 与启动追赶只负责合并并触发 reconcile，不直接写 Asset 事实。
 
-部分资产可能只有 iCloud 副本。默认只索引元数据，网格预取、详情、Feature Print 和后台建议请求均保持本地限定，不自动触发下载。Photos 网格先复用显式下载预览，再按 Asset ID、`content_revision`、representation version 和 `gridRegular` variant 查询统一派生缓存；未命中才请求 local-only PhotoKit，并把规范化缩略图原子发布到应用缓存。缓存损坏或事实版本变化沿用统一失效规则，任何缓存写入失败只退化为本次内存结果。Photos Adapter 是唯一可以构造 `PHImageRequestOptions` 的模块。MVP 采用用户已批准的“单图标准预览”：只有用户在 Inspector 对当前资产点击“获取预览”后，应用服务才签发该次请求的不透明能力，Adapter 才为一个 `2_048 × 2_048` target、`aspectFit` 请求设置 `isNetworkAccessAllowed = true`；缓存标准预览长边最多 2048px，不放大、不裁剪。调用方不能通过裸 `Bool` 绕过该策略。
+部分资产可能只有 iCloud 副本。默认只索引元数据，网格预取、详情、Feature Print 和普通后台建议请求均保持本地限定，不自动触发下载。Photos 网格先复用显式下载预览，再按 Asset ID、`content_revision`、representation version 和 `gridRegular` variant 查询统一派生缓存；未命中才请求 local-only PhotoKit，并把规范化缩略图原子发布到应用缓存。缓存损坏或事实版本变化沿用统一失效规则，任何缓存写入失败只退化为本次内存结果。Photos Adapter 是唯一可以构造 `PHImageRequestOptions` 的模块。MVP 单图标准预览仍要求用户在 Inspector 对当前资产点击“获取预览”，应用服务签发不透明能力后，Adapter 才为一个 `2_048 × 2_048` target、`aspectFit` 请求设置 `isNetworkAccessAllowed = true`；缓存标准预览长边最多 2048px，不放大、不裁剪。调用方不能通过裸 `Bool` 绕过该策略。
 
-单图请求的界面状态区分可获取、下载中、失败和已下载，并支持进度、取消与重试。成功结果进入 512 MiB LRU 下载预览子配额，随后供 Inspector、网格、Feature Print、全库建议和 Review Queue 复用，缓存命中不再读取 PhotoKit。该子配额不是额外磁盘预算：条目仍计入统一派生缓存配额，并受磁盘安全余量约束。批量云下载、后台自动获取和通用 job-scoped grant 不属于 MVP；未来若引入，必须另行设计任务级授权、计量、取消与配额契约。
+单图请求的界面状态区分可获取、下载中、失败和已下载，并支持进度、取消与重试。成功结果进入 512 MiB LRU 下载预览子配额，随后供 Inspector、网格、Feature Print、全库建议和 Review Queue 复用，缓存命中不再读取 PhotoKit。该子配额不是额外磁盘预算：条目仍计入统一派生缓存配额，并受磁盘安全余量约束。
+
+ADR-044 增加一个窄例外：Photos「相同」检测遇到 iCloud-only 资产时，分析 Job 可隐式请求 `.original`
+高质量原始内容，并原子保存到 Application Support 的 `Photos Originals/v1` 作为长期可用产品数据。
+长期对象不进入派生预览 LRU，索引绑定 asset、content revision、Photos local identifier、字节数和
+SHA-256；身份或校验不一致即 fail closed。该授权不扩展到普通建议、批量预览或其它分析任务，也不授权
+写回 Photos。受保护真实图库上的云下载 smoke 仍需 `LOCAL-TEST-DATA-SAFETY.md` 规定的单次授权。
 
 原生 macOS 当前 SDK 将 `PHAuthorizationStatusLimited` 标为 iOS-only，因此 MVP 不假设持续 Photos Source 存在“受限照片库”授权。`PhotosPicker` 的 `Transferable` 选择结果也不作为可持续增量索引的 Locator。若未来要支持只选少量 Photos 资产并跨启动保留，必须先单独验证标识和数据保留契约。
 
@@ -771,12 +777,12 @@ FTS 只是可重建的查询加速结构，必须由 migration 回填和 Asset i
 
 - 启用 App Sandbox；
 - 文件夹权限由系统选择器和只读 security-scoped bookmark 获得；
-- Photos 权限只在用户添加该来源时请求，并提供明确的 `NSPhotoLibraryUsageDescription`；PhotoKit 使用 `.readWrite` access level；除 ADR-042 图库瘦身中用户确认的系统软删除外，禁止调用任何 Photos 写入 / mutation API；禁止私有「最近删除」探测与 ImageAll 发起的 Photos 永久删除；
+- Photos 权限只在用户添加该来源时请求，并提供明确的 `NSPhotoLibraryUsageDescription`；PhotoKit 使用 `.readWrite` access level；除 ADR-044 图库瘦身中用户确认的系统软删除外，禁止调用任何 Photos 写入 / mutation API；禁止私有「最近删除」探测与 ImageAll 发起的 Photos 永久删除；
 - 所有图片分析默认在本机完成；
 - 默认不收集遥测，不上传图片、特征或标签；
 - 日志不得记录图片内容、完整路径、书签数据或 Photos 标识符；
 - bookmark 数据和数据库只存储在应用容器；
-- 除 ADR-042 图库瘦身用户确认的文件夹回收/清理与 Photos 系统软删除路径外，不提供任何原图删除、移动或覆盖入口；
+- 除 ADR-044 图库瘦身用户确认的文件夹回收/清理与 Photos 系统软删除路径外，不提供任何原图删除、移动或覆盖入口；
 - 导出文件默认不包含原图，只包含标签、决策和必要的稳定关联信息；
 - 若未来增加网络模型或同步，必须单独设计威胁模型和用户授权流程。
 
@@ -789,7 +795,7 @@ FTS 只是可重建的查询加速结构，必须由 migration 回填和 Asset i
 | Photos 权限被撤销 | 停止访问，保留标签和索引，展示重新授权入口 |
 | Photos Library 暂时不可用 | 保持原 Source、Asset 事实与标签，暂停同步，不推断批量删除 |
 | System Photo Library 切换 | 自动把旧 Source 标记 unavailable 并停止访问；用户明确确认后为当前图库新建 active Source，旧 Source/Asset、标签、决定和缓存作为历史事实保留，不迁移、不合并、不删除 |
-| iCloud 图片未下载 | 默认显示云端占位；仅当前单图显式请求进入下载中/失败/已下载状态，不阻塞其他资产 |
+| iCloud 图片未下载 | 普通浏览默认显示云端占位；Inspector 单图显式请求可下载标准预览；ADR-044 Photos「相同」检测可隐式下载并长期保存原始内容；单资产失败不阻塞其他资产 |
 | 图片损坏/格式不支持 | 记录单资产错误，继续批次 |
 | 内容发生变化 | 增加 content revision，使缩略图、特征和预测失效 |
 | 标准标签包损坏或 revision 不匹配 | 停用该包的机器结果并提示重新安装；保留标准标签本地别名和全部人工决定 |
@@ -863,7 +869,8 @@ FTS 只是可重建的查询加速结构，必须由 migration 回填和 Asset i
 ### 17.3 系统与人工测试
 
 - 使用专门的测试 Photos Library 验证授权、iCloud-only 资源、库暂时不可用和变化历史；
-- 验证只有 Inspector 当前单图的用户显式动作会下载 iCloud 标准预览；
+- 验证 iCloud 下载边界：Inspector 当前单图显式动作只产生标准预览；ADR-044 Photos「相同」检测
+  可隐式获取原始内容并进入长期 Application Support 对象；其它路径保持 local-only；
 - 外置盘扫描中拔出、重连和改名；
 - 应用强制退出后的任务恢复；
 - 10 万级目录下的网格滚动、筛选和后台索引并行体验；
@@ -1190,13 +1197,17 @@ revision 门；cache-only 自动个人重训和独立服务启动已经验收，
 | ADR-039 | 三轨建议全并行进入 Review Queue；个人质心与 AdamW 多槽激活并存，禁止 singleton 互顶 | T1–T3 已实现 | 队列行身份为 `(asset_id, tag_id, suggestion_origin)`；徽章区分来源；人工决定仍唯一且一次清除该标签全部 origin；磁盘 LinearHead/AdamWHead 与 DB 槽一一对应 |
 | ADR-040 | 三条个人建议路径的进队门槛升级为用户可调的方法默认 + 标签覆盖；训练/重建不自动改阈值 | ST1–ST4 已实现 | 权威细节见 `SUGGESTION-THRESHOLD-SPEC.md`；`effectiveMinScore = override ?? default`；生成过滤 `score > effectiveMinScore` 后再 Top 100；Review 行展示原始 score；同标签同方法的近期拒绝分数只生成需人工采用的参考值，三轨完成通知展示高于阈值数与候选数 |
 | ADR-042 | 正式拒绝 Places365 ResNet18 作为生产 standard 包候选 | 已决定（2026-07-24） | 未标版本 CC BY 与 academic research/education 用途冲突；不伪造 CC-BY-4.0；公开验证门永久不适用；归档 `research` 证据；下一标准场景包须另选许可清晰的新候选 |
+| ADR-043 | Mac Host + 原生 iOS Companion；R0 Host 仅 Debug 可启用 | R0 已加固，R1+ 待实施 | Mac 保持唯一权威；协议同仓；当前请求上限、鉴权和内存幂等只服务开发，Release 在配对、TLS 与持久幂等完成前硬关闭 |
+| ADR-044 | 图库瘦身双轨回收、跨来源相同检测、Photos 原图长期保存与可恢复大库分析 | S0–S8 已交付（2026-07-27） | 用户确认后才回收；iCloud-only 相同检测可隐式下载原始内容；分析冻结成员集并支持暂停、续跑、启动恢复和最多 3 轮自动补全 |
 
 ## 20. 尚待确认的问题
 
 以下问题不追溯阻塞已交付阶段，但必须在相应后续切片开工前决定：
 
 1. Developer ID 与 Mac App Store 中，发布阶段采用哪一种分发方式；
-2. 若 MVP 后增加批量 iCloud 分析，采用何种任务级授权、下载配额和调度策略；单图标准预览已冻结为 `aspectFit`、长边最多 2048px、不放大不裁剪，以及 512 MiB LRU 下载预览子配额；
+2. 除 ADR-044 已批准的 Photos「相同」检测隐式原图下载外，若以后让其它批量分析访问 iCloud，
+   采用何种任务级授权、下载配额和调度策略；单图标准预览仍固定为 `aspectFit`、长边最多 2048px、
+   不放大不裁剪，以及 512 MiB LRU 下载预览子配额；
 3. 是否需要在 MVP 后提供可选 XMP sidecar 写入；
 4. 真实目录库的大致图片数量、主要格式和所在存储类型，用于冻结性能基线；
 5. 首个**可生产**标准标签包纳入哪些场景概念、语言和 DAG 父节点，以及选用哪一许可清晰的公共模型（Places365 已拒绝，见 ADR-042）；
@@ -1209,13 +1220,15 @@ revision 门；cache-only 自动个人重训和独立服务启动已经验收，
 MVP 只有同时满足以下条件才算完成：
 
 - 文件夹与 Photos 两类来源均能稳定恢复访问；
-- 原图全程只读，不复制为 ImageAll 长期托管资产；只允许受配额管理的派生缓存；
+- 原图来源全程默认只读；唯一长期副本例外是 ADR-044 中 Photos「相同」检测下载到 Application Support
+  的 App 拥有对象，且不得写回来源；
 - 手工多标签、显式拒绝和筛选可用；
 - 少样本建议闭环可运行并进入 Review Queue；当前阶段不要求统一准确率、样本完整性或标签覆盖率；
 - 人工决定在重建特征、切换模型版本后仍保持；
 - 初次索引可暂停、可恢复，单资产错误不终止全库；
 - 中断的 generation 不会误判删除，Photos 首扫期间的变化可由 token 重放收敛；
-- iCloud 下载只有在用户对 Inspector 当前单图执行显式“获取预览”时发生；
+- iCloud 下载仅允许两条路径：Inspector 当前单图显式“获取预览”，以及 ADR-044 Photos「相同」检测
+  对 iCloud-only 资产的隐式原始内容下载；
 - `.photoslibrary`、package 和链接遍历边界通过回归，来源全程只读；
 - 缓存配额与磁盘安全余量在首次派生写入前生效；
 - 数据库有迁移与同机快照，并提供不含授权书签的可移植用户数据导出；

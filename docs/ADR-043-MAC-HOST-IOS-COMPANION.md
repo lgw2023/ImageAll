@@ -33,7 +33,8 @@
 - 新增 Remote Application / Infrastructure（Facade、HTTP Host、开发期鉴权）；
 - 增加 `com.apple.security.network.server`；
 - 在 `CompositionRoot`（或等价装配点）挂载 Host，**不经过** `LibraryWorkspaceModel`；
-- 默认关闭或仅开发开关开启；可用 `defaults` / 环境变量启用，R0 不强制改 Mac UI。
+- R0 Host **仅在 Debug 编译存在**且默认关闭，可用 `defaults` / 环境变量显式启用；Release 编译固定返回关闭，
+  不能通过运行时配置重新打开。R0 不强制改 Mac UI。
 
 禁止（本阶段）：
 
@@ -48,8 +49,13 @@
 - Mac 永远是唯一写权威；手机只发命令并消费投影 DTO。
 - R0/R1：局域网 HTTP（可先明文 + 开发 token；TLS/配对后置）。
 - 查询与图片走 HTTP；实时事件 / WebSocket 后置。
-- 批量标签必须带幂等 `operationId`。
+- 批量标签必须带幂等 `operationId`；同一进程内重放相同请求返回原响应，同一个 ID 携带不同 mutation
+  必须返回冲突。跨进程/重启后的持久幂等留到配对发布切片，R0 不伪装成已支持。
 - 缩略图请求带目标像素；R0 可先忽略尺寸并返回现有派生缩略图，但协议字段必须预留。
+- 资产分页的 `limit` 必须一路传到 catalog 查询，不能先固定截断 100 条再按客户端 cursor 翻页。
+- R0 请求采用 256 KiB 总上限、32 KiB header 上限和 15 秒超时；只接受明确的 HTTP/1.0 或 HTTP/1.1，
+  拒绝负数/重复 `Content-Length`、`Transfer-Encoding`、重复或畸形 header、超限 body 和尾随字节。
+  对外错误只返回稳定安全文案，不暴露内部异常、路径或 token。
 
 ### 4. iOS 范围（辅助工具）
 
@@ -60,7 +66,7 @@
 
 | 切片 | 内容 | 停止位置 |
 |---|---|---|
-| **R0** | ADR + Remote Protocol Package + Mac 薄 Facade/HTTP Host + 单测；不改 Mac UI；不建完整 iOS App | Host 可对 capabilities/sources/assets/thumbnail/tag-batch 响应 |
+| **R0** | ADR + Remote Protocol Package + Mac 薄 Facade/HTTP Host + 单测；不改 Mac UI；不建完整 iOS App；Host 仅 Debug 可启用 | Host 可对 capabilities/sources/assets/thumbnail/tag-batch 响应 |
 | **R1** | 最小 iOS target/壳 + Remote Client，连本机 Host | 手机/模拟器能看网格并改标签 |
 | **R2+** | Bonjour、正式配对、TLS、WebSocket 事件、异地中继 | 另开 ADR/切片 |
 
@@ -72,7 +78,9 @@
 ## 后果
 
 - `ARCHITECTURE.md` §3.2「不在 MVP 中实现 iPhone/iPad 客户端」改为：MVP 主产品仍为 Mac；Companion 按 ADR-043 辅助切片推进，不阻塞 Mac 主路径。
-- 测试必须覆盖：DTO round-trip、Facade 映射、Host 鉴权失败、幂等 operationId；不得读取受保护真实照片路径。
+- 测试必须覆盖：DTO round-trip、Facade 映射、分页 limit、Host 鉴权失败、请求边界与超限、幂等
+  operationId 及冲突；不得读取受保护真实照片路径。
+- `Info.plist` 必须声明局域网用途；Release 生产包在正式配对/TLS/持久幂等完成前保持 Host 硬关闭。
 - 现有未提交的 `LibraryWorkspace*` 草稿与本能力无交集，实施时必须保留。
 
 ## 反例
