@@ -8,6 +8,14 @@
 
 /* Begin PBXBuildFile section */
 
+		RH0000010000000000000001 /* RemoteCatalogServing.swift in Sources */ = {isa = PBXBuildFile; fileRef = RH0001010000000000000001 /* RemoteCatalogServing.swift */; };
+		RH0000010000000000000002 /* RemoteCatalogFacade.swift in Sources */ = {isa = PBXBuildFile; fileRef = RH0001010000000000000002 /* RemoteCatalogFacade.swift */; };
+		RH0000010000000000000003 /* RemoteHTTPServer.swift in Sources */ = {isa = PBXBuildFile; fileRef = RH0001010000000000000003 /* RemoteHTTPServer.swift */; };
+		RH0000010000000000000004 /* RemoteHostProcessHolder.swift in Sources */ = {isa = PBXBuildFile; fileRef = RH0001010000000000000004 /* RemoteHostProcessHolder.swift */; };
+		RH0000010000000000000101 /* RemoteCatalogFacadeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = RH0001010000000000000101 /* RemoteCatalogFacadeTests.swift */; };
+		RH0000010000000000000102 /* RemoteHTTPServerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = RH0001010000000000000102 /* RemoteHTTPServerTests.swift */; };
+		RH0000010000000000000005 /* ImageAllRemoteProtocol in Frameworks */ = {isa = PBXBuildFile; productRef = RH0000020000000000000001 /* ImageAllRemoteProtocol */; };
+		RH0000010000000000000006 /* ImageAllRemoteProtocol in Frameworks */ = {isa = PBXBuildFile; productRef = RH0000020000000000000001 /* ImageAllRemoteProtocol */; };
 		MD0000010000000000000001 /* ApprovedSourceMediaTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = MD0001010000000000000001 /* ApprovedSourceMediaTypes.swift */; };
 		MD0000010000000000000002 /* MediaDecodeCascade.swift in Sources */ = {isa = PBXBuildFile; fileRef = MD0001010000000000000002 /* MediaDecodeCascade.swift */; };
 		MD0000010000000000000003 /* ImageAllLibRawBridge.cpp in Sources */ = {isa = PBXBuildFile; fileRef = MD0001010000000000000003 /* ImageAllLibRawBridge.cpp */; };
@@ -492,6 +500,12 @@
 		KK0001010000000000000003 /* GRDBPersonalizationRepository.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GRDBPersonalizationRepository.swift; sourceTree = "<group>"; };
 		LL0001010000000000000101 /* FeaturePrintCacheTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FeaturePrintCacheTests.swift; sourceTree = "<group>"; };
 		LL0001010000000000000001 /* FeaturePrintCacheService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FeaturePrintCacheService.swift; sourceTree = "<group>"; };
+		RH0001010000000000000001 /* RemoteCatalogServing.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteCatalogServing.swift; sourceTree = "<group>"; };
+		RH0001010000000000000002 /* RemoteCatalogFacade.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteCatalogFacade.swift; sourceTree = "<group>"; };
+		RH0001010000000000000003 /* RemoteHTTPServer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteHTTPServer.swift; sourceTree = "<group>"; };
+		RH0001010000000000000004 /* RemoteHostProcessHolder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteHostProcessHolder.swift; sourceTree = "<group>"; };
+		RH0001010000000000000101 /* RemoteCatalogFacadeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteCatalogFacadeTests.swift; sourceTree = "<group>"; };
+		RH0001010000000000000102 /* RemoteHTTPServerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteHTTPServerTests.swift; sourceTree = "<group>"; };
 		SL0001010000000000000001 /* IdenticalDuplicateContracts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IdenticalDuplicateContracts.swift; sourceTree = "<group>"; };
 		SL0001010000000000000002 /* PerceptualImageHash.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PerceptualImageHash.swift; sourceTree = "<group>"; };
 		SL0001010000000000000003 /* FingerprintCompletionService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FingerprintCompletionService.swift; sourceTree = "<group>"; };
@@ -555,6 +569,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				RH0000010000000000000005 /* ImageAllRemoteProtocol in Frameworks */,
 				CC0000010000000000000003 /* GRDB in Frameworks */,
 				MD0000010000000000000004 /* libraw_r.a in Frameworks */,
 			);
@@ -564,6 +579,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				RH0000010000000000000006 /* ImageAllRemoteProtocol in Frameworks */,
 				CC0000010000000000000004 /* GRDB in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -598,6 +614,7 @@
 		AA0006010000000000000003 /* ImageAllTests */ = {
 			isa = PBXGroup;
 			children = (
+				RH0006010000000000000003 /* Remote */,
 				SL0006010000000000000003 /* Similarity */,
 				EX0001010000000000000101 /* PortableCatalogExportTests.swift */,
 				OO0006010000000000000003 /* Photos */,
@@ -707,6 +724,7 @@
 		AA0006010000000000000006 /* Application */ = {
 			isa = PBXGroup;
 			children = (
+				RH0006010000000000000001 /* Remote */,
 				SL0006010000000000000001 /* Similarity */,
 				OO0006010000000000000001 /* Photos */,
 				KK0006010000000000000001 /* Personalization */,
@@ -840,6 +858,7 @@
 		CC0006010000000000000001 /* Infrastructure */ = {
 			isa = PBXGroup;
 			children = (
+				RH0006010000000000000002 /* Remote */,
 				SL0006010000000000000002 /* Similarity */,
 				EX0001010000000000000001 /* PortableCatalogExporter.swift */,
 				OO0006010000000000000002 /* Photos */,
@@ -1187,6 +1206,33 @@
 			path = Similarity;
 			sourceTree = "<group>";
 		};
+		RH0006010000000000000001 /* Remote */ = {
+			isa = PBXGroup;
+			children = (
+				RH0001010000000000000001 /* RemoteCatalogServing.swift */,
+				RH0001010000000000000002 /* RemoteCatalogFacade.swift */,
+			);
+			path = Remote;
+			sourceTree = "<group>";
+		};
+		RH0006010000000000000002 /* Remote */ = {
+			isa = PBXGroup;
+			children = (
+				RH0001010000000000000003 /* RemoteHTTPServer.swift */,
+				RH0001010000000000000004 /* RemoteHostProcessHolder.swift */,
+			);
+			path = Remote;
+			sourceTree = "<group>";
+		};
+		RH0006010000000000000003 /* Remote */ = {
+			isa = PBXGroup;
+			children = (
+				RH0001010000000000000101 /* RemoteCatalogFacadeTests.swift */,
+				RH0001010000000000000102 /* RemoteHTTPServerTests.swift */,
+			);
+			path = Remote;
+			sourceTree = "<group>";
+		};
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
@@ -1206,6 +1252,7 @@
 			name = ImageAll;
 			packageProductDependencies = (
 				CC0000020000000000000001 /* GRDB */,
+				RH0000020000000000000001 /* ImageAllRemoteProtocol */,
 			);
 			productName = ImageAll;
 			productReference = AA0001010000000000000007 /* ImageAll.app */;
@@ -1227,6 +1274,7 @@
 			name = ImageAllTests;
 			packageProductDependencies = (
 				CC0000020000000000000001 /* GRDB */,
+				RH0000020000000000000001 /* ImageAllRemoteProtocol */,
 			);
 			productName = ImageAllTests;
 			productReference = AA0001010000000000000008 /* ImageAllTests.xctest */;
@@ -1265,6 +1313,7 @@
 			projectRoot = "";
 			packageReferences = (
 				CC0000030000000000000001 /* XCRemoteSwiftPackageReference "GRDB" */,
+				RH0000030000000000000001 /* XCLocalSwiftPackageReference "Packages/ImageAllRemoteProtocol" */,
 			);
 			targets = (
 				AA0004010000000000000001 /* ImageAll */,
@@ -1361,6 +1410,10 @@
 				KK0000010000000000000002 /* PersonalizationCatalogPort.swift in Sources */,
 				MM0000010000000000000001 /* PersonalizedSuggestionService.swift in Sources */,
 				LL0000010000000000000001 /* FeaturePrintCacheService.swift in Sources */,
+				RH0000010000000000000001 /* RemoteCatalogServing.swift in Sources */,
+				RH0000010000000000000002 /* RemoteCatalogFacade.swift in Sources */,
+				RH0000010000000000000003 /* RemoteHTTPServer.swift in Sources */,
+				RH0000010000000000000004 /* RemoteHostProcessHolder.swift in Sources */,
 				SL0000010000000000000001 /* IdenticalDuplicateContracts.swift in Sources */,
 				SL0000010000000000000002 /* PerceptualImageHash.swift in Sources */,
 				SL0000010000000000000003 /* FingerprintCompletionService.swift in Sources */,
@@ -1504,6 +1557,8 @@
 				OO0000010000000000000101 /* PhotosIntegrationTests.swift in Sources */,
 				MM0000010000000000000101 /* PersonalizedSuggestionServiceTests.swift in Sources */,
 				LL0000010000000000000101 /* FeaturePrintCacheTests.swift in Sources */,
+				RH0000010000000000000101 /* RemoteCatalogFacadeTests.swift in Sources */,
+				RH0000010000000000000102 /* RemoteHTTPServerTests.swift in Sources */,
 				SL0000010000000000000101 /* IdenticalDuplicateDetectionTests.swift in Sources */,
 				KK0000010000000000000101 /* PersonalizationPersistenceTests.swift in Sources */,
 				NN0000010000000000000101 /* FullLibrarySuggestionsJobTests.swift in Sources */,
@@ -1892,6 +1947,13 @@
 		};
 /* End XCConfigurationList section */
 
+/* Begin XCLocalSwiftPackageReference section */
+		RH0000030000000000000001 /* XCLocalSwiftPackageReference "Packages/ImageAllRemoteProtocol" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = Packages/ImageAllRemoteProtocol;
+		};
+/* End XCLocalSwiftPackageReference section */
+
 /* Begin XCRemoteSwiftPackageReference section */
 		CC0000030000000000000001 /* XCRemoteSwiftPackageReference "GRDB" */ = {
 			isa = XCRemoteSwiftPackageReference;
@@ -1908,6 +1970,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = CC0000030000000000000001 /* XCRemoteSwiftPackageReference "GRDB" */;
 			productName = GRDB;
+		};
+		RH0000020000000000000001 /* ImageAllRemoteProtocol */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = RH0000030000000000000001 /* XCLocalSwiftPackageReference "Packages/ImageAllRemoteProtocol" */;
+			productName = ImageAllRemoteProtocol;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

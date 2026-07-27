@@ -6,7 +6,7 @@ enum ProductionLibraryWorkspaceError: Error {
     case reconcileFailed
 }
 
-struct ProductionLibraryWorkspaceService: LibraryWorkspacePort, Sendable {
+struct ProductionLibraryWorkspaceService: LibraryWorkspacePort, RemoteCatalogServing, Sendable {
     let sourceRepository: GRDBFolderSourceAuthorizationRepository
     let folderSourceMonitor: FolderSourceMonitoringCoordinator
     let photosSourceMonitor: PhotosLibraryChangeObserverCoordinator

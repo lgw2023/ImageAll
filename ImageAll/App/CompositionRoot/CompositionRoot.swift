@@ -269,6 +269,10 @@ struct CompositionRoot {
             appVersion: BundleAppVersionProvider().currentVersion(),
             clock: clock
         )
+        RemoteHostProcessHolder.attach(
+            catalog: service,
+            hostAppVersion: BundleAppVersionProvider().currentVersion()
+        )
         return LibraryWorkspaceModel(
             service: service,
             review: personalizationReview,
