@@ -63,6 +63,14 @@ struct CompositionRoot {
             clock: clock,
             jobQueue: runtime.jobQueue
         )
+        let librarySlimmingMutationAuthorization = FolderMutationAuthorizationCoordinator(
+            database: runtime.database,
+            picker: AppKitFolderDirectoryPicker(),
+            bookmarkPort: bookmark,
+            rootValidator: rootValidator,
+            relationshipChecker: FoundationFolderRootRelationshipChecker(),
+            clock: clock
+        )
         let folderSourceMonitor = FolderSourceMonitoringCoordinator(
             repository: sourceRepository,
             bookmarkPort: bookmark,
@@ -334,6 +342,7 @@ struct CompositionRoot {
             ),
             librarySlimming: librarySlimming,
             librarySlimmingRecycle: librarySlimmingRecycle,
+            librarySlimmingMutationAuthorization: librarySlimmingMutationAuthorization,
             localModelSuggestions: localModelSuggestions,
             appPersonalModelRebuilder: appPersonalModelRebuilder,
             appPersonalAdamWModelRebuilder: appPersonalAdamWModelRebuilder,

@@ -180,11 +180,15 @@ final class DerivedImageQuotaTests: XCTestCase {
         let env = try DerivedImageTestSupport.TempEnvironment(label: "evict-requery-ok")
         defer { env.cleanup() }
         _ = try env.seedAvailableAsset()
-        let artifact = try DerivedImageTestSupport.renderIncomingGridSmallArtifact()
+        let artifact = try DerivedImageTestSupport.renderIncomingArtifact(variant: .gridRegular)
         let incoming = UInt64(artifact.byteSize)
         let total = 100 * gib
         let reserve = try XCTUnwrap(DerivedImageQuotaPolicy.reserveBytes(totalVolumeBytes: total))
-        let victim = try await seedVictimWithInflatedQuotaEntry(env: env, logicalBytes: 10 * gib)
+        let victim = try await seedVictimWithInflatedQuotaEntry(
+            env: env,
+            logicalBytes: 10 * gib,
+            variant: .gridSmall
+        )
         let reader = DerivedImageTestSupport.SequentialVolumeReader(
             sequence: [
                 DerivedImageVolumeFacts(availableBytes: reserve + incoming - 1, totalBytes: total),
@@ -193,7 +197,7 @@ final class DerivedImageQuotaTests: XCTestCase {
         )
         let (service, _) = env.makeService(volumeReader: reader)
         let published = try await service.loadOrGenerate(
-            DerivedImageRequest(assetID: env.assetID, variant: .gridSmall)
+            DerivedImageRequest(assetID: env.assetID, variant: .gridRegular)
         )
         XCTAssertEqual(published.origin, .generated)
         XCTAssertEqual(reader.queryCount, 2)
@@ -207,18 +211,24 @@ final class DerivedImageQuotaTests: XCTestCase {
         defer { env.cleanup() }
         let fileURL = try env.seedAvailableAsset()
         let catalogBefore = try await DerivedImageTestSupport.captureFaultMatrixCatalogSnapshot(env: env)
-        let artifact = try DerivedImageTestSupport.renderIncomingGridSmallArtifact()
+        let artifact = try DerivedImageTestSupport.renderIncomingArtifact(variant: .gridRegular)
         let incoming = UInt64(artifact.byteSize)
         let total = 100 * gib
         let reserve = try XCTUnwrap(DerivedImageQuotaPolicy.reserveBytes(totalVolumeBytes: total))
-        _ = try await seedVictimWithInflatedQuotaEntry(env: env, logicalBytes: 10 * gib)
+        _ = try await seedVictimWithInflatedQuotaEntry(
+            env: env,
+            logicalBytes: 10 * gib,
+            variant: .gridSmall
+        )
         let reader = DerivedImageTestSupport.ConstantVolumeReader(
             availableBytes: reserve + incoming - 1,
             totalBytes: total
         )
         let (service, bookmarkPort) = env.makeService(volumeReader: reader)
         do {
-            _ = try await service.loadOrGenerate(DerivedImageRequest(assetID: env.assetID, variant: .gridSmall))
+            _ = try await service.loadOrGenerate(
+                DerivedImageRequest(assetID: env.assetID, variant: .gridRegular)
+            )
             XCTFail("expected insufficient space")
         } catch DerivedImageError.derivedInsufficientSpace {
         }
@@ -242,7 +252,7 @@ final class DerivedImageQuotaTests: XCTestCase {
         let sourceBefore = try env.sourceTreeSnapshot()
         let jobBefore = try await env.jobRecordCount()
         let tagBefore = try await env.tagRecordCount()
-        let artifact = try DerivedImageTestSupport.renderIncomingGridSmallArtifact()
+        let artifact = try DerivedImageTestSupport.renderIncomingArtifact(variant: .preview)
         let largerID = UUID(uuidString: "ffffffff-ffff-4fff-8fff-ffffffffffff")!
         let smallerID = UUID(uuidString: "00000000-0000-4000-8000-000000000002")!
         let tieMs: Int64 = 100
@@ -273,7 +283,7 @@ final class DerivedImageQuotaTests: XCTestCase {
                     id, asset_id, content_revision, representation_version, variant,
                     storage_format, pixel_width, pixel_height, byte_size, encoded_sha256,
                     created_at_ms, last_accessed_at_ms
-                ) VALUES (?, ?, 1, 1, 'preview', 'jpeg', 256, 256, ?, ?, 300, ?)
+                ) VALUES (?, ?, 1, 1, 'gridSmall', 'jpeg', 256, 256, ?, ?, 300, ?)
                 """,
                 arguments: [
                     smallerID.uuidString.lowercased(),
@@ -290,7 +300,9 @@ final class DerivedImageQuotaTests: XCTestCase {
                 totalBytes: 100 * gib
             )
         )
-        _ = try await service.loadOrGenerate(DerivedImageRequest(assetID: env.assetID, variant: .gridSmall))
+        _ = try await service.loadOrGenerate(
+            DerivedImageRequest(assetID: env.assetID, variant: .preview)
+        )
         let smallerExists = try await env.cacheEntryExists(id: smallerID)
         let largerExists = try await env.cacheEntryExists(id: largerID)
         XCTAssertFalse(smallerExists, "stable LRU must evict lexicographically smaller UUID at tied timestamp")
@@ -316,8 +328,12 @@ final class DerivedImageQuotaTests: XCTestCase {
         let sentinelBefore = try env.sourceFileSnapshot(for: sentinelURL)
         let catalogBefore = try await DerivedImageTestSupport.captureFaultMatrixCatalogSnapshot(env: env)
         let sourceBefore = try env.sourceTreeSnapshot()
-        let victim = try await seedVictimWithInflatedQuotaEntry(env: env, logicalBytes: 10 * gib)
-        let artifact = try DerivedImageTestSupport.renderIncomingGridSmallArtifact()
+        let victim = try await seedVictimWithInflatedQuotaEntry(
+            env: env,
+            logicalBytes: 10 * gib,
+            variant: .gridSmall
+        )
+        let artifact = try DerivedImageTestSupport.renderIncomingArtifact(variant: .gridRegular)
         let incoming = UInt64(artifact.byteSize)
         let total = 100 * gib
         let reserve = try XCTUnwrap(DerivedImageQuotaPolicy.reserveBytes(totalVolumeBytes: total))
@@ -331,7 +347,9 @@ final class DerivedImageQuotaTests: XCTestCase {
             volumeReader: reader
         )
         do {
-            _ = try await service.loadOrGenerate(DerivedImageRequest(assetID: env.assetID, variant: .gridSmall))
+            _ = try await service.loadOrGenerate(
+                DerivedImageRequest(assetID: env.assetID, variant: .gridRegular)
+            )
             XCTFail("expected insufficient space")
         } catch DerivedImageError.derivedInsufficientSpace {
         }
@@ -368,14 +386,20 @@ final class DerivedImageQuotaTests: XCTestCase {
         _ = try env.seedAvailableAsset()
         let sentinelURL = try env.plantExternalSentinel()
         let sentinelBefore = try env.sourceFileSnapshot(for: sentinelURL)
-        let victim = try await seedVictimWithInflatedQuotaEntry(env: env, logicalBytes: 10 * gib)
+        let victim = try await seedVictimWithInflatedQuotaEntry(
+            env: env,
+            logicalBytes: 10 * gib,
+            variant: .gridSmall
+        )
         try env.replacePublishedObjectWithSymlink(
             entryID: victim,
             format: .jpeg,
             linkTarget: sentinelURL
         )
         let objectRelative = env.objectRelativeComponent(entryID: victim, format: .jpeg)
-        let incoming = UInt64(try DerivedImageTestSupport.renderIncomingGridSmallArtifact().byteSize)
+        let incoming = UInt64(
+            try DerivedImageTestSupport.renderIncomingArtifact(variant: .gridRegular).byteSize
+        )
         let total = 100 * gib
         let reserve = try XCTUnwrap(DerivedImageQuotaPolicy.reserveBytes(totalVolumeBytes: total))
         let (service, _) = env.makeService(
@@ -387,7 +411,7 @@ final class DerivedImageQuotaTests: XCTestCase {
 
         do {
             _ = try await service.loadOrGenerate(
-                DerivedImageRequest(assetID: env.assetID, variant: .gridSmall)
+                DerivedImageRequest(assetID: env.assetID, variant: .gridRegular)
             )
             XCTFail("expected insufficient space")
         } catch DerivedImageError.derivedInsufficientSpace {
@@ -728,11 +752,12 @@ final class DerivedImageQuotaTests: XCTestCase {
 private extension DerivedImageQuotaTests {
     func seedVictimWithInflatedQuotaEntry(
         env: DerivedImageTestSupport.TempEnvironment,
-        logicalBytes: UInt64
+        logicalBytes: UInt64,
+        variant: DerivedImageVariant = .gridRegular
     ) async throws -> UUID {
         let (service, _) = env.makeService(volumeReader: DerivedImageTestSupport.generousVolume)
         let victim = try await service.loadOrGenerate(
-            DerivedImageRequest(assetID: env.assetID, variant: .gridRegular)
+            DerivedImageRequest(assetID: env.assetID, variant: variant)
         )
         try await env.database.pool.write { db in
             try db.execute(

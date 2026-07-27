@@ -25,6 +25,7 @@ struct CatalogDatabase: Sendable {
         V017PerTagPersonalSuggestionModelsMigration.register(on: &migrator)
         V018AddAssetSimilarityFingerprintMigration.register(on: &migrator)
         V019AddLibrarySlimmingRecycleMigration.register(on: &migrator)
+        V020HardenLibrarySlimmingRecycleMigration.register(on: &migrator)
         return migrator
     }
 
@@ -1639,5 +1640,100 @@ enum V019AddLibrarySlimmingRecycleMigration {
             WHERE state = 'recycled'
             """
         )
+    }
+}
+
+enum V020HardenLibrarySlimmingRecycleMigration {
+    private static let sourceMutationAuthorizationDDL = """
+        CREATE TABLE source_mutation_authorization (
+            source_id TEXT NOT NULL PRIMARY KEY REFERENCES source(id) ON DELETE CASCADE,
+            bookmark BLOB NOT NULL CHECK(length(bookmark) > 0),
+            updated_at_ms INTEGER NOT NULL CHECK(updated_at_ms >= 0)
+        ) STRICT
+        """
+
+    private static let recycleEntryDDL = """
+        CREATE TABLE recycle_entry (
+            id TEXT NOT NULL PRIMARY KEY,
+            asset_id TEXT REFERENCES asset(id) ON DELETE SET NULL,
+            source_kind TEXT NOT NULL CHECK(source_kind IN ('file', 'photos')),
+            trashed_at_ms INTEGER NOT NULL CHECK(trashed_at_ms >= 0),
+            purge_after_ms INTEGER NOT NULL CHECK(purge_after_ms >= trashed_at_ms),
+            state TEXT NOT NULL CHECK(
+                state IN (
+                    'pending', 'recycled', 'restoring', 'purging',
+                    'restored', 'purged', 'failed'
+                )
+            ),
+            quarantine_relative_path TEXT CHECK(
+                quarantine_relative_path IS NULL OR length(quarantine_relative_path) > 0
+            ),
+            original_relative_path TEXT CHECK(
+                original_relative_path IS NULL OR length(original_relative_path) > 0
+            ),
+            error_code TEXT CHECK(error_code IS NULL OR length(error_code) > 0),
+            created_at_ms INTEGER NOT NULL CHECK(created_at_ms >= 0),
+            updated_at_ms INTEGER NOT NULL CHECK(updated_at_ms >= 0),
+            CHECK(\(V001CreateCatalogCoreMigration.uuidCheck)),
+            CHECK(
+                state != 'purged'
+                OR (
+                    asset_id IS NULL
+                    AND quarantine_relative_path IS NULL
+                    AND original_relative_path IS NULL
+                )
+            )
+        ) STRICT
+        """
+
+    static func register(on migrator: inout DatabaseMigrator) {
+        migrator.registerMigration(CatalogMigrationID.v020HardenLibrarySlimmingRecycle) { db in
+            try db.execute(sql: sourceMutationAuthorizationDDL)
+            try db.execute(
+                sql: """
+                INSERT INTO source_mutation_authorization (
+                    source_id, bookmark, updated_at_ms
+                )
+                SELECT id, mutation_bookmark, updated_at_ms
+                FROM source
+                WHERE mutation_bookmark IS NOT NULL AND length(mutation_bookmark) > 0
+                """
+            )
+            try db.execute(sql: "ALTER TABLE source DROP COLUMN mutation_bookmark")
+
+            try db.execute(sql: "DROP INDEX IF EXISTS recycle_entry_active_asset_uq")
+            try db.execute(sql: "DROP INDEX IF EXISTS recycle_entry_purge_due_idx")
+            try db.execute(sql: "ALTER TABLE recycle_entry RENAME TO recycle_entry_v019")
+            try db.execute(sql: recycleEntryDDL)
+            try db.execute(
+                sql: """
+                INSERT INTO recycle_entry (
+                    id, asset_id, source_kind, trashed_at_ms, purge_after_ms, state,
+                    quarantine_relative_path, original_relative_path, error_code,
+                    created_at_ms, updated_at_ms
+                )
+                SELECT
+                    id, asset_id, source_kind, trashed_at_ms, purge_after_ms, state,
+                    quarantine_relative_path, original_relative_path, error_code,
+                    created_at_ms, updated_at_ms
+                FROM recycle_entry_v019
+                """
+            )
+            try db.execute(sql: "DROP TABLE recycle_entry_v019")
+            try db.execute(
+                sql: """
+                CREATE UNIQUE INDEX recycle_entry_active_asset_uq
+                ON recycle_entry(asset_id)
+                WHERE state IN ('pending', 'recycled', 'restoring', 'purging')
+                """
+            )
+            try db.execute(
+                sql: """
+                CREATE INDEX recycle_entry_purge_due_idx
+                ON recycle_entry(purge_after_ms, id)
+                WHERE state = 'recycled'
+                """
+            )
+        }
     }
 }

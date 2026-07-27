@@ -427,6 +427,9 @@ struct GRDBAssetCatalogQueryRepository: AssetCatalogQueryPort, Sendable {
             for availability in filter.availabilities {
                 arguments += [availability.rawValue]
             }
+        } else {
+            clauses.append("asset.availability != ?")
+            arguments += [AssetAvailability.recycled.rawValue]
         }
 
         if !filter.mediaTypes.isEmpty {

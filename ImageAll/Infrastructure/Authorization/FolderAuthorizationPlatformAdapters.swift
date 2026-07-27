@@ -6,6 +6,10 @@ enum SecurityScopedBookmarkOptions {
         .securityScopeAllowOnlyReadAccess,
     ]
 
+    static let writableCreationOptions: URL.BookmarkCreationOptions = [
+        .withSecurityScope,
+    ]
+
     static let resolutionOptions: URL.BookmarkResolutionOptions = [
         .withSecurityScope,
         .withoutUI,
@@ -59,9 +63,16 @@ struct BookmarkResolveResult: Equatable, Sendable {
 
 protocol SecurityScopedBookmarkPort: Sendable {
     func createReadOnlyBookmark(for url: URL) throws -> Data
+    func createWritableBookmark(for url: URL) throws -> Data
     func resolveBookmark(_ bookmark: Data) throws -> BookmarkResolveResult
     func startAccessing(_ url: URL) -> Bool
     func stopAccessing(_ url: URL)
+}
+
+extension SecurityScopedBookmarkPort {
+    func createWritableBookmark(for url: URL) throws -> Data {
+        throw FolderAuthorizationError.bookmarkCreationFailed
+    }
 }
 
 enum FolderRootValidationFailure: Equatable, Sendable {
@@ -269,6 +280,14 @@ struct FoundationSecurityScopedBookmarkAdapter: SecurityScopedBookmarkPort {
     func createReadOnlyBookmark(for url: URL) throws -> Data {
         try url.bookmarkData(
             options: SecurityScopedBookmarkOptions.creationOptions,
+            includingResourceValuesForKeys: nil,
+            relativeTo: nil
+        )
+    }
+
+    func createWritableBookmark(for url: URL) throws -> Data {
+        try url.bookmarkData(
+            options: SecurityScopedBookmarkOptions.writableCreationOptions,
             includingResourceValuesForKeys: nil,
             relativeTo: nil
         )

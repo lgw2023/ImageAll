@@ -4,6 +4,145 @@ import XCTest
 @testable import ImageAll
 
 final class FolderReconcileTransactionTests: XCTestCase {
+    func testCompleteGenerationDoesNotOverwriteRecycledAvailability() throws {
+        let url = try makeTempDatabaseURL()
+        let database = try CatalogDatabase.open(at: url)
+        let queue = FolderReconcileTestSupport.makeQueue(database: database)
+        let repository = GRDBFolderReconcileRepository(queue: queue)
+        let sourceID = UUID()
+        let assetID = UUID()
+        try FolderReconcileTestSupport.seedActiveFolderSource(
+            database: database,
+            sourceID: sourceID,
+            bookmark: Data("bookmark".utf8)
+        )
+        try CatalogRepository(database: database).insertAsset(
+            NewAssetInput(
+                assetID: assetID,
+                sourceID: sourceID,
+                locatorKind: .file,
+                relativePath: "recycled.jpg",
+                photosLocalIdentifier: nil,
+                mediaType: UTType.jpeg.identifier,
+                timestampMs: FolderReconcileTestSupport.baseTimeMs
+            )
+        )
+        try database.pool.write { db in
+            try db.execute(
+                sql: "UPDATE asset SET availability = 'recycled' WHERE id = ?",
+                arguments: [assetID.uuidString.lowercased()]
+            )
+        }
+        _ = try FolderReconcileTestSupport.enqueueReconcileJob(queue: queue, sourceID: sourceID)
+        let lease = try XCTUnwrap(
+            try queue.claimNext(ClaimNextInput(owner: "recycle-guard", leaseDurationMs: 1_000))
+        )
+        let begin = try repository.beginGeneration(
+            FolderReconcileTestSupport.beginGenerationInput(
+                lease: lease,
+                sourceID: sourceID,
+                leaseDurationMs: 1_000
+            )
+        )
+
+        _ = try repository.completeGeneration(
+            FolderCompleteGenerationInput(
+                lease: lease,
+                sourceID: sourceID,
+                generation: begin.generation,
+                startedDirtyEpoch: begin.startedDirtyEpoch,
+                checkpoint: begin.checkpoint,
+                leaseDurationMs: 1_000
+            )
+        )
+
+        let availability = try database.pool.read { db in
+            try String.fetchOne(
+                db,
+                sql: "SELECT availability FROM asset WHERE id = ?",
+                arguments: [assetID.uuidString.lowercased()]
+            )
+        }
+        XCTAssertEqual(availability, AssetAvailability.recycled.rawValue)
+    }
+
+    func testObservedFileDoesNotOverwriteRecycledAvailability() throws {
+        let database = try CatalogDatabase.open(at: makeTempDatabaseURL())
+        let queue = FolderReconcileTestSupport.makeQueue(database: database)
+        let repository = GRDBFolderReconcileRepository(queue: queue)
+        let sourceID = UUID()
+        let assetID = UUID()
+        try FolderReconcileTestSupport.seedActiveFolderSource(
+            database: database,
+            sourceID: sourceID,
+            bookmark: Data("bookmark".utf8)
+        )
+        try CatalogRepository(database: database).insertAsset(
+            NewAssetInput(
+                assetID: assetID,
+                sourceID: sourceID,
+                locatorKind: .file,
+                relativePath: "recycled.jpg",
+                photosLocalIdentifier: nil,
+                mediaType: UTType.jpeg.identifier,
+                timestampMs: FolderReconcileTestSupport.baseTimeMs
+            )
+        )
+        try database.pool.write { db in
+            try db.execute(
+                sql: "UPDATE asset SET availability = 'recycled' WHERE id = ?",
+                arguments: [assetID.uuidString.lowercased()]
+            )
+        }
+        _ = try FolderReconcileTestSupport.enqueueReconcileJob(queue: queue, sourceID: sourceID)
+        let lease = try XCTUnwrap(
+            try queue.claimNext(ClaimNextInput(owner: "recycle-observed", leaseDurationMs: 1_000))
+        )
+        let begin = try repository.beginGeneration(
+            FolderReconcileTestSupport.beginGenerationInput(
+                lease: lease,
+                sourceID: sourceID,
+                leaseDurationMs: 1_000
+            )
+        )
+
+        _ = try repository.commitAssetBatch(
+            FolderAssetBatchInput(
+                lease: lease,
+                sourceID: sourceID,
+                generation: begin.generation,
+                startedDirtyEpoch: begin.startedDirtyEpoch,
+                checkpoint: begin.checkpoint,
+                observations: [
+                    FolderReconcileAssetObservation(
+                        relativePath: "recycled.jpg",
+                        fileName: "recycled.jpg",
+                        mediaType: UTType.jpeg.identifier,
+                        width: 2,
+                        height: 1,
+                        mediaCreatedAtMs: nil,
+                        availability: .available,
+                        sizeBytes: 100,
+                        modifiedAtNs: 1,
+                        resourceID: nil,
+                        movePathProbe: nil
+                    ),
+                ],
+                leaseDurationMs: 1_000,
+                outcome: .continue
+            )
+        )
+
+        let availability = try database.pool.read { db in
+            try String.fetchOne(
+                db,
+                sql: "SELECT availability FROM asset WHERE id = ?",
+                arguments: [assetID.uuidString.lowercased()]
+            )
+        }
+        XCTAssertEqual(availability, AssetAvailability.recycled.rawValue)
+    }
+
     func testBeginFailureRollsBackGenerationIncrement() throws {
         let url = try makeTempDatabaseURL()
         let database = try CatalogDatabase.open(at: url)

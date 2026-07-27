@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import GRDB
 import XCTest
@@ -18,6 +19,192 @@ final class LibrarySlimmingRecycleTests: XCTestCase {
             RecycleCountdownFormatter.text(purgeAfterMs: now - 1, nowMs: now),
             "即将永久删除"
         )
+    }
+
+    func testMutationAccessRejectsReadOnlyBookmarkUntilUserGrantsWriteAccess() throws {
+        let env = try RecycleTestEnv(label: #function)
+        defer { env.cleanup() }
+        _ = try env.seedAsset(relativePath: "album/read-only.jpg", contents: Data("readonly".utf8))
+        let bookmarks = RecordingMutationBookmarkPort(resolvedURL: env.sourceRoot)
+        let access = FolderMutationAccessService(
+            database: env.database,
+            bookmarkPort: bookmarks
+        )
+
+        XCTAssertThrowsError(
+            try access.withWritableSourceRoot(sourceID: env.sourceID) { _ in () }
+        ) { error in
+            XCTAssertEqual(
+                error as? LibrarySlimmingRecycleError,
+                .mutationAuthorizationRequired
+            )
+        }
+        XCTAssertEqual(bookmarks.resolveCount, 0)
+    }
+
+    func testMutationAccessRejectsWritableBookmarkForDisabledSource() throws {
+        let env = try RecycleTestEnv(label: #function)
+        defer { env.cleanup() }
+        _ = try env.seedAsset(
+            relativePath: "album/disabled.jpg",
+            contents: Data("disabled".utf8)
+        )
+        try env.database.pool.write { db in
+            try db.execute(
+                sql: """
+                INSERT INTO source_mutation_authorization (
+                    source_id, bookmark, updated_at_ms
+                ) VALUES (?, ?, ?)
+                """,
+                arguments: [
+                    env.sourceID.uuidString.lowercased(),
+                    Data("writable".utf8),
+                    FolderReconcileTestSupport.baseTimeMs,
+                ]
+            )
+            try db.execute(
+                sql: """
+                UPDATE source
+                SET state = 'disabled'
+                WHERE id = ?
+                """,
+                arguments: [env.sourceID.uuidString.lowercased()]
+            )
+        }
+        let bookmarks = RecordingMutationBookmarkPort(resolvedURL: env.sourceRoot)
+        let access = FolderMutationAccessService(
+            database: env.database,
+            bookmarkPort: bookmarks
+        )
+
+        XCTAssertThrowsError(
+            try access.withWritableSourceRoot(sourceID: env.sourceID) { _ in () }
+        ) { error in
+            XCTAssertEqual(error as? LibrarySlimmingRecycleError, .invalidState)
+        }
+        XCTAssertEqual(bookmarks.resolveCount, 0)
+    }
+
+    func testMutationAccessTreatsUnresolvableWriteBookmarkAsAuthorizationRequired() throws {
+        let env = try RecycleTestEnv(label: #function)
+        defer { env.cleanup() }
+        _ = try env.seedAsset(
+            relativePath: "album/stale.jpg",
+            contents: Data("stale".utf8)
+        )
+        try env.database.pool.write { db in
+            try db.execute(
+                sql: """
+                INSERT INTO source_mutation_authorization (
+                    source_id, bookmark, updated_at_ms
+                ) VALUES (?, ?, ?)
+                """,
+                arguments: [
+                    env.sourceID.uuidString.lowercased(),
+                    Data("stale-writable".utf8),
+                    FolderReconcileTestSupport.baseTimeMs,
+                ]
+            )
+        }
+        let access = FolderMutationAccessService(
+            database: env.database,
+            bookmarkPort: FailingMutationBookmarkPort()
+        )
+
+        XCTAssertThrowsError(
+            try access.withWritableSourceRoot(sourceID: env.sourceID) { _ in () }
+        ) { error in
+            XCTAssertEqual(
+                error as? LibrarySlimmingRecycleError,
+                .mutationAuthorizationRequired
+            )
+        }
+    }
+
+    @MainActor
+    func testMutationAuthorizationPersistsWritableBookmarkForSameSourceRoot() async throws {
+        let env = try RecycleTestEnv(label: #function)
+        defer { env.cleanup() }
+        _ = try env.seedAsset(relativePath: "album/authorize.jpg", contents: Data("authorize".utf8))
+        let picker = FolderAuthorizationTestSupport.FakeDirectoryPicker()
+        picker.configuredResponses = [env.sourceRoot]
+        let writableBookmark = Data("writable-bookmark".utf8)
+        let bookmarks = RecordingMutationBookmarkPort(
+            resolvedURL: env.sourceRoot,
+            writableBookmark: writableBookmark
+        )
+        let authorization = FolderMutationAuthorizationCoordinator(
+            database: env.database,
+            picker: picker,
+            bookmarkPort: bookmarks,
+            rootValidator: FolderRootValidator(),
+            relationshipChecker: FoundationFolderRootRelationshipChecker(),
+            clock: FixedJobClock(nowMs: FolderReconcileTestSupport.baseTimeMs)
+        )
+        let sourceID = env.sourceID
+        let database = env.database
+
+        let outcome = try await authorization.authorizeMutation(sourceID: sourceID)
+
+        XCTAssertEqual(outcome, .authorized(sourceID: sourceID))
+        let stored: Data? = try await database.pool.read { db in
+            try Data.fetchOne(
+                db,
+                sql: """
+                SELECT bookmark
+                FROM source_mutation_authorization
+                WHERE source_id = ?
+                """,
+                arguments: [sourceID.uuidString.lowercased()]
+            )
+        }
+        XCTAssertEqual(stored, writableBookmark)
+        XCTAssertEqual(bookmarks.writableCreationCount, 1)
+    }
+
+    @MainActor
+    func testMutationAuthorizationRejectsDifferentFolderWithoutPersistingBookmark() async throws {
+        let env = try RecycleTestEnv(label: #function)
+        defer { env.cleanup() }
+        _ = try env.seedAsset(
+            relativePath: "album/reject-mismatch.jpg",
+            contents: Data("mismatch".utf8)
+        )
+        let otherRoot = env.root.appendingPathComponent("Other", isDirectory: true)
+        try FileManager.default.createDirectory(at: otherRoot, withIntermediateDirectories: true)
+        let picker = FolderAuthorizationTestSupport.FakeDirectoryPicker()
+        picker.configuredResponses = [otherRoot]
+        let bookmarks = RecordingMutationBookmarkPort(resolvedURL: env.sourceRoot)
+        let authorization = FolderMutationAuthorizationCoordinator(
+            database: env.database,
+            picker: picker,
+            bookmarkPort: bookmarks,
+            rootValidator: FolderRootValidator(),
+            relationshipChecker: FoundationFolderRootRelationshipChecker(),
+            clock: FixedJobClock(nowMs: FolderReconcileTestSupport.baseTimeMs)
+        )
+        let sourceID = env.sourceID
+        let database = env.database
+
+        do {
+            _ = try await authorization.authorizeMutation(sourceID: sourceID)
+            XCTFail("different folder must not receive mutation authorization")
+        } catch {
+            XCTAssertEqual(error as? FolderAuthorizationError, .identityMismatch)
+        }
+        let stored: Data? = try await database.pool.read { db in
+            try Data.fetchOne(
+                db,
+                sql: """
+                SELECT bookmark
+                FROM source_mutation_authorization
+                WHERE source_id = ?
+                """,
+                arguments: [sourceID.uuidString.lowercased()]
+            )
+        }
+        XCTAssertNil(stored)
+        XCTAssertEqual(bookmarks.writableCreationCount, 0)
     }
 
     func testSameVolumeMoveRestoreAndPurge() throws {
@@ -89,6 +276,118 @@ final class LibrarySlimmingRecycleTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: quarantineURL.path))
     }
 
+    func testPurgeFailureKeepsAssetAndRecycleEntryTracked() throws {
+        let env = try RecycleTestEnv(label: #function)
+        defer { env.cleanup() }
+        let seeded = try env.seedAsset(
+            relativePath: "purge/failure.jpg",
+            contents: Data("keep-tracked".utf8)
+        )
+        let service = env.makeRecycleService()
+        _ = try service.moveFolderAssetsToRecycle(assetIDs: [seeded.assetID])
+        let entry = try XCTUnwrap(try service.listRecycledEntries().first)
+        try env.database.pool.write { db in
+            try db.execute(
+                sql: "UPDATE recycle_entry SET quarantine_relative_path = '../unsafe' WHERE id = ?",
+                arguments: [entry.id.uuidString.lowercased()]
+            )
+        }
+
+        XCTAssertThrowsError(try service.purgeNow(entryID: entry.id)) { error in
+            XCTAssertEqual(error as? LibrarySlimmingRecycleError, .ioFailure)
+        }
+
+        XCTAssertEqual(try service.listRecycledEntries().map(\.id), [entry.id])
+        let assetCount = try env.database.pool.read { db in
+            try Int.fetchOne(
+                db,
+                sql: "SELECT COUNT(*) FROM asset WHERE id = ?",
+                arguments: [seeded.assetID.uuidString.lowercased()]
+            ) ?? 0
+        }
+        XCTAssertEqual(assetCount, 1)
+    }
+
+    func testSuccessfulPurgeRetainsOnlyScrubbedAuditTombstone() throws {
+        let env = try RecycleTestEnv(label: #function)
+        defer { env.cleanup() }
+        let seeded = try env.seedAsset(
+            relativePath: "purge/tombstone.jpg",
+            contents: Data("tombstone".utf8)
+        )
+        let service = env.makeRecycleService()
+        _ = try service.moveFolderAssetsToRecycle(assetIDs: [seeded.assetID])
+        let entry = try XCTUnwrap(try service.listRecycledEntries().first)
+
+        try service.purgeNow(entryID: entry.id)
+
+        let tombstone = try env.database.pool.read { db -> Row? in
+            try Row.fetchOne(
+                db,
+                sql: """
+                SELECT asset_id, state, quarantine_relative_path, original_relative_path
+                FROM recycle_entry WHERE id = ?
+                """,
+                arguments: [entry.id.uuidString.lowercased()]
+            )
+        }
+        let row = try XCTUnwrap(tombstone)
+        XCTAssertNil(row["asset_id"] as String?)
+        XCTAssertEqual(row["state"] as String, RecycleEntryState.purged.rawValue)
+        XCTAssertNil(row["quarantine_relative_path"] as String?)
+        XCTAssertNil(row["original_relative_path"] as String?)
+    }
+
+    func testPurgeRemovesTagDecisionsBeforeDeletingCatalogAsset() throws {
+        let env = try RecycleTestEnv(label: #function)
+        defer { env.cleanup() }
+        let seeded = try env.seedAsset(
+            relativePath: "purge/tagged.jpg",
+            contents: Data("tagged".utf8)
+        )
+        let tagID = UUID()
+        try env.database.pool.write { db in
+            try db.execute(
+                sql: """
+                INSERT INTO tag (
+                    id, name, normalized_name, state, created_at_ms, updated_at_ms, group_id
+                ) VALUES (?, 'Tagged', 'tagged', 'active', ?, ?, ?)
+                """,
+                arguments: [
+                    tagID.uuidString.lowercased(),
+                    FolderReconcileTestSupport.baseTimeMs,
+                    FolderReconcileTestSupport.baseTimeMs,
+                    TagGroupSeed.other.id.uuidString.lowercased(),
+                ]
+            )
+            try db.execute(
+                sql: """
+                INSERT INTO asset_tag_decision (asset_id, tag_id, decision, updated_at_ms)
+                VALUES (?, ?, 'accepted', ?)
+                """,
+                arguments: [
+                    seeded.assetID.uuidString.lowercased(),
+                    tagID.uuidString.lowercased(),
+                    FolderReconcileTestSupport.baseTimeMs,
+                ]
+            )
+        }
+        let service = env.makeRecycleService()
+        _ = try service.moveFolderAssetsToRecycle(assetIDs: [seeded.assetID])
+        let entry = try XCTUnwrap(try service.listRecycledEntries().first)
+
+        try service.purgeNow(entryID: entry.id)
+
+        let decisionCount = try env.database.pool.read { db in
+            try Int.fetchOne(
+                db,
+                sql: "SELECT COUNT(*) FROM asset_tag_decision WHERE asset_id = ?",
+                arguments: [seeded.assetID.uuidString.lowercased()]
+            ) ?? 0
+        }
+        XCTAssertEqual(decisionCount, 0)
+    }
+
     func testCrossVolumeCopyPathViaForceFlag() throws {
         let env = try RecycleTestEnv(label: #function)
         defer { env.cleanup() }
@@ -103,6 +402,226 @@ final class LibrarySlimmingRecycleTests: XCTestCase {
         let entry = try XCTUnwrap(try service.listRecycledEntries().first)
         let quarantineURL = env.quarantineRoot.appendingPathComponent(entry.quarantineRelativePath!)
         XCTAssertEqual(try Data(contentsOf: quarantineURL), bytes)
+    }
+
+    func testRecycleFailsClosedWhenFileChangedAfterCatalogScan() throws {
+        let env = try RecycleTestEnv(label: #function)
+        defer { env.cleanup() }
+        let original = Data("catalog-version".utf8)
+        let replacement = Data("replacement-version".utf8)
+        let seeded = try env.seedAsset(
+            relativePath: "identity/changed.jpg",
+            contents: original
+        )
+        try replacement.write(to: seeded.fileURL)
+        let service = env.makeRecycleService()
+
+        let outcome = try service.moveFolderAssetsToRecycle(assetIDs: [seeded.assetID])
+
+        XCTAssertEqual(outcome.failedAssetIDs, [seeded.assetID])
+        XCTAssertTrue(outcome.recycledEntryIDs.isEmpty)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: seeded.fileURL.path))
+        XCTAssertEqual(try Data(contentsOf: seeded.fileURL), replacement)
+        XCTAssertTrue(try service.listRecycledEntries().isEmpty)
+    }
+
+    func testRecycleFailsClosedWhenFileIdentityChangesEvenIfBytesMatch() throws {
+        let env = try RecycleTestEnv(label: #function)
+        defer { env.cleanup() }
+        let bytes = Data("same-bytes-new-file".utf8)
+        let seeded = try env.seedAsset(
+            relativePath: "identity/replaced.jpg",
+            contents: bytes
+        )
+        let replacementURL = seeded.fileURL
+            .deletingLastPathComponent()
+            .appendingPathComponent("replacement.tmp")
+        try bytes.write(to: replacementURL)
+        try FileManager.default.removeItem(at: seeded.fileURL)
+        try FileManager.default.moveItem(at: replacementURL, to: seeded.fileURL)
+        let service = env.makeRecycleService()
+
+        let outcome = try service.moveFolderAssetsToRecycle(assetIDs: [seeded.assetID])
+
+        XCTAssertEqual(outcome.failedAssetIDs, [seeded.assetID])
+        XCTAssertTrue(outcome.recycledEntryIDs.isEmpty)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: seeded.fileURL.path))
+        XCTAssertEqual(try Data(contentsOf: seeded.fileURL), bytes)
+        XCTAssertTrue(try service.listRecycledEntries().isEmpty)
+    }
+
+    func testFailedMutationAuthorizationCanBeRetriedAfterGrant() throws {
+        let env = try RecycleTestEnv(label: #function)
+        defer { env.cleanup() }
+        let seeded = try env.seedAsset(
+            relativePath: "retry/authorization.jpg",
+            contents: Data("retry".utf8)
+        )
+        let denied = env.makeRecycleService(
+            mutationAccess: DirectFolderMutationAccess(rootsBySourceID: [:])
+        )
+        let first = try denied.moveFolderAssetsToRecycle(assetIDs: [seeded.assetID])
+        XCTAssertEqual(first.failedAssetIDs, [seeded.assetID])
+        XCTAssertEqual(first.authorizationRequiredSourceIDs, [env.sourceID])
+
+        let granted = env.makeRecycleService()
+        let second = try granted.moveFolderAssetsToRecycle(assetIDs: [seeded.assetID])
+
+        XCTAssertEqual(second.recycledEntryIDs.count, 1)
+        XCTAssertTrue(second.failedAssetIDs.isEmpty)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: seeded.fileURL.path))
+        XCTAssertEqual(try granted.listRecycledEntries().count, 1)
+    }
+
+    func testRecoveryFinalizesMoveInterruptedAfterFilesystemSuccess() throws {
+        let env = try RecycleTestEnv(label: #function)
+        defer { env.cleanup() }
+        let seeded = try env.seedAsset(
+            relativePath: "recovery/pending.jpg",
+            contents: Data("pending-recovery".utf8)
+        )
+        let service = env.makeRecycleService()
+        _ = try service.moveFolderAssetsToRecycle(assetIDs: [seeded.assetID])
+        let entry = try XCTUnwrap(try service.listRecycledEntries().first)
+        try env.database.pool.write { db in
+            try db.execute(
+                sql: "UPDATE recycle_entry SET state = 'pending' WHERE id = ?",
+                arguments: [entry.id.uuidString.lowercased()]
+            )
+            try db.execute(
+                sql: "UPDATE asset SET availability = 'available' WHERE id = ?",
+                arguments: [seeded.assetID.uuidString.lowercased()]
+            )
+        }
+
+        let recovered = try service.recoverInterruptedOperations()
+
+        XCTAssertEqual(recovered, 1)
+        XCTAssertEqual(try service.listRecycledEntries().map(\.id), [entry.id])
+        let availability = try env.database.pool.read { db in
+            try String.fetchOne(
+                db,
+                sql: "SELECT availability FROM asset WHERE id = ?",
+                arguments: [seeded.assetID.uuidString.lowercased()]
+            )
+        }
+        XCTAssertEqual(availability, AssetAvailability.recycled.rawValue)
+    }
+
+    func testRecoveryTreatsMissingOriginalParentDirectoryAsMissingObject() throws {
+        let env = try RecycleTestEnv(label: #function)
+        defer { env.cleanup() }
+        let seeded = try env.seedAsset(
+            relativePath: "recovery/removed-parent/pending.jpg",
+            contents: Data("missing-parent".utf8)
+        )
+        let service = env.makeRecycleService()
+        _ = try service.moveFolderAssetsToRecycle(assetIDs: [seeded.assetID])
+        let entry = try XCTUnwrap(try service.listRecycledEntries().first)
+        try FileManager.default.removeItem(at: seeded.fileURL.deletingLastPathComponent())
+        try env.database.pool.write { db in
+            try db.execute(
+                sql: "UPDATE recycle_entry SET state = 'pending' WHERE id = ?",
+                arguments: [entry.id.uuidString.lowercased()]
+            )
+            try db.execute(
+                sql: "UPDATE asset SET availability = 'available' WHERE id = ?",
+                arguments: [seeded.assetID.uuidString.lowercased()]
+            )
+        }
+
+        let recovered = try service.recoverInterruptedOperations()
+
+        XCTAssertEqual(recovered, 1)
+        XCTAssertEqual(try service.listRecycledEntries().map(\.id), [entry.id])
+    }
+
+    func testRecoveryFinalizesRestoreInterruptedAfterFilesystemSuccess() throws {
+        let env = try RecycleTestEnv(label: #function)
+        defer { env.cleanup() }
+        let bytes = Data("restore-recovery".utf8)
+        let seeded = try env.seedAsset(
+            relativePath: "recovery/restoring.jpg",
+            contents: bytes
+        )
+        let service = env.makeRecycleService()
+        _ = try service.moveFolderAssetsToRecycle(assetIDs: [seeded.assetID])
+        let entry = try XCTUnwrap(try service.listRecycledEntries().first)
+        try env.database.pool.write { db in
+            try db.execute(
+                sql: "UPDATE recycle_entry SET state = 'restoring' WHERE id = ?",
+                arguments: [entry.id.uuidString.lowercased()]
+            )
+        }
+        try FolderQuarantineIO().moveOutOfQuarantine(
+            quarantineRootURL: env.quarantineRoot,
+            quarantineRelativePath: try XCTUnwrap(entry.quarantineRelativePath),
+            sourceRootURL: env.sourceRoot,
+            originalRelativePath: entry.originalRelativePath
+        )
+
+        let recovered = try service.recoverInterruptedOperations()
+
+        XCTAssertEqual(recovered, 1)
+        XCTAssertTrue(try service.listRecycledEntries().isEmpty)
+        XCTAssertEqual(try Data(contentsOf: seeded.fileURL), bytes)
+        let availability = try env.database.pool.read { db in
+            try String.fetchOne(
+                db,
+                sql: "SELECT availability FROM asset WHERE id = ?",
+                arguments: [seeded.assetID.uuidString.lowercased()]
+            )
+        }
+        XCTAssertEqual(availability, AssetAvailability.available.rawValue)
+    }
+
+    func testRecoveryFinalizesPurgeInterruptedAfterFilesystemSuccess() throws {
+        let env = try RecycleTestEnv(label: #function)
+        defer { env.cleanup() }
+        let seeded = try env.seedAsset(
+            relativePath: "recovery/purging.jpg",
+            contents: Data("purge-recovery".utf8)
+        )
+        let service = env.makeRecycleService()
+        _ = try service.moveFolderAssetsToRecycle(assetIDs: [seeded.assetID])
+        let entry = try XCTUnwrap(try service.listRecycledEntries().first)
+        try env.database.pool.write { db in
+            try db.execute(
+                sql: "UPDATE recycle_entry SET state = 'purging' WHERE id = ?",
+                arguments: [entry.id.uuidString.lowercased()]
+            )
+        }
+        try FolderQuarantineIO().deleteQuarantineObject(
+            quarantineRootURL: env.quarantineRoot,
+            quarantineRelativePath: try XCTUnwrap(entry.quarantineRelativePath)
+        )
+
+        let recovered = try service.recoverInterruptedOperations()
+
+        XCTAssertEqual(recovered, 1)
+        let tombstone = try env.database.pool.read { db in
+            try Row.fetchOne(
+                db,
+                sql: """
+                SELECT asset_id, state, quarantine_relative_path, original_relative_path
+                FROM recycle_entry WHERE id = ?
+                """,
+                arguments: [entry.id.uuidString.lowercased()]
+            )
+        }
+        let row = try XCTUnwrap(tombstone)
+        XCTAssertNil(row["asset_id"] as String?)
+        XCTAssertEqual(row["state"] as String, RecycleEntryState.purged.rawValue)
+        XCTAssertNil(row["quarantine_relative_path"] as String?)
+        XCTAssertNil(row["original_relative_path"] as String?)
+        let assetCount = try env.database.pool.read { db in
+            try Int.fetchOne(
+                db,
+                sql: "SELECT COUNT(*) FROM asset WHERE id = ?",
+                arguments: [seeded.assetID.uuidString.lowercased()]
+            ) ?? 0
+        }
+        XCTAssertEqual(assetCount, 0)
     }
 
     func testPhotosAssetIsSkipped() throws {
@@ -139,6 +658,80 @@ final class LibrarySlimmingRecycleTests: XCTestCase {
         XCTAssertEqual(purged, 1)
         XCTAssertTrue(try service.listRecycledEntries().isEmpty)
     }
+
+    func testPurgeJobIsScheduledForEarliestRecycleExpiry() throws {
+        let env = try RecycleTestEnv(label: #function)
+        defer { env.cleanup() }
+        let clock = FixedJobClock(nowMs: FolderReconcileTestSupport.baseTimeMs)
+        let queue = GRDBJobQueue(
+            database: env.database,
+            clock: clock,
+            retryPolicy: FixedDelayRetryPolicy(delayMs: 1_000)
+        )
+        let seeded = try env.seedAsset(
+            relativePath: "schedule/expiry.jpg",
+            contents: Data("scheduled".utf8)
+        )
+        let service = env.makeRecycleService(clock: clock, jobQueue: queue)
+        _ = try service.moveFolderAssetsToRecycle(assetIDs: [seeded.assetID])
+        let entry = try XCTUnwrap(try service.listRecycledEntries().first)
+
+        try service.enqueuePurgeExpired()
+
+        let scheduledAt = try env.database.pool.read { db in
+            try Int64.fetchOne(
+                db,
+                sql: "SELECT not_before_ms FROM job WHERE kind = ?",
+                arguments: [LibrarySlimmingPurgeJobFactory.kind]
+            )
+        }
+        XCTAssertEqual(scheduledAt, entry.purgeAfterMs)
+    }
+}
+
+private final class RecordingMutationBookmarkPort: SecurityScopedBookmarkPort, @unchecked Sendable {
+    let resolvedURL: URL
+    let writableBookmark: Data
+    private(set) var resolveCount = 0
+    private(set) var writableCreationCount = 0
+
+    init(
+        resolvedURL: URL,
+        writableBookmark: Data = Data("writable".utf8)
+    ) {
+        self.resolvedURL = resolvedURL
+        self.writableBookmark = writableBookmark
+    }
+
+    func createReadOnlyBookmark(for url: URL) throws -> Data {
+        Data(url.path.utf8)
+    }
+
+    func createWritableBookmark(for url: URL) throws -> Data {
+        writableCreationCount += 1
+        return writableBookmark
+    }
+
+    func resolveBookmark(_ bookmark: Data) throws -> BookmarkResolveResult {
+        resolveCount += 1
+        return BookmarkResolveResult(url: resolvedURL, isStale: false)
+    }
+
+    func startAccessing(_ url: URL) -> Bool { true }
+    func stopAccessing(_ url: URL) {}
+}
+
+private struct FailingMutationBookmarkPort: SecurityScopedBookmarkPort {
+    func createReadOnlyBookmark(for url: URL) throws -> Data {
+        Data(url.path.utf8)
+    }
+
+    func resolveBookmark(_ bookmark: Data) throws -> BookmarkResolveResult {
+        throw FolderAuthorizationError.authorizationUnavailable
+    }
+
+    func startAccessing(_ url: URL) -> Bool { false }
+    func stopAccessing(_ url: URL) {}
 }
 
 private final class RecycleTestEnv {
@@ -171,13 +764,17 @@ private final class RecycleTestEnv {
     }
 
     func makeRecycleService(
-        clock: any JobClock = FixedJobClock(nowMs: FolderReconcileTestSupport.baseTimeMs)
+        clock: any JobClock = FixedJobClock(nowMs: FolderReconcileTestSupport.baseTimeMs),
+        mutationAccess: (any FolderMutationAccessing)? = nil,
+        jobQueue: (any JobQueue)? = nil
     ) -> LibrarySlimmingRecycleService {
         LibrarySlimmingRecycleService(
             database: database,
-            mutationAccess: DirectFolderMutationAccess(rootsBySourceID: [sourceID: sourceRoot]),
+            mutationAccess: mutationAccess
+                ?? DirectFolderMutationAccess(rootsBySourceID: [sourceID: sourceRoot]),
             quarantineRootURL: quarantineRoot,
-            clock: clock
+            clock: clock,
+            jobQueue: jobQueue
         )
     }
 
@@ -224,6 +821,26 @@ private final class RecycleTestEnv {
                     FolderReconcileTestSupport.baseTimeMs,
                     FolderReconcileTestSupport.baseTimeMs,
                     fileName,
+                ]
+            )
+            let resources = FoundationFolderFileResourceReader()
+            guard let sizeBytes = resources.fileSizeBytes(for: fileURL),
+                  let modifiedAtNs = resources.modifiedAtNs(for: fileURL)
+            else {
+                throw LibrarySlimmingRecycleError.ioFailure
+            }
+            try db.execute(
+                sql: """
+                INSERT INTO file_fingerprint (
+                    asset_id, size_bytes, modified_at_ns, resource_id, sha256
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                arguments: [
+                    assetID.uuidString.lowercased(),
+                    sizeBytes,
+                    modifiedAtNs,
+                    resources.resourceIdentifier(for: fileURL),
+                    Data(SHA256.hash(data: contents)),
                 ]
             )
         }

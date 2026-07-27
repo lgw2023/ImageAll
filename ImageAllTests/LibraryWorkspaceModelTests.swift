@@ -4010,6 +4010,142 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertEqual(model.librarySlimmingComparisonAssetIDs, members)
     }
 
+    func testLibrarySlimmingMoveRequestsWriteAuthorizationAndRetriesFailedAssets() async {
+        let sourceID = UUID()
+        let assetA = Self.makeAsset(sourceID: sourceID, fileName: "a.jpg")
+        let assetB = Self.makeAsset(sourceID: sourceID, fileName: "b.jpg")
+        let assetC = Self.makeAsset(sourceID: sourceID, fileName: "c.jpg")
+        let cluster = SlimmingCluster(
+            id: UUID(),
+            kind: .nearDuplicateScene,
+            memberAssetIDs: [assetA.assetID, assetB.assetID, assetC.assetID],
+            representativeAssetID: assetA.assetID,
+            score: 0.99,
+            modelIdentity: .featurePrintOnly
+        )
+        let scan = StubLibrarySlimmingScanPort()
+        scan.seedClusters = [cluster]
+        let recycleEntryID = UUID()
+        let recycle = FakeLibrarySlimmingRecyclePort(
+            moveOutcomes: [
+                LibrarySlimmingRecycleMoveOutcome(
+                    recycledEntryIDs: [],
+                    skippedPhotosAssetIDs: [],
+                    failedAssetIDs: [assetB.assetID, assetC.assetID],
+                    authorizationRequiredSourceIDs: [sourceID],
+                    authorizationRequiredAssetIDs: [assetB.assetID]
+                ),
+                LibrarySlimmingRecycleMoveOutcome(
+                    recycledEntryIDs: [recycleEntryID],
+                    skippedPhotosAssetIDs: [],
+                    failedAssetIDs: [],
+                    authorizationRequiredSourceIDs: [],
+                    authorizationRequiredAssetIDs: []
+                ),
+            ]
+        )
+        let mutationAuthorization = FakeFolderMutationAuthorizationPort()
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: sourceID,
+                displayName: "Fixture",
+                state: .active
+            ),
+            reconciledItems: [assetA, assetB, assetC],
+            initialItems: [assetA, assetB, assetC],
+            startsConnected: true,
+            hasPendingCatalogReconcileJobs: false
+        )
+        let model = LibraryWorkspaceModel(
+            service: service,
+            librarySlimming: scan,
+            librarySlimmingRecycle: recycle,
+            librarySlimmingMutationAuthorization: mutationAuthorization,
+            idlePrewarmInstallEventMonitor: false
+        )
+        await model.start()
+        await model.selectAssets([assetA.assetID], additive: false)
+        await model.findLibrarySlimmingFromSelection()
+        await model.analyzeLibrarySlimming(mode: .seeds)
+        model.selectLibrarySlimmingCluster(cluster.id)
+        model.selectLibrarySlimmingMember(assetB.assetID, additive: false)
+        model.selectLibrarySlimmingMember(assetC.assetID, additive: true)
+
+        await model.moveSelectedLibrarySlimmingMembersToRecycle()
+
+        XCTAssertEqual(Set(recycle.moveAssetIDCalls[0]), Set([assetB.assetID, assetC.assetID]))
+        XCTAssertEqual(recycle.moveAssetIDCalls[1], [assetB.assetID])
+        XCTAssertEqual(mutationAuthorization.authorizedSourceIDs, [sourceID])
+        XCTAssertEqual(model.librarySlimmingStatusMessage, "已移入回收站 1 张 · 失败 1 张")
+    }
+
+    func testLibrarySlimmingRestoreRequestsWriteAuthorizationAndRetries() async {
+        let sourceID = UUID()
+        let entryID = UUID()
+        let recycle = FakeLibrarySlimmingRecyclePort(
+            entries: [
+                RecycleEntryRecord(
+                    id: entryID,
+                    assetID: UUID(),
+                    sourceID: sourceID,
+                    sourceKind: .file,
+                    trashedAtMs: 1,
+                    purgeAfterMs: 2,
+                    state: .recycled,
+                    quarantineRelativePath: "objects/entry.jpg",
+                    originalRelativePath: "entry.jpg",
+                    errorCode: nil,
+                    fileName: "entry.jpg"
+                ),
+            ],
+            restoreAuthorizationFailures: 1
+        )
+        let mutationAuthorization = FakeFolderMutationAuthorizationPort()
+        let model = LibraryWorkspaceModel(
+            service: FakeLibraryWorkspaceService(
+                connectedSource: LibrarySourceSummary(
+                    id: sourceID,
+                    displayName: "Fixture",
+                    state: .active
+                ),
+                reconciledItems: []
+            ),
+            librarySlimmingRecycle: recycle,
+            librarySlimmingMutationAuthorization: mutationAuthorization,
+            idlePrewarmInstallEventMonitor: false
+        )
+        await model.refreshLibrarySlimmingRecycleEntries()
+
+        await model.restoreLibrarySlimmingRecycleEntry(entryID)
+
+        XCTAssertEqual(recycle.restoreEntryIDCalls, [entryID, entryID])
+        XCTAssertEqual(mutationAuthorization.authorizedSourceIDs, [sourceID])
+        XCTAssertEqual(model.librarySlimmingStatusMessage, "已从回收站恢复")
+    }
+
+    func testApplicationDidBecomeActiveRecoversAndRunsRecycleMaintenance() async {
+        let recycle = FakeLibrarySlimmingRecyclePort()
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: UUID(),
+                displayName: "Fixture",
+                state: .active
+            ),
+            reconciledItems: []
+        )
+        let model = LibraryWorkspaceModel(
+            service: service,
+            librarySlimmingRecycle: recycle,
+            idlePrewarmInstallEventMonitor: false
+        )
+
+        await model.applicationDidBecomeActive()
+
+        XCTAssertEqual(recycle.recoverCallCount, 1)
+        XCTAssertEqual(recycle.enqueuePurgeCallCount, 2)
+        XCTAssertEqual(service.librarySlimmingJobRunCount, 1)
+    }
+
     func testPendingSeedAnalyzeCancelledWhenNavigationSuperseded() async {
         let sourceID = UUID()
         let assetA = Self.makeAsset(sourceID: sourceID, fileName: "a.jpg")
@@ -6884,7 +7020,7 @@ final class LibraryWorkspaceModelTests: XCTestCase {
                 title: "更新快速个人模型",
                 shortTitle: "快速个人模型",
                 technicalName: "质心模型",
-                detail: "快速汇总你确认过的标签样本，适合日常更新。",
+                detail: "为每个选中标签单独训练一个快速个人模型；互不影响，可单独回滚。",
                 requirement: "每个标签至少 2 个已确认样本",
                 systemImage: "brain.head.profile"
             )
@@ -6896,7 +7032,7 @@ final class LibraryWorkspaceModelTests: XCTestCase {
                 title: "训练增强个人模型",
                 shortTitle: "增强个人模型",
                 technicalName: "AdamW 线性模型",
-                detail: "进行更充分的本机训练，适合样本较多时获得更细致的个人结果。",
+                detail: "为每个选中标签单独做更充分的本机训练；标签之间互不影响。",
                 requirement: "每个标签至少 2 个已确认样本",
                 systemImage: "brain.head.profile.fill"
             )
@@ -7865,6 +8001,100 @@ private final class StubLibrarySlimmingScanPort: LibrarySlimmingScanPort, @unche
     }
 }
 
+private final class FakeLibrarySlimmingRecyclePort: LibrarySlimmingRecyclePort, @unchecked Sendable {
+    private let lock = NSLock()
+    private var storedMoveOutcomes: [LibrarySlimmingRecycleMoveOutcome]
+    private var storedEntries: [RecycleEntryRecord]
+    private var remainingRestoreAuthorizationFailures: Int
+    private var storedMoveAssetIDCalls: [[UUID]] = []
+    private var storedRestoreEntryIDCalls: [UUID] = []
+    private var storedRecoverCallCount = 0
+    private var storedEnqueuePurgeCallCount = 0
+
+    init(
+        moveOutcomes: [LibrarySlimmingRecycleMoveOutcome] = [],
+        entries: [RecycleEntryRecord] = [],
+        restoreAuthorizationFailures: Int = 0
+    ) {
+        storedMoveOutcomes = moveOutcomes
+        storedEntries = entries
+        remainingRestoreAuthorizationFailures = restoreAuthorizationFailures
+    }
+
+    var moveAssetIDCalls: [[UUID]] {
+        lock.withLock { storedMoveAssetIDCalls }
+    }
+
+    var restoreEntryIDCalls: [UUID] {
+        lock.withLock { storedRestoreEntryIDCalls }
+    }
+
+    var recoverCallCount: Int {
+        lock.withLock { storedRecoverCallCount }
+    }
+
+    var enqueuePurgeCallCount: Int {
+        lock.withLock { storedEnqueuePurgeCallCount }
+    }
+
+    func moveFolderAssetsToRecycle(
+        assetIDs: [UUID]
+    ) throws -> LibrarySlimmingRecycleMoveOutcome {
+        lock.withLock {
+            storedMoveAssetIDCalls.append(assetIDs)
+            guard !storedMoveOutcomes.isEmpty else {
+                return LibrarySlimmingRecycleMoveOutcome(
+                    recycledEntryIDs: [],
+                    skippedPhotosAssetIDs: [],
+                    failedAssetIDs: [],
+                    authorizationRequiredSourceIDs: [],
+                    authorizationRequiredAssetIDs: []
+                )
+            }
+            return storedMoveOutcomes.removeFirst()
+        }
+    }
+
+    func listRecycledEntries() throws -> [RecycleEntryRecord] {
+        lock.withLock { storedEntries }
+    }
+
+    func restore(entryID: UUID) throws {
+        try lock.withLock {
+            storedRestoreEntryIDCalls.append(entryID)
+            if remainingRestoreAuthorizationFailures > 0 {
+                remainingRestoreAuthorizationFailures -= 1
+                throw LibrarySlimmingRecycleError.mutationAuthorizationRequired
+            }
+        }
+    }
+
+    func purgeNow(entryID _: UUID) throws {}
+
+    func purgeExpired(nowMs _: Int64) throws -> Int { 0 }
+
+    func enqueuePurgeExpired() throws {
+        lock.withLock { storedEnqueuePurgeCallCount += 1 }
+    }
+
+    func recoverInterruptedOperations() throws -> Int {
+        lock.withLock {
+            storedRecoverCallCount += 1
+            return 0
+        }
+    }
+}
+
+@MainActor
+private final class FakeFolderMutationAuthorizationPort: FolderMutationAuthorizationPort {
+    private(set) var authorizedSourceIDs: [UUID] = []
+
+    func authorizeMutation(sourceID: UUID) async throws -> FolderMutationAuthorizationOutcome {
+        authorizedSourceIDs.append(sourceID)
+        return .authorized(sourceID: sourceID)
+    }
+}
+
 final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecked Sendable {
     private let lock = NSLock()
     private let connectedSource: LibrarySourceSummary
@@ -7872,6 +8102,7 @@ final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecked Sendab
     private var storedSources: [LibrarySourceSummary] = []
     private var storedItems: [AssetGridItemProjection] = []
     private var storedReconcileRunCount = 0
+    private var storedLibrarySlimmingJobRunCount = 0
     private var storedPhotosConnectCallCount = 0
     private var storedPhotosSyncCallCount = 0
     private var storedPhotosFullRepairCallCount = 0
@@ -8101,6 +8332,10 @@ final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecked Sendab
 
     var photosSyncCallCount: Int {
         lock.withLock { storedPhotosSyncCallCount }
+    }
+
+    var librarySlimmingJobRunCount: Int {
+        lock.withLock { storedLibrarySlimmingJobRunCount }
     }
 
     var photosFullRepairCallCount: Int {
@@ -8519,6 +8754,10 @@ final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecked Sendab
             storedItems = reconciledItems
             storedHasPendingCatalogReconcileJobs = false
         }
+    }
+
+    func runPendingLibrarySlimmingJobs() throws {
+        lock.withLock { storedLibrarySlimmingJobRunCount += 1 }
     }
 
     func runPendingPersonalizationJobs() throws {}

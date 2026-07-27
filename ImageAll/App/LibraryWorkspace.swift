@@ -694,6 +694,7 @@ final class LibraryWorkspaceModel: ObservableObject {
     private let trainingWorkspace: (any TrainingWorkspacePort)?
     private let librarySlimming: (any LibrarySlimmingScanPort)?
     private let librarySlimmingRecycle: (any LibrarySlimmingRecyclePort)?
+    private let librarySlimmingMutationAuthorization: (any FolderMutationAuthorizationPort)?
     private let localModelSuggestions: LocalModelSuggestionRuntime?
     private let appPersonalModelRebuilder: (any AppPersonalModelRebuilding)?
     private let appPersonalAdamWModelRebuilder: (any AppPersonalModelRebuilding)?
@@ -745,6 +746,7 @@ final class LibraryWorkspaceModel: ObservableObject {
     private var selectedSourceID: UUID?
     private var nextCursor: AssetPageCursor?
     private var started = false
+    private var isLibrarySlimmingMaintenanceRunning = false
     private var isLoadingMore = false
     fileprivate var isLoadingMoreReviewQueue = false
     private let catalogProgressRefreshInterval: Duration
@@ -756,6 +758,7 @@ final class LibraryWorkspaceModel: ObservableObject {
         trainingWorkspace: (any TrainingWorkspacePort)? = nil,
         librarySlimming: (any LibrarySlimmingScanPort)? = nil,
         librarySlimmingRecycle: (any LibrarySlimmingRecyclePort)? = nil,
+        librarySlimmingMutationAuthorization: (any FolderMutationAuthorizationPort)? = nil,
         localModelSuggestions: LocalModelSuggestionRuntime? = nil,
         appPersonalModelRebuilder: (any AppPersonalModelRebuilding)? = nil,
         appPersonalAdamWModelRebuilder: (any AppPersonalModelRebuilding)? = nil,
@@ -785,6 +788,7 @@ final class LibraryWorkspaceModel: ObservableObject {
         self.trainingWorkspace = trainingWorkspace
         self.librarySlimming = librarySlimming
         self.librarySlimmingRecycle = librarySlimmingRecycle
+        self.librarySlimmingMutationAuthorization = librarySlimmingMutationAuthorization
         self.localModelSuggestions = localModelSuggestions
         self.appPersonalModelRebuilder = appPersonalModelRebuilder
         self.appPersonalAdamWModelRebuilder = appPersonalAdamWModelRebuilder
@@ -972,8 +976,39 @@ final class LibraryWorkspaceModel: ObservableObject {
         isMutatingLibrarySlimmingRecycle = true
         defer { isMutatingLibrarySlimmingRecycle = false }
         do {
-            let outcome = try await Self.offMain {
+            var outcome = try await Self.offMain {
                 try recycle.moveFolderAssetsToRecycle(assetIDs: assetIDs)
+            }
+            if !outcome.authorizationRequiredSourceIDs.isEmpty,
+               let mutationAuthorization = librarySlimmingMutationAuthorization
+            {
+                var authorizedAtLeastOneSource = false
+                for sourceID in outcome.authorizationRequiredSourceIDs {
+                    do {
+                        if case .authorized = try await mutationAuthorization.authorizeMutation(
+                            sourceID: sourceID
+                        ) {
+                            authorizedAtLeastOneSource = true
+                        }
+                    } catch {
+                        continue
+                    }
+                }
+                if authorizedAtLeastOneSource, !outcome.authorizationRequiredAssetIDs.isEmpty {
+                    let retryAssetIDs = outcome.authorizationRequiredAssetIDs
+                    let authorizationFailures = Set(retryAssetIDs)
+                    let otherFailedAssetIDs = outcome.failedAssetIDs.filter {
+                        !authorizationFailures.contains($0)
+                    }
+                    let retry = try await Self.offMain {
+                        try recycle.moveFolderAssetsToRecycle(assetIDs: retryAssetIDs)
+                    }
+                    outcome.recycledEntryIDs.append(contentsOf: retry.recycledEntryIDs)
+                    outcome.skippedPhotosAssetIDs.append(contentsOf: retry.skippedPhotosAssetIDs)
+                    outcome.failedAssetIDs = otherFailedAssetIDs + retry.failedAssetIDs
+                    outcome.authorizationRequiredSourceIDs = retry.authorizationRequiredSourceIDs
+                    outcome.authorizationRequiredAssetIDs = retry.authorizationRequiredAssetIDs
+                }
             }
             selectedLibrarySlimmingMemberIDs = []
             // Drop recycled members from in-memory clusters.
@@ -1025,6 +1060,7 @@ final class LibraryWorkspaceModel: ObservableObject {
 
     func restoreLibrarySlimmingRecycleEntry(_ entryID: UUID) async {
         guard let recycle = librarySlimmingRecycle else { return }
+        let entry = librarySlimmingRecycleEntries.first(where: { $0.id == entryID })
         isMutatingLibrarySlimmingRecycle = true
         defer { isMutatingLibrarySlimmingRecycle = false }
         do {
@@ -1033,6 +1069,30 @@ final class LibraryWorkspaceModel: ObservableObject {
             }
             librarySlimmingStatusMessage = "已从回收站恢复"
             await refreshLibrarySlimmingRecycleEntries()
+        } catch LibrarySlimmingRecycleError.mutationAuthorizationRequired {
+            guard let sourceID = entry?.sourceID,
+                  let mutationAuthorization = librarySlimmingMutationAuthorization
+            else {
+                librarySlimmingStatusMessage = "恢复失败：需要重新授权来源写入权限"
+                return
+            }
+            do {
+                guard case .authorized = try await mutationAuthorization.authorizeMutation(
+                    sourceID: sourceID
+                ) else {
+                    librarySlimmingStatusMessage = "已取消写入授权，照片仍保留在回收站"
+                    return
+                }
+                try await Self.offMain {
+                    try recycle.restore(entryID: entryID)
+                }
+                librarySlimmingStatusMessage = "已从回收站恢复"
+                await refreshLibrarySlimmingRecycleEntries()
+            } catch LibrarySlimmingRecycleError.restoreConflict {
+                librarySlimmingStatusMessage = "恢复失败：原路径已存在文件"
+            } catch {
+                librarySlimmingStatusMessage = "恢复失败：\(error.localizedDescription)"
+            }
         } catch LibrarySlimmingRecycleError.restoreConflict {
             librarySlimmingStatusMessage = "恢复失败：原路径已存在文件"
         } catch {
@@ -1721,6 +1781,7 @@ final class LibraryWorkspaceModel: ObservableObject {
             notice = .backgroundScanFailed
         }
         await reload(runPendingJobs: false)
+        await runLibrarySlimmingMaintenance()
         await purgeExcludedVideoAssetsIfNeeded()
         await restoreDefaultSourceAuthorizations()
         for source in sources where source.kind == .photos && source.state == .active {
@@ -1731,6 +1792,37 @@ final class LibraryWorkspaceModel: ObservableObject {
         }
         startPersonalizationRunnerIfNeeded()
         startIdleThumbnailPrewarmIfNeeded()
+    }
+
+    func applicationDidBecomeActive() async {
+        await runLibrarySlimmingMaintenance()
+    }
+
+    private func runLibrarySlimmingMaintenance() async {
+        guard let recycle = librarySlimmingRecycle,
+              !isLibrarySlimmingMaintenanceRunning
+        else {
+            return
+        }
+        isLibrarySlimmingMaintenanceRunning = true
+        defer { isLibrarySlimmingMaintenanceRunning = false }
+
+        _ = try? await Self.offMain(priority: .utility) {
+            try recycle.recoverInterruptedOperations()
+        }
+        _ = try? await Self.offMain(priority: .utility) {
+            try recycle.enqueuePurgeExpired()
+        }
+        let service = service
+        _ = try? await Self.offMain(priority: .utility) {
+            try service.runPendingLibrarySlimmingJobs()
+        }
+        _ = try? await Self.offMain(priority: .utility) {
+            try recycle.enqueuePurgeExpired()
+        }
+        if librarySlimmingWorkspaceTab == .recycleBin {
+            await refreshLibrarySlimmingRecycleEntries()
+        }
     }
 
     func setIdleThumbnailPrewarmEnabled(_ enabled: Bool) {

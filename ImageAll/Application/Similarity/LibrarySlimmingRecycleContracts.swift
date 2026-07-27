@@ -3,6 +3,8 @@ import Foundation
 enum RecycleEntryState: String, Sendable, Equatable {
     case pending
     case recycled
+    case restoring
+    case purging
     case restored
     case purged
     case failed
@@ -16,6 +18,7 @@ enum RecycleSourceKind: String, Sendable, Equatable {
 struct RecycleEntryRecord: Identifiable, Sendable, Equatable {
     let id: UUID
     let assetID: UUID
+    let sourceID: UUID
     let sourceKind: RecycleSourceKind
     let trashedAtMs: Int64
     let purgeAfterMs: Int64
@@ -58,6 +61,7 @@ enum LibrarySlimmingRecycleError: Error, Equatable, Sendable {
     case mutationAuthorizationRequired
     case restoreConflict
     case ioFailure
+    case sourceChanged
     case invalidState
 }
 
@@ -66,6 +70,7 @@ struct LibrarySlimmingRecycleMoveOutcome: Sendable, Equatable {
     var skippedPhotosAssetIDs: [UUID]
     var failedAssetIDs: [UUID]
     var authorizationRequiredSourceIDs: [UUID]
+    var authorizationRequiredAssetIDs: [UUID]
 }
 
 protocol LibrarySlimmingRecyclePort: Sendable {
@@ -75,4 +80,6 @@ protocol LibrarySlimmingRecyclePort: Sendable {
     func purgeNow(entryID: UUID) throws
     func purgeExpired(nowMs: Int64) throws -> Int
     func enqueuePurgeExpired() throws
+    @discardableResult
+    func recoverInterruptedOperations() throws -> Int
 }

@@ -96,6 +96,7 @@ enum CatalogSchemaExpectations {
         "prediction",
         "recycle_entry",
         "source",
+        "source_mutation_authorization",
         "standard_model_revision",
         "standard_prediction",
         "standard_tag_binding",
@@ -271,7 +272,11 @@ enum CatalogSchemaExpectations {
             .init(name: "state", type: "TEXT", notNull: true, defaultValue: "'active'", primaryKeyOrder: 0),
             .init(name: "created_at_ms", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
             .init(name: "updated_at_ms", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
-            .init(name: "mutation_bookmark", type: "BLOB", notNull: false, defaultValue: nil, primaryKeyOrder: 0),
+        ],
+        "source_mutation_authorization": [
+            .init(name: "source_id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 1),
+            .init(name: "bookmark", type: "BLOB", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "updated_at_ms", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
         ],
         "asset": [
             .init(name: "id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 1),
@@ -423,13 +428,13 @@ enum CatalogSchemaExpectations {
         ],
         "recycle_entry": [
             .init(name: "id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 1),
-            .init(name: "asset_id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "asset_id", type: "TEXT", notNull: false, defaultValue: nil, primaryKeyOrder: 0),
             .init(name: "source_kind", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
             .init(name: "trashed_at_ms", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
             .init(name: "purge_after_ms", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
             .init(name: "state", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
             .init(name: "quarantine_relative_path", type: "TEXT", notNull: false, defaultValue: nil, primaryKeyOrder: 0),
-            .init(name: "original_relative_path", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "original_relative_path", type: "TEXT", notNull: false, defaultValue: nil, primaryKeyOrder: 0),
             .init(name: "error_code", type: "TEXT", notNull: false, defaultValue: nil, primaryKeyOrder: 0),
             .init(name: "created_at_ms", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
             .init(name: "updated_at_ms", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
@@ -438,6 +443,9 @@ enum CatalogSchemaExpectations {
 
     static let foreignKeysByTable: [String: [ForeignKeyExpectation]] = [
         "source": [],
+        "source_mutation_authorization": [
+            .init(from: "source_id", toTable: "source", to: "id", onDelete: "CASCADE"),
+        ],
         "ontology_pack": [],
         "ontology_concept": [
             .init(from: "ontology_id", toTable: "ontology_pack", to: "ontology_id", onDelete: "RESTRICT"),
@@ -540,7 +548,7 @@ enum CatalogSchemaExpectations {
             .init(from: "model_revision", toTable: "tag_model_revision", to: "revision", onDelete: "CASCADE"),
         ],
         "recycle_entry": [
-            .init(from: "asset_id", toTable: "asset", to: "id", onDelete: "CASCADE"),
+            .init(from: "asset_id", toTable: "asset", to: "id", onDelete: "SET NULL"),
         ],
     ]
 
@@ -890,7 +898,7 @@ enum CatalogSchemaExpectations {
                 .init(name: "asset_id", descending: false, collation: "BINARY"),
             ],
             unique: true,
-            partialPredicateSQL: "state IN ('pending', 'recycled', 'failed')"
+            partialPredicateSQL: "state IN ('pending', 'recycled', 'restoring', 'purging')"
         ),
         .init(
             name: "recycle_entry_purge_due_idx",

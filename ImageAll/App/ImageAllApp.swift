@@ -2,6 +2,7 @@ import SwiftUI
 
 @main
 struct ImageAllApp: App {
+    @Environment(\.scenePhase) private var scenePhase
     @StateObject private var startupModel: CatalogStartupModel
     @StateObject private var modelSettingsModel: AppModelSettingsModel
     @StateObject private var idlePrewarmSettingsModel: IdleThumbnailPrewarmSettingsModel
@@ -43,6 +44,12 @@ struct ImageAllApp: App {
             }
             .onChange(of: idlePrewarmSettingsModel.isEnabled) { _, enabled in
                 startupModel.workspaceModel?.setIdleThumbnailPrewarmEnabled(enabled)
+            }
+            .onChange(of: scenePhase) { _, phase in
+                guard phase == .active else { return }
+                Task {
+                    await startupModel.workspaceModel?.applicationDidBecomeActive()
+                }
             }
         }
         Settings {

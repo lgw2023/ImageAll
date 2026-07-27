@@ -4,6 +4,7 @@ import GRDB
 
 enum ProductionLibraryWorkspaceError: Error {
     case reconcileFailed
+    case librarySlimmingMaintenanceFailed
 }
 
 struct ProductionLibraryWorkspaceService: LibraryWorkspacePort, RemoteCatalogServing, Sendable {
@@ -252,6 +253,19 @@ struct ProductionLibraryWorkspaceService: LibraryWorkspacePort, RemoteCatalogSer
         while let result = try executionCoordinator.claimAndExecuteOnce(claim) {
             guard result.snapshot.state == .completed else {
                 throw ProductionLibraryWorkspaceError.reconcileFailed
+            }
+        }
+    }
+
+    func runPendingLibrarySlimmingJobs() throws {
+        let claim = ClaimNextInput(
+            owner: "imageall-library-slimming-\(UUID().uuidString.lowercased())",
+            leaseDurationMs: 60_000,
+            allowedKinds: [LibrarySlimmingPurgeJobFactory.kind]
+        )
+        while let result = try executionCoordinator.claimAndExecuteOnce(claim) {
+            guard result.snapshot.state == .completed else {
+                throw ProductionLibraryWorkspaceError.librarySlimmingMaintenanceFailed
             }
         }
     }

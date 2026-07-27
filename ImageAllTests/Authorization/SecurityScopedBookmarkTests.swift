@@ -21,6 +21,10 @@ final class SecurityScopedBookmarkTests: XCTestCase {
         XCTAssertTrue(
             SecurityScopedBookmarkOptions.creationOptions.contains(.securityScopeAllowOnlyReadAccess)
         )
+        XCTAssertTrue(SecurityScopedBookmarkOptions.writableCreationOptions.contains(.withSecurityScope))
+        XCTAssertFalse(
+            SecurityScopedBookmarkOptions.writableCreationOptions.contains(.securityScopeAllowOnlyReadAccess)
+        )
         XCTAssertTrue(SecurityScopedBookmarkOptions.resolutionOptions.contains(.withSecurityScope))
         XCTAssertTrue(SecurityScopedBookmarkOptions.resolutionOptions.contains(.withoutUI))
         XCTAssertTrue(SecurityScopedBookmarkOptions.resolutionOptions.contains(.withoutMounting))

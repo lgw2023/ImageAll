@@ -28,6 +28,31 @@ final class AssetCatalogQueryTests: XCTestCase {
         XCTAssertFalse(page.items.contains { $0.assetID == fixture.ids.assetHistorical })
     }
 
+    func testRecycledAssetsAreHiddenByDefaultButRemainExplicitlyQueryable() throws {
+        let fixture = try CatalogQueryTestSupport.openQueryDatabase()
+        try fixture.database.pool.write { db in
+            try db.execute(
+                sql: "UPDATE asset SET availability = 'recycled' WHERE id = ?",
+                arguments: [fixture.ids.assetNewest.uuidString.lowercased()]
+            )
+        }
+
+        let defaultPage = try fixture.query.fetchAssetPage(
+            AssetPageRequest(filter: AssetPageFilter(), sort: .newest, cursor: nil, limit: 200)
+        )
+        XCTAssertFalse(defaultPage.items.contains { $0.assetID == fixture.ids.assetNewest })
+
+        let recyclePage = try fixture.query.fetchAssetPage(
+            AssetPageRequest(
+                filter: AssetPageFilter(availabilities: [.recycled]),
+                sort: .newest,
+                cursor: nil,
+                limit: 200
+            )
+        )
+        XCTAssertEqual(recyclePage.items.map(\.assetID), [fixture.ids.assetNewest])
+    }
+
     func testAllSourceStatesReturnCurrentAssets() throws {
         let fixture = try CatalogQueryTestSupport.openQueryDatabase()
         let page = try fixture.query.fetchAssetPage(

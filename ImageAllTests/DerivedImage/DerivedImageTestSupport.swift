@@ -1036,9 +1036,15 @@ enum DerivedImageTestSupport {
     }
 
     static func renderIncomingGridSmallArtifact() throws -> DerivedImageEncodedArtifact {
+        try renderIncomingArtifact(variant: .gridSmall)
+    }
+
+    static func renderIncomingArtifact(
+        variant: DerivedImageVariant
+    ) throws -> DerivedImageEncodedArtifact {
         try DerivedImageRenderer().render(
             sourceBytes: FolderReconcileTestSupport.minimalJPEGData(),
-            variant: .gridSmall
+            variant: variant
         )
     }
 

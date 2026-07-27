@@ -188,6 +188,7 @@ struct GRDBFolderReconcileRepository: FolderReconcileBatchPort, Sendable {
                     WHERE source_id = ?
                         AND locator_kind = 'file'
                         AND locator_state = 'current'
+                        AND availability != 'recycled'
                         AND (last_seen_generation IS NULL OR last_seen_generation < ?)
                     """,
                     arguments: [
@@ -561,6 +562,21 @@ struct GRDBFolderReconcileRepository: FolderReconcileBatchPort, Sendable {
         nowMs: Int64
     ) throws -> Int {
         switch resolveSamePathIdentity(existing: existing, observation: observation) {
+        case .preserveRecycled:
+            try db.execute(
+                sql: """
+                UPDATE asset SET
+                    last_seen_generation = ?,
+                    record_updated_at_ms = ?
+                WHERE id = ? AND availability = 'recycled'
+                """,
+                arguments: [
+                    generation,
+                    nowMs,
+                    existing.assetID.uuidString.lowercased(),
+                ]
+            )
+            return 0
         case let .retain(revision):
             try updateRetainedAsset(
                 db: db,
@@ -594,6 +610,7 @@ struct GRDBFolderReconcileRepository: FolderReconcileBatchPort, Sendable {
     }
 
     private enum SamePathResolution {
+        case preserveRecycled
         case retain(contentRevision: Int)
         case replace(newAssetID: UUID)
         case conflict
@@ -603,6 +620,9 @@ struct GRDBFolderReconcileRepository: FolderReconcileBatchPort, Sendable {
         existing: ExistingAssetRecord,
         observation: FolderReconcileAssetObservation
     ) -> SamePathResolution {
+        if existing.availability == AssetAvailability.recycled.rawValue {
+            return .preserveRecycled
+        }
         if existing.availability == AssetAvailability.missing.rawValue {
             return .replace(newAssetID: UUID())
         }

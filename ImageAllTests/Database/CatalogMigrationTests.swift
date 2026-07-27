@@ -38,6 +38,49 @@ final class CatalogMigrationTests: XCTestCase {
         XCTAssertEqual(count, 1)
     }
 
+    func testV020MovesWritableBookmarkOutOfSourceWithoutLosingAuthorization() throws {
+        let url = try makeTempDatabaseURL()
+        let sourceID = UUID()
+        let assetID = UUID()
+        let writableBookmark = Data("write-authorization".utf8)
+        let legacy = try CatalogDatabase.open(at: url)
+        try DatabaseTestSupport.makeFolderSourceWithFileAsset(
+            repository: CatalogRepository(database: legacy),
+            sourceID: sourceID,
+            assetID: assetID
+        )
+        try legacy.pool.write { db in
+            try db.execute(sql: "DROP TABLE source_mutation_authorization")
+            try db.execute(sql: "ALTER TABLE source ADD COLUMN mutation_bookmark BLOB")
+            try db.execute(
+                sql: "UPDATE source SET mutation_bookmark = ? WHERE id = ?",
+                arguments: [writableBookmark, sourceID.uuidString.lowercased()]
+            )
+            try db.execute(
+                sql: "DELETE FROM grdb_migrations WHERE identifier = ?",
+                arguments: [CatalogMigrationID.v020HardenLibrarySlimmingRecycle]
+            )
+        }
+        try legacy.pool.close()
+
+        let migrated = try CatalogDatabase.open(at: url)
+        try migrated.pool.read { db in
+            XCTAssertFalse(try db.columns(in: "source").contains { $0.name == "mutation_bookmark" })
+            XCTAssertEqual(
+                try Data.fetchOne(
+                    db,
+                    sql: """
+                    SELECT bookmark
+                    FROM source_mutation_authorization
+                    WHERE source_id = ?
+                    """,
+                    arguments: [sourceID.uuidString.lowercased()]
+                ),
+                writableBookmark
+            )
+        }
+    }
+
     func testV012RepairsMissingStandardTagBindingAndRestoresTagCreate() throws {
         let url = try makeTempDatabaseURL()
         let sourceID = UUID()
@@ -63,8 +106,9 @@ final class CatalogMigrationTests: XCTestCase {
             // recorded; clear the subsequent repair id so v012→v013 can re-apply.
             try db.execute(sql: "DROP TABLE IF EXISTS asset_similarity_fingerprint")
             try db.execute(sql: "DROP TABLE IF EXISTS recycle_entry")
+            try db.execute(sql: "DROP TABLE IF EXISTS source_mutation_authorization")
             try db.execute(
-                sql: "DELETE FROM grdb_migrations WHERE identifier IN (?, ?, ?, ?, ?, ?, ?, ?)",
+                sql: "DELETE FROM grdb_migrations WHERE identifier IN (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 arguments: [
                     CatalogMigrationID.v012RepairStandardTagBinding,
                     CatalogMigrationID.v013PhotosMissingAssetRepair,
@@ -74,6 +118,7 @@ final class CatalogMigrationTests: XCTestCase {
                     CatalogMigrationID.v017PerTagPersonalSuggestionModels,
                     CatalogMigrationID.v018AddAssetSimilarityFingerprint,
                     CatalogMigrationID.v019AddLibrarySlimmingRecycle,
+                    CatalogMigrationID.v020HardenLibrarySlimmingRecycle,
                 ]
             )
             try db.execute(sql: "PRAGMA foreign_keys = ON")
@@ -137,8 +182,9 @@ final class CatalogMigrationTests: XCTestCase {
             }
             try db.execute(sql: "DROP TABLE IF EXISTS asset_similarity_fingerprint")
             try db.execute(sql: "DROP TABLE IF EXISTS recycle_entry")
+            try db.execute(sql: "DROP TABLE IF EXISTS source_mutation_authorization")
             try db.execute(
-                sql: "DELETE FROM grdb_migrations WHERE identifier IN (?, ?, ?, ?, ?, ?, ?)",
+                sql: "DELETE FROM grdb_migrations WHERE identifier IN (?, ?, ?, ?, ?, ?, ?, ?)",
                 arguments: [
                     CatalogMigrationID.v013PhotosMissingAssetRepair,
                     CatalogMigrationID.v014AddTrainingRunsAndPersonalMultiSlot,
@@ -147,6 +193,7 @@ final class CatalogMigrationTests: XCTestCase {
                     CatalogMigrationID.v017PerTagPersonalSuggestionModels,
                     CatalogMigrationID.v018AddAssetSimilarityFingerprint,
                     CatalogMigrationID.v019AddLibrarySlimmingRecycle,
+                    CatalogMigrationID.v020HardenLibrarySlimmingRecycle,
                 ]
             )
             try db.execute(sql: "PRAGMA foreign_keys = ON")
@@ -177,13 +224,15 @@ final class CatalogMigrationTests: XCTestCase {
             }
             try db.execute(sql: "DROP TABLE IF EXISTS asset_similarity_fingerprint")
             try db.execute(sql: "DROP TABLE IF EXISTS recycle_entry")
+            try db.execute(sql: "DROP TABLE IF EXISTS source_mutation_authorization")
             try db.execute(
-                sql: "DELETE FROM grdb_migrations WHERE identifier IN (?, ?, ?, ?)",
+                sql: "DELETE FROM grdb_migrations WHERE identifier IN (?, ?, ?, ?, ?)",
                 arguments: [
                     CatalogMigrationID.v016AddTagGroups,
                     CatalogMigrationID.v017PerTagPersonalSuggestionModels,
                     CatalogMigrationID.v018AddAssetSimilarityFingerprint,
                     CatalogMigrationID.v019AddLibrarySlimmingRecycle,
+                    CatalogMigrationID.v020HardenLibrarySlimmingRecycle,
                 ]
             )
             try db.execute(
