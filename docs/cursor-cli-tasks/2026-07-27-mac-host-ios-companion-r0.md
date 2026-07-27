@@ -30,8 +30,8 @@ R0：Protocol + Mac Host 可测可构建；停止于 R1（iOS 壳）边界。
 ## 结果（实施后补记）
 
 - 开工 HEAD（ADR 文档提交后）：`e3bc5ae85afefcff85604dfbe143a04392ad8e53`
-- 交付 commit：见本实现提交
-- Author / trailer：`Codex <codex@openai.com>` / `Agent-Role: implementation`（临时授权期内直接实施）
+- 交付 commit：`ad63abe7e4ac78faff5b862f4bcfe0749667e7bf`（证据记录：`703026c78664cc6e974f72e3831e7325a4390cbe`）
+- 状态：Delivered（等待复审）；停止于 R1 边界
 - Package 测试：`cd Packages/ImageAllRemoteProtocol && swift test` → 5 passed
 - 定向 Xcode：`RemoteCatalogFacadeTests` + `RemoteHTTPServerTests` + entitlement server 断言 → **6 passed**，`TEST SUCCEEDED`
 - Debug build：`BUILD SUCCEEDED`（`.derivedData-remote-r0`）
