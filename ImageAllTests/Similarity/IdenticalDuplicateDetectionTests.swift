@@ -111,7 +111,7 @@ final class IdenticalDuplicateDetectionTests: XCTestCase {
     }
 }
 
-private enum SimilarityTestSupport {
+enum SimilarityTestSupport {
     struct SeededAsset {
         let assetID: UUID
         let fileURL: URL

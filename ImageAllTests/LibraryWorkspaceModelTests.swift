@@ -3787,6 +3787,34 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertTrue(model.items.isEmpty)
     }
 
+    func testImmediateBrowsingPresentationForLibrarySlimmingClearsReviewWithoutGalleryFilter() async {
+        let sourceID = UUID()
+        let asset = Self.makeAsset(sourceID: sourceID, fileName: "gallery.jpg")
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: sourceID,
+                displayName: "Fixture",
+                state: .active
+            ),
+            reconciledItems: [asset],
+            initialItems: [asset]
+        )
+        let model = LibraryWorkspaceModel(
+            service: service,
+            librarySlimming: StubLibrarySlimmingScanPort()
+        )
+
+        await model.start()
+        await model.enterReviewOverview()
+        XCTAssertEqual(model.reviewMode, ReviewWorkspaceMode.overview)
+
+        model.applyImmediateBrowsingPresentation(for: .librarySlimming)
+
+        XCTAssertNil(model.reviewMode)
+        XCTAssertFalse(model.isSinglePhotoPresented)
+        XCTAssertTrue(model.supportsLibrarySlimming)
+    }
+
     func testStaleReviewNavigationDoesNotResurrectAfterNewerGalleryNavigate() async {
         let sourceID = UUID()
         let asset = Self.makeAsset(sourceID: sourceID, fileName: "gallery.jpg")
@@ -7561,6 +7589,21 @@ private final class FakeLibraryOriginalAssetOpener: LibraryOriginalAssetOpening 
 
     func openOriginalAsset(assetID: UUID) async throws {
         openedAssetIDs.append(assetID)
+    }
+}
+
+private struct StubLibrarySlimmingScanPort: LibrarySlimmingScanPort {
+    func scan(assetIDs: [UUID]) throws -> LibrarySlimmingScanResult {
+        LibrarySlimmingScanResult(
+            clusters: [],
+            pendingAnalysisAssetIDs: [],
+            analyzedAssetCount: assetIDs.count,
+            policyVersion: NearDuplicateScenePolicy.policyVersion
+        )
+    }
+
+    func scanCatalog(limit: Int) throws -> LibrarySlimmingScanResult {
+        try scan(assetIDs: [])
     }
 }
 

@@ -127,6 +127,7 @@ enum LibraryBrowsingDestination: Equatable, Sendable {
     case untagged
     case reviewSuggestions
     case trainingWorkspace
+    case librarySlimming
     case source(UUID)
 }
 
@@ -664,10 +665,16 @@ final class LibraryWorkspaceModel: ObservableObject {
     @Published private(set) var selectedTrainingRunID: UUID?
     @Published private(set) var isRefreshingTrainingWorkspace = false
     @Published private(set) var trainingWorkspaceActivity: TrainingWorkspaceActivity?
+    @Published private(set) var librarySlimmingClusters: [LibrarySlimmingClusterPresentation] = []
+    @Published private(set) var selectedLibrarySlimmingClusterID: UUID?
+    @Published private(set) var librarySlimmingPendingCount = 0
+    @Published private(set) var isAnalyzingLibrarySlimming = false
+    @Published private(set) var librarySlimmingStatusMessage: String?
 
     fileprivate let review: any PersonalizationReviewPort
     private let service: any LibraryWorkspacePort
     private let trainingWorkspace: (any TrainingWorkspacePort)?
+    private let librarySlimming: (any LibrarySlimmingScanPort)?
     private let localModelSuggestions: LocalModelSuggestionRuntime?
     private let appPersonalModelRebuilder: (any AppPersonalModelRebuilding)?
     private let appPersonalAdamWModelRebuilder: (any AppPersonalModelRebuilding)?
@@ -728,6 +735,7 @@ final class LibraryWorkspaceModel: ObservableObject {
         service: any LibraryWorkspacePort,
         review: any PersonalizationReviewPort = EmptyPersonalizationReviewPort(),
         trainingWorkspace: (any TrainingWorkspacePort)? = nil,
+        librarySlimming: (any LibrarySlimmingScanPort)? = nil,
         localModelSuggestions: LocalModelSuggestionRuntime? = nil,
         appPersonalModelRebuilder: (any AppPersonalModelRebuilding)? = nil,
         appPersonalAdamWModelRebuilder: (any AppPersonalModelRebuilding)? = nil,
@@ -755,6 +763,7 @@ final class LibraryWorkspaceModel: ObservableObject {
         self.service = service
         self.review = review
         self.trainingWorkspace = trainingWorkspace
+        self.librarySlimming = librarySlimming
         self.localModelSuggestions = localModelSuggestions
         self.appPersonalModelRebuilder = appPersonalModelRebuilder
         self.appPersonalAdamWModelRebuilder = appPersonalAdamWModelRebuilder
@@ -791,6 +800,54 @@ final class LibraryWorkspaceModel: ObservableObject {
 
     var supportsTrainingWorkspace: Bool {
         trainingWorkspace != nil
+    }
+
+    var supportsLibrarySlimming: Bool {
+        librarySlimming != nil
+    }
+
+    var selectedLibrarySlimmingCluster: LibrarySlimmingClusterPresentation? {
+        guard let selectedLibrarySlimmingClusterID else { return nil }
+        return librarySlimmingClusters.first(where: { $0.id == selectedLibrarySlimmingClusterID })
+    }
+
+    func selectLibrarySlimmingCluster(_ clusterID: UUID?) {
+        selectedLibrarySlimmingClusterID = clusterID
+    }
+
+    func analyzeLibrarySlimming() async {
+        guard let librarySlimming, !isAnalyzingLibrarySlimming else { return }
+        isAnalyzingLibrarySlimming = true
+        librarySlimmingStatusMessage = "正在分析相同与相似照片…"
+        defer { isAnalyzingLibrarySlimming = false }
+        do {
+            let result = try await Self.offMain {
+                try librarySlimming.scanCatalog(
+                    limit: NearDuplicateScenePolicy.defaultCatalogScanLimit
+                )
+            }
+            librarySlimmingClusters = result.clusters.map(LibrarySlimmingClusterPresentation.init)
+            librarySlimmingPendingCount = result.pendingAnalysisAssetIDs.count
+            if let first = librarySlimmingClusters.first {
+                selectedLibrarySlimmingClusterID = first.id
+            } else {
+                selectedLibrarySlimmingClusterID = nil
+            }
+            if result.clusters.isEmpty, result.pendingAnalysisAssetIDs.isEmpty {
+                librarySlimmingStatusMessage = "已分析 \(result.analyzedAssetCount) 张，未发现相同或相似簇。"
+            } else if result.clusters.isEmpty {
+                librarySlimmingStatusMessage =
+                    "已分析 \(result.analyzedAssetCount) 张，暂无成簇结果；\(result.pendingAnalysisAssetIDs.count) 张待分析（缺少 Feature Print 或 DINOv2）。"
+            } else if result.pendingAnalysisAssetIDs.isEmpty {
+                librarySlimmingStatusMessage =
+                    "完成：\(result.clusters.count) 个簇 · 已分析 \(result.analyzedAssetCount) 张。"
+            } else {
+                librarySlimmingStatusMessage =
+                    "完成：\(result.clusters.count) 个簇 · \(result.pendingAnalysisAssetIDs.count) 张待分析。"
+            }
+        } catch {
+            librarySlimmingStatusMessage = "分析失败：\(error.localizedDescription)"
+        }
     }
 
     func refreshTrainingWorkspace(
@@ -2034,6 +2091,12 @@ final class LibraryWorkspaceModel: ObservableObject {
             clearReviewModeState()
             guard browsingNavigationRequestID == requestID else { return }
             await refreshTrainingWorkspace(presentation: .automatic)
+        case .librarySlimming:
+            clearReviewModeState()
+            guard browsingNavigationRequestID == requestID else { return }
+            if librarySlimmingClusters.isEmpty, supportsLibrarySlimming {
+                await analyzeLibrarySlimming()
+            }
         case .all, .untagged, .source:
             clearReviewModeState()
             applyGalleryBrowsingFilters(for: destination)
@@ -5002,7 +5065,7 @@ extension LibraryWorkspaceModel {
         switch destination {
         case .reviewSuggestions:
             applyReviewOverviewPresentation()
-        case .trainingWorkspace:
+        case .trainingWorkspace, .librarySlimming:
             clearReviewModeState()
             isSinglePhotoPresented = false
         case .all, .untagged, .source:
@@ -5045,7 +5108,7 @@ extension LibraryWorkspaceModel {
         case let .source(sourceID):
             selectedSourceID = sourceID
             tagPresence = .any
-        case .reviewSuggestions, .trainingWorkspace:
+        case .reviewSuggestions, .trainingWorkspace, .librarySlimming:
             break
         }
     }
@@ -5610,6 +5673,7 @@ private enum LibrarySidebarSelection: Hashable {
     case untagged
     case reviewSuggestions
     case trainingWorkspace
+    case librarySlimming
     case source(UUID)
 }
 
@@ -6099,6 +6163,8 @@ struct LibraryWorkspaceView: View {
     private var workspaceInspector: some View {
         if selection == .trainingWorkspace {
             TrainingWorkspaceInspectorView(model: model)
+        } else if selection == .librarySlimming {
+            LibrarySlimmingInspectorView(model: model)
         } else {
             inspector
         }
@@ -6109,6 +6175,9 @@ struct LibraryWorkspaceView: View {
         if selection == .trainingWorkspace {
             content
                 .navigationTitle("训练工程")
+        } else if selection == .librarySlimming {
+            content
+                .navigationTitle("图库瘦身")
         } else {
             libraryKeyboardEnabledContent
         }
@@ -6500,6 +6569,8 @@ struct LibraryWorkspaceView: View {
                 .reviewSuggestions
             case .trainingWorkspace:
                 .trainingWorkspace
+            case .librarySlimming:
+                .librarySlimming
             case let .source(sourceID):
                 .source(sourceID)
             }
@@ -6756,6 +6827,8 @@ struct LibraryWorkspaceView: View {
                 .tag(LibrarySidebarSelection.reviewSuggestions)
                 Label("训练工程", systemImage: "hammer")
                     .tag(LibrarySidebarSelection.trainingWorkspace)
+                Label("图库瘦身", systemImage: "square.stack.3d.up")
+                    .tag(LibrarySidebarSelection.librarySlimming)
             }
             Section("来源") {
                 ForEach(orderedSources) { source in
@@ -7152,6 +7225,13 @@ struct LibraryWorkspaceView: View {
     private var content: some View {
         if selection == .trainingWorkspace {
             TrainingWorkspaceView(
+                model: model,
+                onReturnToLibrary: {
+                    selection = .all
+                }
+            )
+        } else if selection == .librarySlimming {
+            LibrarySlimmingWorkspaceView(
                 model: model,
                 onReturnToLibrary: {
                     selection = .all

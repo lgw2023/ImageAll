@@ -227,6 +227,13 @@
 		SL0000010000000000000003 /* FingerprintCompletionService.swift in Sources */ = {isa = PBXBuildFile; fileRef = SL0001010000000000000003 /* FingerprintCompletionService.swift */; };
 		SL0000010000000000000004 /* IdenticalDuplicateClusterService.swift in Sources */ = {isa = PBXBuildFile; fileRef = SL0001010000000000000004 /* IdenticalDuplicateClusterService.swift */; };
 		SL0000010000000000000101 /* IdenticalDuplicateDetectionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = SL0001010000000000000101 /* IdenticalDuplicateDetectionTests.swift */; };
+		SL0000010000000000000005 /* NearDuplicateSceneContracts.swift in Sources */ = {isa = PBXBuildFile; fileRef = SL0001010000000000000005 /* NearDuplicateSceneContracts.swift */; };
+		SL0000010000000000000006 /* SimilarityVectorMath.swift in Sources */ = {isa = PBXBuildFile; fileRef = SL0001010000000000000006 /* SimilarityVectorMath.swift */; };
+		SL0000010000000000000007 /* NearDuplicateSceneClusterService.swift in Sources */ = {isa = PBXBuildFile; fileRef = SL0001010000000000000007 /* NearDuplicateSceneClusterService.swift */; };
+		SL0000010000000000000008 /* LibrarySlimmingScanService.swift in Sources */ = {isa = PBXBuildFile; fileRef = SL0001010000000000000008 /* LibrarySlimmingScanService.swift */; };
+		SL0000010000000000000009 /* CatalogSlimmingEmbeddingLoader.swift in Sources */ = {isa = PBXBuildFile; fileRef = SL0001010000000000000009 /* CatalogSlimmingEmbeddingLoader.swift */; };
+		SL0000010000000000000010 /* LibrarySlimmingWorkspaceUI.swift in Sources */ = {isa = PBXBuildFile; fileRef = SL0001010000000000000010 /* LibrarySlimmingWorkspaceUI.swift */; };
+		SL0000010000000000000102 /* NearDuplicateSceneClusteringTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = SL0001010000000000000102 /* NearDuplicateSceneClusteringTests.swift */; };
 		MM0000010000000000000101 /* PersonalizedSuggestionServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = MM0001010000000000000101 /* PersonalizedSuggestionServiceTests.swift */; };
 		MM0000010000000000000001 /* PersonalizedSuggestionService.swift in Sources */ = {isa = PBXBuildFile; fileRef = MM0001010000000000000001 /* PersonalizedSuggestionService.swift */; };
 		CM0000010000000000000101 /* AppCoreMLEmbeddingServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CM0001010000000000000101 /* AppCoreMLEmbeddingServiceTests.swift */; };
@@ -511,6 +518,13 @@
 		SL0001010000000000000003 /* FingerprintCompletionService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FingerprintCompletionService.swift; sourceTree = "<group>"; };
 		SL0001010000000000000004 /* IdenticalDuplicateClusterService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IdenticalDuplicateClusterService.swift; sourceTree = "<group>"; };
 		SL0001010000000000000101 /* IdenticalDuplicateDetectionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IdenticalDuplicateDetectionTests.swift; sourceTree = "<group>"; };
+		SL0001010000000000000005 /* NearDuplicateSceneContracts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NearDuplicateSceneContracts.swift; sourceTree = "<group>"; };
+		SL0001010000000000000006 /* SimilarityVectorMath.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SimilarityVectorMath.swift; sourceTree = "<group>"; };
+		SL0001010000000000000007 /* NearDuplicateSceneClusterService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NearDuplicateSceneClusterService.swift; sourceTree = "<group>"; };
+		SL0001010000000000000008 /* LibrarySlimmingScanService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibrarySlimmingScanService.swift; sourceTree = "<group>"; };
+		SL0001010000000000000009 /* CatalogSlimmingEmbeddingLoader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CatalogSlimmingEmbeddingLoader.swift; sourceTree = "<group>"; };
+		SL0001010000000000000010 /* LibrarySlimmingWorkspaceUI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibrarySlimmingWorkspaceUI.swift; sourceTree = "<group>"; };
+		SL0001010000000000000102 /* NearDuplicateSceneClusteringTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NearDuplicateSceneClusteringTests.swift; sourceTree = "<group>"; };
 		MM0001010000000000000101 /* PersonalizedSuggestionServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersonalizedSuggestionServiceTests.swift; sourceTree = "<group>"; };
 		MM0001010000000000000001 /* PersonalizedSuggestionService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersonalizedSuggestionService.swift; sourceTree = "<group>"; };
 		CM0001010000000000000101 /* AppCoreMLEmbeddingServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppCoreMLEmbeddingServiceTests.swift; sourceTree = "<group>"; };
@@ -716,6 +730,7 @@
 				PP0001010000000000000001 /* LibraryGridMarqueeSelection.swift */,
 				NN0001010000000000000008 /* PersonalizationReviewUI.swift */,
 				A40001010000000000000001 /* TrainingWorkspaceUI.swift */,
+				SL0001010000000000000010 /* LibrarySlimmingWorkspaceUI.swift */,
 				AA0006010000000000000007 /* CompositionRoot */,
 			);
 			path = App;
@@ -1184,6 +1199,7 @@
 			isa = PBXGroup;
 			children = (
 				SL0001010000000000000001 /* IdenticalDuplicateContracts.swift */,
+				SL0001010000000000000005 /* NearDuplicateSceneContracts.swift */,
 			);
 			path = Similarity;
 			sourceTree = "<group>";
@@ -1194,6 +1210,10 @@
 				SL0001010000000000000002 /* PerceptualImageHash.swift */,
 				SL0001010000000000000003 /* FingerprintCompletionService.swift */,
 				SL0001010000000000000004 /* IdenticalDuplicateClusterService.swift */,
+				SL0001010000000000000006 /* SimilarityVectorMath.swift */,
+				SL0001010000000000000007 /* NearDuplicateSceneClusterService.swift */,
+				SL0001010000000000000008 /* LibrarySlimmingScanService.swift */,
+				SL0001010000000000000009 /* CatalogSlimmingEmbeddingLoader.swift */,
 			);
 			path = Similarity;
 			sourceTree = "<group>";
@@ -1202,6 +1222,7 @@
 			isa = PBXGroup;
 			children = (
 				SL0001010000000000000101 /* IdenticalDuplicateDetectionTests.swift */,
+				SL0001010000000000000102 /* NearDuplicateSceneClusteringTests.swift */,
 			);
 			path = Similarity;
 			sourceTree = "<group>";
@@ -1418,6 +1439,12 @@
 				SL0000010000000000000002 /* PerceptualImageHash.swift in Sources */,
 				SL0000010000000000000003 /* FingerprintCompletionService.swift in Sources */,
 				SL0000010000000000000004 /* IdenticalDuplicateClusterService.swift in Sources */,
+				SL0000010000000000000005 /* NearDuplicateSceneContracts.swift in Sources */,
+				SL0000010000000000000006 /* SimilarityVectorMath.swift in Sources */,
+				SL0000010000000000000007 /* NearDuplicateSceneClusterService.swift in Sources */,
+				SL0000010000000000000008 /* LibrarySlimmingScanService.swift in Sources */,
+				SL0000010000000000000009 /* CatalogSlimmingEmbeddingLoader.swift in Sources */,
+				SL0000010000000000000010 /* LibrarySlimmingWorkspaceUI.swift in Sources */,
 				KK0000010000000000000003 /* GRDBPersonalizationRepository.swift in Sources */,
 				AA0000010000000000000001 /* ImageAllApp.swift in Sources */,
 				AA0000010000000000000002 /* RootView.swift in Sources */,
@@ -1560,6 +1587,7 @@
 				RH0000010000000000000101 /* RemoteCatalogFacadeTests.swift in Sources */,
 				RH0000010000000000000102 /* RemoteHTTPServerTests.swift in Sources */,
 				SL0000010000000000000101 /* IdenticalDuplicateDetectionTests.swift in Sources */,
+				SL0000010000000000000102 /* NearDuplicateSceneClusteringTests.swift in Sources */,
 				KK0000010000000000000101 /* PersonalizationPersistenceTests.swift in Sources */,
 				NN0000010000000000000101 /* FullLibrarySuggestionsJobTests.swift in Sources */,
 				ST0000010000000000000003 /* SuggestionThresholdTests.swift in Sources */,

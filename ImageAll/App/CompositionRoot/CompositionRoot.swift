@@ -273,12 +273,45 @@ struct CompositionRoot {
             catalog: service,
             hostAppVersion: BundleAppVersionProvider().currentVersion()
         )
+        let fingerprintCompletion = FingerprintCompletionService(
+            database: runtime.database,
+            sourceAccess: sourceAccess,
+            clock: clock
+        )
+        let featurePrintInputLoader = LibraryFeaturePrintInputLoader(
+            database: runtime.database,
+            sourceAccess: sourceAccess,
+            photosImages: photosAccess,
+            downloadedPreviews: derivedImages
+        )
+        let slimmingEmbeddingService = makeAppCoreMLEmbeddingService(isEnabled: true)
+        let slimmingEmbeddingLoader: CatalogSlimmingEmbeddingLoader?
+        if let catalogScopeID,
+           let catalogScopeUUID = UUID(uuidString: catalogScopeID)
+        {
+            slimmingEmbeddingLoader = CatalogSlimmingEmbeddingLoader(
+                catalogScopeID: catalogScopeUUID,
+                cachesDirectory: runtime.paths.cachesDirectory,
+                inputLoader: featurePrintInputLoader,
+                serviceProvider: { slimmingEmbeddingService }
+            )
+        } else {
+            slimmingEmbeddingLoader = nil
+        }
+        let librarySlimming = LibrarySlimmingScanService(
+            database: runtime.database,
+            identicalScan: IdenticalDuplicateClusterService(database: runtime.database),
+            fingerprintCompletion: fingerprintCompletion,
+            featureLoader: FeaturePrintSlimmingVectorLoader(service: featurePrintService),
+            embeddingLoader: OptionalSlimmingEmbeddingLoader(base: slimmingEmbeddingLoader)
+        )
         return LibraryWorkspaceModel(
             service: service,
             review: personalizationReview,
             trainingWorkspace: GRDBTrainingWorkspaceRepository(
                 database: runtime.database
             ),
+            librarySlimming: librarySlimming,
             localModelSuggestions: localModelSuggestions,
             appPersonalModelRebuilder: appPersonalModelRebuilder,
             appPersonalAdamWModelRebuilder: appPersonalAdamWModelRebuilder,
