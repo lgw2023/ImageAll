@@ -29,4 +29,12 @@ R0：Protocol + Mac Host 可测可构建；停止于 R1（iOS 壳）边界。
 
 ## 结果（实施后补记）
 
-（待补）
+- 开工 HEAD（ADR 文档提交后）：`e3bc5ae85afefcff85604dfbe143a04392ad8e53`
+- 交付 commit：见本实现提交
+- Author / trailer：`Codex <codex@openai.com>` / `Agent-Role: implementation`（临时授权期内直接实施）
+- Package 测试：`cd Packages/ImageAllRemoteProtocol && swift test` → 5 passed
+- 定向 Xcode：`RemoteCatalogFacadeTests` + `RemoteHTTPServerTests` + entitlement server 断言 → **6 passed**，`TEST SUCCEEDED`
+- Debug build：`BUILD SUCCEEDED`（`.derivedData-remote-r0`）
+- 工作区保留无关未提交草稿：`LibraryWorkspace.swift` / `LibraryWorkspaceModelTests.swift`
+- 未进入 R1（iOS 壳）；未 push
+- Host 默认关闭；启用：`defaults write com.gwlee.ImageAll imageall.remoteHost.enabled -bool YES` 或 `IMAGEALL_REMOTE_HOST=1`
