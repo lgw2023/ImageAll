@@ -300,6 +300,34 @@ final class SuggestionThresholdTests: XCTestCase {
         )
     }
 
+    func testReferenceSuggestionPrefersPositiveNegativeMedianMidpoint() throws {
+        let midpoint = GRDBSuggestionThresholdRepository.makeReferenceSuggestion(
+            acceptedScores: [0.30, 0.32, 0.34, 0.36, 0.38, 0.40],
+            rejectedScores: [0.02, 0.04, 0.06, 0.08, 0.10, 0.12]
+        )
+        XCTAssertEqual(
+            midpoint,
+            SuggestionThresholdReference(
+                minScore: 0.21,
+                acceptedSampleCount: 6,
+                rejectedSampleCount: 6
+            )
+        )
+
+        let rejectedOnly = GRDBSuggestionThresholdRepository.makeReferenceSuggestion(
+            acceptedScores: [0.9, 0.95],
+            rejectedScores: [0.10, 0.20, 0.30, 0.40, 0.50]
+        )
+        XCTAssertEqual(
+            rejectedOnly,
+            SuggestionThresholdReference(
+                minScore: 0.50,
+                acceptedSampleCount: 2,
+                rejectedSampleCount: 5
+            )
+        )
+    }
+
     func testReferenceSuggestionRequiresFiveTraceableRejectedScores() throws {
         let fixture = try makeTagFixture(assetCount: 4)
         let thresholds = GRDBSuggestionThresholdRepository(database: fixture.database)

@@ -242,12 +242,64 @@ struct AppModelSettingsView: View {
     }
 
     private func thresholdStepper(title: String, value: Double, onChange: @escaping (Double) -> Void) -> some View {
+        ThresholdEditableStepper(title: title, value: value, onChange: onChange)
+    }
+}
+
+private struct ThresholdEditableStepper: View {
+    let title: String
+    let value: Double
+    let onChange: (Double) -> Void
+
+    var body: some View {
         LabeledContent(title) {
-            HStack(spacing: 8) {
-                Text(String(format: "%.2f", value)).monospacedDigit().frame(minWidth: 48, alignment: .trailing)
-                Stepper("", value: Binding(get: { value }, set: { onChange($0) }), step: 0.05).labelsHidden()
+            ThresholdEditableField(value: value, onChange: onChange)
+        }
+    }
+}
+
+private struct ThresholdEditableField: View {
+    let value: Double
+    let onChange: (Double) -> Void
+    @State private var text: String = ""
+
+    var body: some View {
+        HStack(spacing: 8) {
+            TextField("", text: $text)
+                .textFieldStyle(.roundedBorder)
+                .monospacedDigit()
+                .frame(width: 64)
+                .multilineTextAlignment(.trailing)
+                .onSubmit { commit() }
+            Stepper(
+                "",
+                value: Binding(
+                    get: { value },
+                    set: {
+                        text = String(format: "%.2f", $0)
+                        onChange($0)
+                    }
+                ),
+                step: 0.05
+            )
+            .labelsHidden()
+        }
+        .onAppear { text = String(format: "%.2f", value) }
+        .onChange(of: value) { _, newValue in
+            if Double(text) == nil || abs((Double(text) ?? newValue) - newValue) < 0.000_001 {
+                text = String(format: "%.2f", newValue)
             }
         }
+    }
+
+    private func commit() {
+        let raw = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let parsed = Double(raw), parsed.isFinite else {
+            text = String(format: "%.2f", value)
+            return
+        }
+        text = String(format: "%.2f", parsed)
+        onChange(parsed)
     }
 }
 
@@ -270,7 +322,7 @@ private struct SuggestionThresholdOverridesSheet: View {
                 Spacer()
                 Button("完成") { dismiss() }.keyboardShortcut(.defaultAction)
             }
-            Text("每个标签、每种方法独立设置；清除后继承方法默认。参考值只来自同轨近期拒绝分数，必须点“采用”才会生效。")
+            Text("每个标签、每种方法独立设置；清除后继承方法默认。参考值优先取同轨正负样本中位分隔，否则用近期拒绝分数的第 90 百分位；点“采用”后写入覆盖。")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -290,26 +342,17 @@ private struct SuggestionThresholdOverridesSheet: View {
                                 HStack {
                                     Text(SuggestionScoreThresholdMethodPresentation.displayName(method))
                                         .frame(width: 88, alignment: .leading)
-                                    Text(String(format: "%.2f", row.overrides[method] ?? model.suggestionDefaults[method]))
-                                        .monospacedDigit()
-                                    Stepper(
-                                        "",
-                                        value: Binding(
-                                            get: {
-                                                row.overrides[method]
-                                                    ?? model.suggestionDefaults[method]
-                                            },
-                                            set: {
-                                                model.setSuggestionOverride(
-                                                    tagID: row.tagID,
-                                                    method: method,
-                                                    minScore: $0
-                                                )
-                                            }
-                                        ),
-                                        step: 0.05
+                                    ThresholdEditableField(
+                                        value: row.overrides[method]
+                                            ?? model.suggestionDefaults[method],
+                                        onChange: {
+                                            model.setSuggestionOverride(
+                                                tagID: row.tagID,
+                                                method: method,
+                                                minScore: $0
+                                            )
+                                        }
                                     )
-                                    .labelsHidden()
                                     if row.overrides[method] != nil {
                                         Button("继承默认") {
                                             model.clearSuggestionOverride(
@@ -325,13 +368,7 @@ private struct SuggestionThresholdOverridesSheet: View {
                                     method: method
                                 ) {
                                     HStack {
-                                        Text(
-                                            "参考建议："
-                                                + String(format: "%.2f", reference.minScore)
-                                                + "（最近 "
-                                                + String(reference.rejectedSampleCount)
-                                                + " 个拒绝分数的第 90 百分位）"
-                                        )
+                                        Text(Self.referenceHelpText(reference))
                                         .foregroundStyle(.secondary)
                                         Button("采用") {
                                             model.applySuggestionReference(
@@ -342,7 +379,7 @@ private struct SuggestionThresholdOverridesSheet: View {
                                         .buttonStyle(.borderless)
                                     }
                                 } else {
-                                    Text("暂无参考建议；至少需要 5 个可追溯的同轨拒绝分数。")
+                                    Text("暂无参考建议；至少需要同轨 5 个可追溯拒绝分数，或正负样本各 5 个。")
                                         .foregroundStyle(.tertiary)
                                 }
                             }
@@ -354,5 +391,24 @@ private struct SuggestionThresholdOverridesSheet: View {
         }
         .padding(16)
         .frame(minWidth: 560, minHeight: 480)
+    }
+
+    private static func referenceHelpText(
+        _ reference: SuggestionThresholdReference
+    ) -> String {
+        if reference.acceptedSampleCount >= 5, reference.rejectedSampleCount >= 5 {
+            return "参考建议："
+                + String(format: "%.2f", reference.minScore)
+                + "（"
+                + String(reference.acceptedSampleCount)
+                + " 确认 / "
+                + String(reference.rejectedSampleCount)
+                + " 拒绝的中位分隔）"
+        }
+        return "参考建议："
+            + String(format: "%.2f", reference.minScore)
+            + "（最近 "
+            + String(reference.rejectedSampleCount)
+            + " 个拒绝分数的第 90 百分位）"
     }
 }

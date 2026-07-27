@@ -50,7 +50,19 @@ struct SuggestionTagThresholdOverrideRow: Equatable, Sendable, Identifiable {
 
 struct SuggestionThresholdReference: Equatable, Sendable {
     let minScore: Double
+    /// Traceable accepted scores used when the separator is based on both classes.
+    let acceptedSampleCount: Int
     let rejectedSampleCount: Int
+
+    init(
+        minScore: Double,
+        acceptedSampleCount: Int = 0,
+        rejectedSampleCount: Int
+    ) {
+        self.minScore = minScore
+        self.acceptedSampleCount = acceptedSampleCount
+        self.rejectedSampleCount = rejectedSampleCount
+    }
 }
 
 protocol SuggestionThresholdPort: Sendable {
@@ -78,8 +90,10 @@ protocol SuggestionThresholdPort: Sendable {
         tagID: UUID,
         method: SuggestionScoreThresholdMethod
     ) throws -> Double
-    /// Read-only 90th-percentile reference from the latest traceable rejected scores.
-    /// Returns nil until at least five same-tag, same-method scores are available.
+    /// Read-only sample-based reference for the same tag and method.
+    /// Prefers the midpoint between median accepted and median rejected scores when both
+    /// classes have at least five traceable scores; otherwise falls back to the 90th
+    /// percentile of recent rejected scores. Returns nil until enough scores exist.
     func referenceSuggestion(
         tagID: UUID,
         method: SuggestionScoreThresholdMethod

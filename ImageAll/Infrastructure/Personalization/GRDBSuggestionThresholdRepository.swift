@@ -127,7 +127,63 @@ struct GRDBSuggestionThresholdRepository: SuggestionThresholdPort {
         tagID: UUID,
         method: SuggestionScoreThresholdMethod
     ) throws -> SuggestionThresholdReference? {
-        let scores = try database.pool.read { db in
+        let accepted = try traceableDecisionScores(
+            tagID: tagID,
+            method: method,
+            decision: "accepted"
+        )
+        let rejected = try traceableDecisionScores(
+            tagID: tagID,
+            method: method,
+            decision: "rejected"
+        )
+        return Self.makeReferenceSuggestion(
+            acceptedScores: accepted,
+            rejectedScores: rejected
+        )
+    }
+
+    static func makeReferenceSuggestion(
+        acceptedScores: [Double],
+        rejectedScores: [Double]
+    ) -> SuggestionThresholdReference? {
+        let accepted = acceptedScores.filter(\.isFinite)
+        let rejected = rejectedScores.filter(\.isFinite)
+        if accepted.count >= 5, rejected.count >= 5 {
+            let midpoint =
+                (Self.median(accepted) + Self.median(rejected)) / 2
+            guard midpoint.isFinite else { return nil }
+            return SuggestionThresholdReference(
+                minScore: midpoint,
+                acceptedSampleCount: accepted.count,
+                rejectedSampleCount: rejected.count
+            )
+        }
+        guard rejected.count >= 5 else { return nil }
+        let sorted = rejected.sorted()
+        let nearestRank = Int(ceil(Double(sorted.count) * 0.9))
+        return SuggestionThresholdReference(
+            minScore: sorted[max(0, nearestRank - 1)],
+            acceptedSampleCount: accepted.count,
+            rejectedSampleCount: rejected.count
+        )
+    }
+
+    private static func median(_ values: [Double]) -> Double {
+        let sorted = values.sorted()
+        let middle = sorted.count / 2
+        if sorted.count % 2 == 0 {
+            return (sorted[middle - 1] + sorted[middle]) / 2
+        }
+        return sorted[middle]
+    }
+
+    private func traceableDecisionScores(
+        tagID: UUID,
+        method: SuggestionScoreThresholdMethod,
+        decision: String
+    ) throws -> [Double] {
+        try database.pool.read { db in
             switch method {
             case .featureKnn:
                 return try Double.fetchAll(
@@ -146,7 +202,7 @@ struct GRDBSuggestionThresholdRepository: SuggestionThresholdPort {
                             ON p.asset_id = d.asset_id
                             AND p.tag_id = d.tag_id
                             AND p.created_at_ms <= d.updated_at_ms
-                        WHERE d.tag_id = ? AND d.decision = 'rejected'
+                        WHERE d.tag_id = ? AND d.decision = ?
                     )
                     SELECT score
                     FROM ranked
@@ -154,7 +210,7 @@ struct GRDBSuggestionThresholdRepository: SuggestionThresholdPort {
                     ORDER BY updated_at_ms DESC, asset_id ASC
                     LIMIT 20
                     """,
-                    arguments: [uuid(tagID)]
+                    arguments: [uuid(tagID), decision]
                 )
             case .personalCentroid, .personalAdamW:
                 return try Double.fetchAll(
@@ -173,7 +229,7 @@ struct GRDBSuggestionThresholdRepository: SuggestionThresholdPort {
                             AND p.tag_id = d.tag_id
                             AND p.method = ?
                             AND p.created_at_ms <= d.updated_at_ms
-                        WHERE d.tag_id = ? AND d.decision = 'rejected'
+                        WHERE d.tag_id = ? AND d.decision = ?
                     )
                     SELECT score
                     FROM ranked
@@ -181,18 +237,10 @@ struct GRDBSuggestionThresholdRepository: SuggestionThresholdPort {
                     ORDER BY updated_at_ms DESC, asset_id ASC
                     LIMIT 20
                     """,
-                    arguments: [method.rawValue, uuid(tagID)]
+                    arguments: [method.rawValue, uuid(tagID), decision]
                 )
             }
         }
-        let finiteScores = scores.filter(\.isFinite)
-        guard finiteScores.count >= 5 else { return nil }
-        let sorted = finiteScores.sorted()
-        let nearestRank = Int(ceil(Double(sorted.count) * 0.9))
-        return SuggestionThresholdReference(
-            minScore: sorted[max(0, nearestRank - 1)],
-            rejectedSampleCount: finiteScores.count
-        )
     }
 
     func listTagOverrides() throws -> [SuggestionTagThresholdOverrideRow] {

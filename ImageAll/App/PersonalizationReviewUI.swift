@@ -662,6 +662,9 @@ struct TagSuggestionThresholdControls: View {
     let rejectedSampleCount: Int
     @State private var references:
         [SuggestionScoreThresholdMethod: SuggestionThresholdReference] = [:]
+    @State private var drafts: [SuggestionScoreThresholdMethod: Double] = [:]
+    @State private var draftTexts: [SuggestionScoreThresholdMethod: String] = [:]
+    @FocusState private var focusedMethodRaw: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -675,28 +678,26 @@ struct TagSuggestionThresholdControls: View {
                             .font(.caption2)
                             .frame(width: 72, alignment: .leading)
                             .lineLimit(1)
-                        Text(String(format: "%.2f", model.effectiveSuggestionMinScore(tagID: tagID, method: method)))
-                            .font(.caption2.monospacedDigit())
-                            .frame(width: 36, alignment: .trailing)
+                        TextField(
+                            "",
+                            text: textBinding(for: method),
+                            prompt: Text("0.00")
+                        )
+                        .textFieldStyle(.roundedBorder)
+                        .font(.caption2.monospacedDigit())
+                        .frame(width: 56)
+                        .multilineTextAlignment(.trailing)
+                        .focused($focusedMethodRaw, equals: method.rawValue)
+                        .onSubmit { commitText(for: method) }
                         Stepper(
                             "",
-                            value: Binding(
-                                get: {
-                                    model.effectiveSuggestionMinScore(tagID: tagID, method: method)
-                                },
-                                set: { newValue in
-                                    model.setSuggestionThresholdOverride(
-                                        tagID: tagID,
-                                        method: method,
-                                        minScore: newValue
-                                    )
-                                }
-                            ),
+                            value: stepperBinding(for: method),
                             step: 0.05
                         )
                         .labelsHidden()
                         .controlSize(.mini)
                         Button("刷新") {
+                            commitText(for: method)
                             model.prunePendingSuggestionsBelowThreshold(
                                 tagID: tagID,
                                 displayName: displayName,
@@ -709,20 +710,10 @@ struct TagSuggestionThresholdControls: View {
                     }
                     if let reference = references[method] {
                         HStack(spacing: 4) {
-                            Text(
-                                "参考 "
-                                    + String(format: "%.2f", reference.minScore)
-                                    + " · "
-                                    + String(reference.rejectedSampleCount)
-                                    + " 拒绝"
-                            )
-                            .foregroundStyle(.secondary)
+                            Text(referenceLabel(reference))
+                                .foregroundStyle(.secondary)
                             Button("采用") {
-                                model.setSuggestionThresholdOverride(
-                                    tagID: tagID,
-                                    method: method,
-                                    minScore: reference.minScore
-                                )
+                                apply(method: method, minScore: reference.minScore)
                             }
                             .buttonStyle(.borderless)
                         }
@@ -733,7 +724,111 @@ struct TagSuggestionThresholdControls: View {
         }
         .padding(.vertical, 2)
         .task(id: "\(tagID.uuidString.lowercased()):\(rejectedSampleCount)") {
-            references = await model.suggestionThresholdReferences(tagID: tagID)
+            await reloadThresholdDrafts()
+        }
+        .onChange(of: model.suggestionThresholdEpoch) { _, _ in
+            syncDraftsFromModel()
+        }
+        .onChange(of: focusedMethodRaw) { oldValue, newValue in
+            guard let oldValue, oldValue != newValue,
+                  let method = SuggestionScoreThresholdMethod(rawValue: oldValue)
+            else { return }
+            commitText(for: method)
+        }
+    }
+
+    private func textBinding(for method: SuggestionScoreThresholdMethod) -> Binding<String> {
+        Binding(
+            get: {
+                draftTexts[method]
+                    ?? String(
+                        format: "%.2f",
+                        drafts[method]
+                            ?? model.effectiveSuggestionMinScore(tagID: tagID, method: method)
+                    )
+            },
+            set: { draftTexts[method] = $0 }
+        )
+    }
+
+    private func stepperBinding(for method: SuggestionScoreThresholdMethod) -> Binding<Double> {
+        Binding(
+            get: {
+                drafts[method]
+                    ?? model.effectiveSuggestionMinScore(tagID: tagID, method: method)
+            },
+            set: { apply(method: method, minScore: $0) }
+        )
+    }
+
+    private func apply(method: SuggestionScoreThresholdMethod, minScore: Double) {
+        guard minScore.isFinite else { return }
+        drafts[method] = minScore
+        draftTexts[method] = String(format: "%.2f", minScore)
+        model.setSuggestionThresholdOverride(
+            tagID: tagID,
+            method: method,
+            minScore: minScore
+        )
+    }
+
+    private func commitText(for method: SuggestionScoreThresholdMethod) {
+        let raw = (draftTexts[method] ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let value = Double(raw), value.isFinite else {
+            let current = drafts[method]
+                ?? model.effectiveSuggestionMinScore(tagID: tagID, method: method)
+            draftTexts[method] = String(format: "%.2f", current)
+            return
+        }
+        apply(method: method, minScore: value)
+    }
+
+    private func referenceLabel(_ reference: SuggestionThresholdReference) -> String {
+        var parts = ["参考 " + String(format: "%.2f", reference.minScore)]
+        if reference.acceptedSampleCount > 0 {
+            parts.append(String(reference.acceptedSampleCount) + " 确认")
+        }
+        if reference.rejectedSampleCount > 0 {
+            parts.append(String(reference.rejectedSampleCount) + " 拒绝")
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    private func syncDraftsFromModel() {
+        for method in SuggestionScoreThresholdMethod.allCases {
+            let value = model.effectiveSuggestionMinScore(tagID: tagID, method: method)
+            drafts[method] = value
+            // Keep in-progress typing unless the field matches the previous draft.
+            if draftTexts[method] == nil
+                || Double(draftTexts[method] ?? "") == nil
+                || abs((Double(draftTexts[method] ?? "") ?? value) - value) < 0.000_001
+            {
+                draftTexts[method] = String(format: "%.2f", value)
+            }
+        }
+    }
+
+    private func reloadThresholdDrafts() async {
+        let loaded = await model.suggestionThresholdReferences(tagID: tagID)
+        references = loaded
+        for method in SuggestionScoreThresholdMethod.allCases {
+            if model.suggestionThresholdOverride(tagID: tagID, method: method) == nil,
+               let reference = loaded[method]
+            {
+                // No tag override yet: seed from sample-based reference as the default.
+                model.setSuggestionThresholdOverride(
+                    tagID: tagID,
+                    method: method,
+                    minScore: reference.minScore
+                )
+                drafts[method] = reference.minScore
+                draftTexts[method] = String(format: "%.2f", reference.minScore)
+            } else {
+                let value = model.effectiveSuggestionMinScore(tagID: tagID, method: method)
+                drafts[method] = value
+                draftTexts[method] = String(format: "%.2f", value)
+            }
         }
     }
 }

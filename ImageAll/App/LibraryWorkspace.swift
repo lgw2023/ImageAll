@@ -643,6 +643,8 @@ final class LibraryWorkspaceModel: ObservableObject {
     @Published private(set) var isChoosingAppStorageLocation = false
     @Published private(set) var isIdleThumbnailPrewarmEnabled: Bool
     @Published private(set) var maxPendingSuggestionsPerTag: Int
+    /// Bumped when suggestion thresholds change so SwiftUI re-reads effective values.
+    @Published private(set) var suggestionThresholdEpoch = 0
     @Published private(set) var sourceThumbnailPrewarmProgress: SourceThumbnailPrewarmProgress?
     @Published private(set) var jobActivityItems: [JobActivityItem] = []
     @Published private(set) var jobActivityActionInFlightIDs: Set<UUID> = []
@@ -912,8 +914,18 @@ final class LibraryWorkspaceModel: ObservableObject {
         tagID: UUID,
         method: SuggestionScoreThresholdMethod
     ) -> Double {
+        _ = suggestionThresholdEpoch
         guard let suggestionThresholds else { return 0 }
         return (try? suggestionThresholds.effectiveMinScore(tagID: tagID, method: method)) ?? 0
+    }
+
+    func suggestionThresholdOverride(
+        tagID: UUID,
+        method: SuggestionScoreThresholdMethod
+    ) -> Double? {
+        _ = suggestionThresholdEpoch
+        guard let suggestionThresholds else { return nil }
+        return try? suggestionThresholds.overrideMinScore(tagID: tagID, method: method)
     }
 
     func suggestionThresholdReferences(
@@ -946,6 +958,7 @@ final class LibraryWorkspaceModel: ObservableObject {
                 minScore: minScore,
                 updatedAtMs: clock.nowMs
             )
+            suggestionThresholdEpoch += 1
         } catch {
             notice = .suggestionThresholdUpdateFailed
         }
@@ -964,6 +977,7 @@ final class LibraryWorkspaceModel: ObservableObject {
                 minScore: minScore,
                 updatedAtMs: clock.nowMs
             )
+            suggestionThresholdEpoch += 1
         } catch {
             notice = .suggestionThresholdUpdateFailed
         }
@@ -976,6 +990,7 @@ final class LibraryWorkspaceModel: ObservableObject {
         guard let suggestionThresholds else { return }
         do {
             try suggestionThresholds.clearOverride(tagID: tagID, method: method)
+            suggestionThresholdEpoch += 1
         } catch {
             notice = .suggestionThresholdUpdateFailed
         }
