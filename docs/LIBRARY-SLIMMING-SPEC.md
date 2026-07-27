@@ -193,4 +193,4 @@ Quarantine 根位于 App 容器内（Application Support），按 source/asset �
 
 ## 11. 停止位置（当前）
 
-S0–S5 已交付（含 S4 文件夹 quarantine 与 S5 Photos 公开 PhotoKit 软删除/系统托管恢复说明/本地对账统一回收站）。2026-07-27 Codex 复审已按所有者确认的双来源策略完成契约修正与安全硬化。下一可选切片为 **S6**（性能分桶 / 阈值可配置）；未授权前不得开 S6。
+S0–S5 已交付（含 S4 文件夹 quarantine 与 S5 Photos 公开 PhotoKit 软删除/系统托管恢复说明/本地对账统一回收站）。2026-07-27 所有者授权可选 **S6**（可配置阈值 + 大库拍摄日分桶）；权威交接见 [`CURSOR-LIBRARY-SLIMMING-S6-HANDOFF.md`](CURSOR-LIBRARY-SLIMMING-S6-HANDOFF.md)。S6 不含簇结果持久化与全库可恢复分析 Job。
