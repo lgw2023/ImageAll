@@ -771,7 +771,7 @@ FTS 只是可重建的查询加速结构，必须由 migration 回填和 Asset i
 
 - 启用 App Sandbox；
 - 文件夹权限由系统选择器和只读 security-scoped bookmark 获得；
-- Photos 权限只在用户添加该来源时请求，并提供明确的 `NSPhotoLibraryUsageDescription`；PhotoKit 的读取使用 `.readWrite` access level，但产品策略禁止调用任何 Photos 写入 API；
+- Photos 权限只在用户添加该来源时请求，并提供明确的 `NSPhotoLibraryUsageDescription`；PhotoKit 使用 `.readWrite` access level；除 ADR-042 图库瘦身回收站路径外，禁止调用任何 Photos 写入 / mutation API；
 - 所有图片分析默认在本机完成；
 - 默认不收集遥测，不上传图片、特征或标签；
 - 日志不得记录图片内容、完整路径、书签数据或 Photos 标识符；
