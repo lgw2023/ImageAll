@@ -3,15 +3,15 @@
 ## 状态
 
 - 任务 ID：`library-slimming-s3`
-- 状态：In progress
+- 状态：Delivered（等待 Codex 复审）
 - 权威交接单：`docs/CURSOR-LIBRARY-SLIMMING-S3-HANDOFF.md`
 - 上一批准基线：`d205f555c730103f206472856d3fe27d0c15099f`
-- 开工 HEAD：`e7535bf4250df53df65109701920fb173137a9a6`（文档提交后替换为精确值）
-- 交付 commit：
+- 开工 HEAD：`7c9d3dbc38a35a4ac30d4eddb8f7da643d1dc80b`（文档提交后替换为精确值）
+- 交付 commit：`8fbfa777444099f78a3e994145957ab23054d04a`
 
 ## 开工 HEAD
 
-文档提交后以 `git rev-parse HEAD` 为准。
+`7c9d3dbc38a35a4ac30d4eddb8f7da643d1dc80b`（S3 handoff pin 提交）
 
 ## 完整任务正文
 
@@ -31,9 +31,11 @@ S3 实现 + 测试 + Debug build 通过并完成本地 implementation commit；�
 
 ## 结果（实施后补记）
 
-- 开工 HEAD：
-- 交付 commit：
-- 测试命令与退出码：
-- 测试总数：
-- Debug build：
-- 工作区：
+- 开工 HEAD：`7c9d3dbc38a35a4ac30d4eddb8f7da643d1dc80b`
+- 交付 commit：`8fbfa777444099f78a3e994145957ab23054d04a`
+- Author / trailer：`Codex <codex@openai.com>` / `Agent-Role: implementation`（临时授权期内直接实施，至 2026-08-13）
+- 定向测试：`xcodebuild test … -only-testing:NearDuplicateSceneClusteringTests,LibraryWorkspaceModelTests/testImmediate…,testFindLibrarySlimming…,testLibrarySlimmingMember…` → **TEST SUCCEEDED**（13 项）
+- Debug build：随测试宿主构建通过（`.derivedData-threshold`）
+- 工作区：干净（证据文档随后补记）
+- 未 push
+- 未进入 S4（回收站 / quarantine / PhotoKit mutation）
