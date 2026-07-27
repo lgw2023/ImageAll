@@ -3,14 +3,14 @@
 ## 状态
 
 - 任务 ID：`library-slimming-s4`
-- 状态：Ready（待实施）
+- 状态：In progress
 - 权威交接单：`docs/CURSOR-LIBRARY-SLIMMING-S4-HANDOFF.md`
 - 上一批准基线：`95cd8cd898e03517d030588c627cbda79f265640`
-- 开工 HEAD：`3513ef539c03072a838022b1984a1bb3a3a11b40`（文档提交后替换为精确值）
+- 开工 HEAD：`6249018724a28e5297d55c9629dfd36a1653f9ee`（S4 pin；历史中含 empty noop `3513ef53`，不改写）
 
 ## 开工 HEAD
 
-3513ef539c03072a838022b1984a1bb3a3a11b40
+`6249018724a28e5297d55c9629dfd36a1653f9ee`
 
 ## 完整任务正文
 
