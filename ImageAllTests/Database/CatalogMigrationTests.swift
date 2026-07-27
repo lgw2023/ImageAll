@@ -58,7 +58,7 @@ final class CatalogMigrationTests: XCTestCase {
             )
             try db.execute(
                 sql: "DELETE FROM grdb_migrations WHERE identifier = ?",
-                arguments: [CatalogMigrationID.v020HardenLibrarySlimmingRecycle]
+                arguments: [CatalogMigrationID.v021AddPhotosRecycleIdentifier]
             )
         }
         try legacy.pool.close()
@@ -119,6 +119,7 @@ final class CatalogMigrationTests: XCTestCase {
                     CatalogMigrationID.v018AddAssetSimilarityFingerprint,
                     CatalogMigrationID.v019AddLibrarySlimmingRecycle,
                     CatalogMigrationID.v020HardenLibrarySlimmingRecycle,
+                    CatalogMigrationID.v021AddPhotosRecycleIdentifier,
                 ]
             )
             try db.execute(sql: "PRAGMA foreign_keys = ON")
@@ -194,6 +195,7 @@ final class CatalogMigrationTests: XCTestCase {
                     CatalogMigrationID.v018AddAssetSimilarityFingerprint,
                     CatalogMigrationID.v019AddLibrarySlimmingRecycle,
                     CatalogMigrationID.v020HardenLibrarySlimmingRecycle,
+                    CatalogMigrationID.v021AddPhotosRecycleIdentifier,
                 ]
             )
             try db.execute(sql: "PRAGMA foreign_keys = ON")
@@ -233,6 +235,7 @@ final class CatalogMigrationTests: XCTestCase {
                     CatalogMigrationID.v018AddAssetSimilarityFingerprint,
                     CatalogMigrationID.v019AddLibrarySlimmingRecycle,
                     CatalogMigrationID.v020HardenLibrarySlimmingRecycle,
+                    CatalogMigrationID.v021AddPhotosRecycleIdentifier,
                 ]
             )
             try db.execute(

@@ -53,6 +53,8 @@ struct CompositionRoot {
         let quarantineRootURL = QuarantinePathLayout.rootURL(
             applicationSupportDirectory: runtime.paths.applicationSupportDirectory
         )
+        let photosAccess = PhotoKitPhotosLibraryAdapter()
+        let photosMutation = PhotoKitPhotosLibraryMutationAdapter()
         let librarySlimmingRecycle = LibrarySlimmingRecycleService(
             database: runtime.database,
             mutationAccess: FolderMutationAccessService(
@@ -61,7 +63,8 @@ struct CompositionRoot {
             ),
             quarantineRootURL: quarantineRootURL,
             clock: clock,
-            jobQueue: runtime.jobQueue
+            jobQueue: runtime.jobQueue,
+            photosMutation: photosMutation
         )
         let librarySlimmingMutationAuthorization = FolderMutationAuthorizationCoordinator(
             database: runtime.database,
@@ -83,7 +86,6 @@ struct CompositionRoot {
             clock: clock
         )
         let handler = FolderReconcileHandler(rootAccess: sourceAccess)
-        let photosAccess = PhotoKitPhotosLibraryAdapter()
         let photosConnection = PhotosLibraryConnectionService(
             database: runtime.database,
             access: photosAccess,

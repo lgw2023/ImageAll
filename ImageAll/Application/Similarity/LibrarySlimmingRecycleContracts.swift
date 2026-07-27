@@ -24,7 +24,8 @@ struct RecycleEntryRecord: Identifiable, Sendable, Equatable {
     let purgeAfterMs: Int64
     let state: RecycleEntryState
     let quarantineRelativePath: String?
-    let originalRelativePath: String
+    let originalRelativePath: String?
+    let photosLocalIdentifier: String?
     let errorCode: String?
     let fileName: String?
 }
@@ -59,6 +60,9 @@ enum LibrarySlimmingRecycleError: Error, Equatable, Sendable {
     case ineligiblePhotos
     case alreadyRecycled
     case mutationAuthorizationRequired
+    case photosAuthorizationRequired
+    case photosRestoreRequiresPhotosApp
+    case photosMutationFailed
     case restoreConflict
     case ioFailure
     case sourceChanged
@@ -67,14 +71,16 @@ enum LibrarySlimmingRecycleError: Error, Equatable, Sendable {
 
 struct LibrarySlimmingRecycleMoveOutcome: Sendable, Equatable {
     var recycledEntryIDs: [UUID]
+    /// Retained for compatibility; S5 no longer skips Photos on the success path.
     var skippedPhotosAssetIDs: [UUID]
     var failedAssetIDs: [UUID]
     var authorizationRequiredSourceIDs: [UUID]
     var authorizationRequiredAssetIDs: [UUID]
+    var authorizationDeniedPhotosAssetIDs: [UUID]
 }
 
 protocol LibrarySlimmingRecyclePort: Sendable {
-    func moveFolderAssetsToRecycle(assetIDs: [UUID]) throws -> LibrarySlimmingRecycleMoveOutcome
+    func moveAssetsToRecycle(assetIDs: [UUID]) throws -> LibrarySlimmingRecycleMoveOutcome
     func listRecycledEntries() throws -> [RecycleEntryRecord]
     func restore(entryID: UUID) throws
     func purgeNow(entryID: UUID) throws
@@ -82,4 +88,13 @@ protocol LibrarySlimmingRecyclePort: Sendable {
     func enqueuePurgeExpired() throws
     @discardableResult
     func recoverInterruptedOperations() throws -> Int
+    @discardableResult
+    func reconcilePhotosRecycleEntries() throws -> Int
+}
+
+extension LibrarySlimmingRecyclePort {
+    /// Compatibility alias used by older call sites / stubs.
+    func moveFolderAssetsToRecycle(assetIDs: [UUID]) throws -> LibrarySlimmingRecycleMoveOutcome {
+        try moveAssetsToRecycle(assetIDs: assetIDs)
+    }
 }

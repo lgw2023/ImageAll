@@ -953,7 +953,8 @@ final class LibraryWorkspaceModel: ObservableObject {
         }
         do {
             let entries = try await Self.offMain {
-                try recycle.listRecycledEntries()
+                _ = try recycle.reconcilePhotosRecycleEntries()
+                return try recycle.listRecycledEntries()
             }
             librarySlimmingRecycleEntries = entries
         } catch {
@@ -977,7 +978,7 @@ final class LibraryWorkspaceModel: ObservableObject {
         defer { isMutatingLibrarySlimmingRecycle = false }
         do {
             var outcome = try await Self.offMain {
-                try recycle.moveFolderAssetsToRecycle(assetIDs: assetIDs)
+                try recycle.moveAssetsToRecycle(assetIDs: assetIDs)
             }
             if !outcome.authorizationRequiredSourceIDs.isEmpty,
                let mutationAuthorization = librarySlimmingMutationAuthorization
@@ -1001,10 +1002,13 @@ final class LibraryWorkspaceModel: ObservableObject {
                         !authorizationFailures.contains($0)
                     }
                     let retry = try await Self.offMain {
-                        try recycle.moveFolderAssetsToRecycle(assetIDs: retryAssetIDs)
+                        try recycle.moveAssetsToRecycle(assetIDs: retryAssetIDs)
                     }
                     outcome.recycledEntryIDs.append(contentsOf: retry.recycledEntryIDs)
                     outcome.skippedPhotosAssetIDs.append(contentsOf: retry.skippedPhotosAssetIDs)
+                    outcome.authorizationDeniedPhotosAssetIDs.append(
+                        contentsOf: retry.authorizationDeniedPhotosAssetIDs
+                    )
                     outcome.failedAssetIDs = otherFailedAssetIDs + retry.failedAssetIDs
                     outcome.authorizationRequiredSourceIDs = retry.authorizationRequiredSourceIDs
                     outcome.authorizationRequiredAssetIDs = retry.authorizationRequiredAssetIDs
@@ -1012,8 +1016,10 @@ final class LibraryWorkspaceModel: ObservableObject {
             }
             selectedLibrarySlimmingMemberIDs = []
             // Drop recycled members from in-memory clusters.
-            let recycled = Set(assetIDs).subtracting(outcome.skippedPhotosAssetIDs)
+            let recycled = Set(assetIDs)
+                .subtracting(outcome.skippedPhotosAssetIDs)
                 .subtracting(outcome.failedAssetIDs)
+                .subtracting(outcome.authorizationDeniedPhotosAssetIDs)
             librarySlimmingClusters = librarySlimmingClusters.compactMap { cluster in
                 let remaining = cluster.memberAssetIDs.filter { !recycled.contains($0) }
                 guard remaining.count >= 2 else { return nil }
@@ -1039,8 +1045,10 @@ final class LibraryWorkspaceModel: ObservableObject {
             if !outcome.recycledEntryIDs.isEmpty {
                 parts.append("已移入回收站 \(outcome.recycledEntryIDs.count) 张")
             }
-            if !outcome.skippedPhotosAssetIDs.isEmpty {
-                parts.append("已跳过 Photos \(outcome.skippedPhotosAssetIDs.count) 张（S5）")
+            if !outcome.authorizationDeniedPhotosAssetIDs.isEmpty {
+                parts.append(
+                    "Photos 未授权 \(outcome.authorizationDeniedPhotosAssetIDs.count) 张"
+                )
             }
             if !outcome.authorizationRequiredSourceIDs.isEmpty {
                 parts.append("部分来源需要写入授权")
@@ -1069,6 +1077,12 @@ final class LibraryWorkspaceModel: ObservableObject {
             }
             librarySlimmingStatusMessage = "已从回收站恢复"
             await refreshLibrarySlimmingRecycleEntries()
+        } catch LibrarySlimmingRecycleError.photosRestoreRequiresPhotosApp {
+            librarySlimmingStatusMessage =
+                "Photos 资产需在系统「照片 → 最近删除」中恢复；恢复后将自动对账"
+            await refreshLibrarySlimmingRecycleEntries()
+        } catch LibrarySlimmingRecycleError.photosAuthorizationRequired {
+            librarySlimmingStatusMessage = "恢复失败：需要 Photos 读写授权"
         } catch LibrarySlimmingRecycleError.mutationAuthorizationRequired {
             guard let sourceID = entry?.sourceID,
                   let mutationAuthorization = librarySlimmingMutationAuthorization
@@ -1090,6 +1104,10 @@ final class LibraryWorkspaceModel: ObservableObject {
                 await refreshLibrarySlimmingRecycleEntries()
             } catch LibrarySlimmingRecycleError.restoreConflict {
                 librarySlimmingStatusMessage = "恢复失败：原路径已存在文件"
+            } catch LibrarySlimmingRecycleError.photosRestoreRequiresPhotosApp {
+                librarySlimmingStatusMessage =
+                    "Photos 资产需在系统「照片 → 最近删除」中恢复；恢复后将自动对账"
+                await refreshLibrarySlimmingRecycleEntries()
             } catch {
                 librarySlimmingStatusMessage = "恢复失败：\(error.localizedDescription)"
             }

@@ -301,7 +301,7 @@ struct LibrarySlimmingWorkspaceView: View {
                         }
                         .disabled(model.isMutatingLibrarySlimmingRecycle)
                         .padding(.horizontal, 16)
-                        .help("确认后将文件夹资产移入应用回收站；Photos 资产将跳过直至 S5")
+                        .help("确认后将选中资产移入回收站（文件夹走应用 quarantine；Photos 经 PhotoKit 进入系统最近删除）")
                     }
 
                     if model.librarySlimmingComparisonAssetIDs.count >= 2 {
@@ -375,7 +375,12 @@ struct LibrarySlimmingWorkspaceView: View {
                         SlimmingThumbnailCell(model: model, assetID: entry.assetID, isSelected: false)
                             .frame(width: 72, height: 72)
                         VStack(alignment: .leading, spacing: 4) {
-                            Text(entry.fileName ?? entry.originalRelativePath)
+                            Text(
+                                entry.fileName
+                                    ?? entry.originalRelativePath
+                                    ?? entry.photosLocalIdentifier
+                                    ?? "未命名"
+                            )
                                 .font(.body.weight(.medium))
                                 .lineLimit(2)
                             Text(entry.sourceKind == .file ? "文件夹" : "Photos")

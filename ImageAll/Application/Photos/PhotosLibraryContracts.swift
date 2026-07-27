@@ -103,3 +103,28 @@ protocol PhotosCloudPreviewPort: Sendable {
 protocol PhotosFeaturePrintImagePort: Sendable {
     func requestLocalFeatureImage(localIdentifier: String) throws -> Data
 }
+
+/// Presence of a Photos asset relative to the system library / Recently Deleted.
+enum PhotosAssetPresence: Equatable, Sendable {
+    case available
+    case recentlyDeleted
+    case missing
+}
+
+enum PhotosLibraryMutationError: Error, Equatable, Sendable {
+    case authorizationDenied
+    case authorizationRestricted
+    case notDetermined
+    case assetNotFound
+    case changeFailed
+}
+
+/// Sole application contract for PhotoKit write operations used by Library Slimming.
+/// Production implementations must live in the dedicated Photos mutation adapter.
+protocol PhotosLibraryMutationPort: Sendable {
+    func authorizationState() -> PhotosAuthorizationState
+    func requestAuthorization() async -> PhotosAuthorizationState
+    func moveToRecentlyDeleted(localIdentifiers: [String]) throws
+    func presence(localIdentifier: String) throws -> PhotosAssetPresence
+    func permanentlyDeleteFromRecentlyDeleted(localIdentifiers: [String]) throws
+}

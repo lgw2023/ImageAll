@@ -240,6 +240,8 @@
 		SL0000010000000000000013 /* FolderMutationAccess.swift in Sources */ = {isa = PBXBuildFile; fileRef = SL0001010000000000000013 /* FolderMutationAccess.swift */; };
 		SL0000010000000000000012 /* FolderQuarantineIO.swift in Sources */ = {isa = PBXBuildFile; fileRef = SL0001010000000000000012 /* FolderQuarantineIO.swift */; };
 		SL0000010000000000000011 /* LibrarySlimmingRecycleContracts.swift in Sources */ = {isa = PBXBuildFile; fileRef = SL0001010000000000000011 /* LibrarySlimmingRecycleContracts.swift */; };
+		SL0001010000000000000016 /* PhotoKitPhotosLibraryMutationAdapter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhotoKitPhotosLibraryMutationAdapter.swift; sourceTree = "<group>"; };
+		SL0000010000000000000016 /* PhotoKitPhotosLibraryMutationAdapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = SL0001010000000000000016 /* PhotoKitPhotosLibraryMutationAdapter.swift */; };
 		MM0000010000000000000101 /* PersonalizedSuggestionServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = MM0001010000000000000101 /* PersonalizedSuggestionServiceTests.swift */; };
 		MM0000010000000000000001 /* PersonalizedSuggestionService.swift in Sources */ = {isa = PBXBuildFile; fileRef = MM0001010000000000000001 /* PersonalizedSuggestionService.swift */; };
 		CM0000010000000000000101 /* AppCoreMLEmbeddingServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CM0001010000000000000101 /* AppCoreMLEmbeddingServiceTests.swift */; };
@@ -703,6 +705,7 @@
 				OO0001010000000000000002 /* PhotosLibraryConnectionService.swift */,
 				OO0001010000000000000003 /* PhotosReconcileHandler.swift */,
 				OO0001010000000000000004 /* PhotoKitPhotosLibraryAdapter.swift */,
+				SL0001010000000000000016 /* PhotoKitPhotosLibraryMutationAdapter.swift */,
 				OO0001010000000000000005 /* LibraryAssetImageLoader.swift */,
 			);
 			path = Photos;
@@ -1463,6 +1466,7 @@
 				SL0000010000000000000008 /* LibrarySlimmingScanService.swift in Sources */,
 				SL0000010000000000000009 /* CatalogSlimmingEmbeddingLoader.swift in Sources */,
 				SL0000010000000000000011 /* LibrarySlimmingRecycleContracts.swift in Sources */,
+				SL0000010000000000000016 /* PhotoKitPhotosLibraryMutationAdapter.swift in Sources */,
 				SL0000010000000000000012 /* FolderQuarantineIO.swift in Sources */,
 				SL0000010000000000000013 /* FolderMutationAccess.swift in Sources */,
 				SL0000010000000000000014 /* LibrarySlimmingRecycleService.swift in Sources */,

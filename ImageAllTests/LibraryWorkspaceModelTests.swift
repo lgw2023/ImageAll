@@ -4033,14 +4033,16 @@ final class LibraryWorkspaceModelTests: XCTestCase {
                     skippedPhotosAssetIDs: [],
                     failedAssetIDs: [assetB.assetID, assetC.assetID],
                     authorizationRequiredSourceIDs: [sourceID],
-                    authorizationRequiredAssetIDs: [assetB.assetID]
+                    authorizationRequiredAssetIDs: [assetB.assetID],
+                    authorizationDeniedPhotosAssetIDs: []
                 ),
                 LibrarySlimmingRecycleMoveOutcome(
                     recycledEntryIDs: [recycleEntryID],
                     skippedPhotosAssetIDs: [],
                     failedAssetIDs: [],
                     authorizationRequiredSourceIDs: [],
-                    authorizationRequiredAssetIDs: []
+                    authorizationRequiredAssetIDs: [],
+                    authorizationDeniedPhotosAssetIDs: []
                 ),
             ]
         )
@@ -4094,6 +4096,7 @@ final class LibraryWorkspaceModelTests: XCTestCase {
                     state: .recycled,
                     quarantineRelativePath: "objects/entry.jpg",
                     originalRelativePath: "entry.jpg",
+                    photosLocalIdentifier: nil,
                     errorCode: nil,
                     fileName: "entry.jpg"
                 ),
@@ -8037,7 +8040,7 @@ private final class FakeLibrarySlimmingRecyclePort: LibrarySlimmingRecyclePort, 
         lock.withLock { storedEnqueuePurgeCallCount }
     }
 
-    func moveFolderAssetsToRecycle(
+    func moveAssetsToRecycle(
         assetIDs: [UUID]
     ) throws -> LibrarySlimmingRecycleMoveOutcome {
         lock.withLock {
@@ -8048,7 +8051,8 @@ private final class FakeLibrarySlimmingRecyclePort: LibrarySlimmingRecyclePort, 
                     skippedPhotosAssetIDs: [],
                     failedAssetIDs: [],
                     authorizationRequiredSourceIDs: [],
-                    authorizationRequiredAssetIDs: []
+                    authorizationRequiredAssetIDs: [],
+                    authorizationDeniedPhotosAssetIDs: []
                 )
             }
             return storedMoveOutcomes.removeFirst()
@@ -8083,6 +8087,8 @@ private final class FakeLibrarySlimmingRecyclePort: LibrarySlimmingRecyclePort, 
             return 0
         }
     }
+
+    func reconcilePhotosRecycleEntries() throws -> Int { 0 }
 }
 
 @MainActor

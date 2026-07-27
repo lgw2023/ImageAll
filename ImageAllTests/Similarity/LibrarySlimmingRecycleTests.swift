@@ -557,7 +557,7 @@ final class LibrarySlimmingRecycleTests: XCTestCase {
             quarantineRootURL: env.quarantineRoot,
             quarantineRelativePath: try XCTUnwrap(entry.quarantineRelativePath),
             sourceRootURL: env.sourceRoot,
-            originalRelativePath: entry.originalRelativePath
+            originalRelativePath: try XCTUnwrap(entry.originalRelativePath)
         )
 
         let recovered = try service.recoverInterruptedOperations()
@@ -629,9 +629,140 @@ final class LibrarySlimmingRecycleTests: XCTestCase {
         defer { env.cleanup() }
         let photosID = try env.seedPhotosAsset()
         let service = env.makeRecycleService()
-        let outcome = try service.moveFolderAssetsToRecycle(assetIDs: [photosID])
-        XCTAssertEqual(outcome.skippedPhotosAssetIDs, [photosID])
+        let outcome = try service.moveAssetsToRecycle(assetIDs: [photosID])
         XCTAssertTrue(outcome.recycledEntryIDs.isEmpty)
+        XCTAssertEqual(outcome.authorizationDeniedPhotosAssetIDs, [photosID])
+    }
+
+    func testPhotosSoftDeleteWritesRecycleEntryWithoutQuarantine() throws {
+        let env = try RecycleTestEnv(label: #function)
+        defer { env.cleanup() }
+        let photosID = try env.seedPhotosAsset(localIdentifier: "local-photos-1")
+        let fake = FakePhotosLibraryMutationPort()
+        fake.presenceByID["local-photos-1"] = .available
+        let service = env.makeRecycleService(photosMutation: fake)
+        let outcome = try service.moveAssetsToRecycle(assetIDs: [photosID])
+        XCTAssertEqual(outcome.recycledEntryIDs.count, 1)
+        XCTAssertEqual(fake.movedToRecentlyDeleted, ["local-photos-1"])
+        let entry = try XCTUnwrap(try service.listRecycledEntries().first)
+        XCTAssertEqual(entry.sourceKind, .photos)
+        XCTAssertEqual(entry.photosLocalIdentifier, "local-photos-1")
+        XCTAssertNil(entry.quarantineRelativePath)
+        let quarantineChildren = try FileManager.default.contentsOfDirectory(
+            at: env.quarantineRoot,
+            includingPropertiesForKeys: nil
+        )
+        XCTAssertTrue(quarantineChildren.isEmpty)
+        let availability = try env.database.pool.read { db in
+            try String.fetchOne(
+                db,
+                sql: "SELECT availability FROM asset WHERE id = ?",
+                arguments: [photosID.uuidString.lowercased()]
+            )
+        }
+        XCTAssertEqual(availability, "recycled")
+    }
+
+    func testPhotosAuthorizationDeniedDoesNotMutate() throws {
+        let env = try RecycleTestEnv(label: #function)
+        defer { env.cleanup() }
+        let photosID = try env.seedPhotosAsset(localIdentifier: "denied-id")
+        let fake = FakePhotosLibraryMutationPort()
+        fake.authorization = .denied
+        let service = env.makeRecycleService(photosMutation: fake)
+        let outcome = try service.moveAssetsToRecycle(assetIDs: [photosID])
+        XCTAssertTrue(outcome.recycledEntryIDs.isEmpty)
+        XCTAssertEqual(outcome.authorizationDeniedPhotosAssetIDs, [photosID])
+        XCTAssertTrue(fake.movedToRecentlyDeleted.isEmpty)
+    }
+
+    func testPhotosReconcileMarksRestoredWhenAvailableAgain() throws {
+        let env = try RecycleTestEnv(label: #function)
+        defer { env.cleanup() }
+        let photosID = try env.seedPhotosAsset(localIdentifier: "restore-id")
+        let fake = FakePhotosLibraryMutationPort()
+        fake.presenceByID["restore-id"] = .available
+        let service = env.makeRecycleService(photosMutation: fake)
+        _ = try service.moveAssetsToRecycle(assetIDs: [photosID])
+        XCTAssertEqual(fake.presenceByID["restore-id"], .recentlyDeleted)
+        fake.presenceByID["restore-id"] = .available
+        let converged = try service.reconcilePhotosRecycleEntries()
+        XCTAssertEqual(converged, 1)
+        XCTAssertTrue(try service.listRecycledEntries().isEmpty)
+        let availability = try env.database.pool.read { db in
+            try String.fetchOne(
+                db,
+                sql: "SELECT availability FROM asset WHERE id = ?",
+                arguments: [photosID.uuidString.lowercased()]
+            )
+        }
+        XCTAssertEqual(availability, "available")
+    }
+
+    func testPhotosRestoreWhileRecentlyDeletedRequiresPhotosApp() throws {
+        let env = try RecycleTestEnv(label: #function)
+        defer { env.cleanup() }
+        let photosID = try env.seedPhotosAsset(localIdentifier: "still-deleted")
+        let fake = FakePhotosLibraryMutationPort()
+        fake.presenceByID["still-deleted"] = .available
+        let service = env.makeRecycleService(photosMutation: fake)
+        _ = try service.moveAssetsToRecycle(assetIDs: [photosID])
+        let entry = try XCTUnwrap(try service.listRecycledEntries().first)
+        XCTAssertThrowsError(try service.restore(entryID: entry.id)) { error in
+            XCTAssertEqual(
+                error as? LibrarySlimmingRecycleError,
+                .photosRestoreRequiresPhotosApp
+            )
+        }
+        XCTAssertEqual(try service.listRecycledEntries().count, 1)
+    }
+
+    func testPhotosPurgeCallsPermanentDelete() throws {
+        let env = try RecycleTestEnv(label: #function)
+        defer { env.cleanup() }
+        let photosID = try env.seedPhotosAsset(localIdentifier: "purge-id")
+        let fake = FakePhotosLibraryMutationPort()
+        fake.presenceByID["purge-id"] = .available
+        let service = env.makeRecycleService(photosMutation: fake)
+        _ = try service.moveAssetsToRecycle(assetIDs: [photosID])
+        let entry = try XCTUnwrap(try service.listRecycledEntries().first)
+        try service.purgeNow(entryID: entry.id)
+        XCTAssertEqual(fake.permanentlyDeleted, ["purge-id"])
+        XCTAssertTrue(try service.listRecycledEntries().isEmpty)
+        let assetCount = try env.database.pool.read { db in
+            try Int.fetchOne(
+                db,
+                sql: "SELECT COUNT(*) FROM asset WHERE id = ?",
+                arguments: [photosID.uuidString.lowercased()]
+            ) ?? 0
+        }
+        XCTAssertEqual(assetCount, 0)
+    }
+
+    func testPhotosReconcilePurgesMissingAfterExpiry() throws {
+        let env = try RecycleTestEnv(label: #function)
+        defer { env.cleanup() }
+        let clock = FixedJobClock(nowMs: FolderReconcileTestSupport.baseTimeMs)
+        let photosID = try env.seedPhotosAsset(localIdentifier: "missing-id")
+        let fake = FakePhotosLibraryMutationPort()
+        fake.presenceByID["missing-id"] = .available
+        let service = env.makeRecycleService(clock: clock, photosMutation: fake)
+        _ = try service.moveAssetsToRecycle(assetIDs: [photosID])
+        let entry = try XCTUnwrap(try service.listRecycledEntries().first)
+        try env.database.pool.write { db in
+            try db.execute(
+                sql: """
+                UPDATE recycle_entry
+                SET trashed_at_ms = ?, purge_after_ms = ?
+                WHERE id = ?
+                """,
+                arguments: [clock.nowMs - 2, clock.nowMs - 1, entry.id.uuidString.lowercased()]
+            )
+        }
+        fake.presenceByID["missing-id"] = .missing
+        let converged = try service.reconcilePhotosRecycleEntries()
+        XCTAssertEqual(converged, 1)
+        XCTAssertTrue(try service.listRecycledEntries().isEmpty)
     }
 
     func testPurgeExpiredRemovesDueEntries() throws {
@@ -766,7 +897,8 @@ private final class RecycleTestEnv {
     func makeRecycleService(
         clock: any JobClock = FixedJobClock(nowMs: FolderReconcileTestSupport.baseTimeMs),
         mutationAccess: (any FolderMutationAccessing)? = nil,
-        jobQueue: (any JobQueue)? = nil
+        jobQueue: (any JobQueue)? = nil,
+        photosMutation: (any PhotosLibraryMutationPort)? = nil
     ) -> LibrarySlimmingRecycleService {
         LibrarySlimmingRecycleService(
             database: database,
@@ -774,7 +906,8 @@ private final class RecycleTestEnv {
                 ?? DirectFolderMutationAccess(rootsBySourceID: [sourceID: sourceRoot]),
             quarantineRootURL: quarantineRoot,
             clock: clock,
-            jobQueue: jobQueue
+            jobQueue: jobQueue,
+            photosMutation: photosMutation
         )
     }
 
@@ -847,7 +980,7 @@ private final class RecycleTestEnv {
         return SeededAsset(assetID: assetID, fileURL: fileURL)
     }
 
-    func seedPhotosAsset() throws -> UUID {
+    func seedPhotosAsset(localIdentifier: String = "local-id") throws -> UUID {
         let photosSourceID = UUID()
         let assetID = UUID()
         try database.pool.write { db in
@@ -870,16 +1003,65 @@ private final class RecycleTestEnv {
                     id, source_id, locator_kind, relative_path, photos_local_identifier,
                     locator_state, media_type, content_revision, availability,
                     record_created_at_ms, record_updated_at_ms, file_name
-                ) VALUES (?, ?, 'photos', NULL, 'local-id', 'current', 'public.jpeg', 1, 'available', ?, ?, NULL)
+                ) VALUES (?, ?, 'photos', NULL, ?, 'current', 'public.jpeg', 1, 'available', ?, ?, NULL)
                 """,
                 arguments: [
                     assetID.uuidString.lowercased(),
                     photosSourceID.uuidString.lowercased(),
+                    localIdentifier,
                     FolderReconcileTestSupport.baseTimeMs,
                     FolderReconcileTestSupport.baseTimeMs,
                 ]
             )
         }
         return assetID
+    }
+}
+
+private final class FakePhotosLibraryMutationPort: PhotosLibraryMutationPort, @unchecked Sendable {
+    var authorization: PhotosAuthorizationState = .authorized
+    var presenceByID: [String: PhotosAssetPresence] = [:]
+    private(set) var movedToRecentlyDeleted: [String] = []
+    private(set) var permanentlyDeleted: [String] = []
+
+    func authorizationState() -> PhotosAuthorizationState {
+        authorization
+    }
+
+    func requestAuthorization() async -> PhotosAuthorizationState {
+        authorization
+    }
+
+    func moveToRecentlyDeleted(localIdentifiers: [String]) throws {
+        guard authorization == .authorized else {
+            throw PhotosLibraryMutationError.authorizationDenied
+        }
+        for id in localIdentifiers {
+            guard presenceByID[id] == .available else {
+                throw PhotosLibraryMutationError.assetNotFound
+            }
+            movedToRecentlyDeleted.append(id)
+            presenceByID[id] = .recentlyDeleted
+        }
+    }
+
+    func presence(localIdentifier: String) throws -> PhotosAssetPresence {
+        guard authorization == .authorized else {
+            throw PhotosLibraryMutationError.authorizationDenied
+        }
+        return presenceByID[localIdentifier] ?? .missing
+    }
+
+    func permanentlyDeleteFromRecentlyDeleted(localIdentifiers: [String]) throws {
+        guard authorization == .authorized else {
+            throw PhotosLibraryMutationError.authorizationDenied
+        }
+        for id in localIdentifiers {
+            guard presenceByID[id] == .recentlyDeleted || presenceByID[id] == .missing else {
+                throw PhotosLibraryMutationError.assetNotFound
+            }
+            permanentlyDeleted.append(id)
+            presenceByID[id] = .missing
+        }
     }
 }
