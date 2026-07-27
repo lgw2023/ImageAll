@@ -61,8 +61,9 @@ final class CatalogMigrationTests: XCTestCase {
             }
             // GRDB rejects replaying an earlier migration while a later one remains
             // recorded; clear the subsequent repair id so v012→v013 can re-apply.
+            try db.execute(sql: "DROP TABLE IF EXISTS asset_similarity_fingerprint")
             try db.execute(
-                sql: "DELETE FROM grdb_migrations WHERE identifier IN (?, ?, ?, ?, ?, ?)",
+                sql: "DELETE FROM grdb_migrations WHERE identifier IN (?, ?, ?, ?, ?, ?, ?)",
                 arguments: [
                     CatalogMigrationID.v012RepairStandardTagBinding,
                     CatalogMigrationID.v013PhotosMissingAssetRepair,
@@ -70,6 +71,7 @@ final class CatalogMigrationTests: XCTestCase {
                     CatalogMigrationID.v015AddSuggestionScoreThresholds,
                     CatalogMigrationID.v016AddTagGroups,
                     CatalogMigrationID.v017PerTagPersonalSuggestionModels,
+                    CatalogMigrationID.v018AddAssetSimilarityFingerprint,
                 ]
             )
             try db.execute(sql: "PRAGMA foreign_keys = ON")
@@ -131,14 +133,16 @@ final class CatalogMigrationTests: XCTestCase {
             if try db.columns(in: "tag").contains(where: { $0.name == "group_id" }) {
                 try Self.stripTagGroupColumn(db)
             }
+            try db.execute(sql: "DROP TABLE IF EXISTS asset_similarity_fingerprint")
             try db.execute(
-                sql: "DELETE FROM grdb_migrations WHERE identifier IN (?, ?, ?, ?, ?)",
+                sql: "DELETE FROM grdb_migrations WHERE identifier IN (?, ?, ?, ?, ?, ?)",
                 arguments: [
                     CatalogMigrationID.v013PhotosMissingAssetRepair,
                     CatalogMigrationID.v014AddTrainingRunsAndPersonalMultiSlot,
                     CatalogMigrationID.v015AddSuggestionScoreThresholds,
                     CatalogMigrationID.v016AddTagGroups,
                     CatalogMigrationID.v017PerTagPersonalSuggestionModels,
+                    CatalogMigrationID.v018AddAssetSimilarityFingerprint,
                 ]
             )
             try db.execute(sql: "PRAGMA foreign_keys = ON")
@@ -167,11 +171,13 @@ final class CatalogMigrationTests: XCTestCase {
             if try db.columns(in: "tag").contains(where: { $0.name == "group_id" }) {
                 try Self.stripTagGroupColumn(db)
             }
+            try db.execute(sql: "DROP TABLE IF EXISTS asset_similarity_fingerprint")
             try db.execute(
-                sql: "DELETE FROM grdb_migrations WHERE identifier IN (?, ?)",
+                sql: "DELETE FROM grdb_migrations WHERE identifier IN (?, ?, ?)",
                 arguments: [
                     CatalogMigrationID.v016AddTagGroups,
                     CatalogMigrationID.v017PerTagPersonalSuggestionModels,
+                    CatalogMigrationID.v018AddAssetSimilarityFingerprint,
                 ]
             )
             try db.execute(

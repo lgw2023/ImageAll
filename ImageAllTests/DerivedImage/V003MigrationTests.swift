@@ -500,6 +500,7 @@ final class V003MigrationTests: XCTestCase {
             "suggestion_score_threshold_default",
             "suggestion_score_threshold_override",
             "tag_group",
+            "asset_similarity_fingerprint",
         ])
         for table in CatalogSchemaExpectations.businessTables
             where table != "derived_image_cache_entry"

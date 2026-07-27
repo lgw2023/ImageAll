@@ -214,6 +214,11 @@
 		KK0000010000000000000003 /* GRDBPersonalizationRepository.swift in Sources */ = {isa = PBXBuildFile; fileRef = KK0001010000000000000003 /* GRDBPersonalizationRepository.swift */; };
 		LL0000010000000000000101 /* FeaturePrintCacheTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = LL0001010000000000000101 /* FeaturePrintCacheTests.swift */; };
 		LL0000010000000000000001 /* FeaturePrintCacheService.swift in Sources */ = {isa = PBXBuildFile; fileRef = LL0001010000000000000001 /* FeaturePrintCacheService.swift */; };
+		SL0000010000000000000001 /* IdenticalDuplicateContracts.swift in Sources */ = {isa = PBXBuildFile; fileRef = SL0001010000000000000001 /* IdenticalDuplicateContracts.swift */; };
+		SL0000010000000000000002 /* PerceptualImageHash.swift in Sources */ = {isa = PBXBuildFile; fileRef = SL0001010000000000000002 /* PerceptualImageHash.swift */; };
+		SL0000010000000000000003 /* FingerprintCompletionService.swift in Sources */ = {isa = PBXBuildFile; fileRef = SL0001010000000000000003 /* FingerprintCompletionService.swift */; };
+		SL0000010000000000000004 /* IdenticalDuplicateClusterService.swift in Sources */ = {isa = PBXBuildFile; fileRef = SL0001010000000000000004 /* IdenticalDuplicateClusterService.swift */; };
+		SL0000010000000000000101 /* IdenticalDuplicateDetectionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = SL0001010000000000000101 /* IdenticalDuplicateDetectionTests.swift */; };
 		MM0000010000000000000101 /* PersonalizedSuggestionServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = MM0001010000000000000101 /* PersonalizedSuggestionServiceTests.swift */; };
 		MM0000010000000000000001 /* PersonalizedSuggestionService.swift in Sources */ = {isa = PBXBuildFile; fileRef = MM0001010000000000000001 /* PersonalizedSuggestionService.swift */; };
 		CM0000010000000000000101 /* AppCoreMLEmbeddingServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CM0001010000000000000101 /* AppCoreMLEmbeddingServiceTests.swift */; };
@@ -487,6 +492,11 @@
 		KK0001010000000000000003 /* GRDBPersonalizationRepository.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GRDBPersonalizationRepository.swift; sourceTree = "<group>"; };
 		LL0001010000000000000101 /* FeaturePrintCacheTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FeaturePrintCacheTests.swift; sourceTree = "<group>"; };
 		LL0001010000000000000001 /* FeaturePrintCacheService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FeaturePrintCacheService.swift; sourceTree = "<group>"; };
+		SL0001010000000000000001 /* IdenticalDuplicateContracts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IdenticalDuplicateContracts.swift; sourceTree = "<group>"; };
+		SL0001010000000000000002 /* PerceptualImageHash.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PerceptualImageHash.swift; sourceTree = "<group>"; };
+		SL0001010000000000000003 /* FingerprintCompletionService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FingerprintCompletionService.swift; sourceTree = "<group>"; };
+		SL0001010000000000000004 /* IdenticalDuplicateClusterService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IdenticalDuplicateClusterService.swift; sourceTree = "<group>"; };
+		SL0001010000000000000101 /* IdenticalDuplicateDetectionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IdenticalDuplicateDetectionTests.swift; sourceTree = "<group>"; };
 		MM0001010000000000000101 /* PersonalizedSuggestionServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersonalizedSuggestionServiceTests.swift; sourceTree = "<group>"; };
 		MM0001010000000000000001 /* PersonalizedSuggestionService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersonalizedSuggestionService.swift; sourceTree = "<group>"; };
 		CM0001010000000000000101 /* AppCoreMLEmbeddingServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppCoreMLEmbeddingServiceTests.swift; sourceTree = "<group>"; };
@@ -588,6 +598,7 @@
 		AA0006010000000000000003 /* ImageAllTests */ = {
 			isa = PBXGroup;
 			children = (
+				SL0006010000000000000003 /* Similarity */,
 				EX0001010000000000000101 /* PortableCatalogExportTests.swift */,
 				OO0006010000000000000003 /* Photos */,
 				JJ0001010000000000000101 /* LibraryWorkspaceModelTests.swift */,
@@ -696,6 +707,7 @@
 		AA0006010000000000000006 /* Application */ = {
 			isa = PBXGroup;
 			children = (
+				SL0006010000000000000001 /* Similarity */,
 				OO0006010000000000000001 /* Photos */,
 				KK0006010000000000000001 /* Personalization */,
 				HH0006010000000000000001 /* Authorization */,
@@ -828,6 +840,7 @@
 		CC0006010000000000000001 /* Infrastructure */ = {
 			isa = PBXGroup;
 			children = (
+				SL0006010000000000000002 /* Similarity */,
 				EX0001010000000000000001 /* PortableCatalogExporter.swift */,
 				OO0006010000000000000002 /* Photos */,
 				KK0006010000000000000002 /* Personalization */,
@@ -1147,6 +1160,33 @@
 			path = DerivedImage;
 			sourceTree = "<group>";
 		};
+
+		SL0006010000000000000001 /* Similarity */ = {
+			isa = PBXGroup;
+			children = (
+				SL0001010000000000000001 /* IdenticalDuplicateContracts.swift */,
+			);
+			path = Similarity;
+			sourceTree = "<group>";
+		};
+		SL0006010000000000000002 /* Similarity */ = {
+			isa = PBXGroup;
+			children = (
+				SL0001010000000000000002 /* PerceptualImageHash.swift */,
+				SL0001010000000000000003 /* FingerprintCompletionService.swift */,
+				SL0001010000000000000004 /* IdenticalDuplicateClusterService.swift */,
+			);
+			path = Similarity;
+			sourceTree = "<group>";
+		};
+		SL0006010000000000000003 /* Similarity */ = {
+			isa = PBXGroup;
+			children = (
+				SL0001010000000000000101 /* IdenticalDuplicateDetectionTests.swift */,
+			);
+			path = Similarity;
+			sourceTree = "<group>";
+		};
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
@@ -1321,6 +1361,10 @@
 				KK0000010000000000000002 /* PersonalizationCatalogPort.swift in Sources */,
 				MM0000010000000000000001 /* PersonalizedSuggestionService.swift in Sources */,
 				LL0000010000000000000001 /* FeaturePrintCacheService.swift in Sources */,
+				SL0000010000000000000001 /* IdenticalDuplicateContracts.swift in Sources */,
+				SL0000010000000000000002 /* PerceptualImageHash.swift in Sources */,
+				SL0000010000000000000003 /* FingerprintCompletionService.swift in Sources */,
+				SL0000010000000000000004 /* IdenticalDuplicateClusterService.swift in Sources */,
 				KK0000010000000000000003 /* GRDBPersonalizationRepository.swift in Sources */,
 				AA0000010000000000000001 /* ImageAllApp.swift in Sources */,
 				AA0000010000000000000002 /* RootView.swift in Sources */,
@@ -1460,6 +1504,7 @@
 				OO0000010000000000000101 /* PhotosIntegrationTests.swift in Sources */,
 				MM0000010000000000000101 /* PersonalizedSuggestionServiceTests.swift in Sources */,
 				LL0000010000000000000101 /* FeaturePrintCacheTests.swift in Sources */,
+				SL0000010000000000000101 /* IdenticalDuplicateDetectionTests.swift in Sources */,
 				KK0000010000000000000101 /* PersonalizationPersistenceTests.swift in Sources */,
 				NN0000010000000000000101 /* FullLibrarySuggestionsJobTests.swift in Sources */,
 				ST0000010000000000000003 /* SuggestionThresholdTests.swift in Sources */,

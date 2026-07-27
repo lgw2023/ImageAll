@@ -40,6 +40,7 @@ final class FolderReconcilePrivacyRegressionTests: XCTestCase {
             CatalogMigrationID.v015AddSuggestionScoreThresholds,
             CatalogMigrationID.v016AddTagGroups,
             CatalogMigrationID.v017PerTagPersonalSuggestionModels,
+            CatalogMigrationID.v018AddAssetSimilarityFingerprint,
         ])
     }
 }

@@ -23,6 +23,7 @@ struct CatalogDatabase: Sendable {
         V015AddSuggestionScoreThresholdsMigration.register(on: &migrator)
         V016AddTagGroupsMigration.register(on: &migrator)
         V017PerTagPersonalSuggestionModelsMigration.register(on: &migrator)
+        V018AddAssetSimilarityFingerprintMigration.register(on: &migrator)
         return migrator
     }
 
@@ -1331,6 +1332,36 @@ enum V016AddTagGroupsMigration {
                 sql: """
                 CREATE INDEX tag_group_id_idx
                 ON tag(group_id, id)
+                """
+            )
+        }
+    }
+}
+
+enum V018AddAssetSimilarityFingerprintMigration {
+    static func register(on migrator: inout DatabaseMigrator) {
+        migrator.registerMigration(CatalogMigrationID.v018AddAssetSimilarityFingerprint) { db in
+            try db.execute(
+                sql: """
+                CREATE TABLE asset_similarity_fingerprint (
+                    asset_id TEXT NOT NULL PRIMARY KEY REFERENCES asset(id) ON DELETE CASCADE,
+                    content_revision INTEGER NOT NULL CHECK(content_revision >= 1),
+                    algo_version TEXT NOT NULL CHECK(length(algo_version) > 0),
+                    perceptual_hash BLOB NOT NULL CHECK(length(perceptual_hash) = 8),
+                    created_at_ms INTEGER NOT NULL CHECK(created_at_ms >= 0),
+                    updated_at_ms INTEGER NOT NULL CHECK(updated_at_ms >= 0),
+                    CHECK(
+                        length(asset_id) = 36
+                        AND asset_id = lower(asset_id)
+                        AND asset_id GLOB '????????-????-????-????-????????????'
+                    )
+                ) STRICT
+                """
+            )
+            try db.execute(
+                sql: """
+                CREATE INDEX asset_similarity_fingerprint_hash_idx
+                ON asset_similarity_fingerprint (algo_version, perceptual_hash, asset_id)
                 """
             )
         }

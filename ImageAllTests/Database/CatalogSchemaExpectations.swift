@@ -80,6 +80,7 @@ enum CatalogSchemaExpectations {
 
     static let businessTables = [
         "asset",
+        "asset_similarity_fingerprint",
         "asset_tag_decision",
         "catalog_scope",
         "derived_image_cache_entry",
@@ -117,6 +118,7 @@ enum CatalogSchemaExpectations {
         "asset_current_time_desc_idx",
         "asset_current_time_idx",
         "asset_generation_missing_idx",
+        "asset_similarity_fingerprint_hash_idx",
         "asset_source_availability_idx",
         "decision_tag_idx",
         "derived_image_cache_key_uq",
@@ -292,6 +294,14 @@ enum CatalogSchemaExpectations {
             .init(name: "modified_at_ns", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
             .init(name: "resource_id", type: "BLOB", notNull: false, defaultValue: nil, primaryKeyOrder: 0),
             .init(name: "sha256", type: "BLOB", notNull: false, defaultValue: nil, primaryKeyOrder: 0),
+        ],
+        "asset_similarity_fingerprint": [
+            .init(name: "asset_id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 1),
+            .init(name: "content_revision", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "algo_version", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "perceptual_hash", type: "BLOB", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "created_at_ms", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "updated_at_ms", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
         ],
         "tag": [
             .init(name: "id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 1),
@@ -475,6 +485,9 @@ enum CatalogSchemaExpectations {
         "file_fingerprint": [
             .init(from: "asset_id", toTable: "asset", to: "id", onDelete: "CASCADE"),
         ],
+        "asset_similarity_fingerprint": [
+            .init(from: "asset_id", toTable: "asset", to: "id", onDelete: "CASCADE"),
+        ],
         "tag": [
             .init(from: "group_id", toTable: "tag_group", to: "id", onDelete: "RESTRICT"),
         ],
@@ -521,6 +534,7 @@ enum CatalogSchemaExpectations {
         "asset_current_time_desc_idx": "asset",
         "asset_current_time_idx": "asset",
         "asset_generation_missing_idx": "asset",
+        "asset_similarity_fingerprint_hash_idx": "asset_similarity_fingerprint",
         "asset_source_availability_idx": "asset",
         "tag_normalized_name_uq": "tag",
         "tag_group_id_idx": "tag",
@@ -714,6 +728,15 @@ enum CatalogSchemaExpectations {
             ],
             unique: false,
             partialPredicateSQL: "locator_kind = 'file' AND locator_state = 'current'"
+        ),
+        .init(
+            name: "asset_similarity_fingerprint_hash_idx",
+            keyColumns: [
+                .init(name: "algo_version", descending: false, collation: "BINARY"),
+                .init(name: "perceptual_hash", descending: false, collation: "BINARY"),
+                .init(name: "asset_id", descending: false, collation: "BINARY"),
+            ],
+            unique: false
         ),
         .init(
             name: "file_fingerprint_resource_id_idx",

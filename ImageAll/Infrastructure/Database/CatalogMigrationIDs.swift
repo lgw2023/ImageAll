@@ -21,6 +21,8 @@ enum CatalogMigrationID {
     static let v016AddTagGroups = "v016_add_tag_groups"
     static let v017PerTagPersonalSuggestionModels =
         "v017_per_tag_personal_suggestion_models"
+    static let v018AddAssetSimilarityFingerprint =
+        "v018_add_asset_similarity_fingerprint"
 
     static let knownOrdered: [String] = [
         v001CreateCatalogCore,
@@ -40,5 +42,6 @@ enum CatalogMigrationID {
         v015AddSuggestionScoreThresholds,
         v016AddTagGroups,
         v017PerTagPersonalSuggestionModels,
+        v018AddAssetSimilarityFingerprint,
     ]
 }
