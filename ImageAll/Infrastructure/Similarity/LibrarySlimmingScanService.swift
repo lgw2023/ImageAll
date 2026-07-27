@@ -677,6 +677,22 @@ struct LibrarySlimmingAnalysisService: LibrarySlimmingAnalysisJobPort {
         guard !members.isEmpty else {
             throw FingerprintCompletionError.notFound
         }
+        // One global analysis job at a time. Explicit new analysis must
+        // supersede a paused/pending/retryable job so seed searches are not
+        // blocked by an unfinished prior run. A still-running job keeps the
+        // coalescing key until it settles.
+        if let existing = try latestActiveAnalysisJob() {
+            switch existing.state {
+            case .pending, .paused, .retryableFailed:
+                _ = try queue.applyStateCommand(
+                    JobStateCommand(jobID: existing.id, operation: .cancel)
+                )
+            case .running:
+                throw JobQueueError.activeCoalescingConflict(existingJobID: existing.id)
+            case .completed, .terminalFailed, .cancelled:
+                break
+            }
+        }
         let jobID = UUID()
         let nowMs = clock.nowMs
         let command = try LibrarySlimmingAnalysisJobFactory.makeCommand(
@@ -705,6 +721,27 @@ struct LibrarySlimmingAnalysisService: LibrarySlimmingAnalysisJobPort {
             }
         }
         return try snapshot(jobID: jobID)
+    }
+
+    private func latestActiveAnalysisJob() throws -> JobRecordSnapshot? {
+        let jobID = try database.pool.read { db -> UUID? in
+            guard let raw: String = try String.fetchOne(
+                db,
+                sql: """
+                SELECT id FROM job
+                WHERE coalescing_key = ?
+                    AND state IN ('pending', 'running', 'paused', 'retryableFailed')
+                ORDER BY updated_at_ms DESC, id DESC
+                LIMIT 1
+                """,
+                arguments: [LibrarySlimmingAnalysisJobFactory.kind]
+            ) else {
+                return nil
+            }
+            return UUID(uuidString: raw)
+        }
+        guard let jobID else { return nil }
+        return try queue.fetchJob(id: jobID)
     }
 
     func runPending() throws {

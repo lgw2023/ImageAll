@@ -1332,6 +1332,9 @@ final class LibraryWorkspaceModel: ObservableObject {
             if snapshot.state == .retryableFailed || snapshot.state == .pending {
                 startLibrarySlimmingAnalysisAutoRunner(jobID: snapshot.jobID)
             }
+        } catch let JobQueueError.activeCoalescingConflict {
+            isAnalyzingLibrarySlimming = false
+            librarySlimmingStatusMessage = "已有分析正在进行，请先暂停后再用当前种子重新发起。"
         } catch {
             isAnalyzingLibrarySlimming = false
             librarySlimmingStatusMessage = "分析失败：\(error.localizedDescription)"

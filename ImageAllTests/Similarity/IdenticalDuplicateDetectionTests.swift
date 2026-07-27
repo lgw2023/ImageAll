@@ -386,6 +386,75 @@ final class IdenticalDuplicateDetectionTests: XCTestCase {
         XCTAssertEqual(finished.result?.clusters.map(\.kind), [.byteIdentical])
         XCTAssertEqual(finished.result?.pendingAnalysisAssetIDs, [])
     }
+
+    func testLibraryAnalysisEnqueueSupersedesPausedJob() throws {
+        let env = try SimilarityTestSupport.Environment(label: #function)
+        defer { env.cleanup() }
+        let bytes = try XCTUnwrap(SimilarityTestSupport.patternedImageData(seed: 92, uti: .png))
+        let left = try env.seedAsset(relativePath: "supersede-left.png", contents: bytes, mediaType: "public.png")
+        let right = try env.seedAsset(relativePath: "supersede-right.png", contents: bytes, mediaType: "public.png")
+        let seed = try env.seedAsset(
+            relativePath: "supersede-seed.png",
+            contents: try XCTUnwrap(SimilarityTestSupport.patternedImageData(seed: 93, uti: .png)),
+            mediaType: "public.png"
+        )
+        let completion = env.makeCompletionService()
+        let featureLoader = DictionarySlimmingFeatureLoader(vectors: [:])
+        let embeddingLoader = DictionarySlimmingEmbeddingLoader(vectors: [:])
+        let scanner = LibrarySlimmingScanService(
+            database: env.database,
+            identicalScan: IdenticalDuplicateClusterService(database: env.database),
+            fingerprintCompletion: completion,
+            featureLoader: featureLoader,
+            embeddingLoader: embeddingLoader
+        )
+        let queue = JobTestSupport.makeQueue(database: env.database)
+        let analysis = LibrarySlimmingAnalysisService(
+            database: env.database,
+            queue: queue,
+            fingerprintCompletion: completion,
+            featureLoader: featureLoader,
+            embeddingLoader: embeddingLoader,
+            scanner: scanner,
+            clock: FixedJobClock(nowMs: JobTestSupport.baseTimeMs)
+        )
+
+        let first = try analysis.enqueue(
+            mode: .catalog,
+            assetIDs: [left.assetID, right.assetID],
+            seedAssetIDs: []
+        )
+        XCTAssertEqual(try analysis.pause(jobID: first.jobID).state, .paused)
+
+        let second = try analysis.enqueue(
+            mode: .seeds,
+            assetIDs: [left.assetID, right.assetID, seed.assetID],
+            seedAssetIDs: [seed.assetID]
+        )
+        XCTAssertNotEqual(second.jobID, first.jobID)
+        XCTAssertEqual(second.state, .pending)
+        XCTAssertEqual(try analysis.snapshot(jobID: first.jobID).state, .cancelled)
+
+        let memberCount = try env.database.pool.read { db in
+            try Int.fetchOne(
+                db,
+                sql: "SELECT COUNT(*) FROM library_slimming_scan_member WHERE job_id = ?",
+                arguments: [second.jobID.uuidString.lowercased()]
+            )
+        }
+        XCTAssertEqual(memberCount, 3)
+        let seedCount = try env.database.pool.read { db in
+            try Int.fetchOne(
+                db,
+                sql: """
+                SELECT COUNT(*) FROM library_slimming_scan_member
+                WHERE job_id = ? AND is_seed = 1
+                """,
+                arguments: [second.jobID.uuidString.lowercased()]
+            )
+        }
+        XCTAssertEqual(seedCount, 1)
+    }
 }
 
 private final class SimilarityDownloadedPreviewCacheStub: DownloadedPreviewCachePort,
