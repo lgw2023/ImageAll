@@ -2025,29 +2025,18 @@ final class LibraryWorkspaceModel: ObservableObject {
 
         switch destination {
         case .reviewSuggestions:
+            // Re-check before mutating: a newer sidebar selection may have
+            // invalidated this request between the top guard and this case.
+            guard browsingNavigationRequestID == requestID else { return }
             await enterReviewOverview()
+            guard browsingNavigationRequestID == requestID else { return }
         case .trainingWorkspace:
             clearReviewModeState()
             guard browsingNavigationRequestID == requestID else { return }
             await refreshTrainingWorkspace(presentation: .automatic)
         case .all, .untagged, .source:
             clearReviewModeState()
-            switch destination {
-            case .all:
-                selectedSourceID = nil
-                tagPresence = .any
-            case .untagged:
-                selectedSourceID = nil
-                tagPresence = .untagged
-                selectedTagFilterDecisions = [:]
-                selectedTagFilterIDs = []
-                excludedTagFilterIDs = []
-            case let .source(sourceID):
-                selectedSourceID = sourceID
-                tagPresence = .any
-            case .reviewSuggestions, .trainingWorkspace:
-                break
-            }
+            applyGalleryBrowsingFilters(for: destination)
             await loadFirstPage(remountGrid: true)
             guard browsingNavigationRequestID == requestID else { return }
             await refreshReviewState()
@@ -5007,12 +4996,58 @@ extension LibraryWorkspaceModel {
         }
     }
 
+    /// Applies review/gallery presentation synchronously so sidebar navigation
+    /// never renders the photo grid for one frame before async work completes.
+    func applyImmediateBrowsingPresentation(for destination: LibraryBrowsingDestination) {
+        switch destination {
+        case .reviewSuggestions:
+            applyReviewOverviewPresentation()
+        case .trainingWorkspace:
+            clearReviewModeState()
+            isSinglePhotoPresented = false
+        case .all, .untagged, .source:
+            clearReviewModeState()
+            applyGalleryBrowsingFilters(for: destination)
+            // Drop stale gallery rows so the previous filter cannot paint under
+            // the newly selected sidebar destination before loadFirstPage.
+            items = []
+            nextCursor = nil
+            selectedAssetIDs = []
+            isSinglePhotoPresented = false
+            inspectorDetail = nil
+            inspectorTags = []
+        }
+    }
+
     func enterReviewOverview() async {
+        applyReviewOverviewPresentation()
+        await refreshReviewState()
+    }
+
+    private func applyReviewOverviewPresentation() {
         reviewMode = .overview
         selectedAssetIDs = []
         selectedReviewItemID = nil
         isSinglePhotoPresented = false
-        await refreshReviewState()
+    }
+
+    private func applyGalleryBrowsingFilters(for destination: LibraryBrowsingDestination) {
+        switch destination {
+        case .all:
+            selectedSourceID = nil
+            tagPresence = .any
+        case .untagged:
+            selectedSourceID = nil
+            tagPresence = .untagged
+            selectedTagFilterDecisions = [:]
+            selectedTagFilterIDs = []
+            excludedTagFilterIDs = []
+        case let .source(sourceID):
+            selectedSourceID = sourceID
+            tagPresence = .any
+        case .reviewSuggestions, .trainingWorkspace:
+            break
+        }
     }
 
     func enterReviewQueue(tagID: UUID, displayName: String) async {
@@ -6468,6 +6503,7 @@ struct LibraryWorkspaceView: View {
             case let .source(sourceID):
                 .source(sourceID)
             }
+            model.applyImmediateBrowsingPresentation(for: destination)
             let requestID = model.beginBrowsingNavigation()
             Task {
                 await model.navigate(to: destination, requestID: requestID)

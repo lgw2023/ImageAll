@@ -3705,6 +3705,115 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertEqual(model.selectionSummaryTitle, "已选择 1 张照片")
     }
 
+    func testImmediateBrowsingPresentationEntersReviewBeforeAsyncNavigate() async {
+        let sourceID = UUID()
+        let asset = Self.makeAsset(sourceID: sourceID, fileName: "gallery.jpg")
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: sourceID,
+                displayName: "Fixture",
+                state: .active
+            ),
+            reconciledItems: [asset],
+            initialItems: [asset]
+        )
+        let model = LibraryWorkspaceModel(service: service)
+
+        await model.start()
+        XCTAssertNil(model.reviewMode)
+
+        model.applyImmediateBrowsingPresentation(for: LibraryBrowsingDestination.reviewSuggestions)
+
+        XCTAssertEqual(model.reviewMode, ReviewWorkspaceMode.overview)
+        XCTAssertTrue(model.selectedAssetIDs.isEmpty)
+        XCTAssertFalse(model.isSinglePhotoPresented)
+    }
+
+    func testImmediateBrowsingPresentationAppliesGalleryFilterBeforeAsyncNavigate() async {
+        let sourceID = UUID()
+        let asset = Self.makeAsset(sourceID: sourceID, fileName: "gallery.jpg")
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: sourceID,
+                displayName: "Fixture",
+                state: .active
+            ),
+            reconciledItems: [asset],
+            initialItems: [asset]
+        )
+        let model = LibraryWorkspaceModel(service: service)
+
+        await model.start()
+        let sourceRequest = model.beginBrowsingNavigation()
+        await model.navigate(to: .source(sourceID), requestID: sourceRequest)
+        await model.selectAsset(asset.assetID)
+        await model.enterReviewOverview()
+        XCTAssertEqual(model.reviewMode, ReviewWorkspaceMode.overview)
+        XCTAssertFalse(model.items.isEmpty)
+
+        model.applyImmediateBrowsingPresentation(for: LibraryBrowsingDestination.untagged)
+
+        XCTAssertNil(model.reviewMode)
+        XCTAssertEqual(model.browsingTitle, "无标签")
+        XCTAssertTrue(model.items.isEmpty)
+        XCTAssertTrue(model.selectedAssetIDs.isEmpty)
+        XCTAssertFalse(model.isSinglePhotoPresented)
+    }
+
+    func testImmediateBrowsingPresentationAppliesSourceFilterBeforeAsyncNavigate() async {
+        let sourceID = UUID()
+        let asset = Self.makeAsset(sourceID: sourceID, fileName: "gallery.jpg")
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: sourceID,
+                displayName: "Fixture",
+                state: .active
+            ),
+            reconciledItems: [asset],
+            initialItems: [asset],
+            startsConnected: true
+        )
+        let model = LibraryWorkspaceModel(service: service)
+
+        await model.start()
+        await model.enterReviewOverview()
+        XCTAssertEqual(model.reviewMode, ReviewWorkspaceMode.overview)
+        XCTAssertFalse(model.items.isEmpty)
+
+        model.applyImmediateBrowsingPresentation(for: LibraryBrowsingDestination.source(sourceID))
+
+        XCTAssertNil(model.reviewMode)
+        XCTAssertEqual(model.browsingTitle, "Fixture")
+        XCTAssertTrue(model.items.isEmpty)
+    }
+
+    func testStaleReviewNavigationDoesNotResurrectAfterNewerGalleryNavigate() async {
+        let sourceID = UUID()
+        let asset = Self.makeAsset(sourceID: sourceID, fileName: "gallery.jpg")
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: sourceID,
+                displayName: "Fixture",
+                state: .active
+            ),
+            reconciledItems: [asset],
+            initialItems: [asset]
+        )
+        let model = LibraryWorkspaceModel(service: service)
+
+        await model.start()
+        let staleReviewRequest = model.beginBrowsingNavigation()
+        model.applyImmediateBrowsingPresentation(for: .reviewSuggestions)
+
+        let latestGalleryRequest = model.beginBrowsingNavigation()
+        model.applyImmediateBrowsingPresentation(for: .all)
+        await model.navigate(to: .all, requestID: latestGalleryRequest)
+        await model.navigate(to: .reviewSuggestions, requestID: staleReviewRequest)
+
+        XCTAssertNil(model.reviewMode)
+        XCTAssertEqual(model.browsingTitle, "全部照片")
+    }
+
     func testStartupRequestsFullRepairWhenCatalogIsIncomplete() async {
         let sourceID = UUID()
         let source = LibrarySourceSummary(
