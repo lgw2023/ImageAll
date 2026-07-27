@@ -50,6 +50,19 @@ struct CompositionRoot {
             rootValidator: rootValidator,
             clock: clock
         )
+        let quarantineRootURL = QuarantinePathLayout.rootURL(
+            applicationSupportDirectory: runtime.paths.applicationSupportDirectory
+        )
+        let librarySlimmingRecycle = LibrarySlimmingRecycleService(
+            database: runtime.database,
+            mutationAccess: FolderMutationAccessService(
+                database: runtime.database,
+                bookmarkPort: bookmark
+            ),
+            quarantineRootURL: quarantineRootURL,
+            clock: clock,
+            jobQueue: runtime.jobQueue
+        )
         let folderSourceMonitor = FolderSourceMonitoringCoordinator(
             repository: sourceRepository,
             bookmarkPort: bookmark,
@@ -129,7 +142,15 @@ struct CompositionRoot {
         )
         let localModelSuggestions: LocalModelSuggestionRuntime?
         localModelSuggestions = makeLocalModelSuggestionRuntime()
-        var jobHandlers: [any JobHandler] = [handler, photosHandler, personalizationHandler]
+        var jobHandlers: [any JobHandler] = [
+            handler,
+            photosHandler,
+            personalizationHandler,
+            LibrarySlimmingPurgeExpiredHandler(
+                recycle: librarySlimmingRecycle,
+                clock: clock
+            ),
+        ]
         if let localModelSuggestions {
             jobHandlers.append(
                 PersonalModelRebuildJobHandler(
@@ -312,6 +333,7 @@ struct CompositionRoot {
                 database: runtime.database
             ),
             librarySlimming: librarySlimming,
+            librarySlimmingRecycle: librarySlimmingRecycle,
             localModelSuggestions: localModelSuggestions,
             appPersonalModelRebuilder: appPersonalModelRebuilder,
             appPersonalAdamWModelRebuilder: appPersonalAdamWModelRebuilder,

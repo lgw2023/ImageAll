@@ -94,6 +94,7 @@ enum CatalogSchemaExpectations {
         "personal_suggestion_model",
         "personal_suggestion_tag",
         "prediction",
+        "recycle_entry",
         "source",
         "standard_model_revision",
         "standard_prediction",
@@ -130,6 +131,8 @@ enum CatalogSchemaExpectations {
         "job_queue_idx",
         "personal_prediction_review_rank_idx",
         "prediction_review_rank_idx",
+        "recycle_entry_active_asset_uq",
+        "recycle_entry_purge_due_idx",
         "standard_prediction_review_rank_idx",
         "tag_group_id_idx",
         "tag_group_name_uq",
@@ -268,6 +271,7 @@ enum CatalogSchemaExpectations {
             .init(name: "state", type: "TEXT", notNull: true, defaultValue: "'active'", primaryKeyOrder: 0),
             .init(name: "created_at_ms", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
             .init(name: "updated_at_ms", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "mutation_bookmark", type: "BLOB", notNull: false, defaultValue: nil, primaryKeyOrder: 0),
         ],
         "asset": [
             .init(name: "id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 1),
@@ -417,6 +421,19 @@ enum CatalogSchemaExpectations {
             .init(name: "state", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
             .init(name: "created_at_ms", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
         ],
+        "recycle_entry": [
+            .init(name: "id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 1),
+            .init(name: "asset_id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "source_kind", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "trashed_at_ms", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "purge_after_ms", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "state", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "quarantine_relative_path", type: "TEXT", notNull: false, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "original_relative_path", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "error_code", type: "TEXT", notNull: false, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "created_at_ms", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "updated_at_ms", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+        ],
     ]
 
     static let foreignKeysByTable: [String: [ForeignKeyExpectation]] = [
@@ -522,6 +539,9 @@ enum CatalogSchemaExpectations {
             .init(from: "tag_id", toTable: "tag_model_revision", to: "tag_id", onDelete: "CASCADE"),
             .init(from: "model_revision", toTable: "tag_model_revision", to: "revision", onDelete: "CASCADE"),
         ],
+        "recycle_entry": [
+            .init(from: "asset_id", toTable: "asset", to: "id", onDelete: "CASCADE"),
+        ],
     ]
 
     static let indexTableByName: [String: String] = [
@@ -554,6 +574,8 @@ enum CatalogSchemaExpectations {
         "training_run_state_created_idx": "training_run",
         "standard_prediction_review_rank_idx": "standard_prediction",
         "tag_model_sample_feature_idx": "tag_model_sample",
+        "recycle_entry_active_asset_uq": "recycle_entry",
+        "recycle_entry_purge_due_idx": "recycle_entry",
     ]
 
     static let indexes: [IndexExpectation] = [
@@ -861,6 +883,23 @@ enum CatalogSchemaExpectations {
                 .init(name: "asset_id", descending: false, collation: "BINARY"),
             ],
             unique: false
+        ),
+        .init(
+            name: "recycle_entry_active_asset_uq",
+            keyColumns: [
+                .init(name: "asset_id", descending: false, collation: "BINARY"),
+            ],
+            unique: true,
+            partialPredicateSQL: "state IN ('pending', 'recycled', 'failed')"
+        ),
+        .init(
+            name: "recycle_entry_purge_due_idx",
+            keyColumns: [
+                .init(name: "purge_after_ms", descending: false, collation: "BINARY"),
+                .init(name: "id", descending: false, collation: "BINARY"),
+            ],
+            unique: false,
+            partialPredicateSQL: "state = 'recycled'"
         ),
     ]
 }

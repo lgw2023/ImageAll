@@ -109,6 +109,7 @@ actor RemoteCatalogFacade {
                 case .missing: .missing
                 case .unreadable: .unreadable
                 case .unsupported: .unsupported
+                case .recycled: .missing
                 }
             }(),
             contentRevision: item.contentRevision,

@@ -27,6 +27,7 @@ enum AssetAvailability: String, Equatable, Sendable {
     case missing
     case unreadable
     case unsupported
+    case recycled
 }
 
 enum TagState: String, Equatable, Sendable {

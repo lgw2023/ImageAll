@@ -131,6 +131,11 @@ enum LibraryBrowsingDestination: Equatable, Sendable {
     case source(UUID)
 }
 
+enum LibrarySlimmingWorkspaceTab: String, Equatable, Sendable {
+    case clusters
+    case recycleBin
+}
+
 enum LibraryGridLayout {
     static let spacing: CGFloat = 8
     static let horizontalPadding: CGFloat = 12
@@ -225,6 +230,7 @@ enum LibraryAssetDetailText {
         case .missing: "文件缺失"
         case .unreadable: "不可读取"
         case .unsupported: "格式不支持"
+        case .recycled: "回收站"
         }
     }
 
@@ -675,6 +681,9 @@ final class LibraryWorkspaceModel: ObservableObject {
     @Published private(set) var librarySlimmingSeedAssetIDs: [UUID] = []
     @Published private(set) var selectedLibrarySlimmingMemberIDs: Set<UUID> = []
     @Published private(set) var hasCompletedLibrarySlimmingScan = false
+    @Published private(set) var librarySlimmingWorkspaceTab: LibrarySlimmingWorkspaceTab = .clusters
+    @Published private(set) var librarySlimmingRecycleEntries: [RecycleEntryRecord] = []
+    @Published private(set) var isMutatingLibrarySlimmingRecycle = false
     /// Bumped when toolbar asks the sidebar view to switch into 图库瘦身.
     @Published private(set) var librarySlimmingNavigationNonce = UUID()
     private var shouldAutoAnalyzeLibrarySlimmingSeeds = false
@@ -684,6 +693,7 @@ final class LibraryWorkspaceModel: ObservableObject {
     private let service: any LibraryWorkspacePort
     private let trainingWorkspace: (any TrainingWorkspacePort)?
     private let librarySlimming: (any LibrarySlimmingScanPort)?
+    private let librarySlimmingRecycle: (any LibrarySlimmingRecyclePort)?
     private let localModelSuggestions: LocalModelSuggestionRuntime?
     private let appPersonalModelRebuilder: (any AppPersonalModelRebuilding)?
     private let appPersonalAdamWModelRebuilder: (any AppPersonalModelRebuilding)?
@@ -745,6 +755,7 @@ final class LibraryWorkspaceModel: ObservableObject {
         review: any PersonalizationReviewPort = EmptyPersonalizationReviewPort(),
         trainingWorkspace: (any TrainingWorkspacePort)? = nil,
         librarySlimming: (any LibrarySlimmingScanPort)? = nil,
+        librarySlimmingRecycle: (any LibrarySlimmingRecyclePort)? = nil,
         localModelSuggestions: LocalModelSuggestionRuntime? = nil,
         appPersonalModelRebuilder: (any AppPersonalModelRebuilding)? = nil,
         appPersonalAdamWModelRebuilder: (any AppPersonalModelRebuilding)? = nil,
@@ -773,6 +784,7 @@ final class LibraryWorkspaceModel: ObservableObject {
         self.review = review
         self.trainingWorkspace = trainingWorkspace
         self.librarySlimming = librarySlimming
+        self.librarySlimmingRecycle = librarySlimmingRecycle
         self.localModelSuggestions = localModelSuggestions
         self.appPersonalModelRebuilder = appPersonalModelRebuilder
         self.appPersonalAdamWModelRebuilder = appPersonalAdamWModelRebuilder
@@ -813,6 +825,10 @@ final class LibraryWorkspaceModel: ObservableObject {
 
     var supportsLibrarySlimming: Bool {
         librarySlimming != nil
+    }
+
+    var supportsLibrarySlimmingRecycle: Bool {
+        librarySlimmingRecycle != nil
     }
 
     var selectedLibrarySlimmingCluster: LibrarySlimmingClusterPresentation? {
@@ -917,6 +933,126 @@ final class LibraryWorkspaceModel: ObservableObject {
         }
         cancelPendingLibrarySlimmingSeedAnalyze()
         await analyzeLibrarySlimming(mode: .seeds)
+    }
+
+    func selectLibrarySlimmingWorkspaceTab(_ tab: LibrarySlimmingWorkspaceTab) {
+        librarySlimmingWorkspaceTab = tab
+        if tab == .recycleBin {
+            Task { await refreshLibrarySlimmingRecycleEntries() }
+        }
+    }
+
+    func refreshLibrarySlimmingRecycleEntries() async {
+        guard let recycle = librarySlimmingRecycle else {
+            librarySlimmingRecycleEntries = []
+            return
+        }
+        do {
+            let entries = try await Self.offMain {
+                try recycle.listRecycledEntries()
+            }
+            librarySlimmingRecycleEntries = entries
+        } catch {
+            librarySlimmingStatusMessage = "无法加载回收站：\(error.localizedDescription)"
+        }
+    }
+
+    var canMoveSelectedLibrarySlimmingMembersToRecycle: Bool {
+        supportsLibrarySlimmingRecycle
+            && !selectedLibrarySlimmingMemberIDs.isEmpty
+            && !isMutatingLibrarySlimmingRecycle
+            && !isAnalyzingLibrarySlimming
+    }
+
+    func moveSelectedLibrarySlimmingMembersToRecycle() async {
+        guard canMoveSelectedLibrarySlimmingMembersToRecycle,
+              let recycle = librarySlimmingRecycle
+        else { return }
+        let assetIDs = Array(selectedLibrarySlimmingMemberIDs)
+        isMutatingLibrarySlimmingRecycle = true
+        defer { isMutatingLibrarySlimmingRecycle = false }
+        do {
+            let outcome = try await Self.offMain {
+                try recycle.moveFolderAssetsToRecycle(assetIDs: assetIDs)
+            }
+            selectedLibrarySlimmingMemberIDs = []
+            // Drop recycled members from in-memory clusters.
+            let recycled = Set(assetIDs).subtracting(outcome.skippedPhotosAssetIDs)
+                .subtracting(outcome.failedAssetIDs)
+            librarySlimmingClusters = librarySlimmingClusters.compactMap { cluster in
+                let remaining = cluster.memberAssetIDs.filter { !recycled.contains($0) }
+                guard remaining.count >= 2 else { return nil }
+                return LibrarySlimmingClusterPresentation(
+                    SlimmingCluster(
+                        id: cluster.id,
+                        kind: cluster.kind,
+                        memberAssetIDs: remaining,
+                        representativeAssetID: remaining.contains(cluster.representativeAssetID)
+                            ? cluster.representativeAssetID
+                            : remaining[0],
+                        score: cluster.score,
+                        modelIdentity: cluster.modelIdentity
+                    )
+                )
+            }
+            if let selected = selectedLibrarySlimmingClusterID,
+               !librarySlimmingClusters.contains(where: { $0.id == selected })
+            {
+                selectedLibrarySlimmingClusterID = librarySlimmingClusters.first?.id
+            }
+            var parts: [String] = []
+            if !outcome.recycledEntryIDs.isEmpty {
+                parts.append("已移入回收站 \(outcome.recycledEntryIDs.count) 张")
+            }
+            if !outcome.skippedPhotosAssetIDs.isEmpty {
+                parts.append("已跳过 Photos \(outcome.skippedPhotosAssetIDs.count) 张（S5）")
+            }
+            if !outcome.authorizationRequiredSourceIDs.isEmpty {
+                parts.append("部分来源需要写入授权")
+            }
+            if !outcome.failedAssetIDs.isEmpty {
+                parts.append("失败 \(outcome.failedAssetIDs.count) 张")
+            }
+            librarySlimmingStatusMessage = parts.isEmpty ? "未移动任何照片" : parts.joined(separator: " · ")
+            await refreshLibrarySlimmingRecycleEntries()
+            _ = try? await Self.offMain {
+                try recycle.enqueuePurgeExpired()
+            }
+        } catch {
+            librarySlimmingStatusMessage = "移入回收站失败：\(error.localizedDescription)"
+        }
+    }
+
+    func restoreLibrarySlimmingRecycleEntry(_ entryID: UUID) async {
+        guard let recycle = librarySlimmingRecycle else { return }
+        isMutatingLibrarySlimmingRecycle = true
+        defer { isMutatingLibrarySlimmingRecycle = false }
+        do {
+            try await Self.offMain {
+                try recycle.restore(entryID: entryID)
+            }
+            librarySlimmingStatusMessage = "已从回收站恢复"
+            await refreshLibrarySlimmingRecycleEntries()
+        } catch LibrarySlimmingRecycleError.restoreConflict {
+            librarySlimmingStatusMessage = "恢复失败：原路径已存在文件"
+        } catch {
+            librarySlimmingStatusMessage = "恢复失败：\(error.localizedDescription)"
+        }
+    }
+
+    func purgeLibrarySlimmingRecycleEntry(_ entryID: UUID) async {
+        guard let recycle = librarySlimmingRecycle else { return }
+        isMutatingLibrarySlimmingRecycle = true
+        defer { isMutatingLibrarySlimmingRecycle = false }
+        do {
+            try await Self.offMain {
+                try recycle.purgeNow(entryID: entryID)
+            }
+            librarySlimmingStatusMessage = "已永久删除"
+            await refreshLibrarySlimmingRecycleEntries()
+        } catch {
+            librarySlimmingStatusMessage = "永久删除失败：\(error.localizedDescription)"
+        }
     }
 
     func analyzeLibrarySlimming(mode: LibrarySlimmingAnalyzeMode? = nil) async {
@@ -8384,6 +8520,7 @@ struct LibraryWorkspaceView: View {
         case .missing: "文件缺失"
         case .unreadable: "不可读取"
         case .unsupported: "格式不支持"
+        case .recycled: "回收站"
         }
     }
 
@@ -8553,6 +8690,7 @@ private struct SinglePhotoView: View {
         case .missing: return "questionmark.folder"
         case .unreadable: return "exclamationmark.triangle"
         case .unsupported: return "nosign"
+        case .recycled: return "trash"
         }
     }
 }
@@ -8753,6 +8891,7 @@ private struct AssetThumbnailView: View {
         case .missing: return "questionmark.folder"
         case .unreadable: return "exclamationmark.triangle"
         case .unsupported: return "nosign"
+        case .recycled: return "trash"
         }
     }
 }

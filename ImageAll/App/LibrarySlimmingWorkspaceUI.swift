@@ -45,11 +45,24 @@ struct LibrarySlimmingClusterPresentation: Identifiable, Equatable, Sendable {
 struct LibrarySlimmingWorkspaceView: View {
     @ObservedObject var model: LibraryWorkspaceModel
     let onReturnToLibrary: () -> Void
+    @State private var confirmMoveToRecycle = false
+    @State private var confirmPurgeEntryID: UUID?
 
     var body: some View {
         VStack(spacing: 0) {
             header
             Divider()
+            Picker("工作台", selection: Binding(
+                get: { model.librarySlimmingWorkspaceTab },
+                set: { model.selectLibrarySlimmingWorkspaceTab($0) }
+            )) {
+                Text("分析结果").tag(LibrarySlimmingWorkspaceTab.clusters)
+                Text("回收站").tag(LibrarySlimmingWorkspaceTab.recycleBin)
+            }
+            .pickerStyle(.segmented)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 8)
+
             if model.isAnalyzingLibrarySlimming, let progress = model.librarySlimmingScanProgress {
                 progressBanner(progress)
                 Divider()
@@ -57,15 +70,57 @@ struct LibrarySlimmingWorkspaceView: View {
                 statusBanner(message)
                 Divider()
             }
-            HSplitView {
-                clusterList
-                    .frame(minWidth: 240, idealWidth: 300, maxWidth: 380)
-                clusterDetail
-                    .frame(minWidth: 380, maxWidth: .infinity, maxHeight: .infinity)
+
+            if model.librarySlimmingWorkspaceTab == .recycleBin {
+                recycleBinList
+            } else {
+                HSplitView {
+                    clusterList
+                        .frame(minWidth: 240, idealWidth: 300, maxWidth: 380)
+                    clusterDetail
+                        .frame(minWidth: 380, maxWidth: .infinity, maxHeight: .infinity)
+                }
             }
         }
         .navigationTitle("图库瘦身")
         .accessibilityLabel("图库瘦身工作台")
+        .task(id: model.librarySlimmingWorkspaceTab) {
+            if model.librarySlimmingWorkspaceTab == .recycleBin {
+                await model.refreshLibrarySlimmingRecycleEntries()
+            }
+        }
+        .confirmationDialog(
+            "移入回收站",
+            isPresented: $confirmMoveToRecycle,
+            titleVisibility: .visible
+        ) {
+            Button("移入回收站（\(model.selectedLibrarySlimmingMemberIDs.count) 张）", role: .destructive) {
+                Task { await model.moveSelectedLibrarySlimmingMembersToRecycle() }
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("选中的文件夹照片将移入应用回收站，默认 30 天后永久删除；期间可恢复。Photos 资产会跳过。")
+        }
+        .confirmationDialog(
+            "立即永久删除",
+            isPresented: Binding(
+                get: { confirmPurgeEntryID != nil },
+                set: { if !$0 { confirmPurgeEntryID = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("永久删除", role: .destructive) {
+                if let id = confirmPurgeEntryID {
+                    Task { await model.purgeLibrarySlimmingRecycleEntry(id) }
+                }
+                confirmPurgeEntryID = nil
+            }
+            Button("取消", role: .cancel) {
+                confirmPurgeEntryID = nil
+            }
+        } message: {
+            Text("此操作不可撤销，将删除回收站中的原图文件。")
+        }
     }
 
     private var header: some View {
@@ -127,10 +182,6 @@ struct LibrarySlimmingWorkspaceView: View {
             }
 
             Text(modeCaption)
-                .foregroundStyle(.tertiary)
-                .font(.caption)
-
-            Text("只读浏览 · 回收站即将推出")
                 .foregroundStyle(.tertiary)
                 .font(.caption)
 
@@ -239,6 +290,20 @@ struct LibrarySlimmingWorkspaceView: View {
                     .foregroundStyle(.secondary)
                     .padding(.horizontal, 16)
 
+                    if model.canMoveSelectedLibrarySlimmingMembersToRecycle {
+                        Button(role: .destructive) {
+                            confirmMoveToRecycle = true
+                        } label: {
+                            Label(
+                                "移入回收站 (\(model.selectedLibrarySlimmingMemberIDs.count))",
+                                systemImage: "trash"
+                            )
+                        }
+                        .disabled(model.isMutatingLibrarySlimmingRecycle)
+                        .padding(.horizontal, 16)
+                        .help("确认后将文件夹资产移入应用回收站；Photos 资产将跳过直至 S5")
+                    }
+
                     if model.librarySlimmingComparisonAssetIDs.count >= 2 {
                         comparisonStrip
                             .padding(.horizontal, 16)
@@ -295,6 +360,53 @@ struct LibrarySlimmingWorkspaceView: View {
         }
         .accessibilityLabel("簇内对比预览")
     }
+
+    private var recycleBinList: some View {
+        Group {
+            if model.librarySlimmingRecycleEntries.isEmpty {
+                ContentUnavailableView {
+                    Label("回收站为空", systemImage: "trash")
+                } description: {
+                    Text("从分析结果中多选照片并移入回收站。默认保留 30 天，可恢复或立即永久删除。")
+                }
+            } else {
+                List(model.librarySlimmingRecycleEntries) { entry in
+                    HStack(alignment: .top, spacing: 12) {
+                        SlimmingThumbnailCell(model: model, assetID: entry.assetID, isSelected: false)
+                            .frame(width: 72, height: 72)
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(entry.fileName ?? entry.originalRelativePath)
+                                .font(.body.weight(.medium))
+                                .lineLimit(2)
+                            Text(entry.sourceKind == .file ? "文件夹" : "Photos")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Text(
+                                RecycleCountdownFormatter.text(
+                                    purgeAfterMs: entry.purgeAfterMs,
+                                    nowMs: Int64(Date().timeIntervalSince1970 * 1000)
+                                )
+                            )
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                        }
+                        Spacer()
+                        VStack(spacing: 8) {
+                            Button("恢复") {
+                                Task { await model.restoreLibrarySlimmingRecycleEntry(entry.id) }
+                            }
+                            .disabled(model.isMutatingLibrarySlimmingRecycle)
+                            Button("立即删除", role: .destructive) {
+                                confirmPurgeEntryID = entry.id
+                            }
+                            .disabled(model.isMutatingLibrarySlimmingRecycle)
+                        }
+                    }
+                    .padding(.vertical, 4)
+                }
+            }
+        }
+    }
 }
 
 struct LibrarySlimmingInspectorView: View {
@@ -304,7 +416,7 @@ struct LibrarySlimmingInspectorView: View {
         VStack(alignment: .leading, spacing: 12) {
             Text("图库瘦身")
                 .font(.headline)
-            Text("查找相同（字节/感知）与相似（场景）照片。支持当前库、当前筛选与种子检索；本页只读，移入回收站将在后续版本提供。")
+            Text("查找相同与相似照片，确认后可将文件夹资产移入回收站（30 天后永久删除）。Photos 删除将在后续版本提供。")
                 .font(.callout)
                 .foregroundStyle(.secondary)
             if !model.librarySlimmingSeedAssetIDs.isEmpty {
@@ -315,6 +427,7 @@ struct LibrarySlimmingInspectorView: View {
             {
                 LabeledContent("筛选", value: model.librarySlimmingFilterScopeSummary)
             }
+            LabeledContent("回收站", value: "\(model.librarySlimmingRecycleEntries.count) 项")
             if let cluster = model.selectedLibrarySlimmingCluster {
                 Divider()
                 LabeledContent("类型", value: cluster.kindTitle)

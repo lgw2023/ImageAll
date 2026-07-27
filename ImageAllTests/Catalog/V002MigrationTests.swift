@@ -181,6 +181,7 @@ final class V002MigrationTests: XCTestCase {
                 "suggestion_score_threshold_override",
                 "tag_group",
                 "asset_similarity_fingerprint",
+                "recycle_entry",
             ].contains($0)
         }
         let v001Dump = try v001Only.pool.read { db in

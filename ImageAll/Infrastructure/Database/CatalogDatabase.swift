@@ -24,6 +24,7 @@ struct CatalogDatabase: Sendable {
         V016AddTagGroupsMigration.register(on: &migrator)
         V017PerTagPersonalSuggestionModelsMigration.register(on: &migrator)
         V018AddAssetSimilarityFingerprintMigration.register(on: &migrator)
+        V019AddLibrarySlimmingRecycleMigration.register(on: &migrator)
         return migrator
     }
 
@@ -1365,5 +1366,278 @@ enum V018AddAssetSimilarityFingerprintMigration {
                 """
             )
         }
+    }
+}
+
+enum V019AddLibrarySlimmingRecycleMigration {
+    private static let uuidAllowedCharsStripped: String = {
+        var expression = "id"
+        for character in Array("0123456789abcdef-") {
+            expression = "replace(\(expression), '\(character)', '')"
+        }
+        return expression
+    }()
+
+    private static let uuidCheck = """
+        length(id) = 36
+        AND id = lower(id)
+        AND id GLOB '????????-????-????-????-????????????'
+        AND \(uuidAllowedCharsStripped) = ''
+        """
+
+    /// Full canonical `asset` DDL with `file_name` folded in and `availability`
+    /// expanded to include `recycled`. SQLite cannot ALTER a CHECK constraint,
+    /// so the table must be rebuilt.
+    private static let rebuiltAssetDDL = """
+        CREATE TABLE asset (
+            id TEXT NOT NULL PRIMARY KEY,
+            source_id TEXT NOT NULL REFERENCES source(id) ON DELETE RESTRICT,
+            locator_kind TEXT NOT NULL CHECK(locator_kind IN ('file', 'photos')),
+            relative_path TEXT,
+            photos_local_identifier TEXT,
+            locator_state TEXT NOT NULL DEFAULT 'current'
+                CHECK(locator_state IN ('current', 'historical')),
+            media_type TEXT NOT NULL CHECK(length(media_type) > 0),
+            width INTEGER CHECK(width IS NULL OR width > 0),
+            height INTEGER CHECK(height IS NULL OR height > 0),
+            media_created_at_ms INTEGER,
+            media_modified_at_ms INTEGER,
+            content_revision INTEGER NOT NULL DEFAULT 1 CHECK(content_revision >= 1),
+            last_seen_generation INTEGER CHECK(last_seen_generation IS NULL OR last_seen_generation >= 0),
+            availability TEXT NOT NULL DEFAULT 'available'
+                CHECK(availability IN ('available', 'missing', 'unreadable', 'unsupported', 'recycled')),
+            record_created_at_ms INTEGER NOT NULL,
+            record_updated_at_ms INTEGER NOT NULL,
+            file_name TEXT CHECK(
+                file_name IS NULL
+                OR (
+                    length(file_name) > 0
+                    AND file_name NOT IN ('.', '..')
+                    AND instr(file_name, '/') = 0
+                    AND instr(file_name, char(0)) = 0
+                )
+            ),
+            CHECK(
+                (locator_kind = 'file'
+                    AND relative_path IS NOT NULL AND length(relative_path) > 0
+                    AND photos_local_identifier IS NULL)
+                OR (locator_kind = 'photos'
+                    AND photos_local_identifier IS NOT NULL AND length(photos_local_identifier) > 0
+                    AND relative_path IS NULL)
+            ),
+            CHECK(\(uuidCheck))
+        ) STRICT
+        """
+
+    private static let assetIndexStatements = [
+        """
+        CREATE UNIQUE INDEX asset_current_file_locator_uq
+        ON asset(source_id, relative_path)
+        WHERE locator_kind = 'file' AND locator_state = 'current'
+        """,
+        """
+        CREATE UNIQUE INDEX asset_current_photos_locator_uq
+        ON asset(source_id, photos_local_identifier)
+        WHERE locator_kind = 'photos' AND locator_state = 'current'
+        """,
+        """
+        CREATE INDEX asset_source_availability_idx
+        ON asset(source_id, availability, id)
+        """,
+        """
+        CREATE INDEX asset_current_time_idx ON asset (
+            \(V002AddStage1CatalogQuerySupportMigration.timeEmptyMarkerExpression),
+            \(V002AddStage1CatalogQuerySupportMigration.coalescedMediaTimeExpression),
+            id
+        ) WHERE locator_state = 'current'
+        """,
+        """
+        CREATE INDEX asset_current_source_time_idx ON asset (
+            source_id,
+            \(V002AddStage1CatalogQuerySupportMigration.timeEmptyMarkerExpression),
+            \(V002AddStage1CatalogQuerySupportMigration.coalescedMediaTimeExpression),
+            id
+        ) WHERE locator_state = 'current'
+        """,
+        """
+        CREATE INDEX asset_current_file_name_idx ON asset (
+            file_name COLLATE NOCASE,
+            id
+        ) WHERE locator_kind = 'file'
+            AND locator_state = 'current'
+            AND file_name IS NOT NULL
+        """,
+        """
+        CREATE INDEX asset_generation_missing_idx ON asset (
+            source_id,
+            last_seen_generation,
+            id
+        ) WHERE locator_kind = 'file' AND locator_state = 'current'
+        """,
+        """
+        CREATE INDEX asset_current_time_desc_idx ON asset (
+            \(V002AddStage1CatalogQuerySupportMigration.timeEmptyMarkerExpression),
+            \(V002AddStage1CatalogQuerySupportMigration.coalescedMediaTimeExpression) DESC,
+            id DESC
+        ) WHERE locator_state = 'current'
+        """,
+        """
+        CREATE INDEX asset_current_source_media_time_desc_idx ON asset (
+            source_id,
+            media_type,
+            \(V002AddStage1CatalogQuerySupportMigration.timeEmptyMarkerExpression),
+            \(V002AddStage1CatalogQuerySupportMigration.coalescedMediaTimeExpression) DESC,
+            id DESC
+        ) WHERE locator_state = 'current'
+        """,
+        """
+        CREATE INDEX asset_current_file_name_all_idx ON asset (
+            (CASE WHEN file_name IS NOT NULL THEN 0 ELSE 1 END),
+            file_name COLLATE NOCASE,
+            id
+        ) WHERE locator_state = 'current'
+        """,
+    ]
+
+    private static let assetSearchTriggerStatements = [
+        """
+        CREATE TRIGGER asset_search_after_insert
+        AFTER INSERT ON asset
+        BEGIN
+            INSERT INTO asset_search(rowid, file_name, relative_path)
+            VALUES (new.rowid, new.file_name, new.relative_path);
+        END
+        """,
+        """
+        CREATE TRIGGER asset_search_after_delete
+        AFTER DELETE ON asset
+        BEGIN
+            INSERT INTO asset_search(asset_search, rowid, file_name, relative_path)
+            VALUES ('delete', old.rowid, old.file_name, old.relative_path);
+        END
+        """,
+        """
+        CREATE TRIGGER asset_search_after_update
+        AFTER UPDATE OF file_name, relative_path ON asset
+        BEGIN
+            INSERT INTO asset_search(asset_search, rowid, file_name, relative_path)
+            VALUES ('delete', old.rowid, old.file_name, old.relative_path);
+            INSERT INTO asset_search(rowid, file_name, relative_path)
+            VALUES (new.rowid, new.file_name, new.relative_path);
+        END
+        """,
+    ]
+
+    private static let recycleEntryDDL = """
+        CREATE TABLE recycle_entry (
+            id TEXT NOT NULL PRIMARY KEY,
+            asset_id TEXT NOT NULL REFERENCES asset(id) ON DELETE CASCADE,
+            source_kind TEXT NOT NULL CHECK(source_kind IN ('file', 'photos')),
+            trashed_at_ms INTEGER NOT NULL CHECK(trashed_at_ms >= 0),
+            purge_after_ms INTEGER NOT NULL CHECK(purge_after_ms >= trashed_at_ms),
+            state TEXT NOT NULL CHECK(
+                state IN ('pending', 'recycled', 'restored', 'purged', 'failed')
+            ),
+            quarantine_relative_path TEXT CHECK(
+                quarantine_relative_path IS NULL OR length(quarantine_relative_path) > 0
+            ),
+            original_relative_path TEXT NOT NULL CHECK(length(original_relative_path) > 0),
+            error_code TEXT CHECK(error_code IS NULL OR length(error_code) > 0),
+            created_at_ms INTEGER NOT NULL CHECK(created_at_ms >= 0),
+            updated_at_ms INTEGER NOT NULL CHECK(updated_at_ms >= 0),
+            CHECK(\(uuidCheck))
+        ) STRICT
+        """
+
+    static func register(on migrator: inout DatabaseMigrator) {
+        migrator.registerMigration(CatalogMigrationID.v019AddLibrarySlimmingRecycle) { db in
+            try addSourceMutationBookmarkColumn(db)
+            try rebuildAssetAvailabilityCheck(db)
+            try createRecycleEntryTable(db)
+        }
+    }
+
+    private static func addSourceMutationBookmarkColumn(_ db: Database) throws {
+        guard try !db.columns(in: "source").map(\.name).contains("mutation_bookmark") else {
+            return
+        }
+        try db.execute(sql: "ALTER TABLE source ADD COLUMN mutation_bookmark BLOB")
+    }
+
+    private static func rebuildAssetAvailabilityCheck(_ db: Database) throws {
+        let existingSQL = try String.fetchOne(
+            db,
+            sql: "SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = 'asset'"
+        )
+        guard let existingSQL, !existingSQL.contains("'recycled'") else {
+            return
+        }
+
+        try db.execute(sql: "PRAGMA foreign_keys = OFF")
+
+        try db.execute(sql: "DROP INDEX IF EXISTS asset_current_file_locator_uq")
+        try db.execute(sql: "DROP INDEX IF EXISTS asset_current_photos_locator_uq")
+        try db.execute(sql: "DROP INDEX IF EXISTS asset_source_availability_idx")
+        try db.execute(sql: "DROP INDEX IF EXISTS asset_current_time_idx")
+        try db.execute(sql: "DROP INDEX IF EXISTS asset_current_source_time_idx")
+        try db.execute(sql: "DROP INDEX IF EXISTS asset_current_file_name_idx")
+        try db.execute(sql: "DROP INDEX IF EXISTS asset_generation_missing_idx")
+        try db.execute(sql: "DROP INDEX IF EXISTS asset_current_time_desc_idx")
+        try db.execute(sql: "DROP INDEX IF EXISTS asset_current_source_media_time_desc_idx")
+        try db.execute(sql: "DROP INDEX IF EXISTS asset_current_file_name_all_idx")
+        try db.execute(sql: "DROP TRIGGER IF EXISTS asset_search_after_insert")
+        try db.execute(sql: "DROP TRIGGER IF EXISTS asset_search_after_delete")
+        try db.execute(sql: "DROP TRIGGER IF EXISTS asset_search_after_update")
+
+        try db.execute(sql: "ALTER TABLE asset RENAME TO asset_v018")
+        try db.execute(sql: rebuiltAssetDDL)
+        try db.execute(
+            sql: """
+            INSERT INTO asset (
+                rowid, id, source_id, locator_kind, relative_path, photos_local_identifier,
+                locator_state, media_type, width, height, media_created_at_ms,
+                media_modified_at_ms, content_revision, last_seen_generation, availability,
+                record_created_at_ms, record_updated_at_ms, file_name
+            )
+            SELECT
+                rowid, id, source_id, locator_kind, relative_path, photos_local_identifier,
+                locator_state, media_type, width, height, media_created_at_ms,
+                media_modified_at_ms, content_revision, last_seen_generation, availability,
+                record_created_at_ms, record_updated_at_ms, file_name
+            FROM asset_v018
+            """
+        )
+        try db.execute(sql: "DROP TABLE asset_v018")
+
+        for statement in assetIndexStatements {
+            try db.execute(sql: statement)
+        }
+        for statement in assetSearchTriggerStatements {
+            try db.execute(sql: statement)
+        }
+        try db.execute(sql: "INSERT INTO asset_search(asset_search) VALUES ('rebuild')")
+
+        try db.execute(sql: "PRAGMA foreign_keys = ON")
+    }
+
+    private static func createRecycleEntryTable(_ db: Database) throws {
+        guard try !db.tableExists("recycle_entry") else {
+            return
+        }
+        try db.execute(sql: recycleEntryDDL)
+        try db.execute(
+            sql: """
+            CREATE UNIQUE INDEX recycle_entry_active_asset_uq
+            ON recycle_entry(asset_id)
+            WHERE state IN ('pending', 'recycled', 'failed')
+            """
+        )
+        try db.execute(
+            sql: """
+            CREATE INDEX recycle_entry_purge_due_idx
+            ON recycle_entry(purge_after_ms, id)
+            WHERE state = 'recycled'
+            """
+        )
     }
 }

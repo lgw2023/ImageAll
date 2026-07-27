@@ -234,6 +234,12 @@
 		SL0000010000000000000009 /* CatalogSlimmingEmbeddingLoader.swift in Sources */ = {isa = PBXBuildFile; fileRef = SL0001010000000000000009 /* CatalogSlimmingEmbeddingLoader.swift */; };
 		SL0000010000000000000010 /* LibrarySlimmingWorkspaceUI.swift in Sources */ = {isa = PBXBuildFile; fileRef = SL0001010000000000000010 /* LibrarySlimmingWorkspaceUI.swift */; };
 		SL0000010000000000000102 /* NearDuplicateSceneClusteringTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = SL0001010000000000000102 /* NearDuplicateSceneClusteringTests.swift */; };
+		SL0000010000000000000103 /* LibrarySlimmingRecycleTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = SL0001010000000000000103 /* LibrarySlimmingRecycleTests.swift */; };
+		SL0000010000000000000015 /* LibrarySlimmingPurgeJob.swift in Sources */ = {isa = PBXBuildFile; fileRef = SL0001010000000000000015 /* LibrarySlimmingPurgeJob.swift */; };
+		SL0000010000000000000014 /* LibrarySlimmingRecycleService.swift in Sources */ = {isa = PBXBuildFile; fileRef = SL0001010000000000000014 /* LibrarySlimmingRecycleService.swift */; };
+		SL0000010000000000000013 /* FolderMutationAccess.swift in Sources */ = {isa = PBXBuildFile; fileRef = SL0001010000000000000013 /* FolderMutationAccess.swift */; };
+		SL0000010000000000000012 /* FolderQuarantineIO.swift in Sources */ = {isa = PBXBuildFile; fileRef = SL0001010000000000000012 /* FolderQuarantineIO.swift */; };
+		SL0000010000000000000011 /* LibrarySlimmingRecycleContracts.swift in Sources */ = {isa = PBXBuildFile; fileRef = SL0001010000000000000011 /* LibrarySlimmingRecycleContracts.swift */; };
 		MM0000010000000000000101 /* PersonalizedSuggestionServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = MM0001010000000000000101 /* PersonalizedSuggestionServiceTests.swift */; };
 		MM0000010000000000000001 /* PersonalizedSuggestionService.swift in Sources */ = {isa = PBXBuildFile; fileRef = MM0001010000000000000001 /* PersonalizedSuggestionService.swift */; };
 		CM0000010000000000000101 /* AppCoreMLEmbeddingServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CM0001010000000000000101 /* AppCoreMLEmbeddingServiceTests.swift */; };
@@ -525,6 +531,12 @@
 		SL0001010000000000000009 /* CatalogSlimmingEmbeddingLoader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CatalogSlimmingEmbeddingLoader.swift; sourceTree = "<group>"; };
 		SL0001010000000000000010 /* LibrarySlimmingWorkspaceUI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibrarySlimmingWorkspaceUI.swift; sourceTree = "<group>"; };
 		SL0001010000000000000102 /* NearDuplicateSceneClusteringTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NearDuplicateSceneClusteringTests.swift; sourceTree = "<group>"; };
+		SL0001010000000000000103 /* LibrarySlimmingRecycleTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibrarySlimmingRecycleTests.swift; sourceTree = "<group>"; };
+		SL0001010000000000000015 /* LibrarySlimmingPurgeJob.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibrarySlimmingPurgeJob.swift; sourceTree = "<group>"; };
+		SL0001010000000000000014 /* LibrarySlimmingRecycleService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibrarySlimmingRecycleService.swift; sourceTree = "<group>"; };
+		SL0001010000000000000013 /* FolderMutationAccess.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FolderMutationAccess.swift; sourceTree = "<group>"; };
+		SL0001010000000000000012 /* FolderQuarantineIO.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FolderQuarantineIO.swift; sourceTree = "<group>"; };
+		SL0001010000000000000011 /* LibrarySlimmingRecycleContracts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibrarySlimmingRecycleContracts.swift; sourceTree = "<group>"; };
 		MM0001010000000000000101 /* PersonalizedSuggestionServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersonalizedSuggestionServiceTests.swift; sourceTree = "<group>"; };
 		MM0001010000000000000001 /* PersonalizedSuggestionService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersonalizedSuggestionService.swift; sourceTree = "<group>"; };
 		CM0001010000000000000101 /* AppCoreMLEmbeddingServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppCoreMLEmbeddingServiceTests.swift; sourceTree = "<group>"; };
@@ -1200,6 +1212,7 @@
 			children = (
 				SL0001010000000000000001 /* IdenticalDuplicateContracts.swift */,
 				SL0001010000000000000005 /* NearDuplicateSceneContracts.swift */,
+				SL0001010000000000000011 /* LibrarySlimmingRecycleContracts.swift */,
 			);
 			path = Similarity;
 			sourceTree = "<group>";
@@ -1214,6 +1227,10 @@
 				SL0001010000000000000007 /* NearDuplicateSceneClusterService.swift */,
 				SL0001010000000000000008 /* LibrarySlimmingScanService.swift */,
 				SL0001010000000000000009 /* CatalogSlimmingEmbeddingLoader.swift */,
+				SL0001010000000000000012 /* FolderQuarantineIO.swift */,
+				SL0001010000000000000013 /* FolderMutationAccess.swift */,
+				SL0001010000000000000014 /* LibrarySlimmingRecycleService.swift */,
+				SL0001010000000000000015 /* LibrarySlimmingPurgeJob.swift */,
 			);
 			path = Similarity;
 			sourceTree = "<group>";
@@ -1223,6 +1240,7 @@
 			children = (
 				SL0001010000000000000101 /* IdenticalDuplicateDetectionTests.swift */,
 				SL0001010000000000000102 /* NearDuplicateSceneClusteringTests.swift */,
+				SL0001010000000000000103 /* LibrarySlimmingRecycleTests.swift */,
 			);
 			path = Similarity;
 			sourceTree = "<group>";
@@ -1444,6 +1462,11 @@
 				SL0000010000000000000007 /* NearDuplicateSceneClusterService.swift in Sources */,
 				SL0000010000000000000008 /* LibrarySlimmingScanService.swift in Sources */,
 				SL0000010000000000000009 /* CatalogSlimmingEmbeddingLoader.swift in Sources */,
+				SL0000010000000000000011 /* LibrarySlimmingRecycleContracts.swift in Sources */,
+				SL0000010000000000000012 /* FolderQuarantineIO.swift in Sources */,
+				SL0000010000000000000013 /* FolderMutationAccess.swift in Sources */,
+				SL0000010000000000000014 /* LibrarySlimmingRecycleService.swift in Sources */,
+				SL0000010000000000000015 /* LibrarySlimmingPurgeJob.swift in Sources */,
 				SL0000010000000000000010 /* LibrarySlimmingWorkspaceUI.swift in Sources */,
 				KK0000010000000000000003 /* GRDBPersonalizationRepository.swift in Sources */,
 				AA0000010000000000000001 /* ImageAllApp.swift in Sources */,
@@ -1588,6 +1611,7 @@
 				RH0000010000000000000102 /* RemoteHTTPServerTests.swift in Sources */,
 				SL0000010000000000000101 /* IdenticalDuplicateDetectionTests.swift in Sources */,
 				SL0000010000000000000102 /* NearDuplicateSceneClusteringTests.swift in Sources */,
+				SL0000010000000000000103 /* LibrarySlimmingRecycleTests.swift in Sources */,
 				KK0000010000000000000101 /* PersonalizationPersistenceTests.swift in Sources */,
 				NN0000010000000000000101 /* FullLibrarySuggestionsJobTests.swift in Sources */,
 				ST0000010000000000000003 /* SuggestionThresholdTests.swift in Sources */,

@@ -23,6 +23,8 @@ enum CatalogMigrationID {
         "v017_per_tag_personal_suggestion_models"
     static let v018AddAssetSimilarityFingerprint =
         "v018_add_asset_similarity_fingerprint"
+    static let v019AddLibrarySlimmingRecycle =
+        "v019_add_library_slimming_recycle"
 
     static let knownOrdered: [String] = [
         v001CreateCatalogCore,
@@ -43,5 +45,6 @@ enum CatalogMigrationID {
         v016AddTagGroups,
         v017PerTagPersonalSuggestionModels,
         v018AddAssetSimilarityFingerprint,
+        v019AddLibrarySlimmingRecycle,
     ]
 }
