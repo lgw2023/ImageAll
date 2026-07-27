@@ -6,11 +6,11 @@
 - 状态：Ready（待实施）
 - 权威交接单：`docs/CURSOR-LIBRARY-SLIMMING-S4-HANDOFF.md`
 - 上一批准基线：`95cd8cd898e03517d030588c627cbda79f265640`
-- 开工 HEAD：`<LAUNCH_HEAD>`（文档提交后替换为精确值）
+- 开工 HEAD：`3513ef539c03072a838022b1984a1bb3a3a11b40`（文档提交后替换为精确值）
 
 ## 开工 HEAD
 
-调用时替换为当时 `git rev-parse HEAD`。
+3513ef539c03072a838022b1984a1bb3a3a11b40
 
 ## 完整任务正文
 
