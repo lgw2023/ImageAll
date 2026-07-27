@@ -188,8 +188,4 @@ Quarantine 根位于 App 容器内（Application Support），按 source/asset �
 
 ## 11. 停止位置（当前）
 
-本文件与 ADR-042 仅完成 **S0 规格**。未授权开始 S1 生产代码，直至：
-
-1. 本规格与 ADR 已本地文档提交；
-2. 工作区中与本任务无关的既存改动已识别且不被覆盖；
-3. 发出 S1 交接单（或临时授权下的等价实施任务）。
+S0 规格与 S1 只读相同检测已交付。当前授权切片为 **S2**（见 [`CURSOR-LIBRARY-SLIMMING-S2-HANDOFF.md`](CURSOR-LIBRARY-SLIMMING-S2-HANDOFF.md)）：相似聚类服务 + 侧栏只读浏览；仍不删原图。未授权进入 S3+。
