@@ -56,11 +56,16 @@ final class CatalogMigrationTests: XCTestCase {
                 sql: "UPDATE source SET mutation_bookmark = ? WHERE id = ?",
                 arguments: [writableBookmark, sourceID.uuidString.lowercased()]
             )
+            try Self.stripV022FingerprintColumns(db)
+            try Self.dropV022Tables(db)
+            try Self.dropV023Tables(db)
             try db.execute(
-                sql: "DELETE FROM grdb_migrations WHERE identifier IN (?, ?)",
+                sql: "DELETE FROM grdb_migrations WHERE identifier IN (?, ?, ?, ?)",
                 arguments: [
                     CatalogMigrationID.v020HardenLibrarySlimmingRecycle,
                     CatalogMigrationID.v021AddPhotosRecycleIdentifier,
+                    CatalogMigrationID.v022HardenLibrarySlimmingAnalysis,
+                    CatalogMigrationID.v023AddSourceSimilarityIndex,
                 ]
             )
         }
@@ -110,8 +115,10 @@ final class CatalogMigrationTests: XCTestCase {
             try db.execute(sql: "DROP TABLE IF EXISTS asset_similarity_fingerprint")
             try db.execute(sql: "DROP TABLE IF EXISTS recycle_entry")
             try db.execute(sql: "DROP TABLE IF EXISTS source_mutation_authorization")
+            try Self.dropV022Tables(db)
+            try Self.dropV023Tables(db)
             try db.execute(
-                sql: "DELETE FROM grdb_migrations WHERE identifier IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                sql: "DELETE FROM grdb_migrations WHERE identifier IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 arguments: [
                     CatalogMigrationID.v012RepairStandardTagBinding,
                     CatalogMigrationID.v013PhotosMissingAssetRepair,
@@ -123,6 +130,8 @@ final class CatalogMigrationTests: XCTestCase {
                     CatalogMigrationID.v019AddLibrarySlimmingRecycle,
                     CatalogMigrationID.v020HardenLibrarySlimmingRecycle,
                     CatalogMigrationID.v021AddPhotosRecycleIdentifier,
+                    CatalogMigrationID.v022HardenLibrarySlimmingAnalysis,
+                    CatalogMigrationID.v023AddSourceSimilarityIndex,
                 ]
             )
             try db.execute(sql: "PRAGMA foreign_keys = ON")
@@ -187,8 +196,10 @@ final class CatalogMigrationTests: XCTestCase {
             try db.execute(sql: "DROP TABLE IF EXISTS asset_similarity_fingerprint")
             try db.execute(sql: "DROP TABLE IF EXISTS recycle_entry")
             try db.execute(sql: "DROP TABLE IF EXISTS source_mutation_authorization")
+            try Self.dropV022Tables(db)
+            try Self.dropV023Tables(db)
             try db.execute(
-                sql: "DELETE FROM grdb_migrations WHERE identifier IN (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                sql: "DELETE FROM grdb_migrations WHERE identifier IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 arguments: [
                     CatalogMigrationID.v013PhotosMissingAssetRepair,
                     CatalogMigrationID.v014AddTrainingRunsAndPersonalMultiSlot,
@@ -199,6 +210,8 @@ final class CatalogMigrationTests: XCTestCase {
                     CatalogMigrationID.v019AddLibrarySlimmingRecycle,
                     CatalogMigrationID.v020HardenLibrarySlimmingRecycle,
                     CatalogMigrationID.v021AddPhotosRecycleIdentifier,
+                    CatalogMigrationID.v022HardenLibrarySlimmingAnalysis,
+                    CatalogMigrationID.v023AddSourceSimilarityIndex,
                 ]
             )
             try db.execute(sql: "PRAGMA foreign_keys = ON")
@@ -230,8 +243,10 @@ final class CatalogMigrationTests: XCTestCase {
             try db.execute(sql: "DROP TABLE IF EXISTS asset_similarity_fingerprint")
             try db.execute(sql: "DROP TABLE IF EXISTS recycle_entry")
             try db.execute(sql: "DROP TABLE IF EXISTS source_mutation_authorization")
+            try Self.dropV022Tables(db)
+            try Self.dropV023Tables(db)
             try db.execute(
-                sql: "DELETE FROM grdb_migrations WHERE identifier IN (?, ?, ?, ?, ?, ?)",
+                sql: "DELETE FROM grdb_migrations WHERE identifier IN (?, ?, ?, ?, ?, ?, ?, ?)",
                 arguments: [
                     CatalogMigrationID.v016AddTagGroups,
                     CatalogMigrationID.v017PerTagPersonalSuggestionModels,
@@ -239,6 +254,8 @@ final class CatalogMigrationTests: XCTestCase {
                     CatalogMigrationID.v019AddLibrarySlimmingRecycle,
                     CatalogMigrationID.v020HardenLibrarySlimmingRecycle,
                     CatalogMigrationID.v021AddPhotosRecycleIdentifier,
+                    CatalogMigrationID.v022HardenLibrarySlimmingAnalysis,
+                    CatalogMigrationID.v023AddSourceSimilarityIndex,
                 ]
             )
             try db.execute(
@@ -721,6 +738,65 @@ final class CatalogMigrationTests: XCTestCase {
             sql: """
             CREATE UNIQUE INDEX tag_normalized_name_uq
             ON tag(normalized_name COLLATE BINARY)
+            """
+        )
+    }
+
+    /// Drops the brand-new tables v022 creates so its migration can re-apply cleanly in
+    /// replay tests. Its `ALTER TABLE asset_similarity_fingerprint ADD COLUMN` statements are
+    /// handled separately: either `asset_similarity_fingerprint` is dropped and rebuilt by a
+    /// replayed v018 (no action needed), or `stripV022FingerprintColumns` must run first.
+    private static func dropV022Tables(_ db: Database) throws {
+        try db.execute(sql: "DROP TABLE IF EXISTS photos_original_cache_entry")
+        try db.execute(sql: "DROP TABLE IF EXISTS library_slimming_scan_member")
+        try db.execute(sql: "DROP TABLE IF EXISTS library_slimming_scan_result")
+    }
+
+    /// Drops the tables v023 creates so its migration can re-apply cleanly in replay tests.
+    private static func dropV023Tables(_ db: Database) throws {
+        try db.execute(sql: "DROP TABLE IF EXISTS source_similarity_bucket_member")
+        try db.execute(sql: "DROP TABLE IF EXISTS source_similarity_index")
+    }
+
+    /// Rebuild `asset_similarity_fingerprint` back to its pre-v022 (v018) shape so v022 can
+    /// re-apply its `ALTER TABLE ... ADD COLUMN` statements cleanly in replay tests that don't
+    /// otherwise drop/recreate this table via a replayed v018.
+    private static func stripV022FingerprintColumns(_ db: Database) throws {
+        try db.execute(sql: "DROP INDEX IF EXISTS asset_similarity_fingerprint_hash_idx")
+        try db.execute(
+            sql: """
+            CREATE TABLE asset_similarity_fingerprint_pre_v022 (
+                asset_id TEXT NOT NULL PRIMARY KEY REFERENCES asset(id) ON DELETE CASCADE,
+                content_revision INTEGER NOT NULL CHECK(content_revision >= 1),
+                algo_version TEXT NOT NULL CHECK(length(algo_version) > 0),
+                perceptual_hash BLOB NOT NULL CHECK(length(perceptual_hash) = 8),
+                created_at_ms INTEGER NOT NULL CHECK(created_at_ms >= 0),
+                updated_at_ms INTEGER NOT NULL CHECK(updated_at_ms >= 0),
+                CHECK(
+                    length(asset_id) = 36
+                    AND asset_id = lower(asset_id)
+                    AND asset_id GLOB '????????-????-????-????-????????????'
+                )
+            ) STRICT
+            """
+        )
+        try db.execute(
+            sql: """
+            INSERT INTO asset_similarity_fingerprint_pre_v022 (
+                asset_id, content_revision, algo_version, perceptual_hash, created_at_ms, updated_at_ms
+            )
+            SELECT asset_id, content_revision, algo_version, perceptual_hash, created_at_ms, updated_at_ms
+            FROM asset_similarity_fingerprint
+            """
+        )
+        try db.execute(sql: "DROP TABLE asset_similarity_fingerprint")
+        try db.execute(
+            sql: "ALTER TABLE asset_similarity_fingerprint_pre_v022 RENAME TO asset_similarity_fingerprint"
+        )
+        try db.execute(
+            sql: """
+            CREATE INDEX asset_similarity_fingerprint_hash_idx
+            ON asset_similarity_fingerprint (algo_version, perceptual_hash, asset_id)
             """
         )
     }

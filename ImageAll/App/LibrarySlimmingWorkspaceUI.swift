@@ -42,6 +42,75 @@ struct LibrarySlimmingClusterPresentation: Identifiable, Equatable, Sendable {
     }
 }
 
+struct LibrarySlimmingAnalysisJobPresentation: Identifiable, Equatable, Sendable {
+    let id: UUID
+    let mode: LibrarySlimmingAnalyzeMode
+    let state: JobState
+    let controlRequest: JobControlRequest
+    let progress: JobProgress
+    let memberCount: Int
+    let seedCount: Int
+    let clusterCount: Int
+    let hasResult: Bool
+    let createdAtMs: Int64
+    let updatedAtMs: Int64
+
+    var modeTitle: String {
+        switch mode {
+        case .catalog: "当前库"
+        case .currentFilter: "当前筛选"
+        case .seeds: "种子检索"
+        }
+    }
+
+    var stateTitle: String {
+        switch (state, controlRequest) {
+        case (.running, .pause): "正在暂停"
+        case (.running, .cancel): "正在取消"
+        case (.pending, _): "等待中"
+        case (.running, _): "运行中"
+        case (.paused, _): "已暂停"
+        case (.retryableFailed, _): "等待重试"
+        case (.completed, _): "已完成"
+        case (.terminalFailed, _): "失败"
+        case (.cancelled, _): "已取消"
+        }
+    }
+
+    var detailCaption: String {
+        var parts: [String] = ["\(memberCount) 张"]
+        if seedCount > 0 {
+            parts.append("种子 \(seedCount)")
+        }
+        if hasResult {
+            parts.append("\(clusterCount) 个簇")
+        }
+        if let total = progress.total, total > 0, state == .running || state == .paused {
+            parts.append("\(progress.completed)/\(total)")
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    var createdCaption: String {
+        let date = Date(timeIntervalSince1970: TimeInterval(createdAtMs) / 1000)
+        return date.formatted(date: .abbreviated, time: .shortened)
+    }
+
+    init(_ summary: LibrarySlimmingAnalysisJobSummary) {
+        id = summary.jobID
+        mode = summary.mode
+        state = summary.state
+        controlRequest = summary.controlRequest
+        progress = summary.progress
+        memberCount = summary.memberCount
+        seedCount = summary.seedCount
+        clusterCount = summary.clusterCount
+        hasResult = summary.hasResult
+        createdAtMs = summary.createdAtMs
+        updatedAtMs = summary.updatedAtMs
+    }
+}
+
 struct LibrarySlimmingWorkspaceView: View {
     @ObservedObject var model: LibraryWorkspaceModel
     let onReturnToLibrary: () -> Void
@@ -75,8 +144,8 @@ struct LibrarySlimmingWorkspaceView: View {
                 recycleBinList
             } else {
                 HSplitView {
-                    clusterList
-                        .frame(minWidth: 240, idealWidth: 300, maxWidth: 380)
+                    analysisHistoryAndClusters
+                        .frame(minWidth: 260, idealWidth: 320, maxWidth: 420)
                     clusterDetail
                         .frame(minWidth: 380, maxWidth: .infinity, maxHeight: .infinity)
                 }
@@ -84,6 +153,10 @@ struct LibrarySlimmingWorkspaceView: View {
         }
         .navigationTitle("图库瘦身")
         .accessibilityLabel("图库瘦身工作台")
+        .task {
+            await model.refreshLibrarySlimmingAnalysisJobs()
+            await model.refreshSourceSimilarityIndexStatus()
+        }
         .task(id: model.librarySlimmingWorkspaceTab) {
             if model.librarySlimmingWorkspaceTab == .recycleBin {
                 await model.refreshLibrarySlimmingRecycleEntries()
@@ -139,11 +212,8 @@ struct LibrarySlimmingWorkspaceView: View {
                 }
             }
             .buttonStyle(.borderedProminent)
-            .disabled(
-                model.isAnalyzingLibrarySlimming
-                    || model.canResumeLibrarySlimmingAnalysis
-                    || !model.supportsLibrarySlimming
-            )
+            .disabled(!model.supportsLibrarySlimming)
+            .help("发起新的全库分析；不会取消已有分析记录")
 
             Button {
                 Task { await model.analyzeLibrarySlimming(mode: .currentFilter) }
@@ -151,12 +221,10 @@ struct LibrarySlimmingWorkspaceView: View {
                 Label("分析当前筛选", systemImage: "line.3.horizontal.decrease.circle")
             }
             .disabled(
-                model.isAnalyzingLibrarySlimming
-                    || model.canResumeLibrarySlimmingAnalysis
-                    || !model.supportsLibrarySlimming
+                !model.supportsLibrarySlimming
                     || !model.hasLibrarySlimmingFilterScope
             )
-            .help("使用侧栏目的地与图库当前标签/来源/搜索筛选作为分析宇宙")
+            .help("使用侧栏目的地与图库当前标签/来源/搜索筛选作为分析宇宙；不会取消已有分析记录")
 
             if !model.librarySlimmingSeedAssetIDs.isEmpty {
                 Button {
@@ -167,34 +235,64 @@ struct LibrarySlimmingWorkspaceView: View {
                         systemImage: "target"
                     )
                 }
-                .disabled(
-                    model.isAnalyzingLibrarySlimming
-                        || model.canResumeLibrarySlimmingAnalysis
-                        || !model.supportsLibrarySlimming
-                )
+                .disabled(!model.supportsLibrarySlimming)
+                .help("以当前种子发起新的检索任务；不会取消已有分析记录")
             }
 
             if model.canPauseLibrarySlimmingAnalysis {
                 Button {
                     Task { await model.pauseLibrarySlimmingAnalysis() }
                 } label: {
-                    Label("暂停", systemImage: "pause.fill")
+                    Label("暂停当前", systemImage: "pause.fill")
                 }
-                .help("在当前照片处理完成后的安全边界暂停")
+                .help("暂停当前选中的分析任务")
             } else if model.canResumeLibrarySlimmingAnalysis {
                 Button {
                     Task { await model.resumeLibrarySlimmingAnalysis() }
                 } label: {
-                    Label("继续", systemImage: "play.fill")
+                    Label("继续当前", systemImage: "play.fill")
                 }
                 .buttonStyle(.borderedProminent)
-                .help("从已保存进度继续，并自动补全剩余照片")
+                .help("从已保存进度继续当前选中的分析任务")
+            }
+
+            if model.canDeleteSelectedLibrarySlimmingAnalysisJob {
+                Button(role: .destructive) {
+                    if let id = model.librarySlimmingAnalysisJobID {
+                        Task { await model.deleteLibrarySlimmingAnalysisJob(id) }
+                    }
+                } label: {
+                    Label("删除记录", systemImage: "trash")
+                }
+                .help("永久删除当前选中的分析任务与结果")
             }
 
             if model.librarySlimmingPendingCount > 0 {
                 Text("待分析 \(model.librarySlimmingPendingCount) 张")
                     .foregroundStyle(.secondary)
                     .font(.callout)
+            }
+
+            if model.supportsSourceSimilarityIndex {
+                Button {
+                    Task { await model.initializeSourceSimilarityIndex() }
+                } label: {
+                    if model.isInitializingSourceSimilarityIndex {
+                        ProgressView()
+                            .controlSize(.small)
+                        Text("初始化中…")
+                    } else {
+                        Label("初始化来源索引", systemImage: "point.3.connected.trianglepath.dotted")
+                    }
+                }
+                .disabled(!model.canInitializeSourceSimilarityIndex)
+                .help("为当前选中的单个来源建立 Feature Print 邻域索引，加速后续按种子检索")
+
+                if let caption = model.sourceSimilarityIndexCaption {
+                    Text(caption)
+                        .foregroundStyle(.secondary)
+                        .font(.caption)
+                }
             }
 
             if model.supportsLibrarySlimmingThresholds {
@@ -266,45 +364,89 @@ struct LibrarySlimmingWorkspaceView: View {
             .padding(.vertical, 8)
     }
 
-    private var clusterList: some View {
-        Group {
-            if model.librarySlimmingClusters.isEmpty {
-                if model.hasCompletedLibrarySlimmingScan {
-                    ContentUnavailableView {
-                        Label("无相似结果", systemImage: "checkmark.circle")
-                    } description: {
-                        Text("本次分析未发现相同或相似簇。可尝试扩大筛选范围、更换种子，或等待待分析照片补全向量。")
-                    }
+    private var analysisHistoryAndClusters: some View {
+        List(selection: Binding(
+            get: { model.librarySlimmingAnalysisJobID },
+            set: { model.selectLibrarySlimmingAnalysisJob($0) }
+        )) {
+            Section("分析记录") {
+                if model.librarySlimmingAnalysisJobs.isEmpty {
+                    Text("尚无分析记录。发起分析后会永久保存在这里，除非手动删除。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 } else {
-                    ContentUnavailableView {
-                        Label("尚未分析", systemImage: "square.stack.3d.up")
-                    } description: {
-                        Text("可分析当前库、当前筛选，或从图库多选后「在图库瘦身中查找」。缺失向量会显示为待分析。")
-                    }
-                }
-            } else {
-                List(selection: Binding(
-                    get: { model.selectedLibrarySlimmingClusterID },
-                    set: { model.selectLibrarySlimmingCluster($0) }
-                )) {
-                    Section("簇（相同优先）") {
-                        ForEach(model.librarySlimmingClusters) { cluster in
-                            VStack(alignment: .leading, spacing: 4) {
-                                HStack {
-                                    Text(cluster.kindTitle)
-                                        .font(.headline)
-                                    Spacer()
-                                    Text("\(cluster.memberAssetIDs.count) 张")
-                                        .foregroundStyle(.secondary)
-                                        .font(.caption)
-                                }
-                                Text(cluster.scoreCaption)
+                    ForEach(model.librarySlimmingAnalysisJobs) { job in
+                        VStack(alignment: .leading, spacing: 4) {
+                            HStack {
+                                Text(job.modeTitle)
+                                    .font(.headline)
+                                Spacer()
+                                Text(job.stateTitle)
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                             }
-                            .tag(Optional(cluster.id))
-                            .accessibilityLabel("\(cluster.kindTitle)，\(cluster.memberAssetIDs.count) 张")
+                            Text(job.detailCaption)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Text(job.createdCaption)
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
                         }
+                        .tag(Optional(job.id))
+                        .contextMenu {
+                            if job.state != .running {
+                                Button("删除记录", role: .destructive) {
+                                    Task { await model.deleteLibrarySlimmingAnalysisJob(job.id) }
+                                }
+                            }
+                        }
+                        .accessibilityLabel(
+                            "\(job.modeTitle)，\(job.stateTitle)，\(job.detailCaption)"
+                        )
+                    }
+                }
+            }
+
+            Section("簇（相同优先）") {
+                if model.librarySlimmingAnalysisJobID == nil {
+                    Text("选择左侧一条分析记录查看结果。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else if model.librarySlimmingClusters.isEmpty {
+                    if model.hasCompletedLibrarySlimmingScan {
+                        Text("本次分析未发现相同或相似簇。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Text("该任务尚无结果，可等待完成或点击「继续当前」。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                } else {
+                    ForEach(model.librarySlimmingClusters) { cluster in
+                        VStack(alignment: .leading, spacing: 4) {
+                            HStack {
+                                Text(cluster.kindTitle)
+                                    .font(.body.weight(.semibold))
+                                Spacer()
+                                Text("\(cluster.memberAssetIDs.count) 张")
+                                    .foregroundStyle(.secondary)
+                                    .font(.caption)
+                            }
+                            Text(cluster.scoreCaption)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            model.selectLibrarySlimmingCluster(cluster.id)
+                        }
+                        .listRowBackground(
+                            model.selectedLibrarySlimmingClusterID == cluster.id
+                                ? Color.accentColor.opacity(0.12)
+                                : Color.clear
+                        )
+                        .accessibilityLabel("\(cluster.kindTitle)，\(cluster.memberAssetIDs.count) 张")
                     }
                 }
             }
@@ -351,30 +493,32 @@ struct LibrarySlimmingWorkspaceView: View {
                             .padding(.horizontal, 16)
                     }
 
-                    ScrollView {
-                        LazyVGrid(
-                            columns: LibraryGridLayout.gridItems(
-                                containerWidth: 720,
-                                density: .standard
-                            ),
-                            spacing: LibraryGridLayout.spacing
-                        ) {
-                            ForEach(cluster.memberAssetIDs, id: \.self) { assetID in
-                                SlimmingThumbnailCell(
-                                    model: model,
-                                    assetID: assetID,
-                                    isSelected: model.selectedLibrarySlimmingMemberIDs.contains(assetID)
-                                )
-                                .onTapGesture {
-                                    let flags = NSEvent.modifierFlags.intersection(.deviceIndependentFlagsMask)
-                                    model.selectLibrarySlimmingMember(
-                                        assetID,
-                                        additive: flags.contains(.command)
+                    GeometryReader { proxy in
+                        ScrollView {
+                            LazyVGrid(
+                                columns: LibraryGridLayout.gridItems(
+                                    containerWidth: proxy.size.width,
+                                    density: model.gridDensity
+                                ),
+                                spacing: LibraryGridLayout.spacing
+                            ) {
+                                ForEach(cluster.memberAssetIDs, id: \.self) { assetID in
+                                    SlimmingThumbnailCell(
+                                        model: model,
+                                        assetID: assetID,
+                                        isSelected: model.selectedLibrarySlimmingMemberIDs.contains(assetID)
                                     )
+                                    .onTapGesture {
+                                        let flags = NSEvent.modifierFlags.intersection(.deviceIndependentFlagsMask)
+                                        model.selectLibrarySlimmingMember(
+                                            assetID,
+                                            additive: flags.contains(.command)
+                                        )
+                                    }
                                 }
                             }
+                            .padding(LibraryGridLayout.horizontalPadding)
                         }
-                        .padding(LibraryGridLayout.horizontalPadding)
                     }
                 }
             } else if model.librarySlimmingClusters.isEmpty, model.hasCompletedLibrarySlimmingScan {
@@ -486,8 +630,16 @@ struct LibrarySlimmingInspectorView: View {
             )
                 .font(.callout)
                 .foregroundStyle(.secondary)
-            if !model.librarySlimmingSeedAssetIDs.isEmpty {
-                LabeledContent("种子", value: "\(model.librarySlimmingSeedAssetIDs.count) 张")
+            LabeledContent("分析记录", value: "\(model.librarySlimmingAnalysisJobs.count) 条")
+            if let job = model.selectedLibrarySlimmingAnalysisJob {
+                LabeledContent("当前任务", value: job.modeTitle)
+                LabeledContent("状态", value: job.stateTitle)
+                LabeledContent("范围", value: "\(job.memberCount) 张")
+                if job.seedCount > 0 {
+                    LabeledContent("种子", value: "\(job.seedCount) 张")
+                }
+            } else if !model.librarySlimmingSeedAssetIDs.isEmpty {
+                LabeledContent("待用种子", value: "\(model.librarySlimmingSeedAssetIDs.count) 张")
             }
             if model.librarySlimmingAnalyzeMode == .currentFilter
                 || model.librarySlimmingAnalyzeMode == .seeds
@@ -495,6 +647,9 @@ struct LibrarySlimmingInspectorView: View {
                 LabeledContent("筛选", value: model.librarySlimmingFilterScopeSummary)
             }
             LabeledContent("回收站", value: "\(model.librarySlimmingRecycleEntries.count) 项")
+            if let caption = model.sourceSimilarityIndexCaption {
+                LabeledContent("来源索引", value: caption.replacingOccurrences(of: "来源索引：", with: ""))
+            }
             if let cluster = model.selectedLibrarySlimmingCluster {
                 Divider()
                 LabeledContent("类型", value: cluster.kindTitle)
@@ -522,24 +677,27 @@ private struct SlimmingThumbnailCell: View {
     @State private var image: NSImage?
 
     var body: some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                .fill(Color.secondary.opacity(0.12))
-            if let image {
-                Image(nsImage: image)
-                    .resizable()
-                    .aspectRatio(contentMode: .fill)
-            } else {
-                ProgressView()
-                    .controlSize(.small)
+        GeometryReader { proxy in
+            ZStack {
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(Color.secondary.opacity(0.12))
+                if let image {
+                    Image(nsImage: image)
+                        .resizable()
+                        .scaledToFill()
+                        .frame(width: proxy.size.width, height: proxy.size.height)
+                } else {
+                    ProgressView()
+                        .controlSize(.small)
+                }
             }
+            .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .strokeBorder(isSelected ? Color.accentColor : Color.clear, lineWidth: 3)
+            )
         }
-        .frame(minWidth: 80, minHeight: 80)
-        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                .strokeBorder(isSelected ? Color.accentColor : Color.clear, lineWidth: 3)
-        )
+        .aspectRatio(1, contentMode: .fit)
         .task(id: assetID) {
             let data = await model.thumbnailData(assetID: assetID)
             if let data {

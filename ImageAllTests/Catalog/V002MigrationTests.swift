@@ -183,6 +183,11 @@ final class V002MigrationTests: XCTestCase {
                 "asset_similarity_fingerprint",
                 "recycle_entry",
                 "source_mutation_authorization",
+                "photos_original_cache_entry",
+                "library_slimming_scan_member",
+                "library_slimming_scan_result",
+                "source_similarity_index",
+                "source_similarity_bucket_member",
             ].contains($0)
         }
         let v001Dump = try v001Only.pool.read { db in

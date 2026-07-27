@@ -73,6 +73,9 @@ struct JobSafeErrorCode: Sendable, Equatable, Hashable {
     static let librarySlimmingAnalysisFailed = JobSafeErrorCode(
         unchecked: "librarySlimmingAnalysisFailed"
     )
+    static let librarySlimmingSourceIndexFailed = JobSafeErrorCode(
+        unchecked: "librarySlimmingSourceIndexFailed"
+    )
 
     private init(unchecked rawValue: String) {
         self.rawValue = rawValue
@@ -132,6 +135,8 @@ enum JobActivityKind: Sendable, Equatable {
     case photosReconcile
     case personalizationSuggestions
     case standardSuggestions
+    case librarySlimmingAnalysis
+    case librarySlimmingSourceIndex
     case background
 
     init(persistedKind: String) {
@@ -146,6 +151,10 @@ enum JobActivityKind: Sendable, Equatable {
             self = .personalizationSuggestions
         case "personalization.standardLibrarySuggestions":
             self = .standardSuggestions
+        case "librarySlimming.analysis.v1":
+            self = .librarySlimmingAnalysis
+        case "librarySlimming.sourceIndex.v1":
+            self = .librarySlimmingSourceIndex
         default:
             self = .background
         }

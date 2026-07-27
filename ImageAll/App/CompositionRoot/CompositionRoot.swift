@@ -347,13 +347,21 @@ struct CompositionRoot {
         let optionalSlimmingEmbeddingLoader = OptionalSlimmingEmbeddingLoader(
             base: slimmingEmbeddingLoader
         )
+        let sourceSimilarityIndex = SourceSimilarityIndexService(
+            database: runtime.database,
+            queue: runtime.jobQueue,
+            featureLoader: slimmingFeatureLoader,
+            thresholdReader: slimmingThresholdStore,
+            clock: clock
+        )
         let librarySlimming = LibrarySlimmingScanService(
             database: runtime.database,
             identicalScan: IdenticalDuplicateClusterService(database: runtime.database),
             fingerprintCompletion: fingerprintCompletion,
             featureLoader: slimmingFeatureLoader,
             embeddingLoader: optionalSlimmingEmbeddingLoader,
-            thresholdReader: slimmingThresholdStore
+            thresholdReader: slimmingThresholdStore,
+            sourceIndex: sourceSimilarityIndex
         )
         let librarySlimmingAnalysis = LibrarySlimmingAnalysisService(
             database: runtime.database,
@@ -372,6 +380,7 @@ struct CompositionRoot {
             ),
             librarySlimming: librarySlimming,
             librarySlimmingAnalysis: librarySlimmingAnalysis,
+            librarySlimmingSourceIndex: sourceSimilarityIndex,
             librarySlimmingRecycle: librarySlimmingRecycle,
             librarySlimmingMutationAuthorization: librarySlimmingMutationAuthorization,
             librarySlimmingThresholds: slimmingThresholdStore,

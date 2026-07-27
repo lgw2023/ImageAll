@@ -28,6 +28,7 @@ struct CatalogDatabase: Sendable {
         V020HardenLibrarySlimmingRecycleMigration.register(on: &migrator)
         V021AddPhotosRecycleIdentifierMigration.register(on: &migrator)
         V022HardenLibrarySlimmingAnalysisMigration.register(on: &migrator)
+        V023AddSourceSimilarityIndexMigration.register(on: &migrator)
         return migrator
     }
 
@@ -1895,6 +1896,60 @@ enum V022HardenLibrarySlimmingAnalysisMigration {
                     result_json BLOB NOT NULL CHECK(length(result_json) > 0),
                     updated_at_ms INTEGER NOT NULL CHECK(updated_at_ms >= 0)
                 ) STRICT
+                """
+            )
+        }
+    }
+}
+
+enum V023AddSourceSimilarityIndexMigration {
+    static func register(on migrator: inout DatabaseMigrator) {
+        migrator.registerMigration(CatalogMigrationID.v023AddSourceSimilarityIndex) { db in
+            try db.execute(
+                sql: """
+                CREATE TABLE source_similarity_index (
+                    source_id TEXT NOT NULL PRIMARY KEY REFERENCES source(id) ON DELETE CASCADE,
+                    state TEXT NOT NULL CHECK(state IN ('building','ready','stale','failed')),
+                    policy_version TEXT NOT NULL,
+                    feature_print_provider TEXT NOT NULL,
+                    feature_print_request_revision INTEGER NOT NULL,
+                    feature_print_preprocessing_revision INTEGER NOT NULL,
+                    feature_print_max_l2 REAL NOT NULL,
+                    lsh_bit_count INTEGER NOT NULL CHECK(lsh_bit_count BETWEEN 8 AND 64),
+                    lsh_planes_json BLOB NOT NULL,
+                    asset_count INTEGER NOT NULL CHECK(asset_count >= 0),
+                    indexed_count INTEGER NOT NULL CHECK(indexed_count >= 0),
+                    cluster_count INTEGER NOT NULL CHECK(cluster_count >= 0),
+                    pending_count INTEGER NOT NULL CHECK(pending_count >= 0),
+                    job_id TEXT REFERENCES job(id) ON DELETE SET NULL,
+                    built_at_ms INTEGER,
+                    updated_at_ms INTEGER NOT NULL,
+                    last_error TEXT
+                ) STRICT
+                """
+            )
+            try db.execute(
+                sql: """
+                CREATE TABLE source_similarity_bucket_member (
+                    source_id TEXT NOT NULL REFERENCES source_similarity_index(source_id) ON DELETE CASCADE,
+                    asset_id TEXT NOT NULL REFERENCES asset(id) ON DELETE CASCADE,
+                    content_revision INTEGER NOT NULL CHECK(content_revision >= 1),
+                    bucket_key INTEGER NOT NULL,
+                    cluster_id TEXT,
+                    PRIMARY KEY(source_id, asset_id)
+                ) STRICT
+                """
+            )
+            try db.execute(
+                sql: """
+                CREATE INDEX source_similarity_bucket_lookup_idx
+                ON source_similarity_bucket_member(source_id, bucket_key, asset_id)
+                """
+            )
+            try db.execute(
+                sql: """
+                CREATE INDEX source_similarity_cluster_lookup_idx
+                ON source_similarity_bucket_member(source_id, cluster_id, asset_id)
                 """
             )
         }

@@ -243,6 +243,10 @@
 		SL0000010000000000000011 /* LibrarySlimmingRecycleContracts.swift in Sources */ = {isa = PBXBuildFile; fileRef = SL0001010000000000000011 /* LibrarySlimmingRecycleContracts.swift */; };
 		SL0001010000000000000016 /* PhotoKitPhotosLibraryMutationAdapter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhotoKitPhotosLibraryMutationAdapter.swift; sourceTree = "<group>"; };
 		SL0000010000000000000016 /* PhotoKitPhotosLibraryMutationAdapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = SL0001010000000000000016 /* PhotoKitPhotosLibraryMutationAdapter.swift */; };
+		SL0000010000000000000017 /* FeaturePrintLSH.swift in Sources */ = {isa = PBXBuildFile; fileRef = SL0001010000000000000017 /* FeaturePrintLSH.swift */; };
+		SL0000010000000000000018 /* SourceSimilarityIndexContracts.swift in Sources */ = {isa = PBXBuildFile; fileRef = SL0001010000000000000018 /* SourceSimilarityIndexContracts.swift */; };
+		SL0000010000000000000019 /* SourceSimilarityIndexService.swift in Sources */ = {isa = PBXBuildFile; fileRef = SL0001010000000000000019 /* SourceSimilarityIndexService.swift */; };
+		SL0000010000000000000104 /* SourceSimilarityIndexTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = SL0001010000000000000104 /* SourceSimilarityIndexTests.swift */; };
 		MM0000010000000000000101 /* PersonalizedSuggestionServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = MM0001010000000000000101 /* PersonalizedSuggestionServiceTests.swift */; };
 		MM0000010000000000000001 /* PersonalizedSuggestionService.swift in Sources */ = {isa = PBXBuildFile; fileRef = MM0001010000000000000001 /* PersonalizedSuggestionService.swift */; };
 		CM0000010000000000000101 /* AppCoreMLEmbeddingServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CM0001010000000000000101 /* AppCoreMLEmbeddingServiceTests.swift */; };
@@ -541,6 +545,10 @@
 		SL0001010000000000000013 /* FolderMutationAccess.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FolderMutationAccess.swift; sourceTree = "<group>"; };
 		SL0001010000000000000012 /* FolderQuarantineIO.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FolderQuarantineIO.swift; sourceTree = "<group>"; };
 		SL0001010000000000000011 /* LibrarySlimmingRecycleContracts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibrarySlimmingRecycleContracts.swift; sourceTree = "<group>"; };
+		SL0001010000000000000017 /* FeaturePrintLSH.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FeaturePrintLSH.swift; sourceTree = "<group>"; };
+		SL0001010000000000000018 /* SourceSimilarityIndexContracts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SourceSimilarityIndexContracts.swift; sourceTree = "<group>"; };
+		SL0001010000000000000019 /* SourceSimilarityIndexService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SourceSimilarityIndexService.swift; sourceTree = "<group>"; };
+		SL0001010000000000000104 /* SourceSimilarityIndexTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SourceSimilarityIndexTests.swift; sourceTree = "<group>"; };
 		MM0001010000000000000101 /* PersonalizedSuggestionServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersonalizedSuggestionServiceTests.swift; sourceTree = "<group>"; };
 		MM0001010000000000000001 /* PersonalizedSuggestionService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersonalizedSuggestionService.swift; sourceTree = "<group>"; };
 		CM0001010000000000000101 /* AppCoreMLEmbeddingServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppCoreMLEmbeddingServiceTests.swift; sourceTree = "<group>"; };
@@ -1218,6 +1226,7 @@
 				SL0001010000000000000001 /* IdenticalDuplicateContracts.swift */,
 				SL0001010000000000000005 /* NearDuplicateSceneContracts.swift */,
 				SL0001010000000000000011 /* LibrarySlimmingRecycleContracts.swift */,
+				SL0001010000000000000018 /* SourceSimilarityIndexContracts.swift */,
 			);
 			path = Similarity;
 			sourceTree = "<group>";
@@ -1237,6 +1246,8 @@
 				SL0001010000000000000013 /* FolderMutationAccess.swift */,
 				SL0001010000000000000014 /* LibrarySlimmingRecycleService.swift */,
 				SL0001010000000000000015 /* LibrarySlimmingPurgeJob.swift */,
+				SL0001010000000000000017 /* FeaturePrintLSH.swift */,
+				SL0001010000000000000019 /* SourceSimilarityIndexService.swift */,
 			);
 			path = Similarity;
 			sourceTree = "<group>";
@@ -1247,6 +1258,7 @@
 				SL0001010000000000000101 /* IdenticalDuplicateDetectionTests.swift */,
 				SL0001010000000000000102 /* NearDuplicateSceneClusteringTests.swift */,
 				SL0001010000000000000103 /* LibrarySlimmingRecycleTests.swift */,
+				SL0001010000000000000104 /* SourceSimilarityIndexTests.swift */,
 			);
 			path = Similarity;
 			sourceTree = "<group>";
@@ -1476,6 +1488,9 @@
 				SL0000010000000000000014 /* LibrarySlimmingRecycleService.swift in Sources */,
 				SL0000010000000000000015 /* LibrarySlimmingPurgeJob.swift in Sources */,
 				SL0000010000000000000010 /* LibrarySlimmingWorkspaceUI.swift in Sources */,
+				SL0000010000000000000017 /* FeaturePrintLSH.swift in Sources */,
+				SL0000010000000000000018 /* SourceSimilarityIndexContracts.swift in Sources */,
+				SL0000010000000000000019 /* SourceSimilarityIndexService.swift in Sources */,
 				KK0000010000000000000003 /* GRDBPersonalizationRepository.swift in Sources */,
 				AA0000010000000000000001 /* ImageAllApp.swift in Sources */,
 				AA0000010000000000000002 /* RootView.swift in Sources */,
@@ -1620,6 +1635,7 @@
 				SL0000010000000000000101 /* IdenticalDuplicateDetectionTests.swift in Sources */,
 				SL0000010000000000000102 /* NearDuplicateSceneClusteringTests.swift in Sources */,
 				SL0000010000000000000103 /* LibrarySlimmingRecycleTests.swift in Sources */,
+				SL0000010000000000000104 /* SourceSimilarityIndexTests.swift in Sources */,
 				KK0000010000000000000101 /* PersonalizationPersistenceTests.swift in Sources */,
 				NN0000010000000000000101 /* FullLibrarySuggestionsJobTests.swift in Sources */,
 				ST0000010000000000000003 /* SuggestionThresholdTests.swift in Sources */,

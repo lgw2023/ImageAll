@@ -44,6 +44,8 @@ final class DerivedImagePrivacyRegressionTests: XCTestCase {
             CatalogMigrationID.v019AddLibrarySlimmingRecycle,
             CatalogMigrationID.v020HardenLibrarySlimmingRecycle,
             CatalogMigrationID.v021AddPhotosRecycleIdentifier,
+            CatalogMigrationID.v022HardenLibrarySlimmingAnalysis,
+            CatalogMigrationID.v023AddSourceSimilarityIndex,
         ])
     }
 

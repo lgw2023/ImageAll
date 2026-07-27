@@ -387,7 +387,7 @@ final class IdenticalDuplicateDetectionTests: XCTestCase {
         XCTAssertEqual(finished.result?.pendingAnalysisAssetIDs, [])
     }
 
-    func testLibraryAnalysisEnqueueSupersedesPausedJob() throws {
+    func testLibraryAnalysisEnqueuePreservesPausedJob() throws {
         let env = try SimilarityTestSupport.Environment(label: #function)
         defer { env.cleanup() }
         let bytes = try XCTUnwrap(SimilarityTestSupport.patternedImageData(seed: 92, uti: .png))
@@ -433,27 +433,18 @@ final class IdenticalDuplicateDetectionTests: XCTestCase {
         )
         XCTAssertNotEqual(second.jobID, first.jobID)
         XCTAssertEqual(second.state, .pending)
-        XCTAssertEqual(try analysis.snapshot(jobID: first.jobID).state, .cancelled)
+        XCTAssertEqual(try analysis.snapshot(jobID: first.jobID).state, .paused)
 
-        let memberCount = try env.database.pool.read { db in
-            try Int.fetchOne(
-                db,
-                sql: "SELECT COUNT(*) FROM library_slimming_scan_member WHERE job_id = ?",
-                arguments: [second.jobID.uuidString.lowercased()]
-            )
-        }
-        XCTAssertEqual(memberCount, 3)
-        let seedCount = try env.database.pool.read { db in
-            try Int.fetchOne(
-                db,
-                sql: """
-                SELECT COUNT(*) FROM library_slimming_scan_member
-                WHERE job_id = ? AND is_seed = 1
-                """,
-                arguments: [second.jobID.uuidString.lowercased()]
-            )
-        }
-        XCTAssertEqual(seedCount, 1)
+        let jobs = try analysis.listJobs()
+        XCTAssertEqual(jobs.count, 2)
+        XCTAssertEqual(Set(jobs.map(\.jobID)), Set([first.jobID, second.jobID]))
+        XCTAssertEqual(jobs.first(where: { $0.jobID == second.jobID })?.seedCount, 1)
+        XCTAssertEqual(jobs.first(where: { $0.jobID == first.jobID })?.memberCount, 2)
+
+        try analysis.delete(jobID: first.jobID)
+        let remaining = try analysis.listJobs()
+        XCTAssertEqual(remaining.map(\.jobID), [second.jobID])
+        XCTAssertThrowsError(try analysis.snapshot(jobID: first.jobID))
     }
 }
 

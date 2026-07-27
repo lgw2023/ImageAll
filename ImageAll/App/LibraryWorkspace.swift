@@ -674,6 +674,7 @@ final class LibraryWorkspaceModel: ObservableObject {
     @Published private(set) var isRefreshingTrainingWorkspace = false
     @Published private(set) var trainingWorkspaceActivity: TrainingWorkspaceActivity?
     @Published private(set) var librarySlimmingClusters: [LibrarySlimmingClusterPresentation] = []
+    @Published private(set) var librarySlimmingAnalysisJobs: [LibrarySlimmingAnalysisJobPresentation] = []
     @Published private(set) var selectedLibrarySlimmingClusterID: UUID?
     @Published private(set) var librarySlimmingPendingCount = 0
     @Published private(set) var isAnalyzingLibrarySlimming = false
@@ -689,6 +690,8 @@ final class LibraryWorkspaceModel: ObservableObject {
     @Published private(set) var librarySlimmingWorkspaceTab: LibrarySlimmingWorkspaceTab = .clusters
     @Published private(set) var librarySlimmingRecycleEntries: [RecycleEntryRecord] = []
     @Published private(set) var librarySlimmingSceneThresholds = NearDuplicateSceneThresholds.factory
+    @Published private(set) var sourceSimilarityIndexStatus: SourceSimilarityIndexStatus?
+    @Published private(set) var isInitializingSourceSimilarityIndex = false
     @Published var showsLibrarySlimmingThresholdEditor = false
     @Published private(set) var isMutatingLibrarySlimmingRecycle = false
     /// Bumped when toolbar asks the sidebar view to switch into 图库瘦身.
@@ -701,6 +704,7 @@ final class LibraryWorkspaceModel: ObservableObject {
     private let trainingWorkspace: (any TrainingWorkspacePort)?
     private let librarySlimming: (any LibrarySlimmingScanPort)?
     private let librarySlimmingAnalysis: (any LibrarySlimmingAnalysisJobPort)?
+    private let librarySlimmingSourceIndex: (any SourceSimilarityIndexPort)?
     private let librarySlimmingRecycle: (any LibrarySlimmingRecyclePort)?
     private let librarySlimmingThresholds: (any NearDuplicateSceneThresholdWriting)?
     private let librarySlimmingMutationAuthorization: (any FolderMutationAuthorizationPort)?
@@ -720,6 +724,7 @@ final class LibraryWorkspaceModel: ObservableObject {
     fileprivate var lastReviewMutation: ReviewMutationUndoRecord?
     private var personalizationRunnerTask: Task<Void, Never>?
     private var librarySlimmingAnalysisRunnerTask: Task<Void, Never>?
+    private var sourceSimilarityIndexRunnerTask: Task<Void, Never>?
     private var catalogReconcileTask: Task<Void, Never>?
     private var catalogReconcileRunRequested = false
     private var cloudPreviewTask: Task<Void, Never>?
@@ -768,6 +773,7 @@ final class LibraryWorkspaceModel: ObservableObject {
         trainingWorkspace: (any TrainingWorkspacePort)? = nil,
         librarySlimming: (any LibrarySlimmingScanPort)? = nil,
         librarySlimmingAnalysis: (any LibrarySlimmingAnalysisJobPort)? = nil,
+        librarySlimmingSourceIndex: (any SourceSimilarityIndexPort)? = nil,
         librarySlimmingRecycle: (any LibrarySlimmingRecyclePort)? = nil,
         librarySlimmingMutationAuthorization: (any FolderMutationAuthorizationPort)? = nil,
         librarySlimmingThresholds: (any NearDuplicateSceneThresholdWriting)? = nil,
@@ -800,6 +806,7 @@ final class LibraryWorkspaceModel: ObservableObject {
         self.trainingWorkspace = trainingWorkspace
         self.librarySlimming = librarySlimming
         self.librarySlimmingAnalysis = librarySlimmingAnalysis
+        self.librarySlimmingSourceIndex = librarySlimmingSourceIndex
         self.librarySlimmingRecycle = librarySlimmingRecycle
         self.librarySlimmingMutationAuthorization = librarySlimmingMutationAuthorization
         self.librarySlimmingThresholds = librarySlimmingThresholds
@@ -850,14 +857,60 @@ final class LibraryWorkspaceModel: ObservableObject {
         librarySlimmingAnalysis != nil
     }
 
+    var supportsSourceSimilarityIndex: Bool {
+        librarySlimmingSourceIndex != nil
+    }
+
+    /// ADR-045 LS-P10: initialization targets exactly one selected source; ready indexes
+    /// may be rebuilt on demand, but a build already in flight must not be duplicated.
+    var canInitializeSourceSimilarityIndex: Bool {
+        guard librarySlimmingSourceIndex != nil, selectedSourceID != nil else { return false }
+        switch sourceSimilarityIndexStatus?.state {
+        case nil, .stale, .failed, .ready:
+            return true
+        case .building:
+            return false
+        }
+    }
+
+    var sourceSimilarityIndexCaption: String? {
+        guard supportsSourceSimilarityIndex else { return nil }
+        guard selectedSourceID != nil else {
+            return "来源索引：请选择单个来源"
+        }
+        guard let status = sourceSimilarityIndexStatus else {
+            return "来源索引：未初始化"
+        }
+        switch status.state {
+        case .building:
+            return "来源索引：构建中 \(status.indexedCount)/\(status.assetCount)"
+        case .ready:
+            return "来源索引：就绪 \(status.indexedCount)/\(status.assetCount) · \(status.clusterCount) 簇"
+        case .stale:
+            return "来源索引：需要重建"
+        case .failed:
+            return "来源索引：失败" + (status.lastError.map { "（\($0)）" } ?? "")
+        }
+    }
+
     var canPauseLibrarySlimmingAnalysis: Bool {
-        return librarySlimmingAnalysisJobState == .running
-            && librarySlimmingAnalysisControlRequest == .none
+        guard let selected = selectedLibrarySlimmingAnalysisJob else { return false }
+        return selected.state == .running && selected.controlRequest == .none
     }
 
     var canResumeLibrarySlimmingAnalysis: Bool {
-        librarySlimmingAnalysisJobState == .paused
-            || librarySlimmingAnalysisJobState == .retryableFailed
+        guard let selected = selectedLibrarySlimmingAnalysisJob else { return false }
+        return selected.state == .paused || selected.state == .retryableFailed
+    }
+
+    var canDeleteSelectedLibrarySlimmingAnalysisJob: Bool {
+        guard let selected = selectedLibrarySlimmingAnalysisJob else { return false }
+        return selected.state != .running
+    }
+
+    var selectedLibrarySlimmingAnalysisJob: LibrarySlimmingAnalysisJobPresentation? {
+        guard let id = librarySlimmingAnalysisJobID else { return nil }
+        return librarySlimmingAnalysisJobs.first(where: { $0.id == id })
     }
 
     var supportsLibrarySlimmingRecycle: Bool {
@@ -896,6 +949,156 @@ final class LibraryWorkspaceModel: ObservableObject {
         selectedLibrarySlimmingMemberIDs = []
     }
 
+    func selectLibrarySlimmingAnalysisJob(_ jobID: UUID?) {
+        guard let jobID else {
+            librarySlimmingAnalysisJobID = nil
+            librarySlimmingAnalysisJobState = nil
+            librarySlimmingAnalysisControlRequest = .none
+            librarySlimmingClusters = []
+            librarySlimmingPendingCount = 0
+            hasCompletedLibrarySlimmingScan = false
+            selectedLibrarySlimmingClusterID = nil
+            selectedLibrarySlimmingMemberIDs = []
+            return
+        }
+        guard librarySlimmingAnalysisJobs.contains(where: { $0.id == jobID }) else { return }
+        Task { await loadLibrarySlimmingAnalysisJob(jobID) }
+    }
+
+    func refreshSourceSimilarityIndexStatus() async {
+        guard let sourceIndex = librarySlimmingSourceIndex, let sourceID = selectedSourceID else {
+            sourceSimilarityIndexStatus = nil
+            return
+        }
+        do {
+            sourceSimilarityIndexStatus = try await Self.offMain {
+                try sourceIndex.status(sourceID: sourceID)
+            }
+        } catch {
+            sourceSimilarityIndexStatus = nil
+        }
+    }
+
+    func initializeSourceSimilarityIndex() async {
+        guard let sourceIndex = librarySlimmingSourceIndex,
+              let sourceID = selectedSourceID,
+              canInitializeSourceSimilarityIndex
+        else {
+            return
+        }
+        isInitializingSourceSimilarityIndex = true
+        librarySlimmingStatusMessage = "正在为当前来源建立相似索引…"
+        do {
+            _ = try await Self.offMain {
+                try sourceIndex.enqueueBuild(sourceID: sourceID)
+            }
+            await refreshSourceSimilarityIndexStatus()
+            try await Self.offMain(priority: .utility) {
+                try sourceIndex.runPending()
+            }
+            await refreshSourceSimilarityIndexStatus()
+            if sourceSimilarityIndexStatus?.state == .building {
+                startSourceSimilarityIndexAutoRunner()
+            } else {
+                isInitializingSourceSimilarityIndex = false
+                librarySlimmingStatusMessage = sourceSimilarityIndexStatus?.state == .ready
+                    ? "来源索引已就绪。"
+                    : "来源索引构建未完成，请稍后重试。"
+            }
+        } catch {
+            isInitializingSourceSimilarityIndex = false
+            librarySlimmingStatusMessage = "初始化来源索引失败：\(error.localizedDescription)"
+        }
+    }
+
+    private func startSourceSimilarityIndexAutoRunner() {
+        guard sourceSimilarityIndexRunnerTask == nil,
+              let sourceIndex = librarySlimmingSourceIndex
+        else {
+            return
+        }
+        sourceSimilarityIndexRunnerTask = Task { @MainActor [weak self] in
+            defer { self?.sourceSimilarityIndexRunnerTask = nil }
+            while !Task.isCancelled {
+                do {
+                    try await Task.sleep(for: .seconds(5))
+                } catch {
+                    return
+                }
+                _ = try? await Self.offMain(priority: .utility) {
+                    try sourceIndex.runPending()
+                }
+                await self?.refreshSourceSimilarityIndexStatus()
+                if self?.sourceSimilarityIndexStatus?.state != .building {
+                    self?.isInitializingSourceSimilarityIndex = false
+                    if self?.sourceSimilarityIndexStatus?.state == .ready {
+                        self?.librarySlimmingStatusMessage = "来源索引已就绪。"
+                    }
+                    return
+                }
+            }
+        }
+    }
+
+    func refreshLibrarySlimmingAnalysisJobs() async {
+        guard let analysis = librarySlimmingAnalysis else {
+            librarySlimmingAnalysisJobs = []
+            return
+        }
+        do {
+            let jobs = try await Self.offMain {
+                try analysis.listJobs()
+            }
+            librarySlimmingAnalysisJobs = jobs.map(LibrarySlimmingAnalysisJobPresentation.init)
+            if let selected = librarySlimmingAnalysisJobID,
+               !librarySlimmingAnalysisJobs.contains(where: { $0.id == selected })
+            {
+                if let latest = librarySlimmingAnalysisJobs.first {
+                    await loadLibrarySlimmingAnalysisJob(latest.id)
+                } else {
+                    selectLibrarySlimmingAnalysisJob(nil)
+                }
+            }
+        } catch {
+            librarySlimmingStatusMessage = "无法加载分析记录：\(error.localizedDescription)"
+        }
+    }
+
+    func deleteLibrarySlimmingAnalysisJob(_ jobID: UUID) async {
+        guard let analysis = librarySlimmingAnalysis else { return }
+        do {
+            try await Self.offMain {
+                try analysis.delete(jobID: jobID)
+            }
+            let wasSelected = librarySlimmingAnalysisJobID == jobID
+            librarySlimmingAnalysisJobs.removeAll { $0.id == jobID }
+            if wasSelected {
+                if let next = librarySlimmingAnalysisJobs.first {
+                    await loadLibrarySlimmingAnalysisJob(next.id)
+                } else {
+                    selectLibrarySlimmingAnalysisJob(nil)
+                    librarySlimmingStatusMessage = "已删除分析记录。"
+                }
+            } else {
+                librarySlimmingStatusMessage = "已删除分析记录。"
+            }
+        } catch {
+            librarySlimmingStatusMessage = "删除失败：\(error.localizedDescription)"
+        }
+    }
+
+    private func loadLibrarySlimmingAnalysisJob(_ jobID: UUID) async {
+        guard let analysis = librarySlimmingAnalysis else { return }
+        do {
+            let snapshot = try await Self.offMain {
+                try analysis.snapshot(jobID: jobID)
+            }
+            applyLibrarySlimmingJobSnapshot(snapshot, forceSelect: true)
+        } catch {
+            librarySlimmingStatusMessage = "无法打开分析记录：\(error.localizedDescription)"
+        }
+    }
+
     func selectLibrarySlimmingMember(_ assetID: UUID, additive: Bool) {
         guard let cluster = selectedLibrarySlimmingCluster,
               cluster.memberAssetIDs.contains(assetID)
@@ -917,7 +1120,7 @@ final class LibraryWorkspaceModel: ObservableObject {
     }
 
     var canFindLibrarySlimmingFromSelection: Bool {
-        supportsLibrarySlimming && !selectedAssetIDs.isEmpty && !isAnalyzingLibrarySlimming
+        supportsLibrarySlimming && !selectedAssetIDs.isEmpty
     }
 
     /// Sidebar destination plus gallery filters always define a scan universe for current-filter analysis.
@@ -1188,7 +1391,7 @@ final class LibraryWorkspaceModel: ObservableObject {
     }
 
     func analyzeLibrarySlimming(mode: LibrarySlimmingAnalyzeMode? = nil) async {
-        guard let librarySlimming, !isAnalyzingLibrarySlimming else { return }
+        guard let librarySlimming else { return }
         let resolvedMode = mode ?? librarySlimmingAnalyzeMode
         if let librarySlimmingAnalysis {
             await analyzeLibrarySlimmingWithJob(
@@ -1197,6 +1400,7 @@ final class LibraryWorkspaceModel: ObservableObject {
             )
             return
         }
+        guard !isAnalyzingLibrarySlimming else { return }
         librarySlimmingAnalyzeMode = resolvedMode
         isAnalyzingLibrarySlimming = true
         hasCompletedLibrarySlimmingScan = false
@@ -1318,23 +1522,22 @@ final class LibraryWorkspaceModel: ObservableObject {
                     seedAssetIDs: seeds
                 )
             }
-            applyLibrarySlimmingJobSnapshot(snapshot)
+            await refreshLibrarySlimmingAnalysisJobs()
+            applyLibrarySlimmingJobSnapshot(snapshot, forceSelect: true)
             librarySlimmingStatusMessage = "后台自动补全内容指纹与相似度向量…"
             librarySlimmingAnalysisJobState = .running
             let enqueuedJobID = snapshot.jobID
             try await Self.offMain(priority: .utility) {
                 try analysis.runPending()
             }
+            await refreshLibrarySlimmingAnalysisJobs()
             snapshot = try await Self.offMain {
                 try analysis.snapshot(jobID: enqueuedJobID)
             }
-            applyLibrarySlimmingJobSnapshot(snapshot)
-            if snapshot.state == .retryableFailed || snapshot.state == .pending {
-                startLibrarySlimmingAnalysisAutoRunner(jobID: snapshot.jobID)
+            applyLibrarySlimmingJobSnapshot(snapshot, forceSelect: false)
+            if snapshot.state == .retryableFailed || snapshot.state == .pending || snapshot.state == .running {
+                startLibrarySlimmingAnalysisAutoRunner()
             }
-        } catch let JobQueueError.activeCoalescingConflict {
-            isAnalyzingLibrarySlimming = false
-            librarySlimmingStatusMessage = "已有分析正在进行，请先暂停后再用当前种子重新发起。"
         } catch {
             isAnalyzingLibrarySlimming = false
             librarySlimmingStatusMessage = "分析失败：\(error.localizedDescription)"
@@ -1352,7 +1555,8 @@ final class LibraryWorkspaceModel: ObservableObject {
             let snapshot = try await Self.offMain {
                 try analysis.pause(jobID: jobID)
             }
-            applyLibrarySlimmingJobSnapshot(snapshot)
+            await refreshLibrarySlimmingAnalysisJobs()
+            applyLibrarySlimmingJobSnapshot(snapshot, forceSelect: false)
             librarySlimmingStatusMessage = snapshot.state == .paused
                 ? "分析已暂停，可稍后继续。"
                 : "正在安全暂停…"
@@ -1364,30 +1568,29 @@ final class LibraryWorkspaceModel: ObservableObject {
     func resumeLibrarySlimmingAnalysis() async {
         guard let analysis = librarySlimmingAnalysis,
               let jobID = librarySlimmingAnalysisJobID,
-              canResumeLibrarySlimmingAnalysis,
-              !isAnalyzingLibrarySlimming
+              canResumeLibrarySlimmingAnalysis
         else {
             return
         }
         isAnalyzingLibrarySlimming = true
-        librarySlimmingAnalysisRunnerTask?.cancel()
-        librarySlimmingAnalysisRunnerTask = nil
         do {
             let resumed = try await Self.offMain {
                 try analysis.resume(jobID: jobID)
             }
-            applyLibrarySlimmingJobSnapshot(resumed)
+            await refreshLibrarySlimmingAnalysisJobs()
+            applyLibrarySlimmingJobSnapshot(resumed, forceSelect: false)
             librarySlimmingStatusMessage = "正在从上次进度继续并自动补全…"
             librarySlimmingAnalysisJobState = .running
             try await Self.offMain(priority: .utility) {
                 try analysis.runPending()
             }
+            await refreshLibrarySlimmingAnalysisJobs()
             let snapshot = try await Self.offMain {
                 try analysis.snapshot(jobID: jobID)
             }
-            applyLibrarySlimmingJobSnapshot(snapshot)
-            if snapshot.state == .retryableFailed || snapshot.state == .pending {
-                startLibrarySlimmingAnalysisAutoRunner(jobID: snapshot.jobID)
+            applyLibrarySlimmingJobSnapshot(snapshot, forceSelect: false)
+            if snapshot.state == .retryableFailed || snapshot.state == .pending || snapshot.state == .running {
+                startLibrarySlimmingAnalysisAutoRunner()
             }
         } catch {
             isAnalyzingLibrarySlimming = false
@@ -1396,37 +1599,58 @@ final class LibraryWorkspaceModel: ObservableObject {
     }
 
     private func applyLibrarySlimmingJobSnapshot(
-        _ snapshot: LibrarySlimmingAnalysisJobSnapshot
+        _ snapshot: LibrarySlimmingAnalysisJobSnapshot,
+        forceSelect: Bool
     ) {
-        librarySlimmingAnalysisJobID = snapshot.jobID
-        librarySlimmingAnalysisJobState = snapshot.state
-        librarySlimmingAnalysisControlRequest = snapshot.controlRequest
-        isAnalyzingLibrarySlimming = snapshot.state == .pending || snapshot.state == .running
-        if let total = snapshot.progress.total, total > 0 {
-            librarySlimmingScanProgress = LibrarySlimmingScanProgress(
-                phase: snapshot.progress.completed >= total - 1 ? .clustering : .loadingFeaturePrints,
-                completed: snapshot.progress.completed,
-                total: total
-            )
+        if forceSelect || librarySlimmingAnalysisJobID == nil {
+            librarySlimmingAnalysisJobID = snapshot.jobID
         }
-        if let result = snapshot.result {
-            applyLibrarySlimmingResult(result)
-            return
+        let isSelected = librarySlimmingAnalysisJobID == snapshot.jobID
+        if let summary = librarySlimmingAnalysisJobs.first(where: { $0.id == snapshot.jobID }) {
+            librarySlimmingAnalyzeMode = summary.mode
         }
-        switch snapshot.state {
-        case .paused:
-            librarySlimmingStatusMessage = "分析已暂停，可稍后继续。"
-        case .retryableFailed:
-            librarySlimmingStatusMessage = "分析会在条件恢复后自动续跑，也可现在继续。"
-        case .terminalFailed:
-            librarySlimmingStatusMessage = "分析未完成，请重新发起。"
-        case .cancelled:
-            librarySlimmingStatusMessage = "分析已取消。"
-        case .pending, .running:
-            break
-        case .completed:
-            librarySlimmingStatusMessage = "分析任务已完成。"
+        if isSelected {
+            librarySlimmingAnalysisJobState = snapshot.state
+            librarySlimmingAnalysisControlRequest = snapshot.controlRequest
+            if let total = snapshot.progress.total, total > 0 {
+                librarySlimmingScanProgress = LibrarySlimmingScanProgress(
+                    phase: snapshot.progress.completed >= total - 1
+                        ? .clustering
+                        : .loadingFeaturePrints,
+                    completed: snapshot.progress.completed,
+                    total: total
+                )
+            } else if snapshot.state != .running && snapshot.state != .pending {
+                librarySlimmingScanProgress = nil
+            }
+            if let result = snapshot.result {
+                applyLibrarySlimmingResult(result)
+            } else if forceSelect {
+                librarySlimmingClusters = []
+                librarySlimmingPendingCount = 0
+                hasCompletedLibrarySlimmingScan = false
+                selectedLibrarySlimmingClusterID = nil
+                selectedLibrarySlimmingMemberIDs = []
+                switch snapshot.state {
+                case .paused:
+                    librarySlimmingStatusMessage = "分析已暂停，可稍后继续。"
+                case .retryableFailed:
+                    librarySlimmingStatusMessage = "分析会在条件恢复后自动续跑，也可现在继续。"
+                case .terminalFailed:
+                    librarySlimmingStatusMessage = "分析未完成，请重新发起。"
+                case .cancelled:
+                    librarySlimmingStatusMessage = "分析已取消。"
+                case .pending, .running:
+                    break
+                case .completed:
+                    librarySlimmingStatusMessage = "分析任务已完成。"
+                }
+            }
         }
+        let anyActive = librarySlimmingAnalysisJobs.contains {
+            $0.state == .pending || $0.state == .running
+        } || snapshot.state == .pending || snapshot.state == .running
+        isAnalyzingLibrarySlimming = anyActive
     }
 
     private func applyLibrarySlimmingResult(_ result: LibrarySlimmingScanResult) {
@@ -1434,6 +1658,7 @@ final class LibraryWorkspaceModel: ObservableObject {
         librarySlimmingPendingCount = result.pendingAnalysisAssetIDs.count
         hasCompletedLibrarySlimmingScan = true
         selectedLibrarySlimmingClusterID = librarySlimmingClusters.first?.id
+        selectedLibrarySlimmingMemberIDs = []
         if result.clusters.isEmpty, result.pendingAnalysisAssetIDs.isEmpty {
             librarySlimmingStatusMessage = "已分析 \(result.analyzedAssetCount) 张，未发现相同或相似簇。"
         } else if result.clusters.isEmpty {
@@ -1448,7 +1673,7 @@ final class LibraryWorkspaceModel: ObservableObject {
         }
     }
 
-    private func startLibrarySlimmingAnalysisAutoRunner(jobID: UUID) {
+    private func startLibrarySlimmingAnalysisAutoRunner() {
         guard librarySlimmingAnalysisRunnerTask == nil,
               let analysis = librarySlimmingAnalysis
         else {
@@ -1462,23 +1687,22 @@ final class LibraryWorkspaceModel: ObservableObject {
                 } catch {
                     return
                 }
-                self?.isAnalyzingLibrarySlimming = true
-                self?.librarySlimmingAnalysisJobState = .running
-                self?.librarySlimmingAnalysisControlRequest = .none
                 _ = try? await Self.offMain(priority: .utility) {
                     try analysis.runPending()
                 }
-                guard let snapshot = try? await Self.offMain({
-                    try analysis.snapshot(jobID: jobID)
-                }) else {
-                    self?.isAnalyzingLibrarySlimming = false
-                    continue
+                await self?.refreshLibrarySlimmingAnalysisJobs()
+                if let selectedID = self?.librarySlimmingAnalysisJobID,
+                   let snapshot = try? await Self.offMain({
+                       try analysis.snapshot(jobID: selectedID)
+                   })
+                {
+                    self?.applyLibrarySlimmingJobSnapshot(snapshot, forceSelect: false)
                 }
-                self?.applyLibrarySlimmingJobSnapshot(snapshot)
-                switch snapshot.state {
-                case .pending, .running, .retryableFailed:
-                    continue
-                case .paused, .completed, .terminalFailed, .cancelled:
+                let hasActive = self?.librarySlimmingAnalysisJobs.contains {
+                    $0.state == .pending || $0.state == .running || $0.state == .retryableFailed
+                } ?? false
+                if !hasActive {
+                    self?.isAnalyzingLibrarySlimming = false
                     return
                 }
             }
@@ -2101,14 +2325,18 @@ final class LibraryWorkspaceModel: ObservableObject {
         _ = try? await Self.offMain(priority: .utility) {
             try service.runPendingLibrarySlimmingJobs()
         }
-        if let analysis = librarySlimmingAnalysis,
-           let snapshot = try? await Self.offMain({
-                try analysis.latestActiveOrCompleted()
-           })
-        {
-            applyLibrarySlimmingJobSnapshot(snapshot)
-            if snapshot.state == .retryableFailed || snapshot.state == .pending {
-                startLibrarySlimmingAnalysisAutoRunner(jobID: snapshot.jobID)
+        if librarySlimmingAnalysis != nil {
+            await refreshLibrarySlimmingAnalysisJobs()
+            if let selected = librarySlimmingAnalysisJobID {
+                await loadLibrarySlimmingAnalysisJob(selected)
+            } else if let latest = librarySlimmingAnalysisJobs.first {
+                await loadLibrarySlimmingAnalysisJob(latest.id)
+            }
+            let hasActive = librarySlimmingAnalysisJobs.contains {
+                $0.state == .pending || $0.state == .running || $0.state == .retryableFailed
+            }
+            if hasActive {
+                startLibrarySlimmingAnalysisAutoRunner()
             }
         }
         _ = try? await Self.offMain(priority: .utility) {
@@ -2794,6 +3022,7 @@ final class LibraryWorkspaceModel: ObservableObject {
         // Navigation only swaps the visible filter. Photos integrity / sync is
         // handled once at start() so switching sources stays flicker-free.
         await loadFirstPage(remountGrid: true)
+        await refreshSourceSimilarityIndexStatus()
     }
 
     func beginBrowsingNavigation() -> UUID {
@@ -2828,6 +3057,10 @@ final class LibraryWorkspaceModel: ObservableObject {
         case .librarySlimming:
             clearReviewModeState()
             guard browsingNavigationRequestID == requestID else { return }
+            await refreshLibrarySlimmingAnalysisJobs()
+            if librarySlimmingAnalysisJobID == nil, let latest = librarySlimmingAnalysisJobs.first {
+                await loadLibrarySlimmingAnalysisJob(latest.id)
+            }
             await consumePendingLibrarySlimmingSeedAnalyzeIfNeeded(
                 navigationRequestID: requestID
             )
@@ -6751,7 +6984,9 @@ struct LibraryWorkspaceView: View {
                 filterMenu
                 sortMenu
 
-                if !model.items.isEmpty, model.reviewMode == nil {
+                if model.reviewMode == nil,
+                   !model.items.isEmpty || selection == .librarySlimming
+                {
                     LibraryGridDensityPicker(
                         selection: Binding(
                             get: { model.gridDensity },
@@ -7177,6 +7412,8 @@ struct LibraryWorkspaceView: View {
         case .photosReconcile: "Apple Photos 同步"
         case .personalizationSuggestions: "个性化建议"
         case .standardSuggestions: "标准模型建议"
+        case .librarySlimmingAnalysis: "图库瘦身分析"
+        case .librarySlimmingSourceIndex: "来源相似索引"
         case .background: "后台任务"
         }
     }

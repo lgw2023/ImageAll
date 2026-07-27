@@ -87,16 +87,21 @@ enum CatalogSchemaExpectations {
         "feature",
         "file_fingerprint",
         "job",
+        "library_slimming_scan_member",
+        "library_slimming_scan_result",
         "ontology_concept",
         "ontology_edge",
         "ontology_pack",
         "personal_prediction",
         "personal_suggestion_model",
         "personal_suggestion_tag",
+        "photos_original_cache_entry",
         "prediction",
         "recycle_entry",
         "source",
         "source_mutation_authorization",
+        "source_similarity_bucket_member",
+        "source_similarity_index",
         "standard_model_revision",
         "standard_prediction",
         "standard_tag_binding",
@@ -134,6 +139,8 @@ enum CatalogSchemaExpectations {
         "prediction_review_rank_idx",
         "recycle_entry_active_asset_uq",
         "recycle_entry_purge_due_idx",
+        "source_similarity_bucket_lookup_idx",
+        "source_similarity_cluster_lookup_idx",
         "standard_prediction_review_rank_idx",
         "tag_group_id_idx",
         "tag_group_name_uq",
@@ -311,6 +318,58 @@ enum CatalogSchemaExpectations {
             .init(name: "perceptual_hash", type: "BLOB", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
             .init(name: "created_at_ms", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
             .init(name: "updated_at_ms", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "content_sha256", type: "BLOB", notNull: false, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "verification_signature", type: "BLOB", notNull: false, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "pixel_width", type: "INTEGER", notNull: false, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "pixel_height", type: "INTEGER", notNull: false, defaultValue: nil, primaryKeyOrder: 0),
+        ],
+        "photos_original_cache_entry": [
+            .init(name: "asset_id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 1),
+            .init(name: "content_revision", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "photos_local_identifier", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "object_name", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "media_type", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "byte_size", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "encoded_sha256", type: "BLOB", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "created_at_ms", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "updated_at_ms", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+        ],
+        "library_slimming_scan_member": [
+            .init(name: "job_id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 1),
+            .init(name: "asset_id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 2),
+            .init(name: "ordinal", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "is_seed", type: "INTEGER", notNull: true, defaultValue: "0", primaryKeyOrder: 0),
+        ],
+        "library_slimming_scan_result": [
+            .init(name: "job_id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 1),
+            .init(name: "result_json", type: "BLOB", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "updated_at_ms", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+        ],
+        "source_similarity_index": [
+            .init(name: "source_id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 1),
+            .init(name: "state", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "policy_version", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "feature_print_provider", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "feature_print_request_revision", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "feature_print_preprocessing_revision", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "feature_print_max_l2", type: "REAL", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "lsh_bit_count", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "lsh_planes_json", type: "BLOB", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "asset_count", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "indexed_count", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "cluster_count", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "pending_count", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "job_id", type: "TEXT", notNull: false, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "built_at_ms", type: "INTEGER", notNull: false, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "updated_at_ms", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "last_error", type: "TEXT", notNull: false, defaultValue: nil, primaryKeyOrder: 0),
+        ],
+        "source_similarity_bucket_member": [
+            .init(name: "source_id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 1),
+            .init(name: "asset_id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 2),
+            .init(name: "content_revision", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "bucket_key", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "cluster_id", type: "TEXT", notNull: false, defaultValue: nil, primaryKeyOrder: 0),
         ],
         "tag": [
             .init(name: "id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 1),
@@ -551,6 +610,24 @@ enum CatalogSchemaExpectations {
         "recycle_entry": [
             .init(from: "asset_id", toTable: "asset", to: "id", onDelete: "SET NULL"),
         ],
+        "photos_original_cache_entry": [
+            .init(from: "asset_id", toTable: "asset", to: "id", onDelete: "CASCADE"),
+        ],
+        "library_slimming_scan_member": [
+            .init(from: "job_id", toTable: "job", to: "id", onDelete: "CASCADE"),
+            .init(from: "asset_id", toTable: "asset", to: "id", onDelete: "CASCADE"),
+        ],
+        "library_slimming_scan_result": [
+            .init(from: "job_id", toTable: "job", to: "id", onDelete: "CASCADE"),
+        ],
+        "source_similarity_index": [
+            .init(from: "source_id", toTable: "source", to: "id", onDelete: "CASCADE"),
+            .init(from: "job_id", toTable: "job", to: "id", onDelete: "SET NULL"),
+        ],
+        "source_similarity_bucket_member": [
+            .init(from: "source_id", toTable: "source_similarity_index", to: "source_id", onDelete: "CASCADE"),
+            .init(from: "asset_id", toTable: "asset", to: "id", onDelete: "CASCADE"),
+        ],
     ]
 
     static let indexTableByName: [String: String] = [
@@ -585,6 +662,8 @@ enum CatalogSchemaExpectations {
         "tag_model_sample_feature_idx": "tag_model_sample",
         "recycle_entry_active_asset_uq": "recycle_entry",
         "recycle_entry_purge_due_idx": "recycle_entry",
+        "source_similarity_bucket_lookup_idx": "source_similarity_bucket_member",
+        "source_similarity_cluster_lookup_idx": "source_similarity_bucket_member",
     ]
 
     static let indexes: [IndexExpectation] = [
@@ -909,6 +988,24 @@ enum CatalogSchemaExpectations {
             ],
             unique: false,
             partialPredicateSQL: "state = 'recycled'"
+        ),
+        .init(
+            name: "source_similarity_bucket_lookup_idx",
+            keyColumns: [
+                .init(name: "source_id", descending: false, collation: "BINARY"),
+                .init(name: "bucket_key", descending: false, collation: "BINARY"),
+                .init(name: "asset_id", descending: false, collation: "BINARY"),
+            ],
+            unique: false
+        ),
+        .init(
+            name: "source_similarity_cluster_lookup_idx",
+            keyColumns: [
+                .init(name: "source_id", descending: false, collation: "BINARY"),
+                .init(name: "cluster_id", descending: false, collation: "BINARY"),
+                .init(name: "asset_id", descending: false, collation: "BINARY"),
+            ],
+            unique: false
         ),
     ]
 }

@@ -503,6 +503,11 @@ final class V003MigrationTests: XCTestCase {
             "asset_similarity_fingerprint",
             "recycle_entry",
             "source_mutation_authorization",
+            "photos_original_cache_entry",
+            "library_slimming_scan_member",
+            "library_slimming_scan_result",
+            "source_similarity_index",
+            "source_similarity_bucket_member",
         ])
         for table in CatalogSchemaExpectations.businessTables
             where table != "derived_image_cache_entry"

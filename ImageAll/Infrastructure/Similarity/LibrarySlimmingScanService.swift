@@ -9,6 +9,9 @@ struct LibrarySlimmingScanService: LibrarySlimmingScanPort {
     let embeddingLoader: any SlimmingEmbeddingLoading
     let thresholdReader: any NearDuplicateSceneThresholdReading
     let bucketCalendar: Calendar
+    /// ADR-045 LS-P11: when set, `scanSeeds` narrows the vector-load/compare set to each
+    /// seed's Feature Print LSH neighborhood whenever the whole universe is index-ready.
+    let sourceIndex: (any SourceSimilarityIndexPort)?
 
     init(
         database: CatalogDatabase,
@@ -19,7 +22,8 @@ struct LibrarySlimmingScanService: LibrarySlimmingScanPort {
         thresholdReader: any NearDuplicateSceneThresholdReading = StaticNearDuplicateSceneThresholds(
             value: .factory
         ),
-        bucketCalendar: Calendar = .current
+        bucketCalendar: Calendar = .current,
+        sourceIndex: (any SourceSimilarityIndexPort)? = nil
     ) {
         self.database = database
         self.identicalScan = identicalScan
@@ -28,6 +32,7 @@ struct LibrarySlimmingScanService: LibrarySlimmingScanPort {
         self.embeddingLoader = embeddingLoader
         self.thresholdReader = thresholdReader
         self.bucketCalendar = bucketCalendar
+        self.sourceIndex = sourceIndex
     }
 
     func scanCatalog(onProgress: LibrarySlimmingScanProgressHandler?) throws -> LibrarySlimmingScanResult {
@@ -100,7 +105,18 @@ struct LibrarySlimmingScanService: LibrarySlimmingScanPort {
             claimed.formUnion(cluster.memberAssetIDs)
         }
 
-        let vectorCandidates = universe.filter { !claimed.contains($0) }
+        let unclaimedSeeds = seeds.filter { !claimed.contains($0) }
+        var vectorCandidates = universe.filter { !claimed.contains($0) }
+        if let sourceIndex, !unclaimedSeeds.isEmpty {
+            let plan = try sourceIndex.candidateAssetIDs(
+                seedAssetIDs: unclaimedSeeds,
+                universeAssetIDs: universe
+            )
+            if case let .restricted(candidates) = plan {
+                let restricted = Set(candidates).union(unclaimedSeeds).subtracting(claimed)
+                vectorCandidates = universe.filter { restricted.contains($0) }
+            }
+        }
         let (featurePrints, embeddings, pending) = try loadVectors(
             assetIDs: vectorCandidates,
             onProgress: onProgress
@@ -112,7 +128,7 @@ struct LibrarySlimmingScanService: LibrarySlimmingScanPort {
         )
         // Seed mode intentionally does not bucket — preserve cross-day recall.
         let sceneClusters = NearDuplicateSceneClusterService().clusterAroundSeeds(
-            seedAssetIDs: seeds.filter { !claimed.contains($0) },
+            seedAssetIDs: unclaimedSeeds,
             featurePrints: featurePrints,
             embeddings: embeddings,
             modelIdentity: sceneModelIdentity,
@@ -545,6 +561,21 @@ struct LibrarySlimmingAnalysisJobSnapshot: Sendable, Equatable {
     let result: LibrarySlimmingScanResult?
 }
 
+struct LibrarySlimmingAnalysisJobSummary: Sendable, Equatable, Identifiable {
+    var id: UUID { jobID }
+    let jobID: UUID
+    let mode: LibrarySlimmingAnalyzeMode
+    let state: JobState
+    let controlRequest: JobControlRequest
+    let progress: JobProgress
+    let memberCount: Int
+    let seedCount: Int
+    let clusterCount: Int
+    let hasResult: Bool
+    let createdAtMs: Int64
+    let updatedAtMs: Int64
+}
+
 protocol LibrarySlimmingAnalysisJobPort: Sendable {
     func enqueue(
         mode: LibrarySlimmingAnalyzeMode,
@@ -556,6 +587,8 @@ protocol LibrarySlimmingAnalysisJobPort: Sendable {
     func resume(jobID: UUID) throws -> LibrarySlimmingAnalysisJobSnapshot
     func snapshot(jobID: UUID) throws -> LibrarySlimmingAnalysisJobSnapshot
     func latestActiveOrCompleted() throws -> LibrarySlimmingAnalysisJobSnapshot?
+    func listJobs() throws -> [LibrarySlimmingAnalysisJobSummary]
+    func delete(jobID: UUID) throws
 }
 
 enum LibrarySlimmingAnalysisJobFactory {
@@ -591,13 +624,16 @@ enum LibrarySlimmingAnalysisJobFactory {
         mode: LibrarySlimmingAnalyzeMode,
         notBeforeMs: Int64
     ) throws -> EnqueueJobCommand {
+        // Each analysis is an independent durable record. No coalescing key
+        // so multiple history / in-flight jobs can coexist without cancelling
+        // each other; claim/execute still serializes work via the job queue.
         EnqueueJobCommand(
             id: jobID,
             kind: kind,
             payloadVersion: payloadVersion,
             payload: try JSONEncoder().encode(Payload(mode: mode)),
             sourceID: nil,
-            coalescingKey: kind,
+            coalescingKey: nil,
             priority: priority,
             maxAttempts: maxAttempts,
             notBeforeMs: notBeforeMs
@@ -677,22 +713,6 @@ struct LibrarySlimmingAnalysisService: LibrarySlimmingAnalysisJobPort {
         guard !members.isEmpty else {
             throw FingerprintCompletionError.notFound
         }
-        // One global analysis job at a time. Explicit new analysis must
-        // supersede a paused/pending/retryable job so seed searches are not
-        // blocked by an unfinished prior run. A still-running job keeps the
-        // coalescing key until it settles.
-        if let existing = try latestActiveAnalysisJob() {
-            switch existing.state {
-            case .pending, .paused, .retryableFailed:
-                _ = try queue.applyStateCommand(
-                    JobStateCommand(jobID: existing.id, operation: .cancel)
-                )
-            case .running:
-                throw JobQueueError.activeCoalescingConflict(existingJobID: existing.id)
-            case .completed, .terminalFailed, .cancelled:
-                break
-            }
-        }
         let jobID = UUID()
         let nowMs = clock.nowMs
         let command = try LibrarySlimmingAnalysisJobFactory.makeCommand(
@@ -721,27 +741,6 @@ struct LibrarySlimmingAnalysisService: LibrarySlimmingAnalysisJobPort {
             }
         }
         return try snapshot(jobID: jobID)
-    }
-
-    private func latestActiveAnalysisJob() throws -> JobRecordSnapshot? {
-        let jobID = try database.pool.read { db -> UUID? in
-            guard let raw: String = try String.fetchOne(
-                db,
-                sql: """
-                SELECT id FROM job
-                WHERE coalescing_key = ?
-                    AND state IN ('pending', 'running', 'paused', 'retryableFailed')
-                ORDER BY updated_at_ms DESC, id DESC
-                LIMIT 1
-                """,
-                arguments: [LibrarySlimmingAnalysisJobFactory.kind]
-            ) else {
-                return nil
-            }
-            return UUID(uuidString: raw)
-        }
-        guard let jobID else { return nil }
-        return try queue.fetchJob(id: jobID)
     }
 
     func runPending() throws {
@@ -822,6 +821,116 @@ struct LibrarySlimmingAnalysisService: LibrarySlimmingAnalysisJobPort {
         }
         guard let jobID else { return nil }
         return try snapshot(jobID: jobID)
+    }
+
+    func listJobs() throws -> [LibrarySlimmingAnalysisJobSummary] {
+        try database.pool.read { db in
+            let rows = try Row.fetchAll(
+                db,
+                sql: """
+                SELECT
+                    job.id AS id,
+                    job.payload AS payload,
+                    job.state AS state,
+                    job.control_request AS control_request,
+                    job.progress_completed AS progress_completed,
+                    job.progress_total AS progress_total,
+                    job.created_at_ms AS created_at_ms,
+                    job.updated_at_ms AS updated_at_ms,
+                    (
+                        SELECT COUNT(*)
+                        FROM library_slimming_scan_member m
+                        WHERE m.job_id = job.id
+                    ) AS member_count,
+                    (
+                        SELECT COUNT(*)
+                        FROM library_slimming_scan_member m
+                        WHERE m.job_id = job.id AND m.is_seed = 1
+                    ) AS seed_count,
+                    (
+                        SELECT result_json
+                        FROM library_slimming_scan_result r
+                        WHERE r.job_id = job.id
+                    ) AS result_json
+                FROM job
+                WHERE job.kind = ?
+                ORDER BY job.created_at_ms DESC, job.id DESC
+                """,
+                arguments: [LibrarySlimmingAnalysisJobFactory.kind]
+            )
+            return try rows.map { row in
+                let rawID: String = row["id"]
+                guard let jobID = UUID(uuidString: rawID) else {
+                    throw JobQueueError.unknownPersistedRawValue(field: "id", value: rawID)
+                }
+                let payloadData: Data = row["payload"]
+                let payload = try LibrarySlimmingAnalysisJobFactory.decodePayload(payloadData)
+                let resultData: Data? = row["result_json"]
+                let clusterCount: Int
+                if let resultData,
+                   let result = try? JSONDecoder().decode(
+                       LibrarySlimmingScanResult.self,
+                       from: resultData
+                   )
+                {
+                    clusterCount = result.clusters.count
+                } else {
+                    clusterCount = 0
+                }
+                return LibrarySlimmingAnalysisJobSummary(
+                    jobID: jobID,
+                    mode: payload.mode,
+                    state: try JobPersistenceMapping.jobState(from: row["state"]),
+                    controlRequest: try JobPersistenceMapping.controlRequest(
+                        from: row["control_request"]
+                    ),
+                    progress: JobProgress(
+                        completed: row["progress_completed"],
+                        total: row["progress_total"]
+                    ),
+                    memberCount: row["member_count"],
+                    seedCount: row["seed_count"],
+                    clusterCount: clusterCount,
+                    hasResult: resultData != nil,
+                    createdAtMs: row["created_at_ms"],
+                    updatedAtMs: row["updated_at_ms"]
+                )
+            }
+        }
+    }
+
+    func delete(jobID: UUID) throws {
+        let deleted = try database.pool.write { db -> Int in
+            let state: String? = try String.fetchOne(
+                db,
+                sql: "SELECT state FROM job WHERE id = ? AND kind = ?",
+                arguments: [
+                    jobID.uuidString.lowercased(),
+                    LibrarySlimmingAnalysisJobFactory.kind,
+                ]
+            )
+            guard let state else {
+                throw JobQueueError.jobNotFound(jobID)
+            }
+            guard state != JobState.running.rawValue else {
+                throw JobQueueError.invalidTransition(
+                    currentState: .running,
+                    operation: "delete"
+                )
+            }
+            try db.execute(
+                sql: "DELETE FROM job WHERE id = ? AND kind = ? AND state != ?",
+                arguments: [
+                    jobID.uuidString.lowercased(),
+                    LibrarySlimmingAnalysisJobFactory.kind,
+                    JobState.running.rawValue,
+                ]
+            )
+            return db.changesCount
+        }
+        guard deleted > 0 else {
+            throw JobQueueError.jobNotFound(jobID)
+        }
     }
 }
 

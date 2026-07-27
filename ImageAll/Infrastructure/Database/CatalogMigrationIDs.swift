@@ -31,6 +31,8 @@ enum CatalogMigrationID {
         "v021_add_photos_recycle_identifier"
     static let v022HardenLibrarySlimmingAnalysis =
         "v022_harden_library_slimming_analysis"
+    static let v023AddSourceSimilarityIndex =
+        "v023_add_source_similarity_index"
 
     static let knownOrdered: [String] = [
         v001CreateCatalogCore,
@@ -55,5 +57,6 @@ enum CatalogMigrationID {
         v020HardenLibrarySlimmingRecycle,
         v021AddPhotosRecycleIdentifier,
         v022HardenLibrarySlimmingAnalysis,
+        v023AddSourceSimilarityIndex,
     ]
 }
