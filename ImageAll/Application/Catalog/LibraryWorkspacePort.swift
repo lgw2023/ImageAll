@@ -121,6 +121,8 @@ enum LibraryWorkspaceNotice: Equatable, Sendable {
     case portableExportFailed
     case previewCacheCleared(removedEntries: Int, partialReclaim: Bool)
     case previewCacheActionFailed
+    case photosOriginalStorageCleared(removedEntries: Int, partialReclaim: Bool)
+    case photosOriginalStorageActionFailed
     case sourceThumbnailPrewarmCompleted(
         sourceDisplayName: String,
         warmed: Int,
@@ -293,6 +295,8 @@ protocol LibraryWorkspacePort: Sendable {
     func exportPortableUserData(to parentDirectoryURL: URL) throws -> PortableCatalogExportResult
     func fetchPreviewCacheUsage() throws -> DerivedImageCacheUsage
     func clearPreviewCache() async throws -> DerivedImageCacheClearResult
+    func fetchPhotosOriginalStorageUsage() throws -> PhotosOriginalStorageUsage
+    func clearPhotosOriginalStorage() throws -> PhotosOriginalStorageClearResult
     func fetchAppStorageLocation() -> AppStorageLocationStatus
     @MainActor
     func chooseExternalAppStorageLocation() async throws -> AppStorageLocationSelectionResult

@@ -188,6 +188,129 @@ final class IdenticalDuplicateDetectionTests: XCTestCase {
         }
     }
 
+    func testDurablePhotosOriginalStorageReportsRetainedUsage() throws {
+        let env = try SimilarityTestSupport.Environment(label: #function)
+        defer { env.cleanup() }
+        let photosAssetID = try env.seedPhotosAsset()
+        let cache = PhotosOriginalCacheService(
+            database: env.database,
+            rootURL: env.root.appendingPathComponent("Photos Originals", isDirectory: true),
+            clock: FixedJobClock(nowMs: FolderReconcileTestSupport.baseTimeMs)
+        )
+        let original = Data("retained-full-original".utf8)
+        let localIdentifier = "LOCAL-\(photosAssetID.uuidString.lowercased())"
+
+        _ = try cache.store(
+            assetID: photosAssetID,
+            contentRevision: 1,
+            localIdentifier: localIdentifier,
+            mediaType: "public.jpeg",
+            sourceBytes: original
+        )
+
+        XCTAssertEqual(
+            try cache.storageUsage(),
+            PhotosOriginalStorageUsage(
+                entryCount: 1,
+                registeredBytes: Int64(original.count)
+            )
+        )
+    }
+
+    func testManualDurablePhotosOriginalClearKeepsCatalogAndFingerprintFacts() throws {
+        let env = try SimilarityTestSupport.Environment(label: #function)
+        defer { env.cleanup() }
+        let photosAssetID = try env.seedPhotosAsset()
+        let original = try XCTUnwrap(
+            SimilarityTestSupport.patternedImageData(seed: 91, uti: .jpeg)
+        )
+        let photos = SimilarityPhotosOriginalStub(bytes: original)
+        let completion = env.makeCompletionService(photosOriginals: photos)
+        let localIdentifier = "LOCAL-\(photosAssetID.uuidString.lowercased())"
+        let cache = PhotosOriginalCacheService(
+            database: env.database,
+            rootURL: env.root.appendingPathComponent("Photos Originals", isDirectory: true),
+            clock: FixedJobClock(nowMs: FolderReconcileTestSupport.baseTimeMs)
+        )
+
+        _ = try completion.completeAsset(assetID: photosAssetID)
+        XCTAssertEqual(try cache.storageUsage().entryCount, 1)
+
+        XCTAssertEqual(
+            try cache.clearAll(),
+            PhotosOriginalStorageClearResult(
+                removedEntries: 1,
+                removedBytes: Int64(original.count),
+                partialReclaim: false
+            )
+        )
+        XCTAssertEqual(try cache.storageUsage(), .zero)
+        XCTAssertNil(
+            try cache.load(
+                assetID: photosAssetID,
+                contentRevision: 1,
+                localIdentifier: localIdentifier
+            )
+        )
+        let fingerprintCount = try env.database.pool.read { db in
+            try Int.fetchOne(
+                db,
+                sql: "SELECT COUNT(*) FROM asset_similarity_fingerprint WHERE asset_id = ?",
+                arguments: [photosAssetID.uuidString.lowercased()]
+            ) ?? 0
+        }
+        XCTAssertEqual(fingerprintCount, 1)
+        XCTAssertEqual(photos.requestCount, 1)
+    }
+
+    func testManualDurablePhotosOriginalClearRejectsSymlinkObject() throws {
+        let env = try SimilarityTestSupport.Environment(label: #function)
+        defer { env.cleanup() }
+        let photosAssetID = try env.seedPhotosAsset()
+        let root = env.root.appendingPathComponent("Photos Originals", isDirectory: true)
+        let cache = PhotosOriginalCacheService(
+            database: env.database,
+            rootURL: root,
+            clock: FixedJobClock(nowMs: FolderReconcileTestSupport.baseTimeMs)
+        )
+        _ = try cache.store(
+            assetID: photosAssetID,
+            contentRevision: 1,
+            localIdentifier: "LOCAL-\(photosAssetID.uuidString.lowercased())",
+            mediaType: "public.jpeg",
+            sourceBytes: Data("registered-original".utf8)
+        )
+        let objectName = try env.database.pool.read { db in
+            try XCTUnwrap(
+                String.fetchOne(
+                    db,
+                    sql: "SELECT object_name FROM photos_original_cache_entry WHERE asset_id = ?",
+                    arguments: [photosAssetID.uuidString.lowercased()]
+                )
+            )
+        }
+        let objectURL = root.appendingPathComponent(objectName)
+        let sentinelURL = env.root.appendingPathComponent("must-survive.txt")
+        let sentinel = Data("user-owned-sentinel".utf8)
+        try sentinel.write(to: sentinelURL)
+        try FileManager.default.removeItem(at: objectURL)
+        try FileManager.default.createSymbolicLink(
+            at: objectURL,
+            withDestinationURL: sentinelURL
+        )
+
+        XCTAssertEqual(
+            try cache.clearAll(),
+            PhotosOriginalStorageClearResult(
+                removedEntries: 0,
+                removedBytes: 0,
+                partialReclaim: true
+            )
+        )
+        XCTAssertEqual(try Data(contentsOf: sentinelURL), sentinel)
+        XCTAssertEqual(try cache.storageUsage().entryCount, 1)
+    }
+
     func testPrioritizedPreviewCacheReadsDurableOriginalAndWritesDisposableFallback() async throws {
         let assetID = UUID()
         let original = Data("durable-original".utf8)

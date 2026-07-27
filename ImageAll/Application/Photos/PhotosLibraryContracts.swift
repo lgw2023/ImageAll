@@ -107,6 +107,19 @@ protocol PhotosOriginalContentPort: Sendable {
     func requestOriginalImageData(localIdentifier: String) throws -> Data
 }
 
+struct PhotosOriginalStorageUsage: Equatable, Sendable {
+    let entryCount: Int
+    let registeredBytes: Int64
+
+    static let zero = PhotosOriginalStorageUsage(entryCount: 0, registeredBytes: 0)
+}
+
+struct PhotosOriginalStorageClearResult: Equatable, Sendable {
+    let removedEntries: Int
+    let removedBytes: Int64
+    let partialReclaim: Bool
+}
+
 protocol PhotosFeaturePrintImagePort: Sendable {
     func requestLocalFeatureImage(localIdentifier: String) throws -> Data
 }

@@ -602,6 +602,113 @@ struct PhotosOriginalCacheService: Sendable {
     let rootURL: URL
     let clock: any JobClock
 
+    func storageUsage() throws -> PhotosOriginalStorageUsage {
+        try database.pool.read { db in
+            let row = try Row.fetchOne(
+                db,
+                sql: """
+                SELECT COUNT(*) AS entry_count,
+                       COALESCE(SUM(byte_size), 0) AS registered_bytes
+                FROM photos_original_cache_entry
+                """
+            )
+            return PhotosOriginalStorageUsage(
+                entryCount: row?["entry_count"] ?? 0,
+                registeredBytes: row?["registered_bytes"] ?? 0
+            )
+        }
+    }
+
+    func clearAll() throws -> PhotosOriginalStorageClearResult {
+        let entries: [(objectName: String, byteSize: Int64)] = try database.pool.read { db in
+            try Row.fetchAll(
+                db,
+                sql: """
+                SELECT object_name, byte_size
+                FROM photos_original_cache_entry
+                ORDER BY created_at_ms, asset_id
+                """
+            ).map { row in
+                (objectName: row["object_name"], byteSize: row["byte_size"])
+            }
+        }
+        guard !entries.isEmpty else {
+            return PhotosOriginalStorageClearResult(
+                removedEntries: 0,
+                removedBytes: 0,
+                partialReclaim: false
+            )
+        }
+
+        let fileManager = FileManager.default
+        if fileManager.fileExists(atPath: rootURL.path) {
+            let rootValues: URLResourceValues
+            do {
+                rootValues = try rootURL.resourceValues(
+                    forKeys: [.isDirectoryKey, .isSymbolicLinkKey]
+                )
+            } catch {
+                throw PhotosOriginalCacheError.persistenceFailed
+            }
+            guard rootValues.isDirectory == true, rootValues.isSymbolicLink != true else {
+                throw PhotosOriginalCacheError.unsafePath
+            }
+        }
+
+        var removedEntries = 0
+        var removedBytes: Int64 = 0
+        var partialReclaim = false
+        for entry in entries {
+            let objectURL: URL
+            do {
+                objectURL = try validatedObjectURL(objectName: entry.objectName)
+            } catch {
+                partialReclaim = true
+                continue
+            }
+
+            if fileManager.fileExists(atPath: objectURL.path) {
+                do {
+                    let values = try objectURL.resourceValues(
+                        forKeys: [.isRegularFileKey, .isSymbolicLinkKey]
+                    )
+                    guard values.isRegularFile == true, values.isSymbolicLink != true else {
+                        partialReclaim = true
+                        continue
+                    }
+                    try fileManager.removeItem(at: objectURL)
+                    removedBytes += entry.byteSize
+                } catch {
+                    partialReclaim = true
+                    continue
+                }
+            }
+
+            do {
+                let deleted = try database.pool.write { db in
+                    try db.execute(
+                        sql: """
+                        DELETE FROM photos_original_cache_entry
+                        WHERE object_name = ?
+                        """,
+                        arguments: [entry.objectName]
+                    )
+                    return db.changesCount
+                }
+                if deleted > 0 {
+                    removedEntries += 1
+                }
+            } catch {
+                partialReclaim = true
+            }
+        }
+        return PhotosOriginalStorageClearResult(
+            removedEntries: removedEntries,
+            removedBytes: removedBytes,
+            partialReclaim: partialReclaim
+        )
+    }
+
     func load(
         assetID: UUID,
         contentRevision: Int,

@@ -645,8 +645,10 @@ final class LibraryWorkspaceModel: ObservableObject {
         (checked: Int, suggested: Int, skipped: Int, total: Int)?
     @Published private(set) var isExportingPortableData = false
     @Published private(set) var previewCacheUsage = DerivedImageCacheUsage.zero
+    @Published private(set) var photosOriginalStorageUsage = PhotosOriginalStorageUsage.zero
     @Published private(set) var appStorageLocation: AppStorageLocationStatus?
     @Published private(set) var isClearingPreviewCache = false
+    @Published private(set) var isClearingPhotosOriginalStorage = false
     @Published private(set) var isChoosingAppStorageLocation = false
     @Published private(set) var isIdleThumbnailPrewarmEnabled: Bool
     @Published private(set) var maxPendingSuggestionsPerTag: Int
@@ -2352,9 +2354,14 @@ final class LibraryWorkspaceModel: ObservableObject {
     func refreshPreviewCacheUsage() async {
         let service = service
         do {
-            previewCacheUsage = try await Self.offMain {
-                try service.fetchPreviewCacheUsage()
+            let usage = try await Self.offMain {
+                (
+                    preview: try service.fetchPreviewCacheUsage(),
+                    photosOriginals: try service.fetchPhotosOriginalStorageUsage()
+                )
             }
+            previewCacheUsage = usage.preview
+            photosOriginalStorageUsage = usage.photosOriginals
             appStorageLocation = service.fetchAppStorageLocation()
         } catch {
             notice = .previewCacheActionFailed
@@ -2421,6 +2428,41 @@ final class LibraryWorkspaceModel: ObservableObject {
         } catch {
             notice = .previewCacheActionFailed
             await refreshPreviewCacheUsage()
+        }
+    }
+
+    var canClearPhotosOriginalStorage: Bool {
+        photosOriginalStorageUsage.entryCount > 0
+            && !isAnalyzingLibrarySlimming
+            && !isClearingPhotosOriginalStorage
+    }
+
+    func clearPhotosOriginalStorage() async {
+        guard canClearPhotosOriginalStorage else { return }
+        isClearingPhotosOriginalStorage = true
+        notice = nil
+        defer { isClearingPhotosOriginalStorage = false }
+        let service = service
+        do {
+            let result = try await Self.offMain {
+                try service.clearPhotosOriginalStorage()
+            }
+            photosOriginalStorageUsage = try await Self.offMain {
+                try service.fetchPhotosOriginalStorageUsage()
+            }
+            notice = .photosOriginalStorageCleared(
+                removedEntries: result.removedEntries,
+                partialReclaim: result.partialReclaim
+            )
+        } catch {
+            notice = .photosOriginalStorageActionFailed
+            do {
+                photosOriginalStorageUsage = try await Self.offMain {
+                    try service.fetchPhotosOriginalStorageUsage()
+                }
+            } catch {
+                // Preserve the last known usage when refresh also fails.
+            }
         }
     }
 
@@ -6491,6 +6533,7 @@ struct LibraryWorkspaceView: View {
     @State private var showPhotosConnectionExplanation = false
     @State private var showPreviewCachePanel = false
     @State private var showPreviewCacheClearConfirmation = false
+    @State private var showPhotosOriginalStorageClearConfirmation = false
     @State private var showJobActivityPanel = false
     @State private var activeSheet: LibraryWorkspaceSheet?
     @State private var commandSearchText = ""
@@ -6833,7 +6876,7 @@ struct LibraryWorkspaceView: View {
             }
             Button("取消", role: .cancel) {}
         } message: {
-            Text("ImageAll 平时只读访问静态照片和元数据，在自身容器保存索引、标签和缓存；只有你在“图库瘦身”中明确确认时，才会经系统 Photos 将所选照片移入“最近删除”。iCloud 原图不会自动下载。")
+            Text("ImageAll 平时只读访问静态照片和元数据，在自身容器保存索引、标签和缓存；只有你在“图库瘦身”中明确确认时，才会经系统 Photos 将所选照片移入“最近删除”。普通浏览不会自动下载 iCloud 原图；“相同”检测需要时会下载并长期保留 App 自有副本。")
         }
         .confirmationDialog(
             photosSourcePendingFullRepair.map { "对“\($0.displayName)”执行完整修复扫描？" } ?? "完整修复扫描？",
@@ -6914,11 +6957,30 @@ struct LibraryWorkspaceView: View {
         VStack(alignment: .leading, spacing: 12) {
             Text("应用存储与预览缓存")
                 .font(.headline)
+            Text("预览缓存")
+                .font(.subheadline)
             LabeledContent("条目", value: "\(model.previewCacheUsage.entryCount)")
             LabeledContent(
                 "已登记用量",
                 value: formattedByteCount(model.previewCacheUsage.registeredBytes)
             )
+            Divider()
+            Text("长期 Photos 原图")
+                .font(.subheadline)
+            LabeledContent(
+                "原图副本",
+                value: "\(model.photosOriginalStorageUsage.entryCount)"
+            )
+            LabeledContent(
+                "登记用量",
+                value: formattedByteCount(
+                    UInt64(max(0, model.photosOriginalStorageUsage.registeredBytes))
+                )
+            )
+            Text("保留策略：默认长期保留，不自动过期或按容量淘汰；仅由你在这里手动清理。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
             if let location = model.appStorageLocation {
                 LabeledContent(
                     "存储位置",
@@ -6986,7 +7048,9 @@ struct LibraryWorkspaceView: View {
                 Label("选择外置应用存储位置…", systemImage: "externaldrive.badge.plus")
             }
             .disabled(
-                model.isChoosingAppStorageLocation || model.isClearingPreviewCache
+                model.isChoosingAppStorageLocation
+                    || model.isClearingPreviewCache
+                    || model.isClearingPhotosOriginalStorage
             )
             Divider()
             Button("清理预览缓存", role: .destructive) {
@@ -6995,6 +7059,17 @@ struct LibraryWorkspaceView: View {
             .disabled(
                 model.previewCacheUsage.entryCount == 0 || model.isClearingPreviewCache
             )
+            Button("清理全部长期原图副本", role: .destructive) {
+                showPhotosOriginalStorageClearConfirmation = true
+            }
+            .disabled(!model.canClearPhotosOriginalStorage)
+            if model.isAnalyzingLibrarySlimming,
+               model.photosOriginalStorageUsage.entryCount > 0
+            {
+                Text("相同检测运行期间不能清理；暂停或完成后可操作。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
         .padding()
         .frame(width: 380)
@@ -7010,6 +7085,18 @@ struct LibraryWorkspaceView: View {
             Button("取消", role: .cancel) {}
         } message: {
             Text("只会删除可重建的网格缩略图和单图预览；不会删除原照片、人工标签、Feature Print 或个性化模型。iCloud 预览之后需要再次手动获取。")
+        }
+        .confirmationDialog(
+            "清理全部长期原图副本？",
+            isPresented: $showPhotosOriginalStorageClearConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("清理全部长期原图副本", role: .destructive) {
+                Task { await model.clearPhotosOriginalStorage() }
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("只删除 ImageAll 在 Application Support 中长期保存的 Photos 原图副本及其缓存索引。不会修改 Apple Photos、人工标签或已计算的相同检测结果；以后再次需要原图时，“相同”检测可能重新从 iCloud 下载。")
         }
     }
 
@@ -8682,6 +8769,7 @@ struct LibraryWorkspaceView: View {
             "line.3.horizontal.decrease.circle"
         case .presetTagsInstalled, .presetTagsAlreadyAvailable,
              .portableExportCompleted, .previewCacheCleared,
+             .photosOriginalStorageCleared,
              .sourceThumbnailPrewarmCompleted,
              .sourceThumbnailPrewarmCancelled,
              .appStorageLocationRequiresRestart,
@@ -8744,6 +8832,12 @@ struct LibraryWorkspaceView: View {
                 : "已清理 \(removedEntries) 个预览缓存条目。"
         case .previewCacheActionFailed:
             "预览缓存操作未完成。原照片、人工标签和个性化数据没有被修改。"
+        case let .photosOriginalStorageCleared(removedEntries, partialReclaim):
+            partialReclaim
+                ? "已清理 \(removedEntries) 个长期原图副本，部分磁盘空间待后续重试。"
+                : "已清理 \(removedEntries) 个长期原图副本。"
+        case .photosOriginalStorageActionFailed:
+            "长期原图清理未完成。Apple Photos、人工标签和已计算的相同检测结果没有被修改。"
         case let .sourceThumbnailPrewarmCompleted(sourceDisplayName, warmed, failed, total):
             if failed == 0 {
                 "已为“\(sourceDisplayName)”预热 \(warmed)/\(total) 张缩略图到磁盘缓存。"

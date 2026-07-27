@@ -299,6 +299,7 @@ struct CompositionRoot {
             assetImages: assetImages,
             personalizationReview: personalizationReview,
             derivedImageCache: derivedImages,
+            photosOriginalCache: photosOriginalCache,
             appStorageLocationController: appStorageLocationController,
             portableExportDestinationPicker: AppKitPortableExportDestinationPicker(),
             portableExportSourceIsolation: PortableExportSourceIsolationValidator(

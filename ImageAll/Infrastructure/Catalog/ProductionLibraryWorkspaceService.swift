@@ -5,6 +5,7 @@ import GRDB
 enum ProductionLibraryWorkspaceError: Error {
     case reconcileFailed
     case librarySlimmingMaintenanceFailed
+    case librarySlimmingAnalysisInProgress
 }
 
 struct ProductionLibraryWorkspaceService: LibraryWorkspacePort, RemoteCatalogServing, Sendable {
@@ -20,6 +21,7 @@ struct ProductionLibraryWorkspaceService: LibraryWorkspacePort, RemoteCatalogSer
     let assetImages: LibraryAssetImageLoader
     let personalizationReview: PersonalizationReviewService
     let derivedImageCache: DerivedImageCacheService
+    let photosOriginalCache: PhotosOriginalCacheService
     let appStorageLocationController: AppStorageLocationController
     let portableExportDestinationPicker: any PortableExportDestinationPicking
     let portableExportSourceIsolation: PortableExportSourceIsolationValidator
@@ -61,6 +63,31 @@ struct ProductionLibraryWorkspaceService: LibraryWorkspacePort, RemoteCatalogSer
 
     func clearPreviewCache() async throws -> DerivedImageCacheClearResult {
         try await derivedImageCache.clearCache()
+    }
+
+    func fetchPhotosOriginalStorageUsage() throws -> PhotosOriginalStorageUsage {
+        try photosOriginalCache.storageUsage()
+    }
+
+    func clearPhotosOriginalStorage() throws -> PhotosOriginalStorageClearResult {
+        let hasActiveAnalysis = try queue.database.pool.read { db in
+            try Bool.fetchOne(
+                db,
+                sql: """
+                SELECT EXISTS(
+                    SELECT 1
+                    FROM job
+                    WHERE kind = ?
+                      AND state IN ('pending', 'running')
+                )
+                """,
+                arguments: [LibrarySlimmingAnalysisJobFactory.kind]
+            ) ?? false
+        }
+        guard !hasActiveAnalysis else {
+            throw ProductionLibraryWorkspaceError.librarySlimmingAnalysisInProgress
+        }
+        return try photosOriginalCache.clearAll()
     }
 
     func fetchAppStorageLocation() -> AppStorageLocationStatus {

@@ -252,6 +252,45 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertFalse(model.isClearingPreviewCache)
     }
 
+    func testManualPhotosOriginalClearRefreshesUsageAndPublishesSuccess() async {
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: UUID(),
+                displayName: "Fixture",
+                state: .active
+            ),
+            reconciledItems: [],
+            photosOriginalStorageUsage: PhotosOriginalStorageUsage(
+                entryCount: 2,
+                registeredBytes: 900
+            ),
+            photosOriginalStorageClearResult: PhotosOriginalStorageClearResult(
+                removedEntries: 2,
+                removedBytes: 900,
+                partialReclaim: false
+            )
+        )
+        let model = LibraryWorkspaceModel(service: service)
+
+        await model.refreshPreviewCacheUsage()
+        XCTAssertEqual(
+            model.photosOriginalStorageUsage,
+            PhotosOriginalStorageUsage(entryCount: 2, registeredBytes: 900)
+        )
+        XCTAssertTrue(model.canClearPhotosOriginalStorage)
+
+        await model.clearPhotosOriginalStorage()
+
+        XCTAssertEqual(service.photosOriginalStorageClearCallCount, 1)
+        XCTAssertEqual(model.photosOriginalStorageUsage, .zero)
+        XCTAssertEqual(
+            model.notice,
+            .photosOriginalStorageCleared(removedEntries: 2, partialReclaim: false)
+        )
+        XCTAssertFalse(model.isClearingPhotosOriginalStorage)
+        XCTAssertFalse(model.canClearPhotosOriginalStorage)
+    }
+
     func testExternalAppStorageSelectionPublishesRestartRequirement() async {
         let internalSupport = URL(
             fileURLWithPath: "/Library/Application Support/ImageAll",
@@ -8163,6 +8202,7 @@ final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecked Sendab
     private var storedPreviewLoadCallCount = 0
     private var storedPortableExportCallCount = 0
     private var storedPreviewCacheClearCallCount = 0
+    private var storedPhotosOriginalStorageClearCallCount = 0
     private var storedCreateTagAndAcceptCallCount = 0
     private var storedLastCreateTagAssetIDs: Set<UUID> = []
     private var storedAssetPageFetchCallCount = 0
@@ -8181,6 +8221,8 @@ final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecked Sendab
     private var storedPreviewCacheUsage: DerivedImageCacheUsage
     private let previewCacheClearResult: DerivedImageCacheClearResult?
     private let previewCacheClearFails: Bool
+    private var storedPhotosOriginalStorageUsage: PhotosOriginalStorageUsage
+    private let photosOriginalStorageClearResult: PhotosOriginalStorageClearResult?
     private let previewCacheLocationSelectionResult: AppStorageLocationSelectionResult
     private var storedPreviewCacheLocationSelectionCallCount = 0
     private let jobActivityActionFails: Bool
@@ -8225,6 +8267,8 @@ final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecked Sendab
         previewCacheUsage: DerivedImageCacheUsage = .zero,
         previewCacheClearResult: DerivedImageCacheClearResult? = nil,
         previewCacheClearFails: Bool = false,
+        photosOriginalStorageUsage: PhotosOriginalStorageUsage = .zero,
+        photosOriginalStorageClearResult: PhotosOriginalStorageClearResult? = nil,
         previewCacheLocationSelectionResult: AppStorageLocationSelectionResult = .cancelled,
         jobActivityItems: [JobActivityItem] = [],
         jobActivityActionFails: Bool = false,
@@ -8266,6 +8310,8 @@ final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecked Sendab
         storedPreviewCacheUsage = previewCacheUsage
         self.previewCacheClearResult = previewCacheClearResult
         self.previewCacheClearFails = previewCacheClearFails
+        storedPhotosOriginalStorageUsage = photosOriginalStorageUsage
+        self.photosOriginalStorageClearResult = photosOriginalStorageClearResult
         self.previewCacheLocationSelectionResult = previewCacheLocationSelectionResult
         storedJobActivityItems = jobActivityItems
         self.jobActivityActionFails = jobActivityActionFails
@@ -8412,6 +8458,10 @@ final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecked Sendab
         lock.withLock { storedPreviewCacheClearCallCount }
     }
 
+    var photosOriginalStorageClearCallCount: Int {
+        lock.withLock { storedPhotosOriginalStorageClearCallCount }
+    }
+
     var previewCacheLocationSelectionCallCount: Int {
         lock.withLock { storedPreviewCacheLocationSelectionCallCount }
     }
@@ -8475,6 +8525,21 @@ final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecked Sendab
             }
             storedPreviewCacheUsage = .zero
             return previewCacheClearResult
+        }
+    }
+
+    func fetchPhotosOriginalStorageUsage() throws -> PhotosOriginalStorageUsage {
+        lock.withLock { storedPhotosOriginalStorageUsage }
+    }
+
+    func clearPhotosOriginalStorage() throws -> PhotosOriginalStorageClearResult {
+        try lock.withLock {
+            storedPhotosOriginalStorageClearCallCount += 1
+            guard let photosOriginalStorageClearResult else {
+                throw FakeWorkspaceError.photosOriginalStorageClearFailed
+            }
+            storedPhotosOriginalStorageUsage = .zero
+            return photosOriginalStorageClearResult
         }
     }
 
@@ -9429,6 +9494,7 @@ private enum FakeWorkspaceError: Error {
     case cloudPreviewFailed
     case portableExportFailed
     case previewCacheClearFailed
+    case photosOriginalStorageClearFailed
     case jobActivityActionFailed
 }
 
