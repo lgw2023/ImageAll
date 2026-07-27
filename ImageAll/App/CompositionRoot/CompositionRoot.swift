@@ -329,12 +329,14 @@ struct CompositionRoot {
         } else {
             slimmingEmbeddingLoader = nil
         }
+        let slimmingThresholdStore = UserDefaultsNearDuplicateSceneThresholdStore()
         let librarySlimming = LibrarySlimmingScanService(
             database: runtime.database,
             identicalScan: IdenticalDuplicateClusterService(database: runtime.database),
             fingerprintCompletion: fingerprintCompletion,
             featureLoader: BudgetedFeaturePrintSlimmingLoader(service: featurePrintService),
-            embeddingLoader: OptionalSlimmingEmbeddingLoader(base: slimmingEmbeddingLoader)
+            embeddingLoader: OptionalSlimmingEmbeddingLoader(base: slimmingEmbeddingLoader),
+            thresholdReader: slimmingThresholdStore
         )
         return LibraryWorkspaceModel(
             service: service,
@@ -345,6 +347,7 @@ struct CompositionRoot {
             librarySlimming: librarySlimming,
             librarySlimmingRecycle: librarySlimmingRecycle,
             librarySlimmingMutationAuthorization: librarySlimmingMutationAuthorization,
+            librarySlimmingThresholds: slimmingThresholdStore,
             localModelSuggestions: localModelSuggestions,
             appPersonalModelRebuilder: appPersonalModelRebuilder,
             appPersonalAdamWModelRebuilder: appPersonalAdamWModelRebuilder,

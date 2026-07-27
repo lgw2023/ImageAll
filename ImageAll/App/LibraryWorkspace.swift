@@ -683,6 +683,8 @@ final class LibraryWorkspaceModel: ObservableObject {
     @Published private(set) var hasCompletedLibrarySlimmingScan = false
     @Published private(set) var librarySlimmingWorkspaceTab: LibrarySlimmingWorkspaceTab = .clusters
     @Published private(set) var librarySlimmingRecycleEntries: [RecycleEntryRecord] = []
+    @Published private(set) var librarySlimmingSceneThresholds = NearDuplicateSceneThresholds.factory
+    @Published var showsLibrarySlimmingThresholdEditor = false
     @Published private(set) var isMutatingLibrarySlimmingRecycle = false
     /// Bumped when toolbar asks the sidebar view to switch into 图库瘦身.
     @Published private(set) var librarySlimmingNavigationNonce = UUID()
@@ -694,6 +696,7 @@ final class LibraryWorkspaceModel: ObservableObject {
     private let trainingWorkspace: (any TrainingWorkspacePort)?
     private let librarySlimming: (any LibrarySlimmingScanPort)?
     private let librarySlimmingRecycle: (any LibrarySlimmingRecyclePort)?
+    private let librarySlimmingThresholds: (any NearDuplicateSceneThresholdWriting)?
     private let librarySlimmingMutationAuthorization: (any FolderMutationAuthorizationPort)?
     private let localModelSuggestions: LocalModelSuggestionRuntime?
     private let appPersonalModelRebuilder: (any AppPersonalModelRebuilding)?
@@ -759,6 +762,7 @@ final class LibraryWorkspaceModel: ObservableObject {
         librarySlimming: (any LibrarySlimmingScanPort)? = nil,
         librarySlimmingRecycle: (any LibrarySlimmingRecyclePort)? = nil,
         librarySlimmingMutationAuthorization: (any FolderMutationAuthorizationPort)? = nil,
+        librarySlimmingThresholds: (any NearDuplicateSceneThresholdWriting)? = nil,
         localModelSuggestions: LocalModelSuggestionRuntime? = nil,
         appPersonalModelRebuilder: (any AppPersonalModelRebuilding)? = nil,
         appPersonalAdamWModelRebuilder: (any AppPersonalModelRebuilding)? = nil,
@@ -789,6 +793,8 @@ final class LibraryWorkspaceModel: ObservableObject {
         self.librarySlimming = librarySlimming
         self.librarySlimmingRecycle = librarySlimmingRecycle
         self.librarySlimmingMutationAuthorization = librarySlimmingMutationAuthorization
+        self.librarySlimmingThresholds = librarySlimmingThresholds
+        librarySlimmingSceneThresholds = librarySlimmingThresholds?.thresholds() ?? .factory
         self.localModelSuggestions = localModelSuggestions
         self.appPersonalModelRebuilder = appPersonalModelRebuilder
         self.appPersonalAdamWModelRebuilder = appPersonalAdamWModelRebuilder
@@ -833,6 +839,28 @@ final class LibraryWorkspaceModel: ObservableObject {
 
     var supportsLibrarySlimmingRecycle: Bool {
         librarySlimmingRecycle != nil
+    }
+
+    var supportsLibrarySlimmingThresholds: Bool {
+        librarySlimmingThresholds != nil
+    }
+
+    func refreshLibrarySlimmingSceneThresholds() {
+        librarySlimmingSceneThresholds = librarySlimmingThresholds?.thresholds() ?? .factory
+    }
+
+    func updateLibrarySlimmingSceneThresholds(_ thresholds: NearDuplicateSceneThresholds) {
+        guard let librarySlimmingThresholds else { return }
+        librarySlimmingThresholds.setThresholds(thresholds)
+        librarySlimmingSceneThresholds = librarySlimmingThresholds.thresholds()
+        librarySlimmingStatusMessage = "阈值已更新，将在下次分析生效"
+    }
+
+    func resetLibrarySlimmingSceneThresholds() {
+        guard let librarySlimmingThresholds else { return }
+        librarySlimmingThresholds.resetToFactory()
+        librarySlimmingSceneThresholds = librarySlimmingThresholds.thresholds()
+        librarySlimmingStatusMessage = "已恢复默认阈值，将在下次分析生效"
     }
 
     var selectedLibrarySlimmingCluster: LibrarySlimmingClusterPresentation? {

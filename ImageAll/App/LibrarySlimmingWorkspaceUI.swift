@@ -171,6 +171,20 @@ struct LibrarySlimmingWorkspaceView: View {
                     .font(.callout)
             }
 
+            if model.supportsLibrarySlimmingThresholds {
+                Button {
+                    model.showsLibrarySlimmingThresholdEditor.toggle()
+                } label: {
+                    Label("阈值", systemImage: "slider.horizontal.3")
+                }
+                .popover(isPresented: $model.showsLibrarySlimmingThresholdEditor, arrowEdge: .bottom) {
+                    LibrarySlimmingThresholdEditor(model: model)
+                        .frame(width: 320)
+                        .padding(16)
+                }
+                .help("调整相似召回与精排阈值；下次分析生效")
+            }
+
             Spacer()
 
             if model.librarySlimmingAnalyzeMode == .currentFilter
@@ -532,6 +546,88 @@ private struct SlimmingPreviewCell: View {
             if let data {
                 image = LibraryGridThumbnailImageFactory.image(from: data)
             }
+        }
+    }
+}
+
+private struct LibrarySlimmingThresholdEditor: View {
+    @ObservedObject var model: LibraryWorkspaceModel
+    @State private var topK: Double = Double(NearDuplicateSceneThresholds.factory.featurePrintRecallTopK)
+    @State private var maxL2: Double = NearDuplicateSceneThresholds.factory.featurePrintMaxL2Distance
+    @State private var dino: Double = NearDuplicateSceneThresholds.factory.dinoCosineMinSimilarity
+    @State private var bucket: Double = Double(
+        NearDuplicateSceneThresholds.factory.sceneBucketActivationAssetCount
+    )
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("相似度阈值")
+                .font(.headline)
+            Text("修改后下次分析生效。分桶仅作用于「当前库 / 当前筛选」的场景相似；相同档与种子检索不受分桶限制。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            labeledSlider("Feature Print Top-K", value: $topK, range: 4...64, step: 1) {
+                "\(Int(topK.rounded()))"
+            }
+            labeledSlider("Feature Print L2 半径", value: $maxL2, range: 5...80, step: 1) {
+                String(format: "%.0f", maxL2)
+            }
+            labeledSlider("DINOv2 余弦下限", value: $dino, range: 0.70...0.99, step: 0.01) {
+                String(format: "%.2f", dino)
+            }
+            labeledSlider("分桶激活资产数", value: $bucket, range: 16...2000, step: 16) {
+                "\(Int(bucket.rounded()))"
+            }
+
+            HStack {
+                Button("恢复默认") {
+                    model.resetLibrarySlimmingSceneThresholds()
+                    syncFromModel()
+                }
+                Spacer()
+                Button("应用") {
+                    model.updateLibrarySlimmingSceneThresholds(
+                        NearDuplicateSceneThresholds(
+                            featurePrintRecallTopK: Int(topK.rounded()),
+                            featurePrintMaxL2Distance: maxL2,
+                            dinoCosineMinSimilarity: dino,
+                            sceneBucketActivationAssetCount: Int(bucket.rounded())
+                        )
+                    )
+                }
+                .keyboardShortcut(.defaultAction)
+            }
+        }
+        .onAppear(perform: syncFromModel)
+    }
+
+    private func syncFromModel() {
+        let current = model.librarySlimmingSceneThresholds
+        topK = Double(current.featurePrintRecallTopK)
+        maxL2 = current.featurePrintMaxL2Distance
+        dino = current.dinoCosineMinSimilarity
+        bucket = Double(current.sceneBucketActivationAssetCount)
+    }
+
+    private func labeledSlider(
+        _ title: String,
+        value: Binding<Double>,
+        range: ClosedRange<Double>,
+        step: Double,
+        caption: @escaping () -> String
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text(title)
+                Spacer()
+                Text(caption())
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+            }
+            .font(.callout)
+            Slider(value: value, in: range, step: step)
         }
     }
 }

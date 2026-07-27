@@ -311,4 +311,228 @@ final class NearDuplicateSceneClusteringTests: XCTestCase {
             accuracy: 1e-6
         )
     }
+
+    func testRaisedDINOThresholdSplitsPreviouslyClusteredPair() {
+        let a = UUID(uuidString: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")!
+        let b = UUID(uuidString: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")!
+        let featurePrints: [UUID: [Float]] = [
+            a: [1, 0],
+            b: [0.99, 0.01],
+        ]
+        // Cosine ≈ 0.905 between [1,0] and [0.9, 0.435]
+        let embeddings: [UUID: [Float]] = [
+            a: [1, 0],
+            b: [0.9, 0.435],
+        ]
+
+        let defaultClusters = NearDuplicateSceneClusterService().cluster(
+            featurePrints: featurePrints,
+            embeddings: embeddings,
+            modelIdentity: sceneModelIdentity,
+            thresholds: .factory
+        )
+        XCTAssertEqual(defaultClusters.count, 1)
+
+        var strict = NearDuplicateSceneThresholds.factory
+        strict.dinoCosineMinSimilarity = 0.95
+        let strictClusters = NearDuplicateSceneClusterService().cluster(
+            featurePrints: featurePrints,
+            embeddings: embeddings,
+            modelIdentity: sceneModelIdentity,
+            thresholds: strict
+        )
+        XCTAssertTrue(strictClusters.isEmpty)
+    }
+
+    func testCaptureDayBucketingPreventsCrossDaySceneClusters() throws {
+        let env = try SimilarityTestSupport.Environment(label: #function)
+        defer { env.cleanup() }
+
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let dayA = calendar.date(from: DateComponents(year: 2024, month: 1, day: 1))!
+        let dayB = calendar.date(from: DateComponents(year: 2024, month: 1, day: 3))!
+        let msA = Int64(dayA.timeIntervalSince1970 * 1_000)
+        let msB = Int64(dayB.timeIntervalSince1970 * 1_000)
+
+        let bytesA = try XCTUnwrap(SimilarityTestSupport.patternedImageData(seed: 11, uti: .jpeg))
+        let bytesB = try XCTUnwrap(SimilarityTestSupport.patternedImageData(seed: 12, uti: .jpeg))
+        let a = try env.seedAsset(relativePath: "a.jpg", contents: bytesA, mediaCreatedAtMs: msA)
+        let b = try env.seedAsset(relativePath: "b.jpg", contents: bytesB, mediaCreatedAtMs: msB)
+
+        var thresholds = NearDuplicateSceneThresholds.factory
+        thresholds.sceneBucketActivationAssetCount = 2
+
+        let scan = LibrarySlimmingScanService(
+            database: env.database,
+            identicalScan: IdenticalDuplicateClusterService(database: env.database),
+            fingerprintCompletion: nil,
+            featureLoader: DictionarySlimmingFeatureLoader(vectors: [
+                a.assetID: [1, 0, 0],
+                b.assetID: [0.99, 0.01, 0],
+            ]),
+            embeddingLoader: DictionarySlimmingEmbeddingLoader(
+                vectors: [
+                    a.assetID: [1, 0],
+                    b.assetID: [0.99, 0.01],
+                ],
+                modelIdentity: sceneModelIdentity
+            ),
+            thresholdReader: StaticNearDuplicateSceneThresholds(value: thresholds),
+            bucketCalendar: calendar
+        )
+
+        let result = try scan.scan(assetIDs: [a.assetID, b.assetID])
+        let keyA = SlimmingCaptureDayBucketing.bucketKey(mediaCreatedAtMs: msA, calendar: calendar)
+        let keyB = SlimmingCaptureDayBucketing.bucketKey(mediaCreatedAtMs: msB, calendar: calendar)
+        XCTAssertNotEqual(keyA, keyB)
+        XCTAssertTrue(
+            result.clusters.filter { $0.kind == .nearDuplicateScene }.isEmpty,
+            "cross-day assets should not form a scene cluster under bucketing"
+        )
+        XCTAssertTrue(result.policyVersion.contains("bucket=2"))
+    }
+
+    func testSameDayStillClustersUnderBucketing() throws {
+        let env = try SimilarityTestSupport.Environment(label: #function)
+        defer { env.cleanup() }
+
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let day = calendar.date(from: DateComponents(year: 2024, month: 2, day: 10))!
+        let ms = Int64(day.timeIntervalSince1970 * 1_000)
+
+        let bytesA = try XCTUnwrap(SimilarityTestSupport.patternedImageData(seed: 21, uti: .jpeg))
+        let bytesB = try XCTUnwrap(SimilarityTestSupport.patternedImageData(seed: 22, uti: .jpeg))
+        let a = try env.seedAsset(relativePath: "a.jpg", contents: bytesA, mediaCreatedAtMs: ms)
+        let b = try env.seedAsset(relativePath: "b.jpg", contents: bytesB, mediaCreatedAtMs: ms)
+
+        var thresholds = NearDuplicateSceneThresholds.factory
+        thresholds.sceneBucketActivationAssetCount = 2
+
+        let scan = LibrarySlimmingScanService(
+            database: env.database,
+            identicalScan: IdenticalDuplicateClusterService(database: env.database),
+            fingerprintCompletion: nil,
+            featureLoader: DictionarySlimmingFeatureLoader(vectors: [
+                a.assetID: [1, 0, 0],
+                b.assetID: [0.99, 0.01, 0],
+            ]),
+            embeddingLoader: DictionarySlimmingEmbeddingLoader(
+                vectors: [
+                    a.assetID: [1, 0],
+                    b.assetID: [0.99, 0.01],
+                ],
+                modelIdentity: sceneModelIdentity
+            ),
+            thresholdReader: StaticNearDuplicateSceneThresholds(value: thresholds),
+            bucketCalendar: calendar
+        )
+
+        let result = try scan.scan(assetIDs: [a.assetID, b.assetID])
+        let scene = result.clusters.filter { $0.kind == .nearDuplicateScene }
+        XCTAssertEqual(scene.count, 1)
+        XCTAssertEqual(Set(scene[0].memberAssetIDs), Set([a.assetID, b.assetID]))
+    }
+
+    func testByteIdenticalStillMergesAcrossDaysWhenBucketingActive() throws {
+        let env = try SimilarityTestSupport.Environment(label: #function)
+        defer { env.cleanup() }
+
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let dayA = calendar.date(from: DateComponents(year: 2024, month: 3, day: 1))!
+        let dayB = calendar.date(from: DateComponents(year: 2024, month: 3, day: 5))!
+        let msA = Int64(dayA.timeIntervalSince1970 * 1_000)
+        let msB = Int64(dayB.timeIntervalSince1970 * 1_000)
+
+        let bytes = try XCTUnwrap(SimilarityTestSupport.patternedImageData(seed: 33, uti: .jpeg))
+        let a = try env.seedAsset(relativePath: "a.jpg", contents: bytes, mediaCreatedAtMs: msA)
+        let b = try env.seedAsset(relativePath: "b.jpg", contents: bytes, mediaCreatedAtMs: msB)
+
+        let completion = env.makeCompletionService()
+        _ = try completion.completeFolderAsset(assetID: a.assetID)
+        _ = try completion.completeFolderAsset(assetID: b.assetID)
+
+        var thresholds = NearDuplicateSceneThresholds.factory
+        thresholds.sceneBucketActivationAssetCount = 2
+
+        let scan = LibrarySlimmingScanService(
+            database: env.database,
+            identicalScan: IdenticalDuplicateClusterService(database: env.database),
+            fingerprintCompletion: nil,
+            featureLoader: DictionarySlimmingFeatureLoader(vectors: [:]),
+            embeddingLoader: DictionarySlimmingEmbeddingLoader(vectors: [:]),
+            thresholdReader: StaticNearDuplicateSceneThresholds(value: thresholds),
+            bucketCalendar: calendar
+        )
+
+        let result = try scan.scan(assetIDs: [a.assetID, b.assetID])
+        let identical = result.clusters.filter { $0.kind == .byteIdentical }
+        XCTAssertEqual(identical.count, 1)
+        XCTAssertEqual(Set(identical[0].memberAssetIDs), Set([a.assetID, b.assetID]))
+    }
+
+    func testSeedScanStillRecallsCrossDayNeighborDespiteBucketPolicy() throws {
+        let env = try SimilarityTestSupport.Environment(label: #function)
+        defer { env.cleanup() }
+
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let dayA = calendar.date(from: DateComponents(year: 2024, month: 4, day: 1))!
+        let dayB = calendar.date(from: DateComponents(year: 2024, month: 4, day: 9))!
+        let msA = Int64(dayA.timeIntervalSince1970 * 1_000)
+        let msB = Int64(dayB.timeIntervalSince1970 * 1_000)
+
+        let bytesA = try XCTUnwrap(SimilarityTestSupport.patternedImageData(seed: 41, uti: .jpeg))
+        let bytesB = try XCTUnwrap(SimilarityTestSupport.patternedImageData(seed: 42, uti: .jpeg))
+        let seed = try env.seedAsset(relativePath: "seed.jpg", contents: bytesA, mediaCreatedAtMs: msA)
+        let hit = try env.seedAsset(relativePath: "hit.jpg", contents: bytesB, mediaCreatedAtMs: msB)
+
+        var thresholds = NearDuplicateSceneThresholds.factory
+        thresholds.sceneBucketActivationAssetCount = 2
+
+        let scan = LibrarySlimmingScanService(
+            database: env.database,
+            identicalScan: IdenticalDuplicateClusterService(database: env.database),
+            fingerprintCompletion: nil,
+            featureLoader: DictionarySlimmingFeatureLoader(vectors: [
+                seed.assetID: [1, 0, 0],
+                hit.assetID: [0.99, 0.01, 0],
+            ]),
+            embeddingLoader: DictionarySlimmingEmbeddingLoader(
+                vectors: [
+                    seed.assetID: [1, 0],
+                    hit.assetID: [0.99, 0.01],
+                ],
+                modelIdentity: sceneModelIdentity
+            ),
+            thresholdReader: StaticNearDuplicateSceneThresholds(value: thresholds),
+            bucketCalendar: calendar
+        )
+
+        let result = try scan.scanSeeds(
+            seedAssetIDs: [seed.assetID],
+            universeAssetIDs: [seed.assetID, hit.assetID]
+        )
+        XCTAssertEqual(result.clusters.count, 1)
+        XCTAssertEqual(Set(result.clusters[0].memberAssetIDs), Set([seed.assetID, hit.assetID]))
+    }
+
+    func testThresholdStoreRoundTripAndReset() {
+        let suiteName = "ImageAll.S6Threshold.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let store = UserDefaultsNearDuplicateSceneThresholdStore(defaults: defaults)
+
+        var custom = NearDuplicateSceneThresholds.factory
+        custom.dinoCosineMinSimilarity = 0.93
+        custom.featurePrintRecallTopK = 8
+        store.setThresholds(custom)
+        XCTAssertEqual(store.thresholds().dinoCosineMinSimilarity, 0.93, accuracy: 1e-9)
+        XCTAssertEqual(store.thresholds().featurePrintRecallTopK, 8)
+
+        store.resetToFactory()
+        XCTAssertEqual(store.thresholds(), .factory)
+    }
 }

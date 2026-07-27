@@ -7,6 +7,28 @@ struct LibrarySlimmingScanService: LibrarySlimmingScanPort {
     let fingerprintCompletion: (any FingerprintCompletionPort)?
     let featureLoader: any SlimmingFeatureVectorLoading
     let embeddingLoader: any SlimmingEmbeddingLoading
+    let thresholdReader: any NearDuplicateSceneThresholdReading
+    let bucketCalendar: Calendar
+
+    init(
+        database: CatalogDatabase,
+        identicalScan: any IdenticalDuplicateScanPort,
+        fingerprintCompletion: (any FingerprintCompletionPort)?,
+        featureLoader: any SlimmingFeatureVectorLoading,
+        embeddingLoader: any SlimmingEmbeddingLoading,
+        thresholdReader: any NearDuplicateSceneThresholdReading = StaticNearDuplicateSceneThresholds(
+            value: .factory
+        ),
+        bucketCalendar: Calendar = .current
+    ) {
+        self.database = database
+        self.identicalScan = identicalScan
+        self.fingerprintCompletion = fingerprintCompletion
+        self.featureLoader = featureLoader
+        self.embeddingLoader = embeddingLoader
+        self.thresholdReader = thresholdReader
+        self.bucketCalendar = bucketCalendar
+    }
 
     func scanCatalog(onProgress: LibrarySlimmingScanProgressHandler?) throws -> LibrarySlimmingScanResult {
         let assetIDs = try database.pool.read { db -> [UUID] in
@@ -51,9 +73,11 @@ struct LibrarySlimmingScanService: LibrarySlimmingScanPort {
                 clusters: [],
                 pendingAnalysisAssetIDs: [],
                 analyzedAssetCount: 0,
-                policyVersion: NearDuplicateScenePolicy.policyVersion
+                policyVersion: thresholdReader.thresholds().policyVersion
             )
         }
+
+        let thresholds = thresholdReader.thresholds().clamped()
 
         (featureLoader as? SlimmingBudgetResetting)?
             .resetScanBudgets(forAssetCount: universe.count)
@@ -82,16 +106,20 @@ struct LibrarySlimmingScanService: LibrarySlimmingScanPort {
             onProgress: onProgress
         )
 
-        let sceneModelIdentity = embeddingLoader.embeddingModelIdentity()
-            ?? .featurePrintOnly
+        let sceneModelIdentity = withPolicyVersion(
+            embeddingLoader.embeddingModelIdentity() ?? .featurePrintOnly,
+            policyVersion: thresholds.policyVersion
+        )
+        // Seed mode intentionally does not bucket — preserve cross-day recall.
         let sceneClusters = NearDuplicateSceneClusterService().clusterAroundSeeds(
             seedAssetIDs: seeds.filter { !claimed.contains($0) },
             featurePrints: featurePrints,
             embeddings: embeddings,
-            modelIdentity: sceneModelIdentity
+            modelIdentity: sceneModelIdentity,
+            thresholds: thresholds
         )
 
-        let identicalMapped = mapIdenticalClusters(identicalWithSeeds)
+        let identicalMapped = mapIdenticalClusters(identicalWithSeeds, policyVersion: thresholds.policyVersion)
         onProgress?(
             LibrarySlimmingScanProgress(phase: .clustering, completed: 1, total: 1)
         )
@@ -107,7 +135,7 @@ struct LibrarySlimmingScanService: LibrarySlimmingScanPort {
                 $0.uuidString.lowercased() < $1.uuidString.lowercased()
             },
             analyzedAssetCount: universe.count,
-            policyVersion: NearDuplicateScenePolicy.policyVersion
+            policyVersion: thresholds.policyVersion
         )
     }
 
@@ -118,6 +146,7 @@ struct LibrarySlimmingScanService: LibrarySlimmingScanPort {
         let uniqueIDs = Array(Set(assetIDs)).sorted {
             $0.uuidString.lowercased() < $1.uuidString.lowercased()
         }
+        let thresholds = thresholdReader.thresholds().clamped()
         (featureLoader as? SlimmingBudgetResetting)?
             .resetScanBudgets(forAssetCount: uniqueIDs.count)
         (embeddingLoader as? SlimmingBudgetResetting)?
@@ -128,7 +157,7 @@ struct LibrarySlimmingScanService: LibrarySlimmingScanPort {
                 clusters: [],
                 pendingAnalysisAssetIDs: [],
                 analyzedAssetCount: 0,
-                policyVersion: NearDuplicateScenePolicy.policyVersion
+                policyVersion: thresholds.policyVersion
             )
         }
 
@@ -149,15 +178,19 @@ struct LibrarySlimmingScanService: LibrarySlimmingScanPort {
             onProgress: onProgress
         )
 
-        let sceneModelIdentity = embeddingLoader.embeddingModelIdentity()
-            ?? .featurePrintOnly
-        let sceneClusters = NearDuplicateSceneClusterService().cluster(
+        let sceneModelIdentity = withPolicyVersion(
+            embeddingLoader.embeddingModelIdentity() ?? .featurePrintOnly,
+            policyVersion: thresholds.policyVersion
+        )
+        let sceneClusters = try clusterScenes(
+            assetIDs: vectorCandidates,
             featurePrints: featurePrints,
             embeddings: embeddings,
-            modelIdentity: sceneModelIdentity
+            modelIdentity: sceneModelIdentity,
+            thresholds: thresholds
         )
 
-        let identicalMapped = mapIdenticalClusters(identical)
+        let identicalMapped = mapIdenticalClusters(identical, policyVersion: thresholds.policyVersion)
         onProgress?(
             LibrarySlimmingScanProgress(phase: .clustering, completed: 1, total: 1)
         )
@@ -169,7 +202,95 @@ struct LibrarySlimmingScanService: LibrarySlimmingScanPort {
                 $0.uuidString.lowercased() < $1.uuidString.lowercased()
             },
             analyzedAssetCount: uniqueIDs.count,
-            policyVersion: NearDuplicateScenePolicy.policyVersion
+            policyVersion: thresholds.policyVersion
+        )
+    }
+
+    private func clusterScenes(
+        assetIDs: [UUID],
+        featurePrints: [UUID: [Float]],
+        embeddings: [UUID: [Float]],
+        modelIdentity: SlimmingVectorModelIdentity,
+        thresholds: NearDuplicateSceneThresholds
+    ) throws -> [SlimmingCluster] {
+        let service = NearDuplicateSceneClusterService()
+        guard assetIDs.count >= thresholds.sceneBucketActivationAssetCount else {
+            return service.cluster(
+                featurePrints: featurePrints,
+                embeddings: embeddings,
+                modelIdentity: modelIdentity,
+                thresholds: thresholds
+            )
+        }
+
+        let createdAtByAsset = try loadMediaCreatedAtMs(assetIDs: assetIDs)
+        var buckets: [String: [UUID]] = [:]
+        for assetID in assetIDs {
+            let key = SlimmingCaptureDayBucketing.bucketKey(
+                mediaCreatedAtMs: createdAtByAsset[assetID],
+                calendar: bucketCalendar
+            )
+            buckets[key, default: []].append(assetID)
+        }
+
+        var clusters: [SlimmingCluster] = []
+        for key in buckets.keys.sorted() {
+            guard let members = buckets[key], members.count >= 2 else { continue }
+            let memberSet = Set(members)
+            let bucketFeaturePrints = featurePrints.filter { memberSet.contains($0.key) }
+            let bucketEmbeddings = embeddings.filter { memberSet.contains($0.key) }
+            clusters.append(
+                contentsOf: service.cluster(
+                    featurePrints: bucketFeaturePrints,
+                    embeddings: bucketEmbeddings,
+                    modelIdentity: modelIdentity,
+                    thresholds: thresholds
+                )
+            )
+        }
+        return clusters
+    }
+
+    private func loadMediaCreatedAtMs(assetIDs: [UUID]) throws -> [UUID: Int64] {
+        guard !assetIDs.isEmpty else { return [:] }
+        let idStrings = assetIDs.map { $0.uuidString.lowercased() }
+        let placeholders = Array(repeating: "?", count: idStrings.count).joined(separator: ", ")
+        return try database.pool.read { db in
+            let rows = try Row.fetchAll(
+                db,
+                sql: """
+                SELECT id, media_created_at_ms
+                FROM asset
+                WHERE id IN (\(placeholders))
+                """,
+                arguments: StatementArguments(idStrings)
+            )
+            var result: [UUID: Int64] = [:]
+            for row in rows {
+                guard let id = UUID(uuidString: row["id"]) else { continue }
+                let ms: Int64? = row["media_created_at_ms"]
+                if let ms {
+                    result[id] = ms
+                }
+            }
+            return result
+        }
+    }
+
+    private func withPolicyVersion(
+        _ identity: SlimmingVectorModelIdentity,
+        policyVersion: String
+    ) -> SlimmingVectorModelIdentity {
+        SlimmingVectorModelIdentity(
+            featurePrintProvider: identity.featurePrintProvider,
+            featurePrintRequestRevision: identity.featurePrintRequestRevision,
+            featurePrintPreprocessingRevision: identity.featurePrintPreprocessingRevision,
+            embeddingProvider: identity.embeddingProvider,
+            embeddingModelID: identity.embeddingModelID,
+            embeddingModelRevision: identity.embeddingModelRevision,
+            embeddingPreprocessingRevision: identity.embeddingPreprocessingRevision,
+            perceptualAlgoVersion: identity.perceptualAlgoVersion,
+            policyVersion: policyVersion
         )
     }
 
@@ -269,7 +390,8 @@ struct LibrarySlimmingScanService: LibrarySlimmingScanPort {
     }
 
     private func mapIdenticalClusters(
-        _ identical: [IdenticalDuplicateCluster]
+        _ identical: [IdenticalDuplicateCluster],
+        policyVersion: String
     ) -> [SlimmingCluster] {
         let identicalModelIdentity = SlimmingVectorModelIdentity(
             featurePrintProvider: nil,
@@ -280,7 +402,7 @@ struct LibrarySlimmingScanService: LibrarySlimmingScanPort {
             embeddingModelRevision: nil,
             embeddingPreprocessingRevision: nil,
             perceptualAlgoVersion: IdenticalDuplicatePolicy.perceptualAlgoVersion,
-            policyVersion: NearDuplicateScenePolicy.policyVersion
+            policyVersion: policyVersion
         )
         return identical.map { cluster -> SlimmingCluster in
             let kind: SlimmingClusterKind = switch cluster.kind {

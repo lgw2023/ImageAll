@@ -6,16 +6,18 @@ struct NearDuplicateSceneClusterService: Sendable {
     func cluster(
         featurePrints: [UUID: [Float]],
         embeddings: [UUID: [Float]],
-        modelIdentity: SlimmingVectorModelIdentity
+        modelIdentity: SlimmingVectorModelIdentity,
+        thresholds: NearDuplicateSceneThresholds = .factory
     ) -> [SlimmingCluster] {
         let ids = featurePrints.keys
             .filter { embeddings[$0] != nil }
             .sorted { $0.uuidString.lowercased() < $1.uuidString.lowercased() }
         guard ids.count >= 2 else { return [] }
 
-        let topK = NearDuplicateScenePolicy.featurePrintRecallTopK
-        let maxL2 = NearDuplicateScenePolicy.featurePrintMaxL2Distance
-        let minCosine = NearDuplicateScenePolicy.dinoCosineMinSimilarity
+        let effective = thresholds.clamped()
+        let topK = effective.featurePrintRecallTopK
+        let maxL2 = effective.featurePrintMaxL2Distance
+        let minCosine = effective.dinoCosineMinSimilarity
 
         var recallEdges: Set<EdgeKey> = []
         for i in 0..<ids.count {
@@ -86,7 +88,8 @@ struct NearDuplicateSceneClusterService: Sendable {
         seedAssetIDs: [UUID],
         featurePrints: [UUID: [Float]],
         embeddings: [UUID: [Float]],
-        modelIdentity: SlimmingVectorModelIdentity
+        modelIdentity: SlimmingVectorModelIdentity,
+        thresholds: NearDuplicateSceneThresholds = .factory
     ) -> [SlimmingCluster] {
         let seeds = Array(Set(seedAssetIDs))
             .filter { featurePrints[$0] != nil && embeddings[$0] != nil }
@@ -96,9 +99,10 @@ struct NearDuplicateSceneClusterService: Sendable {
             .sorted { $0.uuidString.lowercased() < $1.uuidString.lowercased() }
         guard !seeds.isEmpty, !candidates.isEmpty else { return [] }
 
-        let topK = NearDuplicateScenePolicy.featurePrintRecallTopK
-        let maxL2 = NearDuplicateScenePolicy.featurePrintMaxL2Distance
-        let minCosine = NearDuplicateScenePolicy.dinoCosineMinSimilarity
+        let effective = thresholds.clamped()
+        let topK = effective.featurePrintRecallTopK
+        let maxL2 = effective.featurePrintMaxL2Distance
+        let minCosine = effective.dinoCosineMinSimilarity
 
         var clusters: [SlimmingCluster] = []
 

@@ -231,6 +231,7 @@
 		SL0000010000000000000006 /* SimilarityVectorMath.swift in Sources */ = {isa = PBXBuildFile; fileRef = SL0001010000000000000006 /* SimilarityVectorMath.swift */; };
 		SL0000010000000000000007 /* NearDuplicateSceneClusterService.swift in Sources */ = {isa = PBXBuildFile; fileRef = SL0001010000000000000007 /* NearDuplicateSceneClusterService.swift */; };
 		SL0000010000000000000008 /* LibrarySlimmingScanService.swift in Sources */ = {isa = PBXBuildFile; fileRef = SL0001010000000000000008 /* LibrarySlimmingScanService.swift */; };
+		SL000001000000000000001A /* UserDefaultsNearDuplicateSceneThresholdStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = SL000101000000000000001A /* UserDefaultsNearDuplicateSceneThresholdStore.swift */; };
 		SL0000010000000000000009 /* CatalogSlimmingEmbeddingLoader.swift in Sources */ = {isa = PBXBuildFile; fileRef = SL0001010000000000000009 /* CatalogSlimmingEmbeddingLoader.swift */; };
 		SL0000010000000000000010 /* LibrarySlimmingWorkspaceUI.swift in Sources */ = {isa = PBXBuildFile; fileRef = SL0001010000000000000010 /* LibrarySlimmingWorkspaceUI.swift */; };
 		SL0000010000000000000102 /* NearDuplicateSceneClusteringTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = SL0001010000000000000102 /* NearDuplicateSceneClusteringTests.swift */; };
@@ -530,6 +531,7 @@
 		SL0001010000000000000006 /* SimilarityVectorMath.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SimilarityVectorMath.swift; sourceTree = "<group>"; };
 		SL0001010000000000000007 /* NearDuplicateSceneClusterService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NearDuplicateSceneClusterService.swift; sourceTree = "<group>"; };
 		SL0001010000000000000008 /* LibrarySlimmingScanService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibrarySlimmingScanService.swift; sourceTree = "<group>"; };
+		SL000101000000000000001A /* UserDefaultsNearDuplicateSceneThresholdStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UserDefaultsNearDuplicateSceneThresholdStore.swift; sourceTree = "<group>"; };
 		SL0001010000000000000009 /* CatalogSlimmingEmbeddingLoader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CatalogSlimmingEmbeddingLoader.swift; sourceTree = "<group>"; };
 		SL0001010000000000000010 /* LibrarySlimmingWorkspaceUI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibrarySlimmingWorkspaceUI.swift; sourceTree = "<group>"; };
 		SL0001010000000000000102 /* NearDuplicateSceneClusteringTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NearDuplicateSceneClusteringTests.swift; sourceTree = "<group>"; };
@@ -1229,6 +1231,7 @@
 				SL0001010000000000000006 /* SimilarityVectorMath.swift */,
 				SL0001010000000000000007 /* NearDuplicateSceneClusterService.swift */,
 				SL0001010000000000000008 /* LibrarySlimmingScanService.swift */,
+				SL000101000000000000001A /* UserDefaultsNearDuplicateSceneThresholdStore.swift */,
 				SL0001010000000000000009 /* CatalogSlimmingEmbeddingLoader.swift */,
 				SL0001010000000000000012 /* FolderQuarantineIO.swift */,
 				SL0001010000000000000013 /* FolderMutationAccess.swift */,
@@ -1464,6 +1467,7 @@
 				SL0000010000000000000006 /* SimilarityVectorMath.swift in Sources */,
 				SL0000010000000000000007 /* NearDuplicateSceneClusterService.swift in Sources */,
 				SL0000010000000000000008 /* LibrarySlimmingScanService.swift in Sources */,
+				SL000001000000000000001A /* UserDefaultsNearDuplicateSceneThresholdStore.swift in Sources */,
 				SL0000010000000000000009 /* CatalogSlimmingEmbeddingLoader.swift in Sources */,
 				SL0000010000000000000011 /* LibrarySlimmingRecycleContracts.swift in Sources */,
 				SL0000010000000000000016 /* PhotoKitPhotosLibraryMutationAdapter.swift in Sources */,

@@ -12,6 +12,76 @@ enum NearDuplicateScenePolicy {
 
     /// DINOv2 cosine similarity threshold (inclusive) for `nearDuplicateScene`.
     static let dinoCosineMinSimilarity = 0.88
+
+    /// Closed-world scene clustering activates capture-day buckets at or above this count.
+    static let sceneBucketActivationAssetCount = 256
+}
+
+/// User-overridable scene-clustering thresholds. Factory defaults match `NearDuplicateScenePolicy`.
+struct NearDuplicateSceneThresholds: Sendable, Equatable {
+    var featurePrintRecallTopK: Int
+    var featurePrintMaxL2Distance: Double
+    var dinoCosineMinSimilarity: Double
+    var sceneBucketActivationAssetCount: Int
+
+    static let factory = NearDuplicateSceneThresholds(
+        featurePrintRecallTopK: NearDuplicateScenePolicy.featurePrintRecallTopK,
+        featurePrintMaxL2Distance: NearDuplicateScenePolicy.featurePrintMaxL2Distance,
+        dinoCosineMinSimilarity: NearDuplicateScenePolicy.dinoCosineMinSimilarity,
+        sceneBucketActivationAssetCount: NearDuplicateScenePolicy.sceneBucketActivationAssetCount
+    )
+
+    /// Encodes base policy identity plus effective numeric thresholds.
+    var policyVersion: String {
+        String(
+            format: "%@;topk=%d;l2=%.2f;dino=%.3f;bucket=%d",
+            NearDuplicateScenePolicy.policyVersion,
+            featurePrintRecallTopK,
+            featurePrintMaxL2Distance,
+            dinoCosineMinSimilarity,
+            sceneBucketActivationAssetCount
+        )
+    }
+
+    func clamped() -> NearDuplicateSceneThresholds {
+        NearDuplicateSceneThresholds(
+            featurePrintRecallTopK: min(max(featurePrintRecallTopK, 1), 128),
+            featurePrintMaxL2Distance: min(max(featurePrintMaxL2Distance, 0.1), 200),
+            dinoCosineMinSimilarity: min(max(dinoCosineMinSimilarity, 0.5), 0.999),
+            sceneBucketActivationAssetCount: min(max(sceneBucketActivationAssetCount, 2), 10_000)
+        )
+    }
+}
+
+protocol NearDuplicateSceneThresholdReading: Sendable {
+    func thresholds() -> NearDuplicateSceneThresholds
+}
+
+protocol NearDuplicateSceneThresholdWriting: NearDuplicateSceneThresholdReading {
+    func setThresholds(_ thresholds: NearDuplicateSceneThresholds)
+    func resetToFactory()
+}
+
+struct StaticNearDuplicateSceneThresholds: NearDuplicateSceneThresholdReading {
+    let value: NearDuplicateSceneThresholds
+
+    func thresholds() -> NearDuplicateSceneThresholds { value }
+}
+
+enum SlimmingCaptureDayBucketing {
+    /// Local calendar day `YYYY-MM-DD`, or `unknown` when `media_created_at_ms` is missing.
+    static func bucketKey(mediaCreatedAtMs: Int64?, calendar: Calendar = .current) -> String {
+        guard let mediaCreatedAtMs else { return "unknown" }
+        let date = Date(timeIntervalSince1970: TimeInterval(mediaCreatedAtMs) / 1_000)
+        let components = calendar.dateComponents([.year, .month, .day], from: date)
+        guard let year = components.year,
+              let month = components.month,
+              let day = components.day
+        else {
+            return "unknown"
+        }
+        return String(format: "%04d-%02d-%02d", year, month, day)
+    }
 }
 
 /// Hardware-scaled per-scan generation caps (cache hits never consume budget).

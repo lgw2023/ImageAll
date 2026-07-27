@@ -162,7 +162,8 @@ enum SimilarityTestSupport {
         func seedAsset(
             relativePath: String,
             contents: Data,
-            mediaType: String = "public.jpeg"
+            mediaType: String = "public.jpeg",
+            mediaCreatedAtMs: Int64? = nil
         ) throws -> SeededAsset {
             let assetID = UUID()
             let fileURL = sourceRoot.appendingPathComponent(relativePath)
@@ -199,15 +200,16 @@ enum SimilarityTestSupport {
                     sql: """
                     INSERT INTO asset (
                         id, source_id, locator_kind, relative_path, photos_local_identifier,
-                        locator_state, media_type, content_revision, availability,
+                        locator_state, media_type, media_created_at_ms, content_revision, availability,
                         record_created_at_ms, record_updated_at_ms, file_name
-                    ) VALUES (?, ?, 'file', ?, NULL, 'current', ?, 1, 'available', ?, ?, ?)
+                    ) VALUES (?, ?, 'file', ?, NULL, 'current', ?, ?, 1, 'available', ?, ?, ?)
                     """,
                     arguments: [
                         assetID.uuidString.lowercased(),
                         sourceID.uuidString.lowercased(),
                         relativePath,
                         mediaType,
+                        mediaCreatedAtMs,
                         FolderReconcileTestSupport.baseTimeMs,
                         FolderReconcileTestSupport.baseTimeMs,
                         fileName,
