@@ -188,4 +188,4 @@ Quarantine 根位于 App 容器内（Application Support），按 source/asset �
 
 ## 11. 停止位置（当前）
 
-S0–S4 已交付（含 S2/S3 复审加固与 S4 文件夹 quarantine 回收站及安全硬化）。**S5 已授权实施**（Photos PhotoKit 回收/恢复引导/永久删 + 对账；统一回收站 UI）。S5 绿灯前 mutation API 仅可出现在交接单允许的适配器与 Fake；S5 交付后停止于 S5 边界，不进入 S6。
+S0–S5 已交付（含 S4 文件夹 quarantine 与 S5 Photos PhotoKit 回收/对账统一回收站）。下一可选切片为 **S6**（性能分桶 / 阈值可配置）；未授权前不得开 S6。MVP「图库瘦身」验收门在 Codex 复审通过 S5 后关闭。
