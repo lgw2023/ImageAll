@@ -264,6 +264,68 @@ final class LibrarySlimmingRecycleTests: XCTestCase {
         XCTAssertEqual(assetStillThere, 0)
     }
 
+    func testRestoredHistoricalAssetResolvesToMatchingCurrentSuccessor() throws {
+        let env = try RecycleTestEnv(label: #function)
+        defer { env.cleanup() }
+        let seeded = try env.seedAsset(
+            relativePath: "album/restored.jpg",
+            contents: Data("restored-successor".utf8)
+        )
+        let service = env.makeRecycleService()
+        _ = try service.moveAssetsToRecycle(assetIDs: [seeded.assetID])
+        let entry = try XCTUnwrap(try service.listRecycledEntries().first)
+        try service.restore(entryID: entry.id)
+        let successorID = UUID()
+        try env.database.pool.write { db in
+            try db.execute(
+                sql: """
+                UPDATE asset
+                SET locator_state = 'historical', availability = 'missing'
+                WHERE id = ?
+                """,
+                arguments: [seeded.assetID.uuidString.lowercased()]
+            )
+            try db.execute(
+                sql: """
+                INSERT INTO asset (
+                    id, source_id, locator_kind, relative_path, photos_local_identifier,
+                    locator_state, media_type, content_revision, availability,
+                    record_created_at_ms, record_updated_at_ms, file_name
+                )
+                SELECT
+                    ?, source_id, locator_kind, relative_path, photos_local_identifier,
+                    'current', media_type, content_revision, 'available',
+                    record_created_at_ms, record_updated_at_ms, file_name
+                FROM asset
+                WHERE id = ?
+                """,
+                arguments: [
+                    successorID.uuidString.lowercased(),
+                    seeded.assetID.uuidString.lowercased(),
+                ]
+            )
+            try db.execute(
+                sql: """
+                INSERT INTO file_fingerprint (
+                    asset_id, size_bytes, modified_at_ns, resource_id, sha256
+                )
+                SELECT ?, size_bytes, modified_at_ns, resource_id, sha256
+                FROM file_fingerprint
+                WHERE asset_id = ?
+                """,
+                arguments: [
+                    successorID.uuidString.lowercased(),
+                    seeded.assetID.uuidString.lowercased(),
+                ]
+            )
+        }
+
+        XCTAssertEqual(
+            try service.restoredAssetReplacements(from: [seeded.assetID]),
+            [seeded.assetID: successorID]
+        )
+    }
+
     func testRestoreConflictKeepsRecycleEntry() throws {
         let env = try RecycleTestEnv(label: #function)
         defer { env.cleanup() }

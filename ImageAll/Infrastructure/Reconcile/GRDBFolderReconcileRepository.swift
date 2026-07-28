@@ -190,6 +190,14 @@ struct GRDBFolderReconcileRepository: FolderReconcileBatchPort, Sendable {
                         AND locator_state = 'current'
                         AND availability != 'recycled'
                         AND (last_seen_generation IS NULL OR last_seen_generation < ?)
+                        AND NOT EXISTS (
+                            SELECT 1
+                            FROM recycle_entry
+                            WHERE recycle_entry.asset_id = asset.id
+                              AND recycle_entry.state IN (
+                                  'pending', 'recycled', 'restoring', 'purging'
+                              )
+                        )
                     """,
                     arguments: [
                         nowMs,
@@ -568,7 +576,7 @@ struct GRDBFolderReconcileRepository: FolderReconcileBatchPort, Sendable {
                 UPDATE asset SET
                     last_seen_generation = ?,
                     record_updated_at_ms = ?
-                WHERE id = ? AND availability = 'recycled'
+                WHERE id = ?
                 """,
                 arguments: [
                     generation,
@@ -621,6 +629,22 @@ struct GRDBFolderReconcileRepository: FolderReconcileBatchPort, Sendable {
         observation: FolderReconcileAssetObservation
     ) -> SamePathResolution {
         if existing.availability == AssetAvailability.recycled.rawValue {
+            if existing.recycleState == RecycleEntryState.purged.rawValue {
+                return .replace(newAssetID: UUID())
+            }
+            return .preserveRecycled
+        }
+        if let recycleState = existing.recycleState,
+           [
+               RecycleEntryState.pending.rawValue,
+               RecycleEntryState.recycled.rawValue,
+               RecycleEntryState.restoring.rawValue,
+               RecycleEntryState.purging.rawValue,
+           ].contains(recycleState)
+        {
+            // The file system and catalog update are intentionally separate
+            // crash-recoverable phases. Preserve the original identity while
+            // a reconcile observes either side of that transition.
             return .preserveRecycled
         }
         if existing.availability == AssetAvailability.missing.rawValue {
@@ -673,7 +697,14 @@ struct GRDBFolderReconcileRepository: FolderReconcileBatchPort, Sendable {
             sql: """
             SELECT a.id AS asset_id, a.source_id, a.relative_path, a.locator_state, a.availability,
                    a.content_revision, a.last_seen_generation,
-                   f.size_bytes, f.modified_at_ns, f.resource_id
+                   f.size_bytes, f.modified_at_ns, f.resource_id,
+                   (
+                       SELECT r.state
+                       FROM recycle_entry r
+                       WHERE r.asset_id = a.id
+                       ORDER BY r.updated_at_ms DESC, r.id DESC
+                       LIMIT 1
+                   ) AS recycle_state
             FROM asset a
             LEFT JOIN file_fingerprint f ON f.asset_id = a.id
             WHERE a.source_id = ? AND a.relative_path = ?
@@ -956,7 +987,14 @@ struct GRDBFolderReconcileRepository: FolderReconcileBatchPort, Sendable {
             sql: """
             SELECT a.id AS asset_id, a.source_id, a.relative_path, a.locator_state, a.availability,
                    a.content_revision, a.last_seen_generation,
-                   f.size_bytes, f.modified_at_ns, f.resource_id
+                   f.size_bytes, f.modified_at_ns, f.resource_id,
+                   (
+                       SELECT r.state
+                       FROM recycle_entry r
+                       WHERE r.asset_id = a.id
+                       ORDER BY r.updated_at_ms DESC, r.id DESC
+                       LIMIT 1
+                   ) AS recycle_state
             FROM asset a
             LEFT JOIN file_fingerprint f ON f.asset_id = a.id
             WHERE a.id = ?
@@ -1052,6 +1090,7 @@ private struct ExistingAssetRecord {
     let sizeBytes: Int64
     let modifiedAtNs: Int64
     let resourceID: Data?
+    let recycleState: String?
 
     init(row: Row) {
         assetID = UUID(uuidString: row["asset_id"])!
@@ -1064,6 +1103,7 @@ private struct ExistingAssetRecord {
         sizeBytes = row["size_bytes"] ?? 0
         modifiedAtNs = row["modified_at_ns"] ?? 0
         resourceID = row["resource_id"]
+        recycleState = row["recycle_state"]
     }
 
     init(
@@ -1076,7 +1116,8 @@ private struct ExistingAssetRecord {
         lastSeenGeneration: Int?,
         sizeBytes: Int64,
         modifiedAtNs: Int64,
-        resourceID: Data?
+        resourceID: Data?,
+        recycleState: String? = nil
     ) {
         self.assetID = assetID
         self.sourceID = sourceID
@@ -1088,6 +1129,7 @@ private struct ExistingAssetRecord {
         self.sizeBytes = sizeBytes
         self.modifiedAtNs = modifiedAtNs
         self.resourceID = resourceID
+        self.recycleState = recycleState
     }
 }
 

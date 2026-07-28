@@ -113,12 +113,19 @@ protocol LibrarySlimmingRecyclePort: Sendable {
     func reconcilePhotosRecycleEntries() throws -> Int
     /// Asset IDs that should be hidden from slimming cluster presentation.
     func slimmingHiddenAssetIDs(from assetIDs: [UUID]) throws -> Set<UUID>
+    /// Maps a restored historical file identity to the verified current identity
+    /// created by a folder reconcile race at the same path.
+    func restoredAssetReplacements(from assetIDs: [UUID]) throws -> [UUID: UUID]
 }
 
 extension LibrarySlimmingRecyclePort {
     /// Compatibility alias used by older call sites / stubs.
     func moveFolderAssetsToRecycle(assetIDs: [UUID]) throws -> LibrarySlimmingRecycleMoveOutcome {
         try moveAssetsToRecycle(assetIDs: assetIDs)
+    }
+
+    func restoredAssetReplacements(from _: [UUID]) throws -> [UUID: UUID] {
+        [:]
     }
 }
 

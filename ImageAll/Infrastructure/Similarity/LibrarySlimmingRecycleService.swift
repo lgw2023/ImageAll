@@ -296,6 +296,70 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
         }
     }
 
+    func restoredAssetReplacements(from assetIDs: [UUID]) throws -> [UUID: UUID] {
+        guard !assetIDs.isEmpty else { return [:] }
+        var replacements: [UUID: UUID] = [:]
+        let normalized = Array(Set(assetIDs)).map { $0.uuidString.lowercased() }
+        for start in stride(from: 0, to: normalized.count, by: 400) {
+            let chunk = Array(normalized[start ..< min(start + 400, normalized.count)])
+            let placeholders = Array(repeating: "?", count: chunk.count).joined(separator: ", ")
+            let rows = try database.pool.read { db in
+                try Row.fetchAll(
+                    db,
+                    sql: """
+                    SELECT historical.id AS historical_id, current.id AS current_id
+                    FROM asset AS historical
+                    JOIN recycle_entry AS recycle
+                      ON recycle.asset_id = historical.id
+                     AND recycle.source_kind = 'file'
+                     AND recycle.state = 'restored'
+                    JOIN asset AS current
+                      ON current.source_id = historical.source_id
+                     AND current.relative_path = historical.relative_path
+                     AND current.locator_kind = 'file'
+                     AND current.locator_state = 'current'
+                     AND current.availability = 'available'
+                     AND current.id != historical.id
+                    JOIN file_fingerprint AS historical_file
+                      ON historical_file.asset_id = historical.id
+                    JOIN file_fingerprint AS current_file
+                      ON current_file.asset_id = current.id
+                    LEFT JOIN asset_similarity_fingerprint AS historical_similarity
+                      ON historical_similarity.asset_id = historical.id
+                     AND historical_similarity.content_revision = historical.content_revision
+                    LEFT JOIN asset_similarity_fingerprint AS current_similarity
+                      ON current_similarity.asset_id = current.id
+                     AND current_similarity.content_revision = current.content_revision
+                    WHERE historical.id IN (\(placeholders))
+                      AND historical.locator_state = 'historical'
+                      AND historical.availability = 'missing'
+                      AND historical_file.size_bytes = current_file.size_bytes
+                      AND historical_file.modified_at_ns = current_file.modified_at_ns
+                      AND COALESCE(
+                            historical_file.sha256,
+                            historical_similarity.content_sha256
+                          ) IS NOT NULL
+                      AND COALESCE(
+                            historical_file.sha256,
+                            historical_similarity.content_sha256
+                          ) = COALESCE(
+                            current_file.sha256,
+                            current_similarity.content_sha256
+                          )
+                    """,
+                    arguments: StatementArguments(chunk)
+                )
+            }
+            for row in rows {
+                guard let historical = UUID(uuidString: row["historical_id"]),
+                      let current = UUID(uuidString: row["current_id"])
+                else { continue }
+                replacements[historical] = current
+            }
+        }
+        return replacements
+    }
+
     // MARK: - Private
 
     private struct AssetSnapshot {

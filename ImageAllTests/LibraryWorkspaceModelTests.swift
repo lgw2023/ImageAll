@@ -3923,6 +3923,56 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertEqual(model.selectedLibrarySlimmingMemberIDs, Set([a, b]))
     }
 
+    func testLibrarySlimmingRestoredHistoricalMemberUsesCurrentSuccessor() async {
+        let sourceID = UUID()
+        let galleryAsset = Self.makeAsset(sourceID: sourceID, fileName: "gallery.jpg")
+        let historical = UUID(uuidString: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")!
+        let successor = UUID(uuidString: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")!
+        let companion = UUID(uuidString: "cccccccc-cccc-4ccc-8ccc-cccccccccccc")!
+        let cluster = SlimmingCluster(
+            id: UUID(),
+            kind: .nearDuplicateScene,
+            memberAssetIDs: [historical, companion],
+            representativeAssetID: historical,
+            score: 0.95,
+            modelIdentity: .featurePrintOnly
+        )
+        let stub = StubLibrarySlimmingScanPort()
+        stub.seedClusters = [cluster]
+        let recycle = FakeLibrarySlimmingRecyclePort(
+            restoredAssetReplacements: [historical: successor]
+        )
+        let model = LibraryWorkspaceModel(
+            service: FakeLibraryWorkspaceService(
+                connectedSource: LibrarySourceSummary(
+                    id: sourceID,
+                    displayName: "Fixture",
+                    state: .active
+                ),
+                reconciledItems: [galleryAsset],
+                initialItems: [galleryAsset]
+            ),
+            librarySlimming: stub,
+            librarySlimmingRecycle: recycle
+        )
+
+        await model.start()
+        await model.connectFolder()
+        await waitForCatalogScanToFinish(model)
+        await model.selectAssets([galleryAsset.assetID], additive: false)
+        await model.findLibrarySlimmingFromSelection()
+        await model.analyzeLibrarySlimming(mode: .seeds)
+
+        XCTAssertEqual(
+            model.selectedLibrarySlimmingCluster?.memberAssetIDs,
+            [successor, companion]
+        )
+        XCTAssertEqual(
+            model.selectedLibrarySlimmingCluster?.representativeAssetID,
+            successor
+        )
+    }
+
     func testLibrarySlimmingMoveToRecycleDisabledReasonRequiresSelection() async {
         let sourceID = UUID()
         let asset = Self.makeAsset(sourceID: sourceID, fileName: "gallery.jpg")
@@ -8246,15 +8296,18 @@ private final class FakeLibrarySlimmingRecyclePort: LibrarySlimmingRecyclePort, 
     private var storedRestoreEntryIDCalls: [UUID] = []
     private var storedRecoverCallCount = 0
     private var storedEnqueuePurgeCallCount = 0
+    private let storedRestoredAssetReplacements: [UUID: UUID]
 
     init(
         moveOutcomes: [LibrarySlimmingRecycleMoveOutcome] = [],
         entries: [RecycleEntryRecord] = [],
-        restoreAuthorizationFailures: Int = 0
+        restoreAuthorizationFailures: Int = 0,
+        restoredAssetReplacements: [UUID: UUID] = [:]
     ) {
         storedMoveOutcomes = moveOutcomes
         storedEntries = entries
         remainingRestoreAuthorizationFailures = restoreAuthorizationFailures
+        storedRestoredAssetReplacements = restoredAssetReplacements
     }
 
     var moveAssetIDCalls: [[UUID]] {
@@ -8333,6 +8386,12 @@ private final class FakeLibrarySlimmingRecyclePort: LibrarySlimmingRecyclePort, 
                     }
                     .map(\.assetID)
             )
+        }
+    }
+
+    func restoredAssetReplacements(from assetIDs: [UUID]) throws -> [UUID: UUID] {
+        lock.withLock {
+            storedRestoredAssetReplacements.filter { assetIDs.contains($0.key) }
         }
     }
 }

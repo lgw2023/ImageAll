@@ -1941,7 +1941,8 @@ final class LibraryWorkspaceModel: ObservableObject {
     }
 
     private func applyLibrarySlimmingResult(_ result: LibrarySlimmingScanResult) {
-        let filteredClusters = filterLibrarySlimmingClustersForHiddenAssets(result.clusters)
+        let resolvedClusters = resolveRestoredLibrarySlimmingMembers(result.clusters)
+        let filteredClusters = filterLibrarySlimmingClustersForHiddenAssets(resolvedClusters)
         librarySlimmingClusters = filteredClusters.map(LibrarySlimmingClusterPresentation.init)
         librarySlimmingPendingCount = result.pendingAnalysisAssetIDs.count
         hasCompletedLibrarySlimmingScan = true
@@ -1958,6 +1959,39 @@ final class LibraryWorkspaceModel: ObservableObject {
         } else {
             librarySlimmingStatusMessage =
                 "完成：\(filteredClusters.count) 个簇 · \(result.pendingAnalysisAssetIDs.count) 张因不可读取或格式问题待处理。"
+        }
+    }
+
+    private func resolveRestoredLibrarySlimmingMembers(
+        _ clusters: [SlimmingCluster]
+    ) -> [SlimmingCluster] {
+        guard let recycle = librarySlimmingRecycle else { return clusters }
+        let memberIDs = clusters.flatMap(\.memberAssetIDs)
+        guard !memberIDs.isEmpty,
+              let replacements = try? recycle.restoredAssetReplacements(from: memberIDs),
+              !replacements.isEmpty
+        else {
+            return clusters
+        }
+        return clusters.compactMap { cluster in
+            var seen = Set<UUID>()
+            let members = cluster.memberAssetIDs.compactMap { assetID -> UUID? in
+                let resolved = replacements[assetID] ?? assetID
+                return seen.insert(resolved).inserted ? resolved : nil
+            }
+            guard members.count >= 2 else { return nil }
+            let representative = replacements[cluster.representativeAssetID]
+                ?? cluster.representativeAssetID
+            return SlimmingCluster(
+                id: cluster.id,
+                kind: cluster.kind,
+                memberAssetIDs: members,
+                representativeAssetID: members.contains(representative)
+                    ? representative
+                    : members[0],
+                score: cluster.score,
+                modelIdentity: cluster.modelIdentity
+            )
         }
     }
 
