@@ -26,7 +26,7 @@ R3 完成辅助闭环；停止于 R4 Relay。
 ## 结果（实施后补记）
 
 - 开工 HEAD：`e90a8c2e808e97fc14666af5880a26876251b024`
-- 交付 commit：待回填
+- 交付 commit：`eb2018fcd3581c87f69e3cff8dc23476e5677616`
 - Package：Protocol **9** / Client **5** passed
 - Xcode Remote 套件：`TEST SUCCEEDED`（Facade/HTTP/Pairing/Idempotency/Identity 全过）
 - Mac Debug + iOS Simulator Debug：`BUILD SUCCEEDED`
