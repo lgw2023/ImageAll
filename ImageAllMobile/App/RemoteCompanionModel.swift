@@ -11,6 +11,8 @@ final class RemoteCompanionModel: ObservableObject {
     @Published var isConnected = false
     @Published var isBusy = false
     @Published var statusMessage: String?
+    @Published var discoveredHosts: [RemoteDiscoveredHost] = []
+    @Published var isBrowsing = false
     @Published var capabilities: RemoteCapabilities?
     @Published var sources: [RemoteSourceSummary] = []
     @Published var tags: [RemoteTagSummary] = []
@@ -22,6 +24,7 @@ final class RemoteCompanionModel: ObservableObject {
     @Published var thumbnailDataByAssetID: [UUID: Data] = [:]
 
     private var client: RemoteLibraryClient?
+    private let hostBrowser = RemoteHostBrowser()
     private let defaults = UserDefaults.standard
 
     private enum DefaultsKey {
@@ -34,6 +37,33 @@ final class RemoteCompanionModel: ObservableObject {
         host = defaults.string(forKey: DefaultsKey.host) ?? "127.0.0.1"
         port = defaults.string(forKey: DefaultsKey.port) ?? "8787"
         accessToken = defaults.string(forKey: DefaultsKey.token) ?? ""
+    }
+
+    func startBrowsing() {
+        guard !isBrowsing else { return }
+        isBrowsing = true
+        hostBrowser.start { [weak self] hosts in
+            Task { @MainActor in
+                self?.discoveredHosts = hosts
+            }
+        }
+    }
+
+    func stopBrowsing() {
+        hostBrowser.stop()
+        isBrowsing = false
+        discoveredHosts = []
+    }
+
+    func selectDiscoveredHost(_ discovered: RemoteDiscoveredHost) {
+        host = discovered.host
+        port = String(discovered.port)
+        if let protocolVersion = discovered.protocolVersion,
+           protocolVersion < RemoteProtocolVersion.minimumClient {
+            statusMessage = "Host 协议版本过旧（\(protocolVersion)）"
+        } else {
+            statusMessage = "已选择 \(discovered.name)"
+        }
     }
 
     func connect() async {
@@ -74,6 +104,7 @@ final class RemoteCompanionModel: ObservableObject {
             defaults.set(token, forKey: DefaultsKey.token)
             await reloadAssets(reset: true)
             statusMessage = "已连接 \(caps.hostAppVersion)"
+            stopBrowsing()
         } catch {
             isConnected = false
             client = nil
@@ -92,6 +123,7 @@ final class RemoteCompanionModel: ObservableObject {
         selectedAssetIDs = []
         thumbnailDataByAssetID = [:]
         statusMessage = "已断开"
+        startBrowsing()
     }
 
     func reloadAssets(reset: Bool) async {

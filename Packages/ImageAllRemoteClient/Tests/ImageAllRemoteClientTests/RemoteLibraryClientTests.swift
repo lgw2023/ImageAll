@@ -131,6 +131,15 @@ final class RemoteLibraryClientTests: XCTestCase {
         XCTAssertEqual(response.appliedAssetCount, 1)
         XCTAssertFalse(response.replayed)
     }
+
+    func testHostEndpointBracketsIPv6() throws {
+        let endpoint = try RemoteHostEndpoint(
+            host: "fe80::1",
+            port: 8787,
+            accessToken: "secret"
+        )
+        XCTAssertEqual(endpoint.baseURL.absoluteString, "http://[fe80::1]:8787")
+    }
 }
 
 private struct MockTransport: RemoteHTTPTransporting {

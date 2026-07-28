@@ -27,7 +27,26 @@ struct RemoteCompanionRootView: View {
 
     private var connectionView: some View {
         Form {
-            Section("Mac Host") {
+            Section("局域网 Host") {
+                if model.discoveredHosts.isEmpty {
+                    Text(model.isBrowsing ? "正在搜索…" : "未开始搜索")
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(model.discoveredHosts) { discovered in
+                        Button {
+                            model.selectDiscoveredHost(discovered)
+                        } label: {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(discovered.name)
+                                Text("\(discovered.host):\(discovered.port)")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                }
+            }
+            Section("手动连接") {
                 TextField("主机", text: $model.host)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
@@ -57,9 +76,15 @@ struct RemoteCompanionRootView: View {
                 }
             }
             Section {
-                Text("在 Mac Debug 构建启用 Host：defaults write com.gwlee.ImageAll imageall.remoteHost.enabled -bool YES")
+                Text("在 Mac Debug 构建启用 Host：defaults write com.gwlee.ImageAll imageall.remoteHost.enabled -bool YES；token：defaults read com.gwlee.ImageAll imageall.remoteHost.accessToken")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
+            }
+        }
+        .onAppear { model.startBrowsing() }
+        .onDisappear {
+            if !model.isConnected {
+                model.stopBrowsing()
             }
         }
     }

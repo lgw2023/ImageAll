@@ -30,6 +30,13 @@ final class RemoteProtocolRoundTripTests: XCTestCase {
         try assertRoundTrip(original)
     }
 
+    func testBonjourTXTRoundTripHelpers() {
+        let txt = RemoteBonjour.txtRecord(protocolVersion: 1)
+        XCTAssertEqual(txt[RemoteBonjour.TXTKey.protocolVersion], "1")
+        XCTAssertEqual(RemoteBonjour.protocolVersion(fromTXT: txt), 1)
+        XCTAssertEqual(RemoteBonjour.serviceType, "_imageall._tcp")
+    }
+
     func testSourceSummaryRoundTrip() throws {
         let original = RemoteSourceSummary(
             id: UUID(uuidString: "11111111-1111-1111-1111-111111111111")!,

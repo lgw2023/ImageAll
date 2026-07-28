@@ -11,7 +11,14 @@ public struct RemoteHostEndpoint: Sendable, Equatable {
     }
 
     public init(host: String, port: Int, accessToken: String) throws {
-        guard var components = URLComponents(string: "http://\(host)") else {
+        let trimmed = host.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedHost: String = {
+            if trimmed.contains(":"), !trimmed.hasPrefix("[") {
+                return "[\(trimmed)]"
+            }
+            return trimmed
+        }()
+        guard var components = URLComponents(string: "http://\(normalizedHost)") else {
             throw RemoteAPIError(code: .badRequest, message: "invalid host")
         }
         components.port = port

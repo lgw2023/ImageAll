@@ -26,6 +26,7 @@ actor RemoteHTTPServer {
     private let facade: RemoteCatalogFacade
     private let accessToken: String
     private let port: UInt16
+    private let advertisementName: String
     private let logger = Logger(subsystem: "com.gwlee.ImageAll", category: "RemoteHTTPServer")
     private var listener: NWListener?
     private let jsonEncoder = JSONEncoder()
@@ -34,20 +35,28 @@ actor RemoteHTTPServer {
     init(
         facade: RemoteCatalogFacade,
         accessToken: String,
-        port: UInt16 = RemoteHTTPServer.defaultPort
+        port: UInt16 = RemoteHTTPServer.defaultPort,
+        advertisementName: String = RemoteHTTPServer.defaultAdvertisementName()
     ) {
         self.facade = facade
         self.accessToken = accessToken
         self.port = port
+        self.advertisementName = advertisementName
     }
 
     var listenPort: Int { Int(port) }
+
+    /// Exposed for tests: Bonjour service configured on the active listener.
+    var bonjourServiceType: String? {
+        listener?.service?.type
+    }
 
     func start() throws {
         guard listener == nil else { return }
         let parameters = NWParameters.tcp
         parameters.allowLocalEndpointReuse = true
         let listener = try NWListener(using: parameters, on: NWEndpoint.Port(rawValue: port)!)
+        listener.service = Self.makeBonjourService(name: advertisementName)
         listener.newConnectionHandler = { [weak self] connection in
             Task { await self?.handle(connection: connection) }
         }
@@ -56,12 +65,32 @@ actor RemoteHTTPServer {
         }
         listener.start(queue: .global(qos: .utility))
         self.listener = listener
-        logger.info("Remote host listening on port \(self.port, privacy: .public)")
+        logger.info(
+            "Remote host listening on port \(self.port, privacy: .public); Bonjour \(RemoteBonjour.serviceType, privacy: .public) as \(self.advertisementName, privacy: .public)"
+        )
     }
 
     func stop() {
         listener?.cancel()
         listener = nil
+    }
+
+    static func defaultAdvertisementName() -> String {
+        let host = ProcessInfo.processInfo.hostName
+        if host.isEmpty { return "ImageAll" }
+        return host.replacingOccurrences(of: ".local", with: "")
+    }
+
+    static func makeBonjourService(name: String) -> NWListener.Service {
+        var txt = NWTXTRecord()
+        for (key, value) in RemoteBonjour.txtRecord() {
+            txt[key] = value
+        }
+        return NWListener.Service(
+            name: name,
+            type: RemoteBonjour.serviceType,
+            txtRecord: txt
+        )
     }
 
     private func handleListenerState(_ state: NWListener.State) {

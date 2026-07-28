@@ -35,5 +35,9 @@
 	<string>读取照片并在本地建立标签、建议和相似度索引；“图库瘦身”的相同检测可能自动从 iCloud 下载原图并长期保存在本机，只有您明确确认时才会将所选照片移入系统“最近删除”。</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>允许您在同一局域网内使用 ImageAll 手机辅助客户端浏览图库和更新标签。</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_imageall._tcp</string>
+	</array>
 </dict>
 </plist>

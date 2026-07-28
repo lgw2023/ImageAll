@@ -24,6 +24,10 @@
 	<true/>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>ImageAll Mobile 需要访问局域网中的 Mac Host，以便浏览图库并提交标签决定。</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_imageall._tcp</string>
+	</array>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsLocalNetworking</key>

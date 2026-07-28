@@ -128,6 +128,30 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertEqual(capabilities.hostAppVersion, "2.3.4")
         XCTAssertEqual(capabilities.protocolVersion, RemoteProtocolVersion.current)
     }
+
+    func testBonjourServiceIsAdvertisedOnStart() async throws {
+        let port = UInt16.random(in: 19_000...29_000)
+        let facade = RemoteCatalogFacade(
+            catalog: RemoteHTTPServerTestCatalog(),
+            hostAppVersion: "1.0.0",
+            listenPort: Int(port)
+        )
+        let server = RemoteHTTPServer(
+            facade: facade,
+            accessToken: "secret-token",
+            port: port,
+            advertisementName: "ImageAll-Test-Host"
+        )
+        try await server.start()
+        try await Task.sleep(nanoseconds: 100_000_000)
+        let serviceType = await server.bonjourServiceType
+        await server.stop()
+        XCTAssertEqual(serviceType, RemoteBonjour.serviceType)
+
+        let service = RemoteHTTPServer.makeBonjourService(name: "ImageAll-Test-Host")
+        XCTAssertEqual(service.type, RemoteBonjour.serviceType)
+        XCTAssertEqual(service.name, "ImageAll-Test-Host")
+    }
 }
 
 private struct RemoteHTTPServerTestCatalog: RemoteCatalogServing {
