@@ -6,6 +6,7 @@ struct ImageAllApp: App {
     @StateObject private var startupModel: CatalogStartupModel
     @StateObject private var modelSettingsModel: AppModelSettingsModel
     @StateObject private var idlePrewarmSettingsModel: IdleThumbnailPrewarmSettingsModel
+    @StateObject private var toolbarDisplayModeSettingsModel: ToolbarDisplayModeSettingsModel
 
     init() {
         let root = CompositionRoot()
@@ -23,6 +24,9 @@ struct ImageAllApp: App {
         _idlePrewarmSettingsModel = StateObject(
             wrappedValue: IdleThumbnailPrewarmSettingsModel()
         )
+        _toolbarDisplayModeSettingsModel = StateObject(
+            wrappedValue: ToolbarDisplayModeSettingsModel()
+        )
     }
 
     var body: some Scene {
@@ -37,6 +41,7 @@ struct ImageAllApp: App {
                     startupModel.retryBootstrap()
                 }
             )
+            .environmentObject(toolbarDisplayModeSettingsModel)
             .task { await modelSettingsModel.start() }
             .onAppear { attachSettingsPortsIfReady() }
             .onChange(of: startupModel.workspaceModel != nil) { _, _ in
@@ -55,7 +60,8 @@ struct ImageAllApp: App {
         Settings {
             AppModelSettingsView(
                 model: modelSettingsModel,
-                idlePrewarmSettings: idlePrewarmSettingsModel
+                idlePrewarmSettings: idlePrewarmSettingsModel,
+                toolbarDisplayModeSettings: toolbarDisplayModeSettingsModel
             )
             .onAppear { attachSettingsPortsIfReady() }
             .onChange(of: startupModel.workspaceModel != nil) { _, _ in

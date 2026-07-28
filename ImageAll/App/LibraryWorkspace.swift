@@ -67,16 +67,29 @@ enum LibraryGridDensity: Int, CaseIterable, Sendable {
 struct LibraryGridDensityPicker: View {
     @Binding var selection: LibraryGridDensity
     var help: String
+    var displayMode: LibraryToolbarDisplayMode
 
-    init(selection: Binding<LibraryGridDensity>, help: String = "调整照片网格缩略图大小") {
+    init(
+        selection: Binding<LibraryGridDensity>,
+        help: String = "调整照片网格缩略图大小",
+        displayMode: LibraryToolbarDisplayMode = .iconOnly
+    ) {
         _selection = selection
         self.help = help
+        self.displayMode = displayMode
     }
 
     var body: some View {
-        Picker("缩略图大小", selection: $selection) {
+        Picker(selection: $selection) {
             ForEach(LibraryGridDensity.allCases, id: \.self) { density in
                 Text(density.displayName).tag(density)
+            }
+        } label: {
+            switch displayMode {
+            case .iconOnly:
+                Image(systemName: "square.grid.3x3")
+            case .iconAndTitle:
+                Label(selection.displayName, systemImage: "square.grid.3x3")
             }
         }
         .pickerStyle(.menu)
@@ -308,23 +321,31 @@ struct LibraryTagGroupSection: Identifiable, Equatable, Sendable {
 
     var id: UUID { group.id }
 
+    @MainActor
     static func build(
         groups: [TagGroupListItem],
-        tags: [TagListItem]
+        tags: [TagListItem],
+        orderPreferences: LibraryTagOrderPreferences? = nil
     ) -> [LibraryTagGroupSection] {
         let classified = Dictionary(grouping: tags, by: \.groupID)
         return groups.map { group in
-            LibraryTagGroupSection(
-                group: group,
-                tags: (classified[group.id] ?? []).sorted { lhs, rhs in
-                    let comparison = lhs.displayName.localizedStandardCompare(rhs.displayName)
-                    if comparison == .orderedSame {
-                        return lhs.id.uuidString.lowercased() < rhs.id.uuidString.lowercased()
-                    }
-                    return comparison == .orderedAscending
-                }
-            )
+            let groupTags = classified[group.id] ?? []
+            let orderedTags: [TagListItem]
+            if let orderPreferences {
+                orderedTags = orderPreferences.ordered(groupTags, in: group.id)
+            } else {
+                orderedTags = groupTags.sorted(by: Self.alphabetical)
+            }
+            return LibraryTagGroupSection(group: group, tags: orderedTags)
         }
+    }
+
+    private static func alphabetical(_ lhs: TagListItem, _ rhs: TagListItem) -> Bool {
+        let comparison = lhs.displayName.localizedStandardCompare(rhs.displayName)
+        if comparison == .orderedSame {
+            return lhs.id.uuidString.lowercased() < rhs.id.uuidString.lowercased()
+        }
+        return comparison == .orderedAscending
     }
 }
 
@@ -425,6 +446,95 @@ final class LibrarySourceOrderPreferences {
     }
 }
 
+@MainActor
+final class LibraryTagOrderPreferences {
+    private static let defaultKey = "library.sidebar.tag-order.v1"
+    private let defaults: UserDefaults
+    private let key: String
+
+    init(defaults: UserDefaults = .standard, key: String = defaultKey) {
+        self.defaults = defaults
+        self.key = key
+    }
+
+    func ordered(_ tags: [TagListItem], in groupID: UUID) -> [TagListItem] {
+        let byID = Dictionary(uniqueKeysWithValues: tags.map { ($0.id, $0) })
+        let savedIDs = loadIDs(for: groupID)
+        let orderedKnown = savedIDs.compactMap { byID[$0] }
+        let savedSet = Set(savedIDs)
+        let appended = tags
+            .filter { !savedSet.contains($0.id) }
+            .sorted(by: Self.alphabetical)
+        return orderedKnown + appended
+    }
+
+    func move(
+        fromOffsets sourceOffsets: IndexSet,
+        toOffset destination: Int,
+        tags: [TagListItem],
+        in groupID: UUID
+    ) {
+        var ids = ordered(tags, in: groupID).map(\.id)
+        let validOffsets = sourceOffsets.filter { ids.indices.contains($0) }.sorted()
+        guard !validOffsets.isEmpty else { return }
+        let movedIDs = validOffsets.map { ids[$0] }
+        for offset in validOffsets.reversed() {
+            ids.remove(at: offset)
+        }
+        let removedBeforeDestination = validOffsets.filter { $0 < destination }.count
+        let insertionIndex = min(
+            max(destination - removedBeforeDestination, 0),
+            ids.endIndex
+        )
+        ids.insert(contentsOf: movedIDs, at: insertionIndex)
+        saveIDs(ids, for: groupID)
+    }
+
+    func remove(_ tagID: UUID, from groupID: UUID) {
+        var storage = loadStorage()
+        let groupToken = groupID.uuidString.lowercased()
+        let tagToken = tagID.uuidString.lowercased()
+        guard var ids = storage[groupToken] else { return }
+        ids.removeAll { $0 == tagToken }
+        storage[groupToken] = ids
+        saveStorage(storage)
+    }
+
+    func append(_ tagID: UUID, to groupID: UUID, tags: [TagListItem]) {
+        var ids = ordered(tags, in: groupID).map(\.id)
+        ids.removeAll { $0 == tagID }
+        ids.append(tagID)
+        saveIDs(ids, for: groupID)
+    }
+
+    private static func alphabetical(_ lhs: TagListItem, _ rhs: TagListItem) -> Bool {
+        let comparison = lhs.displayName.localizedStandardCompare(rhs.displayName)
+        if comparison == .orderedSame {
+            return lhs.id.uuidString.lowercased() < rhs.id.uuidString.lowercased()
+        }
+        return comparison == .orderedAscending
+    }
+
+    private func loadIDs(for groupID: UUID) -> [UUID] {
+        let token = groupID.uuidString.lowercased()
+        return (loadStorage()[token] ?? []).compactMap(UUID.init(uuidString:))
+    }
+
+    private func saveIDs(_ ids: [UUID], for groupID: UUID) {
+        var storage = loadStorage()
+        storage[groupID.uuidString.lowercased()] = ids.map(\.uuidString)
+        saveStorage(storage)
+    }
+
+    private func loadStorage() -> [String: [String]] {
+        defaults.dictionary(forKey: key) as? [String: [String]] ?? [:]
+    }
+
+    private func saveStorage(_ storage: [String: [String]]) {
+        defaults.set(storage, forKey: key)
+    }
+}
+
 struct LibrarySourceReorderMove: Equatable, Sendable {
     let sourceOffset: Int
     let destinationOffset: Int
@@ -458,6 +568,71 @@ enum LibrarySourceReorderLayout {
             sourceOffset: sourceOffset,
             destinationOffset: destinationOffset
         )
+    }
+}
+
+enum LibraryTagReorderLayout {
+    static let rowThreshold: CGFloat = 8
+
+    static func readingOrder(tagIDs: [UUID], frames: [UUID: CGRect]) -> [UUID] {
+        tagIDs
+            .compactMap { id -> (UUID, CGRect)? in
+                guard let frame = frames[id] else { return nil }
+                return (id, frame)
+            }
+            .sorted { lhs, rhs in
+                if abs(lhs.1.midY - rhs.1.midY) > rowThreshold {
+                    return lhs.1.midY < rhs.1.midY
+                }
+                return lhs.1.midX < rhs.1.midX
+            }
+            .map(\.0)
+    }
+
+    static func destinationOffset(
+        pointer: CGPoint,
+        tagIDs: [UUID],
+        frames: [UUID: CGRect]
+    ) -> Int {
+        let ordered = readingOrder(tagIDs: tagIDs, frames: frames)
+        for id in ordered {
+            guard let frame = frames[id] else { continue }
+            if pointer.y < frame.midY - rowThreshold / 2 {
+                return tagIDs.firstIndex(of: id) ?? tagIDs.count
+            }
+            if abs(pointer.y - frame.midY) <= rowThreshold, pointer.x < frame.midX {
+                return tagIDs.firstIndex(of: id) ?? tagIDs.count
+            }
+        }
+        return tagIDs.count
+    }
+
+    static func moveRequest(
+        tagID: UUID,
+        pointer: CGPoint,
+        tagIDs: [UUID],
+        frames: [UUID: CGRect]
+    ) -> LibrarySourceReorderMove? {
+        guard let sourceOffset = tagIDs.firstIndex(of: tagID) else { return nil }
+        let destinationOffset = destinationOffset(
+            pointer: pointer,
+            tagIDs: tagIDs,
+            frames: frames
+        )
+        guard destinationOffset != sourceOffset,
+              destinationOffset != sourceOffset + 1
+        else { return nil }
+        return LibrarySourceReorderMove(
+            sourceOffset: sourceOffset,
+            destinationOffset: destinationOffset
+        )
+    }
+
+    static func targetGroupID(
+        pointer: CGPoint,
+        groupFrames: [UUID: CGRect]
+    ) -> UUID? {
+        groupFrames.first { _, frame in frame.contains(pointer) }?.key
     }
 }
 
@@ -658,6 +833,7 @@ final class LibraryWorkspaceModel: ObservableObject {
     @Published private(set) var jobActivityItems: [JobActivityItem] = []
     @Published private(set) var jobActivityActionInFlightIDs: Set<UUID> = []
     @Published private(set) var sourceOrderRevision = 0
+    @Published private(set) var tagOrderRevision = 0
     @Published private(set) var isOpeningOriginal = false
     @Published private(set) var trainingRuns: [TrainingRunRecord] = []
     @Published private(set) var trainingSlots: [TrainingWorkspaceSlot] =
@@ -706,24 +882,29 @@ final class LibraryWorkspaceModel: ObservableObject {
     private let librarySlimmingAnalysis: (any LibrarySlimmingAnalysisJobPort)?
     private let librarySlimmingSourceIndex: (any SourceSimilarityIndexPort)?
     private let librarySlimmingRecycle: (any LibrarySlimmingRecyclePort)?
+    private let librarySlimmingRecycleConfirmationPreferences:
+        any LibrarySlimmingRecycleConfirmationPreferenceStore
     private let librarySlimmingThresholds: (any NearDuplicateSceneThresholdWriting)?
     private let librarySlimmingMutationAuthorization: (any FolderMutationAuthorizationPort)?
     private let localModelSuggestions: LocalModelSuggestionRuntime?
     private let appPersonalModelRebuilder: (any AppPersonalModelRebuilding)?
     private let appPersonalAdamWModelRebuilder: (any AppPersonalModelRebuilding)?
     private let selectedAssetEmbeddingCache: (any AppSelectedAssetEmbeddingCaching)?
+    private let idleFeaturePrintCache: (any SyncFeatureVectorLoading)?
     private let appPersonalSampleSuggester: (any AppPersonalSampleSuggesting)?
     private let appPersonalTagLibrarySuggester: (any AppPersonalTagLibrarySuggesting)?
     private let appPersonalAdamWTagLibrarySuggester: (any AppPersonalTagLibrarySuggesting)?
     private let suggestionThresholds: (any SuggestionThresholdPort)?
     private let originalAssetOpener: any LibraryOriginalAssetOpening
     private let sourceOrderPreferences: LibrarySourceOrderPreferences
+    private let tagOrderPreferences: LibraryTagOrderPreferences
     private let tagGroupCollapsePreferences: LibraryTagGroupCollapsePreferences
     private let clock: any JobClock
     private var lastTagMutation: LibraryTagUndoRecord?
     fileprivate var lastReviewMutation: ReviewMutationUndoRecord?
     private var personalizationRunnerTask: Task<Void, Never>?
     private var librarySlimmingAnalysisRunnerTask: Task<Void, Never>?
+    private var librarySlimmingAnalysisProgressMonitorTask: Task<Void, Never>?
     private var sourceSimilarityIndexRunnerTask: Task<Void, Never>?
     private var catalogReconcileTask: Task<Void, Never>?
     private var catalogReconcileRunRequested = false
@@ -745,7 +926,8 @@ final class LibraryWorkspaceModel: ObservableObject {
     private let idlePrewarmMonitorTickSeconds: TimeInterval
     private let idlePrewarmInstallEventMonitor: Bool
     private var idleThumbnailPrewarmController: IdleThumbnailPrewarmController?
-    private var idlePrewarmGeneration = 0
+    private var idlePrewarmSkippedAssetIDs: Set<UUID> = []
+    private var idlePrewarmEmbeddingUnavailable = false
     private var sourceThumbnailPrewarmTask: Task<Void, Never>?
     private var sourceThumbnailPrewarmGeneration = 0
     private var browsingNavigationRequestID: UUID?
@@ -775,12 +957,16 @@ final class LibraryWorkspaceModel: ObservableObject {
         librarySlimmingAnalysis: (any LibrarySlimmingAnalysisJobPort)? = nil,
         librarySlimmingSourceIndex: (any SourceSimilarityIndexPort)? = nil,
         librarySlimmingRecycle: (any LibrarySlimmingRecyclePort)? = nil,
+        librarySlimmingRecycleConfirmationPreferences:
+            any LibrarySlimmingRecycleConfirmationPreferenceStore =
+            UserDefaultsLibrarySlimmingRecycleConfirmationPreferenceStore(),
         librarySlimmingMutationAuthorization: (any FolderMutationAuthorizationPort)? = nil,
         librarySlimmingThresholds: (any NearDuplicateSceneThresholdWriting)? = nil,
         localModelSuggestions: LocalModelSuggestionRuntime? = nil,
         appPersonalModelRebuilder: (any AppPersonalModelRebuilding)? = nil,
         appPersonalAdamWModelRebuilder: (any AppPersonalModelRebuilding)? = nil,
         selectedAssetEmbeddingCache: (any AppSelectedAssetEmbeddingCaching)? = nil,
+        idleFeaturePrintCache: (any SyncFeatureVectorLoading)? = nil,
         appPersonalSampleSuggester: (any AppPersonalSampleSuggesting)? = nil,
         appPersonalTagLibrarySuggester: (any AppPersonalTagLibrarySuggesting)? = nil,
         appPersonalAdamWTagLibrarySuggester: (any AppPersonalTagLibrarySuggesting)? = nil,
@@ -789,6 +975,7 @@ final class LibraryWorkspaceModel: ObservableObject {
             UserDefaultsPendingSuggestionCountPreferenceStore(),
         originalAssetOpener: any LibraryOriginalAssetOpening = UnavailableLibraryOriginalAssetOpener(),
         sourceOrderPreferences: LibrarySourceOrderPreferences = LibrarySourceOrderPreferences(),
+        tagOrderPreferences: LibraryTagOrderPreferences = LibraryTagOrderPreferences(),
         tagGroupCollapsePreferences: LibraryTagGroupCollapsePreferences = LibraryTagGroupCollapsePreferences(),
         clock: any JobClock = SystemJobClock(),
         catalogProgressRefreshInterval: Duration = .milliseconds(750),
@@ -808,6 +995,8 @@ final class LibraryWorkspaceModel: ObservableObject {
         self.librarySlimmingAnalysis = librarySlimmingAnalysis
         self.librarySlimmingSourceIndex = librarySlimmingSourceIndex
         self.librarySlimmingRecycle = librarySlimmingRecycle
+        self.librarySlimmingRecycleConfirmationPreferences =
+            librarySlimmingRecycleConfirmationPreferences
         self.librarySlimmingMutationAuthorization = librarySlimmingMutationAuthorization
         self.librarySlimmingThresholds = librarySlimmingThresholds
         librarySlimmingSceneThresholds = librarySlimmingThresholds?.thresholds() ?? .factory
@@ -822,6 +1011,7 @@ final class LibraryWorkspaceModel: ObservableObject {
         isIdleThumbnailPrewarmEnabled = idleThumbnailPrewarmPreferenceStore.isEnabled
         maxPendingSuggestionsPerTag = pendingSuggestionCountPreferences.maxPendingSuggestionsPerTag
         self.selectedAssetEmbeddingCache = selectedAssetEmbeddingCache
+        self.idleFeaturePrintCache = idleFeaturePrintCache
         self.appPersonalSampleSuggester = appPersonalSampleSuggester
         self.appPersonalTagLibrarySuggester = appPersonalTagLibrarySuggester
         self.appPersonalAdamWTagLibrarySuggester = appPersonalAdamWTagLibrarySuggester
@@ -829,6 +1019,7 @@ final class LibraryWorkspaceModel: ObservableObject {
         self.pendingSuggestionCountPreferences = pendingSuggestionCountPreferences
         self.originalAssetOpener = originalAssetOpener
         self.sourceOrderPreferences = sourceOrderPreferences
+        self.tagOrderPreferences = tagOrderPreferences
         self.tagGroupCollapsePreferences = tagGroupCollapsePreferences
         self.clock = clock
         self.catalogProgressRefreshInterval = catalogProgressRefreshInterval
@@ -1217,6 +1408,14 @@ final class LibraryWorkspaceModel: ObservableObject {
         }
     }
 
+    var skipsLibrarySlimmingMoveToRecycleConfirmation: Bool {
+        librarySlimmingRecycleConfirmationPreferences.skipsMoveConfirmation
+    }
+
+    func setSkipsLibrarySlimmingMoveToRecycleConfirmation(_ skips: Bool) {
+        librarySlimmingRecycleConfirmationPreferences.skipsMoveConfirmation = skips
+    }
+
     var canMoveSelectedLibrarySlimmingMembersToRecycle: Bool {
         librarySlimmingMoveToRecycleDisabledReason == nil
     }
@@ -1486,9 +1685,6 @@ final class LibraryWorkspaceModel: ObservableObject {
         librarySlimmingStatusMessage = "正在建立可暂停、可续跑的分析任务…"
         librarySlimmingScanProgress = nil
         selectedLibrarySlimmingMemberIDs = []
-        defer {
-            librarySlimmingScanProgress = nil
-        }
         do {
             let workspaceService = service
             let filter: AssetPageFilter
@@ -1526,7 +1722,7 @@ final class LibraryWorkspaceModel: ObservableObject {
                 librarySlimmingStatusMessage = "当前范围没有可分析的照片。"
                 return
             }
-            var snapshot = try await Self.offMain {
+            let snapshot = try await Self.offMain {
                 try analysis.enqueue(
                     mode: mode,
                     assetIDs: assetIDs,
@@ -1537,18 +1733,7 @@ final class LibraryWorkspaceModel: ObservableObject {
             applyLibrarySlimmingJobSnapshot(snapshot, forceSelect: true)
             librarySlimmingStatusMessage = "后台自动补全内容指纹与相似度向量…"
             librarySlimmingAnalysisJobState = .running
-            let enqueuedJobID = snapshot.jobID
-            try await Self.offMain(priority: .utility) {
-                try analysis.runPending()
-            }
-            await refreshLibrarySlimmingAnalysisJobs()
-            snapshot = try await Self.offMain {
-                try analysis.snapshot(jobID: enqueuedJobID)
-            }
-            applyLibrarySlimmingJobSnapshot(snapshot, forceSelect: false)
-            if snapshot.state == .retryableFailed || snapshot.state == .pending || snapshot.state == .running {
-                startLibrarySlimmingAnalysisAutoRunner()
-            }
+            startLibrarySlimmingAnalysisAutoRunner()
         } catch {
             isAnalyzingLibrarySlimming = false
             librarySlimmingStatusMessage = "分析失败：\(error.localizedDescription)"
@@ -1596,17 +1781,7 @@ final class LibraryWorkspaceModel: ObservableObject {
             }
             librarySlimmingStatusMessage = "正在从已保存进度继续并自动补全…"
             librarySlimmingAnalysisJobState = .running
-            try await Self.offMain(priority: .utility) {
-                try analysis.runPending()
-            }
-            await refreshLibrarySlimmingAnalysisJobs()
-            let snapshot = try await Self.offMain {
-                try analysis.snapshot(jobID: jobID)
-            }
-            applyLibrarySlimmingJobSnapshot(snapshot, forceSelect: false)
-            if snapshot.state == .retryableFailed || snapshot.state == .pending || snapshot.state == .running {
-                startLibrarySlimmingAnalysisAutoRunner()
-            }
+            startLibrarySlimmingAnalysisAutoRunner()
         } catch {
             isAnalyzingLibrarySlimming = false
             librarySlimmingStatusMessage = "继续分析失败：\(error.localizedDescription)"
@@ -1691,7 +1866,56 @@ final class LibraryWorkspaceModel: ObservableObject {
         }
     }
 
+    func ensureLibrarySlimmingAnalysisMonitoring() {
+        guard librarySlimmingAnalysis != nil else { return }
+        guard hasActiveLibrarySlimmingAnalysisJob() else { return }
+        isAnalyzingLibrarySlimming = true
+        startLibrarySlimmingAnalysisProgressMonitorIfNeeded()
+        startLibrarySlimmingAnalysisAutoRunner()
+    }
+
+    private func hasActiveLibrarySlimmingAnalysisJob() -> Bool {
+        librarySlimmingAnalysisJobs.contains {
+            $0.state == .pending || $0.state == .running || $0.state == .retryableFailed
+        }
+    }
+
+    private func refreshActiveLibrarySlimmingAnalysisProgress() async {
+        guard let analysis = librarySlimmingAnalysis else { return }
+        if let selectedID = librarySlimmingAnalysisJobID {
+            let snapshot = try? await Self.offMain {
+                try analysis.snapshot(jobID: selectedID)
+            }
+            if let snapshot {
+                applyLibrarySlimmingJobSnapshot(snapshot, forceSelect: false)
+            }
+        }
+        await refreshLibrarySlimmingAnalysisJobs()
+    }
+
+    private func startLibrarySlimmingAnalysisProgressMonitorIfNeeded() {
+        guard librarySlimmingAnalysisProgressMonitorTask == nil,
+              librarySlimmingAnalysis != nil
+        else {
+            return
+        }
+        librarySlimmingAnalysisProgressMonitorTask = Task { @MainActor [weak self] in
+            defer { self?.librarySlimmingAnalysisProgressMonitorTask = nil }
+            while !Task.isCancelled {
+                guard let self else { return }
+                guard self.hasActiveLibrarySlimmingAnalysisJob() else { return }
+                await self.refreshActiveLibrarySlimmingAnalysisProgress()
+                do {
+                    try await Task.sleep(for: self.catalogProgressRefreshInterval)
+                } catch {
+                    return
+                }
+            }
+        }
+    }
+
     private func startLibrarySlimmingAnalysisAutoRunner() {
+        startLibrarySlimmingAnalysisProgressMonitorIfNeeded()
         guard librarySlimmingAnalysisRunnerTask == nil,
               let analysis = librarySlimmingAnalysis
         else {
@@ -1700,27 +1924,22 @@ final class LibraryWorkspaceModel: ObservableObject {
         librarySlimmingAnalysisRunnerTask = Task { @MainActor [weak self] in
             defer { self?.librarySlimmingAnalysisRunnerTask = nil }
             while !Task.isCancelled {
-                do {
-                    try await Task.sleep(for: .seconds(5))
-                } catch {
+                guard let self else { return }
+                guard self.hasActiveLibrarySlimmingAnalysisJob() else {
+                    self.isAnalyzingLibrarySlimming = false
                     return
                 }
                 _ = try? await Self.offMain(priority: .utility) {
                     try analysis.runPending()
                 }
-                await self?.refreshLibrarySlimmingAnalysisJobs()
-                if let selectedID = self?.librarySlimmingAnalysisJobID,
-                   let snapshot = try? await Self.offMain({
-                       try analysis.snapshot(jobID: selectedID)
-                   })
-                {
-                    self?.applyLibrarySlimmingJobSnapshot(snapshot, forceSelect: false)
+                await self.refreshActiveLibrarySlimmingAnalysisProgress()
+                if !self.hasActiveLibrarySlimmingAnalysisJob() {
+                    self.isAnalyzingLibrarySlimming = false
+                    return
                 }
-                let hasActive = self?.librarySlimmingAnalysisJobs.contains {
-                    $0.state == .pending || $0.state == .running || $0.state == .retryableFailed
-                } ?? false
-                if !hasActive {
-                    self?.isAnalyzingLibrarySlimming = false
+                do {
+                    try await Task.sleep(for: .seconds(1))
+                } catch {
                     return
                 }
             }
@@ -1801,7 +2020,12 @@ final class LibraryWorkspaceModel: ObservableObject {
 
     var tagGroupSections: [LibraryTagGroupSection] {
         _ = tagGroupCollapseRevision
-        return LibraryTagGroupSection.build(groups: tagGroups, tags: tags)
+        _ = tagOrderRevision
+        return LibraryTagGroupSection.build(
+            groups: tagGroups,
+            tags: tags,
+            orderPreferences: tagOrderPreferences
+        )
     }
 
     func isTagGroupCollapsed(_ groupID: UUID) -> Bool {
@@ -1830,6 +2054,21 @@ final class LibraryWorkspaceModel: ObservableObject {
             in: sources
         )
         sourceOrderRevision &+= 1
+    }
+
+    func moveTags(
+        in groupID: UUID,
+        fromOffsets sourceOffsets: IndexSet,
+        toOffset destination: Int
+    ) {
+        let groupTags = tags.filter { $0.groupID == groupID }
+        tagOrderPreferences.move(
+            fromOffsets: sourceOffsets,
+            toOffset: destination,
+            tags: groupTags,
+            in: groupID
+        )
+        tagOrderRevision &+= 1
     }
 
     func moveSource(_ sourceID: UUID, to targetID: UUID) {
@@ -2400,29 +2639,94 @@ final class LibraryWorkspaceModel: ObservableObject {
     }
 
     private func runIdleThumbnailPrewarm(generation: Int) async {
-        idlePrewarmGeneration = generation
-        let assetIDs = items.map(\.assetID)
-        for assetID in assetIDs {
+        let gridItems = items
+        for item in gridItems {
             if Task.isCancelled { return }
-            guard idleThumbnailPrewarmController?.currentPrewarmGeneration == generation else {
-                return
+            guard idlePrewarmIsCurrentGeneration(generation) else { return }
+            let assetID = item.assetID
+            if cachedThumbnailData(for: assetID) == nil {
+                await warmGridThumbnailForIdlePrewarm(assetID: assetID, generation: generation)
+                guard idlePrewarmIsCurrentGeneration(generation), !Task.isCancelled else { return }
             }
-            guard cachedThumbnailData(for: assetID) == nil else { continue }
-            await warmGridThumbnailForIdlePrewarm(assetID: assetID, generation: generation)
+            await warmFeaturePrintForIdlePrewarm(assetID: assetID, generation: generation)
+            guard idlePrewarmIsCurrentGeneration(generation), !Task.isCancelled else { return }
+            await warmEmbeddingForIdlePrewarm(
+                assetID: assetID,
+                contentRevision: item.contentRevision,
+                generation: generation
+            )
         }
+    }
+
+    private func idlePrewarmIsCurrentGeneration(_ generation: Int) -> Bool {
+        idleThumbnailPrewarmController?.currentPrewarmGeneration == generation
     }
 
     private func warmGridThumbnailForIdlePrewarm(assetID: UUID, generation: Int) async {
         guard cachedThumbnailData(for: assetID) == nil else { return }
-        guard idleThumbnailPrewarmController?.currentPrewarmGeneration == generation else { return }
+        guard idlePrewarmIsCurrentGeneration(generation) else { return }
         let service = service
         do {
             try Task.checkCancellation()
             let data = try await service.loadThumbnail(assetID: assetID)
-            guard idleThumbnailPrewarmController?.currentPrewarmGeneration == generation else { return }
+            guard idlePrewarmIsCurrentGeneration(generation) else { return }
             rememberThumbnailData(data, for: assetID)
+        } catch is CancellationError {
+            return
         } catch {
             // Best-effort; browsing remains available.
+        }
+    }
+
+    private func warmFeaturePrintForIdlePrewarm(assetID: UUID, generation: Int) async {
+        guard let loader = idleFeaturePrintCache else { return }
+        guard !idlePrewarmSkippedAssetIDs.contains(assetID) else { return }
+        guard idlePrewarmIsCurrentGeneration(generation) else { return }
+        do {
+            try Task.checkCancellation()
+            _ = try await Self.cancellableOffMain(priority: .utility) {
+                try loader.loadOrGenerateSync(assetID: assetID)
+            }
+            guard idlePrewarmIsCurrentGeneration(generation) else { return }
+        } catch is CancellationError {
+            return
+        } catch {
+            idlePrewarmSkippedAssetIDs.insert(assetID)
+        }
+    }
+
+    private func warmEmbeddingForIdlePrewarm(
+        assetID: UUID,
+        contentRevision: Int,
+        generation: Int
+    ) async {
+        guard contentRevision > 0,
+              !idlePrewarmEmbeddingUnavailable,
+              let cache = selectedAssetEmbeddingCache
+        else { return }
+        guard !idlePrewarmSkippedAssetIDs.contains(assetID) else { return }
+        guard idlePrewarmIsCurrentGeneration(generation) else { return }
+        let service = service
+        do {
+            try Task.checkCancellation()
+            _ = try await cache.cacheSelectedAsset(
+                assetID: assetID,
+                contentRevision: contentRevision,
+                imageData: {
+                    try Task.checkCancellation()
+                    guard !Task.isCancelled else { throw CancellationError() }
+                    return try await service.loadPreview(assetID: assetID)
+                }
+            )
+            guard idlePrewarmIsCurrentGeneration(generation) else { return }
+        } catch is CancellationError {
+            return
+        } catch AppSelectedAssetEmbeddingCacheError.modelUnavailable {
+            idlePrewarmEmbeddingUnavailable = true
+        } catch PhotosLibraryError.cloudOnly {
+            idlePrewarmSkippedAssetIDs.insert(assetID)
+        } catch {
+            idlePrewarmSkippedAssetIDs.insert(assetID)
         }
     }
 
@@ -5115,12 +5419,16 @@ final class LibraryWorkspaceModel: ObservableObject {
             return nil
         }
         notice = nil
+        tagOrderPreferences.remove(tagID, from: current.groupID)
         tags[index] = TagListItem(
             id: current.id,
             displayName: current.displayName,
             state: current.state,
             groupID: toGroupID
         )
+        let destinationTags = tags.filter { $0.groupID == toGroupID }
+        tagOrderPreferences.append(tagID, to: toGroupID, tags: destinationTags)
+        tagOrderRevision &+= 1
         return current
     }
 
@@ -5818,6 +6126,23 @@ final class LibraryWorkspaceModel: ObservableObject {
         _ operation: @escaping @Sendable () throws -> T
     ) async throws -> T {
         try await Task.detached(priority: priority, operation: operation).value
+    }
+
+    /// Child task that cancels with the caller, unlike `offMain`'s detached work.
+    private static func cancellableOffMain<T: Sendable>(
+        priority: TaskPriority = .utility,
+        _ operation: @escaping @Sendable () throws -> T
+    ) async throws -> T {
+        try await withThrowingTaskGroup(of: T.self) { group in
+            group.addTask(priority: priority) {
+                try operation()
+            }
+            guard let result = try await group.next() else {
+                throw CancellationError()
+            }
+            group.cancelAll()
+            return result
+        }
     }
 
     private func resetCloudPreviewIfSelectionChanged() {
@@ -6744,7 +7069,24 @@ private struct LibrarySourceRowFramePreferenceKey: PreferenceKey {
     }
 }
 
+private struct LibraryTagChipFramePreferenceKey: PreferenceKey {
+    static let defaultValue: [UUID: CGRect] = [:]
+
+    static func reduce(value: inout [UUID: CGRect], nextValue: () -> [UUID: CGRect]) {
+        value.merge(nextValue()) { _, latest in latest }
+    }
+}
+
+private struct LibraryTagGroupContainerFramePreferenceKey: PreferenceKey {
+    static let defaultValue: [UUID: CGRect] = [:]
+
+    static func reduce(value: inout [UUID: CGRect], nextValue: () -> [UUID: CGRect]) {
+        value.merge(nextValue()) { _, latest in latest }
+    }
+}
+
 struct LibraryWorkspaceView: View {
+    @EnvironmentObject private var toolbarDisplayModeSettings: ToolbarDisplayModeSettingsModel
     private static let sourceDropRowHeight: CGFloat = 40
     private static let sourceReorderCoordinateSpace = "library-source-reorder"
     private static let mediaFormatFilterOptions = [
@@ -6797,6 +7139,12 @@ struct LibraryWorkspaceView: View {
     @State private var sourceRowFrames: [UUID: CGRect] = [:]
     @State private var draggedSourceID: UUID?
     @State private var sourceInsertionOffset: Int?
+    @State private var draggedTagID: UUID?
+    @State private var draggedTagGroupID: UUID?
+    @State private var tagChipFrames: [UUID: CGRect] = [:]
+    @State private var tagGroupContainerFrames: [UUID: CGRect] = [:]
+    @State private var tagInsertionGroupID: UUID?
+    @State private var tagInsertionOffset: Int?
     @State private var isMarqueeSelecting = false
     @State private var gridScrollTargetID: UUID?
     @State private var layoutState = LibraryWorkspaceLayoutState()
@@ -6848,234 +7196,9 @@ struct LibraryWorkspaceView: View {
         }
         .toolbar {
             ToolbarItemGroup {
-                Button {
-                    layoutState.toggleSidebar()
-                } label: {
-                    Label(
-                        layoutState.isSidebarPresented ? "隐藏侧栏" : "显示侧栏",
-                        systemImage: "sidebar.left"
-                    )
-                }
-                .help(layoutState.isSidebarPresented ? "隐藏侧栏" : "显示侧栏")
-
-                Button {
-                    layoutState.toggleInspector()
-                } label: {
-                    Label(
-                        layoutState.isInspectorPresented ? "隐藏检查器" : "显示检查器",
-                        systemImage: "sidebar.right"
-                    )
-                }
-                .help(layoutState.isInspectorPresented ? "隐藏检查器" : "显示检查器")
-
-                if model.isCatalogScanning {
-                    HStack(spacing: 6) {
-                        if let progress = model.catalogReconcileProgress,
-                           let total = progress.total,
-                           total > 0
-                        {
-                            ProgressView(value: Double(progress.completed), total: Double(total))
-                                .frame(width: 42)
-                                .controlSize(.small)
-                        } else {
-                            ProgressView()
-                                .controlSize(.small)
-                        }
-                        Text(catalogProgressTitle(model.catalogReconcileProgress))
-                            .font(.caption)
-                    }
-                    .accessibilityElement(children: .combine)
-                    .accessibilityLabel(catalogProgressTitle(model.catalogReconcileProgress))
-                }
-
-                if let progress = model.sourceThumbnailPrewarmProgress {
-                    HStack(spacing: 6) {
-                        if progress.total > 0 {
-                            ProgressView(
-                                value: Double(progress.completed),
-                                total: Double(progress.total)
-                            )
-                            .frame(width: 42)
-                            .controlSize(.small)
-                        } else {
-                            ProgressView()
-                                .controlSize(.small)
-                        }
-                        Text(sourceThumbnailPrewarmTitle(progress))
-                            .font(.caption)
-                            .lineLimit(1)
-                        Button("取消") {
-                            model.cancelSourceThumbnailPrewarm()
-                        }
-                        .controlSize(.small)
-                    }
-                    .accessibilityElement(children: .combine)
-                    .accessibilityIdentifier("sourceThumbnailPrewarmProgress")
-                    .accessibilityLabel(sourceThumbnailPrewarmTitle(progress))
-                }
-
-                if model.supportsPersonalModelRebuild {
-                    Button {
-                        Task { await model.rebuildPersonalModel() }
-                    } label: {
-                        if model.isRebuildingPersonalModel {
-                            ProgressView()
-                                .controlSize(.small)
-                        } else {
-                            Label("重建个人模型", systemImage: "brain.head.profile")
-                        }
-                    }
-                    .disabled(
-                        model.isRebuildingPersonalModel
-                            || model.isRebuildingPersonalAdamWModel
-                            || model.isGeneratingPersonalLibrarySuggestions
-                    )
-                    .help("先在左侧选择要训练的标签；有多选时只使用选中照片上这些标签的确认样本，无多选时使用全库这些标签的全部确认样本。会自动为本批样本补齐本地 embedding（仅用本机预览）")
-                }
-
-                if model.supportsPersonalAdamWModelRebuild {
-                    Button {
-                        Task { await model.rebuildPersonalAdamWModel() }
-                    } label: {
-                        if model.isRebuildingPersonalAdamWModel {
-                            ProgressView()
-                                .controlSize(.small)
-                        } else {
-                            Label("训练超级个人模型", systemImage: "brain.head.profile.fill")
-                        }
-                    }
-                    .disabled(
-                        model.isRebuildingPersonalModel
-                            || model.isRebuildingPersonalAdamWModel
-                            || model.isGeneratingPersonalLibrarySuggestions
-                    )
-                    .help("先在左侧选择要训练的标签；冻结 DINO + AdamW 线性头，多 epoch / 早停；仍只要正样本。与人脑质心模型并存、互不覆盖。多选只限样本照片。")
-                }
-
-                if model.supportsAppPersonalSampleSuggestions {
-                    Button {
-                        Task { await model.generateAppPersonalSampleSuggestions() }
-                    } label: {
-                        if model.isGeneratingAppPersonalSampleSuggestions {
-                            ProgressView()
-                                .controlSize(.small)
-                        } else {
-                            Label(
-                                "抽 \(model.maxPendingSuggestionsPerTag) 张生成建议",
-                                systemImage: "wand.and.stars"
-                            )
-                        }
-                    }
-                    .disabled(!model.canGenerateAppPersonalSampleSuggestions)
-                    .help(
-                        "有多选时：对选中照片（最多 \(model.maxPendingSuggestionsPerTag) 张）生成建议；"
-                            + "无多选时：从库中抽最多 \(model.maxPendingSuggestionsPerTag) 张。"
-                            + "写入待审核队列后可用 P 接受 / X 拒绝"
-                    )
-                }
-
-                if model.supportsSelectedAssetEmbeddingCache {
-                    Button {
-                        Task { await model.cacheSelectedAssetEmbedding() }
-                    } label: {
-                        if model.isCachingSelectedAssetEmbedding {
-                            ProgressView()
-                                .controlSize(.small)
-                        } else {
-                            Label("准备选中照片特征", systemImage: "sparkles")
-                        }
-                    }
-                    .disabled(!model.canCacheSelectedAssetEmbedding)
-                    .help("为当前选中的照片生成或命中跳过本地模型缓存；重建个人模型会按选中/历史样本范围自行准备所需特征")
-                }
-
-                if model.supportsLibrarySlimming {
-                    Button {
-                        Task { await model.findLibrarySlimmingFromSelection() }
-                    } label: {
-                        Label("在图库瘦身中查找", systemImage: "square.stack.3d.up")
-                    }
-                    .disabled(!model.canFindLibrarySlimmingFromSelection)
-                    .help("以当前多选为种子，在图库（或当前筛选）中查找相同与相似照片")
-                }
-
-                filterMenu
-                sortMenu
-
-                if model.reviewMode == nil,
-                   !model.items.isEmpty || selection == .librarySlimming
-                {
-                    LibraryGridDensityPicker(
-                        selection: Binding(
-                            get: { model.gridDensity },
-                            set: { model.setGridDensity($0) }
-                        )
-                    )
-                }
-
-                Button {
-                    Task { await model.undoLastTagMutation() }
-                } label: {
-                    Label("撤销标签操作", systemImage: "arrow.uturn.backward")
-                }
-                .disabled(!model.canUndoTagMutation)
-
-                if model.canUndoReviewMutation {
-                    Button {
-                        Task { await model.undoLastReviewMutation() }
-                    } label: {
-                        Label("撤销审核操作", systemImage: "arrow.uturn.backward.circle")
-                    }
-                }
-
-                Button {
-                    Task { await model.connectFolder() }
-                } label: {
-                    Label("连接文件夹", systemImage: "folder.badge.plus")
-                }
-                .disabled(model.isBusy)
-
-                Button {
-                    Task { await model.exportPortableUserData() }
-                } label: {
-                    Label("导出用户数据", systemImage: "square.and.arrow.up")
-                }
-                .disabled(model.isBusy || model.isExportingPortableData)
-
-                Button {
-                    showPreviewCachePanel = true
-                    Task { await model.refreshPreviewCacheUsage() }
-                } label: {
-                    Label("预览缓存", systemImage: "internaldrive")
-                }
-                .popover(isPresented: $showPreviewCachePanel) {
-                    previewCachePanel
-                }
-
-                Button {
-                    activeSheet = .commandPalette
-                } label: {
-                    Label("命令", systemImage: "command")
-                }
-                .keyboardShortcut("k", modifiers: .command)
-                .help("打开命令面板（⌘K）")
-
-                Button {
-                    showJobActivityPanel = true
-                    Task { await model.refreshJobActivity() }
-                } label: {
-                    Label("活动", systemImage: "clock.arrow.circlepath")
-                }
-                .popover(isPresented: $showJobActivityPanel) {
-                    jobActivityPanel
-                }
-
-                Button {
-                    Task { await model.rescan() }
-                } label: {
-                    Label(model.rescanToolbarTitle, systemImage: "arrow.clockwise")
-                }
-                .disabled(model.isBusy || !model.canRescan)
+                libraryToolbarLayoutItems
+                libraryToolbarPersonalizationItems
+                libraryToolbarBrowseAndActionItems
             }
         }
         .toolbar(removing: .sidebarToggle)
@@ -7985,7 +8108,29 @@ struct LibraryWorkspaceView: View {
                             LibraryTagFlowLayout {
                                 ForEach(section.tags, id: \.id) { tag in
                                     tagRow(tag)
-                                        .draggable(tag.id.uuidString)
+                                        .background {
+                                            GeometryReader { proxy in
+                                                Color.clear.preference(
+                                                    key: LibraryTagChipFramePreferenceKey.self,
+                                                    value: [
+                                                        tag.id: proxy.frame(
+                                                            in: .named(Self.sourceReorderCoordinateSpace)
+                                                        ),
+                                                    ]
+                                                )
+                                            }
+                                        }
+                                        .overlay {
+                                            tagInsertionIndicator(for: tag.id, in: section)
+                                        }
+                                        .opacity(draggedTagID == tag.id ? 0.55 : 1)
+                                        .simultaneousGesture(
+                                            tagReorderGesture(
+                                                tagID: tag.id,
+                                                groupID: section.group.id,
+                                                tagIDs: section.tags.map(\.id)
+                                            )
+                                        )
                                 }
                             }
                         }
@@ -7993,21 +8138,23 @@ struct LibraryWorkspaceView: View {
                     .padding(.vertical, 3)
                     .padding(4)
                     .background {
-                        if tagDropTargetGroupID == section.group.id {
-                            RoundedRectangle(cornerRadius: 8)
-                                .fill(Color.accentColor.opacity(0.12))
+                        GeometryReader { proxy in
+                            Color.clear
+                                .preference(
+                                    key: LibraryTagGroupContainerFramePreferenceKey.self,
+                                    value: [
+                                        section.group.id: proxy.frame(
+                                            in: .named(Self.sourceReorderCoordinateSpace)
+                                        ),
+                                    ]
+                                )
+                                .overlay {
+                                    if tagDropTargetGroupID == section.group.id {
+                                        RoundedRectangle(cornerRadius: 8)
+                                            .fill(Color.accentColor.opacity(0.12))
+                                    }
+                                }
                         }
-                    }
-                    .dropDestination(for: String.self) { items, _ in
-                        tagDropTargetGroupID = nil
-                        guard let raw = items.first,
-                              let tagID = UUID(uuidString: raw)
-                        else {
-                            return false
-                        }
-                        return model.acceptAndEnqueueMoveTag(tagID, toGroupID: section.group.id)
-                    } isTargeted: { targeted in
-                        tagDropTargetGroupID = targeted ? section.group.id : nil
                     }
                 }
                 Button {
@@ -8035,8 +8182,15 @@ struct LibraryWorkspaceView: View {
             }
         }
         .coordinateSpace(name: Self.sourceReorderCoordinateSpace)
+        .coordinateSpace(name: Self.sourceReorderCoordinateSpace)
         .onPreferenceChange(LibrarySourceRowFramePreferenceKey.self) { frames in
             sourceRowFrames = frames
+        }
+        .onPreferenceChange(LibraryTagChipFramePreferenceKey.self) { frames in
+            tagChipFrames = frames
+        }
+        .onPreferenceChange(LibraryTagGroupContainerFramePreferenceKey.self) { frames in
+            tagGroupContainerFrames = frames
         }
         .listStyle(.sidebar)
         .navigationTitle("ImageAll")
@@ -8075,6 +8229,101 @@ struct LibraryWorkspaceView: View {
                 fromOffsets: IndexSet(integer: move.sourceOffset),
                 toOffset: move.destinationOffset
             )
+        }
+    }
+
+    private func tagReorderGesture(
+        tagID: UUID,
+        groupID: UUID,
+        tagIDs: [UUID]
+    ) -> some Gesture {
+        DragGesture(
+            minimumDistance: 12,
+            coordinateSpace: .named(Self.sourceReorderCoordinateSpace)
+        )
+        .onChanged { value in
+            draggedTagID = tagID
+            draggedTagGroupID = groupID
+            let pointer = value.location
+            if let targetGroupID = LibraryTagReorderLayout.targetGroupID(
+                pointer: pointer,
+                groupFrames: tagGroupContainerFrames
+            ) {
+                tagDropTargetGroupID = targetGroupID
+                if targetGroupID != groupID {
+                    tagInsertionGroupID = nil
+                    tagInsertionOffset = nil
+                    return
+                }
+            }
+            let visibleTagIDs = tagIDs.filter { tagChipFrames[$0] != nil }
+            guard visibleTagIDs.count == tagIDs.count else { return }
+            tagInsertionGroupID = groupID
+            tagInsertionOffset = LibraryTagReorderLayout.destinationOffset(
+                pointer: pointer,
+                tagIDs: tagIDs,
+                frames: tagChipFrames
+            )
+        }
+        .onEnded { value in
+            defer {
+                draggedTagID = nil
+                draggedTagGroupID = nil
+                tagInsertionOffset = nil
+                tagInsertionGroupID = nil
+                tagDropTargetGroupID = nil
+            }
+            let pointer = value.location
+            if let targetGroupID = LibraryTagReorderLayout.targetGroupID(
+                pointer: pointer,
+                groupFrames: tagGroupContainerFrames
+            ), targetGroupID != groupID {
+                _ = model.acceptAndEnqueueMoveTag(tagID, toGroupID: targetGroupID)
+                return
+            }
+            guard let move = LibraryTagReorderLayout.moveRequest(
+                tagID: tagID,
+                pointer: pointer,
+                tagIDs: tagIDs,
+                frames: tagChipFrames
+            ) else { return }
+            model.moveTags(
+                in: groupID,
+                fromOffsets: IndexSet(integer: move.sourceOffset),
+                toOffset: move.destinationOffset
+            )
+        }
+    }
+
+    @ViewBuilder
+    private func tagInsertionIndicator(
+        for tagID: UUID,
+        in section: LibraryTagGroupSection
+    ) -> some View {
+        if draggedTagGroupID == section.group.id,
+           tagInsertionGroupID == section.group.id,
+           let insertionOffset = tagInsertionOffset,
+           let tagIndex = section.tags.firstIndex(where: { $0.id == tagID })
+        {
+            if insertionOffset == tagIndex {
+                HStack(spacing: 0) {
+                    Capsule()
+                        .fill(Color.accentColor)
+                        .frame(width: 3)
+                    Spacer(minLength: 0)
+                }
+                .allowsHitTesting(false)
+            } else if tagIndex == section.tags.count - 1,
+                      insertionOffset == section.tags.count
+            {
+                HStack(spacing: 0) {
+                    Spacer(minLength: 0)
+                    Capsule()
+                        .fill(Color.accentColor)
+                        .frame(width: 3)
+                }
+                .allowsHitTesting(false)
+            }
         }
     }
 
@@ -8763,6 +9012,343 @@ struct LibraryWorkspaceView: View {
         .font(.caption)
     }
 
+    @ViewBuilder
+    private var libraryToolbarLayoutItems: some View {
+        Button {
+            layoutState.toggleSidebar()
+        } label: {
+            LibraryToolbarLabel(
+                title: layoutState.isSidebarPresented ? "隐藏侧栏" : "显示侧栏",
+                systemImage: "sidebar.left",
+                displayMode: toolbarDisplayModeSettings.displayMode
+            )
+        }
+        .libraryToolbarHelp(
+            layoutState.isSidebarPresented ? "隐藏侧栏" : "显示侧栏",
+            detail: "显示或隐藏左侧边栏，包含来源、标签分组与导航。"
+        )
+
+        Button {
+            layoutState.toggleInspector()
+        } label: {
+            LibraryToolbarLabel(
+                title: layoutState.isInspectorPresented ? "隐藏检查器" : "显示检查器",
+                systemImage: "sidebar.right",
+                displayMode: toolbarDisplayModeSettings.displayMode
+            )
+        }
+        .libraryToolbarHelp(
+            layoutState.isInspectorPresented ? "隐藏检查器" : "显示检查器",
+            detail: "显示或隐藏右侧检查器，查看选中照片的详情、标签与操作。"
+        )
+
+        if model.isCatalogScanning {
+            HStack(spacing: 6) {
+                if let progress = model.catalogReconcileProgress,
+                   let total = progress.total,
+                   total > 0
+                {
+                    ProgressView(value: Double(progress.completed), total: Double(total))
+                        .frame(width: 42)
+                        .controlSize(.small)
+                } else {
+                    ProgressView()
+                        .controlSize(.small)
+                }
+                Text(catalogProgressTitle(model.catalogReconcileProgress))
+                    .font(.caption)
+            }
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel(catalogProgressTitle(model.catalogReconcileProgress))
+        }
+
+        if let progress = model.sourceThumbnailPrewarmProgress {
+            HStack(spacing: 6) {
+                if progress.total > 0 {
+                    ProgressView(
+                        value: Double(progress.completed),
+                        total: Double(progress.total)
+                    )
+                    .frame(width: 42)
+                    .controlSize(.small)
+                } else {
+                    ProgressView()
+                        .controlSize(.small)
+                }
+                Text(sourceThumbnailPrewarmTitle(progress))
+                    .font(.caption)
+                    .lineLimit(1)
+                Button("取消") {
+                    model.cancelSourceThumbnailPrewarm()
+                }
+                .controlSize(.small)
+            }
+            .accessibilityElement(children: .combine)
+            .accessibilityIdentifier("sourceThumbnailPrewarmProgress")
+            .accessibilityLabel(sourceThumbnailPrewarmTitle(progress))
+        }
+    }
+
+    @ViewBuilder
+    private var libraryToolbarPersonalizationItems: some View {
+        if model.supportsPersonalModelRebuild {
+            Button {
+                Task { await model.rebuildPersonalModel() }
+            } label: {
+                if model.isRebuildingPersonalModel {
+                    ProgressView()
+                        .controlSize(.small)
+                } else {
+                    LibraryToolbarLabel(
+                        title: "重建个人模型",
+                        systemImage: "brain.head.profile",
+                        displayMode: toolbarDisplayModeSettings.displayMode
+                    )
+                }
+            }
+            .disabled(
+                model.isRebuildingPersonalModel
+                    || model.isRebuildingPersonalAdamWModel
+                    || model.isGeneratingPersonalLibrarySuggestions
+            )
+            .libraryToolbarHelp(
+                "重建个人模型",
+                detail: "先在左侧选择要训练的标签；有多选时只使用选中照片上这些标签的确认样本，无多选时使用全库这些标签的全部确认样本。会自动为本批样本补齐本地 embedding（仅用本机预览）。"
+            )
+        }
+
+        if model.supportsPersonalAdamWModelRebuild {
+            Button {
+                Task { await model.rebuildPersonalAdamWModel() }
+            } label: {
+                if model.isRebuildingPersonalAdamWModel {
+                    ProgressView()
+                        .controlSize(.small)
+                } else {
+                    LibraryToolbarLabel(
+                        title: "训练超级个人模型",
+                        systemImage: "brain.head.profile.fill",
+                        displayMode: toolbarDisplayModeSettings.displayMode
+                    )
+                }
+            }
+            .disabled(
+                model.isRebuildingPersonalModel
+                    || model.isRebuildingPersonalAdamWModel
+                    || model.isGeneratingPersonalLibrarySuggestions
+            )
+            .libraryToolbarHelp(
+                "训练超级个人模型",
+                detail: "先在左侧选择要训练的标签；冻结 DINO + AdamW 线性头，多 epoch / 早停；仍只要正样本。与人脑质心模型并存、互不覆盖。多选只限样本照片。"
+            )
+        }
+
+        if model.supportsAppPersonalSampleSuggestions {
+            Button {
+                Task { await model.generateAppPersonalSampleSuggestions() }
+            } label: {
+                if model.isGeneratingAppPersonalSampleSuggestions {
+                    ProgressView()
+                        .controlSize(.small)
+                } else {
+                    LibraryToolbarLabel(
+                        title: "抽 \(model.maxPendingSuggestionsPerTag) 张生成建议",
+                        systemImage: "wand.and.stars",
+                        displayMode: toolbarDisplayModeSettings.displayMode
+                    )
+                }
+            }
+            .disabled(!model.canGenerateAppPersonalSampleSuggestions)
+            .libraryToolbarHelp(
+                "生成建议",
+                detail: "有多选时：对选中照片（最多 \(model.maxPendingSuggestionsPerTag) 张）生成建议；"
+                    + "无多选时：从库中抽最多 \(model.maxPendingSuggestionsPerTag) 张。"
+                    + "写入待审核队列后可用 P 接受 / X 拒绝。"
+            )
+        }
+
+        if model.supportsSelectedAssetEmbeddingCache {
+            Button {
+                Task { await model.cacheSelectedAssetEmbedding() }
+            } label: {
+                if model.isCachingSelectedAssetEmbedding {
+                    ProgressView()
+                        .controlSize(.small)
+                } else {
+                    LibraryToolbarLabel(
+                        title: "准备选中照片特征",
+                        systemImage: "sparkles",
+                        displayMode: toolbarDisplayModeSettings.displayMode
+                    )
+                }
+            }
+            .disabled(!model.canCacheSelectedAssetEmbedding)
+            .libraryToolbarHelp(
+                "准备选中照片特征",
+                detail: "为当前选中的照片生成或命中跳过本地模型缓存；重建个人模型会按选中/历史样本范围自行准备所需特征。"
+            )
+        }
+
+        if model.supportsLibrarySlimming {
+            Button {
+                Task { await model.findLibrarySlimmingFromSelection() }
+            } label: {
+                LibraryToolbarLabel(
+                    title: "在图库瘦身中查找",
+                    systemImage: "square.stack.3d.up",
+                    displayMode: toolbarDisplayModeSettings.displayMode
+                )
+            }
+            .disabled(!model.canFindLibrarySlimmingFromSelection)
+            .libraryToolbarHelp(
+                "在图库瘦身中查找",
+                detail: "以当前多选为种子，在图库（或当前筛选）中查找相同与相似照片。"
+            )
+        }
+    }
+
+    @ViewBuilder
+    private var libraryToolbarBrowseAndActionItems: some View {
+        filterMenu
+        sortMenu
+
+        if model.reviewMode == nil,
+           !model.items.isEmpty || selection == .librarySlimming
+        {
+            LibraryGridDensityPicker(
+                selection: Binding(
+                    get: { model.gridDensity },
+                    set: { model.setGridDensity($0) }
+                ),
+                displayMode: toolbarDisplayModeSettings.displayMode
+            )
+        }
+
+        Button {
+            Task { await model.undoLastTagMutation() }
+        } label: {
+            LibraryToolbarLabel(
+                title: "撤销标签操作",
+                systemImage: "arrow.uturn.backward",
+                displayMode: toolbarDisplayModeSettings.displayMode
+            )
+        }
+        .disabled(!model.canUndoTagMutation)
+        .libraryToolbarHelp(
+            "撤销标签操作",
+            detail: "撤销最近一次对标签的创建、确认、拒绝或清除操作。"
+        )
+
+        if model.canUndoReviewMutation {
+            Button {
+                Task { await model.undoLastReviewMutation() }
+            } label: {
+                LibraryToolbarLabel(
+                    title: "撤销审核操作",
+                    systemImage: "arrow.uturn.backward.circle",
+                    displayMode: toolbarDisplayModeSettings.displayMode
+                )
+            }
+            .libraryToolbarHelp(
+                "撤销审核操作",
+                detail: "撤销最近一次在审核队列中的接受或拒绝操作。"
+            )
+        }
+
+        Button {
+            Task { await model.connectFolder() }
+        } label: {
+            LibraryToolbarLabel(
+                title: "连接文件夹",
+                systemImage: "folder.badge.plus",
+                displayMode: toolbarDisplayModeSettings.displayMode
+            )
+        }
+        .disabled(model.isBusy)
+        .libraryToolbarHelp(
+            "连接文件夹",
+            detail: "选择本地文件夹作为新的照片来源；ImageAll 会索引其中的照片，不会修改原文件。"
+        )
+
+        Button {
+            Task { await model.exportPortableUserData() }
+        } label: {
+            LibraryToolbarLabel(
+                title: "导出用户数据",
+                systemImage: "square.and.arrow.up",
+                displayMode: toolbarDisplayModeSettings.displayMode
+            )
+        }
+        .disabled(model.isBusy || model.isExportingPortableData)
+        .libraryToolbarHelp(
+            "导出用户数据",
+            detail: "导出标签、审核记录与个人模型等用户数据，便于备份或迁移。"
+        )
+
+        Button {
+            showPreviewCachePanel = true
+            Task { await model.refreshPreviewCacheUsage() }
+        } label: {
+            LibraryToolbarLabel(
+                title: "预览缓存",
+                systemImage: "internaldrive",
+                displayMode: toolbarDisplayModeSettings.displayMode
+            )
+        }
+        .popover(isPresented: $showPreviewCachePanel) {
+            previewCachePanel
+        }
+        .libraryToolbarHelp(
+            "预览缓存",
+            detail: "查看预览缓存占用空间，并可清理不再需要的缓存文件。"
+        )
+
+        Button {
+            activeSheet = .commandPalette
+        } label: {
+            LibraryToolbarLabel(
+                title: "命令",
+                systemImage: "command",
+                displayMode: toolbarDisplayModeSettings.displayMode
+            )
+        }
+        .keyboardShortcut("k", modifiers: .command)
+        .libraryToolbarHelp("命令", detail: "打开命令面板，快速执行导航与操作（⌘K）。")
+
+        Button {
+            showJobActivityPanel = true
+            Task { await model.refreshJobActivity() }
+        } label: {
+            LibraryToolbarLabel(
+                title: "活动",
+                systemImage: "clock.arrow.circlepath",
+                displayMode: toolbarDisplayModeSettings.displayMode
+            )
+        }
+        .popover(isPresented: $showJobActivityPanel) {
+            jobActivityPanel
+        }
+        .libraryToolbarHelp(
+            "活动",
+            detail: "查看后台任务进度，例如扫描、建议生成与个人模型训练。"
+        )
+
+        Button {
+            Task { await model.rescan() }
+        } label: {
+            LibraryToolbarLabel(
+                title: model.rescanToolbarTitle,
+                systemImage: "arrow.clockwise",
+                displayMode: toolbarDisplayModeSettings.displayMode
+            )
+        }
+        .disabled(model.isBusy || !model.canRescan)
+        .libraryToolbarHelp(
+            model.rescanToolbarTitle,
+            detail: "重新扫描当前来源或同步 Apple Photos，更新索引与可用状态。"
+        )
+    }
+
     private var filterMenu: some View {
         Menu {
             Button {
@@ -8850,11 +9436,26 @@ struct LibraryWorkspaceView: View {
                 }
             }
         } label: {
-            Label(
-                filterMenuTitle,
-                systemImage: activeFilterCount == 0 ? "line.3.horizontal.decrease.circle" : "line.3.horizontal.decrease.circle.fill"
-            )
+            switch toolbarDisplayModeSettings.displayMode {
+            case .iconOnly:
+                Image(
+                    systemName: activeFilterCount == 0
+                        ? "line.3.horizontal.decrease.circle"
+                        : "line.3.horizontal.decrease.circle.fill"
+                )
+            case .iconAndTitle:
+                Label(
+                    filterMenuTitle,
+                    systemImage: activeFilterCount == 0
+                        ? "line.3.horizontal.decrease.circle"
+                        : "line.3.horizontal.decrease.circle.fill"
+                )
+            }
         }
+        .libraryToolbarHelp(
+            "筛选",
+            detail: "按标签、可用状态与文件格式筛选当前照片列表。"
+        )
     }
 
     private var filterMenuTitle: String {
@@ -8901,9 +9502,17 @@ struct LibraryWorkspaceView: View {
             sortButton(.oldest, title: "最早优先")
             sortButton(.fileNameAscending, title: "文件名升序")
         } label: {
-            Label(sortTitle(model.sort), systemImage: "arrow.up.arrow.down")
+            switch toolbarDisplayModeSettings.displayMode {
+            case .iconOnly:
+                Image(systemName: "arrow.up.arrow.down")
+            case .iconAndTitle:
+                Label(sortTitle(model.sort), systemImage: "arrow.up.arrow.down")
+            }
         }
-        .help("更改照片排序")
+        .libraryToolbarHelp(
+            "排序",
+            detail: "更改照片列表的排序方式：最新优先、最早优先或文件名升序。"
+        )
     }
 
     private func sortButton(_ sort: AssetPageSort, title: String) -> some View {

@@ -282,6 +282,11 @@
 		IP0000010000000000000002 /* UserDefaultsIdleThumbnailPrewarmPreferenceStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = IP0001010000000000000002 /* UserDefaultsIdleThumbnailPrewarmPreferenceStore.swift */; };
 		IP0000010000000000000003 /* IdleThumbnailPrewarmController.swift in Sources */ = {isa = PBXBuildFile; fileRef = IP0001010000000000000003 /* IdleThumbnailPrewarmController.swift */; };
 		IP0000010000000000000004 /* IdleThumbnailPrewarmSettingsModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = IP0001010000000000000004 /* IdleThumbnailPrewarmSettingsModel.swift */; };
+		TD0000010000000000000001 /* ToolbarDisplayModeContracts.swift in Sources */ = {isa = PBXBuildFile; fileRef = TD0001010000000000000001 /* ToolbarDisplayModeContracts.swift */; };
+		TD0000010000000000000002 /* UserDefaultsToolbarDisplayModePreferenceStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = TD0001010000000000000002 /* UserDefaultsToolbarDisplayModePreferenceStore.swift */; };
+		TD0000010000000000000003 /* ToolbarDisplayModeSettingsModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = TD0001010000000000000003 /* ToolbarDisplayModeSettingsModel.swift */; };
+		TD0000010000000000000004 /* LibraryToolbarItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = TD0001010000000000000004 /* LibraryToolbarItem.swift */; };
+		TD0000010000000000000101 /* ToolbarDisplayModeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = TD0001010000000000000101 /* ToolbarDisplayModeTests.swift */; };
 		IP0000010000000000000101 /* IdleThumbnailPrewarmTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = IP0001010000000000000101 /* IdleThumbnailPrewarmTests.swift */; };
 		IP0000010000000000000102 /* SourceThumbnailPrewarmTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = IP0001010000000000000102 /* SourceThumbnailPrewarmTests.swift */; };
 		CM0000010000000000000201 /* DINOv2Small in Resources */ = {isa = PBXBuildFile; fileRef = CM0001010000000000000201 /* DINOv2Small */; };
@@ -584,6 +589,11 @@
 		IP0001010000000000000002 /* UserDefaultsIdleThumbnailPrewarmPreferenceStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UserDefaultsIdleThumbnailPrewarmPreferenceStore.swift; sourceTree = "<group>"; };
 		IP0001010000000000000003 /* IdleThumbnailPrewarmController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IdleThumbnailPrewarmController.swift; sourceTree = "<group>"; };
 		IP0001010000000000000004 /* IdleThumbnailPrewarmSettingsModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IdleThumbnailPrewarmSettingsModel.swift; sourceTree = "<group>"; };
+		TD0001010000000000000001 /* ToolbarDisplayModeContracts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ToolbarDisplayModeContracts.swift; sourceTree = "<group>"; };
+		TD0001010000000000000002 /* UserDefaultsToolbarDisplayModePreferenceStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UserDefaultsToolbarDisplayModePreferenceStore.swift; sourceTree = "<group>"; };
+		TD0001010000000000000003 /* ToolbarDisplayModeSettingsModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ToolbarDisplayModeSettingsModel.swift; sourceTree = "<group>"; };
+		TD0001010000000000000004 /* LibraryToolbarItem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryToolbarItem.swift; sourceTree = "<group>"; };
+		TD0001010000000000000101 /* ToolbarDisplayModeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ToolbarDisplayModeTests.swift; sourceTree = "<group>"; };
 		IP0001010000000000000101 /* IdleThumbnailPrewarmTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IdleThumbnailPrewarmTests.swift; sourceTree = "<group>"; };
 		IP0001010000000000000102 /* SourceThumbnailPrewarmTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SourceThumbnailPrewarmTests.swift; sourceTree = "<group>"; };
 		CM0001010000000000000201 /* DINOv2Small */ = {isa = PBXFileReference; lastKnownFileType = folder; path = Resources/Models/DINOv2Small; sourceTree = "<group>"; };
@@ -658,6 +668,7 @@
 				OO0006010000000000000003 /* Photos */,
 				JJ0001010000000000000101 /* LibraryWorkspaceModelTests.swift */,
 				IP0001010000000000000101 /* IdleThumbnailPrewarmTests.swift */,
+				TD0001010000000000000101 /* ToolbarDisplayModeTests.swift */,
 				IP0001010000000000000102 /* SourceThumbnailPrewarmTests.swift */,
 				KK0006010000000000000003 /* Personalization */,
 				AA0006010000000000000008 /* Startup */,
@@ -750,6 +761,8 @@
 				CM0001010000000000000005 /* AppModelSettingsView.swift */,
 				IP0001010000000000000003 /* IdleThumbnailPrewarmController.swift */,
 				IP0001010000000000000004 /* IdleThumbnailPrewarmSettingsModel.swift */,
+				TD0001010000000000000003 /* ToolbarDisplayModeSettingsModel.swift */,
+				TD0001010000000000000004 /* LibraryToolbarItem.swift */,
 				AA0001010000000000000002 /* RootView.swift */,
 				JJ0001010000000000000002 /* LibraryWorkspace.swift */,
 				PP0001010000000000000001 /* LibraryGridMarqueeSelection.swift */,
@@ -802,6 +815,7 @@
 				FF0001010000000000000002 /* AssetCatalogQueryPort.swift */,
 				JJ0001010000000000000001 /* LibraryWorkspacePort.swift */,
 				IP0001010000000000000001 /* IdleThumbnailPrewarmContracts.swift */,
+				TD0001010000000000000001 /* ToolbarDisplayModeContracts.swift */,
 				FF0001010000000000000003 /* TagCatalogTypes.swift */,
 				FF0001010000000000000004 /* TagCatalogQueryPort.swift */,
 				FF0001010000000000000005 /* TagDecisionCommandPort.swift */,
@@ -952,6 +966,7 @@
 			children = (
 				JJ0001010000000000000003 /* ProductionLibraryWorkspaceService.swift */,
 				IP0001010000000000000002 /* UserDefaultsIdleThumbnailPrewarmPreferenceStore.swift */,
+				TD0001010000000000000002 /* UserDefaultsToolbarDisplayModePreferenceStore.swift */,
 				FF0001010000000000000007 /* CatalogQuerySQLHelpers.swift */,
 				FF000101000000000000000F /* CatalogQueryErrorMapping.swift */,
 				FF0001010000000000000008 /* GRDBAssetCatalogQueryRepository.swift */,
@@ -1440,6 +1455,10 @@
 				CM0000010000000000000005 /* AppModelSettingsView.swift in Sources */,
 				IP0000010000000000000003 /* IdleThumbnailPrewarmController.swift in Sources */,
 				IP0000010000000000000004 /* IdleThumbnailPrewarmSettingsModel.swift in Sources */,
+				TD0000010000000000000001 /* ToolbarDisplayModeContracts.swift in Sources */,
+				TD0000010000000000000002 /* UserDefaultsToolbarDisplayModePreferenceStore.swift in Sources */,
+				TD0000010000000000000003 /* ToolbarDisplayModeSettingsModel.swift in Sources */,
+				TD0000010000000000000004 /* LibraryToolbarItem.swift in Sources */,
 				IP0000010000000000000001 /* IdleThumbnailPrewarmContracts.swift in Sources */,
 				IP0000010000000000000002 /* UserDefaultsIdleThumbnailPrewarmPreferenceStore.swift in Sources */,
 				CM0000010000000000000006 /* AppCoreMLEmbeddingCache.swift in Sources */,
@@ -1641,6 +1660,7 @@
 				ST0000010000000000000003 /* SuggestionThresholdTests.swift in Sources */,
 				JJ0000010000000000000101 /* LibraryWorkspaceModelTests.swift in Sources */,
 				IP0000010000000000000101 /* IdleThumbnailPrewarmTests.swift in Sources */,
+				TD0000010000000000000101 /* ToolbarDisplayModeTests.swift in Sources */,
 				IP0000010000000000000102 /* SourceThumbnailPrewarmTests.swift in Sources */,
 				AA0000010000000000000005 /* CompositionRootTests.swift in Sources */,
 				EE0000010000000000000101 /* StartupTestSupport.swift in Sources */,

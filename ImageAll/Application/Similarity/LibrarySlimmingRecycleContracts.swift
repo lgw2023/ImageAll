@@ -117,3 +117,7 @@ extension LibrarySlimmingRecyclePort {
         try moveAssetsToRecycle(assetIDs: assetIDs)
     }
 }
+
+protocol LibrarySlimmingRecycleConfirmationPreferenceStore: Sendable {
+    var skipsMoveConfirmation: Bool { get nonmutating set }
+}

@@ -3970,6 +3970,57 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertTrue(model.canMoveSelectedLibrarySlimmingMembersToRecycle)
     }
 
+    func testLibrarySlimmingMoveToRecycleConfirmationPreferenceSkipsDialog() async {
+        let defaults = UserDefaults(suiteName: "LibrarySlimmingMoveToRecycleConfirmationPreferenceSkipsDialog")!
+        defaults.removePersistentDomain(forName: "LibrarySlimmingMoveToRecycleConfirmationPreferenceSkipsDialog")
+        let preferences = UserDefaultsLibrarySlimmingRecycleConfirmationPreferenceStore(defaults: defaults)
+        XCTAssertFalse(preferences.skipsMoveConfirmation)
+
+        let sourceID = UUID()
+        let asset = Self.makeAsset(sourceID: sourceID, fileName: "gallery.jpg")
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: sourceID,
+                displayName: "Fixture",
+                state: .active
+            ),
+            reconciledItems: [asset],
+            initialItems: [asset]
+        )
+        let a = UUID(uuidString: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")!
+        let b = UUID(uuidString: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")!
+        let cluster = SlimmingCluster(
+            id: UUID(),
+            kind: .nearDuplicateScene,
+            memberAssetIDs: [a, b],
+            representativeAssetID: a,
+            score: 0.95,
+            modelIdentity: .featurePrintOnly
+        )
+        let stub = StubLibrarySlimmingScanPort()
+        stub.seedClusters = [cluster]
+        let recycle = FakeLibrarySlimmingRecyclePort()
+        let model = LibraryWorkspaceModel(
+            service: service,
+            librarySlimming: stub,
+            librarySlimmingRecycle: recycle,
+            librarySlimmingRecycleConfirmationPreferences: preferences
+        )
+        await model.start()
+        await model.connectFolder()
+        await waitForCatalogScanToFinish(model)
+        await model.selectAssets(Set([asset.assetID]), additive: false)
+        await model.findLibrarySlimmingFromSelection()
+        await model.analyzeLibrarySlimming(mode: .seeds)
+        model.selectLibrarySlimmingCluster(cluster.id)
+        model.selectLibrarySlimmingMember(a, additive: false)
+
+        preferences.skipsMoveConfirmation = true
+        XCTAssertTrue(model.skipsLibrarySlimmingMoveToRecycleConfirmation)
+        await model.moveSelectedLibrarySlimmingMembersToRecycle()
+        XCTAssertEqual(recycle.moveAssetIDCalls, [[a]])
+    }
+
     func testAnalyzeLibrarySlimmingCurrentFilterUsesResolvedAssetIDs() async {
         let sourceID = UUID()
         let assetA = Self.makeAsset(sourceID: sourceID, fileName: "beach-a.jpg")
@@ -6080,6 +6131,129 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         )
 
         XCTAssertEqual(preferences.ordered([first, second, third]).map(\.id), [third.id, first.id, second.id])
+    }
+
+    func testTagOrderPreferencesPersistManualDragOrderAndAppendNewTags() {
+        let suiteName = "ImageAllTests.TagOrder.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let groupID = TagGroupSeed.food.id
+        let first = TagListItem(id: UUID(), displayName: "一", state: .active, groupID: groupID)
+        let second = TagListItem(id: UUID(), displayName: "二", state: .active, groupID: groupID)
+        let third = TagListItem(id: UUID(), displayName: "三", state: .active, groupID: groupID)
+        let later = TagListItem(id: UUID(), displayName: "四", state: .active, groupID: groupID)
+
+        let preferences = LibraryTagOrderPreferences(defaults: defaults)
+        preferences.move(
+            fromOffsets: IndexSet(integer: 2),
+            toOffset: 0,
+            tags: [first, second, third],
+            in: groupID
+        )
+
+        let reopened = LibraryTagOrderPreferences(defaults: defaults)
+        XCTAssertEqual(
+            reopened.ordered([first, second, third, later], in: groupID).map(\.id),
+            [third.id, first.id, second.id, later.id]
+        )
+    }
+
+    func testTagOrderPreferencesMoveListOffsetsToTail() {
+        let suiteName = "ImageAllTests.TagOrderTail.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let groupID = TagGroupSeed.placesAndScenes.id
+        let first = TagListItem(id: UUID(), displayName: "一", state: .active, groupID: groupID)
+        let second = TagListItem(id: UUID(), displayName: "二", state: .active, groupID: groupID)
+        let third = TagListItem(id: UUID(), displayName: "三", state: .active, groupID: groupID)
+        let preferences = LibraryTagOrderPreferences(defaults: defaults)
+
+        preferences.move(
+            fromOffsets: IndexSet(integer: 0),
+            toOffset: 3,
+            tags: [first, second, third],
+            in: groupID
+        )
+
+        XCTAssertEqual(
+            preferences.ordered([first, second, third], in: groupID).map(\.id),
+            [second.id, third.id, first.id]
+        )
+    }
+
+    func testTagReorderLayoutResolvesWrappedFlowInsertion() {
+        let firstID = UUID()
+        let secondID = UUID()
+        let thirdID = UUID()
+        let tagIDs = [firstID, secondID, thirdID]
+        let frames: [UUID: CGRect] = [
+            firstID: CGRect(x: 0, y: 0, width: 80, height: 28),
+            secondID: CGRect(x: 86, y: 0, width: 80, height: 28),
+            thirdID: CGRect(x: 0, y: 34, width: 80, height: 28),
+        ]
+
+        XCTAssertEqual(
+            LibraryTagReorderLayout.destinationOffset(
+                pointer: CGPoint(x: 40, y: 10),
+                tagIDs: tagIDs,
+                frames: frames
+            ),
+            0
+        )
+        XCTAssertEqual(
+            LibraryTagReorderLayout.destinationOffset(
+                pointer: CGPoint(x: 120, y: 10),
+                tagIDs: tagIDs,
+                frames: frames
+            ),
+            1
+        )
+        XCTAssertEqual(
+            LibraryTagReorderLayout.destinationOffset(
+                pointer: CGPoint(x: 40, y: 48),
+                tagIDs: tagIDs,
+                frames: frames
+            ),
+            2
+        )
+        XCTAssertEqual(
+            LibraryTagReorderLayout.destinationOffset(
+                pointer: CGPoint(x: 120, y: 48),
+                tagIDs: tagIDs,
+                frames: frames
+            ),
+            3
+        )
+    }
+
+    func testTagReorderLayoutResolvesMoveFromGestureEndLocation() {
+        let firstID = UUID()
+        let secondID = UUID()
+        let thirdID = UUID()
+        let tagIDs = [firstID, secondID, thirdID]
+        let frames: [UUID: CGRect] = [
+            firstID: CGRect(x: 0, y: 0, width: 80, height: 28),
+            secondID: CGRect(x: 86, y: 0, width: 80, height: 28),
+            thirdID: CGRect(x: 0, y: 34, width: 80, height: 28),
+        ]
+
+        XCTAssertEqual(
+            LibraryTagReorderLayout.moveRequest(
+                tagID: firstID,
+                pointer: CGPoint(x: 120, y: 10),
+                tagIDs: tagIDs,
+                frames: frames
+            )?.destinationOffset,
+            1
+        )
+        XCTAssertNil(
+            LibraryTagReorderLayout.moveRequest(
+                tagID: secondID,
+                pointer: CGPoint(x: 100, y: 10),
+                tagIDs: tagIDs,
+                frames: frames
+            )
+        )
     }
 
     func testSourceReorderLayoutResolvesHeadGapsAndTailFromRowMidpoints() {

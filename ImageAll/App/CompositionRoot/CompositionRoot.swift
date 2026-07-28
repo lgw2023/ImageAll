@@ -390,6 +390,7 @@ struct CompositionRoot {
             appPersonalModelRebuilder: appPersonalModelRebuilder,
             appPersonalAdamWModelRebuilder: appPersonalAdamWModelRebuilder,
             selectedAssetEmbeddingCache: selectedAssetEmbeddingCache,
+            idleFeaturePrintCache: featurePrintService,
             appPersonalSampleSuggester: appPersonalSampleSuggester,
             appPersonalTagLibrarySuggester: appPersonalTagLibrarySuggester,
             appPersonalAdamWTagLibrarySuggester: appPersonalAdamWTagLibrarySuggester,

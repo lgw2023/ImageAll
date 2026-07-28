@@ -1,7 +1,7 @@
 import AppKit
 import Foundation
 
-/// Watches for user inactivity and runs a low-priority thumbnail prewarm callback.
+/// Watches for user inactivity and runs a low-priority cache prewarm callback.
 @MainActor
 final class IdleThumbnailPrewarmController {
     private let preferenceStore: any IdleThumbnailPrewarmPreferenceStore

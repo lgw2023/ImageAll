@@ -1028,3 +1028,22 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
         }
     }
 }
+
+final class UserDefaultsLibrarySlimmingRecycleConfirmationPreferenceStore:
+    LibrarySlimmingRecycleConfirmationPreferenceStore,
+    @unchecked Sendable
+{
+    private static let skipsMoveConfirmationKey =
+        "library.slimming.recycle.skip-move-confirmation"
+
+    private let defaults: UserDefaults
+
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+    }
+
+    var skipsMoveConfirmation: Bool {
+        get { defaults.bool(forKey: Self.skipsMoveConfirmationKey) }
+        set { defaults.set(newValue, forKey: Self.skipsMoveConfirmationKey) }
+    }
+}

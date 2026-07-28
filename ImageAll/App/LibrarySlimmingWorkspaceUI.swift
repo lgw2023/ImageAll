@@ -85,10 +85,28 @@ struct LibrarySlimmingAnalysisJobPresentation: Identifiable, Equatable, Sendable
         if hasResult {
             parts.append("\(clusterCount) 个簇")
         }
-        if let total = progress.total, total > 0, state == .running || state == .paused {
-            parts.append("\(progress.completed)/\(total)")
+        if let progressCaption = scanProgressCaption {
+            parts.append(progressCaption)
         }
         return parts.joined(separator: " · ")
+    }
+
+    private var scanProgressCaption: String? {
+        guard memberCount > 0,
+              let progressTotal = progress.total,
+              progressTotal > 0,
+              state == .running || state == .paused || state == .pending
+        else {
+            return nil
+        }
+        guard let mapped = LibrarySlimmingJobProgressPresentation.scanProgress(
+            completed: progress.completed,
+            progressTotal: progressTotal,
+            memberCount: memberCount
+        ) else {
+            return nil
+        }
+        return "\(mapped.completed)/\(mapped.total)"
     }
 
     var createdCaption: String {
@@ -116,6 +134,7 @@ struct LibrarySlimmingWorkspaceView: View {
     let onReturnToLibrary: () -> Void
     @FocusState private var keyboardFocused: Bool
     @State private var confirmMoveToRecycle = false
+    @State private var suppressMoveToRecycleConfirmation = false
     @State private var confirmPurgeEntryID: UUID?
 
     var body: some View {
@@ -163,24 +182,27 @@ struct LibrarySlimmingWorkspaceView: View {
         .task {
             await model.refreshLibrarySlimmingAnalysisJobs()
             await model.refreshSourceSimilarityIndexStatus()
+            model.ensureLibrarySlimmingAnalysisMonitoring()
         }
         .task(id: model.librarySlimmingWorkspaceTab) {
             if model.librarySlimmingWorkspaceTab == .recycleBin {
                 await model.refreshLibrarySlimmingRecycleEntries()
             }
         }
-        .confirmationDialog(
-            "移入回收站",
-            isPresented: $confirmMoveToRecycle,
-            titleVisibility: .visible
-        ) {
-            Button("移入回收站（\(model.selectedLibrarySlimmingMemberIDs.count) 张）", role: .destructive) {
-                Task { await model.moveSelectedLibrarySlimmingMembersToRecycle() }
-            }
-            Button("取消", role: .cancel) {}
-        } message: {
-            Text(
-                "文件夹照片将移入 ImageAll 回收站，默认保留 30 天；Photos 资产将由 macOS 移入系统「最近删除」，恢复和永久删除均由「照片」App 管理。"
+        .sheet(isPresented: $confirmMoveToRecycle) {
+            LibrarySlimmingMoveToRecycleConfirmationSheet(
+                selectedCount: model.selectedLibrarySlimmingMemberIDs.count,
+                suppressFutureConfirmation: $suppressMoveToRecycleConfirmation,
+                onConfirm: {
+                    if suppressMoveToRecycleConfirmation {
+                        model.setSkipsLibrarySlimmingMoveToRecycleConfirmation(true)
+                    }
+                    confirmMoveToRecycle = false
+                    Task { await model.moveSelectedLibrarySlimmingMembersToRecycle() }
+                },
+                onCancel: {
+                    confirmMoveToRecycle = false
+                }
             )
         }
         .confirmationDialog(
@@ -276,7 +298,7 @@ struct LibrarySlimmingWorkspaceView: View {
 
             if model.selectedLibrarySlimmingCluster != nil {
                 Button(role: .destructive) {
-                    confirmMoveToRecycle = true
+                    requestMoveToRecycleConfirmation()
                 } label: {
                     if model.selectedLibrarySlimmingMemberIDs.isEmpty {
                         Label("移入回收站", systemImage: "trash.slash")
@@ -372,8 +394,18 @@ struct LibrarySlimmingWorkspaceView: View {
         guard model.librarySlimmingWorkspaceTab == .clusters,
               model.canMoveSelectedLibrarySlimmingMembersToRecycle
         else { return .ignored }
-        confirmMoveToRecycle = true
+        requestMoveToRecycleConfirmation()
         return .handled
+    }
+
+    private func requestMoveToRecycleConfirmation() {
+        guard model.canMoveSelectedLibrarySlimmingMembersToRecycle else { return }
+        if model.skipsLibrarySlimmingMoveToRecycleConfirmation {
+            Task { await model.moveSelectedLibrarySlimmingMembersToRecycle() }
+            return
+        }
+        suppressMoveToRecycleConfirmation = false
+        confirmMoveToRecycle = true
     }
 
     private func presentMoveToRecycle(for assetID: UUID) {
@@ -382,8 +414,7 @@ struct LibrarySlimmingWorkspaceView: View {
         } else {
             model.selectLibrarySlimmingMember(assetID, additive: false)
         }
-        guard model.canMoveSelectedLibrarySlimmingMembersToRecycle else { return }
-        confirmMoveToRecycle = true
+        requestMoveToRecycleConfirmation()
     }
 
     private func progressBanner(_ progress: LibrarySlimmingScanProgress) -> some View {
@@ -391,13 +422,16 @@ struct LibrarySlimmingWorkspaceView: View {
             Text(progress.caption)
                 .font(.callout)
                 .foregroundStyle(.secondary)
+                .contentTransition(.numericText())
             ProgressView(value: progress.fraction)
                 .progressViewStyle(.linear)
+                .animation(.linear(duration: 0.25), value: progress.fraction)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 16)
         .padding(.vertical, 8)
         .accessibilityLabel(progress.caption)
+        .animation(.default, value: progress.caption)
     }
 
     private func statusBanner(_ message: String) -> some View {
@@ -740,6 +774,43 @@ private struct SlimmingThumbnailCell: View {
                 image = LibraryGridThumbnailImageFactory.image(from: data)
             }
         }
+    }
+}
+
+private struct LibrarySlimmingMoveToRecycleConfirmationSheet: View {
+    let selectedCount: Int
+    @Binding var suppressFutureConfirmation: Bool
+    let onConfirm: () -> Void
+    let onCancel: () -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("移入回收站")
+                .font(.headline)
+            Text(
+                "文件夹照片将移入 ImageAll 回收站，默认保留 30 天；Photos 资产将由 macOS 移入系统「最近删除」，恢复和永久删除均由「照片」App 管理。"
+            )
+            .font(.callout)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+            Toggle("不再弹出该消息", isOn: $suppressFutureConfirmation)
+            HStack {
+                Spacer()
+                Button("取消") {
+                    onCancel()
+                    dismiss()
+                }
+                .keyboardShortcut(.cancelAction)
+                Button("移入回收站（\(selectedCount) 张）", role: .destructive) {
+                    onConfirm()
+                    dismiss()
+                }
+                .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(20)
+        .frame(width: 420)
     }
 }
 

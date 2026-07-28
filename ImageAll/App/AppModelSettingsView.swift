@@ -172,10 +172,30 @@ final class AppModelSettingsModel: ObservableObject {
 struct AppModelSettingsView: View {
     @ObservedObject var model: AppModelSettingsModel
     @ObservedObject var idlePrewarmSettings: IdleThumbnailPrewarmSettingsModel
+    @ObservedObject var toolbarDisplayModeSettings: ToolbarDisplayModeSettingsModel
     @State private var showingOverrides = false
 
     var body: some View {
         Form {
+            Section("界面") {
+                Picker(
+                    "工具栏显示",
+                    selection: Binding(
+                        get: { toolbarDisplayModeSettings.displayMode },
+                        set: { toolbarDisplayModeSettings.setDisplayMode($0) }
+                    )
+                ) {
+                    ForEach(LibraryToolbarDisplayMode.allCases, id: \.self) { mode in
+                        Text(mode.displayName).tag(mode)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .accessibilityIdentifier("toolbarDisplayModePicker")
+                Text("选择顶部工具栏仅显示图标，或同时显示图标与功能名称。鼠标悬停时始终显示详细说明。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             Section("本地模型") {
                 Toggle(
                     "启用 DINOv2 Small",
@@ -197,14 +217,14 @@ struct AppModelSettingsView: View {
             }
             Section("性能") {
                 Toggle(
-                    "空闲时预生成缩略图",
+                    "空闲时后台预热缓存",
                     isOn: Binding(
                         get: { idlePrewarmSettings.isEnabled },
                         set: { idlePrewarmSettings.setEnabled($0) }
                     )
                 )
                 .accessibilityIdentifier("idleThumbnailPrewarmToggle")
-                Text("默认开启。连续 3 分钟无操作后，会在后台为当前列表预热网格缩略图；任意操作立即让路给浏览。")
+                Text("默认开启。连续 3 分钟无操作后，会在后台为当前列表预热网格缩略图，并静默准备特征向量与本地模型嵌入缓存，供训练标签、建议队列与图库瘦身使用；任意操作立即让路给浏览。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -233,11 +253,12 @@ struct AppModelSettingsView: View {
         }
         .formStyle(.grouped)
         .padding(12)
-        .frame(width: 480, height: model.hasSuggestionThresholdPort ? 540 : 380)
+        .frame(width: 480, height: model.hasSuggestionThresholdPort ? 620 : 460)
         .sheet(isPresented: $showingOverrides) { SuggestionThresholdOverridesSheet(model: model) }
         .onAppear {
             model.refreshSuggestionThresholds()
             idlePrewarmSettings.refresh()
+            toolbarDisplayModeSettings.refresh()
         }
     }
 
