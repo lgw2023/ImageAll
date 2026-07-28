@@ -68,7 +68,8 @@
 |---|---|---|
 | **R0** | ADR + Remote Protocol Package + Mac 薄 Facade/HTTP Host + 单测；不改 Mac UI；不建完整 iOS App；Host 仅 Debug 可启用 | Host 可对 capabilities/sources/assets/thumbnail/tag-batch 响应 |
 | **R1** | 最小 iOS target/壳 + Remote Client，连本机 Host | 手机/模拟器能看网格并改标签 |
-| **R2+** | Bonjour、正式配对、TLS、WebSocket 事件、异地中继 | 另开 ADR/切片 |
+| **R2** | Bonjour 局域网发现（Host 发布 + Mobile 浏览/resolve）；token 仍手动 | 同局域网可发现并连接 Host |
+| **R3+** | 正式配对、TLS、WebSocket 事件、异地中继 | 另开切片 |
 
 ### 6. 版本与兼容
 
