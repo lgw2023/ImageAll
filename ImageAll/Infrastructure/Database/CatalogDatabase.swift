@@ -29,6 +29,7 @@ struct CatalogDatabase: Sendable {
         V021AddPhotosRecycleIdentifierMigration.register(on: &migrator)
         V022HardenLibrarySlimmingAnalysisMigration.register(on: &migrator)
         V023AddSourceSimilarityIndexMigration.register(on: &migrator)
+        V024RepairSourceMutationAuthorizationMigration.register(on: &migrator)
         return migrator
     }
 
@@ -1952,6 +1953,47 @@ enum V023AddSourceSimilarityIndexMigration {
                 ON source_similarity_bucket_member(source_id, cluster_id, asset_id)
                 """
             )
+        }
+    }
+}
+
+/// Repairs catalogs where v020–v023 are recorded but `source_mutation_authorization`
+/// is missing and legacy `source.mutation_bookmark` remains (observed after partial
+/// restore / schema drift). Fully idempotent for healthy databases.
+enum V024RepairSourceMutationAuthorizationMigration {
+    private static let sourceMutationAuthorizationDDL = """
+        CREATE TABLE source_mutation_authorization (
+            source_id TEXT NOT NULL PRIMARY KEY REFERENCES source(id) ON DELETE CASCADE,
+            bookmark BLOB NOT NULL CHECK(length(bookmark) > 0),
+            updated_at_ms INTEGER NOT NULL CHECK(updated_at_ms >= 0)
+        ) STRICT
+        """
+
+    static func register(on migrator: inout DatabaseMigrator) {
+        migrator.registerMigration(CatalogMigrationID.v024RepairSourceMutationAuthorization) { db in
+            if try !db.tableExists("source_mutation_authorization") {
+                try db.execute(sql: sourceMutationAuthorizationDDL)
+            }
+
+            let hasLegacyColumn = try db.columns(in: "source")
+                .contains { $0.name == "mutation_bookmark" }
+            guard hasLegacyColumn else { return }
+
+            try db.execute(
+                sql: """
+                INSERT INTO source_mutation_authorization (
+                    source_id, bookmark, updated_at_ms
+                )
+                SELECT id, mutation_bookmark, updated_at_ms
+                FROM source
+                WHERE mutation_bookmark IS NOT NULL AND length(mutation_bookmark) > 0
+                ON CONFLICT(source_id) DO UPDATE SET
+                    bookmark = excluded.bookmark,
+                    updated_at_ms = excluded.updated_at_ms
+                WHERE excluded.updated_at_ms >= source_mutation_authorization.updated_at_ms
+                """
+            )
+            try db.execute(sql: "ALTER TABLE source DROP COLUMN mutation_bookmark")
         }
     }
 }

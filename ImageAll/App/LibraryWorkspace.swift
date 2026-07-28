@@ -595,16 +595,28 @@ enum LibraryTagReorderLayout {
         frames: [UUID: CGRect]
     ) -> Int {
         let ordered = readingOrder(tagIDs: tagIDs, frames: frames)
-        for id in ordered {
-            guard let frame = frames[id] else { continue }
-            if pointer.y < frame.midY - rowThreshold / 2 {
-                return tagIDs.firstIndex(of: id) ?? tagIDs.count
-            }
-            if abs(pointer.y - frame.midY) <= rowThreshold, pointer.x < frame.midX {
-                return tagIDs.firstIndex(of: id) ?? tagIDs.count
+        guard !ordered.isEmpty else { return 0 }
+
+        var bestArrayIndex = tagIDs.count
+        var bestDistance = CGFloat.greatestFiniteMagnitude
+
+        for insertionIndex in 0...ordered.count {
+            let anchor = insertionAnchor(
+                at: insertionIndex,
+                ordered: ordered,
+                frames: frames
+            )
+            let distance = hypot(pointer.x - anchor.x, pointer.y - anchor.y)
+            if distance < bestDistance {
+                bestDistance = distance
+                bestArrayIndex = insertionArrayIndex(
+                    at: insertionIndex,
+                    ordered: ordered,
+                    tagIDs: tagIDs
+                )
             }
         }
-        return tagIDs.count
+        return bestArrayIndex
     }
 
     static func moveRequest(
@@ -633,6 +645,49 @@ enum LibraryTagReorderLayout {
         groupFrames: [UUID: CGRect]
     ) -> UUID? {
         groupFrames.first { _, frame in frame.contains(pointer) }?.key
+    }
+
+    private static func insertionArrayIndex(
+        at insertionIndex: Int,
+        ordered: [UUID],
+        tagIDs: [UUID]
+    ) -> Int {
+        if insertionIndex >= ordered.count {
+            return tagIDs.count
+        }
+        let id = ordered[insertionIndex]
+        return tagIDs.firstIndex(of: id) ?? tagIDs.count
+    }
+
+    private static func insertionAnchor(
+        at insertionIndex: Int,
+        ordered: [UUID],
+        frames: [UUID: CGRect]
+    ) -> CGPoint {
+        if insertionIndex == 0,
+           let firstID = ordered.first,
+           let frame = frames[firstID]
+        {
+            return CGPoint(x: frame.minX - 3, y: frame.midY)
+        }
+        if insertionIndex >= ordered.count,
+           let lastID = ordered.last,
+           let frame = frames[lastID]
+        {
+            return CGPoint(x: frame.maxX + 3, y: frame.midY)
+        }
+        let beforeID = ordered[insertionIndex - 1]
+        let afterID = ordered[insertionIndex]
+        guard let before = frames[beforeID], let after = frames[afterID] else {
+            return .zero
+        }
+        if abs(before.midY - after.midY) <= rowThreshold {
+            return CGPoint(
+                x: (before.maxX + after.minX) / 2,
+                y: (before.midY + after.midY) / 2
+            )
+        }
+        return CGPoint(x: after.minX - 3, y: after.midY)
     }
 }
 
@@ -1533,7 +1588,16 @@ final class LibraryWorkspaceModel: ObservableObject {
                 parts.append("部分来源需要写入授权")
             }
             if !outcome.failedAssetIDs.isEmpty {
-                parts.append("失败 \(outcome.failedAssetIDs.count) 张")
+                if outcome.recycledEntryIDs.isEmpty,
+                   outcome.authorizationRequiredSourceIDs.isEmpty,
+                   outcome.authorizationDeniedPhotosAssetIDs.isEmpty
+                {
+                    parts.append(
+                        "失败 \(outcome.failedAssetIDs.count) 张（未能移入回收站；请确认文件夹写入授权后重试）"
+                    )
+                } else {
+                    parts.append("失败 \(outcome.failedAssetIDs.count) 张")
+                }
             }
             librarySlimmingStatusMessage = parts.isEmpty ? "未移动任何照片" : parts.joined(separator: " · ")
             await refreshLibrarySlimmingRecycleEntries()
@@ -8308,12 +8372,14 @@ struct LibraryWorkspaceView: View {
     ) -> some Gesture {
         DragGesture(
             minimumDistance: 12,
-            coordinateSpace: .named(Self.sourceReorderCoordinateSpace)
+            coordinateSpace: .local
         )
         .onChanged { value in
+            guard let pointer = tagReorderPointer(tagID: tagID, location: value.location) else {
+                return
+            }
             draggedTagID = tagID
             draggedTagGroupID = groupID
-            let pointer = value.location
             if let targetGroupID = LibraryTagReorderLayout.targetGroupID(
                 pointer: pointer,
                 groupFrames: tagGroupContainerFrames
@@ -8342,7 +8408,9 @@ struct LibraryWorkspaceView: View {
                 tagInsertionGroupID = nil
                 tagDropTargetGroupID = nil
             }
-            let pointer = value.location
+            guard let pointer = tagReorderPointer(tagID: tagID, location: value.location) else {
+                return
+            }
             if let targetGroupID = LibraryTagReorderLayout.targetGroupID(
                 pointer: pointer,
                 groupFrames: tagGroupContainerFrames
@@ -8362,6 +8430,14 @@ struct LibraryWorkspaceView: View {
                 toOffset: move.destinationOffset
             )
         }
+    }
+
+    private func tagReorderPointer(tagID: UUID, location: CGPoint) -> CGPoint? {
+        guard let sourceFrame = tagChipFrames[tagID] else { return nil }
+        return CGPoint(
+            x: sourceFrame.minX + location.x,
+            y: sourceFrame.minY + location.y
+        )
     }
 
     @ViewBuilder
@@ -8429,7 +8505,52 @@ struct LibraryWorkspaceView: View {
         let isExcluded = model.isTagFilterExcluded(tag.id)
         let usesIntersection = isIncluded && model.tagMatchMode == .all
 
-        return Button {
+        return HStack(spacing: 5) {
+            Label {
+                Text(tag.displayName)
+                    .lineLimit(1)
+            } icon: {
+                Image(systemName: isExcluded ? "tag.slash" : "tag")
+            }
+            if isIncluded {
+                if usesIntersection {
+                    Text("∩")
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(.secondary)
+                } else {
+                    Image(systemName: "checkmark")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                }
+            } else if isExcluded {
+                Image(systemName: "minus.circle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+        }
+        .padding(.horizontal, 8)
+        .frame(height: 28)
+        .frame(maxWidth: 180, alignment: .leading)
+        .fixedSize(horizontal: true, vertical: false)
+        .contentShape(Rectangle())
+        .background {
+            if isIncluded {
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(
+                        usesIntersection
+                            ? Color.orange.opacity(0.18)
+                            : Color.accentColor.opacity(0.18)
+                    )
+            } else if isExcluded {
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(Color.red.opacity(0.12))
+            } else {
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(Color(nsColor: .controlBackgroundColor).opacity(0.75))
+            }
+        }
+        .foregroundStyle(isExcluded ? Color.red : Color.primary)
+        .onTapGesture {
             let flags = NSEvent.modifierFlags.intersection(.deviceIndependentFlagsMask)
             Task {
                 if flags.contains(.command), flags.contains(.option) {
@@ -8440,62 +8561,15 @@ struct LibraryWorkspaceView: View {
                     await model.toggleIncludedTagFilter(tag.id, matchMode: .any)
                 }
             }
-        } label: {
-            HStack(spacing: 5) {
-                Label {
-                    Text(tag.displayName)
-                        .lineLimit(1)
-                } icon: {
-                    Image(systemName: isExcluded ? "tag.slash" : "tag")
-                }
-                if isIncluded {
-                    if usesIntersection {
-                        Text("∩")
-                            .font(.caption.weight(.bold))
-                            .foregroundStyle(.secondary)
-                    } else {
-                        Image(systemName: "checkmark")
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(.secondary)
-                    }
-                } else if isExcluded {
-                    Image(systemName: "minus.circle.fill")
-                        .font(.caption)
-                        .foregroundStyle(.red)
-                }
-            }
-            .padding(.horizontal, 8)
-            .frame(height: 28)
-            .frame(maxWidth: 180, alignment: .leading)
-            .fixedSize(horizontal: true, vertical: false)
-            .contentShape(Rectangle())
-            .background {
-                if isIncluded {
-                    RoundedRectangle(cornerRadius: 6)
-                        .fill(
-                            usesIntersection
-                                ? Color.orange.opacity(0.18)
-                                : Color.accentColor.opacity(0.18)
-                        )
-                } else if isExcluded {
-                    RoundedRectangle(cornerRadius: 6)
-                        .fill(Color.red.opacity(0.12))
-                } else {
-                    RoundedRectangle(cornerRadius: 6)
-                        .fill(Color(nsColor: .controlBackgroundColor).opacity(0.75))
-                }
-            }
-            .foregroundStyle(isExcluded ? Color.red : Color.primary)
         }
-        .buttonStyle(.plain)
         .help(
             isExcluded
-                ? "⌘⌥点击取消排除"
+                ? "⌘⌥点击取消排除；拖拽可调整顺序"
                 : isIncluded
                     ? (usesIntersection
-                        ? "交集筛选；⌘点击切换；⌘⌥点击排除"
-                        : "并集筛选；⌘点击改为交集；⌘⌥点击排除")
-                    : "点击并集筛选；⌘点击交集筛选；⌘⌥点击排除"
+                        ? "交集筛选；⌘点击切换；⌘⌥点击排除；拖拽可调整顺序"
+                        : "并集筛选；⌘点击改为交集；⌘⌥点击排除；拖拽可调整顺序")
+                    : "点击并集筛选；⌘点击交集筛选；⌘⌥点击排除；拖拽可调整顺序"
         )
         .contextMenu {
             Button("仅筛选此标签") {

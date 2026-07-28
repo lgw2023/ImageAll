@@ -160,17 +160,21 @@ struct LibrarySlimmingWorkspaceView: View {
                 Divider()
             }
 
-            if model.librarySlimmingWorkspaceTab == .recycleBin {
-                recycleBinList
-            } else {
-                HSplitView {
-                    analysisHistoryAndClusters
-                        .frame(minWidth: 260, idealWidth: 320, maxWidth: 420)
-                    clusterDetail
-                        .frame(minWidth: 380, maxWidth: .infinity, maxHeight: .infinity)
+            Group {
+                if model.librarySlimmingWorkspaceTab == .recycleBin {
+                    recycleBinList
+                } else {
+                    HSplitView {
+                        analysisHistoryAndClusters
+                            .frame(minWidth: 260, idealWidth: 320, maxWidth: 420)
+                        clusterDetail
+                            .frame(minWidth: 380, maxWidth: .infinity, maxHeight: .infinity)
+                    }
                 }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .navigationTitle("图库瘦身")
         .accessibilityLabel("图库瘦身工作台")
         .focusable()
@@ -627,6 +631,7 @@ struct LibrarySlimmingWorkspaceView: View {
                         "文件夹照片由 ImageAll 保留 30 天；Photos 资产遵循 macOS「照片」App 的删除与恢复规则。"
                     )
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 List(model.librarySlimmingRecycleEntries) { entry in
                     HStack(alignment: .top, spacing: 12) {
@@ -685,6 +690,7 @@ struct LibrarySlimmingWorkspaceView: View {
                 }
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 }
 

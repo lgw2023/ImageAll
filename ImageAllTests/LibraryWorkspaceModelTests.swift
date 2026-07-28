@@ -6185,16 +6185,18 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         let firstID = UUID()
         let secondID = UUID()
         let thirdID = UUID()
-        let tagIDs = [firstID, secondID, thirdID]
+        let fourthID = UUID()
+        let tagIDs = [firstID, secondID, thirdID, fourthID]
         let frames: [UUID: CGRect] = [
             firstID: CGRect(x: 0, y: 0, width: 80, height: 28),
             secondID: CGRect(x: 86, y: 0, width: 80, height: 28),
             thirdID: CGRect(x: 0, y: 34, width: 80, height: 28),
+            fourthID: CGRect(x: 86, y: 34, width: 80, height: 28),
         ]
 
         XCTAssertEqual(
             LibraryTagReorderLayout.destinationOffset(
-                pointer: CGPoint(x: 40, y: 10),
+                pointer: CGPoint(x: -10, y: 14),
                 tagIDs: tagIDs,
                 frames: frames
             ),
@@ -6202,7 +6204,7 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         )
         XCTAssertEqual(
             LibraryTagReorderLayout.destinationOffset(
-                pointer: CGPoint(x: 120, y: 10),
+                pointer: CGPoint(x: 83, y: 14),
                 tagIDs: tagIDs,
                 frames: frames
             ),
@@ -6210,7 +6212,7 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         )
         XCTAssertEqual(
             LibraryTagReorderLayout.destinationOffset(
-                pointer: CGPoint(x: 40, y: 48),
+                pointer: CGPoint(x: 10, y: 40),
                 tagIDs: tagIDs,
                 frames: frames
             ),
@@ -6218,11 +6220,11 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         )
         XCTAssertEqual(
             LibraryTagReorderLayout.destinationOffset(
-                pointer: CGPoint(x: 120, y: 48),
+                pointer: CGPoint(x: 170, y: 48),
                 tagIDs: tagIDs,
                 frames: frames
             ),
-            3
+            4
         )
     }
 
@@ -6230,26 +6232,37 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         let firstID = UUID()
         let secondID = UUID()
         let thirdID = UUID()
-        let tagIDs = [firstID, secondID, thirdID]
+        let fourthID = UUID()
+        let tagIDs = [firstID, secondID, thirdID, fourthID]
         let frames: [UUID: CGRect] = [
             firstID: CGRect(x: 0, y: 0, width: 80, height: 28),
             secondID: CGRect(x: 86, y: 0, width: 80, height: 28),
             thirdID: CGRect(x: 0, y: 34, width: 80, height: 28),
+            fourthID: CGRect(x: 86, y: 34, width: 80, height: 28),
         ]
 
         XCTAssertEqual(
             LibraryTagReorderLayout.moveRequest(
-                tagID: firstID,
-                pointer: CGPoint(x: 120, y: 10),
+                tagID: fourthID,
+                pointer: CGPoint(x: 83, y: 14),
                 tagIDs: tagIDs,
                 frames: frames
             )?.destinationOffset,
             1
         )
+        XCTAssertEqual(
+            LibraryTagReorderLayout.moveRequest(
+                tagID: firstID,
+                pointer: CGPoint(x: 10, y: 40),
+                tagIDs: tagIDs,
+                frames: frames
+            )?.destinationOffset,
+            2
+        )
         XCTAssertNil(
             LibraryTagReorderLayout.moveRequest(
                 tagID: secondID,
-                pointer: CGPoint(x: 100, y: 10),
+                pointer: CGPoint(x: 120, y: 14),
                 tagIDs: tagIDs,
                 frames: frames
             )
