@@ -121,6 +121,26 @@ struct RemoteCompanionRootView: View {
             }
             .frame(height: model.tags.isEmpty ? 90 : 140)
 
+            if !model.jobs.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        ForEach(model.jobs.prefix(12)) { job in
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(job.kind.rawValue)
+                                    .font(.caption2.weight(.semibold))
+                                Text(job.state.rawValue)
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
+                            .padding(8)
+                            .background(Color.secondary.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
+                        }
+                    }
+                    .padding(.horizontal, 8)
+                }
+                .frame(height: 56)
+            }
+
             assetGrid
 
             if let statusMessage = model.statusMessage {
