@@ -28,7 +28,7 @@ R2：同局域网可发现 Mac Host 并连接（token 仍手动）；停止于 R
 ## 结果（实施后补记）
 
 - 开工 HEAD：`635e85bc3bf5d984df65ed6d1a2b9ff5e08120f8`
-- 交付 commit：待实现提交后回填
+- 交付 commit：`11171bd1a3770eaba5448cf9df180c2b3ba978a7`
 - Package 测试：
   - `Packages/ImageAllRemoteProtocol` swift test → **7 passed**
   - `Packages/ImageAllRemoteClient` swift test → **5 passed**
