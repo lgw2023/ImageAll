@@ -33,6 +33,8 @@ struct RecycleEntryRecord: Identifiable, Sendable, Equatable {
 enum LibrarySlimmingRecyclePolicy {
     static let retentionDays: Int = 30
     static let dayMs: Int64 = 24 * 60 * 60 * 1_000
+    /// PhotoKit may still return an asset briefly after `deleteAssets`; do not treat as user-restored.
+    static let photosDeleteConvergenceGraceMs: Int64 = 2 * 60 * 1_000
 
     static func purgeAfterMs(trashedAtMs: Int64) -> Int64 {
         trashedAtMs + Int64(retentionDays) * dayMs
@@ -109,6 +111,8 @@ protocol LibrarySlimmingRecyclePort: Sendable {
     func recoverInterruptedOperations() throws -> Int
     @discardableResult
     func reconcilePhotosRecycleEntries() throws -> Int
+    /// Asset IDs that should be hidden from slimming cluster presentation.
+    func slimmingHiddenAssetIDs(from assetIDs: [UUID]) throws -> Set<UUID>
 }
 
 extension LibrarySlimmingRecyclePort {

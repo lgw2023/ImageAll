@@ -886,6 +886,7 @@ final class LibraryWorkspaceModel: ObservableObject {
         any LibrarySlimmingRecycleConfirmationPreferenceStore
     private let librarySlimmingThresholds: (any NearDuplicateSceneThresholdWriting)?
     private let librarySlimmingMutationAuthorization: (any FolderMutationAuthorizationPort)?
+    private let photosLibraryMutation: (any PhotosLibraryMutationPort)?
     private let localModelSuggestions: LocalModelSuggestionRuntime?
     private let appPersonalModelRebuilder: (any AppPersonalModelRebuilding)?
     private let appPersonalAdamWModelRebuilder: (any AppPersonalModelRebuilding)?
@@ -961,6 +962,7 @@ final class LibraryWorkspaceModel: ObservableObject {
             any LibrarySlimmingRecycleConfirmationPreferenceStore =
             UserDefaultsLibrarySlimmingRecycleConfirmationPreferenceStore(),
         librarySlimmingMutationAuthorization: (any FolderMutationAuthorizationPort)? = nil,
+        photosLibraryMutation: (any PhotosLibraryMutationPort)? = nil,
         librarySlimmingThresholds: (any NearDuplicateSceneThresholdWriting)? = nil,
         localModelSuggestions: LocalModelSuggestionRuntime? = nil,
         appPersonalModelRebuilder: (any AppPersonalModelRebuilding)? = nil,
@@ -998,6 +1000,7 @@ final class LibraryWorkspaceModel: ObservableObject {
         self.librarySlimmingRecycleConfirmationPreferences =
             librarySlimmingRecycleConfirmationPreferences
         self.librarySlimmingMutationAuthorization = librarySlimmingMutationAuthorization
+        self.photosLibraryMutation = photosLibraryMutation
         self.librarySlimmingThresholds = librarySlimmingThresholds
         librarySlimmingSceneThresholds = librarySlimmingThresholds?.thresholds() ?? .factory
         self.localModelSuggestions = localModelSuggestions
@@ -1478,28 +1481,40 @@ final class LibraryWorkspaceModel: ObservableObject {
                     outcome.authorizationRequiredAssetIDs = retry.authorizationRequiredAssetIDs
                 }
             }
-            selectedLibrarySlimmingMemberIDs = []
-            // Drop recycled members from in-memory clusters.
-            let recycled = Set(assetIDs)
-                .subtracting(outcome.skippedPhotosAssetIDs)
-                .subtracting(outcome.failedAssetIDs)
-                .subtracting(outcome.authorizationDeniedPhotosAssetIDs)
-            librarySlimmingClusters = librarySlimmingClusters.compactMap { cluster in
-                let remaining = cluster.memberAssetIDs.filter { !recycled.contains($0) }
-                guard remaining.count >= 2 else { return nil }
-                return LibrarySlimmingClusterPresentation(
-                    SlimmingCluster(
-                        id: cluster.id,
-                        kind: cluster.kind,
-                        memberAssetIDs: remaining,
-                        representativeAssetID: remaining.contains(cluster.representativeAssetID)
-                            ? cluster.representativeAssetID
-                            : remaining[0],
-                        score: cluster.score,
-                        modelIdentity: cluster.modelIdentity
+            if !outcome.authorizationDeniedPhotosAssetIDs.isEmpty,
+               let photosLibraryMutation
+            {
+                let auth = await photosLibraryMutation.requestAuthorization()
+                if auth == .authorized {
+                    let retryAssetIDs = outcome.authorizationDeniedPhotosAssetIDs
+                    let photosAuthorizationFailures = Set(retryAssetIDs)
+                    let otherFailedAssetIDs = outcome.failedAssetIDs.filter {
+                        !photosAuthorizationFailures.contains($0)
+                    }
+                    let retry = try await Self.offMain {
+                        try recycle.moveAssetsToRecycle(assetIDs: retryAssetIDs)
+                    }
+                    outcome.recycledEntryIDs.append(contentsOf: retry.recycledEntryIDs)
+                    outcome.skippedPhotosAssetIDs.append(contentsOf: retry.skippedPhotosAssetIDs)
+                    outcome.authorizationDeniedPhotosAssetIDs =
+                        retry.authorizationDeniedPhotosAssetIDs
+                    outcome.failedAssetIDs = otherFailedAssetIDs + retry.failedAssetIDs
+                    outcome.authorizationRequiredSourceIDs.append(
+                        contentsOf: retry.authorizationRequiredSourceIDs
                     )
-                )
+                    outcome.authorizationRequiredAssetIDs.append(
+                        contentsOf: retry.authorizationRequiredAssetIDs
+                    )
+                }
             }
+            selectedLibrarySlimmingMemberIDs = []
+            let recycled = try await Self.offMain {
+                try recycle.slimmingHiddenAssetIDs(from: assetIDs)
+            }
+            librarySlimmingClusters = filterLibrarySlimmingClustersRemoving(
+                assetIDs: recycled,
+                from: librarySlimmingClusters
+            )
             if let selected = selectedLibrarySlimmingClusterID,
                !librarySlimmingClusters.contains(where: { $0.id == selected })
             {
@@ -1511,7 +1526,7 @@ final class LibraryWorkspaceModel: ObservableObject {
             }
             if !outcome.authorizationDeniedPhotosAssetIDs.isEmpty {
                 parts.append(
-                    "Photos 未授权 \(outcome.authorizationDeniedPhotosAssetIDs.count) 张"
+                    "Photos 未授权 \(outcome.authorizationDeniedPhotosAssetIDs.count) 张，请在系统设置中允许 ImageAll 访问照片库"
                 )
             }
             if !outcome.authorizationRequiredSourceIDs.isEmpty {
@@ -1847,22 +1862,76 @@ final class LibraryWorkspaceModel: ObservableObject {
     }
 
     private func applyLibrarySlimmingResult(_ result: LibrarySlimmingScanResult) {
-        librarySlimmingClusters = result.clusters.map(LibrarySlimmingClusterPresentation.init)
+        let filteredClusters = filterLibrarySlimmingClustersForHiddenAssets(result.clusters)
+        librarySlimmingClusters = filteredClusters.map(LibrarySlimmingClusterPresentation.init)
         librarySlimmingPendingCount = result.pendingAnalysisAssetIDs.count
         hasCompletedLibrarySlimmingScan = true
         selectedLibrarySlimmingClusterID = librarySlimmingClusters.first?.id
         selectedLibrarySlimmingMemberIDs = []
-        if result.clusters.isEmpty, result.pendingAnalysisAssetIDs.isEmpty {
+        if filteredClusters.isEmpty, result.pendingAnalysisAssetIDs.isEmpty {
             librarySlimmingStatusMessage = "已分析 \(result.analyzedAssetCount) 张，未发现相同或相似簇。"
-        } else if result.clusters.isEmpty {
+        } else if filteredClusters.isEmpty {
             librarySlimmingStatusMessage =
                 "已分析 \(result.analyzedAssetCount) 张，暂无成簇结果；\(result.pendingAnalysisAssetIDs.count) 张因不可读取或格式问题待处理。"
         } else if result.pendingAnalysisAssetIDs.isEmpty {
             librarySlimmingStatusMessage =
-                "完成：\(result.clusters.count) 个簇 · 已分析 \(result.analyzedAssetCount) 张。"
+                "完成：\(filteredClusters.count) 个簇 · 已分析 \(result.analyzedAssetCount) 张。"
         } else {
             librarySlimmingStatusMessage =
-                "完成：\(result.clusters.count) 个簇 · \(result.pendingAnalysisAssetIDs.count) 张因不可读取或格式问题待处理。"
+                "完成：\(filteredClusters.count) 个簇 · \(result.pendingAnalysisAssetIDs.count) 张因不可读取或格式问题待处理。"
+        }
+    }
+
+    private func filterLibrarySlimmingClustersForHiddenAssets(
+        _ clusters: [SlimmingCluster]
+    ) -> [SlimmingCluster] {
+        guard let recycle = librarySlimmingRecycle else { return clusters }
+        let memberIDs = clusters.flatMap(\.memberAssetIDs)
+        guard !memberIDs.isEmpty else { return clusters }
+        let hidden = (try? recycle.slimmingHiddenAssetIDs(from: memberIDs)) ?? []
+        guard !hidden.isEmpty else { return clusters }
+        return filterLibrarySlimmingClustersRemoving(assetIDs: hidden, from: clusters)
+    }
+
+    private func filterLibrarySlimmingClustersRemoving(
+        assetIDs hidden: Set<UUID>,
+        from clusters: [SlimmingCluster]
+    ) -> [SlimmingCluster] {
+        clusters.compactMap { cluster in
+            let remaining = cluster.memberAssetIDs.filter { !hidden.contains($0) }
+            guard remaining.count >= 2 else { return nil }
+            return SlimmingCluster(
+                id: cluster.id,
+                kind: cluster.kind,
+                memberAssetIDs: remaining,
+                representativeAssetID: remaining.contains(cluster.representativeAssetID)
+                    ? cluster.representativeAssetID
+                    : remaining[0],
+                score: cluster.score,
+                modelIdentity: cluster.modelIdentity
+            )
+        }
+    }
+
+    private func filterLibrarySlimmingClustersRemoving(
+        assetIDs hidden: Set<UUID>,
+        from clusters: [LibrarySlimmingClusterPresentation]
+    ) -> [LibrarySlimmingClusterPresentation] {
+        clusters.compactMap { cluster in
+            let remaining = cluster.memberAssetIDs.filter { !hidden.contains($0) }
+            guard remaining.count >= 2 else { return nil }
+            return LibrarySlimmingClusterPresentation(
+                SlimmingCluster(
+                    id: cluster.id,
+                    kind: cluster.kind,
+                    memberAssetIDs: remaining,
+                    representativeAssetID: remaining.contains(cluster.representativeAssetID)
+                        ? cluster.representativeAssetID
+                        : remaining[0],
+                    score: cluster.score,
+                    modelIdentity: cluster.modelIdentity
+                )
+            )
         }
     }
 

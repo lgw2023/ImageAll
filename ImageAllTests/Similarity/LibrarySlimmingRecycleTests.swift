@@ -864,9 +864,18 @@ final class LibrarySlimmingRecycleTests: XCTestCase {
         _ = try service.moveAssetsToRecycle(assetIDs: [photosID])
         XCTAssertEqual(fake.presenceByID["restore-id"], .recentlyDeleted)
         fake.presenceByID["restore-id"] = .available
-        let converged = try service.reconcilePhotosRecycleEntries()
+        let advancedClock = FixedJobClock(
+            nowMs: FolderReconcileTestSupport.baseTimeMs
+                + LibrarySlimmingRecyclePolicy.photosDeleteConvergenceGraceMs
+                + 1
+        )
+        let advancedService = env.makeRecycleService(
+            clock: advancedClock,
+            photosMutation: fake
+        )
+        let converged = try advancedService.reconcilePhotosRecycleEntries()
         XCTAssertEqual(converged, 1)
-        XCTAssertTrue(try service.listRecycledEntries().isEmpty)
+        XCTAssertTrue(try advancedService.listRecycledEntries().isEmpty)
         let availability = try env.database.pool.read { db in
             try String.fetchOne(
                 db,
@@ -875,6 +884,42 @@ final class LibrarySlimmingRecycleTests: XCTestCase {
             )
         }
         XCTAssertEqual(availability, "available")
+    }
+
+    func testPhotosReconcileDoesNotRestoreDuringDeleteConvergenceGrace() throws {
+        let env = try RecycleTestEnv(label: #function)
+        defer { env.cleanup() }
+        let photosID = try env.seedPhotosAsset(localIdentifier: "converging-id")
+        let fake = FakePhotosLibraryMutationPort()
+        fake.presenceByID["converging-id"] = .available
+        let service = env.makeRecycleService(photosMutation: fake)
+        _ = try service.moveAssetsToRecycle(assetIDs: [photosID])
+        fake.presenceByID["converging-id"] = .available
+
+        let converged = try service.reconcilePhotosRecycleEntries()
+
+        XCTAssertEqual(converged, 0)
+        XCTAssertEqual(try service.listRecycledEntries().map(\.assetID), [photosID])
+        let availability = try env.database.pool.read { db in
+            try String.fetchOne(
+                db,
+                sql: "SELECT availability FROM asset WHERE id = ?",
+                arguments: [photosID.uuidString.lowercased()]
+            )
+        }
+        XCTAssertEqual(availability, AssetAvailability.recycled.rawValue)
+    }
+
+    func testSlimmingHiddenAssetIDsIncludesRecycledAssets() throws {
+        let env = try RecycleTestEnv(label: #function)
+        defer { env.cleanup() }
+        let seeded = try env.seedAsset(relativePath: "hidden.jpg", contents: Data("x".utf8))
+        let service = env.makeRecycleService()
+        _ = try service.moveFolderAssetsToRecycle(assetIDs: [seeded.assetID])
+
+        let hidden = try service.slimmingHiddenAssetIDs(from: [seeded.assetID, UUID()])
+
+        XCTAssertEqual(hidden, Set([seeded.assetID]))
     }
 
     func testPhotosRestoreWhileRecentlyDeletedRequiresPhotosApp() throws {

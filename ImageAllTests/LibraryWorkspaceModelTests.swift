@@ -8302,6 +8302,19 @@ private final class FakeLibrarySlimmingRecyclePort: LibrarySlimmingRecyclePort, 
     }
 
     func reconcilePhotosRecycleEntries() throws -> Int { 0 }
+
+    func slimmingHiddenAssetIDs(from assetIDs: [UUID]) throws -> Set<UUID> {
+        lock.withLock {
+            Set(
+                storedEntries
+                    .filter { entry in
+                        assetIDs.contains(entry.assetID)
+                            && entry.state == .recycled
+                    }
+                    .map(\.assetID)
+            )
+        }
+    }
 }
 
 @MainActor

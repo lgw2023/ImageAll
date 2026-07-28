@@ -225,6 +225,11 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
             }
             switch presence {
             case .available:
+                if clock.nowMs - entry.trashedAtMs
+                    < LibrarySlimmingRecyclePolicy.photosDeleteConvergenceGraceMs
+                {
+                    continue
+                }
                 try markPhotosRestored(entry)
                 converged += 1
             case .missing:
@@ -254,6 +259,43 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
         return converged
     }
 
+    func slimmingHiddenAssetIDs(from assetIDs: [UUID]) throws -> Set<UUID> {
+        guard !assetIDs.isEmpty else { return [] }
+        let normalized = assetIDs.map { $0.uuidString.lowercased() }
+        let placeholders = Array(repeating: "?", count: normalized.count).joined(separator: ", ")
+        return try database.pool.read { db in
+            var hidden = Set<UUID>()
+            let recycledRows = try Row.fetchAll(
+                db,
+                sql: """
+                SELECT id FROM asset
+                WHERE id IN (\(placeholders)) AND availability = 'recycled'
+                """,
+                arguments: StatementArguments(normalized)
+            )
+            for row in recycledRows {
+                if let id = UUID(uuidString: row["id"]) {
+                    hidden.insert(id)
+                }
+            }
+            let pendingRows = try Row.fetchAll(
+                db,
+                sql: """
+                SELECT asset_id FROM recycle_entry
+                WHERE asset_id IN (\(placeholders))
+                  AND state IN ('recycled', 'pending')
+                """,
+                arguments: StatementArguments(normalized)
+            )
+            for row in pendingRows {
+                if let id = UUID(uuidString: row["asset_id"]) {
+                    hidden.insert(id)
+                }
+            }
+            return hidden
+        }
+    }
+
     // MARK: - Private
 
     private struct AssetSnapshot {
@@ -278,6 +320,7 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
         let quarantineRelativePath: String?
         let originalRelativePath: String?
         let photosLocalIdentifier: String?
+        let trashedAtMs: Int64
         let purgeAfterMs: Int64
     }
 
@@ -921,7 +964,7 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
                 sql: """
                 SELECT
                     id, asset_id, source_kind, state, quarantine_relative_path,
-                    original_relative_path, photos_local_identifier, purge_after_ms
+                    original_relative_path, photos_local_identifier, trashed_at_ms, purge_after_ms
                 FROM recycle_entry
                 WHERE state IN ('pending', 'restoring', 'purging')
                 ORDER BY updated_at_ms ASC, id ASC
@@ -938,7 +981,7 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
                 sql: """
                 SELECT
                     id, asset_id, source_kind, state, quarantine_relative_path,
-                    original_relative_path, photos_local_identifier, purge_after_ms
+                    original_relative_path, photos_local_identifier, trashed_at_ms, purge_after_ms
                 FROM recycle_entry
                 WHERE state = 'recycled' AND source_kind = 'photos'
                 ORDER BY updated_at_ms ASC, id ASC
@@ -964,6 +1007,7 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
             quarantineRelativePath: row["quarantine_relative_path"],
             originalRelativePath: row["original_relative_path"],
             photosLocalIdentifier: row["photos_local_identifier"],
+            trashedAtMs: row["trashed_at_ms"],
             purgeAfterMs: row["purge_after_ms"]
         )
     }
@@ -1015,7 +1059,7 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
                 sql: """
                 SELECT
                     id, asset_id, source_kind, state, quarantine_relative_path,
-                    original_relative_path, photos_local_identifier, purge_after_ms
+                    original_relative_path, photos_local_identifier, trashed_at_ms, purge_after_ms
                 FROM recycle_entry WHERE id = ?
                 """,
                 arguments: [entryID.uuidString.lowercased()]

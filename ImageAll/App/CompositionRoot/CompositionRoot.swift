@@ -385,6 +385,7 @@ struct CompositionRoot {
             librarySlimmingSourceIndex: sourceSimilarityIndex,
             librarySlimmingRecycle: librarySlimmingRecycle,
             librarySlimmingMutationAuthorization: librarySlimmingMutationAuthorization,
+            photosLibraryMutation: photosMutation,
             librarySlimmingThresholds: slimmingThresholdStore,
             localModelSuggestions: localModelSuggestions,
             appPersonalModelRebuilder: appPersonalModelRebuilder,
