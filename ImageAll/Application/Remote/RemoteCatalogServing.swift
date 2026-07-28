@@ -12,9 +12,14 @@ protocol RemoteCatalogServing: Sendable {
         limit: Int
     ) throws -> AssetPageResult
     func loadThumbnail(assetID: UUID) async throws -> Data
+    func loadPreview(assetID: UUID) async throws -> Data
+    func fetchInspectorDetail(assetID: UUID) throws -> AssetInspectorDetail
+    func selectionAggregate(tagIDs: [UUID], assetIDs: [UUID]) throws -> [TagSelectionAggregate]
     func mutateTag(
         tagID: UUID,
         assetIDs: [UUID],
         action: LibraryTagDecisionAction
     ) throws -> TagMutationPriorStateSnapshot
+    func fetchJobActivity() throws -> [JobActivityItem]
+    func applyJobActivityAction(_ action: JobActivityAction, jobID: UUID) throws
 }

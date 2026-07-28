@@ -16,6 +16,14 @@
 		RH0000010000000000000102 /* RemoteHTTPServerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = RH0001010000000000000102 /* RemoteHTTPServerTests.swift */; };
 		RH0000010000000000000005 /* ImageAllRemoteProtocol in Frameworks */ = {isa = PBXBuildFile; productRef = RH0000020000000000000001 /* ImageAllRemoteProtocol */; };
 		RH0000010000000000000006 /* ImageAllRemoteProtocol in Frameworks */ = {isa = PBXBuildFile; productRef = RH0000020000000000000001 /* ImageAllRemoteProtocol */; };
+		RH0000010000000000000007 /* RemoteHostIdentity.swift in Sources */ = {isa = PBXBuildFile; fileRef = RH0001010000000000000005 /* RemoteHostIdentity.swift */; };
+		RH0000010000000000000008 /* RemotePairingStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = RH0001010000000000000006 /* RemotePairingStore.swift */; };
+		RH0000010000000000000009 /* RemoteIdempotencyStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = RH0001010000000000000007 /* RemoteIdempotencyStore.swift */; };
+		RH0000010000000000000010 /* RemoteEventBroker.swift in Sources */ = {isa = PBXBuildFile; fileRef = RH0001010000000000000008 /* RemoteEventBroker.swift */; };
+		RH0000010000000000000011 /* RemoteHostSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = RH000101000000000000000B /* RemoteHostSettingsView.swift */; };
+		RH0000010000000000000103 /* RemotePairingStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = RH0001010000000000000103 /* RemotePairingStoreTests.swift */; };
+		RH0000010000000000000104 /* RemoteIdempotencyStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = RH0001010000000000000104 /* RemoteIdempotencyStoreTests.swift */; };
+		RH0000010000000000000105 /* RemoteHostIdentityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = RH0001010000000000000105 /* RemoteHostIdentityTests.swift */; };
 		MD0000010000000000000001 /* ApprovedSourceMediaTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = MD0001010000000000000001 /* ApprovedSourceMediaTypes.swift */; };
 		MD0000010000000000000002 /* MediaDecodeCascade.swift in Sources */ = {isa = PBXBuildFile; fileRef = MD0001010000000000000002 /* MediaDecodeCascade.swift */; };
 		MD0000010000000000000003 /* ImageAllLibRawBridge.cpp in Sources */ = {isa = PBXBuildFile; fileRef = MD0001010000000000000003 /* ImageAllLibRawBridge.cpp */; };
@@ -531,6 +539,14 @@
 		RH0001010000000000000004 /* RemoteHostProcessHolder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteHostProcessHolder.swift; sourceTree = "<group>"; };
 		RH0001010000000000000101 /* RemoteCatalogFacadeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteCatalogFacadeTests.swift; sourceTree = "<group>"; };
 		RH0001010000000000000102 /* RemoteHTTPServerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteHTTPServerTests.swift; sourceTree = "<group>"; };
+		RH0001010000000000000005 /* RemoteHostIdentity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteHostIdentity.swift; sourceTree = "<group>"; };
+		RH0001010000000000000006 /* RemotePairingStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemotePairingStore.swift; sourceTree = "<group>"; };
+		RH0001010000000000000007 /* RemoteIdempotencyStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteIdempotencyStore.swift; sourceTree = "<group>"; };
+		RH0001010000000000000008 /* RemoteEventBroker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteEventBroker.swift; sourceTree = "<group>"; };
+		RH000101000000000000000B /* RemoteHostSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteHostSettingsView.swift; sourceTree = "<group>"; };
+		RH0001010000000000000103 /* RemotePairingStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemotePairingStoreTests.swift; sourceTree = "<group>"; };
+		RH0001010000000000000104 /* RemoteIdempotencyStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteIdempotencyStoreTests.swift; sourceTree = "<group>"; };
+		RH0001010000000000000105 /* RemoteHostIdentityTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteHostIdentityTests.swift; sourceTree = "<group>"; };
 		SL0001010000000000000001 /* IdenticalDuplicateContracts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IdenticalDuplicateContracts.swift; sourceTree = "<group>"; };
 		SL0001010000000000000002 /* PerceptualImageHash.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PerceptualImageHash.swift; sourceTree = "<group>"; };
 		SL0001010000000000000003 /* FingerprintCompletionService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FingerprintCompletionService.swift; sourceTree = "<group>"; };
@@ -758,6 +774,7 @@
 			isa = PBXGroup;
 			children = (
 				AA0001010000000000000001 /* ImageAllApp.swift */,
+				RH000101000000000000000B /* RemoteHostSettingsView.swift */,
 				CM0001010000000000000005 /* AppModelSettingsView.swift */,
 				IP0001010000000000000003 /* IdleThumbnailPrewarmController.swift */,
 				IP0001010000000000000004 /* IdleThumbnailPrewarmSettingsModel.swift */,
@@ -1292,6 +1309,10 @@
 			children = (
 				RH0001010000000000000003 /* RemoteHTTPServer.swift */,
 				RH0001010000000000000004 /* RemoteHostProcessHolder.swift */,
+				RH0001010000000000000005 /* RemoteHostIdentity.swift */,
+				RH0001010000000000000006 /* RemotePairingStore.swift */,
+				RH0001010000000000000007 /* RemoteIdempotencyStore.swift */,
+				RH0001010000000000000008 /* RemoteEventBroker.swift */,
 			);
 			path = Remote;
 			sourceTree = "<group>";
@@ -1301,6 +1322,9 @@
 			children = (
 				RH0001010000000000000101 /* RemoteCatalogFacadeTests.swift */,
 				RH0001010000000000000102 /* RemoteHTTPServerTests.swift */,
+				RH0001010000000000000103 /* RemotePairingStoreTests.swift */,
+				RH0001010000000000000104 /* RemoteIdempotencyStoreTests.swift */,
+				RH0001010000000000000105 /* RemoteHostIdentityTests.swift */,
 			);
 			path = Remote;
 			sourceTree = "<group>";
@@ -1490,6 +1514,11 @@
 				RH0000010000000000000002 /* RemoteCatalogFacade.swift in Sources */,
 				RH0000010000000000000003 /* RemoteHTTPServer.swift in Sources */,
 				RH0000010000000000000004 /* RemoteHostProcessHolder.swift in Sources */,
+				RH0000010000000000000007 /* RemoteHostIdentity.swift in Sources */,
+				RH0000010000000000000008 /* RemotePairingStore.swift in Sources */,
+				RH0000010000000000000009 /* RemoteIdempotencyStore.swift in Sources */,
+				RH0000010000000000000010 /* RemoteEventBroker.swift in Sources */,
+				RH0000010000000000000011 /* RemoteHostSettingsView.swift in Sources */,
 				SL0000010000000000000001 /* IdenticalDuplicateContracts.swift in Sources */,
 				SL0000010000000000000002 /* PerceptualImageHash.swift in Sources */,
 				SL0000010000000000000003 /* FingerprintCompletionService.swift in Sources */,
@@ -1651,6 +1680,9 @@
 				LL0000010000000000000101 /* FeaturePrintCacheTests.swift in Sources */,
 				RH0000010000000000000101 /* RemoteCatalogFacadeTests.swift in Sources */,
 				RH0000010000000000000102 /* RemoteHTTPServerTests.swift in Sources */,
+				RH0000010000000000000103 /* RemotePairingStoreTests.swift in Sources */,
+				RH0000010000000000000104 /* RemoteIdempotencyStoreTests.swift in Sources */,
+				RH0000010000000000000105 /* RemoteHostIdentityTests.swift in Sources */,
 				SL0000010000000000000101 /* IdenticalDuplicateDetectionTests.swift in Sources */,
 				SL0000010000000000000102 /* NearDuplicateSceneClusteringTests.swift in Sources */,
 				SL0000010000000000000103 /* LibrarySlimmingRecycleTests.swift in Sources */,

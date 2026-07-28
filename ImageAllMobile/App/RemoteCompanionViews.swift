@@ -46,6 +46,15 @@ struct RemoteCompanionRootView: View {
                     }
                 }
             }
+            Section("配对") {
+                TextEditor(text: $model.pairingOfferJSON)
+                    .frame(minHeight: 88)
+                    .font(.system(.footnote, design: .monospaced))
+                Button("使用配对 JSON 完成配对") {
+                    Task { await model.pairUsingOfferJSON() }
+                }
+                .disabled(model.isBusy || model.pairingOfferJSON.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
             Section("手动连接") {
                 TextField("主机", text: $model.host)
                     .textInputAutocapitalization(.never)

@@ -313,6 +313,7 @@ struct CompositionRoot {
         )
         RemoteHostProcessHolder.attach(
             catalog: service,
+            review: personalizationReview,
             hostAppVersion: BundleAppVersionProvider().currentVersion()
         )
         let fingerprintCompletion = FingerprintCompletionService(

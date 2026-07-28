@@ -24,9 +24,34 @@ public enum RemoteHTTPPaths {
     public static let tags = "/v1/tags"
     public static let assets = "/v1/assets"
     public static let tagDecisionsBatch = "/v1/tag-decisions/batch"
+    public static let tagSelection = "/v1/tags/selection"
+    public static let reviewQueue = "/v1/review/queue"
+    public static let reviewDecisionsBatch = "/v1/review/decisions/batch"
+    public static let jobs = "/v1/jobs"
+    public static let pairingOffer = "/v1/pairing/offer"
+    public static let pairingComplete = "/v1/pairing/complete"
+    public static let pairingRefresh = "/v1/pairing/token"
+    public static let pairingDevices = "/v1/pairing/devices"
+    public static let eventsWebSocket = "/v1/events/websocket"
+
+    public static func assetDetail(assetID: UUID) -> String {
+        "/v1/assets/\(assetID.uuidString)"
+    }
 
     public static func thumbnail(assetID: UUID) -> String {
         "/v1/assets/\(assetID.uuidString)/thumbnail"
+    }
+
+    public static func preview(assetID: UUID) -> String {
+        "/v1/assets/\(assetID.uuidString)/preview"
+    }
+
+    public static func jobAction(jobID: UUID) -> String {
+        "/v1/jobs/\(jobID.uuidString)/actions"
+    }
+
+    public static func pairingDevice(deviceID: UUID) -> String {
+        "/v1/pairing/devices/\(deviceID.uuidString)"
     }
 }
 

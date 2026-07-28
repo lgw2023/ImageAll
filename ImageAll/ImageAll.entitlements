@@ -14,5 +14,13 @@
 	<true/>
 	<key>com.apple.security.network.server</key>
 	<true/>
+	<!-- Required so the sandboxed app can create *permanent* Keychain items (the Remote
+	     Host's TLS private key, kSecAttrIsPermanent) via the modern Data Protection Keychain.
+	     Without this, SecKeyCreateRandomKey/SecItemAdd fail with errSecMissingEntitlement
+	     (-34018) and RemoteHostIdentity silently falls back to cleartext. -->
+	<key>keychain-access-groups</key>
+	<array>
+		<string>$(AppIdentifierPrefix)com.gwlee.ImageAll</string>
+	</array>
 </dict>
 </plist>

@@ -14,8 +14,33 @@ final class RemoteProtocolRoundTripTests: XCTestCase {
     func testCapabilitiesRoundTrip() throws {
         let original = RemoteCapabilities(
             hostAppVersion: "1.0.0-test",
-            capabilities: [.sources, .tags, .assetPages, .thumbnails, .tagDecisions],
-            listenPort: 8787
+            capabilities: [.sources, .tags, .assetPages, .thumbnails, .tagDecisions, .pairing, .events],
+            listenPort: 8787,
+            usesTLS: true,
+            hostID: UUID(uuidString: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
+            certificateFingerprintSHA256: "deadbeef"
+        )
+        try assertRoundTrip(original)
+    }
+
+    func testPairingOfferRoundTrip() throws {
+        let original = RemotePairingOffer(
+            hostID: UUID(uuidString: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")!,
+            hostDisplayName: "Studio",
+            listenPort: 8787,
+            usesTLS: true,
+            certificateFingerprintSHA256: "abc123",
+            pairingToken: "pair-token",
+            expiresAtMs: 1_700_000_000_000
+        )
+        try assertRoundTrip(original)
+    }
+
+    func testRemoteEventRoundTrip() throws {
+        let original = RemoteEvent(
+            kind: .jobsChanged,
+            emittedAtMs: 1_700_000_000_000,
+            jobID: UUID(uuidString: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")!
         )
         try assertRoundTrip(original)
     }

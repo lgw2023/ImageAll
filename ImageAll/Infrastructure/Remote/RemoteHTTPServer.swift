@@ -1,6 +1,8 @@
+import CryptoKit
 import Foundation
 import ImageAllRemoteProtocol
 import Network
+import Security
 import os
 
 struct RemoteHTTPParsedRequest: Sendable {
@@ -16,30 +18,44 @@ enum RemoteHTTPRequestParseResult: Sendable {
     case rejected(status: Int, error: RemoteAPIError)
 }
 
-/// Minimal HTTP/1.1 listener for the auxiliary iOS companion. Default off.
+/// HTTP/1.1 (+ WebSocket upgrade) listener for the auxiliary iOS companion. Default off;
+/// serves TLS when a `SecIdentity` is available, cleartext otherwise (Debug emergency path
+/// per ADR-044). Pairing completion/refresh are intentionally reachable without a bearer
+/// token; every other route requires either a paired device's access token or the legacy
+/// Debug static token.
 actor RemoteHTTPServer {
     static let defaultPort: UInt16 = 8787
     static let maximumRequestBytes = 256 * 1_024
     static let maximumHeaderBytes = 32 * 1_024
     static let requestTimeout: Duration = .seconds(15)
+    private static let webSocketGUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
     private let facade: RemoteCatalogFacade
-    private let accessToken: String
+    private let pairingStore: RemotePairingStore
+    private let eventBroker: RemoteEventBroker
+    private let secIdentity: SecIdentity?
     private let port: UInt16
     private let advertisementName: String
     private let logger = Logger(subsystem: "com.gwlee.ImageAll", category: "RemoteHTTPServer")
     private var listener: NWListener?
+    private var webSocketConnections: [ObjectIdentifier: NWConnection] = [:]
     private let jsonEncoder = JSONEncoder()
     private let jsonDecoder = JSONDecoder()
 
+    var usesTLS: Bool { secIdentity != nil }
+
     init(
         facade: RemoteCatalogFacade,
-        accessToken: String,
+        pairingStore: RemotePairingStore,
+        eventBroker: RemoteEventBroker,
+        secIdentity: SecIdentity? = nil,
         port: UInt16 = RemoteHTTPServer.defaultPort,
         advertisementName: String = RemoteHTTPServer.defaultAdvertisementName()
     ) {
         self.facade = facade
-        self.accessToken = accessToken
+        self.pairingStore = pairingStore
+        self.eventBroker = eventBroker
+        self.secIdentity = secIdentity
         self.port = port
         self.advertisementName = advertisementName
     }
@@ -53,8 +69,7 @@ actor RemoteHTTPServer {
 
     func start() throws {
         guard listener == nil else { return }
-        let parameters = NWParameters.tcp
-        parameters.allowLocalEndpointReuse = true
+        let parameters = Self.makeListenerParameters(secIdentity: secIdentity)
         let listener = try NWListener(using: parameters, on: NWEndpoint.Port(rawValue: port)!)
         listener.service = Self.makeBonjourService(name: advertisementName)
         listener.newConnectionHandler = { [weak self] connection in
@@ -66,13 +81,19 @@ actor RemoteHTTPServer {
         listener.start(queue: .global(qos: .utility))
         self.listener = listener
         logger.info(
-            "Remote host listening on port \(self.port, privacy: .public); Bonjour \(RemoteBonjour.serviceType, privacy: .public) as \(self.advertisementName, privacy: .public)"
+            "Remote host listening on port \(self.port, privacy: .public) (tls=\(self.usesTLS, privacy: .public)); Bonjour \(RemoteBonjour.serviceType, privacy: .public) as \(self.advertisementName, privacy: .public)"
         )
+        Task { await eventBroker.startPingLoop() }
     }
 
     func stop() {
         listener?.cancel()
         listener = nil
+        for connection in webSocketConnections.values {
+            connection.cancel()
+        }
+        webSocketConnections.removeAll()
+        Task { await eventBroker.stopPingLoop() }
     }
 
     static func defaultAdvertisementName() -> String {
@@ -93,6 +114,20 @@ actor RemoteHTTPServer {
         )
     }
 
+    private static func makeListenerParameters(secIdentity: SecIdentity?) -> NWParameters {
+        guard let secIdentity, let identity = sec_identity_create(secIdentity) else {
+            let parameters = NWParameters.tcp
+            parameters.allowLocalEndpointReuse = true
+            return parameters
+        }
+        let tlsOptions = NWProtocolTLS.Options()
+        sec_protocol_options_set_min_tls_protocol_version(tlsOptions.securityProtocolOptions, .TLSv12)
+        sec_protocol_options_set_local_identity(tlsOptions.securityProtocolOptions, identity)
+        let parameters = NWParameters(tls: tlsOptions, tcp: .init())
+        parameters.allowLocalEndpointReuse = true
+        return parameters
+    }
+
     private func handleListenerState(_ state: NWListener.State) {
         switch state {
         case .failed(let error):
@@ -106,14 +141,23 @@ actor RemoteHTTPServer {
 
     private func handle(connection: NWConnection) {
         connection.start(queue: .global(qos: .utility))
-        Task {
-            try? await Task.sleep(for: Self.requestTimeout)
+        let timeoutTask = Task {
+            // `try?` alone would swallow `CancellationError` from an *intentional* early
+            // `timeoutTask.cancel()` (once the request has already been handled) and fall
+            // through to `connection.cancel()` regardless — racing the in-flight response
+            // send and intermittently truncating it from the client's perspective. Only the
+            // full timeout elapsing (no throw) should cancel the connection here.
+            do {
+                try await Task.sleep(for: Self.requestTimeout)
+            } catch {
+                return
+            }
             connection.cancel()
         }
-        receiveRequest(on: connection, buffer: Data())
+        receiveRequest(on: connection, buffer: Data(), timeoutTask: timeoutTask)
     }
 
-    private func receiveRequest(on connection: NWConnection, buffer: Data) {
+    private func receiveRequest(on connection: NWConnection, buffer: Data, timeoutTask: Task<Void, Never>) {
         connection.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) { [weak self] data, _, isComplete, error in
             Task {
                 guard let self else {
@@ -122,6 +166,7 @@ actor RemoteHTTPServer {
                 }
                 if let error {
                     self.logger.error("Remote receive failed: \(String(describing: error), privacy: .public)")
+                    timeoutTask.cancel()
                     connection.cancel()
                     return
                 }
@@ -131,8 +176,9 @@ actor RemoteHTTPServer {
                 }
                 switch Self.parseRequest(buffer: next, isComplete: isComplete) {
                 case .incomplete:
-                    await self.receiveRequest(on: connection, buffer: next)
+                    await self.receiveRequest(on: connection, buffer: next, timeoutTask: timeoutTask)
                 case let .rejected(status, apiError):
+                    timeoutTask.cancel()
                     await self.respond(connection, status: status, error: apiError)
                 case let .request(request):
                     await self.route(
@@ -140,7 +186,8 @@ actor RemoteHTTPServer {
                         method: request.method,
                         pathAndQuery: request.pathAndQuery,
                         headers: request.headers,
-                        body: request.body
+                        body: request.body,
+                        timeoutTask: timeoutTask
                     )
                 }
             }
@@ -270,52 +317,134 @@ actor RemoteHTTPServer {
         )
     }
 
+    // MARK: - Routing
+
+    private static let unauthenticatedPaths: Set<String> = [
+        RemoteHTTPPaths.pairingComplete,
+        RemoteHTTPPaths.pairingRefresh,
+    ]
+
     private func route(
         connection: NWConnection,
         method: String,
         pathAndQuery: String,
         headers: [String: String],
-        body: Data
+        body: Data,
+        timeoutTask: Task<Void, Never>
     ) async {
-        guard authorize(headers: headers) else {
-            await respond(connection, status: 401, error: .init(code: .unauthorized, message: "invalid or missing bearer token"))
+        let (path, query) = Self.splitPathAndQuery(pathAndQuery)
+
+        if method == "GET",
+           path == RemoteHTTPPaths.eventsWebSocket,
+           Self.isWebSocketUpgrade(headers: headers) {
+            guard (await pairingStore.authenticate(bearer: bearerToken(headers: headers))).isAuthorized else {
+                timeoutTask.cancel()
+                await respond(connection, status: 401, error: .init(code: .unauthorized, message: "invalid or missing bearer token"))
+                return
+            }
+            guard let secWebSocketKey = headers["sec-websocket-key"] else {
+                timeoutTask.cancel()
+                await respond(connection, status: 400, error: .init(code: .badRequest, message: "missing Sec-WebSocket-Key"))
+                return
+            }
+            // WebSocket connections are long-lived by design: cancel the generic
+            // request-parse timeout before completing the handshake.
+            timeoutTask.cancel()
+            await upgradeToWebSocket(connection: connection, secWebSocketKey: secWebSocketKey)
             return
         }
 
-        let (path, query) = Self.splitPathAndQuery(pathAndQuery)
+        if !Self.unauthenticatedPaths.contains(path) {
+            guard (await pairingStore.authenticate(bearer: bearerToken(headers: headers))).isAuthorized else {
+                timeoutTask.cancel()
+                await respond(connection, status: 401, error: .init(code: .unauthorized, message: "invalid or missing bearer token"))
+                return
+            }
+        }
+
         do {
             switch (method, path) {
             case ("GET", RemoteHTTPPaths.capabilities):
                 let payload = await facade.capabilities()
-                await respondJSON(connection, status: 200, value: payload)
+                await respondJSON(connection, status: 200, value: payload, timeoutTask: timeoutTask)
             case ("GET", RemoteHTTPPaths.sources):
                 let payload = try await facade.fetchSources()
-                await respondJSON(connection, status: 200, value: payload)
+                await respondJSON(connection, status: 200, value: payload, timeoutTask: timeoutTask)
             case ("GET", RemoteHTTPPaths.tags):
                 let payload = try await facade.fetchTags()
-                await respondJSON(connection, status: 200, value: payload)
+                await respondJSON(connection, status: 200, value: payload, timeoutTask: timeoutTask)
             case ("GET", RemoteHTTPPaths.assets):
                 let request = Self.parseAssetPageRequest(query: query)
                 let payload = try await facade.fetchAssets(request)
-                await respondJSON(connection, status: 200, value: payload)
+                await respondJSON(connection, status: 200, value: payload, timeoutTask: timeoutTask)
             case ("POST", RemoteHTTPPaths.tagDecisionsBatch):
                 let request = try jsonDecoder.decode(RemoteBatchTagDecisionRequest.self, from: body)
                 let payload = try await facade.applyTagDecision(request)
-                await respondJSON(connection, status: 200, value: payload)
+                await respondJSON(connection, status: 200, value: payload, timeoutTask: timeoutTask)
+            case ("POST", RemoteHTTPPaths.tagSelection):
+                let request = try jsonDecoder.decode(RemoteTagSelectionRequest.self, from: body)
+                let payload = try await facade.selectionAggregate(request)
+                await respondJSON(connection, status: 200, value: payload, timeoutTask: timeoutTask)
+            case ("GET", RemoteHTTPPaths.reviewQueue):
+                let request = try Self.parseReviewQueueRequest(query: query)
+                let payload = try await facade.fetchReviewQueue(request)
+                await respondJSON(connection, status: 200, value: payload, timeoutTask: timeoutTask)
+            case ("POST", RemoteHTTPPaths.reviewDecisionsBatch):
+                let request = try jsonDecoder.decode(RemoteBatchReviewDecisionRequest.self, from: body)
+                let payload = try await facade.applyReviewDecision(request)
+                await respondJSON(connection, status: 200, value: payload, timeoutTask: timeoutTask)
+            case ("GET", RemoteHTTPPaths.jobs):
+                let payload = try await facade.fetchJobActivity()
+                await respondJSON(connection, status: 200, value: payload, timeoutTask: timeoutTask)
+            case ("GET", RemoteHTTPPaths.pairingOffer):
+                if let offer = await pairingStore.currentOffer() {
+                    await respondJSON(connection, status: 200, value: offer, timeoutTask: timeoutTask)
+                } else {
+                    await respond(connection, status: 404, error: .init(code: .notFound, message: "no active pairing offer"), timeoutTask: timeoutTask)
+                }
+            case ("POST", RemoteHTTPPaths.pairingComplete):
+                let request = try jsonDecoder.decode(RemotePairingCompleteRequest.self, from: body)
+                let payload = try await pairingStore.completePairing(request)
+                await respondJSON(connection, status: 200, value: payload, timeoutTask: timeoutTask)
+            case ("POST", RemoteHTTPPaths.pairingRefresh):
+                let request = try jsonDecoder.decode(RemoteTokenRefreshRequest.self, from: body)
+                let payload = try await pairingStore.refresh(request)
+                await respondJSON(connection, status: 200, value: payload, timeoutTask: timeoutTask)
+            case ("GET", RemoteHTTPPaths.pairingDevices):
+                let payload = await pairingStore.listDevices()
+                await respondJSON(connection, status: 200, value: payload, timeoutTask: timeoutTask)
             default:
                 if method == "GET", let assetID = Self.thumbnailAssetID(from: path) {
                     let width = Int(query["w"] ?? query["width"] ?? "320") ?? 320
                     let data = try await facade.loadThumbnail(assetID: assetID, targetPixelWidth: width)
-                    await respond(
-                        connection,
-                        status: 200,
-                        contentType: "image/jpeg",
-                        body: data
-                    )
+                    await respond(connection, status: 200, contentType: "image/jpeg", body: data, timeoutTask: timeoutTask)
+                } else if method == "GET", let assetID = Self.previewAssetID(from: path) {
+                    let data = try await facade.loadPreview(assetID: assetID)
+                    await respond(connection, status: 200, contentType: "image/jpeg", body: data, timeoutTask: timeoutTask)
+                } else if method == "GET", let assetID = Self.assetDetailID(from: path) {
+                    let payload = try await facade.fetchInspectorDetail(assetID: assetID)
+                    await respondJSON(connection, status: 200, value: payload, timeoutTask: timeoutTask)
+                } else if method == "POST", let jobID = Self.jobActionID(from: path) {
+                    let request = try jsonDecoder.decode(RemoteJobActionRequest.self, from: body)
+                    try await facade.applyJobActivityAction(jobID: jobID, request: request)
+                    await respondJSON(connection, status: 200, value: RemoteJobActionAcceptedResponse(jobID: jobID), timeoutTask: timeoutTask)
+                } else if method == "DELETE", let deviceID = Self.pairingDeviceID(from: path) {
+                    await pairingStore.revoke(deviceID: deviceID)
+                    await respond(connection, status: 204, contentType: "application/json", body: Data(), timeoutTask: timeoutTask)
                 } else {
-                    await respond(connection, status: 404, error: .init(code: .notFound, message: "unknown route"))
+                    await respond(connection, status: 404, error: .init(code: .notFound, message: "unknown route"), timeoutTask: timeoutTask)
                 }
             }
+        } catch is DecodingError {
+            await respond(connection, status: 400, error: .init(code: .badRequest, message: "malformed request body"), timeoutTask: timeoutTask)
+        } catch let pairingError as RemotePairingStore.PairingError {
+            let (status, code): (Int, RemoteAPIErrorCode) = {
+                switch pairingError {
+                case .noActiveOffer, .offerExpired, .invalidToken: (400, .badRequest)
+                case .unknownDevice, .invalidRefreshToken: (401, .unauthorized)
+                }
+            }()
+            await respond(connection, status: status, error: .init(code: code, message: String(describing: pairingError)), timeoutTask: timeoutTask)
         } catch let api as RemoteAPIError {
             let status: Int = {
                 switch api.code {
@@ -326,34 +455,124 @@ actor RemoteHTTPServer {
                 case .internalError: 500
                 }
             }()
-            await respond(connection, status: status, error: api)
+            await respond(connection, status: status, error: api, timeoutTask: timeoutTask)
         } catch {
             logger.error("Remote route failed: \(String(describing: error), privacy: .private)")
             await respond(
                 connection,
                 status: 500,
-                error: .init(code: .internalError, message: "internal server error")
+                error: .init(code: .internalError, message: "internal server error"),
+                timeoutTask: timeoutTask
             )
         }
     }
 
-    private func authorize(headers: [String: String]) -> Bool {
-        guard let value = headers["authorization"] else { return false }
+    private func bearerToken(headers: [String: String]) -> String {
+        guard let value = headers["authorization"] else { return "" }
         let prefix = RemoteHTTPHeaders.bearerPrefix
-        guard value.hasPrefix(prefix) else { return false }
-        let token = String(value.dropFirst(prefix.count))
-        return token == accessToken && !accessToken.isEmpty
+        guard value.hasPrefix(prefix) else { return "" }
+        return String(value.dropFirst(prefix.count))
     }
 
-    private func respondJSON<T: Encodable>(_ connection: NWConnection, status: Int, value: T) async {
+    // MARK: - WebSocket upgrade
+
+    private static func isWebSocketUpgrade(headers: [String: String]) -> Bool {
+        (headers["upgrade"]?.lowercased() == "websocket")
+            && (headers["connection"]?.lowercased().contains("upgrade") ?? false)
+    }
+
+    /// RFC 6455 §1.3 handshake accept value: base64(SHA-1(key + GUID)).
+    static func webSocketAcceptValue(secWebSocketKey: String) -> String {
+        let concatenated = secWebSocketKey + webSocketGUID
+        let digest = Insecure.SHA1.hash(data: Data(concatenated.utf8))
+        return Data(digest).base64EncodedString()
+    }
+
+    private func upgradeToWebSocket(connection: NWConnection, secWebSocketKey: String) async {
+        let accept = Self.webSocketAcceptValue(secWebSocketKey: secWebSocketKey)
+        var header = "HTTP/1.1 101 Switching Protocols\r\n"
+        header += "Upgrade: websocket\r\n"
+        header += "Connection: Upgrade\r\n"
+        header += "Sec-WebSocket-Accept: \(accept)\r\n\r\n"
+        let handshake = Data(header.utf8)
+        let sent = await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
+            connection.send(content: handshake, completion: .contentProcessed { error in
+                continuation.resume(returning: error == nil)
+            })
+        }
+        guard sent else {
+            connection.cancel()
+            return
+        }
+
+        let key = ObjectIdentifier(connection)
+        webSocketConnections[key] = connection
+        let subscriberID = await eventBroker.subscribe { event in
+            guard let data = try? JSONEncoder().encode(event) else { return }
+            let text = String(data: data, encoding: .utf8) ?? "{}"
+            let frame = Self.encodeWebSocketTextFrame(text)
+            connection.send(content: frame, completion: .contentProcessed { _ in })
+        }
+        logger.info("Remote WebSocket client connected (subscriberID=\(subscriberID.uuidString, privacy: .private))")
+        watchWebSocketConnection(connection, key: key, subscriberID: subscriberID)
+    }
+
+    /// Best-effort connection-close detection: the server does not need to interpret
+    /// client-sent WebSocket frames (this channel is server-push only), only notice when
+    /// the socket goes away so it can unsubscribe from the broker and stop retaining it.
+    private func watchWebSocketConnection(_ connection: NWConnection, key: ObjectIdentifier, subscriberID: RemoteEventBroker.SubscriberID) {
+        connection.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) { [weak self] _, _, isComplete, error in
+            Task {
+                guard let self else { return }
+                if isComplete || error != nil {
+                    await self.cleanupWebSocketConnection(key: key, subscriberID: subscriberID)
+                    connection.cancel()
+                } else {
+                    await self.watchWebSocketConnection(connection, key: key, subscriberID: subscriberID)
+                }
+            }
+        }
+    }
+
+    private func cleanupWebSocketConnection(key: ObjectIdentifier, subscriberID: RemoteEventBroker.SubscriberID) async {
+        webSocketConnections.removeValue(forKey: key)
+        await eventBroker.unsubscribe(subscriberID)
+    }
+
+    static func encodeWebSocketTextFrame(_ text: String) -> Data {
+        var frame = Data()
+        let payload = Data(text.utf8)
+        frame.append(0x81) // FIN=1, opcode=1 (text)
+        switch payload.count {
+        case 0...125:
+            frame.append(UInt8(payload.count))
+        case 126...65535:
+            frame.append(126)
+            frame.append(UInt8((payload.count >> 8) & 0xFF))
+            frame.append(UInt8(payload.count & 0xFF))
+        default:
+            frame.append(127)
+            for shift in stride(from: 56, through: 0, by: -8) {
+                frame.append(UInt8((payload.count >> shift) & 0xFF))
+            }
+        }
+        // Server-to-client frames are sent unmasked per RFC 6455 §5.1.
+        frame.append(payload)
+        return frame
+    }
+
+    // MARK: - Response helpers
+
+    private func respondJSON<T: Encodable>(_ connection: NWConnection, status: Int, value: T, timeoutTask: Task<Void, Never>) async {
         do {
             let data = try jsonEncoder.encode(value)
-            await respond(connection, status: status, contentType: "application/json", body: data)
+            await respond(connection, status: status, contentType: "application/json", body: data, timeoutTask: timeoutTask)
         } catch {
             await respond(
                 connection,
                 status: 500,
-                error: .init(code: .internalError, message: "encode failed")
+                error: .init(code: .internalError, message: "encode failed"),
+                timeoutTask: timeoutTask
             )
         }
     }
@@ -361,21 +580,25 @@ actor RemoteHTTPServer {
     private func respond(
         _ connection: NWConnection,
         status: Int,
-        error: RemoteAPIError
+        error: RemoteAPIError,
+        timeoutTask: Task<Void, Never>? = nil
     ) async {
         let data = (try? jsonEncoder.encode(error)) ?? Data(#"{"code":"internalError","message":"encode"}"#.utf8)
-        await respond(connection, status: status, contentType: "application/json", body: data)
+        await respond(connection, status: status, contentType: "application/json", body: data, timeoutTask: timeoutTask)
     }
 
     private func respond(
         _ connection: NWConnection,
         status: Int,
         contentType: String,
-        body: Data
+        body: Data,
+        timeoutTask: Task<Void, Never>? = nil
     ) async {
+        timeoutTask?.cancel()
         let reason: String = {
             switch status {
             case 200: "OK"
+            case 204: "No Content"
             case 400: "Bad Request"
             case 401: "Unauthorized"
             case 404: "Not Found"
@@ -390,12 +613,19 @@ actor RemoteHTTPServer {
         header += "Connection: close\r\n\r\n"
         var payload = Data(header.utf8)
         payload.append(body)
+        // `isComplete: true` with `.finalMessage` performs a graceful TCP half-close (FIN)
+        // once the response is flushed, rather than an abrupt reset.
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-            connection.send(content: payload, completion: .contentProcessed { _ in
-                connection.cancel()
-                continuation.resume()
-            })
+            connection.send(
+                content: payload,
+                contentContext: .finalMessage,
+                isComplete: true,
+                completion: .contentProcessed { _ in
+                    continuation.resume()
+                }
+            )
         }
+        connection.cancel()
     }
 
     private static func splitPathAndQuery(_ pathAndQuery: String) -> (String, [String: String]) {
@@ -428,17 +658,62 @@ actor RemoteHTTPServer {
         )
     }
 
+    private static func parseReviewQueueRequest(query: [String: String]) throws -> RemoteReviewQueueRequest {
+        guard let tagIDString = query["tagID"], let tagID = UUID(uuidString: tagIDString) else {
+            throw RemoteAPIError(code: .badRequest, message: "tagID is required")
+        }
+        let sourceIDs = (query["sourceIDs"] ?? "")
+            .split(separator: ",")
+            .compactMap { UUID(uuidString: String($0)) }
+        let limit = Int(query["limit"] ?? "40") ?? 40
+        return RemoteReviewQueueRequest(tagID: tagID, sourceIDs: sourceIDs, limit: limit, cursor: query["cursor"])
+    }
+
     private static func thumbnailAssetID(from path: String) -> UUID? {
         // /v1/assets/{uuid}/thumbnail
-        let parts = path.split(separator: "/").map(String.init)
-        guard parts.count == 4,
-              parts[0] == "v1",
-              parts[1] == "assets",
-              parts[3] == "thumbnail",
-              let id = UUID(uuidString: parts[2])
-        else {
-            return nil
-        }
-        return id
+        pathParameter(path, expectedSegments: ["v1", "assets", nil, "thumbnail"])
     }
+
+    private static func previewAssetID(from path: String) -> UUID? {
+        // /v1/assets/{uuid}/preview
+        pathParameter(path, expectedSegments: ["v1", "assets", nil, "preview"])
+    }
+
+    private static func assetDetailID(from path: String) -> UUID? {
+        // /v1/assets/{uuid}
+        pathParameter(path, expectedSegments: ["v1", "assets", nil])
+    }
+
+    private static func jobActionID(from path: String) -> UUID? {
+        // /v1/jobs/{uuid}/actions
+        pathParameter(path, expectedSegments: ["v1", "jobs", nil, "actions"])
+    }
+
+    private static func pairingDeviceID(from path: String) -> UUID? {
+        // /v1/pairing/devices/{uuid}
+        pathParameter(path, expectedSegments: ["v1", "pairing", "devices", nil])
+    }
+
+    /// Matches `path` against `expectedSegments` (nil marks the UUID slot) and returns
+    /// that UUID if every other segment matches exactly.
+    private static func pathParameter(_ path: String, expectedSegments: [String?]) -> UUID? {
+        let parts = path.split(separator: "/").map(String.init)
+        guard parts.count == expectedSegments.count else { return nil }
+        var found: UUID?
+        for (part, expected) in zip(parts, expectedSegments) {
+            if let expected {
+                guard part == expected else { return nil }
+            } else {
+                guard let id = UUID(uuidString: part) else { return nil }
+                found = id
+            }
+        }
+        return found
+    }
+}
+
+/// Minimal ack body for `POST /v1/jobs/{id}/actions`; the client already knows the action
+/// it requested, so this only confirms which job it applied to.
+private struct RemoteJobActionAcceptedResponse: Codable, Sendable {
+    let jobID: UUID
 }

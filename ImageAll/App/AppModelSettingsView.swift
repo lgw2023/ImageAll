@@ -176,84 +176,90 @@ struct AppModelSettingsView: View {
     @State private var showingOverrides = false
 
     var body: some View {
-        Form {
-            Section("界面") {
-                Picker(
-                    "工具栏显示",
-                    selection: Binding(
-                        get: { toolbarDisplayModeSettings.displayMode },
-                        set: { toolbarDisplayModeSettings.setDisplayMode($0) }
-                    )
-                ) {
-                    ForEach(LibraryToolbarDisplayMode.allCases, id: \.self) { mode in
-                        Text(mode.displayName).tag(mode)
+        TabView {
+            Form {
+                Section("界面") {
+                    Picker(
+                        "工具栏显示",
+                        selection: Binding(
+                            get: { toolbarDisplayModeSettings.displayMode },
+                            set: { toolbarDisplayModeSettings.setDisplayMode($0) }
+                        )
+                    ) {
+                        ForEach(LibraryToolbarDisplayMode.allCases, id: \.self) { mode in
+                            Text(mode.displayName).tag(mode)
+                        }
                     }
-                }
-                .pickerStyle(.segmented)
-                .accessibilityIdentifier("toolbarDisplayModePicker")
-                Text("选择顶部工具栏仅显示图标，或同时显示图标与功能名称。鼠标悬停时始终显示详细说明。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            Section("本地模型") {
-                Toggle(
-                    "启用 DINOv2 Small",
-                    isOn: Binding(get: { model.isEnabled }, set: { model.setEnabled($0) })
-                )
-                .accessibilityIdentifier("appModelEnabledToggle")
-                LabeledContent("状态") {
-                    HStack(spacing: 8) {
-                        if model.state == .validating { ProgressView().controlSize(.small) }
-                        Text(model.statusText)
-                    }
-                }
-                LabeledContent("模型", value: model.modelText)
-                LabeledContent("运行方式", value: model.runtimeText)
-                Text(model.detailText)
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            Section("性能") {
-                Toggle(
-                    "空闲时后台预热缓存",
-                    isOn: Binding(
-                        get: { idlePrewarmSettings.isEnabled },
-                        set: { idlePrewarmSettings.setEnabled($0) }
-                    )
-                )
-                .accessibilityIdentifier("idleThumbnailPrewarmToggle")
-                Text("默认开启。连续 3 分钟无操作后，会在后台为当前列表预热网格缩略图，并静默准备特征向量与本地模型嵌入缓存，供训练标签、建议队列与图库瘦身使用；任意操作立即让路给浏览。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            if model.hasSuggestionThresholdPort {
-                Section("建议阈值") {
-                    Text("三轨分数含义不同，请分别调节；默认 0 表示只要正分就可进队。分数不可横向比较。")
+                    .pickerStyle(.segmented)
+                    .accessibilityIdentifier("toolbarDisplayModePicker")
+                    Text("选择顶部工具栏仅显示图标，或同时显示图标与功能名称。鼠标悬停时始终显示详细说明。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
-                    thresholdStepper(title: "特征向量默认门槛", value: model.suggestionDefaults.featureKnn) {
-                        model.setSuggestionDefault(method: .featureKnn, minScore: $0)
+                }
+                Section("本地模型") {
+                    Toggle(
+                        "启用 DINOv2 Small",
+                        isOn: Binding(get: { model.isEnabled }, set: { model.setEnabled($0) })
+                    )
+                    .accessibilityIdentifier("appModelEnabledToggle")
+                    LabeledContent("状态") {
+                        HStack(spacing: 8) {
+                            if model.state == .validating { ProgressView().controlSize(.small) }
+                            Text(model.statusText)
+                        }
                     }
-                    thresholdStepper(title: "个人模型默认门槛", value: model.suggestionDefaults.personalCentroid) {
-                        model.setSuggestionDefault(method: .personalCentroid, minScore: $0)
-                    }
-                    thresholdStepper(title: "超级个人模型默认门槛", value: model.suggestionDefaults.personalAdamW) {
-                        model.setSuggestionDefault(method: .personalAdamW, minScore: $0)
-                    }
-                    Button("按标签覆盖…") {
-                        model.refreshSuggestionThresholds()
-                        showingOverrides = true
+                    LabeledContent("模型", value: model.modelText)
+                    LabeledContent("运行方式", value: model.runtimeText)
+                    Text(model.detailText)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Section("性能") {
+                    Toggle(
+                        "空闲时后台预热缓存",
+                        isOn: Binding(
+                            get: { idlePrewarmSettings.isEnabled },
+                            set: { idlePrewarmSettings.setEnabled($0) }
+                        )
+                    )
+                    .accessibilityIdentifier("idleThumbnailPrewarmToggle")
+                    Text("默认开启。连续 3 分钟无操作后，会在后台为当前列表预热网格缩略图，并静默准备特征向量与本地模型嵌入缓存，供训练标签、建议队列与图库瘦身使用；任意操作立即让路给浏览。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                if model.hasSuggestionThresholdPort {
+                    Section("建议阈值") {
+                        Text("三轨分数含义不同，请分别调节；默认 0 表示只要正分就可进队。分数不可横向比较。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        thresholdStepper(title: "特征向量默认门槛", value: model.suggestionDefaults.featureKnn) {
+                            model.setSuggestionDefault(method: .featureKnn, minScore: $0)
+                        }
+                        thresholdStepper(title: "个人模型默认门槛", value: model.suggestionDefaults.personalCentroid) {
+                            model.setSuggestionDefault(method: .personalCentroid, minScore: $0)
+                        }
+                        thresholdStepper(title: "超级个人模型默认门槛", value: model.suggestionDefaults.personalAdamW) {
+                            model.setSuggestionDefault(method: .personalAdamW, minScore: $0)
+                        }
+                        Button("按标签覆盖…") {
+                            model.refreshSuggestionThresholds()
+                            showingOverrides = true
+                        }
                     }
                 }
             }
+            .formStyle(.grouped)
+            .padding(12)
+            .tabItem { Label("通用", systemImage: "gearshape") }
+
+            RemoteHostSettingsView()
+                .tabItem { Label("移动 Host", systemImage: "iphone") }
         }
-        .formStyle(.grouped)
-        .padding(12)
-        .frame(width: 480, height: model.hasSuggestionThresholdPort ? 620 : 460)
+        .frame(minWidth: 520, minHeight: 420)
         .sheet(isPresented: $showingOverrides) { SuggestionThresholdOverridesSheet(model: model) }
         .onAppear {
             model.refreshSuggestionThresholds()
