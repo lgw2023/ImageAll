@@ -920,6 +920,7 @@ final class LibraryWorkspaceModel: ObservableObject {
     @Published private(set) var hasCompletedLibrarySlimmingScan = false
     @Published private(set) var librarySlimmingWorkspaceTab: LibrarySlimmingWorkspaceTab = .clusters
     @Published private(set) var librarySlimmingRecycleEntries: [RecycleEntryRecord] = []
+    @Published private var librarySlimmingThumbnailReloadVersions: [UUID: Int] = [:]
     @Published private(set) var librarySlimmingSceneThresholds = NearDuplicateSceneThresholds.factory
     @Published private(set) var sourceSimilarityIndexStatus: SourceSimilarityIndexStatus?
     @Published private(set) var isInitializingSourceSimilarityIndex = false
@@ -1618,6 +1619,9 @@ final class LibraryWorkspaceModel: ObservableObject {
             try await Self.offMain {
                 try recycle.restore(entryID: entryID)
             }
+            if let entry {
+                markLibrarySlimmingThumbnailForReload(entry.assetID)
+            }
             librarySlimmingStatusMessage = "已从回收站恢复"
             await refreshLibrarySlimmingRecycleEntries()
         } catch LibrarySlimmingRecycleError.photosRestoreRequiresPhotosApp {
@@ -1643,6 +1647,9 @@ final class LibraryWorkspaceModel: ObservableObject {
                 try await Self.offMain {
                     try recycle.restore(entryID: entryID)
                 }
+                if let entry {
+                    markLibrarySlimmingThumbnailForReload(entry.assetID)
+                }
                 librarySlimmingStatusMessage = "已从回收站恢复"
                 await refreshLibrarySlimmingRecycleEntries()
             } catch LibrarySlimmingRecycleError.restoreConflict {
@@ -1659,6 +1666,14 @@ final class LibraryWorkspaceModel: ObservableObject {
         } catch {
             librarySlimmingStatusMessage = "恢复失败：\(error.localizedDescription)"
         }
+    }
+
+    func librarySlimmingThumbnailReloadVersion(for assetID: UUID) -> Int {
+        librarySlimmingThumbnailReloadVersions[assetID, default: 0]
+    }
+
+    private func markLibrarySlimmingThumbnailForReload(_ assetID: UUID) {
+        librarySlimmingThumbnailReloadVersions[assetID, default: 0] &+= 1
     }
 
     func purgeLibrarySlimmingRecycleEntry(_ entryID: UUID) async {

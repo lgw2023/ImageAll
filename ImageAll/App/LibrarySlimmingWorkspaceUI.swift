@@ -751,6 +751,7 @@ private struct SlimmingThumbnailCell: View {
     let assetID: UUID
     var isSelected: Bool = false
     @State private var image: NSImage?
+    @State private var loadState: SlimmingThumbnailLoadState = .loading
 
     var body: some View {
         GeometryReader { proxy in
@@ -763,8 +764,15 @@ private struct SlimmingThumbnailCell: View {
                         .scaledToFill()
                         .frame(width: proxy.size.width, height: proxy.size.height)
                 } else {
-                    ProgressView()
-                        .controlSize(.small)
+                    switch loadState {
+                    case .loading:
+                        ProgressView()
+                            .controlSize(.small)
+                    case let .placeholder(symbol):
+                        Image(systemName: symbol)
+                            .font(.title2)
+                            .foregroundStyle(.secondary)
+                    }
                 }
             }
             .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
@@ -774,13 +782,46 @@ private struct SlimmingThumbnailCell: View {
             )
         }
         .aspectRatio(1, contentMode: .fit)
-        .task(id: assetID) {
-            let data = await model.thumbnailData(assetID: assetID)
-            if let data {
-                image = LibraryGridThumbnailImageFactory.image(from: data)
+        .task(id: loadID) {
+            image = nil
+            loadState = .loading
+            switch await model.loadThumbnailResultWithRetry(assetID: assetID) {
+            case let .loaded(data):
+                guard !Task.isCancelled else { return }
+                if let decoded = LibraryGridThumbnailImageFactory.image(from: data) {
+                    image = decoded
+                } else {
+                    loadState = .placeholder(symbol: "exclamationmark.triangle")
+                }
+            case .cloudOnly:
+                loadState = .placeholder(symbol: "icloud.and.arrow.down")
+            case .unavailable:
+                loadState = .placeholder(symbol: "photo")
+            case .failed:
+                loadState = .placeholder(symbol: "exclamationmark.triangle")
+            case .cancelled:
+                guard !Task.isCancelled else { return }
+                loadState = .placeholder(symbol: "photo")
             }
         }
     }
+
+    private var loadID: SlimmingThumbnailLoadID {
+        SlimmingThumbnailLoadID(
+            assetID: assetID,
+            restoreVersion: model.librarySlimmingThumbnailReloadVersion(for: assetID)
+        )
+    }
+}
+
+private enum SlimmingThumbnailLoadState: Equatable {
+    case loading
+    case placeholder(symbol: String)
+}
+
+private struct SlimmingThumbnailLoadID: Hashable {
+    let assetID: UUID
+    let restoreVersion: Int
 }
 
 private struct LibrarySlimmingMoveToRecycleConfirmationSheet: View {

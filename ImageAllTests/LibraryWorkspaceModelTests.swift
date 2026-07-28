@@ -4174,11 +4174,12 @@ final class LibraryWorkspaceModelTests: XCTestCase {
     func testLibrarySlimmingRestoreRequestsWriteAuthorizationAndRetries() async {
         let sourceID = UUID()
         let entryID = UUID()
+        let assetID = UUID()
         let recycle = FakeLibrarySlimmingRecyclePort(
             entries: [
                 RecycleEntryRecord(
                     id: entryID,
-                    assetID: UUID(),
+                    assetID: assetID,
                     sourceID: sourceID,
                     sourceKind: .file,
                     trashedAtMs: 1,
@@ -4208,12 +4209,18 @@ final class LibraryWorkspaceModelTests: XCTestCase {
             idlePrewarmInstallEventMonitor: false
         )
         await model.refreshLibrarySlimmingRecycleEntries()
+        let thumbnailReloadVersionBeforeRestore =
+            model.librarySlimmingThumbnailReloadVersion(for: assetID)
 
         await model.restoreLibrarySlimmingRecycleEntry(entryID)
 
         XCTAssertEqual(recycle.restoreEntryIDCalls, [entryID, entryID])
         XCTAssertEqual(mutationAuthorization.authorizedSourceIDs, [sourceID])
         XCTAssertEqual(model.librarySlimmingStatusMessage, "已从回收站恢复")
+        XCTAssertGreaterThan(
+            model.librarySlimmingThumbnailReloadVersion(for: assetID),
+            thumbnailReloadVersionBeforeRestore
+        )
     }
 
     func testApplicationDidBecomeActiveRecoversAndRunsRecycleMaintenance() async {
