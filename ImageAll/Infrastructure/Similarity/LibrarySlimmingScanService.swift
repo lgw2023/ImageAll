@@ -597,7 +597,7 @@ enum LibrarySlimmingAnalysisJobFactory {
     static let checkpointVersion = 1
     static let priority = 10
     static let maxAttempts = 5
-    static let fingerprintBatchSize = 1
+    static let fingerprintBatchSize = 16
     static let vectorBatchSize = 16
     static let automaticCompletionPasses = 3
     static let leaseDurationMs: Int64 = 10 * 60 * 1_000
@@ -992,6 +992,10 @@ private struct LibrarySlimmingAnalysisHandler: LeaseBoundJobHandler {
                     if batch.isEmpty {
                         state.phase = .vectors
                         state.nextOrdinal = 0
+                        (featureLoader as? SlimmingBudgetResetting)?
+                            .resetScanBudgets(forAssetCount: total)
+                        (embeddingLoader as? SlimmingBudgetResetting)?
+                            .resetScanBudgets(forAssetCount: total)
                         continue
                     }
                     for member in batch {
@@ -1017,10 +1021,6 @@ private struct LibrarySlimmingAnalysisHandler: LeaseBoundJobHandler {
                         state.nextOrdinal = 0
                         continue
                     }
-                    (featureLoader as? SlimmingBudgetResetting)?
-                        .resetScanBudgets(forAssetCount: batch.count)
-                    (embeddingLoader as? SlimmingBudgetResetting)?
-                        .resetScanBudgets(forAssetCount: batch.count)
                     for member in batch {
                         guard (try? featureLoader.featureVector(assetID: member.assetID)) != nil else {
                             continue

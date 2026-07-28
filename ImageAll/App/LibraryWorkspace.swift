@@ -900,7 +900,13 @@ final class LibraryWorkspaceModel: ObservableObject {
 
     var canResumeLibrarySlimmingAnalysis: Bool {
         guard let selected = selectedLibrarySlimmingAnalysisJob else { return false }
-        return selected.state == .paused || selected.state == .retryableFailed
+        guard !selected.hasResult else { return false }
+        switch selected.state {
+        case .pending, .paused, .retryableFailed:
+            return true
+        case .running, .completed, .terminalFailed, .cancelled:
+            return false
+        }
     }
 
     var canDeleteSelectedLibrarySlimmingAnalysisJob: Bool {
@@ -1114,11 +1120,6 @@ final class LibraryWorkspaceModel: ObservableObject {
         }
     }
 
-    var librarySlimmingComparisonAssetIDs: [UUID] {
-        guard let cluster = selectedLibrarySlimmingCluster else { return [] }
-        return cluster.memberAssetIDs.filter { selectedLibrarySlimmingMemberIDs.contains($0) }
-    }
-
     var canFindLibrarySlimmingFromSelection: Bool {
         supportsLibrarySlimming && !selectedAssetIDs.isEmpty
     }
@@ -1217,10 +1218,20 @@ final class LibraryWorkspaceModel: ObservableObject {
     }
 
     var canMoveSelectedLibrarySlimmingMembersToRecycle: Bool {
-        supportsLibrarySlimmingRecycle
-            && !selectedLibrarySlimmingMemberIDs.isEmpty
-            && !isMutatingLibrarySlimmingRecycle
-            && !isAnalyzingLibrarySlimming
+        librarySlimmingMoveToRecycleDisabledReason == nil
+    }
+
+    var librarySlimmingMoveToRecycleDisabledReason: String? {
+        if !supportsLibrarySlimmingRecycle {
+            return "回收站服务未就绪"
+        }
+        if selectedLibrarySlimmingMemberIDs.isEmpty {
+            return "请先选择要移入回收站的照片"
+        }
+        if isMutatingLibrarySlimmingRecycle {
+            return "正在移入回收站…"
+        }
+        return nil
     }
 
     func moveSelectedLibrarySlimmingMembersToRecycle() async {
@@ -1574,12 +1585,16 @@ final class LibraryWorkspaceModel: ObservableObject {
         }
         isAnalyzingLibrarySlimming = true
         do {
-            let resumed = try await Self.offMain {
-                try analysis.resume(jobID: jobID)
+            if let selected = selectedLibrarySlimmingAnalysisJob,
+               selected.state == .paused || selected.state == .retryableFailed
+            {
+                let resumed = try await Self.offMain {
+                    try analysis.resume(jobID: jobID)
+                }
+                await refreshLibrarySlimmingAnalysisJobs()
+                applyLibrarySlimmingJobSnapshot(resumed, forceSelect: false)
             }
-            await refreshLibrarySlimmingAnalysisJobs()
-            applyLibrarySlimmingJobSnapshot(resumed, forceSelect: false)
-            librarySlimmingStatusMessage = "正在从上次进度继续并自动补全…"
+            librarySlimmingStatusMessage = "正在从已保存进度继续并自动补全…"
             librarySlimmingAnalysisJobState = .running
             try await Self.offMain(priority: .utility) {
                 try analysis.runPending()
@@ -1612,14 +1627,17 @@ final class LibraryWorkspaceModel: ObservableObject {
         if isSelected {
             librarySlimmingAnalysisJobState = snapshot.state
             librarySlimmingAnalysisControlRequest = snapshot.controlRequest
-            if let total = snapshot.progress.total, total > 0 {
-                librarySlimmingScanProgress = LibrarySlimmingScanProgress(
-                    phase: snapshot.progress.completed >= total - 1
-                        ? .clustering
-                        : .loadingFeaturePrints,
-                    completed: snapshot.progress.completed,
-                    total: total
-                )
+            let memberCount = librarySlimmingAnalysisJobs
+                .first(where: { $0.id == snapshot.jobID })?.memberCount ?? 0
+            if let mapped = LibrarySlimmingJobProgressPresentation.scanProgress(
+                completed: snapshot.progress.completed,
+                progressTotal: snapshot.progress.total ?? 0,
+                memberCount: memberCount
+            ) {
+                librarySlimmingScanProgress = mapped
+                if snapshot.state == .running || snapshot.state == .pending {
+                    librarySlimmingStatusMessage = mapped.caption
+                }
             } else if snapshot.state != .running && snapshot.state != .pending {
                 librarySlimmingScanProgress = nil
             }

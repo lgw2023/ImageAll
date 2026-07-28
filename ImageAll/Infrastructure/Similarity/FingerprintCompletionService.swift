@@ -8,6 +8,8 @@ struct FingerprintCompletionService: FingerprintCompletionPort {
     let sourceReader: DerivedImageSourceReader
     let photosOriginals: (any PhotosOriginalContentPort)?
     let photosOriginalCache: PhotosOriginalCacheService?
+    let photosFeatureImages: (any PhotosFeaturePrintImagePort)?
+    let downloadedPreviews: (any DownloadedPreviewCachePort)?
     let clock: any JobClock
     let assetRepository: GRDBDerivedImageCacheRepository
 
@@ -17,6 +19,8 @@ struct FingerprintCompletionService: FingerprintCompletionPort {
         sourceReader: DerivedImageSourceReader = DerivedImageSourceReader(),
         photosOriginals: (any PhotosOriginalContentPort)? = nil,
         photosOriginalCache: PhotosOriginalCacheService? = nil,
+        photosFeatureImages: (any PhotosFeaturePrintImagePort)? = nil,
+        downloadedPreviews: (any DownloadedPreviewCachePort)? = nil,
         clock: any JobClock,
         assetRepository: GRDBDerivedImageCacheRepository? = nil
     ) {
@@ -25,6 +29,8 @@ struct FingerprintCompletionService: FingerprintCompletionPort {
         self.sourceReader = sourceReader
         self.photosOriginals = photosOriginals
         self.photosOriginalCache = photosOriginalCache
+        self.photosFeatureImages = photosFeatureImages
+        self.downloadedPreviews = downloadedPreviews
         self.clock = clock
         self.assetRepository = assetRepository ?? GRDBDerivedImageCacheRepository(database: database)
     }
@@ -320,6 +326,13 @@ struct FingerprintCompletionService: FingerprintCompletionPort {
         let mediaType: String
     }
 
+    private enum PhotosSourceBytesOrigin: Equatable {
+        case durableCache
+        case localOriginal
+        case previewCache
+        case localFeatureImage
+    }
+
     private func completePhotosAsset(assetID: UUID) throws -> AssetContentFingerprint {
         let context = try loadPhotosContext(assetID: assetID)
         if let existing = try loadCompletedFingerprint(
@@ -328,33 +341,17 @@ struct FingerprintCompletionService: FingerprintCompletionPort {
         ) {
             return existing
         }
-        guard let photosOriginals, let photosOriginalCache else {
+        guard photosOriginals != nil
+            || photosOriginalCache != nil
+            || photosFeatureImages != nil
+            || downloadedPreviews != nil
+        else {
             throw FingerprintCompletionError.ineligible
         }
 
-        let bytes: Data
+        let loaded: (bytes: Data, origin: PhotosSourceBytesOrigin)
         do {
-            if let cached = try photosOriginalCache.load(
-                assetID: assetID,
-                contentRevision: context.contentRevision,
-                localIdentifier: context.localIdentifier
-            ) {
-                bytes = cached
-            } else {
-                let downloaded = try photosOriginals.requestOriginalImageData(
-                    localIdentifier: context.localIdentifier
-                )
-                guard !downloaded.isEmpty else {
-                    throw FingerprintCompletionError.sourceUnavailable
-                }
-                bytes = try photosOriginalCache.store(
-                    assetID: assetID,
-                    contentRevision: context.contentRevision,
-                    localIdentifier: context.localIdentifier,
-                    mediaType: context.mediaType,
-                    sourceBytes: downloaded
-                )
-            }
+            loaded = try loadPhotosSourceBytes(assetID: assetID, context: context)
         } catch let error as FingerprintCompletionError {
             throw error
         } catch let error as PhotosLibraryError {
@@ -366,6 +363,21 @@ struct FingerprintCompletionService: FingerprintCompletionPort {
             }
         } catch {
             throw FingerprintCompletionError.persistenceFailed
+        }
+        let bytes = loaded.bytes
+        guard !bytes.isEmpty else {
+            throw FingerprintCompletionError.sourceUnavailable
+        }
+        if loaded.origin == .localOriginal,
+           let photosOriginalCache
+        {
+            _ = try? photosOriginalCache.store(
+                assetID: assetID,
+                contentRevision: context.contentRevision,
+                localIdentifier: context.localIdentifier,
+                mediaType: context.mediaType,
+                sourceBytes: bytes
+            )
         }
 
         let sha256 = Data(SHA256.hash(data: bytes))
@@ -404,6 +416,67 @@ struct FingerprintCompletionService: FingerprintCompletionPort {
             pixelHeight: analysis.pixelHeight,
             perceptualAlgoVersion: IdenticalDuplicatePolicy.perceptualAlgoVersion
         )
+    }
+
+    private func loadPhotosSourceBytes(
+        assetID: UUID,
+        context: PhotosCompletionContext
+    ) throws -> (bytes: Data, origin: PhotosSourceBytesOrigin) {
+        if let photosOriginalCache,
+           let cached = try photosOriginalCache.load(
+               assetID: assetID,
+               contentRevision: context.contentRevision,
+               localIdentifier: context.localIdentifier
+           ),
+           !cached.isEmpty
+        {
+            return (cached, .durableCache)
+        }
+
+        if let photosOriginals {
+            do {
+                let local = try photosOriginals.requestOriginalImageData(
+                    localIdentifier: context.localIdentifier
+                )
+                if !local.isEmpty {
+                    return (local, .localOriginal)
+                }
+            } catch let error as PhotosLibraryError {
+                switch error {
+                case .authorizationDenied, .authorizationRestricted:
+                    throw FingerprintCompletionError.authorizationRequired
+                case .cloudOnly, .libraryUnavailable, .changeTokenInvalid, .persistenceFailure:
+                    break
+                }
+            }
+        }
+
+        if let downloadedPreviews,
+           let preview = try downloadedPreviews.loadDownloadedPreview(assetID: assetID),
+           !preview.isEmpty
+        {
+            return (preview, .previewCache)
+        }
+
+        if let photosFeatureImages {
+            do {
+                let feature = try photosFeatureImages.requestLocalFeatureImage(
+                    localIdentifier: context.localIdentifier
+                )
+                if !feature.isEmpty {
+                    return (feature, .localFeatureImage)
+                }
+            } catch let error as PhotosLibraryError {
+                switch error {
+                case .authorizationDenied, .authorizationRestricted:
+                    throw FingerprintCompletionError.authorizationRequired
+                case .cloudOnly, .libraryUnavailable, .changeTokenInvalid, .persistenceFailure:
+                    break
+                }
+            }
+        }
+
+        throw FingerprintCompletionError.sourceUnavailable
     }
 
     private func loadPhotosContext(assetID: UUID) throws -> PhotosCompletionContext {

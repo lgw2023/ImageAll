@@ -114,6 +114,7 @@ struct LibrarySlimmingAnalysisJobPresentation: Identifiable, Equatable, Sendable
 struct LibrarySlimmingWorkspaceView: View {
     @ObservedObject var model: LibraryWorkspaceModel
     let onReturnToLibrary: () -> Void
+    @FocusState private var keyboardFocused: Bool
     @State private var confirmMoveToRecycle = false
     @State private var confirmPurgeEntryID: UUID?
 
@@ -153,6 +154,12 @@ struct LibrarySlimmingWorkspaceView: View {
         }
         .navigationTitle("图库瘦身")
         .accessibilityLabel("图库瘦身工作台")
+        .focusable()
+        .focused($keyboardFocused)
+        .focusEffectDisabled()
+        .onAppear { keyboardFocused = true }
+        .onKeyPress(.delete, action: handleMoveToRecycleKeyPress)
+        .onKeyPress(.deleteForward, action: handleMoveToRecycleKeyPress)
         .task {
             await model.refreshLibrarySlimmingAnalysisJobs()
             await model.refreshSourceSimilarityIndexStatus()
@@ -267,6 +274,26 @@ struct LibrarySlimmingWorkspaceView: View {
                 .help("永久删除当前选中的分析任务与结果")
             }
 
+            if model.selectedLibrarySlimmingCluster != nil {
+                Button(role: .destructive) {
+                    confirmMoveToRecycle = true
+                } label: {
+                    if model.selectedLibrarySlimmingMemberIDs.isEmpty {
+                        Label("移入回收站", systemImage: "trash.slash")
+                    } else {
+                        Label(
+                            "移入回收站 (\(model.selectedLibrarySlimmingMemberIDs.count))",
+                            systemImage: "trash.slash"
+                        )
+                    }
+                }
+                .disabled(!model.canMoveSelectedLibrarySlimmingMembersToRecycle)
+                .help(
+                    model.librarySlimmingMoveToRecycleDisabledReason
+                        ?? "将簇内选中的照片移入回收站（⌫ / Delete 或右键菜单）"
+                )
+            }
+
             if model.librarySlimmingPendingCount > 0 {
                 Text("待分析 \(model.librarySlimmingPendingCount) 张")
                     .foregroundStyle(.secondary)
@@ -339,6 +366,24 @@ struct LibrarySlimmingWorkspaceView: View {
         case .currentFilter: "模式：当前筛选"
         case .seeds: "模式：种子检索"
         }
+    }
+
+    private func handleMoveToRecycleKeyPress() -> KeyPress.Result {
+        guard model.librarySlimmingWorkspaceTab == .clusters,
+              model.canMoveSelectedLibrarySlimmingMembersToRecycle
+        else { return .ignored }
+        confirmMoveToRecycle = true
+        return .handled
+    }
+
+    private func presentMoveToRecycle(for assetID: UUID) {
+        if model.selectedLibrarySlimmingMemberIDs.contains(assetID) {
+            // Keep the current multi-selection.
+        } else {
+            model.selectLibrarySlimmingMember(assetID, additive: false)
+        }
+        guard model.canMoveSelectedLibrarySlimmingMembersToRecycle else { return }
+        confirmMoveToRecycle = true
     }
 
     private func progressBanner(_ progress: LibrarySlimmingScanProgress) -> some View {
@@ -417,8 +462,16 @@ struct LibrarySlimmingWorkspaceView: View {
                         Text("本次分析未发现相同或相似簇。")
                             .font(.caption)
                             .foregroundStyle(.secondary)
+                    } else if model.canResumeLibrarySlimmingAnalysis {
+                        Text("该任务尚无结果。若进度长时间不动，请点击工具栏「继续当前」。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else if model.isAnalyzingLibrarySlimming {
+                        Text("该任务尚无结果，正在后台处理…")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     } else {
-                        Text("该任务尚无结果，可等待完成或点击「继续当前」。")
+                        Text("该任务尚无结果。")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -468,30 +521,11 @@ struct LibrarySlimmingWorkspaceView: View {
                     .padding(.top, 12)
 
                     Text(
-                        "成员 \(cluster.memberAssetIDs.count) · 已选 \(model.selectedLibrarySlimmingMemberIDs.count) · ⌘点击多选对比"
+                        "成员 \(cluster.memberAssetIDs.count) · 已选 \(model.selectedLibrarySlimmingMemberIDs.count) · ⌘点击多选"
                     )
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .padding(.horizontal, 16)
-
-                    if model.canMoveSelectedLibrarySlimmingMembersToRecycle {
-                        Button(role: .destructive) {
-                            confirmMoveToRecycle = true
-                        } label: {
-                            Label(
-                                "移入回收站 (\(model.selectedLibrarySlimmingMemberIDs.count))",
-                                systemImage: "trash"
-                            )
-                        }
-                        .disabled(model.isMutatingLibrarySlimmingRecycle)
-                        .padding(.horizontal, 16)
-                        .help("确认后将选中资产移入回收站（文件夹走应用 quarantine；Photos 经 PhotoKit 进入系统最近删除）")
-                    }
-
-                    if model.librarySlimmingComparisonAssetIDs.count >= 2 {
-                        comparisonStrip
-                            .padding(.horizontal, 16)
-                    }
 
                     GeometryReader { proxy in
                         ScrollView {
@@ -515,6 +549,9 @@ struct LibrarySlimmingWorkspaceView: View {
                                             additive: flags.contains(.command)
                                         )
                                     }
+                                    .contextMenu {
+                                        moveToRecycleContextMenu(for: assetID)
+                                    }
                                 }
                             }
                             .padding(LibraryGridLayout.horizontalPadding)
@@ -535,16 +572,15 @@ struct LibrarySlimmingWorkspaceView: View {
         }
     }
 
-    private var comparisonStrip: some View {
-        ScrollView(.horizontal, showsIndicators: true) {
-            HStack(alignment: .top, spacing: 12) {
-                ForEach(model.librarySlimmingComparisonAssetIDs, id: \.self) { assetID in
-                    SlimmingPreviewCell(model: model, assetID: assetID)
-                        .frame(width: 280, height: 220)
-                }
-            }
+    @ViewBuilder
+    private func moveToRecycleContextMenu(for assetID: UUID) -> some View {
+        let moveCount = model.selectedLibrarySlimmingMemberIDs.contains(assetID)
+            ? model.selectedLibrarySlimmingMemberIDs.count
+            : 1
+        Button("移入回收站 (\(moveCount))", role: .destructive) {
+            presentMoveToRecycle(for: assetID)
         }
-        .accessibilityLabel("簇内对比预览")
+        .disabled(!model.supportsLibrarySlimmingRecycle || model.isMutatingLibrarySlimmingRecycle)
     }
 
     private var recycleBinList: some View {
@@ -654,7 +690,7 @@ struct LibrarySlimmingInspectorView: View {
                 Divider()
                 LabeledContent("类型", value: cluster.kindTitle)
                 LabeledContent("成员", value: "\(cluster.memberAssetIDs.count)")
-                LabeledContent("已选对比", value: "\(model.selectedLibrarySlimmingMemberIDs.count)")
+                LabeledContent("已选", value: "\(model.selectedLibrarySlimmingMemberIDs.count)")
                 LabeledContent("分数", value: cluster.scoreCaption)
             }
             if model.librarySlimmingPendingCount > 0 {
@@ -700,33 +736,6 @@ private struct SlimmingThumbnailCell: View {
         .aspectRatio(1, contentMode: .fit)
         .task(id: assetID) {
             let data = await model.thumbnailData(assetID: assetID)
-            if let data {
-                image = LibraryGridThumbnailImageFactory.image(from: data)
-            }
-        }
-    }
-}
-
-private struct SlimmingPreviewCell: View {
-    @ObservedObject var model: LibraryWorkspaceModel
-    let assetID: UUID
-    @State private var image: NSImage?
-
-    var body: some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(Color.secondary.opacity(0.1))
-            if let image {
-                Image(nsImage: image)
-                    .resizable()
-                    .aspectRatio(contentMode: .fit)
-            } else {
-                ProgressView()
-            }
-        }
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .task(id: assetID) {
-            let data = await model.previewData(assetID: assetID)
             if let data {
                 image = LibraryGridThumbnailImageFactory.image(from: data)
             }

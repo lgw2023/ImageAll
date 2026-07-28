@@ -320,6 +320,8 @@ struct CompositionRoot {
             sourceAccess: sourceAccess,
             photosOriginals: photosAccess,
             photosOriginalCache: photosOriginalCache,
+            photosFeatureImages: photosAccess,
+            downloadedPreviews: featureInputImages,
             clock: clock
         )
         let featurePrintInputLoader = LibraryFeaturePrintInputLoader(

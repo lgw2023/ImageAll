@@ -3883,7 +3883,7 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertEqual(model.librarySlimmingAnalyzeMode, .seeds)
     }
 
-    func testLibrarySlimmingMemberMultiSelectTracksComparisonIDs() async {
+    func testLibrarySlimmingMemberMultiSelectTracksSelection() async {
         let sourceID = UUID()
         let asset = Self.makeAsset(sourceID: sourceID, fileName: "gallery.jpg")
         let service = FakeLibraryWorkspaceService(
@@ -3921,7 +3921,53 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         model.selectLibrarySlimmingMember(a, additive: false)
         model.selectLibrarySlimmingMember(b, additive: true)
         XCTAssertEqual(model.selectedLibrarySlimmingMemberIDs, Set([a, b]))
-        XCTAssertEqual(model.librarySlimmingComparisonAssetIDs, [a, b])
+    }
+
+    func testLibrarySlimmingMoveToRecycleDisabledReasonRequiresSelection() async {
+        let sourceID = UUID()
+        let asset = Self.makeAsset(sourceID: sourceID, fileName: "gallery.jpg")
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: sourceID,
+                displayName: "Fixture",
+                state: .active
+            ),
+            reconciledItems: [asset],
+            initialItems: [asset]
+        )
+        let a = UUID(uuidString: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")!
+        let b = UUID(uuidString: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")!
+        let cluster = SlimmingCluster(
+            id: UUID(),
+            kind: .nearDuplicateScene,
+            memberAssetIDs: [a, b],
+            representativeAssetID: a,
+            score: 0.95,
+            modelIdentity: .featurePrintOnly
+        )
+        let stub = StubLibrarySlimmingScanPort()
+        stub.seedClusters = [cluster]
+        let recycle = FakeLibrarySlimmingRecyclePort()
+        let model = LibraryWorkspaceModel(
+            service: service,
+            librarySlimming: stub,
+            librarySlimmingRecycle: recycle
+        )
+        await model.start()
+        await model.connectFolder()
+        await waitForCatalogScanToFinish(model)
+        await model.selectAssets(Set([asset.assetID]), additive: false)
+        await model.findLibrarySlimmingFromSelection()
+        await model.analyzeLibrarySlimming(mode: .seeds)
+        model.selectLibrarySlimmingCluster(cluster.id)
+
+        XCTAssertEqual(
+            model.librarySlimmingMoveToRecycleDisabledReason,
+            "请先选择要移入回收站的照片"
+        )
+        model.selectLibrarySlimmingMember(a, additive: false)
+        XCTAssertNil(model.librarySlimmingMoveToRecycleDisabledReason)
+        XCTAssertTrue(model.canMoveSelectedLibrarySlimmingMembersToRecycle)
     }
 
     func testAnalyzeLibrarySlimmingCurrentFilterUsesResolvedAssetIDs() async {
@@ -4001,52 +4047,6 @@ final class LibraryWorkspaceModelTests: XCTestCase {
             model.librarySlimmingStatusMessage,
             "已分析 0 张，未发现相同或相似簇。"
         )
-    }
-
-    func testLibrarySlimmingComparisonIncludesAllSelectedMembers() async {
-        let sourceID = UUID()
-        let asset = Self.makeAsset(sourceID: sourceID, fileName: "gallery.jpg")
-        let service = FakeLibraryWorkspaceService(
-            connectedSource: LibrarySourceSummary(
-                id: sourceID,
-                displayName: "Fixture",
-                state: .active
-            ),
-            reconciledItems: [asset],
-            initialItems: [asset]
-        )
-        let members = [
-            UUID(uuidString: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")!,
-            UUID(uuidString: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")!,
-            UUID(uuidString: "cccccccc-cccc-4ccc-8ccc-cccccccccccc")!,
-            UUID(uuidString: "dddddddd-dddd-4ddd-8ddd-dddddddddddd")!,
-            UUID(uuidString: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee")!,
-        ]
-        let cluster = SlimmingCluster(
-            id: UUID(),
-            kind: .nearDuplicateScene,
-            memberAssetIDs: members,
-            representativeAssetID: members[0],
-            score: 0.95,
-            modelIdentity: .featurePrintOnly
-        )
-        let stub = StubLibrarySlimmingScanPort()
-        stub.seedClusters = [cluster]
-        let model = LibraryWorkspaceModel(service: service, librarySlimming: stub)
-        await model.start()
-        await model.connectFolder()
-        await waitForCatalogScanToFinish(model)
-        await model.selectAssets(Set([asset.assetID]), additive: false)
-        await model.findLibrarySlimmingFromSelection()
-        await model.analyzeLibrarySlimming(mode: .seeds)
-
-        model.selectLibrarySlimmingCluster(model.librarySlimmingClusters[0].id)
-        model.selectLibrarySlimmingMember(members[0], additive: false)
-        for member in members.dropFirst() {
-            model.selectLibrarySlimmingMember(member, additive: true)
-        }
-
-        XCTAssertEqual(model.librarySlimmingComparisonAssetIDs, members)
     }
 
     func testLibrarySlimmingMoveRequestsWriteAuthorizationAndRetriesFailedAssets() async {

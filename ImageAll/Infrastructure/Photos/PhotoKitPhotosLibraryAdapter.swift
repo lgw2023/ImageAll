@@ -385,6 +385,16 @@ final class PhotoKitPhotosLibraryAdapter: NSObject, PhotosLibraryAccessPort, Pho
         }
     }
 
+
+    static func makeLocalOnlyOriginalImageRequestOptions() -> PHImageRequestOptions {
+        let options = PHImageRequestOptions()
+        options.version = .original
+        options.deliveryMode = .highQualityFormat
+        options.isSynchronous = true
+        options.isNetworkAccessAllowed = false
+        return options
+    }
+
     func requestOriginalImageData(localIdentifier: String) throws -> Data {
         guard authorizationState() == .authorized else {
             throw PhotosLibraryError.authorizationDenied
@@ -393,19 +403,19 @@ final class PhotoKitPhotosLibraryAdapter: NSObject, PhotosLibraryAccessPort, Pho
         guard let asset = fetch.firstObject else {
             throw PhotosLibraryError.libraryUnavailable
         }
-        let options = PHImageRequestOptions()
-        options.version = .original
-        options.deliveryMode = .highQualityFormat
-        options.isSynchronous = true
-        options.isNetworkAccessAllowed = true
         let result = SynchronousImageResult()
-        imageManager.requestImageDataAndOrientation(for: asset, options: options) {
+        imageManager.requestImageDataAndOrientation(
+            for: asset,
+            options: Self.makeLocalOnlyOriginalImageRequestOptions()
+        ) {
             data,
             _,
             _,
             info in
             if let data {
                 result.set(.success(data))
+            } else if (info?[PHImageResultIsInCloudKey] as? Bool) == true {
+                result.set(.failure(PhotosLibraryError.cloudOnly))
             } else if let error = info?[PHImageErrorKey] as? Error {
                 result.set(.failure(error))
             } else {

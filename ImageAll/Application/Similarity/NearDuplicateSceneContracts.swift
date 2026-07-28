@@ -209,6 +209,32 @@ struct LibrarySlimmingScanProgress: Sendable, Equatable {
     }
 }
 
+/// Maps durable job progress (`memberCount * 2 + 1` scale) to user-facing scan phases.
+enum LibrarySlimmingJobProgressPresentation {
+    static func scanProgress(
+        completed: Int,
+        progressTotal: Int,
+        memberCount: Int
+    ) -> LibrarySlimmingScanProgress? {
+        guard progressTotal > 0, memberCount > 0 else { return nil }
+        if completed >= progressTotal - 1 {
+            return LibrarySlimmingScanProgress(phase: .clustering, completed: 1, total: 1)
+        }
+        if completed < memberCount {
+            return LibrarySlimmingScanProgress(
+                phase: .preparingFingerprints,
+                completed: completed,
+                total: memberCount
+            )
+        }
+        return LibrarySlimmingScanProgress(
+            phase: .loadingFeaturePrints,
+            completed: completed - memberCount,
+            total: memberCount
+        )
+    }
+}
+
 struct LibrarySlimmingScanResult: Sendable, Equatable, Codable {
     let clusters: [SlimmingCluster]
     let pendingAnalysisAssetIDs: [UUID]

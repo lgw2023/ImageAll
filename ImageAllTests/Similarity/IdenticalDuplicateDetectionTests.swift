@@ -1,3 +1,4 @@
+import CryptoKit
 import GRDB
 import ImageIO
 import UniformTypeIdentifiers
@@ -142,6 +143,47 @@ final class IdenticalDuplicateDetectionTests: XCTestCase {
         photos.bytes = nil
         _ = try completion.completeAsset(assetID: photosAssetID)
         XCTAssertEqual(photos.requestCount, 1, "second completion must use the durable local original")
+    }
+
+    func testPhotosFingerprintFallsBackToLocalFeatureImageWhenOriginalIsCloudOnly() throws {
+        let env = try SimilarityTestSupport.Environment(label: #function)
+        defer { env.cleanup() }
+        let photosAssetID = try env.seedPhotosAsset()
+        let previewBytes = try XCTUnwrap(
+            SimilarityTestSupport.patternedImageData(seed: 44, uti: .jpeg)
+        )
+        let originals = SimilarityPhotosOriginalStub(error: .cloudOnly)
+        let featureImages = SimilarityPhotosFeatureImageStub(bytes: previewBytes)
+        let completion = env.makeCompletionService(
+            photosOriginals: originals,
+            photosFeatureImages: featureImages
+        )
+        let cache = PhotosOriginalCacheService(
+            database: env.database,
+            rootURL: env.root.appendingPathComponent("Photos Originals", isDirectory: true),
+            clock: FixedJobClock(nowMs: FolderReconcileTestSupport.baseTimeMs)
+        )
+
+        let fingerprint = try completion.completeAsset(assetID: photosAssetID)
+
+        XCTAssertEqual(originals.requestCount, 1)
+        XCTAssertEqual(featureImages.requestCount, 1)
+        XCTAssertEqual(try cache.storageUsage(), .zero, "preview/thumbnail bytes must not be stored as originals")
+        XCTAssertEqual(fingerprint.sha256, Data(SHA256.hash(data: previewBytes)))
+    }
+
+    func testPhotosFingerprintSkipsWhenNoLocalBytesAvailable() throws {
+        let env = try SimilarityTestSupport.Environment(label: #function)
+        defer { env.cleanup() }
+        let photosAssetID = try env.seedPhotosAsset()
+        let completion = env.makeCompletionService(
+            photosOriginals: SimilarityPhotosOriginalStub(error: .cloudOnly),
+            photosFeatureImages: SimilarityPhotosFeatureImageStub(error: .cloudOnly)
+        )
+
+        XCTAssertThrowsError(try completion.completeAsset(assetID: photosAssetID)) { error in
+            XCTAssertEqual(error as? FingerprintCompletionError, .sourceUnavailable)
+        }
     }
 
     func testDurablePhotosOriginalCacheRejectsPreviewWrites() async throws {
@@ -512,7 +554,9 @@ enum SimilarityTestSupport {
         }
 
         func makeCompletionService(
-            photosOriginals: (any PhotosOriginalContentPort)? = nil
+            photosOriginals: (any PhotosOriginalContentPort)? = nil,
+            photosFeatureImages: (any PhotosFeaturePrintImagePort)? = nil,
+            downloadedPreviews: (any DownloadedPreviewCachePort)? = nil
         ) -> FingerprintCompletionService {
             let bookmarkPort = FolderReconcileTestSupport.TestBookmarkPort(
                 rootByBookmark: [bookmark: sourceRoot]
@@ -532,6 +576,8 @@ enum SimilarityTestSupport {
                     rootURL: root.appendingPathComponent("Photos Originals", isDirectory: true),
                     clock: FixedJobClock(nowMs: FolderReconcileTestSupport.baseTimeMs)
                 ),
+                photosFeatureImages: photosFeatureImages,
+                downloadedPreviews: downloadedPreviews,
                 clock: FixedJobClock(nowMs: FolderReconcileTestSupport.baseTimeMs)
             )
         }
@@ -738,10 +784,12 @@ enum SimilarityTestSupport {
 private final class SimilarityPhotosOriginalStub: PhotosOriginalContentPort, @unchecked Sendable {
     private let lock = NSLock()
     var bytes: Data?
+    let error: PhotosLibraryError?
     private var storedRequestCount = 0
 
-    init(bytes: Data?) {
+    init(bytes: Data? = nil, error: PhotosLibraryError? = nil) {
         self.bytes = bytes
+        self.error = error
     }
 
     var requestCount: Int {
@@ -752,6 +800,39 @@ private final class SimilarityPhotosOriginalStub: PhotosOriginalContentPort, @un
         _ = localIdentifier
         return try lock.withLock {
             storedRequestCount += 1
+            if let error {
+                throw error
+            }
+            guard let bytes else {
+                throw PhotosLibraryError.libraryUnavailable
+            }
+            return bytes
+        }
+    }
+}
+
+private final class SimilarityPhotosFeatureImageStub: PhotosFeaturePrintImagePort, @unchecked Sendable {
+    private let lock = NSLock()
+    let bytes: Data?
+    let error: PhotosLibraryError?
+    private var storedRequestCount = 0
+
+    init(bytes: Data? = nil, error: PhotosLibraryError? = nil) {
+        self.bytes = bytes
+        self.error = error
+    }
+
+    var requestCount: Int {
+        lock.withLock { storedRequestCount }
+    }
+
+    func requestLocalFeatureImage(localIdentifier: String) throws -> Data {
+        _ = localIdentifier
+        return try lock.withLock {
+            storedRequestCount += 1
+            if let error {
+                throw error
+            }
             guard let bytes else {
                 throw PhotosLibraryError.libraryUnavailable
             }

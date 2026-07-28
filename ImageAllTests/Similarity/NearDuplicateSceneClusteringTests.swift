@@ -205,6 +205,33 @@ final class NearDuplicateSceneClusteringTests: XCTestCase {
         XCTAssertLessThanOrEqual(budgets.embeddingGenerations, 12)
     }
 
+    func testJobProgressPresentationMapsFingerprintPhaseBeforeFeaturePrints() {
+        let memberCount = 25_320
+        let progressTotal = memberCount * 2 + 1
+        let mapped = LibrarySlimmingJobProgressPresentation.scanProgress(
+            completed: 5_985,
+            progressTotal: progressTotal,
+            memberCount: memberCount
+        )
+        XCTAssertEqual(mapped?.phase, .preparingFingerprints)
+        XCTAssertEqual(mapped?.completed, 5_985)
+        XCTAssertEqual(mapped?.total, memberCount)
+        XCTAssertEqual(mapped?.caption, "补全内容指纹 5985/25320")
+    }
+
+    func testJobProgressPresentationMapsVectorPhaseAfterFingerprints() {
+        let memberCount = 100
+        let progressTotal = memberCount * 2 + 1
+        let mapped = LibrarySlimmingJobProgressPresentation.scanProgress(
+            completed: memberCount + 40,
+            progressTotal: progressTotal,
+            memberCount: memberCount
+        )
+        XCTAssertEqual(mapped?.phase, .loadingFeaturePrints)
+        XCTAssertEqual(mapped?.completed, 40)
+        XCTAssertEqual(mapped?.total, memberCount)
+    }
+
     func testSeedQueryRetrievesUniverseNeighborNotJustSeedClosure() throws {
         let seed = UUID(uuidString: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")!
         let hit = UUID(uuidString: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")!
