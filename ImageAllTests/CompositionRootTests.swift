@@ -4,6 +4,40 @@ import XCTest
 
 @MainActor
 final class CompositionRootTests: XCTestCase {
+    func testDevelopmentRootEnvironmentIsolatesProductionCatalogPaths() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ImageAll-DevelopmentRoot-\(UUID().uuidString)", isDirectory: true)
+        let dependencies = CompositionRoot.makeProductionDependencies(
+            environment: ["IMAGEALL_DEVELOPMENT_ROOT": root.path]
+        )
+
+        let paths = try dependencies.pathsResolver.resolve()
+
+        XCTAssertEqual(
+            paths.applicationSupportDirectory,
+            root.appendingPathComponent("Application Support/ImageAll", isDirectory: true)
+        )
+        XCTAssertEqual(
+            paths.catalogDatabaseURL,
+            root.appendingPathComponent(
+                "Application Support/ImageAll/Catalog/ImageAll.sqlite",
+                isDirectory: false
+            )
+        )
+        XCTAssertEqual(
+            paths.cachesDirectory,
+            root.appendingPathComponent("Caches/ImageAll", isDirectory: true)
+        )
+    }
+
+    func testDevelopmentRootEnvironmentRejectsRelativePathInsteadOfFallingBack() {
+        let dependencies = CompositionRoot.makeProductionDependencies(
+            environment: ["IMAGEALL_DEVELOPMENT_ROOT": "relative/path"]
+        )
+
+        XCTAssertThrowsError(try dependencies.pathsResolver.resolve())
+    }
+
     func testBundledStandardOntologyIncludesApprovedIdentityAndConcepts() {
         let package = StandardOntologyCatalog.bundledSceneFixture
         XCTAssertEqual(package.ontologyID, "imageall-public-fixture")

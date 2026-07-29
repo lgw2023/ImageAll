@@ -6,6 +6,7 @@ import SwiftUI
 @MainActor
 final class RemoteHostSettingsModel: ObservableObject {
     @Published var isEnabled: Bool
+    @Published var publicBaseURL: String
     @Published private(set) var isRunning = false
     @Published private(set) var identityText = "—"
     @Published private(set) var fingerprintText = "—"
@@ -18,6 +19,9 @@ final class RemoteHostSettingsModel: ObservableObject {
 
     init() {
         isEnabled = UserDefaults.standard.bool(forKey: enabledKey)
+        publicBaseURL = UserDefaults.standard.string(
+            forKey: RemoteHostProcessHolder.publicBaseURLKey
+        ) ?? ""
 #if DEBUG
         legacyDebugToken = RemoteHostProcessHolder.currentAccessToken()
 #endif
@@ -45,6 +49,28 @@ final class RemoteHostSettingsModel: ObservableObject {
         isEnabled = enabled
         UserDefaults.standard.set(enabled, forKey: enabledKey)
         statusMessage = "已写入开关。请重新启动 ImageAll 使 Host \(enabled ? "启动" : "停止")。"
+    }
+
+    func savePublicBaseURL() {
+        let trimmed = publicBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            UserDefaults.standard.removeObject(
+                forKey: RemoteHostProcessHolder.publicBaseURLKey
+            )
+            publicBaseURL = ""
+            statusMessage = "已关闭公网入口。请重新启动 ImageAll 使设置生效。"
+            return
+        }
+        guard let normalized = RemotePublicEndpoint.normalizedHTTPSBaseURL(trimmed) else {
+            statusMessage = "公网入口必须是专用域名的根路径 HTTPS URL（标准 443 端口）。"
+            return
+        }
+        UserDefaults.standard.set(
+            normalized,
+            forKey: RemoteHostProcessHolder.publicBaseURLKey
+        )
+        publicBaseURL = normalized
+        statusMessage = "已保存公网入口。请重新启动 ImageAll 使 Host 和新二维码使用该地址。"
     }
 
     func startPairing() async {
@@ -88,7 +114,7 @@ struct RemoteHostSettingsView: View {
         Form {
             Section("移动辅助 Host") {
                 Toggle(
-                    "启用局域网 Host",
+                    "启用移动 Host",
                     isOn: Binding(
                         get: { model.isEnabled },
                         set: { model.setEnabled($0) }
@@ -101,6 +127,19 @@ struct RemoteHostSettingsView: View {
                         .font(.system(.caption, design: .monospaced))
                         .textSelection(.enabled)
                 }
+                if model.isRunning,
+                   model.offer?.publicBaseURL == nil,
+                   model.publicBaseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                {
+                    Text(
+                        """
+                        若手机持续连接超时，请打开“系统设置 > 网络 > 防火墙 > 选项”，\
+                        关闭“阻止所有传入连接”，并将 ImageAll 设为“允许传入连接”。
+                        """
+                    )
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                }
 #if DEBUG
                 if let token = model.legacyDebugToken {
                     LabeledContent("Debug Token") {
@@ -110,6 +149,32 @@ struct RemoteHostSettingsView: View {
                     }
                 }
 #endif
+            }
+
+            Section("公网 Tunnel") {
+                TextField(
+                    "https://imageall.example.com",
+                    text: $model.publicBaseURL
+                )
+                .textFieldStyle(.roundedBorder)
+                HStack {
+                    Button("保存公网入口") {
+                        model.savePublicBaseURL()
+                    }
+                    if let activeURL = model.offer?.publicBaseURL {
+                        Text("当前 Host：\(activeURL)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                Text(
+                    """
+                    使用 Cloudflare 等出站 Tunnel 时填写专用 HTTPS 根域名。公网模式不需要关闭 \
+                    Mac 防火墙；保存后重启 ImageAll。
+                    """
+                )
+                .font(.footnote)
+                .foregroundStyle(.secondary)
             }
 
             Section("配对") {
@@ -140,6 +205,9 @@ struct RemoteHostSettingsView: View {
                     LabeledContent("配对码", value: offer.pairingToken)
                     LabeledContent("端口", value: String(offer.listenPort))
                     LabeledContent("TLS", value: offer.usesTLS ? "是" : "否")
+                    if let publicBaseURL = offer.publicBaseURL {
+                        LabeledContent("公网入口", value: publicBaseURL)
+                    }
                 } else {
                     Text("尚未开始配对会话")
                         .foregroundStyle(.secondary)

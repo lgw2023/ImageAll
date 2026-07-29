@@ -20,19 +20,31 @@ final class RemoteCompanionModel: ObservableObject {
     @Published var sources: [RemoteSourceSummary] = []
     @Published var tags: [RemoteTagSummary] = []
     @Published var jobs: [RemoteJobSummary] = []
+    @Published var reviewItems: [RemoteReviewQueueItem] = []
     @Published var selectedSourceID: UUID?
     @Published var selectedTagID: UUID?
     @Published var assets: [RemoteAssetSummary] = []
     @Published var nextCursor: String?
+    @Published var reviewNextCursor: String?
     @Published var selectedAssetIDs: Set<UUID> = []
+    @Published var selectedReviewAssetIDs: Set<UUID> = []
     @Published var thumbnailDataByAssetID: [UUID: Data] = [:]
+    @Published var reviewThumbnailDataByAssetID: [UUID: Data] = [:]
+    @Published var previewDetail: RemoteAssetDetail?
+    @Published var previewData: Data?
+    @Published var isLoadingPreview = false
+    @Published var jobActionInFlightIDs: Set<UUID> = []
+    @Published private(set) var publicBaseURL: String?
 
     private var client: RemoteLibraryClient?
     private var sessionTokens: RemoteSessionTokens?
     private var certificateFingerprint: String?
     private let hostBrowser = RemoteHostBrowser()
     private let eventSocket = RemoteEventSocket()
-    private let defaults = UserDefaults.standard
+    private let defaults: UserDefaults
+    private let credentialVault: RemoteSessionCredentialVault
+    private var storedRefreshToken: String?
+    private var previewRequestID: UUID?
 
     private enum DefaultsKey {
         static let host = "imageall.mobile.host"
@@ -40,23 +52,69 @@ final class RemoteCompanionModel: ObservableObject {
         static let token = "imageall.mobile.accessToken"
         static let refresh = "imageall.mobile.refreshToken"
         static let deviceID = "imageall.mobile.deviceID"
+        static let hostID = "imageall.mobile.hostID"
         static let fingerprint = "imageall.mobile.certFingerprint"
         static let usesTLS = "imageall.mobile.usesTLS"
+        static let publicBaseURL = "imageall.mobile.publicBaseURL"
     }
 
     init() {
+        let defaults = UserDefaults.standard
+        let credentialVault = RemoteSessionCredentialVault(
+            service: "com.gwlee.ImageAllMobile.remote-session",
+            account: "paired-refresh-token"
+        )
+        var storedRefreshToken: String?
+        var initialStatusMessage: String?
+        var shouldPreserveLegacyCredentials = false
+        do {
+            let result = try credentialVault.loadMigratingLegacy(
+                loadLegacy: {
+                    defaults.string(forKey: DefaultsKey.refresh)
+                },
+                removeLegacy: {
+                    defaults.removeObject(forKey: DefaultsKey.token)
+                    defaults.removeObject(forKey: DefaultsKey.refresh)
+                }
+            )
+            storedRefreshToken = result?.refreshToken
+            if result?.source == .migratedLegacy {
+                initialStatusMessage = "已将旧配对凭据迁入系统 Keychain"
+            }
+            if result == nil {
+                defaults.removeObject(forKey: DefaultsKey.token)
+            }
+        } catch {
+            shouldPreserveLegacyCredentials = true
+            initialStatusMessage = "旧配对凭据未迁移，已保留原值：\(error.localizedDescription)"
+        }
+
+        self.defaults = defaults
+        self.credentialVault = credentialVault
+        self.storedRefreshToken = storedRefreshToken
         host = defaults.string(forKey: DefaultsKey.host) ?? "127.0.0.1"
         port = defaults.string(forKey: DefaultsKey.port) ?? "8787"
-        accessToken = defaults.string(forKey: DefaultsKey.token) ?? ""
+        accessToken = shouldPreserveLegacyCredentials
+            ? defaults.string(forKey: DefaultsKey.token) ?? ""
+            : ""
         certificateFingerprint = defaults.string(forKey: DefaultsKey.fingerprint)
+        publicBaseURL = RemotePublicEndpoint.normalizedHTTPSBaseURL(
+            defaults.string(forKey: DefaultsKey.publicBaseURL)
+        )
+        statusMessage = initialStatusMessage
     }
 
     func startBrowsing() {
+        guard publicBaseURL == nil else {
+            isBrowsing = false
+            discoveredHosts = []
+            return
+        }
         guard !isBrowsing else { return }
         isBrowsing = true
         hostBrowser.start { [weak self] hosts in
             Task { @MainActor in
-                self?.discoveredHosts = hosts
+                self?.applyDiscoveredHosts(hosts)
             }
         }
     }
@@ -74,31 +132,49 @@ final class RemoteCompanionModel: ObservableObject {
     }
 
     func pairUsingOfferJSON() async {
+        await pair(using: pairingOfferJSON)
+    }
+
+    func pairUsingScannedPayload(_ payload: String) async {
+        pairingOfferJSON = payload
+        await pair(using: payload)
+    }
+
+    private func pair(using payload: String) async {
         isBusy = true
         defer { isBusy = false }
-        guard let data = pairingOfferJSON.data(using: .utf8),
-              let offer = try? JSONDecoder().decode(RemotePairingOffer.self, from: data)
-        else {
-            statusMessage = "配对 JSON 无效"
-            return
-        }
         do {
+            let offer = try RemotePairingPayloadDecoder.decode(payload)
+            let publicURL = RemotePublicEndpoint.normalizedHTTPSBaseURL(
+                offer.publicBaseURL
+            )
+            publicBaseURL = publicURL
+            let pairingHost: String
+            if let publicURL,
+               let publicHost = URL(string: publicURL)?.host
+            {
+                pairingHost = publicHost
+                host = publicHost
+                port = "443"
+            } else {
+                pairingHost = try RemotePairingHostResolver.resolve(
+                    hostID: offer.hostID,
+                    displayName: offer.hostDisplayName,
+                    currentHost: host,
+                    discoveredHosts: discoveredHosts
+                )
+                host = pairingHost
+                port = String(offer.listenPort)
+            }
             let deviceKey = SHA256.hash(data: Data(UUID().uuidString.utf8))
                 .map { String(format: "%02x", $0) }.joined()
-            let bootstrap = try RemoteLibraryClient(
-                endpoint: RemoteHostEndpoint(
-                    host: host.trimmingCharacters(in: .whitespacesAndNewlines),
-                    port: offer.listenPort,
-                    accessToken: "",
-                    usesTLS: offer.usesTLS
-                ),
-                transport: offer.usesTLS
-                    ? URLSessionRemoteHTTPTransport(
-                        session: RemotePinnedURLSessionFactory.makeSession(
-                            certificateFingerprintSHA256: offer.certificateFingerprintSHA256
-                        )
-                    )
-                    : URLSessionRemoteHTTPTransport(),
+            let bootstrap = try makeClient(
+                accessToken: "",
+                publicBaseURL: publicURL,
+                localHost: pairingHost,
+                localPort: offer.listenPort,
+                usesTLS: offer.usesTLS,
+                certificateFingerprint: offer.certificateFingerprintSHA256,
                 sendAuthorization: false
             )
             let tokens = try await bootstrap.completePairing(
@@ -108,35 +184,92 @@ final class RemoteCompanionModel: ObservableObject {
                     devicePublicKeySPKI_SHA256: deviceKey
                 )
             )
-            applySession(tokens)
-            statusMessage = "配对成功"
-            await connectWithStoredSession()
+            try RemoteSessionIdentityValidator.validate(
+                tokens,
+                expectedHostID: offer.hostID,
+                expectedUsesTLS: offer.usesTLS,
+                expectedCertificateFingerprintSHA256: offer.certificateFingerprintSHA256,
+                expectedPublicBaseURL: publicURL
+            )
+            let storageWarning = applySession(tokens)
+            let pairedClient = try makeClient(
+                accessToken: tokens.accessToken,
+                publicBaseURL: tokens.publicBaseURL,
+                localHost: host,
+                localPort: tokens.listenPort,
+                usesTLS: tokens.usesTLS,
+                certificateFingerprint: tokens.certificateFingerprintSHA256
+            )
+            try await finishConnect(pairedClient)
+            pairingOfferJSON = ""
+            if let storageWarning {
+                statusMessage = "\(statusMessage ?? "已连接")；\(storageWarning)"
+            } else {
+                statusMessage = "配对成功 · \(statusMessage ?? "已连接")"
+            }
         } catch {
-            statusMessage = error.localizedDescription
+            statusMessage = connectionStatusMessage(for: error)
+        }
+    }
+
+    func loadPairingOfferFromPasteboard() {
+        guard let payload = UIPasteboard.general.string?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+            !payload.isEmpty
+        else {
+            statusMessage = "剪贴板中没有配对 JSON"
+            return
+        }
+        pairingOfferJSON = payload
+        statusMessage = "已从剪贴板读取配对 JSON"
+    }
+
+    func rememberEndpointHint() {
+        let trimmedHost = host.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedHost.isEmpty {
+            defaults.set(trimmedHost, forKey: DefaultsKey.host)
+        }
+        let trimmedPort = port.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedPort.isEmpty {
+            defaults.set(trimmedPort, forKey: DefaultsKey.port)
         }
     }
 
     func connect() async {
-        if defaults.string(forKey: DefaultsKey.refresh) != nil {
+        if storedRefreshToken != nil {
             await connectWithStoredSession()
             return
         }
         await connectWithManualToken()
     }
 
+    func restoreStoredSessionIfAvailable() async {
+        guard storedRefreshToken != nil, !isConnected, !isBusy else { return }
+        statusMessage = publicBaseURL == nil
+            ? "正在恢复已配对会话…"
+            : "正在恢复公网会话…"
+        await connectWithStoredSession()
+    }
+
     func disconnect() {
         eventSocket.stop()
         client = nil
         sessionTokens = nil
+        accessToken = ""
         isConnected = false
         capabilities = nil
         sources = []
         tags = []
         jobs = []
+        reviewItems = []
         assets = []
         nextCursor = nil
+        reviewNextCursor = nil
         selectedAssetIDs = []
+        selectedReviewAssetIDs = []
         thumbnailDataByAssetID = [:]
+        reviewThumbnailDataByAssetID = [:]
+        resetPreview()
         statusMessage = "已断开"
         startBrowsing()
     }
@@ -178,9 +311,50 @@ final class RemoteCompanionModel: ObservableObject {
         }
     }
 
+    func reloadReviewQueue(reset: Bool) async {
+        guard let client,
+              capabilities?.capabilities.contains(.reviewQueue) == true,
+              let tagID = selectedTagID
+        else {
+            reviewItems = []
+            reviewNextCursor = nil
+            selectedReviewAssetIDs = []
+            return
+        }
+        isBusy = true
+        defer { isBusy = false }
+        do {
+            let page = try await client.fetchReviewQueue(
+                RemoteReviewQueueRequest(
+                    tagID: tagID,
+                    sourceIDs: selectedSourceID.map { [$0] } ?? [],
+                    limit: 40,
+                    cursor: reset ? nil : reviewNextCursor
+                )
+            )
+            if reset {
+                reviewItems = page.items
+                selectedReviewAssetIDs = []
+                reviewThumbnailDataByAssetID = [:]
+            } else {
+                let existing = Set(reviewItems.map(\.id))
+                reviewItems.append(contentsOf: page.items.filter { !existing.contains($0.id) })
+            }
+            reviewNextCursor = page.nextCursor
+            await prefetchReviewThumbnails(for: page.items)
+        } catch {
+            statusMessage = error.localizedDescription
+        }
+    }
+
     func loadMoreIfNeeded(current asset: RemoteAssetSummary) async {
         guard asset.id == assets.last?.id, nextCursor != nil, !isBusy else { return }
         await reloadAssets(reset: false)
+    }
+
+    func loadMoreReviewIfNeeded(current item: RemoteReviewQueueItem) async {
+        guard item.id == reviewItems.last?.id, reviewNextCursor != nil, !isBusy else { return }
+        await reloadReviewQueue(reset: false)
     }
 
     func toggleSelection(_ assetID: UUID) {
@@ -191,12 +365,26 @@ final class RemoteCompanionModel: ObservableObject {
         }
     }
 
+    func toggleReviewSelection(_ assetID: UUID) {
+        if selectedReviewAssetIDs.contains(assetID) {
+            selectedReviewAssetIDs.remove(assetID)
+        } else {
+            selectedReviewAssetIDs.insert(assetID)
+        }
+    }
+
     func applyTagDecision(_ action: RemoteTagDecisionAction) async {
+        await applyTagDecision(action, assetIDs: Array(selectedAssetIDs))
+    }
+
+    func applyTagDecision(
+        _ action: RemoteTagDecisionAction,
+        assetIDs: [UUID]
+    ) async {
         guard let client, let tagID = selectedTagID else {
             statusMessage = "请先选择标签"
             return
         }
-        let assetIDs = Array(selectedAssetIDs)
         guard !assetIDs.isEmpty else {
             statusMessage = "请先选择资产"
             return
@@ -213,11 +401,107 @@ final class RemoteCompanionModel: ObservableObject {
                 )
             )
             statusMessage = "已应用到 \(response.appliedAssetCount) 项\(response.replayed ? "（重放）" : "")"
-            selectedAssetIDs = []
+            selectedAssetIDs.subtract(assetIDs)
             await reloadAssets(reset: true)
+            if previewDetail?.assetID == assetIDs.first, assetIDs.count == 1 {
+                await loadPreview(assetID: assetIDs[0])
+            }
         } catch {
             statusMessage = error.localizedDescription
         }
+    }
+
+    func applyReviewDecision(_ action: RemoteReviewDecisionAction) async {
+        await applyReviewDecision(action, assetIDs: Array(selectedReviewAssetIDs))
+    }
+
+    func applyReviewDecision(
+        _ action: RemoteReviewDecisionAction,
+        assetIDs: [UUID]
+    ) async {
+        guard let client,
+              capabilities?.capabilities.contains(.reviewDecisions) == true,
+              let tagID = selectedTagID
+        else {
+            statusMessage = "Host 不支持远程审核决定"
+            return
+        }
+        guard !assetIDs.isEmpty else {
+            statusMessage = "请先选择审核项"
+            return
+        }
+        isBusy = true
+        defer { isBusy = false }
+        do {
+            let response = try await client.applyReviewDecision(
+                RemoteBatchReviewDecisionRequest(
+                    operationID: UUID(),
+                    tagID: tagID,
+                    assetIDs: assetIDs,
+                    action: action
+                )
+            )
+            statusMessage = "已审核 \(response.appliedAssetCount) 项\(response.replayed ? "（重放）" : "")"
+            selectedReviewAssetIDs.subtract(assetIDs)
+            await reloadReviewQueue(reset: true)
+            if previewDetail?.assetID == assetIDs.first, assetIDs.count == 1 {
+                await loadPreview(assetID: assetIDs[0])
+            }
+        } catch {
+            statusMessage = error.localizedDescription
+        }
+    }
+
+    func applyJobAction(_ action: RemoteJobAction, to jobID: UUID) async {
+        guard let client else { return }
+        jobActionInFlightIDs.insert(jobID)
+        defer { jobActionInFlightIDs.remove(jobID) }
+        do {
+            try await client.applyJobAction(jobID: jobID, action: action)
+            statusMessage = "任务操作已提交"
+            await reloadJobs()
+        } catch {
+            statusMessage = error.localizedDescription
+        }
+    }
+
+    func loadPreview(assetID: UUID) async {
+        guard let client else { return }
+        let requestID = UUID()
+        previewRequestID = requestID
+        previewDetail = nil
+        previewData = nil
+        isLoadingPreview = true
+        defer {
+            if previewRequestID == requestID {
+                isLoadingPreview = false
+            }
+        }
+        do {
+            let detail: RemoteAssetDetail? = if capabilities?.capabilities.contains(.assetDetail) == true {
+                try await client.fetchAssetDetail(assetID: assetID)
+            } else {
+                nil
+            }
+            let data: Data? = if capabilities?.capabilities.contains(.previews) == true {
+                try await client.loadPreview(assetID: assetID, targetPixelWidth: 1_600)
+            } else {
+                try await client.loadThumbnail(assetID: assetID, targetPixelWidth: 1_024)
+            }
+            guard previewRequestID == requestID else { return }
+            previewDetail = detail
+            previewData = data
+        } catch {
+            guard previewRequestID == requestID else { return }
+            statusMessage = error.localizedDescription
+        }
+    }
+
+    func resetPreview() {
+        previewRequestID = nil
+        previewDetail = nil
+        previewData = nil
+        isLoadingPreview = false
     }
 
     private func connectWithManualToken() async {
@@ -238,36 +522,26 @@ final class RemoteCompanionModel: ObservableObject {
         }
         do {
             let usesTLS = defaults.bool(forKey: DefaultsKey.usesTLS)
-            let endpoint = try RemoteHostEndpoint(
-                host: host.trimmingCharacters(in: .whitespacesAndNewlines),
-                port: portValue,
+            let nextClient = try makeClient(
                 accessToken: token,
-                usesTLS: usesTLS
+                publicBaseURL: publicBaseURL,
+                localHost: host.trimmingCharacters(in: .whitespacesAndNewlines),
+                localPort: portValue,
+                usesTLS: usesTLS,
+                certificateFingerprint: certificateFingerprint
             )
-            let transport: any RemoteHTTPTransporting
-            if usesTLS, let fingerprint = certificateFingerprint {
-                transport = URLSessionRemoteHTTPTransport(
-                    session: RemotePinnedURLSessionFactory.makeSession(
-                        certificateFingerprintSHA256: fingerprint
-                    )
-                )
-            } else {
-                transport = URLSessionRemoteHTTPTransport()
-            }
-            try await finishConnect(
-                RemoteLibraryClient(endpoint: endpoint, transport: transport)
-            )
+            try await finishConnect(nextClient)
         } catch {
             isConnected = false
             client = nil
-            statusMessage = error.localizedDescription
+            statusMessage = connectionStatusMessage(for: error)
         }
     }
 
     private func connectWithStoredSession() async {
         isBusy = true
         defer { isBusy = false }
-        guard let refresh = defaults.string(forKey: DefaultsKey.refresh),
+        guard let refresh = storedRefreshToken,
               let deviceIDRaw = defaults.string(forKey: DefaultsKey.deviceID),
               let deviceID = UUID(uuidString: deviceIDRaw),
               let fingerprint = defaults.string(forKey: DefaultsKey.fingerprint),
@@ -278,35 +552,84 @@ final class RemoteCompanionModel: ObservableObject {
         }
         do {
             let usesTLS = defaults.bool(forKey: DefaultsKey.usesTLS)
-            let bootstrap = try RemoteLibraryClient(
-                endpoint: RemoteHostEndpoint(
-                    host: host,
-                    port: portValue,
-                    accessToken: "",
-                    usesTLS: usesTLS
-                ),
-                transport: usesTLS
-                    ? URLSessionRemoteHTTPTransport(
-                        session: RemotePinnedURLSessionFactory.makeSession(
-                            certificateFingerprintSHA256: fingerprint
-                        )
-                    )
-                    : URLSessionRemoteHTTPTransport(),
+            let expectedPublicURL = RemotePublicEndpoint.normalizedHTTPSBaseURL(
+                defaults.string(forKey: DefaultsKey.publicBaseURL)
+            )
+            let bootstrap = try makeClient(
+                accessToken: "",
+                publicBaseURL: expectedPublicURL,
+                localHost: host,
+                localPort: portValue,
+                usesTLS: usesTLS,
+                certificateFingerprint: fingerprint,
                 sendAuthorization: false
             )
             let tokens = try await bootstrap.refreshSession(
                 RemoteTokenRefreshRequest(deviceID: deviceID, refreshToken: refresh)
             )
-            applySession(tokens)
-            let client = try RemoteLibraryClient.pinned(
-                host: host,
-                port: tokens.listenPort,
+            try RemoteSessionIdentityValidator.validate(
+                tokens,
+                expectedHostID: defaults
+                    .string(forKey: DefaultsKey.hostID)
+                    .flatMap(UUID.init(uuidString:)),
+                expectedUsesTLS: usesTLS,
+                expectedCertificateFingerprintSHA256: fingerprint,
+                expectedPublicBaseURL: expectedPublicURL
+            )
+            let storageWarning = applySession(tokens)
+            let client = try makeClient(
                 accessToken: tokens.accessToken,
-                certificateFingerprintSHA256: tokens.certificateFingerprintSHA256
+                publicBaseURL: tokens.publicBaseURL,
+                localHost: host,
+                localPort: tokens.listenPort,
+                usesTLS: tokens.usesTLS,
+                certificateFingerprint: tokens.certificateFingerprintSHA256
             )
             try await finishConnect(client)
+            if let storageWarning {
+                statusMessage = "\(statusMessage ?? "已连接")；\(storageWarning)"
+            }
         } catch {
-            statusMessage = error.localizedDescription
+            statusMessage = connectionStatusMessage(for: error)
+        }
+    }
+
+    private func connectionStatusMessage(for error: Error) -> String {
+        let nsError = error as NSError
+        guard nsError.domain == NSURLErrorDomain else {
+            return error.localizedDescription
+        }
+        let usesPublicEndpoint = publicBaseURL != nil
+
+        switch URLError.Code(rawValue: nsError.code) {
+        case .timedOut:
+            if usesPublicEndpoint {
+                return "连接公网 Mac Host 超时。请确认 Mac 上 ImageAll Host 与 cloudflared Tunnel 正在运行。"
+            }
+            return """
+            连接 Mac Host 超时。请确认两台设备在同一局域网，并在 Mac 的“网络 > 防火墙 > \
+            选项”中关闭“阻止所有传入连接”、允许 ImageAll 传入连接。
+            """
+        case .cannotConnectToHost, .cannotFindHost, .networkConnectionLost:
+            if usesPublicEndpoint {
+                return "无法连接公网 Mac Host。请确认公网域名、ImageAll Host 和 cloudflared Tunnel 状态。"
+            }
+            return """
+            无法连接 Mac Host。请确认 Host 正在运行、地址正确，并在 Mac 防火墙中允许 \
+            ImageAll 传入连接。
+            """
+        case .notConnectedToInternet:
+            return usesPublicEndpoint
+                ? "iPhone 当前没有可用互联网连接。"
+                : "iPhone 当前没有可用网络。请先连接与 Mac 相同的局域网。"
+        case .secureConnectionFailed,
+             .serverCertificateHasBadDate,
+             .serverCertificateUntrusted,
+             .serverCertificateHasUnknownRoot,
+             .serverCertificateNotYetValid:
+            return "TLS 证书校验失败。请在 Mac 重新开始配对，并扫描最新二维码。"
+        default:
+            return error.localizedDescription
         }
     }
 
@@ -326,37 +649,100 @@ final class RemoteCompanionModel: ObservableObject {
         stopBrowsing()
         await reloadAssets(reset: true)
         await reloadJobs()
+        await reloadReviewQueue(reset: true)
         startEvents()
-        statusMessage = "已连接 \(caps.hostAppVersion)\(caps.usesTLS ? " · TLS" : "")"
+        let transportText: String
+        if publicBaseURL != nil {
+            transportText = " · 公网 TLS"
+        } else {
+            transportText = caps.usesTLS ? " · TLS" : ""
+        }
+        statusMessage = "已连接 \(caps.hostAppVersion)\(transportText)"
     }
 
-    private func applySession(_ tokens: RemoteSessionTokens) {
+    private func applySession(_ tokens: RemoteSessionTokens) -> String? {
         sessionTokens = tokens
         accessToken = tokens.accessToken
-        port = String(tokens.listenPort)
+        publicBaseURL = RemotePublicEndpoint.normalizedHTTPSBaseURL(
+            tokens.publicBaseURL
+        )
+        if let publicBaseURL,
+           let endpointURL = URL(string: publicBaseURL),
+           let publicHost = endpointURL.host
+        {
+            host = publicHost
+            port = String(endpointURL.port ?? 443)
+        } else {
+            port = String(tokens.listenPort)
+        }
         certificateFingerprint = tokens.certificateFingerprintSHA256
-        defaults.set(tokens.accessToken, forKey: DefaultsKey.token)
-        defaults.set(tokens.refreshToken, forKey: DefaultsKey.refresh)
+        var storageWarning: String?
+        do {
+            try credentialVault.saveRefreshToken(tokens.refreshToken)
+            storedRefreshToken = tokens.refreshToken
+        } catch {
+            storedRefreshToken = tokens.refreshToken
+            try? credentialVault.deleteRefreshToken()
+            storageWarning = "Keychain 保存失败，当前会话可用，重启后需重新配对：\(error.localizedDescription)"
+        }
+        defaults.removeObject(forKey: DefaultsKey.token)
+        defaults.removeObject(forKey: DefaultsKey.refresh)
         defaults.set(tokens.deviceID.uuidString, forKey: DefaultsKey.deviceID)
+        defaults.set(tokens.hostID.uuidString, forKey: DefaultsKey.hostID)
         defaults.set(tokens.certificateFingerprintSHA256, forKey: DefaultsKey.fingerprint)
         defaults.set(tokens.usesTLS, forKey: DefaultsKey.usesTLS)
-        defaults.set(tokens.listenPort, forKey: DefaultsKey.port)
+        defaults.set(port, forKey: DefaultsKey.port)
+        if let publicBaseURL {
+            defaults.set(publicBaseURL, forKey: DefaultsKey.publicBaseURL)
+        } else {
+            defaults.removeObject(forKey: DefaultsKey.publicBaseURL)
+        }
+        return storageWarning
+    }
+
+    private func applyDiscoveredHosts(_ hosts: [RemoteDiscoveredHost]) {
+        discoveredHosts = hosts
+        guard !isConnected,
+              storedRefreshToken != nil,
+              publicBaseURL == nil,
+              let hostIDRaw = defaults.string(forKey: DefaultsKey.hostID),
+              let hostID = UUID(uuidString: hostIDRaw),
+              let matched = RemoteHostSelection.bestMatch(hostID: hostID, in: hosts)
+        else {
+            return
+        }
+        let endpointChanged = host != matched.host || port != String(matched.port)
+        host = matched.host
+        port = String(matched.port)
+        if endpointChanged {
+            statusMessage = "已找到已配对的 \(matched.name)"
+        }
     }
 
     private func startEvents() {
         eventSocket.stop()
-        // Reconstruct endpoint from client is not exposed; use stored values.
-        guard let portValue = Int(port) else { return }
         do {
-            let endpoint = try RemoteHostEndpoint(
-                host: host,
-                port: portValue,
-                accessToken: accessToken,
-                usesTLS: defaults.bool(forKey: DefaultsKey.usesTLS)
-            )
+            let endpoint: RemoteHostEndpoint
+            let pinnedFingerprint: String?
+            if let publicBaseURL {
+                endpoint = try RemoteHostEndpoint(
+                    publicHTTPSBaseURL: publicBaseURL,
+                    accessToken: accessToken
+                )
+                pinnedFingerprint = nil
+            } else {
+                guard let portValue = Int(port) else { return }
+                endpoint = try RemoteHostEndpoint(
+                    host: host,
+                    port: portValue,
+                    accessToken: accessToken,
+                    usesTLS: defaults.bool(forKey: DefaultsKey.usesTLS)
+                )
+                pinnedFingerprint = certificateFingerprint
+            }
             try eventSocket.connect(
                 endpoint: endpoint,
-                certificateFingerprintSHA256: certificateFingerprint
+                certificateFingerprintSHA256: pinnedFingerprint
             ) { [weak self] event in
                 Task { @MainActor in
                     await self?.handle(event: event)
@@ -367,18 +753,65 @@ final class RemoteCompanionModel: ObservableObject {
         }
     }
 
+    private func makeClient(
+        accessToken: String,
+        publicBaseURL: String?,
+        localHost: String,
+        localPort: Int,
+        usesTLS: Bool,
+        certificateFingerprint: String?,
+        sendAuthorization: Bool = true
+    ) throws -> RemoteLibraryClient {
+        if let publicBaseURL {
+            return RemoteLibraryClient(
+                endpoint: try RemoteHostEndpoint(
+                    publicHTTPSBaseURL: publicBaseURL,
+                    accessToken: accessToken
+                ),
+                transport: URLSessionRemoteHTTPTransport(),
+                sendAuthorization: sendAuthorization
+            )
+        }
+
+        let endpoint = try RemoteHostEndpoint(
+            host: localHost,
+            port: localPort,
+            accessToken: accessToken,
+            usesTLS: usesTLS
+        )
+        let transport: any RemoteHTTPTransporting
+        if usesTLS, let certificateFingerprint {
+            transport = URLSessionRemoteHTTPTransport(
+                session: RemotePinnedURLSessionFactory.makeSession(
+                    certificateFingerprintSHA256: certificateFingerprint
+                )
+            )
+        } else {
+            transport = URLSessionRemoteHTTPTransport()
+        }
+        return RemoteLibraryClient(
+            endpoint: endpoint,
+            transport: transport,
+            sendAuthorization: sendAuthorization
+        )
+    }
+
     private func handle(event: RemoteEvent) async {
         switch event.kind {
         case .ping:
             break
         case .sourcesChanged, .assetsChanged:
             await reloadAssets(reset: true)
+            await reloadReviewQueue(reset: true)
         case .tagsChanged:
             if let client {
                 tags = (try? await client.fetchTags())?.filter { $0.state == .active } ?? tags
             }
-        case .jobsChanged, .reviewChanged:
+            await reloadReviewQueue(reset: true)
+        case .jobsChanged:
             await reloadJobs()
+        case .reviewChanged:
+            await reloadReviewQueue(reset: true)
         }
     }
 
@@ -403,8 +836,29 @@ final class RemoteCompanionModel: ObservableObject {
             }
         }
     }
-}
 
-extension RemoteAPIError: LocalizedError {
-    public var errorDescription: String? { message }
+    private func prefetchReviewThumbnails(for items: [RemoteReviewQueueItem]) async {
+        guard let client else { return }
+        await withTaskGroup(of: (UUID, Data?).self) { group in
+            for item in items.prefix(40) {
+                if reviewThumbnailDataByAssetID[item.assetID] != nil { continue }
+                group.addTask {
+                    do {
+                        let data = try await client.loadThumbnail(
+                            assetID: item.assetID,
+                            targetPixelWidth: 320
+                        )
+                        return (item.assetID, data)
+                    } catch {
+                        return (item.assetID, nil)
+                    }
+                }
+            }
+            for await (id, data) in group {
+                if let data {
+                    reviewThumbnailDataByAssetID[id] = data
+                }
+            }
+        }
+    }
 }

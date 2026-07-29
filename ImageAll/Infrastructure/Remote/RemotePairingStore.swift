@@ -21,6 +21,7 @@ actor RemotePairingStore {
         let usesTLS: Bool
         let certificateFingerprintSHA256: String
         let protocolVersion: Int
+        let publicBaseURL: String?
 
         init(
             hostID: UUID,
@@ -28,7 +29,8 @@ actor RemotePairingStore {
             listenPort: Int,
             usesTLS: Bool,
             certificateFingerprintSHA256: String,
-            protocolVersion: Int = RemoteProtocolVersion.current
+            protocolVersion: Int = RemoteProtocolVersion.current,
+            publicBaseURL: String? = nil
         ) {
             self.hostID = hostID
             self.hostDisplayName = hostDisplayName
@@ -36,6 +38,7 @@ actor RemotePairingStore {
             self.usesTLS = usesTLS
             self.certificateFingerprintSHA256 = certificateFingerprintSHA256
             self.protocolVersion = protocolVersion
+            self.publicBaseURL = publicBaseURL
         }
     }
 
@@ -101,7 +104,8 @@ actor RemotePairingStore {
             certificateFingerprintSHA256: hostContext.certificateFingerprintSHA256,
             pairingToken: token,
             expiresAtMs: Self.milliseconds(expiresAt),
-            protocolVersion: hostContext.protocolVersion
+            protocolVersion: hostContext.protocolVersion,
+            publicBaseURL: hostContext.publicBaseURL
         )
         activeOffer = offer
         return offer
@@ -158,7 +162,8 @@ actor RemotePairingStore {
             refreshToken: refreshToken,
             certificateFingerprintSHA256: hostContext.certificateFingerprintSHA256,
             usesTLS: hostContext.usesTLS,
-            listenPort: hostContext.listenPort
+            listenPort: hostContext.listenPort,
+            publicBaseURL: hostContext.publicBaseURL
         )
     }
 
@@ -188,7 +193,8 @@ actor RemotePairingStore {
             refreshToken: newRefreshToken,
             certificateFingerprintSHA256: hostContext.certificateFingerprintSHA256,
             usesTLS: hostContext.usesTLS,
-            listenPort: hostContext.listenPort
+            listenPort: hostContext.listenPort,
+            publicBaseURL: hostContext.publicBaseURL
         )
     }
 
