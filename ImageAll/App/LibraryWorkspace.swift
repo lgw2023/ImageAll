@@ -821,6 +821,20 @@ enum AssetThumbnailLoadResult: Equatable, Sendable {
     case failed
 }
 
+struct LibrarySlimmingIdenticalCleanupExecutionProgress: Equatable, Sendable {
+    enum Phase: Equatable, Sendable {
+        case validatingPlan
+        case recyclingAssets
+        case requestingAuthorization
+        case refreshingState
+        case verifyingResult
+    }
+
+    let phase: Phase
+    let completedAssetCount: Int
+    let totalAssetCount: Int
+}
+
 @MainActor
 final class LibraryWorkspaceModel: ObservableObject {
     @Published private(set) var phase: LibraryWorkspacePhase = .loading
@@ -931,6 +945,8 @@ final class LibraryWorkspaceModel: ObservableObject {
     @Published var showsLibrarySlimmingThresholdEditor = false
     @Published private(set) var isMutatingLibrarySlimmingRecycle = false
     @Published private(set) var isPreparingLibrarySlimmingIdenticalCleanup = false
+    @Published private(set) var librarySlimmingIdenticalCleanupExecutionProgress:
+        LibrarySlimmingIdenticalCleanupExecutionProgress?
     @Published private(set) var librarySlimmingIdenticalCleanupPostDeleteReport:
         LibrarySlimmingIdenticalCleanupPostDeleteReport?
     /// Bumped when toolbar asks the sidebar view to switch into 图库瘦身.
@@ -973,6 +989,7 @@ final class LibraryWorkspaceModel: ObservableObject {
     private var sourceSimilarityIndexRunnerTask: Task<Void, Never>?
     private var catalogReconcileTask: Task<Void, Never>?
     private var catalogReconcileRunRequested = false
+    private var librarySlimmingIdenticalCleanupExecutionID: UUID?
     private var cloudPreviewTask: Task<Void, Never>?
     private var cloudPreviewRequestID: UUID?
     private var localModelSuggestionRequestID: UUID?
@@ -1666,6 +1683,10 @@ final class LibraryWorkspaceModel: ObservableObject {
         librarySlimmingClusters.filter { $0.kind == .byteIdentical }.count
     }
 
+    var isRunningLibrarySlimmingIdenticalCleanup: Bool {
+        librarySlimmingIdenticalCleanupExecutionProgress != nil
+    }
+
     var canPrepareLibrarySlimmingIdenticalCleanup: Bool {
         librarySlimmingIdenticalCleanupDisabledReason == nil
     }
@@ -1679,6 +1700,15 @@ final class LibraryWorkspaceModel: ObservableObject {
         }
         if isPreparingLibrarySlimmingIdenticalCleanup {
             return "正在计算清理方案…"
+        }
+        if isAnalyzingLibrarySlimming {
+            return "请先等待当前分析完成或暂停"
+        }
+        if isCatalogScanning {
+            return "请先等待照片来源刷新完成"
+        }
+        if isInitializingSourceSimilarityIndex {
+            return "请先等待来源索引初始化完成"
         }
         if isMutatingLibrarySlimmingRecycle {
             return "正在移入回收站…"
@@ -1747,11 +1777,23 @@ final class LibraryWorkspaceModel: ObservableObject {
     ) async {
         guard !plan.isEmpty,
               canPrepareLibrarySlimmingIdenticalCleanup,
+              !isRunningLibrarySlimmingIdenticalCleanup,
               !isMutatingLibrarySlimmingRecycle,
               let recycle = librarySlimmingRecycle
         else { return }
+        let executionID = UUID()
+        librarySlimmingIdenticalCleanupExecutionID = executionID
+        librarySlimmingIdenticalCleanupExecutionProgress =
+            LibrarySlimmingIdenticalCleanupExecutionProgress(
+                phase: .validatingPlan,
+                completedAssetCount: 0,
+                totalAssetCount: plan.assetIDsToRecycle.count
+            )
         isMutatingLibrarySlimmingRecycle = true
-        defer { isMutatingLibrarySlimmingRecycle = false }
+        defer {
+            isMutatingLibrarySlimmingRecycle = false
+            finishLibrarySlimmingIdenticalCleanupExecution(executionID: executionID)
+        }
         do {
             let clusters = librarySlimmingClusters.map(\.cluster)
             let refreshedPlan = try await Self.offMain {
@@ -1801,12 +1843,39 @@ final class LibraryWorkspaceModel: ObservableObject {
             }
         }
         do {
+            let cleanupExecutionID = identicalCleanupPlan == nil
+                ? nil
+                : librarySlimmingIdenticalCleanupExecutionID
+            let totalAssetCount = assetIDs.count
+            if let cleanupExecutionID {
+                setLibrarySlimmingIdenticalCleanupExecutionPhase(
+                    .recyclingAssets,
+                    completedAssetCount: 0,
+                    totalAssetCount: totalAssetCount,
+                    executionID: cleanupExecutionID
+                )
+            }
+            let initialProgressHandler = makeLibrarySlimmingRecycleProgressHandler(
+                executionID: cleanupExecutionID,
+                baseCompletedAssetCount: 0,
+                overallTotalAssetCount: totalAssetCount
+            )
             var outcome = try await Self.offMain {
-                try recycle.moveAssetsToRecycle(assetIDs: assetIDs)
+                try recycle.moveAssetsToRecycle(
+                    assetIDs: assetIDs,
+                    onProgress: initialProgressHandler
+                )
             }
             if !outcome.authorizationRequiredSourceIDs.isEmpty,
                let mutationAuthorization = librarySlimmingMutationAuthorization
             {
+                if let cleanupExecutionID {
+                    setLibrarySlimmingIdenticalCleanupExecutionPhase(
+                        .requestingAuthorization,
+                        totalAssetCount: totalAssetCount,
+                        executionID: cleanupExecutionID
+                    )
+                }
                 var authorizedAtLeastOneSource = false
                 for sourceID in outcome.authorizationRequiredSourceIDs {
                     do {
@@ -1821,12 +1890,32 @@ final class LibraryWorkspaceModel: ObservableObject {
                 }
                 if authorizedAtLeastOneSource, !outcome.authorizationRequiredAssetIDs.isEmpty {
                     let retryAssetIDs = outcome.authorizationRequiredAssetIDs
+                    let baseCompletedAssetCount = completedLibrarySlimmingRecycleAssetCount(
+                        totalAssetCount: totalAssetCount,
+                        outcome: outcome
+                    )
+                    if let cleanupExecutionID {
+                        setLibrarySlimmingIdenticalCleanupExecutionPhase(
+                            .recyclingAssets,
+                            completedAssetCount: baseCompletedAssetCount,
+                            totalAssetCount: totalAssetCount,
+                            executionID: cleanupExecutionID
+                        )
+                    }
+                    let retryProgressHandler = makeLibrarySlimmingRecycleProgressHandler(
+                        executionID: cleanupExecutionID,
+                        baseCompletedAssetCount: baseCompletedAssetCount,
+                        overallTotalAssetCount: totalAssetCount
+                    )
                     let authorizationFailures = Set(retryAssetIDs)
                     let otherFailedAssetIDs = outcome.failedAssetIDs.filter {
                         !authorizationFailures.contains($0)
                     }
                     let retry = try await Self.offMain {
-                        try recycle.moveAssetsToRecycle(assetIDs: retryAssetIDs)
+                        try recycle.moveAssetsToRecycle(
+                            assetIDs: retryAssetIDs,
+                            onProgress: retryProgressHandler
+                        )
                     }
                     outcome.recycledEntryIDs.append(contentsOf: retry.recycledEntryIDs)
                     outcome.skippedPhotosAssetIDs.append(contentsOf: retry.skippedPhotosAssetIDs)
@@ -1841,15 +1930,42 @@ final class LibraryWorkspaceModel: ObservableObject {
             if !outcome.authorizationDeniedPhotosAssetIDs.isEmpty,
                let photosLibraryMutation
             {
+                if let cleanupExecutionID {
+                    setLibrarySlimmingIdenticalCleanupExecutionPhase(
+                        .requestingAuthorization,
+                        totalAssetCount: totalAssetCount,
+                        executionID: cleanupExecutionID
+                    )
+                }
                 let auth = await photosLibraryMutation.requestAuthorization()
                 if auth == .authorized {
                     let retryAssetIDs = outcome.authorizationDeniedPhotosAssetIDs
+                    let baseCompletedAssetCount = completedLibrarySlimmingRecycleAssetCount(
+                        totalAssetCount: totalAssetCount,
+                        outcome: outcome
+                    )
+                    if let cleanupExecutionID {
+                        setLibrarySlimmingIdenticalCleanupExecutionPhase(
+                            .recyclingAssets,
+                            completedAssetCount: baseCompletedAssetCount,
+                            totalAssetCount: totalAssetCount,
+                            executionID: cleanupExecutionID
+                        )
+                    }
+                    let retryProgressHandler = makeLibrarySlimmingRecycleProgressHandler(
+                        executionID: cleanupExecutionID,
+                        baseCompletedAssetCount: baseCompletedAssetCount,
+                        overallTotalAssetCount: totalAssetCount
+                    )
                     let photosAuthorizationFailures = Set(retryAssetIDs)
                     let otherFailedAssetIDs = outcome.failedAssetIDs.filter {
                         !photosAuthorizationFailures.contains($0)
                     }
                     let retry = try await Self.offMain {
-                        try recycle.moveAssetsToRecycle(assetIDs: retryAssetIDs)
+                        try recycle.moveAssetsToRecycle(
+                            assetIDs: retryAssetIDs,
+                            onProgress: retryProgressHandler
+                        )
                     }
                     outcome.recycledEntryIDs.append(contentsOf: retry.recycledEntryIDs)
                     outcome.skippedPhotosAssetIDs.append(contentsOf: retry.skippedPhotosAssetIDs)
@@ -1863,6 +1979,13 @@ final class LibraryWorkspaceModel: ObservableObject {
                         contentsOf: retry.authorizationRequiredAssetIDs
                     )
                 }
+            }
+            if let cleanupExecutionID {
+                setLibrarySlimmingIdenticalCleanupExecutionPhase(
+                    .refreshingState,
+                    totalAssetCount: totalAssetCount,
+                    executionID: cleanupExecutionID
+                )
             }
             let recycled = try await Self.offMain {
                 try recycle.slimmingHiddenAssetIDs(from: assetIDs)
@@ -1925,6 +2048,13 @@ final class LibraryWorkspaceModel: ObservableObject {
             librarySlimmingRecycleActionMessage = message
             await refreshLibrarySlimmingRecycleEntries()
             if let identicalCleanupPlan {
+                if let cleanupExecutionID {
+                    setLibrarySlimmingIdenticalCleanupExecutionPhase(
+                        .verifyingResult,
+                        totalAssetCount: totalAssetCount,
+                        executionID: cleanupExecutionID
+                    )
+                }
                 await verifyLibrarySlimmingIdenticalCleanupAfterDeletion(
                     plan: identicalCleanupPlan,
                     recycle: recycle
@@ -1938,12 +2068,76 @@ final class LibraryWorkspaceModel: ObservableObject {
             librarySlimmingStatusMessage = message
             librarySlimmingRecycleActionMessage = message
             if let identicalCleanupPlan {
+                if let executionID = librarySlimmingIdenticalCleanupExecutionID {
+                    setLibrarySlimmingIdenticalCleanupExecutionPhase(
+                        .verifyingResult,
+                        totalAssetCount: assetIDs.count,
+                        executionID: executionID
+                    )
+                }
                 await verifyLibrarySlimmingIdenticalCleanupAfterDeletion(
                     plan: identicalCleanupPlan,
                     recycle: recycle
                 )
             }
         }
+    }
+
+    private func setLibrarySlimmingIdenticalCleanupExecutionPhase(
+        _ phase: LibrarySlimmingIdenticalCleanupExecutionProgress.Phase,
+        completedAssetCount: Int = 0,
+        totalAssetCount: Int,
+        executionID: UUID
+    ) {
+        guard librarySlimmingIdenticalCleanupExecutionID == executionID else { return }
+        librarySlimmingIdenticalCleanupExecutionProgress =
+            LibrarySlimmingIdenticalCleanupExecutionProgress(
+                phase: phase,
+                completedAssetCount: min(
+                    max(0, completedAssetCount),
+                    max(0, totalAssetCount)
+                ),
+                totalAssetCount: max(0, totalAssetCount)
+            )
+    }
+
+    private func makeLibrarySlimmingRecycleProgressHandler(
+        executionID: UUID?,
+        baseCompletedAssetCount: Int,
+        overallTotalAssetCount: Int
+    ) -> LibrarySlimmingRecycleMoveProgressHandler {
+        { [weak self] progress in
+            guard let executionID else { return }
+            Task { @MainActor [weak self] in
+                guard let self,
+                      self.librarySlimmingIdenticalCleanupExecutionID == executionID,
+                      self.librarySlimmingIdenticalCleanupExecutionProgress?.phase
+                        == .recyclingAssets
+                else { return }
+                self.setLibrarySlimmingIdenticalCleanupExecutionPhase(
+                    .recyclingAssets,
+                    completedAssetCount: baseCompletedAssetCount
+                        + progress.completedAssetCount,
+                    totalAssetCount: overallTotalAssetCount,
+                    executionID: executionID
+                )
+            }
+        }
+    }
+
+    private func completedLibrarySlimmingRecycleAssetCount(
+        totalAssetCount: Int,
+        outcome: LibrarySlimmingRecycleMoveOutcome
+    ) -> Int {
+        let retryableAssetIDs = Set(outcome.authorizationRequiredAssetIDs)
+            .union(outcome.authorizationDeniedPhotosAssetIDs)
+        return max(0, totalAssetCount - retryableAssetIDs.count)
+    }
+
+    private func finishLibrarySlimmingIdenticalCleanupExecution(executionID: UUID) {
+        guard librarySlimmingIdenticalCleanupExecutionID == executionID else { return }
+        librarySlimmingIdenticalCleanupExecutionProgress = nil
+        librarySlimmingIdenticalCleanupExecutionID = nil
     }
 
     private func verifyLibrarySlimmingIdenticalCleanupAfterDeletion(
@@ -2922,7 +3116,10 @@ final class LibraryWorkspaceModel: ObservableObject {
     }
 
     var isBusy: Bool {
-        phase == .loading || phase == .scanning || isCatalogScanning
+        phase == .loading
+            || phase == .scanning
+            || isCatalogScanning
+            || isRunningLibrarySlimmingIdenticalCleanup
     }
 
     var supportsPersonalModelRebuild: Bool {
@@ -7825,6 +8022,129 @@ private struct LibraryTagGroupContainerFramePreferenceKey: PreferenceKey {
     }
 }
 
+private struct LibrarySlimmingIdenticalCleanupBlockingOverlay: View {
+    let progress: LibrarySlimmingIdenticalCleanupExecutionProgress
+
+    var body: some View {
+        ZStack {
+            Rectangle()
+                .fill(.ultraThinMaterial)
+            Rectangle()
+                .fill(Color.black.opacity(0.12))
+
+            VStack(spacing: 18) {
+                Image(systemName: phaseSystemImage)
+                    .font(.system(size: 34, weight: .semibold))
+                    .foregroundStyle(.orange)
+                    .frame(width: 58, height: 58)
+                    .background(.orange.opacity(0.14), in: RoundedRectangle(cornerRadius: 14))
+
+                VStack(spacing: 7) {
+                    Text("正在优先执行一键清理")
+                        .font(.title2.weight(.semibold))
+                    Text(phaseTitle)
+                        .font(.headline)
+                    Text(phaseDetail)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                if progress.phase == .recyclingAssets, progress.totalAssetCount > 0 {
+                    VStack(spacing: 7) {
+                        ProgressView(
+                            value: Double(progress.completedAssetCount),
+                            total: Double(progress.totalAssetCount)
+                        )
+                        Text(
+                            "已处理 \(progress.completedAssetCount.formatted()) / "
+                                + "\(progress.totalAssetCount.formatted()) 张"
+                        )
+                        .font(.callout.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                    }
+                } else {
+                    ProgressView()
+                        .controlSize(.large)
+                }
+
+                Label("为避免删除冲突，其他操作已暂时锁定", systemImage: "lock.fill")
+                    .font(.callout.weight(.medium))
+                    .foregroundStyle(.orange)
+
+                Text("请等待删除与删除后核验完成，不要退出 ImageAll。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 34)
+            .padding(.vertical, 30)
+            .frame(width: 520)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18))
+            .overlay(
+                RoundedRectangle(cornerRadius: 18)
+                    .strokeBorder(Color.primary.opacity(0.08))
+            )
+            .shadow(color: .black.opacity(0.22), radius: 28, y: 12)
+        }
+        .ignoresSafeArea()
+        .contentShape(Rectangle())
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("librarySlimmingIdenticalCleanupBlockingProgress")
+        .accessibilityLabel(
+            progress.phase == .recyclingAssets
+                ? "\(phaseTitle)，已处理 \(progress.completedAssetCount) / "
+                    + "\(progress.totalAssetCount) 张，其他操作已锁定"
+                : "\(phaseTitle)，其他操作已锁定"
+        )
+    }
+
+    private var phaseTitle: String {
+        switch progress.phase {
+        case .validatingPlan:
+            "正在复核清理方案"
+        case .recyclingAssets:
+            "正在移入回收站"
+        case .requestingAuthorization:
+            "正在等待系统授权"
+        case .refreshingState:
+            "正在刷新删除状态"
+        case .verifyingResult:
+            "正在进行删除后核验"
+        }
+    }
+
+    private var phaseDetail: String {
+        switch progress.phase {
+        case .validatingPlan:
+            "重新读取照片与来源状态，确认清理范围没有变化。"
+        case .recyclingAssets:
+            "按已确认的优先级逐项处理；这里显示本次运行的实际进度。"
+        case .requestingAuthorization:
+            "如有系统窗口，请先完成照片或文件夹访问授权。"
+        case .refreshingState:
+            "重新读取回收记录和当前可用状态。"
+        case .verifyingResult:
+            "实打实统计已完成去重、仍有冗余和状态待确认的照片。"
+        }
+    }
+
+    private var phaseSystemImage: String {
+        switch progress.phase {
+        case .validatingPlan:
+            "checkmark.shield"
+        case .recyclingAssets:
+            "trash.square.fill"
+        case .requestingAuthorization:
+            "lock.open"
+        case .refreshingState:
+            "arrow.clockwise"
+        case .verifyingResult:
+            "checkmark.seal"
+        }
+    }
+}
+
 struct LibraryWorkspaceView: View {
     @EnvironmentObject private var toolbarDisplayModeSettings: ToolbarDisplayModeSettingsModel
     private static let sourceDropRowHeight: CGFloat = 40
@@ -8361,7 +8681,15 @@ struct LibraryWorkspaceView: View {
     }
 
     var body: some View {
-        workspaceWithSourceControls
+        ZStack {
+            workspaceWithSourceControls
+                .disabled(model.isRunningLibrarySlimmingIdenticalCleanup)
+
+            if let progress = model.librarySlimmingIdenticalCleanupExecutionProgress {
+                LibrarySlimmingIdenticalCleanupBlockingOverlay(progress: progress)
+                    .zIndex(100)
+            }
+        }
         .alert(
             "重命名标签",
             isPresented: Binding(

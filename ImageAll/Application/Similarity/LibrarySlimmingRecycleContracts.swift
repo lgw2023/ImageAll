@@ -303,6 +303,14 @@ struct LibrarySlimmingRecycleMoveOutcome: Sendable, Equatable {
     var authorizationDeniedPhotosAssetIDs: [UUID]
 }
 
+struct LibrarySlimmingRecycleMoveProgress: Sendable, Equatable {
+    let completedAssetCount: Int
+    let totalAssetCount: Int
+}
+
+typealias LibrarySlimmingRecycleMoveProgressHandler =
+    @Sendable (LibrarySlimmingRecycleMoveProgress) -> Void
+
 protocol LibrarySlimmingRecyclePort: Sendable {
     func makeIdenticalCleanupPlan(
         clusters: [SlimmingCluster]
@@ -311,6 +319,10 @@ protocol LibrarySlimmingRecyclePort: Sendable {
         plan: LibrarySlimmingIdenticalCleanupPlan
     ) throws -> LibrarySlimmingIdenticalCleanupVerification
     func moveAssetsToRecycle(assetIDs: [UUID]) throws -> LibrarySlimmingRecycleMoveOutcome
+    func moveAssetsToRecycle(
+        assetIDs: [UUID],
+        onProgress: @escaping LibrarySlimmingRecycleMoveProgressHandler
+    ) throws -> LibrarySlimmingRecycleMoveOutcome
     func listRecycledEntries() throws -> [RecycleEntryRecord]
     func restore(entryID: UUID) throws
     func purgeNow(entryID: UUID) throws
@@ -338,6 +350,20 @@ extension LibrarySlimmingRecyclePort {
         plan _: LibrarySlimmingIdenticalCleanupPlan
     ) throws -> LibrarySlimmingIdenticalCleanupVerification {
         throw LibrarySlimmingRecycleError.cleanupPlanningUnavailable
+    }
+
+    func moveAssetsToRecycle(
+        assetIDs: [UUID],
+        onProgress: @escaping LibrarySlimmingRecycleMoveProgressHandler
+    ) throws -> LibrarySlimmingRecycleMoveOutcome {
+        let outcome = try moveAssetsToRecycle(assetIDs: assetIDs)
+        onProgress(
+            LibrarySlimmingRecycleMoveProgress(
+                completedAssetCount: assetIDs.count,
+                totalAssetCount: assetIDs.count
+            )
+        )
+        return outcome
     }
 
     /// Compatibility alias used by older call sites / stubs.

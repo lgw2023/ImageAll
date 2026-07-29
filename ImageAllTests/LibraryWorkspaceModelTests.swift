@@ -4765,7 +4765,8 @@ final class LibraryWorkspaceModelTests: XCTestCase {
                     authorizationDeniedPhotosAssetIDs: []
                 ),
             ],
-            entriesAfterMoves: [entries]
+            entriesAfterMoves: [entries],
+            blocksMove: true
         )
         let scan = StubLibrarySlimmingScanPort()
         scan.seedClusters = [firstCluster, secondCluster]
@@ -4797,7 +4798,34 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertEqual(prepared?.verifiedAssetCount, 5)
         XCTAssertEqual(prepared?.groupSizeHistogram, [2: 1, 3: 1])
 
-        await model.moveLibrarySlimmingIdenticalRedundancyToRecycle(plan: plan)
+        let cleanupTask = Task {
+            await model.moveLibrarySlimmingIdenticalRedundancyToRecycle(plan: plan)
+        }
+        for _ in 0 ..< 200 {
+            if model.librarySlimmingIdenticalCleanupExecutionProgress
+                == LibrarySlimmingIdenticalCleanupExecutionProgress(
+                    phase: .recyclingAssets,
+                    completedAssetCount: 1,
+                    totalAssetCount: 3
+                )
+            {
+                break
+            }
+            await Task.yield()
+        }
+
+        XCTAssertTrue(model.isRunningLibrarySlimmingIdenticalCleanup)
+        XCTAssertEqual(
+            model.librarySlimmingIdenticalCleanupExecutionProgress,
+            LibrarySlimmingIdenticalCleanupExecutionProgress(
+                phase: .recyclingAssets,
+                completedAssetCount: 1,
+                totalAssetCount: 3
+            )
+        )
+
+        recycle.releaseBlockedMove()
+        await cleanupTask.value
 
         XCTAssertEqual(Set(recycle.moveAssetIDCalls[0]), Set(plan.assetIDsToRecycle))
         XCTAssertTrue(model.librarySlimmingClusters.isEmpty)
@@ -4810,6 +4838,8 @@ final class LibraryWorkspaceModelTests: XCTestCase {
             model.librarySlimmingIdenticalCleanupPostDeleteReport,
             .verified(verification)
         )
+        XCTAssertFalse(model.isRunningLibrarySlimmingIdenticalCleanup)
+        XCTAssertNil(model.librarySlimmingIdenticalCleanupExecutionProgress)
     }
 
     func testLibrarySlimmingIdenticalCleanupStopsWhenPlanChangesAfterPreview() async {
@@ -9578,6 +9608,8 @@ private final class FakeLibrarySlimmingRecyclePort: LibrarySlimmingRecyclePort, 
     private var storedIdenticalCleanupPlan: LibrarySlimmingIdenticalCleanupPlan?
     private var storedIdenticalCleanupVerification:
         LibrarySlimmingIdenticalCleanupVerification?
+    private let blocksMove: Bool
+    private let moveReleaseSemaphore = DispatchSemaphore(value: 0)
 
     init(
         identicalCleanupPlan: LibrarySlimmingIdenticalCleanupPlan? = nil,
@@ -9587,7 +9619,8 @@ private final class FakeLibrarySlimmingRecyclePort: LibrarySlimmingRecyclePort, 
         entriesAfterMoves: [[RecycleEntryRecord]] = [],
         entriesAfterRestores: [[RecycleEntryRecord]] = [],
         restoreAuthorizationFailures: Int = 0,
-        restoredAssetReplacements: [UUID: UUID] = [:]
+        restoredAssetReplacements: [UUID: UUID] = [:],
+        blocksMove: Bool = false
     ) {
         storedIdenticalCleanupPlan = identicalCleanupPlan
         storedIdenticalCleanupVerification = identicalCleanupVerification
@@ -9597,6 +9630,7 @@ private final class FakeLibrarySlimmingRecyclePort: LibrarySlimmingRecyclePort, 
         storedEntriesAfterRestores = entriesAfterRestores
         remainingRestoreAuthorizationFailures = restoreAuthorizationFailures
         storedRestoredAssetReplacements = restoredAssetReplacements
+        self.blocksMove = blocksMove
     }
 
     func makeIdenticalCleanupPlan(
@@ -9667,6 +9701,27 @@ private final class FakeLibrarySlimmingRecyclePort: LibrarySlimmingRecyclePort, 
             }
             return outcome
         }
+    }
+
+    func moveAssetsToRecycle(
+        assetIDs: [UUID],
+        onProgress: @escaping LibrarySlimmingRecycleMoveProgressHandler
+    ) throws -> LibrarySlimmingRecycleMoveOutcome {
+        let completedCount = blocksMove ? min(1, assetIDs.count) : assetIDs.count
+        onProgress(
+            LibrarySlimmingRecycleMoveProgress(
+                completedAssetCount: completedCount,
+                totalAssetCount: assetIDs.count
+            )
+        )
+        if blocksMove {
+            _ = moveReleaseSemaphore.wait(timeout: .now() + 5)
+        }
+        return try moveAssetsToRecycle(assetIDs: assetIDs)
+    }
+
+    func releaseBlockedMove() {
+        moveReleaseSemaphore.signal()
     }
 
     func listRecycledEntries() throws -> [RecycleEntryRecord] {

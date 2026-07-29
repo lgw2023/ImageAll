@@ -282,6 +282,13 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
     }
 
     func moveAssetsToRecycle(assetIDs: [UUID]) throws -> LibrarySlimmingRecycleMoveOutcome {
+        try moveAssetsToRecycle(assetIDs: assetIDs, onProgress: { _ in })
+    }
+
+    func moveAssetsToRecycle(
+        assetIDs: [UUID],
+        onProgress: @escaping LibrarySlimmingRecycleMoveProgressHandler
+    ) throws -> LibrarySlimmingRecycleMoveOutcome {
         var outcome = LibrarySlimmingRecycleMoveOutcome(
             recycledEntryIDs: [],
             skippedPhotosAssetIDs: [],
@@ -292,8 +299,21 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
         )
         try quarantineIO.ensureQuarantineRoot(at: quarantineRootURL)
 
+        let totalAssetCount = assetIDs.count
+        var completedAssetCount = 0
+        func reportCompleted(_ count: Int = 1) {
+            completedAssetCount = min(totalAssetCount, completedAssetCount + count)
+            onProgress(
+                LibrarySlimmingRecycleMoveProgress(
+                    completedAssetCount: completedAssetCount,
+                    totalAssetCount: totalAssetCount
+                )
+            )
+        }
+
         var photosAssets: [AssetSnapshot] = []
         for assetID in assetIDs {
+            var reachedTerminalOutcome = true
             do {
                 let asset = try loadAsset(assetID: assetID)
                 guard asset.availability == AssetAvailability.available.rawValue else {
@@ -311,10 +331,12 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
                         throw LibrarySlimmingRecycleError.invalidState
                     }
                     photosAssets.append(asset)
+                    reachedTerminalOutcome = false
                 default:
                     throw LibrarySlimmingRecycleError.invalidState
                 }
             } catch LibrarySlimmingRecycleError.mutationAuthorizationRequired {
+                reachedTerminalOutcome = false
                 if let sourceID = try? loadSourceID(assetID: assetID) {
                     if !outcome.authorizationRequiredSourceIDs.contains(sourceID) {
                         outcome.authorizationRequiredSourceIDs.append(sourceID)
@@ -323,23 +345,32 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
                 outcome.failedAssetIDs.append(assetID)
                 outcome.authorizationRequiredAssetIDs.append(assetID)
             } catch LibrarySlimmingRecycleError.photosAuthorizationRequired {
+                reachedTerminalOutcome = false
                 outcome.failedAssetIDs.append(assetID)
                 outcome.authorizationDeniedPhotosAssetIDs.append(assetID)
             } catch {
                 outcome.failedAssetIDs.append(assetID)
             }
+            if reachedTerminalOutcome {
+                reportCompleted()
+            }
         }
         if !photosAssets.isEmpty {
             let photosAssetIDs = photosAssets.map(\.assetID)
+            var reachedTerminalOutcome = true
             do {
                 outcome.recycledEntryIDs.append(
                     contentsOf: try recyclePhotosAssets(photosAssets)
                 )
             } catch LibrarySlimmingRecycleError.photosAuthorizationRequired {
+                reachedTerminalOutcome = false
                 outcome.failedAssetIDs.append(contentsOf: photosAssetIDs)
                 outcome.authorizationDeniedPhotosAssetIDs.append(contentsOf: photosAssetIDs)
             } catch {
                 outcome.failedAssetIDs.append(contentsOf: photosAssetIDs)
+            }
+            if reachedTerminalOutcome {
+                reportCompleted(photosAssetIDs.count)
             }
         }
         return outcome

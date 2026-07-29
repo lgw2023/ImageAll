@@ -200,6 +200,39 @@ final class LibrarySlimmingRecycleTests: XCTestCase {
         XCTAssertTrue(verification.isComplete)
     }
 
+    func testRecycleServiceReportsActualMoveProgressForEachTerminalFileAsset() throws {
+        let env = try RecycleTestEnv(label: #function)
+        defer { env.cleanup() }
+        let first = try env.seedAsset(
+            relativePath: "first.jpg",
+            contents: Data("first".utf8)
+        )
+        let second = try env.seedAsset(
+            relativePath: "second.jpg",
+            contents: Data("second".utf8)
+        )
+        let progress = RecycleMoveProgressProbe()
+
+        _ = try env.makeRecycleService().moveAssetsToRecycle(
+            assetIDs: [first.assetID, second.assetID],
+            onProgress: { progress.append($0) }
+        )
+
+        XCTAssertEqual(
+            progress.values,
+            [
+                LibrarySlimmingRecycleMoveProgress(
+                    completedAssetCount: 1,
+                    totalAssetCount: 2
+                ),
+                LibrarySlimmingRecycleMoveProgress(
+                    completedAssetCount: 2,
+                    totalAssetCount: 2
+                ),
+            ]
+        )
+    }
+
     func testRecycleServiceDoesNotCountIncompleteGroupAsRetainedNonredundant() throws {
         let env = try RecycleTestEnv(label: #function)
         defer { env.cleanup() }
@@ -1498,6 +1531,21 @@ final class LibrarySlimmingRecycleTests: XCTestCase {
             )
         }
         XCTAssertEqual(scheduledAt, entry.purgeAfterMs)
+    }
+}
+
+private final class RecycleMoveProgressProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storedValues: [LibrarySlimmingRecycleMoveProgress] = []
+
+    var values: [LibrarySlimmingRecycleMoveProgress] {
+        lock.withLock { storedValues }
+    }
+
+    func append(_ progress: LibrarySlimmingRecycleMoveProgress) {
+        lock.withLock {
+            storedValues.append(progress)
+        }
     }
 }
 
