@@ -139,13 +139,24 @@ struct RemoteCompanionRootView: View {
                         .foregroundStyle(.secondary)
                 }
 
-                DisclosureGroup("粘贴配对 JSON") {
-                    TextEditor(text: $model.pairingOfferJSON)
+                DisclosureGroup("手动配对 JSON") {
+                    PairingJSONTextEditor(text: $model.pairingOfferJSON)
                         .frame(minHeight: 88)
-                        .font(.system(.footnote, design: .monospaced))
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 8)
+                                .stroke(.quaternary)
+                        }
+                        .accessibilityLabel("配对 JSON")
+                    Text("建议优先扫码或从剪贴板读取；输入框不会自动大写或替换引号。")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
                     Button("从剪贴板读取") {
                         model.loadPairingOfferFromPasteboard()
                     }
+                    Button("清空", role: .destructive) {
+                        model.pairingOfferJSON = ""
+                    }
+                    .disabled(model.pairingOfferJSON.isEmpty)
                     Button("使用配对 JSON") {
                         Task { await model.pairUsingOfferJSON() }
                     }
@@ -825,6 +836,53 @@ private struct PairingQRCodeScannerView: UIViewControllerRepresentable {
             becameUnavailableWithError error: DataScannerViewController.ScanningUnavailable
         ) {
             onError(String(describing: error))
+        }
+    }
+}
+
+private struct PairingJSONTextEditor: UIViewRepresentable {
+    @Binding var text: String
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(text: $text)
+    }
+
+    func makeUIView(context: Context) -> UITextView {
+        let textView = UITextView()
+        textView.delegate = context.coordinator
+        textView.font = .monospacedSystemFont(ofSize: UIFont.preferredFont(
+            forTextStyle: .footnote
+        ).pointSize, weight: .regular)
+        textView.adjustsFontForContentSizeCategory = true
+        textView.backgroundColor = .clear
+        textView.keyboardType = .asciiCapable
+        textView.autocapitalizationType = .none
+        textView.autocorrectionType = .no
+        textView.spellCheckingType = .no
+        textView.smartQuotesType = .no
+        textView.smartDashesType = .no
+        textView.smartInsertDeleteType = .no
+        textView.keyboardDismissMode = .interactive
+        textView.textContainerInset = UIEdgeInsets(top: 8, left: 4, bottom: 8, right: 4)
+        return textView
+    }
+
+    func updateUIView(_ textView: UITextView, context: Context) {
+        if textView.text != text {
+            textView.text = text
+        }
+    }
+
+    @MainActor
+    final class Coordinator: NSObject, UITextViewDelegate {
+        private let text: Binding<String>
+
+        init(text: Binding<String>) {
+            self.text = text
+        }
+
+        func textViewDidChange(_ textView: UITextView) {
+            text.wrappedValue = textView.text
         }
     }
 }

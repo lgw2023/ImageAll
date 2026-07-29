@@ -101,6 +101,16 @@ struct RemoteHostSettingsView: View {
                         .font(.system(.caption, design: .monospaced))
                         .textSelection(.enabled)
                 }
+                if model.isRunning {
+                    Text(
+                        """
+                        若手机持续连接超时，请打开“系统设置 > 网络 > 防火墙 > 选项”，\
+                        关闭“阻止所有传入连接”，并将 ImageAll 设为“允许传入连接”。
+                        """
+                    )
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                }
 #if DEBUG
                 if let token = model.legacyDebugToken {
                     LabeledContent("Debug Token") {

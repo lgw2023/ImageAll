@@ -188,7 +188,7 @@ final class RemoteCompanionModel: ObservableObject {
                 statusMessage = "配对成功 · \(statusMessage ?? "已连接")"
             }
         } catch {
-            statusMessage = error.localizedDescription
+            statusMessage = connectionStatusMessage(for: error)
         }
     }
 
@@ -516,7 +516,7 @@ final class RemoteCompanionModel: ObservableObject {
         } catch {
             isConnected = false
             client = nil
-            statusMessage = error.localizedDescription
+            statusMessage = connectionStatusMessage(for: error)
         }
     }
 
@@ -573,7 +573,37 @@ final class RemoteCompanionModel: ObservableObject {
                 statusMessage = "\(statusMessage ?? "已连接")；\(storageWarning)"
             }
         } catch {
-            statusMessage = error.localizedDescription
+            statusMessage = connectionStatusMessage(for: error)
+        }
+    }
+
+    private func connectionStatusMessage(for error: Error) -> String {
+        let nsError = error as NSError
+        guard nsError.domain == NSURLErrorDomain else {
+            return error.localizedDescription
+        }
+
+        switch URLError.Code(rawValue: nsError.code) {
+        case .timedOut:
+            return """
+            连接 Mac Host 超时。请确认两台设备在同一局域网，并在 Mac 的“网络 > 防火墙 > \
+            选项”中关闭“阻止所有传入连接”、允许 ImageAll 传入连接。
+            """
+        case .cannotConnectToHost, .cannotFindHost, .networkConnectionLost:
+            return """
+            无法连接 Mac Host。请确认 Host 正在运行、地址正确，并在 Mac 防火墙中允许 \
+            ImageAll 传入连接。
+            """
+        case .notConnectedToInternet:
+            return "iPhone 当前没有可用网络。请先连接与 Mac 相同的局域网。"
+        case .secureConnectionFailed,
+             .serverCertificateHasBadDate,
+             .serverCertificateUntrusted,
+             .serverCertificateHasUnknownRoot,
+             .serverCertificateNotYetValid:
+            return "TLS 证书校验失败。请在 Mac 重新开始配对，并扫描最新二维码。"
+        default:
+            return error.localizedDescription
         }
     }
 
