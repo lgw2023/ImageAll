@@ -30,7 +30,6 @@ final class AppCoreMLEmbeddingCache: @unchecked Sendable {
     private let cachesDirectory: URL
     private let service: AppCoreMLEmbeddingService
     private let maximumCacheBytes: Int64
-    private var requiresMaintenance = true
 
     init(
         cachesDirectory: URL,
@@ -63,16 +62,11 @@ final class AppCoreMLEmbeddingCache: @unchecked Sendable {
                 _ = Darwin.lockf(lockDescriptor, F_ULOCK, 0)
                 Darwin.close(lockDescriptor)
             }
-            if requiresMaintenance,
-               case let .ready(identity) = service.availability
-            {
-                do {
-                    try maintain(identity: identity)
-                    requiresMaintenance = false
-                } catch {
-                    // Cache maintenance is best-effort; inference remains available.
-                }
-            }
+            // Cache addresses include the complete model identity, and reads
+            // validate the record schema. A lookup therefore cannot consume an
+            // older model's object. Avoid opening and decoding every cache object
+            // on this latency-sensitive path; capacity enforcement after a
+            // publish reclaims older objects.
             return try embeddingLocked(for: image, key: key)
         }
     }
@@ -209,26 +203,6 @@ final class AppCoreMLEmbeddingCache: @unchecked Sendable {
             throw DerivedImageSecureIOError.unsafePath
         }
         return destination
-    }
-
-    private func maintain(identity: AppCoreMLModelIdentity) throws {
-        for object in try ownedObjects() {
-            let isCurrent: Bool
-            do {
-                let descriptor = try DerivedImageSecureIO.openReadOnlyNoFollow(at: object.url)
-                defer { Darwin.close(descriptor) }
-                let data = try DerivedImageSecureIO.readAllBytes(from: descriptor)
-                let record = try JSONDecoder().decode(Record.self, from: data)
-                isCurrent = record.schemaRevision == Self.recordSchemaRevision
-                    && record.address.matches(identity: identity)
-            } catch {
-                isCurrent = false
-            }
-            if !isCurrent {
-                _ = Darwin.unlink(object.url.path)
-            }
-        }
-        try enforceCapacity(preserving: nil)
     }
 
     private func enforceCapacity(preserving destination: URL?) throws {
@@ -390,21 +364,6 @@ final class AppCoreMLEmbeddingCache: @unchecked Sendable {
             licenseSHA256 = identity.licenseSHA256
         }
 
-        func matches(identity: AppCoreMLModelIdentity) -> Bool {
-            provider == identity.provider
-                && modelID == identity.modelID
-                && modelRevision == identity.modelRevision
-                && preprocessingRevision == identity.preprocessingRevision
-                && embeddingSemantics == identity.embeddingSemantics
-                && postprocessingRevision == identity.postprocessingRevision
-                && elementType == identity.elementType
-                && elementCount == identity.elementCount
-                && sourceModelSHA256 == identity.sourceModelSHA256
-                && artifactSHA256 == identity.artifactSHA256
-                && manifestSHA256 == identity.manifestSHA256
-                && licenseID == identity.licenseID
-                && licenseSHA256 == identity.licenseSHA256
-        }
     }
 }
 

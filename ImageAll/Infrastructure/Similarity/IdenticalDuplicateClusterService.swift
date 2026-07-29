@@ -17,23 +17,28 @@ struct IdenticalDuplicateClusterService: IdenticalDuplicateScanPort {
         var claimed = Set<UUID>()
         var clusters: [IdenticalDuplicateCluster] = []
 
-        // 1) Byte-identical groups by sha256.
-        var bySHA: [Data: [FingerprintRecord]] = [:]
-        for record in records {
-            bySHA[record.sha256, default: []].append(record)
-        }
-        for (_, group) in bySHA.sorted(by: { $0.key.lexicographicallyPrecedes($1.key) }) {
-            guard group.count >= 2 else { continue }
-            let members = group.map(\.assetID).sorted { $0.uuidString.lowercased() < $1.uuidString.lowercased() }
-            for id in members { claimed.insert(id) }
-            clusters.append(
-                IdenticalDuplicateCluster(
-                    kind: .byteIdentical,
-                    memberAssetIDs: members,
-                    representativeAssetID: members[0],
-                    score: 0
+        // A representative frame cannot prove that two full videos are byte
+        // identical. Only still images may enter deletion-grade SHA groups.
+        if mediaKind == .image {
+            var bySHA: [Data: [FingerprintRecord]] = [:]
+            for record in records {
+                bySHA[record.sha256, default: []].append(record)
+            }
+            for (_, group) in bySHA.sorted(by: { $0.key.lexicographicallyPrecedes($1.key) }) {
+                guard group.count >= 2 else { continue }
+                let members = group.map(\.assetID).sorted {
+                    $0.uuidString.lowercased() < $1.uuidString.lowercased()
+                }
+                for id in members { claimed.insert(id) }
+                clusters.append(
+                    IdenticalDuplicateCluster(
+                        kind: .byteIdentical,
+                        memberAssetIDs: members,
+                        representativeAssetID: members[0],
+                        score: 0
+                    )
                 )
-            )
+            }
         }
 
         // 2) Perceptual duplicates among remaining assets. A dHash match only

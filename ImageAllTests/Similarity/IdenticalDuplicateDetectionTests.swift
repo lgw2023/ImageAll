@@ -6,7 +6,7 @@ import XCTest
 @testable import ImageAll
 
 final class IdenticalDuplicateDetectionTests: XCTestCase {
-    func testPhotoKitVideoUsesLocalFullBytesForExactHashAndPosterForVisualFingerprint() throws {
+    func testVideoFingerprintUsesOnlyRepresentativePosterAcrossFolderAndPhotoKit() throws {
         let env = try SimilarityTestSupport.Environment(label: #function)
         defer { env.cleanup() }
 
@@ -24,17 +24,10 @@ final class IdenticalDuplicateDetectionTests: XCTestCase {
             durationMs: 4_000
         )
         let posterBytes = try XCTUnwrap(
-            SimilarityTestSupport.solidImageData(
-                red: 230,
-                green: 20,
-                blue: 20,
-                uti: .png
-            )
+            SimilarityTestSupport.patternedImageData(seed: 101, uti: .png)
         )
-        let videoOriginals = SimilarityPhotosOriginalVideoStub(bytes: videoBytes)
         let featureImages = SimilarityPhotosFeatureImageStub(bytes: posterBytes)
         let completion = env.makeCompletionService(
-            photosOriginalVideos: videoOriginals,
             photosFeatureImages: featureImages,
             videoPosterGenerator: SimilarityVideoPosterStub()
         )
@@ -42,56 +35,62 @@ final class IdenticalDuplicateDetectionTests: XCTestCase {
         let folderFingerprint = try completion.completeAsset(assetID: folder.assetID)
         let photosFingerprint = try completion.completeAsset(assetID: photosAssetID)
 
-        XCTAssertEqual(folderFingerprint.sha256, Data(SHA256.hash(data: videoBytes)))
         XCTAssertEqual(photosFingerprint.sha256, folderFingerprint.sha256)
+        XCTAssertNotEqual(folderFingerprint.sha256, Data(SHA256.hash(data: videoBytes)))
         XCTAssertEqual(
             photosFingerprint.perceptualAlgoVersion,
             IdenticalDuplicatePolicy.videoPosterPerceptualAlgoVersion
         )
-        XCTAssertEqual(videoOriginals.requestCount, 1)
         XCTAssertEqual(featureImages.requestCount, 1)
+        let storedFileSHA: Data? = try env.database.pool.read { db in
+            try Data.fetchOne(
+                db,
+                sql: "SELECT sha256 FROM file_fingerprint WHERE asset_id = ?",
+                arguments: [folder.assetID.uuidString.lowercased()]
+            )
+        }
+        XCTAssertNil(storedFileSHA)
 
         let clusters = try IdenticalDuplicateClusterService(database: env.database)
             .clusterIdenticalDuplicates(
                 assetIDs: [folder.assetID, photosAssetID],
                 mediaKind: .video
             )
-        XCTAssertEqual(clusters.map(\.kind), [.byteIdentical])
+        XCTAssertEqual(clusters.map(\.kind), [.perceptualDuplicate])
         XCTAssertEqual(
             Set(try XCTUnwrap(clusters.first).memberAssetIDs),
             Set([folder.assetID, photosAssetID])
         )
     }
 
-    func testVideoSlimmingUsesFullFileHashAndPosterSimilarityWithoutPhotoLeakage() throws {
+    func testVideoSlimmingUsesOnlyPosterSimilarityWithoutPhotoLeakage() throws {
         let env = try SimilarityTestSupport.Environment(label: #function)
         defer { env.cleanup() }
 
-        let exactBytes = Data([1, 9, 9, 9])
         let exactA = try env.seedAsset(
             relativePath: "exact-a.mp4",
-            contents: exactBytes,
+            contents: Data([1, 9, 9, 9]),
             mediaType: "public.mpeg-4",
             mediaKind: .video,
             durationMs: 4_000
         )
         let exactB = try env.seedAsset(
             relativePath: "exact-b.mp4",
-            contents: exactBytes,
+            contents: Data([1, 8, 8, 8]),
             mediaType: "public.mpeg-4",
             mediaKind: .video,
             durationMs: 4_000
         )
         let sceneA = try env.seedAsset(
             relativePath: "scene-a.mp4",
-            contents: Data([1, 2, 3]),
+            contents: Data([2, 2, 3]),
             mediaType: "public.mpeg-4",
             mediaKind: .video,
             durationMs: 5_000
         )
         let sceneB = try env.seedAsset(
             relativePath: "scene-b.mp4",
-            contents: Data([2, 3, 4]),
+            contents: Data([3, 3, 4]),
             mediaType: "public.mpeg-4",
             mediaKind: .video,
             durationMs: 6_000
@@ -147,13 +146,24 @@ final class IdenticalDuplicateDetectionTests: XCTestCase {
         )
 
         XCTAssertEqual(result.analyzedAssetCount, 4)
-        let exact = try XCTUnwrap(result.clusters.first { $0.kind == .byteIdentical })
-        XCTAssertEqual(Set(exact.memberAssetIDs), Set([exactA.assetID, exactB.assetID]))
+        XCTAssertFalse(result.clusters.contains { $0.kind == .byteIdentical })
+        let posterDuplicate = try XCTUnwrap(
+            result.clusters.first {
+                $0.kind == .perceptualDuplicate
+                    && Set($0.memberAssetIDs) == Set([exactA.assetID, exactB.assetID])
+            },
+            """
+            exactA=\(exactA.assetID) exactB=\(exactB.assetID) \
+            sceneA=\(sceneA.assetID) sceneB=\(sceneB.assetID) \
+            clusters=\(result.clusters.map { ($0.kind, $0.memberAssetIDs) })
+            """
+        )
+        XCTAssertEqual(posterDuplicate.score, 1)
         let similar = try XCTUnwrap(result.clusters.first { $0.kind == .nearDuplicateScene })
         XCTAssertEqual(Set(similar.memberAssetIDs), Set([sceneA.assetID, sceneB.assetID]))
         XCTAssertFalse(result.clusters.flatMap(\.memberAssetIDs).contains(photo.assetID))
         XCTAssertEqual(
-            exact.modelIdentity.perceptualAlgoVersion,
+            posterDuplicate.modelIdentity.perceptualAlgoVersion,
             IdenticalDuplicatePolicy.videoPosterPerceptualAlgoVersion
         )
 
@@ -647,6 +657,57 @@ final class IdenticalDuplicateDetectionTests: XCTestCase {
         )
     }
 
+    func testLibraryAnalysisResumeRecoversExpiredRunningJob() throws {
+        let env = try SimilarityTestSupport.Environment(label: #function)
+        defer { env.cleanup() }
+        let bytes = try XCTUnwrap(
+            SimilarityTestSupport.patternedImageData(seed: 97, uti: .png)
+        )
+        let asset = try env.seedAsset(
+            relativePath: "expired-running.png",
+            contents: bytes,
+            mediaType: "public.png"
+        )
+        let completion = env.makeCompletionService()
+        let featureLoader = DictionarySlimmingFeatureLoader(vectors: [:])
+        let embeddingLoader = DictionarySlimmingEmbeddingLoader(vectors: [:])
+        let scanner = LibrarySlimmingScanService(
+            database: env.database,
+            identicalScan: IdenticalDuplicateClusterService(database: env.database),
+            fingerprintCompletion: completion,
+            featureLoader: featureLoader,
+            embeddingLoader: embeddingLoader
+        )
+        let clock = MutableJobClock(nowMs: JobTestSupport.baseTimeMs)
+        let queue = GRDBJobQueue(
+            database: env.database,
+            clock: clock,
+            retryPolicy: FixedDelayRetryPolicy(delayMs: JobTestSupport.retryDelayMs)
+        )
+        let analysis = LibrarySlimmingAnalysisService(
+            database: env.database,
+            queue: queue,
+            fingerprintCompletion: completion,
+            featureLoader: featureLoader,
+            embeddingLoader: embeddingLoader,
+            scanner: scanner,
+            clock: clock
+        )
+        let enqueued = try analysis.enqueue(
+            mode: .catalog,
+            assetIDs: [asset.assetID],
+            seedAssetIDs: []
+        )
+        let lease = try XCTUnwrap(try JobTestSupport.claimDefault(queue: queue))
+        XCTAssertEqual(lease.jobID, enqueued.jobID)
+        clock.setNowMs(lease.leaseExpiresAtMs + 1)
+
+        let resumed = try analysis.resume(jobID: enqueued.jobID)
+
+        XCTAssertEqual(resumed.state, .pending)
+        XCTAssertNil(try queue.fetchJob(id: enqueued.jobID).leaseOwner)
+    }
+
     func testLibraryAnalysisListJobsUpgradesActiveRetryBudgetAndExposesAttempts() throws {
         let env = try SimilarityTestSupport.Environment(label: #function)
         defer { env.cleanup() }
@@ -811,6 +872,53 @@ final class IdenticalDuplicateDetectionTests: XCTestCase {
         XCTAssertEqual(finished.state, .completed)
         XCTAssertEqual(finished.progress.completed, finished.progress.total)
     }
+
+    func testLibraryAnalysisClusteringRenewsLeaseWithoutProgressCallbacks() throws {
+        let env = try SimilarityTestSupport.Environment(label: #function)
+        defer { env.cleanup() }
+        let bytes = try XCTUnwrap(
+            SimilarityTestSupport.patternedImageData(seed: 98, uti: .png)
+        )
+        let asset = try env.seedAsset(
+            relativePath: "callback-free-heartbeat.png",
+            contents: bytes,
+            mediaType: "public.png"
+        )
+        let completion = env.makeCompletionService()
+        let featureLoader = DictionarySlimmingFeatureLoader(vectors: [
+            asset.assetID: [1, 0],
+        ])
+        let embeddingLoader = DictionarySlimmingEmbeddingLoader(vectors: [
+            asset.assetID: [1, 0],
+        ])
+        let clock = SystemJobClock()
+        let queue = GRDBJobQueue(
+            database: env.database,
+            clock: clock,
+            retryPolicy: FixedDelayRetryPolicy(delayMs: JobTestSupport.retryDelayMs)
+        )
+        let analysis = LibrarySlimmingAnalysisService(
+            database: env.database,
+            queue: queue,
+            fingerprintCompletion: completion,
+            featureLoader: featureLoader,
+            embeddingLoader: embeddingLoader,
+            scanner: CallbackFreeBlockingSlimmingScanner(delay: 0.65),
+            clock: clock,
+            leaseDurationMs: 300
+        )
+        let enqueued = try analysis.enqueue(
+            mode: .catalog,
+            assetIDs: [asset.assetID],
+            seedAssetIDs: []
+        )
+
+        try analysis.runPending()
+
+        let finished = try analysis.snapshot(jobID: enqueued.jobID)
+        XCTAssertEqual(finished.state, .completed)
+        XCTAssertEqual(finished.progress.completed, finished.progress.total)
+    }
 }
 
 private final class LeaseAdvancingSlimmingScanner: LibrarySlimmingScanPort,
@@ -860,6 +968,37 @@ private final class LeaseAdvancingSlimmingScanner: LibrarySlimmingScanPort,
     ) throws -> LibrarySlimmingScanResult {
         _ = seedAssetIDs
         return try scan(assetIDs: universeAssetIDs, onProgress: onProgress)
+    }
+}
+
+private struct CallbackFreeBlockingSlimmingScanner: LibrarySlimmingScanPort {
+    let delay: TimeInterval
+
+    func scan(
+        assetIDs: [UUID],
+        onProgress _: LibrarySlimmingScanProgressHandler?
+    ) throws -> LibrarySlimmingScanResult {
+        Thread.sleep(forTimeInterval: delay)
+        return LibrarySlimmingScanResult(
+            clusters: [],
+            pendingAnalysisAssetIDs: [],
+            analyzedAssetCount: assetIDs.count,
+            policyVersion: NearDuplicateScenePolicy.policyVersion
+        )
+    }
+
+    func scanCatalog(
+        onProgress: LibrarySlimmingScanProgressHandler?
+    ) throws -> LibrarySlimmingScanResult {
+        try scan(assetIDs: [], onProgress: onProgress)
+    }
+
+    func scanSeeds(
+        seedAssetIDs _: [UUID],
+        universeAssetIDs: [UUID],
+        onProgress: LibrarySlimmingScanProgressHandler?
+    ) throws -> LibrarySlimmingScanResult {
+        try scan(assetIDs: universeAssetIDs, onProgress: onProgress)
     }
 }
 
@@ -928,7 +1067,6 @@ enum SimilarityTestSupport {
 
         func makeCompletionService(
             photosOriginals: (any PhotosOriginalContentPort)? = nil,
-            photosOriginalVideos: (any PhotosOriginalVideoContentPort)? = nil,
             photosFeatureImages: (any PhotosFeaturePrintImagePort)? = nil,
             downloadedPreviews: (any DownloadedPreviewCachePort)? = nil,
             videoPosterGenerator: any DerivedVideoPosterGenerating =
@@ -947,7 +1085,6 @@ enum SimilarityTestSupport {
                 database: database,
                 sourceAccess: sourceAccess,
                 photosOriginals: photosOriginals,
-                photosOriginalVideos: photosOriginalVideos,
                 photosOriginalCache: PhotosOriginalCacheService(
                     database: database,
                     rootURL: root.appendingPathComponent("Photos Originals", isDirectory: true),
@@ -1181,21 +1318,16 @@ private struct SimilarityVideoPosterStub: DerivedVideoPosterGenerating {
         let source = try Data(contentsOf: sourceFileDescriptorURL)
         if source.first == 1 {
             return try XCTUnwrap(
-                SimilarityTestSupport.solidImageData(
-                    red: 230,
-                    green: 20,
-                    blue: 20,
-                    uti: .png
-                )
+                SimilarityTestSupport.patternedImageData(seed: 101, uti: .png)
+            )
+        }
+        if source.first == 2 {
+            return try XCTUnwrap(
+                SimilarityTestSupport.patternedImageData(seed: 180, uti: .png)
             )
         }
         return try XCTUnwrap(
-            SimilarityTestSupport.solidImageData(
-                red: 20,
-                green: 20,
-                blue: 230,
-                uti: .png
-            )
+            SimilarityTestSupport.patternedImageData(seed: 240, uti: .png)
         )
     }
 }
@@ -1225,31 +1357,6 @@ private final class SimilarityPhotosOriginalStub: PhotosOriginalContentPort, @un
             guard let bytes else {
                 throw PhotosLibraryError.libraryUnavailable
             }
-            return bytes
-        }
-    }
-}
-
-private final class SimilarityPhotosOriginalVideoStub:
-    PhotosOriginalVideoContentPort,
-    @unchecked Sendable
-{
-    private let lock = NSLock()
-    let bytes: Data
-    private var storedRequestCount = 0
-
-    init(bytes: Data) {
-        self.bytes = bytes
-    }
-
-    var requestCount: Int {
-        lock.withLock { storedRequestCount }
-    }
-
-    func requestOriginalVideoData(localIdentifier: String) throws -> Data {
-        _ = localIdentifier
-        return lock.withLock {
-            storedRequestCount += 1
             return bytes
         }
     }

@@ -2704,6 +2704,7 @@ final class LibraryWorkspaceModel: ObservableObject {
             applyLibrarySlimmingJobSnapshot(resumed, forceSelect: false)
             librarySlimmingStatusMessage = "正在从已保存进度继续并自动补全…"
             librarySlimmingAnalysisJobState = .running
+            startLibrarySlimmingAnalysisProgressMonitorIfNeeded()
             try await Self.offMain(priority: .utility) {
                 try analysis.runPending()
             }
@@ -3119,6 +3120,7 @@ final class LibraryWorkspaceModel: ObservableObject {
         librarySlimmingClusters = []
         librarySlimmingPendingCount = 0
         await refreshLibrarySlimmingAnalysisJobs()
+        ensureLibrarySlimmingAnalysisMonitoring()
         await refreshSourceSimilarityIndexStatus()
         await refreshLibrarySlimmingRecycleEntries()
     }

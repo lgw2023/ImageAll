@@ -1,3 +1,4 @@
+import CryptoKit
 import CoreGraphics
 import Foundation
 import ImageIO
@@ -144,6 +145,15 @@ enum PerceptualImageHash {
         return data.withUnsafeBytes { raw in
             UInt64(bigEndian: raw.load(as: UInt64.self))
         }
+    }
+
+    /// Stable, domain-separated digest of the normalized visual analysis.
+    /// For videos this is a representative-poster identity, not a full-file hash.
+    static func visualContentDigest(_ analysis: PerceptualImageAnalysis) -> Data {
+        var canonical = Data("ImageAll.visual-content.v1\u{0}".utf8)
+        canonical.append(encodeHash(analysis.dHash))
+        canonical.append(analysis.verificationSignature)
+        return Data(SHA256.hash(data: canonical))
     }
 
     static func verificationMatches(
