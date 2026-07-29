@@ -48,7 +48,8 @@ Cloudflare 的 TCP published application 又要求移动端运行 `cloudflared a
 - 除配对完成和 refresh 外，所有 HTTP / WebSocket 路由继续要求 Host bearer；
 - Host 所有 HTTP 响应增加 `Cache-Control: no-store`，防止 Cloudflare 或其他中间层缓存
   capabilities、DTO、缩略图和预览；
-- Host 默认关闭；只有用户显式启用 Host 并开始约五分钟配对会话时才接受新设备；
+- Host 默认启用，但只有用户开始约五分钟配对会话时才接受新设备；设置开关关闭后当前进程
+  立即停止监听，再次打开则立即恢复，无需重启 App；
 - 设备撤销、短期 access token、可轮换 refresh token、持久幂等与 WebSocket 鉴权沿用 R3；
 - Tunnel 配置和仓库证据不得记录 Tunnel UUID、credentials 文件内容、pairing token、bearer
   或完整证书指纹。
@@ -80,6 +81,8 @@ Access service token 可在不改变原生协议的后续加固切片评估。
    capabilities、图库/缩略图、preview、review、jobs 与 WebSocket；
 6. Mobile 重启后用 Keychain refresh 恢复会话；Mac 撤销设备后旧 refresh 失败；
 7. 证据只记录域名、聚合结果和脱敏 Host ID，不记录令牌、完整指纹或照片内容。
+8. 新安装启动后 Host 默认运行；设置开关可以在当前 App 进程内立即停止并再次启动。保存公网
+   Base URL 后 Host 立即重载，后续新二维码包含生效后的公网入口，不要求重启 App。
 
 ## 停止位置
 
