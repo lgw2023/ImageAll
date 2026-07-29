@@ -11,6 +11,7 @@
 - 隔离分支：`lgw/imageall-mobile-r3-polish`
 - 实现提交：`17237f2f`
 - 身份绑定加固提交：`38d9e6a8`
+- Keychain 凭据加固提交：`91a3cc5a`
 - 实施身份：Codex；实现 `feat(codex):` / `fix(codex):`；文档 `docs(codex):`
 
 ## 并行工作区边界
@@ -90,6 +91,27 @@ ADR-044 的二维码按安全边界只带 `hostID`、端口提示、一次性 to
 
 本加固不改 Remote DTO，不允许远端替代 Mac 写权威，也不改变 R3/R4 边界。
 
+## Mobile 会话凭据 Keychain 加固
+
+静态复核发现 Mobile 把配对返回的短期 `accessToken` 与可撤销 `refreshToken` 都写入
+`UserDefaults`。提交 `91a3cc5a` 将凭据边界收紧为：
+
+- `refreshToken` 作为 non-synchronizable generic-password item 写入 iOS Keychain，
+  accessibility 为 `whenUnlockedThisDeviceOnly`，不经 iCloud Keychain 同步；
+- `accessToken` 只保留在当前进程内存，不再持久化；断开连接时清空；
+- Host 地址、端口、`deviceID`、`hostID`、TLS 模式与证书指纹仍作为非秘密连接元数据保存在
+  `UserDefaults`；
+- 启动时若发现旧 `refreshToken`，先确认 Keychain 写入成功，再删除旧 access/refresh 值；
+- Keychain 已有 refresh credential 时，以安全存储为准并清理陈旧偏好副本；
+- 旧值为空或 Keychain 写入失败时，不删除旧偏好，也不拿旧 refresh token 请求 Host 轮换；
+- 新配对完成后直接使用刚签发的短期 access token 建立固定证书的 TLS 会话，不再为了连接立刻额外
+  refresh 一次；
+- 新配对或正常 refresh 已从 Host 收到新 token、但 Keychain 更新失败时，Mobile 仅把新 token
+  保留在当前内存会话，删除可能已经失效的 Keychain 旧值，并明确提示重启后需要重新配对。
+
+Keychain 存取和旧值迁移封装在 `ImageAllRemoteClient` 的小接口后；自动化测试只替换系统安全存储
+边界，不读取真实 Keychain，也不记录任何真实 token。
+
 ## 自动化与构建证据
 
 所有命令均在隔离 worktree 执行；构建产物写入 `/tmp`，没有启动 Mac 生产 App。
@@ -97,12 +119,13 @@ ADR-044 的二维码按安全边界只带 `hostID`、端口提示、一次性 to
 | 验证 | 结果 |
 |---|---|
 | `Packages/ImageAllRemoteProtocol`：`swift test -q` | 9 tests，0 failures |
-| `Packages/ImageAllRemoteClient`：`swift test -q` | 23 tests，0 failures |
+| `Packages/ImageAllRemoteClient`：`swift test -q` | 27 tests，0 failures |
 | Mobile Debug，generic iOS Simulator | `BUILD SUCCEEDED` |
 | Mobile Debug，generic iOS Device/arm64 | `BUILD SUCCEEDED` |
 | Mac Debug，macOS | `BUILD SUCCEEDED` |
 | Remote 五组测试 `build-for-testing` | 成功编译 |
 | Mobile Simulator 启动与连接页视觉 smoke | 通过；未崩溃，扫码回退与连接表单可见 |
+| Mobile Simulator 合成旧凭据迁移 | 通过；Keychain 成功提示、access 输入清空、App 偏好 plist 无 token |
 | `plutil -lint ImageAllMobile/Info.plist` | OK |
 | `git diff --check` / cached diff check | 通过 |
 
@@ -121,9 +144,26 @@ Remote 定向编译包含：
 - 旧会话缺失已存 Host ID 的一次性迁移；
 - Bonjour 精确身份优先、拒绝同名不同身份、旧 Host 同名回退。
 
+Keychain 新增的 4 项 Client 测试覆盖：
+
+- 旧 refresh token 成功迁入安全存储后才删除旧值；
+- 空白旧值拒绝迁移且保留原值；
+- 安全存储写入失败时保留旧值；
+- Keychain 已有值优先于陈旧偏好值。
+
+模拟器运行 smoke 使用本轮创建的可丢弃 iPhone 模拟器与合成 token。第一轮刻意使用
+`CODE_SIGNING_ALLOWED=NO` 的构建，系统拒绝 Keychain，Mobile 显示缺失 entitlement 错误且保留
+旧值，验证了失败保护路径。随后使用正常签名的 Simulator Debug 构建，Migration 状态显示成功，
+access token 输入已清空，App 数据容器内的 `Library/Preferences/com.gwlee.ImageAllMobile.plist`
+为空。临时模拟器在取证后已关机并删除。
+
 本轮曾先以 Mac 工程名调用 Mobile scheme，Xcode 在方案解析阶段返回
 “不包含 `ImageAllMobile` scheme”；更正为独立的 `ImageAllMobile.xcodeproj` 后，模拟器与
 设备架构 Debug 构建均成功。该误调用未启动 App、测试宿主或数据访问。
+
+Keychain 加固的第一次聚合验证命令曾在仓库根目录直接执行 `swift test`，SwiftPM 因根目录没有
+`Package.swift` 在包发现阶段退出；随后分别进入两个 Package 目录重跑，得到上表 27/27 与
+9/9 的最终结果。该误调用没有启动 App、测试宿主或数据访问。
 
 未执行 Mac `xcodebuild test`：`ImageAllTests` 当前配置了生产 `ImageAll.app` 作为
 `TEST_HOST`。`docs/LOCAL-TEST-DATA-SAFETY.md` 已记录，在受保护 Photos Library 所在卷挂载时，
@@ -204,6 +244,8 @@ identifier 写入证据。
 
 - QR 不含长期 bearer；
 - TLS 指纹在网络请求前做格式校验，连接时继续固定证书；
+- refresh token 只进入本机、设备解锁时可读的非同步 Keychain item；
+- access token 不再持久化，旧 UserDefaults secret 仅在 Keychain 迁移失败时原样保留；
 - 审核/标签写操作继续使用随机 `operationID` 和 Host 持久幂等；
 - 测试使用纯 DTO/Mock transport/构建验证；
 - 未访问 `/Volumes/HDD2`，未读取或写入受保护真实照片；
@@ -213,6 +255,7 @@ identifier 写入证据。
 
 - `ImageAllMobile/App/RemoteCompanionModel.swift`
 - `ImageAllMobile/App/RemoteCompanionViews.swift`
+- `Packages/ImageAllRemoteClient/Sources/ImageAllRemoteClient/RemoteSessionCredentialVault.swift`
 - `Packages/ImageAllRemoteClient/Sources/ImageAllRemoteClient/RemotePairingPayloadDecoder.swift`
 - `Packages/ImageAllRemoteClient/Sources/ImageAllRemoteClient/RemoteHostBrowser.swift`
 - `Packages/ImageAllRemoteProtocol/Sources/ImageAllRemoteProtocol/RemoteBonjour.swift`
@@ -220,8 +263,7 @@ identifier 写入证据。
 
 ### 已知剩余项
 
-1. 物理 iPhone 未接入，真机相机、局域网权限与 TLS 配对主路径仍需按清单现场执行。
+1. 物理 iPhone 未接入，真机相机、局域网权限、TLS 配对、Keychain 跨重启持久性与撤销后 refresh
+   仍需按清单现场执行。
 2. Mac Remote Xcode 测试已编译但未启动生产 test host；需隔离宿主或一次具体授权后补执行证据。
-3. Mobile 现有会话 token 仍由既有实现保存在 `UserDefaults`；正式产品化前应把可撤销
-   `refreshToken` 迁入 iOS Keychain，并保留可测试的旧值迁移。
-4. 本切片停止于 R3 Mobile 打磨；不自动进入 R4 Relay。
+3. 本切片停止于 R3 Mobile 打磨；不自动进入 R4 Relay。
