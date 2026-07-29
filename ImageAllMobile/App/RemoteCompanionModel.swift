@@ -40,7 +40,9 @@ final class RemoteCompanionModel: ObservableObject {
     private var certificateFingerprint: String?
     private let hostBrowser = RemoteHostBrowser()
     private let eventSocket = RemoteEventSocket()
-    private let defaults = UserDefaults.standard
+    private let defaults: UserDefaults
+    private let credentialVault: RemoteSessionCredentialVault
+    private var storedRefreshToken: String?
     private var previewRequestID: UUID?
 
     private enum DefaultsKey {
@@ -55,10 +57,46 @@ final class RemoteCompanionModel: ObservableObject {
     }
 
     init() {
+        let defaults = UserDefaults.standard
+        let credentialVault = RemoteSessionCredentialVault(
+            service: "com.gwlee.ImageAllMobile.remote-session",
+            account: "paired-refresh-token"
+        )
+        var storedRefreshToken: String?
+        var initialStatusMessage: String?
+        var shouldPreserveLegacyCredentials = false
+        do {
+            let result = try credentialVault.loadMigratingLegacy(
+                loadLegacy: {
+                    defaults.string(forKey: DefaultsKey.refresh)
+                },
+                removeLegacy: {
+                    defaults.removeObject(forKey: DefaultsKey.token)
+                    defaults.removeObject(forKey: DefaultsKey.refresh)
+                }
+            )
+            storedRefreshToken = result?.refreshToken
+            if result?.source == .migratedLegacy {
+                initialStatusMessage = "已将旧配对凭据迁入系统 Keychain"
+            }
+            if result == nil {
+                defaults.removeObject(forKey: DefaultsKey.token)
+            }
+        } catch {
+            shouldPreserveLegacyCredentials = true
+            initialStatusMessage = "旧配对凭据未迁移，已保留原值：\(error.localizedDescription)"
+        }
+
+        self.defaults = defaults
+        self.credentialVault = credentialVault
+        self.storedRefreshToken = storedRefreshToken
         host = defaults.string(forKey: DefaultsKey.host) ?? "127.0.0.1"
         port = defaults.string(forKey: DefaultsKey.port) ?? "8787"
-        accessToken = defaults.string(forKey: DefaultsKey.token) ?? ""
+        accessToken = shouldPreserveLegacyCredentials
+            ? defaults.string(forKey: DefaultsKey.token) ?? ""
+            : ""
         certificateFingerprint = defaults.string(forKey: DefaultsKey.fingerprint)
+        statusMessage = initialStatusMessage
     }
 
     func startBrowsing() {
@@ -136,16 +174,26 @@ final class RemoteCompanionModel: ObservableObject {
                 expectedUsesTLS: offer.usesTLS,
                 expectedCertificateFingerprintSHA256: offer.certificateFingerprintSHA256
             )
-            applySession(tokens)
-            statusMessage = "配对成功"
-            await connectWithStoredSession()
+            let storageWarning = applySession(tokens)
+            let pairedClient = try RemoteLibraryClient.pinned(
+                host: host,
+                port: tokens.listenPort,
+                accessToken: tokens.accessToken,
+                certificateFingerprintSHA256: tokens.certificateFingerprintSHA256
+            )
+            try await finishConnect(pairedClient)
+            if let storageWarning {
+                statusMessage = "\(statusMessage ?? "已连接")；\(storageWarning)"
+            } else {
+                statusMessage = "配对成功 · \(statusMessage ?? "已连接")"
+            }
         } catch {
             statusMessage = error.localizedDescription
         }
     }
 
     func connect() async {
-        if defaults.string(forKey: DefaultsKey.refresh) != nil {
+        if storedRefreshToken != nil {
             await connectWithStoredSession()
             return
         }
@@ -156,6 +204,7 @@ final class RemoteCompanionModel: ObservableObject {
         eventSocket.stop()
         client = nil
         sessionTokens = nil
+        accessToken = ""
         isConnected = false
         capabilities = nil
         sources = []
@@ -451,7 +500,7 @@ final class RemoteCompanionModel: ObservableObject {
     private func connectWithStoredSession() async {
         isBusy = true
         defer { isBusy = false }
-        guard let refresh = defaults.string(forKey: DefaultsKey.refresh),
+        guard let refresh = storedRefreshToken,
               let deviceIDRaw = defaults.string(forKey: DefaultsKey.deviceID),
               let deviceID = UUID(uuidString: deviceIDRaw),
               let fingerprint = defaults.string(forKey: DefaultsKey.fingerprint),
@@ -489,7 +538,7 @@ final class RemoteCompanionModel: ObservableObject {
                 expectedUsesTLS: usesTLS,
                 expectedCertificateFingerprintSHA256: fingerprint
             )
-            applySession(tokens)
+            let storageWarning = applySession(tokens)
             let client = try RemoteLibraryClient.pinned(
                 host: host,
                 port: tokens.listenPort,
@@ -497,6 +546,9 @@ final class RemoteCompanionModel: ObservableObject {
                 certificateFingerprintSHA256: tokens.certificateFingerprintSHA256
             )
             try await finishConnect(client)
+            if let storageWarning {
+                statusMessage = "\(statusMessage ?? "已连接")；\(storageWarning)"
+            }
         } catch {
             statusMessage = error.localizedDescription
         }
@@ -523,24 +575,34 @@ final class RemoteCompanionModel: ObservableObject {
         statusMessage = "已连接 \(caps.hostAppVersion)\(caps.usesTLS ? " · TLS" : "")"
     }
 
-    private func applySession(_ tokens: RemoteSessionTokens) {
+    private func applySession(_ tokens: RemoteSessionTokens) -> String? {
         sessionTokens = tokens
         accessToken = tokens.accessToken
         port = String(tokens.listenPort)
         certificateFingerprint = tokens.certificateFingerprintSHA256
-        defaults.set(tokens.accessToken, forKey: DefaultsKey.token)
-        defaults.set(tokens.refreshToken, forKey: DefaultsKey.refresh)
+        var storageWarning: String?
+        do {
+            try credentialVault.saveRefreshToken(tokens.refreshToken)
+            storedRefreshToken = tokens.refreshToken
+        } catch {
+            storedRefreshToken = tokens.refreshToken
+            try? credentialVault.deleteRefreshToken()
+            storageWarning = "Keychain 保存失败，当前会话可用，重启后需重新配对：\(error.localizedDescription)"
+        }
+        defaults.removeObject(forKey: DefaultsKey.token)
+        defaults.removeObject(forKey: DefaultsKey.refresh)
         defaults.set(tokens.deviceID.uuidString, forKey: DefaultsKey.deviceID)
         defaults.set(tokens.hostID.uuidString, forKey: DefaultsKey.hostID)
         defaults.set(tokens.certificateFingerprintSHA256, forKey: DefaultsKey.fingerprint)
         defaults.set(tokens.usesTLS, forKey: DefaultsKey.usesTLS)
         defaults.set(tokens.listenPort, forKey: DefaultsKey.port)
+        return storageWarning
     }
 
     private func applyDiscoveredHosts(_ hosts: [RemoteDiscoveredHost]) {
         discoveredHosts = hosts
         guard !isConnected,
-              defaults.string(forKey: DefaultsKey.refresh) != nil,
+              storedRefreshToken != nil,
               let hostIDRaw = defaults.string(forKey: DefaultsKey.hostID),
               let hostID = UUID(uuidString: hostIDRaw),
               let matched = RemoteHostSelection.bestMatch(hostID: hostID, in: hosts)
