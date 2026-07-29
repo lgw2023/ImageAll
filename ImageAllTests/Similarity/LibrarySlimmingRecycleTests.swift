@@ -148,6 +148,100 @@ final class LibrarySlimmingRecycleTests: XCTestCase {
         XCTAssertEqual(plan.skippedGroupCount, 0)
     }
 
+    func testRecycleServiceVerifiesActualPostDeleteRetainedNonredundantCount() throws {
+        let env = try RecycleTestEnv(label: #function)
+        defer { env.cleanup() }
+        let survivor = try env.seedAsset(
+            relativePath: "keep.jpg",
+            contents: Data("identical".utf8)
+        )
+        let redundantA = try env.seedAsset(
+            relativePath: "redundant-a.jpg",
+            contents: Data("identical".utf8)
+        )
+        let redundantB = try env.seedAsset(
+            relativePath: "redundant-b.jpg",
+            contents: Data("identical".utf8)
+        )
+        let clusterID = UUID()
+        let plan = LibrarySlimmingIdenticalCleanupPlan(
+            decisions: [
+                LibrarySlimmingIdenticalCleanupDecision(
+                    clusterID: clusterID,
+                    survivorAssetID: survivor.assetID,
+                    assetIDsToRecycle: [redundantA.assetID, redundantB.assetID]
+                ),
+            ],
+            skippedGroupCount: 0,
+            photosAssetCount: 0,
+            fileAssetCount: 2
+        )
+        let service = env.makeRecycleService()
+
+        _ = try service.moveAssetsToRecycle(assetIDs: plan.assetIDsToRecycle)
+        let verification = try service.verifyIdenticalCleanup(plan: plan)
+
+        XCTAssertEqual(verification.observedAssetCount, 3)
+        XCTAssertEqual(verification.currentAvailableAssetIDs, [survivor.assetID])
+        XCTAssertEqual(verification.retainedNonredundantAssetIDs, [survivor.assetID])
+        XCTAssertEqual(verification.retainedNonredundantAssetCount, 1)
+        XCTAssertEqual(
+            Set(verification.recycledRedundantAssetIDs),
+            Set([redundantA.assetID, redundantB.assetID])
+        )
+        XCTAssertEqual(verification.recycledRedundantAssetCount, 2)
+        XCTAssertEqual(verification.verifiedGroupIDs, [clusterID])
+        XCTAssertEqual(verification.verifiedGroupCount, 1)
+        XCTAssertTrue(verification.remainingRedundantAssetIDs.isEmpty)
+        XCTAssertTrue(verification.unresolvedAssetIDs.isEmpty)
+        XCTAssertTrue(verification.unresolvedGroupIDs.isEmpty)
+        XCTAssertTrue(verification.isComplete)
+    }
+
+    func testRecycleServiceDoesNotCountIncompleteGroupAsRetainedNonredundant() throws {
+        let env = try RecycleTestEnv(label: #function)
+        defer { env.cleanup() }
+        let survivor = try env.seedAsset(
+            relativePath: "keep.jpg",
+            contents: Data("identical".utf8)
+        )
+        let recycled = try env.seedAsset(
+            relativePath: "recycled.jpg",
+            contents: Data("identical".utf8)
+        )
+        let stillAvailable = try env.seedAsset(
+            relativePath: "still-available.jpg",
+            contents: Data("identical".utf8)
+        )
+        let clusterID = UUID()
+        let plan = LibrarySlimmingIdenticalCleanupPlan(
+            decisions: [
+                LibrarySlimmingIdenticalCleanupDecision(
+                    clusterID: clusterID,
+                    survivorAssetID: survivor.assetID,
+                    assetIDsToRecycle: [recycled.assetID, stillAvailable.assetID]
+                ),
+            ],
+            skippedGroupCount: 0,
+            photosAssetCount: 0,
+            fileAssetCount: 2
+        )
+        let service = env.makeRecycleService()
+
+        _ = try service.moveAssetsToRecycle(assetIDs: [recycled.assetID])
+        let verification = try service.verifyIdenticalCleanup(plan: plan)
+
+        XCTAssertEqual(verification.observedAssetCount, 3)
+        XCTAssertEqual(verification.currentAvailableAssetCount, 2)
+        XCTAssertTrue(verification.retainedNonredundantAssetIDs.isEmpty)
+        XCTAssertEqual(verification.recycledRedundantAssetIDs, [recycled.assetID])
+        XCTAssertEqual(verification.remainingRedundantAssetIDs, [stillAvailable.assetID])
+        XCTAssertTrue(verification.unresolvedAssetIDs.isEmpty)
+        XCTAssertTrue(verification.verifiedGroupIDs.isEmpty)
+        XCTAssertEqual(verification.unresolvedGroupIDs, [clusterID])
+        XCTAssertFalse(verification.isComplete)
+    }
+
     func testCountdownFormatterUsesDaysAndHours() {
         let now: Int64 = 1_700_000_000_000
         XCTAssertEqual(

@@ -4742,8 +4742,19 @@ final class LibraryWorkspaceModelTests: XCTestCase {
                 fileName: "\($0.uuidString).jpg"
             )
         }
+        let verification = LibrarySlimmingIdenticalCleanupVerification(
+            observedAssetIDs: assets.map(\.assetID),
+            currentAvailableAssetIDs: plan.survivorAssetIDs,
+            retainedNonredundantAssetIDs: plan.survivorAssetIDs,
+            recycledRedundantAssetIDs: plan.assetIDsToRecycle,
+            remainingRedundantAssetIDs: [],
+            unresolvedAssetIDs: [],
+            verifiedGroupIDs: [firstCluster.id, secondCluster.id],
+            unresolvedGroupIDs: []
+        )
         let recycle = FakeLibrarySlimmingRecyclePort(
             identicalCleanupPlan: plan,
+            identicalCleanupVerification: verification,
             moveOutcomes: [
                 LibrarySlimmingRecycleMoveOutcome(
                     recycledEntryIDs: entries.map(\.id),
@@ -4793,6 +4804,11 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertEqual(
             model.librarySlimmingRecycleActionMessage,
             "已清理 2 组完全相同照片 · 已移入回收站 3 张"
+        )
+        XCTAssertEqual(recycle.identicalCleanupVerificationCallCount, 1)
+        XCTAssertEqual(
+            model.librarySlimmingIdenticalCleanupPostDeleteReport,
+            .verified(verification)
         )
     }
 
@@ -9557,11 +9573,15 @@ private final class FakeLibrarySlimmingRecyclePort: LibrarySlimmingRecyclePort, 
     private var storedRestoreEntryIDCalls: [UUID] = []
     private var storedRecoverCallCount = 0
     private var storedEnqueuePurgeCallCount = 0
+    private var storedIdenticalCleanupVerificationCallCount = 0
     private let storedRestoredAssetReplacements: [UUID: UUID]
     private var storedIdenticalCleanupPlan: LibrarySlimmingIdenticalCleanupPlan?
+    private var storedIdenticalCleanupVerification:
+        LibrarySlimmingIdenticalCleanupVerification?
 
     init(
         identicalCleanupPlan: LibrarySlimmingIdenticalCleanupPlan? = nil,
+        identicalCleanupVerification: LibrarySlimmingIdenticalCleanupVerification? = nil,
         moveOutcomes: [LibrarySlimmingRecycleMoveOutcome] = [],
         entries: [RecycleEntryRecord] = [],
         entriesAfterMoves: [[RecycleEntryRecord]] = [],
@@ -9570,6 +9590,7 @@ private final class FakeLibrarySlimmingRecyclePort: LibrarySlimmingRecyclePort, 
         restoredAssetReplacements: [UUID: UUID] = [:]
     ) {
         storedIdenticalCleanupPlan = identicalCleanupPlan
+        storedIdenticalCleanupVerification = identicalCleanupVerification
         storedMoveOutcomes = moveOutcomes
         storedEntries = entries
         storedEntriesAfterMoves = entriesAfterMoves
@@ -9595,6 +9616,22 @@ private final class FakeLibrarySlimmingRecyclePort: LibrarySlimmingRecyclePort, 
 
     func setIdenticalCleanupPlan(_ plan: LibrarySlimmingIdenticalCleanupPlan?) {
         lock.withLock { storedIdenticalCleanupPlan = plan }
+    }
+
+    var identicalCleanupVerificationCallCount: Int {
+        lock.withLock { storedIdenticalCleanupVerificationCallCount }
+    }
+
+    func verifyIdenticalCleanup(
+        plan _: LibrarySlimmingIdenticalCleanupPlan
+    ) throws -> LibrarySlimmingIdenticalCleanupVerification {
+        try lock.withLock {
+            storedIdenticalCleanupVerificationCallCount += 1
+            guard let storedIdenticalCleanupVerification else {
+                throw LibrarySlimmingRecycleError.cleanupPlanningUnavailable
+            }
+            return storedIdenticalCleanupVerification
+        }
     }
 
     var restoreEntryIDCalls: [UUID] {

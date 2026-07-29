@@ -931,6 +931,8 @@ final class LibraryWorkspaceModel: ObservableObject {
     @Published var showsLibrarySlimmingThresholdEditor = false
     @Published private(set) var isMutatingLibrarySlimmingRecycle = false
     @Published private(set) var isPreparingLibrarySlimmingIdenticalCleanup = false
+    @Published private(set) var librarySlimmingIdenticalCleanupPostDeleteReport:
+        LibrarySlimmingIdenticalCleanupPostDeleteReport?
     /// Bumped when toolbar asks the sidebar view to switch into 图库瘦身.
     @Published private(set) var librarySlimmingNavigationNonce = UUID()
     private var shouldAutoAnalyzeLibrarySlimmingSeeds = false
@@ -1715,6 +1717,7 @@ final class LibraryWorkspaceModel: ObservableObject {
         else { return nil }
         isPreparingLibrarySlimmingIdenticalCleanup = true
         librarySlimmingRecycleActionMessage = nil
+        librarySlimmingIdenticalCleanupPostDeleteReport = nil
         defer { isPreparingLibrarySlimmingIdenticalCleanup = false }
         do {
             let clusters = librarySlimmingClusters.map(\.cluster)
@@ -1771,6 +1774,10 @@ final class LibraryWorkspaceModel: ObservableObject {
             identicalCleanupPlan: plan,
             mutationStateAlreadyHeld: true
         )
+    }
+
+    func dismissLibrarySlimmingIdenticalCleanupPostDeleteReport() {
+        librarySlimmingIdenticalCleanupPostDeleteReport = nil
     }
 
     private func moveLibrarySlimmingAssetsToRecycle(
@@ -1917,6 +1924,12 @@ final class LibraryWorkspaceModel: ObservableObject {
             librarySlimmingStatusMessage = message
             librarySlimmingRecycleActionMessage = message
             await refreshLibrarySlimmingRecycleEntries()
+            if let identicalCleanupPlan {
+                await verifyLibrarySlimmingIdenticalCleanupAfterDeletion(
+                    plan: identicalCleanupPlan,
+                    recycle: recycle
+                )
+            }
             _ = try? await Self.offMain {
                 try recycle.enqueuePurgeExpired()
             }
@@ -1924,6 +1937,28 @@ final class LibraryWorkspaceModel: ObservableObject {
             let message = "移入回收站失败：\(error.localizedDescription)"
             librarySlimmingStatusMessage = message
             librarySlimmingRecycleActionMessage = message
+            if let identicalCleanupPlan {
+                await verifyLibrarySlimmingIdenticalCleanupAfterDeletion(
+                    plan: identicalCleanupPlan,
+                    recycle: recycle
+                )
+            }
+        }
+    }
+
+    private func verifyLibrarySlimmingIdenticalCleanupAfterDeletion(
+        plan: LibrarySlimmingIdenticalCleanupPlan,
+        recycle: any LibrarySlimmingRecyclePort
+    ) async {
+        do {
+            let verification = try await Self.offMain {
+                try recycle.verifyIdenticalCleanup(plan: plan)
+            }
+            librarySlimmingIdenticalCleanupPostDeleteReport = .verified(verification)
+        } catch {
+            librarySlimmingIdenticalCleanupPostDeleteReport = .unavailable(
+                message: "删除动作已经结束，但无法读取删除后的实际资产状态：\(error.localizedDescription)"
+            )
         }
     }
 

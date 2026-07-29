@@ -161,6 +161,126 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
         )
     }
 
+    func verifyIdenticalCleanup(
+        plan: LibrarySlimmingIdenticalCleanupPlan
+    ) throws -> LibrarySlimmingIdenticalCleanupVerification {
+        enum ObservedState: Equatable {
+            case currentAvailable
+            case recycled
+            case unresolved
+        }
+
+        let plannedAssetIDs = Set(plan.survivorAssetIDs + plan.assetIDsToRecycle)
+        var statesByAssetID: [UUID: ObservedState] = [:]
+        let normalized = plannedAssetIDs
+            .map { $0.uuidString.lowercased() }
+            .sorted()
+
+        for start in stride(from: 0, to: normalized.count, by: 400) {
+            let chunk = Array(normalized[start ..< min(start + 400, normalized.count)])
+            let placeholders = Array(repeating: "?", count: chunk.count).joined(separator: ",")
+            let rows = try database.pool.read { db in
+                try Row.fetchAll(
+                    db,
+                    sql: """
+                    SELECT
+                        a.id,
+                        CASE
+                            WHEN a.locator_state = 'current'
+                             AND a.availability = 'available'
+                             AND s.state = 'active'
+                            THEN 1 ELSE 0
+                        END AS is_current_available,
+                        CASE
+                            WHEN a.availability = 'recycled'
+                             AND EXISTS (
+                                SELECT 1
+                                FROM recycle_entry r
+                                WHERE r.asset_id = a.id
+                                  AND r.state IN ('recycled', 'purging', 'purged')
+                             )
+                            THEN 1 ELSE 0
+                        END AS is_recycled
+                    FROM asset a
+                    JOIN source s ON s.id = a.source_id
+                    WHERE a.id IN (\(placeholders))
+                    """,
+                    arguments: StatementArguments(chunk)
+                )
+            }
+            for row in rows {
+                guard let assetID = UUID(uuidString: row["id"]) else { continue }
+                let isCurrentAvailable: Int = row["is_current_available"]
+                let isRecycled: Int = row["is_recycled"]
+                if isCurrentAvailable == 1 {
+                    statesByAssetID[assetID] = .currentAvailable
+                } else if isRecycled == 1 {
+                    statesByAssetID[assetID] = .recycled
+                } else {
+                    statesByAssetID[assetID] = .unresolved
+                }
+            }
+        }
+
+        let currentAvailable = Set(
+            statesByAssetID.compactMap { assetID, state in
+                state == .currentAvailable ? assetID : nil
+            }
+        )
+        var retainedNonredundant = Set<UUID>()
+        var recycledRedundant = Set<UUID>()
+        var remainingRedundant = Set<UUID>()
+        var unresolved = plannedAssetIDs.subtracting(statesByAssetID.keys)
+        var verifiedGroups = Set<UUID>()
+        var unresolvedGroups = Set<UUID>()
+
+        for decision in plan.decisions {
+            let redundantIDs = Set(decision.assetIDsToRecycle)
+            let groupIDs = redundantIDs.union([decision.survivorAssetID])
+            let availableInGroup = groupIDs.intersection(currentAvailable)
+            let recycledInGroup = Set(redundantIDs.filter {
+                statesByAssetID[$0] == .recycled
+            })
+            let remainingInGroup = redundantIDs.intersection(currentAvailable)
+            let unresolvedInGroup = Set(groupIDs.filter {
+                guard let state = statesByAssetID[$0] else { return true }
+                return state == .unresolved
+            })
+
+            recycledRedundant.formUnion(recycledInGroup)
+            remainingRedundant.formUnion(remainingInGroup)
+            unresolved.formUnion(unresolvedInGroup)
+
+            let groupIsVerified =
+                availableInGroup == Set([decision.survivorAssetID])
+                && recycledInGroup == redundantIDs
+                && unresolvedInGroup.isEmpty
+            if groupIsVerified {
+                verifiedGroups.insert(decision.clusterID)
+                retainedNonredundant.insert(decision.survivorAssetID)
+            } else {
+                unresolvedGroups.insert(decision.clusterID)
+            }
+        }
+
+        func sorted(_ ids: Set<UUID>) -> [UUID] {
+            ids.sorted {
+                $0.uuidString.lowercased() < $1.uuidString.lowercased()
+            }
+        }
+
+        return LibrarySlimmingIdenticalCleanupVerification(
+            observedAssetIDs: sorted(Set(statesByAssetID.keys)),
+            currentAvailableAssetIDs: sorted(currentAvailable),
+            retainedNonredundantAssetIDs: sorted(retainedNonredundant),
+            recycledRedundantAssetIDs: sorted(recycledRedundant),
+            remainingRedundantAssetIDs: sorted(remainingRedundant),
+            unresolvedAssetIDs: sorted(unresolved),
+            verifiedGroupIDs: sorted(verifiedGroups),
+            unresolvedGroupIDs: sorted(unresolvedGroups)
+        )
+    }
+
     func moveAssetsToRecycle(assetIDs: [UUID]) throws -> LibrarySlimmingRecycleMoveOutcome {
         var outcome = LibrarySlimmingRecycleMoveOutcome(
             recycledEntryIDs: [],

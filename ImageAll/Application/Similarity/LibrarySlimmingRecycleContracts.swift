@@ -148,6 +148,68 @@ struct LibrarySlimmingIdenticalCleanupPlan: Sendable, Equatable {
     }
 }
 
+struct LibrarySlimmingIdenticalCleanupVerification: Sendable, Equatable {
+    /// Every planned asset ID that was found in the catalog during the post-delete read.
+    let observedAssetIDs: [UUID]
+    /// Assets that are still current and available after the cleanup attempt.
+    let currentAvailableAssetIDs: [UUID]
+    /// Survivors from groups that now contain exactly one available asset and whose
+    /// redundant members all have completed recycle records.
+    let retainedNonredundantAssetIDs: [UUID]
+    /// Planned redundant assets confirmed in the recycle state after execution.
+    let recycledRedundantAssetIDs: [UUID]
+    /// Planned redundant assets that are still current and available.
+    let remainingRedundantAssetIDs: [UUID]
+    /// Planned assets that could not be classified as current/available or recycled.
+    let unresolvedAssetIDs: [UUID]
+    let verifiedGroupIDs: [UUID]
+    let unresolvedGroupIDs: [UUID]
+
+    var observedAssetCount: Int {
+        Set(observedAssetIDs).count
+    }
+
+    var currentAvailableAssetCount: Int {
+        Set(currentAvailableAssetIDs).count
+    }
+
+    var retainedNonredundantAssetCount: Int {
+        Set(retainedNonredundantAssetIDs).count
+    }
+
+    var recycledRedundantAssetCount: Int {
+        Set(recycledRedundantAssetIDs).count
+    }
+
+    var remainingRedundantAssetCount: Int {
+        Set(remainingRedundantAssetIDs).count
+    }
+
+    var unresolvedAssetCount: Int {
+        Set(unresolvedAssetIDs).count
+    }
+
+    var verifiedGroupCount: Int {
+        Set(verifiedGroupIDs).count
+    }
+
+    var unresolvedGroupCount: Int {
+        Set(unresolvedGroupIDs).count
+    }
+
+    var isComplete: Bool {
+        !verifiedGroupIDs.isEmpty
+            && unresolvedGroupIDs.isEmpty
+            && remainingRedundantAssetIDs.isEmpty
+            && unresolvedAssetIDs.isEmpty
+    }
+}
+
+enum LibrarySlimmingIdenticalCleanupPostDeleteReport: Sendable, Equatable {
+    case verified(LibrarySlimmingIdenticalCleanupVerification)
+    case unavailable(message: String)
+}
+
 enum LibrarySlimmingIdenticalCleanupPlanner {
     static func makePlan(
         clusters: [SlimmingCluster],
@@ -234,6 +296,9 @@ protocol LibrarySlimmingRecyclePort: Sendable {
     func makeIdenticalCleanupPlan(
         clusters: [SlimmingCluster]
     ) throws -> LibrarySlimmingIdenticalCleanupPlan
+    func verifyIdenticalCleanup(
+        plan: LibrarySlimmingIdenticalCleanupPlan
+    ) throws -> LibrarySlimmingIdenticalCleanupVerification
     func moveAssetsToRecycle(assetIDs: [UUID]) throws -> LibrarySlimmingRecycleMoveOutcome
     func listRecycledEntries() throws -> [RecycleEntryRecord]
     func restore(entryID: UUID) throws
@@ -255,6 +320,12 @@ extension LibrarySlimmingRecyclePort {
     func makeIdenticalCleanupPlan(
         clusters _: [SlimmingCluster]
     ) throws -> LibrarySlimmingIdenticalCleanupPlan {
+        throw LibrarySlimmingRecycleError.cleanupPlanningUnavailable
+    }
+
+    func verifyIdenticalCleanup(
+        plan _: LibrarySlimmingIdenticalCleanupPlan
+    ) throws -> LibrarySlimmingIdenticalCleanupVerification {
         throw LibrarySlimmingRecycleError.cleanupPlanningUnavailable
     }
 

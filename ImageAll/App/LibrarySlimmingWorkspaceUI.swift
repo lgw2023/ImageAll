@@ -318,6 +318,25 @@ struct LibrarySlimmingWorkspaceView: View {
                 )
             }
         }
+        .sheet(
+            isPresented: Binding(
+                get: { model.librarySlimmingIdenticalCleanupPostDeleteReport != nil },
+                set: {
+                    if !$0 {
+                        model.dismissLibrarySlimmingIdenticalCleanupPostDeleteReport()
+                    }
+                }
+            )
+        ) {
+            if let report = model.librarySlimmingIdenticalCleanupPostDeleteReport {
+                LibrarySlimmingIdenticalCleanupVerificationSheet(
+                    report: report,
+                    onDismiss: {
+                        model.dismissLibrarySlimmingIdenticalCleanupPostDeleteReport()
+                    }
+                )
+            }
+        }
         .confirmationDialog(
             "立即永久删除",
             isPresented: Binding(
@@ -1523,6 +1542,201 @@ private struct CleanupMetricCard: View {
             RoundedRectangle(cornerRadius: 10)
                 .stroke(tint.opacity(0.18))
         }
+    }
+}
+
+private struct LibrarySlimmingIdenticalCleanupVerificationSheet: View {
+    let report: LibrarySlimmingIdenticalCleanupPostDeleteReport
+    let onDismiss: () -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(spacing: 0) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 22) {
+                    header
+                    reportContent
+                }
+                .padding(28)
+            }
+
+            Divider()
+
+            HStack {
+                Text("这是删除动作结束后的独立核验结果。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button("完成") {
+                    close()
+                }
+                .keyboardShortcut(.defaultAction)
+            }
+            .padding(.horizontal, 28)
+            .padding(.vertical, 16)
+        }
+        .frame(width: 680, height: 540)
+    }
+
+    private var header: some View {
+        HStack(alignment: .top, spacing: 14) {
+            Image(systemName: headerSystemImage)
+                .font(.system(size: 30))
+                .foregroundStyle(headerTint)
+                .frame(width: 46, height: 46)
+                .background(headerTint.opacity(0.12), in: RoundedRectangle(cornerRadius: 12))
+            VStack(alignment: .leading, spacing: 5) {
+                Text(headerTitle)
+                    .font(.title2.weight(.semibold))
+                Text(headerSubtitle)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var reportContent: some View {
+        switch report {
+        case let .verified(verification):
+            verifiedContent(verification)
+        case let .unavailable(message):
+            unavailableContent(message)
+        }
+    }
+
+    private func verifiedContent(
+        _ verification: LibrarySlimmingIdenticalCleanupVerification
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 18) {
+            VStack(spacing: 6) {
+                Text(verification.retainedNonredundantAssetCount.formatted())
+                    .font(.system(size: 54, weight: .bold, design: .rounded))
+                    .monospacedDigit()
+                    .foregroundStyle(verification.isComplete ? Color.green : Color.orange)
+                Text("张非冗余照片已确认保留")
+                    .font(.title3.weight(.medium))
+                Text("只统计删除后确实达到“每组仅剩一张”的分组。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 10)
+
+            HStack(spacing: 12) {
+                CleanupMetricCard(
+                    title: "实际读取资产",
+                    value: verification.observedAssetCount,
+                    systemImage: "checkmark.seal",
+                    tint: .blue
+                )
+                CleanupMetricCard(
+                    title: "确认已清理",
+                    value: verification.recycledRedundantAssetCount,
+                    systemImage: "trash.square",
+                    tint: .green
+                )
+                CleanupMetricCard(
+                    title: "完成分组",
+                    value: verification.verifiedGroupCount,
+                    systemImage: "square.stack.3d.up.fill",
+                    tint: .indigo
+                )
+                CleanupMetricCard(
+                    title: "未通过分组",
+                    value: verification.unresolvedGroupCount,
+                    systemImage: "exclamationmark.triangle",
+                    tint: verification.unresolvedGroupCount == 0 ? .gray : .orange
+                )
+            }
+
+            if verification.isComplete {
+                Label(
+                    "核验完成：处理范围内没有仍处于可用状态的计划删除项。",
+                    systemImage: "checkmark.circle.fill"
+                )
+                .font(.callout.weight(.medium))
+                .foregroundStyle(.green)
+            } else {
+                VStack(alignment: .leading, spacing: 8) {
+                    Label("核验发现未完成项", systemImage: "exclamationmark.triangle.fill")
+                        .font(.callout.weight(.semibold))
+                        .foregroundStyle(.orange)
+                    Text(
+                        "仍可用的冗余照片 \(verification.remainingRedundantAssetCount.formatted()) 张；"
+                            + "状态无法确认 \(verification.unresolvedAssetCount.formatted()) 张；"
+                            + "当前范围实际仍可用 \(verification.currentAvailableAssetCount.formatted()) 张。"
+                    )
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                }
+                .padding(14)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(.orange.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
+            }
+
+            Text("以上数字来自删除完成后对资产当前可用状态和回收记录的再次读取，不复用删除前预览值，也不按分组数推算。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private func unavailableContent(_ message: String) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Label("未显示未经证实的保留数量", systemImage: "shield.lefthalf.filled")
+                .font(.headline)
+                .foregroundStyle(.orange)
+            Text(message)
+                .font(.callout)
+            Text("请保留当前回收记录并重新进入图库瘦身后再核验；在成功读取真实状态前，ImageAll 不会用删除前计划值代替结果。")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+        }
+        .padding(18)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.orange.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
+    }
+
+    private var headerTitle: String {
+        switch report {
+        case let .verified(verification):
+            verification.isComplete ? "删除后核验完成" : "删除后核验存在未完成项"
+        case .unavailable:
+            "删除后核验未完成"
+        }
+    }
+
+    private var headerSubtitle: String {
+        switch report {
+        case .verified:
+            "已重新读取本次处理资产的实时可用与回收状态。"
+        case .unavailable:
+            "删除动作已经结束，但无法取得可信的实际统计。"
+        }
+    }
+
+    private var headerSystemImage: String {
+        switch report {
+        case let .verified(verification):
+            verification.isComplete ? "checkmark.seal.fill" : "exclamationmark.triangle.fill"
+        case .unavailable:
+            "exclamationmark.shield.fill"
+        }
+    }
+
+    private var headerTint: Color {
+        switch report {
+        case let .verified(verification):
+            verification.isComplete ? .green : .orange
+        case .unavailable:
+            .orange
+        }
+    }
+
+    private func close() {
+        onDismiss()
+        dismiss()
     }
 }
 
