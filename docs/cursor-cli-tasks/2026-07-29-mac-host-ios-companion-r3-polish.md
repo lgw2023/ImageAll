@@ -3,7 +3,8 @@
 ## 状态
 
 - 任务 ID：`mac-host-ios-companion-r3-polish`
-- 状态：In Verification（修复版地址解析通过；macOS 入站防火墙待所有者授权调整）
+- 状态：Closed at R3 boundary（实体相机扫码与地址解析已确认；当前 Wi-Fi 子网隔离，所有者改选
+  ADR-047 公网路径）
 - 权威决策：
   - `docs/ADR-043-MAC-HOST-IOS-COMPANION.md`
   - `docs/ADR-044-MAC-HOST-COMPANION-R3.md`
@@ -13,6 +14,7 @@
 - 身份绑定加固提交：`38d9e6a8`
 - Keychain 凭据加固提交：`91a3cc5a`
 - 真机配对路径加固提交：`c9eda11c`
+- 配对恢复提示提交：`34a4469c`
 - 实施身份：Codex；实现 `feat(codex):` / `fix(codex):`；文档 `docs(codex):`
 
 ## 并行工作区边界
@@ -126,8 +128,7 @@ Keychain 存取和旧值迁移封装在 `ImageAllRemoteClient` 的小接口后�
 二次扫码已确认 Host 表单保持为 Mac 局域网地址，不再回落 `127.0.0.1`；二维码 JSON 被正确
 填入，但 HTTPS pairing 返回超时。Mac 本机访问 loopback `:8787` 立即得到预期 `401`，进程监听
 `*:8787`，而访问本机局域网地址的 TLS 握手失败。只读系统检查显示 macOS Application Firewall
-处于“阻止所有非必要传入连接”（state 2），且已有 ImageAll 规则为阻止传入。调整系统防火墙属于
-安全敏感设置，本轮停止在明确授权门前，没有自行修改。
+处于“阻止所有非必要传入连接”（state 2），且已有 ImageAll 规则为阻止传入。
 
 提交 `c9eda11c` 做了以下收敛：
 
@@ -142,6 +143,45 @@ Keychain 存取和旧值迁移封装在 `ImageAllRemoteClient` 的小接口后�
 `IMAGEALL_DEVELOPMENT_ROOT`：仅接受非空绝对路径且拒绝 `/`；变量存在但非法时 fail closed，
 不会回退生产 `Application Support`。Release 构建不接受此开发覆盖。
 
+## 防火墙与当前网络路径结论
+
+所有者随后授权本轮调整 macOS 防火墙。诊断始终使用空隔离 catalog，并分别验证简单 HTTP、
+简单 TLS、Debug 明文 Host 与原签名 TLS Host：
+
+- Mac 本机通过 loopback 和自身 Wi-Fi 地址可访问简单 HTTP/TLS 服务，证明服务端监听与 TLS
+  基本路径正常；该结果不能证明 iPhone 到 Mac 的路径可达；
+- iPhone 的 ImageAll“本地网络”权限已开启，VPN 未连接；
+- 关闭“阻止所有传入连接”并新增单 App 允许规则后，ImageAll Host 仍无法完成局域网响应；
+- 临时完全关闭 macOS Application Firewall 后，Debug 明文 Host 立即返回预期 `401`；
+- 切回原签名 TLS Host 后，局域网 HTTPS 同样立即返回预期 `401`；
+- iPhone 最终报告地址 `100.99.157.132/24`、路由器 `100.99.157.1`；Mac 为
+  `100.125.5.151/23`。两台设备不在同一 IP 子网，且实体 iPhone 对 Mac 的临时纯 HTTP
+  探针也不可达；
+- 因而最终现场结论是：Host 监听、TLS 和 Mobile 地址解析均正常；当前 Wi-Fi/上游网络把两台
+  设备置于隔离子网，R3 局域网产品路径在该网络上不可用。防火墙曾是独立干扰项，但不是最终
+  iPhone 超时的唯一根因。
+
+验证结束后已停止所有隔离 Host 和临时探针，移除临时 ImageAll、Python、OpenSSL 防火墙规则，
+并恢复原始状态：全局防火墙开启、“阻止所有传入连接”开启、隐身模式开启。未修改已有生产
+ImageAll 阻止规则，也未影响另一会话正在运行的 ImageAll 进程。
+
+在防火墙临时关闭期间继续人工配对时又确认两项 UI 限制：
+
+1. iPhone 镜像明确提示不能从 Mac 使用 iPhone 相机；镜像窗口内的扫码页没有相机画面，因此
+   最终扫码必须在实体 iPhone 上完成。
+2. 通用剪贴板没有同步最新配对 JSON；通过镜像键盘逐字输入后，Mobile 本地 JSON 校验失败，
+   表明系统智能标点可能改变引号或破折号。
+
+提交 `34a4469c` 因此增加：
+
+- Mobile 手动 JSON 专用 ASCII 编辑器，关闭自动大写、自动纠错、拼写检查、智能引号、智能破折号
+  和智能插入删除；
+- 手动 JSON 的扫码/剪贴板优先提示与清空操作；
+- 对超时、找不到 Host、连接丢失、无网络和 TLS 证书失败给出不同的可操作中文提示；
+- Mac Host 设置在运行时明确提示关闭“阻止所有传入连接”并允许 ImageAll。
+
+本提交没有降低 TLS 指纹固定、配对载荷验证或 Host 写权威边界。
+
 ### 本地数据边界事件
 
 首次启动人工 Host 时只设置了 `CFFIXED_USER_HOME`，App sandbox 仍解析到生产 catalog，并打开了
@@ -153,7 +193,7 @@ Keychain 存取和旧值迁移封装在 `ImageAllRemoteClient` 的小接口后�
 之后所有 Host smoke 均使用空的隔离 catalog；进程级文件描述符检查确认没有生产 catalog 或受保护
 卷句柄。自动化测试没有读取受保护真实照片。
 
-### 公网出口 / cloudflared 结论
+### 公网出口 / cloudflared 的 R3 检查点
 
 只以脱敏方式核对了 `~/.cloudflared/config.yml` 的结构，没有记录域名、Tunnel ID、凭据路径或
 其他秘密，也没有修改配置。现有 ingress 是 HTTP origin 路由，Cloudflare 会在边缘终止 TLS；
@@ -162,6 +202,10 @@ Mobile 看到的是边缘证书，而 R3 二维码固定的是 Mac Host 自签�
 信任、Mac 出站隧道和 Relay 验收门。Cloudflare 的
 [Published application protocols](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/routing-to-tunnel/protocols/)
 也明确区分 HTTP/HTTPS 代理与需要客户端 `cloudflared` 的非 HTTP TCP 路径。
+
+以上仅记录 R3 当时的停止点。所有者随后明确要求停止局域网方案并使用自有域名，已另由
+`docs/ADR-047-MAC-HOST-CLOUDFLARE-PUBLIC-TUNNEL.md` 决定 R4A 的 Cloudflare 信任边界与实现，
+不再把 R3 自签证书固定语义直接套到 Cloudflare 边缘证书。
 
 ## 自动化与构建证据
 
@@ -180,7 +224,8 @@ Mobile 看到的是边缘证书，而 R3 二维码固定的是 Mac Host 自签�
 | `CompositionRootTests` + 四组无 Keychain Remote 裸 bundle 定向执行 | 39 tests，0 failures |
 | Mobile Simulator 启动与连接页视觉 smoke | 通过；未崩溃，扫码回退与连接表单可见 |
 | Mobile Simulator 合成旧凭据迁移 | 通过；Keychain 成功提示、access 输入清空、App 偏好 plist 无 token |
-| 物理 iPhone 签名安装、启动与相机扫码 | 修复版安装/启动/QR/地址解析通过；pairing 被入站防火墙阻断 |
+| 防火墙开/关对照的 Mac 侧 Host 探针 | 临时关闭后明文/TLS 均立即返回预期 `401`；防火墙已恢复 |
+| 物理 iPhone 签名安装、启动与相机扫码 | QR 与地址解析通过；当前 Wi-Fi 子网隔离，R3 网络连接未完成 |
 | `plutil -lint ImageAllMobile/Info.plist` | OK |
 | `git diff --check` / cached diff check | 通过 |
 
@@ -234,8 +279,9 @@ test host 后，再补该测试的自动化执行结果。
 ## 真机 TLS / 配对 smoke 清单
 
 2026-07-29 已接入 iPhone 16 Pro Max（iOS 26.5.2）。签名安装、启动、相机授权和二维码读取通过；
-旧版因未发现 Bonjour Host 而误用 `127.0.0.1`，配对/TLS 及连接后功能尚未通过。修复版已签名
-构建、安装并启动；二次扫码地址解析已通过，pairing 当前被 macOS 入站防火墙阻断。
+旧版因未发现 Bonjour Host 而误用 `127.0.0.1`。修复版二次扫码地址解析已通过；实体设备相机
+也能读取 QR，但当前 Mac 与 iPhone 被分配到不同隔离子网，纯 HTTP 探针同样不可达。所有者
+因此停止 R3 局域网验收，转入 `docs/ADR-047-MAC-HOST-CLOUDFLARE-PUBLIC-TUNNEL.md`。
 
 ### 前置条件
 
@@ -276,12 +322,13 @@ test host 后，再补该测试的自动化执行结果。
 只记录聚合与非敏感证据：
 
 - iPhone 型号 / iOS 版本：iPhone 16 Pro Max / iOS 26.5.2
-- Mac build commit：`c9eda11c` 对应工作树构建；隔离空 catalog
-- Mobile build commit：旧版扫码 `35f4eda8`；已安装修复版 `c9eda11c`
+- Mac build commit：`34a4469c`；隔离空 catalog
+- Mobile build commit：旧版扫码 `35f4eda8`；地址修复版 `c9eda11c`；恢复提示版
+  `34a4469c` 已安装；公网后续包另见 ADR-047 留档
 - Host ID：仅记录首尾各 4 位；
 - TLS 指纹：仅记录首尾各 4 位；
 - 相机 / QR / pairing Host 解析：PASS / PASS / PASS
-- 配对 / TLS / preview / review / job / WS：BLOCKED（macOS 防火墙 state 2）
+- 配对 / TLS / preview / review / job / WS：R3 NETWORK BLOCKED（当前 Wi-Fi 子网隔离；转 R4A）
 - 撤销后 refresh：PASS 或失败码；
 - 是否访问受保护真实数据：自动化否；首次错误 Host 启动和递归检查发生边界事件，见上文
 - 是否发生源端写入：否；
@@ -324,10 +371,10 @@ identifier 写入证据。
 
 ### 已知剩余项
 
-1. 物理 iPhone 真机 smoke 已推进到 pairing 网络连接；需所有者授权临时关闭“阻止所有传入”
-   并允许隔离 ImageAll Debug App 后，完成配对/TLS、preview/review/job/WS、Keychain 跨重启
-   持久性与撤销复测。
+1. R3 物理 iPhone 真机 smoke 已完成签名安装、真实相机 QR 读取和地址解析；当前 Wi-Fi 子网
+   隔离阻断局域网连接。所有者已选择 R4A 公网路径，R3 不再等待更换路由器完成验收。
 2. `RemoteHostIdentityTests` 已编译，但裸 bundle 没有签名 App Keychain 权限；需无 Photos 初始化的
    隔离 test host 后补自动化执行证据。
-3. `~/.cloudflared/config.yml` 仅作为 R4 设计输入；现有 HTTP ingress 与 R3 Host 证书固定不兼容。
+3. 公网实现、部署与真机证据转记
+   `docs/cursor-cli-tasks/2026-07-29-mac-host-ios-companion-r4-cloudflare.md`。
 4. 本切片停止于 R3 Mobile 打磨；不自动进入 R4 Relay。
