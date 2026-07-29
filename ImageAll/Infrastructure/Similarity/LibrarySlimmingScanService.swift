@@ -881,6 +881,7 @@ struct LibrarySlimmingAnalysisService: LibrarySlimmingAnalysisJobPort {
     let database: CatalogDatabase
     let queue: GRDBJobQueue
     let clock: any JobClock
+    private let leaseDurationMs: Int64
     private let coordinator: JobExecutionCoordinator
 
     init(
@@ -890,11 +891,13 @@ struct LibrarySlimmingAnalysisService: LibrarySlimmingAnalysisJobPort {
         featureLoader: any SlimmingFeatureVectorLoading,
         embeddingLoader: any SlimmingEmbeddingLoading,
         scanner: any LibrarySlimmingScanPort,
-        clock: any JobClock
+        clock: any JobClock,
+        leaseDurationMs: Int64 = LibrarySlimmingAnalysisJobFactory.leaseDurationMs
     ) {
         self.database = database
         self.queue = queue
         self.clock = clock
+        self.leaseDurationMs = leaseDurationMs
         let handler = LibrarySlimmingAnalysisHandler(
             database: database,
             queue: queue,
@@ -902,7 +905,8 @@ struct LibrarySlimmingAnalysisService: LibrarySlimmingAnalysisJobPort {
             featureLoader: featureLoader,
             embeddingLoader: embeddingLoader,
             scanner: scanner,
-            clock: clock
+            clock: clock,
+            leaseDurationMs: leaseDurationMs
         )
         coordinator = JobExecutionCoordinator(
             queue: queue,
@@ -993,7 +997,7 @@ struct LibrarySlimmingAnalysisService: LibrarySlimmingAnalysisJobPort {
         try queue.settleRetryableJobs()
         let claim = ClaimNextInput(
             owner: "imageall-library-slimming-analysis-\(UUID().uuidString.lowercased())",
-            leaseDurationMs: LibrarySlimmingAnalysisJobFactory.leaseDurationMs,
+            leaseDurationMs: leaseDurationMs,
             allowedKinds: [LibrarySlimmingAnalysisJobFactory.kind]
         )
         while let execution = try coordinator.claimAndExecuteOnce(claim) {
@@ -1014,6 +1018,7 @@ struct LibrarySlimmingAnalysisService: LibrarySlimmingAnalysisJobPort {
     }
 
     func resume(jobID: UUID) throws -> LibrarySlimmingAnalysisJobSnapshot {
+        try queue.recoverExpiredRunningJobs()
         try reconcileActiveRetryBudgets(jobID: jobID)
         let current = try queue.fetchJob(id: jobID)
         if current.state == .pending, current.attempts < current.maxAttempts {
@@ -1275,6 +1280,7 @@ private struct LibrarySlimmingAnalysisHandler: LeaseBoundJobHandler {
     let embeddingLoader: any SlimmingEmbeddingLoading
     let scanner: any LibrarySlimmingScanPort
     let clock: any JobClock
+    let leaseDurationMs: Int64
 
     var kind: String { LibrarySlimmingAnalysisJobFactory.kind }
     var supportedPayloadVersions: Set<Int> { [LibrarySlimmingAnalysisJobFactory.payloadVersion] }
@@ -1402,8 +1408,9 @@ private struct LibrarySlimmingAnalysisHandler: LeaseBoundJobHandler {
                         lease: lease,
                         checkpoint: clusteringCheckpoint,
                         progress: clusteringProgress,
-                        leaseDurationMs: LibrarySlimmingAnalysisJobFactory.leaseDurationMs
+                        leaseDurationMs: leaseDurationMs
                     )
+                    heartbeat.start()
                     let scanProgress: LibrarySlimmingScanProgressHandler = { progress in
                         if progress.phase == .clustering
                             || progress.completed == progress.total
@@ -1413,20 +1420,26 @@ private struct LibrarySlimmingAnalysisHandler: LeaseBoundJobHandler {
                         }
                     }
                     let result: LibrarySlimmingScanResult
-                    if payload.mode == .seeds {
-                        result = try scanner.scanSeeds(
-                            seedAssetIDs: seeds,
-                            universeAssetIDs: assetIDs,
-                            mediaKind: payload.mediaKind,
-                            onProgress: scanProgress
-                        )
-                    } else {
-                        result = try scanner.scan(
-                            assetIDs: assetIDs,
-                            mediaKind: payload.mediaKind,
-                            onProgress: scanProgress
-                        )
+                    do {
+                        if payload.mode == .seeds {
+                            result = try scanner.scanSeeds(
+                                seedAssetIDs: seeds,
+                                universeAssetIDs: assetIDs,
+                                mediaKind: payload.mediaKind,
+                                onProgress: scanProgress
+                            )
+                        } else {
+                            result = try scanner.scan(
+                                assetIDs: assetIDs,
+                                mediaKind: payload.mediaKind,
+                                onProgress: scanProgress
+                            )
+                        }
+                    } catch {
+                        heartbeat.stop()
+                        throw error
                     }
+                    heartbeat.stop()
                     switch heartbeat.status() {
                     case .active:
                         break
@@ -1472,7 +1485,7 @@ private struct LibrarySlimmingAnalysisHandler: LeaseBoundJobHandler {
                             outcome: .completed,
                             checkpoint: finalCheckpoint,
                             progress: finalProgress,
-                            leaseDurationMs: LibrarySlimmingAnalysisJobFactory.leaseDurationMs
+                            leaseDurationMs: leaseDurationMs
                         )
                     ) { db in
                         try db.execute(
@@ -1603,7 +1616,7 @@ private struct LibrarySlimmingAnalysisHandler: LeaseBoundJobHandler {
                 outcome: .continue,
                 checkpoint: checkpoint,
                 progress: progress,
-                leaseDurationMs: LibrarySlimmingAnalysisJobFactory.leaseDurationMs
+                leaseDurationMs: leaseDurationMs
             )
         )
         guard snapshot.state != .running else { return nil }
@@ -1641,6 +1654,8 @@ private final class LibrarySlimmingAnalysisLeaseHeartbeat: @unchecked Sendable {
     private let lock = NSLock()
     private var lastRenewedAtMs: Int64
     private var storedStatus: Status = .active
+    private var timer: DispatchSourceTimer?
+    private var isStopped = false
 
     init(
         queue: GRDBJobQueue,
@@ -1656,14 +1671,49 @@ private final class LibrarySlimmingAnalysisLeaseHeartbeat: @unchecked Sendable {
         self.checkpoint = checkpoint
         self.progress = progress
         self.leaseDurationMs = leaseDurationMs
-        minimumRenewIntervalMs = max(1_000, leaseDurationMs / 3)
+        minimumRenewIntervalMs = max(100, leaseDurationMs / 3)
         lastRenewedAtMs = clock.nowMs
+    }
+
+    func start() {
+        lock.lock()
+        guard timer == nil, !isStopped, case .active = storedStatus else {
+            lock.unlock()
+            return
+        }
+        let interval = DispatchTimeInterval.milliseconds(Int(minimumRenewIntervalMs))
+        let source = DispatchSource.makeTimerSource(
+            queue: DispatchQueue(
+                label: "com.gwlee.ImageAll.library-slimming-lease-heartbeat"
+            )
+        )
+        source.schedule(
+            deadline: .now() + interval,
+            repeating: interval,
+            leeway: .milliseconds(max(1, Int(minimumRenewIntervalMs / 10)))
+        )
+        source.setEventHandler { [weak self] in
+            self?.renewIfDue()
+        }
+        timer = source
+        source.resume()
+        lock.unlock()
+    }
+
+    func stop() {
+        lock.lock()
+        isStopped = true
+        let source = timer
+        timer = nil
+        source?.setEventHandler {}
+        source?.cancel()
+        lock.unlock()
     }
 
     func renewIfDue() {
         lock.lock()
         defer { lock.unlock() }
-        guard case .active = storedStatus else { return }
+        guard !isStopped, case .active = storedStatus else { return }
         let nowMs = clock.nowMs
         guard nowMs - lastRenewedAtMs >= minimumRenewIntervalMs else { return }
         do {

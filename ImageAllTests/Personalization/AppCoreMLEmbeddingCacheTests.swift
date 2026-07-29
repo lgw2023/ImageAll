@@ -475,7 +475,7 @@ final class AppCoreMLEmbeddingCacheTests: XCTestCase {
         XCTAssertEqual(cacheFiles(under: root).count, 1)
     }
 
-    func testFirstUseRemovesOwnedObjectsWithOldRecordSchema() throws {
+    func testFirstUseDoesNotEagerlyInspectUnrelatedOldSchemaEntry() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -507,11 +507,11 @@ final class AppCoreMLEmbeddingCacheTests: XCTestCase {
         ).embedding(for: generatedImage(), key: key)
 
         XCTAssertEqual(result.origin, .cacheHit)
-        XCTAssertFalse(FileManager.default.fileExists(atPath: stale.path))
-        XCTAssertEqual(cacheFiles(under: root).count, 1)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: stale.path))
+        XCTAssertEqual(cacheFiles(under: root).count, 2)
     }
 
-    func testFirstUseRemovesOwnedObjectsWithStaleModelIdentity() throws {
+    func testFirstUseDoesNotEagerlyInspectUnrelatedStaleModelIdentityEntry() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -545,8 +545,8 @@ final class AppCoreMLEmbeddingCacheTests: XCTestCase {
         ).embedding(for: generatedImage(), key: key)
 
         XCTAssertEqual(result.origin, .cacheHit)
-        XCTAssertFalse(FileManager.default.fileExists(atPath: stale.path))
-        XCTAssertEqual(cacheFiles(under: root).count, 1)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: stale.path))
+        XCTAssertEqual(cacheFiles(under: root).count, 2)
     }
 
     func testNonFiniteVectorWithMatchingChecksumRegeneratesTheEntry() throws {
