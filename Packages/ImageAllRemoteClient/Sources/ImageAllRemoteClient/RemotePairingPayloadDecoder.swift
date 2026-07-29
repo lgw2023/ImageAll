@@ -59,13 +59,15 @@ public enum RemotePairingPayloadDecoder {
             throw RemotePairingPayloadError.missingPairingToken
         }
         if offer.usesTLS {
-            let fingerprint = offer.certificateFingerprintSHA256
-                .lowercased()
-                .filter(\.isHexDigit)
-            guard !fingerprint.isEmpty else {
+            guard !offer.certificateFingerprintSHA256
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .isEmpty
+            else {
                 throw RemotePairingPayloadError.missingTLSFingerprint
             }
-            guard fingerprint.count == 64 else {
+            guard RemoteTLSFingerprint.normalizedSHA256(
+                offer.certificateFingerprintSHA256
+            ) != nil else {
                 throw RemotePairingPayloadError.invalidTLSFingerprint
             }
         }

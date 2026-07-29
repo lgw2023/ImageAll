@@ -49,6 +49,7 @@ final class RemoteCompanionModel: ObservableObject {
         static let token = "imageall.mobile.accessToken"
         static let refresh = "imageall.mobile.refreshToken"
         static let deviceID = "imageall.mobile.deviceID"
+        static let hostID = "imageall.mobile.hostID"
         static let fingerprint = "imageall.mobile.certFingerprint"
         static let usesTLS = "imageall.mobile.usesTLS"
     }
@@ -65,7 +66,7 @@ final class RemoteCompanionModel: ObservableObject {
         isBrowsing = true
         hostBrowser.start { [weak self] hosts in
             Task { @MainActor in
-                self?.discoveredHosts = hosts
+                self?.applyDiscoveredHosts(hosts)
             }
         }
     }
@@ -96,11 +97,11 @@ final class RemoteCompanionModel: ObservableObject {
         defer { isBusy = false }
         do {
             let offer = try RemotePairingPayloadDecoder.decode(payload)
-            if let discovered = discoveredHosts.first(where: { $0.hostID == offer.hostID })
-                ?? discoveredHosts.first(where: {
-                    $0.name.localizedCaseInsensitiveCompare(offer.hostDisplayName) == .orderedSame
-                })
-            {
+            if let discovered = RemoteHostSelection.bestMatch(
+                hostID: offer.hostID,
+                displayName: offer.hostDisplayName,
+                in: discoveredHosts
+            ) {
                 selectDiscoveredHost(discovered)
             }
             port = String(offer.listenPort)
@@ -128,6 +129,12 @@ final class RemoteCompanionModel: ObservableObject {
                     deviceName: UIDevice.current.name,
                     devicePublicKeySPKI_SHA256: deviceKey
                 )
+            )
+            try RemoteSessionIdentityValidator.validate(
+                tokens,
+                expectedHostID: offer.hostID,
+                expectedUsesTLS: offer.usesTLS,
+                expectedCertificateFingerprintSHA256: offer.certificateFingerprintSHA256
             )
             applySession(tokens)
             statusMessage = "配对成功"
@@ -474,6 +481,14 @@ final class RemoteCompanionModel: ObservableObject {
             let tokens = try await bootstrap.refreshSession(
                 RemoteTokenRefreshRequest(deviceID: deviceID, refreshToken: refresh)
             )
+            try RemoteSessionIdentityValidator.validate(
+                tokens,
+                expectedHostID: defaults
+                    .string(forKey: DefaultsKey.hostID)
+                    .flatMap(UUID.init(uuidString:)),
+                expectedUsesTLS: usesTLS,
+                expectedCertificateFingerprintSHA256: fingerprint
+            )
             applySession(tokens)
             let client = try RemoteLibraryClient.pinned(
                 host: host,
@@ -516,9 +531,28 @@ final class RemoteCompanionModel: ObservableObject {
         defaults.set(tokens.accessToken, forKey: DefaultsKey.token)
         defaults.set(tokens.refreshToken, forKey: DefaultsKey.refresh)
         defaults.set(tokens.deviceID.uuidString, forKey: DefaultsKey.deviceID)
+        defaults.set(tokens.hostID.uuidString, forKey: DefaultsKey.hostID)
         defaults.set(tokens.certificateFingerprintSHA256, forKey: DefaultsKey.fingerprint)
         defaults.set(tokens.usesTLS, forKey: DefaultsKey.usesTLS)
         defaults.set(tokens.listenPort, forKey: DefaultsKey.port)
+    }
+
+    private func applyDiscoveredHosts(_ hosts: [RemoteDiscoveredHost]) {
+        discoveredHosts = hosts
+        guard !isConnected,
+              defaults.string(forKey: DefaultsKey.refresh) != nil,
+              let hostIDRaw = defaults.string(forKey: DefaultsKey.hostID),
+              let hostID = UUID(uuidString: hostIDRaw),
+              let matched = RemoteHostSelection.bestMatch(hostID: hostID, in: hosts)
+        else {
+            return
+        }
+        let endpointChanged = host != matched.host || port != String(matched.port)
+        host = matched.host
+        port = String(matched.port)
+        if endpointChanged {
+            statusMessage = "已找到已配对的 \(matched.name)"
+        }
     }
 
     private func startEvents() {
