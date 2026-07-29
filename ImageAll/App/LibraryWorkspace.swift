@@ -130,6 +130,65 @@ enum LibraryGridDensity: Int, CaseIterable, Sendable {
     ]
 }
 
+enum LibraryThumbnailAspectMode: String, CaseIterable, Sendable {
+    case square
+    case original
+
+    static let `default`: Self = .square
+
+    var displayName: String {
+        switch self {
+        case .square: "正方形"
+        case .original: "原比例"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .square: "square"
+        case .original: "aspectratio"
+        }
+    }
+
+    var toggled: Self {
+        switch self {
+        case .square: .original
+        case .original: .square
+        }
+    }
+
+    var imageContentMode: ContentMode {
+        switch self {
+        case .square: .fill
+        case .original: .fit
+        }
+    }
+
+    func frameAspectRatio(
+        imageSize: CGSize? = nil,
+        pixelWidth: Int? = nil,
+        pixelHeight: Int? = nil
+    ) -> CGFloat {
+        guard self == .original else { return 1 }
+        if let imageSize,
+           imageSize.width.isFinite,
+           imageSize.height.isFinite,
+           imageSize.width > 0,
+           imageSize.height > 0
+        {
+            return imageSize.width / imageSize.height
+        }
+        if let pixelWidth,
+           let pixelHeight,
+           pixelWidth > 0,
+           pixelHeight > 0
+        {
+            return CGFloat(pixelWidth) / CGFloat(pixelHeight)
+        }
+        return 1
+    }
+}
+
 struct LibraryGridDensityPicker: View {
     @Binding var selection: LibraryGridDensity
     var help: String
@@ -162,6 +221,39 @@ struct LibraryGridDensityPicker: View {
         .fixedSize()
         .accessibilityLabel("缩略图大小")
         .persistentHelp(help)
+    }
+}
+
+struct LibraryThumbnailAspectModeButton: View {
+    @Binding var selection: LibraryThumbnailAspectMode
+    var displayMode: LibraryToolbarDisplayMode
+
+    init(
+        selection: Binding<LibraryThumbnailAspectMode>,
+        displayMode: LibraryToolbarDisplayMode = .iconOnly
+    ) {
+        _selection = selection
+        self.displayMode = displayMode
+    }
+
+    var body: some View {
+        Button {
+            selection = selection.toggled
+        } label: {
+            LibraryToolbarLabel(
+                title: selection.displayName,
+                systemImage: selection.systemImage,
+                displayMode: displayMode
+            )
+        }
+        .fixedSize()
+        .accessibilityLabel("缩略图比例")
+        .accessibilityValue(selection.displayName)
+        .persistentHelp(
+            selection == .square
+                ? "当前缩略图为正方形并填充裁切。点击切换为原比例，完整显示图库、待审核和图库瘦身中的缩略图。"
+                : "当前缩略图按图片原比例完整显示。点击切换为正方形并填充裁切；此设置作用于图库、待审核和图库瘦身。"
+        )
     }
 }
 
@@ -926,6 +1018,7 @@ final class LibraryWorkspaceModel: ObservableObject {
     @Published private(set) var selectedMediaTypes: [String] = []
     @Published private(set) var sort: AssetPageSort = .newest
     @Published private(set) var gridDensity: LibraryGridDensity = .default
+    @Published private(set) var thumbnailAspectMode: LibraryThumbnailAspectMode = .default
     @Published private(set) var notice: LibraryWorkspaceNotice?
     @Published private(set) var pendingSuggestionTotal = 0
     @Published private(set) var isCatalogScanning = false
@@ -7102,6 +7195,10 @@ final class LibraryWorkspaceModel: ObservableObject {
         gridDensity = density
     }
 
+    func setThumbnailAspectMode(_ mode: LibraryThumbnailAspectMode) {
+        thumbnailAspectMode = mode
+    }
+
     func toggleAvailabilityFilter(_ availability: AssetAvailability) async {
         if let index = selectedAvailabilities.firstIndex(of: availability) {
             selectedAvailabilities.remove(at: index)
@@ -10381,6 +10478,9 @@ struct LibraryWorkspaceView: View {
                 .onChange(of: model.gridDensity) { _, _ in
                     updateGridMetrics(containerSize: proxy.size)
                 }
+                .onChange(of: model.thumbnailAspectMode) { _, _ in
+                    updateGridMetrics(containerSize: proxy.size)
+                }
                 .onChange(of: gridScrollTargetID) { _, assetID in
                     guard let assetID else { return }
                     scrollProxy.scrollTo(assetID, anchor: .center)
@@ -10811,6 +10911,13 @@ struct LibraryWorkspaceView: View {
                 selection: Binding(
                     get: { model.gridDensity },
                     set: { model.setGridDensity($0) }
+                ),
+                displayMode: toolbarDisplayModeSettings.displayMode
+            )
+            LibraryThumbnailAspectModeButton(
+                selection: Binding(
+                    get: { model.thumbnailAspectMode },
+                    set: { model.setThumbnailAspectMode($0) }
                 ),
                 displayMode: toolbarDisplayModeSettings.displayMode
             )
@@ -11731,7 +11838,7 @@ private struct AssetThumbnailView: View {
                 if let image {
                     Image(nsImage: image)
                         .resizable()
-                        .scaledToFill()
+                        .aspectRatio(contentMode: model.thumbnailAspectMode.imageContentMode)
                         .frame(width: proxy.size.width, height: proxy.size.height)
                 } else {
                     Image(systemName: emptyThumbnailSymbol)
@@ -11774,7 +11881,7 @@ private struct AssetThumbnailView: View {
             .accessibilityLabel(item.fileName ?? item.mediaKind.displayName)
             .accessibilityAddTraits(isSelected ? .isSelected : [])
         }
-        .aspectRatio(1, contentMode: .fit)
+        .aspectRatio(thumbnailFrameAspectRatio, contentMode: .fit)
         .contentShape(Rectangle())
         .gesture(
             TapGesture(count: 2)
@@ -11870,6 +11977,14 @@ private struct AssetThumbnailView: View {
             assetID: item.assetID,
             usesDownloadedCloudPreview: usesDownloadedCloudPreview,
             cacheVersion: model.thumbnailCacheVersion(for: item.assetID)
+        )
+    }
+
+    private var thumbnailFrameAspectRatio: CGFloat {
+        model.thumbnailAspectMode.frameAspectRatio(
+            imageSize: image?.size,
+            pixelWidth: item.width,
+            pixelHeight: item.height
         )
     }
 

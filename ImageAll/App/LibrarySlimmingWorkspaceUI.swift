@@ -1179,7 +1179,7 @@ private struct SlimmingThumbnailCell: View {
                 if let image {
                     Image(nsImage: image)
                         .resizable()
-                        .scaledToFill()
+                        .aspectRatio(contentMode: model.thumbnailAspectMode.imageContentMode)
                         .frame(width: proxy.size.width, height: proxy.size.height)
                 } else {
                     switch loadState {
@@ -1225,7 +1225,10 @@ private struct SlimmingThumbnailCell: View {
                 }
             }
         }
-        .aspectRatio(1, contentMode: .fit)
+        .aspectRatio(
+            model.thumbnailAspectMode.frameAspectRatio(imageSize: image?.size),
+            contentMode: .fit
+        )
         .task(id: loadID) {
             image = nil
             loadState = .loading

@@ -988,6 +988,12 @@ struct ReviewQueueContentView: View {
                         ),
                         help: "调整待审核建议网格缩略图大小"
                     )
+                    LibraryThumbnailAspectModeButton(
+                        selection: Binding(
+                            get: { model.thumbnailAspectMode },
+                            set: { model.setThumbnailAspectMode($0) }
+                        )
+                    )
                 }
             }
             .padding(.horizontal, 12)
@@ -1111,6 +1117,9 @@ struct ReviewQueueContentView: View {
                     updateGridMetrics(containerSize: size)
                 }
                 .onChange(of: model.gridDensity) { _, _ in
+                    updateGridMetrics(containerSize: proxy.size)
+                }
+                .onChange(of: model.thumbnailAspectMode) { _, _ in
                     updateGridMetrics(containerSize: proxy.size)
                 }
                 .onChange(of: gridScrollTargetID) { _, itemID in
@@ -1255,7 +1264,7 @@ private struct ReviewThumbnailView: View {
                 if let image {
                     Image(nsImage: image)
                         .resizable()
-                        .scaledToFill()
+                        .aspectRatio(contentMode: model.thumbnailAspectMode.imageContentMode)
                         .frame(width: proxy.size.width, height: proxy.size.height)
                 } else {
                     Image(systemName: emptyThumbnailSymbol)
@@ -1290,7 +1299,10 @@ private struct ReviewThumbnailView: View {
                     .stroke(isSelected ? Color.accentColor : Color.clear, lineWidth: 3)
             }
         }
-        .aspectRatio(1, contentMode: .fit)
+        .aspectRatio(
+            model.thumbnailAspectMode.frameAspectRatio(imageSize: image?.size),
+            contentMode: .fit
+        )
         .contentShape(Rectangle())
         .gesture(
             TapGesture(count: 2)

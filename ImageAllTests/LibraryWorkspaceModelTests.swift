@@ -7758,6 +7758,43 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertEqual(LibraryGridDensity.giant.cellWidthRange, 620 ... 1038)
     }
 
+    func testThumbnailAspectModeDefaultsToSquareAndUsesOriginalDimensionsWhenSelected() {
+        XCTAssertEqual(LibraryThumbnailAspectMode.default, .square)
+        XCTAssertEqual(
+            LibraryThumbnailAspectMode.square.frameAspectRatio(
+                pixelWidth: 4_032,
+                pixelHeight: 3_024
+            ),
+            1
+        )
+        XCTAssertEqual(
+            LibraryThumbnailAspectMode.original.frameAspectRatio(
+                pixelWidth: 4_032,
+                pixelHeight: 3_024
+            ),
+            4.0 / 3.0,
+            accuracy: 0.000_001
+        )
+        XCTAssertEqual(
+            LibraryThumbnailAspectMode.original.frameAspectRatio(
+                imageSize: CGSize(width: 1_920, height: 1_080),
+                pixelWidth: 4_032,
+                pixelHeight: 3_024
+            ),
+            16.0 / 9.0,
+            accuracy: 0.000_001
+        )
+        XCTAssertEqual(
+            LibraryThumbnailAspectMode.original.frameAspectRatio(
+                pixelWidth: 0,
+                pixelHeight: nil
+            ),
+            1
+        )
+        XCTAssertEqual(LibraryThumbnailAspectMode.square.toggled, .original)
+        XCTAssertEqual(LibraryThumbnailAspectMode.original.toggled, .square)
+    }
+
     func testGridLayoutReservesScrollerGutterAndKeepsFixedColumnsStable() {
         let containerWidth: CGFloat = 856
         let density = LibraryGridDensity.standard
@@ -8006,6 +8043,33 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertEqual(model.items.map(\.assetID), [first.assetID, second.assetID])
         XCTAssertEqual(model.selectedAssetIDs, [second.assetID])
         XCTAssertTrue(model.isSinglePhotoPresented)
+    }
+
+    func testChangingThumbnailAspectModeIsSharedAndPreservesLoadedCatalogState() async {
+        let sourceID = UUID()
+        let first = Self.makeAsset(sourceID: sourceID, fileName: "first.jpg")
+        let second = Self.makeAsset(sourceID: sourceID, fileName: "second.jpg")
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(id: sourceID, displayName: "Fixture", state: .active),
+            reconciledItems: [first, second]
+        )
+        let model = LibraryWorkspaceModel(service: service)
+
+        await model.start()
+        await model.connectFolder()
+        await waitForCatalogScanToFinish(model)
+        await model.selectAsset(second.assetID)
+
+        XCTAssertEqual(model.thumbnailAspectMode, .square)
+
+        model.setThumbnailAspectMode(.original)
+
+        XCTAssertEqual(model.thumbnailAspectMode, .original)
+        XCTAssertEqual(model.items.map(\.assetID), [first.assetID, second.assetID])
+        XCTAssertEqual(model.selectedAssetIDs, [second.assetID])
+
+        model.setThumbnailAspectMode(.square)
+        XCTAssertEqual(model.thumbnailAspectMode, .square)
     }
 
     func testAvailabilityFormatAndSortControlsReloadCatalogAndClearHiddenSelection() async {
