@@ -35,6 +35,7 @@ final class RemoteCompanionModel: ObservableObject {
     @Published var isLoadingPreview = false
     @Published var jobActionInFlightIDs: Set<UUID> = []
     @Published private(set) var publicBaseURL: String?
+    @Published private(set) var hasStoredPairing = false
 
     private var client: RemoteLibraryClient?
     private var sessionTokens: RemoteSessionTokens?
@@ -102,6 +103,7 @@ final class RemoteCompanionModel: ObservableObject {
             defaults.string(forKey: DefaultsKey.publicBaseURL)
         )
         statusMessage = initialStatusMessage
+        hasStoredPairing = storedRefreshToken != nil
     }
 
     func startBrowsing() {
@@ -243,6 +245,17 @@ final class RemoteCompanionModel: ObservableObject {
         await connectWithManualToken()
     }
 
+    func reconnectStoredSession() async {
+        guard hasStoredPairing else {
+            statusMessage = "当前没有已保存的配对，请扫描 Mac 上的新二维码"
+            return
+        }
+        statusMessage = publicBaseURL == nil
+            ? "正在重新连接已配对 Host…"
+            : "正在重新连接公网 Host…"
+        await connectWithStoredSession()
+    }
+
     func restoreStoredSessionIfAvailable() async {
         guard storedRefreshToken != nil, !isConnected, !isBusy else { return }
         statusMessage = publicBaseURL == nil
@@ -271,6 +284,48 @@ final class RemoteCompanionModel: ObservableObject {
         reviewThumbnailDataByAssetID = [:]
         resetPreview()
         statusMessage = "已断开"
+        startBrowsing()
+    }
+
+    func forgetStoredPairing() {
+        do {
+            try credentialVault.deleteRefreshToken()
+        } catch {
+            statusMessage = "无法清除此 iPhone 的配对：\(error.localizedDescription)"
+            return
+        }
+
+        eventSocket.stop()
+        client = nil
+        sessionTokens = nil
+        storedRefreshToken = nil
+        hasStoredPairing = false
+        accessToken = ""
+        certificateFingerprint = nil
+        publicBaseURL = nil
+        isConnected = false
+        capabilities = nil
+        sources = []
+        tags = []
+        jobs = []
+        reviewItems = []
+        assets = []
+        nextCursor = nil
+        reviewNextCursor = nil
+        selectedAssetIDs = []
+        selectedReviewAssetIDs = []
+        thumbnailDataByAssetID = [:]
+        reviewThumbnailDataByAssetID = [:]
+        resetPreview()
+
+        defaults.removeObject(forKey: DefaultsKey.token)
+        defaults.removeObject(forKey: DefaultsKey.refresh)
+        defaults.removeObject(forKey: DefaultsKey.deviceID)
+        defaults.removeObject(forKey: DefaultsKey.hostID)
+        defaults.removeObject(forKey: DefaultsKey.fingerprint)
+        defaults.removeObject(forKey: DefaultsKey.usesTLS)
+        defaults.removeObject(forKey: DefaultsKey.publicBaseURL)
+        statusMessage = "已清除此 iPhone 的配对，请扫描 Mac 上的新配对二维码"
         startBrowsing()
     }
 
@@ -595,6 +650,25 @@ final class RemoteCompanionModel: ObservableObject {
     }
 
     private func connectionStatusMessage(for error: Error) -> String {
+        if let apiError = error as? RemoteAPIError {
+            switch (apiError.code, apiError.message) {
+            case (.badRequest, "noActiveOffer"):
+                return """
+                Mac 当前没有活动配对二维码。若此 iPhone 已配对，请点“重新连接已配对 Host”；\
+                否则请在 Mac 上刷新二维码后再扫码。
+                """
+            case (.badRequest, "offerExpired"):
+                return "配对二维码已过期，请在 Mac 上刷新后重新扫码。"
+            case (.badRequest, "invalidToken"):
+                return "配对二维码已失效或已使用，请在 Mac 上刷新后重新扫码。"
+            case (.unauthorized, "unknownDevice"),
+                 (.unauthorized, "invalidRefreshToken"):
+                return "此设备的配对授权已失效。请先清除此 iPhone 的配对，再扫描 Mac 上的新二维码。"
+            default:
+                return apiError.localizedDescription
+            }
+        }
+
         let nsError = error as NSError
         guard nsError.domain == NSURLErrorDomain else {
             return error.localizedDescription
@@ -680,8 +754,10 @@ final class RemoteCompanionModel: ObservableObject {
         do {
             try credentialVault.saveRefreshToken(tokens.refreshToken)
             storedRefreshToken = tokens.refreshToken
+            hasStoredPairing = true
         } catch {
             storedRefreshToken = tokens.refreshToken
+            hasStoredPairing = true
             try? credentialVault.deleteRefreshToken()
             storageWarning = "Keychain 保存失败，当前会话可用，重启后需重新配对：\(error.localizedDescription)"
         }

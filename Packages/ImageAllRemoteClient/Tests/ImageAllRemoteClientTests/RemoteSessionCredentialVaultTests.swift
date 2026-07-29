@@ -81,11 +81,34 @@ final class RemoteSessionCredentialVaultTests: XCTestCase {
         )
         XCTAssertNil(legacyRefreshToken)
     }
+
+    func testDeletesStoredRefreshToken() throws {
+        let secureStore = InMemoryRemoteSecureCredentialStore()
+        secureStore.data = Data("secure-refresh".utf8)
+        let vault = RemoteSessionCredentialVault(secureStore: secureStore)
+
+        try vault.deleteRefreshToken()
+
+        XCTAssertNil(try vault.loadRefreshToken())
+    }
+
+    func testPreservesStoredRefreshTokenWhenDeleteFails() throws {
+        let secureStore = InMemoryRemoteSecureCredentialStore()
+        secureStore.data = Data("secure-refresh".utf8)
+        secureStore.deleteError = TestStoreError.unavailable
+        let vault = RemoteSessionCredentialVault(secureStore: secureStore)
+
+        XCTAssertThrowsError(try vault.deleteRefreshToken()) { error in
+            XCTAssertEqual(error as? TestStoreError, .unavailable)
+        }
+        XCTAssertEqual(try vault.loadRefreshToken(), "secure-refresh")
+    }
 }
 
 private final class InMemoryRemoteSecureCredentialStore: RemoteSecureCredentialStoring {
     var data: Data?
     var saveError: Error?
+    var deleteError: Error?
 
     func load() throws -> Data? {
         data
@@ -99,6 +122,9 @@ private final class InMemoryRemoteSecureCredentialStore: RemoteSecureCredentialS
     }
 
     func delete() throws {
+        if let deleteError {
+            throw deleteError
+        }
         data = nil
     }
 }

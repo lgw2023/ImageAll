@@ -8,6 +8,7 @@ struct RemoteCompanionRootView: View {
     @ObservedObject var model: RemoteCompanionModel
     @State private var isScannerPresented = false
     @State private var scannerMessage: String?
+    @State private var isForgetPairingConfirmationPresented = false
 
     var body: some View {
         Group {
@@ -61,6 +62,18 @@ struct RemoteCompanionRootView: View {
         .task {
             await model.restoreStoredSessionIfAvailable()
         }
+        .confirmationDialog(
+            "清除此 iPhone 的配对？",
+            isPresented: $isForgetPairingConfirmationPresented,
+            titleVisibility: .visible
+        ) {
+            Button("清除本机配对凭据", role: .destructive) {
+                model.forgetStoredPairing()
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("之后需要重新扫码。Mac 的设备列表会保留撤销记录，可在 Mac 设置中移除。")
+        }
     }
 
     private var connectedTabs: some View {
@@ -91,7 +104,7 @@ struct RemoteCompanionRootView: View {
     @ToolbarContentBuilder
     private var disconnectToolbar: some ToolbarContent {
         ToolbarItem(placement: .topBarTrailing) {
-            Button("断开") { model.disconnect() }
+            Button("暂时断开") { model.disconnect() }
         }
     }
 
@@ -133,6 +146,30 @@ struct RemoteCompanionRootView: View {
                             }
                         }
                     }
+                }
+            }
+
+            if model.hasStoredPairing {
+                Section("已配对设备") {
+                    Button {
+                        Task { await model.reconnectStoredSession() }
+                    } label: {
+                        if model.isBusy {
+                            ProgressView()
+                        } else {
+                            Label("重新连接已配对 Host", systemImage: "arrow.clockwise")
+                        }
+                    }
+                    .disabled(model.isBusy)
+
+                    Text("临时断开不会删除配对。重新连接无需刷新或扫描一次性二维码。")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+
+                    Button("清除此 iPhone 的配对", role: .destructive) {
+                        isForgetPairingConfirmationPresented = true
+                    }
+                    .disabled(model.isBusy)
                 }
             }
 
