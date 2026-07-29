@@ -35,6 +35,18 @@ public struct RemoteHostEndpoint: Sendable, Equatable {
         self.accessToken = accessToken
     }
 
+    public init(publicHTTPSBaseURL: String, accessToken: String) throws {
+        guard let normalized = RemotePublicEndpoint.normalizedHTTPSBaseURL(
+            publicHTTPSBaseURL
+        ),
+            let url = URL(string: normalized)
+        else {
+            throw RemoteAPIError(code: .badRequest, message: "invalid public host URL")
+        }
+        self.baseURL = url
+        self.accessToken = accessToken
+    }
+
     public var usesTLS: Bool {
         baseURL.scheme?.lowercased() == "https"
     }

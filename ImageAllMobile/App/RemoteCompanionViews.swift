@@ -58,6 +58,9 @@ struct RemoteCompanionRootView: View {
                 }
             }
         }
+        .task {
+            await model.restoreStoredSessionIfAvailable()
+        }
     }
 
     private var connectedTabs: some View {
@@ -94,29 +97,38 @@ struct RemoteCompanionRootView: View {
 
     private var connectionView: some View {
         Form {
-            Section("局域网 Host") {
-                if model.discoveredHosts.isEmpty {
-                    Text(model.isBrowsing ? "正在搜索…" : "未开始搜索")
-                        .foregroundStyle(.secondary)
-                    Text("若持续搜索不到，请在下方输入 Mac 的局域网地址后再扫码；127.0.0.1 只代表当前 iPhone。")
+            if let publicBaseURL = model.publicBaseURL {
+                Section("公网 Host") {
+                    LabeledContent("入口", value: publicBaseURL)
+                    Text("当前会话使用公网 HTTPS，不要求 iPhone 与 Mac 位于同一局域网。")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
-                } else {
-                    ForEach(model.discoveredHosts) { discovered in
-                        Button {
-                            model.selectDiscoveredHost(discovered)
-                        } label: {
-                            HStack {
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(discovered.name)
-                                    Text("\(discovered.host):\(discovered.port)")
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                }
-                                Spacer()
-                                if discovered.host == model.host, String(discovered.port) == model.port {
-                                    Image(systemName: "checkmark.circle.fill")
-                                        .foregroundStyle(.tint)
+                }
+            } else {
+                Section("局域网 Host") {
+                    if model.discoveredHosts.isEmpty {
+                        Text(model.isBrowsing ? "正在搜索…" : "未开始搜索")
+                            .foregroundStyle(.secondary)
+                        Text("若持续搜索不到，请在下方输入 Mac 的局域网地址后再扫码；127.0.0.1 只代表当前 iPhone。")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        ForEach(model.discoveredHosts) { discovered in
+                            Button {
+                                model.selectDiscoveredHost(discovered)
+                            } label: {
+                                HStack {
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(discovered.name)
+                                        Text("\(discovered.host):\(discovered.port)")
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    Spacer()
+                                    if discovered.host == model.host, String(discovered.port) == model.port {
+                                        Image(systemName: "checkmark.circle.fill")
+                                            .foregroundStyle(.tint)
+                                    }
                                 }
                             }
                         }

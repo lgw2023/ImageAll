@@ -34,6 +34,7 @@ final class RemoteCompanionModel: ObservableObject {
     @Published var previewData: Data?
     @Published var isLoadingPreview = false
     @Published var jobActionInFlightIDs: Set<UUID> = []
+    @Published private(set) var publicBaseURL: String?
 
     private var client: RemoteLibraryClient?
     private var sessionTokens: RemoteSessionTokens?
@@ -54,6 +55,7 @@ final class RemoteCompanionModel: ObservableObject {
         static let hostID = "imageall.mobile.hostID"
         static let fingerprint = "imageall.mobile.certFingerprint"
         static let usesTLS = "imageall.mobile.usesTLS"
+        static let publicBaseURL = "imageall.mobile.publicBaseURL"
     }
 
     init() {
@@ -96,10 +98,18 @@ final class RemoteCompanionModel: ObservableObject {
             ? defaults.string(forKey: DefaultsKey.token) ?? ""
             : ""
         certificateFingerprint = defaults.string(forKey: DefaultsKey.fingerprint)
+        publicBaseURL = RemotePublicEndpoint.normalizedHTTPSBaseURL(
+            defaults.string(forKey: DefaultsKey.publicBaseURL)
+        )
         statusMessage = initialStatusMessage
     }
 
     func startBrowsing() {
+        guard publicBaseURL == nil else {
+            isBrowsing = false
+            discoveredHosts = []
+            return
+        }
         guard !isBrowsing else { return }
         isBrowsing = true
         hostBrowser.start { [weak self] hosts in
@@ -135,30 +145,36 @@ final class RemoteCompanionModel: ObservableObject {
         defer { isBusy = false }
         do {
             let offer = try RemotePairingPayloadDecoder.decode(payload)
-            let pairingHost = try RemotePairingHostResolver.resolve(
-                hostID: offer.hostID,
-                displayName: offer.hostDisplayName,
-                currentHost: host,
-                discoveredHosts: discoveredHosts
+            let publicURL = RemotePublicEndpoint.normalizedHTTPSBaseURL(
+                offer.publicBaseURL
             )
-            host = pairingHost
-            port = String(offer.listenPort)
+            publicBaseURL = publicURL
+            let pairingHost: String
+            if let publicURL,
+               let publicHost = URL(string: publicURL)?.host
+            {
+                pairingHost = publicHost
+                host = publicHost
+                port = "443"
+            } else {
+                pairingHost = try RemotePairingHostResolver.resolve(
+                    hostID: offer.hostID,
+                    displayName: offer.hostDisplayName,
+                    currentHost: host,
+                    discoveredHosts: discoveredHosts
+                )
+                host = pairingHost
+                port = String(offer.listenPort)
+            }
             let deviceKey = SHA256.hash(data: Data(UUID().uuidString.utf8))
                 .map { String(format: "%02x", $0) }.joined()
-            let bootstrap = try RemoteLibraryClient(
-                endpoint: RemoteHostEndpoint(
-                    host: pairingHost,
-                    port: offer.listenPort,
-                    accessToken: "",
-                    usesTLS: offer.usesTLS
-                ),
-                transport: offer.usesTLS
-                    ? URLSessionRemoteHTTPTransport(
-                        session: RemotePinnedURLSessionFactory.makeSession(
-                            certificateFingerprintSHA256: offer.certificateFingerprintSHA256
-                        )
-                    )
-                    : URLSessionRemoteHTTPTransport(),
+            let bootstrap = try makeClient(
+                accessToken: "",
+                publicBaseURL: publicURL,
+                localHost: pairingHost,
+                localPort: offer.listenPort,
+                usesTLS: offer.usesTLS,
+                certificateFingerprint: offer.certificateFingerprintSHA256,
                 sendAuthorization: false
             )
             let tokens = try await bootstrap.completePairing(
@@ -172,16 +188,20 @@ final class RemoteCompanionModel: ObservableObject {
                 tokens,
                 expectedHostID: offer.hostID,
                 expectedUsesTLS: offer.usesTLS,
-                expectedCertificateFingerprintSHA256: offer.certificateFingerprintSHA256
+                expectedCertificateFingerprintSHA256: offer.certificateFingerprintSHA256,
+                expectedPublicBaseURL: publicURL
             )
             let storageWarning = applySession(tokens)
-            let pairedClient = try RemoteLibraryClient.pinned(
-                host: host,
-                port: tokens.listenPort,
+            let pairedClient = try makeClient(
                 accessToken: tokens.accessToken,
-                certificateFingerprintSHA256: tokens.certificateFingerprintSHA256
+                publicBaseURL: tokens.publicBaseURL,
+                localHost: host,
+                localPort: tokens.listenPort,
+                usesTLS: tokens.usesTLS,
+                certificateFingerprint: tokens.certificateFingerprintSHA256
             )
             try await finishConnect(pairedClient)
+            pairingOfferJSON = ""
             if let storageWarning {
                 statusMessage = "\(statusMessage ?? "已连接")；\(storageWarning)"
             } else {
@@ -221,6 +241,14 @@ final class RemoteCompanionModel: ObservableObject {
             return
         }
         await connectWithManualToken()
+    }
+
+    func restoreStoredSessionIfAvailable() async {
+        guard storedRefreshToken != nil, !isConnected, !isBusy else { return }
+        statusMessage = publicBaseURL == nil
+            ? "正在恢复已配对会话…"
+            : "正在恢复公网会话…"
+        await connectWithStoredSession()
     }
 
     func disconnect() {
@@ -494,25 +522,15 @@ final class RemoteCompanionModel: ObservableObject {
         }
         do {
             let usesTLS = defaults.bool(forKey: DefaultsKey.usesTLS)
-            let endpoint = try RemoteHostEndpoint(
-                host: host.trimmingCharacters(in: .whitespacesAndNewlines),
-                port: portValue,
+            let nextClient = try makeClient(
                 accessToken: token,
-                usesTLS: usesTLS
+                publicBaseURL: publicBaseURL,
+                localHost: host.trimmingCharacters(in: .whitespacesAndNewlines),
+                localPort: portValue,
+                usesTLS: usesTLS,
+                certificateFingerprint: certificateFingerprint
             )
-            let transport: any RemoteHTTPTransporting
-            if usesTLS, let fingerprint = certificateFingerprint {
-                transport = URLSessionRemoteHTTPTransport(
-                    session: RemotePinnedURLSessionFactory.makeSession(
-                        certificateFingerprintSHA256: fingerprint
-                    )
-                )
-            } else {
-                transport = URLSessionRemoteHTTPTransport()
-            }
-            try await finishConnect(
-                RemoteLibraryClient(endpoint: endpoint, transport: transport)
-            )
+            try await finishConnect(nextClient)
         } catch {
             isConnected = false
             client = nil
@@ -534,20 +552,16 @@ final class RemoteCompanionModel: ObservableObject {
         }
         do {
             let usesTLS = defaults.bool(forKey: DefaultsKey.usesTLS)
-            let bootstrap = try RemoteLibraryClient(
-                endpoint: RemoteHostEndpoint(
-                    host: host,
-                    port: portValue,
-                    accessToken: "",
-                    usesTLS: usesTLS
-                ),
-                transport: usesTLS
-                    ? URLSessionRemoteHTTPTransport(
-                        session: RemotePinnedURLSessionFactory.makeSession(
-                            certificateFingerprintSHA256: fingerprint
-                        )
-                    )
-                    : URLSessionRemoteHTTPTransport(),
+            let expectedPublicURL = RemotePublicEndpoint.normalizedHTTPSBaseURL(
+                defaults.string(forKey: DefaultsKey.publicBaseURL)
+            )
+            let bootstrap = try makeClient(
+                accessToken: "",
+                publicBaseURL: expectedPublicURL,
+                localHost: host,
+                localPort: portValue,
+                usesTLS: usesTLS,
+                certificateFingerprint: fingerprint,
                 sendAuthorization: false
             )
             let tokens = try await bootstrap.refreshSession(
@@ -559,14 +573,17 @@ final class RemoteCompanionModel: ObservableObject {
                     .string(forKey: DefaultsKey.hostID)
                     .flatMap(UUID.init(uuidString:)),
                 expectedUsesTLS: usesTLS,
-                expectedCertificateFingerprintSHA256: fingerprint
+                expectedCertificateFingerprintSHA256: fingerprint,
+                expectedPublicBaseURL: expectedPublicURL
             )
             let storageWarning = applySession(tokens)
-            let client = try RemoteLibraryClient.pinned(
-                host: host,
-                port: tokens.listenPort,
+            let client = try makeClient(
                 accessToken: tokens.accessToken,
-                certificateFingerprintSHA256: tokens.certificateFingerprintSHA256
+                publicBaseURL: tokens.publicBaseURL,
+                localHost: host,
+                localPort: tokens.listenPort,
+                usesTLS: tokens.usesTLS,
+                certificateFingerprint: tokens.certificateFingerprintSHA256
             )
             try await finishConnect(client)
             if let storageWarning {
@@ -582,20 +599,29 @@ final class RemoteCompanionModel: ObservableObject {
         guard nsError.domain == NSURLErrorDomain else {
             return error.localizedDescription
         }
+        let usesPublicEndpoint = publicBaseURL != nil
 
         switch URLError.Code(rawValue: nsError.code) {
         case .timedOut:
+            if usesPublicEndpoint {
+                return "连接公网 Mac Host 超时。请确认 Mac 上 ImageAll Host 与 cloudflared Tunnel 正在运行。"
+            }
             return """
             连接 Mac Host 超时。请确认两台设备在同一局域网，并在 Mac 的“网络 > 防火墙 > \
             选项”中关闭“阻止所有传入连接”、允许 ImageAll 传入连接。
             """
         case .cannotConnectToHost, .cannotFindHost, .networkConnectionLost:
+            if usesPublicEndpoint {
+                return "无法连接公网 Mac Host。请确认公网域名、ImageAll Host 和 cloudflared Tunnel 状态。"
+            }
             return """
             无法连接 Mac Host。请确认 Host 正在运行、地址正确，并在 Mac 防火墙中允许 \
             ImageAll 传入连接。
             """
         case .notConnectedToInternet:
-            return "iPhone 当前没有可用网络。请先连接与 Mac 相同的局域网。"
+            return usesPublicEndpoint
+                ? "iPhone 当前没有可用互联网连接。"
+                : "iPhone 当前没有可用网络。请先连接与 Mac 相同的局域网。"
         case .secureConnectionFailed,
              .serverCertificateHasBadDate,
              .serverCertificateUntrusted,
@@ -625,13 +651,30 @@ final class RemoteCompanionModel: ObservableObject {
         await reloadJobs()
         await reloadReviewQueue(reset: true)
         startEvents()
-        statusMessage = "已连接 \(caps.hostAppVersion)\(caps.usesTLS ? " · TLS" : "")"
+        let transportText: String
+        if publicBaseURL != nil {
+            transportText = " · 公网 TLS"
+        } else {
+            transportText = caps.usesTLS ? " · TLS" : ""
+        }
+        statusMessage = "已连接 \(caps.hostAppVersion)\(transportText)"
     }
 
     private func applySession(_ tokens: RemoteSessionTokens) -> String? {
         sessionTokens = tokens
         accessToken = tokens.accessToken
-        port = String(tokens.listenPort)
+        publicBaseURL = RemotePublicEndpoint.normalizedHTTPSBaseURL(
+            tokens.publicBaseURL
+        )
+        if let publicBaseURL,
+           let endpointURL = URL(string: publicBaseURL),
+           let publicHost = endpointURL.host
+        {
+            host = publicHost
+            port = String(endpointURL.port ?? 443)
+        } else {
+            port = String(tokens.listenPort)
+        }
         certificateFingerprint = tokens.certificateFingerprintSHA256
         var storageWarning: String?
         do {
@@ -648,7 +691,12 @@ final class RemoteCompanionModel: ObservableObject {
         defaults.set(tokens.hostID.uuidString, forKey: DefaultsKey.hostID)
         defaults.set(tokens.certificateFingerprintSHA256, forKey: DefaultsKey.fingerprint)
         defaults.set(tokens.usesTLS, forKey: DefaultsKey.usesTLS)
-        defaults.set(tokens.listenPort, forKey: DefaultsKey.port)
+        defaults.set(port, forKey: DefaultsKey.port)
+        if let publicBaseURL {
+            defaults.set(publicBaseURL, forKey: DefaultsKey.publicBaseURL)
+        } else {
+            defaults.removeObject(forKey: DefaultsKey.publicBaseURL)
+        }
         return storageWarning
     }
 
@@ -656,6 +704,7 @@ final class RemoteCompanionModel: ObservableObject {
         discoveredHosts = hosts
         guard !isConnected,
               storedRefreshToken != nil,
+              publicBaseURL == nil,
               let hostIDRaw = defaults.string(forKey: DefaultsKey.hostID),
               let hostID = UUID(uuidString: hostIDRaw),
               let matched = RemoteHostSelection.bestMatch(hostID: hostID, in: hosts)
@@ -672,18 +721,28 @@ final class RemoteCompanionModel: ObservableObject {
 
     private func startEvents() {
         eventSocket.stop()
-        // Reconstruct endpoint from client is not exposed; use stored values.
-        guard let portValue = Int(port) else { return }
         do {
-            let endpoint = try RemoteHostEndpoint(
-                host: host,
-                port: portValue,
-                accessToken: accessToken,
-                usesTLS: defaults.bool(forKey: DefaultsKey.usesTLS)
-            )
+            let endpoint: RemoteHostEndpoint
+            let pinnedFingerprint: String?
+            if let publicBaseURL {
+                endpoint = try RemoteHostEndpoint(
+                    publicHTTPSBaseURL: publicBaseURL,
+                    accessToken: accessToken
+                )
+                pinnedFingerprint = nil
+            } else {
+                guard let portValue = Int(port) else { return }
+                endpoint = try RemoteHostEndpoint(
+                    host: host,
+                    port: portValue,
+                    accessToken: accessToken,
+                    usesTLS: defaults.bool(forKey: DefaultsKey.usesTLS)
+                )
+                pinnedFingerprint = certificateFingerprint
+            }
             try eventSocket.connect(
                 endpoint: endpoint,
-                certificateFingerprintSHA256: certificateFingerprint
+                certificateFingerprintSHA256: pinnedFingerprint
             ) { [weak self] event in
                 Task { @MainActor in
                     await self?.handle(event: event)
@@ -692,6 +751,49 @@ final class RemoteCompanionModel: ObservableObject {
         } catch {
             statusMessage = "事件通道失败：\(error.localizedDescription)"
         }
+    }
+
+    private func makeClient(
+        accessToken: String,
+        publicBaseURL: String?,
+        localHost: String,
+        localPort: Int,
+        usesTLS: Bool,
+        certificateFingerprint: String?,
+        sendAuthorization: Bool = true
+    ) throws -> RemoteLibraryClient {
+        if let publicBaseURL {
+            return RemoteLibraryClient(
+                endpoint: try RemoteHostEndpoint(
+                    publicHTTPSBaseURL: publicBaseURL,
+                    accessToken: accessToken
+                ),
+                transport: URLSessionRemoteHTTPTransport(),
+                sendAuthorization: sendAuthorization
+            )
+        }
+
+        let endpoint = try RemoteHostEndpoint(
+            host: localHost,
+            port: localPort,
+            accessToken: accessToken,
+            usesTLS: usesTLS
+        )
+        let transport: any RemoteHTTPTransporting
+        if usesTLS, let certificateFingerprint {
+            transport = URLSessionRemoteHTTPTransport(
+                session: RemotePinnedURLSessionFactory.makeSession(
+                    certificateFingerprintSHA256: certificateFingerprint
+                )
+            )
+        } else {
+            transport = URLSessionRemoteHTTPTransport()
+        }
+        return RemoteLibraryClient(
+            endpoint: endpoint,
+            transport: transport,
+            sendAuthorization: sendAuthorization
+        )
     }
 
     private func handle(event: RemoteEvent) async {

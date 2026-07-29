@@ -612,6 +612,8 @@ actor RemoteHTTPServer {
         }()
         var header = "HTTP/1.1 \(status) \(reason)\r\n"
         header += "Content-Type: \(contentType)\r\n"
+        header += "Cache-Control: no-store\r\n"
+        header += "Pragma: no-cache\r\n"
         header += "Content-Length: \(body.count)\r\n"
         header += "Connection: close\r\n\r\n"
         var payload = Data(header.utf8)

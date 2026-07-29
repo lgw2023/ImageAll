@@ -9,6 +9,7 @@ public enum RemotePairingPayloadError: Error, Equatable, Sendable {
     case missingPairingToken
     case missingTLSFingerprint
     case invalidTLSFingerprint
+    case invalidPublicBaseURL
 }
 
 extension RemotePairingPayloadError: LocalizedError {
@@ -28,6 +29,8 @@ extension RemotePairingPayloadError: LocalizedError {
             "TLS 配对信息缺少证书指纹"
         case .invalidTLSFingerprint:
             "TLS 证书指纹格式无效"
+        case .invalidPublicBaseURL:
+            "公网 Host 地址无效，请在 Mac 设置中重新配置 HTTPS 域名"
         }
     }
 }
@@ -70,6 +73,11 @@ public enum RemotePairingPayloadDecoder {
             ) != nil else {
                 throw RemotePairingPayloadError.invalidTLSFingerprint
             }
+        }
+        if offer.publicBaseURL != nil,
+           RemotePublicEndpoint.normalizedHTTPSBaseURL(offer.publicBaseURL) == nil
+        {
+            throw RemotePairingPayloadError.invalidPublicBaseURL
         }
         return offer
     }

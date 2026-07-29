@@ -278,6 +278,19 @@ final class RemoteLibraryClientTests: XCTestCase {
         XCTAssertEqual(endpoint.baseURL.absoluteString, "http://[fe80::1]:8787")
     }
 
+    func testPublicHostEndpointUsesCanonicalSystemTrustedHTTPSURL() throws {
+        let endpoint = try RemoteHostEndpoint(
+            publicHTTPSBaseURL: " HTTPS://ImageAll.UltraHardcore.Net:443/ ",
+            accessToken: "secret"
+        )
+
+        XCTAssertEqual(
+            endpoint.baseURL.absoluteString,
+            "https://imageall.ultrahardcore.net"
+        )
+        XCTAssertTrue(endpoint.usesTLS)
+    }
+
     private static func jsonResponse<T: Encodable>(
         _ value: T,
         for request: URLRequest

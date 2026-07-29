@@ -31,9 +31,46 @@ final class RemoteProtocolRoundTripTests: XCTestCase {
             usesTLS: true,
             certificateFingerprintSHA256: "abc123",
             pairingToken: "pair-token",
-            expiresAtMs: 1_700_000_000_000
+            expiresAtMs: 1_700_000_000_000,
+            publicBaseURL: "https://imageall.ultrahardcore.net"
         )
         try assertRoundTrip(original)
+    }
+
+    func testPublicEndpointNormalizationAcceptsOnlyDedicatedHTTPSRoot() {
+        XCTAssertEqual(
+            RemotePublicEndpoint.normalizedHTTPSBaseURL(
+                " HTTPS://ImageAll.UltraHardcore.Net:443/ "
+            ),
+            "https://imageall.ultrahardcore.net"
+        )
+        XCTAssertNil(RemotePublicEndpoint.normalizedHTTPSBaseURL("http://imageall.example.com"))
+        XCTAssertNil(RemotePublicEndpoint.normalizedHTTPSBaseURL("https://user@example.com"))
+        XCTAssertNil(RemotePublicEndpoint.normalizedHTTPSBaseURL("https://example.com/api"))
+        XCTAssertNil(RemotePublicEndpoint.normalizedHTTPSBaseURL("https://127.0.0.1"))
+        XCTAssertNil(RemotePublicEndpoint.normalizedHTTPSBaseURL("https://[::1]"))
+        XCTAssertNil(RemotePublicEndpoint.normalizedHTTPSBaseURL("https://example.com:8443"))
+    }
+
+    func testPairingOfferWithoutPublicEndpointRemainsDecodable() throws {
+        let payload = Data(
+            """
+            {
+              "hostID":"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+              "hostDisplayName":"Legacy Host",
+              "listenPort":8787,
+              "usesTLS":true,
+              "certificateFingerprintSHA256":"abc123",
+              "pairingToken":"pair-token",
+              "expiresAtMs":1700000000000,
+              "protocolVersion":1
+            }
+            """.utf8
+        )
+
+        let offer = try JSONDecoder().decode(RemotePairingOffer.self, from: payload)
+
+        XCTAssertNil(offer.publicBaseURL)
     }
 
     func testRemoteEventRoundTrip() throws {

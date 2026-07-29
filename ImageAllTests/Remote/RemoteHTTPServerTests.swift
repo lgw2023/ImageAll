@@ -144,6 +144,8 @@ final class RemoteHTTPServerTests: XCTestCase {
 
         let http = try XCTUnwrap(response as? HTTPURLResponse)
         XCTAssertEqual(http.statusCode, 401)
+        XCTAssertEqual(http.value(forHTTPHeaderField: "Cache-Control"), "no-store")
+        XCTAssertEqual(http.value(forHTTPHeaderField: "Pragma"), "no-cache")
         let error = try JSONDecoder().decode(RemoteAPIError.self, from: data)
         XCTAssertEqual(error.code, .unauthorized)
     }

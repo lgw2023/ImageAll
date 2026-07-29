@@ -92,6 +92,41 @@ final class RemotePairingPayloadDecoderTests: XCTestCase {
         XCTAssertEqual(decoded.certificateFingerprintSHA256, fingerprint)
     }
 
+    func testAcceptsPublicHTTPSRootEndpoint() throws {
+        let payload = try XCTUnwrap(
+            String(
+                data: JSONEncoder().encode(
+                    makeOffer(publicBaseURL: "https://imageall.ultrahardcore.net")
+                ),
+                encoding: .utf8
+            )
+        )
+
+        let decoded = try RemotePairingPayloadDecoder.decode(payload, nowMs: 1_000)
+
+        XCTAssertEqual(decoded.publicBaseURL, "https://imageall.ultrahardcore.net")
+    }
+
+    func testRejectsNonHTTPSOrPathScopedPublicEndpoint() throws {
+        for invalid in [
+            "http://imageall.example.com",
+            "https://imageall.example.com/api",
+            "https://127.0.0.1",
+        ] {
+            let payload = try XCTUnwrap(
+                String(
+                    data: JSONEncoder().encode(makeOffer(publicBaseURL: invalid)),
+                    encoding: .utf8
+                )
+            )
+            XCTAssertThrowsError(
+                try RemotePairingPayloadDecoder.decode(payload, nowMs: 1_000)
+            ) { error in
+                XCTAssertEqual(error as? RemotePairingPayloadError, .invalidPublicBaseURL)
+            }
+        }
+    }
+
     func testRejectsMalformedPayload() {
         XCTAssertThrowsError(
             try RemotePairingPayloadDecoder.decode("not json", nowMs: 1_000)
@@ -103,7 +138,8 @@ final class RemotePairingPayloadDecoderTests: XCTestCase {
     private func makeOffer(
         certificateFingerprint: String = String(repeating: "ab", count: 32),
         expiresAtMs: Int64 = 2_000,
-        protocolVersion: Int = RemoteProtocolVersion.current
+        protocolVersion: Int = RemoteProtocolVersion.current,
+        publicBaseURL: String? = nil
     ) -> RemotePairingOffer {
         RemotePairingOffer(
             hostID: hostID,
@@ -113,7 +149,8 @@ final class RemotePairingPayloadDecoderTests: XCTestCase {
             certificateFingerprintSHA256: certificateFingerprint,
             pairingToken: "pair-token",
             expiresAtMs: expiresAtMs,
-            protocolVersion: protocolVersion
+            protocolVersion: protocolVersion,
+            publicBaseURL: publicBaseURL
         )
     }
 }
@@ -176,9 +213,50 @@ final class RemoteSessionIdentityValidatorTests: XCTestCase {
         )
     }
 
+    func testAcceptsMatchingPublicEndpoint() throws {
+        XCTAssertNoThrow(
+            try RemoteSessionIdentityValidator.validate(
+                makeTokens(publicBaseURL: "https://imageall.ultrahardcore.net"),
+                expectedHostID: expectedHostID,
+                expectedUsesTLS: true,
+                expectedCertificateFingerprintSHA256: expectedFingerprint,
+                expectedPublicBaseURL: "HTTPS://IMAGEALL.ULTRAHARDCORE.NET/"
+            )
+        )
+    }
+
+    func testRejectsPublicEndpointChangeDuringRefresh() {
+        XCTAssertThrowsError(
+            try RemoteSessionIdentityValidator.validate(
+                makeTokens(publicBaseURL: "https://other.example.com"),
+                expectedHostID: expectedHostID,
+                expectedUsesTLS: true,
+                expectedCertificateFingerprintSHA256: expectedFingerprint,
+                expectedPublicBaseURL: "https://imageall.ultrahardcore.net"
+            )
+        ) { error in
+            XCTAssertEqual(error as? RemoteSessionIdentityError, .publicEndpointMismatch)
+        }
+    }
+
+    func testRejectsInvalidExpectedPublicEndpointInsteadOfTreatingItAsLocal() {
+        XCTAssertThrowsError(
+            try RemoteSessionIdentityValidator.validate(
+                makeTokens(),
+                expectedHostID: expectedHostID,
+                expectedUsesTLS: true,
+                expectedCertificateFingerprintSHA256: expectedFingerprint,
+                expectedPublicBaseURL: "http://imageall.example.com"
+            )
+        ) { error in
+            XCTAssertEqual(error as? RemoteSessionIdentityError, .publicEndpointMismatch)
+        }
+    }
+
     private func makeTokens(
         hostID: UUID? = nil,
-        certificateFingerprint: String? = nil
+        certificateFingerprint: String? = nil,
+        publicBaseURL: String? = nil
     ) -> RemoteSessionTokens {
         RemoteSessionTokens(
             deviceID: UUID(uuidString: "dddddddd-dddd-dddd-dddd-dddddddddddd")!,
@@ -188,7 +266,8 @@ final class RemoteSessionIdentityValidatorTests: XCTestCase {
             refreshToken: "refresh",
             certificateFingerprintSHA256: certificateFingerprint ?? expectedFingerprint,
             usesTLS: true,
-            listenPort: 8787
+            listenPort: 8787,
+            publicBaseURL: publicBaseURL
         )
     }
 }

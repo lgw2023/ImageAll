@@ -12,6 +12,7 @@ enum RemoteHostProcessHolder {
     private static let enabledKey = "imageall.remoteHost.enabled"
     private static let legacyDebugTokenKey = "imageall.remoteHost.accessToken"
     private static let portKey = "imageall.remoteHost.port"
+    static let publicBaseURLKey = "imageall.remoteHost.publicBaseURL"
     private static let state = State()
 
     private actor State {
@@ -64,6 +65,7 @@ enum RemoteHostProcessHolder {
         let configuredPort = defaults.object(forKey: portKey) as? Int
             ?? Int(RemoteHTTPServer.defaultPort)
         let port = UInt16(exactly: configuredPort) ?? RemoteHTTPServer.defaultPort
+        let publicBaseURL = configuredPublicBaseURL(defaults: defaults)
         let legacyDebugToken = existingOrCreateLegacyDebugToken(defaults: defaults)
 
         let hostContext = RemotePairingStore.HostContext(
@@ -71,7 +73,8 @@ enum RemoteHostProcessHolder {
             hostDisplayName: RemoteHTTPServer.defaultAdvertisementName(),
             listenPort: Int(port),
             usesTLS: identity.usesTLS,
-            certificateFingerprintSHA256: identity.certificateFingerprintSHA256
+            certificateFingerprintSHA256: identity.certificateFingerprintSHA256,
+            publicBaseURL: publicBaseURL
         )
         let pairingStore = RemotePairingStore(
             hostContext: hostContext,
@@ -110,7 +113,7 @@ enum RemoteHostProcessHolder {
                     identity: identity
                 )
                 logger.info(
-                    "Remote host ready on port \(port, privacy: .public); tls=\(identity.usesTLS, privacy: .public)"
+                    "Remote host ready on port \(port, privacy: .public); tls=\(identity.usesTLS, privacy: .public); public=\(publicBaseURL != nil, privacy: .public)"
                 )
             } catch {
                 logger.error("Remote host failed to start: \(String(describing: error), privacy: .public)")
@@ -131,6 +134,15 @@ enum RemoteHostProcessHolder {
 #else
         nil
 #endif
+    }
+
+    static func configuredPublicBaseURL(
+        defaults: UserDefaults = .standard,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> String? {
+        let raw = environment["IMAGEALL_REMOTE_PUBLIC_BASE_URL"]
+            ?? defaults.string(forKey: publicBaseURLKey)
+        return RemotePublicEndpoint.normalizedHTTPSBaseURL(raw)
     }
 
     // MARK: - Mac UI surface (Debug/Settings panel)

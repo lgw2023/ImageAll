@@ -9,6 +9,7 @@ public struct RemotePairingOffer: Codable, Sendable, Equatable {
     public let pairingToken: String
     public let expiresAtMs: Int64
     public let protocolVersion: Int
+    public let publicBaseURL: String?
 
     public init(
         hostID: UUID,
@@ -18,7 +19,8 @@ public struct RemotePairingOffer: Codable, Sendable, Equatable {
         certificateFingerprintSHA256: String,
         pairingToken: String,
         expiresAtMs: Int64,
-        protocolVersion: Int = RemoteProtocolVersion.current
+        protocolVersion: Int = RemoteProtocolVersion.current,
+        publicBaseURL: String? = nil
     ) {
         self.hostID = hostID
         self.hostDisplayName = hostDisplayName
@@ -28,6 +30,7 @@ public struct RemotePairingOffer: Codable, Sendable, Equatable {
         self.pairingToken = pairingToken
         self.expiresAtMs = expiresAtMs
         self.protocolVersion = protocolVersion
+        self.publicBaseURL = publicBaseURL
     }
 }
 
@@ -52,6 +55,7 @@ public struct RemoteSessionTokens: Codable, Sendable, Equatable {
     public let certificateFingerprintSHA256: String
     public let usesTLS: Bool
     public let listenPort: Int
+    public let publicBaseURL: String?
 
     public init(
         deviceID: UUID,
@@ -61,7 +65,8 @@ public struct RemoteSessionTokens: Codable, Sendable, Equatable {
         refreshToken: String,
         certificateFingerprintSHA256: String,
         usesTLS: Bool,
-        listenPort: Int
+        listenPort: Int,
+        publicBaseURL: String? = nil
     ) {
         self.deviceID = deviceID
         self.hostID = hostID
@@ -71,6 +76,7 @@ public struct RemoteSessionTokens: Codable, Sendable, Equatable {
         self.certificateFingerprintSHA256 = certificateFingerprintSHA256
         self.usesTLS = usesTLS
         self.listenPort = listenPort
+        self.publicBaseURL = publicBaseURL
     }
 }
 

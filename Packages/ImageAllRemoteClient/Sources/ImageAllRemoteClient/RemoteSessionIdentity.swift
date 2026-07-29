@@ -42,6 +42,7 @@ public enum RemoteSessionIdentityError: Error, Equatable, Sendable {
     case tlsModeMismatch
     case tlsFingerprintMismatch
     case invalidPort
+    case publicEndpointMismatch
 }
 
 extension RemoteSessionIdentityError: LocalizedError {
@@ -55,6 +56,8 @@ extension RemoteSessionIdentityError: LocalizedError {
             "Host TLS 证书指纹已变化，请在 Mac 上确认后重新扫码配对"
         case .invalidPort:
             "Host 会话端口无效"
+        case .publicEndpointMismatch:
+            "Host 公网地址与配对会话不一致，请重新扫码配对"
         }
     }
 }
@@ -64,7 +67,8 @@ public enum RemoteSessionIdentityValidator {
         _ tokens: RemoteSessionTokens,
         expectedHostID: UUID?,
         expectedUsesTLS: Bool,
-        expectedCertificateFingerprintSHA256: String
+        expectedCertificateFingerprintSHA256: String,
+        expectedPublicBaseURL: String? = nil
     ) throws {
         if let expectedHostID, tokens.hostID != expectedHostID {
             throw RemoteSessionIdentityError.hostIdentityMismatch
@@ -74,6 +78,18 @@ public enum RemoteSessionIdentityValidator {
         }
         guard (1 ..< 65_536).contains(tokens.listenPort) else {
             throw RemoteSessionIdentityError.invalidPort
+        }
+        let expectedPublicURL = expectedPublicBaseURL.flatMap {
+            RemotePublicEndpoint.normalizedHTTPSBaseURL($0)
+        }
+        let actualPublicURL = tokens.publicBaseURL.flatMap {
+            RemotePublicEndpoint.normalizedHTTPSBaseURL($0)
+        }
+        guard (expectedPublicBaseURL == nil || expectedPublicURL != nil),
+              expectedPublicURL == actualPublicURL,
+              (tokens.publicBaseURL == nil || actualPublicURL != nil)
+        else {
+            throw RemoteSessionIdentityError.publicEndpointMismatch
         }
         if expectedUsesTLS {
             guard let expectedFingerprint = RemoteTLSFingerprint.normalizedSHA256(
