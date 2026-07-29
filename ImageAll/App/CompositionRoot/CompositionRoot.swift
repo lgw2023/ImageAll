@@ -17,9 +17,31 @@ struct CompositionRoot {
         )
     }
 
-    static func makeProductionDependencies() -> CatalogBootstrapDependencies {
-        CatalogBootstrapDependencies(
-            pathsResolver: FoundationAppPathsResolver(),
+    static func makeProductionDependencies(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> CatalogBootstrapDependencies {
+        let pathsResolver: any AppPathsResolving
+#if DEBUG
+        if let developmentRoot = environment["IMAGEALL_DEVELOPMENT_ROOT"] {
+            let trimmedRoot = developmentRoot.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmedRoot.isEmpty,
+               NSString(string: trimmedRoot).isAbsolutePath,
+               URL(fileURLWithPath: trimmedRoot, isDirectory: true).standardizedFileURL.path != "/"
+            {
+                pathsResolver = TemporaryAppPathsResolver(
+                    rootURL: URL(fileURLWithPath: trimmedRoot, isDirectory: true)
+                )
+            } else {
+                pathsResolver = RejectedDevelopmentAppPathsResolver()
+            }
+        } else {
+            pathsResolver = FoundationAppPathsResolver()
+        }
+#else
+        pathsResolver = FoundationAppPathsResolver()
+#endif
+        return CatalogBootstrapDependencies(
+            pathsResolver: pathsResolver,
             appVersionProvider: { BundleAppVersionProvider().currentVersion() }
         )
     }
@@ -489,3 +511,15 @@ struct CompositionRoot {
         nil
     }
 }
+
+#if DEBUG
+private struct RejectedDevelopmentAppPathsResolver: AppPathsResolving {
+    func resolve() throws -> AppPaths {
+        throw AppPathsError.resolutionFailed
+    }
+
+    func ensureRequiredDirectories(for _: AppPaths) throws {
+        throw AppPathsError.resolutionFailed
+    }
+}
+#endif

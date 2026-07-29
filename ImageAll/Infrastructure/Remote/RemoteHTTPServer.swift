@@ -36,6 +36,7 @@ actor RemoteHTTPServer {
     private let secIdentity: SecIdentity?
     private let port: UInt16
     private let advertisementName: String
+    private let hostID: UUID?
     private let logger = Logger(subsystem: "com.gwlee.ImageAll", category: "RemoteHTTPServer")
     private var listener: NWListener?
     private var webSocketConnections: [ObjectIdentifier: NWConnection] = [:]
@@ -50,7 +51,8 @@ actor RemoteHTTPServer {
         eventBroker: RemoteEventBroker,
         secIdentity: SecIdentity? = nil,
         port: UInt16 = RemoteHTTPServer.defaultPort,
-        advertisementName: String = RemoteHTTPServer.defaultAdvertisementName()
+        advertisementName: String = RemoteHTTPServer.defaultAdvertisementName(),
+        hostID: UUID? = nil
     ) {
         self.facade = facade
         self.pairingStore = pairingStore
@@ -58,6 +60,7 @@ actor RemoteHTTPServer {
         self.secIdentity = secIdentity
         self.port = port
         self.advertisementName = advertisementName
+        self.hostID = hostID
     }
 
     var listenPort: Int { Int(port) }
@@ -71,7 +74,7 @@ actor RemoteHTTPServer {
         guard listener == nil else { return }
         let parameters = Self.makeListenerParameters(secIdentity: secIdentity)
         let listener = try NWListener(using: parameters, on: NWEndpoint.Port(rawValue: port)!)
-        listener.service = Self.makeBonjourService(name: advertisementName)
+        listener.service = Self.makeBonjourService(name: advertisementName, hostID: hostID)
         listener.newConnectionHandler = { [weak self] connection in
             Task { await self?.handle(connection: connection) }
         }
@@ -102,9 +105,9 @@ actor RemoteHTTPServer {
         return host.replacingOccurrences(of: ".local", with: "")
     }
 
-    static func makeBonjourService(name: String) -> NWListener.Service {
+    static func makeBonjourService(name: String, hostID: UUID? = nil) -> NWListener.Service {
         var txt = NWTXTRecord()
-        for (key, value) in RemoteBonjour.txtRecord() {
+        for (key, value) in RemoteBonjour.txtRecord(hostID: hostID) {
             txt[key] = value
         }
         return NWListener.Service(
@@ -609,6 +612,8 @@ actor RemoteHTTPServer {
         }()
         var header = "HTTP/1.1 \(status) \(reason)\r\n"
         header += "Content-Type: \(contentType)\r\n"
+        header += "Cache-Control: no-store\r\n"
+        header += "Pragma: no-cache\r\n"
         header += "Content-Length: \(body.count)\r\n"
         header += "Connection: close\r\n\r\n"
         var payload = Data(header.utf8)

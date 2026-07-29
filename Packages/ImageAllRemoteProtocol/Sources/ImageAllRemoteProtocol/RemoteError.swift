@@ -18,6 +18,10 @@ public struct RemoteAPIError: Codable, Sendable, Equatable, Error {
     }
 }
 
+extension RemoteAPIError: LocalizedError {
+    public var errorDescription: String? { message }
+}
+
 public enum RemoteHTTPPaths {
     public static let capabilities = "/v1/capabilities"
     public static let sources = "/v1/sources"

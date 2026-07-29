@@ -1,10 +1,60 @@
 import Foundation
 import ImageAllRemoteProtocol
+import Network
 import XCTest
 @testable import ImageAll
 
 final class RemoteHTTPServerTests: XCTestCase {
     private static let legacyDebugToken = "secret-token"
+
+    func testRemoteHostDefaultsEnabledUntilUserTurnsItOff() {
+        let suiteName = "RemoteHTTPServerTests.RemoteHostDefaults.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.removePersistentDomain(forName: suiteName)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        XCTAssertTrue(
+            RemoteHostProcessHolder.isEnabled(defaults: defaults, environment: [:])
+        )
+
+        defaults.set(false, forKey: RemoteHostProcessHolder.enabledKey)
+        XCTAssertFalse(
+            RemoteHostProcessHolder.isEnabled(defaults: defaults, environment: [:])
+        )
+
+        defaults.set(true, forKey: RemoteHostProcessHolder.enabledKey)
+        XCTAssertTrue(
+            RemoteHostProcessHolder.isEnabled(defaults: defaults, environment: [:])
+        )
+    }
+
+    func testRemoteHostEnvironmentProvidesDevelopmentDefaultWithoutOverridingUserSwitch() {
+        let suiteName = "RemoteHTTPServerTests.RemoteHostEnvironment.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.removePersistentDomain(forName: suiteName)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        XCTAssertTrue(
+            RemoteHostProcessHolder.isEnabled(
+                defaults: defaults,
+                environment: ["IMAGEALL_REMOTE_HOST": "1"]
+            )
+        )
+        XCTAssertFalse(
+            RemoteHostProcessHolder.isEnabled(
+                defaults: defaults,
+                environment: ["IMAGEALL_REMOTE_HOST": "0"]
+            )
+        )
+
+        defaults.set(false, forKey: RemoteHostProcessHolder.enabledKey)
+        XCTAssertFalse(
+            RemoteHostProcessHolder.isEnabled(
+                defaults: defaults,
+                environment: ["IMAGEALL_REMOTE_HOST": "1"]
+            )
+        )
+    }
 
     private func makeIdempotencyStore() -> RemoteIdempotencyStore {
         RemoteIdempotencyStore(storageURL: tempStorageURL(name: "idempotency.json"))
@@ -143,6 +193,8 @@ final class RemoteHTTPServerTests: XCTestCase {
 
         let http = try XCTUnwrap(response as? HTTPURLResponse)
         XCTAssertEqual(http.statusCode, 401)
+        XCTAssertEqual(http.value(forHTTPHeaderField: "Cache-Control"), "no-store")
+        XCTAssertEqual(http.value(forHTTPHeaderField: "Pragma"), "no-cache")
         let error = try JSONDecoder().decode(RemoteAPIError.self, from: data)
         XCTAssertEqual(error.code, .unauthorized)
     }
@@ -168,6 +220,7 @@ final class RemoteHTTPServerTests: XCTestCase {
 
     func testBonjourServiceIsAdvertisedOnStart() async throws {
         let port = UInt16.random(in: 19_000...29_000)
+        let hostID = UUID(uuidString: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")!
         let facade = RemoteCatalogFacade(
             catalog: RemoteHTTPServerTestCatalog(),
             review: EmptyPersonalizationReviewPort(),
@@ -181,7 +234,8 @@ final class RemoteHTTPServerTests: XCTestCase {
             eventBroker: RemoteEventBroker(),
             secIdentity: nil,
             port: port,
-            advertisementName: "ImageAll-Test-Host"
+            advertisementName: "ImageAll-Test-Host",
+            hostID: hostID
         )
         try await server.start()
         try await Task.sleep(nanoseconds: 100_000_000)
@@ -189,9 +243,17 @@ final class RemoteHTTPServerTests: XCTestCase {
         await server.stop()
         XCTAssertEqual(serviceType, RemoteBonjour.serviceType)
 
-        let service = RemoteHTTPServer.makeBonjourService(name: "ImageAll-Test-Host")
+        let service = RemoteHTTPServer.makeBonjourService(
+            name: "ImageAll-Test-Host",
+            hostID: hostID
+        )
         XCTAssertEqual(service.type, RemoteBonjour.serviceType)
         XCTAssertEqual(service.name, "ImageAll-Test-Host")
+        let txtRecord = try XCTUnwrap(service.txtRecordObject)
+        XCTAssertEqual(
+            txtRecord.dictionary[RemoteBonjour.TXTKey.hostID],
+            hostID.uuidString
+        )
     }
 
     func testPairingCompleteRequiresNoBearerTokenAndIssuesSessionTokens() async throws {

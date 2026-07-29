@@ -10,13 +10,17 @@ final class RemotePairingStoreTests: XCTestCase {
             .appendingPathComponent("pairing.json")
     }
 
-    private func makeContext(hostID: UUID = UUID()) -> RemotePairingStore.HostContext {
+    private func makeContext(
+        hostID: UUID = UUID(),
+        publicBaseURL: String? = nil
+    ) -> RemotePairingStore.HostContext {
         RemotePairingStore.HostContext(
             hostID: hostID,
             hostDisplayName: "Test Host",
             listenPort: 8787,
             usesTLS: true,
-            certificateFingerprintSHA256: "fingerprint"
+            certificateFingerprintSHA256: "fingerprint",
+            publicBaseURL: publicBaseURL
         )
     }
 
@@ -113,6 +117,33 @@ final class RemotePairingStoreTests: XCTestCase {
         } catch let error as RemotePairingStore.PairingError {
             XCTAssertEqual(error, .invalidRefreshToken)
         }
+    }
+
+    func testPublicEndpointIsBoundIntoOfferAndRotatedSession() async throws {
+        let publicURL = "https://imageall.ultrahardcore.net"
+        let store = RemotePairingStore(
+            hostContext: makeContext(publicBaseURL: publicURL),
+            storageURL: tempStorageURL()
+        )
+        let offer = await store.issueOffer()
+        XCTAssertEqual(offer.publicBaseURL, publicURL)
+
+        let initial = try await store.completePairing(
+            RemotePairingCompleteRequest(
+                pairingToken: offer.pairingToken,
+                deviceName: "iPhone",
+                devicePublicKeySPKI_SHA256: "pubkey-hash"
+            )
+        )
+        XCTAssertEqual(initial.publicBaseURL, publicURL)
+
+        let refreshed = try await store.refresh(
+            RemoteTokenRefreshRequest(
+                deviceID: initial.deviceID,
+                refreshToken: initial.refreshToken
+            )
+        )
+        XCTAssertEqual(refreshed.publicBaseURL, publicURL)
     }
 
     func testRevokeInvalidatesAccessTokenAndRemovesDevice() async throws {

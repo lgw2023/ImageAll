@@ -10,9 +10,9 @@ public enum RemotePinnedURLSessionFactory {
         certificateFingerprintSHA256: String,
         timeout: TimeInterval = 15
     ) -> URLSession {
-        let normalized = certificateFingerprintSHA256
-            .replacingOccurrences(of: ":", with: "")
-            .lowercased()
+        let normalized = RemoteTLSFingerprint.normalizedSHA256(
+            certificateFingerprintSHA256
+        ) ?? ""
         let delegate = PinningDelegate(expectedFingerprint: normalized)
         let config = URLSessionConfiguration.ephemeral
         config.timeoutIntervalForRequest = timeout

@@ -21,6 +21,9 @@ let package = Package(
             name: "ImageAllRemoteClient",
             dependencies: [
                 .product(name: "ImageAllRemoteProtocol", package: "ImageAllRemoteProtocol"),
+            ],
+            linkerSettings: [
+                .linkedFramework("Security"),
             ]
         ),
         .testTarget(

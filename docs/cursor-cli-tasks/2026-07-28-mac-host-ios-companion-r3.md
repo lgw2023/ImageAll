@@ -31,3 +31,8 @@ R3 完成辅助闭环；停止于 R4 Relay。
 - Xcode Remote 套件：`TEST SUCCEEDED`（Facade/HTTP/Pairing/Idempotency/Identity 全过）
 - Mac Debug + iOS Simulator Debug：`BUILD SUCCEEDED`
 - 未 push；无关草稿未纳入提交
+
+## 后续打磨
+
+- 2026-07-29 的 Mobile 预览、审核、扫码、任务动作与真机 smoke 清单见
+  `docs/cursor-cli-tasks/2026-07-29-mac-host-ios-companion-r3-polish.md`。
