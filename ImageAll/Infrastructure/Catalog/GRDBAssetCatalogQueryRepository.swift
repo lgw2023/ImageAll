@@ -141,7 +141,9 @@ struct GRDBAssetCatalogQueryRepository: AssetCatalogQueryPort, Sendable {
                 FROM asset
                 INNER JOIN source ON source.id = asset.source_id
                 LEFT JOIN file_fingerprint ON file_fingerprint.asset_id = asset.id
-                WHERE asset.id = ? AND asset.locator_state = 'current'
+                WHERE asset.id = ?
+                    AND asset.locator_state = 'current'
+                    AND \(Self.nonBrowseableRecycleEntryExclusionSQL)
                 """,
                 arguments: [CatalogQuerySQLHelpers.lowercaseUUID(assetID)]
             ) else {
@@ -442,6 +444,10 @@ struct GRDBAssetCatalogQueryRepository: AssetCatalogQueryPort, Sendable {
             arguments += [AssetAvailability.recycled.rawValue]
         }
 
+        if !filter.availabilities.contains(.recycled) {
+            clauses.append(Self.nonBrowseableRecycleEntryExclusionSQL)
+        }
+
         if !filter.mediaTypes.isEmpty {
             let placeholders = Array(repeating: "?", count: filter.mediaTypes.count).joined(separator: ", ")
             clauses.append("asset.media_type IN (\(placeholders))")
@@ -605,6 +611,24 @@ struct GRDBAssetCatalogQueryRepository: AssetCatalogQueryPort, Sendable {
 
         return clauses.joined(separator: " AND ")
     }
+
+    /// Recycle lifecycle state is authoritative for browse visibility.
+    ///
+    /// Photos reconciliation can legitimately change a recycled asset's
+    /// `availability` from `recycled` to `missing` after PhotoKit stops returning
+    /// it. Materializing this uncorrelated subquery once per catalog request keeps
+    /// those records out of normal pages across relaunches without relying on an
+    /// in-memory hidden-ID set or scanning `recycle_entry` once per asset row.
+    private static let nonBrowseableRecycleEntryExclusionSQL = """
+    asset.id NOT IN (
+        SELECT recycle_entry.asset_id
+        FROM recycle_entry
+        WHERE recycle_entry.asset_id IS NOT NULL
+          AND recycle_entry.state IN (
+              'pending', 'recycled', 'restoring', 'purging', 'purged'
+          )
+    )
+    """
 }
 
 private extension Row {

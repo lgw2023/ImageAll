@@ -53,6 +53,77 @@ final class AssetCatalogQueryTests: XCTestCase {
         XCTAssertEqual(recyclePage.items.map(\.assetID), [fixture.ids.assetNewest])
     }
 
+    func testPhotosRecycleEntryRemainsHiddenAfterReconcileMarksAssetMissingAndRepositoryReloads() throws {
+        let fixture = try CatalogQueryTestSupport.openQueryDatabase()
+        let recycleEntryID = UUID(uuidString: "70000000-0000-4000-8000-000000000001")!
+        try fixture.database.pool.write { db in
+            try db.execute(
+                sql: """
+                UPDATE asset
+                SET availability = 'missing', content_revision = content_revision + 1
+                WHERE id = ?
+                """,
+                arguments: [fixture.ids.assetAuthRequired.uuidString.lowercased()]
+            )
+            try db.execute(
+                sql: """
+                INSERT INTO recycle_entry (
+                    id, asset_id, source_kind, trashed_at_ms, purge_after_ms, state,
+                    quarantine_relative_path, original_relative_path, photos_local_identifier,
+                    error_code, created_at_ms, updated_at_ms
+                ) VALUES (?, ?, 'photos', 1, 2, 'recycled', NULL, ?, ?, NULL, 1, 1)
+                """,
+                arguments: [
+                    recycleEntryID.uuidString.lowercased(),
+                    fixture.ids.assetAuthRequired.uuidString.lowercased(),
+                    "AUTH-LOCAL-ID",
+                    "AUTH-LOCAL-ID",
+                ]
+            )
+        }
+
+        // A fresh repository models reopening ImageAll after Photos reconciliation.
+        let reloadedQuery = GRDBAssetCatalogQueryRepository(database: fixture.database)
+        let defaultPage = try reloadedQuery.fetchAssetPage(
+            AssetPageRequest(filter: AssetPageFilter(), sort: .newest, cursor: nil, limit: 200)
+        )
+        XCTAssertFalse(defaultPage.items.contains { $0.assetID == fixture.ids.assetAuthRequired })
+
+        let missingPage = try reloadedQuery.fetchAssetPage(
+            AssetPageRequest(
+                filter: AssetPageFilter(availabilities: [.missing]),
+                sort: .newest,
+                cursor: nil,
+                limit: 200
+            )
+        )
+        XCTAssertFalse(missingPage.items.contains { $0.assetID == fixture.ids.assetAuthRequired })
+        XCTAssertThrowsError(
+            try reloadedQuery.fetchInspectorDetail(assetID: fixture.ids.assetAuthRequired)
+        ) { error in
+            XCTAssertEqual(error as? CatalogQueryError, .notFound)
+        }
+
+        try fixture.database.pool.write { db in
+            try db.execute(
+                sql: "UPDATE recycle_entry SET state = 'restored' WHERE id = ?",
+                arguments: [recycleEntryID.uuidString.lowercased()]
+            )
+            try db.execute(
+                sql: "UPDATE asset SET availability = 'available' WHERE id = ?",
+                arguments: [fixture.ids.assetAuthRequired.uuidString.lowercased()]
+            )
+        }
+
+        let restoredPage = try reloadedQuery.fetchAssetPage(
+            AssetPageRequest(filter: AssetPageFilter(), sort: .newest, cursor: nil, limit: 200)
+        )
+        XCTAssertTrue(restoredPage.items.contains { $0.assetID == fixture.ids.assetAuthRequired })
+        XCTAssertNoThrow(
+            try reloadedQuery.fetchInspectorDetail(assetID: fixture.ids.assetAuthRequired)
+        )
+    }
+
     func testAllSourceStatesReturnCurrentAssets() throws {
         let fixture = try CatalogQueryTestSupport.openQueryDatabase()
         let page = try fixture.query.fetchAssetPage(
