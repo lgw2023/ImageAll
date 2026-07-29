@@ -11,11 +11,12 @@ final class DerivedImageContractTests: XCTestCase {
         let (service, _) = env.makeService()
         try await env.insertSyntheticCacheEntry(id: UUID(), variant: .gridSmall, byteSize: 100)
         try await env.insertSyntheticCacheEntry(id: UUID(), variant: .gridRegular, byteSize: 200)
-        try await env.insertSyntheticCacheEntry(id: UUID(), variant: .preview, byteSize: 300)
+        try await env.insertSyntheticCacheEntry(id: UUID(), variant: .gridOriginal, byteSize: 300)
+        try await env.insertSyntheticCacheEntry(id: UUID(), variant: .preview, byteSize: 400)
 
         let usage = try service.cacheUsage()
 
-        XCTAssertEqual(usage, DerivedImageCacheUsage(entryCount: 3, registeredBytes: 600))
+        XCTAssertEqual(usage, DerivedImageCacheUsage(entryCount: 4, registeredBytes: 1_000))
     }
 
     func testClearInvalidatesPreviewCacheAndPreservesCatalogFacts() async throws {
@@ -38,7 +39,7 @@ final class DerivedImageContractTests: XCTestCase {
 
         let result = try await service.clearCache()
 
-        XCTAssertEqual(result.removedEntries, 3)
+        XCTAssertEqual(result.removedEntries, 4)
         XCTAssertGreaterThan(result.registeredBytesInvalidated, 0)
         XCTAssertFalse(result.partialReclaim)
         XCTAssertEqual(try service.cacheUsage(), .zero)
@@ -544,6 +545,57 @@ final class DerivedImageContractTests: XCTestCase {
 }
 
 extension DerivedImageContractTests {
+    func testOriginalAspectPhotosThumbnailPersistsAcrossServiceRecreation() async throws {
+        let env = try DerivedImageTestSupport.TempEnvironment(
+            label: "photos-original-aspect-thumbnail"
+        )
+        defer { env.cleanup() }
+        try await seedPhotosAsset(in: env)
+        typealias Fixtures = DerivedImageTestSupport.DerivedImageRenderingTestFixtures
+        let sourceBytes = try Fixtures.jpegData(
+            from: Fixtures.makeSolidImage(
+                width: 1_000,
+                height: 500,
+                rgba: Fixtures.RGBA(r: 50, g: 100, b: 150, a: 255)
+            )
+        )
+        let (service, _) = env.makeService(
+            volumeReader: DerivedImageTestSupport.generousVolume
+        )
+
+        let stored = try await service.storePhotoOriginalAspectThumbnail(
+            assetID: env.assetID,
+            sourceBytes: sourceBytes
+        )
+        XCTAssertFalse(stored.isEmpty)
+        XCTAssertEqual(
+            try service.loadPhotoOriginalAspectThumbnail(assetID: env.assetID),
+            stored
+        )
+
+        let (reopenedService, _) = env.makeService(
+            volumeReader: DerivedImageTestSupport.generousVolume
+        )
+        XCTAssertEqual(
+            try reopenedService.loadPhotoOriginalAspectThumbnail(assetID: env.assetID),
+            stored
+        )
+        let dimensions = try env.database.pool.read { db in
+            try Row.fetchOne(
+                db,
+                sql: """
+                SELECT variant, pixel_width, pixel_height
+                FROM derived_image_cache_entry
+                WHERE asset_id = ? AND variant = 'gridOriginal'
+                """,
+                arguments: [env.assetID.uuidString.lowercased()]
+            )
+        }
+        XCTAssertEqual(dimensions?["variant"] as String?, "gridOriginal")
+        XCTAssertEqual(dimensions?["pixel_width"] as Int?, 512)
+        XCTAssertEqual(dimensions?["pixel_height"] as Int?, 256)
+    }
+
     func testLocalPhotosThumbnailPersistsInDerivedCacheAcrossServiceRecreation() async throws {
         let env = try DerivedImageTestSupport.TempEnvironment(label: "photos-local-thumbnail")
         defer { env.cleanup() }

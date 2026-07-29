@@ -332,6 +332,14 @@ struct ProductionLibraryWorkspaceService: LibraryWorkspacePort, RemoteCatalogSer
         try await assetImages.load(assetID: assetID, variant: .grid)
     }
 
+    func loadOriginalAspectThumbnailIfCached(assetID: UUID) async throws -> Data? {
+        try await assetImages.loadOriginalAspectThumbnailIfCached(assetID: assetID)
+    }
+
+    func prewarmOriginalAspectThumbnail(assetID: UUID) async throws -> Data {
+        try await assetImages.prewarmOriginalAspectThumbnail(assetID: assetID)
+    }
+
     func loadPreview(assetID: UUID) async throws -> Data {
         try await assetImages.load(assetID: assetID, variant: .preview)
     }

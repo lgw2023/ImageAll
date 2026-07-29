@@ -1808,6 +1808,60 @@ final class PhotosIntegrationTests: XCTestCase {
         XCTAssertEqual(files.requestedVariants, [.preview])
     }
 
+    func testOriginalAspectFolderThumbnailIsGeneratedOnlyByExplicitPrewarm() async throws {
+        let database = try FolderAuthorizationTestSupport.makeDatabase()
+        let sourceID = UUID()
+        let assetID = UUID()
+        try await database.pool.write { db in
+            try db.execute(
+                sql: """
+                INSERT INTO source (
+                    id, kind, display_name, bookmark, state, created_at_ms, updated_at_ms
+                ) VALUES (?, 'folder', 'Fixture', ?, 'active', ?, ?)
+                """,
+                arguments: [
+                    sourceID.uuidString.lowercased(),
+                    Data([1]),
+                    DatabaseTestSupport.timestampMs,
+                    DatabaseTestSupport.timestampMs,
+                ]
+            )
+            try db.execute(
+                sql: """
+                INSERT INTO asset (
+                    id, source_id, locator_kind, relative_path, media_type, availability,
+                    record_created_at_ms, record_updated_at_ms, file_name
+                ) VALUES (?, ?, 'file', 'Landscape.jpg', 'public.jpeg', 'available', ?, ?,
+                          'Landscape.jpg')
+                """,
+                arguments: [
+                    assetID.uuidString.lowercased(),
+                    sourceID.uuidString.lowercased(),
+                    DatabaseTestSupport.timestampMs,
+                    DatabaseTestSupport.timestampMs,
+                ]
+            )
+        }
+        let files = FakeDerivedImageCache(data: Data("original-aspect-folder".utf8))
+        let loader = LibraryAssetImageLoader(
+            database: database,
+            fileImages: files,
+            photosImages: FakePhotosLibraryAccess(state: .authorized)
+        )
+
+        let uncached = try await loader.loadOriginalAspectThumbnailIfCached(assetID: assetID)
+        XCTAssertNil(uncached)
+        XCTAssertEqual(files.requestedVariants, [])
+
+        let prewarmed = try await loader.prewarmOriginalAspectThumbnail(assetID: assetID)
+        XCTAssertEqual(prewarmed, Data("original-aspect-folder".utf8))
+        XCTAssertEqual(files.requestedVariants, [.gridOriginal])
+
+        let cached = try await loader.loadOriginalAspectThumbnailIfCached(assetID: assetID)
+        XCTAssertEqual(cached, Data("original-aspect-folder".utf8))
+        XCTAssertEqual(files.requestedVariants, [.gridOriginal])
+    }
+
     func testImageLoaderDoesNotResolveHistoricalIdentifierAgainstCurrentPhotosLibrary() async throws {
         let database = try FolderAuthorizationTestSupport.makeDatabase()
         let historicalSourceID = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
@@ -1935,7 +1989,80 @@ final class PhotosIntegrationTests: XCTestCase {
         XCTAssertEqual(unavailablePhotos.requestedVariants, [])
     }
 
-    func testExplicitCloudPreviewDownloadRequiresUserActionAndReusesDownloadedCacheForPreviewAndGrid() async throws {
+    func testOriginalAspectPhotosThumbnailIsGeneratedOnlyByExplicitPrewarm() async throws {
+        let database = try FolderAuthorizationTestSupport.makeDatabase()
+        let sourceID = UUID()
+        let assetID = UUID()
+        try await database.pool.write { db in
+            try db.execute(
+                sql: """
+                INSERT INTO source (
+                    id, kind, display_name, bookmark, state, created_at_ms, updated_at_ms
+                ) VALUES (?, 'photos', 'Apple Photos', NULL, 'active', ?, ?)
+                """,
+                arguments: [
+                    sourceID.uuidString.lowercased(),
+                    DatabaseTestSupport.timestampMs,
+                    DatabaseTestSupport.timestampMs,
+                ]
+            )
+            try db.execute(
+                sql: """
+                INSERT INTO asset (
+                    id, source_id, locator_kind, photos_local_identifier,
+                    media_type, availability, record_created_at_ms, record_updated_at_ms,
+                    file_name
+                ) VALUES (?, ?, 'photos', 'photos-original-aspect', 'public.jpeg',
+                          'available', ?, ?, 'Landscape.jpg')
+                """,
+                arguments: [
+                    assetID.uuidString.lowercased(),
+                    sourceID.uuidString.lowercased(),
+                    DatabaseTestSupport.timestampMs,
+                    DatabaseTestSupport.timestampMs,
+                ]
+            )
+        }
+
+        let localBytes = Data("local-original-aspect".utf8)
+        let persistedBytes = Data("persisted-original-aspect".utf8)
+        let photos = FakePhotosLibraryAccess(state: .authorized, localImageData: localBytes)
+        let thumbnails = FakePhotoThumbnailCache(storedResult: persistedBytes)
+        let loader = LibraryAssetImageLoader(
+            database: database,
+            fileImages: FakeDerivedImageCache(data: Data()),
+            photosImages: photos,
+            photoThumbnails: thumbnails
+        )
+
+        let uncached = try await loader.loadOriginalAspectThumbnailIfCached(assetID: assetID)
+        XCTAssertNil(uncached)
+        XCTAssertEqual(photos.requestedVariants, [])
+
+        let prewarmed = try await loader.prewarmOriginalAspectThumbnail(assetID: assetID)
+        XCTAssertEqual(
+            prewarmed,
+            persistedBytes
+        )
+        XCTAssertEqual(photos.requestedVariants, [.originalAspectThumbnail])
+        XCTAssertEqual(thumbnails.storedOriginalAspectSourceBytes, [localBytes])
+
+        let unavailablePhotos = FakePhotosLibraryAccess(
+            state: .authorized,
+            localImageError: .libraryUnavailable
+        )
+        let reopened = LibraryAssetImageLoader(
+            database: database,
+            fileImages: FakeDerivedImageCache(data: Data()),
+            photosImages: unavailablePhotos,
+            photoThumbnails: thumbnails
+        )
+        let cached = try await reopened.loadOriginalAspectThumbnailIfCached(assetID: assetID)
+        XCTAssertEqual(cached, persistedBytes)
+        XCTAssertEqual(unavailablePhotos.requestedVariants, [])
+    }
+
+    func testDownloadedCloudPreviewMaterializesSquareGridButDoesNotEnableOriginalAspect() async throws {
         let database = try FolderAuthorizationTestSupport.makeDatabase()
         let sourceID = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
         let assetID = UUID(uuidString: "33333333-4444-5555-6666-777777777777")!
@@ -1970,12 +2097,16 @@ final class PhotosIntegrationTests: XCTestCase {
         )
         let cloud = FakePhotosCloudPreview(data: Data("cloud-source".utf8))
         let cache = FakeDownloadedPreviewCache(cachedData: Data("cached-preview".utf8))
+        let thumbnails = FakePhotoThumbnailCache(
+            storedResult: Data("cached-square-thumbnail".utf8)
+        )
         let loader = LibraryAssetImageLoader(
             database: database,
             fileImages: FakeDerivedImageCache(data: Data()),
             photosImages: local,
             cloudPreviews: cloud,
-            downloadedPreviews: cache
+            downloadedPreviews: cache,
+            photoThumbnails: thumbnails
         )
 
         do {
@@ -1998,7 +2129,12 @@ final class PhotosIntegrationTests: XCTestCase {
         let cachedPreview = try await loader.load(assetID: assetID, variant: .preview)
         let cachedGrid = try await loader.load(assetID: assetID, variant: .grid)
         XCTAssertEqual(cachedPreview, downloaded)
-        XCTAssertEqual(cachedGrid, downloaded)
+        XCTAssertEqual(cachedGrid, Data("cached-square-thumbnail".utf8))
+        XCTAssertEqual(thumbnails.storedSourceBytes, [downloaded])
+        let originalAspect = try await loader.loadOriginalAspectThumbnailIfCached(
+            assetID: assetID
+        )
+        XCTAssertNil(originalAspect)
         XCTAssertEqual(local.requestedVariants, [.preview])
         XCTAssertEqual(cloud.requestedLocalIdentifiers.count, 1)
     }
@@ -2577,7 +2713,9 @@ private final class FakePhotoThumbnailCache: PhotoThumbnailCachePort, @unchecked
     private let lock = NSLock()
     private let storedResult: Data
     private var cachedData: Data?
+    private var originalAspectCachedData: Data?
     private var storedSourceBytesValue: [Data] = []
+    private var storedOriginalAspectSourceBytesValue: [Data] = []
 
     init(storedResult: Data) {
         self.storedResult = storedResult
@@ -2595,8 +2733,27 @@ private final class FakePhotoThumbnailCache: PhotoThumbnailCachePort, @unchecked
         return storedResult
     }
 
+    func loadPhotoOriginalAspectThumbnail(assetID _: UUID) throws -> Data? {
+        lock.withLock { originalAspectCachedData }
+    }
+
+    func storePhotoOriginalAspectThumbnail(
+        assetID _: UUID,
+        sourceBytes: Data
+    ) async throws -> Data {
+        lock.withLock {
+            storedOriginalAspectSourceBytesValue.append(sourceBytes)
+            originalAspectCachedData = storedResult
+        }
+        return storedResult
+    }
+
     var storedSourceBytes: [Data] {
         lock.withLock { storedSourceBytesValue }
+    }
+
+    var storedOriginalAspectSourceBytes: [Data] {
+        lock.withLock { storedOriginalAspectSourceBytesValue }
     }
 }
 
@@ -2670,13 +2827,19 @@ private final class FakeDerivedImageCache: DerivedImageCachePort, @unchecked Sen
     private let lock = NSLock()
     private let data: Data
     private var variants: [DerivedImageVariant] = []
+    private var cachedOriginalAspectAssetIDs: Set<UUID> = []
 
     init(data: Data) {
         self.data = data
     }
 
     func loadOrGenerate(_ request: DerivedImageRequest) async throws -> DerivedImagePayload {
-        lock.withLock { variants.append(request.variant) }
+        lock.withLock {
+            variants.append(request.variant)
+            if request.variant == .gridOriginal {
+                cachedOriginalAspectAssetIDs.insert(request.assetID)
+            }
+        }
         return DerivedImagePayload(
             entryID: UUID(),
             assetID: request.assetID,
@@ -2685,6 +2848,26 @@ private final class FakeDerivedImageCache: DerivedImageCachePort, @unchecked Sen
             variant: request.variant,
             storageFormat: .jpeg,
             pixelWidth: 1,
+            pixelHeight: 1,
+            encodedBytes: data,
+            origin: .cacheHit
+        )
+    }
+
+    func loadCached(_ request: DerivedImageRequest) async throws -> DerivedImagePayload? {
+        let isCached = lock.withLock {
+            request.variant == .gridOriginal
+                && cachedOriginalAspectAssetIDs.contains(request.assetID)
+        }
+        guard isCached else { return nil }
+        return DerivedImagePayload(
+            entryID: UUID(),
+            assetID: request.assetID,
+            contentRevision: 1,
+            representationVersion: DerivedImageRepresentationVersion.production,
+            variant: request.variant,
+            storageFormat: .jpeg,
+            pixelWidth: 2,
             pixelHeight: 1,
             encodedBytes: data,
             origin: .cacheHit

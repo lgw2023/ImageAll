@@ -7,8 +7,9 @@ enum PhotosAuthorizationState: Equatable, Sendable {
     case restricted
 }
 
-enum PhotosImageVariant: Equatable, Sendable {
+enum PhotosImageVariant: Equatable, Hashable, Sendable {
     case grid
+    case originalAspectThumbnail
     case preview
 }
 

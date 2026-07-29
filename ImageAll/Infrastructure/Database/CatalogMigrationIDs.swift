@@ -43,6 +43,8 @@ enum CatalogMigrationID {
         "v027_partition_personalization_by_media_kind"
     static let v028PartitionSlimmingByMediaKind =
         "v028_partition_slimming_by_media_kind"
+    static let v029AddOriginalAspectThumbnailCache =
+        "v029_add_original_aspect_thumbnail_cache"
 
     static let knownOrdered: [String] = [
         v001CreateCatalogCore,
@@ -73,5 +75,6 @@ enum CatalogMigrationID {
         v026AddMediaKindAndVideoMetadata,
         v027PartitionPersonalizationByMediaKind,
         v028PartitionSlimmingByMediaKind,
+        v029AddOriginalAspectThumbnailCache,
     ]
 }

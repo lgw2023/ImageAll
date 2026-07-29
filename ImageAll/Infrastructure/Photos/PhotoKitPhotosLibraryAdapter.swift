@@ -264,7 +264,7 @@ final class PhotoKitPhotosLibraryAdapter: NSObject, PhotosLibraryAccessPort, Pho
 
         let options = Self.makeLocalOnlyImageRequestOptions()
         let targetSize: NSSize = switch variant {
-        case .grid: NSSize(width: 512, height: 512)
+        case .grid, .originalAspectThumbnail: NSSize(width: 512, height: 512)
         case .preview: NSSize(width: 2_048, height: 2_048)
         }
 

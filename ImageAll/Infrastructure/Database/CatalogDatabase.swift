@@ -34,6 +34,7 @@ struct CatalogDatabase: Sendable {
         V026AddMediaKindAndVideoMetadataMigration.register(on: &migrator)
         V027PartitionPersonalizationByMediaKindMigration.register(on: &migrator)
         V028PartitionSlimmingByMediaKindMigration.register(on: &migrator)
+        V029AddOriginalAspectThumbnailCacheMigration.register(on: &migrator)
         return migrator
     }
 
@@ -485,6 +486,82 @@ enum V028PartitionSlimmingByMediaKindMigration {
                 CREATE INDEX source_similarity_cluster_lookup_idx
                 ON source_similarity_bucket_member(
                     source_id, media_kind, cluster_id, asset_id
+                )
+                """
+            )
+        }
+    }
+}
+
+enum V029AddOriginalAspectThumbnailCacheMigration {
+    static func register(on migrator: inout DatabaseMigrator) {
+        migrator.registerMigration(CatalogMigrationID.v029AddOriginalAspectThumbnailCache) { db in
+            try db.execute(
+                sql: "ALTER TABLE derived_image_cache_entry RENAME TO derived_image_cache_entry_v028"
+            )
+            try db.execute(
+                sql: """
+                CREATE TABLE derived_image_cache_entry (
+                    id TEXT NOT NULL PRIMARY KEY,
+                    asset_id TEXT NOT NULL REFERENCES asset(id) ON DELETE CASCADE,
+                    content_revision INTEGER NOT NULL CHECK(content_revision >= 1),
+                    representation_version INTEGER NOT NULL CHECK(representation_version >= 1),
+                    variant TEXT NOT NULL CHECK(
+                        variant IN ('gridSmall', 'gridRegular', 'gridOriginal', 'preview')
+                    ),
+                    storage_format TEXT NOT NULL CHECK(storage_format IN ('jpeg', 'png')),
+                    pixel_width INTEGER NOT NULL CHECK(pixel_width > 0),
+                    pixel_height INTEGER NOT NULL CHECK(pixel_height > 0),
+                    byte_size INTEGER NOT NULL CHECK(byte_size > 0),
+                    encoded_sha256 BLOB NOT NULL CHECK(length(encoded_sha256) = 32),
+                    created_at_ms INTEGER NOT NULL CHECK(created_at_ms >= 0),
+                    last_accessed_at_ms INTEGER NOT NULL CHECK(last_accessed_at_ms >= 0),
+                    CHECK(\(V001CreateCatalogCoreMigration.uuidCheck)),
+                    CHECK(
+                        (variant = 'gridSmall' AND pixel_width = 256 AND pixel_height = 256)
+                        OR (variant = 'gridRegular' AND pixel_width = 512 AND pixel_height = 512)
+                        OR (
+                            variant = 'gridOriginal'
+                            AND max(pixel_width, pixel_height) <= 512
+                        )
+                        OR (
+                            variant = 'preview'
+                            AND max(pixel_width, pixel_height) <= 2048
+                        )
+                    )
+                ) STRICT
+                """
+            )
+            try db.execute(
+                sql: """
+                INSERT INTO derived_image_cache_entry (
+                    id, asset_id, content_revision, representation_version, variant,
+                    storage_format, pixel_width, pixel_height, byte_size, encoded_sha256,
+                    created_at_ms, last_accessed_at_ms
+                )
+                SELECT
+                    id, asset_id, content_revision, representation_version, variant,
+                    storage_format, pixel_width, pixel_height, byte_size, encoded_sha256,
+                    created_at_ms, last_accessed_at_ms
+                FROM derived_image_cache_entry_v028
+                """
+            )
+            try db.execute(sql: "DROP TABLE derived_image_cache_entry_v028")
+            try db.execute(
+                sql: """
+                CREATE UNIQUE INDEX derived_image_cache_key_uq ON derived_image_cache_entry (
+                    asset_id,
+                    content_revision,
+                    representation_version,
+                    variant
+                )
+                """
+            )
+            try db.execute(
+                sql: """
+                CREATE INDEX derived_image_cache_lru_idx ON derived_image_cache_entry (
+                    last_accessed_at_ms,
+                    id
                 )
                 """
             )

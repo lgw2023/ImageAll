@@ -28,6 +28,7 @@ struct DerivedImageRenderer: Sendable {
         switch variant {
         case .gridSmall: return 512
         case .gridRegular: return 1_024
+        case .gridOriginal: return 512
         case .preview: return 2_048
         }
     }
@@ -78,6 +79,8 @@ struct DerivedImageRenderer: Sendable {
             outputImage = try aspectFill(image: oriented, targetWidth: 256, targetHeight: 256)
         case .gridRegular:
             outputImage = try aspectFill(image: oriented, targetWidth: 512, targetHeight: 512)
+        case .gridOriginal:
+            outputImage = try aspectFit(image: oriented, maxEdge: 512, allowUpscale: false)
         case .preview:
             outputImage = try aspectFit(image: oriented, maxEdge: 2048, allowUpscale: false)
         }

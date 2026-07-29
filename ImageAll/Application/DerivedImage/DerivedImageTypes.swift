@@ -3,6 +3,7 @@ import Foundation
 enum DerivedImageVariant: String, Equatable, Sendable, CaseIterable {
     case gridSmall
     case gridRegular
+    case gridOriginal
     case preview
 }
 

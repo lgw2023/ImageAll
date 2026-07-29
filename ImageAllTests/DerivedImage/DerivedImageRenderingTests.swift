@@ -76,6 +76,43 @@ final class DerivedImageRenderingTests: XCTestCase {
         XCTAssertEqual(cached.encodedBytes, generated.encodedBytes)
     }
 
+    func testVideoOriginalAspectPosterPreservesLandscapeRatioAndCaches() async throws {
+        let env = try DerivedImageTestSupport.TempEnvironment(label: "video-original-aspect")
+        defer { env.cleanup() }
+        try env.seedAvailableAsset(
+            relativePath: "videos/landscape.mov",
+            fileName: "landscape.mov",
+            mediaKind: .video,
+            mediaType: "com.apple.quicktime-movie",
+            durationMs: 5_000,
+            contents: Data([0x00, 0x00, 0x00, 0x14])
+        )
+        let posterBytes = try Fixtures.jpegData(
+            from: Fixtures.makeSolidImage(
+                width: 1_000,
+                height: 500,
+                rgba: Fixtures.RGBA(r: 50, g: 100, b: 150, a: 255)
+            )
+        )
+        let (service, _) = env.makeService(
+            videoPosterGenerator: StubVideoPosterGenerator(posterBytes: posterBytes),
+            volumeReader: DerivedImageTestSupport.generousVolume
+        )
+
+        let generated = try await service.loadOrGenerate(
+            DerivedImageRequest(assetID: env.assetID, variant: .gridOriginal)
+        )
+        XCTAssertEqual(generated.origin, .generated)
+        XCTAssertEqual(generated.pixelWidth, 512)
+        XCTAssertEqual(generated.pixelHeight, 256)
+
+        let cached = try await service.loadCached(
+            DerivedImageRequest(assetID: env.assetID, variant: .gridOriginal)
+        )
+        XCTAssertEqual(cached?.origin, .cacheHit)
+        XCTAssertEqual(cached?.entryID, generated.entryID)
+    }
+
     func testStaticHEICInputGeneratesConsistentArtifact() throws {
         guard let data = FolderReconcileTestSupport.minimalHEICData(), !data.isEmpty else {
             return XCTFail("host must encode HEIC")
@@ -202,6 +239,20 @@ final class DerivedImageRenderingTests: XCTestCase {
         let right = try Fixtures.rgbaPixel(in: image, x: 495, y: 256)
         XCTAssertGreaterThan(left.r, left.b + 40)
         XCTAssertGreaterThan(right.b, right.r + 40)
+    }
+
+    func testGridOriginalPreservesAspectRatioAt512PixelLongEdge() throws {
+        let source = try Fixtures.jpegData(from: Fixtures.makeSolidImage(
+            width: 1_000,
+            height: 500,
+            rgba: Fixtures.RGBA(r: 60, g: 120, b: 180, a: 255)
+        ))
+
+        let artifact = try renderer.render(sourceBytes: source, variant: .gridOriginal)
+
+        XCTAssertEqual(artifact.pixelWidth, 512)
+        XCTAssertEqual(artifact.pixelHeight, 256)
+        try Fixtures.assertArtifactSelfConsistent(artifact)
     }
 
     func testGridUpscalesSmallSourceToExactSquareWithoutLetterbox() throws {

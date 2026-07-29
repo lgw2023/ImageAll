@@ -51,6 +51,7 @@ final class FolderReconcilePrivacyRegressionTests: XCTestCase {
             CatalogMigrationID.v026AddMediaKindAndVideoMetadata,
             CatalogMigrationID.v027PartitionPersonalizationByMediaKind,
             CatalogMigrationID.v028PartitionSlimmingByMediaKind,
+            CatalogMigrationID.v029AddOriginalAspectThumbnailCache,
         ])
     }
 }

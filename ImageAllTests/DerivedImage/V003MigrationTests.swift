@@ -226,6 +226,44 @@ final class V003MigrationTests: XCTestCase {
         )
     }
 
+    func testV029PreservesExistingRowsAndAcceptsGridOriginalDimensions() throws {
+        let url = try makeTempDatabaseURL()
+        let pool = try openV002OnlyPool(at: url)
+        let sentinel = try seedV002SentinelFacts(in: pool)
+        var migrator = DatabaseTestSupport.makeV002OnlyMigrator()
+        V003AddDerivedImageCacheMigration.register(on: &migrator)
+        try migrator.migrate(pool)
+        try pool.write { db in
+            try insertValidEntry(
+                db: db,
+                assetID: sentinel.assetID.uuidString.lowercased(),
+                variant: "gridRegular",
+                pixelWidth: 512,
+                pixelHeight: 512
+            )
+        }
+
+        V029AddOriginalAspectThumbnailCacheMigration.register(on: &migrator)
+        try migrator.migrate(pool)
+
+        try pool.write { db in
+            XCTAssertEqual(
+                try Int.fetchOne(
+                    db,
+                    sql: "SELECT COUNT(*) FROM derived_image_cache_entry WHERE variant = 'gridRegular'"
+                ),
+                1
+            )
+            try insertValidEntry(
+                db: db,
+                assetID: sentinel.assetID.uuidString.lowercased(),
+                variant: "gridOriginal",
+                pixelWidth: 512,
+                pixelHeight: 256
+            )
+        }
+    }
+
     func testPreviewLegalDimensionsAccepted() throws {
         let database = try seededDatabaseWithAsset()
         try insertValidEntry(

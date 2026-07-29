@@ -1232,7 +1232,10 @@ private struct SlimmingThumbnailCell: View {
         .task(id: loadID) {
             image = nil
             loadState = .loading
-            switch await model.loadThumbnailResultWithRetry(assetID: assetID) {
+            switch await model.loadThumbnailResultWithRetry(
+                assetID: assetID,
+                aspectMode: model.thumbnailAspectMode
+            ) {
             case let .loaded(data):
                 guard !Task.isCancelled else { return }
                 if let decoded = LibraryGridThumbnailImageFactory.image(from: data) {
@@ -1260,7 +1263,9 @@ private struct SlimmingThumbnailCell: View {
     private var loadID: SlimmingThumbnailLoadID {
         SlimmingThumbnailLoadID(
             assetID: assetID,
-            restoreVersion: model.librarySlimmingThumbnailReloadVersion(for: assetID)
+            restoreVersion: model.librarySlimmingThumbnailReloadVersion(for: assetID),
+            aspectMode: model.thumbnailAspectMode,
+            originalAspectCacheGeneration: model.originalAspectThumbnailCacheGeneration
         )
     }
 }
@@ -1273,6 +1278,8 @@ private enum SlimmingThumbnailLoadState: Equatable {
 private struct SlimmingThumbnailLoadID: Hashable {
     let assetID: UUID
     let restoreVersion: Int
+    let aspectMode: LibraryThumbnailAspectMode
+    let originalAspectCacheGeneration: Int
 }
 
 private struct LibrarySlimmingMoveToRecycleConfirmationSheet: View {

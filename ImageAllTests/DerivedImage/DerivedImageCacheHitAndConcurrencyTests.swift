@@ -53,6 +53,36 @@ final class DerivedImageCacheHitAndConcurrencyTests: XCTestCase {
         )
     }
 
+    func testCacheOnlyOriginalAspectLookupNeverReadsSourceOrGenerates() async throws {
+        let env = try DerivedImageTestSupport.TempEnvironment(label: "original-aspect-cache-only")
+        defer { env.cleanup() }
+        _ = try env.seedAvailableAsset()
+        let (service, bookmarkPort) = env.makeService(
+            volumeReader: DerivedImageTestSupport.generousVolume
+        )
+        let request = DerivedImageRequest(
+            assetID: env.assetID,
+            variant: .gridOriginal,
+            persistence: .required
+        )
+
+        let coldLookup = try await service.loadCached(request)
+        XCTAssertNil(coldLookup)
+        XCTAssertEqual(bookmarkPort.scopeStartCount, 0)
+        let coldCounts = try await env.cacheArtifactCounts()
+        XCTAssertEqual(coldCounts.entries, 0)
+
+        let generated = try await service.loadOrGenerate(request)
+        XCTAssertEqual(generated.origin, .generated)
+        let scopeAfterPrewarm = bookmarkPort.scopeStartCount
+
+        let warmLookup = try await service.loadCached(request)
+        XCTAssertEqual(warmLookup?.origin, .cacheHit)
+        XCTAssertEqual(warmLookup?.entryID, generated.entryID)
+        XCTAssertEqual(warmLookup?.encodedBytes, generated.encodedBytes)
+        XCTAssertEqual(bookmarkPort.scopeStartCount, scopeAfterPrewarm)
+    }
+
     func testGridRegularMaterializesFromCachedPreviewWithoutRereadingSource() async throws {
         let env = try DerivedImageTestSupport.TempEnvironment(label: "preview-to-grid")
         defer { env.cleanup() }

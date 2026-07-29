@@ -1248,6 +1248,12 @@ private extension ReviewQueueSuggestionOrigin {
     }
 }
 
+private struct ReviewThumbnailLoadID: Hashable {
+    let assetID: UUID
+    let aspectMode: LibraryThumbnailAspectMode
+    let originalAspectCacheGeneration: Int
+}
+
 private struct ReviewThumbnailView: View {
     let item: ReviewQueueItemProjection
     @ObservedObject var model: LibraryWorkspaceModel
@@ -1326,19 +1332,25 @@ private struct ReviewThumbnailView: View {
         .accessibilityAction(named: "打开单图预览") {
             onOpen()
         }
-        .task(id: item.assetID) {
+        .task(id: ReviewThumbnailLoadID(
+            assetID: item.assetID,
+            aspectMode: model.thumbnailAspectMode,
+            originalAspectCacheGeneration: model.originalAspectThumbnailCacheGeneration
+        )) {
             await loadReviewThumbnailWhileVisible()
         }
     }
 
     private func loadReviewThumbnailWhileVisible() async {
         isCloudOnly = false
+        image = nil
         guard item.availability == .available else {
-            image = nil
             return
         }
 
-        if let cached = model.cachedThumbnailData(for: item.assetID),
+        let aspectMode = model.thumbnailAspectMode
+        if aspectMode == .square,
+           let cached = model.cachedThumbnailData(for: item.assetID),
            let cachedImage = LibraryGridThumbnailImageFactory.image(from: cached)
         {
             image = cachedImage
@@ -1347,11 +1359,16 @@ private struct ReviewThumbnailView: View {
 
         var transientAttempts = 0
         while !Task.isCancelled {
-            switch await model.loadThumbnailResultWithRetry(assetID: item.assetID) {
+            switch await model.loadThumbnailResultWithRetry(
+                assetID: item.assetID,
+                aspectMode: aspectMode
+            ) {
             case let .loaded(data):
                 guard !Task.isCancelled else { return }
                 if let decoded = LibraryGridThumbnailImageFactory.image(from: data) {
-                    model.rememberThumbnailData(data, for: item.assetID)
+                    if aspectMode == .square {
+                        model.rememberThumbnailData(data, for: item.assetID)
+                    }
                     image = decoded
                     return
                 }

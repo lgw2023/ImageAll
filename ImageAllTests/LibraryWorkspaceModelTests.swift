@@ -865,10 +865,11 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertTrue(model.selectedSourceIsPhotos)
     }
 
-    func testExplicitCloudPreviewDownloadPublishesProgressAndBecomesGridThumbnail() async {
+    func testExplicitCloudPreviewDownloadPublishesProgressThenLoadsSquareGridThumbnail() async {
         let sourceID = UUID()
         let asset = Self.makeAsset(sourceID: sourceID, fileName: "cloud.jpg")
         let downloaded = Data("downloaded-preview".utf8)
+        let squareThumbnail = Data("square-thumbnail".utf8)
         let service = FakeLibraryWorkspaceService(
             connectedSource: LibrarySourceSummary(
                 id: sourceID,
@@ -880,6 +881,7 @@ final class LibraryWorkspaceModelTests: XCTestCase {
             initialItems: [asset],
             startsConnected: true,
             previewError: .cloudOnly,
+            thumbnailData: squareThumbnail,
             cloudPreviewData: downloaded,
             cloudPreviewProgress: [0.4, 1.0]
         )
@@ -904,8 +906,8 @@ final class LibraryWorkspaceModelTests: XCTestCase {
 
         let gridThumbnail = await model.thumbnailData(assetID: asset.assetID)
 
-        XCTAssertEqual(gridThumbnail, downloaded)
-        XCTAssertEqual(service.thumbnailLoadCallCount, 0)
+        XCTAssertEqual(gridThumbnail, squareThumbnail)
+        XCTAssertEqual(service.thumbnailLoadCallCount, 1)
         XCTAssertEqual(service.cloudPreviewDownloadCallCount, 1)
     }
 
@@ -7853,6 +7855,41 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertEqual(LibraryThumbnailAspectMode.original.toggled, .square)
     }
 
+    func testOriginalThumbnailAspectModeFallsBackToSquareWithoutManualPrewarm() async {
+        let sourceID = UUID()
+        let asset = Self.makeAsset(sourceID: sourceID, fileName: "landscape.jpg")
+        let squareGridData = Data("square-grid".utf8)
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: sourceID,
+                kind: .folder,
+                displayName: "Fixture",
+                state: .active
+            ),
+            reconciledItems: [asset],
+            initialItems: [asset],
+            startsConnected: true,
+            previewData: Data("must-not-load-preview".utf8),
+            thumbnailData: squareGridData
+        )
+        let model = LibraryWorkspaceModel(service: service)
+        await model.start()
+
+        let squareResult = await model.loadThumbnailResultWithRetry(
+            assetID: asset.assetID,
+            aspectMode: .square
+        )
+        let originalResult = await model.loadThumbnailResultWithRetry(
+            assetID: asset.assetID,
+            aspectMode: .original
+        )
+
+        XCTAssertEqual(squareResult, .loaded(squareGridData))
+        XCTAssertEqual(originalResult, .loaded(squareGridData))
+        XCTAssertEqual(service.thumbnailLoadCallCount, 1)
+        XCTAssertEqual(service.previewLoadCallCount, 0)
+    }
+
     func testGridLayoutReservesScrollerGutterAndKeepsFixedColumnsStable() {
         let containerWidth: CGFloat = 856
         let density = LibraryGridDensity.standard
@@ -10309,6 +10346,7 @@ final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecked Sendab
     private let previewError: PhotosLibraryError?
     private let previewData: Data
     private let thumbnailData: Data
+    private let originalAspectPrewarmData: Data
     private let thumbnailFailureCount: Int
     private let thumbnailFailureError: Error
     private let thumbnailCancelOnCall: Int?
@@ -10331,6 +10369,8 @@ final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecked Sendab
     private var storedPeakConcurrentThumbnailLoads = 0
     private let thumbnailLoadDelayNanoseconds: UInt64
     private var storedPreviewLoadCallCount = 0
+    private var storedOriginalAspectPrewarmCallCount = 0
+    private var storedOriginalAspectThumbnailData: [UUID: Data] = [:]
     private var storedPortableExportCallCount = 0
     private var storedPreviewCacheClearCallCount = 0
     private var storedPhotosOriginalStorageClearCallCount = 0
@@ -10385,6 +10425,7 @@ final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecked Sendab
         previewError: PhotosLibraryError? = nil,
         previewData: Data = Data(),
         thumbnailData: Data = Data(),
+        originalAspectPrewarmData: Data = Data(),
         thumbnailFailureCount: Int = 0,
         thumbnailFailureError: Error = PhotosLibraryError.libraryUnavailable,
         thumbnailCancelOnCall: Int? = nil,
@@ -10427,6 +10468,7 @@ final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecked Sendab
         self.previewError = previewError
         self.previewData = previewData
         self.thumbnailData = thumbnailData
+        self.originalAspectPrewarmData = originalAspectPrewarmData
         self.thumbnailFailureCount = thumbnailFailureCount
         self.thumbnailFailureError = thumbnailFailureError
         self.thumbnailCancelOnCall = thumbnailCancelOnCall
@@ -10580,6 +10622,10 @@ final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecked Sendab
 
     var previewLoadCallCount: Int {
         lock.withLock { storedPreviewLoadCallCount }
+    }
+
+    var originalAspectPrewarmCallCount: Int {
+        lock.withLock { storedOriginalAspectPrewarmCallCount }
     }
 
     var portableExportCallCount: Int {
@@ -11093,6 +11139,18 @@ final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecked Sendab
             throw previewError
         }
         return previewData
+    }
+
+    func loadOriginalAspectThumbnailIfCached(assetID: UUID) async throws -> Data? {
+        lock.withLock { storedOriginalAspectThumbnailData[assetID] }
+    }
+
+    func prewarmOriginalAspectThumbnail(assetID: UUID) async throws -> Data {
+        lock.withLock {
+            storedOriginalAspectPrewarmCallCount += 1
+            storedOriginalAspectThumbnailData[assetID] = originalAspectPrewarmData
+        }
+        return originalAspectPrewarmData
     }
 
     func downloadCloudPreview(

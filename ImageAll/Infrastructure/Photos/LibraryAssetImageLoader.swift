@@ -70,6 +70,24 @@ struct LibraryAssetImageLoader: Sendable {
         }
     }
 
+    func loadOriginalAspectThumbnailIfCached(assetID: UUID) async throws -> Data? {
+        let locator = try await locator(assetID: assetID)
+        if locator.kind == AssetLocatorKind.photos.rawValue {
+            return try photoThumbnails?.loadPhotoOriginalAspectThumbnail(assetID: assetID)
+        }
+        return try await fileImages.loadCached(
+            DerivedImageRequest(
+                assetID: assetID,
+                variant: .gridOriginal,
+                persistence: .required
+            )
+        )?.encodedBytes
+    }
+
+    func prewarmOriginalAspectThumbnail(assetID: UUID) async throws -> Data {
+        try await load(assetID: assetID, variant: .originalAspectThumbnail)
+    }
+
     func downloadCloudPreview(
         assetID: UUID,
         onProgress: @escaping @Sendable (Double) -> Void
@@ -107,15 +125,40 @@ struct LibraryAssetImageLoader: Sendable {
             guard let identifier = locator.identifier else {
                 throw PhotosLibraryError.libraryUnavailable
             }
-            if let downloadedPreviews,
-               let cached = try downloadedPreviews.loadDownloadedPreview(assetID: assetID)
-            {
-                return cached
+            if variant == .originalAspectThumbnail {
+                guard let photoThumbnails else {
+                    throw PhotosLibraryError.libraryUnavailable
+                }
+                if let cached = try? photoThumbnails.loadPhotoOriginalAspectThumbnail(
+                    assetID: assetID
+                )
+                {
+                    return cached
+                }
+                if let downloadedPreviews,
+                   let sourceBytes = try downloadedPreviews.loadDownloadedPreview(assetID: assetID)
+                {
+                    return try await photoThumbnails.storePhotoOriginalAspectThumbnail(
+                        assetID: assetID,
+                        sourceBytes: sourceBytes
+                    )
+                }
             }
             if variant == .grid,
                let photoThumbnails,
                let cached = try? photoThumbnails.loadPhotoThumbnail(assetID: assetID)
             {
+                return cached
+            }
+            if let downloadedPreviews,
+               let cached = try downloadedPreviews.loadDownloadedPreview(assetID: assetID)
+            {
+                if variant == .grid, let photoThumbnails {
+                    return (try? await photoThumbnails.storePhotoThumbnail(
+                        assetID: assetID,
+                        sourceBytes: cached
+                    )) ?? cached
+                }
                 return cached
             }
             guard locator.sourceState == SourceState.active.rawValue else {
@@ -131,18 +174,30 @@ struct LibraryAssetImageLoader: Sendable {
                     sourceBytes: sourceBytes
                 )) ?? sourceBytes
             }
+            if variant == .originalAspectThumbnail {
+                guard let photoThumbnails else {
+                    throw PhotosLibraryError.libraryUnavailable
+                }
+                return try await photoThumbnails.storePhotoOriginalAspectThumbnail(
+                    assetID: assetID,
+                    sourceBytes: sourceBytes
+                )
+            }
             return sourceBytes
         }
 
         let derivedVariant: DerivedImageVariant = switch variant {
         case .grid: .gridRegular
+        case .originalAspectThumbnail: .gridOriginal
         case .preview: .preview
         }
         return try await fileImages.loadOrGenerate(
             DerivedImageRequest(
                 assetID: assetID,
                 variant: derivedVariant,
-                persistence: .memoryFallbackAllowed
+                persistence: variant == .originalAspectThumbnail
+                    ? .required
+                    : .memoryFallbackAllowed
             )
         ).encodedBytes
     }
@@ -174,7 +229,7 @@ enum LibraryAssetImageLoadLane: Hashable, Sendable {
 
     static func lane(for variant: PhotosImageVariant) -> LibraryAssetImageLoadLane {
         switch variant {
-        case .grid: .grid
+        case .grid, .originalAspectThumbnail: .grid
         case .preview: .preview
         }
     }

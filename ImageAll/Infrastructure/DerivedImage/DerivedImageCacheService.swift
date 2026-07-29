@@ -269,12 +269,53 @@ final class DerivedImageCacheService: DerivedImageCachePort, DownloadedPreviewCa
         }
     }
 
+    func loadCached(_ request: DerivedImageRequest) async throws -> DerivedImagePayload? {
+        operationGate.beginAccess()
+        defer { operationGate.endAccess() }
+        do {
+            guard let lookup = try repository.fetchCacheLookupContext(assetID: request.assetID),
+                  let entry = try repository.fetchEntry(
+                      assetID: request.assetID,
+                      contentRevision: lookup.contentRevision,
+                      representationVersion: DerivedImageRepresentationVersion.production,
+                      variant: request.variant
+                  )
+            else {
+                return nil
+            }
+            let session = try store.ensureLayout()
+            defer { session.closeHandles() }
+            switch try validateHit(entry: entry, session: session) {
+            case let .valid(payload):
+                return payload
+            case let .invalid(candidate):
+                try repository.deleteEntry(id: candidate.id)
+                _ = try? store.deleteObjectDuringEviction(
+                    entryID: candidate.id,
+                    format: candidate.storageFormat,
+                    session: session
+                )
+                return nil
+            }
+        } catch let error as DerivedImageError {
+            throw error
+        } catch DerivedImageSecureIOError.unsafePath {
+            throw DerivedImageError.derivedCacheUnsafePath
+        } catch {
+            throw DerivedImageError.derivedCachePersistenceFailed
+        }
+    }
+
     func loadDownloadedPreview(assetID: UUID) throws -> Data? {
         try loadCachedPhotoImage(assetID: assetID, variant: .preview)
     }
 
     func loadPhotoThumbnail(assetID: UUID) throws -> Data? {
         try loadCachedPhotoImage(assetID: assetID, variant: .gridRegular)
+    }
+
+    func loadPhotoOriginalAspectThumbnail(assetID: UUID) throws -> Data? {
+        try loadCachedPhotoImage(assetID: assetID, variant: .gridOriginal)
     }
 
     private func loadCachedPhotoImage(
@@ -340,6 +381,15 @@ final class DerivedImageCacheService: DerivedImageCachePort, DownloadedPreviewCa
             assetID: assetID,
             sourceBytes: sourceBytes,
             variant: .gridRegular,
+            usesDownloadedPreviewQuota: false
+        )
+    }
+
+    func storePhotoOriginalAspectThumbnail(assetID: UUID, sourceBytes: Data) async throws -> Data {
+        try await storePhotoImage(
+            assetID: assetID,
+            sourceBytes: sourceBytes,
+            variant: .gridOriginal,
             usesDownloadedPreviewQuota: false
         )
     }
@@ -457,8 +507,10 @@ final class DerivedImageCacheService: DerivedImageCachePort, DownloadedPreviewCa
         let donorVariants: [DerivedImageVariant]
         switch request.variant {
         case .gridSmall:
-            donorVariants = [.gridRegular, .preview]
+            donorVariants = [.gridRegular, .gridOriginal, .preview]
         case .gridRegular:
+            donorVariants = [.preview]
+        case .gridOriginal:
             donorVariants = [.preview]
         case .preview:
             return nil

@@ -96,6 +96,72 @@ final class SourceThumbnailPrewarmTests: XCTestCase {
         XCTAssertLessThan(service.thumbnailLoadCallCount, assets.count)
     }
 
+    func testOriginalAspectPrewarmIncludesPhotosAndVideosAndEnablesAuxiliaryCache() async {
+        let sourceID = UUID()
+        let photo = makeAsset(
+            sourceID: sourceID,
+            fileName: "landscape.jpg",
+            mediaKind: .image
+        )
+        let video = makeAsset(
+            sourceID: sourceID,
+            fileName: "landscape.mov",
+            mediaKind: .video
+        )
+        let originalAspectData = Data("original-aspect".utf8)
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: sourceID,
+                kind: .folder,
+                displayName: "Mixed Media",
+                state: .active
+            ),
+            reconciledItems: [photo, video],
+            initialItems: [photo, video],
+            startsConnected: true,
+            thumbnailData: Data("square".utf8),
+            originalAspectPrewarmData: originalAspectData,
+            hasPendingCatalogReconcileJobs: false
+        )
+        let model = LibraryWorkspaceModel(
+            service: service,
+            idlePrewarmInstallEventMonitor: false
+        )
+        await model.start()
+        XCTAssertEqual(model.originalAspectThumbnailCacheGeneration, 0)
+
+        model.prewarmSourceOriginalAspectThumbnails(sourceID: sourceID)
+
+        let deadline = Date().addingTimeInterval(5)
+        while model.isPrewarmingSourceThumbnails, Date() < deadline {
+            await Task.yield()
+            try? await Task.sleep(nanoseconds: 20_000_000)
+        }
+
+        XCTAssertFalse(model.isPrewarmingSourceThumbnails)
+        XCTAssertEqual(model.originalAspectThumbnailCacheGeneration, 1)
+        XCTAssertEqual(service.originalAspectPrewarmCallCount, 2)
+        XCTAssertEqual(
+            model.notice,
+            .sourceOriginalAspectThumbnailPrewarmCompleted(
+                sourceDisplayName: "Mixed Media",
+                warmed: 2,
+                failed: 0,
+                total: 2
+            )
+        )
+        for asset in [photo, video] {
+            let result = await model.loadThumbnailResultWithRetry(
+                assetID: asset.assetID,
+                aspectMode: .original
+            )
+            XCTAssertEqual(
+                result,
+                .loaded(originalAspectData)
+            )
+        }
+    }
+
     func testSecondPrewarmIgnoredWhileFirstRunning() async {
         let sourceID = UUID()
         let otherSourceID = UUID()
@@ -160,7 +226,11 @@ final class SourceThumbnailPrewarmTests: XCTestCase {
         )
     }
 
-    private func makeAsset(sourceID: UUID, fileName: String) -> AssetGridItemProjection {
+    private func makeAsset(
+        sourceID: UUID,
+        fileName: String,
+        mediaKind: MediaKind = .image
+    ) -> AssetGridItemProjection {
         AssetGridItemProjection(
             assetID: UUID(),
             sourceID: sourceID,
@@ -168,7 +238,9 @@ final class SourceThumbnailPrewarmTests: XCTestCase {
             sourceState: .active,
             relativePath: fileName,
             fileName: fileName,
-            mediaType: "public.jpeg",
+            mediaKind: mediaKind,
+            mediaType: mediaKind == .video ? "com.apple.quicktime-movie" : "public.jpeg",
+            durationMs: mediaKind == .video ? 1_000 : nil,
             mediaCreatedAtMs: 1,
             mediaModifiedAtMs: 1,
             width: 100,

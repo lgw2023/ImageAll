@@ -70,13 +70,37 @@ enum AppStorageLocationSelectionResult: Equatable, Sendable {
     case restartRequired(AppStorageLocationStatus)
 }
 
+enum SourceThumbnailPrewarmKind: Equatable, Sendable {
+    case square
+    case originalAspect
+}
+
 struct SourceThumbnailPrewarmProgress: Equatable, Sendable {
     let sourceID: UUID
     let sourceDisplayName: String
+    let kind: SourceThumbnailPrewarmKind
     let completed: Int
     let total: Int
     let warmed: Int
     let failed: Int
+
+    init(
+        sourceID: UUID,
+        sourceDisplayName: String,
+        kind: SourceThumbnailPrewarmKind = .square,
+        completed: Int,
+        total: Int,
+        warmed: Int,
+        failed: Int
+    ) {
+        self.sourceID = sourceID
+        self.sourceDisplayName = sourceDisplayName
+        self.kind = kind
+        self.completed = completed
+        self.total = total
+        self.warmed = warmed
+        self.failed = failed
+    }
 
     var fractionCompleted: Double {
         guard total > 0 else { return 0 }
@@ -130,6 +154,18 @@ enum LibraryWorkspaceNotice: Equatable, Sendable {
         total: Int
     )
     case sourceThumbnailPrewarmFailed
+    case sourceOriginalAspectThumbnailPrewarmCompleted(
+        sourceDisplayName: String,
+        warmed: Int,
+        failed: Int,
+        total: Int
+    )
+    case sourceOriginalAspectThumbnailPrewarmCancelled(
+        sourceDisplayName: String,
+        completed: Int,
+        total: Int
+    )
+    case sourceOriginalAspectThumbnailPrewarmFailed
     case appStorageLocationRequiresRestart
     case appStorageLocationActionFailed
     case jobActivityActionFailed
@@ -325,6 +361,8 @@ protocol LibraryWorkspacePort: Sendable {
         cursor: AssetPageCursor?
     ) throws -> AssetPageResult
     func loadThumbnail(assetID: UUID) async throws -> Data
+    func loadOriginalAspectThumbnailIfCached(assetID: UUID) async throws -> Data?
+    func prewarmOriginalAspectThumbnail(assetID: UUID) async throws -> Data
     func loadPreview(assetID: UUID) async throws -> Data
     func downloadCloudPreview(
         assetID: UUID,
@@ -359,6 +397,14 @@ protocol LibraryWorkspacePort: Sendable {
 extension LibraryWorkspacePort {
     func startCatalogSourceMonitoring(onChange: @escaping @Sendable () -> Void) throws {}
     func stopCatalogSourceMonitoring() {}
+
+    func loadOriginalAspectThumbnailIfCached(assetID _: UUID) async throws -> Data? {
+        nil
+    }
+
+    func prewarmOriginalAspectThumbnail(assetID _: UUID) async throws -> Data {
+        throw DerivedImageError.derivedAssetIneligible
+    }
 
     func fetchAppStorageLocation() -> AppStorageLocationStatus {
         let applicationSupport = FileManager.default.urls(

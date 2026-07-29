@@ -251,8 +251,8 @@ struct LibraryThumbnailAspectModeButton: View {
         .accessibilityValue(selection.displayName)
         .persistentHelp(
             selection == .square
-                ? "当前缩略图为正方形并填充裁切。点击切换为原比例，完整显示图库、待审核和图库瘦身中的缩略图。"
-                : "当前缩略图按图片原比例完整显示。点击切换为正方形并填充裁切；此设置作用于图库、待审核和图库瘦身。"
+                ? "当前缩略图为正方形。点击后，仅手动生成过原比例缓存的照片和视频会完整显示；其余项目保持正方形。"
+                : "当前优先显示已手动缓存的原比例缩略图，未缓存项目仍为正方形。点击切回全部正方形。"
         )
     }
 }
@@ -1062,6 +1062,7 @@ final class LibraryWorkspaceModel: ObservableObject {
     /// Bumped when suggestion thresholds change so SwiftUI re-reads effective values.
     @Published private(set) var suggestionThresholdEpoch = 0
     @Published private(set) var sourceThumbnailPrewarmProgress: SourceThumbnailPrewarmProgress?
+    @Published private(set) var originalAspectThumbnailCacheGeneration = 0
     @Published private(set) var jobActivityItems: [JobActivityItem] = []
     @Published private(set) var jobActivityActionInFlightIDs: Set<UUID> = []
     @Published private(set) var sourceOrderRevision = 0
@@ -3946,8 +3947,19 @@ final class LibraryWorkspaceModel: ObservableObject {
     }
 
     func prewarmSourceThumbnails(sourceID: UUID) {
+        startSourceThumbnailPrewarm(sourceID: sourceID, kind: .square)
+    }
+
+    func prewarmSourceOriginalAspectThumbnails(sourceID: UUID) {
+        startSourceThumbnailPrewarm(sourceID: sourceID, kind: .originalAspect)
+    }
+
+    private func startSourceThumbnailPrewarm(
+        sourceID: UUID,
+        kind: SourceThumbnailPrewarmKind
+    ) {
         guard !isPrewarmingSourceThumbnails else { return }
-        guard canStartSourceThumbnailPrewarm(sourceID: sourceID) else { return }
+        guard canStartSourceThumbnailPrewarm(sourceID: sourceID, kind: kind) else { return }
         sourceThumbnailPrewarmTask = Task(priority: .utility) { [weak self] in
             await self?.runSourceThumbnailPrewarm(sourceID: sourceID)
         }
@@ -3959,14 +3971,29 @@ final class LibraryWorkspaceModel: ObservableObject {
         sourceThumbnailPrewarmTask?.cancel()
         sourceThumbnailPrewarmTask = nil
         sourceThumbnailPrewarmProgress = nil
-        notice = .sourceThumbnailPrewarmCancelled(
-            sourceDisplayName: progress.sourceDisplayName,
-            completed: progress.completed,
-            total: progress.total
-        )
+        if progress.kind == .originalAspect, progress.warmed > 0 {
+            originalAspectThumbnailCacheGeneration &+= 1
+        }
+        notice = switch progress.kind {
+        case .square:
+            .sourceThumbnailPrewarmCancelled(
+                sourceDisplayName: progress.sourceDisplayName,
+                completed: progress.completed,
+                total: progress.total
+            )
+        case .originalAspect:
+            .sourceOriginalAspectThumbnailPrewarmCancelled(
+                sourceDisplayName: progress.sourceDisplayName,
+                completed: progress.completed,
+                total: progress.total
+            )
+        }
     }
 
-    private func canStartSourceThumbnailPrewarm(sourceID: UUID) -> Bool {
+    private func canStartSourceThumbnailPrewarm(
+        sourceID: UUID,
+        kind: SourceThumbnailPrewarmKind
+    ) -> Bool {
         guard let source = sources.first(where: { $0.id == sourceID }) else { return false }
         guard source.state == .active || source.state == .unavailable else { return false }
 
@@ -3976,6 +4003,7 @@ final class LibraryWorkspaceModel: ObservableObject {
         sourceThumbnailPrewarmProgress = SourceThumbnailPrewarmProgress(
             sourceID: sourceID,
             sourceDisplayName: source.displayName,
+            kind: kind,
             completed: 0,
             total: 0,
             warmed: 0,
@@ -3989,6 +4017,7 @@ final class LibraryWorkspaceModel: ObservableObject {
         let sourceDisplayName = sourceThumbnailPrewarmProgress?.sourceDisplayName
             ?? sources.first(where: { $0.id == sourceID })?.displayName
             ?? "来源"
+        let kind = sourceThumbnailPrewarmProgress?.kind ?? .square
         let service = service
         defer {
             if sourceThumbnailPrewarmGeneration == generation {
@@ -4026,7 +4055,9 @@ final class LibraryWorkspaceModel: ObservableObject {
             } while cursor != nil
         } catch {
             guard sourceThumbnailPrewarmGeneration == generation else { return }
-            notice = .sourceThumbnailPrewarmFailed
+            notice = kind == .square
+                ? .sourceThumbnailPrewarmFailed
+                : .sourceOriginalAspectThumbnailPrewarmFailed
             return
         }
 
@@ -4034,6 +4065,7 @@ final class LibraryWorkspaceModel: ObservableObject {
         sourceThumbnailPrewarmProgress = SourceThumbnailPrewarmProgress(
             sourceID: sourceID,
             sourceDisplayName: sourceDisplayName,
+            kind: kind,
             completed: 0,
             total: assetIDs.count,
             warmed: 0,
@@ -4046,9 +4078,16 @@ final class LibraryWorkspaceModel: ObservableObject {
             guard sourceThumbnailPrewarmGeneration == generation, !Task.isCancelled else { return }
             do {
                 try Task.checkCancellation()
-                let data = try await service.loadThumbnail(assetID: assetID)
+                let data = switch kind {
+                case .square:
+                    try await service.loadThumbnail(assetID: assetID)
+                case .originalAspect:
+                    try await service.prewarmOriginalAspectThumbnail(assetID: assetID)
+                }
                 guard sourceThumbnailPrewarmGeneration == generation else { return }
-                rememberThumbnailData(data, for: assetID)
+                if kind == .square {
+                    rememberThumbnailData(data, for: assetID)
+                }
                 warmed += 1
             } catch is CancellationError {
                 return
@@ -4060,6 +4099,7 @@ final class LibraryWorkspaceModel: ObservableObject {
             sourceThumbnailPrewarmProgress = SourceThumbnailPrewarmProgress(
                 sourceID: sourceID,
                 sourceDisplayName: sourceDisplayName,
+                kind: kind,
                 completed: index + 1,
                 total: assetIDs.count,
                 warmed: warmed,
@@ -4068,12 +4108,25 @@ final class LibraryWorkspaceModel: ObservableObject {
         }
 
         guard sourceThumbnailPrewarmGeneration == generation else { return }
-        notice = .sourceThumbnailPrewarmCompleted(
-            sourceDisplayName: sourceDisplayName,
-            warmed: warmed,
-            failed: failed,
-            total: assetIDs.count
-        )
+        if kind == .originalAspect, warmed > 0 {
+            originalAspectThumbnailCacheGeneration &+= 1
+        }
+        notice = switch kind {
+        case .square:
+            .sourceThumbnailPrewarmCompleted(
+                sourceDisplayName: sourceDisplayName,
+                warmed: warmed,
+                failed: failed,
+                total: assetIDs.count
+            )
+        case .originalAspect:
+            .sourceOriginalAspectThumbnailPrewarmCompleted(
+                sourceDisplayName: sourceDisplayName,
+                warmed: warmed,
+                failed: failed,
+                total: assetIDs.count
+            )
+        }
     }
 
     func exportPortableUserData() async {
@@ -4689,12 +4742,6 @@ final class LibraryWorkspaceModel: ObservableObject {
         if let cached = cachedThumbnailData(for: assetID) {
             return .loaded(cached)
         }
-        if case let .downloaded(downloadedAssetID, data) = cloudPreviewState,
-           downloadedAssetID == assetID
-        {
-            rememberThumbnailData(data, for: assetID)
-            return .loaded(data)
-        }
         let service = service
         let loadEpoch = thumbnailLoadEpoch
         do {
@@ -4725,13 +4772,50 @@ final class LibraryWorkspaceModel: ObservableObject {
         }
     }
 
+    private func loadOriginalAspectThumbnailResult(assetID: UUID) async -> AssetThumbnailLoadResult {
+        let service = service
+        let loadEpoch = thumbnailLoadEpoch
+        do {
+            let data = try await thumbnailLoadGate.withPermit { () -> Data? in
+                try Task.checkCancellation()
+                return try await service.loadOriginalAspectThumbnailIfCached(assetID: assetID)
+            }
+            guard loadEpoch == thumbnailLoadEpoch else {
+                return .cancelled
+            }
+            if let data {
+                return .loaded(data)
+            }
+        } catch is CancellationError {
+            return .cancelled
+        } catch {
+            // The original-aspect cache is auxiliary. Any miss or read failure
+            // keeps the primary square thumbnail available.
+        }
+        return await loadThumbnailResult(assetID: assetID)
+    }
+
     /// Retries transient thumbnail failures while the requesting SwiftUI task remains active.
     /// Cancellation settles as `.cancelled` without being promoted to a permanent blank state.
     func loadThumbnailResultWithRetry(
         assetID: UUID,
         maxAttempts: Int = 8
     ) async -> AssetThumbnailLoadResult {
-        if let cached = cachedThumbnailData(for: assetID) {
+        await loadThumbnailResultWithRetry(
+            assetID: assetID,
+            aspectMode: .square,
+            maxAttempts: maxAttempts
+        )
+    }
+
+    func loadThumbnailResultWithRetry(
+        assetID: UUID,
+        aspectMode: LibraryThumbnailAspectMode,
+        maxAttempts: Int = 8
+    ) async -> AssetThumbnailLoadResult {
+        if aspectMode == .square,
+           let cached = cachedThumbnailData(for: assetID)
+        {
             return .loaded(cached)
         }
         precondition(maxAttempts > 0)
@@ -4740,7 +4824,12 @@ final class LibraryWorkspaceModel: ObservableObject {
             if Task.isCancelled {
                 return .cancelled
             }
-            let result = await loadThumbnailResult(assetID: assetID)
+            let result: AssetThumbnailLoadResult = switch aspectMode {
+            case .square:
+                await loadThumbnailResult(assetID: assetID)
+            case .original:
+                await loadOriginalAspectThumbnailResult(assetID: assetID)
+            }
             switch result {
             case .loaded, .cloudOnly, .unavailable, .cancelled:
                 return result
@@ -10105,6 +10194,18 @@ struct LibraryWorkspaceView: View {
             )
             .persistentHelp("在后台预先生成这个来源的网格缩略图，让后续浏览更快。")
 
+            Button("专门用于原比例的缓存") {
+                model.prewarmSourceOriginalAspectThumbnails(sourceID: source.id)
+            }
+            .disabled(
+                model.isPrewarmingSourceThumbnails
+                    || source.state == .disabled
+                    || source.state == .authorizationRequired
+            )
+            .persistentHelp(
+                "手动为这个来源的照片和视频生成原比例网格缓存；未缓存的项目切换比例后仍显示正方形。"
+            )
+
             if source.kind == .photos && source.state == .active {
                 Button("完整修复扫描…") {
                     photosSourcePendingFullRepair = source
@@ -11258,10 +11359,11 @@ struct LibraryWorkspaceView: View {
     }
 
     private func sourceThumbnailPrewarmTitle(_ progress: SourceThumbnailPrewarmProgress) -> String {
+        let prefix = progress.kind == .square ? "预热" : "原比例缓存"
         if progress.total > 0 {
-            return "预热 \(progress.sourceDisplayName) \(progress.completed.formatted()) / \(progress.total.formatted())"
+            return "\(prefix) \(progress.sourceDisplayName) \(progress.completed.formatted()) / \(progress.total.formatted())"
         }
-        return "正在列出 \(progress.sourceDisplayName)…"
+        return "正在列出 \(progress.sourceDisplayName) 的\(prefix)…"
     }
 
     private func availabilityFilterButton(
@@ -11357,6 +11459,8 @@ struct LibraryWorkspaceView: View {
              .photosOriginalStorageCleared,
              .sourceThumbnailPrewarmCompleted,
              .sourceThumbnailPrewarmCancelled,
+             .sourceOriginalAspectThumbnailPrewarmCompleted,
+             .sourceOriginalAspectThumbnailPrewarmCancelled,
              .appStorageLocationRequiresRestart,
              .personalModelRebuildCompleted, .personalAdamWRebuildCompleted,
              .selectedAssetEmbeddingCached,
@@ -11433,6 +11537,25 @@ struct LibraryWorkspaceView: View {
             "已取消“\(sourceDisplayName)”缩略图预热（\(completed)/\(total)）。已写入磁盘的条目仍会保留。"
         case .sourceThumbnailPrewarmFailed:
             "来源缩略图预热未能开始。浏览和已有缓存不受影响，请稍后重试。"
+        case let .sourceOriginalAspectThumbnailPrewarmCompleted(
+            sourceDisplayName,
+            warmed,
+            failed,
+            total
+        ):
+            if failed == 0 {
+                "已为“\(sourceDisplayName)”生成 \(warmed)/\(total) 个照片和视频原比例缓存。"
+            } else {
+                "已为“\(sourceDisplayName)”生成 \(warmed)/\(total) 个原比例缓存（失败 \(failed) 个）；未缓存项目仍显示正方形。"
+            }
+        case let .sourceOriginalAspectThumbnailPrewarmCancelled(
+            sourceDisplayName,
+            completed,
+            total
+        ):
+            "已取消“\(sourceDisplayName)”原比例缓存（\(completed)/\(total)）。已经生成的缓存仍会保留。"
+        case .sourceOriginalAspectThumbnailPrewarmFailed:
+            "原比例缓存未能开始。图库继续使用正方形缩略图，请稍后重试。"
         case .appStorageLocationRequiresRestart:
             "外置应用存储位置已保存；重新启动 ImageAll 后会迁移现有资料与全部缓存。"
         case .appStorageLocationActionFailed:
@@ -11913,12 +12036,14 @@ private struct AssetThumbnailView: View {
 
     private func loadGridThumbnailWhileVisible() async {
         isCloudOnly = false
+        image = nil
         guard item.availability == .available else {
-            image = nil
             return
         }
 
-        if let cached = model.cachedThumbnailData(for: item.assetID),
+        let aspectMode = model.thumbnailAspectMode
+        if aspectMode == .square,
+           let cached = model.cachedThumbnailData(for: item.assetID),
            let cachedImage = LibraryGridThumbnailImageFactory.image(from: cached)
         {
             image = cachedImage
@@ -11927,11 +12052,16 @@ private struct AssetThumbnailView: View {
 
         var transientAttempts = 0
         while !Task.isCancelled {
-            switch await model.loadThumbnailResultWithRetry(assetID: item.assetID) {
+            switch await model.loadThumbnailResultWithRetry(
+                assetID: item.assetID,
+                aspectMode: aspectMode
+            ) {
             case let .loaded(data):
                 guard !Task.isCancelled else { return }
                 if let decoded = LibraryGridThumbnailImageFactory.image(from: data) {
-                    model.rememberThumbnailData(data, for: item.assetID)
+                    if aspectMode == .square {
+                        model.rememberThumbnailData(data, for: item.assetID)
+                    }
                     image = decoded
                     return
                 }
@@ -11978,16 +12108,16 @@ private struct AssetThumbnailView: View {
         return AssetThumbnailLoadID(
             assetID: item.assetID,
             usesDownloadedCloudPreview: usesDownloadedCloudPreview,
-            cacheVersion: model.thumbnailCacheVersion(for: item.assetID)
+            cacheVersion: model.thumbnailCacheVersion(for: item.assetID),
+            aspectMode: model.thumbnailAspectMode,
+            originalAspectCacheGeneration: model.originalAspectThumbnailCacheGeneration
         )
     }
 
     private var thumbnailFrameAspectRatio: CGFloat {
-        model.thumbnailAspectMode.frameAspectRatio(
-            imageSize: image?.size,
-            pixelWidth: item.width,
-            pixelHeight: item.height
-        )
+        // Catalog dimensions alone do not prove that the manually generated
+        // original-aspect cache exists. Stay square until cache bytes load.
+        model.thumbnailAspectMode.frameAspectRatio(imageSize: image?.size)
     }
 
     private var emptyThumbnailSymbol: String {
@@ -12028,6 +12158,8 @@ private struct AssetThumbnailLoadID: Hashable {
     let assetID: UUID
     let usesDownloadedCloudPreview: Bool
     let cacheVersion: Int
+    let aspectMode: LibraryThumbnailAspectMode
+    let originalAspectCacheGeneration: Int
 }
 
 enum LibraryGridThumbnailImageFactory {
