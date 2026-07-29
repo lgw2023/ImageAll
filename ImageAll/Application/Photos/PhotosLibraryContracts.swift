@@ -20,6 +20,30 @@ struct PhotosAssetMetadata: Equatable, Sendable {
     let height: Int
     let createdAtMs: Int64?
     let modifiedAtMs: Int64?
+    let mediaKind: MediaKind
+    let durationMs: Int64?
+
+    init(
+        localIdentifier: String,
+        fileName: String?,
+        mediaType: String,
+        width: Int,
+        height: Int,
+        createdAtMs: Int64?,
+        modifiedAtMs: Int64?,
+        mediaKind: MediaKind = .image,
+        durationMs: Int64? = nil
+    ) {
+        self.localIdentifier = localIdentifier
+        self.fileName = fileName
+        self.mediaType = mediaType
+        self.width = width
+        self.height = height
+        self.createdAtMs = createdAtMs
+        self.modifiedAtMs = modifiedAtMs
+        self.mediaKind = mediaKind
+        self.durationMs = durationMs
+    }
 }
 
 struct PhotosAssetEnumerationBatch: Equatable, Sendable {
@@ -105,6 +129,12 @@ protocol PhotosCloudPreviewPort: Sendable {
 /// prior user-granted download already materialized the original on disk.
 protocol PhotosOriginalContentPort: Sendable {
     func requestOriginalImageData(localIdentifier: String) throws -> Data
+}
+
+/// Full video bytes for exact-duplicate analysis. Production PhotoKit access
+/// is local-only and never materializes an iCloud original implicitly.
+protocol PhotosOriginalVideoContentPort: Sendable {
+    func requestOriginalVideoData(localIdentifier: String) throws -> Data
 }
 
 struct PhotosOriginalStorageUsage: Equatable, Sendable {

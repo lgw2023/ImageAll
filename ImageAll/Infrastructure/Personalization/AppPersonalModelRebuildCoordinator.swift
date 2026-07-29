@@ -92,6 +92,7 @@ actor AppPersonalModelRebuildRuntime: AppPersonalModelRebuilding {
             applicationSupportDirectory: applicationSupportDirectory,
             expectedCatalogScopeID: expectedCatalogScopeID,
             expectedEncoderIdentity: identity,
+            mediaKind: source.mediaKind,
             family: family
         )
         let coordinator = AppPersonalModelRebuildCoordinator(
@@ -113,10 +114,14 @@ actor AppPersonalModelRebuildRuntime: AppPersonalModelRebuilding {
             if let database {
                 let review = GRDBPersonalizationReviewRepository(database: database)
                 let published = try review.publishedArtifactSHA256s(
+                    mediaKind: source.mediaKind,
                     method: family.personalSuggestionMethod
                 )
                 if published.isEmpty,
-                   try review.usesLegacyActivePointer(method: family.personalSuggestionMethod)
+                   try review.usesLegacyActivePointer(
+                       mediaKind: source.mediaKind,
+                       method: family.personalSuggestionMethod
+                   )
                 {
                     _ = await store.start()
                 } else {
@@ -132,6 +137,7 @@ actor AppPersonalModelRebuildRuntime: AppPersonalModelRebuilding {
                 let finishedAtMs = clock.nowMs
                 let capability = AppPersonalSuggestionCapabilityMapper.capability(
                     from: execution.identity,
+                    mediaKind: source.mediaKind,
                     family: family
                 )
                 let review = GRDBPersonalizationReviewRepository(database: database)
@@ -198,6 +204,7 @@ actor AppPersonalModelRebuildRuntime: AppPersonalModelRebuilding {
             try runs.insert(
                 TrainingRunRecord(
                     id: runID,
+                    mediaKind: snapshot.mediaKind,
                     method: family.trainingRunMethod,
                     state: .queued,
                     createdAtMs: nowMs,
@@ -210,7 +217,10 @@ actor AppPersonalModelRebuildRuntime: AppPersonalModelRebuilding {
                         : nil,
                     sampleSummaryJSON: try Self.sampleSummary(snapshot: snapshot),
                     sampleManifestSHA256: nil,
-                    configJSON: try Self.configJSON(family: family),
+                    configJSON: try Self.configJSON(
+                        mediaKind: snapshot.mediaKind,
+                        family: family
+                    ),
                     metricsJSON: "{}",
                     artifactKind: nil,
                     artifactRef: nil,
@@ -250,6 +260,7 @@ actor AppPersonalModelRebuildRuntime: AppPersonalModelRebuilding {
         return try AppPersonalTrainingRunJSON.object([
             "scope": "resolvedSnapshot",
             "scopeKind": "resolvedSnapshot",
+            "mediaKind": snapshot.mediaKind.rawValue,
             "decisionSnapshotRevision":
                 AppPersonalTrainingSnapshotAudit.decisionRevision(snapshot),
             "tagCount": snapshot.personalTagIDs.count,
@@ -258,16 +269,21 @@ actor AppPersonalModelRebuildRuntime: AppPersonalModelRebuilding {
         ])
     }
 
-    private static func configJSON(family: AppPersonalLinearHeadFamily) throws -> String {
+    private static func configJSON(
+        mediaKind: MediaKind,
+        family: AppPersonalLinearHeadFamily
+    ) throws -> String {
         switch family {
         case .centroid:
             return try AppPersonalTrainingRunJSON.object([
+                "mediaKind": mediaKind.rawValue,
                 "algorithmRevision": AppPersonalLinearHeadTrainer.algorithmRevision,
                 "minimumAcceptedPerTag": 2,
             ])
         case .adamW:
             let config = AppPersonalAdamWTrainingConfig.default
             return try AppPersonalTrainingRunJSON.object([
+                "mediaKind": mediaKind.rawValue,
                 "algorithmRevision": AppPersonalAdamWLinearHeadTrainer.algorithmRevision,
                 "maxEpochs": config.maxEpochs,
                 "learningRate": config.learningRate,
@@ -294,6 +310,7 @@ actor AppPersonalModelRebuildRuntime: AppPersonalModelRebuilding {
         })
         return try AppPersonalTrainingRunJSON.object([
             "published": true,
+            "mediaKind": snapshot.mediaKind.rawValue,
             "tagCount": snapshot.personalTagIDs.count,
             "sampleCount": samples.count,
         ])

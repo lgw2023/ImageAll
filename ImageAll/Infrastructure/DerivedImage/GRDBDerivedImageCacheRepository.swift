@@ -361,7 +361,9 @@ struct GRDBDerivedImageCacheRepository: Sendable {
                 a.content_revision,
                 a.relative_path,
                 a.file_name,
+                a.media_kind,
                 a.media_type,
+                a.duration_ms,
                 a.availability,
                 a.locator_state,
                 a.locator_kind,
@@ -392,7 +394,9 @@ struct GRDBDerivedImageCacheRepository: Sendable {
             contentRevision: row["content_revision"],
             relativePath: relativePath,
             fileName: fileName,
+            mediaKind: MediaKind(rawValue: row["media_kind"]) ?? .image,
             mediaType: row["media_type"],
+            durationMs: row["duration_ms"],
             availability: row["availability"],
             locatorState: row["locator_state"],
             locatorKind: row["locator_kind"],
@@ -466,16 +470,27 @@ enum PublishEntryOutcome: Equatable {
 
 extension DerivedImageAssetGenerationContext {
     var isEligibleForGeneration: Bool {
-        locatorKind == AssetLocatorKind.file.rawValue
+        let supportedMedia = switch mediaKind {
+        case .image:
+            DerivedImageRenderer.isSupportedSourceMediaType(mediaType)
+        case .video:
+            ApprovedSourceMediaTypes.isVideoMediaType(mediaType)
+                && (durationMs ?? 0) > 0
+        }
+        let currentFile = locatorKind == AssetLocatorKind.file.rawValue
             && locatorState == AssetLocatorState.current.rawValue
             && availability == AssetAvailability.available.rawValue
-            && sourceKind == SourceKind.folder.rawValue
+        let activeFolder = sourceKind == SourceKind.folder.rawValue
             && sourceState == SourceState.active.rawValue
-            && DerivedImageRenderer.isSupportedSourceMediaType(mediaType)
-            && RelativePathRules.validate(relativePath).isSuccess
+        let validPath = RelativePathRules.validate(relativePath).isSuccess
             && RelativePathRules.fileName(from: relativePath) == fileName
-            && fingerprintSizeBytes > 0
+        let validFingerprint = fingerprintSizeBytes > 0
             && fingerprintModifiedAtNs >= 0
+        return currentFile
+            && activeFolder
+            && supportedMedia
+            && validPath
+            && validFingerprint
     }
 
     /// Catalog compatibility for generation uses stable content facts only.

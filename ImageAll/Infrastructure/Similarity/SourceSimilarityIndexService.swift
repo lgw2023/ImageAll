@@ -47,22 +47,46 @@ struct SourceSimilarityIndexService: SourceSimilarityIndexPort {
     }
 
     func status(sourceID: UUID) throws -> SourceSimilarityIndexStatus? {
+        try status(sourceID: sourceID, mediaKind: .image)
+    }
+
+    func enqueueBuild(sourceID: UUID) throws -> UUID {
+        try enqueueBuild(sourceID: sourceID, mediaKind: .image)
+    }
+
+    func candidateAssetIDs(
+        seedAssetIDs: [UUID],
+        universeAssetIDs: [UUID]
+    ) throws -> SourceSimilarityCandidatePlan {
+        try candidateAssetIDs(
+            seedAssetIDs: seedAssetIDs,
+            universeAssetIDs: universeAssetIDs,
+            mediaKind: .image
+        )
+    }
+
+    func status(sourceID: UUID, mediaKind: MediaKind) throws -> SourceSimilarityIndexStatus? {
         try database.pool.read { db in
-            guard let row = try Self.fetchRow(db, sourceID: sourceID) else { return nil }
+            guard let row = try Self.fetchRow(
+                db,
+                sourceID: sourceID,
+                mediaKind: mediaKind
+            ) else { return nil }
             return row.status
         }
     }
 
-    func enqueueBuild(sourceID: UUID) throws -> UUID {
+    func enqueueBuild(sourceID: UUID, mediaKind: MediaKind) throws -> UUID {
         let jobID = UUID()
         let nowMs = clock.nowMs
         let command = try SourceSimilarityIndexJobFactory.makeCommand(
             jobID: jobID,
             sourceID: sourceID,
+            mediaKind: mediaKind,
             notBeforeMs: nowMs
         )
         let assetCount = try database.pool.read { db in
-            try Self.countAvailableAssets(db, sourceID: sourceID)
+            try Self.countAvailableAssets(db, sourceID: sourceID, mediaKind: mediaKind)
         }
         let maxL2 = thresholdReader.thresholds().clamped().featurePrintMaxL2Distance
         do {
@@ -71,6 +95,7 @@ struct SourceSimilarityIndexService: SourceSimilarityIndexPort {
                 try Self.upsertBuildingRow(
                     db,
                     sourceID: sourceID,
+                    mediaKind: mediaKind,
                     jobID: jobID,
                     assetCount: assetCount,
                     featurePrintMaxL2: maxL2,
@@ -102,7 +127,8 @@ struct SourceSimilarityIndexService: SourceSimilarityIndexPort {
 
     func candidateAssetIDs(
         seedAssetIDs: [UUID],
-        universeAssetIDs: [UUID]
+        universeAssetIDs: [UUID],
+        mediaKind: MediaKind
     ) throws -> SourceSimilarityCandidatePlan {
         let seeds = Array(Set(seedAssetIDs))
         let universe = Array(Set(universeAssetIDs).union(seeds))
@@ -119,7 +145,11 @@ struct SourceSimilarityIndexService: SourceSimilarityIndexPort {
                 }
                 var rows: [UUID: SourceSimilarityIndexRow] = [:]
                 for sourceID in Set(map.values) {
-                    guard let row = try Self.fetchRow(db, sourceID: sourceID) else { return nil }
+                    guard let row = try Self.fetchRow(
+                        db,
+                        sourceID: sourceID,
+                        mediaKind: mediaKind
+                    ) else { return nil }
                     rows[sourceID] = row
                 }
                 return (map, rows)
@@ -162,7 +192,10 @@ struct SourceSimilarityIndexService: SourceSimilarityIndexPort {
             for (sourceID, neighborKeys) in neighborLookups {
                 guard !neighborKeys.isEmpty else { continue }
                 let placeholders = Array(repeating: "?", count: neighborKeys.count).joined(separator: ", ")
-                var arguments: [DatabaseValueConvertible?] = [sourceID.uuidString.lowercased()]
+                var arguments: [DatabaseValueConvertible?] = [
+                    sourceID.uuidString.lowercased(),
+                    mediaKind.rawValue,
+                ]
                 arguments.append(contentsOf: neighborKeys as [DatabaseValueConvertible?])
                 let rows = try Row.fetchAll(
                     db,
@@ -171,6 +204,7 @@ struct SourceSimilarityIndexService: SourceSimilarityIndexPort {
                     FROM source_similarity_bucket_member bm
                     JOIN asset a ON a.id = bm.asset_id
                     WHERE bm.source_id = ?
+                        AND bm.media_kind = ?
                         AND bm.bucket_key IN (\(placeholders))
                         AND bm.content_revision = a.content_revision
                     """,
@@ -223,20 +257,26 @@ struct SourceSimilarityIndexService: SourceSimilarityIndexPort {
         return result
     }
 
-    fileprivate static func countAvailableAssets(_ db: Database, sourceID: UUID) throws -> Int {
+    fileprivate static func countAvailableAssets(
+        _ db: Database,
+        sourceID: UUID,
+        mediaKind: MediaKind
+    ) throws -> Int {
         try Int.fetchOne(
             db,
             sql: """
             SELECT COUNT(*) FROM asset
-            WHERE source_id = ? AND locator_state = 'current' AND availability = 'available'
+            WHERE source_id = ? AND media_kind = ?
+              AND locator_state = 'current' AND availability = 'available'
             """,
-            arguments: [sourceID.uuidString.lowercased()]
+            arguments: [sourceID.uuidString.lowercased(), mediaKind.rawValue]
         ) ?? 0
     }
 
     fileprivate static func upsertBuildingRow(
         _ db: Database,
         sourceID: UUID,
+        mediaKind: MediaKind,
         jobID: UUID,
         assetCount: Int,
         featurePrintMaxL2: Double,
@@ -245,13 +285,13 @@ struct SourceSimilarityIndexService: SourceSimilarityIndexPort {
         try db.execute(
             sql: """
             INSERT INTO source_similarity_index (
-                source_id, state, policy_version, feature_print_provider,
+                source_id, media_kind, state, policy_version, feature_print_provider,
                 feature_print_request_revision, feature_print_preprocessing_revision,
                 feature_print_max_l2, lsh_bit_count, lsh_planes_json,
                 asset_count, indexed_count, cluster_count, pending_count,
                 job_id, built_at_ms, updated_at_ms, last_error
-            ) VALUES (?, 'building', ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, NULL, ?, NULL)
-            ON CONFLICT(source_id) DO UPDATE SET
+            ) VALUES (?, ?, 'building', ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, NULL, ?, NULL)
+            ON CONFLICT(source_id, media_kind) DO UPDATE SET
                 state = 'building',
                 policy_version = excluded.policy_version,
                 feature_print_provider = excluded.feature_print_provider,
@@ -271,6 +311,7 @@ struct SourceSimilarityIndexService: SourceSimilarityIndexPort {
             """,
             arguments: [
                 sourceID.uuidString.lowercased(),
+                mediaKind.rawValue,
                 SourceSimilarityIndexPolicy.identityVersion,
                 PersonalizationConstants.provider,
                 PersonalizationConstants.requestRevision,
@@ -286,11 +327,18 @@ struct SourceSimilarityIndexService: SourceSimilarityIndexPort {
         )
     }
 
-    fileprivate static func fetchRow(_ db: Database, sourceID: UUID) throws -> SourceSimilarityIndexRow? {
+    fileprivate static func fetchRow(
+        _ db: Database,
+        sourceID: UUID,
+        mediaKind: MediaKind
+    ) throws -> SourceSimilarityIndexRow? {
         guard let row = try Row.fetchOne(
             db,
-            sql: "SELECT * FROM source_similarity_index WHERE source_id = ?",
-            arguments: [sourceID.uuidString.lowercased()]
+            sql: """
+            SELECT * FROM source_similarity_index
+            WHERE source_id = ? AND media_kind = ?
+            """,
+            arguments: [sourceID.uuidString.lowercased(), mediaKind.rawValue]
         ) else {
             return nil
         }
@@ -300,6 +348,7 @@ struct SourceSimilarityIndexService: SourceSimilarityIndexPort {
 
 struct SourceSimilarityIndexRow {
     let sourceID: UUID
+    let mediaKind: MediaKind
     let state: String
     let policyVersion: String
     let featurePrintProvider: String
@@ -321,6 +370,14 @@ struct SourceSimilarityIndexRow {
             throw JobQueueError.unknownPersistedRawValue(field: "source_id", value: rawSourceID)
         }
         self.sourceID = sourceID
+        let rawMediaKind: String = row["media_kind"]
+        guard let mediaKind = MediaKind(rawValue: rawMediaKind) else {
+            throw JobQueueError.unknownPersistedRawValue(
+                field: "media_kind",
+                value: rawMediaKind
+            )
+        }
+        self.mediaKind = mediaKind
         state = row["state"]
         policyVersion = row["policy_version"]
         featurePrintProvider = row["feature_print_provider"]
@@ -341,6 +398,7 @@ struct SourceSimilarityIndexRow {
     var status: SourceSimilarityIndexStatus {
         SourceSimilarityIndexStatus(
             sourceID: sourceID,
+            mediaKind: mediaKind,
             state: SourceSimilarityIndexState(rawValue: state) ?? .failed,
             assetCount: assetCount,
             indexedCount: indexedCount,
@@ -363,6 +421,23 @@ enum SourceSimilarityIndexJobFactory {
 
     struct Payload: Codable, Sendable, Equatable {
         let sourceID: UUID
+        let mediaKind: MediaKind
+
+        init(sourceID: UUID, mediaKind: MediaKind = .image) {
+            self.sourceID = sourceID
+            self.mediaKind = mediaKind
+        }
+
+        private enum CodingKeys: String, CodingKey {
+            case sourceID
+            case mediaKind
+        }
+
+        init(from decoder: Decoder) throws {
+            let values = try decoder.container(keyedBy: CodingKeys.self)
+            sourceID = try values.decode(UUID.self, forKey: .sourceID)
+            mediaKind = try values.decodeIfPresent(MediaKind.self, forKey: .mediaKind) ?? .image
+        }
     }
 
     enum Phase: String, Codable, Sendable {
@@ -377,22 +452,24 @@ enum SourceSimilarityIndexJobFactory {
         var dimension: Int?
     }
 
-    static func coalescingKey(sourceID: UUID) -> String {
-        "sourceSimilarityIndex:\(sourceID.uuidString.lowercased())"
+    static func coalescingKey(sourceID: UUID, mediaKind: MediaKind = .image) -> String {
+        let base = "sourceSimilarityIndex:\(sourceID.uuidString.lowercased())"
+        return mediaKind == .image ? base : "\(base):\(mediaKind.rawValue)"
     }
 
     static func makeCommand(
         jobID: UUID,
         sourceID: UUID,
+        mediaKind: MediaKind = .image,
         notBeforeMs: Int64
     ) throws -> EnqueueJobCommand {
         EnqueueJobCommand(
             id: jobID,
             kind: kind,
             payloadVersion: payloadVersion,
-            payload: try JSONEncoder().encode(Payload(sourceID: sourceID)),
+            payload: try JSONEncoder().encode(Payload(sourceID: sourceID, mediaKind: mediaKind)),
             sourceID: sourceID,
-            coalescingKey: coalescingKey(sourceID: sourceID),
+            coalescingKey: coalescingKey(sourceID: sourceID, mediaKind: mediaKind),
             priority: priority,
             maxAttempts: maxAttempts,
             notBeforeMs: notBeforeMs
@@ -452,17 +529,25 @@ private struct SourceSimilarityIndexHandler: LeaseBoundJobHandler {
             return failure(checkpoint: checkpoint)
         }
         let sourceID = decoded.sourceID
+        let mediaKind = decoded.mediaKind
 
         do {
             var state = try SourceSimilarityIndexJobFactory.decodeCheckpoint(checkpoint)
             if state == nil {
                 let total = try database.pool.read { db in
-                    try SourceSimilarityIndexService.countAvailableAssets(db, sourceID: sourceID)
+                    try SourceSimilarityIndexService.countAvailableAssets(
+                        db,
+                        sourceID: sourceID,
+                        mediaKind: mediaKind
+                    )
                 }
                 try database.pool.write { db in
                     try db.execute(
-                        sql: "DELETE FROM source_similarity_bucket_member WHERE source_id = ?",
-                        arguments: [sourceID.uuidString.lowercased()]
+                        sql: """
+                        DELETE FROM source_similarity_bucket_member
+                        WHERE source_id = ? AND media_kind = ?
+                        """,
+                        arguments: [sourceID.uuidString.lowercased(), mediaKind.rawValue]
                     )
                 }
                 state = SourceSimilarityIndexJobFactory.Checkpoint(
@@ -487,6 +572,7 @@ private struct SourceSimilarityIndexHandler: LeaseBoundJobHandler {
                 case .vectors:
                     let batch = try listAssets(
                         sourceID: sourceID,
+                        mediaKind: mediaKind,
                         offset: current.nextOffset,
                         limit: SourceSimilarityIndexJobFactory.vectorBatchSize
                     )
@@ -502,17 +588,25 @@ private struct SourceSimilarityIndexHandler: LeaseBoundJobHandler {
                         }
                         if current.dimension == nil {
                             current.dimension = vector.count
-                            try persistPlanes(sourceID: sourceID, dimension: vector.count)
+                            try persistPlanes(
+                                sourceID: sourceID,
+                                mediaKind: mediaKind,
+                                dimension: vector.count
+                            )
                             cachedPlanes = nil
                         }
                         guard vector.count == current.dimension else { continue }
                         if cachedPlanes == nil {
-                            cachedPlanes = try loadPlanes(sourceID: sourceID)
+                            cachedPlanes = try loadPlanes(
+                                sourceID: sourceID,
+                                mediaKind: mediaKind
+                            )
                         }
                         guard let planes = cachedPlanes, !planes.isEmpty else { continue }
                         let key = FeaturePrintLSH.bucketKey(vector: vector, planes: planes)
                         try insertMember(
                             sourceID: sourceID,
+                            mediaKind: mediaKind,
                             assetID: member.assetID,
                             contentRevision: member.contentRevision,
                             bucketKey: key
@@ -527,7 +621,10 @@ private struct SourceSimilarityIndexHandler: LeaseBoundJobHandler {
                         return settled
                     }
                 case .clustering:
-                    let (clusterCount, indexedCount) = try clusterAndFinalize(sourceID: sourceID)
+                    let (clusterCount, indexedCount) = try clusterAndFinalize(
+                        sourceID: sourceID,
+                        mediaKind: mediaKind
+                    )
                     let finalCheckpoint = try SourceSimilarityIndexJobFactory.encodeCheckpoint(current)
                     let finalProgress = JobProgress(completed: progressTotal, total: progressTotal)
                     _ = try queue.commitLeaseProtectedBatch(
@@ -542,6 +639,7 @@ private struct SourceSimilarityIndexHandler: LeaseBoundJobHandler {
                         try markReady(
                             db,
                             sourceID: sourceID,
+                            mediaKind: mediaKind,
                             assetCount: current.totalAssetCount,
                             indexedCount: indexedCount,
                             clusterCount: clusterCount,
@@ -559,7 +657,13 @@ private struct SourceSimilarityIndexHandler: LeaseBoundJobHandler {
         } catch {
             let message = String(describing: error)
             try? database.pool.write { db in
-                try markFailed(db, sourceID: sourceID, message: message, nowMs: clock.nowMs)
+                try markFailed(
+                    db,
+                    sourceID: sourceID,
+                    mediaKind: mediaKind,
+                    message: message,
+                    nowMs: clock.nowMs
+                )
             }
             let persisted = try? queue.fetchJob(id: lease.jobID)
             return JobHandlerExecutionResult(
@@ -575,17 +679,28 @@ private struct SourceSimilarityIndexHandler: LeaseBoundJobHandler {
         let contentRevision: Int
     }
 
-    private func listAssets(sourceID: UUID, offset: Int, limit: Int) throws -> [Member] {
+    private func listAssets(
+        sourceID: UUID,
+        mediaKind: MediaKind,
+        offset: Int,
+        limit: Int
+    ) throws -> [Member] {
         try database.pool.read { db in
             let rows = try Row.fetchAll(
                 db,
                 sql: """
                 SELECT id, content_revision FROM asset
-                WHERE source_id = ? AND locator_state = 'current' AND availability = 'available'
+                WHERE source_id = ? AND media_kind = ?
+                  AND locator_state = 'current' AND availability = 'available'
                 ORDER BY id ASC
                 LIMIT ? OFFSET ?
                 """,
-                arguments: [sourceID.uuidString.lowercased(), limit, offset]
+                arguments: [
+                    sourceID.uuidString.lowercased(),
+                    mediaKind.rawValue,
+                    limit,
+                    offset,
+                ]
             )
             return rows.compactMap { row -> Member? in
                 let rawID: String = row["id"]
@@ -595,9 +710,13 @@ private struct SourceSimilarityIndexHandler: LeaseBoundJobHandler {
         }
     }
 
-    private func persistPlanes(sourceID: UUID, dimension: Int) throws {
+    private func persistPlanes(sourceID: UUID, mediaKind: MediaKind, dimension: Int) throws {
         guard let row = try database.pool.read({ db in
-            try SourceSimilarityIndexService.fetchRow(db, sourceID: sourceID)
+            try SourceSimilarityIndexService.fetchRow(
+                db,
+                sourceID: sourceID,
+                mediaKind: mediaKind
+            )
         }) else {
             return
         }
@@ -608,25 +727,38 @@ private struct SourceSimilarityIndexHandler: LeaseBoundJobHandler {
             try db.execute(
                 sql: """
                 UPDATE source_similarity_index SET lsh_planes_json = ?, updated_at_ms = ?
-                WHERE source_id = ?
+                WHERE source_id = ? AND media_kind = ?
                 """,
-                arguments: [json, clock.nowMs, sourceID.uuidString.lowercased()]
+                arguments: [
+                    json,
+                    clock.nowMs,
+                    sourceID.uuidString.lowercased(),
+                    mediaKind.rawValue,
+                ]
             )
         }
     }
 
-    private func loadPlanes(sourceID: UUID) throws -> [[Float]] {
+    private func loadPlanes(sourceID: UUID, mediaKind: MediaKind) throws -> [[Float]] {
         guard let row = try database.pool.read({ db in
-            try SourceSimilarityIndexService.fetchRow(db, sourceID: sourceID)
+            try SourceSimilarityIndexService.fetchRow(
+                db,
+                sourceID: sourceID,
+                mediaKind: mediaKind
+            )
         }) else {
             return []
         }
         return row.lshPlanes
     }
 
-    private func loadMaxL2(sourceID: UUID) throws -> Double {
+    private func loadMaxL2(sourceID: UUID, mediaKind: MediaKind) throws -> Double {
         guard let row = try database.pool.read({ db in
-            try SourceSimilarityIndexService.fetchRow(db, sourceID: sourceID)
+            try SourceSimilarityIndexService.fetchRow(
+                db,
+                sourceID: sourceID,
+                mediaKind: mediaKind
+            )
         }) else {
             return NearDuplicateScenePolicy.featurePrintMaxL2Distance
         }
@@ -635,6 +767,7 @@ private struct SourceSimilarityIndexHandler: LeaseBoundJobHandler {
 
     private func insertMember(
         sourceID: UUID,
+        mediaKind: MediaKind,
         assetID: UUID,
         contentRevision: Int,
         bucketKey: UInt64
@@ -643,15 +776,16 @@ private struct SourceSimilarityIndexHandler: LeaseBoundJobHandler {
             try db.execute(
                 sql: """
                 INSERT INTO source_similarity_bucket_member (
-                    source_id, asset_id, content_revision, bucket_key, cluster_id
-                ) VALUES (?, ?, ?, ?, NULL)
-                ON CONFLICT(source_id, asset_id) DO UPDATE SET
+                    source_id, media_kind, asset_id, content_revision, bucket_key, cluster_id
+                ) VALUES (?, ?, ?, ?, ?, NULL)
+                ON CONFLICT(source_id, media_kind, asset_id) DO UPDATE SET
                     content_revision = excluded.content_revision,
                     bucket_key = excluded.bucket_key,
                     cluster_id = NULL
                 """,
                 arguments: [
                     sourceID.uuidString.lowercased(),
+                    mediaKind.rawValue,
                     assetID.uuidString.lowercased(),
                     contentRevision,
                     Int64(bitPattern: bucketKey),
@@ -660,13 +794,20 @@ private struct SourceSimilarityIndexHandler: LeaseBoundJobHandler {
         }
     }
 
-    private func clusterAndFinalize(sourceID: UUID) throws -> (clusterCount: Int, indexedCount: Int) {
-        let maxL2 = try loadMaxL2(sourceID: sourceID)
+    private func clusterAndFinalize(
+        sourceID: UUID,
+        mediaKind: MediaKind
+    ) throws -> (clusterCount: Int, indexedCount: Int) {
+        let maxL2 = try loadMaxL2(sourceID: sourceID, mediaKind: mediaKind)
         let members = try database.pool.read { db -> [(assetID: UUID, bucketKey: Int64)] in
             let rows = try Row.fetchAll(
                 db,
-                sql: "SELECT asset_id, bucket_key FROM source_similarity_bucket_member WHERE source_id = ?",
-                arguments: [sourceID.uuidString.lowercased()]
+                sql: """
+                SELECT asset_id, bucket_key
+                FROM source_similarity_bucket_member
+                WHERE source_id = ? AND media_kind = ?
+                """,
+                arguments: [sourceID.uuidString.lowercased(), mediaKind.rawValue]
             )
             return rows.compactMap { row -> (assetID: UUID, bucketKey: Int64)? in
                 let rawID: String = row["asset_id"]
@@ -733,9 +874,14 @@ private struct SourceSimilarityIndexHandler: LeaseBoundJobHandler {
                 try db.execute(
                     sql: """
                     UPDATE source_similarity_bucket_member SET cluster_id = ?
-                    WHERE source_id = ? AND asset_id = ?
+                    WHERE source_id = ? AND media_kind = ? AND asset_id = ?
                     """,
-                    arguments: [clusterID, sourceID.uuidString.lowercased(), assetID.uuidString.lowercased()]
+                    arguments: [
+                        clusterID,
+                        sourceID.uuidString.lowercased(),
+                        mediaKind.rawValue,
+                        assetID.uuidString.lowercased(),
+                    ]
                 )
             }
         }
@@ -761,6 +907,7 @@ private struct SourceSimilarityIndexHandler: LeaseBoundJobHandler {
     private func markReady(
         _ db: Database,
         sourceID: UUID,
+        mediaKind: MediaKind,
         assetCount: Int,
         indexedCount: Int,
         clusterCount: Int,
@@ -777,7 +924,7 @@ private struct SourceSimilarityIndexHandler: LeaseBoundJobHandler {
                 built_at_ms = ?,
                 updated_at_ms = ?,
                 last_error = NULL
-            WHERE source_id = ?
+            WHERE source_id = ? AND media_kind = ?
             """,
             arguments: [
                 assetCount,
@@ -787,17 +934,29 @@ private struct SourceSimilarityIndexHandler: LeaseBoundJobHandler {
                 nowMs,
                 nowMs,
                 sourceID.uuidString.lowercased(),
+                mediaKind.rawValue,
             ]
         )
     }
 
-    private func markFailed(_ db: Database, sourceID: UUID, message: String, nowMs: Int64) throws {
+    private func markFailed(
+        _ db: Database,
+        sourceID: UUID,
+        mediaKind: MediaKind,
+        message: String,
+        nowMs: Int64
+    ) throws {
         try db.execute(
             sql: """
             UPDATE source_similarity_index SET state = 'failed', last_error = ?, updated_at_ms = ?
-            WHERE source_id = ?
+            WHERE source_id = ? AND media_kind = ?
             """,
-            arguments: [String(message.prefix(500)), nowMs, sourceID.uuidString.lowercased()]
+            arguments: [
+                String(message.prefix(500)),
+                nowMs,
+                sourceID.uuidString.lowercased(),
+                mediaKind.rawValue,
+            ]
         )
     }
 

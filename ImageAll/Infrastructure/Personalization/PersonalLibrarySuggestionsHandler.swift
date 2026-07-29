@@ -121,6 +121,7 @@ private extension PersonalLibrarySuggestionsHandler {
         let total: Int
         do {
             total = try review.frozenAssetTotal(
+                mediaKind: payload.capability.target.mediaKind,
                 sourceIDs: payload.sourceIDs,
                 catalogCutoffMs: payload.catalogCutoffMs,
                 excludingDecisionsForTagID: exclusionTagID
@@ -151,6 +152,7 @@ private extension PersonalLibrarySuggestionsHandler {
             while true {
                 try Task.checkCancellation()
                 let batch = try review.frozenAssetBatch(
+                    mediaKind: payload.capability.target.mediaKind,
                     sourceIDs: payload.sourceIDs,
                     catalogCutoffMs: payload.catalogCutoffMs,
                     afterAssetID: state.lastAssetID,
@@ -232,6 +234,7 @@ private extension PersonalLibrarySuggestionsHandler {
                     state: state,
                     total: total,
                     leaseDurationMs: leaseDurationMs,
+                    mediaKind: payload.capability.target.mediaKind,
                     review: review
                 )
             case .serviceUnavailable:
@@ -273,6 +276,7 @@ private extension PersonalLibrarySuggestionsHandler {
     ) async throws -> AssetResult {
         guard let tagID = payload.capability.tagIDs.first,
               let context = try review.frozenAssetProcessingContext(
+                  mediaKind: payload.capability.target.mediaKind,
                   tagID: tagID,
                   assetID: assetID
               ),
@@ -432,6 +436,7 @@ private extension PersonalLibrarySuggestionsHandler {
         state: PersonalLibrarySuggestionsCheckpoint,
         total: Int,
         leaseDurationMs: Int64,
+        mediaKind: MediaKind,
         review: GRDBPersonalizationReviewRepository
     ) throws -> JobHandlerExecutionResult {
         let jobCheckpoint = try PersonalLibrarySuggestionsCodec.jobCheckpoint(from: state)
@@ -444,7 +449,10 @@ private extension PersonalLibrarySuggestionsHandler {
                 leaseDurationMs: leaseDurationMs
             )
         ) { db in
-            try review.invalidateAllPersonalSuggestionBundles(on: db)
+            try review.invalidatePersonalSuggestionBundles(
+                mediaKind: mediaKind,
+                on: db
+            )
         }
         return settledResult(snapshot: snapshot)
     }
@@ -614,6 +622,7 @@ private extension StandardLibrarySuggestionsHandler {
         let total: Int
         do {
             total = try review.frozenAssetTotal(
+                mediaKind: payload.mediaKind,
                 sourceIDs: payload.sourceIDs,
                 catalogCutoffMs: payload.catalogCutoffMs
             )
@@ -641,6 +650,7 @@ private extension StandardLibrarySuggestionsHandler {
             while true {
                 try Task.checkCancellation()
                 let batch = try review.frozenAssetBatch(
+                    mediaKind: payload.mediaKind,
                     sourceIDs: payload.sourceIDs,
                     catalogCutoffMs: payload.catalogCutoffMs,
                     afterAssetID: state.lastAssetID,
@@ -742,7 +752,10 @@ private extension StandardLibrarySuggestionsHandler {
         payload: StandardLibrarySuggestionsPayload,
         review: GRDBPersonalizationReviewRepository
     ) async throws -> AssetResult {
-        guard let context = try review.frozenStandardAssetProcessingContext(assetID: assetID),
+        guard let context = try review.frozenStandardAssetProcessingContext(
+            mediaKind: payload.mediaKind,
+            assetID: assetID
+        ),
               context.recordUpdatedAtMs <= payload.catalogCutoffMs,
               context.locatorState == AssetLocatorState.current.rawValue,
               context.sourceState == SourceState.active.rawValue,

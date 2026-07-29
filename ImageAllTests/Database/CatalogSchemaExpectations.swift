@@ -125,6 +125,7 @@ enum CatalogSchemaExpectations {
         "asset_current_time_desc_idx",
         "asset_current_time_idx",
         "asset_generation_missing_idx",
+        "asset_current_media_kind_idx",
         "asset_similarity_fingerprint_hash_idx",
         "asset_source_availability_idx",
         "decision_tag_idx",
@@ -148,6 +149,7 @@ enum CatalogSchemaExpectations {
         "tag_model_sample_feature_idx",
         "tag_normalized_name_uq",
         "training_run_method_created_idx",
+        "training_run_media_kind_method_created_idx",
         "training_run_state_created_idx",
     ]
 
@@ -219,8 +221,9 @@ enum CatalogSchemaExpectations {
             .init(name: "updated_at_ms", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
         ],
         "personal_suggestion_model": [
-            .init(name: "method", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 1),
-            .init(name: "tag_id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 2),
+            .init(name: "media_kind", type: "TEXT", notNull: true, defaultValue: "'image'", primaryKeyOrder: 1),
+            .init(name: "method", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 2),
+            .init(name: "tag_id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 3),
             .init(name: "catalog_scope_id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
             .init(name: "bundle_id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
             .init(name: "bundle_revision", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
@@ -236,14 +239,16 @@ enum CatalogSchemaExpectations {
             .init(name: "published_run_id", type: "TEXT", notNull: false, defaultValue: nil, primaryKeyOrder: 0),
         ],
         "personal_suggestion_tag": [
-            .init(name: "method", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 1),
-            .init(name: "tag_id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 2),
+            .init(name: "media_kind", type: "TEXT", notNull: true, defaultValue: "'image'", primaryKeyOrder: 1),
+            .init(name: "method", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 2),
+            .init(name: "tag_id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 3),
         ],
         "personal_prediction": [
-            .init(name: "method", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 1),
-            .init(name: "asset_id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 2),
-            .init(name: "tag_id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 3),
-            .init(name: "content_revision", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 4),
+            .init(name: "media_kind", type: "TEXT", notNull: true, defaultValue: "'image'", primaryKeyOrder: 1),
+            .init(name: "method", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 2),
+            .init(name: "asset_id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 3),
+            .init(name: "tag_id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 4),
+            .init(name: "content_revision", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 5),
             .init(name: "score", type: "REAL", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
             .init(name: "state", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
             .init(name: "created_at_ms", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
@@ -267,6 +272,7 @@ enum CatalogSchemaExpectations {
             .init(name: "result_summary_json", type: "TEXT", notNull: true, defaultValue: "'{}'", primaryKeyOrder: 0),
             .init(name: "error_code", type: "TEXT", notNull: false, defaultValue: nil, primaryKeyOrder: 0),
             .init(name: "tag_id", type: "TEXT", notNull: false, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "media_kind", type: "TEXT", notNull: true, defaultValue: "'image'", primaryKeyOrder: 0),
         ],
         "source": [
             .init(name: "id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 1),
@@ -303,6 +309,8 @@ enum CatalogSchemaExpectations {
             .init(name: "record_created_at_ms", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
             .init(name: "record_updated_at_ms", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
             .init(name: "file_name", type: "TEXT", notNull: false, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "media_kind", type: "TEXT", notNull: true, defaultValue: "'image'", primaryKeyOrder: 0),
+            .init(name: "duration_ms", type: "INTEGER", notNull: false, defaultValue: nil, primaryKeyOrder: 0),
         ],
         "file_fingerprint": [
             .init(name: "asset_id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 1),
@@ -347,6 +355,7 @@ enum CatalogSchemaExpectations {
         ],
         "source_similarity_index": [
             .init(name: "source_id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 1),
+            .init(name: "media_kind", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 2),
             .init(name: "state", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
             .init(name: "policy_version", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
             .init(name: "feature_print_provider", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
@@ -366,7 +375,8 @@ enum CatalogSchemaExpectations {
         ],
         "source_similarity_bucket_member": [
             .init(name: "source_id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 1),
-            .init(name: "asset_id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 2),
+            .init(name: "media_kind", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 2),
+            .init(name: "asset_id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 3),
             .init(name: "content_revision", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
             .init(name: "bucket_key", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
             .init(name: "cluster_id", type: "TEXT", notNull: false, defaultValue: nil, primaryKeyOrder: 0),
@@ -448,8 +458,9 @@ enum CatalogSchemaExpectations {
             .init(name: "created_at_ms", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
         ],
         "tag_model_revision": [
-            .init(name: "tag_id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 1),
-            .init(name: "revision", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 2),
+            .init(name: "media_kind", type: "TEXT", notNull: true, defaultValue: "'image'", primaryKeyOrder: 1),
+            .init(name: "tag_id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 2),
+            .init(name: "revision", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 3),
             .init(name: "provider", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
             .init(name: "request_revision", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
             .init(name: "preprocessing_revision", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
@@ -461,9 +472,10 @@ enum CatalogSchemaExpectations {
             .init(name: "created_at_ms", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
         ],
         "tag_model_sample": [
-            .init(name: "tag_id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 1),
-            .init(name: "model_revision", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 2),
-            .init(name: "asset_id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 3),
+            .init(name: "media_kind", type: "TEXT", notNull: true, defaultValue: "'image'", primaryKeyOrder: 1),
+            .init(name: "tag_id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 2),
+            .init(name: "model_revision", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 3),
+            .init(name: "asset_id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 4),
             .init(name: "content_revision", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
             .init(name: "role", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
             .init(name: "rank", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
@@ -472,15 +484,17 @@ enum CatalogSchemaExpectations {
             .init(name: "preprocessing_revision", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
         ],
         "tag_model": [
-            .init(name: "tag_id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 1),
+            .init(name: "media_kind", type: "TEXT", notNull: true, defaultValue: "'image'", primaryKeyOrder: 1),
+            .init(name: "tag_id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 2),
             .init(name: "current_revision", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
             .init(name: "updated_at_ms", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
         ],
         "prediction": [
-            .init(name: "asset_id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 1),
-            .init(name: "tag_id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 2),
-            .init(name: "content_revision", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 3),
-            .init(name: "model_revision", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 4),
+            .init(name: "media_kind", type: "TEXT", notNull: true, defaultValue: "'image'", primaryKeyOrder: 1),
+            .init(name: "asset_id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 2),
+            .init(name: "tag_id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 3),
+            .init(name: "content_revision", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 4),
+            .init(name: "model_revision", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 5),
             .init(name: "score", type: "REAL", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
             .init(name: "state", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
             .init(name: "created_at_ms", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
@@ -545,10 +559,12 @@ enum CatalogSchemaExpectations {
             .init(from: "published_run_id", toTable: "training_run", to: "id", onDelete: "SET NULL"),
         ],
         "personal_suggestion_tag": [
+            .init(from: "media_kind", toTable: "personal_suggestion_model", to: "media_kind", onDelete: "CASCADE"),
             .init(from: "method", toTable: "personal_suggestion_model", to: "method", onDelete: "CASCADE"),
             .init(from: "tag_id", toTable: "personal_suggestion_model", to: "tag_id", onDelete: "CASCADE"),
         ],
         "personal_prediction": [
+            .init(from: "media_kind", toTable: "personal_suggestion_tag", to: "media_kind", onDelete: "CASCADE"),
             .init(from: "method", toTable: "personal_suggestion_tag", to: "method", onDelete: "CASCADE"),
             .init(from: "asset_id", toTable: "asset", to: "id", onDelete: "CASCADE"),
             .init(from: "tag_id", toTable: "personal_suggestion_tag", to: "tag_id", onDelete: "CASCADE"),
@@ -588,6 +604,7 @@ enum CatalogSchemaExpectations {
             .init(from: "tag_id", toTable: "tag", to: "id", onDelete: "CASCADE"),
         ],
         "tag_model_sample": [
+            .init(from: "media_kind", toTable: "tag_model_revision", to: "media_kind", onDelete: "CASCADE"),
             .init(from: "tag_id", toTable: "tag_model_revision", to: "tag_id", onDelete: "CASCADE"),
             .init(from: "model_revision", toTable: "tag_model_revision", to: "revision", onDelete: "CASCADE"),
             .init(from: "asset_id", toTable: "asset", to: "id", onDelete: "CASCADE"),
@@ -599,11 +616,13 @@ enum CatalogSchemaExpectations {
         ],
         "tag_model": [
             .init(from: "tag_id", toTable: "tag", to: "id", onDelete: "CASCADE"),
+            .init(from: "media_kind", toTable: "tag_model_revision", to: "media_kind", onDelete: "RESTRICT"),
             .init(from: "tag_id", toTable: "tag_model_revision", to: "tag_id", onDelete: "RESTRICT"),
             .init(from: "current_revision", toTable: "tag_model_revision", to: "revision", onDelete: "RESTRICT"),
         ],
         "prediction": [
             .init(from: "asset_id", toTable: "asset", to: "id", onDelete: "CASCADE"),
+            .init(from: "media_kind", toTable: "tag_model_revision", to: "media_kind", onDelete: "CASCADE"),
             .init(from: "tag_id", toTable: "tag_model_revision", to: "tag_id", onDelete: "CASCADE"),
             .init(from: "model_revision", toTable: "tag_model_revision", to: "revision", onDelete: "CASCADE"),
         ],
@@ -626,6 +645,7 @@ enum CatalogSchemaExpectations {
         ],
         "source_similarity_bucket_member": [
             .init(from: "source_id", toTable: "source_similarity_index", to: "source_id", onDelete: "CASCADE"),
+            .init(from: "media_kind", toTable: "source_similarity_index", to: "media_kind", onDelete: "CASCADE"),
             .init(from: "asset_id", toTable: "asset", to: "id", onDelete: "CASCADE"),
         ],
     ]
@@ -640,6 +660,7 @@ enum CatalogSchemaExpectations {
         "asset_current_time_desc_idx": "asset",
         "asset_current_time_idx": "asset",
         "asset_generation_missing_idx": "asset",
+        "asset_current_media_kind_idx": "asset",
         "asset_similarity_fingerprint_hash_idx": "asset_similarity_fingerprint",
         "asset_source_availability_idx": "asset",
         "tag_normalized_name_uq": "tag",
@@ -657,6 +678,7 @@ enum CatalogSchemaExpectations {
         "personal_prediction_review_rank_idx": "personal_prediction",
         "prediction_review_rank_idx": "prediction",
         "training_run_method_created_idx": "training_run",
+        "training_run_media_kind_method_created_idx": "training_run",
         "training_run_state_created_idx": "training_run",
         "standard_prediction_review_rank_idx": "standard_prediction",
         "tag_model_sample_feature_idx": "tag_model_sample",
@@ -840,6 +862,16 @@ enum CatalogSchemaExpectations {
             partialPredicateSQL: "locator_kind = 'file' AND locator_state = 'current'"
         ),
         .init(
+            name: "asset_current_media_kind_idx",
+            keyColumns: [
+                .init(name: "media_kind", descending: false, collation: "BINARY"),
+                .init(name: "locator_state", descending: false, collation: "BINARY"),
+                .init(name: "availability", descending: false, collation: "BINARY"),
+                .init(name: "id", descending: false, collation: "BINARY"),
+            ],
+            unique: false
+        ),
+        .init(
             name: "asset_similarity_fingerprint_hash_idx",
             keyColumns: [
                 .init(name: "algo_version", descending: false, collation: "BINARY"),
@@ -905,6 +937,7 @@ enum CatalogSchemaExpectations {
         .init(
             name: "personal_prediction_review_rank_idx",
             keyColumns: [
+                .init(name: "media_kind", descending: false, collation: "BINARY"),
                 .init(name: "method", descending: false, collation: "BINARY"),
                 .init(name: "tag_id", descending: false, collation: "BINARY"),
                 .init(name: "state", descending: false, collation: "BINARY"),
@@ -953,6 +986,16 @@ enum CatalogSchemaExpectations {
             unique: false
         ),
         .init(
+            name: "training_run_media_kind_method_created_idx",
+            keyColumns: [
+                .init(name: "media_kind", descending: false, collation: "BINARY"),
+                .init(name: "method", descending: false, collation: "BINARY"),
+                .init(name: "created_at_ms", descending: true, collation: "BINARY"),
+                .init(name: "id", descending: false, collation: "BINARY"),
+            ],
+            unique: false
+        ),
+        .init(
             name: "standard_prediction_review_rank_idx",
             keyColumns: [
                 .init(name: "tag_id", descending: false, collation: "BINARY"),
@@ -965,6 +1008,7 @@ enum CatalogSchemaExpectations {
         .init(
             name: "prediction_review_rank_idx",
             keyColumns: [
+                .init(name: "media_kind", descending: false, collation: "BINARY"),
                 .init(name: "tag_id", descending: false, collation: "BINARY"),
                 .init(name: "state", descending: false, collation: "BINARY"),
                 .init(name: "score", descending: true, collation: "BINARY"),
@@ -993,6 +1037,7 @@ enum CatalogSchemaExpectations {
             name: "source_similarity_bucket_lookup_idx",
             keyColumns: [
                 .init(name: "source_id", descending: false, collation: "BINARY"),
+                .init(name: "media_kind", descending: false, collation: "BINARY"),
                 .init(name: "bucket_key", descending: false, collation: "BINARY"),
                 .init(name: "asset_id", descending: false, collation: "BINARY"),
             ],
@@ -1002,6 +1047,7 @@ enum CatalogSchemaExpectations {
             name: "source_similarity_cluster_lookup_idx",
             keyColumns: [
                 .init(name: "source_id", descending: false, collation: "BINARY"),
+                .init(name: "media_kind", descending: false, collation: "BINARY"),
                 .init(name: "cluster_id", descending: false, collation: "BINARY"),
                 .init(name: "asset_id", descending: false, collation: "BINARY"),
             ],

@@ -24,6 +24,20 @@ actor AppPersonalSampleSuggestionRuntime: AppPersonalSampleSuggesting {
         maximumSuggestionsPerAsset: Int,
         embedding: @escaping @Sendable (PersonalSuggestionCandidate) async throws -> AppCoreMLEmbedding
     ) async throws -> AppPersonalSampleSuggestionBatch {
+        try await suggest(
+            mediaKind: .image,
+            candidates: candidates,
+            maximumSuggestionsPerAsset: maximumSuggestionsPerAsset,
+            embedding: embedding
+        )
+    }
+
+    func suggest(
+        mediaKind: MediaKind,
+        candidates: [PersonalSuggestionCandidate],
+        maximumSuggestionsPerAsset: Int,
+        embedding: @escaping @Sendable (PersonalSuggestionCandidate) async throws -> AppCoreMLEmbedding
+    ) async throws -> AppPersonalSampleSuggestionBatch {
         guard !isRunning else {
             throw AppPersonalSampleSuggestionError.alreadyRunning
         }
@@ -42,14 +56,21 @@ actor AppPersonalSampleSuggestionRuntime: AppPersonalSampleSuggesting {
         let store = AppPersonalLinearHeadStore(
             applicationSupportDirectory: applicationSupportDirectory,
             expectedCatalogScopeID: expectedCatalogScopeID,
-            expectedEncoderIdentity: encoderIdentity
+            expectedEncoderIdentity: encoderIdentity,
+            mediaKind: mediaKind
         )
         let storeCapability: AppPersonalLinearHeadCapability
         if let database {
             let review = GRDBPersonalizationReviewRepository(database: database)
-            let published = try review.publishedArtifactSHA256s(method: .personalCentroid)
+            let published = try review.publishedArtifactSHA256s(
+                mediaKind: mediaKind,
+                method: .personalCentroid
+            )
             if published.isEmpty,
-               try review.usesLegacyActivePointer(method: .personalCentroid)
+               try review.usesLegacyActivePointer(
+                   mediaKind: mediaKind,
+                   method: .personalCentroid
+               )
             {
                 storeCapability = await store.start()
             } else {
@@ -67,7 +88,10 @@ actor AppPersonalSampleSuggestionRuntime: AppPersonalSampleSuggesting {
         }
         // Each active model is single-tag; persist/match capability per tag.
         let capabilities = identities.map {
-            AppPersonalSuggestionCapabilityMapper.capability(from: $0)
+            AppPersonalSuggestionCapabilityMapper.capability(
+                from: $0,
+                mediaKind: mediaKind
+            )
         }
 
         var results: [AppPersonalSampleSuggestionAssetResult] = []

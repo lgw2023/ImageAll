@@ -384,7 +384,7 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
                 SELECT
                     r.id, r.asset_id, a.source_id, r.source_kind, r.trashed_at_ms, r.purge_after_ms,
                     r.state, r.quarantine_relative_path, r.original_relative_path,
-                    r.photos_local_identifier, r.error_code, a.file_name
+                    r.photos_local_identifier, r.error_code, a.file_name, a.media_kind
                 FROM recycle_entry r
                 JOIN asset a ON a.id = r.asset_id
                 WHERE r.state = 'recycled'
@@ -396,6 +396,7 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
                       let assetID = UUID(uuidString: row["asset_id"]),
                       let sourceID = UUID(uuidString: row["source_id"]),
                       let sourceKind = RecycleSourceKind(rawValue: row["source_kind"]),
+                      let mediaKind = MediaKind(rawValue: row["media_kind"]),
                       let state = RecycleEntryState(rawValue: row["state"])
                 else { return nil }
                 return RecycleEntryRecord(
@@ -403,6 +404,7 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
                     assetID: assetID,
                     sourceID: sourceID,
                     sourceKind: sourceKind,
+                    mediaKind: mediaKind,
                     trashedAtMs: row["trashed_at_ms"],
                     purgeAfterMs: row["purge_after_ms"],
                     state: state,

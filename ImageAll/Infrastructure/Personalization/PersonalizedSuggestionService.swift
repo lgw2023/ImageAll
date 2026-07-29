@@ -37,7 +37,8 @@ final class PersonalizedSuggestionService: @unchecked Sendable {
 
     func generateSuggestions(
         tagID: UUID,
-        candidateAssetIDs: [UUID]
+        candidateAssetIDs: [UUID],
+        mediaKind: MediaKind = .image
     ) async throws -> PersonalizedSuggestionResult {
         let candidates = Self.unique(candidateAssetIDs)
         guard !candidates.isEmpty,
@@ -46,7 +47,7 @@ final class PersonalizedSuggestionService: @unchecked Sendable {
             throw PersonalizedSuggestionError.invalidCandidates
         }
 
-        let samples = try await fetchSamples(tagID: tagID)
+        let samples = try await fetchSamples(tagID: tagID, mediaKind: mediaKind)
         let positives = samples.filter { $0.role == .positive }
         let negatives = samples.filter { $0.role == .negative }
         guard positives.count >= 2, negatives.count >= 2 else {
@@ -64,6 +65,7 @@ final class PersonalizedSuggestionService: @unchecked Sendable {
 
         let eligibleCandidates = try await fetchEligibleCandidates(
             tagID: tagID,
+            mediaKind: mediaKind,
             assetIDs: candidates
         )
         let neighborCount = min(3, loadedPositives.count, loadedNegatives.count)
@@ -99,15 +101,17 @@ final class PersonalizedSuggestionService: @unchecked Sendable {
             }
         }
 
-        let revision = try await nextRevision(tagID: tagID)
+        let revision = try await nextRevision(tagID: tagID, mediaKind: mediaKind)
         let sampleRegistrations = Self.registrations(
             positives: loadedPositives,
             negatives: loadedNegatives
         )
+        let finalizedPredictions = predictions
         do {
             try catalog.publishModelRevision(
                 ModelRevisionRegistration(
                     tagID: tagID,
+                    mediaKind: mediaKind,
                     revision: revision,
                     threshold: 0,
                     neighborCount: neighborCount,
@@ -116,13 +120,17 @@ final class PersonalizedSuggestionService: @unchecked Sendable {
                     createdAtMs: clock.nowMs
                 )
             )
-            try catalog.replacePredictions(
-                tagID: tagID,
-                modelRevision: revision,
-                candidateAssetIDs: candidates,
-                predictions: predictions,
-                createdAtMs: clock.nowMs
-            )
+            try await database.pool.write { db in
+                try catalog.replacePredictions(
+                    mediaKind: mediaKind,
+                    tagID: tagID,
+                    modelRevision: revision,
+                    candidateAssetIDs: candidates,
+                    predictions: finalizedPredictions,
+                    createdAtMs: clock.nowMs,
+                    on: db
+                )
+            }
         } catch let error as PersonalizationCatalogError {
             switch error {
             case .notFound: throw PersonalizedSuggestionError.tagNotFound
@@ -140,7 +148,10 @@ final class PersonalizedSuggestionService: @unchecked Sendable {
         )
     }
 
-    private func fetchSamples(tagID: UUID) async throws -> [SampleCandidate] {
+    private func fetchSamples(
+        tagID: UUID,
+        mediaKind: MediaKind
+    ) async throws -> [SampleCandidate] {
         try await database.pool.read { db in
             guard let tagState: String = try String.fetchOne(
                 db,
@@ -169,6 +180,7 @@ final class PersonalizedSuggestionService: @unchecked Sendable {
                     JOIN asset a ON a.id = d.asset_id
                     JOIN source s ON s.id = a.source_id
                     WHERE d.tag_id = ?
+                        AND a.media_kind = ?
                         AND d.decision IN ('accepted', 'rejected')
                         AND a.locator_state = 'current'
                         AND a.availability = 'available'
@@ -183,7 +195,7 @@ final class PersonalizedSuggestionService: @unchecked Sendable {
                 WHERE role_rank <= 12
                 ORDER BY decision ASC, role_rank ASC
                 """,
-                arguments: [tagID.uuidString.lowercased()]
+                arguments: [tagID.uuidString.lowercased(), mediaKind.rawValue]
             )
             return rows.compactMap { row in
                 guard let assetID = UUID(uuidString: row["id"]),
@@ -220,6 +232,7 @@ final class PersonalizedSuggestionService: @unchecked Sendable {
 
     private func fetchEligibleCandidates(
         tagID: UUID,
+        mediaKind: MediaKind,
         assetIDs: [UUID]
     ) async throws -> [CandidateRevision] {
         try await database.pool.read { db in
@@ -232,6 +245,7 @@ final class PersonalizedSuggestionService: @unchecked Sendable {
                     FROM asset a
                     JOIN source s ON s.id = a.source_id
                     WHERE a.id = ?
+                        AND a.media_kind = ?
                         AND a.locator_state = 'current'
                         AND a.availability = 'available'
                         AND s.state = 'active'
@@ -244,7 +258,11 @@ final class PersonalizedSuggestionService: @unchecked Sendable {
                             WHERE d.asset_id = a.id AND d.tag_id = ?
                         )
                     """,
-                    arguments: [assetID.uuidString.lowercased(), tagID.uuidString.lowercased()]
+                    arguments: [
+                        assetID.uuidString.lowercased(),
+                        mediaKind.rawValue,
+                        tagID.uuidString.lowercased(),
+                    ]
                 ) else { continue }
                 result.append(
                     CandidateRevision(assetID: assetID, contentRevision: row["content_revision"])
@@ -254,12 +272,16 @@ final class PersonalizedSuggestionService: @unchecked Sendable {
         }
     }
 
-    private func nextRevision(tagID: UUID) async throws -> Int {
+    private func nextRevision(tagID: UUID, mediaKind: MediaKind) async throws -> Int {
         try await database.pool.read { db in
             let current: Int = try Int.fetchOne(
                 db,
-                sql: "SELECT COALESCE(MAX(revision), 0) FROM tag_model_revision WHERE tag_id = ?",
-                arguments: [tagID.uuidString.lowercased()]
+                sql: """
+                SELECT COALESCE(MAX(revision), 0)
+                FROM tag_model_revision
+                WHERE media_kind = ? AND tag_id = ?
+                """,
+                arguments: [mediaKind.rawValue, tagID.uuidString.lowercased()]
             ) ?? 0
             return current + 1
         }

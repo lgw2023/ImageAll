@@ -55,6 +55,7 @@ actor AppPersonalLinearHeadStore {
     private static let pointerSchemaRevision = 1
 
     private let family: AppPersonalLinearHeadFamily
+    private let mediaKind: MediaKind
     private let applicationSupportDirectory: URL
     private let expectedCatalogScopeID: String
     private let expectedEncoderIdentity: AppCoreMLModelIdentity
@@ -65,9 +66,11 @@ actor AppPersonalLinearHeadStore {
         applicationSupportDirectory: URL,
         expectedCatalogScopeID: String,
         expectedEncoderIdentity: AppCoreMLModelIdentity,
+        mediaKind: MediaKind = .image,
         family: AppPersonalLinearHeadFamily = .centroid
     ) {
         self.family = family
+        self.mediaKind = mediaKind
         self.applicationSupportDirectory = applicationSupportDirectory
         self.expectedCatalogScopeID = expectedCatalogScopeID
         self.expectedEncoderIdentity = expectedEncoderIdentity
@@ -505,9 +508,15 @@ actor AppPersonalLinearHeadStore {
 
     private var storeRoot: URL {
         applicationSupportDirectory.appendingPathComponent(
-            "PersonalModels/\(family.directoryName)/v1",
+            "PersonalModels/\(storeDirectoryName)/v1",
             isDirectory: true
         )
+    }
+
+    private var storeDirectoryName: String {
+        mediaKind == .image
+            ? family.directoryName
+            : "\(family.directoryName)-Video"
     }
 
     private var objectsDirectory: URL {
@@ -523,7 +532,7 @@ actor AppPersonalLinearHeadStore {
             applicationSupportDirectory,
             applicationSupportDirectory.appendingPathComponent("PersonalModels", isDirectory: true),
             applicationSupportDirectory.appendingPathComponent(
-                "PersonalModels/\(family.directoryName)",
+                "PersonalModels/\(storeDirectoryName)",
                 isDirectory: true
             ),
             storeRoot,

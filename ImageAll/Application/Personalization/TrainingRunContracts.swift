@@ -45,6 +45,7 @@ enum TrainingRunState: String, Equatable, Sendable, CaseIterable {
 
 struct TrainingRunRecord: Equatable, Sendable, Identifiable {
     let id: UUID
+    let mediaKind: MediaKind
     let method: TrainingRunMethod
     let state: TrainingRunState
     let createdAtMs: Int64
@@ -65,6 +66,7 @@ struct TrainingRunRecord: Equatable, Sendable, Identifiable {
 
     init(
         id: UUID,
+        mediaKind: MediaKind = .image,
         method: TrainingRunMethod,
         state: TrainingRunState,
         createdAtMs: Int64,
@@ -84,6 +86,7 @@ struct TrainingRunRecord: Equatable, Sendable, Identifiable {
         errorCode: String?
     ) {
         self.id = id
+        self.mediaKind = mediaKind
         self.method = method
         self.state = state
         self.createdAtMs = createdAtMs
@@ -120,6 +123,7 @@ struct TrainingWorkspaceSnapshot: Equatable, Sendable {
 
 protocol TrainingWorkspacePort: Sendable {
     func snapshot(
+        mediaKind: MediaKind,
         method: TrainingRunMethod?,
         limit: Int
     ) throws -> TrainingWorkspaceSnapshot

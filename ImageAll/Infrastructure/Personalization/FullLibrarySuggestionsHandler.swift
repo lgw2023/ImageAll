@@ -107,6 +107,7 @@ struct FullLibrarySuggestionsHandler: LeaseBoundJobHandler, Sendable {
         }
 
         let total = try review.frozenAssetTotal(
+            mediaKind: decodedPayload.mediaKind,
             sourceIDs: decodedPayload.sourceIDs,
             catalogCutoffMs: decodedPayload.catalogCutoffMs,
             excludingDecisionsForTagID: decodedPayload.tagID
@@ -150,6 +151,7 @@ struct FullLibrarySuggestionsHandler: LeaseBoundJobHandler, Sendable {
             }
 
             let batch = try review.frozenAssetBatch(
+                mediaKind: decodedPayload.mediaKind,
                 sourceIDs: decodedPayload.sourceIDs,
                 catalogCutoffMs: decodedPayload.catalogCutoffMs,
                 afterAssetID: state.lastAssetID,
@@ -199,6 +201,7 @@ struct FullLibrarySuggestionsHandler: LeaseBoundJobHandler, Sendable {
             for assetID in batch {
                 checkedDelta += 1
                 guard let context = try review.frozenAssetProcessingContext(
+                    mediaKind: decodedPayload.mediaKind,
                     tagID: decodedPayload.tagID,
                     assetID: assetID
                 ) else {
@@ -299,6 +302,7 @@ struct FullLibrarySuggestionsHandler: LeaseBoundJobHandler, Sendable {
                         try catalog.publishModelRevision(
                             ModelRevisionRegistration(
                                 tagID: decodedPayload.tagID,
+                                mediaKind: decodedPayload.mediaKind,
                                 revision: modelRevision,
                                 threshold: minimumScore,
                                 neighborCount: scoring.neighborCount,
@@ -310,6 +314,7 @@ struct FullLibrarySuggestionsHandler: LeaseBoundJobHandler, Sendable {
                         )
                         if !batchAssetIDs.isEmpty {
                             try catalog.replacePredictions(
+                                mediaKind: decodedPayload.mediaKind,
                                 tagID: decodedPayload.tagID,
                                 modelRevision: modelRevision,
                                 candidateAssetIDs: batchAssetIDs,
@@ -319,6 +324,7 @@ struct FullLibrarySuggestionsHandler: LeaseBoundJobHandler, Sendable {
                             )
                         }
                         try catalog.retainTopPendingPredictions(
+                            mediaKind: decodedPayload.mediaKind,
                             tagID: decodedPayload.tagID,
                             modelRevision: modelRevision,
                             limit: dependencies.maxPendingSuggestionsPerTag(),
@@ -353,6 +359,7 @@ struct FullLibrarySuggestionsHandler: LeaseBoundJobHandler, Sendable {
                         )
                     ) { db in
                         try catalog.appendPredictions(
+                            mediaKind: decodedPayload.mediaKind,
                             tagID: decodedPayload.tagID,
                             modelRevision: modelRevision,
                             predictions: predictions,
@@ -360,6 +367,7 @@ struct FullLibrarySuggestionsHandler: LeaseBoundJobHandler, Sendable {
                             on: db
                         )
                         try catalog.retainTopPendingPredictions(
+                            mediaKind: decodedPayload.mediaKind,
                             tagID: decodedPayload.tagID,
                             modelRevision: modelRevision,
                             limit: dependencies.maxPendingSuggestionsPerTag(),
@@ -503,9 +511,7 @@ struct FullLibrarySuggestionsHandler: LeaseBoundJobHandler, Sendable {
                 "skippedCount": state.skippedCount,
             ]),
             artifactKind: published ? "tagModelRevision" : nil,
-            artifactRef: published
-                ? "tag_model/\(payload.tagID.uuidString.lowercased())/\(payload.modelRevision)"
-                : nil,
+            artifactRef: published ? modelArtifactRef(payload: payload) : nil,
             resultSummaryJSON: try trainingRunResultSummary(
                 payload: payload,
                 state: state,
@@ -536,7 +542,7 @@ struct FullLibrarySuggestionsHandler: LeaseBoundJobHandler, Sendable {
                 "skippedCount": state.skippedCount,
             ]),
             artifactKind: "tagModelRevision",
-            artifactRef: "tag_model/\(payload.tagID.uuidString.lowercased())/\(payload.modelRevision)",
+            artifactRef: modelArtifactRef(payload: payload),
             resultSummaryJSON: try trainingRunResultSummary(
                 payload: payload,
                 state: state,
@@ -556,6 +562,7 @@ struct FullLibrarySuggestionsHandler: LeaseBoundJobHandler, Sendable {
         try TrainingRunJSON.encode([
             "published": published,
             "partial": partial,
+            "mediaKind": payload.mediaKind.rawValue,
             "successfulTagCount": published ? 1 : 0,
             "positiveSampleCount": payload.frozenPositiveSamples.count,
             "negativeSampleCount": payload.frozenNegativeSamples.count,
@@ -564,6 +571,13 @@ struct FullLibrarySuggestionsHandler: LeaseBoundJobHandler, Sendable {
             "suggestedCount": state.suggestedCount,
             "skippedCount": state.skippedCount,
         ])
+    }
+
+    private func modelArtifactRef(payload: FullLibrarySuggestionsPayload) -> String {
+        let tagPath = "\(payload.tagID.uuidString.lowercased())/\(payload.modelRevision)"
+        return payload.mediaKind == .image
+            ? "tag_model/\(tagPath)"
+            : "tag_model/\(payload.mediaKind.rawValue)/\(tagPath)"
     }
 
     private func retryableFailureWithCommittedState(

@@ -28,6 +28,13 @@ struct GRDBPersonalizationReviewRepository: Sendable {
     let database: CatalogDatabase
 
     func totalPendingSuggestionCount(sourceIDs: [UUID]? = nil) throws -> Int {
+        try totalPendingSuggestionCount(mediaKind: .image, sourceIDs: sourceIDs)
+    }
+
+    func totalPendingSuggestionCount(
+        mediaKind: MediaKind,
+        sourceIDs: [UUID]? = nil
+    ) throws -> Int {
         if let sourceIDs, sourceIDs.isEmpty { return 0 }
         var sourceClause = ""
         var sourceArguments: [DatabaseValueConvertible] = []
@@ -44,7 +51,8 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                     SELECT p.asset_id, p.tag_id
                     FROM prediction p
                     JOIN tag_model m
-                        ON m.tag_id = p.tag_id
+                        ON m.media_kind = p.media_kind
+                        AND m.tag_id = p.tag_id
                         AND m.current_revision = p.model_revision
                     JOIN tag t ON t.id = p.tag_id AND t.state = 'active'
                     JOIN asset a
@@ -54,7 +62,9 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                         AND a.availability = 'available'
                     LEFT JOIN asset_tag_decision d
                         ON d.asset_id = p.asset_id AND d.tag_id = p.tag_id
-                    WHERE p.state = 'pendingReview' AND d.asset_id IS NULL\(sourceClause)
+                    WHERE p.media_kind = ?
+                        AND a.media_kind = ?
+                        AND p.state = 'pendingReview' AND d.asset_id IS NULL\(sourceClause)
                     UNION ALL
                     SELECT p.asset_id, p.tag_id
                     FROM standard_prediction p
@@ -74,14 +84,17 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                         AND a.availability = 'available'
                     LEFT JOIN asset_tag_decision d
                         ON d.asset_id = p.asset_id AND d.tag_id = p.tag_id
-                    WHERE p.state = 'pendingReview' AND d.asset_id IS NULL\(sourceClause)
+                    WHERE a.media_kind = ?
+                        AND p.state = 'pendingReview' AND d.asset_id IS NULL\(sourceClause)
                     UNION ALL
                     SELECT p.asset_id, p.tag_id
                     FROM personal_prediction p
                     JOIN personal_suggestion_model m
-                        ON m.method = p.method AND m.tag_id = p.tag_id
+                        ON m.media_kind = p.media_kind
+                        AND m.method = p.method AND m.tag_id = p.tag_id
                     JOIN personal_suggestion_tag pst
-                        ON pst.method = p.method AND pst.tag_id = p.tag_id
+                        ON pst.media_kind = p.media_kind
+                        AND pst.method = p.method AND pst.tag_id = p.tag_id
                     JOIN tag t ON t.id = p.tag_id AND t.state = 'active'
                     JOIN asset a
                         ON a.id = p.asset_id
@@ -90,12 +103,16 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                         AND a.availability = 'available'
                     LEFT JOIN asset_tag_decision d
                         ON d.asset_id = p.asset_id AND d.tag_id = p.tag_id
-                    WHERE p.state = 'pendingReview' AND d.asset_id IS NULL\(sourceClause)
+                    WHERE p.media_kind = ?
+                        AND a.media_kind = ?
+                        AND p.state = 'pendingReview' AND d.asset_id IS NULL\(sourceClause)
                 )
                 SELECT COUNT(*) FROM pending_pairs
                 """,
                 arguments: StatementArguments(
-                    sourceArguments + sourceArguments + sourceArguments
+                    [mediaKind.rawValue, mediaKind.rawValue] + sourceArguments
+                        + [mediaKind.rawValue] + sourceArguments
+                        + [mediaKind.rawValue, mediaKind.rawValue] + sourceArguments
                 )
             ) ?? 0
         }
@@ -106,6 +123,14 @@ struct GRDBPersonalizationReviewRepository: Sendable {
     }
 
     func pendingCounts(
+        tagID: UUID,
+        sourceIDs: [UUID]? = nil
+    ) throws -> SuggestionOriginCounts {
+        try pendingCounts(mediaKind: .image, tagID: tagID, sourceIDs: sourceIDs)
+    }
+
+    func pendingCounts(
+        mediaKind: MediaKind,
         tagID: UUID,
         sourceIDs: [UUID]? = nil
     ) throws -> SuggestionOriginCounts {
@@ -125,7 +150,8 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                     SELECT 'featurePrint' AS suggestion_origin
                     FROM prediction p
                     JOIN tag_model m
-                        ON m.tag_id = p.tag_id
+                        ON m.media_kind = p.media_kind
+                        AND m.tag_id = p.tag_id
                         AND m.current_revision = p.model_revision
                     JOIN tag t ON t.id = p.tag_id AND t.state = 'active'
                     JOIN asset a
@@ -136,6 +162,8 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                     LEFT JOIN asset_tag_decision d
                         ON d.asset_id = p.asset_id AND d.tag_id = p.tag_id
                     WHERE p.tag_id = ?
+                        AND p.media_kind = ?
+                        AND a.media_kind = ?
                         AND p.state = 'pendingReview'
                         AND d.asset_id IS NULL\(sourceClause)
                     UNION ALL
@@ -158,6 +186,7 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                     LEFT JOIN asset_tag_decision d
                         ON d.asset_id = p.asset_id AND d.tag_id = p.tag_id
                     WHERE p.tag_id = ?
+                        AND a.media_kind = ?
                         AND p.state = 'pendingReview'
                         AND d.asset_id IS NULL\(sourceClause)
                     UNION ALL
@@ -167,9 +196,11 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                     END AS suggestion_origin
                     FROM personal_prediction p
                     JOIN personal_suggestion_model m
-                        ON m.method = p.method AND m.tag_id = p.tag_id
+                        ON m.media_kind = p.media_kind
+                        AND m.method = p.method AND m.tag_id = p.tag_id
                     JOIN personal_suggestion_tag pst
-                        ON pst.method = p.method AND pst.tag_id = p.tag_id
+                        ON pst.media_kind = p.media_kind
+                        AND pst.method = p.method AND pst.tag_id = p.tag_id
                     JOIN tag t ON t.id = p.tag_id AND t.state = 'active'
                     JOIN asset a
                         ON a.id = p.asset_id
@@ -179,6 +210,8 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                     LEFT JOIN asset_tag_decision d
                         ON d.asset_id = p.asset_id AND d.tag_id = p.tag_id
                     WHERE p.tag_id = ?
+                        AND p.media_kind = ?
+                        AND a.media_kind = ?
                         AND p.state = 'pendingReview'
                         AND d.asset_id IS NULL\(sourceClause)
                 )
@@ -194,9 +227,9 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                 FROM pending_rows
                 """,
                 arguments: StatementArguments(
-                    [uuid(tagID)] + sourceArguments
-                        + [uuid(tagID)] + sourceArguments
-                        + [uuid(tagID)] + sourceArguments
+                    [uuid(tagID), mediaKind.rawValue, mediaKind.rawValue] + sourceArguments
+                        + [uuid(tagID), mediaKind.rawValue] + sourceArguments
+                        + [uuid(tagID), mediaKind.rawValue, mediaKind.rawValue] + sourceArguments
                 )
             ) else {
                 return .zero
@@ -211,6 +244,13 @@ struct GRDBPersonalizationReviewRepository: Sendable {
     }
 
     func sampleCounts(tagID: UUID) throws -> (accepted: Int, rejected: Int) {
+        try sampleCounts(mediaKind: .image, tagID: tagID)
+    }
+
+    func sampleCounts(
+        mediaKind: MediaKind,
+        tagID: UUID
+    ) throws -> (accepted: Int, rejected: Int) {
         try database.pool.read { db in
             let accepted = try Int.fetchOne(
                 db,
@@ -220,6 +260,7 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                 JOIN asset a ON a.id = d.asset_id
                 JOIN source s ON s.id = a.source_id
                 WHERE d.tag_id = ? AND d.decision = 'accepted'
+                    AND a.media_kind = ?
                     AND a.locator_state = 'current'
                     AND a.availability = 'available'
                     AND s.state = 'active'
@@ -228,7 +269,7 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                         OR (s.kind = 'photos' AND a.locator_kind = 'photos')
                     )
                 """,
-                arguments: [uuid(tagID)]
+                arguments: [uuid(tagID), mediaKind.rawValue]
             ) ?? 0
             let rejected = try Int.fetchOne(
                 db,
@@ -238,6 +279,7 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                 JOIN asset a ON a.id = d.asset_id
                 JOIN source s ON s.id = a.source_id
                 WHERE d.tag_id = ? AND d.decision = 'rejected'
+                    AND a.media_kind = ?
                     AND a.locator_state = 'current'
                     AND a.availability = 'available'
                     AND s.state = 'active'
@@ -246,18 +288,27 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                         OR (s.kind = 'photos' AND a.locator_kind = 'photos')
                     )
                 """,
-                arguments: [uuid(tagID)]
+                arguments: [uuid(tagID), mediaKind.rawValue]
             ) ?? 0
             return (accepted, rejected)
         }
     }
 
     func tagHasCurrentModel(tagID: UUID) throws -> Bool {
+        try tagHasCurrentModel(mediaKind: .image, tagID: tagID)
+    }
+
+    func tagHasCurrentModel(mediaKind: MediaKind, tagID: UUID) throws -> Bool {
         try database.pool.read { db in
             try Bool.fetchOne(
                 db,
-                sql: "SELECT EXISTS(SELECT 1 FROM tag_model WHERE tag_id = ?)",
-                arguments: [uuid(tagID)]
+                sql: """
+                SELECT EXISTS(
+                    SELECT 1 FROM tag_model
+                    WHERE media_kind = ? AND tag_id = ?
+                )
+                """,
+                arguments: [mediaKind.rawValue, uuid(tagID)]
             ) ?? false
         }
     }
@@ -273,6 +324,16 @@ struct GRDBPersonalizationReviewRepository: Sendable {
     }
 
     func fetchFrozenSampleIdentities(tagID: UUID) throws -> (
+        positives: [FrozenSampleIdentity],
+        negatives: [FrozenSampleIdentity]
+    ) {
+        try fetchFrozenSampleIdentities(mediaKind: .image, tagID: tagID)
+    }
+
+    func fetchFrozenSampleIdentities(
+        mediaKind: MediaKind,
+        tagID: UUID
+    ) throws -> (
         positives: [FrozenSampleIdentity],
         negatives: [FrozenSampleIdentity]
     ) {
@@ -293,6 +354,7 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                     JOIN asset a ON a.id = d.asset_id
                     JOIN source s ON s.id = a.source_id
                     WHERE d.tag_id = ?
+                        AND a.media_kind = ?
                         AND d.decision IN ('accepted', 'rejected')
                         AND a.locator_state = 'current'
                         AND a.availability = 'available'
@@ -307,7 +369,7 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                 WHERE role_rank <= 12
                 ORDER BY decision ASC, role_rank ASC
                 """,
-                arguments: [uuid(tagID)]
+                arguments: [uuid(tagID), mediaKind.rawValue]
             )
             var positives: [FrozenSampleIdentity] = []
             var negatives: [FrozenSampleIdentity] = []
@@ -328,21 +390,46 @@ struct GRDBPersonalizationReviewRepository: Sendable {
     }
 
     func personalTrainingSnapshot() throws -> PersonalTrainingSnapshot {
-        try personalTrainingSnapshot(limitingToTagIDs: nil, limitingToAssetIDs: nil)
+        try personalTrainingSnapshot(
+            mediaKind: .image,
+            limitingToTagIDs: nil,
+            limitingToAssetIDs: nil
+        )
     }
 
     func personalTrainingSnapshot(limitingToAssetIDs assetIDs: Set<UUID>) throws -> PersonalTrainingSnapshot {
-        try personalTrainingSnapshot(limitingToTagIDs: nil, limitingToAssetIDs: Optional(assetIDs))
+        try personalTrainingSnapshot(
+            mediaKind: .image,
+            limitingToTagIDs: nil,
+            limitingToAssetIDs: Optional(assetIDs)
+        )
     }
 
     func personalTrainingSnapshot(
         limitingToTagIDs tagIDs: Set<UUID>,
         limitingToAssetIDs assetIDs: Set<UUID>?
     ) throws -> PersonalTrainingSnapshot {
-        try personalTrainingSnapshot(limitingToTagIDs: Optional(tagIDs), limitingToAssetIDs: assetIDs)
+        try personalTrainingSnapshot(
+            mediaKind: .image,
+            limitingToTagIDs: Optional(tagIDs),
+            limitingToAssetIDs: assetIDs
+        )
+    }
+
+    func personalTrainingSnapshot(
+        mediaKind: MediaKind,
+        limitingToTagIDs tagIDs: Set<UUID>,
+        limitingToAssetIDs assetIDs: Set<UUID>?
+    ) throws -> PersonalTrainingSnapshot {
+        try personalTrainingSnapshot(
+            mediaKind: mediaKind,
+            limitingToTagIDs: Optional(tagIDs),
+            limitingToAssetIDs: assetIDs
+        )
     }
 
     private func personalTrainingSnapshot(
+        mediaKind: MediaKind,
         limitingToTagIDs tagIDs: Set<UUID>?,
         limitingToAssetIDs assetIDs: Set<UUID>?
     ) throws -> PersonalTrainingSnapshot {
@@ -350,6 +437,7 @@ struct GRDBPersonalizationReviewRepository: Sendable {
         if let tagIDs, tagIDs.isEmpty {
             return PersonalTrainingSnapshot(
                 catalogScopeID: catalogScopeID,
+                mediaKind: mediaKind,
                 personalTagIDs: [],
                 decisions: []
             )
@@ -357,6 +445,7 @@ struct GRDBPersonalizationReviewRepository: Sendable {
         if let assetIDs, assetIDs.isEmpty {
             return PersonalTrainingSnapshot(
                 catalogScopeID: catalogScopeID,
+                mediaKind: mediaKind,
                 personalTagIDs: [],
                 decisions: []
             )
@@ -377,6 +466,7 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                     JOIN asset a ON a.id = d.asset_id
                     JOIN source s ON s.id = a.source_id
                     WHERE t.state = 'active'
+                        AND a.media_kind = ?
                         AND d.decision IN ('accepted', 'rejected')
                         AND a.locator_state = 'current'
                         AND a.availability = 'available'
@@ -386,7 +476,7 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                             OR (s.kind = 'photos' AND a.locator_kind = 'photos')
                         )
                 """
-            var arguments = StatementArguments()
+            var arguments: StatementArguments = [mediaKind.rawValue]
             if let tagIDValues {
                 let placeholders = Array(repeating: "?", count: tagIDValues.count).joined(separator: ", ")
                 sql += "\n                        AND d.tag_id IN (\(placeholders))"
@@ -441,6 +531,7 @@ struct GRDBPersonalizationReviewRepository: Sendable {
             }
             return PersonalTrainingSnapshot(
                 catalogScopeID: catalogScopeID,
+                mediaKind: mediaKind,
                 personalTagIDs: resolvedTagIDs,
                 decisions: decisions
             )
@@ -457,6 +548,18 @@ struct GRDBPersonalizationReviewRepository: Sendable {
     }
 
     func frozenAssetProcessingContext(tagID: UUID, assetID: UUID) throws -> FrozenAssetProcessingContext? {
+        try frozenAssetProcessingContext(
+            mediaKind: .image,
+            tagID: tagID,
+            assetID: assetID
+        )
+    }
+
+    func frozenAssetProcessingContext(
+        mediaKind: MediaKind,
+        tagID: UUID,
+        assetID: UUID
+    ) throws -> FrozenAssetProcessingContext? {
         try database.pool.read { db in
             guard let row = try Row.fetchOne(
                 db,
@@ -470,13 +573,14 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                 FROM asset a
                 JOIN source s ON s.id = a.source_id
                 WHERE a.id = ?
+                    AND a.media_kind = ?
                     AND a.locator_state = 'current'
                     AND (
                         (s.kind = 'folder' AND a.locator_kind = 'file')
                         OR (s.kind = 'photos' AND a.locator_kind = 'photos')
                     )
                 """,
-                arguments: [uuid(tagID), uuid(assetID)]
+                arguments: [uuid(tagID), uuid(assetID), mediaKind.rawValue]
             ) else { return nil }
             return FrozenAssetProcessingContext(
                 contentRevision: row["content_revision"],
@@ -490,6 +594,16 @@ struct GRDBPersonalizationReviewRepository: Sendable {
     }
 
     func frozenStandardAssetProcessingContext(assetID: UUID) throws -> FrozenAssetProcessingContext? {
+        try frozenStandardAssetProcessingContext(
+            mediaKind: .image,
+            assetID: assetID
+        )
+    }
+
+    func frozenStandardAssetProcessingContext(
+        mediaKind: MediaKind,
+        assetID: UUID
+    ) throws -> FrozenAssetProcessingContext? {
         try database.pool.read { db in
             guard let row = try Row.fetchOne(
                 db,
@@ -499,13 +613,14 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                 FROM asset a
                 JOIN source s ON s.id = a.source_id
                 WHERE a.id = ?
+                    AND a.media_kind = ?
                     AND a.locator_state = 'current'
                     AND (
                         (s.kind = 'folder' AND a.locator_kind = 'file')
                         OR (s.kind = 'photos' AND a.locator_kind = 'photos')
                     )
                 """,
-                arguments: [uuid(assetID)]
+                arguments: [uuid(assetID), mediaKind.rawValue]
             ) else { return nil }
             return FrozenAssetProcessingContext(
                 contentRevision: row["content_revision"],
@@ -564,6 +679,7 @@ struct GRDBPersonalizationReviewRepository: Sendable {
     }
 
     func frozenAssetBatch(
+        mediaKind: MediaKind = .image,
         sourceIDs: [UUID],
         catalogCutoffMs: Int64,
         afterAssetID: UUID?,
@@ -573,6 +689,7 @@ struct GRDBPersonalizationReviewRepository: Sendable {
         guard !sourceIDs.isEmpty, limit > 0 else { return [] }
         let placeholders = Array(repeating: "?", count: sourceIDs.count).joined(separator: ", ")
         var arguments: [DatabaseValueConvertible] = sourceIDs.map { uuid($0) }
+        arguments.append(mediaKind.rawValue)
         arguments.append(catalogCutoffMs)
         var decisionClause = ""
         if let excludingDecisionsForTagID {
@@ -598,6 +715,7 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                 FROM asset a
                 JOIN source s ON s.id = a.source_id
                 WHERE s.id IN (\(placeholders))
+                    AND a.media_kind = ?
                     AND (
                         (s.kind = 'folder' AND a.locator_kind = 'file')
                         OR (s.kind = 'photos' AND a.locator_kind = 'photos')
@@ -614,6 +732,7 @@ struct GRDBPersonalizationReviewRepository: Sendable {
     }
 
     func frozenAssetTotal(
+        mediaKind: MediaKind = .image,
         sourceIDs: [UUID],
         catalogCutoffMs: Int64,
         excludingDecisionsForTagID: UUID? = nil
@@ -621,6 +740,7 @@ struct GRDBPersonalizationReviewRepository: Sendable {
         guard !sourceIDs.isEmpty else { return 0 }
         let placeholders = Array(repeating: "?", count: sourceIDs.count).joined(separator: ", ")
         var arguments: [DatabaseValueConvertible] = sourceIDs.map { uuid($0) }
+        arguments.append(mediaKind.rawValue)
         arguments.append(catalogCutoffMs)
         var decisionClause = ""
         if let excludingDecisionsForTagID {
@@ -640,6 +760,7 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                 FROM asset a
                 JOIN source s ON s.id = a.source_id
                 WHERE s.id IN (\(placeholders))
+                    AND a.media_kind = ?
                     AND (
                         (s.kind = 'folder' AND a.locator_kind = 'file')
                         OR (s.kind = 'photos' AND a.locator_kind = 'photos')
@@ -658,6 +779,22 @@ struct GRDBPersonalizationReviewRepository: Sendable {
         sourceIDs: [UUID]? = nil,
         excludingDecisionsForTagID: UUID? = nil
     ) throws -> [PersonalSuggestionCandidate] {
+        try personalSuggestionCandidates(
+            mediaKind: .image,
+            afterAssetID: afterAssetID,
+            limit: limit,
+            sourceIDs: sourceIDs,
+            excludingDecisionsForTagID: excludingDecisionsForTagID
+        )
+    }
+
+    func personalSuggestionCandidates(
+        mediaKind: MediaKind,
+        afterAssetID: UUID?,
+        limit: Int,
+        sourceIDs: [UUID]? = nil,
+        excludingDecisionsForTagID: UUID? = nil
+    ) throws -> [PersonalSuggestionCandidate] {
         guard limit > 0 else { return [] }
         if let sourceIDs, sourceIDs.isEmpty { return [] }
         var sql = """
@@ -666,12 +803,13 @@ struct GRDBPersonalizationReviewRepository: Sendable {
         JOIN source s ON s.id = a.source_id AND s.state = 'active'
         WHERE a.locator_state = 'current'
             AND a.availability = 'available'
+            AND a.media_kind = ?
             AND (
                 (s.kind = 'folder' AND a.locator_kind = 'file')
                 OR (s.kind = 'photos' AND a.locator_kind = 'photos')
             )
         """
-        var arguments: [DatabaseValueConvertible] = []
+        var arguments: [DatabaseValueConvertible] = [mediaKind.rawValue]
         if let sourceIDs {
             let placeholders = Array(repeating: "?", count: sourceIDs.count).joined(separator: ", ")
             sql += " AND a.source_id IN (\(placeholders))"
@@ -744,11 +882,12 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                     sql: """
                     UPDATE personal_suggestion_model
                     SET published_run_id = ?, activated_at_ms = ?
-                    WHERE method = ? AND tag_id = ?
+                    WHERE media_kind = ? AND method = ? AND tag_id = ?
                     """,
                     arguments: [
                         publishedRunID.uuidString.lowercased(),
                         activatedAtMs,
+                        target.mediaKind.rawValue,
                         method,
                         tagKey,
                     ]
@@ -760,31 +899,38 @@ struct GRDBPersonalizationReviewRepository: Sendable {
             return
         }
         try db.execute(
-            sql: "DELETE FROM personal_prediction WHERE method = ? AND tag_id = ?",
-            arguments: [method, tagKey]
+            sql: """
+            DELETE FROM personal_prediction
+            WHERE media_kind = ? AND method = ? AND tag_id = ?
+            """,
+            arguments: [target.mediaKind.rawValue, method, tagKey]
         )
         try db.execute(
-            sql: "DELETE FROM personal_suggestion_tag WHERE method = ? AND tag_id = ?",
-            arguments: [method, tagKey]
+            sql: """
+            DELETE FROM personal_suggestion_tag
+            WHERE media_kind = ? AND method = ? AND tag_id = ?
+            """,
+            arguments: [target.mediaKind.rawValue, method, tagKey]
         )
         try db.execute(
             sql: """
             DELETE FROM personal_suggestion_model
-            WHERE method = ? AND tag_id = ?
+            WHERE media_kind = ? AND method = ? AND tag_id = ?
             """,
-            arguments: [method, tagKey]
+            arguments: [target.mediaKind.rawValue, method, tagKey]
         )
         try db.execute(
             sql: """
             INSERT INTO personal_suggestion_model (
-                method, tag_id, catalog_scope_id, bundle_id, bundle_revision, provider, model_id,
+                media_kind, method, tag_id, catalog_scope_id, bundle_id, bundle_revision, provider, model_id,
                 model_revision, preprocessing_revision, element_count,
                 label_vocabulary_revision, weights_sha256, policy_revision, activated_at_ms,
                 published_run_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             arguments: [
-                method, tagKey, target.catalogScopeID, target.bundleID, target.bundleRevision,
+                target.mediaKind.rawValue, method, tagKey,
+                target.catalogScopeID, target.bundleID, target.bundleRevision,
                 target.provider, target.modelID, target.modelRevision,
                 target.preprocessingRevision, target.elementCount,
                 target.labelVocabularyRevision, target.weightsSHA256, target.policyRevision,
@@ -793,10 +939,10 @@ struct GRDBPersonalizationReviewRepository: Sendable {
         )
         try db.execute(
             sql: """
-            INSERT INTO personal_suggestion_tag (method, tag_id)
-            SELECT ?, id FROM tag WHERE id = ? AND state = 'active'
+            INSERT INTO personal_suggestion_tag (media_kind, method, tag_id)
+            SELECT ?, ?, id FROM tag WHERE id = ? AND state = 'active'
             """,
-            arguments: [method, tagKey]
+            arguments: [target.mediaKind.rawValue, method, tagKey]
         )
         guard db.changesCount == 1 else {
             throw PersonalizationReviewError.persistenceFailure
@@ -804,15 +950,23 @@ struct GRDBPersonalizationReviewRepository: Sendable {
     }
 
     func publishedRunID(method: PersonalSuggestionMethod, tagID: UUID) throws -> UUID? {
+        try publishedRunID(mediaKind: .image, method: method, tagID: tagID)
+    }
+
+    func publishedRunID(
+        mediaKind: MediaKind,
+        method: PersonalSuggestionMethod,
+        tagID: UUID
+    ) throws -> UUID? {
         try database.pool.read { db in
             guard let raw = try String.fetchOne(
                 db,
                 sql: """
                 SELECT published_run_id
                 FROM personal_suggestion_model
-                WHERE method = ? AND tag_id = ?
+                WHERE media_kind = ? AND method = ? AND tag_id = ?
                 """,
-                arguments: [method.rawValue, uuid(tagID)]
+                arguments: [mediaKind.rawValue, method.rawValue, uuid(tagID)]
             ) else {
                 return nil
             }
@@ -821,18 +975,25 @@ struct GRDBPersonalizationReviewRepository: Sendable {
     }
 
     func publishedRunID(method: PersonalSuggestionMethod) throws -> UUID? {
+        try publishedRunID(mediaKind: .image, method: method)
+    }
+
+    func publishedRunID(
+        mediaKind: MediaKind,
+        method: PersonalSuggestionMethod
+    ) throws -> UUID? {
         try database.pool.read { db in
             guard let raw = try String.fetchOne(
                 db,
                 sql: """
                 SELECT published_run_id
                 FROM personal_suggestion_model
-                WHERE method = ?
+                WHERE media_kind = ? AND method = ?
                     AND published_run_id IS NOT NULL
                 ORDER BY activated_at_ms DESC, tag_id ASC
                 LIMIT 1
                 """,
-                arguments: [method.rawValue]
+                arguments: [mediaKind.rawValue, method.rawValue]
             ) else {
                 return nil
             }
@@ -841,6 +1002,14 @@ struct GRDBPersonalizationReviewRepository: Sendable {
     }
 
     func publishedArtifactSHA256(method: PersonalSuggestionMethod, tagID: UUID) throws -> String? {
+        try publishedArtifactSHA256(mediaKind: .image, method: method, tagID: tagID)
+    }
+
+    func publishedArtifactSHA256(
+        mediaKind: MediaKind,
+        method: PersonalSuggestionMethod,
+        tagID: UUID
+    ) throws -> String? {
         try database.pool.read { db in
             try String.fetchOne(
                 db,
@@ -848,17 +1017,32 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                 SELECT r.artifact_sha256
                 FROM personal_suggestion_model m
                 JOIN training_run r ON r.id = m.published_run_id
-                WHERE m.method = ?
+                WHERE m.media_kind = ?
+                    AND m.method = ?
                     AND m.tag_id = ?
                     AND r.method = ?
+                    AND r.media_kind = ?
                     AND r.state = 'succeeded'
                 """,
-                arguments: [method.rawValue, uuid(tagID), method.rawValue]
+                arguments: [
+                    mediaKind.rawValue,
+                    method.rawValue,
+                    uuid(tagID),
+                    method.rawValue,
+                    mediaKind.rawValue,
+                ]
             )
         }
     }
 
     func publishedArtifactSHA256s(method: PersonalSuggestionMethod) throws -> [UUID: String] {
+        try publishedArtifactSHA256s(mediaKind: .image, method: method)
+    }
+
+    func publishedArtifactSHA256s(
+        mediaKind: MediaKind,
+        method: PersonalSuggestionMethod
+    ) throws -> [UUID: String] {
         try database.pool.read { db in
             let rows = try Row.fetchAll(
                 db,
@@ -866,13 +1050,20 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                 SELECT m.tag_id, r.artifact_sha256
                 FROM personal_suggestion_model m
                 JOIN training_run r ON r.id = m.published_run_id
-                WHERE m.method = ?
+                WHERE m.media_kind = ?
+                    AND m.method = ?
                     AND r.method = ?
+                    AND r.media_kind = ?
                     AND r.state = 'succeeded'
                     AND r.artifact_sha256 IS NOT NULL
                 ORDER BY m.tag_id
                 """,
-                arguments: [method.rawValue, method.rawValue]
+                arguments: [
+                    mediaKind.rawValue,
+                    method.rawValue,
+                    method.rawValue,
+                    mediaKind.rawValue,
+                ]
             )
             var result: [UUID: String] = [:]
             for row in rows {
@@ -886,37 +1077,57 @@ struct GRDBPersonalizationReviewRepository: Sendable {
     }
 
     func publishedArtifactSHA256(method: PersonalSuggestionMethod) throws -> String? {
-        let all = try publishedArtifactSHA256s(method: method)
+        let all = try publishedArtifactSHA256s(mediaKind: .image, method: method)
         guard all.count == 1, let only = all.values.first else { return nil }
         return only
     }
 
     func usesLegacyActivePointer(method: PersonalSuggestionMethod) throws -> Bool {
+        try usesLegacyActivePointer(mediaKind: .image, method: method)
+    }
+
+    func usesLegacyActivePointer(
+        mediaKind: MediaKind,
+        method: PersonalSuggestionMethod
+    ) throws -> Bool {
         try database.pool.read { db in
             try Bool.fetchOne(
                 db,
                 sql: """
                 SELECT EXISTS(
                     SELECT 1 FROM personal_suggestion_model
-                    WHERE method = ? AND published_run_id IS NULL
+                    WHERE media_kind = ? AND method = ? AND published_run_id IS NULL
                 )
                 """,
-                arguments: [method.rawValue]
+                arguments: [mediaKind.rawValue, method.rawValue]
             ) == true
         }
     }
 
     func usesLegacyActivePointer(method: PersonalSuggestionMethod, tagID: UUID) throws -> Bool {
+        try usesLegacyActivePointer(
+            mediaKind: .image,
+            method: method,
+            tagID: tagID
+        )
+    }
+
+    func usesLegacyActivePointer(
+        mediaKind: MediaKind,
+        method: PersonalSuggestionMethod,
+        tagID: UUID
+    ) throws -> Bool {
         try database.pool.read { db in
             try Bool.fetchOne(
                 db,
                 sql: """
                 SELECT EXISTS(
                     SELECT 1 FROM personal_suggestion_model
-                    WHERE method = ? AND tag_id = ? AND published_run_id IS NULL
+                    WHERE media_kind = ?
+                        AND method = ? AND tag_id = ? AND published_run_id IS NULL
                 )
                 """,
-                arguments: [method.rawValue, uuid(tagID)]
+                arguments: [mediaKind.rawValue, method.rawValue, uuid(tagID)]
             ) == true
         }
     }
@@ -968,6 +1179,7 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                       FROM asset a
                       JOIN source s ON s.id = a.source_id AND s.state = 'active'
                       WHERE a.id = ?
+                          AND a.media_kind = ?
                           AND a.content_revision = ?
                           AND a.locator_state = 'current'
                           AND a.availability = 'available'
@@ -977,7 +1189,11 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                           )
                   )
                   """,
-                  arguments: [uuid(candidate.assetID), candidate.contentRevision]
+                  arguments: [
+                      uuid(candidate.assetID),
+                      expectedCapability.target.mediaKind.rawValue,
+                      candidate.contentRevision,
+                  ]
               ) == true
         else {
             throw PersonalizationReviewError.persistenceFailure
@@ -991,9 +1207,15 @@ struct GRDBPersonalizationReviewRepository: Sendable {
             try db.execute(
                 sql: """
                 DELETE FROM personal_prediction
-                WHERE asset_id = ? AND method = ? AND tag_id = ?
+                WHERE media_kind = ?
+                    AND asset_id = ? AND method = ? AND tag_id = ?
                 """,
-                arguments: [uuid(candidate.assetID), method, uuid(tagID)]
+                arguments: [
+                    expectedCapability.target.mediaKind.rawValue,
+                    uuid(candidate.assetID),
+                    method,
+                    uuid(tagID),
+                ]
             )
         }
         var inserted = 0
@@ -1004,12 +1226,14 @@ struct GRDBPersonalizationReviewRepository: Sendable {
             try db.execute(
                 sql: """
                 INSERT INTO personal_prediction (
-                    method, asset_id, tag_id, content_revision, score, state, created_at_ms
+                    media_kind, method, asset_id, tag_id,
+                    content_revision, score, state, created_at_ms
                 )
-                SELECT ?, ?, pst.tag_id, ?, ?, 'pendingReview', ?
+                SELECT ?, ?, ?, pst.tag_id, ?, ?, 'pendingReview', ?
                 FROM personal_suggestion_tag pst
                 JOIN tag t ON t.id = pst.tag_id AND t.state = 'active'
-                WHERE pst.method = ?
+                WHERE pst.media_kind = ?
+                    AND pst.method = ?
                     AND pst.tag_id = ?
                     AND NOT EXISTS (
                         SELECT 1 FROM asset_tag_decision d
@@ -1017,8 +1241,16 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                     )
                 """,
                 arguments: [
-                    method, uuid(candidate.assetID), candidate.contentRevision, prediction.score,
-                    createdAtMs, method, uuid(prediction.tagID), uuid(candidate.assetID),
+                    expectedCapability.target.mediaKind.rawValue,
+                    method,
+                    uuid(candidate.assetID),
+                    candidate.contentRevision,
+                    prediction.score,
+                    createdAtMs,
+                    expectedCapability.target.mediaKind.rawValue,
+                    method,
+                    uuid(prediction.tagID),
+                    uuid(candidate.assetID),
                 ]
             )
             inserted += db.changesCount
@@ -1065,19 +1297,32 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                 SELECT EXISTS(
                     SELECT 1 FROM personal_suggestion_model psm
                     JOIN personal_suggestion_tag pst
-                        ON pst.method = psm.method AND pst.tag_id = psm.tag_id
+                        ON pst.media_kind = psm.media_kind
+                        AND pst.method = psm.method AND pst.tag_id = psm.tag_id
                     JOIN tag t ON t.id = pst.tag_id AND t.state = 'active'
-                    WHERE psm.method = ? AND psm.tag_id = ?
+                    WHERE psm.media_kind = ?
+                        AND psm.method = ? AND psm.tag_id = ?
                 )
                 """,
-                arguments: [method, uuid(tagID)]
+                arguments: [
+                    expectedCapability.target.mediaKind.rawValue,
+                    method,
+                    uuid(tagID),
+                ]
             ) == true else {
                 throw PersonalizationReviewError.persistenceFailure
             }
 
             try db.execute(
-                sql: "DELETE FROM personal_prediction WHERE tag_id = ? AND method = ?",
-                arguments: [uuid(tagID), method]
+                sql: """
+                DELETE FROM personal_prediction
+                WHERE media_kind = ? AND tag_id = ? AND method = ?
+                """,
+                arguments: [
+                    expectedCapability.target.mediaKind.rawValue,
+                    uuid(tagID),
+                    method,
+                ]
             )
 
             // Ranked hits may still include decided assets from callers that did not
@@ -1104,6 +1349,7 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                         FROM asset a
                         JOIN source s ON s.id = a.source_id AND s.state = 'active'
                         WHERE a.id = ?
+                            AND a.media_kind = ?
                             AND a.content_revision = ?
                             AND a.locator_state = 'current'
                             AND a.availability = 'available'
@@ -1113,17 +1359,23 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                             )
                     )
                     """,
-                    arguments: [uuid(hit.candidate.assetID), hit.candidate.contentRevision]
+                    arguments: [
+                        uuid(hit.candidate.assetID),
+                        expectedCapability.target.mediaKind.rawValue,
+                        hit.candidate.contentRevision,
+                    ]
                 ) ?? false
                 guard assetOK else { continue }
                 try db.execute(
                     sql: """
                     INSERT INTO personal_prediction (
-                        method, asset_id, tag_id, content_revision, score, state, created_at_ms
+                        media_kind, method, asset_id, tag_id,
+                        content_revision, score, state, created_at_ms
                     )
-                    SELECT ?, ?, pst.tag_id, ?, ?, 'pendingReview', ?
+                    SELECT ?, ?, ?, pst.tag_id, ?, ?, 'pendingReview', ?
                     FROM personal_suggestion_tag pst
-                    WHERE pst.method = ?
+                    WHERE pst.media_kind = ?
+                        AND pst.method = ?
                         AND pst.tag_id = ?
                         AND NOT EXISTS (
                             SELECT 1 FROM asset_tag_decision d
@@ -1131,11 +1383,13 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                         )
                     """,
                     arguments: [
+                        expectedCapability.target.mediaKind.rawValue,
                         method,
                         uuid(hit.candidate.assetID),
                         hit.candidate.contentRevision,
                         hit.score,
                         createdAtMs,
+                        expectedCapability.target.mediaKind.rawValue,
                         method,
                         uuid(tagID),
                         uuid(hit.candidate.assetID),
@@ -1386,6 +1640,22 @@ struct GRDBPersonalizationReviewRepository: Sendable {
         try db.execute(sql: "DELETE FROM personal_suggestion_model")
     }
 
+    func invalidatePersonalSuggestionBundles(mediaKind: MediaKind) throws {
+        try database.pool.write { db in
+            try invalidatePersonalSuggestionBundles(mediaKind: mediaKind, on: db)
+        }
+    }
+
+    func invalidatePersonalSuggestionBundles(
+        mediaKind: MediaKind,
+        on db: Database
+    ) throws {
+        try db.execute(
+            sql: "DELETE FROM personal_suggestion_model WHERE media_kind = ?",
+            arguments: [mediaKind.rawValue]
+        )
+    }
+
     func personalSuggestionCapabilityMatches(
         _ capability: PersonalModelSuggestionCapability
     ) throws -> Bool {
@@ -1395,6 +1665,22 @@ struct GRDBPersonalizationReviewRepository: Sendable {
     }
 
     func fetchReviewQueuePage(
+        tagID: UUID,
+        sourceIDs: [UUID]? = nil,
+        cursor: ReviewQueueCursor?,
+        limit: Int
+    ) throws -> ReviewQueuePage {
+        try fetchReviewQueuePage(
+            mediaKind: .image,
+            tagID: tagID,
+            sourceIDs: sourceIDs,
+            cursor: cursor,
+            limit: limit
+        )
+    }
+
+    func fetchReviewQueuePage(
+        mediaKind: MediaKind,
         tagID: UUID,
         sourceIDs: [UUID]? = nil,
         cursor: ReviewQueueCursor?,
@@ -1416,7 +1702,8 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                 a.file_name, a.availability
             FROM prediction p
             JOIN tag_model m
-                ON m.tag_id = p.tag_id
+                ON m.media_kind = p.media_kind
+                AND m.tag_id = p.tag_id
                 AND m.current_revision = p.model_revision
             JOIN tag t ON t.id = p.tag_id AND t.state = 'active'
             JOIN asset a
@@ -1427,6 +1714,8 @@ struct GRDBPersonalizationReviewRepository: Sendable {
             LEFT JOIN asset_tag_decision d
                 ON d.asset_id = p.asset_id AND d.tag_id = p.tag_id
             WHERE p.tag_id = ?
+                AND p.media_kind = ?
+                AND a.media_kind = ?
                 AND p.state = 'pendingReview'
                 AND d.asset_id IS NULL\(sourceClause)
             UNION ALL
@@ -1450,6 +1739,7 @@ struct GRDBPersonalizationReviewRepository: Sendable {
             LEFT JOIN asset_tag_decision d
                 ON d.asset_id = p.asset_id AND d.tag_id = p.tag_id
             WHERE p.tag_id = ?
+                AND a.media_kind = ?
                 AND p.state = 'pendingReview'
                 AND d.asset_id IS NULL\(sourceClause)
             UNION ALL
@@ -1465,9 +1755,11 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                 a.file_name, a.availability
             FROM personal_prediction p
             JOIN personal_suggestion_model m
-                ON m.method = p.method AND m.tag_id = p.tag_id
+                ON m.media_kind = p.media_kind
+                AND m.method = p.method AND m.tag_id = p.tag_id
             JOIN personal_suggestion_tag pst
-                ON pst.method = p.method AND pst.tag_id = p.tag_id
+                ON pst.media_kind = p.media_kind
+                AND pst.method = p.method AND pst.tag_id = p.tag_id
             JOIN tag t ON t.id = p.tag_id AND t.state = 'active'
             JOIN asset a
                 ON a.id = p.asset_id
@@ -1477,6 +1769,8 @@ struct GRDBPersonalizationReviewRepository: Sendable {
             LEFT JOIN asset_tag_decision d
                 ON d.asset_id = p.asset_id AND d.tag_id = p.tag_id
             WHERE p.tag_id = ?
+                AND p.media_kind = ?
+                AND a.media_kind = ?
                 AND p.state = 'pendingReview'
                 AND d.asset_id IS NULL\(sourceClause)
         )
@@ -1494,9 +1788,9 @@ struct GRDBPersonalizationReviewRepository: Sendable {
         WHERE 1 = 1
         """
         var arguments: [DatabaseValueConvertible] =
-            [uuid(tagID)] + sourceArguments
-            + [uuid(tagID)] + sourceArguments
-            + [uuid(tagID)] + sourceArguments
+            [uuid(tagID), mediaKind.rawValue, mediaKind.rawValue] + sourceArguments
+            + [uuid(tagID), mediaKind.rawValue] + sourceArguments
+            + [uuid(tagID), mediaKind.rawValue, mediaKind.rawValue] + sourceArguments
         if let cursor {
             let boundary = try ReviewQueueCursorCodec.decodeBoundary(cursor)
             sql += """
@@ -1560,7 +1854,8 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                     SELECT p.tag_id, 1 AS origin_rank, 'featurePrint' AS suggestion_origin
                     FROM prediction p
                     JOIN tag_model m
-                        ON m.tag_id = p.tag_id
+                        ON m.media_kind = p.media_kind
+                        AND m.tag_id = p.tag_id
                         AND m.current_revision = p.model_revision
                     JOIN tag t ON t.id = p.tag_id AND t.state = 'active'
                     JOIN asset a
@@ -1607,9 +1902,11 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                         END AS suggestion_origin
                     FROM personal_prediction p
                     JOIN personal_suggestion_model m
-                        ON m.method = p.method AND m.tag_id = p.tag_id
+                        ON m.media_kind = p.media_kind
+                        AND m.method = p.method AND m.tag_id = p.tag_id
                     JOIN personal_suggestion_tag pst
-                        ON pst.method = p.method AND pst.tag_id = p.tag_id
+                        ON pst.media_kind = p.media_kind
+                        AND pst.method = p.method AND pst.tag_id = p.tag_id
                     JOIN tag t ON t.id = p.tag_id AND t.state = 'active'
                     JOIN asset a
                         ON a.id = p.asset_id
@@ -1642,6 +1939,13 @@ struct GRDBPersonalizationReviewRepository: Sendable {
     }
 
     func activeSuggestionJob(tagID: UUID) throws -> JobRecordSnapshot? {
+        try activeSuggestionJob(mediaKind: .image, tagID: tagID)
+    }
+
+    func activeSuggestionJob(
+        mediaKind: MediaKind,
+        tagID: UUID
+    ) throws -> JobRecordSnapshot? {
         try database.pool.read { db in
             guard let row = try Row.fetchOne(
                 db,
@@ -1652,15 +1956,26 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                 ORDER BY created_at_ms DESC
                 LIMIT 1
                 """,
-                arguments: [FullLibrarySuggestionsJobFactory.coalescingKey(tagID: tagID)]
+                arguments: [
+                    FullLibrarySuggestionsJobFactory.coalescingKey(
+                        tagID: tagID,
+                        mediaKind: mediaKind
+                    ),
+                ]
             ) else { return nil }
             return try JobPersistenceMapping.snapshot(from: row)
         }
     }
 
     func latestPersonalLibrarySuggestionJob() throws -> JobRecordSnapshot? {
+        try latestPersonalLibrarySuggestionJob(mediaKind: .image)
+    }
+
+    func latestPersonalLibrarySuggestionJob(
+        mediaKind: MediaKind
+    ) throws -> JobRecordSnapshot? {
         try database.pool.read { db in
-            guard let row = try Row.fetchOne(
+            let rows = try Row.fetchAll(
                 db,
                 sql: """
                 SELECT * FROM job
@@ -1672,17 +1987,32 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                     END ASC,
                     created_at_ms DESC,
                     id DESC
-                LIMIT 1
+                LIMIT 100
                 """,
                 arguments: [PersonalLibrarySuggestionsJobFactory.kind]
-            ) else { return nil }
-            return try JobPersistenceMapping.snapshot(from: row)
+            )
+            for row in rows {
+                let snapshot = try JobPersistenceMapping.snapshot(from: row)
+                guard let payload = try? PersonalLibrarySuggestionsCodec.decodePayload(
+                    snapshot.payload
+                ) else { continue }
+                if payload.capability.target.mediaKind == mediaKind {
+                    return snapshot
+                }
+            }
+            return nil
         }
     }
 
     func latestStandardLibrarySuggestionJob() throws -> JobRecordSnapshot? {
+        try latestStandardLibrarySuggestionJob(mediaKind: .image)
+    }
+
+    func latestStandardLibrarySuggestionJob(
+        mediaKind: MediaKind
+    ) throws -> JobRecordSnapshot? {
         try database.pool.read { db in
-            guard let row = try Row.fetchOne(
+            let rows = try Row.fetchAll(
                 db,
                 sql: """
                 SELECT * FROM job
@@ -1694,20 +2024,37 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                     END ASC,
                     created_at_ms DESC,
                     id DESC
-                LIMIT 1
+                LIMIT 100
                 """,
                 arguments: [StandardLibrarySuggestionsJobFactory.kind]
-            ) else { return nil }
-            return try JobPersistenceMapping.snapshot(from: row)
+            )
+            for row in rows {
+                let snapshot = try JobPersistenceMapping.snapshot(from: row)
+                guard let payload = try? StandardLibrarySuggestionsCodec.decodePayload(
+                    snapshot.payload
+                ) else { continue }
+                if payload.mediaKind == mediaKind {
+                    return snapshot
+                }
+            }
+            return nil
         }
     }
 
     func nextModelRevision(tagID: UUID) throws -> Int {
+        try nextModelRevision(mediaKind: .image, tagID: tagID)
+    }
+
+    func nextModelRevision(mediaKind: MediaKind, tagID: UUID) throws -> Int {
         try database.pool.read { db in
             let current: Int = try Int.fetchOne(
                 db,
-                sql: "SELECT COALESCE(MAX(revision), 0) FROM tag_model_revision WHERE tag_id = ?",
-                arguments: [uuid(tagID)]
+                sql: """
+                SELECT COALESCE(MAX(revision), 0)
+                FROM tag_model_revision
+                WHERE media_kind = ? AND tag_id = ?
+                """,
+                arguments: [mediaKind.rawValue, uuid(tagID)]
             ) ?? 0
             return current + 1
         }
@@ -1836,9 +2183,11 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                 SELECT 1
                 FROM personal_suggestion_model psm
                 JOIN personal_suggestion_tag pst
-                    ON pst.method = psm.method AND pst.tag_id = psm.tag_id
+                    ON pst.media_kind = psm.media_kind
+                    AND pst.method = psm.method AND pst.tag_id = psm.tag_id
                 JOIN tag t ON t.id = psm.tag_id AND t.state = 'active'
-                WHERE psm.method = ?
+                WHERE psm.media_kind = ?
+                    AND psm.method = ?
                     AND psm.tag_id = ?
                     AND psm.catalog_scope_id = ?
                     AND psm.bundle_id = ?
@@ -1854,6 +2203,7 @@ struct GRDBPersonalizationReviewRepository: Sendable {
             )
             """,
             arguments: [
+                target.mediaKind.rawValue,
                 method, uuid(tagID), target.catalogScopeID, target.bundleID, target.bundleRevision,
                 target.provider, target.modelID, target.modelRevision,
                 target.preprocessingRevision, target.elementCount,

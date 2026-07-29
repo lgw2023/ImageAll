@@ -1,10 +1,12 @@
 import AppKit
+import AVFoundation
 import Foundation
 import Photos
 
 final class PhotoKitPhotosLibraryAdapter: NSObject, PhotosLibraryAccessPort, PhotosChangeHistoryPort,
     PhotosChangeObserverPort, PhotosLibraryAvailabilityObserverPort, PhotosCloudPreviewPort,
-    PhotosOriginalContentPort, PhotosFeaturePrintImagePort, PHPhotoLibraryChangeObserver,
+    PhotosOriginalContentPort, PhotosOriginalVideoContentPort, PhotosFeaturePrintImagePort,
+    PHPhotoLibraryChangeObserver,
     PHPhotoLibraryAvailabilityObserver,
     @unchecked Sendable
 {
@@ -33,12 +35,7 @@ final class PhotoKitPhotosLibraryAdapter: NSObject, PhotosLibraryAccessPort, Pho
         guard PHPhotoLibrary.shared().unavailabilityReason == nil else {
             throw PhotosLibraryError.libraryUnavailable
         }
-        let options = PHFetchOptions()
-        options.predicate = NSPredicate(
-            format: "mediaType == %d",
-            PHAssetMediaType.image.rawValue
-        )
-        let result = PHAsset.fetchAssets(with: options)
+        let result = PHAsset.fetchAssets(with: nil)
         var count = 0
         result.enumerateObjects { asset, _, _ in
             // Match catalog upsert: only count assets that resolve to supported still metadata.
@@ -67,7 +64,7 @@ final class PhotoKitPhotosLibraryAdapter: NSObject, PhotosLibraryAccessPort, Pho
         options.sortDescriptors = [
             NSSortDescriptor(key: "creationDate", ascending: true),
         ]
-        let result = PHAsset.fetchAssets(with: .image, options: options)
+        let result = PHAsset.fetchAssets(with: options)
         let totalCount = result.count
         let effectiveStart = min(max(0, startOffset), totalCount)
         guard effectiveStart < totalCount else {
@@ -329,6 +326,41 @@ final class PhotoKitPhotosLibraryAdapter: NSObject, PhotosLibraryAccessPort, Pho
         }
     }
 
+    func requestOriginalVideoURL(localIdentifier: String) async throws -> URL {
+        guard authorizationState() == .authorized else {
+            throw PhotosLibraryError.authorizationDenied
+        }
+        let fetch = PHAsset.fetchAssets(withLocalIdentifiers: [localIdentifier], options: nil)
+        guard let asset = fetch.firstObject, asset.mediaType == .video else {
+            throw PhotosLibraryError.libraryUnavailable
+        }
+
+        return try await withCheckedThrowingContinuation { continuation in
+            imageManager.requestAVAsset(
+                forVideo: asset,
+                options: Self.makeLocalOnlyOriginalVideoRequestOptions()
+            ) { avAsset, _, info in
+                if let url = (avAsset as? AVURLAsset)?.url {
+                    continuation.resume(returning: url)
+                    return
+                }
+                if (info?[PHImageResultIsInCloudKey] as? Bool) == true {
+                    continuation.resume(throwing: PhotosLibraryError.cloudOnly)
+                    return
+                }
+                if let error = info?[PHImageErrorKey] as? Error {
+                    continuation.resume(throwing: error)
+                    return
+                }
+                if (info?[PHImageCancelledKey] as? Bool) == true {
+                    continuation.resume(throwing: CancellationError())
+                    return
+                }
+                continuation.resume(throwing: PhotosLibraryError.libraryUnavailable)
+            }
+        }
+    }
+
     static func makeOriginalContentEditingInputRequestOptions() -> PHContentEditingInputRequestOptions {
         let options = PHContentEditingInputRequestOptions()
         // Opening in Preview remains local-only. Materializing an iCloud-backed original
@@ -428,6 +460,35 @@ final class PhotoKitPhotosLibraryAdapter: NSObject, PhotosLibraryAccessPort, Pho
         return try value.get()
     }
 
+    func requestOriginalVideoData(localIdentifier: String) throws -> Data {
+        guard authorizationState() == .authorized else {
+            throw PhotosLibraryError.authorizationDenied
+        }
+        let fetch = PHAsset.fetchAssets(withLocalIdentifiers: [localIdentifier], options: nil)
+        guard let asset = fetch.firstObject,
+              asset.mediaType == .video,
+              let resource = preferredMediaResource(for: asset)
+        else {
+            throw PhotosLibraryError.libraryUnavailable
+        }
+
+        let result = SynchronousResourceDataResult()
+        let semaphore = DispatchSemaphore(value: 0)
+        PHAssetResourceManager.default().requestData(
+            for: resource,
+            options: Self.makeLocalOnlyVideoResourceRequestOptions(),
+            dataReceivedHandler: { data in
+                result.append(data)
+            },
+            completionHandler: { error in
+                result.finish(error: error)
+                semaphore.signal()
+            }
+        )
+        semaphore.wait()
+        return try result.value()
+    }
+
     func requestLocalFeatureImage(localIdentifier: String) throws -> Data {
         guard authorizationState() == .authorized else {
             throw PhotosLibraryError.authorizationDenied
@@ -482,6 +543,25 @@ final class PhotoKitPhotosLibraryAdapter: NSObject, PhotosLibraryAccessPort, Pho
             && ApprovedSourceMediaTypes.contains(uniformTypeIdentifier)
     }
 
+    static func isSupportedMediaAsset(
+        mediaType: PHAssetMediaType,
+        mediaSubtypes: PHAssetMediaSubtype,
+        uniformTypeIdentifier: String
+    ) -> Bool {
+        switch mediaType {
+        case .image:
+            return isSupportedStaticImage(
+                mediaType: mediaType,
+                mediaSubtypes: mediaSubtypes,
+                uniformTypeIdentifier: uniformTypeIdentifier
+            )
+        case .video:
+            return ApprovedSourceMediaTypes.isVideoMediaType(uniformTypeIdentifier)
+        default:
+            return false
+        }
+    }
+
     /// Counts assets that would be indexable by the same UTI policy as catalog upsert.
     /// Used by startup repair heuristics and unit tests; production counting must not
     /// treat every `mediaType == image` asset as supported.
@@ -517,6 +597,20 @@ final class PhotoKitPhotosLibraryAdapter: NSObject, PhotosLibraryAccessPort, Pho
         return options
     }
 
+    static func makeLocalOnlyVideoResourceRequestOptions() -> PHAssetResourceRequestOptions {
+        let options = PHAssetResourceRequestOptions()
+        options.isNetworkAccessAllowed = false
+        return options
+    }
+
+    static func makeLocalOnlyOriginalVideoRequestOptions() -> PHVideoRequestOptions {
+        let options = PHVideoRequestOptions()
+        options.version = .original
+        options.deliveryMode = .highQualityFormat
+        options.isNetworkAccessAllowed = false
+        return options
+    }
+
     static func makeCloudPreviewRequestOptions(
         onProgress: @escaping @Sendable (Double) -> Void
     ) -> PHImageRequestOptions {
@@ -538,6 +632,15 @@ final class PhotoKitPhotosLibraryAdapter: NSObject, PhotosLibraryAccessPort, Pho
             ?? resources.first(where: { $0.type == .alternatePhoto })
     }
 
+    private func preferredMediaResource(for asset: PHAsset) -> PHAssetResource? {
+        if asset.mediaType == .video {
+            let resources = PHAssetResource.assetResources(for: asset)
+            return resources.first(where: { $0.type == .fullSizeVideo })
+                ?? resources.first(where: { $0.type == .video })
+        }
+        return preferredStillResource(for: asset)
+    }
+
     private func metadata(localIdentifiers: Set<String>) -> [PhotosAssetMetadata] {
         guard !localIdentifiers.isEmpty else { return [] }
         let result = PHAsset.fetchAssets(withLocalIdentifiers: localIdentifiers.sorted(), options: nil)
@@ -552,13 +655,17 @@ final class PhotoKitPhotosLibraryAdapter: NSObject, PhotosLibraryAccessPort, Pho
     }
 
     private func metadata(for asset: PHAsset) -> PhotosAssetMetadata? {
-        guard let resource = preferredStillResource(for: asset) else { return nil }
+        guard let resource = preferredMediaResource(for: asset) else { return nil }
         let type = resource.uniformTypeIdentifier.lowercased()
-        guard Self.isSupportedStaticImage(
+        guard Self.isSupportedMediaAsset(
             mediaType: asset.mediaType,
             mediaSubtypes: asset.mediaSubtypes,
             uniformTypeIdentifier: type
         ) else { return nil }
+        let mediaKind: MediaKind = asset.mediaType == .video ? .video : .image
+        let durationMs: Int64? = mediaKind == .video
+            ? max(1, Int64((asset.duration * 1_000).rounded()))
+            : nil
         return PhotosAssetMetadata(
             localIdentifier: asset.localIdentifier,
             fileName: safeFileName(resource.originalFilename),
@@ -566,7 +673,9 @@ final class PhotoKitPhotosLibraryAdapter: NSObject, PhotosLibraryAccessPort, Pho
             width: asset.pixelWidth,
             height: asset.pixelHeight,
             createdAtMs: milliseconds(asset.creationDate),
-            modifiedAtMs: milliseconds(asset.modificationDate)
+            modifiedAtMs: milliseconds(asset.modificationDate),
+            mediaKind: mediaKind,
+            durationMs: durationMs
         )
     }
 
@@ -601,6 +710,36 @@ private final class SynchronousImageResult: @unchecked Sendable {
         lock.withLock {
             guard storedValue == nil else { return }
             storedValue = value
+        }
+    }
+}
+
+private final class SynchronousResourceDataResult: @unchecked Sendable {
+    private let lock = NSLock()
+    private var data = Data()
+    private var completionError: Error?
+
+    func append(_ chunk: Data) {
+        lock.withLock {
+            data.append(chunk)
+        }
+    }
+
+    func finish(error: Error?) {
+        lock.withLock {
+            completionError = error
+        }
+    }
+
+    func value() throws -> Data {
+        try lock.withLock {
+            if completionError != nil {
+                throw PhotosLibraryError.cloudOnly
+            }
+            guard !data.isEmpty else {
+                throw PhotosLibraryError.libraryUnavailable
+            }
+            return data
         }
     }
 }

@@ -47,6 +47,39 @@ protocol AppPersonalTagLibrarySuggesting: Sendable {
         embedding: @escaping @Sendable (PersonalSuggestionCandidate) async throws -> AppCoreMLEmbedding,
         progress: (@Sendable (Int, Int, Int) -> Void)?
     ) async throws -> AppPersonalTagLibrarySuggestionBatch
+    func suggest(
+        mediaKind: MediaKind,
+        tagID: UUID,
+        candidates: [PersonalSuggestionCandidate],
+        maximumPendingCount: Int,
+        minimumScore: Double,
+        embedding: @escaping @Sendable (PersonalSuggestionCandidate) async throws -> AppCoreMLEmbedding,
+        progress: (@Sendable (Int, Int, Int) -> Void)?
+    ) async throws -> AppPersonalTagLibrarySuggestionBatch
+}
+
+extension AppPersonalTagLibrarySuggesting {
+    func suggest(
+        mediaKind: MediaKind,
+        tagID: UUID,
+        candidates: [PersonalSuggestionCandidate],
+        maximumPendingCount: Int,
+        minimumScore: Double,
+        embedding: @escaping @Sendable (PersonalSuggestionCandidate) async throws -> AppCoreMLEmbedding,
+        progress: (@Sendable (Int, Int, Int) -> Void)?
+    ) async throws -> AppPersonalTagLibrarySuggestionBatch {
+        guard mediaKind == .image else {
+            throw AppPersonalTagLibrarySuggestionError.personalUnavailable
+        }
+        return try await suggest(
+            tagID: tagID,
+            candidates: candidates,
+            maximumPendingCount: maximumPendingCount,
+            minimumScore: minimumScore,
+            embedding: embedding,
+            progress: progress
+        )
+    }
 }
 
 enum AppPersonalTagLibrarySuggestionLimits {

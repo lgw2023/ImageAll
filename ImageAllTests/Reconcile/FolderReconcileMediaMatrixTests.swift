@@ -49,17 +49,25 @@ final class FolderReconcileMediaMatrixTests: XCTestCase {
         }
     }
 
-    func testPDFVideoTextIgnored() throws {
+    func testPDFAndTextIgnoredWhileCorruptVideoIsUnreadable() throws {
         let fixture = FolderReconcileTestSupport.TempFixtureRoot()
         defer { fixture.cleanup() }
         let root = try fixture.makeRoot(label: "ignored")
         _ = try fixture.writeFile(root: root, relativePath: "d.pdf", contents: Data("%PDF-1.4".utf8))
         _ = try fixture.writeFile(root: root, relativePath: "v.mov", contents: Data([0x00, 0x00, 0x00, 0x14, 0x66, 0x74, 0x79, 0x70]))
         _ = try fixture.writeFile(root: root, relativePath: "n.txt", contents: Data("hello".utf8))
-        for name in ["d.pdf", "v.mov", "n.txt"] {
+        for name in ["d.pdf", "n.txt"] {
             let file = root.appendingPathComponent(name)
             XCTAssertEqual(FolderReconcileTestSupport.classifyMedia(at: file, fileName: name), .ignored)
         }
+        let video = root.appendingPathComponent("v.mov")
+        guard case let .unreadable(metadata) = FolderReconcileTestSupport.classifyMedia(
+            at: video,
+            fileName: "v.mov"
+        ) else {
+            return XCTFail("recognized but corrupt video must remain visible as unreadable")
+        }
+        XCTAssertEqual(metadata.mediaKind, .video)
     }
 
     func testPseudoExtensionUsesActualContainer() throws {

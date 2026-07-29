@@ -4,11 +4,14 @@ import GRDB
 struct IdenticalDuplicateClusterService: IdenticalDuplicateScanPort {
     let database: CatalogDatabase
 
-    func clusterIdenticalDuplicates(assetIDs: [UUID]) throws -> [IdenticalDuplicateCluster] {
+    func clusterIdenticalDuplicates(
+        assetIDs: [UUID],
+        mediaKind: MediaKind
+    ) throws -> [IdenticalDuplicateCluster] {
         let uniqueIDs = Array(Set(assetIDs)).sorted { $0.uuidString.lowercased() < $1.uuidString.lowercased() }
         guard !uniqueIDs.isEmpty else { return [] }
 
-        let records = try loadRecords(assetIDs: uniqueIDs)
+        let records = try loadRecords(assetIDs: uniqueIDs, mediaKind: mediaKind)
         guard !records.isEmpty else { return [] }
 
         var claimed = Set<UUID>()
@@ -125,7 +128,10 @@ struct IdenticalDuplicateClusterService: IdenticalDuplicateScanPort {
         )
     }
 
-    private func loadRecords(assetIDs: [UUID]) throws -> [FingerprintRecord] {
+    private func loadRecords(
+        assetIDs: [UUID],
+        mediaKind: MediaKind
+    ) throws -> [FingerprintRecord] {
         let placeholders = Array(repeating: "?", count: assetIDs.count).joined(separator: ",")
         let idStrings = assetIDs.map { $0.uuidString.lowercased() }
         return try database.pool.read { db in
@@ -148,8 +154,14 @@ struct IdenticalDuplicateClusterService: IdenticalDuplicateScanPort {
                   AND p.pixel_height IS NOT NULL
                   AND p.algo_version = ?
                   AND p.content_revision = a.content_revision
+                  AND a.media_kind = ?
                 """,
-                arguments: StatementArguments(idStrings + [IdenticalDuplicatePolicy.perceptualAlgoVersion])
+                arguments: StatementArguments(
+                    idStrings + [
+                        IdenticalDuplicatePolicy.perceptualAlgoVersion(for: mediaKind),
+                        mediaKind.rawValue,
+                    ]
+                )
             )
             return rows.compactMap { row -> FingerprintRecord? in
                 guard let assetID = UUID(uuidString: row["asset_id"]),

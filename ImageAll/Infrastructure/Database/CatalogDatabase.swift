@@ -31,6 +31,9 @@ struct CatalogDatabase: Sendable {
         V023AddSourceSimilarityIndexMigration.register(on: &migrator)
         V024RepairSourceMutationAuthorizationMigration.register(on: &migrator)
         V025RetainPurgedAssetKnowledgeMigration.register(on: &migrator)
+        V026AddMediaKindAndVideoMetadataMigration.register(on: &migrator)
+        V027PartitionPersonalizationByMediaKindMigration.register(on: &migrator)
+        V028PartitionSlimmingByMediaKindMigration.register(on: &migrator)
         return migrator
     }
 
@@ -390,6 +393,102 @@ struct CatalogDatabase: Sendable {
         try closeQueueOnce(queue, closed: &closed)
         try CatalogDatabaseSidecarHelpers.removeSidecarsIfPresent(at: url)
         try CatalogDatabaseSidecarHelpers.requireNoSidecars(at: url)
+    }
+}
+
+enum V028PartitionSlimmingByMediaKindMigration {
+    static func register(on migrator: inout DatabaseMigrator) {
+        migrator.registerMigration(CatalogMigrationID.v028PartitionSlimmingByMediaKind) { db in
+            try db.execute(sql: "ALTER TABLE source_similarity_bucket_member RENAME TO source_similarity_bucket_member_v027")
+            try db.execute(sql: "ALTER TABLE source_similarity_index RENAME TO source_similarity_index_v027")
+
+            try db.execute(
+                sql: """
+                CREATE TABLE source_similarity_index (
+                    source_id TEXT NOT NULL REFERENCES source(id) ON DELETE CASCADE,
+                    media_kind TEXT NOT NULL CHECK(media_kind IN ('image', 'video')),
+                    state TEXT NOT NULL CHECK(state IN ('building','ready','stale','failed')),
+                    policy_version TEXT NOT NULL,
+                    feature_print_provider TEXT NOT NULL,
+                    feature_print_request_revision INTEGER NOT NULL,
+                    feature_print_preprocessing_revision INTEGER NOT NULL,
+                    feature_print_max_l2 REAL NOT NULL,
+                    lsh_bit_count INTEGER NOT NULL CHECK(lsh_bit_count BETWEEN 8 AND 64),
+                    lsh_planes_json BLOB NOT NULL,
+                    asset_count INTEGER NOT NULL CHECK(asset_count >= 0),
+                    indexed_count INTEGER NOT NULL CHECK(indexed_count >= 0),
+                    cluster_count INTEGER NOT NULL CHECK(cluster_count >= 0),
+                    pending_count INTEGER NOT NULL CHECK(pending_count >= 0),
+                    job_id TEXT REFERENCES job(id) ON DELETE SET NULL,
+                    built_at_ms INTEGER,
+                    updated_at_ms INTEGER NOT NULL,
+                    last_error TEXT,
+                    PRIMARY KEY(source_id, media_kind)
+                ) STRICT
+                """
+            )
+            try db.execute(
+                sql: """
+                INSERT INTO source_similarity_index (
+                    source_id, media_kind, state, policy_version, feature_print_provider,
+                    feature_print_request_revision, feature_print_preprocessing_revision,
+                    feature_print_max_l2, lsh_bit_count, lsh_planes_json,
+                    asset_count, indexed_count, cluster_count, pending_count,
+                    job_id, built_at_ms, updated_at_ms, last_error
+                )
+                SELECT
+                    source_id, 'image', state, policy_version, feature_print_provider,
+                    feature_print_request_revision, feature_print_preprocessing_revision,
+                    feature_print_max_l2, lsh_bit_count, lsh_planes_json,
+                    asset_count, indexed_count, cluster_count, pending_count,
+                    job_id, built_at_ms, updated_at_ms, last_error
+                FROM source_similarity_index_v027
+                """
+            )
+            try db.execute(
+                sql: """
+                CREATE TABLE source_similarity_bucket_member (
+                    source_id TEXT NOT NULL,
+                    media_kind TEXT NOT NULL CHECK(media_kind IN ('image', 'video')),
+                    asset_id TEXT NOT NULL REFERENCES asset(id) ON DELETE CASCADE,
+                    content_revision INTEGER NOT NULL CHECK(content_revision >= 1),
+                    bucket_key INTEGER NOT NULL,
+                    cluster_id TEXT,
+                    PRIMARY KEY(source_id, media_kind, asset_id),
+                    FOREIGN KEY(source_id, media_kind)
+                        REFERENCES source_similarity_index(source_id, media_kind)
+                        ON DELETE CASCADE
+                ) STRICT
+                """
+            )
+            try db.execute(
+                sql: """
+                INSERT INTO source_similarity_bucket_member (
+                    source_id, media_kind, asset_id, content_revision, bucket_key, cluster_id
+                )
+                SELECT source_id, 'image', asset_id, content_revision, bucket_key, cluster_id
+                FROM source_similarity_bucket_member_v027
+                """
+            )
+            try db.execute(sql: "DROP TABLE source_similarity_bucket_member_v027")
+            try db.execute(sql: "DROP TABLE source_similarity_index_v027")
+            try db.execute(
+                sql: """
+                CREATE INDEX source_similarity_bucket_lookup_idx
+                ON source_similarity_bucket_member(
+                    source_id, media_kind, bucket_key, asset_id
+                )
+                """
+            )
+            try db.execute(
+                sql: """
+                CREATE INDEX source_similarity_cluster_lookup_idx
+                ON source_similarity_bucket_member(
+                    source_id, media_kind, cluster_id, asset_id
+                )
+                """
+            )
+        }
     }
 }
 
@@ -2082,6 +2181,406 @@ enum V025RetainPurgedAssetKnowledgeMigration {
                 WHERE state = 'recycled'
                 """
             )
+        }
+    }
+}
+
+/// Introduces a first-class image/video domain without rewriting the existing
+/// catalog or training history. Existing rows are image assets by contract.
+enum V026AddMediaKindAndVideoMetadataMigration {
+    static func register(on migrator: inout DatabaseMigrator) {
+        migrator.registerMigration(CatalogMigrationID.v026AddMediaKindAndVideoMetadata) { db in
+            let assetColumns = try Set(db.columns(in: "asset").map(\.name))
+            if !assetColumns.contains("media_kind") {
+                try db.execute(
+                    sql: """
+                    ALTER TABLE asset
+                    ADD COLUMN media_kind TEXT NOT NULL DEFAULT 'image'
+                        CHECK(media_kind IN ('image', 'video'))
+                    """
+                )
+            }
+            if !assetColumns.contains("duration_ms") {
+                try db.execute(
+                    sql: """
+                    ALTER TABLE asset
+                    ADD COLUMN duration_ms INTEGER
+                        CHECK(duration_ms IS NULL OR duration_ms > 0)
+                    """
+                )
+            }
+            let trainingRunColumns = try Set(db.columns(in: "training_run").map(\.name))
+            if !trainingRunColumns.contains("media_kind") {
+                try db.execute(
+                    sql: """
+                    ALTER TABLE training_run
+                    ADD COLUMN media_kind TEXT NOT NULL DEFAULT 'image'
+                        CHECK(media_kind IN ('image', 'video'))
+                    """
+                )
+            }
+            try db.execute(
+                sql: """
+                CREATE INDEX IF NOT EXISTS asset_current_media_kind_idx
+                ON asset(media_kind, locator_state, availability, id)
+                """
+            )
+            try db.execute(
+                sql: """
+                CREATE INDEX IF NOT EXISTS training_run_media_kind_method_created_idx
+                ON training_run(media_kind, method, created_at_ms DESC, id)
+                """
+            )
+        }
+    }
+}
+
+/// Gives image and video independent Feature KNN and app-personal model slots.
+/// Existing model history predates video support and is therefore copied into
+/// the image partition without changing its revisions or artifact identity.
+enum V027PartitionPersonalizationByMediaKindMigration {
+    static func register(on migrator: inout DatabaseMigrator) {
+        migrator.registerMigration(CatalogMigrationID.v027PartitionPersonalizationByMediaKind) { db in
+            let featureModelColumns = try Set(db.columns(in: "tag_model_revision").map(\.name))
+            let personalModelColumns = try Set(db.columns(in: "personal_suggestion_model").map(\.name))
+            if featureModelColumns.contains("media_kind"),
+               personalModelColumns.contains("media_kind")
+            {
+                return
+            }
+
+            try db.execute(sql: "PRAGMA foreign_keys = OFF")
+            try db.execute(sql: "DROP INDEX IF EXISTS tag_model_sample_feature_idx")
+            try db.execute(sql: "DROP INDEX IF EXISTS prediction_review_rank_idx")
+            try db.execute(sql: "DROP INDEX IF EXISTS personal_prediction_review_rank_idx")
+            try db.execute(sql: "DROP TRIGGER IF EXISTS personal_suggestion_tag_before_insert")
+
+            for table in [
+                "prediction",
+                "tag_model_sample",
+                "tag_model",
+                "tag_model_revision",
+                "personal_prediction",
+                "personal_suggestion_tag",
+                "personal_suggestion_model",
+            ] {
+                try db.execute(sql: "ALTER TABLE \(table) RENAME TO \(table)_v026")
+            }
+
+            try db.execute(
+                sql: """
+                CREATE TABLE tag_model_revision (
+                    media_kind TEXT NOT NULL DEFAULT 'image'
+                        CHECK(media_kind IN ('image', 'video')),
+                    tag_id TEXT NOT NULL REFERENCES tag(id) ON DELETE CASCADE,
+                    revision INTEGER NOT NULL CHECK(revision > 0),
+                    provider TEXT NOT NULL CHECK(provider = 'vision-feature-print'),
+                    request_revision INTEGER NOT NULL CHECK(request_revision > 0),
+                    preprocessing_revision INTEGER NOT NULL CHECK(preprocessing_revision > 0),
+                    threshold REAL NOT NULL CHECK(
+                        typeof(threshold) IN ('real', 'integer')
+                        AND threshold = threshold
+                        AND threshold BETWEEN -1.0e308 AND 1.0e308
+                    ),
+                    positive_count INTEGER NOT NULL CHECK(positive_count > 0),
+                    negative_count INTEGER NOT NULL CHECK(negative_count > 0),
+                    neighbor_count INTEGER NOT NULL CHECK(
+                        neighbor_count > 0
+                        AND neighbor_count <= positive_count
+                        AND neighbor_count <= negative_count
+                    ),
+                    sample_budget_per_role INTEGER NOT NULL CHECK(
+                        sample_budget_per_role >= positive_count
+                        AND sample_budget_per_role >= negative_count
+                    ),
+                    created_at_ms INTEGER NOT NULL CHECK(created_at_ms >= 0),
+                    PRIMARY KEY (media_kind, tag_id, revision)
+                ) STRICT
+                """
+            )
+            try db.execute(
+                sql: """
+                CREATE TABLE tag_model_sample (
+                    media_kind TEXT NOT NULL DEFAULT 'image'
+                        CHECK(media_kind IN ('image', 'video')),
+                    tag_id TEXT NOT NULL,
+                    model_revision INTEGER NOT NULL,
+                    asset_id TEXT NOT NULL REFERENCES asset(id) ON DELETE CASCADE,
+                    content_revision INTEGER NOT NULL CHECK(content_revision > 0),
+                    role TEXT NOT NULL CHECK(role IN ('positive', 'negative')),
+                    rank INTEGER NOT NULL CHECK(rank >= 0),
+                    provider TEXT NOT NULL CHECK(provider = 'vision-feature-print'),
+                    request_revision INTEGER NOT NULL CHECK(request_revision > 0),
+                    preprocessing_revision INTEGER NOT NULL CHECK(preprocessing_revision > 0),
+                    PRIMARY KEY (media_kind, tag_id, model_revision, asset_id),
+                    UNIQUE (media_kind, tag_id, model_revision, role, rank),
+                    FOREIGN KEY (media_kind, tag_id, model_revision)
+                        REFERENCES tag_model_revision(media_kind, tag_id, revision)
+                        ON DELETE CASCADE,
+                    FOREIGN KEY (
+                        asset_id, provider, request_revision,
+                        preprocessing_revision, content_revision
+                    ) REFERENCES feature(
+                        asset_id, provider, request_revision,
+                        preprocessing_revision, content_revision
+                    ) ON DELETE CASCADE
+                ) STRICT
+                """
+            )
+            try db.execute(
+                sql: """
+                CREATE TABLE tag_model (
+                    media_kind TEXT NOT NULL DEFAULT 'image'
+                        CHECK(media_kind IN ('image', 'video')),
+                    tag_id TEXT NOT NULL REFERENCES tag(id) ON DELETE CASCADE,
+                    current_revision INTEGER NOT NULL CHECK(current_revision > 0),
+                    updated_at_ms INTEGER NOT NULL CHECK(updated_at_ms >= 0),
+                    PRIMARY KEY (media_kind, tag_id),
+                    FOREIGN KEY (media_kind, tag_id, current_revision)
+                        REFERENCES tag_model_revision(media_kind, tag_id, revision)
+                        ON DELETE RESTRICT
+                ) STRICT
+                """
+            )
+            try db.execute(
+                sql: """
+                CREATE TABLE prediction (
+                    media_kind TEXT NOT NULL DEFAULT 'image'
+                        CHECK(media_kind IN ('image', 'video')),
+                    asset_id TEXT NOT NULL REFERENCES asset(id) ON DELETE CASCADE,
+                    tag_id TEXT NOT NULL,
+                    content_revision INTEGER NOT NULL CHECK(content_revision > 0),
+                    model_revision INTEGER NOT NULL CHECK(model_revision > 0),
+                    score REAL NOT NULL CHECK(
+                        typeof(score) IN ('real', 'integer')
+                        AND score = score
+                        AND score BETWEEN -1.0e308 AND 1.0e308
+                    ),
+                    state TEXT NOT NULL CHECK(state = 'pendingReview'),
+                    created_at_ms INTEGER NOT NULL CHECK(created_at_ms >= 0),
+                    PRIMARY KEY (
+                        media_kind, asset_id, tag_id, content_revision, model_revision
+                    ),
+                    FOREIGN KEY (media_kind, tag_id, model_revision)
+                        REFERENCES tag_model_revision(media_kind, tag_id, revision)
+                        ON DELETE CASCADE
+                ) STRICT
+                """
+            )
+
+            try db.execute(
+                sql: """
+                CREATE TABLE personal_suggestion_model (
+                    media_kind TEXT NOT NULL DEFAULT 'image'
+                        CHECK(media_kind IN ('image', 'video')),
+                    method TEXT NOT NULL CHECK(
+                        method IN ('personalCentroid', 'personalAdamW')
+                    ),
+                    tag_id TEXT NOT NULL REFERENCES tag(id) ON DELETE CASCADE,
+                    catalog_scope_id TEXT NOT NULL
+                        REFERENCES catalog_scope(scope_id) ON DELETE CASCADE,
+                    bundle_id TEXT NOT NULL CHECK(length(bundle_id) BETWEEN 1 AND 200),
+                    bundle_revision TEXT NOT NULL CHECK(length(bundle_revision) BETWEEN 1 AND 200),
+                    provider TEXT NOT NULL CHECK(length(provider) BETWEEN 1 AND 200),
+                    model_id TEXT NOT NULL CHECK(length(model_id) BETWEEN 1 AND 300),
+                    model_revision TEXT NOT NULL CHECK(length(model_revision) BETWEEN 1 AND 200),
+                    preprocessing_revision TEXT NOT NULL
+                        CHECK(length(preprocessing_revision) BETWEEN 1 AND 200),
+                    element_count INTEGER NOT NULL CHECK(element_count > 0),
+                    label_vocabulary_revision TEXT NOT NULL CHECK(
+                        length(label_vocabulary_revision) = 64
+                        AND label_vocabulary_revision NOT GLOB '*[^0-9a-f]*'
+                    ),
+                    weights_sha256 TEXT NOT NULL CHECK(
+                        length(weights_sha256) = 64
+                        AND weights_sha256 NOT GLOB '*[^0-9a-f]*'
+                    ),
+                    policy_revision TEXT NOT NULL CHECK(length(policy_revision) BETWEEN 1 AND 200),
+                    activated_at_ms INTEGER NOT NULL CHECK(activated_at_ms >= 0),
+                    published_run_id TEXT REFERENCES training_run(id) ON DELETE SET NULL,
+                    PRIMARY KEY(media_kind, method, tag_id)
+                ) STRICT
+                """
+            )
+            try db.execute(
+                sql: """
+                CREATE TABLE personal_suggestion_tag (
+                    media_kind TEXT NOT NULL DEFAULT 'image'
+                        CHECK(media_kind IN ('image', 'video')),
+                    method TEXT NOT NULL,
+                    tag_id TEXT NOT NULL,
+                    PRIMARY KEY(media_kind, method, tag_id),
+                    FOREIGN KEY(media_kind, method, tag_id)
+                        REFERENCES personal_suggestion_model(media_kind, method, tag_id)
+                        ON DELETE CASCADE
+                ) STRICT
+                """
+            )
+            try db.execute(
+                sql: """
+                CREATE TABLE personal_prediction (
+                    media_kind TEXT NOT NULL DEFAULT 'image'
+                        CHECK(media_kind IN ('image', 'video')),
+                    method TEXT NOT NULL,
+                    asset_id TEXT NOT NULL REFERENCES asset(id) ON DELETE CASCADE,
+                    tag_id TEXT NOT NULL,
+                    content_revision INTEGER NOT NULL CHECK(content_revision > 0),
+                    score REAL NOT NULL CHECK(
+                        typeof(score) IN ('real', 'integer')
+                        AND score = score
+                        AND score BETWEEN -1.0e308 AND 1.0e308
+                    ),
+                    state TEXT NOT NULL CHECK(state = 'pendingReview'),
+                    created_at_ms INTEGER NOT NULL CHECK(created_at_ms >= 0),
+                    PRIMARY KEY(media_kind, method, asset_id, tag_id, content_revision),
+                    FOREIGN KEY(media_kind, method, tag_id)
+                        REFERENCES personal_suggestion_tag(media_kind, method, tag_id)
+                        ON DELETE CASCADE
+                ) STRICT
+                """
+            )
+
+            try db.execute(
+                sql: """
+                INSERT INTO tag_model_revision (
+                    media_kind, tag_id, revision, provider, request_revision,
+                    preprocessing_revision, threshold, positive_count, negative_count,
+                    neighbor_count, sample_budget_per_role, created_at_ms
+                )
+                SELECT
+                    'image', tag_id, revision, provider, request_revision,
+                    preprocessing_revision, threshold, positive_count, negative_count,
+                    neighbor_count, sample_budget_per_role, created_at_ms
+                FROM tag_model_revision_v026
+                """
+            )
+            try db.execute(
+                sql: """
+                INSERT INTO tag_model_sample (
+                    media_kind, tag_id, model_revision, asset_id, content_revision,
+                    role, rank, provider, request_revision, preprocessing_revision
+                )
+                SELECT
+                    'image', tag_id, model_revision, asset_id, content_revision,
+                    role, rank, provider, request_revision, preprocessing_revision
+                FROM tag_model_sample_v026
+                """
+            )
+            try db.execute(
+                sql: """
+                INSERT INTO tag_model (
+                    media_kind, tag_id, current_revision, updated_at_ms
+                )
+                SELECT 'image', tag_id, current_revision, updated_at_ms
+                FROM tag_model_v026
+                """
+            )
+            try db.execute(
+                sql: """
+                INSERT INTO prediction (
+                    media_kind, asset_id, tag_id, content_revision, model_revision,
+                    score, state, created_at_ms
+                )
+                SELECT
+                    'image', asset_id, tag_id, content_revision, model_revision,
+                    score, state, created_at_ms
+                FROM prediction_v026
+                """
+            )
+            try db.execute(
+                sql: """
+                INSERT INTO personal_suggestion_model (
+                    media_kind, method, tag_id, catalog_scope_id, bundle_id,
+                    bundle_revision, provider, model_id, model_revision,
+                    preprocessing_revision, element_count, label_vocabulary_revision,
+                    weights_sha256, policy_revision, activated_at_ms, published_run_id
+                )
+                SELECT
+                    'image', method, tag_id, catalog_scope_id, bundle_id,
+                    bundle_revision, provider, model_id, model_revision,
+                    preprocessing_revision, element_count, label_vocabulary_revision,
+                    weights_sha256, policy_revision, activated_at_ms, published_run_id
+                FROM personal_suggestion_model_v026
+                """
+            )
+            try db.execute(
+                sql: """
+                INSERT INTO personal_suggestion_tag (media_kind, method, tag_id)
+                SELECT 'image', method, tag_id
+                FROM personal_suggestion_tag_v026
+                """
+            )
+            try db.execute(
+                sql: """
+                INSERT INTO personal_prediction (
+                    media_kind, method, asset_id, tag_id, content_revision,
+                    score, state, created_at_ms
+                )
+                SELECT
+                    'image', method, asset_id, tag_id, content_revision,
+                    score, state, created_at_ms
+                FROM personal_prediction_v026
+                """
+            )
+
+            for table in [
+                "prediction_v026",
+                "tag_model_sample_v026",
+                "tag_model_v026",
+                "tag_model_revision_v026",
+                "personal_prediction_v026",
+                "personal_suggestion_tag_v026",
+                "personal_suggestion_model_v026",
+            ] {
+                try db.execute(sql: "DROP TABLE \(table)")
+            }
+
+            try db.execute(
+                sql: """
+                CREATE INDEX tag_model_sample_feature_idx ON tag_model_sample (
+                    asset_id, provider, request_revision,
+                    preprocessing_revision, content_revision
+                )
+                """
+            )
+            try db.execute(
+                sql: """
+                CREATE INDEX prediction_review_rank_idx ON prediction (
+                    media_kind, tag_id, state, score DESC, asset_id
+                )
+                """
+            )
+            try db.execute(
+                sql: """
+                CREATE INDEX personal_prediction_review_rank_idx ON personal_prediction (
+                    media_kind, method, tag_id, state, score DESC, asset_id
+                )
+                """
+            )
+            try db.execute(
+                sql: "DROP TRIGGER IF EXISTS personal_tag_model_before_insert"
+            )
+            try db.execute(
+                sql: """
+                CREATE TRIGGER personal_tag_model_before_insert
+                BEFORE INSERT ON tag_model_revision
+                WHEN EXISTS (SELECT 1 FROM standard_tag_binding WHERE tag_id = NEW.tag_id)
+                BEGIN
+                    SELECT RAISE(ABORT, 'personal model requires personal tag');
+                END
+                """
+            )
+            try db.execute(
+                sql: """
+                CREATE TRIGGER personal_suggestion_tag_before_insert
+                BEFORE INSERT ON personal_suggestion_tag
+                WHEN EXISTS (SELECT 1 FROM standard_tag_binding WHERE tag_id = NEW.tag_id)
+                BEGIN
+                    SELECT RAISE(ABORT, 'personal suggestion requires personal tag');
+                END
+                """
+            )
+            try db.execute(sql: "PRAGMA foreign_keys = ON")
         }
     }
 }

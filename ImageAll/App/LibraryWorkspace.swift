@@ -5,6 +5,72 @@ import ImageIO
 import SwiftUI
 import UniformTypeIdentifiers
 
+extension MediaKind {
+    var displayName: String {
+        switch self {
+        case .image: "照片"
+        case .video: "视频"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .image: "photo.on.rectangle"
+        case .video: "play.rectangle"
+        }
+    }
+
+    var countingNoun: String {
+        switch self {
+        case .image: "张照片"
+        case .video: "个视频"
+        }
+    }
+}
+
+struct MediaKindWorkspaceTabs: View {
+    let selection: MediaKind
+    let accessibilityIdentifier: String
+    let help: String
+    let onSelect: (MediaKind) -> Void
+
+    var body: some View {
+        HStack(spacing: 4) {
+            ForEach(MediaKind.allCases, id: \.self) { mediaKind in
+                Button {
+                    onSelect(mediaKind)
+                } label: {
+                    Label(mediaKind.displayName, systemImage: mediaKind.systemImage)
+                        .font(.headline)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 9)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(selection == mediaKind ? Color.accentColor : Color.secondary)
+                .background {
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(
+                            selection == mediaKind
+                                ? Color.accentColor.opacity(0.16)
+                                : Color.clear
+                        )
+                }
+                .accessibilityAddTraits(selection == mediaKind ? .isSelected : [])
+            }
+        }
+        .padding(4)
+        .background(.secondary.opacity(0.1), in: RoundedRectangle(cornerRadius: 10))
+        .frame(maxWidth: 420)
+        .padding(.horizontal, 20)
+        .padding(.vertical, 12)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("媒体类型")
+        .accessibilityIdentifier(accessibilityIdentifier)
+        .persistentHelp(help)
+    }
+}
+
 private struct LibraryTagUndoRecord {
     let snapshot: TagMutationPriorStateSnapshot
     let appliedDecision: TagDecisionQueryState
@@ -215,6 +281,9 @@ enum LibraryAssetDetailText {
         }
         if let width = item.width, let height = item.height {
             lines.append("尺寸：\(formattedInteger(width)) × \(formattedInteger(height))")
+        }
+        if let durationMs = item.durationMs {
+            lines.append("时长：\(VideoDurationText.format(milliseconds: durationMs))")
         }
         lines.append("格式：\(item.mediaType)")
         if let createdAt = item.mediaCreatedAtMs {
@@ -853,6 +922,7 @@ final class LibraryWorkspaceModel: ObservableObject {
     @Published private(set) var tagMatchMode: TagMatchMode = .all
     @Published private(set) var tagPresence: TagPresenceFilter = .any
     @Published private(set) var selectedAvailabilities: [AssetAvailability] = []
+    @Published private(set) var selectedMediaKind: MediaKind = .image
     @Published private(set) var selectedMediaTypes: [String] = []
     @Published private(set) var sort: AssetPageSort = .newest
     @Published private(set) var gridDensity: LibraryGridDensity = .default
@@ -989,6 +1059,10 @@ final class LibraryWorkspaceModel: ObservableObject {
     private var sourceSimilarityIndexRunnerTask: Task<Void, Never>?
     private var catalogReconcileTask: Task<Void, Never>?
     private var catalogReconcileRunRequested = false
+    private var isLibrarySlimmingWorkspaceActive = false
+    private var librarySlimmingCatalogRefreshPendingAfterExit = false
+    private var librarySlimmingCatalogRefreshSourceIDs: Set<UUID> = []
+    private var reportsLibrarySlimmingCatalogRefreshCompletion = false
     private var librarySlimmingIdenticalCleanupExecutionID: UUID?
     private var cloudPreviewTask: Task<Void, Never>?
     private var cloudPreviewRequestID: UUID?
@@ -1368,9 +1442,10 @@ final class LibraryWorkspaceModel: ObservableObject {
             sourceSimilarityIndexStatus = nil
             return
         }
+        let mediaKind = selectedMediaKind
         do {
             sourceSimilarityIndexStatus = try await Self.offMain {
-                try sourceIndex.status(sourceID: sourceID)
+                try sourceIndex.status(sourceID: sourceID, mediaKind: mediaKind)
             }
         } catch {
             sourceSimilarityIndexStatus = nil
@@ -1386,9 +1461,10 @@ final class LibraryWorkspaceModel: ObservableObject {
         }
         isInitializingSourceSimilarityIndex = true
         librarySlimmingStatusMessage = "正在为当前来源建立相似索引…"
+        let mediaKind = selectedMediaKind
         do {
             _ = try await Self.offMain {
-                try sourceIndex.enqueueBuild(sourceID: sourceID)
+                try sourceIndex.enqueueBuild(sourceID: sourceID, mediaKind: mediaKind)
             }
             await refreshSourceSimilarityIndexStatus()
             try await Self.offMain(priority: .utility) {
@@ -1443,9 +1519,10 @@ final class LibraryWorkspaceModel: ObservableObject {
             librarySlimmingAnalysisJobs = []
             return
         }
+        let mediaKind = selectedMediaKind
         do {
             let jobs = try await Self.offMain {
-                try analysis.listJobs()
+                try analysis.listJobs(mediaKind: mediaKind)
             }
             librarySlimmingAnalysisJobs = jobs.map(LibrarySlimmingAnalysisJobPresentation.init)
             if let selected = librarySlimmingAnalysisJobID,
@@ -1656,12 +1733,13 @@ final class LibraryWorkspaceModel: ObservableObject {
             librarySlimmingRecycleEntries = []
             return
         }
+        let mediaKind = selectedMediaKind
         do {
             let entries = try await Self.offMain {
                 _ = try recycle.reconcilePhotosRecycleEntries()
                 return try recycle.listRecycledEntries()
             }
-            librarySlimmingRecycleEntries = entries
+            librarySlimmingRecycleEntries = entries.filter { $0.mediaKind == mediaKind }
         } catch {
             librarySlimmingStatusMessage = "无法加载回收站：\(error.localizedDescription)"
         }
@@ -1990,6 +2068,7 @@ final class LibraryWorkspaceModel: ObservableObject {
             let recycled = try await Self.offMain {
                 try recycle.slimmingHiddenAssetIDs(from: assetIDs)
             }
+            noteLibrarySlimmingCatalogMutation(assetIDs: recycled)
             invalidateRecycledAssetsInActiveWorkspace(recycled)
             selectedLibrarySlimmingMemberIDs.subtract(recycled)
             if let anchorID = librarySlimmingSelectionAnchorID,
@@ -2047,6 +2126,7 @@ final class LibraryWorkspaceModel: ObservableObject {
             librarySlimmingStatusMessage = message
             librarySlimmingRecycleActionMessage = message
             await refreshLibrarySlimmingRecycleEntries()
+            noteLibrarySlimmingCatalogMutation(assetIDs: recycled)
             if let identicalCleanupPlan {
                 if let cleanupExecutionID {
                     setLibrarySlimmingIdenticalCleanupExecutionPhase(
@@ -2333,7 +2413,9 @@ final class LibraryWorkspaceModel: ObservableObject {
         librarySlimmingAnalyzeMode = resolvedMode
         isAnalyzingLibrarySlimming = true
         hasCompletedLibrarySlimmingScan = false
-        librarySlimmingStatusMessage = "正在分析相同与相似照片…"
+        let mediaKind = selectedMediaKind
+        let mediaNoun = mediaKind == .video ? "视频" : "照片"
+        librarySlimmingStatusMessage = "正在分析相同与相似\(mediaNoun)…"
         librarySlimmingScanProgress = nil
         selectedLibrarySlimmingMemberIDs = []
         librarySlimmingSelectionAnchorID = nil
@@ -2355,7 +2437,8 @@ final class LibraryWorkspaceModel: ObservableObject {
             case .catalog:
                 let filter = AssetPageFilter(
                     sourceIDs: catalogSourceIDs,
-                    availabilities: [.available]
+                    availabilities: [.available],
+                    mediaKinds: [mediaKind]
                 )
                 result = try await Self.offMain {
                     let assetIDs = try Self.listAllAssetIDs(
@@ -2365,6 +2448,7 @@ final class LibraryWorkspaceModel: ObservableObject {
                     )
                     return try scanPort.scan(
                         assetIDs: assetIDs,
+                        mediaKind: mediaKind,
                         onProgress: progressHandler
                     )
                 }
@@ -2377,16 +2461,22 @@ final class LibraryWorkspaceModel: ObservableObject {
                         filter: filter,
                         sort: pageSort
                     )
-                    return try scanPort.scan(assetIDs: assetIDs, onProgress: progressHandler)
+                    return try scanPort.scan(
+                        assetIDs: assetIDs,
+                        mediaKind: mediaKind,
+                        onProgress: progressHandler
+                    )
                 }
             case .seeds:
                 let seeds = librarySlimmingSeedAssetIDs
                 guard !seeds.isEmpty else {
-                    librarySlimmingStatusMessage = "请先在图库中选择种子照片。"
+                    librarySlimmingStatusMessage = "请先在图库中选择种子\(mediaNoun)。"
                     return
                 }
                 let narrowed = hasNarrowedLibrarySlimmingUniverse
-                let filter = narrowed ? currentFilter : AssetPageFilter(availabilities: [.available])
+                let filter = narrowed
+                    ? currentFilter
+                    : AssetPageFilter(availabilities: [.available], mediaKinds: [mediaKind])
                 let pageSort = narrowed ? sort : AssetPageSort.newest
                 result = try await Self.offMain {
                     let universe = try Self.listAllAssetIDs(
@@ -2397,6 +2487,7 @@ final class LibraryWorkspaceModel: ObservableObject {
                     return try scanPort.scanSeeds(
                         seedAssetIDs: seeds,
                         universeAssetIDs: universe,
+                        mediaKind: mediaKind,
                         onProgress: progressHandler
                     )
                 }
@@ -2421,6 +2512,8 @@ final class LibraryWorkspaceModel: ObservableObject {
         librarySlimmingSelectionAnchorID = nil
         do {
             let workspaceService = service
+            let mediaKind = selectedMediaKind
+            let mediaNoun = mediaKind == .video ? "视频" : "照片"
             let filter: AssetPageFilter
             let pageSort: AssetPageSort
             let seeds: [UUID]
@@ -2428,7 +2521,8 @@ final class LibraryWorkspaceModel: ObservableObject {
             case .catalog:
                 filter = AssetPageFilter(
                     sourceIDs: catalogSourceIDs,
-                    availabilities: [.available]
+                    availabilities: [.available],
+                    mediaKinds: [mediaKind]
                 )
                 pageSort = .newest
                 seeds = []
@@ -2440,11 +2534,13 @@ final class LibraryWorkspaceModel: ObservableObject {
                 seeds = librarySlimmingSeedAssetIDs
                 guard !seeds.isEmpty else {
                     isAnalyzingLibrarySlimming = false
-                    librarySlimmingStatusMessage = "请先在图库中选择种子照片。"
+                    librarySlimmingStatusMessage = "请先在图库中选择种子\(mediaNoun)。"
                     return
                 }
                 let narrowed = hasNarrowedLibrarySlimmingUniverse
-                filter = narrowed ? currentFilter : AssetPageFilter(availabilities: [.available])
+                filter = narrowed
+                    ? currentFilter
+                    : AssetPageFilter(availabilities: [.available], mediaKinds: [mediaKind])
                 pageSort = narrowed ? sort : .newest
             }
             let assetIDs = try await Self.offMain {
@@ -2456,14 +2552,15 @@ final class LibraryWorkspaceModel: ObservableObject {
             }
             guard !assetIDs.isEmpty else {
                 isAnalyzingLibrarySlimming = false
-                librarySlimmingStatusMessage = "当前范围没有可分析的照片。"
+                librarySlimmingStatusMessage = "当前范围没有可分析的\(mediaNoun)。"
                 return
             }
             let snapshot = try await Self.offMain {
                 try analysis.enqueue(
                     mode: mode,
                     assetIDs: assetIDs,
-                    seedAssetIDs: seeds
+                    seedAssetIDs: seeds,
+                    mediaKind: mediaKind
                 )
             }
             await refreshLibrarySlimmingAnalysisJobs()
@@ -2606,7 +2703,9 @@ final class LibraryWorkspaceModel: ObservableObject {
         let previousMemberIDs = selectedLibrarySlimmingMemberIDs
         let resolvedClusters = resolveRestoredLibrarySlimmingMembers(result.clusters)
         let filteredClusters = filterLibrarySlimmingClustersForHiddenAssets(resolvedClusters)
-        librarySlimmingClusters = filteredClusters.map(LibrarySlimmingClusterPresentation.init)
+        librarySlimmingClusters = filteredClusters.map {
+            LibrarySlimmingClusterPresentation($0, mediaKind: selectedMediaKind)
+        }
         librarySlimmingPendingCount = result.pendingAnalysisAssetIDs.count
         hasCompletedLibrarySlimmingScan = true
         if preserveSelection,
@@ -2725,7 +2824,8 @@ final class LibraryWorkspaceModel: ObservableObject {
                         : remaining[0],
                     score: cluster.score,
                     modelIdentity: cluster.modelIdentity
-                )
+                ),
+                mediaKind: cluster.mediaKind
             )
         }
     }
@@ -2872,9 +2972,14 @@ final class LibraryWorkspaceModel: ObservableObject {
             }
         }
         let method = trainingRunMethodFilter
+        let mediaKind = selectedMediaKind
         do {
             let snapshot = try await Self.offMain {
-                try trainingWorkspace.snapshot(method: method, limit: 200)
+                try trainingWorkspace.snapshot(
+                    mediaKind: mediaKind,
+                    method: method,
+                    limit: 200
+                )
             }
             trainingRuns = snapshot.runs
             trainingSlots = snapshot.slots
@@ -2902,6 +3007,27 @@ final class LibraryWorkspaceModel: ObservableObject {
         guard trainingRunMethodFilter != method else { return }
         trainingRunMethodFilter = method
         await refreshTrainingWorkspace(presentation: .automatic)
+    }
+
+    func setTrainingWorkspaceMediaKind(_ mediaKind: MediaKind) async {
+        guard selectedMediaKind != mediaKind else { return }
+        selectedMediaKind = mediaKind
+        trainingWorkspaceActivity = nil
+        selectedTrainingRunID = nil
+        await refreshTrainingWorkspace(presentation: .automatic)
+    }
+
+    func setLibrarySlimmingWorkspaceMediaKind(_ mediaKind: MediaKind) async {
+        guard selectedMediaKind != mediaKind else { return }
+        selectedMediaKind = mediaKind
+        selectedLibrarySlimmingClusterID = nil
+        selectedLibrarySlimmingMemberIDs = []
+        librarySlimmingAnalysisJobID = nil
+        librarySlimmingClusters = []
+        librarySlimmingPendingCount = 0
+        await refreshLibrarySlimmingAnalysisJobs()
+        await refreshSourceSimilarityIndexStatus()
+        await refreshLibrarySlimmingRecycleEntries()
     }
 
     func selectTrainingRun(_ id: UUID?) {
@@ -3275,12 +3401,15 @@ final class LibraryWorkspaceModel: ObservableObject {
         {
             return source.displayName
         }
-        return tagPresence == .untagged ? "无标签" : "全部照片"
+        if tagPresence == .untagged {
+            return selectedMediaKind == .image ? "无标签照片" : "无标签视频"
+        }
+        return selectedMediaKind == .image ? "全部照片" : "全部视频"
     }
 
     var selectionSummaryTitle: String {
         let count = selectedAssetIDs.count
-        return count == 1 ? "已选择 1 张照片" : "已选择 \(count) 张照片"
+        return "已选择 \(count) \(selectedMediaKind.countingNoun)"
     }
 
     var selectedPhotosSourceNeedsAuthorization: Bool {
@@ -3447,7 +3576,6 @@ final class LibraryWorkspaceModel: ObservableObject {
         }
         await reload(runPendingJobs: false)
         await runLibrarySlimmingMaintenance()
-        await purgeExcludedVideoAssetsIfNeeded()
         await restoreDefaultSourceAuthorizations()
         for source in sources where source.kind == .photos && source.state == .active {
             await ensurePhotosLibraryIndexed(sourceID: source.id)
@@ -3457,6 +3585,94 @@ final class LibraryWorkspaceModel: ObservableObject {
         }
         startPersonalizationRunnerIfNeeded()
         startIdleThumbnailPrewarmIfNeeded()
+    }
+
+    var canRefreshLibrarySlimmingCatalog: Bool {
+        !isCatalogScanning
+            && !isMutatingLibrarySlimmingRecycle
+            && sources.contains { $0.state == .active }
+    }
+
+    /// Catalog source events are still recorded while this workspace is open,
+    /// but they must not launch repeated full-source reconciliation around each
+    /// user-confirmed recycle operation.
+    func setLibrarySlimmingWorkspaceActive(_ isActive: Bool) {
+        guard isLibrarySlimmingWorkspaceActive != isActive else { return }
+        isLibrarySlimmingWorkspaceActive = isActive
+        guard !isActive, librarySlimmingCatalogRefreshPendingAfterExit else { return }
+
+        let requestedSourceIDs = librarySlimmingCatalogRefreshSourceIDs
+        librarySlimmingCatalogRefreshPendingAfterExit = false
+        librarySlimmingCatalogRefreshSourceIDs = []
+        Task { @MainActor [weak self] in
+            await self?.refreshLibrarySlimmingCatalog(
+                preferredSourceIDs: requestedSourceIDs,
+                reportsStatus: false
+            )
+        }
+    }
+
+    /// Explicit user refresh is the only catalog reconcile allowed to start
+    /// while the library-slimming workspace remains visible.
+    func refreshLibrarySlimmingCatalog() async {
+        await refreshLibrarySlimmingCatalog(
+            preferredSourceIDs: [],
+            reportsStatus: true
+        )
+    }
+
+    private func refreshLibrarySlimmingCatalog(
+        preferredSourceIDs: Set<UUID>,
+        reportsStatus: Bool
+    ) async {
+        let activeSourceIDs = Set(
+            sources.lazy
+                .filter { $0.state == .active }
+                .map(\.id)
+        )
+        guard !activeSourceIDs.isEmpty else {
+            if reportsStatus {
+                librarySlimmingStatusMessage = "当前没有可刷新的照片来源"
+            }
+            return
+        }
+        let preferredActiveSourceIDs = preferredSourceIDs.intersection(activeSourceIDs)
+        let requestedSourceIDs = preferredActiveSourceIDs.isEmpty
+            ? activeSourceIDs
+            : preferredActiveSourceIDs
+        let service = service
+        do {
+            try await Self.offMain(priority: .utility) {
+                try service.enqueueReconcile(
+                    sourceIDs: requestedSourceIDs.sorted {
+                        $0.uuidString < $1.uuidString
+                    }
+                )
+            }
+            librarySlimmingCatalogRefreshPendingAfterExit = false
+            librarySlimmingCatalogRefreshSourceIDs = []
+            if reportsStatus {
+                librarySlimmingStatusMessage = "正在刷新照片来源…"
+                reportsLibrarySlimmingCatalogRefreshCompletion = true
+            }
+            startCatalogReconcileRunnerIfNeeded(allowInLibrarySlimming: true)
+        } catch {
+            if reportsStatus {
+                librarySlimmingStatusMessage = "刷新来源失败：\(error.localizedDescription)"
+            } else {
+                notice = .backgroundScanFailed
+            }
+        }
+    }
+
+    private func noteLibrarySlimmingCatalogMutation(assetIDs: Set<UUID>) {
+        guard !assetIDs.isEmpty else { return }
+        librarySlimmingCatalogRefreshPendingAfterExit = true
+        librarySlimmingCatalogRefreshSourceIDs.formUnion(
+            librarySlimmingRecycleEntries.lazy
+                .filter { assetIDs.contains($0.assetID) }
+                .map(\.sourceID)
+        )
     }
 
     func applicationDidBecomeActive() async {
@@ -3763,20 +3979,6 @@ final class LibraryWorkspaceModel: ObservableObject {
             failed: failed,
             total: assetIDs.count
         )
-    }
-
-    private func purgeExcludedVideoAssetsIfNeeded() async {
-        let service = service
-        do {
-            let result = try await Self.offMain {
-                try service.purgeExcludedVideoAssets()
-            }
-            if result.removedAssetCount > 0 {
-                await reload(runPendingJobs: false)
-            }
-        } catch {
-            // Best-effort cleanup; browsing remains available.
-        }
     }
 
     func exportPortableUserData() async {
@@ -4803,6 +5005,7 @@ final class LibraryWorkspaceModel: ObservableObject {
             try Self.validatePersonalCapability(
                 capability,
                 catalogScopeID: runtime.catalogScopeID,
+                mediaKind: selectedMediaKind,
                 activeTagIDs: activeTagIDs
             )
 
@@ -4881,8 +5084,10 @@ final class LibraryWorkspaceModel: ObservableObject {
             tagGroups = try await Self.offMain { try service.listTagGroups() }
             let reviewPort = review
             let sourceIDs = resolvedReviewSourceFilter
+            let mediaKind = selectedMediaKind
             try await Self.offMain {
                 _ = try reviewPort.enqueueStandardLibrarySuggestions(
+                    mediaKind: mediaKind,
                     target: capability.target,
                     sourceIDs: sourceIDs
                 )
@@ -4920,8 +5125,9 @@ final class LibraryWorkspaceModel: ObservableObject {
             let availability = try await runtime.client.personalCapability()
             guard case let .available(capability) = availability else {
                 let reviewPort = review
+                let mediaKind = selectedMediaKind
                 try await Self.offMain {
-                    try reviewPort.invalidateAllPersonalSuggestionBundles()
+                    try reviewPort.invalidatePersonalSuggestionBundles(mediaKind: mediaKind)
                 }
                 await refreshReviewState()
                 personalLibrarySuggestionState = .personalUnavailable
@@ -4930,6 +5136,7 @@ final class LibraryWorkspaceModel: ObservableObject {
             try Self.validatePersonalCapability(
                 capability,
                 catalogScopeID: runtime.catalogScopeID,
+                mediaKind: selectedMediaKind,
                 activeTagIDs: Set(tags.filter { $0.state == .active }.map(\.id))
             )
 
@@ -5007,6 +5214,7 @@ final class LibraryWorkspaceModel: ObservableObject {
 
             let service = service
             let batch = try await suggester.suggest(
+                mediaKind: selectedMediaKind,
                 candidates: candidates,
                 maximumSuggestionsPerAsset:
                     AppPersonalSampleSuggestionLimits.defaultMaximumSuggestionsPerAsset,
@@ -5164,6 +5372,7 @@ final class LibraryWorkspaceModel: ObservableObject {
             )
             let maximumPendingCount = maxPendingSuggestionsPerTag
             let batch = try await suggester.suggest(
+                mediaKind: selectedMediaKind,
                 tagID: tagID,
                 candidates: candidates,
                 maximumPendingCount: maximumPendingCount,
@@ -5260,6 +5469,7 @@ final class LibraryWorkspaceModel: ObservableObject {
         sourceIDs: [UUID]? = nil
     ) async throws -> [PersonalSuggestionCandidate] {
         let reviewPort = review
+        let mediaKind = selectedMediaKind
         let pageSize = AppPersonalTagLibrarySuggestionLimits.candidatePageSize
         var candidates: [PersonalSuggestionCandidate] = []
         var afterAssetID: UUID?
@@ -5267,6 +5477,7 @@ final class LibraryWorkspaceModel: ObservableObject {
             let pageAfter = afterAssetID
             let page = try await Self.offMain {
                 try reviewPort.personalSuggestionCandidates(
+                    mediaKind: mediaKind,
                     afterAssetID: pageAfter,
                     limit: pageSize,
                     sourceIDs: sourceIDs,
@@ -5317,15 +5528,23 @@ final class LibraryWorkspaceModel: ObservableObject {
         }
 
         let reviewPort = review
+        let mediaKind = selectedMediaKind
         return try await Self.offMain {
-            try reviewPort.personalSuggestionCandidates(afterAssetID: nil, limit: limit)
+            try reviewPort.personalSuggestionCandidates(
+                mediaKind: mediaKind,
+                afterAssetID: nil,
+                limit: limit,
+                sourceIDs: nil,
+                excludingDecisionsForTagID: nil
+            )
         }
     }
 
     private func invalidatePersonalLibrarySuggestionBundle() async {
         let reviewPort = review
+        let mediaKind = selectedMediaKind
         try? await Self.offMain {
-            try reviewPort.invalidateAllPersonalSuggestionBundles()
+            try reviewPort.invalidatePersonalSuggestionBundles(mediaKind: mediaKind)
         }
         await refreshReviewState()
     }
@@ -5333,10 +5552,12 @@ final class LibraryWorkspaceModel: ObservableObject {
     private static func validatePersonalCapability(
         _ capability: PersonalModelSuggestionCapability,
         catalogScopeID: String,
+        mediaKind: MediaKind,
         activeTagIDs: Set<UUID>
     ) throws {
         let target = capability.target
         guard target.catalogScopeID == catalogScopeID,
+              target.mediaKind == mediaKind,
               !target.bundleID.isEmpty,
               !target.bundleRevision.isEmpty,
               !target.provider.isEmpty,
@@ -5772,6 +5993,7 @@ final class LibraryWorkspaceModel: ObservableObject {
                 ? .allSources
                 : .selectedAssets(count: selectedAssetIDs.count)
             let review = review
+            let mediaKind = selectedMediaKind
             let refreshTask = startTrainingWorkspaceAutoRefresh()
             defer { refreshTask?.cancel() }
             // One selected tag => one independent training_run / 训练工程.
@@ -5796,6 +6018,7 @@ final class LibraryWorkspaceModel: ObservableObject {
                 let singleTagIDs: Set<UUID> = [tagID]
                 let snapshotSource = AppPersonalTrainingSnapshotPortSource {
                     try review.personalTrainingSnapshot(
+                        mediaKind: mediaKind,
                         limitingToTagIDs: singleTagIDs,
                         limitingToAssetIDs: selectedAssetIDs.isEmpty ? nil : selectedAssetIDs
                     )
@@ -6466,7 +6689,10 @@ final class LibraryWorkspaceModel: ObservableObject {
         }
     }
 
-    private func startCatalogReconcileRunnerIfNeeded() {
+    private func startCatalogReconcileRunnerIfNeeded(
+        allowInLibrarySlimming: Bool = false
+    ) {
+        guard allowInLibrarySlimming || !isLibrarySlimmingWorkspaceActive else { return }
         catalogReconcileRunRequested = true
         guard catalogReconcileTask == nil else { return }
         let service = service
@@ -6493,11 +6719,15 @@ final class LibraryWorkspaceModel: ObservableObject {
                     if let refreshed = try? await Self.offMain({ try service.fetchSources() }) {
                         self.sources = refreshed
                     }
-                    await self.loadFirstPage(remountGrid: false)
+                    await self.reloadLoadedAssetWindow()
                     await self.refreshReviewState()
                     self.startPersonalizationRunnerIfNeeded()
                 } catch {
                     self.catalogReconcileRunRequested = false
+                    if self.reportsLibrarySlimmingCatalogRefreshCompletion {
+                        self.librarySlimmingStatusMessage = "照片来源刷新失败，请稍后重试"
+                        self.reportsLibrarySlimmingCatalogRefreshCompletion = false
+                    }
                     if let refreshed = try? await Self.offMain({ try service.fetchSources() }) {
                         self.sources = refreshed
                     }
@@ -6522,9 +6752,13 @@ final class LibraryWorkspaceModel: ObservableObject {
                     // Preserve the visible scan failure instead of letting a
                     // final empty-page refresh overwrite it with `.content`.
                 } else {
-                    await self.loadFirstPage(remountGrid: false)
+                    await self.reloadLoadedAssetWindow()
                 }
                 self.isCatalogScanning = false
+                if self.reportsLibrarySlimmingCatalogRefreshCompletion {
+                    self.librarySlimmingStatusMessage = "照片来源已刷新"
+                    self.reportsLibrarySlimmingCatalogRefreshCompletion = false
+                }
             }
         }
     }
@@ -6639,17 +6873,87 @@ final class LibraryWorkspaceModel: ObservableObject {
             let visibleItems = page.items.filter {
                 !hiddenRecycledAssetIDs.contains($0.assetID)
             }
+            let refreshedItems: [AssetGridItemProjection]
+            let refreshedCursor: AssetPageCursor?
+            if remountGrid {
+                refreshedItems = visibleItems
+                refreshedCursor = page.nextCursor
+            } else {
+                // Progress polling is a soft refresh. It may run after the user
+                // has paged far beyond the first 100 assets, so replacing the
+                // grid here would collapse the visible window and strand the
+                // LazyVGrid's already-completed pagination task.
+                let firstPageIDs = Set(visibleItems.map(\.assetID))
+                refreshedItems = visibleItems + items.filter {
+                    !firstPageIDs.contains($0.assetID)
+                        && !hiddenRecycledAssetIDs.contains($0.assetID)
+                }
+                refreshedCursor = nextCursor ?? page.nextCursor
+            }
             if !remountGrid,
-               visibleItems == items,
-               page.nextCursor == nextCursor
+               refreshedItems == items,
+               refreshedCursor == nextCursor
             {
+                return
+            }
+            items = refreshedItems
+            nextCursor = refreshedCursor
+            if remountGrid {
+                assetGridRevision += 1
+            }
+            let hadSelection = !selectedAssetIDs.isEmpty
+            let visibleIDs = Set(refreshedItems.map(\.assetID))
+            selectedAssetIDs.formIntersection(visibleIDs)
+            resetCloudPreviewIfSelectionChanged()
+            if selectedAssetIDs.isEmpty {
+                isSinglePhotoPresented = false
+                inspectorDetail = nil
+                inspectorTags = []
+                if hadSelection {
+                    notice = .selectionHiddenByFilter
+                }
+            } else if selectedAssetIDs.count == 1,
+                      let selectedAssetID = selectedAssetIDs.first,
+                      inspectorDetail?.assetID != selectedAssetID
+            {
+                _ = await refreshInspector()
+            }
+            phase = .content
+        } catch {
+            guard assetPageRequestID == requestID else { return }
+            phase = .failed(.catalogFailed)
+        }
+    }
+
+    /// Reconciles the currently loaded pagination depth after a background
+    /// source job completes. Unlike a first-page refresh, this preserves the
+    /// user's scrollable window while also removing assets that no longer
+    /// satisfy the active filter.
+    private func reloadLoadedAssetWindow() async {
+        let requestID = UUID()
+        assetPageRequestID = requestID
+        let service = service
+        let filter = currentFilter
+        let sort = sort
+        let minimumItemCount = max(items.count, 1)
+        do {
+            let page = try await Self.offMain {
+                try Self.fetchAssetWindow(
+                    service: service,
+                    filter: filter,
+                    sort: sort,
+                    minimumItemCount: minimumItemCount
+                )
+            }
+            guard assetPageRequestID == requestID else { return }
+            let visibleItems = page.items.filter {
+                !hiddenRecycledAssetIDs.contains($0.assetID)
+            }
+            if visibleItems == items, page.nextCursor == nextCursor {
                 return
             }
             items = visibleItems
             nextCursor = page.nextCursor
-            if remountGrid {
-                assetGridRevision += 1
-            }
             let hadSelection = !selectedAssetIDs.isEmpty
             let visibleIDs = Set(visibleItems.map(\.assetID))
             selectedAssetIDs.formIntersection(visibleIDs)
@@ -6672,6 +6976,31 @@ final class LibraryWorkspaceModel: ObservableObject {
             guard assetPageRequestID == requestID else { return }
             phase = .failed(.catalogFailed)
         }
+    }
+
+    nonisolated private static func fetchAssetWindow(
+        service: any LibraryWorkspacePort,
+        filter: AssetPageFilter,
+        sort: AssetPageSort,
+        minimumItemCount: Int
+    ) throws -> AssetPageResult {
+        var collected: [AssetGridItemProjection] = []
+        var cursor: AssetPageCursor?
+        repeat {
+            let page = try service.fetchAssetPage(
+                filter: filter,
+                sort: sort,
+                cursor: cursor
+            )
+            collected.append(contentsOf: page.items)
+            let previousCursor = cursor
+            cursor = page.nextCursor
+            if page.items.isEmpty || cursor == previousCursor {
+                cursor = nil
+                break
+            }
+        } while cursor != nil && collected.count < minimumItemCount
+        return AssetPageResult(items: collected, nextCursor: cursor)
     }
 
     func applySearchText(_ text: String) async {
@@ -6808,6 +7137,33 @@ final class LibraryWorkspaceModel: ObservableObject {
         await loadFirstPage()
     }
 
+    func setMediaKind(_ mediaKind: MediaKind) async {
+        guard selectedMediaKind != mediaKind else { return }
+        assetPageRequestID = UUID()
+        searchDebounceTask?.cancel()
+        selectedMediaKind = mediaKind
+        selectedMediaTypes = []
+        selectedAssetIDs = []
+        selectionAnchorID = nil
+        isSinglePhotoPresented = false
+        inspectorDetail = nil
+        inspectorTags = []
+        assetPendingSuggestions = []
+        cloudPreviewState = .hidden
+        if reviewMode != nil {
+            reviewPageRequestID = UUID()
+            reviewMode = .overview
+            reviewQueueItems = []
+            reviewNextCursor = nil
+            selectedReviewItemID = nil
+            suggestionOverviews = []
+            pendingSuggestionTotal = 0
+            await refreshReviewState()
+            return
+        }
+        await loadFirstPage()
+    }
+
     func clearAssetPropertyFilters() async {
         guard hasAssetPropertyFilters else { return }
         selectedAvailabilities = []
@@ -6860,6 +7216,7 @@ final class LibraryWorkspaceModel: ObservableObject {
             excludedTagIDs: Array(excludedTagFilterIDs),
             tagMatchMode: tagMatchMode,
             availabilities: selectedAvailabilities,
+            mediaKinds: [selectedMediaKind],
             mediaTypes: selectedMediaTypes,
             tagPresence: tagPresence,
             searchText: searchText
@@ -7136,15 +7493,22 @@ extension LibraryWorkspaceModel {
     func refreshReviewState() async {
         let reviewPort = review
         let sourceFilter = resolvedReviewSourceFilter
+        let mediaKind = selectedMediaKind
         do {
             pendingSuggestionTotal = try await Self.offMain {
-                try reviewPort.totalPendingSuggestionCount(sourceIDs: sourceFilter)
+                try reviewPort.totalPendingSuggestionCount(
+                    mediaKind: mediaKind,
+                    sourceIDs: sourceFilter
+                )
             }
             suggestionOverviews = try await Self.offMain {
-                try reviewPort.tagOverviews(sourceIDs: sourceFilter)
+                try reviewPort.tagOverviews(
+                    mediaKind: mediaKind,
+                    sourceIDs: sourceFilter
+                )
             }
             let personalJob = try await Self.offMain {
-                try reviewPort.personalLibrarySuggestionJob()
+                try reviewPort.personalLibrarySuggestionJob(mediaKind: mediaKind)
             }
             if let personalJob {
                 personalLibrarySuggestionJobID = personalJob.id
@@ -7156,7 +7520,7 @@ extension LibraryWorkspaceModel {
                 personalLibrarySuggestionState = .idle
             }
             let standardJob = try await Self.offMain {
-                try reviewPort.standardLibrarySuggestionJob()
+                try reviewPort.standardLibrarySuggestionJob(mediaKind: mediaKind)
             }
             if let standardJob {
                 standardLibrarySuggestionJobID = standardJob.id
@@ -7296,10 +7660,13 @@ extension LibraryWorkspaceModel {
     /// Applies review/gallery presentation synchronously so sidebar navigation
     /// never renders the photo grid for one frame before async work completes.
     func applyImmediateBrowsingPresentation(for destination: LibraryBrowsingDestination) {
+        setLibrarySlimmingWorkspaceActive(destination == .librarySlimming)
         switch destination {
         case .reviewSuggestions:
+            selectedMediaKind = .image
             applyReviewOverviewPresentation()
         case .trainingWorkspace, .librarySlimming:
+            selectedMediaKind = .image
             clearReviewModeState()
             isSinglePhotoPresented = false
         case .all, .untagged, .source:
@@ -7380,9 +7747,11 @@ extension LibraryWorkspaceModel {
         reviewPageRequestID = requestID
         let reviewPort = review
         let sourceFilter = resolvedReviewSourceFilter
+        let mediaKind = selectedMediaKind
         do {
             let page = try await Self.offMain {
                 try reviewPort.fetchReviewQueue(
+                    mediaKind: mediaKind,
                     tagID: tagID,
                     sourceIDs: sourceFilter,
                     cursor: nil,
@@ -7428,9 +7797,11 @@ extension LibraryWorkspaceModel {
         let requestID = reviewPageRequestID
         let reviewPort = review
         let sourceFilter = resolvedReviewSourceFilter
+        let mediaKind = selectedMediaKind
         do {
             let page = try await Self.offMain {
                 try reviewPort.fetchReviewQueue(
+                    mediaKind: mediaKind,
                     tagID: tagID,
                     sourceIDs: sourceFilter,
                     cursor: cursor,
@@ -7576,6 +7947,7 @@ extension LibraryWorkspaceModel {
         }
         pendingSuggestionConfirmation = SuggestionEnqueueConfirmation(
             tagID: tagID,
+            mediaKind: selectedMediaKind,
             displayName: displayName,
             mode: mode,
             method: method,
@@ -7607,6 +7979,7 @@ extension LibraryWorkspaceModel {
                 notice = nil
                 let jobID = try await Self.offMain {
                     try reviewPort.enqueueFullLibrarySuggestions(
+                        mediaKind: pending.mediaKind,
                         tagID: pending.tagID,
                         mode: pending.mode,
                         sourceIDs: selectedSourceIDs
@@ -9709,6 +10082,25 @@ struct LibraryWorkspaceView: View {
 
     @ViewBuilder
     private var libraryContent: some View {
+        VStack(spacing: 0) {
+            mediaKindTabs
+            Divider()
+            libraryContentBody
+        }
+    }
+
+    private var mediaKindTabs: some View {
+        MediaKindWorkspaceTabs(
+            selection: model.selectedMediaKind,
+            accessibilityIdentifier: "libraryMediaKindTabs",
+            help: "在当前入口内切换照片和视频；两个页面的数据和选择严格隔离。"
+        ) { mediaKind in
+            Task { await model.setMediaKind(mediaKind) }
+        }
+    }
+
+    @ViewBuilder
+    private var libraryContentBody: some View {
         switch model.phase {
         case .loading:
             ProgressView("正在打开图库…")
@@ -9791,7 +10183,10 @@ struct LibraryWorkspaceView: View {
             } else if model.items.isEmpty {
                 if model.hasAssetPropertyFilters {
                     ContentUnavailableView {
-                        Label("没有符合筛选的照片", systemImage: "line.3.horizontal.decrease.circle")
+                            Label(
+                                "没有符合筛选的\(model.selectedMediaKind.displayName)",
+                                systemImage: "line.3.horizontal.decrease.circle"
+                            )
                     } description: {
                         Text("请调整可用状态或文件格式筛选。")
                     } actions: {
@@ -9856,14 +10251,21 @@ struct LibraryWorkspaceView: View {
                         }
                     } else {
                         ContentUnavailableView {
-                            Label("没有支持的照片", systemImage: "photo")
+                            Label(
+                                "没有支持的\(model.selectedMediaKind.displayName)",
+                                systemImage: model.selectedMediaKind.systemImage
+                            )
                         } description: {
-                            Text("支持 JPEG、PNG、HEIC/HEIF、TIFF、WebP、JPEG 2000、静态 GIF 和 RAW（富士/Adobe 等）。")
+                            if model.selectedMediaKind == .image {
+                                Text("支持 JPEG、PNG、HEIC/HEIF、TIFF、WebP、JPEG 2000、静态 GIF 和 RAW（富士/Adobe 等）。")
+                            } else {
+                                Text("支持系统可读取的 MOV、MP4、M4V 等视频；视频以代表缩略图显示。")
+                            }
                         } actions: {
                             Button("立即重扫") {
                                 Task { await model.rescan() }
                             }
-                            .persistentHelp("重新扫描当前文件夹来源，寻找支持的照片并更新索引。")
+                            .persistentHelp("重新扫描当前文件夹来源，寻找支持的媒体并更新索引。")
                         }
                     }
                 }
@@ -9967,7 +10369,7 @@ struct LibraryWorkspaceView: View {
                     onPageKey: handleGridPageNavigation
                 )
                 .background(Color(nsColor: .windowBackgroundColor))
-                .accessibilityLabel("照片网格")
+                .accessibilityLabel("\(model.selectedMediaKind.displayName)网格")
                 .onAppear {
                     updateGridMetrics(containerSize: proxy.size)
                     contentFocused = true
@@ -10135,9 +10537,16 @@ struct LibraryWorkspaceView: View {
             LabeledContent("文件名", value: detail.fileName ?? "—")
             LabeledContent("来源", value: detail.sourceDisplayName)
             LabeledContent("相对位置", value: detail.relativePath ?? "—")
+            LabeledContent("媒体", value: detail.mediaKind.displayName)
             LabeledContent("格式", value: detail.mediaType)
             if let width = detail.width, let height = detail.height {
                 LabeledContent("尺寸", value: "\(width) × \(height)")
+            }
+            if let durationMs = detail.durationMs {
+                LabeledContent(
+                    "时长",
+                    value: VideoDurationText.format(milliseconds: durationMs)
+                )
             }
             if let bytes = detail.fingerprintSizeBytes {
                 LabeledContent(
@@ -10165,8 +10574,16 @@ struct LibraryWorkspaceView: View {
                 Task { await model.openSelectedOriginal() }
             } label: {
                 Label(
-                    model.isOpeningOriginal ? "正在打开原图…" : "用“预览”打开原图",
-                    systemImage: "arrow.up.forward.app"
+                    model.isOpeningOriginal
+                        ? "正在打开…"
+                        : (
+                            detail.mediaKind == .video
+                                ? "使用系统播放器打开"
+                                : "用“预览”打开原图"
+                        ),
+                    systemImage: detail.mediaKind == .video
+                        ? "play.rectangle"
+                        : "arrow.up.forward.app"
                 )
             }
             .buttonStyle(.borderedProminent)
@@ -10176,7 +10593,11 @@ struct LibraryWorkspaceView: View {
                     model.selectedAssetIDs.count != 1 ||
                     model.isOpeningOriginal
             )
-            .persistentHelp("以只读方式定位原始照片，并交给 macOS“预览”显示；不会修改原图。")
+            .persistentHelp(
+                detail.mediaKind == .video
+                    ? "以只读方式定位原始视频，并交给系统默认播放器；不会修改视频。"
+                    : "以只读方式定位原始照片，并交给 macOS“预览”显示；不会修改原图。"
+            )
             .padding(.top, 5)
         }
         .font(.caption)
@@ -10212,7 +10633,7 @@ struct LibraryWorkspaceView: View {
             detail: "显示或隐藏右侧检查器，查看选中照片的详情、标签与操作。"
         )
 
-        if model.isCatalogScanning {
+        if model.isCatalogScanning, selection != .librarySlimming {
             HStack(spacing: 6) {
                 if let progress = model.catalogReconcileProgress,
                    let total = progress.total,
@@ -11191,11 +11612,26 @@ private struct SinglePhotoView: View {
                         .font(.system(size: 48))
                         .foregroundStyle(.secondary)
                 }
+                if item.mediaKind == .video {
+                    VStack {
+                        Spacer()
+                        Button {
+                            Task { await model.openSelectedOriginal() }
+                        } label: {
+                            Label("使用系统播放器打开", systemImage: "play.fill")
+                                .font(.headline)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.large)
+                        .disabled(item.availability != .available || model.isOpeningOriginal)
+                        .padding(.bottom, 28)
+                    }
+                }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .accessibilityIdentifier("singlePhotoView")
-        .accessibilityLabel(item.fileName ?? "照片")
+        .accessibilityLabel(item.fileName ?? item.mediaKind.displayName)
         .task(id: item.assetID) {
             image = nil
             guard item.availability == .available,
@@ -11319,7 +11755,23 @@ private struct AssetThumbnailView: View {
                         .padding(6)
                 }
             }
-            .accessibilityLabel(item.fileName ?? "照片")
+            .overlay(alignment: .bottomLeading) {
+                if item.mediaKind == .video {
+                    HStack(spacing: 4) {
+                        Image(systemName: "play.fill")
+                        if let durationMs = item.durationMs {
+                            Text(VideoDurationText.format(milliseconds: durationMs))
+                                .monospacedDigit()
+                        }
+                    }
+                    .font(.caption2.weight(.semibold))
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 4)
+                    .background(.regularMaterial, in: Capsule())
+                    .padding(6)
+                }
+            }
+            .accessibilityLabel(item.fileName ?? item.mediaKind.displayName)
             .accessibilityAddTraits(isSelected ? .isSelected : [])
         }
         .aspectRatio(1, contentMode: .fit)
@@ -11333,7 +11785,11 @@ private struct AssetThumbnailView: View {
         )
         .accessibilityAddTraits(.isButton)
         .accessibilityValue(isSelected ? "已选择" : "未选择")
-        .accessibilityHint("选择照片；双击或选择后按空格查看单张照片")
+        .accessibilityHint(
+            item.mediaKind == .video
+                ? "选择视频；双击或选择后按空格查看代表缩略图和播放入口"
+                : "选择照片；双击或选择后按空格查看单张照片"
+        )
         .persistentHelp(LibraryAssetDetailText.hoverText(item))
         .accessibilityAction {
             onSelect()
@@ -11425,6 +11881,9 @@ private struct AssetThumbnailView: View {
     }
 
     private var placeholderIcon: String {
+        if item.mediaKind == .video, item.availability == .available {
+            return "play.rectangle"
+        }
         switch item.availability {
         case .available: return "photo"
         case .missing: return "questionmark.folder"
@@ -11432,6 +11891,19 @@ private struct AssetThumbnailView: View {
         case .unsupported: return "nosign"
         case .recycled: return "trash"
         }
+    }
+}
+
+enum VideoDurationText {
+    static func format(milliseconds: Int64) -> String {
+        let totalSeconds = max(0, milliseconds / 1_000)
+        let hours = totalSeconds / 3_600
+        let minutes = (totalSeconds % 3_600) / 60
+        let seconds = totalSeconds % 60
+        if hours > 0 {
+            return String(format: "%lld:%02lld:%02lld", hours, minutes, seconds)
+        }
+        return String(format: "%lld:%02lld", minutes, seconds)
     }
 }
 

@@ -14,12 +14,14 @@ final class TrainingWorkspaceSchemaTests: XCTestCase {
         try database.pool.read { db in
             XCTAssertTrue(try db.tableExists("training_run"))
             let modelColumns = try db.columns(in: "personal_suggestion_model").map(\.name)
-            XCTAssertEqual(modelColumns.first, "method")
+            XCTAssertEqual(modelColumns.first, "media_kind")
+            XCTAssertEqual(modelColumns.dropFirst().first, "method")
             XCTAssertTrue(modelColumns.contains("tag_id"))
             XCTAssertTrue(modelColumns.contains("published_run_id"))
             XCTAssertFalse(modelColumns.contains("singleton"))
             let predictionColumns = try db.columns(in: "personal_prediction").map(\.name)
-            XCTAssertEqual(predictionColumns.first, "method")
+            XCTAssertEqual(predictionColumns.first, "media_kind")
+            XCTAssertEqual(predictionColumns.dropFirst().first, "method")
             let runColumns = try db.columns(in: "training_run").map(\.name)
             XCTAssertTrue(runColumns.contains("tag_id"))
         }
@@ -572,6 +574,14 @@ final class TrainingWorkspaceSchemaTests: XCTestCase {
             scopeID: scopeID,
             artifactRef: "PersonalModels/AdamWHead/v1/objects/adamw.json"
         )
+        let videoCentroidRun = try insertSucceededRun(
+            runs: runs,
+            mediaKind: .video,
+            method: .personalCentroid,
+            createdAtMs: 400,
+            scopeID: scopeID,
+            artifactRef: "PersonalModels/LinearHead-Video/v1/objects/centroid.json"
+        )
         try database.pool.write { db in
             try db.execute(
                 sql: """
@@ -614,9 +624,21 @@ final class TrainingWorkspaceSchemaTests: XCTestCase {
             activatedAtMs: 200,
             publishedRunID: adamWRun
         )
+        try review.activatePersonalSuggestionBundle(
+            personalCapability(
+                mediaKind: .video,
+                method: .personalCentroid,
+                scopeID: scopeID,
+                tagID: tag.id,
+                revision: "centroid-video-workspace",
+                sha: String(repeating: "e", count: 64)
+            ),
+            activatedAtMs: 400,
+            publishedRunID: videoCentroidRun
+        )
 
         let workspace = GRDBTrainingWorkspaceRepository(database: database)
-        let snapshot = try workspace.snapshot(method: nil, limit: 50)
+        let snapshot = try workspace.snapshot(mediaKind: .image, method: nil, limit: 50)
 
         XCTAssertEqual(snapshot.runs.map(\.id), [centroidRun, adamWRun, featureRun])
         XCTAssertEqual(
@@ -629,8 +651,47 @@ final class TrainingWorkspaceSchemaTests: XCTestCase {
             centroidRun
         )
         XCTAssertEqual(
-            try workspace.snapshot(method: .personalAdamW, limit: 50).runs.map(\.id),
+            try workspace.snapshot(
+                mediaKind: .image,
+                method: .personalAdamW,
+                limit: 50
+            ).runs.map(\.id),
             [adamWRun]
+        )
+        let videoSnapshot = try workspace.snapshot(mediaKind: .video, method: nil, limit: 50)
+        XCTAssertEqual(videoSnapshot.runs.map(\.id), [videoCentroidRun])
+        XCTAssertEqual(
+            videoSnapshot.slots.filter(\.isPublished).map(\.method),
+            [.personalCentroid]
+        )
+        XCTAssertEqual(
+            videoSnapshot.slots.first(where: { $0.method == .personalCentroid })?.publishedRunID,
+            videoCentroidRun
+        )
+        XCTAssertFalse(
+            snapshot.runs.contains(where: { $0.id == videoCentroidRun }),
+            "视频训练记录不得出现在照片工作区"
+        )
+
+        try review.invalidatePersonalSuggestionBundles(mediaKind: .video)
+        let imageAfterVideoInvalidation = try workspace.snapshot(
+            mediaKind: .image,
+            method: nil,
+            limit: 50
+        )
+        let videoAfterVideoInvalidation = try workspace.snapshot(
+            mediaKind: .video,
+            method: nil,
+            limit: 50
+        )
+        XCTAssertEqual(
+            imageAfterVideoInvalidation.slots.filter(\.isPublished).map(\.method),
+            [.featureKnn, .personalCentroid, .personalAdamW],
+            "清除视频个人模型不得影响照片的三个已发布槽位"
+        )
+        XCTAssertTrue(
+            videoAfterVideoInvalidation.slots.allSatisfy { !$0.isPublished },
+            "清除视频个人模型后视频槽位应为空"
         )
     }
 
@@ -687,6 +748,7 @@ final class TrainingWorkspaceSchemaTests: XCTestCase {
 
     private func insertSucceededRun(
         runs: GRDBTrainingRunRepository,
+        mediaKind: MediaKind = .image,
         method: TrainingRunMethod,
         createdAtMs: Int64,
         scopeID: String,
@@ -696,6 +758,7 @@ final class TrainingWorkspaceSchemaTests: XCTestCase {
         try runs.insert(
             TrainingRunRecord(
                 id: id,
+                mediaKind: mediaKind,
                 method: method,
                 state: .succeeded,
                 createdAtMs: createdAtMs,
@@ -718,6 +781,7 @@ final class TrainingWorkspaceSchemaTests: XCTestCase {
     }
 
     private func personalCapability(
+        mediaKind: MediaKind = .image,
         method: PersonalSuggestionMethod,
         scopeID: String,
         tagID: UUID,
@@ -727,6 +791,7 @@ final class TrainingWorkspaceSchemaTests: XCTestCase {
         PersonalModelSuggestionCapability(
             target: PersonalModelSuggestionTarget(
                 catalogScopeID: scopeID,
+                mediaKind: mediaKind,
                 bundleID: method == .personalCentroid
                     ? PersonalSuggestionMethod.linearHeadBundleID
                     : PersonalSuggestionMethod.adamWHeadBundleID,

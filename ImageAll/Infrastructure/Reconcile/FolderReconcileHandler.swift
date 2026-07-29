@@ -601,7 +601,9 @@ struct FolderReconcileHandler: LeaseBoundJobHandler {
         FolderReconcileAssetObservation(
             relativePath: relativePath,
             fileName: fileName,
+            mediaKind: metadata.mediaKind,
             mediaType: metadata.mediaType,
+            durationMs: metadata.durationMs,
             width: metadata.width,
             height: metadata.height,
             mediaCreatedAtMs: metadata.mediaCreatedAtMs,

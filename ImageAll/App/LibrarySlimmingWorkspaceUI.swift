@@ -4,6 +4,7 @@ import SwiftUI
 
 struct LibrarySlimmingClusterPresentation: Identifiable, Equatable, Sendable {
     let id: UUID
+    let mediaKind: MediaKind
     let kind: SlimmingClusterKind
     let memberAssetIDs: [UUID]
     let representativeAssetID: UUID
@@ -11,7 +12,14 @@ struct LibrarySlimmingClusterPresentation: Identifiable, Equatable, Sendable {
     let modelIdentity: SlimmingVectorModelIdentity
 
     var kindTitle: String {
-        switch kind {
+        if mediaKind == .video {
+            switch kind {
+            case .byteIdentical: return "完全相同视频"
+            case .perceptualDuplicate: return "代表缩略图重复"
+            case .nearDuplicateScene: return "相似视频（按代表缩略图）"
+            }
+        }
+        return switch kind {
         case .byteIdentical: "完全相同"
         case .perceptualDuplicate: "视觉重复"
         case .nearDuplicateScene: "同场景相似"
@@ -19,7 +27,17 @@ struct LibrarySlimmingClusterPresentation: Identifiable, Equatable, Sendable {
     }
 
     var scoreCaption: String {
-        switch kind {
+        if mediaKind == .video {
+            switch kind {
+            case .byteIdentical:
+                return "完整视频文件一致"
+            case .perceptualDuplicate:
+                return String(format: "代表缩略图匹配度 %.0f%%", score * 100)
+            case .nearDuplicateScene:
+                return String(format: "代表缩略图相似度 %.0f%%", score * 100)
+            }
+        }
+        return switch kind {
         case .byteIdentical:
             "内容完全一致"
         case .perceptualDuplicate:
@@ -59,8 +77,9 @@ struct LibrarySlimmingClusterPresentation: Identifiable, Equatable, Sendable {
         )
     }
 
-    init(_ cluster: SlimmingCluster) {
+    init(_ cluster: SlimmingCluster, mediaKind: MediaKind = .image) {
         id = cluster.id
+        self.mediaKind = mediaKind
         kind = cluster.kind
         memberAssetIDs = cluster.memberAssetIDs
         representativeAssetID = cluster.representativeAssetID
@@ -72,6 +91,7 @@ struct LibrarySlimmingClusterPresentation: Identifiable, Equatable, Sendable {
 struct LibrarySlimmingAnalysisJobPresentation: Identifiable, Equatable, Sendable {
     let id: UUID
     let mode: LibrarySlimmingAnalyzeMode
+    let mediaKind: MediaKind
     let state: JobState
     let controlRequest: JobControlRequest
     let progress: JobProgress
@@ -108,7 +128,8 @@ struct LibrarySlimmingAnalysisJobPresentation: Identifiable, Equatable, Sendable
     }
 
     var detailCaption: String {
-        var parts: [String] = ["\(memberCount) 张"]
+        let unit = mediaKind == .video ? "个视频" : "张照片"
+        var parts: [String] = ["\(memberCount) \(unit)"]
         if seedCount > 0 {
             parts.append("种子 \(seedCount)")
         }
@@ -164,6 +185,7 @@ struct LibrarySlimmingAnalysisJobPresentation: Identifiable, Equatable, Sendable
     init(_ summary: LibrarySlimmingAnalysisJobSummary) {
         id = summary.jobID
         mode = summary.mode
+        mediaKind = summary.mediaKind
         state = summary.state
         controlRequest = summary.controlRequest
         progress = summary.progress
@@ -192,6 +214,14 @@ struct LibrarySlimmingWorkspaceView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            MediaKindWorkspaceTabs(
+                selection: model.selectedMediaKind,
+                accessibilityIdentifier: "librarySlimmingMediaKindTabs",
+                help: "在图库瘦身内切换照片和视频；分析任务、结果和回收记录不会跨媒体混用。"
+            ) { mediaKind in
+                Task { await model.setLibrarySlimmingWorkspaceMediaKind(mediaKind) }
+            }
+            Divider()
             header
             Divider()
             Picker("工作台", selection: Binding(
@@ -220,13 +250,7 @@ struct LibrarySlimmingWorkspaceView: View {
                 Divider()
             }
 
-            // Size-locked workspace body.
-            //
-            // Under NavigationSplitView + .inspector, HSplitView/List often receive an
-            // unbounded height proposal. A long cluster List then sizes to its full
-            // content height, expands the detail column, and clips the header/picker
-            // out of view. Color.clear flexes to the remaining offered space; its
-            // overlay proposes that exact size to children, so List must scroll.
+            // Lock the workspace body to the remaining height so long Lists scroll.
             Color.clear
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .overlay {
@@ -282,6 +306,7 @@ struct LibrarySlimmingWorkspaceView: View {
         .sheet(isPresented: $confirmMoveToRecycle) {
             LibrarySlimmingMoveToRecycleConfirmationSheet(
                 selectedCount: model.selectedLibrarySlimmingMemberIDs.count,
+                mediaKind: model.selectedMediaKind,
                 suppressFutureConfirmation: $suppressMoveToRecycleConfirmation,
                 onConfirm: {
                     if suppressMoveToRecycleConfirmation {
@@ -351,13 +376,17 @@ struct LibrarySlimmingWorkspaceView: View {
                 }
                 confirmPurgeEntryID = nil
             }
-            .persistentHelp("永久删除回收站中的这张文件夹原图；此操作不可撤销。")
+            .persistentHelp(
+                model.selectedMediaKind == .video
+                    ? "永久删除回收站中的这个文件夹视频；此操作不可撤销。"
+                    : "永久删除回收站中的这张文件夹原图；此操作不可撤销。"
+            )
             Button("取消", role: .cancel) {
                 confirmPurgeEntryID = nil
             }
-            .persistentHelp("关闭确认窗口并保留回收站中的照片。")
+            .persistentHelp("关闭确认窗口并保留回收站中的媒体。")
         } message: {
-            Text("此操作不可撤销，将删除回收站中的原图文件。")
+            Text("此操作不可撤销，将删除回收站中的原始媒体文件。")
         }
     }
 
@@ -498,12 +527,22 @@ struct LibrarySlimmingWorkspaceView: View {
                     .persistentHelp("调整相似召回与精排阈值；下次分析生效")
                 }
 
+                Button {
+                    Task { await model.refreshLibrarySlimmingCatalog() }
+                } label: {
+                    Label("刷新来源", systemImage: "arrow.clockwise")
+                }
+                .disabled(!model.canRefreshLibrarySlimmingCatalog)
+                .persistentHelp(
+                    "手动校对媒体来源并更新目录；停留在图库瘦身期间，来源变化不会自动触发扫描。"
+                )
+
                 Spacer()
 
                 Button("返回图库", systemImage: "photo.on.rectangle") {
                     onReturnToLibrary()
                 }
-                .persistentHelp("退出图库瘦身工作区并返回照片图库；已有分析任务不会被删除。")
+                .persistentHelp("退出图库瘦身工作区并返回图库；已有分析任务不会被删除。")
             }
 
             HStack(spacing: 10) {
@@ -556,7 +595,7 @@ struct LibrarySlimmingWorkspaceView: View {
                     .disabled(!model.canPrepareLibrarySlimmingIdenticalCleanup)
                     .persistentHelp(
                         model.librarySlimmingIdenticalCleanupDisabledReason
-                            ?? "为当前分析结果的每个完全相同分组保留一张，并预览其余照片的批量回收方案。"
+                            ?? "为当前分析结果的每个完全相同分组保留一个，并预览其余媒体的批量回收方案。"
                     )
                 }
 
@@ -576,12 +615,16 @@ struct LibrarySlimmingWorkspaceView: View {
                     .disabled(!model.canMoveSelectedLibrarySlimmingMembersToRecycle)
                     .persistentHelp(
                         model.librarySlimmingMoveToRecycleDisabledReason
-                            ?? "将簇内选中的照片移入回收站（⌫ / Delete 或右键菜单）"
+                            ?? "将簇内选中的媒体移入回收站（⌫ / Delete 或右键菜单）"
                     )
                 }
 
                 if model.librarySlimmingPendingCount > 0 {
-                    Text("待分析 \(model.librarySlimmingPendingCount) 张")
+                    Text(
+                        model.selectedMediaKind == .video
+                            ? "待分析 \(model.librarySlimmingPendingCount) 个"
+                            : "待分析 \(model.librarySlimmingPendingCount) 张"
+                    )
                         .foregroundStyle(.secondary)
                         .font(.callout)
                 }
@@ -742,7 +785,7 @@ struct LibrarySlimmingWorkspaceView: View {
                                 Button("删除记录", role: .destructive) {
                                     Task { await model.deleteLibrarySlimmingAnalysisJob(job.id) }
                                 }
-                                .persistentHelp("永久删除这条分析任务记录和结果；不会删除任何原照片。")
+                                .persistentHelp("永久删除这条分析任务记录和结果；不会删除任何原始媒体。")
                             }
                         }
                         .accessibilityLabel(
@@ -930,13 +973,13 @@ struct LibrarySlimmingWorkspaceView: View {
                 ContentUnavailableView {
                     Label("正在准备结果", systemImage: "photo.stack")
                 } description: {
-                    Text("任务仍在处理，或暂时还没有形成相同、相似照片分组。")
+                    Text("任务仍在处理，或暂时还没有形成相同、相似媒体分组。")
                 }
             } else {
                 ContentUnavailableView {
                     Label("选择结果分组", systemImage: "photo.stack")
                 } description: {
-                    Text("请从左侧“结果分组”选择一组照片。")
+                    Text("请从左侧“结果分组”选择一组媒体。")
                 }
             }
         }
@@ -952,7 +995,7 @@ struct LibrarySlimmingWorkspaceView: View {
             presentMoveToRecycle(for: assetID)
         }
         .disabled(!model.supportsLibrarySlimmingRecycle || model.isMutatingLibrarySlimmingRecycle)
-        .persistentHelp("把当前照片或已选照片移入回收站；确认前不会改动原照片。")
+        .persistentHelp("把当前媒体或已选媒体移入回收站；确认前不会改动原文件。")
     }
 
     private var recycleBinList: some View {
@@ -962,7 +1005,7 @@ struct LibrarySlimmingWorkspaceView: View {
                     Label("回收站为空", systemImage: "trash")
                 } description: {
                     Text(
-                        "文件夹照片由 ImageAll 保留 30 天；Photos 资产遵循 macOS「照片」App 的删除与恢复规则。"
+                        "文件夹媒体由 ImageAll 保留 30 天；Photos 资产遵循 macOS「照片」App 的删除与恢复规则。"
                     )
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -1014,15 +1057,15 @@ struct LibrarySlimmingWorkspaceView: View {
                             .disabled(model.isMutatingLibrarySlimmingRecycle)
                             .persistentHelp(
                                 entry.sourceKind == .photos
-                                    ? "查看如何从 Apple Photos“最近删除”中恢复这张照片。"
-                                    : "把这张文件夹照片从 ImageAll 回收站恢复到原位置。"
+                                    ? "查看如何从 Apple Photos“最近删除”中恢复这个媒体。"
+                                    : "把这个文件夹媒体从 ImageAll 回收站恢复到原位置。"
                             )
                             if entry.sourceKind == .file {
                                 Button("立即删除", role: .destructive) {
                                     confirmPurgeEntryID = entry.id
                                 }
                                 .disabled(model.isMutatingLibrarySlimmingRecycle)
-                                .persistentHelp("打开永久删除确认；确认后这张原图将不可恢复。")
+                                .persistentHelp("打开永久删除确认；确认后这个原始媒体将不可恢复。")
                             }
                         }
                     }
@@ -1043,7 +1086,9 @@ struct LibrarySlimmingInspectorView: View {
                 Text("图库瘦身")
                     .font(.headline)
                 Text(
-                    "查找相同与相似照片。文件夹资产使用 ImageAll 的 30 天回收机制；Photos 资产使用 macOS「照片」App 的系统删除与恢复机制。"
+                    model.selectedMediaKind == .video
+                        ? "查找完整文件相同或代表缩略图相似的视频。文件夹资产使用 ImageAll 的 30 天回收机制；Photos 资产使用 macOS「照片」App 的系统删除与恢复机制。"
+                        : "查找相同与相似照片。文件夹资产使用 ImageAll 的 30 天回收机制；Photos 资产使用 macOS「照片」App 的系统删除与恢复机制。"
                 )
                     .font(.callout)
                     .foregroundStyle(.secondary)
@@ -1058,9 +1103,19 @@ struct LibrarySlimmingInspectorView: View {
                     }
                     LabeledContent("状态", value: job.stateTitle)
                     LabeledContent("尝试次数", value: job.attemptCaption)
-                    LabeledContent("范围", value: "\(job.memberCount) 张")
+                    LabeledContent(
+                        "范围",
+                        value: model.selectedMediaKind == .video
+                            ? "\(job.memberCount) 个"
+                            : "\(job.memberCount) 张"
+                    )
                     if job.seedCount > 0 {
-                        LabeledContent("种子", value: "\(job.seedCount) 张")
+                        LabeledContent(
+                            "种子",
+                            value: model.selectedMediaKind == .video
+                                ? "\(job.seedCount) 个"
+                                : "\(job.seedCount) 张"
+                        )
                     }
                 } else if !model.librarySlimmingSeedAssetIDs.isEmpty {
                     LabeledContent("待用种子", value: "\(model.librarySlimmingSeedAssetIDs.count) 张")
@@ -1093,7 +1148,11 @@ struct LibrarySlimmingInspectorView: View {
                 }
                 if model.librarySlimmingPendingCount > 0 {
                     Divider()
-                    Text("有 \(model.librarySlimmingPendingCount) 张照片缺少 Feature Print 或 DINOv2，已标为待分析。")
+                    Text(
+                        model.selectedMediaKind == .video
+                            ? "有 \(model.librarySlimmingPendingCount) 个视频缺少代表缩略图、Feature Print 或 DINOv2，已标为待分析。"
+                            : "有 \(model.librarySlimmingPendingCount) 张照片缺少 Feature Print 或 DINOv2，已标为待分析。"
+                    )
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -1154,6 +1213,17 @@ private struct SlimmingThumbnailCell: View {
                         .accessibilityLabel("来源：\(sourceName)")
                 }
             }
+            .overlay(alignment: .topTrailing) {
+                if model.selectedMediaKind == .video {
+                    Image(systemName: "play.fill")
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(.white)
+                        .padding(7)
+                        .background(.black.opacity(0.68), in: Circle())
+                        .padding(7)
+                        .accessibilityLabel("视频代表缩略图")
+                }
+            }
         }
         .aspectRatio(1, contentMode: .fit)
         .task(id: loadID) {
@@ -1170,12 +1240,16 @@ private struct SlimmingThumbnailCell: View {
             case .cloudOnly:
                 loadState = .placeholder(symbol: "icloud.and.arrow.down")
             case .unavailable:
-                loadState = .placeholder(symbol: "photo")
+                loadState = .placeholder(
+                    symbol: model.selectedMediaKind == .video ? "video" : "photo"
+                )
             case .failed:
                 loadState = .placeholder(symbol: "exclamationmark.triangle")
             case .cancelled:
                 guard !Task.isCancelled else { return }
-                loadState = .placeholder(symbol: "photo")
+                loadState = .placeholder(
+                    symbol: model.selectedMediaKind == .video ? "video" : "photo"
+                )
             }
         }
     }
@@ -1200,6 +1274,7 @@ private struct SlimmingThumbnailLoadID: Hashable {
 
 private struct LibrarySlimmingMoveToRecycleConfirmationSheet: View {
     let selectedCount: Int
+    let mediaKind: MediaKind
     @Binding var suppressFutureConfirmation: Bool
     let onConfirm: () -> Void
     let onCancel: () -> Void
@@ -1210,7 +1285,7 @@ private struct LibrarySlimmingMoveToRecycleConfirmationSheet: View {
             Text("移入回收站")
                 .font(.headline)
             Text(
-                "文件夹照片将移入 ImageAll 回收站，默认保留 30 天；Photos 资产将由 macOS 移入系统「最近删除」，恢复和永久删除均由「照片」App 管理。"
+                "文件夹媒体将移入 ImageAll 回收站，默认保留 30 天；Photos 资产将由 macOS 移入系统「最近删除」，恢复和永久删除均由「照片」App 管理。"
             )
             .font(.callout)
             .foregroundStyle(.secondary)
@@ -1223,13 +1298,18 @@ private struct LibrarySlimmingMoveToRecycleConfirmationSheet: View {
                     dismiss()
                 }
                 .keyboardShortcut(.cancelAction)
-                .persistentHelp("关闭窗口并保留所有照片，不执行回收操作。")
-                Button("移入回收站（\(selectedCount) 张）", role: .destructive) {
+                .persistentHelp("关闭窗口并保留所有媒体，不执行回收操作。")
+                Button(
+                    mediaKind == .video
+                        ? "移入回收站（\(selectedCount) 个）"
+                        : "移入回收站（\(selectedCount) 张）",
+                    role: .destructive
+                ) {
                     onConfirm()
                     dismiss()
                 }
                 .keyboardShortcut(.defaultAction)
-                .persistentHelp("确认把列出的照片移入回收站，之后仍可按来源规则恢复。")
+                .persistentHelp("确认把列出的媒体移入回收站，之后仍可按来源规则恢复。")
             }
         }
         .padding(20)
@@ -1289,7 +1369,7 @@ private struct LibrarySlimmingIdenticalCleanupConfirmationSheet: View {
                 .frame(width: 42, height: 42)
                 .background(.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 10))
             VStack(alignment: .leading, spacing: 5) {
-                Text("一键清理完全相同照片")
+                Text("一键清理完全相同媒体")
                     .font(.title2.weight(.semibold))
                 Text("这是基于当前运行时资产与来源状态生成的实际清理预览。")
                     .font(.callout)
@@ -1304,7 +1384,7 @@ private struct LibrarySlimmingIdenticalCleanupConfirmationSheet: View {
                 .font(.headline)
             HStack(spacing: 12) {
                 CleanupMetricCard(
-                    title: "已核验照片",
+                    title: "已核验媒体",
                     value: plan.verifiedAssetCount,
                     systemImage: "checkmark.seal",
                     tint: .blue
@@ -1343,7 +1423,7 @@ private struct LibrarySlimmingIdenticalCleanupConfirmationSheet: View {
                     ZStack {
                         Chart(dispositionData) { item in
                             SectorMark(
-                                angle: .value("照片数", item.count),
+                                angle: .value("媒体数", item.count),
                                 innerRadius: .ratio(0.62),
                                 angularInset: 1.5
                             )
@@ -1375,7 +1455,7 @@ private struct LibrarySlimmingIdenticalCleanupConfirmationSheet: View {
                 GroupBox("完全相同组规模") {
                     Chart(groupSizeData) { item in
                         BarMark(
-                            x: .value("每组照片数", item.label),
+                            x: .value("每组媒体数", item.label),
                             y: .value("分组数", item.groupCount)
                         )
                         .foregroundStyle(.indigo.gradient)
@@ -1385,7 +1465,7 @@ private struct LibrarySlimmingIdenticalCleanupConfirmationSheet: View {
                                 .foregroundStyle(.secondary)
                         }
                     }
-                    .chartXAxisLabel("每组照片数")
+                    .chartXAxisLabel("每组媒体数")
                     .chartYAxisLabel("分组数")
                     .frame(height: 180)
                     .accessibilityLabel("完全相同组规模分布")
@@ -1393,10 +1473,10 @@ private struct LibrarySlimmingIdenticalCleanupConfirmationSheet: View {
                 .frame(maxWidth: .infinity)
             }
 
-            GroupBox("待清理照片来源") {
+            GroupBox("待清理媒体来源") {
                 Chart(recycleSourceData) { item in
                     BarMark(
-                        x: .value("照片数", item.count),
+                        x: .value("媒体数", item.count),
                         y: .value("来源", item.label)
                     )
                     .foregroundStyle(item.color.gradient)
@@ -1406,9 +1486,9 @@ private struct LibrarySlimmingIdenticalCleanupConfirmationSheet: View {
                             .foregroundStyle(.secondary)
                     }
                 }
-                .chartXAxisLabel("待清理照片数")
+                .chartXAxisLabel("待清理媒体数")
                 .frame(height: 105)
-                .accessibilityLabel("待清理照片来源分布")
+                .accessibilityLabel("待清理媒体来源分布")
             }
         }
     }
@@ -1618,7 +1698,7 @@ private struct LibrarySlimmingIdenticalCleanupVerificationSheet: View {
                     .font(.system(size: 54, weight: .bold, design: .rounded))
                     .monospacedDigit()
                     .foregroundStyle(verification.isComplete ? Color.green : Color.orange)
-                Text("组完全相同照片已完成去重")
+                Text("组完全相同媒体已完成去重")
                     .font(.title3.weight(.medium))
                 Text(
                     "目标是每组保留 1 张，共 \(verification.targetRetainedAssetCount.formatted()) 张；"
@@ -1675,7 +1755,7 @@ private struct LibrarySlimmingIdenticalCleanupVerificationSheet: View {
                         "本次实际读取 \(verification.observedAssetCount.formatted()) 张；"
                             + "确认已清理 \(verification.recycledRedundantAssetCount.formatted()) 张；"
                             + "当前实际可用 \(verification.currentAvailableAssetCount.formatted()) 张；"
-                            + "其中仍可用的冗余照片 \(verification.remainingRedundantAssetCount.formatted()) 张；"
+                            + "其中仍可用的冗余媒体 \(verification.remainingRedundantAssetCount.formatted()) 个；"
                             + "状态无法确认 \(verification.unresolvedAssetCount.formatted()) 张。"
                     )
                     .font(.callout)
@@ -1847,7 +1927,7 @@ private struct LibrarySlimmingThresholdEditor: View {
                     model.resetLibrarySlimmingSceneThresholds()
                     syncFromModel()
                 }
-                .persistentHelp("把相似照片召回和精排参数恢复为 ImageAll 默认值。")
+                .persistentHelp("把相似媒体召回和精排参数恢复为 ImageAll 默认值。")
                 Spacer()
                 Button("应用") {
                     model.updateLibrarySlimmingSceneThresholds(

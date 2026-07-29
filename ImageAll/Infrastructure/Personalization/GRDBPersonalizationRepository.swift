@@ -157,14 +157,22 @@ struct GRDBPersonalizationRepository: PersonalizationCatalogPort, Sendable {
 
         if let current = try Int.fetchOne(
             db,
-            sql: "SELECT current_revision FROM tag_model WHERE tag_id = ?",
-            arguments: [Self.uuid(registration.tagID)]
+            sql: """
+            SELECT current_revision FROM tag_model
+            WHERE media_kind = ? AND tag_id = ?
+            """,
+            arguments: [registration.mediaKind.rawValue, Self.uuid(registration.tagID)]
         ), registration.revision <= current {
             throw PersonalizationCatalogError.staleModelRevision
         }
 
         for sample in registration.samples {
-            guard try Self.sampleIsCurrentAndEligible(db, tagID: registration.tagID, sample: sample) else {
+            guard try Self.sampleIsCurrentAndEligible(
+                db,
+                mediaKind: registration.mediaKind,
+                tagID: registration.tagID,
+                sample: sample
+            ) else {
                 throw PersonalizationCatalogError.missingFeature
             }
         }
@@ -172,12 +180,13 @@ struct GRDBPersonalizationRepository: PersonalizationCatalogPort, Sendable {
         try db.execute(
             sql: """
             INSERT INTO tag_model_revision (
-                tag_id, revision, provider, request_revision, preprocessing_revision,
+                media_kind, tag_id, revision, provider, request_revision, preprocessing_revision,
                 threshold, positive_count, negative_count, neighbor_count,
                 sample_budget_per_role, created_at_ms
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             arguments: [
+                registration.mediaKind.rawValue,
                 Self.uuid(registration.tagID),
                 registration.revision,
                 PersonalizationConstants.provider,
@@ -196,11 +205,12 @@ struct GRDBPersonalizationRepository: PersonalizationCatalogPort, Sendable {
             try db.execute(
                 sql: """
                 INSERT INTO tag_model_sample (
-                    tag_id, model_revision, asset_id, content_revision, role, rank,
+                    media_kind, tag_id, model_revision, asset_id, content_revision, role, rank,
                     provider, request_revision, preprocessing_revision
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 arguments: [
+                    registration.mediaKind.rawValue,
                     Self.uuid(registration.tagID),
                     registration.revision,
                     Self.uuid(sample.identity.assetID),
@@ -216,13 +226,14 @@ struct GRDBPersonalizationRepository: PersonalizationCatalogPort, Sendable {
 
         try db.execute(
             sql: """
-            INSERT INTO tag_model (tag_id, current_revision, updated_at_ms)
-            VALUES (?, ?, ?)
-            ON CONFLICT(tag_id) DO UPDATE SET
+            INSERT INTO tag_model (media_kind, tag_id, current_revision, updated_at_ms)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(media_kind, tag_id) DO UPDATE SET
                 current_revision = excluded.current_revision,
                 updated_at_ms = excluded.updated_at_ms
             """,
             arguments: [
+                registration.mediaKind.rawValue,
                 Self.uuid(registration.tagID),
                 registration.revision,
                 registration.createdAtMs,
@@ -263,6 +274,26 @@ struct GRDBPersonalizationRepository: PersonalizationCatalogPort, Sendable {
         createdAtMs: Int64,
         on db: Database
     ) throws {
+        try replacePredictions(
+            mediaKind: .image,
+            tagID: tagID,
+            modelRevision: modelRevision,
+            candidateAssetIDs: candidateAssetIDs,
+            predictions: predictions,
+            createdAtMs: createdAtMs,
+            on: db
+        )
+    }
+
+    func replacePredictions(
+        mediaKind: MediaKind,
+        tagID: UUID,
+        modelRevision: Int,
+        candidateAssetIDs: [UUID],
+        predictions: [PredictionRegistration],
+        createdAtMs: Int64,
+        on db: Database
+    ) throws {
         let uniqueCandidates = Array(Set(candidateAssetIDs))
         let candidateSet = Set(uniqueCandidates)
         guard modelRevision > 0,
@@ -287,24 +318,38 @@ struct GRDBPersonalizationRepository: PersonalizationCatalogPort, Sendable {
         }
         guard try Int.fetchOne(
             db,
-            sql: "SELECT current_revision FROM tag_model WHERE tag_id = ?",
-            arguments: [Self.uuid(tagID)]
+            sql: """
+            SELECT current_revision FROM tag_model
+            WHERE media_kind = ? AND tag_id = ?
+            """,
+            arguments: [mediaKind.rawValue, Self.uuid(tagID)]
         ) == modelRevision else {
             throw PersonalizationCatalogError.staleModelRevision
         }
 
         for assetID in uniqueCandidates {
             try db.execute(
-                sql: "DELETE FROM prediction WHERE asset_id = ? AND tag_id = ? AND model_revision = ?",
-                arguments: [Self.uuid(assetID), Self.uuid(tagID), modelRevision]
+                sql: """
+                DELETE FROM prediction
+                WHERE media_kind = ? AND asset_id = ? AND tag_id = ? AND model_revision = ?
+                """,
+                arguments: [
+                    mediaKind.rawValue,
+                    Self.uuid(assetID),
+                    Self.uuid(tagID),
+                    modelRevision,
+                ]
             )
         }
 
         for prediction in predictions {
             guard let currentRevision = try Int.fetchOne(
                 db,
-                sql: "SELECT content_revision FROM asset WHERE id = ?",
-                arguments: [Self.uuid(prediction.assetID)]
+                sql: """
+                SELECT content_revision FROM asset
+                WHERE id = ? AND media_kind = ?
+                """,
+                arguments: [Self.uuid(prediction.assetID), mediaKind.rawValue]
             ) else {
                 throw PersonalizationCatalogError.notFound
             }
@@ -321,11 +366,12 @@ struct GRDBPersonalizationRepository: PersonalizationCatalogPort, Sendable {
             try db.execute(
                 sql: """
                 INSERT INTO prediction (
-                    asset_id, tag_id, content_revision, model_revision,
+                    media_kind, asset_id, tag_id, content_revision, model_revision,
                     score, state, created_at_ms
-                ) VALUES (?, ?, ?, ?, ?, 'pendingReview', ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, 'pendingReview', ?)
                 """,
                 arguments: [
+                    mediaKind.rawValue,
                     Self.uuid(prediction.assetID),
                     Self.uuid(tagID),
                     prediction.contentRevision,
@@ -349,7 +395,8 @@ struct GRDBPersonalizationRepository: PersonalizationCatalogPort, Sendable {
                     SELECT p.asset_id, p.tag_id, p.content_revision, p.model_revision, p.score
                     FROM prediction p
                     JOIN tag_model m
-                        ON m.tag_id = p.tag_id
+                        ON m.media_kind = p.media_kind
+                        AND m.tag_id = p.tag_id
                         AND m.current_revision = p.model_revision
                     JOIN tag t ON t.id = p.tag_id AND t.state = 'active'
                     JOIN asset a
@@ -359,7 +406,8 @@ struct GRDBPersonalizationRepository: PersonalizationCatalogPort, Sendable {
                         AND a.availability = 'available'
                     LEFT JOIN asset_tag_decision d
                         ON d.asset_id = p.asset_id AND d.tag_id = p.tag_id
-                    WHERE p.tag_id = ?
+                    WHERE p.media_kind = 'image'
+                        AND p.tag_id = ?
                         AND p.state = 'pendingReview'
                         AND d.asset_id IS NULL
                     ORDER BY p.score DESC, p.asset_id
@@ -416,6 +464,22 @@ struct GRDBPersonalizationRepository: PersonalizationCatalogPort, Sendable {
         limit: Int,
         on db: Database
     ) throws {
+        try retainTopPendingPredictions(
+            mediaKind: .image,
+            tagID: tagID,
+            modelRevision: modelRevision,
+            limit: limit,
+            on: db
+        )
+    }
+
+    func retainTopPendingPredictions(
+        mediaKind: MediaKind,
+        tagID: UUID,
+        modelRevision: Int,
+        limit: Int,
+        on db: Database
+    ) throws {
         guard modelRevision > 0, limit > 0 else {
             throw PersonalizationCatalogError.invalidInput
         }
@@ -423,7 +487,8 @@ struct GRDBPersonalizationRepository: PersonalizationCatalogPort, Sendable {
         try db.execute(
             sql: """
             DELETE FROM prediction
-            WHERE tag_id = ?
+            WHERE media_kind = ?
+                AND tag_id = ?
                 AND model_revision = ?
                 AND state = 'pendingReview'
                 AND NOT EXISTS (
@@ -437,6 +502,7 @@ struct GRDBPersonalizationRepository: PersonalizationCatalogPort, Sendable {
                         LEFT JOIN asset_tag_decision d
                             ON d.asset_id = p.asset_id AND d.tag_id = p.tag_id
                         WHERE p.tag_id = ?
+                            AND p.media_kind = ?
                             AND p.model_revision = ?
                             AND p.state = 'pendingReview'
                             AND d.asset_id IS NULL
@@ -445,11 +511,37 @@ struct GRDBPersonalizationRepository: PersonalizationCatalogPort, Sendable {
                     )
                 )
             """,
-            arguments: [tagKey, modelRevision, tagKey, modelRevision, limit]
+            arguments: [
+                mediaKind.rawValue,
+                tagKey,
+                modelRevision,
+                tagKey,
+                mediaKind.rawValue,
+                modelRevision,
+                limit,
+            ]
         )
     }
 
     func appendPredictions(
+        tagID: UUID,
+        modelRevision: Int,
+        predictions: [PredictionRegistration],
+        createdAtMs: Int64,
+        on db: Database
+    ) throws {
+        try appendPredictions(
+            mediaKind: .image,
+            tagID: tagID,
+            modelRevision: modelRevision,
+            predictions: predictions,
+            createdAtMs: createdAtMs,
+            on: db
+        )
+    }
+
+    func appendPredictions(
+        mediaKind: MediaKind,
         tagID: UUID,
         modelRevision: Int,
         predictions: [PredictionRegistration],
@@ -476,8 +568,11 @@ struct GRDBPersonalizationRepository: PersonalizationCatalogPort, Sendable {
         }
         guard try Int.fetchOne(
             db,
-            sql: "SELECT current_revision FROM tag_model WHERE tag_id = ?",
-            arguments: [Self.uuid(tagID)]
+            sql: """
+            SELECT current_revision FROM tag_model
+            WHERE media_kind = ? AND tag_id = ?
+            """,
+            arguments: [mediaKind.rawValue, Self.uuid(tagID)]
         ) == modelRevision else {
             throw PersonalizationCatalogError.staleModelRevision
         }
@@ -485,8 +580,11 @@ struct GRDBPersonalizationRepository: PersonalizationCatalogPort, Sendable {
         for prediction in predictions {
             guard let currentRevision = try Int.fetchOne(
                 db,
-                sql: "SELECT content_revision FROM asset WHERE id = ?",
-                arguments: [Self.uuid(prediction.assetID)]
+                sql: """
+                SELECT content_revision FROM asset
+                WHERE id = ? AND media_kind = ?
+                """,
+                arguments: [Self.uuid(prediction.assetID), mediaKind.rawValue]
             ) else {
                 continue
             }
@@ -502,10 +600,12 @@ struct GRDBPersonalizationRepository: PersonalizationCatalogPort, Sendable {
                 sql: """
                 SELECT EXISTS(
                     SELECT 1 FROM prediction
-                    WHERE asset_id = ? AND tag_id = ? AND model_revision = ?
+                    WHERE media_kind = ?
+                        AND asset_id = ? AND tag_id = ? AND model_revision = ?
                 )
                 """,
                 arguments: [
+                    mediaKind.rawValue,
                     Self.uuid(prediction.assetID),
                     Self.uuid(tagID),
                     modelRevision,
@@ -516,11 +616,12 @@ struct GRDBPersonalizationRepository: PersonalizationCatalogPort, Sendable {
             try db.execute(
                 sql: """
                 INSERT INTO prediction (
-                    asset_id, tag_id, content_revision, model_revision,
+                    media_kind, asset_id, tag_id, content_revision, model_revision,
                     score, state, created_at_ms
-                ) VALUES (?, ?, ?, ?, ?, 'pendingReview', ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, 'pendingReview', ?)
                 """,
                 arguments: [
+                    mediaKind.rawValue,
                     Self.uuid(prediction.assetID),
                     Self.uuid(tagID),
                     prediction.contentRevision,
@@ -534,6 +635,7 @@ struct GRDBPersonalizationRepository: PersonalizationCatalogPort, Sendable {
 
     private static func sampleIsCurrentAndEligible(
         _ db: Database,
+        mediaKind: MediaKind,
         tagID: UUID,
         sample: ModelSampleRegistration
     ) throws -> Bool {
@@ -554,6 +656,7 @@ struct GRDBPersonalizationRepository: PersonalizationCatalogPort, Sendable {
                     AND d.tag_id = ?
                     AND d.decision = ?
                 WHERE f.asset_id = ?
+                    AND a.media_kind = ?
                     AND f.provider = ?
                     AND f.request_revision = ?
                     AND f.preprocessing_revision = ?
@@ -564,6 +667,7 @@ struct GRDBPersonalizationRepository: PersonalizationCatalogPort, Sendable {
                 uuid(tagID),
                 expectedDecision,
                 uuid(sample.identity.assetID),
+                mediaKind.rawValue,
                 sample.identity.provider,
                 sample.identity.requestRevision,
                 sample.identity.preprocessingRevision,

@@ -3,6 +3,7 @@ import Foundation
 enum PersonalLibrarySuggestionsJobEnqueue {
     static func makeEnqueueCommand(
         jobID: UUID,
+        mediaKind: MediaKind = .image,
         sourceIDs: [UUID],
         catalogCutoffMs: Int64,
         capability: PersonalModelSuggestionCapability,
@@ -25,7 +26,8 @@ enum PersonalLibrarySuggestionsJobEnqueue {
             payload: try PersonalLibrarySuggestionsCodec.encodePayload(payload),
             sourceID: nil,
             coalescingKey: PersonalLibrarySuggestionsJobFactory.coalescingKey(
-                catalogScopeID: capability.target.catalogScopeID
+                catalogScopeID: capability.target.catalogScopeID,
+                mediaKind: capability.target.mediaKind
             ),
             priority: PersonalLibrarySuggestionsJobFactory.priority,
             maxAttempts: PersonalLibrarySuggestionsJobFactory.maxAttempts,
@@ -37,6 +39,7 @@ enum PersonalLibrarySuggestionsJobEnqueue {
 enum StandardLibrarySuggestionsJobEnqueue {
     static func makeEnqueueCommand(
         jobID: UUID,
+        mediaKind: MediaKind = .image,
         sourceIDs: [UUID],
         catalogCutoffMs: Int64,
         target: StandardModelSuggestionTarget,
@@ -44,6 +47,7 @@ enum StandardLibrarySuggestionsJobEnqueue {
     ) throws -> EnqueueJobCommand {
         let payload = StandardLibrarySuggestionsPayload(
             contractVersion: StandardLibrarySuggestionsJobFactory.contractVersion,
+            mediaKind: mediaKind,
             sourceIDs: sourceIDs.sorted { $0.uuidString < $1.uuidString },
             catalogCutoffMs: catalogCutoffMs,
             target: target
@@ -55,7 +59,8 @@ enum StandardLibrarySuggestionsJobEnqueue {
             payload: try StandardLibrarySuggestionsCodec.encodePayload(payload),
             sourceID: nil,
             coalescingKey: StandardLibrarySuggestionsJobFactory.coalescingKey(
-                standardPackID: target.standardPackID
+                standardPackID: target.standardPackID,
+                mediaKind: mediaKind
             ),
             priority: StandardLibrarySuggestionsJobFactory.priority,
             maxAttempts: StandardLibrarySuggestionsJobFactory.maxAttempts,

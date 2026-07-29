@@ -30,6 +30,26 @@ actor AppPersonalTagLibrarySuggestionRuntime: AppPersonalTagLibrarySuggesting {
         embedding: @escaping @Sendable (PersonalSuggestionCandidate) async throws -> AppCoreMLEmbedding,
         progress: (@Sendable (Int, Int, Int) -> Void)?
     ) async throws -> AppPersonalTagLibrarySuggestionBatch {
+        try await suggest(
+            mediaKind: .image,
+            tagID: tagID,
+            candidates: candidates,
+            maximumPendingCount: maximumPendingCount,
+            minimumScore: minimumScore,
+            embedding: embedding,
+            progress: progress
+        )
+    }
+
+    func suggest(
+        mediaKind: MediaKind,
+        tagID: UUID,
+        candidates: [PersonalSuggestionCandidate],
+        maximumPendingCount: Int,
+        minimumScore: Double,
+        embedding: @escaping @Sendable (PersonalSuggestionCandidate) async throws -> AppCoreMLEmbedding,
+        progress: (@Sendable (Int, Int, Int) -> Void)?
+    ) async throws -> AppPersonalTagLibrarySuggestionBatch {
         guard !isRunning else {
             throw AppPersonalTagLibrarySuggestionError.alreadyRunning
         }
@@ -49,17 +69,20 @@ actor AppPersonalTagLibrarySuggestionRuntime: AppPersonalTagLibrarySuggesting {
             applicationSupportDirectory: applicationSupportDirectory,
             expectedCatalogScopeID: expectedCatalogScopeID,
             expectedEncoderIdentity: encoderIdentity,
+            mediaKind: mediaKind,
             family: family
         )
         let storeCapability: AppPersonalLinearHeadCapability
         if let database {
             let review = GRDBPersonalizationReviewRepository(database: database)
             let artifactSHA256 = try review.publishedArtifactSHA256(
+                mediaKind: mediaKind,
                 method: family.personalSuggestionMethod,
                 tagID: tagID
             )
             if artifactSHA256 == nil,
                try review.usesLegacyActivePointer(
+                   mediaKind: mediaKind,
                    method: family.personalSuggestionMethod,
                    tagID: tagID
                )
@@ -89,6 +112,7 @@ actor AppPersonalTagLibrarySuggestionRuntime: AppPersonalTagLibrarySuggesting {
         }
         let capability = AppPersonalSuggestionCapabilityMapper.capability(
             from: matchedIdentity,
+            mediaKind: mediaKind,
             family: family
         )
 

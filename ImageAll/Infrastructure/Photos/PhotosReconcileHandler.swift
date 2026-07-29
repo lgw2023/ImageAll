@@ -596,32 +596,52 @@ struct PhotosReconcileHandler: LeaseBoundJobHandler, Sendable {
             db,
             sql: """
             SELECT id, file_name, media_type, width, height,
-                   media_created_at_ms, media_modified_at_ms, availability
+                   media_created_at_ms, media_modified_at_ms, availability,
+                   media_kind, duration_ms
             FROM asset
             WHERE source_id = ? AND locator_kind = 'photos'
                 AND locator_state = 'current' AND photos_local_identifier = ?
             """,
             arguments: [sourceIDString, metadata.localIdentifier]
         ) {
-            let changed = (row["file_name"] as String?) != metadata.fileName
-                || (row["media_type"] as String) != metadata.mediaType
-                || (row["width"] as Int?) != metadata.width
-                || (row["height"] as Int?) != metadata.height
-                || (row["media_created_at_ms"] as Int64?) != metadata.createdAtMs
-                || (row["media_modified_at_ms"] as Int64?) != metadata.modifiedAtMs
-                || (row["availability"] as String) != AssetAvailability.available.rawValue
+            let storedFileName: String? = row["file_name"]
+            let storedMediaType: String = row["media_type"]
+            let storedWidth: Int? = row["width"]
+            let storedHeight: Int? = row["height"]
+            let storedCreatedAtMs: Int64? = row["media_created_at_ms"]
+            let storedModifiedAtMs: Int64? = row["media_modified_at_ms"]
+            let storedMediaKind: String = row["media_kind"]
+            let storedDurationMs: Int64? = row["duration_ms"]
+            let storedAvailability: String = row["availability"]
+            let fileIdentityChanged = storedFileName != metadata.fileName
+                || storedMediaType != metadata.mediaType
+            let dimensionsChanged = storedWidth != metadata.width
+                || storedHeight != metadata.height
+            let timestampsChanged = storedCreatedAtMs != metadata.createdAtMs
+                || storedModifiedAtMs != metadata.modifiedAtMs
+            let videoMetadataChanged = storedMediaKind != metadata.mediaKind.rawValue
+                || storedDurationMs != metadata.durationMs
+            let availabilityChanged = storedAvailability != AssetAvailability.available.rawValue
+            let changed = fileIdentityChanged
+                || dimensionsChanged
+                || timestampsChanged
+                || videoMetadataChanged
+                || availabilityChanged
             try db.execute(
                 sql: """
                 UPDATE asset SET
                     file_name = ?, media_type = ?, width = ?, height = ?,
                     media_created_at_ms = ?, media_modified_at_ms = ?,
+                    media_kind = ?, duration_ms = ?,
                     last_seen_generation = ?, availability = 'available',
                     content_revision = content_revision + ?, record_updated_at_ms = ?
                 WHERE id = ?
                 """,
                 arguments: [
                     metadata.fileName, metadata.mediaType, metadata.width, metadata.height,
-                    metadata.createdAtMs, metadata.modifiedAtMs, generation, changed ? 1 : 0,
+                    metadata.createdAtMs, metadata.modifiedAtMs,
+                    metadata.mediaKind.rawValue, metadata.durationMs,
+                    generation, changed ? 1 : 0,
                     clock.nowMs, row["id"] as String,
                 ]
             )
@@ -633,13 +653,14 @@ struct PhotosReconcileHandler: LeaseBoundJobHandler, Sendable {
                     locator_state, media_type, width, height,
                     media_created_at_ms, media_modified_at_ms, content_revision,
                     last_seen_generation, availability, record_created_at_ms,
-                    record_updated_at_ms, file_name
-                ) VALUES (?, ?, 'photos', NULL, ?, 'current', ?, ?, ?, ?, ?, 1, ?, 'available', ?, ?, ?)
+                    record_updated_at_ms, file_name, media_kind, duration_ms
+                ) VALUES (?, ?, 'photos', NULL, ?, 'current', ?, ?, ?, ?, ?, 1, ?, 'available', ?, ?, ?, ?, ?)
                 """,
                 arguments: [
                     idGenerator().uuidString.lowercased(), sourceIDString, metadata.localIdentifier,
                     metadata.mediaType, metadata.width, metadata.height, metadata.createdAtMs,
                     metadata.modifiedAtMs, generation, clock.nowMs, clock.nowMs, metadata.fileName,
+                    metadata.mediaKind.rawValue, metadata.durationMs,
                 ]
             )
         }

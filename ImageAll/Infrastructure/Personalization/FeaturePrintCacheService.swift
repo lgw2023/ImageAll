@@ -84,6 +84,7 @@ struct LibraryFeaturePrintInputLoader: FeaturePrintInputLoading, Sendable {
     let photosImages: (any PhotosFeaturePrintImagePort)?
     let downloadedPreviews: (any DownloadedPreviewCachePort)?
     let sourceReader: DerivedImageSourceReader
+    let videoPosterGenerator: any DerivedVideoPosterGenerating
 
     private var assetRepository: GRDBDerivedImageCacheRepository {
         GRDBDerivedImageCacheRepository(database: database)
@@ -94,13 +95,16 @@ struct LibraryFeaturePrintInputLoader: FeaturePrintInputLoading, Sendable {
         sourceAccess: FolderReconcileSourceAccessService,
         photosImages: (any PhotosFeaturePrintImagePort)? = nil,
         downloadedPreviews: (any DownloadedPreviewCachePort)? = nil,
-        sourceReader: DerivedImageSourceReader = DerivedImageSourceReader()
+        sourceReader: DerivedImageSourceReader = DerivedImageSourceReader(),
+        videoPosterGenerator: any DerivedVideoPosterGenerating =
+            AVFoundationDerivedVideoPosterGenerator()
     ) {
         self.database = database
         self.sourceAccess = sourceAccess
         self.photosImages = photosImages
         self.downloadedPreviews = downloadedPreviews
         self.sourceReader = sourceReader
+        self.videoPosterGenerator = videoPosterGenerator
     }
 
     func resolveIdentity(assetID: UUID) throws -> FeatureIdentity {
@@ -169,7 +173,33 @@ struct LibraryFeaturePrintInputLoader: FeaturePrintInputLoading, Sendable {
             throw FeaturePrintError.sourceChanged
         }
         let bytes = try sourceAccess.withActiveSourceRootURL(sourceID: context.sourceID) { rootURL in
-            let initial = try sourceReader.readSourceBytes(rootURL: rootURL, relativePath: context.relativePath)
+            if context.mediaKind == .video {
+                guard let durationMs = context.durationMs, durationMs > 0 else {
+                    throw FeaturePrintError.decodeFailed
+                }
+                return try sourceReader.withOpenSourceFileDescriptorURL(
+                    rootURL: rootURL,
+                    relativePath: context.relativePath
+                ) { descriptorURL, initialFingerprint in
+                    guard context.matchesHandleFacts(initialFingerprint) else {
+                        throw FeaturePrintError.sourceChanged
+                    }
+                    do {
+                        return try videoPosterGenerator.makePosterBytes(
+                            sourceFileDescriptorURL: descriptorURL,
+                            mediaType: context.mediaType,
+                            durationMs: durationMs,
+                            maximumPixelSize: 1_024
+                        )
+                    } catch {
+                        throw FeaturePrintError.decodeFailed
+                    }
+                }
+            }
+            let initial = try sourceReader.readSourceBytes(
+                rootURL: rootURL,
+                relativePath: context.relativePath
+            )
             guard context.matchesHandleFacts(initial.initialFingerprint),
                   initial.preHandleFstat.sizeBytes == initial.postHandleFstat.sizeBytes,
                   initial.preHandleFstat.modifiedAtNs == initial.postHandleFstat.modifiedAtNs,
@@ -182,7 +212,9 @@ struct LibraryFeaturePrintInputLoader: FeaturePrintInputLoading, Sendable {
         return FeaturePrintInput(
             identity: expectedIdentity,
             sourceBytes: bytes,
-            expectedMediaType: context.mediaType,
+            expectedMediaType: context.mediaKind == .video
+                ? nil
+                : context.mediaType,
             validationToken: fileValidationToken(context)
         )
     }

@@ -1581,6 +1581,7 @@ final class FullLibrarySuggestionsJobTests: XCTestCase {
         XCTAssertEqual(payload.sourceIDs, [fixture.sourceID])
         XCTAssertEqual(payload.catalogCutoffMs, fixture.cutoffMs)
         XCTAssertEqual(payload.capability, capability)
+        XCTAssertEqual(payload.capability.target.mediaKind, .image)
 
         let object = try XCTUnwrap(
             JSONSerialization.jsonObject(with: command.payload) as? [String: Any]
@@ -1590,7 +1591,7 @@ final class FullLibrarySuggestionsJobTests: XCTestCase {
             ["contractVersion", "sourceIDs", "catalogCutoffMs", "capability"]
         )
         let encoded = try XCTUnwrap(String(data: command.payload, encoding: .utf8))
-        for forbidden in ["path", "bookmark", "image", "bytes"] {
+        for forbidden in ["path", "bookmark", "bytes"] {
             XCTAssertFalse(encoded.localizedCaseInsensitiveContains(forbidden))
         }
     }
@@ -2181,6 +2182,121 @@ final class FullLibrarySuggestionsJobTests: XCTestCase {
         XCTAssertEqual(completion.candidateCount, metrics["eligibleCount"] as? Int)
         XCTAssertEqual(completion.aboveThresholdCount, metrics["suggestedCount"] as? Int)
         XCTAssertEqual(completion.skippedCount, metrics["skippedCount"] as? Int)
+    }
+
+    func testVideoFeatureKnnJobUsesVideoSamplesAndKeepsPhotoSlotEmpty() async throws {
+        let fixture = try makeLargeLibraryFixture(assetCount: 8)
+        try await fixture.database.pool.write { db in
+            try db.execute(
+                sql: """
+                UPDATE asset
+                SET media_kind = 'video',
+                    media_type = 'public.mpeg-4',
+                    duration_ms = 2_000
+                """
+            )
+        }
+        try GRDBSuggestionThresholdRepository(database: fixture.database).setOverride(
+            tagID: fixture.tagID,
+            method: .featureKnn,
+            minScore: 0,
+            updatedAtMs: fixture.cutoffMs
+        )
+        let queue = JobTestSupport.makeQueue(
+            database: fixture.database,
+            nowMs: fixture.cutoffMs,
+            retryDelayMs: 0
+        )
+        let handler = FullLibrarySuggestionsHandler(
+            dependencies: FullLibrarySuggestionsHandlerDependencies(
+                database: fixture.database,
+                queue: queue,
+                featureLoader: fixture.loader,
+                clock: FixedJobClock(nowMs: fixture.cutoffMs)
+            )
+        )
+        let service = PersonalizationReviewService(
+            database: fixture.database,
+            queue: queue,
+            executionCoordinator: makeCoordinator(
+                database: fixture.database,
+                handler: handler,
+                queue: queue
+            ),
+            tags: fixture.tags,
+            clock: FixedJobClock(nowMs: fixture.cutoffMs)
+        )
+
+        let jobID = try service.enqueueFullLibrarySuggestions(
+            mediaKind: .video,
+            tagID: fixture.tagID,
+            mode: .generate,
+            sourceIDs: nil
+        )
+        let payload = try FullLibrarySuggestionsCodec.decodePayload(
+            queue.fetchJob(id: jobID).payload
+        )
+        XCTAssertEqual(payload.mediaKind, .video)
+        let didWork = try await service.runPendingSuggestionJobsAsync()
+        XCTAssertTrue(didWork)
+
+        let run = try XCTUnwrap(
+            GRDBTrainingRunRepository(database: fixture.database).fetch(jobID: jobID)
+        )
+        XCTAssertEqual(run.mediaKind, .video)
+        XCTAssertEqual(run.state, .succeeded)
+        let metrics = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(run.metricsJSON.utf8))
+                as? [String: Any]
+        )
+        let suggestedCount = metrics["suggestedCount"] as? Int ?? 0
+        XCTAssertGreaterThan(suggestedCount, 0)
+        let review = GRDBPersonalizationReviewRepository(database: fixture.database)
+        XCTAssertEqual(
+            try review.totalPendingSuggestionCount(
+                mediaKind: .video,
+                sourceIDs: nil
+            ),
+            suggestedCount
+        )
+        XCTAssertEqual(
+            try review.totalPendingSuggestionCount(
+                mediaKind: .image,
+                sourceIDs: nil
+            ),
+            0,
+            "视频建议不得泄漏到照片 Review"
+        )
+        let videoReviewPage = try review.fetchReviewQueuePage(
+            mediaKind: .video,
+            tagID: fixture.tagID,
+            sourceIDs: nil,
+            cursor: nil,
+            limit: 100
+        )
+        XCTAssertEqual(videoReviewPage.items.count, suggestedCount)
+        let modelKinds = try await fixture.database.pool.read { db in
+            try String.fetchAll(
+                db,
+                sql: "SELECT media_kind FROM tag_model WHERE tag_id = ? ORDER BY media_kind",
+                arguments: [fixture.tagID.uuidString.lowercased()]
+            )
+        }
+        XCTAssertEqual(modelKinds, [MediaKind.video.rawValue])
+
+        let workspace = GRDBTrainingWorkspaceRepository(database: fixture.database)
+        XCTAssertTrue(
+            try workspace.snapshot(mediaKind: .image, method: nil, limit: 50)
+                .slots
+                .allSatisfy { !$0.isPublished }
+        )
+        XCTAssertEqual(
+            try workspace.snapshot(mediaKind: .video, method: nil, limit: 50)
+                .slots
+                .first(where: { $0.method == .featureKnn })?
+                .isPublished,
+            true
+        )
     }
 
     func testCancellingQueuedFeatureKnnJobFinishesRunAsCancelled() throws {

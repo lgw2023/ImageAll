@@ -366,38 +366,87 @@ enum LibrarySlimmingAnalyzeMode: String, Sendable, Equatable, Codable {
 }
 
 protocol LibrarySlimmingScanPort: Sendable {
-    /// Clusters the given assets. Incomplete fingerprints / vectors become pending.
     func scan(
         assetIDs: [UUID],
         onProgress: LibrarySlimmingScanProgressHandler?
     ) throws -> LibrarySlimmingScanResult
 
+    func scanCatalog(
+        onProgress: LibrarySlimmingScanProgressHandler?
+    ) throws -> LibrarySlimmingScanResult
+
+    func scanSeeds(
+        seedAssetIDs: [UUID],
+        universeAssetIDs: [UUID],
+        onProgress: LibrarySlimmingScanProgressHandler?
+    ) throws -> LibrarySlimmingScanResult
+
+    /// Clusters the given assets. Incomplete fingerprints / vectors become pending.
+    func scan(
+        assetIDs: [UUID],
+        mediaKind: MediaKind,
+        onProgress: LibrarySlimmingScanProgressHandler?
+    ) throws -> LibrarySlimmingScanResult
+
     /// Scans all current available catalog assets (deterministic UUID order).
-    func scanCatalog(onProgress: LibrarySlimmingScanProgressHandler?) throws -> LibrarySlimmingScanResult
+    func scanCatalog(
+        mediaKind: MediaKind,
+        onProgress: LibrarySlimmingScanProgressHandler?
+    ) throws -> LibrarySlimmingScanResult
 
     /// Uses `seedAssetIDs` as queries against `universeAssetIDs` (full catalog or narrowed).
     /// Hits are merged with seeds into clusters. Must not reduce to closed-world `scan(seeds)`.
     func scanSeeds(
         seedAssetIDs: [UUID],
         universeAssetIDs: [UUID],
+        mediaKind: MediaKind,
         onProgress: LibrarySlimmingScanProgressHandler?
     ) throws -> LibrarySlimmingScanResult
 }
 
 extension LibrarySlimmingScanPort {
     func scan(assetIDs: [UUID]) throws -> LibrarySlimmingScanResult {
-        try scan(assetIDs: assetIDs, onProgress: nil)
+        try scan(assetIDs: assetIDs, mediaKind: .image, onProgress: nil)
     }
 
     func scanCatalog() throws -> LibrarySlimmingScanResult {
-        try scanCatalog(onProgress: nil)
+        try scanCatalog(mediaKind: .image, onProgress: nil)
     }
 
     func scanSeeds(seedAssetIDs: [UUID], universeAssetIDs: [UUID]) throws -> LibrarySlimmingScanResult {
         try scanSeeds(
             seedAssetIDs: seedAssetIDs,
             universeAssetIDs: universeAssetIDs,
+            mediaKind: .image,
             onProgress: nil
+        )
+    }
+
+    func scan(
+        assetIDs: [UUID],
+        mediaKind _: MediaKind,
+        onProgress: LibrarySlimmingScanProgressHandler?
+    ) throws -> LibrarySlimmingScanResult {
+        try scan(assetIDs: assetIDs, onProgress: onProgress)
+    }
+
+    func scanCatalog(
+        mediaKind _: MediaKind,
+        onProgress: LibrarySlimmingScanProgressHandler?
+    ) throws -> LibrarySlimmingScanResult {
+        try scanCatalog(onProgress: onProgress)
+    }
+
+    func scanSeeds(
+        seedAssetIDs: [UUID],
+        universeAssetIDs: [UUID],
+        mediaKind _: MediaKind,
+        onProgress: LibrarySlimmingScanProgressHandler?
+    ) throws -> LibrarySlimmingScanResult {
+        try scanSeeds(
+            seedAssetIDs: seedAssetIDs,
+            universeAssetIDs: universeAssetIDs,
+            onProgress: onProgress
         )
     }
 }

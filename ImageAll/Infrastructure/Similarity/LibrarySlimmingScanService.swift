@@ -35,7 +35,36 @@ struct LibrarySlimmingScanService: LibrarySlimmingScanPort {
         self.sourceIndex = sourceIndex
     }
 
-    func scanCatalog(onProgress: LibrarySlimmingScanProgressHandler?) throws -> LibrarySlimmingScanResult {
+    func scanCatalog(
+        onProgress: LibrarySlimmingScanProgressHandler?
+    ) throws -> LibrarySlimmingScanResult {
+        try scanCatalog(mediaKind: .image, onProgress: onProgress)
+    }
+
+    func scan(
+        assetIDs: [UUID],
+        onProgress: LibrarySlimmingScanProgressHandler?
+    ) throws -> LibrarySlimmingScanResult {
+        try scan(assetIDs: assetIDs, mediaKind: .image, onProgress: onProgress)
+    }
+
+    func scanSeeds(
+        seedAssetIDs: [UUID],
+        universeAssetIDs: [UUID],
+        onProgress: LibrarySlimmingScanProgressHandler?
+    ) throws -> LibrarySlimmingScanResult {
+        try scanSeeds(
+            seedAssetIDs: seedAssetIDs,
+            universeAssetIDs: universeAssetIDs,
+            mediaKind: .image,
+            onProgress: onProgress
+        )
+    }
+
+    func scanCatalog(
+        mediaKind: MediaKind,
+        onProgress: LibrarySlimmingScanProgressHandler?
+    ) throws -> LibrarySlimmingScanResult {
         let assetIDs = try database.pool.read { db -> [UUID] in
             let rows = try Row.fetchAll(
                 db,
@@ -47,32 +76,41 @@ struct LibrarySlimmingScanService: LibrarySlimmingScanPort {
                 WHERE l.state = ?
                   AND a.availability = ?
                   AND s.state = ?
+                  AND a.media_kind = ?
                 ORDER BY a.id ASC
                 """,
                 arguments: [
                     AssetLocatorState.current.rawValue,
                     AssetAvailability.available.rawValue,
                     SourceState.active.rawValue,
+                    mediaKind.rawValue,
                 ]
             )
             return rows.compactMap { row in
                 UUID(uuidString: row["id"])
             }
         }
-        return try scan(assetIDs: assetIDs, onProgress: onProgress)
+        return try scan(assetIDs: assetIDs, mediaKind: mediaKind, onProgress: onProgress)
     }
 
     func scanSeeds(
         seedAssetIDs: [UUID],
         universeAssetIDs: [UUID],
+        mediaKind: MediaKind,
         onProgress: LibrarySlimmingScanProgressHandler? = nil
     ) throws -> LibrarySlimmingScanResult {
-        let seeds = Array(Set(seedAssetIDs)).sorted {
+        let requestedSeeds = Array(Set(seedAssetIDs)).sorted {
             $0.uuidString.lowercased() < $1.uuidString.lowercased()
         }
-        let universe = Array(Set(universeAssetIDs).union(seeds)).sorted {
+        let requestedUniverse = Array(Set(universeAssetIDs).union(requestedSeeds)).sorted {
             $0.uuidString.lowercased() < $1.uuidString.lowercased()
         }
+        let universe = try retainingRequestedMedia(
+            assetIDs: requestedUniverse,
+            mediaKind: mediaKind
+        )
+        let universeSet = Set(universe)
+        let seeds = requestedSeeds.filter(universeSet.contains)
         guard !seeds.isEmpty else {
             return LibrarySlimmingScanResult(
                 clusters: [],
@@ -96,7 +134,10 @@ struct LibrarySlimmingScanService: LibrarySlimmingScanPort {
         )
 
         let seedSet = Set(seeds)
-        let identical = try identicalScan.clusterIdenticalDuplicates(assetIDs: universe)
+        let identical = try identicalScan.clusterIdenticalDuplicates(
+            assetIDs: universe,
+            mediaKind: mediaKind
+        )
         let identicalWithSeeds = identical.filter { cluster in
             cluster.memberAssetIDs.contains(where: seedSet.contains)
         }
@@ -113,7 +154,8 @@ struct LibrarySlimmingScanService: LibrarySlimmingScanPort {
         {
             let plan = try sourceIndex.candidateAssetIDs(
                 seedAssetIDs: unclaimedSeeds,
-                universeAssetIDs: universe
+                universeAssetIDs: universe,
+                mediaKind: mediaKind
             )
             if case let .restricted(candidates) = plan {
                 let restricted = Set(candidates).union(unclaimedSeeds).subtracting(claimed)
@@ -138,7 +180,11 @@ struct LibrarySlimmingScanService: LibrarySlimmingScanPort {
             thresholds: thresholds
         )
 
-        let identicalMapped = mapIdenticalClusters(identicalWithSeeds, policyVersion: thresholds.policyVersion)
+        let identicalMapped = mapIdenticalClusters(
+            identicalWithSeeds,
+            mediaKind: mediaKind,
+            policyVersion: thresholds.policyVersion
+        )
         onProgress?(
             LibrarySlimmingScanProgress(phase: .clustering, completed: 1, total: 1)
         )
@@ -160,11 +206,16 @@ struct LibrarySlimmingScanService: LibrarySlimmingScanPort {
 
     func scan(
         assetIDs: [UUID],
+        mediaKind: MediaKind,
         onProgress: LibrarySlimmingScanProgressHandler? = nil
     ) throws -> LibrarySlimmingScanResult {
-        let uniqueIDs = Array(Set(assetIDs)).sorted {
+        let requestedIDs = Array(Set(assetIDs)).sorted {
             $0.uuidString.lowercased() < $1.uuidString.lowercased()
         }
+        let uniqueIDs = try retainingRequestedMedia(
+            assetIDs: requestedIDs,
+            mediaKind: mediaKind
+        )
         let thresholds = thresholdReader.thresholds().clamped()
         (featureLoader as? SlimmingBudgetResetting)?
             .resetScanBudgets(forAssetCount: uniqueIDs.count)
@@ -185,7 +236,10 @@ struct LibrarySlimmingScanService: LibrarySlimmingScanPort {
         onProgress?(
             LibrarySlimmingScanProgress(phase: .clustering, completed: 0, total: 1)
         )
-        let identical = try identicalScan.clusterIdenticalDuplicates(assetIDs: uniqueIDs)
+        let identical = try identicalScan.clusterIdenticalDuplicates(
+            assetIDs: uniqueIDs,
+            mediaKind: mediaKind
+        )
         var claimed = Set<UUID>()
         for cluster in identical {
             claimed.formUnion(cluster.memberAssetIDs)
@@ -210,7 +264,11 @@ struct LibrarySlimmingScanService: LibrarySlimmingScanPort {
             onProgress: onProgress
         )
 
-        let identicalMapped = mapIdenticalClusters(identical, policyVersion: thresholds.policyVersion)
+        let identicalMapped = mapIdenticalClusters(
+            identical,
+            mediaKind: mediaKind,
+            policyVersion: thresholds.policyVersion
+        )
         onProgress?(
             LibrarySlimmingScanProgress(phase: .clustering, completed: 1, total: 1)
         )
@@ -338,6 +396,34 @@ struct LibrarySlimmingScanService: LibrarySlimmingScanPort {
         }
     }
 
+    /// Production scans only compare the requested media domain. Unknown IDs are
+    /// retained for dictionary-backed unit scanners, while catalog-backed assets
+    /// from the opposite domain are rejected.
+    private func retainingRequestedMedia(
+        assetIDs: [UUID],
+        mediaKind: MediaKind
+    ) throws -> [UUID] {
+        guard !assetIDs.isEmpty else { return [] }
+        let idStrings = assetIDs.map { $0.uuidString.lowercased() }
+        let placeholders = Array(repeating: "?", count: idStrings.count).joined(separator: ", ")
+        let knownKinds = try database.pool.read { db -> [UUID: MediaKind] in
+            let rows = try Row.fetchAll(
+                db,
+                sql: "SELECT id, media_kind FROM asset WHERE id IN (\(placeholders))",
+                arguments: StatementArguments(idStrings)
+            )
+            var result: [UUID: MediaKind] = [:]
+            for row in rows {
+                guard let id = UUID(uuidString: row["id"]),
+                      let kind = MediaKind(rawValue: row["media_kind"])
+                else { continue }
+                result[id] = kind
+            }
+            return result
+        }
+        return assetIDs.filter { knownKinds[$0] == nil || knownKinds[$0] == mediaKind }
+    }
+
     private func withPolicyVersion(
         _ identity: SlimmingVectorModelIdentity,
         policyVersion: String
@@ -452,6 +538,7 @@ struct LibrarySlimmingScanService: LibrarySlimmingScanPort {
 
     private func mapIdenticalClusters(
         _ identical: [IdenticalDuplicateCluster],
+        mediaKind: MediaKind = .image,
         policyVersion: String
     ) -> [SlimmingCluster] {
         let identicalModelIdentity = SlimmingVectorModelIdentity(
@@ -462,7 +549,7 @@ struct LibrarySlimmingScanService: LibrarySlimmingScanPort {
             embeddingModelID: nil,
             embeddingModelRevision: nil,
             embeddingPreprocessingRevision: nil,
-            perceptualAlgoVersion: IdenticalDuplicatePolicy.perceptualAlgoVersion,
+            perceptualAlgoVersion: IdenticalDuplicatePolicy.perceptualAlgoVersion(for: mediaKind),
             policyVersion: policyVersion
         )
         return identical.map { cluster -> SlimmingCluster in
@@ -610,6 +697,7 @@ struct LibrarySlimmingAnalysisJobSummary: Sendable, Equatable, Identifiable {
     var id: UUID { jobID }
     let jobID: UUID
     let mode: LibrarySlimmingAnalyzeMode
+    let mediaKind: MediaKind
     let state: JobState
     let controlRequest: JobControlRequest
     let progress: JobProgress
@@ -626,6 +714,7 @@ struct LibrarySlimmingAnalysisJobSummary: Sendable, Equatable, Identifiable {
     init(
         jobID: UUID,
         mode: LibrarySlimmingAnalyzeMode,
+        mediaKind: MediaKind = .image,
         state: JobState,
         controlRequest: JobControlRequest,
         progress: JobProgress,
@@ -641,6 +730,7 @@ struct LibrarySlimmingAnalysisJobSummary: Sendable, Equatable, Identifiable {
     ) {
         self.jobID = jobID
         self.mode = mode
+        self.mediaKind = mediaKind
         self.state = state
         self.controlRequest = controlRequest
         self.progress = progress
@@ -662,13 +752,35 @@ protocol LibrarySlimmingAnalysisJobPort: Sendable {
         assetIDs: [UUID],
         seedAssetIDs: [UUID]
     ) throws -> LibrarySlimmingAnalysisJobSnapshot
+    func enqueue(
+        mode: LibrarySlimmingAnalyzeMode,
+        assetIDs: [UUID],
+        seedAssetIDs: [UUID],
+        mediaKind: MediaKind
+    ) throws -> LibrarySlimmingAnalysisJobSnapshot
     func runPending() throws
     func pause(jobID: UUID) throws -> LibrarySlimmingAnalysisJobSnapshot
     func resume(jobID: UUID) throws -> LibrarySlimmingAnalysisJobSnapshot
     func snapshot(jobID: UUID) throws -> LibrarySlimmingAnalysisJobSnapshot
     func latestActiveOrCompleted() throws -> LibrarySlimmingAnalysisJobSnapshot?
     func listJobs() throws -> [LibrarySlimmingAnalysisJobSummary]
+    func listJobs(mediaKind: MediaKind) throws -> [LibrarySlimmingAnalysisJobSummary]
     func delete(jobID: UUID) throws
+}
+
+extension LibrarySlimmingAnalysisJobPort {
+    func enqueue(
+        mode: LibrarySlimmingAnalyzeMode,
+        assetIDs: [UUID],
+        seedAssetIDs: [UUID],
+        mediaKind _: MediaKind
+    ) throws -> LibrarySlimmingAnalysisJobSnapshot {
+        try enqueue(mode: mode, assetIDs: assetIDs, seedAssetIDs: seedAssetIDs)
+    }
+
+    func listJobs(mediaKind: MediaKind) throws -> [LibrarySlimmingAnalysisJobSummary] {
+        try listJobs().filter { $0.mediaKind == mediaKind }
+    }
 }
 
 enum LibrarySlimmingAnalysisJobFactory {
@@ -684,6 +796,23 @@ enum LibrarySlimmingAnalysisJobFactory {
 
     struct Payload: Codable, Sendable, Equatable {
         let mode: LibrarySlimmingAnalyzeMode
+        let mediaKind: MediaKind
+
+        init(mode: LibrarySlimmingAnalyzeMode, mediaKind: MediaKind = .image) {
+            self.mode = mode
+            self.mediaKind = mediaKind
+        }
+
+        private enum CodingKeys: String, CodingKey {
+            case mode
+            case mediaKind
+        }
+
+        init(from decoder: Decoder) throws {
+            let values = try decoder.container(keyedBy: CodingKeys.self)
+            mode = try values.decode(LibrarySlimmingAnalyzeMode.self, forKey: .mode)
+            mediaKind = try values.decodeIfPresent(MediaKind.self, forKey: .mediaKind) ?? .image
+        }
     }
 
     enum Phase: String, Codable, Sendable {
@@ -702,6 +831,7 @@ enum LibrarySlimmingAnalysisJobFactory {
     static func makeCommand(
         jobID: UUID,
         mode: LibrarySlimmingAnalyzeMode,
+        mediaKind: MediaKind = .image,
         notBeforeMs: Int64
     ) throws -> EnqueueJobCommand {
         // Each analysis is an independent durable record. No coalescing key
@@ -711,7 +841,7 @@ enum LibrarySlimmingAnalysisJobFactory {
             id: jobID,
             kind: kind,
             payloadVersion: payloadVersion,
-            payload: try JSONEncoder().encode(Payload(mode: mode)),
+            payload: try JSONEncoder().encode(Payload(mode: mode, mediaKind: mediaKind)),
             sourceID: nil,
             coalescingKey: nil,
             priority: priority,
@@ -786,6 +916,20 @@ struct LibrarySlimmingAnalysisService: LibrarySlimmingAnalysisJobPort {
         assetIDs: [UUID],
         seedAssetIDs: [UUID]
     ) throws -> LibrarySlimmingAnalysisJobSnapshot {
+        try enqueue(
+            mode: mode,
+            assetIDs: assetIDs,
+            seedAssetIDs: seedAssetIDs,
+            mediaKind: .image
+        )
+    }
+
+    func enqueue(
+        mode: LibrarySlimmingAnalyzeMode,
+        assetIDs: [UUID],
+        seedAssetIDs: [UUID],
+        mediaKind: MediaKind
+    ) throws -> LibrarySlimmingAnalysisJobSnapshot {
         let seeds = Set(seedAssetIDs)
         let members = Array(Set(assetIDs).union(seeds)).sorted {
             $0.uuidString.lowercased() < $1.uuidString.lowercased()
@@ -793,11 +937,31 @@ struct LibrarySlimmingAnalysisService: LibrarySlimmingAnalysisJobPort {
         guard !members.isEmpty else {
             throw FingerprintCompletionError.notFound
         }
+        let normalizedMembers = members.map { $0.uuidString.lowercased() }
+        let placeholders = Array(repeating: "?", count: normalizedMembers.count)
+            .joined(separator: ", ")
+        let matchingCount = try database.pool.read { db in
+            var arguments: [DatabaseValueConvertible] = normalizedMembers
+            arguments.append(mediaKind.rawValue)
+            return try Int.fetchOne(
+                db,
+                sql: """
+                SELECT COUNT(*)
+                FROM asset
+                WHERE id IN (\(placeholders)) AND media_kind = ?
+                """,
+                arguments: StatementArguments(arguments)
+            ) ?? 0
+        }
+        guard matchingCount == members.count else {
+            throw FingerprintCompletionError.ineligible
+        }
         let jobID = UUID()
         let nowMs = clock.nowMs
         let command = try LibrarySlimmingAnalysisJobFactory.makeCommand(
             jobID: jobID,
             mode: mode,
+            mediaKind: mediaKind,
             notBeforeMs: nowMs
         )
         try database.pool.write { db in
@@ -995,6 +1159,7 @@ struct LibrarySlimmingAnalysisService: LibrarySlimmingAnalysisJobPort {
                 return LibrarySlimmingAnalysisJobSummary(
                     jobID: jobID,
                     mode: payload.mode,
+                    mediaKind: payload.mediaKind,
                     state: try JobPersistenceMapping.jobState(from: row["state"]),
                     controlRequest: try JobPersistenceMapping.controlRequest(
                         from: row["control_request"]
@@ -1015,6 +1180,10 @@ struct LibrarySlimmingAnalysisService: LibrarySlimmingAnalysisJobPort {
                 )
             }
         }
+    }
+
+    func listJobs(mediaKind: MediaKind) throws -> [LibrarySlimmingAnalysisJobSummary] {
+        try listJobs().filter { $0.mediaKind == mediaKind }
     }
 
     private func reconcileActiveRetryBudgets(jobID: UUID? = nil) throws {
@@ -1248,11 +1417,13 @@ private struct LibrarySlimmingAnalysisHandler: LeaseBoundJobHandler {
                         result = try scanner.scanSeeds(
                             seedAssetIDs: seeds,
                             universeAssetIDs: assetIDs,
+                            mediaKind: payload.mediaKind,
                             onProgress: scanProgress
                         )
                     } else {
                         result = try scanner.scan(
                             assetIDs: assetIDs,
+                            mediaKind: payload.mediaKind,
                             onProgress: scanProgress
                         )
                     }

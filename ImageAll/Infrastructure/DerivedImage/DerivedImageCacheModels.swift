@@ -80,7 +80,9 @@ struct DerivedImageAssetGenerationContext: Equatable, Sendable {
     let contentRevision: Int
     let relativePath: String
     let fileName: String
+    let mediaKind: MediaKind
     let mediaType: String
+    let durationMs: Int64?
     let availability: String
     let locatorState: String
     let locatorKind: String

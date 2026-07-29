@@ -123,6 +123,44 @@ final class AssetCatalogQueryTests: XCTestCase {
         XCTAssertEqual(utiPage.items[0].assetID, fixture.ids.assetNoTime)
     }
 
+    func testMediaKindFilterKeepsPhotoAndVideoPagesDisjoint() throws {
+        let fixture = try CatalogQueryTestSupport.openQueryDatabase()
+        try fixture.database.pool.write { db in
+            try db.execute(
+                sql: """
+                UPDATE asset
+                SET media_kind = 'video',
+                    media_type = 'com.apple.quicktime-movie',
+                    duration_ms = 12_345
+                WHERE id = ?
+                """,
+                arguments: [fixture.ids.assetNewest.uuidString.lowercased()]
+            )
+        }
+
+        let photos = try fixture.query.fetchAssetPage(
+            AssetPageRequest(
+                filter: AssetPageFilter(mediaKinds: [.image]),
+                sort: .newest,
+                cursor: nil,
+                limit: 200
+            )
+        )
+        let videos = try fixture.query.fetchAssetPage(
+            AssetPageRequest(
+                filter: AssetPageFilter(mediaKinds: [.video]),
+                sort: .newest,
+                cursor: nil,
+                limit: 200
+            )
+        )
+
+        XCTAssertFalse(photos.items.contains { $0.assetID == fixture.ids.assetNewest })
+        XCTAssertEqual(videos.items.map(\.assetID), [fixture.ids.assetNewest])
+        XCTAssertEqual(videos.items.first?.mediaKind, .video)
+        XCTAssertEqual(videos.items.first?.durationMs, 12_345)
+    }
+
     func testTagDecisionAllAndAnyFilters() throws {
         let fixture = try CatalogQueryTestSupport.openQueryDatabase()
         let allPage = try fixture.query.fetchAssetPage(

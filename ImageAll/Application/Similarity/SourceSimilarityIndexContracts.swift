@@ -10,6 +10,7 @@ enum SourceSimilarityIndexState: String, Sendable, Equatable, Codable {
 
 struct SourceSimilarityIndexStatus: Sendable, Equatable {
     let sourceID: UUID
+    let mediaKind: MediaKind
     let state: SourceSimilarityIndexState
     let assetCount: Int
     let indexedCount: Int
@@ -29,9 +30,11 @@ enum SourceSimilarityCandidatePlan: Sendable, Equatable {
 
 protocol SourceSimilarityIndexPort: Sendable {
     func status(sourceID: UUID) throws -> SourceSimilarityIndexStatus?
+    func status(sourceID: UUID, mediaKind: MediaKind) throws -> SourceSimilarityIndexStatus?
 
     /// Enqueues (or returns the already-running) durable build job for `sourceID`.
     func enqueueBuild(sourceID: UUID) throws -> UUID
+    func enqueueBuild(sourceID: UUID, mediaKind: MediaKind) throws -> UUID
 
     /// Drives the underlying job queue to completion for pending source-index builds.
     func runPending() throws
@@ -43,4 +46,30 @@ protocol SourceSimilarityIndexPort: Sendable {
         seedAssetIDs: [UUID],
         universeAssetIDs: [UUID]
     ) throws -> SourceSimilarityCandidatePlan
+    func candidateAssetIDs(
+        seedAssetIDs: [UUID],
+        universeAssetIDs: [UUID],
+        mediaKind: MediaKind
+    ) throws -> SourceSimilarityCandidatePlan
+}
+
+extension SourceSimilarityIndexPort {
+    func status(sourceID: UUID, mediaKind _: MediaKind) throws -> SourceSimilarityIndexStatus? {
+        try status(sourceID: sourceID)
+    }
+
+    func enqueueBuild(sourceID: UUID, mediaKind _: MediaKind) throws -> UUID {
+        try enqueueBuild(sourceID: sourceID)
+    }
+
+    func candidateAssetIDs(
+        seedAssetIDs: [UUID],
+        universeAssetIDs: [UUID],
+        mediaKind _: MediaKind
+    ) throws -> SourceSimilarityCandidatePlan {
+        try candidateAssetIDs(
+            seedAssetIDs: seedAssetIDs,
+            universeAssetIDs: universeAssetIDs
+        )
+    }
 }

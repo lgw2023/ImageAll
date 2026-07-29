@@ -458,6 +458,141 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertEqual(model.items.map(\.assetID), [asset.assetID])
     }
 
+    func testLibrarySlimmingSuppressesAutomaticMonitoringUntilManualRefresh() async {
+        let sourceID = UUID()
+        let asset = Self.makeAsset(sourceID: sourceID, fileName: "fixture.jpg")
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: sourceID,
+                displayName: "Fixture",
+                state: .active
+            ),
+            reconciledItems: [asset],
+            initialItems: [asset],
+            startsConnected: true,
+            hasPendingCatalogReconcileJobs: false
+        )
+        let model = LibraryWorkspaceModel(
+            service: service,
+            idlePrewarmInstallEventMonitor: false
+        )
+        await model.start()
+        model.applyImmediateBrowsingPresentation(for: .librarySlimming)
+
+        service.triggerFolderMonitoringChange()
+        for _ in 0 ..< 100 {
+            await Task.yield()
+        }
+        XCTAssertEqual(service.reconcileRunCount, 0)
+
+        model.applyImmediateBrowsingPresentation(for: .all)
+        for _ in 0 ..< 100 {
+            await Task.yield()
+        }
+        XCTAssertEqual(
+            service.reconcileRunCount,
+            0,
+            "leaving without a slimming recycle action must not start a scan"
+        )
+
+        model.applyImmediateBrowsingPresentation(for: .librarySlimming)
+        await model.refreshLibrarySlimmingCatalog()
+        await waitForCatalogScanToFinish(model)
+
+        XCTAssertEqual(service.reconcileRunCount, 1)
+        XCTAssertEqual(service.enqueueReconcileCalls, [[sourceID]])
+    }
+
+    func testLibrarySlimmingRecycleCoalescesRefreshUntilWorkspaceExit() async {
+        let sourceID = UUID()
+        let assetA = Self.makeAsset(sourceID: sourceID, fileName: "keep.jpg")
+        let assetB = Self.makeAsset(sourceID: sourceID, fileName: "recycle.jpg")
+        let cluster = SlimmingCluster(
+            id: UUID(),
+            kind: .nearDuplicateScene,
+            memberAssetIDs: [assetA.assetID, assetB.assetID],
+            representativeAssetID: assetA.assetID,
+            score: 0.98,
+            modelIdentity: .featurePrintOnly
+        )
+        let scan = StubLibrarySlimmingScanPort()
+        scan.seedClusters = [cluster]
+        let entryID = UUID()
+        let entry = RecycleEntryRecord(
+            id: entryID,
+            assetID: assetB.assetID,
+            sourceID: sourceID,
+            sourceKind: .file,
+            trashedAtMs: 1,
+            purgeAfterMs: 2,
+            state: .recycled,
+            quarantineRelativePath: "objects/recycle.jpg",
+            originalRelativePath: "recycle.jpg",
+            photosLocalIdentifier: nil,
+            errorCode: nil,
+            fileName: "recycle.jpg"
+        )
+        let recycle = FakeLibrarySlimmingRecyclePort(
+            moveOutcomes: [
+                LibrarySlimmingRecycleMoveOutcome(
+                    recycledEntryIDs: [entryID],
+                    skippedPhotosAssetIDs: [],
+                    failedAssetIDs: [],
+                    authorizationRequiredSourceIDs: [],
+                    authorizationRequiredAssetIDs: [],
+                    authorizationDeniedPhotosAssetIDs: []
+                ),
+            ],
+            entriesAfterMoves: [[entry]]
+        )
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: sourceID,
+                displayName: "Fixture",
+                state: .active
+            ),
+            reconciledItems: [assetA, assetB],
+            initialItems: [assetA, assetB],
+            startsConnected: true,
+            hasPendingCatalogReconcileJobs: false
+        )
+        let model = LibraryWorkspaceModel(
+            service: service,
+            librarySlimming: scan,
+            librarySlimmingRecycle: recycle,
+            idlePrewarmInstallEventMonitor: false
+        )
+        await model.start()
+        await model.selectAssets([assetA.assetID], additive: false)
+        await model.findLibrarySlimmingFromSelection()
+        await model.analyzeLibrarySlimming(mode: .seeds)
+        model.selectLibrarySlimmingCluster(cluster.id)
+        model.selectLibrarySlimmingMember(assetB.assetID, additive: false)
+        model.applyImmediateBrowsingPresentation(for: .librarySlimming)
+
+        await model.moveSelectedLibrarySlimmingMembersToRecycle()
+        XCTAssertEqual(service.reconcileRunCount, 0)
+        XCTAssertTrue(service.enqueueReconcileCalls.isEmpty)
+
+        model.applyImmediateBrowsingPresentation(for: .all)
+        for _ in 0 ..< 10_000 where service.reconcileRunCount < 1 {
+            await Task.yield()
+        }
+        await waitForCatalogScanToFinish(model)
+        XCTAssertEqual(service.reconcileRunCount, 1)
+        XCTAssertEqual(service.enqueueReconcileCalls, [[sourceID]])
+
+        model.applyImmediateBrowsingPresentation(for: .untagged)
+        for _ in 0 ..< 100 {
+            await Task.yield()
+        }
+        XCTAssertEqual(
+            service.reconcileRunCount,
+            1,
+            "the coalesced exit refresh must be consumed exactly once"
+        )
+    }
+
     func testBackgroundScanPublishesProgressAndFirstBatchBeforeCompletion() async {
         let sourceID = UUID()
         let asset = Self.makeAsset(sourceID: sourceID, fileName: "first-photo.jpg")
@@ -496,6 +631,55 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertTrue(model.isCatalogScanning)
         service.releaseBlockedReconcile()
         await waitForCatalogScanToFinish(model)
+    }
+
+    func testCompletedPhotosVideoScanPreservesLoadedPaginationWindow() async {
+        let sourceID = UUID()
+        let videos = (0 ..< 6).map {
+            Self.makeAsset(
+                sourceID: sourceID,
+                fileName: "video-\($0).mov",
+                mediaType: "com.apple.quicktime-movie",
+                mediaKind: .video
+            )
+        }
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: sourceID,
+                kind: .photos,
+                displayName: "Apple Photos",
+                state: .active
+            ),
+            reconciledItems: videos,
+            initialItems: videos,
+            startsConnected: true,
+            blocksReconcileRuns: true,
+            assetPageSize: 2,
+            photosLibrarySupportedImageCount: videos.count,
+            photosCatalogAssetCount: videos.count,
+            sourceIsReconcileClean: true
+        )
+        let model = LibraryWorkspaceModel(service: service)
+
+        await model.start()
+        while !service.hasStartedBlockedReconcile {
+            await Task.yield()
+        }
+        await model.setMediaKind(.video)
+        XCTAssertEqual(model.items.map(\.assetID), Array(videos.prefix(2)).map(\.assetID))
+
+        await model.loadMoreIfNeeded(currentAssetID: videos[1].assetID)
+        await model.loadMoreIfNeeded(currentAssetID: videos[3].assetID)
+        XCTAssertEqual(model.items.map(\.assetID), videos.map(\.assetID))
+
+        service.releaseBlockedReconcile()
+        await waitForCatalogScanToFinish(model)
+
+        XCTAssertEqual(
+            model.items.map(\.assetID),
+            videos.map(\.assetID),
+            "a background Photos refresh must not collapse an already paged video grid"
+        )
     }
 
     func testBackgroundFolderScanPublishesProgressAndFirstBatchBeforeCompletion() async {
@@ -3793,7 +3977,7 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         model.applyImmediateBrowsingPresentation(for: LibraryBrowsingDestination.untagged)
 
         XCTAssertNil(model.reviewMode)
-        XCTAssertEqual(model.browsingTitle, "无标签")
+        XCTAssertEqual(model.browsingTitle, "无标签照片")
         XCTAssertTrue(model.items.isEmpty)
         XCTAssertTrue(model.selectedAssetIDs.isEmpty)
         XCTAssertFalse(model.isSinglePhotoPresented)
@@ -7864,6 +8048,142 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertEqual(model.notice, .selectionHiddenByFilter)
     }
 
+    func testMediaKindSwitchDefaultsToPhotosAndClearsCrossPageSelection() async {
+        let sourceID = UUID()
+        let photo = Self.makeAsset(
+            sourceID: sourceID,
+            fileName: "photo.jpg",
+            mediaKind: .image
+        )
+        let video = Self.makeAsset(
+            sourceID: sourceID,
+            fileName: "clip.mov",
+            mediaType: "com.apple.quicktime-movie",
+            mediaKind: .video,
+            durationMs: 12_345
+        )
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: sourceID,
+                displayName: "Fixture",
+                state: .active
+            ),
+            reconciledItems: [photo, video],
+            startsConnected: true
+        )
+        let model = LibraryWorkspaceModel(
+            service: service,
+            idlePrewarmInstallEventMonitor: false
+        )
+
+        await model.start()
+        await waitForCatalogScanToFinish(model)
+        XCTAssertEqual(model.selectedMediaKind, .image)
+        XCTAssertEqual(model.items.map(\.assetID), [photo.assetID])
+        await model.selectAsset(photo.assetID)
+
+        await model.setMediaKind(.video)
+
+        XCTAssertEqual(model.selectedMediaKind, .video)
+        XCTAssertEqual(service.lastFilter.mediaKinds, [.video])
+        XCTAssertEqual(model.items.map(\.assetID), [video.assetID])
+        XCTAssertTrue(model.selectedAssetIDs.isEmpty)
+        XCTAssertFalse(model.isSinglePhotoPresented)
+    }
+
+    func testReviewVideoTabClearsPhotoQueueAndShowsNoPhotoCounts() async {
+        let sourceID = UUID()
+        let tag = TagListItem(id: UUID(), displayName: "Family", state: .active)
+        let photo = Self.makeAsset(sourceID: sourceID)
+        let review = FakePersonalizationReviewPort(
+            queueItems: [
+                ReviewQueueItemProjection(
+                    assetID: photo.assetID,
+                    fileName: photo.fileName,
+                    availability: photo.availability,
+                    acceptedTagCount: 0,
+                    rejectedTagCount: 0
+                ),
+            ]
+        )
+        let model = LibraryWorkspaceModel(
+            service: FakeLibraryWorkspaceService(
+                connectedSource: LibrarySourceSummary(
+                    id: sourceID,
+                    displayName: "Fixture",
+                    state: .active
+                ),
+                reconciledItems: [photo],
+                tags: [tag]
+            ),
+            review: review
+        )
+        await model.enterReviewQueue(tagID: tag.id, displayName: tag.displayName)
+        XCTAssertEqual(model.reviewQueueItems.map(\.assetID), [photo.assetID])
+
+        await model.setMediaKind(.video)
+
+        XCTAssertEqual(model.selectedMediaKind, .video)
+        XCTAssertEqual(model.reviewMode, .overview)
+        XCTAssertTrue(model.reviewQueueItems.isEmpty)
+        XCTAssertTrue(model.suggestionOverviews.isEmpty)
+        XCTAssertEqual(model.pendingSuggestionTotal, 0)
+    }
+
+    func testTrainingVideoTabQueriesOnlyVideoRunsAndUsesIndependentEmptySlots() async {
+        let imageRun = TrainingRunRecord(
+            id: UUID(),
+            mediaKind: .image,
+            method: .featureKnn,
+            state: .succeeded,
+            createdAtMs: 100,
+            startedAtMs: 100,
+            finishedAtMs: 101,
+            catalogScopeID: "scope",
+            jobID: nil,
+            sampleSummaryJSON: "{}",
+            sampleManifestSHA256: nil,
+            configJSON: "{}",
+            metricsJSON: "{}",
+            artifactKind: "fixture",
+            artifactRef: "fixture/image",
+            artifactSHA256: String(repeating: "a", count: 64),
+            resultSummaryJSON: "{}",
+            errorCode: nil
+        )
+        let workspace = FakeTrainingWorkspacePort(
+            runs: [imageRun],
+            slots: [
+                TrainingWorkspaceSlot(
+                    method: .featureKnn,
+                    isPublished: true,
+                    publishedRunID: imageRun.id,
+                    artifactRef: imageRun.artifactRef
+                ),
+            ]
+        )
+        let model = LibraryWorkspaceModel(
+            service: FakeLibraryWorkspaceService(
+                connectedSource: LibrarySourceSummary(
+                    id: UUID(),
+                    displayName: "Fixture",
+                    state: .active
+                ),
+                reconciledItems: []
+            ),
+            trainingWorkspace: workspace
+        )
+        await model.refreshTrainingWorkspace()
+        XCTAssertEqual(model.trainingRuns.map(\.id), [imageRun.id])
+
+        await model.setTrainingWorkspaceMediaKind(.video)
+
+        XCTAssertEqual(model.selectedMediaKind, .video)
+        XCTAssertTrue(model.trainingRuns.isEmpty)
+        XCTAssertTrue(model.trainingSlots.allSatisfy { !$0.isPublished })
+        XCTAssertEqual(workspace.requestedMediaKinds, [.image, .video])
+    }
+
     func testClearingAssetPropertyFiltersRestoresAllFormatsAndStates() async {
         let sourceID = UUID()
         let availableJPEG = Self.makeAsset(sourceID: sourceID, fileName: "available.jpg")
@@ -9350,6 +9670,8 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         assetID: UUID = UUID(),
         fileName: String = "sample.jpg",
         mediaType: String = "public.jpeg",
+        mediaKind: MediaKind = .image,
+        durationMs: Int64? = nil,
         availability: AssetAvailability = .available,
         sourceDisplayName: String = "Fixture"
     ) -> AssetGridItemProjection {
@@ -9360,7 +9682,9 @@ final class LibraryWorkspaceModelTests: XCTestCase {
             sourceState: .active,
             relativePath: fileName,
             fileName: fileName,
+            mediaKind: mediaKind,
             mediaType: mediaType,
+            durationMs: durationMs,
             mediaCreatedAtMs: 1,
             mediaModifiedAtMs: 1,
             width: 32,
@@ -9864,6 +10188,7 @@ final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecked Sendab
     private var storedCreateTagAndAcceptCallCount = 0
     private var storedLastCreateTagAssetIDs: Set<UUID> = []
     private var storedAssetPageFetchCallCount = 0
+    private var storedEnqueueReconcileCalls: [[UUID]] = []
     private var storedJobActivityItems: [JobActivityItem]
     private var storedJobActivityFetchCallCount = 0
     private var storedJobActivityActionCallCount = 0
@@ -10134,6 +10459,10 @@ final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecked Sendab
 
     var assetPageFetchCallCount: Int {
         lock.withLock { storedAssetPageFetchCallCount }
+    }
+
+    var enqueueReconcileCalls: [[UUID]] {
+        lock.withLock { storedEnqueueReconcileCalls }
     }
 
     var hasStartedBlockedAssetPageFetch: Bool {
@@ -10430,7 +10759,10 @@ final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecked Sendab
 
     func enqueueReconcile(sourceIDs: [UUID]) throws {
         guard !sourceIDs.isEmpty else { return }
-        lock.withLock { storedHasPendingCatalogReconcileJobs = true }
+        lock.withLock {
+            storedEnqueueReconcileCalls.append(sourceIDs)
+            storedHasPendingCatalogReconcileJobs = true
+        }
     }
 
     func hasPendingCatalogReconcileJobs() throws -> Bool {
@@ -10522,6 +10854,11 @@ final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecked Sendab
                 }
                 if !filter.mediaTypes.isEmpty,
                    !filter.mediaTypes.contains(item.mediaType)
+                {
+                    return false
+                }
+                if !filter.mediaKinds.isEmpty,
+                   !filter.mediaKinds.contains(item.mediaKind)
                 {
                     return false
                 }
@@ -11364,6 +11701,7 @@ private final class FakeTrainingWorkspacePort: TrainingWorkspacePort, @unchecked
     private let runs: [TrainingRunRecord]
     private let slots: [TrainingWorkspaceSlot]
     private var storedRequestedMethods: [TrainingRunMethod?] = []
+    private var storedRequestedMediaKinds: [MediaKind] = []
 
     init(runs: [TrainingRunRecord], slots: [TrainingWorkspaceSlot]) {
         self.runs = runs
@@ -11374,19 +11712,35 @@ private final class FakeTrainingWorkspacePort: TrainingWorkspacePort, @unchecked
         lock.withLock { storedRequestedMethods }
     }
 
+    var requestedMediaKinds: [MediaKind] {
+        lock.withLock { storedRequestedMediaKinds }
+    }
+
     func snapshot(
+        mediaKind: MediaKind,
         method: TrainingRunMethod?,
         limit: Int
     ) throws -> TrainingWorkspaceSnapshot {
         lock.withLock {
             storedRequestedMethods.append(method)
+            storedRequestedMediaKinds.append(mediaKind)
             return TrainingWorkspaceSnapshot(
                 runs: Array(
                     runs
+                        .filter { $0.mediaKind == mediaKind }
                         .filter { method == nil || $0.method == method }
                         .prefix(limit)
                 ),
-                slots: slots
+                slots: mediaKind == .image
+                    ? slots
+                    : TrainingRunMethod.allCases.map {
+                        TrainingWorkspaceSlot(
+                            method: $0,
+                            isPublished: false,
+                            publishedRunID: nil,
+                            artifactRef: nil
+                        )
+                    }
             )
         }
     }
@@ -11402,6 +11756,7 @@ private final class BlockingTrainingWorkspacePort: TrainingWorkspacePort, @unche
     }
 
     func snapshot(
+        mediaKind _: MediaKind,
         method _: TrainingRunMethod?,
         limit _: Int
     ) throws -> TrainingWorkspaceSnapshot {

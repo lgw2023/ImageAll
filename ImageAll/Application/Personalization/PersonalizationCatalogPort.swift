@@ -100,8 +100,21 @@ struct PersonalTrainingDecision: Codable, Equatable, Hashable, Sendable {
 
 struct PersonalTrainingSnapshot: Equatable, Sendable {
     let catalogScopeID: String
+    let mediaKind: MediaKind
     let personalTagIDs: [UUID]
     let decisions: [PersonalTrainingDecision]
+
+    init(
+        catalogScopeID: String,
+        mediaKind: MediaKind = .image,
+        personalTagIDs: [UUID],
+        decisions: [PersonalTrainingDecision]
+    ) {
+        self.catalogScopeID = catalogScopeID
+        self.mediaKind = mediaKind
+        self.personalTagIDs = personalTagIDs
+        self.decisions = decisions
+    }
 }
 
 struct PersonalTrainingEncoderIdentity: Codable, Equatable, Sendable {
@@ -170,12 +183,33 @@ struct ModelSampleRegistration: Equatable, Sendable {
 
 struct ModelRevisionRegistration: Equatable, Sendable {
     let tagID: UUID
+    let mediaKind: MediaKind
     let revision: Int
     let threshold: Double
     let neighborCount: Int
     let sampleBudgetPerRole: Int
     let samples: [ModelSampleRegistration]
     let createdAtMs: Int64
+
+    init(
+        tagID: UUID,
+        mediaKind: MediaKind = .image,
+        revision: Int,
+        threshold: Double,
+        neighborCount: Int,
+        sampleBudgetPerRole: Int,
+        samples: [ModelSampleRegistration],
+        createdAtMs: Int64
+    ) {
+        self.tagID = tagID
+        self.mediaKind = mediaKind
+        self.revision = revision
+        self.threshold = threshold
+        self.neighborCount = neighborCount
+        self.sampleBudgetPerRole = sampleBudgetPerRole
+        self.samples = samples
+        self.createdAtMs = createdAtMs
+    }
 }
 
 struct PredictionRegistration: Equatable, Sendable {
@@ -276,6 +310,7 @@ enum StandardModelSuggestionCapabilityAvailability: Equatable, Sendable {
 
 struct PersonalModelSuggestionTarget: Codable, Equatable, Sendable {
     let catalogScopeID: String
+    let mediaKind: MediaKind
     let bundleID: String
     let bundleRevision: String
     let provider: String
@@ -286,6 +321,68 @@ struct PersonalModelSuggestionTarget: Codable, Equatable, Sendable {
     let labelVocabularyRevision: String
     let weightsSHA256: String
     let policyRevision: String
+
+    init(
+        catalogScopeID: String,
+        mediaKind: MediaKind = .image,
+        bundleID: String,
+        bundleRevision: String,
+        provider: String,
+        modelID: String,
+        modelRevision: String,
+        preprocessingRevision: String,
+        elementCount: Int,
+        labelVocabularyRevision: String,
+        weightsSHA256: String,
+        policyRevision: String
+    ) {
+        self.catalogScopeID = catalogScopeID
+        self.mediaKind = mediaKind
+        self.bundleID = bundleID
+        self.bundleRevision = bundleRevision
+        self.provider = provider
+        self.modelID = modelID
+        self.modelRevision = modelRevision
+        self.preprocessingRevision = preprocessingRevision
+        self.elementCount = elementCount
+        self.labelVocabularyRevision = labelVocabularyRevision
+        self.weightsSHA256 = weightsSHA256
+        self.policyRevision = policyRevision
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case catalogScopeID
+        case mediaKind
+        case bundleID
+        case bundleRevision
+        case provider
+        case modelID
+        case modelRevision
+        case preprocessingRevision
+        case elementCount
+        case labelVocabularyRevision
+        case weightsSHA256
+        case policyRevision
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        catalogScopeID = try values.decode(String.self, forKey: .catalogScopeID)
+        mediaKind = try values.decodeIfPresent(MediaKind.self, forKey: .mediaKind) ?? .image
+        bundleID = try values.decode(String.self, forKey: .bundleID)
+        bundleRevision = try values.decode(String.self, forKey: .bundleRevision)
+        provider = try values.decode(String.self, forKey: .provider)
+        modelID = try values.decode(String.self, forKey: .modelID)
+        modelRevision = try values.decode(String.self, forKey: .modelRevision)
+        preprocessingRevision = try values.decode(String.self, forKey: .preprocessingRevision)
+        elementCount = try values.decode(Int.self, forKey: .elementCount)
+        labelVocabularyRevision = try values.decode(
+            String.self,
+            forKey: .labelVocabularyRevision
+        )
+        weightsSHA256 = try values.decode(String.self, forKey: .weightsSHA256)
+        policyRevision = try values.decode(String.self, forKey: .policyRevision)
+    }
 }
 
 enum ModelSuggestionTarget: Equatable, Sendable {

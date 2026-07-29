@@ -7,32 +7,39 @@ struct FingerprintCompletionService: FingerprintCompletionPort {
     let sourceAccess: FolderReconcileSourceAccessService
     let sourceReader: DerivedImageSourceReader
     let photosOriginals: (any PhotosOriginalContentPort)?
+    let photosOriginalVideos: (any PhotosOriginalVideoContentPort)?
     let photosOriginalCache: PhotosOriginalCacheService?
     let photosFeatureImages: (any PhotosFeaturePrintImagePort)?
     let downloadedPreviews: (any DownloadedPreviewCachePort)?
     let clock: any JobClock
     let assetRepository: GRDBDerivedImageCacheRepository
+    let videoPosterGenerator: any DerivedVideoPosterGenerating
 
     init(
         database: CatalogDatabase,
         sourceAccess: FolderReconcileSourceAccessService,
         sourceReader: DerivedImageSourceReader = DerivedImageSourceReader(),
         photosOriginals: (any PhotosOriginalContentPort)? = nil,
+        photosOriginalVideos: (any PhotosOriginalVideoContentPort)? = nil,
         photosOriginalCache: PhotosOriginalCacheService? = nil,
         photosFeatureImages: (any PhotosFeaturePrintImagePort)? = nil,
         downloadedPreviews: (any DownloadedPreviewCachePort)? = nil,
         clock: any JobClock,
-        assetRepository: GRDBDerivedImageCacheRepository? = nil
+        assetRepository: GRDBDerivedImageCacheRepository? = nil,
+        videoPosterGenerator: any DerivedVideoPosterGenerating =
+            AVFoundationDerivedVideoPosterGenerator()
     ) {
         self.database = database
         self.sourceAccess = sourceAccess
         self.sourceReader = sourceReader
         self.photosOriginals = photosOriginals
+        self.photosOriginalVideos = photosOriginalVideos
         self.photosOriginalCache = photosOriginalCache
         self.photosFeatureImages = photosFeatureImages
         self.downloadedPreviews = downloadedPreviews
         self.clock = clock
         self.assetRepository = assetRepository ?? GRDBDerivedImageCacheRepository(database: database)
+        self.videoPosterGenerator = videoPosterGenerator
     }
 
     func completeAsset(assetID: UUID) throws -> AssetContentFingerprint {
@@ -52,16 +59,18 @@ struct FingerprintCompletionService: FingerprintCompletionPort {
             throw FingerprintCompletionError.ineligible
         }
 
+        let algoVersion = IdenticalDuplicatePolicy.perceptualAlgoVersion(for: context.mediaKind)
         if let existing = try loadCompletedFingerprint(
             assetID: assetID,
-            contentRevision: context.contentRevision
+            contentRevision: context.contentRevision,
+            algoVersion: algoVersion
         ) {
             return existing
         }
 
-        let bytes: Data
+        let input: (contentBytes: Data, visualBytes: Data, expectedMediaType: String?)
         do {
-            bytes = try sourceAccess.withActiveSourceRootURL(sourceID: context.sourceID) { rootURL in
+            input = try sourceAccess.withActiveSourceRootURL(sourceID: context.sourceID) { rootURL in
                 let initial = try sourceReader.readSourceBytes(
                     rootURL: rootURL,
                     relativePath: context.relativePath
@@ -73,7 +82,31 @@ struct FingerprintCompletionService: FingerprintCompletionPort {
                 else {
                     throw FingerprintCompletionError.sourceChanged
                 }
-                return initial.bytes
+                guard context.mediaKind == .video else {
+                    return (initial.bytes, initial.bytes, context.mediaType)
+                }
+                guard let durationMs = context.durationMs, durationMs > 0 else {
+                    throw FingerprintCompletionError.decodeFailed
+                }
+                let poster = try sourceReader.withOpenSourceFileDescriptorURL(
+                    rootURL: rootURL,
+                    relativePath: context.relativePath
+                ) { descriptorURL, openedFingerprint in
+                    guard context.matchesHandleFacts(openedFingerprint) else {
+                        throw FingerprintCompletionError.sourceChanged
+                    }
+                    do {
+                        return try videoPosterGenerator.makePosterBytes(
+                            sourceFileDescriptorURL: descriptorURL,
+                            mediaType: context.mediaType,
+                            durationMs: durationMs,
+                            maximumPixelSize: 1_024
+                        )
+                    } catch {
+                        throw FingerprintCompletionError.decodeFailed
+                    }
+                }
+                return (initial.bytes, poster, nil)
             }
         } catch let error as FingerprintCompletionError {
             throw error
@@ -88,12 +121,12 @@ struct FingerprintCompletionService: FingerprintCompletionPort {
             throw FingerprintCompletionError.sourceUnavailable
         }
 
-        let sha256 = Data(SHA256.hash(data: bytes))
+        let sha256 = Data(SHA256.hash(data: input.contentBytes))
         let analysis: PerceptualImageAnalysis
         do {
             analysis = try PerceptualImageHash.analyze(
-                sourceBytes: bytes,
-                expectedMediaType: context.mediaType
+                sourceBytes: input.visualBytes,
+                expectedMediaType: input.expectedMediaType
             )
         } catch {
             throw FingerprintCompletionError.decodeFailed
@@ -113,7 +146,8 @@ struct FingerprintCompletionService: FingerprintCompletionPort {
                 verificationSignature: analysis.verificationSignature,
                 pixelWidth: analysis.pixelWidth,
                 pixelHeight: analysis.pixelHeight,
-                nowMs: nowMs
+                nowMs: nowMs,
+                algoVersion: algoVersion
             )
         } catch let error as FingerprintCompletionError {
             throw error
@@ -129,7 +163,7 @@ struct FingerprintCompletionService: FingerprintCompletionPort {
             verificationSignature: analysis.verificationSignature,
             pixelWidth: analysis.pixelWidth,
             pixelHeight: analysis.pixelHeight,
-            perceptualAlgoVersion: IdenticalDuplicatePolicy.perceptualAlgoVersion
+            perceptualAlgoVersion: algoVersion
         )
     }
 
@@ -191,7 +225,10 @@ struct FingerprintCompletionService: FingerprintCompletionPort {
                 LEFT JOIN asset_similarity_fingerprint p
                     ON p.asset_id = a.id
                     AND p.content_revision = a.content_revision
-                    AND p.algo_version = ?
+                    AND p.algo_version = CASE a.media_kind
+                        WHEN 'video' THEN ?
+                        ELSE ?
+                    END
                 LEFT JOIN file_fingerprint f ON f.asset_id = a.id
                 WHERE a.locator_state = 'current'
                   AND a.availability = 'available'
@@ -218,6 +255,7 @@ struct FingerprintCompletionService: FingerprintCompletionPort {
                 LIMIT ?
                 """,
                 arguments: [
+                    IdenticalDuplicatePolicy.videoPosterPerceptualAlgoVersion,
                     IdenticalDuplicatePolicy.perceptualAlgoVersion,
                     folderOnly ? 1 : 0,
                     limit,
@@ -262,7 +300,8 @@ struct FingerprintCompletionService: FingerprintCompletionPort {
 
     private func loadCompletedFingerprint(
         assetID: UUID,
-        contentRevision: Int
+        contentRevision: Int,
+        algoVersion: String = IdenticalDuplicatePolicy.perceptualAlgoVersion
     ) throws -> AssetContentFingerprint? {
         try database.pool.read { db in
             guard let row = try Row.fetchOne(
@@ -288,7 +327,7 @@ struct FingerprintCompletionService: FingerprintCompletionPort {
                 arguments: [
                     assetID.uuidString.lowercased(),
                     contentRevision,
-                    IdenticalDuplicatePolicy.perceptualAlgoVersion,
+                    algoVersion,
                 ]
             ) else {
                 return nil
@@ -324,6 +363,7 @@ struct FingerprintCompletionService: FingerprintCompletionPort {
         let localIdentifier: String
         let contentRevision: Int
         let mediaType: String
+        let mediaKind: MediaKind
     }
 
     private enum PhotosSourceBytesOrigin: Equatable {
@@ -335,6 +375,9 @@ struct FingerprintCompletionService: FingerprintCompletionPort {
 
     private func completePhotosAsset(assetID: UUID) throws -> AssetContentFingerprint {
         let context = try loadPhotosContext(assetID: assetID)
+        if context.mediaKind == .video {
+            return try completePhotosVideoAsset(assetID: assetID, context: context)
+        }
         if let existing = try loadCompletedFingerprint(
             assetID: assetID,
             contentRevision: context.contentRevision
@@ -418,6 +461,84 @@ struct FingerprintCompletionService: FingerprintCompletionPort {
         )
     }
 
+    private func completePhotosVideoAsset(
+        assetID: UUID,
+        context: PhotosCompletionContext
+    ) throws -> AssetContentFingerprint {
+        let algoVersion = IdenticalDuplicatePolicy.videoPosterPerceptualAlgoVersion
+        if let existing = try loadCompletedFingerprint(
+            assetID: assetID,
+            contentRevision: context.contentRevision,
+            algoVersion: algoVersion
+        ) {
+            return existing
+        }
+        guard let photosOriginalVideos, let photosFeatureImages else {
+            throw FingerprintCompletionError.ineligible
+        }
+
+        let videoBytes: Data
+        let posterBytes: Data
+        do {
+            videoBytes = try photosOriginalVideos.requestOriginalVideoData(
+                localIdentifier: context.localIdentifier
+            )
+            posterBytes = try photosFeatureImages.requestLocalFeatureImage(
+                localIdentifier: context.localIdentifier
+            )
+        } catch let error as PhotosLibraryError {
+            switch error {
+            case .authorizationDenied, .authorizationRestricted:
+                throw FingerprintCompletionError.authorizationRequired
+            case .libraryUnavailable, .cloudOnly, .changeTokenInvalid, .persistenceFailure:
+                throw FingerprintCompletionError.sourceUnavailable
+            }
+        } catch {
+            throw FingerprintCompletionError.sourceUnavailable
+        }
+        guard !videoBytes.isEmpty, !posterBytes.isEmpty else {
+            throw FingerprintCompletionError.sourceUnavailable
+        }
+
+        let sha256 = Data(SHA256.hash(data: videoBytes))
+        let analysis: PerceptualImageAnalysis
+        do {
+            analysis = try PerceptualImageHash.analyze(
+                sourceBytes: posterBytes,
+                expectedMediaType: nil
+            )
+        } catch {
+            throw FingerprintCompletionError.decodeFailed
+        }
+        let perceptual = PerceptualImageHash.encodeHash(analysis.dHash)
+        do {
+            try persistPhotosFingerprint(
+                assetID: assetID,
+                context: context,
+                sha256: sha256,
+                perceptualHash: perceptual,
+                verificationSignature: analysis.verificationSignature,
+                pixelWidth: analysis.pixelWidth,
+                pixelHeight: analysis.pixelHeight,
+                algoVersion: algoVersion
+            )
+        } catch let error as FingerprintCompletionError {
+            throw error
+        } catch {
+            throw FingerprintCompletionError.persistenceFailed
+        }
+        return AssetContentFingerprint(
+            assetID: assetID,
+            contentRevision: context.contentRevision,
+            sha256: sha256,
+            perceptualHash: perceptual,
+            verificationSignature: analysis.verificationSignature,
+            pixelWidth: analysis.pixelWidth,
+            pixelHeight: analysis.pixelHeight,
+            perceptualAlgoVersion: algoVersion
+        )
+    }
+
     private func loadPhotosSourceBytes(
         assetID: UUID,
         context: PhotosCompletionContext
@@ -487,7 +608,8 @@ struct FingerprintCompletionService: FingerprintCompletionPort {
                 SELECT
                     a.photos_local_identifier,
                     a.content_revision,
-                    a.media_type
+                    a.media_type,
+                    a.media_kind
                 FROM asset a
                 JOIN source s ON s.id = a.source_id
                 WHERE a.id = ?
@@ -503,10 +625,14 @@ struct FingerprintCompletionService: FingerprintCompletionPort {
             else {
                 throw FingerprintCompletionError.ineligible
             }
+            guard let mediaKind = MediaKind(rawValue: row["media_kind"]) else {
+                throw FingerprintCompletionError.ineligible
+            }
             return PhotosCompletionContext(
                 localIdentifier: localIdentifier,
                 contentRevision: row["content_revision"],
-                mediaType: row["media_type"]
+                mediaType: row["media_type"],
+                mediaKind: mediaKind
             )
         }
     }
@@ -518,7 +644,8 @@ struct FingerprintCompletionService: FingerprintCompletionPort {
         perceptualHash: Data,
         verificationSignature: Data,
         pixelWidth: Int,
-        pixelHeight: Int
+        pixelHeight: Int,
+        algoVersion: String = IdenticalDuplicatePolicy.perceptualAlgoVersion
     ) throws {
         try database.pool.write { db in
             let current = try Bool.fetchOne(
@@ -558,7 +685,8 @@ struct FingerprintCompletionService: FingerprintCompletionPort {
                 verificationSignature: verificationSignature,
                 pixelWidth: pixelWidth,
                 pixelHeight: pixelHeight,
-                nowMs: clock.nowMs
+                nowMs: clock.nowMs,
+                algoVersion: algoVersion
             )
         }
     }
@@ -574,7 +702,8 @@ struct FingerprintCompletionService: FingerprintCompletionPort {
         verificationSignature: Data,
         pixelWidth: Int,
         pixelHeight: Int,
-        nowMs: Int64
+        nowMs: Int64,
+        algoVersion: String = IdenticalDuplicatePolicy.perceptualAlgoVersion
     ) throws {
         try database.pool.write { db in
             try db.execute(
@@ -611,7 +740,8 @@ struct FingerprintCompletionService: FingerprintCompletionPort {
                 verificationSignature: verificationSignature,
                 pixelWidth: pixelWidth,
                 pixelHeight: pixelHeight,
-                nowMs: nowMs
+                nowMs: nowMs,
+                algoVersion: algoVersion
             )
         }
     }
@@ -625,7 +755,8 @@ struct FingerprintCompletionService: FingerprintCompletionPort {
         verificationSignature: Data,
         pixelWidth: Int,
         pixelHeight: Int,
-        nowMs: Int64
+        nowMs: Int64,
+        algoVersion: String = IdenticalDuplicatePolicy.perceptualAlgoVersion
     ) throws {
         try db.execute(
             sql: """
@@ -647,7 +778,7 @@ struct FingerprintCompletionService: FingerprintCompletionPort {
             arguments: [
                 assetID.uuidString.lowercased(),
                 contentRevision,
-                IdenticalDuplicatePolicy.perceptualAlgoVersion,
+                algoVersion,
                 perceptualHash,
                 nowMs,
                 nowMs,

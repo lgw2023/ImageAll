@@ -58,7 +58,9 @@ struct FolderReconcileCheckpointV1: Equatable, Sendable, Codable {
 struct FolderReconcileAssetObservation: Equatable, Sendable {
     let relativePath: String
     let fileName: String
+    let mediaKind: MediaKind
     let mediaType: String
+    let durationMs: Int64?
     let width: Int?
     let height: Int?
     let mediaCreatedAtMs: Int64?
@@ -67,6 +69,36 @@ struct FolderReconcileAssetObservation: Equatable, Sendable {
     let modifiedAtNs: Int64?
     let resourceID: Data?
     let movePathProbe: FolderMovePathProbe?
+
+    init(
+        relativePath: String,
+        fileName: String,
+        mediaKind: MediaKind = .image,
+        mediaType: String,
+        durationMs: Int64? = nil,
+        width: Int?,
+        height: Int?,
+        mediaCreatedAtMs: Int64?,
+        availability: AssetAvailability,
+        sizeBytes: Int64?,
+        modifiedAtNs: Int64?,
+        resourceID: Data?,
+        movePathProbe: FolderMovePathProbe?
+    ) {
+        self.relativePath = relativePath
+        self.fileName = fileName
+        self.mediaKind = mediaKind
+        self.mediaType = mediaType
+        self.durationMs = durationMs
+        self.width = width
+        self.height = height
+        self.mediaCreatedAtMs = mediaCreatedAtMs
+        self.availability = availability
+        self.sizeBytes = sizeBytes
+        self.modifiedAtNs = modifiedAtNs
+        self.resourceID = resourceID
+        self.movePathProbe = movePathProbe
+    }
 }
 
 struct FolderBeginGenerationResult: Equatable, Sendable {

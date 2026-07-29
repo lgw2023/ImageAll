@@ -1,6 +1,6 @@
 # ImageAll 视频媒体工作区实施规格
 
-> 状态：Approved（产品形态已批准，实施待开始）
+> 状态：Approved / In Progress（S1-S4 主链路已落地；S5 Remote / Companion 投影待后续切片）
 > 日期：2026-07-29
 > 依据：ADR-046
 > 安全：自动化测试不得读取 `/Volumes/HDD2/Photos Library.photoslibrary` 或 `/Volumes/HDD2`
@@ -65,17 +65,18 @@ enum MediaKind: String, Codable, Sendable, CaseIterable {
 
 UI 可以把 `image` 显示为“照片”，但数据库和应用层不得同时出现 `photo` / `image` 两种领域值。
 
-### 3.2 migration v026
+### 3.2 migration v026 与后续分槽迁移
 
-在新 migration 中演进，不改写 v001-v025：
+不改写 v001-v025。v026 先建立可运行的媒体域基础；依赖复合唯一键或模型产物身份的表在对应纵向切片
+中使用 v027+ 继续演进，避免在调用链尚未接入前提前改写全部模型契约：
 
 | 表 | 变化 |
 |---|---|
-| `asset` | 新增 `media_kind NOT NULL DEFAULT 'image'`；新增可空 `duration_ms`；视频要求 `duration_ms > 0`，图片要求为空 |
-| `training_run` | 新增 `media_kind NOT NULL DEFAULT 'image'`；查询索引包含 `media_kind, method, created_at_ms` |
-| 个人模型槽 / 标签槽 | 唯一身份从 `method` 扩展为 `media_kind + method` |
-| 建议阈值 / 模型身份 | 需要训练数据分布的记录按 `media_kind` 分槽；全局默认值可共享 |
-| 相似分析任务 / 来源索引 | 任务快照和索引身份加入 `media_kind`，禁止照片 / 视频同桶 |
+| v026 `asset` | 新增 `media_kind NOT NULL DEFAULT 'image'`；新增可空 `duration_ms`；视频要求 `duration_ms > 0` |
+| v026 `training_run` | 新增 `media_kind NOT NULL DEFAULT 'image'`；查询索引包含 `media_kind, method, created_at_ms` |
+| v027+ 个人模型槽 / 标签槽 | 唯一身份从 `method` 扩展为 `media_kind + method` |
+| v027+ 建议阈值 / 模型身份 | 需要训练数据分布的记录按 `media_kind` 分槽；全局默认值可共享 |
+| v027+ 相似分析任务 / 来源索引 | 任务快照和索引身份加入 `media_kind`，禁止照片 / 视频同桶 |
 
 迁移回填：
 
@@ -190,6 +191,14 @@ Feature Print / embedding / prediction 的 provenance 必须记录 `videoPoster.
 
 验收：一个合成文件夹 fixture 完成上述闭环，照片现有查询回归通过。
 
+当前进度（2026-07-29）：
+
+- 已完成：v026、MOV / MP4 / M4V 候选与 AVFoundation 元数据、视频资产写库、媒体域分页隔离、
+  图库照片 / 视频页签、代表图缓存、播放标识 / 时长、系统默认播放器打开、启动期视频清除移除；
+- 已用合成 MOV 验证生产元数据读取与生产代表帧抽取，未访问真实 Photos；
+- S1 剩余收口：补齐“入库 → 人工标签 → 重启保持”的单条组合验收，以及 App 内嵌播放器（如产品仍要求
+  内嵌控制；当前实现使用系统默认播放器）。
+
 ### S2：统一页签与查询隔离
 
 在图库、Review、训练工程、图库瘦身接入同一媒体页签和媒体域查询；先允许后三个视频页显示真实空态，
@@ -197,17 +206,48 @@ Feature Print / embedding / prediction 的 provenance 必须记录 `videoPoster.
 
 验收：进入默认照片；切视频后四个工作区均无照片泄漏；选择与异步查询竞态有测试。
 
+当前进度（2026-07-29）：
+
+- 四个现有工作区均已显示同规格照片 / 视频大页签，并在进入 Review、训练工程、图库瘦身时重置为照片；
+- 图库视频页显示真实视频资产；Review、训练工程与图库瘦身视频页均已接入各自媒体域的实际数据；
+- 切到视频会读取独立的 Review 队列、计数、训练 Run 与三个模型槽，不读取照片数据；
+- 图库瘦身的任务、结果、来源相似索引与回收站均按媒体域隔离，不再以照片结果填充视频页。
+
 ### S3：视频 AI + 训练 + Review 闭环
 
 代表图 Feature Print / embedding → 三种方法独立视频槽 → 视频建议 → Review 决定 → Run 历史。
 
 验收：合成视频代表图至少完成一条训练 / 建议 / 审核主路径；照片模型槽不变化。
 
+当前进度（2026-07-29）：
+
+- 视频代表图 `videoPoster.v1` 已作为 Feature Print / 本地图像模型输入，完整视频内容不会隐式送入模型；
+- FeatureKNN、标准场景模型、个人质心模型和 AdamW 个人模型的任务载荷、样本、预测、模型发布槽、
+  Run 历史与 artifact 目录均按 `media_kind` 隔离；
+- Review 与训练工程继续复用原入口和交互，顶部照片 / 视频页签切换实际队列、计数、Run、模型槽和新建任务；
+- v027 将标签模型、个人模型与预测表升级为照片 / 视频复合身份；旧数据按照片无损回填；
+- 合成视频回归已覆盖“视频样本 → FeatureKNN → 视频建议 → Review 队列 → 视频 Run / 发布槽”，
+  并验证照片 Review 与模型槽不变化；视频个人模型失效也不会清除照片模型。
+
 ### S4：图库瘦身与 PhotoKit 视频
 
 视频相同 / 代表图相似分析、回收语义；PhotoKit 假 Adapter 覆盖视频枚举、缩略图、播放与云端不可用。
 
 验收：零真实 Photos 访问；视频索引不与照片同桶；云端默认不下载。
+
+当前进度（2026-07-29）：
+
+- 文件夹与 PhotoKit 本地视频均使用完整文件字节 SHA-256 判定“相同”，跨来源相同视频可进入同一结果组；
+- “相似视频”只分析 `videoPoster.v1` 代表图，Feature Print / embedding provenance 不与照片算法混用；
+- v028 已将瘦身任务快照、来源相似索引和相似结果按 `media_kind` 分桶；扫描、结果与回收站均保持
+  照片 / 视频隔离；
+- 视频页复用照片瘦身的分析、选择、移入回收站、恢复与永久清理流程，界面使用视频代表图、播放标识和
+  视频语义文案；
+- PhotoKit Adapter 已覆盖本地视频枚举、时长元数据、代表缩略图、完整字节读取和系统播放器打开；
+  所有请求均显式禁止网络访问，iCloud-only 视频返回不可用，不会被分析、预热或播放动作隐式下载；
+- fake PhotoKit 与合成文件回归覆盖视频媒体类型策略、无网络请求、照片 / 视频查询隔离、跨来源完全相同
+  和代表图相似；自动化过程未访问受保护的真实 Photos 数据；
+- 真实 Photos 库的只读人工验收仍需项目所有者另行明确授权，当前完成证据不包含该目录。
 
 ### S5：Remote / Companion 投影
 

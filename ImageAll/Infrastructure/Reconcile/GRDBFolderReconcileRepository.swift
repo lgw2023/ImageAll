@@ -501,6 +501,19 @@ struct GRDBFolderReconcileRepository: FolderReconcileBatchPort, Sendable {
         guard observation.sizeBytes != nil, observation.modifiedAtNs != nil else {
             throw FolderReconcileRepositoryError.invalidObservation
         }
+        switch observation.mediaKind {
+        case .image:
+            guard observation.durationMs == nil else {
+                throw FolderReconcileRepositoryError.invalidObservation
+            }
+        case .video:
+            guard let durationMs = observation.durationMs, durationMs > 0 else {
+                if observation.availability == .available {
+                    throw FolderReconcileRepositoryError.invalidObservation
+                }
+                return
+            }
+        }
     }
 
     @discardableResult
@@ -729,17 +742,20 @@ struct GRDBFolderReconcileRepository: FolderReconcileBatchPort, Sendable {
             sql: """
             INSERT INTO asset (
                 id, source_id, locator_kind, relative_path, file_name, locator_state,
-                media_type, width, height, media_created_at_ms, media_modified_at_ms,
+                media_kind, media_type, duration_ms, width, height,
+                media_created_at_ms, media_modified_at_ms,
                 content_revision, last_seen_generation, availability,
                 record_created_at_ms, record_updated_at_ms
-            ) VALUES (?, ?, 'file', ?, ?, 'current', ?, ?, ?, ?, NULL, 1, ?, ?, ?, ?)
+            ) VALUES (?, ?, 'file', ?, ?, 'current', ?, ?, ?, ?, ?, ?, NULL, 1, ?, ?, ?, ?)
             """,
             arguments: [
                 assetID.uuidString.lowercased(),
                 sourceID,
                 observation.relativePath,
                 observation.fileName,
+                observation.mediaKind.rawValue,
                 observation.mediaType,
+                observation.durationMs,
                 observation.width,
                 observation.height,
                 observation.mediaCreatedAtMs,
@@ -764,7 +780,9 @@ struct GRDBFolderReconcileRepository: FolderReconcileBatchPort, Sendable {
             sql: """
             UPDATE asset SET
                 file_name = ?,
+                media_kind = ?,
                 media_type = ?,
+                duration_ms = ?,
                 width = ?,
                 height = ?,
                 media_created_at_ms = ?,
@@ -776,7 +794,9 @@ struct GRDBFolderReconcileRepository: FolderReconcileBatchPort, Sendable {
             """,
             arguments: [
                 observation.fileName,
+                observation.mediaKind.rawValue,
                 observation.mediaType,
+                observation.durationMs,
                 observation.width,
                 observation.height,
                 observation.mediaCreatedAtMs,
@@ -954,7 +974,9 @@ struct GRDBFolderReconcileRepository: FolderReconcileBatchPort, Sendable {
             UPDATE asset SET
                 relative_path = ?,
                 file_name = ?,
+                media_kind = ?,
                 media_type = ?,
+                duration_ms = ?,
                 width = ?,
                 height = ?,
                 media_created_at_ms = ?,
@@ -967,7 +989,9 @@ struct GRDBFolderReconcileRepository: FolderReconcileBatchPort, Sendable {
             arguments: [
                 observation.relativePath,
                 observation.fileName,
+                observation.mediaKind.rawValue,
                 observation.mediaType,
+                observation.durationMs,
                 observation.width,
                 observation.height,
                 observation.mediaCreatedAtMs,

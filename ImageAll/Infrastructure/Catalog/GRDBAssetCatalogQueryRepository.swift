@@ -27,7 +27,9 @@ struct GRDBAssetCatalogQueryRepository: AssetCatalogQueryPort, Sendable {
                     source.state AS source_state,
                     asset.relative_path AS relative_path,
                     asset.file_name AS file_name,
+                    asset.media_kind AS media_kind,
                     asset.media_type AS media_type,
+                    asset.duration_ms AS duration_ms,
                     asset.media_created_at_ms AS media_created_at_ms,
                     asset.media_modified_at_ms AS media_modified_at_ms,
                     asset.width AS width,
@@ -67,7 +69,9 @@ struct GRDBAssetCatalogQueryRepository: AssetCatalogQueryPort, Sendable {
                 source.state AS source_state,
                 asset.relative_path AS relative_path,
                 asset.file_name AS file_name,
+                asset.media_kind AS media_kind,
                 asset.media_type AS media_type,
+                asset.duration_ms AS duration_ms,
                 asset.media_created_at_ms AS media_created_at_ms,
                 asset.media_modified_at_ms AS media_modified_at_ms,
                 asset.width AS width,
@@ -113,7 +117,9 @@ struct GRDBAssetCatalogQueryRepository: AssetCatalogQueryPort, Sendable {
                     source.state AS source_state,
                     asset.relative_path AS relative_path,
                     asset.file_name AS file_name,
+                    asset.media_kind AS media_kind,
                     asset.media_type AS media_type,
+                    asset.duration_ms AS duration_ms,
                     asset.media_created_at_ms AS media_created_at_ms,
                     asset.media_modified_at_ms AS media_modified_at_ms,
                     asset.width AS width,
@@ -185,7 +191,9 @@ struct GRDBAssetCatalogQueryRepository: AssetCatalogQueryPort, Sendable {
                 sourceState: SourceState(rawValue: row["source_state"]) ?? .active,
                 relativePath: row["relative_path"],
                 fileName: row["file_name"],
+                mediaKind: MediaKind(rawValue: row["media_kind"]) ?? .image,
                 mediaType: row["media_type"],
+                durationMs: row["duration_ms"],
                 mediaCreatedAtMs: row["media_created_at_ms"],
                 mediaModifiedAtMs: row["media_modified_at_ms"],
                 width: row["width"],
@@ -230,7 +238,9 @@ struct GRDBAssetCatalogQueryRepository: AssetCatalogQueryPort, Sendable {
                 sourceState: SourceState(rawValue: row["source_state"]) ?? .active,
                 relativePath: row["relative_path"],
                 fileName: row["file_name"],
+                mediaKind: MediaKind(rawValue: row["media_kind"]) ?? .image,
                 mediaType: row["media_type"],
+                durationMs: row["duration_ms"],
                 mediaCreatedAtMs: row["media_created_at_ms"],
                 mediaModifiedAtMs: row["media_modified_at_ms"],
                 width: row["width"],
@@ -437,6 +447,15 @@ struct GRDBAssetCatalogQueryRepository: AssetCatalogQueryPort, Sendable {
             clauses.append("asset.media_type IN (\(placeholders))")
             for mediaType in filter.mediaTypes {
                 arguments += [mediaType]
+            }
+        }
+
+        if !filter.mediaKinds.isEmpty {
+            let placeholders = Array(repeating: "?", count: filter.mediaKinds.count)
+                .joined(separator: ", ")
+            clauses.append("asset.media_kind IN (\(placeholders))")
+            for mediaKind in filter.mediaKinds {
+                arguments += [mediaKind.rawValue]
             }
         }
 

@@ -4,6 +4,7 @@ enum FullLibrarySuggestionsJobEnqueue {
     static func makeEnqueueCommand(
         jobID: UUID,
         tagID: UUID,
+        mediaKind: MediaKind = .image,
         sourceIDs: [UUID],
         catalogCutoffMs: Int64,
         modelRevision: Int,
@@ -13,6 +14,7 @@ enum FullLibrarySuggestionsJobEnqueue {
     ) throws -> EnqueueJobCommand {
         let payload = FullLibrarySuggestionsPayload(
             contractVersion: FullLibrarySuggestionsJobFactory.contractVersion,
+            mediaKind: mediaKind,
             tagID: tagID,
             sourceIDs: sourceIDs.sorted { $0.uuidString.lowercased() < $1.uuidString.lowercased() },
             catalogCutoffMs: catalogCutoffMs,
@@ -26,7 +28,10 @@ enum FullLibrarySuggestionsJobEnqueue {
             payloadVersion: FullLibrarySuggestionsJobFactory.payloadVersion,
             payload: try FullLibrarySuggestionsCodec.encodePayload(payload),
             sourceID: nil,
-            coalescingKey: FullLibrarySuggestionsJobFactory.coalescingKey(tagID: tagID),
+            coalescingKey: FullLibrarySuggestionsJobFactory.coalescingKey(
+                tagID: tagID,
+                mediaKind: mediaKind
+            ),
             priority: FullLibrarySuggestionsJobFactory.priority,
             maxAttempts: FullLibrarySuggestionsJobFactory.maxAttempts,
             notBeforeMs: notBeforeMs

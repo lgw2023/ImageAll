@@ -29,6 +29,7 @@ enum PersonalModelRebuildJobFactory {
         for tagID in orderedTagIDs {
             let scoped = PersonalTrainingSnapshot(
                 catalogScopeID: snapshot.catalogScopeID,
+                mediaKind: snapshot.mediaKind,
                 personalTagIDs: [tagID],
                 decisions: snapshot.decisions.filter { $0.tagID == tagID }
             )
@@ -197,8 +198,12 @@ enum PersonalLibrarySuggestionsJobFactory {
     static let maxAttempts = 5
     static let priority = -1
 
-    static func coalescingKey(catalogScopeID: String) -> String {
-        "personalization:personal-library:\(catalogScopeID)"
+    static func coalescingKey(
+        catalogScopeID: String,
+        mediaKind: MediaKind = .image
+    ) -> String {
+        let base = "personalization:personal-library:\(catalogScopeID)"
+        return mediaKind == .image ? base : "\(base):\(mediaKind.rawValue)"
     }
 }
 
@@ -311,16 +316,52 @@ enum StandardLibrarySuggestionsJobFactory {
     static let maxAttempts = 5
     static let priority = -1
 
-    static func coalescingKey(standardPackID: String) -> String {
-        "personalization:standard-library:\(standardPackID)"
+    static func coalescingKey(
+        standardPackID: String,
+        mediaKind: MediaKind = .image
+    ) -> String {
+        let base = "personalization:standard-library:\(standardPackID)"
+        return mediaKind == .image ? base : "\(base):\(mediaKind.rawValue)"
     }
 }
 
 struct StandardLibrarySuggestionsPayload: Codable, Equatable, Sendable {
     let contractVersion: Int
+    let mediaKind: MediaKind
     let sourceIDs: [UUID]
     let catalogCutoffMs: Int64
     let target: StandardModelSuggestionTarget
+
+    init(
+        contractVersion: Int,
+        mediaKind: MediaKind = .image,
+        sourceIDs: [UUID],
+        catalogCutoffMs: Int64,
+        target: StandardModelSuggestionTarget
+    ) {
+        self.contractVersion = contractVersion
+        self.mediaKind = mediaKind
+        self.sourceIDs = sourceIDs
+        self.catalogCutoffMs = catalogCutoffMs
+        self.target = target
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case contractVersion
+        case mediaKind
+        case sourceIDs
+        case catalogCutoffMs
+        case target
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        contractVersion = try values.decode(Int.self, forKey: .contractVersion)
+        mediaKind = try values.decodeIfPresent(MediaKind.self, forKey: .mediaKind) ?? .image
+        sourceIDs = try values.decode([UUID].self, forKey: .sourceIDs)
+        catalogCutoffMs = try values.decode(Int64.self, forKey: .catalogCutoffMs)
+        target = try values.decode(StandardModelSuggestionTarget.self, forKey: .target)
+    }
 }
 
 struct StandardLibrarySuggestionsCheckpoint: Codable, Equatable, Sendable {

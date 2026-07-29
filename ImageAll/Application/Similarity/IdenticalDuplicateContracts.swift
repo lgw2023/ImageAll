@@ -4,9 +4,20 @@ import Foundation
 enum IdenticalDuplicatePolicy {
     /// Difference-hash algorithm identity persisted in `asset_similarity_fingerprint.algo_version`.
     static let perceptualAlgoVersion = "dhash-rgbverify-v2"
+    /// Video visual verification runs against the deterministic representative poster.
+    static let videoPosterPerceptualAlgoVersion = "videoPoster.v1-dhash-rgbverify-v2"
 
     /// Maximum Hamming distance (inclusive) for the dHash candidate stage.
     static let perceptualDuplicateMaxHammingDistance = 8
+}
+
+extension IdenticalDuplicatePolicy {
+    static func perceptualAlgoVersion(for mediaKind: MediaKind) -> String {
+        switch mediaKind {
+        case .image: perceptualAlgoVersion
+        case .video: videoPosterPerceptualAlgoVersion
+        }
+    }
 }
 
 enum IdenticalDuplicateKind: String, Sendable, Equatable {
@@ -61,5 +72,14 @@ protocol FingerprintCompletionPort: Sendable {
 
 protocol IdenticalDuplicateScanPort: Sendable {
     /// Clusters assets that already have completed fingerprints. Incomplete assets are ignored.
-    func clusterIdenticalDuplicates(assetIDs: [UUID]) throws -> [IdenticalDuplicateCluster]
+    func clusterIdenticalDuplicates(
+        assetIDs: [UUID],
+        mediaKind: MediaKind
+    ) throws -> [IdenticalDuplicateCluster]
+}
+
+extension IdenticalDuplicateScanPort {
+    func clusterIdenticalDuplicates(assetIDs: [UUID]) throws -> [IdenticalDuplicateCluster] {
+        try clusterIdenticalDuplicates(assetIDs: assetIDs, mediaKind: .image)
+    }
 }

@@ -53,8 +53,9 @@ enum FullLibrarySuggestionsJobFactory {
     /// Per-tag review queue keeps only the highest-scoring pending suggestions.
     static let maxPendingSuggestionsPerTag = PendingSuggestionGenerationLimits.defaultMaxCount
 
-    static func coalescingKey(tagID: UUID) -> String {
-        "personalization:\(tagID.uuidString.lowercased())"
+    static func coalescingKey(tagID: UUID, mediaKind: MediaKind = .image) -> String {
+        let base = "personalization:\(tagID.uuidString.lowercased())"
+        return mediaKind == .image ? base : "\(base):\(mediaKind.rawValue)"
     }
 }
 
@@ -65,12 +66,62 @@ struct FrozenSampleIdentity: Equatable, Sendable, Codable {
 
 struct FullLibrarySuggestionsPayload: Equatable, Sendable, Codable {
     let contractVersion: Int
+    let mediaKind: MediaKind
     let tagID: UUID
     let sourceIDs: [UUID]
     let catalogCutoffMs: Int64
     let modelRevision: Int
     let frozenPositiveSamples: [FrozenSampleIdentity]
     let frozenNegativeSamples: [FrozenSampleIdentity]
+
+    init(
+        contractVersion: Int,
+        mediaKind: MediaKind = .image,
+        tagID: UUID,
+        sourceIDs: [UUID],
+        catalogCutoffMs: Int64,
+        modelRevision: Int,
+        frozenPositiveSamples: [FrozenSampleIdentity],
+        frozenNegativeSamples: [FrozenSampleIdentity]
+    ) {
+        self.contractVersion = contractVersion
+        self.mediaKind = mediaKind
+        self.tagID = tagID
+        self.sourceIDs = sourceIDs
+        self.catalogCutoffMs = catalogCutoffMs
+        self.modelRevision = modelRevision
+        self.frozenPositiveSamples = frozenPositiveSamples
+        self.frozenNegativeSamples = frozenNegativeSamples
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case contractVersion
+        case mediaKind
+        case tagID
+        case sourceIDs
+        case catalogCutoffMs
+        case modelRevision
+        case frozenPositiveSamples
+        case frozenNegativeSamples
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        contractVersion = try values.decode(Int.self, forKey: .contractVersion)
+        mediaKind = try values.decodeIfPresent(MediaKind.self, forKey: .mediaKind) ?? .image
+        tagID = try values.decode(UUID.self, forKey: .tagID)
+        sourceIDs = try values.decode([UUID].self, forKey: .sourceIDs)
+        catalogCutoffMs = try values.decode(Int64.self, forKey: .catalogCutoffMs)
+        modelRevision = try values.decode(Int.self, forKey: .modelRevision)
+        frozenPositiveSamples = try values.decode(
+            [FrozenSampleIdentity].self,
+            forKey: .frozenPositiveSamples
+        )
+        frozenNegativeSamples = try values.decode(
+            [FrozenSampleIdentity].self,
+            forKey: .frozenNegativeSamples
+        )
+    }
 }
 
 struct FullLibrarySuggestionsCheckpoint: Equatable, Sendable, Codable {

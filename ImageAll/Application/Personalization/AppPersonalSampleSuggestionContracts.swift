@@ -51,6 +51,30 @@ protocol AppPersonalSampleSuggesting: Sendable {
         maximumSuggestionsPerAsset: Int,
         embedding: @escaping @Sendable (PersonalSuggestionCandidate) async throws -> AppCoreMLEmbedding
     ) async throws -> AppPersonalSampleSuggestionBatch
+    func suggest(
+        mediaKind: MediaKind,
+        candidates: [PersonalSuggestionCandidate],
+        maximumSuggestionsPerAsset: Int,
+        embedding: @escaping @Sendable (PersonalSuggestionCandidate) async throws -> AppCoreMLEmbedding
+    ) async throws -> AppPersonalSampleSuggestionBatch
+}
+
+extension AppPersonalSampleSuggesting {
+    func suggest(
+        mediaKind: MediaKind,
+        candidates: [PersonalSuggestionCandidate],
+        maximumSuggestionsPerAsset: Int,
+        embedding: @escaping @Sendable (PersonalSuggestionCandidate) async throws -> AppCoreMLEmbedding
+    ) async throws -> AppPersonalSampleSuggestionBatch {
+        guard mediaKind == .image else {
+            throw AppPersonalSampleSuggestionError.personalUnavailable
+        }
+        return try await suggest(
+            candidates: candidates,
+            maximumSuggestionsPerAsset: maximumSuggestionsPerAsset,
+            embedding: embedding
+        )
+    }
 }
 
 enum AppPersonalSuggestionCapabilityMapper {
@@ -61,6 +85,7 @@ enum AppPersonalSuggestionCapabilityMapper {
 
     static func capability(
         from identity: AppPersonalLinearHeadIdentity,
+        mediaKind: MediaKind = .image,
         family: AppPersonalLinearHeadFamily = .centroid
     ) -> PersonalModelSuggestionCapability {
         let bundleID: String
@@ -76,6 +101,7 @@ enum AppPersonalSuggestionCapabilityMapper {
         return PersonalModelSuggestionCapability(
             target: PersonalModelSuggestionTarget(
                 catalogScopeID: identity.catalogScopeID,
+                mediaKind: mediaKind,
                 bundleID: bundleID,
                 bundleRevision: identity.decisionSnapshotRevision,
                 provider: identity.encoderIdentity.provider,

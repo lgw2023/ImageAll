@@ -41,10 +41,31 @@ struct PersonalizationReviewService: PersonalizationReviewPort, Sendable {
     }
 
     func tagOverviews(sourceIDs: [UUID]?) throws -> [SuggestionTagOverview] {
+        try tagOverviews(mediaKind: .image, sourceIDs: sourceIDs)
+    }
+
+    func totalPendingSuggestionCount(
+        mediaKind: MediaKind,
+        sourceIDs: [UUID]?
+    ) throws -> Int {
+        try review.totalPendingSuggestionCount(
+            mediaKind: mediaKind,
+            sourceIDs: sourceIDs
+        )
+    }
+
+    func tagOverviews(
+        mediaKind: MediaKind,
+        sourceIDs: [UUID]?
+    ) throws -> [SuggestionTagOverview] {
         let tags = try tags.listTags(includeArchived: false)
         return try tags.map { tag in
-            let samples = try review.sampleCounts(tagID: tag.id)
+            let samples = try review.sampleCounts(
+                mediaKind: mediaKind,
+                tagID: tag.id
+            )
             let pendingCounts = try review.pendingCounts(
+                mediaKind: mediaKind,
                 tagID: tag.id,
                 sourceIDs: sourceIDs
             )
@@ -52,7 +73,10 @@ struct PersonalizationReviewService: PersonalizationReviewPort, Sendable {
             let job = try review.activeSuggestionJob(tagID: tag.id)
             let status = mapTaskStatus(tag: tag, samples: samples, job: job)
             let checkpoint = try job.flatMap { try FullLibrarySuggestionsCodec.checkpoint(from: $0.checkpoint) }
-            let hasModel = try review.tagHasCurrentModel(tagID: tag.id)
+            let hasModel = try review.tagHasCurrentModel(
+                mediaKind: mediaKind,
+                tagID: tag.id
+            )
             let isStandard = try review.tagIsStandard(tagID: tag.id)
             let missingPositive = max(0, 2 - samples.accepted)
             let missingNegative = max(0, 2 - samples.rejected)
@@ -98,6 +122,18 @@ struct PersonalizationReviewService: PersonalizationReviewPort, Sendable {
         limitingToAssetIDs assetIDs: Set<UUID>?
     ) throws -> PersonalTrainingSnapshot {
         try review.personalTrainingSnapshot(
+            limitingToTagIDs: tagIDs,
+            limitingToAssetIDs: assetIDs
+        )
+    }
+
+    func personalTrainingSnapshot(
+        mediaKind: MediaKind,
+        limitingToTagIDs tagIDs: Set<UUID>,
+        limitingToAssetIDs assetIDs: Set<UUID>?
+    ) throws -> PersonalTrainingSnapshot {
+        try review.personalTrainingSnapshot(
+            mediaKind: mediaKind,
             limitingToTagIDs: tagIDs,
             limitingToAssetIDs: assetIDs
         )
@@ -149,6 +185,22 @@ struct PersonalizationReviewService: PersonalizationReviewPort, Sendable {
         )
     }
 
+    func fetchReviewQueue(
+        mediaKind: MediaKind,
+        tagID: UUID,
+        sourceIDs: [UUID]?,
+        cursor: ReviewQueueCursor?,
+        limit: Int
+    ) throws -> ReviewQueuePage {
+        try review.fetchReviewQueuePage(
+            mediaKind: mediaKind,
+            tagID: tagID,
+            sourceIDs: sourceIDs,
+            cursor: cursor,
+            limit: limit
+        )
+    }
+
     func pendingSuggestionsForAsset(assetID: UUID) throws -> [AssetPendingSuggestion] {
         try review.pendingSuggestionsForAsset(assetID: assetID)
     }
@@ -160,6 +212,22 @@ struct PersonalizationReviewService: PersonalizationReviewPort, Sendable {
         excludingDecisionsForTagID: UUID?
     ) throws -> [PersonalSuggestionCandidate] {
         try review.personalSuggestionCandidates(
+            afterAssetID: afterAssetID,
+            limit: limit,
+            sourceIDs: sourceIDs,
+            excludingDecisionsForTagID: excludingDecisionsForTagID
+        )
+    }
+
+    func personalSuggestionCandidates(
+        mediaKind: MediaKind,
+        afterAssetID: UUID?,
+        limit: Int,
+        sourceIDs: [UUID]?,
+        excludingDecisionsForTagID: UUID?
+    ) throws -> [PersonalSuggestionCandidate] {
+        try review.personalSuggestionCandidates(
+            mediaKind: mediaKind,
             afterAssetID: afterAssetID,
             limit: limit,
             sourceIDs: sourceIDs,
@@ -220,12 +288,33 @@ struct PersonalizationReviewService: PersonalizationReviewPort, Sendable {
         try review.invalidateAllPersonalSuggestionBundles()
     }
 
+    func invalidatePersonalSuggestionBundles(mediaKind: MediaKind) throws {
+        try review.invalidatePersonalSuggestionBundles(mediaKind: mediaKind)
+    }
+
     func enqueueFullLibrarySuggestions(
         tagID: UUID,
         mode: PersonalizationReviewEnqueueMode,
         sourceIDs: [UUID]?
     ) throws -> UUID {
-        let samples = try review.fetchFrozenSampleIdentities(tagID: tagID)
+        try enqueueFullLibrarySuggestions(
+            mediaKind: .image,
+            tagID: tagID,
+            mode: mode,
+            sourceIDs: sourceIDs
+        )
+    }
+
+    func enqueueFullLibrarySuggestions(
+        mediaKind: MediaKind,
+        tagID: UUID,
+        mode: PersonalizationReviewEnqueueMode,
+        sourceIDs: [UUID]?
+    ) throws -> UUID {
+        let samples = try review.fetchFrozenSampleIdentities(
+            mediaKind: mediaKind,
+            tagID: tagID
+        )
         guard samples.positives.count >= 2, samples.negatives.count >= 2 else {
             let accepted = samples.positives.count
             let rejected = samples.negatives.count
@@ -234,7 +323,7 @@ struct PersonalizationReviewService: PersonalizationReviewPort, Sendable {
                 negativeMissing: max(0, 2 - rejected)
             )
         }
-        if let job = try review.activeSuggestionJob(tagID: tagID),
+        if let job = try review.activeSuggestionJob(mediaKind: mediaKind, tagID: tagID),
            !job.state.isTerminal
         {
             throw PersonalizationReviewError.activeJobConflict
@@ -243,7 +332,10 @@ struct PersonalizationReviewService: PersonalizationReviewPort, Sendable {
         let allActiveSourceIDs = try resolvePersonalizationSourceIDs(nil)
         let usesAllActiveSources = sourceIDs == nil
             || Set(resolvedSourceIDs) == Set(allActiveSourceIDs)
-        let modelRevision = try review.nextModelRevision(tagID: tagID)
+        let modelRevision = try review.nextModelRevision(
+            mediaKind: mediaKind,
+            tagID: tagID
+        )
         let jobID = UUID()
         let runID = UUID()
         let nowMs = clock.nowMs
@@ -251,6 +343,7 @@ struct PersonalizationReviewService: PersonalizationReviewPort, Sendable {
         let command = try FullLibrarySuggestionsJobEnqueue.makeEnqueueCommand(
             jobID: jobID,
             tagID: tagID,
+            mediaKind: mediaKind,
             sourceIDs: resolvedSourceIDs,
             catalogCutoffMs: nowMs,
             modelRevision: modelRevision,
@@ -260,6 +353,7 @@ struct PersonalizationReviewService: PersonalizationReviewPort, Sendable {
         )
         let run = TrainingRunRecord(
             id: runID,
+            mediaKind: mediaKind,
             method: .featureKnn,
             state: .queued,
             createdAtMs: nowMs,
@@ -268,6 +362,7 @@ struct PersonalizationReviewService: PersonalizationReviewPort, Sendable {
             catalogScopeID: catalogScopeID,
             jobID: jobID,
             sampleSummaryJSON: try TrainingRunJSON.encode([
+                "mediaKind": mediaKind.rawValue,
                 "tagCount": 1,
                 "tagIDs": [tagID.uuidString.lowercased()],
                 "positiveCount": samples.positives.count,
@@ -283,6 +378,7 @@ struct PersonalizationReviewService: PersonalizationReviewPort, Sendable {
             ]),
             sampleManifestSHA256: nil,
             configJSON: try TrainingRunJSON.encode([
+                "mediaKind": mediaKind.rawValue,
                 "action": mode == .generate ? "generate" : "update",
                 "provider": "vision.featurePrint",
                 "modelRevision": modelRevision,
@@ -344,12 +440,17 @@ struct PersonalizationReviewService: PersonalizationReviewPort, Sendable {
                     db,
                     sql: """
                     SELECT * FROM job
-                    WHERE kind = ?
+                    WHERE coalescing_key = ?
                         AND state IN ('pending', 'running', 'paused', 'retryableFailed')
                     ORDER BY created_at_ms DESC, id DESC
                     LIMIT 1
                     """,
-                    arguments: [PersonalLibrarySuggestionsJobFactory.kind]
+                    arguments: [
+                        PersonalLibrarySuggestionsJobFactory.coalescingKey(
+                            catalogScopeID: capability.target.catalogScopeID,
+                            mediaKind: capability.target.mediaKind
+                        ),
+                    ]
                 ) {
                     let existing = try JobPersistenceMapping.snapshot(from: row)
                     let existingPayload = try PersonalLibrarySuggestionsCodec.decodePayload(
@@ -365,6 +466,7 @@ struct PersonalizationReviewService: PersonalizationReviewPort, Sendable {
                 let resolvedSourceIDs = try resolvePersonalizationSourceIDs(sourceIDs, in: db)
                 let command = try PersonalLibrarySuggestionsJobEnqueue.makeEnqueueCommand(
                     jobID: jobID,
+                    mediaKind: capability.target.mediaKind,
                     sourceIDs: resolvedSourceIDs,
                     catalogCutoffMs: nowMs,
                     capability: capability,
@@ -388,7 +490,15 @@ struct PersonalizationReviewService: PersonalizationReviewPort, Sendable {
     }
 
     func personalLibrarySuggestionJob() throws -> PersonalLibrarySuggestionJobProjection? {
-        guard let job = try review.latestPersonalLibrarySuggestionJob() else { return nil }
+        try personalLibrarySuggestionJob(mediaKind: .image)
+    }
+
+    func personalLibrarySuggestionJob(
+        mediaKind: MediaKind
+    ) throws -> PersonalLibrarySuggestionJobProjection? {
+        guard let job = try review.latestPersonalLibrarySuggestionJob(
+            mediaKind: mediaKind
+        ) else { return nil }
         let checkpoint = (try? PersonalLibrarySuggestionsCodec.checkpoint(from: job.checkpoint))
             ?? .empty
         return PersonalLibrarySuggestionJobProjection(
@@ -403,6 +513,18 @@ struct PersonalizationReviewService: PersonalizationReviewPort, Sendable {
     }
 
     func enqueueStandardLibrarySuggestions(
+        target: StandardModelSuggestionTarget,
+        sourceIDs: [UUID]?
+    ) throws -> UUID {
+        try enqueueStandardLibrarySuggestions(
+            mediaKind: .image,
+            target: target,
+            sourceIDs: sourceIDs
+        )
+    }
+
+    func enqueueStandardLibrarySuggestions(
+        mediaKind: MediaKind,
         target: StandardModelSuggestionTarget,
         sourceIDs: [UUID]?
     ) throws -> UUID {
@@ -422,12 +544,17 @@ struct PersonalizationReviewService: PersonalizationReviewPort, Sendable {
                     db,
                     sql: """
                     SELECT * FROM job
-                    WHERE kind = ?
+                    WHERE coalescing_key = ?
                         AND state IN ('pending', 'running', 'paused', 'retryableFailed')
                     ORDER BY created_at_ms DESC, id DESC
                     LIMIT 1
                     """,
-                    arguments: [StandardLibrarySuggestionsJobFactory.kind]
+                    arguments: [
+                        StandardLibrarySuggestionsJobFactory.coalescingKey(
+                            standardPackID: target.standardPackID,
+                            mediaKind: mediaKind
+                        ),
+                    ]
                 ) {
                     let existing = try JobPersistenceMapping.snapshot(from: row)
                     let existingPayload = try StandardLibrarySuggestionsCodec.decodePayload(
@@ -441,6 +568,7 @@ struct PersonalizationReviewService: PersonalizationReviewPort, Sendable {
                 let resolvedSourceIDs = try resolvePersonalizationSourceIDs(sourceIDs, in: db)
                 let command = try StandardLibrarySuggestionsJobEnqueue.makeEnqueueCommand(
                     jobID: jobID,
+                    mediaKind: mediaKind,
                     sourceIDs: resolvedSourceIDs,
                     catalogCutoffMs: nowMs,
                     target: target,
@@ -459,7 +587,15 @@ struct PersonalizationReviewService: PersonalizationReviewPort, Sendable {
     }
 
     func standardLibrarySuggestionJob() throws -> StandardLibrarySuggestionJobProjection? {
-        guard let job = try review.latestStandardLibrarySuggestionJob() else { return nil }
+        try standardLibrarySuggestionJob(mediaKind: .image)
+    }
+
+    func standardLibrarySuggestionJob(
+        mediaKind: MediaKind
+    ) throws -> StandardLibrarySuggestionJobProjection? {
+        guard let job = try review.latestStandardLibrarySuggestionJob(
+            mediaKind: mediaKind
+        ) else { return nil }
         let checkpoint = (try? StandardLibrarySuggestionsCodec.checkpoint(from: job.checkpoint))
             ?? .empty
         return StandardLibrarySuggestionJobProjection(

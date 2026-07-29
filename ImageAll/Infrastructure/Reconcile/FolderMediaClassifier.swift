@@ -1,3 +1,4 @@
+import AVFoundation
 import Foundation
 import ImageIO
 import UniformTypeIdentifiers
@@ -10,7 +11,9 @@ enum FolderMediaClassification: Equatable, Sendable {
 }
 
 struct FolderMediaMetadata: Equatable, Sendable {
+    let mediaKind: MediaKind
     let mediaType: String
+    let durationMs: Int64?
     let width: Int?
     let height: Int?
     let mediaCreatedAtMs: Int64?
@@ -21,6 +24,8 @@ struct FolderMediaMetadata: Equatable, Sendable {
 
     init(
         mediaType: String,
+        mediaKind: MediaKind = .image,
+        durationMs: Int64? = nil,
         width: Int?,
         height: Int?,
         mediaCreatedAtMs: Int64?,
@@ -29,7 +34,9 @@ struct FolderMediaMetadata: Equatable, Sendable {
         resourceID: Data?,
         classificationFailureReason: FolderMediaClassificationFailureReason? = nil
     ) {
+        self.mediaKind = mediaKind
         self.mediaType = mediaType
+        self.durationMs = durationMs
         self.width = width
         self.height = height
         self.mediaCreatedAtMs = mediaCreatedAtMs
@@ -44,22 +51,65 @@ struct FolderMediaMetadata: Equatable, Sendable {
     }
 }
 
+struct FolderVideoMetadata: Equatable, Sendable {
+    let mediaType: String
+    let width: Int
+    let height: Int
+    let durationMs: Int64
+    let mediaCreatedAtMs: Int64?
+}
+
+protocol FolderVideoMetadataReading: Sendable {
+    func metadata(fileURL: URL, declaredType: String) -> FolderVideoMetadata?
+}
+
+struct AVFoundationFolderVideoMetadataReader: FolderVideoMetadataReading {
+    func metadata(fileURL: URL, declaredType: String) -> FolderVideoMetadata? {
+        let asset = AVURLAsset(url: fileURL)
+        let durationSeconds = CMTimeGetSeconds(asset.duration)
+        guard durationSeconds.isFinite, durationSeconds > 0,
+              durationSeconds <= Double(Int64.max) / 1_000,
+              let track = asset.tracks(withMediaType: .video).first
+        else {
+            return nil
+        }
+
+        let transformedSize = track.naturalSize.applying(track.preferredTransform)
+        let width = Int(abs(transformedSize.width).rounded())
+        let height = Int(abs(transformedSize.height).rounded())
+        guard width > 0, height > 0 else {
+            return nil
+        }
+
+        return FolderVideoMetadata(
+            mediaType: declaredType,
+            width: width,
+            height: height,
+            durationMs: max(1, Int64((durationSeconds * 1_000).rounded())),
+            mediaCreatedAtMs: nil
+        )
+    }
+}
+
 struct FolderMediaClassifier: Sendable {
     private let resourceReader: any FolderFileResourceReading
     private let cascade: MediaDecodeCascade
+    private let videoMetadataReader: any FolderVideoMetadataReading
 
     init(
         resourceReader: any FolderFileResourceReading = FoundationFolderFileResourceReader(),
-        cascade: MediaDecodeCascade = MediaDecodeCascade()
+        cascade: MediaDecodeCascade = MediaDecodeCascade(),
+        videoMetadataReader: any FolderVideoMetadataReading = AVFoundationFolderVideoMetadataReader()
     ) {
         self.resourceReader = resourceReader
         self.cascade = cascade
+        self.videoMetadataReader = videoMetadataReader
     }
 
     func classify(fileURL: URL, fileName: String, relativePath: String? = nil) -> FolderMediaClassification {
         let rel = relativePath ?? fileName
         let ext = (fileName as NSString).pathExtension
-        guard let declaredType = UTType(filenameExtension: ext), declaredType.conforms(to: .image) else {
+        guard let declaredType = UTType(filenameExtension: ext) else {
             return .ignored
         }
 
@@ -69,6 +119,44 @@ struct FolderMediaClassifier: Sendable {
             modifiedAtNs: modifiedAtNs(fileURL, relativePath: rel),
             resourceID: resourceIdentifier(fileURL)
         )
+
+        if ApprovedSourceMediaTypes.isVideoMediaType(candidateUTI) {
+            if let video = videoMetadataReader.metadata(
+                fileURL: fileURL,
+                declaredType: candidateUTI
+            ) {
+                return .available(
+                    FolderMediaMetadata(
+                        mediaType: video.mediaType,
+                        mediaKind: .video,
+                        durationMs: video.durationMs,
+                        width: video.width,
+                        height: video.height,
+                        mediaCreatedAtMs: video.mediaCreatedAtMs,
+                        sizeBytes: fingerprint.sizeBytes,
+                        modifiedAtNs: fingerprint.modifiedAtNs,
+                        resourceID: fingerprint.resourceID
+                    )
+                )
+            }
+            return .unreadable(
+                FolderMediaMetadata(
+                    mediaType: candidateUTI,
+                    mediaKind: .video,
+                    width: nil,
+                    height: nil,
+                    mediaCreatedAtMs: nil,
+                    sizeBytes: fingerprint.sizeBytes,
+                    modifiedAtNs: fingerprint.modifiedAtNs,
+                    resourceID: fingerprint.resourceID,
+                    classificationFailureReason: .sourceCreateFailed
+                )
+            )
+        }
+
+        guard declaredType.conforms(to: .image) else {
+            return .ignored
+        }
 
         guard let source = CGImageSourceCreateWithURL(fileURL as CFURL, nil) else {
             return classifyWithCascadeFallback(

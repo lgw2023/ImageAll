@@ -3,6 +3,41 @@ import XCTest
 @testable import ImageAll
 
 final class CatalogMigrationTests: XCTestCase {
+    func testV026AddsMediaDomainColumnsWithImageBackfill() throws {
+        let url = try makeTempDatabaseURL()
+        let database = try CatalogDatabase.open(at: url)
+        let repository = CatalogRepository(database: database)
+        let sourceID = UUID()
+        let assetID = UUID()
+        try DatabaseTestSupport.makeFolderSourceWithFileAsset(
+            repository: repository,
+            sourceID: sourceID,
+            assetID: assetID
+        )
+
+        try database.pool.read { db in
+            let assetColumns = try db.columns(in: "asset").map(\.name)
+            XCTAssertTrue(assetColumns.contains("media_kind"))
+            XCTAssertTrue(assetColumns.contains("duration_ms"))
+            XCTAssertEqual(
+                try String.fetchOne(
+                    db,
+                    sql: "SELECT media_kind FROM asset WHERE id = ?",
+                    arguments: [assetID.uuidString.lowercased()]
+                ),
+                MediaKind.image.rawValue
+            )
+            XCTAssertNil(
+                try Int64.fetchOne(
+                    db,
+                    sql: "SELECT duration_ms FROM asset WHERE id = ?",
+                    arguments: [assetID.uuidString.lowercased()]
+                )
+            )
+            XCTAssertTrue(try db.columns(in: "training_run").contains { $0.name == "media_kind" })
+        }
+    }
+
     func testFreshDatabaseAppliesV001Once() throws {
         let url = try makeTempDatabaseURL()
         let database = try CatalogDatabase.open(at: url)
@@ -60,7 +95,7 @@ final class CatalogMigrationTests: XCTestCase {
             try Self.dropV022Tables(db)
             try Self.dropV023Tables(db)
             try db.execute(
-                sql: "DELETE FROM grdb_migrations WHERE identifier IN (?, ?, ?, ?, ?, ?)",
+                sql: "DELETE FROM grdb_migrations WHERE identifier IN (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 arguments: [
                     CatalogMigrationID.v020HardenLibrarySlimmingRecycle,
                     CatalogMigrationID.v021AddPhotosRecycleIdentifier,
@@ -68,6 +103,9 @@ final class CatalogMigrationTests: XCTestCase {
                     CatalogMigrationID.v023AddSourceSimilarityIndex,
                     CatalogMigrationID.v024RepairSourceMutationAuthorization,
                     CatalogMigrationID.v025RetainPurgedAssetKnowledge,
+                    CatalogMigrationID.v026AddMediaKindAndVideoMetadata,
+                    CatalogMigrationID.v027PartitionPersonalizationByMediaKind,
+                    CatalogMigrationID.v028PartitionSlimmingByMediaKind,
                 ]
             )
         }
@@ -112,10 +150,13 @@ final class CatalogMigrationTests: XCTestCase {
                 arguments: [writableBookmark, sourceID.uuidString.lowercased()]
             )
             try db.execute(
-                sql: "DELETE FROM grdb_migrations WHERE identifier IN (?, ?)",
+                sql: "DELETE FROM grdb_migrations WHERE identifier IN (?, ?, ?, ?, ?)",
                 arguments: [
                     CatalogMigrationID.v024RepairSourceMutationAuthorization,
                     CatalogMigrationID.v025RetainPurgedAssetKnowledge,
+                    CatalogMigrationID.v026AddMediaKindAndVideoMetadata,
+                    CatalogMigrationID.v027PartitionPersonalizationByMediaKind,
+                    CatalogMigrationID.v028PartitionSlimmingByMediaKind,
                 ]
             )
             XCTAssertFalse(try db.tableExists("source_mutation_authorization"))
@@ -180,7 +221,7 @@ final class CatalogMigrationTests: XCTestCase {
             try Self.dropV022Tables(db)
             try Self.dropV023Tables(db)
             try db.execute(
-                sql: "DELETE FROM grdb_migrations WHERE identifier IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                sql: "DELETE FROM grdb_migrations WHERE identifier IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 arguments: [
                     CatalogMigrationID.v012RepairStandardTagBinding,
                     CatalogMigrationID.v013PhotosMissingAssetRepair,
@@ -196,6 +237,9 @@ final class CatalogMigrationTests: XCTestCase {
                     CatalogMigrationID.v023AddSourceSimilarityIndex,
                     CatalogMigrationID.v024RepairSourceMutationAuthorization,
                     CatalogMigrationID.v025RetainPurgedAssetKnowledge,
+                    CatalogMigrationID.v026AddMediaKindAndVideoMetadata,
+                    CatalogMigrationID.v027PartitionPersonalizationByMediaKind,
+                    CatalogMigrationID.v028PartitionSlimmingByMediaKind,
                 ]
             )
             try db.execute(sql: "PRAGMA foreign_keys = ON")
@@ -263,7 +307,7 @@ final class CatalogMigrationTests: XCTestCase {
             try Self.dropV022Tables(db)
             try Self.dropV023Tables(db)
             try db.execute(
-                sql: "DELETE FROM grdb_migrations WHERE identifier IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                sql: "DELETE FROM grdb_migrations WHERE identifier IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 arguments: [
                     CatalogMigrationID.v013PhotosMissingAssetRepair,
                     CatalogMigrationID.v014AddTrainingRunsAndPersonalMultiSlot,
@@ -278,6 +322,9 @@ final class CatalogMigrationTests: XCTestCase {
                     CatalogMigrationID.v023AddSourceSimilarityIndex,
                     CatalogMigrationID.v024RepairSourceMutationAuthorization,
                     CatalogMigrationID.v025RetainPurgedAssetKnowledge,
+                    CatalogMigrationID.v026AddMediaKindAndVideoMetadata,
+                    CatalogMigrationID.v027PartitionPersonalizationByMediaKind,
+                    CatalogMigrationID.v028PartitionSlimmingByMediaKind,
                 ]
             )
             try db.execute(sql: "PRAGMA foreign_keys = ON")
@@ -312,7 +359,7 @@ final class CatalogMigrationTests: XCTestCase {
             try Self.dropV022Tables(db)
             try Self.dropV023Tables(db)
             try db.execute(
-                sql: "DELETE FROM grdb_migrations WHERE identifier IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                sql: "DELETE FROM grdb_migrations WHERE identifier IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 arguments: [
                     CatalogMigrationID.v016AddTagGroups,
                     CatalogMigrationID.v017PerTagPersonalSuggestionModels,
@@ -324,6 +371,9 @@ final class CatalogMigrationTests: XCTestCase {
                     CatalogMigrationID.v023AddSourceSimilarityIndex,
                     CatalogMigrationID.v024RepairSourceMutationAuthorization,
                     CatalogMigrationID.v025RetainPurgedAssetKnowledge,
+                    CatalogMigrationID.v026AddMediaKindAndVideoMetadata,
+                    CatalogMigrationID.v027PartitionPersonalizationByMediaKind,
+                    CatalogMigrationID.v028PartitionSlimmingByMediaKind,
                 ]
             )
             try db.execute(

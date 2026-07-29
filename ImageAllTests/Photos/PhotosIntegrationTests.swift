@@ -37,6 +37,55 @@ final class PhotosIntegrationTests: XCTestCase {
         let featureOptions = PhotoKitPhotosLibraryAdapter.makeLocalOnlyFeaturePrintRequestOptions()
         XCTAssertTrue(featureOptions.isSynchronous)
         XCTAssertFalse(featureOptions.isNetworkAccessAllowed)
+        XCTAssertFalse(
+            PhotoKitPhotosLibraryAdapter.makeLocalOnlyVideoResourceRequestOptions()
+                .isNetworkAccessAllowed
+        )
+        XCTAssertFalse(
+            PhotoKitPhotosLibraryAdapter.makeLocalOnlyOriginalVideoRequestOptions()
+                .isNetworkAccessAllowed
+        )
+    }
+
+    func testPhotoKitMediaPolicyIncludesApprovedVideosButRejectsUnsupportedVideoTypes() {
+        XCTAssertTrue(
+            PhotoKitPhotosLibraryAdapter.isSupportedMediaAsset(
+                mediaType: .video,
+                mediaSubtypes: [],
+                uniformTypeIdentifier: "public.mpeg-4"
+            )
+        )
+        XCTAssertTrue(
+            PhotoKitPhotosLibraryAdapter.isSupportedMediaAsset(
+                mediaType: .video,
+                mediaSubtypes: [],
+                uniformTypeIdentifier: "com.apple.quicktime-movie"
+            )
+        )
+        XCTAssertFalse(
+            PhotoKitPhotosLibraryAdapter.isSupportedMediaAsset(
+                mediaType: .video,
+                mediaSubtypes: [],
+                uniformTypeIdentifier: "public.jpeg"
+            )
+        )
+        XCTAssertFalse(
+            PhotoKitPhotosLibraryAdapter.isSupportedMediaAsset(
+                mediaType: .audio,
+                mediaSubtypes: [],
+                uniformTypeIdentifier: "public.mpeg-4"
+            )
+        )
+        XCTAssertFalse(PhotoKitPhotosLibraryAdapter.makeLocalOnlyImageRequestOptions().isNetworkAccessAllowed)
+        XCTAssertFalse(PhotoKitPhotosLibraryAdapter.makeLocalOnlyFeaturePrintRequestOptions().isNetworkAccessAllowed)
+        XCTAssertFalse(
+            PhotoKitPhotosLibraryAdapter.makeLocalOnlyVideoResourceRequestOptions()
+                .isNetworkAccessAllowed
+        )
+        XCTAssertFalse(
+            PhotoKitPhotosLibraryAdapter.makeLocalOnlyOriginalVideoRequestOptions()
+                .isNetworkAccessAllowed
+        )
     }
 
     func testPhotoKitCloudPreviewPolicyOnlyEnablesNetworkForExplicit2048Request() {
@@ -470,6 +519,81 @@ final class PhotosIntegrationTests: XCTestCase {
         XCTAssertEqual(all.items.map(\.fileName).sorted { ($0 ?? "") < ($1 ?? "") }, ["A.HEIC", "B.PNG", "C.WEBP"])
         XCTAssertEqual(photosOnly.items.count, 3)
         XCTAssertEqual(Set(photosOnly.items.map(\.sourceID)), [sourceID])
+    }
+
+    func testReconcilePersistsPhotoKitVideoMetadataAndKeepsMediaPagesDisjoint() async throws {
+        let database = try FolderAuthorizationTestSupport.makeDatabase()
+        let video = PhotosAssetMetadata(
+            localIdentifier: "photos-video-a",
+            fileName: "Clip.MOV",
+            mediaType: "com.apple.quicktime-movie",
+            width: 1_920,
+            height: 1_080,
+            createdAtMs: DatabaseTestSupport.timestampMs,
+            modifiedAtMs: DatabaseTestSupport.timestampMs,
+            mediaKind: .video,
+            durationMs: 12_345
+        )
+        let access = FakePhotosLibraryAccess(
+            state: .authorized,
+            batches: [
+                [metadata("photos-image-a", name: "Still.HEIC", type: "public.heic"), video],
+            ]
+        )
+        let sourceID = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
+        let jobID = UUID(uuidString: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")!
+        let clock = FixedJobClock(nowMs: DatabaseTestSupport.timestampMs)
+        let connection = PhotosLibraryConnectionService(
+            database: database,
+            access: access,
+            clock: clock,
+            idGenerator: IDSequence([sourceID, jobID]).next
+        )
+        _ = try await connection.connect()
+
+        let queue = GRDBJobQueue(
+            database: database,
+            clock: clock,
+            retryPolicy: FixedDelayRetryPolicy(delayMs: 1_000)
+        )
+        let handler = PhotosReconcileHandler(database: database, queue: queue, access: access, clock: clock)
+        let coordinator = JobExecutionCoordinator(
+            queue: queue,
+            registry: MultiJobHandlerRegistry(handlers: [handler]),
+            leaseContextProvider: GRDBJobLeaseContextProvider(queue: queue)
+        )
+
+        let result = try coordinator.claimAndExecuteOnce(
+            ClaimNextInput(
+                owner: "photos-video-metadata-test",
+                leaseDurationMs: 60_000,
+                allowedKinds: [PhotosReconcileJobFactory.kind]
+            )
+        )
+        XCTAssertEqual(result?.snapshot.state, .completed)
+
+        let query = GRDBAssetCatalogQueryRepository(database: database)
+        let photos = try query.fetchAssetPage(
+            AssetPageRequest(
+                filter: AssetPageFilter(sourceIDs: [sourceID], mediaKinds: [.image]),
+                sort: .newest,
+                cursor: nil,
+                limit: 100
+            )
+        )
+        let videos = try query.fetchAssetPage(
+            AssetPageRequest(
+                filter: AssetPageFilter(sourceIDs: [sourceID], mediaKinds: [.video]),
+                sort: .newest,
+                cursor: nil,
+                limit: 100
+            )
+        )
+
+        XCTAssertEqual(photos.items.map(\.fileName), ["Still.HEIC"])
+        XCTAssertEqual(videos.items.map(\.fileName), ["Clip.MOV"])
+        XCTAssertEqual(videos.items.first?.mediaKind, .video)
+        XCTAssertEqual(videos.items.first?.durationMs, 12_345)
     }
 
     func testReconcileUsesPersistedChangeCursorForIncrementalAssetChanges() async throws {

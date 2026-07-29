@@ -3,6 +3,71 @@ import XCTest
 @testable import ImageAll
 
 final class AppPersonalLinearHeadStoreTests: XCTestCase {
+    func testPhotoAndVideoStoresKeepIndependentPublishedPointers() async throws {
+        let applicationSupportDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: applicationSupportDirectory) }
+        let encoderIdentity = makeEncoderIdentity()
+        let snapshot = makeSnapshot(encoderIdentity: encoderIdentity)
+        let artifact = try AppPersonalLinearHeadTrainer.train(
+            snapshot: snapshot,
+            encoderIdentity: encoderIdentity
+        )
+        let identity = try AppPersonalLinearHeadModel(artifact: artifact).identity
+        let photoStore = AppPersonalLinearHeadStore(
+            applicationSupportDirectory: applicationSupportDirectory,
+            expectedCatalogScopeID: snapshot.catalogScopeID,
+            expectedEncoderIdentity: encoderIdentity,
+            mediaKind: .image
+        )
+        let videoStore = AppPersonalLinearHeadStore(
+            applicationSupportDirectory: applicationSupportDirectory,
+            expectedCatalogScopeID: snapshot.catalogScopeID,
+            expectedEncoderIdentity: encoderIdentity,
+            mediaKind: .video
+        )
+
+        let photoCapability = try await photoStore.publish(artifact)
+        let videoCapability = try await videoStore.publish(artifact)
+        XCTAssertEqual(photoCapability, .ready(identity))
+        XCTAssertEqual(videoCapability, .ready(identity))
+        _ = await videoStore.start(publishedArtifacts: [:])
+
+        let restartedPhotoStore = AppPersonalLinearHeadStore(
+            applicationSupportDirectory: applicationSupportDirectory,
+            expectedCatalogScopeID: snapshot.catalogScopeID,
+            expectedEncoderIdentity: encoderIdentity,
+            mediaKind: .image
+        )
+        let restartedVideoStore = AppPersonalLinearHeadStore(
+            applicationSupportDirectory: applicationSupportDirectory,
+            expectedCatalogScopeID: snapshot.catalogScopeID,
+            expectedEncoderIdentity: encoderIdentity,
+            mediaKind: .video
+        )
+        let restartedPhotoCapability = await restartedPhotoStore.start()
+        let restartedVideoCapability = await restartedVideoStore.start()
+        XCTAssertEqual(restartedPhotoCapability, .ready(identity))
+        XCTAssertEqual(
+            restartedVideoCapability,
+            .unavailable(.artifactMissing)
+        )
+        XCTAssertTrue(
+            FileManager.default.fileExists(
+                atPath: applicationSupportDirectory
+                    .appendingPathComponent("PersonalModels/LinearHead/v1")
+                    .path
+            )
+        )
+        XCTAssertTrue(
+            FileManager.default.fileExists(
+                atPath: applicationSupportDirectory
+                    .appendingPathComponent("PersonalModels/LinearHead-Video/v1")
+                    .path
+            )
+        )
+    }
+
     func testValidCandidateBecomesReadyAndRestartsFromTheActiveArtifact() async throws {
         let applicationSupportDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)

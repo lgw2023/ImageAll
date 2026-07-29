@@ -1,8 +1,76 @@
+import AVFoundation
+import Darwin
 import UniformTypeIdentifiers
 import XCTest
 @testable import ImageAll
 
 final class FolderMediaClassificationTests: XCTestCase {
+    func testProductionMOVMetadataAndPosterExtraction() async throws {
+        let fixture = FolderReconcileTestSupport.TempFixtureRoot()
+        defer { fixture.cleanup() }
+        let root = try fixture.makeRoot(label: "production-mov")
+        let file = root.appendingPathComponent("clip.mov")
+        try await Self.writeSyntheticMOV(to: file)
+
+        guard case let .available(metadata) = FolderMediaClassifier()
+            .classify(fileURL: file, fileName: "clip.mov")
+        else {
+            return XCTFail("production AVFoundation reader must classify the synthetic MOV")
+        }
+        XCTAssertEqual(metadata.mediaKind, .video)
+        XCTAssertEqual(metadata.mediaType, "com.apple.quicktime-movie")
+        XCTAssertEqual(metadata.width, 64)
+        XCTAssertEqual(metadata.height, 48)
+        XCTAssertGreaterThan(metadata.durationMs ?? 0, 0)
+
+        let fd = Darwin.open(file.path, O_RDONLY)
+        XCTAssertGreaterThanOrEqual(fd, 0)
+        defer { Darwin.close(fd) }
+        let poster = try AVFoundationDerivedVideoPosterGenerator().makePosterBytes(
+            sourceFileDescriptorURL: URL(fileURLWithPath: "/dev/fd/\(fd)"),
+            mediaType: metadata.mediaType,
+            durationMs: try XCTUnwrap(metadata.durationMs),
+            maximumPixelSize: 512
+        )
+        XCTAssertEqual(
+            FolderReconcileTestSupport.imageIOActualType(for: poster),
+            UTType.png.identifier
+        )
+    }
+
+    func testMOVUsesVideoMetadataReaderAndBecomesAvailable() throws {
+        let fixture = FolderReconcileTestSupport.TempFixtureRoot()
+        defer { fixture.cleanup() }
+        let root = try fixture.makeRoot(label: "mov")
+        let file = try fixture.writeFile(
+            root: root,
+            relativePath: "clip.mov",
+            contents: Data("synthetic-video".utf8)
+        )
+        let reader = StubFolderVideoMetadataReader(
+            result: FolderVideoMetadata(
+                mediaType: "com.apple.quicktime-movie",
+                width: 1_920,
+                height: 1_080,
+                durationMs: 12_345,
+                mediaCreatedAtMs: nil
+            )
+        )
+
+        guard case let .available(metadata) = FolderMediaClassifier(
+            videoMetadataReader: reader
+        ).classify(fileURL: file, fileName: "clip.mov") else {
+            return XCTFail("MOV must be available when AV metadata is readable")
+        }
+
+        XCTAssertEqual(metadata.mediaKind, .video)
+        XCTAssertEqual(metadata.mediaType, "com.apple.quicktime-movie")
+        XCTAssertEqual(metadata.width, 1_920)
+        XCTAssertEqual(metadata.height, 1_080)
+        XCTAssertEqual(metadata.durationMs, 12_345)
+        XCTAssertTrue(metadata.hasProvenFingerprint)
+    }
+
     func testPNGAvailableAndSHAUnset() throws {
         let fixture = FolderReconcileTestSupport.TempFixtureRoot()
         defer { fixture.cleanup() }
@@ -156,5 +224,77 @@ final class FolderMediaClassificationTests: XCTestCase {
         )
         let after = try fixture.snapshotDetailed(root: root)
         XCTAssertEqual(before, after)
+    }
+
+    private static func writeSyntheticMOV(to url: URL) async throws {
+        let writer = try AVAssetWriter(outputURL: url, fileType: .mov)
+        let input = AVAssetWriterInput(
+            mediaType: .video,
+            outputSettings: [
+                AVVideoCodecKey: AVVideoCodecType.h264,
+                AVVideoWidthKey: 64,
+                AVVideoHeightKey: 48,
+            ]
+        )
+        input.expectsMediaDataInRealTime = false
+        let adaptor = AVAssetWriterInputPixelBufferAdaptor(
+            assetWriterInput: input,
+            sourcePixelBufferAttributes: [
+                kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
+                kCVPixelBufferWidthKey as String: 64,
+                kCVPixelBufferHeightKey as String: 48,
+            ]
+        )
+        guard writer.canAdd(input) else {
+            throw NSError(domain: "FolderMediaClassificationTests", code: 1)
+        }
+        writer.add(input)
+        guard writer.startWriting() else {
+            throw writer.error ?? NSError(domain: "FolderMediaClassificationTests", code: 2)
+        }
+        writer.startSession(atSourceTime: .zero)
+
+        var pixelBuffer: CVPixelBuffer?
+        let status = CVPixelBufferCreate(
+            nil,
+            64,
+            48,
+            kCVPixelFormatType_32BGRA,
+            nil,
+            &pixelBuffer
+        )
+        guard status == kCVReturnSuccess, let pixelBuffer else {
+            throw NSError(domain: "FolderMediaClassificationTests", code: 3)
+        }
+        CVPixelBufferLockBaseAddress(pixelBuffer, [])
+        if let baseAddress = CVPixelBufferGetBaseAddress(pixelBuffer) {
+            memset(baseAddress, 0x7F, CVPixelBufferGetDataSize(pixelBuffer))
+        }
+        CVPixelBufferUnlockBaseAddress(pixelBuffer, [])
+
+        while !input.isReadyForMoreMediaData {
+            await Task.yield()
+        }
+        guard adaptor.append(pixelBuffer, withPresentationTime: .zero),
+              adaptor.append(
+                  pixelBuffer,
+                  withPresentationTime: CMTime(seconds: 1, preferredTimescale: 600)
+              )
+        else {
+            throw writer.error ?? NSError(domain: "FolderMediaClassificationTests", code: 4)
+        }
+        input.markAsFinished()
+        await writer.finishWriting()
+        guard writer.status == .completed else {
+            throw writer.error ?? NSError(domain: "FolderMediaClassificationTests", code: 5)
+        }
+    }
+}
+
+private struct StubFolderVideoMetadataReader: FolderVideoMetadataReading {
+    let result: FolderVideoMetadata?
+
+    func metadata(fileURL _: URL, declaredType _: String) -> FolderVideoMetadata? {
+        result
     }
 }

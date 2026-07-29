@@ -11,6 +11,14 @@ struct TrainingWorkspaceView: View {
         VStack(spacing: 0) {
             header
             Divider()
+            MediaKindWorkspaceTabs(
+                selection: model.selectedMediaKind,
+                accessibilityIdentifier: "trainingMediaKindTabs",
+                help: "在训练工程内切换照片和视频；Run、模型槽和新建任务不会跨媒体混用。"
+            ) { mediaKind in
+                Task { await model.setTrainingWorkspaceMediaKind(mediaKind) }
+            }
+            Divider()
             if let activity = model.trainingWorkspaceActivity {
                 activityBanner(activity)
                 Divider()
@@ -53,7 +61,9 @@ struct TrainingWorkspaceView: View {
                     || model.isRebuildingPersonalAdamWModel
                     || model.isGeneratingPersonalLibrarySuggestions
             )
-            .persistentHelp("打开训练设置，选择目标标签、训练方法和照片范围，再确认创建任务。")
+            .persistentHelp(
+                "打开训练设置，选择目标标签、训练方法和\(model.selectedMediaKind.displayName)范围，再确认创建任务。"
+            )
 
             Button {
                 Task { await model.refreshTrainingWorkspace() }
@@ -72,7 +82,9 @@ struct TrainingWorkspaceView: View {
             Button("返回图库", systemImage: "photo.on.rectangle") {
                 onReturnToLibrary()
             }
-            .persistentHelp("退出训练工作台并返回照片图库；正在运行的后台任务不会被取消。")
+            .persistentHelp(
+                "退出训练工作台并返回\(model.selectedMediaKind.displayName)图库；正在运行的后台任务不会被取消。"
+            )
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
@@ -128,9 +140,19 @@ struct TrainingWorkspaceView: View {
                     .controlSize(.small)
             }
             VStack(alignment: .leading, spacing: 4) {
-                Text(TrainingWorkspaceActivityPresentation.title(activity))
+                Text(
+                    TrainingWorkspaceActivityPresentation.title(
+                        activity,
+                        mediaKind: model.selectedMediaKind
+                    )
+                )
                     .font(.subheadline.weight(.semibold))
-                Text(TrainingWorkspaceActivityPresentation.detail(activity))
+                Text(
+                    TrainingWorkspaceActivityPresentation.detail(
+                        activity,
+                        mediaKind: model.selectedMediaKind
+                    )
+                )
                     .font(.caption)
                 Text(TrainingWorkspaceActivityPresentation.phase(activity))
                     .font(.caption)
@@ -152,7 +174,10 @@ struct TrainingWorkspaceView: View {
         HStack(spacing: 10) {
             ForEach(model.trainingSlots) { slot in
                 let isTraining = model.trainingWorkspaceActivity?.method == slot.method
-                let presentation = TrainingWorkspaceMethodPresentation(method: slot.method)
+                let presentation = TrainingWorkspaceMethodPresentation(
+                    method: slot.method,
+                    mediaKind: model.selectedMediaKind
+                )
                 VStack(alignment: .leading, spacing: 4) {
                     Label(presentation.shortTitle, systemImage: presentation.systemImage)
                         .font(.subheadline.weight(.semibold))
@@ -202,7 +227,12 @@ struct TrainingWorkspaceView: View {
                 ) {
                     Text("全部记录").tag(Optional<TrainingRunMethod>.none)
                     ForEach(TrainingRunMethod.allCases, id: \.self) { method in
-                        Text(TrainingWorkspaceMethodPresentation(method: method).shortTitle)
+                        Text(
+                            TrainingWorkspaceMethodPresentation(
+                                method: method,
+                                mediaKind: model.selectedMediaKind
+                            ).shortTitle
+                        )
                             .tag(Optional(method))
                     }
                 }
@@ -248,7 +278,10 @@ struct TrainingWorkspaceView: View {
     @ViewBuilder
     private var detail: some View {
         if let run = model.selectedTrainingRun {
-            let presentation = TrainingWorkspaceMethodPresentation(method: run.method)
+            let presentation = TrainingWorkspaceMethodPresentation(
+                method: run.method,
+                mediaKind: run.mediaKind
+            )
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
                     HStack(alignment: .firstTextBaseline) {
@@ -275,6 +308,13 @@ struct TrainingWorkspaceView: View {
                     TrainingWorkspaceDetailSection("概览") {
                         LabeledContent("任务", value: presentation.shortTitle)
                         LabeledContent("技术方法", value: presentation.technicalName)
+                        LabeledContent("媒体", value: run.mediaKind.displayName)
+                        if run.mediaKind == .video {
+                            LabeledContent(
+                                "AI 输入",
+                                value: "视频代表缩略图（videoPoster.v1）"
+                            )
+                        }
                         LabeledContent("状态", value: run.state.trainingWorkspaceDisplayName)
                         LabeledContent(
                             "创建时间",
@@ -406,7 +446,7 @@ private struct TrainingWorkspaceLaunchSheet: View {
     }
 
     private var featureOptions: [SuggestionTagOverview] {
-        model.suggestionOverviews.filter { $0.canGenerate || $0.canUpdate }
+        return model.suggestionOverviews.filter { $0.canGenerate || $0.canUpdate }
     }
 
     private var personalOptions: [SuggestionTagOverview] {
@@ -434,6 +474,7 @@ private struct TrainingWorkspaceLaunchSheet: View {
         TrainingWorkspaceLaunchSummary(
             method: selectedMethod,
             tagNames: selectedTagNames,
+            mediaKind: model.selectedMediaKind,
             photoScope: selectedAssetIDs.isEmpty
                 ? .allSources
                 : .selectedAssets(count: selectedAssetIDs.count)
@@ -507,7 +548,9 @@ private struct TrainingWorkspaceLaunchSheet: View {
                 .buttonStyle(.borderedProminent)
                 .controlSize(.large)
                 .disabled(!canLaunch)
-                .persistentHelp("按当前标签、方法和照片范围创建训练或建议生成任务。")
+                .persistentHelp(
+                    "按当前标签、方法和\(model.selectedMediaKind.displayName)范围创建训练或建议生成任务。"
+                )
             }
             .padding(.horizontal, 28)
             .padding(.top, 16)
@@ -532,7 +575,10 @@ private struct TrainingWorkspaceLaunchSheet: View {
     }
 
     private func methodSidebarCard(_ method: TrainingRunMethod) -> some View {
-        let presentation = TrainingWorkspaceMethodPresentation(method: method)
+        let presentation = TrainingWorkspaceMethodPresentation(
+            method: method,
+            mediaKind: model.selectedMediaKind
+        )
         let isSelected = selectedMethod == method
         let isAvailable = isMethodAvailable(method)
         return Button {
@@ -607,7 +653,10 @@ private struct TrainingWorkspaceLaunchSheet: View {
 
     private var configurationPanel: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Label("选择标签和照片范围", systemImage: "slider.horizontal.3")
+            Label(
+                "选择标签和\(model.selectedMediaKind.displayName)范围",
+                systemImage: "slider.horizontal.3"
+            )
                 .font(.headline)
             configuration
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -631,7 +680,10 @@ private struct TrainingWorkspaceLaunchSheet: View {
         switch selectedMethod {
         case .featureKnn:
             VStack(alignment: .leading, spacing: 12) {
-                Picker("要寻找哪种标签的相似照片？", selection: $selectedFeatureTagID) {
+                Picker(
+                    "要寻找哪种标签的相似\(model.selectedMediaKind.displayName)？",
+                    selection: $selectedFeatureTagID
+                ) {
                     ForEach(featureOptions) { overview in
                         Text(
                             "\(overview.displayName)（属于 \(overview.acceptedSampleCount) / 不属于 \(overview.rejectedSampleCount)）"
@@ -640,8 +692,12 @@ private struct TrainingWorkspaceLaunchSheet: View {
                     }
                 }
                 .pickerStyle(.menu)
-                .persistentHelp("选择要为哪个标签寻找相似照片；列表同时显示现有正反样本数。")
-                Text("下一步可以选择要扫描的照片来源，并确认建议阈值。")
+                .persistentHelp(
+                    "选择要为哪个标签寻找相似\(model.selectedMediaKind.displayName)；列表同时显示现有正反样本数。"
+                )
+                Text(
+                    "下一步可以选择要扫描的\(model.selectedMediaKind.displayName)来源，并确认建议阈值。"
+                )
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -707,16 +763,23 @@ private struct TrainingWorkspaceLaunchSheet: View {
                 }
 
                 Divider()
-                Picker("使用哪些照片？", selection: $photoScopeChoice) {
-                    Text("所有来源中的已确认照片")
+                Picker(
+                    "使用哪些\(model.selectedMediaKind.displayName)？",
+                    selection: $photoScopeChoice
+                ) {
+                    Text("所有来源中的已确认\(model.selectedMediaKind.displayName)")
                         .tag(TrainingWorkspacePhotoScopeChoice.allSources)
                     if !model.selectedAssetIDs.isEmpty {
-                        Text("当前在图库中选择的 \(model.selectedAssetIDs.count) 张照片")
+                        Text(
+                            "当前在图库中选择的 \(model.selectedAssetIDs.count) \(model.selectedMediaKind == .image ? "张照片" : "个视频")"
+                        )
                             .tag(TrainingWorkspacePhotoScopeChoice.currentSelection)
                     }
                 }
                 .pickerStyle(.radioGroup)
-                .persistentHelp("选择训练使用全部来源中的确认照片，或只使用图库当前选中的照片。")
+                .persistentHelp(
+                    "选择训练使用全部来源中的确认\(model.selectedMediaKind.displayName)，或只使用图库当前选中的\(model.selectedMediaKind.displayName)。"
+                )
                 Text("默认使用所有来源；只有你在这里明确选择时，才会限制为图库中的当前选择。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -729,9 +792,9 @@ private struct TrainingWorkspaceLaunchSheet: View {
             summaryRow("任务", launchSummary.methodText)
             summaryRow("标签", launchSummary.tagText)
             summaryRow(
-                "照片范围",
+                "\(model.selectedMediaKind.displayName)范围",
                 selectedMethod == .featureKnn
-                    ? "下一步选择要扫描的照片来源"
+                    ? "下一步选择要扫描的\(model.selectedMediaKind.displayName)来源"
                     : launchSummary.photoScopeText
             )
             summaryRow("最低要求", launchSummary.requirementText)
@@ -749,7 +812,7 @@ private struct TrainingWorkspaceLaunchSheet: View {
 
     private var launchButtonTitle: String {
         selectedMethod == .featureKnn
-            ? "下一步：选择照片来源"
+            ? "下一步：选择\(model.selectedMediaKind.displayName)来源"
             : "开始训练"
     }
 
@@ -768,12 +831,12 @@ private struct TrainingWorkspaceLaunchSheet: View {
         switch method {
         case .featureKnn:
             if model.activeReviewSources.isEmpty {
-                return "需要至少一个可用照片来源"
+                return "需要至少一个可用\(model.selectedMediaKind.displayName)来源"
             }
             return "需要至少 2 个属于、2 个不属于"
         case .personalCentroid, .personalAdamW:
             if personalOptions.isEmpty {
-                return "需要至少一个有 2 张已确认照片的标签"
+                return "需要至少一个有 2 个已确认\(model.selectedMediaKind.displayName)样本的标签"
             }
             return "当前设备尚未提供此训练能力"
         }
@@ -815,15 +878,28 @@ struct TrainingWorkspaceInspectorView: View {
             if let activity = model.trainingWorkspaceActivity {
                 ProgressView()
                     .controlSize(.small)
-                Text(TrainingWorkspaceActivityPresentation.title(activity))
+                Text(
+                    TrainingWorkspaceActivityPresentation.title(
+                        activity,
+                        mediaKind: model.selectedMediaKind
+                    )
+                )
                     .font(.subheadline.weight(.semibold))
-                Text(TrainingWorkspaceActivityPresentation.detail(activity))
+                Text(
+                    TrainingWorkspaceActivityPresentation.detail(
+                        activity,
+                        mediaKind: model.selectedMediaKind
+                    )
+                )
                     .foregroundStyle(.secondary)
                 Text(TrainingWorkspaceActivityPresentation.phase(activity))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else if let run = model.selectedTrainingRun {
-                let presentation = TrainingWorkspaceMethodPresentation(method: run.method)
+                let presentation = TrainingWorkspaceMethodPresentation(
+                    method: run.method,
+                    mediaKind: run.mediaKind
+                )
                 LabeledContent("任务", value: presentation.shortTitle)
                 LabeledContent("技术方法", value: presentation.technicalName)
                 LabeledContent("状态", value: run.state.trainingWorkspaceDisplayName)
@@ -843,7 +919,9 @@ struct TrainingWorkspaceInspectorView: View {
             Divider()
             Text("样本门槛")
                 .font(.subheadline.weight(.semibold))
-            Text("相似照片：每个标签至少 2 个属于、2 个不属于。")
+            Text(
+                "相似\(model.selectedMediaKind.displayName)：每个标签至少 2 个属于、2 个不属于。"
+            )
             Text("快速与增强个人模型：每个标签至少 2 个已确认样本。")
             Text("训练结果不会覆盖人工标签；三种建议可以在待审核区同时出现。")
                 .foregroundStyle(.secondary)
@@ -863,15 +941,15 @@ struct TrainingWorkspaceMethodPresentation: Equatable {
     let requirement: String
     let systemImage: String
 
-    init(method: TrainingRunMethod) {
+    init(method: TrainingRunMethod, mediaKind: MediaKind = .image) {
         self = switch method {
         case .featureKnn:
             Self(
                 method: method,
-                title: "为标签寻找相似照片",
-                shortTitle: "相似照片",
+                title: "为标签寻找相似\(mediaKind.displayName)",
+                shortTitle: "相似\(mediaKind.displayName)",
                 technicalName: "特征向量近邻",
-                detail: "用已确认属于和不属于该标签的照片作参考，找出新的相似照片并送去审核。",
+                detail: "用已确认属于和不属于该标签的\(mediaKind.displayName)作参考，找出新的相似\(mediaKind.displayName)并送去审核。",
                 requirement: "每个标签至少 2 个属于、2 个不属于",
                 systemImage: "sparkle.magnifyingglass"
             )
@@ -920,10 +998,26 @@ struct TrainingWorkspaceMethodPresentation: Equatable {
 struct TrainingWorkspaceLaunchSummary: Equatable {
     let method: TrainingRunMethod
     let tagNames: [String]
+    let mediaKind: MediaKind
     let photoScope: TrainingWorkspaceActivityScope
 
+    init(
+        method: TrainingRunMethod,
+        tagNames: [String],
+        mediaKind: MediaKind = .image,
+        photoScope: TrainingWorkspaceActivityScope
+    ) {
+        self.method = method
+        self.tagNames = tagNames
+        self.mediaKind = mediaKind
+        self.photoScope = photoScope
+    }
+
     var methodText: String {
-        let presentation = TrainingWorkspaceMethodPresentation(method: method)
+        let presentation = TrainingWorkspaceMethodPresentation(
+            method: method,
+            mediaKind: mediaKind
+        )
         return "\(presentation.shortTitle)（\(presentation.technicalName)）"
     }
 
@@ -937,12 +1031,15 @@ struct TrainingWorkspaceLaunchSummary: Equatable {
         case .allSources:
             "所有来源中的已确认样本"
         case let .selectedAssets(count):
-            "当前选择的 \(count) 张照片"
+            "当前选择的 \(count) \(mediaKind == .image ? "张照片" : "个视频")"
         }
     }
 
     var requirementText: String {
-        TrainingWorkspaceMethodPresentation(method: method).requirement
+        TrainingWorkspaceMethodPresentation(
+            method: method,
+            mediaKind: mediaKind
+        ).requirement
     }
 }
 
@@ -950,7 +1047,10 @@ private struct TrainingWorkspaceRunRow: View {
     let run: TrainingRunRecord
 
     var body: some View {
-        let presentation = TrainingWorkspaceMethodPresentation(method: run.method)
+        let presentation = TrainingWorkspaceMethodPresentation(
+            method: run.method,
+            mediaKind: run.mediaKind
+        )
         VStack(alignment: .leading, spacing: 5) {
             HStack {
                 Text(presentation.shortTitle)
@@ -1137,11 +1237,17 @@ enum TrainingWorkspaceJSONPresentation {
 }
 
 enum TrainingWorkspaceActivityPresentation {
-    static func title(_ activity: TrainingWorkspaceActivity) -> String {
-        "\(TrainingWorkspaceMethodPresentation(method: activity.method).shortTitle)正在训练"
+    static func title(
+        _ activity: TrainingWorkspaceActivity,
+        mediaKind: MediaKind = .image
+    ) -> String {
+        "\(TrainingWorkspaceMethodPresentation(method: activity.method, mediaKind: mediaKind).shortTitle)正在训练"
     }
 
-    static func detail(_ activity: TrainingWorkspaceActivity) -> String {
+    static func detail(
+        _ activity: TrainingWorkspaceActivity,
+        mediaKind: MediaKind = .image
+    ) -> String {
         let tags = activity.tagNames.isEmpty
             ? "未命名标签"
             : activity.tagNames.joined(separator: "、")
@@ -1149,9 +1255,11 @@ enum TrainingWorkspaceActivityPresentation {
         case .allSources:
             "所有来源"
         case let .selectedAssets(count):
-            "当前选择（\(count) 张）"
+            "当前选择（\(count) \(mediaKind == .image ? "张" : "个")）"
         }
-        let samples = activity.sampleCount.map { "\($0) 张" } ?? "正在统计"
+        let samples = activity.sampleCount.map {
+            "\($0) \(mediaKind == .image ? "张" : "个")"
+        } ?? "正在统计"
         return "标签：\(tags) · 范围：\(scope) · 样本：\(samples)"
     }
 

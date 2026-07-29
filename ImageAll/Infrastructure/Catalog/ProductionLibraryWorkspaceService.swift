@@ -99,10 +99,6 @@ struct ProductionLibraryWorkspaceService: LibraryWorkspacePort, RemoteCatalogSer
         try await appStorageLocationController.chooseExternalLocation()
     }
 
-    func purgeExcludedVideoAssets() throws -> CatalogExcludedVideoPurgeResult {
-        try CatalogExcludedVideoPurger.purge(in: sourceRepository.database)
-    }
-
     func fetchJobActivity() throws -> [JobActivityItem] {
         try queue.fetchActivityItems()
     }
@@ -449,66 +445,11 @@ struct ProductionLibraryWorkspaceService: LibraryWorkspacePort, RemoteCatalogSer
     }
 }
 
-enum CatalogExcludedVideoPurger {
-    static func purge(in database: CatalogDatabase) throws -> CatalogExcludedVideoPurgeResult {
-        try database.pool.write { db in
-            let rows = try Row.fetchAll(
-                db,
-                sql: """
-                SELECT id, media_type, file_name
-                FROM asset
-                """
-            )
-            var assetIDs: [String] = []
-            assetIDs.reserveCapacity(rows.count)
-            for row in rows {
-                let mediaType: String = row["media_type"]
-                let fileName: String? = row["file_name"]
-                if ApprovedSourceMediaTypes.isExcludedVideoAsset(
-                    mediaType: mediaType,
-                    fileName: fileName
-                ) {
-                    assetIDs.append(row["id"])
-                }
-            }
-            guard !assetIDs.isEmpty else {
-                return CatalogExcludedVideoPurgeResult(
-                    removedAssetCount: 0,
-                    removedDecisionCount: 0
-                )
-            }
-
-            var removedDecisions = 0
-            for assetID in assetIDs {
-                let decisionCount = try Int.fetchOne(
-                    db,
-                    sql: "SELECT COUNT(*) FROM asset_tag_decision WHERE asset_id = ?",
-                    arguments: [assetID]
-                ) ?? 0
-                if decisionCount > 0 {
-                    try db.execute(
-                        sql: "DELETE FROM asset_tag_decision WHERE asset_id = ?",
-                        arguments: [assetID]
-                    )
-                    removedDecisions += decisionCount
-                }
-                try db.execute(
-                    sql: "DELETE FROM asset WHERE id = ?",
-                    arguments: [assetID]
-                )
-            }
-            return CatalogExcludedVideoPurgeResult(
-                removedAssetCount: assetIDs.count,
-                removedDecisionCount: removedDecisions
-            )
-        }
-    }
-}
-
 private struct LibraryOriginalAssetLocator: Sendable {
     let sourceID: UUID
     let sourceKind: SourceKind
     let locatorKind: AssetLocatorKind
+    let mediaKind: MediaKind
     let relativePath: String?
     let photosLocalIdentifier: String?
     let availability: AssetAvailability
@@ -534,16 +475,28 @@ struct AppKitLibraryOriginalAssetOpener: LibraryOriginalAssetOpening {
                 throw LibraryOriginalAssetOpenError.unsafeLocator
             }
             try folderAuthorization.accessFolderSource(sourceID: locator.sourceID) { rootURL in
-                try openWithPreview(rootURL.appendingPathComponent(validatedPath, isDirectory: false))
+                let url = rootURL.appendingPathComponent(validatedPath, isDirectory: false)
+                if locator.mediaKind == .video {
+                    try openWithSystemDefault(url)
+                } else {
+                    try openWithPreview(url)
+                }
             }
         case (.photos, .photos):
             guard let localIdentifier = locator.photosLocalIdentifier else {
                 throw LibraryOriginalAssetOpenError.unsafeLocator
             }
-            let originalURL = try await photosLibrary.requestOriginalImageURL(
-                localIdentifier: localIdentifier
-            )
-            try openWithPreview(originalURL)
+            if locator.mediaKind == .video {
+                let originalURL = try await photosLibrary.requestOriginalVideoURL(
+                    localIdentifier: localIdentifier
+                )
+                try openWithSystemDefault(originalURL)
+            } else {
+                let originalURL = try await photosLibrary.requestOriginalImageURL(
+                    localIdentifier: localIdentifier
+                )
+                try openWithPreview(originalURL)
+            }
         default:
             throw LibraryOriginalAssetOpenError.unsafeLocator
         }
@@ -558,6 +511,7 @@ struct AppKitLibraryOriginalAssetOpener: LibraryOriginalAssetOpening {
                     asset.source_id,
                     source.kind AS source_kind,
                     asset.locator_kind,
+                    asset.media_kind,
                     asset.relative_path,
                     asset.photos_local_identifier,
                     asset.availability
@@ -570,6 +524,7 @@ struct AppKitLibraryOriginalAssetOpener: LibraryOriginalAssetOpening {
                 let sourceID = UUID(uuidString: row["source_id"]),
                 let sourceKind = SourceKind(rawValue: row["source_kind"]),
                 let locatorKind = AssetLocatorKind(rawValue: row["locator_kind"]),
+                let mediaKind = MediaKind(rawValue: row["media_kind"]),
                 let availability = AssetAvailability(rawValue: row["availability"])
             else {
                 throw LibraryOriginalAssetOpenError.unavailable
@@ -578,6 +533,7 @@ struct AppKitLibraryOriginalAssetOpener: LibraryOriginalAssetOpening {
                 sourceID: sourceID,
                 sourceKind: sourceKind,
                 locatorKind: locatorKind,
+                mediaKind: mediaKind,
                 relativePath: row["relative_path"],
                 photosLocalIdentifier: row["photos_local_identifier"],
                 availability: availability
@@ -600,5 +556,11 @@ struct AppKitLibraryOriginalAssetOpener: LibraryOriginalAssetOpening {
             configuration: configuration,
             completionHandler: nil
         )
+    }
+
+    private func openWithSystemDefault(_ url: URL) throws {
+        guard NSWorkspace.shared.open(url) else {
+            throw LibraryOriginalAssetOpenError.previewUnavailable
+        }
     }
 }

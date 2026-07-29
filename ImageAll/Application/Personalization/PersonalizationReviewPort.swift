@@ -183,6 +183,7 @@ struct SuggestionEnqueueSourceOption: Identifiable, Equatable, Sendable {
 
 struct SuggestionEnqueueConfirmation: Identifiable, Equatable, Sendable {
     let tagID: UUID
+    let mediaKind: MediaKind
     let displayName: String
     let mode: PersonalizationReviewEnqueueMode
     let method: SuggestionGenerationMethod
@@ -193,6 +194,7 @@ struct SuggestionEnqueueConfirmation: Identifiable, Equatable, Sendable {
 
     init(
         tagID: UUID,
+        mediaKind: MediaKind = .image,
         displayName: String,
         mode: PersonalizationReviewEnqueueMode,
         method: SuggestionGenerationMethod = .featureKnn,
@@ -202,6 +204,7 @@ struct SuggestionEnqueueConfirmation: Identifiable, Equatable, Sendable {
         maxPendingSuggestionsPerTag: Int = PendingSuggestionGenerationLimits.defaultMaxCount
     ) {
         self.tagID = tagID
+        self.mediaKind = mediaKind
         self.displayName = displayName
         self.mode = mode
         self.method = method
@@ -211,7 +214,7 @@ struct SuggestionEnqueueConfirmation: Identifiable, Equatable, Sendable {
         self.maxPendingSuggestionsPerTag = maxPendingSuggestionsPerTag
     }
 
-    var id: String { "\(tagID.uuidString.lowercased()):\(method)" }
+    var id: String { "\(mediaKind.rawValue):\(tagID.uuidString.lowercased()):\(method)" }
 
     var sourceCount: Int { selectedSourceIDs.count }
 
@@ -297,6 +300,7 @@ protocol PersonalizationReviewPort: Sendable {
         expectedTarget: StandardModelSuggestionTarget
     ) throws -> Int
     func invalidateAllPersonalSuggestionBundles() throws
+    func invalidatePersonalSuggestionBundles(mediaKind: MediaKind) throws
     /// `sourceIDs == nil` freezes all active personalization sources at enqueue time.
     func enqueueFullLibrarySuggestions(
         tagID: UUID,
@@ -309,20 +313,176 @@ protocol PersonalizationReviewPort: Sendable {
         sourceIDs: [UUID]?
     ) throws -> UUID
     func personalLibrarySuggestionJob() throws -> PersonalLibrarySuggestionJobProjection?
+    func personalLibrarySuggestionJob(
+        mediaKind: MediaKind
+    ) throws -> PersonalLibrarySuggestionJobProjection?
     func enqueueStandardLibrarySuggestions(
         target: StandardModelSuggestionTarget,
         sourceIDs: [UUID]?
     ) throws -> UUID
     func standardLibrarySuggestionJob() throws -> StandardLibrarySuggestionJobProjection?
+    func enqueueStandardLibrarySuggestions(
+        mediaKind: MediaKind,
+        target: StandardModelSuggestionTarget,
+        sourceIDs: [UUID]?
+    ) throws -> UUID
+    func standardLibrarySuggestionJob(
+        mediaKind: MediaKind
+    ) throws -> StandardLibrarySuggestionJobProjection?
     func pauseSuggestionJob(jobID: UUID) throws
     func resumeSuggestionJob(jobID: UUID) throws
     func cancelSuggestionJob(jobID: UUID) throws
     func runPendingSuggestionJobs(maxSteps: Int?) throws -> Bool
     func runPendingSuggestionJobsAsync(maxSteps: Int?) async throws -> Bool
     func nextSuggestionRetryDelayNanoseconds() throws -> UInt64?
+
+    func totalPendingSuggestionCount(
+        mediaKind: MediaKind,
+        sourceIDs: [UUID]?
+    ) throws -> Int
+    func tagOverviews(
+        mediaKind: MediaKind,
+        sourceIDs: [UUID]?
+    ) throws -> [SuggestionTagOverview]
+    func personalTrainingSnapshot(
+        mediaKind: MediaKind,
+        limitingToTagIDs tagIDs: Set<UUID>,
+        limitingToAssetIDs assetIDs: Set<UUID>?
+    ) throws -> PersonalTrainingSnapshot
+    func fetchReviewQueue(
+        mediaKind: MediaKind,
+        tagID: UUID,
+        sourceIDs: [UUID]?,
+        cursor: ReviewQueueCursor?,
+        limit: Int
+    ) throws -> ReviewQueuePage
+    func personalSuggestionCandidates(
+        mediaKind: MediaKind,
+        afterAssetID: UUID?,
+        limit: Int,
+        sourceIDs: [UUID]?,
+        excludingDecisionsForTagID: UUID?
+    ) throws -> [PersonalSuggestionCandidate]
+    func enqueueFullLibrarySuggestions(
+        mediaKind: MediaKind,
+        tagID: UUID,
+        mode: PersonalizationReviewEnqueueMode,
+        sourceIDs: [UUID]?
+    ) throws -> UUID
 }
 
 extension PersonalizationReviewPort {
+    func personalLibrarySuggestionJob(
+        mediaKind: MediaKind
+    ) throws -> PersonalLibrarySuggestionJobProjection? {
+        mediaKind == .image ? try personalLibrarySuggestionJob() : nil
+    }
+
+    func enqueueStandardLibrarySuggestions(
+        mediaKind: MediaKind,
+        target: StandardModelSuggestionTarget,
+        sourceIDs: [UUID]?
+    ) throws -> UUID {
+        guard mediaKind == .image else {
+            throw PersonalizationReviewError.persistenceFailure
+        }
+        return try enqueueStandardLibrarySuggestions(
+            target: target,
+            sourceIDs: sourceIDs
+        )
+    }
+
+    func standardLibrarySuggestionJob(
+        mediaKind: MediaKind
+    ) throws -> StandardLibrarySuggestionJobProjection? {
+        mediaKind == .image ? try standardLibrarySuggestionJob() : nil
+    }
+
+    func totalPendingSuggestionCount(
+        mediaKind: MediaKind,
+        sourceIDs: [UUID]?
+    ) throws -> Int {
+        mediaKind == .image
+            ? try totalPendingSuggestionCount(sourceIDs: sourceIDs)
+            : 0
+    }
+
+    func tagOverviews(
+        mediaKind: MediaKind,
+        sourceIDs: [UUID]?
+    ) throws -> [SuggestionTagOverview] {
+        mediaKind == .image ? try tagOverviews(sourceIDs: sourceIDs) : []
+    }
+
+    func personalTrainingSnapshot(
+        mediaKind: MediaKind,
+        limitingToTagIDs tagIDs: Set<UUID>,
+        limitingToAssetIDs assetIDs: Set<UUID>?
+    ) throws -> PersonalTrainingSnapshot {
+        guard mediaKind == .image else {
+            return PersonalTrainingSnapshot(
+                catalogScopeID: "",
+                mediaKind: mediaKind,
+                personalTagIDs: [],
+                decisions: []
+            )
+        }
+        return try personalTrainingSnapshot(
+            limitingToTagIDs: tagIDs,
+            limitingToAssetIDs: assetIDs
+        )
+    }
+
+    func fetchReviewQueue(
+        mediaKind: MediaKind,
+        tagID: UUID,
+        sourceIDs: [UUID]?,
+        cursor: ReviewQueueCursor?,
+        limit: Int
+    ) throws -> ReviewQueuePage {
+        guard mediaKind == .image else {
+            return ReviewQueuePage(items: [], nextCursor: nil)
+        }
+        return try fetchReviewQueue(
+            tagID: tagID,
+            sourceIDs: sourceIDs,
+            cursor: cursor,
+            limit: limit
+        )
+    }
+
+    func personalSuggestionCandidates(
+        mediaKind: MediaKind,
+        afterAssetID: UUID?,
+        limit: Int,
+        sourceIDs: [UUID]?,
+        excludingDecisionsForTagID: UUID?
+    ) throws -> [PersonalSuggestionCandidate] {
+        guard mediaKind == .image else { return [] }
+        return try personalSuggestionCandidates(
+            afterAssetID: afterAssetID,
+            limit: limit,
+            sourceIDs: sourceIDs,
+            excludingDecisionsForTagID: excludingDecisionsForTagID
+        )
+    }
+
+    func enqueueFullLibrarySuggestions(
+        mediaKind: MediaKind,
+        tagID: UUID,
+        mode: PersonalizationReviewEnqueueMode,
+        sourceIDs: [UUID]?
+    ) throws -> UUID {
+        guard mediaKind == .image else {
+            throw PersonalizationReviewError.persistenceFailure
+        }
+        return try enqueueFullLibrarySuggestions(
+            tagID: tagID,
+            mode: mode,
+            sourceIDs: sourceIDs
+        )
+    }
+
     func totalPendingSuggestionCount() throws -> Int {
         try totalPendingSuggestionCount(sourceIDs: nil)
     }
@@ -415,6 +575,11 @@ extension PersonalizationReviewPort {
 
     func invalidateAllPersonalSuggestionBundles() throws {
         throw PersonalizationReviewError.persistenceFailure
+    }
+
+    func invalidatePersonalSuggestionBundles(mediaKind: MediaKind) throws {
+        guard mediaKind == .image else { return }
+        try invalidateAllPersonalSuggestionBundles()
     }
 
     func replaceStandardSuggestions(

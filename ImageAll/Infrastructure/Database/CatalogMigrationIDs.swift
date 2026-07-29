@@ -37,6 +37,12 @@ enum CatalogMigrationID {
         "v024_repair_source_mutation_authorization"
     static let v025RetainPurgedAssetKnowledge =
         "v025_retain_purged_asset_knowledge"
+    static let v026AddMediaKindAndVideoMetadata =
+        "v026_add_media_kind_and_video_metadata"
+    static let v027PartitionPersonalizationByMediaKind =
+        "v027_partition_personalization_by_media_kind"
+    static let v028PartitionSlimmingByMediaKind =
+        "v028_partition_slimming_by_media_kind"
 
     static let knownOrdered: [String] = [
         v001CreateCatalogCore,
@@ -64,5 +70,8 @@ enum CatalogMigrationID {
         v023AddSourceSimilarityIndex,
         v024RepairSourceMutationAuthorization,
         v025RetainPurgedAssetKnowledge,
+        v026AddMediaKindAndVideoMetadata,
+        v027PartitionPersonalizationByMediaKind,
+        v028PartitionSlimmingByMediaKind,
     ]
 }

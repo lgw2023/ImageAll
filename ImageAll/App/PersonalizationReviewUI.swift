@@ -22,11 +22,13 @@ struct ReviewOverviewView: View {
                 ContentUnavailableView {
                     Label("暂无待审核标签", systemImage: "sparkles")
                 } description: {
-                    Text("先在图库中为照片打标签并积累确认/拒绝样本，再回来生成建议。")
+                    Text("先在图库中为\(model.selectedMediaKind.displayName)打标签并积累确认/拒绝样本，再回来生成建议。")
                 } actions: {
                     Button("返回图库", action: onBack)
                         .buttonStyle(.borderedProminent)
-                        .persistentHelp("返回照片图库，为照片添加标签或积累更多确认和拒绝样本。")
+                        .persistentHelp(
+                            "返回\(model.selectedMediaKind.displayName)图库，为\(model.selectedMediaKind.displayName)添加标签或积累更多确认和拒绝样本。"
+                        )
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
@@ -82,7 +84,9 @@ private struct ReviewOverviewHeader: View {
     var body: some View {
         HStack(spacing: 12) {
             Button("返回图库", systemImage: "photo.on.rectangle", action: onBack)
-                .persistentHelp("退出待审核建议工作区并返回照片图库。")
+                .persistentHelp(
+                    "退出待审核建议工作区并返回\(model.selectedMediaKind.displayName)图库。"
+                )
 
             Divider()
                 .frame(height: 18)
@@ -133,7 +137,9 @@ private struct ReviewSourceFilterMenu: View {
                 Task { await model.selectAllReviewSources() }
             }
             .disabled(model.reviewFilterSourceIDs == nil)
-            .persistentHelp("恢复使用所有已启用来源生成建议并显示待审照片。")
+            .persistentHelp(
+                "恢复使用所有已启用来源生成建议并显示待审\(model.selectedMediaKind.displayName)。"
+            )
             Divider()
             ForEach(model.activeReviewSources) { source in
                 Toggle(
@@ -159,7 +165,9 @@ private struct ReviewSourceFilterMenu: View {
         }
         .menuStyle(.borderlessButton)
         .fixedSize(horizontal: false, vertical: true)
-        .persistentHelp("选择建议生成和待审列表要覆盖的照片来源；不会改变图库侧栏当前浏览位置。")
+        .persistentHelp(
+            "选择建议生成和待审列表要覆盖的\(model.selectedMediaKind.displayName)来源；不会改变图库侧栏当前浏览位置。"
+        )
     }
 }
 
@@ -189,7 +197,9 @@ private struct ReviewLocalModelPanel: View {
                         }
                     }
                     .disabled(model.localModelServiceHealthState == .checking)
-                    .persistentHelp("重新检查本机模型服务是否可用；不会启动服务、下载模型或读取照片。")
+                    .persistentHelp(
+                        "重新检查本机模型服务是否可用；不会启动服务、下载模型或读取\(model.selectedMediaKind.displayName)。"
+                    )
                 }
                 .padding(12)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -209,7 +219,7 @@ private struct ReviewLocalModelPanel: View {
                             model.isGeneratingStandardLibrarySuggestions
                             || model.isGeneratingPersonalLibrarySuggestions
                             || model.isRebuildingPersonalModel,
-                        help: "按顶部来源筛选扫描；仅分析当前可本地读取的预览；iCloud 云端照片会跳过",
+                        help: "按顶部来源筛选扫描；仅分析当前可本地读取的预览；iCloud 云端\(model.selectedMediaKind.displayName)会跳过",
                         action: { Task { await model.generateStandardLibrarySuggestions() } },
                         jobActivity: model.standardLibrarySuggestionJobActivity,
                         applyAction: { await model.applyStandardLibrarySuggestionAction($0) }
@@ -250,8 +260,8 @@ private struct ReviewLocalModelPanel: View {
 
     private var personalLibraryActionHelp: String {
         model.usesAppPersonalSampleSuggestionsPath
-            ? "有多选时用选中照片；无多选时从库中抽样。仅用本机预览；云端未下载照片会跳过"
-            : "按顶部来源筛选扫描；仅分析当前可本地读取的预览；iCloud 云端照片会跳过"
+            ? "有多选时用选中\(model.selectedMediaKind.displayName)；无多选时从库中抽样。仅用本机预览；云端未下载\(model.selectedMediaKind.displayName)会跳过"
+            : "按顶部来源筛选扫描；仅分析当前可本地读取的预览；iCloud 云端\(model.selectedMediaKind.displayName)会跳过"
     }
 
     @ViewBuilder
@@ -318,7 +328,7 @@ private struct ReviewLocalModelPanel: View {
         case let .degraded(serviceVersion):
             "已连接，模型未加载 · v\(serviceVersion)"
         case .unavailable:
-            "服务未运行；现有照片、标签和 Feature Print 不受影响。"
+            "服务未运行；现有\(model.selectedMediaKind.displayName)、标签和 Feature Print 不受影响。"
         }
     }
 
@@ -429,6 +439,7 @@ private struct ReviewTagOverviewCard: View {
             if overview.pendingSuggestionCount > 0 {
                 ReviewOriginCountBadges(
                     counts: overview.pendingSuggestionCounts,
+                    mediaKind: model.selectedMediaKind,
                     onOpenQueue: { onOpenQueue(overview.id, overview.displayName) }
                 )
             }
@@ -467,7 +478,9 @@ private struct ReviewTagOverviewCard: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.regular)
-                .persistentHelp("打开“\(overview.displayName)”的待审核照片队列，逐张确认、拒绝或稍后处理。")
+                .persistentHelp(
+                    "打开“\(overview.displayName)”的待审核\(model.selectedMediaKind.displayName)队列，逐个确认、拒绝或稍后处理。"
+                )
             }
 
             ReviewTagGenerateActions(model: model, overview: overview)
@@ -484,6 +497,7 @@ private struct ReviewTagOverviewCard: View {
 
 private struct ReviewOriginCountBadges: View {
     let counts: SuggestionOriginCounts
+    let mediaKind: MediaKind
     let onOpenQueue: () -> Void
 
     var body: some View {
@@ -507,7 +521,7 @@ private struct ReviewOriginCountBadges: View {
                     .background(.secondary.opacity(0.1), in: Capsule())
             }
             .buttonStyle(.plain)
-            .persistentHelp("打开这个标签的待审核照片队列。")
+            .persistentHelp("打开这个标签的待审核\(mediaKind.displayName)队列。")
         }
     }
 }
@@ -927,11 +941,12 @@ struct SuggestionEnqueueConfirmationSheet: View {
     private var message: String {
         let thresholdText = String(format: "%.2f", pending.effectiveMinScore)
         let limitText = String(pending.maxPendingSuggestionsPerTag)
+        let mediaName = pending.mediaKind.displayName
         switch pending.method {
         case .featureKnn:
             switch pending.mode {
             case .generate:
-                return "将用特征向量近邻检查所选来源中已入库的照片，只保留分数高于 \(thresholdText) 且最高的 \(limitText) 条待审核建议。训练样本仍来自全部来源；人工标签不会丢失。"
+                return "将用特征向量近邻检查所选来源中已入库的\(mediaName)，只保留分数高于 \(thresholdText) 且最高的 \(limitText) 条待审核建议。训练样本仍来自全部来源；人工标签不会丢失。"
             case .update:
                 return "将用最新确认/拒绝样本重新扫描所选来源，只保留分数高于 \(thresholdText) 且最高的 \(limitText) 条；人工标签不会改变。"
             }
@@ -1284,12 +1299,14 @@ private struct ReviewThumbnailView: View {
                     before: TapGesture().onEnded { onSelect() }
                 )
         )
-        .accessibilityLabel(item.fileName ?? "照片")
+        .accessibilityLabel(item.fileName ?? model.selectedMediaKind.displayName)
         .accessibilityAddTraits(.isButton)
         .accessibilityValue(
             "\(isSelected ? "已选择" : "未选择")，\(item.suggestionOrigin.reviewDisplayName)建议，分数 \(String(format: "%.2f", item.score))"
         )
-        .accessibilityHint("选择待审核照片；双击可预览，也可按 P、X 或 U 处理")
+        .accessibilityHint(
+            "选择待审核\(model.selectedMediaKind.displayName)；双击可预览，也可按 P、X 或 U 处理"
+        )
         .persistentHelp(LibraryAssetDetailText.reviewHoverText(item))
         .accessibilityAction {
             onSelect()
@@ -1353,7 +1370,7 @@ private struct ReviewThumbnailView: View {
         if isCloudOnly {
             return "icloud.and.arrow.down"
         }
-        return "photo"
+        return model.selectedMediaKind == .video ? "play.rectangle" : "photo"
     }
 }
 
@@ -1382,13 +1399,17 @@ struct InspectorSuggestionSection: View {
                                 await model.applyInspectorSuggestion(tagID: suggestion.tagID, action: .accept)
                             }
                         }
-                        .persistentHelp("确认这张照片属于“\(suggestion.displayName)”标签，并写入人工决定。")
+                        .persistentHelp(
+                            "确认这个\(model.selectedMediaKind.displayName)属于“\(suggestion.displayName)”标签，并写入人工决定。"
+                        )
                         Button("不属于") {
                             Task {
                                 await model.applyInspectorSuggestion(tagID: suggestion.tagID, action: .reject)
                             }
                         }
-                        .persistentHelp("确认这张照片不属于“\(suggestion.displayName)”标签，并写入人工决定。")
+                        .persistentHelp(
+                            "确认这个\(model.selectedMediaKind.displayName)不属于“\(suggestion.displayName)”标签，并写入人工决定。"
+                        )
                     }
                     .font(.caption)
                 }
@@ -1397,7 +1418,9 @@ struct InspectorSuggestionSection: View {
                         expanded = true
                     }
                     .font(.caption)
-                    .persistentHelp("展开并显示这张照片剩余的全部模型建议。")
+                    .persistentHelp(
+                        "展开并显示这个\(model.selectedMediaKind.displayName)剩余的全部模型建议。"
+                    )
                 }
             }
             .onChange(of: model.primarySelectedAssetID) { _, _ in
@@ -1425,7 +1448,7 @@ struct InspectorLocalModelSuggestionSection: View {
             container {
                 HStack(spacing: 8) {
                     ProgressView().controlSize(.small)
-                    Text("正在分析当前照片…")
+                    Text("正在分析当前\(model.selectedMediaKind.displayName)…")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -1453,7 +1476,9 @@ struct InspectorLocalModelSuggestionSection: View {
                                     Image(systemName: "xmark")
                                 }
                                 .buttonStyle(.borderless)
-                                .persistentHelp("拒绝这条模型建议，不把该标签添加到照片。")
+                                .persistentHelp(
+                                    "拒绝这条模型建议，不把该标签添加到\(model.selectedMediaKind.displayName)。"
+                                )
                                 Button {
                                     Task {
                                         await model.applyLocalModelSuggestionDecision(
@@ -1465,7 +1490,9 @@ struct InspectorLocalModelSuggestionSection: View {
                                     Image(systemName: "checkmark")
                                 }
                                 .buttonStyle(.borderless)
-                                .persistentHelp("接受这条模型建议，并把对应标签添加到照片。")
+                                .persistentHelp(
+                                    "接受这条模型建议，并把对应标签添加到\(model.selectedMediaKind.displayName)。"
+                                )
                             } else {
                                 Text(suggestion.recommendedState == .autoAssigned ? "自动匹配" : "建议复核")
                                     .foregroundStyle(.secondary)
@@ -1479,7 +1506,7 @@ struct InspectorLocalModelSuggestionSection: View {
             }
         case .previewUnavailable:
             container {
-                Text("请先在上方获取这张照片的 iCloud 预览。")
+                Text("请先在上方获取这个\(model.selectedMediaKind.displayName)的 iCloud 预览。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -1493,7 +1520,9 @@ struct InspectorLocalModelSuggestionSection: View {
             }
         case .serviceUnavailable:
             container {
-                Text("本地模型服务当前不可用，照片与人工标签不受影响。")
+                Text(
+                    "本地模型服务当前不可用，\(model.selectedMediaKind.displayName)与人工标签不受影响。"
+                )
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 retryButton("重试")
@@ -1525,7 +1554,9 @@ struct InspectorLocalModelSuggestionSection: View {
             Task { await model.requestLocalModelSuggestions() }
         }
         .buttonStyle(.bordered)
-        .persistentHelp("使用标准场景模型分析当前照片，并显示建议标签。")
+        .persistentHelp(
+            "使用标准场景模型分析当前\(model.selectedMediaKind.displayName)，并显示建议标签。"
+        )
     }
 
     private func personalRequestButton(_ title: String) -> some View {
@@ -1533,7 +1564,9 @@ struct InspectorLocalModelSuggestionSection: View {
             Task { await model.requestPersonalModelSuggestions() }
         }
         .buttonStyle(.bordered)
-        .persistentHelp("使用你的个人模型分析当前照片，并显示建议标签。")
+        .persistentHelp(
+            "使用你的个人模型分析当前\(model.selectedMediaKind.displayName)，并显示建议标签。"
+        )
     }
 
     @ViewBuilder

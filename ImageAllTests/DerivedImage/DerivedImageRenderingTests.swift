@@ -10,6 +10,23 @@ final class DerivedImageRenderingTests: XCTestCase {
     private let renderer = DerivedImageRenderer()
     private typealias Fixtures = DerivedImageTestSupport.DerivedImageRenderingTestFixtures
 
+    private struct StubVideoPosterGenerator: DerivedVideoPosterGenerating {
+        let posterBytes: Data
+
+        func makePosterBytes(
+            sourceFileDescriptorURL: URL,
+            mediaType: String,
+            durationMs: Int64,
+            maximumPixelSize: Int
+        ) throws -> Data {
+            XCTAssertTrue(sourceFileDescriptorURL.path.hasPrefix("/dev/fd/"))
+            XCTAssertEqual(mediaType, "com.apple.quicktime-movie")
+            XCTAssertEqual(durationMs, 5_000)
+            XCTAssertEqual(maximumPixelSize, 512)
+            return posterBytes
+        }
+    }
+
     private func assertFormatGenerates(expectedUTI: String, sourceData: Data, file: StaticString = #filePath, line: UInt = #line) throws {
         XCTAssertEqual(try Fixtures.canonicalUTI(for: sourceData), expectedUTI, file: file, line: line)
         let artifact = try renderer.render(sourceBytes: sourceData, variant: .gridSmall)
@@ -26,6 +43,37 @@ final class DerivedImageRenderingTests: XCTestCase {
     func testStaticPNGInputGeneratesConsistentArtifact() throws {
         let data = try Fixtures.requireEncodedData(uti: UTType.png.identifier)
         try assertFormatGenerates(expectedUTI: UTType.png.identifier, sourceData: data)
+    }
+
+    func testVideoPosterUsesExistingDerivedImageCachePipeline() async throws {
+        let env = try DerivedImageTestSupport.TempEnvironment(label: "video-poster-cache")
+        defer { env.cleanup() }
+        try env.seedAvailableAsset(
+            relativePath: "videos/sample.mov",
+            fileName: "sample.mov",
+            mediaKind: .video,
+            mediaType: "com.apple.quicktime-movie",
+            durationMs: 5_000,
+            contents: Data([0x00, 0x00, 0x00, 0x14])
+        )
+        let posterBytes = FolderReconcileTestSupport.minimalPNGData()
+        let (service, _) = env.makeService(
+            videoPosterGenerator: StubVideoPosterGenerator(posterBytes: posterBytes),
+            volumeReader: DerivedImageTestSupport.generousVolume
+        )
+
+        let generated = try await service.loadOrGenerate(
+            DerivedImageRequest(assetID: env.assetID, variant: .gridSmall)
+        )
+        XCTAssertEqual(generated.origin, .generated)
+        XCTAssertEqual(generated.pixelWidth, 256)
+        XCTAssertEqual(generated.pixelHeight, 256)
+
+        let cached = try await service.loadOrGenerate(
+            DerivedImageRequest(assetID: env.assetID, variant: .gridSmall)
+        )
+        XCTAssertEqual(cached.origin, .cacheHit)
+        XCTAssertEqual(cached.encodedBytes, generated.encodedBytes)
     }
 
     func testStaticHEICInputGeneratesConsistentArtifact() throws {

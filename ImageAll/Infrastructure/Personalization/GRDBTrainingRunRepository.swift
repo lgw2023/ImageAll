@@ -28,14 +28,15 @@ struct GRDBTrainingRunRepository: Sendable {
         try db.execute(
             sql: """
             INSERT INTO training_run (
-                id, method, state, created_at_ms, started_at_ms, finished_at_ms,
+                id, media_kind, method, state, created_at_ms, started_at_ms, finished_at_ms,
                 catalog_scope_id, job_id, tag_id, sample_summary_json, sample_manifest_sha256,
                 config_json, metrics_json, artifact_kind, artifact_ref, artifact_sha256,
                 result_summary_json, error_code
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             arguments: [
                 run.id.uuidString.lowercased(),
+                run.mediaKind.rawValue,
                 run.method.rawValue,
                 run.state.rawValue,
                 run.createdAtMs,
@@ -190,25 +191,27 @@ struct GRDBTrainingRunRepository: Sendable {
     }
 
     func list(
+        mediaKind: MediaKind = .image,
         method: TrainingRunMethod? = nil,
         limit: Int = 50
     ) throws -> [TrainingRunRecord] {
         guard limit > 0 else { return [] }
         return try database.pool.read { db in
-            try list(method: method, limit: limit, on: db)
+            try list(mediaKind: mediaKind, method: method, limit: limit, on: db)
         }
     }
 
     func list(
+        mediaKind: MediaKind = .image,
         method: TrainingRunMethod?,
         limit: Int,
         on db: Database
     ) throws -> [TrainingRunRecord] {
         guard limit > 0 else { return [] }
-        var sql = "SELECT * FROM training_run"
-        var arguments: [DatabaseValueConvertible] = []
+        var sql = "SELECT * FROM training_run WHERE media_kind = ?"
+        var arguments: [DatabaseValueConvertible] = [mediaKind.rawValue]
         if let method {
-            sql += " WHERE method = ?"
+            sql += " AND method = ?"
             arguments.append(method.rawValue)
         }
         sql += " ORDER BY created_at_ms DESC, id ASC LIMIT ?"
@@ -234,6 +237,7 @@ struct GRDBTrainingRunRepository: Sendable {
         }()
         return TrainingRunRecord(
             id: id,
+            mediaKind: MediaKind(rawValue: row["media_kind"]) ?? .image,
             method: method,
             state: state,
             createdAtMs: row["created_at_ms"],
@@ -270,12 +274,13 @@ struct GRDBTrainingWorkspaceRepository: TrainingWorkspacePort, Sendable {
     let database: CatalogDatabase
 
     func snapshot(
+        mediaKind: MediaKind,
         method: TrainingRunMethod?,
         limit: Int = 200
     ) throws -> TrainingWorkspaceSnapshot {
         try database.pool.read { db in
             let runs = try GRDBTrainingRunRepository(database: database)
-                .list(method: method, limit: limit, on: db)
+                .list(mediaKind: mediaKind, method: method, limit: limit, on: db)
             let featurePublished = try Bool.fetchOne(
                 db,
                 sql: """
@@ -284,9 +289,12 @@ struct GRDBTrainingWorkspaceRepository: TrainingWorkspacePort, Sendable {
                     FROM tag_model m
                     JOIN tag t ON t.id = m.tag_id AND t.state = 'active'
                     JOIN tag_model_revision r
-                        ON r.tag_id = m.tag_id AND r.revision = m.current_revision
+                        ON r.media_kind = m.media_kind
+                        AND r.tag_id = m.tag_id AND r.revision = m.current_revision
+                    WHERE m.media_kind = ?
                 )
-                """
+                """,
+                arguments: [mediaKind.rawValue]
             ) == true
             let featureRow = try Row.fetchOne(
                 db,
@@ -294,11 +302,13 @@ struct GRDBTrainingWorkspaceRepository: TrainingWorkspacePort, Sendable {
                 SELECT id, artifact_ref
                 FROM training_run
                 WHERE method = 'featureKnn'
+                    AND media_kind = ?
                     AND state = 'succeeded'
                     AND artifact_ref IS NOT NULL
                 ORDER BY created_at_ms DESC, id ASC
                 LIMIT 1
-                """
+                """,
+                arguments: [mediaKind.rawValue]
             )
             var slots = [
                 TrainingWorkspaceSlot(
@@ -324,14 +334,21 @@ struct GRDBTrainingWorkspaceRepository: TrainingWorkspacePort, Sendable {
                     SELECT r.id, r.artifact_ref
                     FROM personal_suggestion_model m
                     JOIN training_run r ON r.id = m.published_run_id
-                    WHERE m.method = ?
+                    WHERE m.media_kind = ?
+                        AND m.method = ?
                         AND r.method = ?
+                        AND r.media_kind = ?
                         AND r.state = 'succeeded'
                         AND r.artifact_ref IS NOT NULL
                     ORDER BY m.activated_at_ms DESC, m.tag_id ASC
                     LIMIT 1
                     """,
-                    arguments: [personalMethod.rawValue, method.rawValue]
+                    arguments: [
+                        mediaKind.rawValue,
+                        personalMethod.rawValue,
+                        method.rawValue,
+                        mediaKind.rawValue,
+                    ]
                 )
                 let anyPublished = try Bool.fetchOne(
                     db,
@@ -340,12 +357,19 @@ struct GRDBTrainingWorkspaceRepository: TrainingWorkspacePort, Sendable {
                         SELECT 1
                         FROM personal_suggestion_model m
                         JOIN training_run r ON r.id = m.published_run_id
-                        WHERE m.method = ?
+                        WHERE m.media_kind = ?
+                            AND m.method = ?
                             AND r.method = ?
+                            AND r.media_kind = ?
                             AND r.state = 'succeeded'
                     )
                     """,
-                    arguments: [personalMethod.rawValue, method.rawValue]
+                    arguments: [
+                        mediaKind.rawValue,
+                        personalMethod.rawValue,
+                        method.rawValue,
+                        mediaKind.rawValue,
+                    ]
                 ) == true
                 slots.append(
                     TrainingWorkspaceSlot(

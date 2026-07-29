@@ -20,6 +20,7 @@ struct RecycleEntryRecord: Identifiable, Sendable, Equatable {
     let assetID: UUID
     let sourceID: UUID
     let sourceKind: RecycleSourceKind
+    let mediaKind: MediaKind
     let trashedAtMs: Int64
     let purgeAfterMs: Int64
     let state: RecycleEntryState
@@ -28,6 +29,36 @@ struct RecycleEntryRecord: Identifiable, Sendable, Equatable {
     let photosLocalIdentifier: String?
     let errorCode: String?
     let fileName: String?
+
+    init(
+        id: UUID,
+        assetID: UUID,
+        sourceID: UUID,
+        sourceKind: RecycleSourceKind,
+        mediaKind: MediaKind = .image,
+        trashedAtMs: Int64,
+        purgeAfterMs: Int64,
+        state: RecycleEntryState,
+        quarantineRelativePath: String?,
+        originalRelativePath: String?,
+        photosLocalIdentifier: String?,
+        errorCode: String?,
+        fileName: String?
+    ) {
+        self.id = id
+        self.assetID = assetID
+        self.sourceID = sourceID
+        self.sourceKind = sourceKind
+        self.mediaKind = mediaKind
+        self.trashedAtMs = trashedAtMs
+        self.purgeAfterMs = purgeAfterMs
+        self.state = state
+        self.quarantineRelativePath = quarantineRelativePath
+        self.originalRelativePath = originalRelativePath
+        self.photosLocalIdentifier = photosLocalIdentifier
+        self.errorCode = errorCode
+        self.fileName = fileName
+    }
 }
 
 enum LibrarySlimmingRecyclePolicy {

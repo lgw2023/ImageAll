@@ -126,7 +126,9 @@ enum DerivedImageTestSupport {
         func seedAvailableAsset(
             relativePath: String = "photos/sample.jpg",
             fileName: String = "sample.jpg",
+            mediaKind: MediaKind = .image,
             mediaType: String = "public.jpeg",
+            durationMs: Int64? = nil,
             contentRevision: Int = 1,
             contents: Data? = nil
         ) throws -> URL {
@@ -148,15 +150,18 @@ enum DerivedImageTestSupport {
                     sql: """
                     INSERT INTO asset (
                         id, source_id, locator_kind, relative_path, photos_local_identifier,
-                        locator_state, media_type, content_revision, availability,
+                        locator_state, media_kind, media_type, duration_ms,
+                        content_revision, availability,
                         record_created_at_ms, record_updated_at_ms, file_name
-                    ) VALUES (?, ?, 'file', ?, NULL, 'current', ?, ?, 'available', ?, ?, ?)
+                    ) VALUES (?, ?, 'file', ?, NULL, 'current', ?, ?, ?, ?, 'available', ?, ?, ?)
                     """,
                     arguments: [
                         assetID.uuidString.lowercased(),
                         sourceID.uuidString.lowercased(),
                         relativePath,
+                        mediaKind.rawValue,
                         mediaType,
+                        durationMs,
                         contentRevision,
                         FolderReconcileTestSupport.baseTimeMs,
                         FolderReconcileTestSupport.baseTimeMs,
@@ -251,6 +256,7 @@ enum DerivedImageTestSupport {
             finalPublishCheckpoint: (any DerivedImageFinalPublishCheckpointing)? = nil,
             maintenanceCheckpoint: (any DerivedImageMaintenanceCheckpointing)? = nil,
             sourceReader: DerivedImageSourceReader? = nil,
+            videoPosterGenerator: (any DerivedVideoPosterGenerating)? = nil,
             volumeReader: (any DerivedImageVolumeCapacityReading)? = nil,
             clock: any JobClock = FixedJobClock(nowMs: FolderReconcileTestSupport.baseTimeMs),
             downloadedPreviewQuotaBytes: UInt64 = DownloadedPreviewCachePolicy.publishedQuotaBytes
@@ -267,6 +273,7 @@ enum DerivedImageTestSupport {
                 cachesDirectory: overrideCachesDirectory ?? cachesDirectory,
                 sourceAccess: access,
                 sourceReader: sourceReader ?? DerivedImageSourceReader(),
+                videoPosterGenerator: videoPosterGenerator ?? AVFoundationDerivedVideoPosterGenerator(),
                 volumeReader: volumeReader ?? FoundationDerivedImageVolumeCapacityReader(),
                 clock: clock,
                 faultInjector: faultInjector,

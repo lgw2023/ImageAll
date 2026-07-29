@@ -54,8 +54,9 @@ enum ApprovedSourceMediaTypes: Sendable {
         }
     }
 
-    /// Folder enumeration may skip these before classification to avoid HDD metadata work.
-    static func shouldSkipNonImageFileName(_ fileName: String) -> Bool {
+    /// Folder enumeration may skip unsupported files before classification to
+    /// avoid unnecessary metadata work on large sources.
+    static func shouldSkipUnsupportedFileName(_ fileName: String) -> Bool {
         if isLikelyCameraRawFileName(fileName) {
             return false
         }
@@ -67,7 +68,7 @@ enum ApprovedSourceMediaTypes: Sendable {
             return true
         }
         if isVideoUTI(type) {
-            return true
+            return false
         }
         return !type.conforms(to: .image)
     }
@@ -75,30 +76,6 @@ enum ApprovedSourceMediaTypes: Sendable {
     static func isVideoMediaType(_ mediaType: String) -> Bool {
         let lowered = mediaType.lowercased()
         if let type = UTType(lowered) ?? UTType(mediaType), isVideoUTI(type) {
-            return true
-        }
-        return false
-    }
-
-    static func isVideoFileName(_ fileName: String) -> Bool {
-        let ext = (fileName as NSString).pathExtension.lowercased()
-        switch ext {
-        case "mov", "mp4", "m4v", "avi", "mkv", "mpg", "mpeg", "3gp", "webm", "mts", "m2ts":
-            return true
-        default:
-            break
-        }
-        guard let type = UTType(filenameExtension: ext) else {
-            return false
-        }
-        return isVideoUTI(type)
-    }
-
-    static func isExcludedVideoAsset(mediaType: String, fileName: String?) -> Bool {
-        if isVideoMediaType(mediaType) {
-            return true
-        }
-        if let fileName, isVideoFileName(fileName) {
             return true
         }
         return false
