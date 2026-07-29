@@ -62,6 +62,42 @@ struct GRDBDerivedImageCacheRepository: Sendable {
         }
     }
 
+    func fetchLatestRecycledPhotosEntry(
+        assetID: UUID,
+        representationVersion: Int,
+        variant: DerivedImageVariant
+    ) throws -> DerivedImageCacheEntryRow? {
+        try database.pool.read { db in
+            guard let row = try Row.fetchOne(
+                db,
+                sql: """
+                SELECT e.*
+                FROM derived_image_cache_entry e
+                WHERE e.asset_id = ?
+                  AND e.representation_version = ?
+                  AND e.variant = ?
+                  AND EXISTS (
+                      SELECT 1
+                      FROM recycle_entry r
+                      WHERE r.asset_id = e.asset_id
+                        AND r.source_kind = 'photos'
+                        AND r.state = 'recycled'
+                  )
+                ORDER BY e.content_revision DESC, e.created_at_ms DESC, e.id ASC
+                LIMIT 1
+                """,
+                arguments: [
+                    assetID.uuidString.lowercased(),
+                    representationVersion,
+                    variant.rawValue,
+                ]
+            ) else {
+                return nil
+            }
+            return try mapEntry(row)
+        }
+    }
+
     func fetchEntry(db: Database, assetID: UUID, contentRevision: Int, representationVersion: Int, variant: DerivedImageVariant) throws -> DerivedImageCacheEntryRow? {
         guard let row = try Row.fetchOne(
             db,

@@ -287,12 +287,20 @@ final class DerivedImageCacheService: DerivedImageCachePort, DownloadedPreviewCa
             guard let lookup = try repository.fetchCacheLookupContext(assetID: assetID) else {
                 return nil
             }
-            guard let entry = try repository.fetchEntry(
+            var entry = try repository.fetchEntry(
                 assetID: assetID,
                 contentRevision: lookup.contentRevision,
                 representationVersion: DerivedImageRepresentationVersion.production,
                 variant: variant
-            ) else {
+            )
+            if entry == nil {
+                entry = try repository.fetchLatestRecycledPhotosEntry(
+                    assetID: assetID,
+                    representationVersion: DerivedImageRepresentationVersion.production,
+                    variant: variant
+                )
+            }
+            guard let entry else {
                 return nil
             }
             let session = try store.ensureLayout()

@@ -582,6 +582,73 @@ extension DerivedImageContractTests {
         XCTAssertEqual(row?["source_kind"] as String?, SourceKind.photos.rawValue)
     }
 
+    func testRecycledPhotosThumbnailSurvivesCatalogRevisionAdvance() async throws {
+        let env = try DerivedImageTestSupport.TempEnvironment(
+            label: "photos-recycled-thumbnail-revision"
+        )
+        defer { env.cleanup() }
+        try await seedPhotosAsset(in: env)
+        let sourceBytes = FolderReconcileTestSupport.minimalJPEGData()
+        let (service, _) = env.makeService(volumeReader: DerivedImageTestSupport.generousVolume)
+        let stored = try await service.storePhotoThumbnail(
+            assetID: env.assetID,
+            sourceBytes: sourceBytes
+        )
+
+        try await env.database.pool.write { db in
+            try db.execute(
+                sql: """
+                UPDATE asset
+                SET content_revision = 2, availability = 'missing'
+                WHERE id = ?
+                """,
+                arguments: [env.assetID.uuidString.lowercased()]
+            )
+            try db.execute(
+                sql: """
+                INSERT INTO recycle_entry (
+                    id, asset_id, source_kind, trashed_at_ms, purge_after_ms, state,
+                    quarantine_relative_path, original_relative_path, photos_local_identifier,
+                    error_code, created_at_ms, updated_at_ms
+                ) VALUES (?, ?, 'photos', 1, 2, 'recycled', NULL, NULL, 'abc', NULL, 1, 1)
+                """,
+                arguments: [
+                    UUID().uuidString.lowercased(),
+                    env.assetID.uuidString.lowercased(),
+                ]
+            )
+        }
+
+        XCTAssertEqual(try service.loadPhotoThumbnail(assetID: env.assetID), stored)
+    }
+
+    func testMissingPhotosAssetWithoutRecycleEntryDoesNotReuseStaleThumbnail() async throws {
+        let env = try DerivedImageTestSupport.TempEnvironment(
+            label: "photos-missing-thumbnail-revision"
+        )
+        defer { env.cleanup() }
+        try await seedPhotosAsset(in: env)
+        let sourceBytes = FolderReconcileTestSupport.minimalJPEGData()
+        let (service, _) = env.makeService(volumeReader: DerivedImageTestSupport.generousVolume)
+        _ = try await service.storePhotoThumbnail(
+            assetID: env.assetID,
+            sourceBytes: sourceBytes
+        )
+
+        try await env.database.pool.write { db in
+            try db.execute(
+                sql: """
+                UPDATE asset
+                SET content_revision = 2, availability = 'missing'
+                WHERE id = ?
+                """,
+                arguments: [env.assetID.uuidString.lowercased()]
+            )
+        }
+
+        XCTAssertNil(try service.loadPhotoThumbnail(assetID: env.assetID))
+    }
+
     func testCorruptLocalPhotosThumbnailIsRejectedAndCanBeRebuilt() async throws {
         let env = try DerivedImageTestSupport.TempEnvironment(label: "photos-local-thumbnail-corrupt")
         defer { env.cleanup() }
