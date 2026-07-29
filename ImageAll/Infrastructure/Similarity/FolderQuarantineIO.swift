@@ -26,7 +26,7 @@ struct FolderQuarantineExpectedIdentity: Sendable, Equatable {
     let sizeBytes: Int64
     let modifiedAtNs: Int64
     let resourceID: Data?
-    let sha256: Data
+    let sha256: Data?
 }
 
 /// FD-based move/copy between a writable source root and the app quarantine root.
@@ -116,7 +116,7 @@ struct FolderQuarantineIO: Sendable {
         try copyVerifiedOpenFileAndUnlink(
             sourceFD: openedSource.fd,
             sourceStat: openedSource.stat,
-            expectedDigest: openedSource.digest,
+            expectedDigest: try (openedSource.digest ?? hashFile(fd: openedSource.fd)),
             sourceParentFD: sourceParentFD,
             sourceName: sourceName,
             destParentFD: destParentFD,
@@ -197,7 +197,7 @@ struct FolderQuarantineIO: Sendable {
         try copyVerifiedOpenFileAndUnlink(
             sourceFD: openedSource.fd,
             sourceStat: openedSource.stat,
-            expectedDigest: openedSource.digest,
+            expectedDigest: try (openedSource.digest ?? hashFile(fd: openedSource.fd)),
             sourceParentFD: qParentFD,
             sourceName: qName,
             destParentFD: destParentFD,
@@ -316,7 +316,7 @@ struct FolderQuarantineIO: Sendable {
     private struct OpenedRegularFile {
         let fd: Int32
         let stat: Darwin.stat
-        let digest: Data
+        let digest: Data?
     }
 
     private func openVerifiedRegularFile(
@@ -337,28 +337,34 @@ struct FolderQuarantineIO: Sendable {
             throw FolderQuarantineIOError.unsafePath
         }
 
-        let digest: Data
-        do {
-            digest = try hashFile(fd: fd)
-        } catch {
-            Darwin.close(fd)
-            throw error
-        }
+        var digest: Data?
         if let expectedIdentity {
             let currentResourceID = resourceIdentifier(forOpenFileFD: fd)
             guard let currentModifiedAtNs = modificationTimeNanoseconds(sourceStat),
                   sourceStat.st_size == expectedIdentity.sizeBytes,
                   modificationTimesMatch(
-                    currentModifiedAtNs,
-                    expectedIdentity.modifiedAtNs
+                      currentModifiedAtNs,
+                      expectedIdentity.modifiedAtNs
                   ),
-                  expectedIdentity.sha256.count == SHA256.byteCount,
-                  digest == expectedIdentity.sha256,
                   expectedIdentity.resourceID == nil
                     || currentResourceID == expectedIdentity.resourceID
             else {
                 Darwin.close(fd)
                 throw FolderQuarantineIOError.verificationFailed
+            }
+            if let expectedSHA256 = expectedIdentity.sha256 {
+                do {
+                    digest = try hashFile(fd: fd)
+                } catch {
+                    Darwin.close(fd)
+                    throw error
+                }
+                guard expectedSHA256.count == SHA256.byteCount,
+                      digest == expectedSHA256
+                else {
+                    Darwin.close(fd)
+                    throw FolderQuarantineIOError.verificationFailed
+                }
             }
         }
         return OpenedRegularFile(fd: fd, stat: sourceStat, digest: digest)

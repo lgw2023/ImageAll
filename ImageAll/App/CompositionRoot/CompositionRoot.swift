@@ -333,7 +333,6 @@ struct CompositionRoot {
             database: runtime.database,
             sourceAccess: sourceAccess,
             photosOriginals: photosAccess,
-            photosOriginalVideos: photosAccess,
             photosOriginalCache: photosOriginalCache,
             photosFeatureImages: photosAccess,
             downloadedPreviews: featureInputImages,

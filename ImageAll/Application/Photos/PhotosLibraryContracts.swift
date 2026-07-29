@@ -131,12 +131,6 @@ protocol PhotosOriginalContentPort: Sendable {
     func requestOriginalImageData(localIdentifier: String) throws -> Data
 }
 
-/// Full video bytes for exact-duplicate analysis. Production PhotoKit access
-/// is local-only and never materializes an iCloud original implicitly.
-protocol PhotosOriginalVideoContentPort: Sendable {
-    func requestOriginalVideoData(localIdentifier: String) throws -> Data
-}
-
 struct PhotosOriginalStorageUsage: Equatable, Sendable {
     let entryCount: Int
     let registeredBytes: Int64

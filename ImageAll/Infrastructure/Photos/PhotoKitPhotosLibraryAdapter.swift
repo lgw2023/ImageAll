@@ -5,7 +5,7 @@ import Photos
 
 final class PhotoKitPhotosLibraryAdapter: NSObject, PhotosLibraryAccessPort, PhotosChangeHistoryPort,
     PhotosChangeObserverPort, PhotosLibraryAvailabilityObserverPort, PhotosCloudPreviewPort,
-    PhotosOriginalContentPort, PhotosOriginalVideoContentPort, PhotosFeaturePrintImagePort,
+    PhotosOriginalContentPort, PhotosFeaturePrintImagePort,
     PHPhotoLibraryChangeObserver,
     PHPhotoLibraryAvailabilityObserver,
     @unchecked Sendable
@@ -460,35 +460,6 @@ final class PhotoKitPhotosLibraryAdapter: NSObject, PhotosLibraryAccessPort, Pho
         return try value.get()
     }
 
-    func requestOriginalVideoData(localIdentifier: String) throws -> Data {
-        guard authorizationState() == .authorized else {
-            throw PhotosLibraryError.authorizationDenied
-        }
-        let fetch = PHAsset.fetchAssets(withLocalIdentifiers: [localIdentifier], options: nil)
-        guard let asset = fetch.firstObject,
-              asset.mediaType == .video,
-              let resource = preferredMediaResource(for: asset)
-        else {
-            throw PhotosLibraryError.libraryUnavailable
-        }
-
-        let result = SynchronousResourceDataResult()
-        let semaphore = DispatchSemaphore(value: 0)
-        PHAssetResourceManager.default().requestData(
-            for: resource,
-            options: Self.makeLocalOnlyVideoResourceRequestOptions(),
-            dataReceivedHandler: { data in
-                result.append(data)
-            },
-            completionHandler: { error in
-                result.finish(error: error)
-                semaphore.signal()
-            }
-        )
-        semaphore.wait()
-        return try result.value()
-    }
-
     func requestLocalFeatureImage(localIdentifier: String) throws -> Data {
         guard authorizationState() == .authorized else {
             throw PhotosLibraryError.authorizationDenied
@@ -710,36 +681,6 @@ private final class SynchronousImageResult: @unchecked Sendable {
         lock.withLock {
             guard storedValue == nil else { return }
             storedValue = value
-        }
-    }
-}
-
-private final class SynchronousResourceDataResult: @unchecked Sendable {
-    private let lock = NSLock()
-    private var data = Data()
-    private var completionError: Error?
-
-    func append(_ chunk: Data) {
-        lock.withLock {
-            data.append(chunk)
-        }
-    }
-
-    func finish(error: Error?) {
-        lock.withLock {
-            completionError = error
-        }
-    }
-
-    func value() throws -> Data {
-        try lock.withLock {
-            if completionError != nil {
-                throw PhotosLibraryError.cloudOnly
-            }
-            guard !data.isEmpty else {
-                throw PhotosLibraryError.libraryUnavailable
-            }
-            return data
         }
     }
 }

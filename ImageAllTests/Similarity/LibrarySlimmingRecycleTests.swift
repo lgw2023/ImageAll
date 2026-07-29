@@ -557,6 +557,41 @@ final class LibrarySlimmingRecycleTests: XCTestCase {
         XCTAssertEqual(retainedAsset?["availability"] as String?, AssetAvailability.recycled.rawValue)
     }
 
+    func testSameVolumeVideoMoveDoesNotRequireFullFileSHA256() throws {
+        let env = try RecycleTestEnv(label: #function)
+        defer { env.cleanup() }
+
+        let bytes = Data("video-fixture".utf8)
+        let seeded = try env.seedAsset(relativePath: "album/video.mov", contents: bytes)
+        try env.database.pool.write { db in
+            try db.execute(
+                sql: """
+                UPDATE asset
+                SET media_kind = 'video',
+                    media_type = 'com.apple.quicktime-movie',
+                    duration_ms = 4000
+                WHERE id = ?
+                """,
+                arguments: [seeded.assetID.uuidString.lowercased()]
+            )
+            try db.execute(
+                sql: "UPDATE file_fingerprint SET sha256 = NULL WHERE asset_id = ?",
+                arguments: [seeded.assetID.uuidString.lowercased()]
+            )
+        }
+
+        let service = env.makeRecycleService()
+        let outcome = try service.moveFolderAssetsToRecycle(assetIDs: [seeded.assetID])
+
+        XCTAssertEqual(outcome.recycledEntryIDs.count, 1)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: seeded.fileURL.path))
+        let entry = try XCTUnwrap(try service.listRecycledEntries().first)
+        let quarantineURL = env.quarantineRoot.appendingPathComponent(
+            try XCTUnwrap(entry.quarantineRelativePath)
+        )
+        XCTAssertEqual(try Data(contentsOf: quarantineURL), bytes)
+    }
+
     func testRestoredHistoricalAssetResolvesToMatchingCurrentSuccessor() throws {
         let env = try RecycleTestEnv(label: #function)
         defer { env.cleanup() }

@@ -7,7 +7,6 @@ struct FingerprintCompletionService: FingerprintCompletionPort {
     let sourceAccess: FolderReconcileSourceAccessService
     let sourceReader: DerivedImageSourceReader
     let photosOriginals: (any PhotosOriginalContentPort)?
-    let photosOriginalVideos: (any PhotosOriginalVideoContentPort)?
     let photosOriginalCache: PhotosOriginalCacheService?
     let photosFeatureImages: (any PhotosFeaturePrintImagePort)?
     let downloadedPreviews: (any DownloadedPreviewCachePort)?
@@ -20,7 +19,6 @@ struct FingerprintCompletionService: FingerprintCompletionPort {
         sourceAccess: FolderReconcileSourceAccessService,
         sourceReader: DerivedImageSourceReader = DerivedImageSourceReader(),
         photosOriginals: (any PhotosOriginalContentPort)? = nil,
-        photosOriginalVideos: (any PhotosOriginalVideoContentPort)? = nil,
         photosOriginalCache: PhotosOriginalCacheService? = nil,
         photosFeatureImages: (any PhotosFeaturePrintImagePort)? = nil,
         downloadedPreviews: (any DownloadedPreviewCachePort)? = nil,
@@ -33,7 +31,6 @@ struct FingerprintCompletionService: FingerprintCompletionPort {
         self.sourceAccess = sourceAccess
         self.sourceReader = sourceReader
         self.photosOriginals = photosOriginals
-        self.photosOriginalVideos = photosOriginalVideos
         self.photosOriginalCache = photosOriginalCache
         self.photosFeatureImages = photosFeatureImages
         self.downloadedPreviews = downloadedPreviews
@@ -68,21 +65,21 @@ struct FingerprintCompletionService: FingerprintCompletionPort {
             return existing
         }
 
-        let input: (contentBytes: Data, visualBytes: Data, expectedMediaType: String?)
+        let input: (contentBytes: Data?, visualBytes: Data, expectedMediaType: String?)
         do {
             input = try sourceAccess.withActiveSourceRootURL(sourceID: context.sourceID) { rootURL in
-                let initial = try sourceReader.readSourceBytes(
-                    rootURL: rootURL,
-                    relativePath: context.relativePath
-                )
-                guard context.matchesHandleFacts(initial.initialFingerprint),
-                      initial.preHandleFstat.sizeBytes == initial.postHandleFstat.sizeBytes,
-                      initial.preHandleFstat.modifiedAtNs == initial.postHandleFstat.modifiedAtNs,
-                      initial.initialFingerprint.resourceID == initial.postResourceID
-                else {
-                    throw FingerprintCompletionError.sourceChanged
-                }
                 guard context.mediaKind == .video else {
+                    let initial = try sourceReader.readSourceBytes(
+                        rootURL: rootURL,
+                        relativePath: context.relativePath
+                    )
+                    guard context.matchesHandleFacts(initial.initialFingerprint),
+                          initial.preHandleFstat.sizeBytes == initial.postHandleFstat.sizeBytes,
+                          initial.preHandleFstat.modifiedAtNs == initial.postHandleFstat.modifiedAtNs,
+                          initial.initialFingerprint.resourceID == initial.postResourceID
+                    else {
+                        throw FingerprintCompletionError.sourceChanged
+                    }
                     return (initial.bytes, initial.bytes, context.mediaType)
                 }
                 guard let durationMs = context.durationMs, durationMs > 0 else {
@@ -106,7 +103,7 @@ struct FingerprintCompletionService: FingerprintCompletionPort {
                         throw FingerprintCompletionError.decodeFailed
                     }
                 }
-                return (initial.bytes, poster, nil)
+                return (nil, poster, nil)
             }
         } catch let error as FingerprintCompletionError {
             throw error
@@ -121,7 +118,6 @@ struct FingerprintCompletionService: FingerprintCompletionPort {
             throw FingerprintCompletionError.sourceUnavailable
         }
 
-        let sha256 = Data(SHA256.hash(data: input.contentBytes))
         let analysis: PerceptualImageAnalysis
         do {
             analysis = try PerceptualImageHash.analyze(
@@ -131,6 +127,8 @@ struct FingerprintCompletionService: FingerprintCompletionPort {
         } catch {
             throw FingerprintCompletionError.decodeFailed
         }
+        let sha256 = input.contentBytes.map { Data(SHA256.hash(data: $0)) }
+            ?? PerceptualImageHash.visualContentDigest(analysis)
         let perceptual = PerceptualImageHash.encodeHash(analysis.dHash)
 
         let nowMs = clock.nowMs
@@ -141,6 +139,7 @@ struct FingerprintCompletionService: FingerprintCompletionPort {
                 expectedSize: context.fingerprintSizeBytes,
                 expectedModifiedAtNs: context.fingerprintModifiedAtNs,
                 expectedResourceID: context.fingerprintResourceID,
+                fileSHA256: input.contentBytes == nil ? nil : sha256,
                 sha256: sha256,
                 perceptualHash: perceptual,
                 verificationSignature: analysis.verificationSignature,
@@ -473,16 +472,12 @@ struct FingerprintCompletionService: FingerprintCompletionPort {
         ) {
             return existing
         }
-        guard let photosOriginalVideos, let photosFeatureImages else {
+        guard let photosFeatureImages else {
             throw FingerprintCompletionError.ineligible
         }
 
-        let videoBytes: Data
         let posterBytes: Data
         do {
-            videoBytes = try photosOriginalVideos.requestOriginalVideoData(
-                localIdentifier: context.localIdentifier
-            )
             posterBytes = try photosFeatureImages.requestLocalFeatureImage(
                 localIdentifier: context.localIdentifier
             )
@@ -496,11 +491,10 @@ struct FingerprintCompletionService: FingerprintCompletionPort {
         } catch {
             throw FingerprintCompletionError.sourceUnavailable
         }
-        guard !videoBytes.isEmpty, !posterBytes.isEmpty else {
+        guard !posterBytes.isEmpty else {
             throw FingerprintCompletionError.sourceUnavailable
         }
 
-        let sha256 = Data(SHA256.hash(data: videoBytes))
         let analysis: PerceptualImageAnalysis
         do {
             analysis = try PerceptualImageHash.analyze(
@@ -510,6 +504,7 @@ struct FingerprintCompletionService: FingerprintCompletionPort {
         } catch {
             throw FingerprintCompletionError.decodeFailed
         }
+        let sha256 = PerceptualImageHash.visualContentDigest(analysis)
         let perceptual = PerceptualImageHash.encodeHash(analysis.dHash)
         do {
             try persistPhotosFingerprint(
@@ -697,6 +692,7 @@ struct FingerprintCompletionService: FingerprintCompletionPort {
         expectedSize: Int64,
         expectedModifiedAtNs: Int64,
         expectedResourceID: Data?,
+        fileSHA256: Data?,
         sha256: Data,
         perceptualHash: Data,
         verificationSignature: Data,
@@ -719,7 +715,7 @@ struct FingerprintCompletionService: FingerprintCompletionPort {
                   )
                 """,
                 arguments: [
-                    sha256,
+                    fileSHA256,
                     assetID.uuidString.lowercased(),
                     expectedSize,
                     expectedModifiedAtNs,

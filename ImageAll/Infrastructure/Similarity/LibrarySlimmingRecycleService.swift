@@ -721,8 +721,7 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
         let purgeAfter = LibrarySlimmingRecyclePolicy.purgeAfterMs(trashedAtMs: now)
         guard let sizeBytes = asset.sizeBytes,
               let modifiedAtNs = asset.modifiedAtNs,
-              let sha256 = asset.sha256,
-              sha256.count == 32
+              asset.sha256 == nil || asset.sha256?.count == 32
         else {
             throw LibrarySlimmingRecycleError.sourceChanged
         }
@@ -730,7 +729,7 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
             sizeBytes: sizeBytes,
             modifiedAtNs: modifiedAtNs,
             resourceID: asset.resourceID,
-            sha256: sha256
+            sha256: asset.sha256
         )
 
         try database.pool.write { db in
@@ -1402,7 +1401,10 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
                     a.id, a.source_id, a.locator_kind, a.relative_path,
                     a.photos_local_identifier, a.file_name, a.availability,
                     f.size_bytes, f.modified_at_ns, f.resource_id,
-                    COALESCE(f.sha256, sf.content_sha256) AS sha256
+                    CASE a.media_kind
+                        WHEN 'video' THEN f.sha256
+                        ELSE COALESCE(f.sha256, sf.content_sha256)
+                    END AS sha256
                 FROM asset a
                 LEFT JOIN file_fingerprint f ON f.asset_id = a.id
                 LEFT JOIN asset_similarity_fingerprint sf

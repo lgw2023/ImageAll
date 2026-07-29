@@ -4,8 +4,10 @@ import Foundation
 enum IdenticalDuplicatePolicy {
     /// Difference-hash algorithm identity persisted in `asset_similarity_fingerprint.algo_version`.
     static let perceptualAlgoVersion = "dhash-rgbverify-v2"
-    /// Video visual verification runs against the deterministic representative poster.
-    static let videoPosterPerceptualAlgoVersion = "videoPoster.v1-dhash-rgbverify-v2"
+    /// Video identity and visual verification both run against videoPoster.v1.
+    /// The visual-only revision invalidates former full-video SHA-256 fingerprints.
+    static let videoPosterPerceptualAlgoVersion =
+        "videoPoster.v1-visualdigest-dhash-rgbverify-v3"
 
     /// Maximum Hamming distance (inclusive) for the dHash candidate stage.
     static let perceptualDuplicateMaxHammingDistance = 8

@@ -1087,7 +1087,7 @@ struct LibrarySlimmingInspectorView: View {
                     .font(.headline)
                 Text(
                     model.selectedMediaKind == .video
-                        ? "查找完整文件相同或代表缩略图相似的视频。文件夹资产使用 ImageAll 的 30 天回收机制；Photos 资产使用 macOS「照片」App 的系统删除与恢复机制。"
+                        ? "按代表缩略图查找视觉重复或相似的视频。文件夹资产使用 ImageAll 的 30 天回收机制；Photos 资产使用 macOS「照片」App 的系统删除与恢复机制。"
                         : "查找相同与相似照片。文件夹资产使用 ImageAll 的 30 天回收机制；Photos 资产使用 macOS「照片」App 的系统删除与恢复机制。"
                 )
                     .font(.callout)
