@@ -10,7 +10,8 @@
 - 开工基线：`51eec706170ccf0a2b1f99494c45aa7f9559f2a3`
 - 隔离分支：`lgw/imageall-mobile-r3-polish`
 - 实现提交：`17237f2f`
-- 实施身份：Codex；实现 `feat(codex):`；文档 `docs(codex):`
+- 身份绑定加固提交：`38d9e6a8`
+- 实施身份：Codex；实现 `feat(codex):` / `fix(codex):`；文档 `docs(codex):`
 
 ## 并行工作区边界
 
@@ -70,6 +71,25 @@ ADR-044 的二维码按安全边界只带 `hostID`、端口提示、一次性 to
 该字段为向后兼容的可选 TXT 元数据，不改变 HTTP DTO，不同步数据库，也不把
 `LibraryWorkspaceModel` 作为网络入口。
 
+## 已配对 Host 身份绑定加固
+
+真机 smoke 尚未具备设备条件，但静态复核发现两个可独立闭环的会话缺口：
+
+1. Mobile 原先只保存 Host 地址，没有保存配对返回的 `hostID`。Mac 的局域网地址变化后，
+   已配对会话无法根据 Bonjour 中的稳定身份找回新地址。
+2. pairing/refresh 请求虽然由既有证书指纹固定的 TLS 通道保护，但客户端会直接保存响应 DTO
+   中的新指纹；响应若与原信任锚不一致，不应静默迁移信任。
+
+提交 `38d9e6a8` 完成以下加固：
+
+- 配对成功后持久化 `hostID`，断开状态收到 Bonjour 更新时仅按该稳定身份更新 Host 地址和端口；
+- 扫码匹配优先且严格使用 `hostID`，只有旧 Host 未广播身份时才允许同名兼容回退；
+- pairing 与 refresh 响应在落盘前校验 Host ID、TLS 模式、证书 SHA-256 指纹和端口；
+- TLS 指纹只接受 64 位 ASCII 十六进制，或严格的 32 组冒号分隔字节，不再忽略任意夹杂字符；
+- 旧 Mobile 会话没有持久化 `hostID` 时仍可用原指纹完成一次 refresh，成功后自动补存身份。
+
+本加固不改 Remote DTO，不允许远端替代 Mac 写权威，也不改变 R3/R4 边界。
+
 ## 自动化与构建证据
 
 所有命令均在隔离 worktree 执行；构建产物写入 `/tmp`，没有启动 Mac 生产 App。
@@ -77,7 +97,7 @@ ADR-044 的二维码按安全边界只带 `hostID`、端口提示、一次性 to
 | 验证 | 结果 |
 |---|---|
 | `Packages/ImageAllRemoteProtocol`：`swift test -q` | 9 tests，0 failures |
-| `Packages/ImageAllRemoteClient`：`swift test -q` | 13 tests，0 failures |
+| `Packages/ImageAllRemoteClient`：`swift test -q` | 23 tests，0 failures |
 | Mobile Debug，generic iOS Simulator | `BUILD SUCCEEDED` |
 | Mobile Debug，generic iOS Device/arm64 | `BUILD SUCCEEDED` |
 | Mac Debug，macOS | `BUILD SUCCEEDED` |
@@ -93,6 +113,17 @@ Remote 定向编译包含：
 - `RemoteHostIdentityTests`
 - `RemoteIdempotencyStoreTests`
 - `RemotePairingStoreTests`
+
+身份绑定新增的 10 项 Client 测试覆盖：
+
+- 二维码指纹严格格式与冒号分隔兼容；
+- pairing/refresh Host ID 与 TLS 指纹不漂移；
+- 旧会话缺失已存 Host ID 的一次性迁移；
+- Bonjour 精确身份优先、拒绝同名不同身份、旧 Host 同名回退。
+
+本轮曾先以 Mac 工程名调用 Mobile scheme，Xcode 在方案解析阶段返回
+“不包含 `ImageAllMobile` scheme”；更正为独立的 `ImageAllMobile.xcodeproj` 后，模拟器与
+设备架构 Debug 构建均成功。该误调用未启动 App、测试宿主或数据访问。
 
 未执行 Mac `xcodebuild test`：`ImageAllTests` 当前配置了生产 `ImageAll.app` 作为
 `TEST_HOST`。`docs/LOCAL-TEST-DATA-SAFETY.md` 已记录，在受保护 Photos Library 所在卷挂载时，
@@ -191,4 +222,6 @@ identifier 写入证据。
 
 1. 物理 iPhone 未接入，真机相机、局域网权限与 TLS 配对主路径仍需按清单现场执行。
 2. Mac Remote Xcode 测试已编译但未启动生产 test host；需隔离宿主或一次具体授权后补执行证据。
-3. 本切片停止于 R3 Mobile 打磨；不自动进入 R4 Relay。
+3. Mobile 现有会话 token 仍由既有实现保存在 `UserDefaults`；正式产品化前应把可撤销
+   `refreshToken` 迁入 iOS Keychain，并保留可测试的旧值迁移。
+4. 本切片停止于 R3 Mobile 打磨；不自动进入 R4 Relay。
