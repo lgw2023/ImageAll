@@ -9,19 +9,22 @@ public struct RemoteDiscoveredHost: Identifiable, Sendable, Equatable, Hashable 
     public let host: String
     public let port: Int
     public let protocolVersion: Int?
+    public let hostID: UUID?
 
     public init(
         name: String,
         domain: String,
         host: String,
         port: Int,
-        protocolVersion: Int?
+        protocolVersion: Int?,
+        hostID: UUID? = nil
     ) {
         self.name = name
         self.domain = domain
         self.host = host
         self.port = port
         self.protocolVersion = protocolVersion
+        self.hostID = hostID
     }
 }
 
@@ -89,13 +92,16 @@ public final class RemoteHostBrowser: @unchecked Sendable {
             }
             let serviceID = "\(name).\(domain)"
             seenServiceIDs.insert(serviceID)
-            let protocolVersion = RemoteBonjour.protocolVersion(fromTXT: txtDictionary(from: result.metadata))
+            let txt = txtDictionary(from: result.metadata)
+            let protocolVersion = RemoteBonjour.protocolVersion(fromTXT: txt)
+            let hostID = RemoteBonjour.hostID(fromTXT: txt)
             resolveIfNeeded(
                 serviceID: serviceID,
                 name: name,
                 domain: domain,
                 endpoint: result.endpoint,
-                protocolVersion: protocolVersion
+                protocolVersion: protocolVersion,
+                hostID: hostID
             )
         }
 
@@ -118,7 +124,8 @@ public final class RemoteHostBrowser: @unchecked Sendable {
         name: String,
         domain: String,
         endpoint: NWEndpoint,
-        protocolVersion: Int?
+        protocolVersion: Int?,
+        hostID: UUID?
     ) {
         lock.lock()
         if hostsByServiceID[serviceID] != nil || pendingResolvers[serviceID] != nil {
@@ -139,7 +146,8 @@ public final class RemoteHostBrowser: @unchecked Sendable {
                         name: name,
                         domain: domain,
                         connection: connection,
-                        protocolVersion: protocolVersion
+                        protocolVersion: protocolVersion,
+                        hostID: hostID
                     )
                 }
             case .failed, .cancelled:
@@ -161,7 +169,8 @@ public final class RemoteHostBrowser: @unchecked Sendable {
         name: String,
         domain: String,
         connection: NWConnection,
-        protocolVersion: Int?
+        protocolVersion: Int?,
+        hostID: UUID?
     ) {
         defer { connection.cancel() }
         guard let remote = connection.currentPath?.remoteEndpoint,
@@ -189,7 +198,8 @@ public final class RemoteHostBrowser: @unchecked Sendable {
             domain: domain,
             host: hostString,
             port: Int(port.rawValue),
-            protocolVersion: protocolVersion
+            protocolVersion: protocolVersion,
+            hostID: hostID
         )
         lock.lock()
         pendingResolvers.removeValue(forKey: serviceID)

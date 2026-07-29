@@ -132,6 +132,143 @@ final class RemoteLibraryClientTests: XCTestCase {
         XCTAssertFalse(response.replayed)
     }
 
+    func testLoadsAssetDetailAndPreviewAtRequestedWidth() async throws {
+        let assetID = UUID(uuidString: "33333333-3333-3333-3333-333333333333")!
+        let transport = MockTransport { request in
+            if request.url?.path == "/v1/assets/\(assetID.uuidString)" {
+                let detail = RemoteAssetDetail(
+                    assetID: assetID,
+                    sourceID: UUID(),
+                    sourceName: "Fixture",
+                    fileName: "sample.jpg",
+                    relativePath: "sample.jpg",
+                    mediaType: "image",
+                    availability: .available,
+                    contentRevision: 1,
+                    acceptedTagCount: 0,
+                    rejectedTagCount: 0,
+                    mediaCreatedAtMs: nil,
+                    mediaModifiedAtMs: nil,
+                    width: 1200,
+                    height: 800,
+                    tags: []
+                )
+                return try Self.jsonResponse(detail, for: request)
+            }
+            XCTAssertEqual(request.url?.path, "/v1/assets/\(assetID.uuidString)/preview")
+            let query = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems
+            XCTAssertEqual(query?.first(where: { $0.name == "w" })?.value, "1440")
+            return (
+                Data([0xFF, 0xD8, 0xFF]),
+                HTTPURLResponse(
+                    url: request.url!,
+                    statusCode: 200,
+                    httpVersion: "HTTP/1.1",
+                    headerFields: ["Content-Type": "image/jpeg"]
+                )!
+            )
+        }
+        let client = RemoteLibraryClient(
+            endpoint: try RemoteHostEndpoint(host: "127.0.0.1", port: 8787, accessToken: "secret"),
+            transport: transport
+        )
+
+        let detail = try await client.fetchAssetDetail(assetID: assetID)
+        let preview = try await client.loadPreview(assetID: assetID, targetPixelWidth: 1440)
+
+        XCTAssertEqual(detail.assetID, assetID)
+        XCTAssertEqual(preview, Data([0xFF, 0xD8, 0xFF]))
+    }
+
+    func testBuildsReviewQueueQueryAndPostsDecision() async throws {
+        let tagID = UUID(uuidString: "22222222-2222-2222-2222-222222222222")!
+        let sourceID = UUID(uuidString: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")!
+        let assetID = UUID(uuidString: "33333333-3333-3333-3333-333333333333")!
+        let operationID = UUID(uuidString: "11111111-1111-1111-1111-111111111111")!
+        let transport = MockTransport { request in
+            if request.httpMethod == "GET" {
+                XCTAssertEqual(request.url?.path, "/v1/review/queue")
+                let items = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems ?? []
+                let map = Dictionary(uniqueKeysWithValues: items.map { ($0.name, $0.value ?? "") })
+                XCTAssertEqual(map["tagID"], tagID.uuidString)
+                XCTAssertEqual(map["sourceIDs"], sourceID.uuidString)
+                XCTAssertEqual(map["limit"], "20")
+                XCTAssertEqual(map["cursor"], "next")
+                return try Self.jsonResponse(
+                    RemoteReviewQueuePage(items: [], nextCursor: nil),
+                    for: request
+                )
+            }
+
+            XCTAssertEqual(request.url?.path, "/v1/review/decisions/batch")
+            let body = try XCTUnwrap(request.httpBody)
+            let decoded = try JSONDecoder().decode(RemoteBatchReviewDecisionRequest.self, from: body)
+            XCTAssertEqual(decoded.operationID, operationID)
+            XCTAssertEqual(decoded.tagID, tagID)
+            XCTAssertEqual(decoded.assetIDs, [assetID])
+            XCTAssertEqual(decoded.action, .accept)
+            return try Self.jsonResponse(
+                RemoteBatchReviewDecisionResponse(
+                    operationID: operationID,
+                    appliedAssetCount: 1,
+                    replayed: false
+                ),
+                for: request
+            )
+        }
+        let client = RemoteLibraryClient(
+            endpoint: try RemoteHostEndpoint(host: "127.0.0.1", port: 8787, accessToken: "secret"),
+            transport: transport
+        )
+
+        _ = try await client.fetchReviewQueue(
+            RemoteReviewQueueRequest(
+                tagID: tagID,
+                sourceIDs: [sourceID],
+                limit: 20,
+                cursor: "next"
+            )
+        )
+        let response = try await client.applyReviewDecision(
+            RemoteBatchReviewDecisionRequest(
+                operationID: operationID,
+                tagID: tagID,
+                assetIDs: [assetID],
+                action: .accept
+            )
+        )
+
+        XCTAssertEqual(response.appliedAssetCount, 1)
+    }
+
+    func testPostsJobAction() async throws {
+        let jobID = UUID(uuidString: "44444444-4444-4444-4444-444444444444")!
+        let transport = MockTransport { request in
+            XCTAssertEqual(request.httpMethod, "POST")
+            XCTAssertEqual(request.url?.path, "/v1/jobs/\(jobID.uuidString)/actions")
+            let body = try XCTUnwrap(request.httpBody)
+            XCTAssertEqual(
+                try JSONDecoder().decode(RemoteJobActionRequest.self, from: body).action,
+                .pause
+            )
+            return (
+                Data(),
+                HTTPURLResponse(
+                    url: request.url!,
+                    statusCode: 200,
+                    httpVersion: "HTTP/1.1",
+                    headerFields: ["Content-Type": "application/json"]
+                )!
+            )
+        }
+        let client = RemoteLibraryClient(
+            endpoint: try RemoteHostEndpoint(host: "127.0.0.1", port: 8787, accessToken: "secret"),
+            transport: transport
+        )
+
+        try await client.applyJobAction(jobID: jobID, action: .pause)
+    }
+
     func testHostEndpointBracketsIPv6() throws {
         let endpoint = try RemoteHostEndpoint(
             host: "fe80::1",
@@ -139,6 +276,21 @@ final class RemoteLibraryClientTests: XCTestCase {
             accessToken: "secret"
         )
         XCTAssertEqual(endpoint.baseURL.absoluteString, "http://[fe80::1]:8787")
+    }
+
+    private static func jsonResponse<T: Encodable>(
+        _ value: T,
+        for request: URLRequest
+    ) throws -> (Data, URLResponse) {
+        (
+            try JSONEncoder().encode(value),
+            HTTPURLResponse(
+                url: request.url!,
+                statusCode: 200,
+                httpVersion: "HTTP/1.1",
+                headerFields: ["Content-Type": "application/json"]
+            )!
+        )
     }
 }
 

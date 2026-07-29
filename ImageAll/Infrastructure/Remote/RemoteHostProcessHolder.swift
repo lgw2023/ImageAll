@@ -97,7 +97,8 @@ enum RemoteHostProcessHolder {
             pairingStore: pairingStore,
             eventBroker: eventBroker,
             secIdentity: identity.secIdentity,
-            port: port
+            port: port,
+            hostID: identity.hostID
         )
         Task {
             do {

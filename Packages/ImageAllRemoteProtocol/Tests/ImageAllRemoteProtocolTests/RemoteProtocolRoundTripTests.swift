@@ -56,9 +56,12 @@ final class RemoteProtocolRoundTripTests: XCTestCase {
     }
 
     func testBonjourTXTRoundTripHelpers() {
-        let txt = RemoteBonjour.txtRecord(protocolVersion: 1)
+        let hostID = UUID(uuidString: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")!
+        let txt = RemoteBonjour.txtRecord(protocolVersion: 1, hostID: hostID)
         XCTAssertEqual(txt[RemoteBonjour.TXTKey.protocolVersion], "1")
+        XCTAssertEqual(txt[RemoteBonjour.TXTKey.hostID], hostID.uuidString)
         XCTAssertEqual(RemoteBonjour.protocolVersion(fromTXT: txt), 1)
+        XCTAssertEqual(RemoteBonjour.hostID(fromTXT: txt), hostID)
         XCTAssertEqual(RemoteBonjour.serviceType, "_imageall._tcp")
     }
 
@@ -111,6 +114,7 @@ final class RemoteProtocolRoundTripTests: XCTestCase {
     func testAPIErrorRoundTrip() throws {
         let original = RemoteAPIError(code: .unauthorized, message: "missing token")
         try assertRoundTrip(original)
+        XCTAssertEqual(original.localizedDescription, "missing token")
     }
 
     private func assertRoundTrip<T: Codable & Equatable>(_ value: T) throws {
