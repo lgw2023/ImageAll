@@ -7,6 +7,55 @@ import XCTest
 final class RemoteHTTPServerTests: XCTestCase {
     private static let legacyDebugToken = "secret-token"
 
+    func testRemoteHostDefaultsEnabledUntilUserTurnsItOff() {
+        let suiteName = "RemoteHTTPServerTests.RemoteHostDefaults.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.removePersistentDomain(forName: suiteName)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        XCTAssertTrue(
+            RemoteHostProcessHolder.isEnabled(defaults: defaults, environment: [:])
+        )
+
+        defaults.set(false, forKey: RemoteHostProcessHolder.enabledKey)
+        XCTAssertFalse(
+            RemoteHostProcessHolder.isEnabled(defaults: defaults, environment: [:])
+        )
+
+        defaults.set(true, forKey: RemoteHostProcessHolder.enabledKey)
+        XCTAssertTrue(
+            RemoteHostProcessHolder.isEnabled(defaults: defaults, environment: [:])
+        )
+    }
+
+    func testRemoteHostEnvironmentProvidesDevelopmentDefaultWithoutOverridingUserSwitch() {
+        let suiteName = "RemoteHTTPServerTests.RemoteHostEnvironment.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.removePersistentDomain(forName: suiteName)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        XCTAssertTrue(
+            RemoteHostProcessHolder.isEnabled(
+                defaults: defaults,
+                environment: ["IMAGEALL_REMOTE_HOST": "1"]
+            )
+        )
+        XCTAssertFalse(
+            RemoteHostProcessHolder.isEnabled(
+                defaults: defaults,
+                environment: ["IMAGEALL_REMOTE_HOST": "0"]
+            )
+        )
+
+        defaults.set(false, forKey: RemoteHostProcessHolder.enabledKey)
+        XCTAssertFalse(
+            RemoteHostProcessHolder.isEnabled(
+                defaults: defaults,
+                environment: ["IMAGEALL_REMOTE_HOST": "1"]
+            )
+        )
+    }
+
     private func makeIdempotencyStore() -> RemoteIdempotencyStore {
         RemoteIdempotencyStore(storageURL: tempStorageURL(name: "idempotency.json"))
     }

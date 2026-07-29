@@ -14,11 +14,10 @@ final class RemoteHostSettingsModel: ObservableObject {
     @Published private(set) var devices: [RemotePairedDeviceSummary] = []
     @Published private(set) var statusMessage: String?
     @Published private(set) var legacyDebugToken: String?
-
-    private let enabledKey = "imageall.remoteHost.enabled"
+    @Published private(set) var isApplyingConfiguration = false
 
     init() {
-        isEnabled = UserDefaults.standard.bool(forKey: enabledKey)
+        isEnabled = RemoteHostProcessHolder.isEnabled()
         publicBaseURL = UserDefaults.standard.string(
             forKey: RemoteHostProcessHolder.publicBaseURLKey
         ) ?? ""
@@ -28,6 +27,7 @@ final class RemoteHostSettingsModel: ObservableObject {
     }
 
     func refresh() async {
+        isEnabled = RemoteHostProcessHolder.isEnabled()
         isRunning = await RemoteHostProcessHolder.isRunning()
         if let identity = await RemoteHostProcessHolder.identitySummary() {
             identityText = identity.hostID.uuidString
@@ -45,10 +45,37 @@ final class RemoteHostSettingsModel: ObservableObject {
 #endif
     }
 
+    func refreshUntilStartupSettles() async {
+        await refresh()
+        guard isEnabled, !isRunning else { return }
+
+        for _ in 0 ..< 20 {
+            do {
+                try await Task.sleep(for: .milliseconds(100))
+            } catch {
+                return
+            }
+            await refresh()
+            if isRunning || !isEnabled {
+                return
+            }
+        }
+    }
+
     func setEnabled(_ enabled: Bool) {
         isEnabled = enabled
-        UserDefaults.standard.set(enabled, forKey: enabledKey)
-        statusMessage = "已写入开关。请重新启动 ImageAll 使 Host \(enabled ? "启动" : "停止")。"
+        isApplyingConfiguration = true
+        statusMessage = enabled ? "正在启动移动 Host…" : "正在停止移动 Host…"
+        Task {
+            let result = await RemoteHostProcessHolder.setEnabled(enabled)
+            await refresh()
+            isApplyingConfiguration = false
+            statusMessage = lifecycleMessage(
+                result,
+                running: "移动 Host 已启动，可立即开始配对。",
+                stopped: "移动 Host 已停止。"
+            )
+        }
     }
 
     func savePublicBaseURL() {
@@ -58,7 +85,9 @@ final class RemoteHostSettingsModel: ObservableObject {
                 forKey: RemoteHostProcessHolder.publicBaseURLKey
             )
             publicBaseURL = ""
-            statusMessage = "已关闭公网入口。请重新启动 ImageAll 使设置生效。"
+            applyStoredConfiguration(
+                runningMessage: "已关闭公网入口；Host 已切换为局域网模式。"
+            )
             return
         }
         guard let normalized = RemotePublicEndpoint.normalizedHTTPSBaseURL(trimmed) else {
@@ -70,13 +99,15 @@ final class RemoteHostSettingsModel: ObservableObject {
             forKey: RemoteHostProcessHolder.publicBaseURLKey
         )
         publicBaseURL = normalized
-        statusMessage = "已保存公网入口。请重新启动 ImageAll 使 Host 和新二维码使用该地址。"
+        applyStoredConfiguration(
+            runningMessage: "公网入口已生效；请生成新的配对二维码。"
+        )
     }
 
     func startPairing() async {
         offer = await RemoteHostProcessHolder.startPairingSession()
         if offer == nil {
-            statusMessage = "Host 未运行。请先打开开关并重启应用。"
+            statusMessage = "Host 尚未就绪，请确认“启用移动 Host”已打开后重试。"
         } else {
             statusMessage = "配对会话已开始（约 5 分钟有效）"
         }
@@ -105,6 +136,40 @@ final class RemoteHostSettingsModel: ObservableObject {
         NSPasteboard.general.setString(text, forType: .string)
         statusMessage = "配对载荷已复制到剪贴板"
     }
+
+    private func applyStoredConfiguration(runningMessage: String) {
+        isApplyingConfiguration = true
+        statusMessage = "正在应用 Host 设置…"
+        Task {
+            let result = await RemoteHostProcessHolder.reloadConfiguration()
+            await refresh()
+            isApplyingConfiguration = false
+            statusMessage = lifecycleMessage(
+                result,
+                running: runningMessage,
+                stopped: "设置已保存；移动 Host 当前关闭。"
+            )
+        }
+    }
+
+    private func lifecycleMessage(
+        _ result: RemoteHostProcessHolder.LifecycleResult,
+        running: String,
+        stopped: String
+    ) -> String {
+        switch result {
+        case .running:
+            return running
+        case .stopped:
+            return stopped
+        case .waitingForAttachment:
+            return "设置已保存；图库服务就绪后会自动启动 Host。"
+        case .superseded:
+            return "Host 设置已由更新的操作接管。"
+        case let .failed(message):
+            return "Host 启动失败：\(message)"
+        }
+    }
 }
 
 struct RemoteHostSettingsView: View {
@@ -120,6 +185,7 @@ struct RemoteHostSettingsView: View {
                         set: { model.setEnabled($0) }
                     )
                 )
+                .disabled(model.isApplyingConfiguration)
                 LabeledContent("运行状态", value: model.isRunning ? "运行中" : "未运行")
                 LabeledContent("Host ID", value: model.identityText)
                 LabeledContent("证书指纹") {
@@ -161,6 +227,7 @@ struct RemoteHostSettingsView: View {
                     Button("保存公网入口") {
                         model.savePublicBaseURL()
                     }
+                    .disabled(model.isApplyingConfiguration)
                     if let activeURL = model.offer?.publicBaseURL {
                         Text("当前 Host：\(activeURL)")
                             .font(.caption)
@@ -170,7 +237,7 @@ struct RemoteHostSettingsView: View {
                 Text(
                     """
                     使用 Cloudflare 等出站 Tunnel 时填写专用 HTTPS 根域名。公网模式不需要关闭 \
-                    Mac 防火墙；保存后重启 ImageAll。
+                    Mac 防火墙；保存后 Host 会立即切换并要求生成新的配对二维码。
                     """
                 )
                 .font(.footnote)
@@ -244,7 +311,7 @@ struct RemoteHostSettingsView: View {
                 }
             }
         }
-        .task { await model.refresh() }
+        .task { await model.refreshUntilStartupSettles() }
     }
 
     private func qrImage(for offer: RemotePairingOffer) -> NSImage? {
