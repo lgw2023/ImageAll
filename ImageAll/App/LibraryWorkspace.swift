@@ -95,7 +95,7 @@ struct LibraryGridDensityPicker: View {
         .pickerStyle(.menu)
         .fixedSize()
         .accessibilityLabel("缩略图大小")
-        .help(help)
+        .persistentHelp(help)
     }
 }
 
@@ -910,8 +910,11 @@ final class LibraryWorkspaceModel: ObservableObject {
     @Published private(set) var librarySlimmingPendingCount = 0
     @Published private(set) var isAnalyzingLibrarySlimming = false
     @Published private(set) var librarySlimmingStatusMessage: String?
+    @Published private(set) var librarySlimmingRecycleActionMessage: String?
     @Published private(set) var librarySlimmingScanProgress: LibrarySlimmingScanProgress?
     @Published private(set) var librarySlimmingAnalyzeMode: LibrarySlimmingAnalyzeMode = .catalog
+    /// `nil` means every active source; an empty set intentionally means no source.
+    @Published private(set) var librarySlimmingCatalogSourceIDs: Set<UUID>?
     @Published private(set) var librarySlimmingAnalysisJobID: UUID?
     @Published private(set) var librarySlimmingAnalysisJobState: JobState?
     @Published private(set) var librarySlimmingAnalysisControlRequest: JobControlRequest = .none
@@ -921,11 +924,13 @@ final class LibraryWorkspaceModel: ObservableObject {
     @Published private(set) var librarySlimmingWorkspaceTab: LibrarySlimmingWorkspaceTab = .clusters
     @Published private(set) var librarySlimmingRecycleEntries: [RecycleEntryRecord] = []
     @Published private var librarySlimmingThumbnailReloadVersions: [UUID: Int] = [:]
+    @Published private(set) var librarySlimmingMemberSourceNames: [UUID: String] = [:]
     @Published private(set) var librarySlimmingSceneThresholds = NearDuplicateSceneThresholds.factory
     @Published private(set) var sourceSimilarityIndexStatus: SourceSimilarityIndexStatus?
     @Published private(set) var isInitializingSourceSimilarityIndex = false
     @Published var showsLibrarySlimmingThresholdEditor = false
     @Published private(set) var isMutatingLibrarySlimmingRecycle = false
+    @Published private(set) var isPreparingLibrarySlimmingIdenticalCleanup = false
     /// Bumped when toolbar asks the sidebar view to switch into 图库瘦身.
     @Published private(set) var librarySlimmingNavigationNonce = UUID()
     private var shouldAutoAnalyzeLibrarySlimmingSeeds = false
@@ -962,6 +967,7 @@ final class LibraryWorkspaceModel: ObservableObject {
     private var personalizationRunnerTask: Task<Void, Never>?
     private var librarySlimmingAnalysisRunnerTask: Task<Void, Never>?
     private var librarySlimmingAnalysisProgressMonitorTask: Task<Void, Never>?
+    private var librarySlimmingSourceLoadTask: Task<Void, Never>?
     private var sourceSimilarityIndexRunnerTask: Task<Void, Never>?
     private var catalogReconcileTask: Task<Void, Never>?
     private var catalogReconcileRunRequested = false
@@ -970,6 +976,8 @@ final class LibraryWorkspaceModel: ObservableObject {
     private var localModelSuggestionRequestID: UUID?
     private var searchDebounceTask: Task<Void, Never>?
     private var assetPageRequestID: UUID?
+    private var reviewPageRequestID: UUID?
+    private var hiddenRecycledAssetIDs: Set<UUID> = []
     private var thumbnailDataCache: [UUID: Data] = [:]
     private var thumbnailCacheVersions: [UUID: Int] = [:]
     private var thumbnailCacheOrder: [UUID] = []
@@ -989,6 +997,7 @@ final class LibraryWorkspaceModel: ObservableObject {
     private var sourceThumbnailPrewarmGeneration = 0
     private var browsingNavigationRequestID: UUID?
     private var selectionAnchorID: UUID?
+    private var librarySlimmingSelectionAnchorID: UUID?
     private struct FeatureSuggestionCompletionContext: Equatable {
         let tagID: UUID
         let displayName: String
@@ -1103,6 +1112,88 @@ final class LibraryWorkspaceModel: ObservableObject {
         librarySlimming != nil
     }
 
+    var activeLibrarySlimmingSources: [LibrarySourceSummary] {
+        orderedSources.filter { $0.state == .active }
+    }
+
+    var canAnalyzeLibrarySlimmingCatalog: Bool {
+        supportsLibrarySlimming && !resolvedLibrarySlimmingCatalogSourceIDs.isEmpty
+    }
+
+    var librarySlimmingCatalogSourceSelectionTitle: String {
+        let active = activeLibrarySlimmingSources
+        let selected = resolvedLibrarySlimmingCatalogSources
+        guard !selected.isEmpty else { return "未选择来源" }
+        if selected.count == active.count {
+            return "全部来源（\(active.count)）"
+        }
+        if selected.count == 1 {
+            return selected[0].displayName
+        }
+        return "已选 \(selected.count) 个来源"
+    }
+
+    var librarySlimmingCatalogSourceScopeCaption: String {
+        let active = activeLibrarySlimmingSources
+        let selected = resolvedLibrarySlimmingCatalogSources
+        guard !selected.isEmpty else { return "分析范围：未选择来源" }
+        if selected.count == active.count {
+            return "分析范围：全部 \(active.count) 个来源"
+        }
+        return "分析范围：\(selected.map(\.displayName).joined(separator: "、"))"
+    }
+
+    var librarySlimmingCatalogAnalyzeActionTitle: String {
+        resolvedLibrarySlimmingCatalogSources.count == activeLibrarySlimmingSources.count
+            ? "分析全部来源"
+            : "分析所选来源"
+    }
+
+    var librarySlimmingCatalogAnalyzeRunningTitle: String {
+        resolvedLibrarySlimmingCatalogSources.count == activeLibrarySlimmingSources.count
+            ? "正在分析全部来源…"
+            : "正在分析所选来源…"
+    }
+
+    func isLibrarySlimmingCatalogSourceIncluded(_ sourceID: UUID) -> Bool {
+        guard activeLibrarySlimmingSources.contains(where: { $0.id == sourceID }) else {
+            return false
+        }
+        guard let selected = librarySlimmingCatalogSourceIDs else { return true }
+        return selected.contains(sourceID)
+    }
+
+    func setLibrarySlimmingCatalogSourceIncluded(_ sourceID: UUID, _ included: Bool) {
+        let activeIDs = Set(activeLibrarySlimmingSources.map(\.id))
+        guard activeIDs.contains(sourceID) else { return }
+        var selected = librarySlimmingCatalogSourceIDs ?? activeIDs
+        if included {
+            selected.insert(sourceID)
+        } else {
+            selected.remove(sourceID)
+        }
+        selected.formIntersection(activeIDs)
+        librarySlimmingCatalogSourceIDs = selected == activeIDs ? nil : selected
+    }
+
+    func selectAllLibrarySlimmingCatalogSources() {
+        librarySlimmingCatalogSourceIDs = nil
+    }
+
+    func clearLibrarySlimmingCatalogSourceSelection() {
+        librarySlimmingCatalogSourceIDs = []
+    }
+
+    private var resolvedLibrarySlimmingCatalogSources: [LibrarySourceSummary] {
+        let active = activeLibrarySlimmingSources
+        guard let selected = librarySlimmingCatalogSourceIDs else { return active }
+        return active.filter { selected.contains($0.id) }
+    }
+
+    private var resolvedLibrarySlimmingCatalogSourceIDs: [UUID] {
+        resolvedLibrarySlimmingCatalogSources.map(\.id)
+    }
+
     var supportsResumableLibrarySlimmingAnalysis: Bool {
         librarySlimmingAnalysis != nil
     }
@@ -1200,9 +1291,38 @@ final class LibraryWorkspaceModel: ObservableObject {
         return librarySlimmingClusters.first(where: { $0.id == selectedLibrarySlimmingClusterID })
     }
 
+    func librarySlimmingSourceName(for assetID: UUID) -> String? {
+        librarySlimmingMemberSourceNames[assetID]
+    }
+
+    var librarySlimmingSelectedClusterSourceSummary: String? {
+        guard let cluster = selectedLibrarySlimmingCluster else { return nil }
+        var order: [String] = []
+        var seen = Set<String>()
+        for assetID in cluster.memberAssetIDs {
+            guard let sourceName = librarySlimmingMemberSourceNames[assetID] else {
+                continue
+            }
+            if seen.insert(sourceName).inserted {
+                order.append(sourceName)
+            }
+        }
+        guard !order.isEmpty else { return nil }
+        return order.joined(separator: " · ")
+    }
+
     func selectLibrarySlimmingCluster(_ clusterID: UUID?) {
         selectedLibrarySlimmingClusterID = clusterID
         selectedLibrarySlimmingMemberIDs = []
+        librarySlimmingSelectionAnchorID = nil
+        refreshSelectedLibrarySlimmingMemberSources()
+    }
+
+    func ensureLibrarySlimmingClusterSelection() {
+        guard !librarySlimmingClusters.isEmpty,
+              selectedLibrarySlimmingCluster == nil
+        else { return }
+        selectLibrarySlimmingCluster(librarySlimmingClusters.first?.id)
     }
 
     func selectLibrarySlimmingAnalysisJob(_ jobID: UUID?) {
@@ -1211,10 +1331,13 @@ final class LibraryWorkspaceModel: ObservableObject {
             librarySlimmingAnalysisJobState = nil
             librarySlimmingAnalysisControlRequest = .none
             librarySlimmingClusters = []
+            librarySlimmingMemberSourceNames = [:]
             librarySlimmingPendingCount = 0
             hasCompletedLibrarySlimmingScan = false
             selectedLibrarySlimmingClusterID = nil
             selectedLibrarySlimmingMemberIDs = []
+            librarySlimmingSelectionAnchorID = nil
+            librarySlimmingSourceLoadTask?.cancel()
             return
         }
         guard librarySlimmingAnalysisJobs.contains(where: { $0.id == jobID }) else { return }
@@ -1315,6 +1438,7 @@ final class LibraryWorkspaceModel: ObservableObject {
                     selectLibrarySlimmingAnalysisJob(nil)
                 }
             }
+            ensureLibrarySlimmingClusterSelection()
         } catch {
             librarySlimmingStatusMessage = "无法加载分析记录：\(error.localizedDescription)"
         }
@@ -1343,30 +1467,65 @@ final class LibraryWorkspaceModel: ObservableObject {
         }
     }
 
-    private func loadLibrarySlimmingAnalysisJob(_ jobID: UUID) async {
+    private func loadLibrarySlimmingAnalysisJob(
+        _ jobID: UUID,
+        forceSelect: Bool = true
+    ) async {
         guard let analysis = librarySlimmingAnalysis else { return }
         do {
             let snapshot = try await Self.offMain {
                 try analysis.snapshot(jobID: jobID)
             }
-            applyLibrarySlimmingJobSnapshot(snapshot, forceSelect: true)
+            applyLibrarySlimmingJobSnapshot(snapshot, forceSelect: forceSelect)
         } catch {
             librarySlimmingStatusMessage = "无法打开分析记录：\(error.localizedDescription)"
         }
     }
 
-    func selectLibrarySlimmingMember(_ assetID: UUID, additive: Bool) {
+    func selectLibrarySlimmingMember(
+        _ assetID: UUID,
+        additive: Bool,
+        extendRange: Bool = false
+    ) {
         guard let cluster = selectedLibrarySlimmingCluster,
               cluster.memberAssetIDs.contains(assetID)
         else { return }
-        if additive {
+        if extendRange,
+           let anchorID = librarySlimmingSelectionAnchorID,
+           let anchorIndex = cluster.memberAssetIDs.firstIndex(of: anchorID),
+           let targetIndex = cluster.memberAssetIDs.firstIndex(of: assetID)
+        {
+            let range = min(anchorIndex, targetIndex) ... max(anchorIndex, targetIndex)
+            let rangeIDs = Set(range.map { cluster.memberAssetIDs[$0] })
+            selectedLibrarySlimmingMemberIDs = additive
+                ? selectedLibrarySlimmingMemberIDs.union(rangeIDs)
+                : rangeIDs
+        } else if additive {
             if selectedLibrarySlimmingMemberIDs.contains(assetID) {
                 selectedLibrarySlimmingMemberIDs.remove(assetID)
             } else {
                 selectedLibrarySlimmingMemberIDs.insert(assetID)
             }
+            librarySlimmingSelectionAnchorID = assetID
         } else {
             selectedLibrarySlimmingMemberIDs = [assetID]
+            librarySlimmingSelectionAnchorID = assetID
+        }
+    }
+
+    func selectLibrarySlimmingMembers(
+        _ assetIDs: Set<UUID>,
+        additive: Bool = false
+    ) {
+        guard let cluster = selectedLibrarySlimmingCluster else { return }
+        let normalizedIDs = assetIDs.intersection(cluster.memberAssetIDs)
+        if additive {
+            selectedLibrarySlimmingMemberIDs.formUnion(normalizedIDs)
+        } else {
+            selectedLibrarySlimmingMemberIDs = normalizedIDs
+        }
+        librarySlimmingSelectionAnchorID = cluster.memberAssetIDs.first {
+            selectedLibrarySlimmingMemberIDs.contains($0)
         }
     }
 
@@ -1408,6 +1567,28 @@ final class LibraryWorkspaceModel: ObservableObject {
             parts.append("格式筛选")
         }
         return parts.joined(separator: " · ")
+    }
+
+    var librarySlimmingCurrentFilterActionTitle: String {
+        guard let selectedSourceID,
+              let source = sources.first(where: { $0.id == selectedSourceID })
+        else {
+            return "分析当前筛选"
+        }
+        return "分析来源：\(source.displayName)"
+    }
+
+    var librarySlimmingCurrentFilterRunningTitle: String {
+        guard let selectedSourceID,
+              let source = sources.first(where: { $0.id == selectedSourceID })
+        else {
+            return "正在分析当前筛选…"
+        }
+        return "正在分析：\(source.displayName)…"
+    }
+
+    var librarySlimmingFilterScopeCaption: String {
+        "筛选范围：\(librarySlimmingFilterScopeSummary)"
     }
 
     func findLibrarySlimmingFromSelection() async {
@@ -1479,6 +1660,30 @@ final class LibraryWorkspaceModel: ObservableObject {
         librarySlimmingMoveToRecycleDisabledReason == nil
     }
 
+    var librarySlimmingIdenticalGroupCount: Int {
+        librarySlimmingClusters.filter { $0.kind == .byteIdentical }.count
+    }
+
+    var canPrepareLibrarySlimmingIdenticalCleanup: Bool {
+        librarySlimmingIdenticalCleanupDisabledReason == nil
+    }
+
+    var librarySlimmingIdenticalCleanupDisabledReason: String? {
+        if !supportsLibrarySlimmingRecycle {
+            return "回收站服务未就绪"
+        }
+        if librarySlimmingIdenticalGroupCount == 0 {
+            return "当前分析结果中没有完全相同分组"
+        }
+        if isPreparingLibrarySlimmingIdenticalCleanup {
+            return "正在计算清理方案…"
+        }
+        if isMutatingLibrarySlimmingRecycle {
+            return "正在移入回收站…"
+        }
+        return nil
+    }
+
     var librarySlimmingMoveToRecycleDisabledReason: String? {
         if !supportsLibrarySlimmingRecycle {
             return "回收站服务未就绪"
@@ -1494,11 +1699,100 @@ final class LibraryWorkspaceModel: ObservableObject {
 
     func moveSelectedLibrarySlimmingMembersToRecycle() async {
         guard canMoveSelectedLibrarySlimmingMembersToRecycle,
+              !selectedLibrarySlimmingMemberIDs.isEmpty
+        else { return }
+        await moveLibrarySlimmingAssetsToRecycle(
+            Array(selectedLibrarySlimmingMemberIDs),
+            identicalCleanupPlan: nil
+        )
+    }
+
+    func prepareLibrarySlimmingIdenticalCleanup()
+        async -> LibrarySlimmingIdenticalCleanupPlan?
+    {
+        guard canPrepareLibrarySlimmingIdenticalCleanup,
+              let recycle = librarySlimmingRecycle
+        else { return nil }
+        isPreparingLibrarySlimmingIdenticalCleanup = true
+        librarySlimmingRecycleActionMessage = nil
+        defer { isPreparingLibrarySlimmingIdenticalCleanup = false }
+        do {
+            let clusters = librarySlimmingClusters.map(\.cluster)
+            let plan = try await Self.offMain {
+                try recycle.makeIdenticalCleanupPlan(clusters: clusters)
+            }
+            guard !plan.isEmpty else {
+                let skipped = plan.skippedGroupCount > 0
+                    ? "；另有 \(plan.skippedGroupCount) 组因来源状态变化已跳过"
+                    : ""
+                let message = "当前没有可安全清理的完全相同照片\(skipped)"
+                librarySlimmingStatusMessage = message
+                librarySlimmingRecycleActionMessage = message
+                return nil
+            }
+            return plan
+        } catch {
+            let message = "无法生成一键清理方案：\(error.localizedDescription)"
+            librarySlimmingStatusMessage = message
+            librarySlimmingRecycleActionMessage = message
+            return nil
+        }
+    }
+
+    func moveLibrarySlimmingIdenticalRedundancyToRecycle(
+        plan: LibrarySlimmingIdenticalCleanupPlan
+    ) async {
+        guard !plan.isEmpty,
+              canPrepareLibrarySlimmingIdenticalCleanup,
+              !isMutatingLibrarySlimmingRecycle,
               let recycle = librarySlimmingRecycle
         else { return }
-        let assetIDs = Array(selectedLibrarySlimmingMemberIDs)
         isMutatingLibrarySlimmingRecycle = true
         defer { isMutatingLibrarySlimmingRecycle = false }
+        do {
+            let clusters = librarySlimmingClusters.map(\.cluster)
+            let refreshedPlan = try await Self.offMain {
+                try recycle.makeIdenticalCleanupPlan(clusters: clusters)
+            }
+            guard refreshedPlan == plan else {
+                let message = "分析结果或来源状态已变化，请重新预览一键清理方案。"
+                librarySlimmingStatusMessage = message
+                librarySlimmingRecycleActionMessage = message
+                return
+            }
+        } catch {
+            let message = "无法复核一键清理方案：\(error.localizedDescription)"
+            librarySlimmingStatusMessage = message
+            librarySlimmingRecycleActionMessage = message
+            return
+        }
+        await moveLibrarySlimmingAssetsToRecycle(
+            plan.assetIDsToRecycle,
+            identicalCleanupPlan: plan,
+            mutationStateAlreadyHeld: true
+        )
+    }
+
+    private func moveLibrarySlimmingAssetsToRecycle(
+        _ assetIDs: [UUID],
+        identicalCleanupPlan: LibrarySlimmingIdenticalCleanupPlan?,
+        mutationStateAlreadyHeld: Bool = false
+    ) async {
+        guard !assetIDs.isEmpty,
+              let recycle = librarySlimmingRecycle
+        else { return }
+        if mutationStateAlreadyHeld {
+            guard isMutatingLibrarySlimmingRecycle else { return }
+        } else {
+            guard !isMutatingLibrarySlimmingRecycle else { return }
+            isMutatingLibrarySlimmingRecycle = true
+        }
+        librarySlimmingRecycleActionMessage = nil
+        defer {
+            if !mutationStateAlreadyHeld {
+                isMutatingLibrarySlimmingRecycle = false
+            }
+        }
         do {
             var outcome = try await Self.offMain {
                 try recycle.moveAssetsToRecycle(assetIDs: assetIDs)
@@ -1563,9 +1857,15 @@ final class LibraryWorkspaceModel: ObservableObject {
                     )
                 }
             }
-            selectedLibrarySlimmingMemberIDs = []
             let recycled = try await Self.offMain {
                 try recycle.slimmingHiddenAssetIDs(from: assetIDs)
+            }
+            invalidateRecycledAssetsInActiveWorkspace(recycled)
+            selectedLibrarySlimmingMemberIDs.subtract(recycled)
+            if let anchorID = librarySlimmingSelectionAnchorID,
+               recycled.contains(anchorID)
+            {
+                librarySlimmingSelectionAnchorID = nil
             }
             librarySlimmingClusters = filterLibrarySlimmingClustersRemoving(
                 assetIDs: recycled,
@@ -1576,7 +1876,20 @@ final class LibraryWorkspaceModel: ObservableObject {
             {
                 selectedLibrarySlimmingClusterID = librarySlimmingClusters.first?.id
             }
+            refreshSelectedLibrarySlimmingMemberSources()
             var parts: [String] = []
+            if let identicalCleanupPlan {
+                let completedGroups = identicalCleanupPlan.decisions.filter { decision in
+                    Set(decision.assetIDsToRecycle).isSubset(of: recycled)
+                }.count
+                if completedGroups == identicalCleanupPlan.groupCount {
+                    parts.append("已清理 \(completedGroups) 组完全相同照片")
+                } else if completedGroups > 0 {
+                    parts.append(
+                        "已清理 \(completedGroups)/\(identicalCleanupPlan.groupCount) 组完全相同照片"
+                    )
+                }
+            }
             if !outcome.recycledEntryIDs.isEmpty {
                 parts.append("已移入回收站 \(outcome.recycledEntryIDs.count) 张")
             }
@@ -1594,20 +1907,66 @@ final class LibraryWorkspaceModel: ObservableObject {
                    outcome.authorizationDeniedPhotosAssetIDs.isEmpty
                 {
                     parts.append(
-                        "失败 \(outcome.failedAssetIDs.count) 张（未能移入回收站；请确认文件夹写入授权后重试）"
+                        "失败 \(outcome.failedAssetIDs.count) 张（已有来源权限不可用；请从左侧来源菜单更新回收权限后重试）"
                     )
                 } else {
                     parts.append("失败 \(outcome.failedAssetIDs.count) 张")
                 }
             }
-            librarySlimmingStatusMessage = parts.isEmpty ? "未移动任何照片" : parts.joined(separator: " · ")
+            let message = parts.isEmpty ? "未移动任何照片" : parts.joined(separator: " · ")
+            librarySlimmingStatusMessage = message
+            librarySlimmingRecycleActionMessage = message
             await refreshLibrarySlimmingRecycleEntries()
             _ = try? await Self.offMain {
                 try recycle.enqueuePurgeExpired()
             }
         } catch {
-            librarySlimmingStatusMessage = "移入回收站失败：\(error.localizedDescription)"
+            let message = "移入回收站失败：\(error.localizedDescription)"
+            librarySlimmingStatusMessage = message
+            librarySlimmingRecycleActionMessage = message
         }
+    }
+
+    private func invalidateRecycledAssetsInActiveWorkspace(_ assetIDs: Set<UUID>) {
+        guard !assetIDs.isEmpty else { return }
+        hiddenRecycledAssetIDs.formUnion(assetIDs)
+
+        // A query that started before the database transaction may still carry
+        // an available projection. Invalidate those completions before changing
+        // the visible collections so they cannot make a recycled asset flash back.
+        assetPageRequestID = UUID()
+        reviewPageRequestID = UUID()
+
+        let removedSelectedReviewItem = selectedReviewItemID.map { selectedID in
+            reviewQueueItems.contains {
+                $0.id == selectedID && assetIDs.contains($0.assetID)
+            }
+        } ?? false
+
+        items.removeAll { assetIDs.contains($0.assetID) }
+        reviewQueueItems.removeAll { assetIDs.contains($0.assetID) }
+        selectedAssetIDs.subtract(assetIDs)
+        librarySlimmingSeedAssetIDs.removeAll { assetIDs.contains($0) }
+
+        if removedSelectedReviewItem {
+            selectedReviewItemID = nil
+        }
+        if let selectionAnchorID, assetIDs.contains(selectionAnchorID) {
+            self.selectionAnchorID = nil
+        }
+        if let inspectorAssetID = inspectorDetail?.assetID,
+           assetIDs.contains(inspectorAssetID)
+        {
+            inspectorDetail = nil
+            inspectorTags = []
+            assetPendingSuggestions = []
+        }
+        if selectedAssetIDs.isEmpty {
+            isSinglePhotoPresented = false
+        }
+
+        resetCloudPreviewIfSelectionChanged()
+        resetLocalModelSuggestionsForSelection()
     }
 
     func restoreLibrarySlimmingRecycleEntry(_ entryID: UUID) async {
@@ -1620,16 +1979,21 @@ final class LibraryWorkspaceModel: ObservableObject {
                 try recycle.restore(entryID: entryID)
             }
             if let entry {
+                hiddenRecycledAssetIDs.remove(entry.assetID)
                 markLibrarySlimmingThumbnailForReload(entry.assetID)
             }
             librarySlimmingStatusMessage = "已从回收站恢复"
             await refreshLibrarySlimmingRecycleEntries()
+            await refreshActiveWorkspaceAfterRecycleRestore()
         } catch LibrarySlimmingRecycleError.photosRestoreRequiresPhotosApp {
             librarySlimmingStatusMessage =
                 "Photos 资产需在系统「照片 → 最近删除」中恢复；恢复后将自动对账"
             await refreshLibrarySlimmingRecycleEntries()
         } catch LibrarySlimmingRecycleError.photosAuthorizationRequired {
             librarySlimmingStatusMessage = "恢复失败：需要 Photos 读写授权"
+        } catch LibrarySlimmingRecycleError.mutationAuthorizationInvalid {
+            librarySlimmingStatusMessage =
+                "恢复失败：已有来源权限不可用，请从左侧来源菜单更新回收权限后重试"
         } catch LibrarySlimmingRecycleError.mutationAuthorizationRequired {
             guard let sourceID = entry?.sourceID,
                   let mutationAuthorization = librarySlimmingMutationAuthorization
@@ -1648,10 +2012,12 @@ final class LibraryWorkspaceModel: ObservableObject {
                     try recycle.restore(entryID: entryID)
                 }
                 if let entry {
+                    hiddenRecycledAssetIDs.remove(entry.assetID)
                     markLibrarySlimmingThumbnailForReload(entry.assetID)
                 }
                 librarySlimmingStatusMessage = "已从回收站恢复"
                 await refreshLibrarySlimmingRecycleEntries()
+                await refreshActiveWorkspaceAfterRecycleRestore()
             } catch LibrarySlimmingRecycleError.restoreConflict {
                 librarySlimmingStatusMessage = "恢复失败：原路径已存在文件"
             } catch LibrarySlimmingRecycleError.photosRestoreRequiresPhotosApp {
@@ -1665,6 +2031,14 @@ final class LibraryWorkspaceModel: ObservableObject {
             librarySlimmingStatusMessage = "恢复失败：原路径已存在文件"
         } catch {
             librarySlimmingStatusMessage = "恢复失败：\(error.localizedDescription)"
+        }
+    }
+
+    private func refreshActiveWorkspaceAfterRecycleRestore() async {
+        await loadFirstPage(remountGrid: false)
+        await refreshReviewState()
+        if let selectedJobID = librarySlimmingAnalysisJobID {
+            await loadLibrarySlimmingAnalysisJob(selectedJobID, forceSelect: false)
         }
     }
 
@@ -1697,10 +2071,16 @@ final class LibraryWorkspaceModel: ObservableObject {
     func analyzeLibrarySlimming(mode: LibrarySlimmingAnalyzeMode? = nil) async {
         guard let librarySlimming else { return }
         let resolvedMode = mode ?? librarySlimmingAnalyzeMode
+        let catalogSourceIDs = resolvedLibrarySlimmingCatalogSourceIDs
+        if resolvedMode == .catalog, catalogSourceIDs.isEmpty {
+            librarySlimmingStatusMessage = "请至少选择一个要分析的来源。"
+            return
+        }
         if let librarySlimmingAnalysis {
             await analyzeLibrarySlimmingWithJob(
                 analysis: librarySlimmingAnalysis,
-                mode: resolvedMode
+                mode: resolvedMode,
+                catalogSourceIDs: catalogSourceIDs
             )
             return
         }
@@ -1711,6 +2091,7 @@ final class LibraryWorkspaceModel: ObservableObject {
         librarySlimmingStatusMessage = "正在分析相同与相似照片…"
         librarySlimmingScanProgress = nil
         selectedLibrarySlimmingMemberIDs = []
+        librarySlimmingSelectionAnchorID = nil
         defer {
             isAnalyzingLibrarySlimming = false
             librarySlimmingScanProgress = nil
@@ -1727,8 +2108,20 @@ final class LibraryWorkspaceModel: ObservableObject {
             let result: LibrarySlimmingScanResult
             switch resolvedMode {
             case .catalog:
+                let filter = AssetPageFilter(
+                    sourceIDs: catalogSourceIDs,
+                    availabilities: [.available]
+                )
                 result = try await Self.offMain {
-                    try scanPort.scanCatalog(onProgress: progressHandler)
+                    let assetIDs = try Self.listAllAssetIDs(
+                        service: workspaceService,
+                        filter: filter,
+                        sort: .newest
+                    )
+                    return try scanPort.scan(
+                        assetIDs: assetIDs,
+                        onProgress: progressHandler
+                    )
                 }
             case .currentFilter:
                 let filter = currentFilter
@@ -1771,7 +2164,8 @@ final class LibraryWorkspaceModel: ObservableObject {
 
     private func analyzeLibrarySlimmingWithJob(
         analysis: any LibrarySlimmingAnalysisJobPort,
-        mode: LibrarySlimmingAnalyzeMode
+        mode: LibrarySlimmingAnalyzeMode,
+        catalogSourceIDs: [UUID]
     ) async {
         librarySlimmingAnalyzeMode = mode
         isAnalyzingLibrarySlimming = true
@@ -1779,6 +2173,7 @@ final class LibraryWorkspaceModel: ObservableObject {
         librarySlimmingStatusMessage = "正在建立可暂停、可续跑的分析任务…"
         librarySlimmingScanProgress = nil
         selectedLibrarySlimmingMemberIDs = []
+        librarySlimmingSelectionAnchorID = nil
         do {
             let workspaceService = service
             let filter: AssetPageFilter
@@ -1786,7 +2181,10 @@ final class LibraryWorkspaceModel: ObservableObject {
             let seeds: [UUID]
             switch mode {
             case .catalog:
-                filter = AssetPageFilter(availabilities: [.available])
+                filter = AssetPageFilter(
+                    sourceIDs: catalogSourceIDs,
+                    availabilities: [.available]
+                )
                 pageSort = .newest
                 seeds = []
             case .currentFilter:
@@ -1864,18 +2262,27 @@ final class LibraryWorkspaceModel: ObservableObject {
         }
         isAnalyzingLibrarySlimming = true
         do {
-            if let selected = selectedLibrarySlimmingAnalysisJob,
-               selected.state == .paused || selected.state == .retryableFailed
-            {
-                let resumed = try await Self.offMain {
-                    try analysis.resume(jobID: jobID)
-                }
-                await refreshLibrarySlimmingAnalysisJobs()
-                applyLibrarySlimmingJobSnapshot(resumed, forceSelect: false)
+            let resumed = try await Self.offMain {
+                try analysis.resume(jobID: jobID)
             }
+            await refreshLibrarySlimmingAnalysisJobs()
+            applyLibrarySlimmingJobSnapshot(resumed, forceSelect: false)
             librarySlimmingStatusMessage = "正在从已保存进度继续并自动补全…"
             librarySlimmingAnalysisJobState = .running
-            startLibrarySlimmingAnalysisAutoRunner()
+            try await Self.offMain(priority: .utility) {
+                try analysis.runPending()
+            }
+            await refreshLibrarySlimmingAnalysisJobs()
+            let snapshot = try await Self.offMain {
+                try analysis.snapshot(jobID: jobID)
+            }
+            applyLibrarySlimmingJobSnapshot(snapshot, forceSelect: false)
+            if snapshot.state == .retryableFailed
+                || snapshot.state == .pending
+                || snapshot.state == .running
+            {
+                startLibrarySlimmingAnalysisAutoRunner()
+            }
         } catch {
             isAnalyzingLibrarySlimming = false
             librarySlimmingStatusMessage = "继续分析失败：\(error.localizedDescription)"
@@ -1886,6 +2293,7 @@ final class LibraryWorkspaceModel: ObservableObject {
         _ snapshot: LibrarySlimmingAnalysisJobSnapshot,
         forceSelect: Bool
     ) {
+        let wasAlreadySelected = librarySlimmingAnalysisJobID == snapshot.jobID
         if forceSelect || librarySlimmingAnalysisJobID == nil {
             librarySlimmingAnalysisJobID = snapshot.jobID
         }
@@ -1911,13 +2319,18 @@ final class LibraryWorkspaceModel: ObservableObject {
                 librarySlimmingScanProgress = nil
             }
             if let result = snapshot.result {
-                applyLibrarySlimmingResult(result)
+                applyLibrarySlimmingResult(
+                    result,
+                    preserveSelection: !forceSelect && wasAlreadySelected
+                )
             } else if forceSelect {
                 librarySlimmingClusters = []
+                librarySlimmingMemberSourceNames = [:]
                 librarySlimmingPendingCount = 0
                 hasCompletedLibrarySlimmingScan = false
                 selectedLibrarySlimmingClusterID = nil
                 selectedLibrarySlimmingMemberIDs = []
+                librarySlimmingSelectionAnchorID = nil
                 switch snapshot.state {
                 case .paused:
                     librarySlimmingStatusMessage = "分析已暂停，可稍后继续。"
@@ -1940,14 +2353,38 @@ final class LibraryWorkspaceModel: ObservableObject {
         isAnalyzingLibrarySlimming = anyActive
     }
 
-    private func applyLibrarySlimmingResult(_ result: LibrarySlimmingScanResult) {
+    private func applyLibrarySlimmingResult(
+        _ result: LibrarySlimmingScanResult,
+        preserveSelection: Bool = false
+    ) {
+        let previousClusterID = selectedLibrarySlimmingClusterID
+        let previousMemberIDs = selectedLibrarySlimmingMemberIDs
         let resolvedClusters = resolveRestoredLibrarySlimmingMembers(result.clusters)
         let filteredClusters = filterLibrarySlimmingClustersForHiddenAssets(resolvedClusters)
         librarySlimmingClusters = filteredClusters.map(LibrarySlimmingClusterPresentation.init)
         librarySlimmingPendingCount = result.pendingAnalysisAssetIDs.count
         hasCompletedLibrarySlimmingScan = true
-        selectedLibrarySlimmingClusterID = librarySlimmingClusters.first?.id
-        selectedLibrarySlimmingMemberIDs = []
+        if preserveSelection,
+           let previousClusterID,
+           let refreshedCluster = librarySlimmingClusters.first(where: {
+               $0.id == previousClusterID
+           })
+        {
+            selectedLibrarySlimmingClusterID = previousClusterID
+            selectedLibrarySlimmingMemberIDs = previousMemberIDs.intersection(
+                refreshedCluster.memberAssetIDs
+            )
+            if let anchorID = librarySlimmingSelectionAnchorID,
+               !refreshedCluster.memberAssetIDs.contains(anchorID)
+            {
+                librarySlimmingSelectionAnchorID = nil
+            }
+        } else {
+            selectedLibrarySlimmingClusterID = librarySlimmingClusters.first?.id
+            selectedLibrarySlimmingMemberIDs = []
+            librarySlimmingSelectionAnchorID = nil
+        }
+        refreshSelectedLibrarySlimmingMemberSources()
         if filteredClusters.isEmpty, result.pendingAnalysisAssetIDs.isEmpty {
             librarySlimmingStatusMessage = "已分析 \(result.analyzedAssetCount) 张，未发现相同或相似簇。"
         } else if filteredClusters.isEmpty {
@@ -2045,6 +2482,38 @@ final class LibraryWorkspaceModel: ObservableObject {
                     modelIdentity: cluster.modelIdentity
                 )
             )
+        }
+    }
+
+    private func refreshSelectedLibrarySlimmingMemberSources() {
+        librarySlimmingSourceLoadTask?.cancel()
+        guard let cluster = selectedLibrarySlimmingCluster else { return }
+
+        let memberIDs = Set(cluster.memberAssetIDs)
+        for item in items where memberIDs.contains(item.assetID) {
+            librarySlimmingMemberSourceNames[item.assetID] = item.sourceDisplayName
+        }
+        let missingAssetIDs = cluster.memberAssetIDs.filter {
+            librarySlimmingMemberSourceNames[$0] == nil
+        }
+        guard !missingAssetIDs.isEmpty else { return }
+
+        let workspaceService = service
+        librarySlimmingSourceLoadTask = Task { @MainActor [weak self] in
+            for assetID in missingAssetIDs {
+                guard !Task.isCancelled else { return }
+                let sourceName: String
+                do {
+                    sourceName = try await Self.offMain(priority: .utility) {
+                        try workspaceService.fetchInspectorDetail(assetID: assetID)
+                            .sourceDisplayName
+                    }
+                } catch {
+                    sourceName = "来源不可用"
+                }
+                guard !Task.isCancelled else { return }
+                self?.librarySlimmingMemberSourceNames[assetID] = sourceName
+            }
         }
     }
 
@@ -2397,6 +2866,7 @@ final class LibraryWorkspaceModel: ObservableObject {
 
     deinit {
         searchDebounceTask?.cancel()
+        librarySlimmingSourceLoadTask?.cancel()
         service.stopCatalogSourceMonitoring()
     }
 
@@ -2767,7 +3237,7 @@ final class LibraryWorkspaceModel: ObservableObject {
         if librarySlimmingAnalysis != nil {
             await refreshLibrarySlimmingAnalysisJobs()
             if let selected = librarySlimmingAnalysisJobID {
-                await loadLibrarySlimmingAnalysisJob(selected)
+                await loadLibrarySlimmingAnalysisJob(selected, forceSelect: false)
             } else if let latest = librarySlimmingAnalysisJobs.first {
                 await loadLibrarySlimmingAnalysisJob(latest.id)
             }
@@ -3341,6 +3811,25 @@ final class LibraryWorkspaceModel: ObservableObject {
             startCatalogReconcileRunnerIfNeeded()
         } catch {
             phase = previousPhase
+            notice = .sourceActionFailed
+        }
+    }
+
+    func refreshFolderMutationAuthorization(_ sourceID: UUID) async {
+        guard !isBusy,
+              sources.contains(where: {
+                  $0.id == sourceID && $0.kind == .folder && $0.state == .active
+              }),
+              let mutationAuthorization = librarySlimmingMutationAuthorization
+        else { return }
+        do {
+            switch try await mutationAuthorization.authorizeMutation(sourceID: sourceID) {
+            case .authorized:
+                librarySlimmingStatusMessage = "已更新来源回收权限，可以重新执行删除或恢复。"
+            case .cancelled:
+                return
+            }
+        } catch {
             notice = .sourceActionFailed
         }
     }
@@ -5899,19 +6388,22 @@ final class LibraryWorkspaceModel: ObservableObject {
                 try service.fetchAssetPage(filter: filter, sort: sort, cursor: nil)
             }
             guard assetPageRequestID == requestID else { return }
+            let visibleItems = page.items.filter {
+                !hiddenRecycledAssetIDs.contains($0.assetID)
+            }
             if !remountGrid,
-               page.items == items,
+               visibleItems == items,
                page.nextCursor == nextCursor
             {
                 return
             }
-            items = page.items
+            items = visibleItems
             nextCursor = page.nextCursor
             if remountGrid {
                 assetGridRevision += 1
             }
             let hadSelection = !selectedAssetIDs.isEmpty
-            let visibleIDs = Set(page.items.map(\.assetID))
+            let visibleIDs = Set(visibleItems.map(\.assetID))
             selectedAssetIDs.formIntersection(visibleIDs)
             resetCloudPreviewIfSelectionChanged()
             if selectedAssetIDs.isEmpty {
@@ -6582,6 +7074,7 @@ extension LibraryWorkspaceModel {
     }
 
     private func applyReviewOverviewPresentation() {
+        reviewPageRequestID = UUID()
         reviewMode = .overview
         selectedAssetIDs = []
         selectedReviewItemID = nil
@@ -6608,6 +7101,7 @@ extension LibraryWorkspaceModel {
     }
 
     func enterReviewQueue(tagID: UUID, displayName: String) async {
+        reviewPageRequestID = UUID()
         reviewQueueItems = []
         reviewNextCursor = nil
         selectedAssetIDs = []
@@ -6626,6 +7120,7 @@ extension LibraryWorkspaceModel {
     }
 
     private func clearReviewModeState() {
+        reviewPageRequestID = UUID()
         reviewMode = nil
         reviewQueueItems = []
         selectedReviewItemID = nil
@@ -6633,6 +7128,8 @@ extension LibraryWorkspaceModel {
     }
 
     func loadReviewQueueFirstPage(tagID: UUID) async {
+        let requestID = UUID()
+        reviewPageRequestID = requestID
         let reviewPort = review
         let sourceFilter = resolvedReviewSourceFilter
         do {
@@ -6644,7 +7141,10 @@ extension LibraryWorkspaceModel {
                     limit: 100
                 )
             }
-            reviewQueueItems = page.items
+            guard reviewPageRequestID == requestID else { return }
+            reviewQueueItems = page.items.filter {
+                !hiddenRecycledAssetIDs.contains($0.assetID)
+            }
             if let selectedReviewItemID,
                !reviewQueueItems.contains(where: { $0.id == selectedReviewItemID })
             {
@@ -6663,6 +7163,7 @@ extension LibraryWorkspaceModel {
             }
             reviewNextCursor = page.nextCursor
         } catch {
+            guard reviewPageRequestID == requestID else { return }
             reviewQueueItems = []
             selectedReviewItemID = nil
             reviewNextCursor = nil
@@ -6676,6 +7177,7 @@ extension LibraryWorkspaceModel {
         else { return }
         isLoadingMoreReviewQueue = true
         defer { isLoadingMoreReviewQueue = false }
+        let requestID = reviewPageRequestID
         let reviewPort = review
         let sourceFilter = resolvedReviewSourceFilter
         do {
@@ -6687,7 +7189,12 @@ extension LibraryWorkspaceModel {
                     limit: 100
                 )
             }
-            reviewQueueItems.append(contentsOf: page.items)
+            guard reviewPageRequestID == requestID else { return }
+            reviewQueueItems.append(
+                contentsOf: page.items.filter {
+                    !hiddenRecycledAssetIDs.contains($0.assetID)
+                }
+            )
             reviewNextCursor = page.nextCursor
         } catch {}
     }
@@ -7402,9 +7909,11 @@ struct LibraryWorkspaceView: View {
                 sourcePendingDisable = nil
                 Task { await model.disableSource(source.id) }
             }
+            .persistentHelp("停止扫描这个来源，但保留索引、人工标签和历史；不会修改原照片。")
             Button("取消", role: .cancel) {
                 sourcePendingDisable = nil
             }
+            .persistentHelp("关闭确认窗口并保持来源启用。")
         } message: { _ in
             Text("ImageAll 会停止该来源的扫描任务，但保留已索引的照片、人工标签和历史；原照片不会被修改。")
         }
@@ -7421,9 +7930,11 @@ struct LibraryWorkspaceView: View {
                 photosSourcePendingRebind = nil
                 Task { await model.rebindPhotos(from: source.id) }
             }
+            .persistentHelp("保留旧图库历史，并把当前系统照片图库连接为一个新的独立来源。")
             Button("取消", role: .cancel) {
                 photosSourcePendingRebind = nil
             }
+            .persistentHelp("关闭确认窗口，不连接当前系统照片图库。")
         } message: { _ in
             Text("ImageAll 会保留旧图库的索引、人工标签和历史，并为当前系统照片图库创建一个新的来源。不会迁移或合并无法确认身份的照片，也不会修改 Apple Photos 中的原图。")
         }
@@ -7435,7 +7946,9 @@ struct LibraryWorkspaceView: View {
             Button("继续并请求照片权限") {
                 Task { await model.connectPhotos() }
             }
+            .persistentHelp("向 macOS 请求照片访问权限，并在授权后连接系统照片图库。")
             Button("取消", role: .cancel) {}
+                .persistentHelp("关闭说明窗口，不请求照片访问权限。")
         } message: {
             Text("ImageAll 平时只读访问静态照片和元数据，在自身容器保存索引、标签和缓存；只有你在“图库瘦身”中明确确认时，才会经系统 Photos 将所选照片移入“最近删除”。普通浏览不会自动下载 iCloud 原图；“相同”检测需要时会下载并长期保留 App 自有副本。")
         }
@@ -7456,9 +7969,11 @@ struct LibraryWorkspaceView: View {
                     await model.requestPhotosFullRepair(sourceID: source.id)
                 }
             }
+            .persistentHelp("重新扫描整个 Apple Photos 图库，并在后台修复错误的缺失状态。")
             Button("取消", role: .cancel) {
                 photosSourcePendingFullRepair = nil
             }
+            .persistentHelp("关闭确认窗口，不启动完整修复扫描。")
         } message: { _ in
             Text("这会重新扫描整个 Apple Photos 图库，并在后台修复先前可能误标为缺失的照片。扫描期间仍可浏览已有索引；大图库可能需要数分钟。")
         }
@@ -7613,6 +8128,7 @@ struct LibraryWorkspaceView: View {
                     || model.isClearingPreviewCache
                     || model.isClearingPhotosOriginalStorage
             )
+            .persistentHelp("选择外置磁盘上的应用数据根目录；保存后需要重启才能迁移并生效。")
             Divider()
             Button("清理预览缓存", role: .destructive) {
                 showPreviewCacheClearConfirmation = true
@@ -7620,10 +8136,12 @@ struct LibraryWorkspaceView: View {
             .disabled(
                 model.previewCacheUsage.entryCount == 0 || model.isClearingPreviewCache
             )
+            .persistentHelp("打开清理确认；只删除可重建的缩略图和单图预览缓存。")
             Button("清理全部长期原图副本", role: .destructive) {
                 showPhotosOriginalStorageClearConfirmation = true
             }
             .disabled(!model.canClearPhotosOriginalStorage)
+            .persistentHelp("打开清理确认；删除 ImageAll 自有的 Photos 原图副本，不修改 Apple Photos。")
             if model.isAnalyzingLibrarySlimming,
                model.photosOriginalStorageUsage.entryCount > 0
             {
@@ -7643,7 +8161,9 @@ struct LibraryWorkspaceView: View {
                 showPreviewCachePanel = false
                 Task { await model.clearPreviewCache() }
             }
+            .persistentHelp("确认删除可重建的预览缓存；原照片、标签和模型不会被删除。")
             Button("取消", role: .cancel) {}
+                .persistentHelp("关闭确认窗口并保留预览缓存。")
         } message: {
             Text("只会删除可重建的网格缩略图和单图预览；不会删除原照片、人工标签、Feature Print 或个性化模型。iCloud 预览之后需要再次手动获取。")
         }
@@ -7655,7 +8175,9 @@ struct LibraryWorkspaceView: View {
             Button("清理全部长期原图副本", role: .destructive) {
                 Task { await model.clearPhotosOriginalStorage() }
             }
+            .persistentHelp("确认删除 ImageAll 长期保存的 Photos 原图副本；Apple Photos 不会被修改。")
             Button("取消", role: .cancel) {}
+                .persistentHelp("关闭确认窗口并保留长期原图副本。")
         } message: {
             Text("只删除 ImageAll 在 Application Support 中长期保存的 Photos 原图副本及其缓存索引。不会修改 Apple Photos、人工标签或已计算的相同检测结果；以后再次需要原图时，“相同”检测可能重新从 iCloud 下载。")
         }
@@ -7673,7 +8195,7 @@ struct LibraryWorkspaceView: View {
                     Image(systemName: "arrow.clockwise")
                 }
                 .buttonStyle(.borderless)
-                .help("刷新活动")
+                .persistentHelp("重新读取后台任务的最新进度和可用操作。")
             }
 
             if model.jobActivityItems.isEmpty {
@@ -7721,6 +8243,7 @@ struct LibraryWorkspaceView: View {
                             Task { await model.applyJobActivityAction(action, to: item.id) }
                         }
                         .disabled(model.isApplyingJobActivityAction(item.id))
+                        .persistentHelp(jobActivityActionHelp(action))
                     }
                 }
                 .controlSize(.small)
@@ -7770,6 +8293,17 @@ struct LibraryWorkspaceView: View {
         }
     }
 
+    private func jobActivityActionHelp(_ action: JobActivityAction) -> String {
+        switch action {
+        case .pause:
+            "暂停这个后台任务，并保存已完成的进度。"
+        case .resume:
+            "从保存的进度继续这个后台任务。"
+        case .cancel:
+            "取消这个后台任务；已经安全完成的结果会保留。"
+        }
+    }
+
     private func formattedByteCount(_ bytes: UInt64) -> String {
         guard let signedBytes = Int64(exactly: bytes) else { return "超过可显示范围" }
         return ByteCountFormatter.string(fromByteCount: signedBytes, countStyle: .file)
@@ -7798,10 +8332,12 @@ struct LibraryWorkspaceView: View {
                 Task { _ = await model.renameTag(tag.id, to: candidate) }
             }
             .disabled(TagNameNormalizer.trimUnicodeWhiteSpace(renamedTagName).isEmpty)
+            .persistentHelp("保存新的标签名称；已有人工确认、拒绝和历史都会保留。")
             Button("取消", role: .cancel) {
                 tagPendingRename = nil
                 renamedTagName = ""
             }
+            .persistentHelp("放弃名称修改并关闭窗口。")
         } message: { tag in
             Text("为“\(tag.displayName)”输入新名称。现有人工标签决定会保留。")
         }
@@ -7817,10 +8353,12 @@ struct LibraryWorkspaceView: View {
                 Task { _ = await model.createTagGroup(named: candidate) }
             }
             .disabled(TagNameNormalizer.trimUnicodeWhiteSpace(newTagGroupName).isEmpty)
+            .persistentHelp("使用输入的名称创建一个可折叠标签分组。")
             Button("取消", role: .cancel) {
                 newTagGroupName = ""
                 showCreateTagGroupAlert = false
             }
+            .persistentHelp("放弃新建分组并关闭窗口。")
         } message: {
             Text("创建一个可折叠的标签分组，之后可把标签拖入该组。")
         }
@@ -7846,10 +8384,12 @@ struct LibraryWorkspaceView: View {
                 Task { _ = await model.renameTagGroup(groupID, to: candidate) }
             }
             .disabled(TagNameNormalizer.trimUnicodeWhiteSpace(renamedTagGroupName).isEmpty)
+            .persistentHelp("保存新的分组名称；组内标签不会改变。")
             Button("取消", role: .cancel) {
                 tagGroupPendingRename = nil
                 renamedTagGroupName = ""
             }
+            .persistentHelp("放弃分组名称修改并关闭窗口。")
         } message: { group in
             Text("为“\(group.displayName)”输入新名称。")
         }
@@ -7867,9 +8407,11 @@ struct LibraryWorkspaceView: View {
                 tagGroupPendingDelete = nil
                 Task { _ = await model.deleteTagGroup(groupID) }
             }
+            .persistentHelp("删除这个自定义分组，并把其中标签移到“其他”；不会删除标签决定。")
             Button("取消", role: .cancel) {
                 tagGroupPendingDelete = nil
             }
+            .persistentHelp("关闭确认窗口并保留分组。")
         } message: { _ in
             Text("组内标签会移到「\(TagGroupSeed.other.displayName)」。系统默认分组不可删除。")
         }
@@ -7891,9 +8433,11 @@ struct LibraryWorkspaceView: View {
                     }
                 }
             }
+            .persistentHelp("从界面隐藏这个标签，但保留已经保存的人工决定和历史。")
             Button("取消", role: .cancel) {
                 tagPendingArchive = nil
             }
+            .persistentHelp("关闭确认窗口并保留标签可见。")
         } message: { _ in
             Text("标签会从侧栏和编辑器隐藏，但已保存的人工确认、拒绝和历史都会保留。")
         }
@@ -7987,6 +8531,7 @@ struct LibraryWorkspaceView: View {
                     }
                     .buttonStyle(.plain)
                     .disabled(!item.isEnabled)
+                    .persistentHelp("执行“\(item.title)”命令。")
                 }
                 .listStyle(.inset)
             }
@@ -8013,6 +8558,7 @@ struct LibraryWorkspaceView: View {
                     activeSheet = nil
                 }
                 .keyboardShortcut(.defaultAction)
+                .persistentHelp("关闭快捷键说明窗口。")
             }
             shortcutRow("打开命令面板", keys: "⌘K")
             shortcutRow("全选当前照片", keys: "⌘A")
@@ -8235,6 +8781,7 @@ struct LibraryWorkspaceView: View {
                 }
                 .buttonStyle(.plain)
                 .disabled(model.isBusy)
+                .persistentHelp("选择一个本地文件夹作为照片来源；ImageAll 只索引，不修改原文件。")
                 if model.sources.contains(where: { $0.kind == .photos && $0.state == .active }) {
                     Label("已连接 Apple Photos", systemImage: "checkmark.circle")
                         .foregroundStyle(.secondary)
@@ -8246,6 +8793,7 @@ struct LibraryWorkspaceView: View {
                     }
                     .buttonStyle(.plain)
                     .disabled(model.isBusy)
+                    .persistentHelp("请求照片访问权限，并连接当前系统 Apple Photos 图库。")
                 }
             }
             Section("标签") {
@@ -8274,15 +8822,22 @@ struct LibraryWorkspaceView: View {
                             .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
+                        .persistentHelp(
+                            isCollapsed
+                                ? "展开“\(section.group.displayName)”分组，显示其中标签。"
+                                : "折叠“\(section.group.displayName)”分组，暂时隐藏其中标签。"
+                        )
                         .contextMenu {
                             if !section.group.isSystem {
                                 Button("重命名分组…") {
                                     renamedTagGroupName = section.group.displayName
                                     tagGroupPendingRename = section.group
                                 }
+                                .persistentHelp("打开重命名窗口，修改这个分组的显示名称。")
                                 Button("删除分组", role: .destructive) {
                                     tagGroupPendingDelete = section.group
                                 }
+                                .persistentHelp("打开删除确认；组内标签会移到“其他”。")
                             }
                         }
 
@@ -8347,6 +8902,7 @@ struct LibraryWorkspaceView: View {
                 }
                 .buttonStyle(.plain)
                 .disabled(model.isBusy)
+                .persistentHelp("创建一个新的可折叠标签分组。")
                 Button {
                     Task { await model.installPresetTags() }
                 } label: {
@@ -8354,6 +8910,7 @@ struct LibraryWorkspaceView: View {
                 }
                 .buttonStyle(.plain)
                 .disabled(model.isBusy)
+                .persistentHelp("安装一组可编辑的常用标签；不会分析照片或自动应用标签。")
                 Button {
                     newTagFieldFocused = true
                 } label: {
@@ -8361,6 +8918,7 @@ struct LibraryWorkspaceView: View {
                 }
                 .buttonStyle(.plain)
                 .disabled(model.selectedAssetIDs.isEmpty)
+                .persistentHelp("把光标移到新标签输入框，为当前所选照片创建并确认标签。")
             }
         }
         .coordinateSpace(name: Self.sourceReorderCoordinateSpace)
@@ -8611,7 +9169,7 @@ struct LibraryWorkspaceView: View {
                 }
             }
         }
-        .help(
+        .persistentHelp(
             isExcluded
                 ? "⌘⌥点击取消排除；拖拽可调整顺序"
                 : isIncluded
@@ -8624,19 +9182,23 @@ struct LibraryWorkspaceView: View {
             Button("仅筛选此标签") {
                 Task { await model.filterToSingleIncludedTag(tag.id) }
             }
+            .persistentHelp("清除其他标签条件，只显示符合“\(tag.displayName)”的照片。")
             Button("排除此标签") {
                 Task { await model.toggleExcludedTagFilter(tag.id) }
             }
+            .persistentHelp("在当前筛选中排除带有“\(tag.displayName)”的照片。")
             Button("重命名…") {
                 renamedTagName = tag.displayName
                 tagPendingRename = tag
             }
+            .persistentHelp("打开重命名窗口，修改这个标签的显示名称。")
 
             Divider()
 
             Button("归档标签", role: .destructive) {
                 tagPendingArchive = tag
             }
+            .persistentHelp("打开归档确认；标签会隐藏，但人工决定和历史会保留。")
         }
     }
 
@@ -8658,11 +9220,12 @@ struct LibraryWorkspaceView: View {
             }
         }
         .accessibilityElement(children: .combine)
-        .help(sourceHelpText(source.state) + "；拖拽可调整来源顺序")
+        .persistentHelp(sourceHelpText(source.state) + "；拖拽可调整来源顺序")
         .contextMenu {
             Button("在图库中查看") {
                 selection = .source(source.id)
             }
+            .persistentHelp("切换图库，只显示“\(source.displayName)”来源中的照片。")
             Button(source.kind == .photos ? "立即同步" : "立即重扫") {
                 selection = .source(source.id)
                 Task {
@@ -8675,6 +9238,11 @@ struct LibraryWorkspaceView: View {
                 }
             }
             .disabled(model.isBusy || source.state != .active)
+            .persistentHelp(
+                source.kind == .photos
+                    ? "同步“\(source.displayName)”的最新 Apple Photos 变化。"
+                    : "重新扫描“\(source.displayName)”并更新照片索引。"
+            )
 
             Button("预热缩略图缓存") {
                 model.prewarmSourceThumbnails(sourceID: source.id)
@@ -8684,12 +9252,14 @@ struct LibraryWorkspaceView: View {
                     || source.state == .disabled
                     || source.state == .authorizationRequired
             )
+            .persistentHelp("在后台预先生成这个来源的网格缩略图，让后续浏览更快。")
 
             if source.kind == .photos && source.state == .active {
                 Button("完整修复扫描…") {
                     photosSourcePendingFullRepair = source
                 }
                 .disabled(model.isBusy)
+                .persistentHelp("打开确认窗口，重新扫描整个 Apple Photos 图库并修复缺失状态。")
             }
 
             if source.kind == .photos && source.state == .unavailable {
@@ -8697,6 +9267,7 @@ struct LibraryWorkspaceView: View {
                     photosSourcePendingRebind = source
                 }
                 .disabled(model.isBusy)
+                .persistentHelp("保留旧图库历史，并把当前系统照片图库连接为新来源。")
             } else {
                 Button(source.kind == .photos && source.state == .disabled ? "重新启用…" : "重新授权…") {
                     Task { await model.reauthorizeSource(source.id) }
@@ -8705,6 +9276,21 @@ struct LibraryWorkspaceView: View {
                     model.isBusy ||
                     (source.kind == .folder && source.state != .unavailable && source.state != .authorizationRequired) ||
                     (source.kind == .photos && source.state != .authorizationRequired && source.state != .disabled)
+                )
+                .persistentHelp(
+                    source.kind == .photos
+                        ? "重新请求 Apple Photos 权限或重新启用这个来源。"
+                        : "重新选择文件夹，恢复这个来源的访问授权。"
+                )
+            }
+
+            if source.kind == .folder && source.state == .active {
+                Button("更新回收权限…") {
+                    Task { await model.refreshFolderMutationAuthorization(source.id) }
+                }
+                .disabled(model.isBusy)
+                .persistentHelp(
+                    "仅在删除或恢复提示已有来源权限不可用时使用；由您明确选择原文件夹更新权限。"
                 )
             }
 
@@ -8717,6 +9303,7 @@ struct LibraryWorkspaceView: View {
                 model.isBusy || source.state == .disabled ||
                 (source.kind == .photos && source.state == .unavailable)
             )
+            .persistentHelp("停止扫描这个来源，但保留索引、人工标签和历史；不会修改原照片。")
         }
     }
 
@@ -8761,14 +9348,17 @@ struct LibraryWorkspaceView: View {
                         Task { await model.connectFolder() }
                     }
                     .buttonStyle(.borderedProminent)
+                    .persistentHelp("选择本地文件夹作为照片来源；ImageAll 只索引，不修改原文件。")
                     Button("连接 Apple Photos…") {
                         showPhotosConnectionExplanation = true
                     }
                     .buttonStyle(.bordered)
+                    .persistentHelp("请求照片访问权限，并连接当前系统 Apple Photos 图库。")
                     Button("添加常用标签") {
                         Task { await model.installPresetTags() }
                     }
                     .buttonStyle(.bordered)
+                    .persistentHelp("安装一组可编辑的常用标签；不会分析照片或自动应用标签。")
                 }
             } else {
                 ContentUnavailableView {
@@ -8780,10 +9370,12 @@ struct LibraryWorkspaceView: View {
                         Task { await model.connectFolder() }
                     }
                     .buttonStyle(.borderedProminent)
+                    .persistentHelp("选择本地文件夹作为照片来源；ImageAll 只索引，不修改原文件。")
                     Button("连接 Apple Photos…") {
                         showPhotosConnectionExplanation = true
                     }
                     .buttonStyle(.bordered)
+                    .persistentHelp("请求照片访问权限，并连接当前系统 Apple Photos 图库。")
                 }
             }
         case .content:
@@ -8827,6 +9419,7 @@ struct LibraryWorkspaceView: View {
                         Button("清除状态和格式筛选") {
                             Task { await model.clearAssetPropertyFilters() }
                         }
+                        .persistentHelp("清除可用状态和文件格式条件，恢复显示当前范围内的全部照片。")
                     }
                 } else {
                     if model.selectedSourceIsPhotos {
@@ -8839,6 +9432,7 @@ struct LibraryWorkspaceView: View {
                                 Button("保留历史并连接当前图库…") {
                                     photosSourcePendingRebind = unavailableSource
                                 }
+                                .persistentHelp("保留旧图库的索引与标签，并连接当前系统照片图库为新来源。")
                             }
                         } else if model.selectedPhotosSourceNeedsAuthorization || model.notice == .photosAuthorizationRequired {
                             ContentUnavailableView {
@@ -8855,9 +9449,11 @@ struct LibraryWorkspaceView: View {
                                         }
                                     }
                                 }
+                                .persistentHelp("重新请求或检查照片权限，并同步当前系统照片图库。")
                                 Button("打开照片权限设置…") {
                                     openPhotosPrivacySettings()
                                 }
+                                .persistentHelp("打开 macOS 的照片隐私设置，以便调整 ImageAll 的访问权限。")
                             }
                         } else {
                             ContentUnavailableView {
@@ -8876,6 +9472,7 @@ struct LibraryWorkspaceView: View {
                                         }
                                     }
                                 }
+                                .persistentHelp("立即同步当前系统照片图库，更新照片索引和可用状态。")
                             }
                         }
                     } else {
@@ -8887,6 +9484,7 @@ struct LibraryWorkspaceView: View {
                             Button("立即重扫") {
                                 Task { await model.rescan() }
                             }
+                            .persistentHelp("重新扫描当前文件夹来源，寻找支持的照片并更新索引。")
                         }
                     }
                 }
@@ -8916,6 +9514,7 @@ struct LibraryWorkspaceView: View {
                     Task { await model.rescan() }
                 }
                 .disabled(model.sources.isEmpty)
+                .persistentHelp("重新访问当前来源并再次扫描；不会修改原照片。")
             }
         }
     }
@@ -9075,7 +9674,7 @@ struct LibraryWorkspaceView: View {
                 } label: {
                     Image(systemName: "plus")
                 }
-                .help("创建标签并确认应用到所选照片")
+                .persistentHelp("创建新标签，并立即将它确认为所选照片所属的标签。")
                 .disabled(
                     model.selectedAssetIDs.isEmpty ||
                     TagNameNormalizer.trimUnicodeWhiteSpace(newTagName).isEmpty
@@ -9146,7 +9745,7 @@ struct LibraryWorkspaceView: View {
             isActive ? Color.accentColor.opacity(0.14) : Color.clear,
             in: RoundedRectangle(cornerRadius: 5)
         )
-        .help(label)
+        .persistentHelp(label)
         .accessibilityLabel(label)
     }
 
@@ -9198,7 +9797,7 @@ struct LibraryWorkspaceView: View {
                     model.selectedAssetIDs.count != 1 ||
                     model.isOpeningOriginal
             )
-            .help("以只读定位打开原始照片；文件夹照片和 Apple Photos 均交给 macOS“预览”显示")
+            .persistentHelp("以只读方式定位原始照片，并交给 macOS“预览”显示；不会修改原图。")
             .padding(.top, 5)
         }
         .font(.caption)
@@ -9274,6 +9873,7 @@ struct LibraryWorkspaceView: View {
                     model.cancelSourceThumbnailPrewarm()
                 }
                 .controlSize(.small)
+                .persistentHelp("停止当前缩略图预热；已经生成的缓存会保留。")
             }
             .accessibilityElement(children: .combine)
             .accessibilityIdentifier("sourceThumbnailPrewarmProgress")
@@ -9548,11 +10148,13 @@ struct LibraryWorkspaceView: View {
             } label: {
                 Label("全部照片", systemImage: model.tagPresence == .any ? "checkmark" : "circle")
             }
+            .persistentHelp("取消“无标签”条件，显示当前范围内有标签和无标签的照片。")
             Button {
                 Task { await model.setTagPresence(.untagged) }
             } label: {
                 Label("无标签", systemImage: model.tagPresence == .untagged ? "checkmark" : "circle")
             }
+            .persistentHelp("只显示尚未设置任何人工标签决定的照片。")
 
             if !model.tags.isEmpty {
                 Divider()
@@ -9563,6 +10165,7 @@ struct LibraryWorkspaceView: View {
                         Button("不筛选此标签") {
                             Task { await model.setTagDecisionFilter(tagID: tag.id, decision: nil) }
                         }
+                        .persistentHelp("移除“\(tag.displayName)”的确认或拒绝筛选条件。")
                     }
                 }
             }
@@ -9574,11 +10177,13 @@ struct LibraryWorkspaceView: View {
                 } label: {
                     Label("全部标签（ALL）", systemImage: model.tagMatchMode == .all ? "checkmark" : "circle")
                 }
+                .persistentHelp("照片必须同时符合全部已选标签条件才会显示。")
                 Button {
                     Task { await model.setTagMatchMode(.any) }
                 } label: {
                     Label("任一标签（ANY）", systemImage: model.tagMatchMode == .any ? "checkmark" : "circle")
                 }
+                .persistentHelp("照片符合任意一个已选标签条件就会显示。")
             }
 
             if model.hasActiveTagFilters {
@@ -9586,6 +10191,7 @@ struct LibraryWorkspaceView: View {
                 Button("清除标签筛选") {
                     Task { await model.clearTagFilters() }
                 }
+                .persistentHelp("清除全部标签条件，但保留状态和文件格式筛选。")
             }
 
             Divider()
@@ -9598,6 +10204,7 @@ struct LibraryWorkspaceView: View {
                         systemImage: model.selectedAvailabilities.isEmpty ? "checkmark" : "circle"
                     )
                 }
+                .persistentHelp("清除照片可用状态条件，显示所有状态。")
                 Divider()
                 availabilityFilterButton(.available, title: "可用")
                 availabilityFilterButton(.missing, title: "文件缺失")
@@ -9613,6 +10220,7 @@ struct LibraryWorkspaceView: View {
                         systemImage: model.selectedMediaTypes.isEmpty ? "checkmark" : "circle"
                     )
                 }
+                .persistentHelp("清除文件格式条件，显示所有支持格式。")
                 Divider()
                 ForEach(Self.mediaFormatFilterOptions, id: \.title) { option in
                     Button {
@@ -9625,6 +10233,7 @@ struct LibraryWorkspaceView: View {
                                 : "circle"
                         )
                     }
+                    .persistentHelp("切换“\(option.title)”格式组是否包含在当前筛选中。")
                 }
             }
         } label: {
@@ -9676,11 +10285,13 @@ struct LibraryWorkspaceView: View {
                 .pickerStyle(.segmented)
                 .labelsHidden()
                 .frame(maxWidth: 120)
+                .persistentHelp("选择标签条件是满足任意一个“或”，还是必须全部满足“且”。")
             }
             Button("清除筛选") {
                 Task { await model.clearTagFilters() }
             }
             .buttonStyle(.borderless)
+            .persistentHelp("清除当前全部标签筛选条件，恢复显示当前来源范围内的照片。")
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
@@ -9713,6 +10324,7 @@ struct LibraryWorkspaceView: View {
         } label: {
             Label(title, systemImage: model.sort == sort ? "checkmark" : "circle")
         }
+        .persistentHelp("按“\(title)”重新排列当前照片列表。")
     }
 
     private func sortTitle(_ sort: AssetPageSort) -> String {
@@ -9755,6 +10367,7 @@ struct LibraryWorkspaceView: View {
                 systemImage: model.selectedAvailabilities.contains(availability) ? "checkmark" : "circle"
             )
         }
+        .persistentHelp("切换“\(title)”可用状态是否包含在当前筛选中。")
     }
 
     private func tagFilterButton(
@@ -9770,6 +10383,7 @@ struct LibraryWorkspaceView: View {
                 systemImage: model.tagFilterDecision(for: tag.id) == decision ? "checkmark" : "circle"
             )
         }
+        .persistentHelp("只显示“\(tag.displayName)”标签被标记为“\(title)”的照片。")
     }
 
     private var activeFilterCount: Int {
@@ -9805,15 +10419,18 @@ struct LibraryWorkspaceView: View {
                         Task { await model.undoLastTagMutation() }
                     }
                     .buttonStyle(.plain)
+                    .persistentHelp("撤销刚刚完成的这次标签操作。")
                 }
                 Button("关闭") { model.dismissNotice() }
                     .buttonStyle(.plain)
+                    .persistentHelp("关闭这条状态提示。")
             } else {
                 Text(Self.noticeText(notice))
                     .font(.caption)
                 Spacer()
                 Button("关闭") { model.dismissNotice() }
                     .buttonStyle(.plain)
+                    .persistentHelp("关闭这条状态提示。")
             }
         }
         .padding(.horizontal, 12)
@@ -10037,12 +10654,15 @@ struct LibraryWorkspaceView: View {
                 Button("确认属于 (P)") {
                     Task { await model.applyReviewDecision(action: .accept) }
                 }
+                .persistentHelp("确认所选照片属于当前审核标签，并进入下一项；快捷键 P。")
                 Button("不属于 (X)") {
                     Task { await model.applyReviewDecision(action: .reject) }
                 }
+                .persistentHelp("确认所选照片不属于当前审核标签，并进入下一项；快捷键 X。")
                 Button("稍后 (U)") {
                     Task { await model.deferReviewSelection() }
                 }
+                .persistentHelp("暂不处理所选照片并移到队列后面；快捷键 U。")
             }
             .disabled(model.selectedAssetIDs.isEmpty)
         }
@@ -10128,12 +10748,15 @@ private struct SinglePhotoReviewView: View {
                 Button("属于 (P)", systemImage: "checkmark.circle") {
                     Task { await model.applyReviewDecision(action: .accept) }
                 }
+                .persistentHelp("确认当前照片属于审核标签，并进入下一张；快捷键 P。")
                 Button("不属于 (X)", systemImage: "xmark.circle") {
                     Task { await model.applyReviewDecision(action: .reject) }
                 }
+                .persistentHelp("确认当前照片不属于审核标签，并进入下一张；快捷键 X。")
                 Button("稍后 (U)", systemImage: "arrow.right.circle") {
                     Task { await model.deferReviewSelection() }
                 }
+                .persistentHelp("暂不处理当前照片并移到队列后面；快捷键 U。")
             }
             .buttonStyle(.bordered)
             .padding(.horizontal, 12)
@@ -10238,6 +10861,7 @@ private struct SinglePhotoNavigationBar: View {
                 Button("返回网格", systemImage: "square.grid.2x2") {
                     model.closeSinglePhotoView()
                 }
+                .persistentHelp("关闭单图查看并返回当前照片网格；也可按 Esc。")
 
                 Spacer()
 
@@ -10245,7 +10869,7 @@ private struct SinglePhotoNavigationBar: View {
                     Text(navigation.fileName)
                         .font(.headline)
                         .lineLimit(1)
-                        .help(navigation.fileName)
+                        .persistentHelp("当前照片文件名：\(navigation.fileName)")
                     Text("\(navigation.position) / \(navigation.loadedCount)")
                         .font(.caption.monospacedDigit())
                         .foregroundStyle(.secondary)
@@ -10260,11 +10884,13 @@ private struct SinglePhotoNavigationBar: View {
                     Task { await model.moveSinglePhotoSelection(by: -1) }
                 }
                 .disabled(!navigation.canMovePrevious)
+                .persistentHelp("显示当前列表中的上一张照片。")
 
                 Button("下一张", systemImage: "chevron.right") {
                     Task { await model.moveSinglePhotoSelection(by: 1) }
                 }
                 .disabled(!navigation.canMoveNext)
+                .persistentHelp("显示当前列表中的下一张照片。")
             }
             .buttonStyle(.borderless)
             .padding(.horizontal, 12)
@@ -10329,7 +10955,7 @@ private struct AssetThumbnailView: View {
         .accessibilityAddTraits(.isButton)
         .accessibilityValue(isSelected ? "已选择" : "未选择")
         .accessibilityHint("选择照片；双击或选择后按空格查看单张照片")
-        .help(LibraryAssetDetailText.hoverText(item))
+        .persistentHelp(LibraryAssetDetailText.hoverText(item))
         .accessibilityAction {
             onSelect()
         }
@@ -10504,6 +11130,7 @@ private struct InspectorPreview: View {
                     model.downloadCloudPreview(assetID: assetID)
                 }
                 .buttonStyle(.borderedProminent)
+                .persistentHelp("从 iCloud 下载这张照片的临时预览，供本次查看使用。")
             }
         case let .downloading(cloudAssetID, progress) where cloudAssetID == assetID:
             VStack(spacing: 10) {
@@ -10515,6 +11142,7 @@ private struct InspectorPreview: View {
                 Button("取消") {
                     model.cancelCloudPreviewDownload(assetID: assetID)
                 }
+                .persistentHelp("停止下载这张照片的 iCloud 预览。")
             }
         case let .failed(cloudAssetID) where cloudAssetID == assetID:
             VStack(spacing: 10) {
@@ -10528,6 +11156,7 @@ private struct InspectorPreview: View {
                     model.retryCloudPreviewDownload(assetID: assetID)
                 }
                 .buttonStyle(.borderedProminent)
+                .persistentHelp("重新尝试从 iCloud 获取这张照片的预览。")
             }
         default:
             Image(systemName: "photo")

@@ -107,7 +107,10 @@ struct LibrarySlimmingScanService: LibrarySlimmingScanPort {
 
         let unclaimedSeeds = seeds.filter { !claimed.contains($0) }
         var vectorCandidates = universe.filter { !claimed.contains($0) }
-        if let sourceIndex, !unclaimedSeeds.isEmpty {
+        if let sourceIndex,
+           !unclaimedSeeds.isEmpty,
+           !thresholds.usesExhaustiveFeaturePrintRecall
+        {
             let plan = try sourceIndex.candidateAssetIDs(
                 seedAssetIDs: unclaimedSeeds,
                 universeAssetIDs: universe
@@ -203,7 +206,8 @@ struct LibrarySlimmingScanService: LibrarySlimmingScanPort {
             featurePrints: featurePrints,
             embeddings: embeddings,
             modelIdentity: sceneModelIdentity,
-            thresholds: thresholds
+            thresholds: thresholds,
+            onProgress: onProgress
         )
 
         let identicalMapped = mapIdenticalClusters(identical, policyVersion: thresholds.policyVersion)
@@ -227,15 +231,25 @@ struct LibrarySlimmingScanService: LibrarySlimmingScanPort {
         featurePrints: [UUID: [Float]],
         embeddings: [UUID: [Float]],
         modelIdentity: SlimmingVectorModelIdentity,
-        thresholds: NearDuplicateSceneThresholds
+        thresholds: NearDuplicateSceneThresholds,
+        onProgress: LibrarySlimmingScanProgressHandler?
     ) throws -> [SlimmingCluster] {
         let service = NearDuplicateSceneClusterService()
-        guard assetIDs.count >= thresholds.sceneBucketActivationAssetCount else {
+        guard thresholds.usesCaptureDayBuckets(assetCount: assetIDs.count) else {
             return service.cluster(
                 featurePrints: featurePrints,
                 embeddings: embeddings,
                 modelIdentity: modelIdentity,
-                thresholds: thresholds
+                thresholds: thresholds,
+                onProgress: { completed, total in
+                    onProgress?(
+                        LibrarySlimmingScanProgress(
+                            phase: .clustering,
+                            completed: completed,
+                            total: total
+                        )
+                    )
+                }
             )
         }
 
@@ -249,21 +263,52 @@ struct LibrarySlimmingScanService: LibrarySlimmingScanPort {
             buckets[key, default: []].append(assetID)
         }
 
+        let clusteringTotal = buckets.values.reduce(into: 0) { total, members in
+            if members.count >= 2 {
+                total += members.count
+            }
+        }
+        var clusteringCompleted = 0
+        onProgress?(
+            LibrarySlimmingScanProgress(
+                phase: .clustering,
+                completed: 0,
+                total: max(clusteringTotal, 1)
+            )
+        )
         var clusters: [SlimmingCluster] = []
         for key in buckets.keys.sorted() {
             guard let members = buckets[key], members.count >= 2 else { continue }
             let memberSet = Set(members)
             let bucketFeaturePrints = featurePrints.filter { memberSet.contains($0.key) }
             let bucketEmbeddings = embeddings.filter { memberSet.contains($0.key) }
+            let completedBeforeBucket = clusteringCompleted
             clusters.append(
                 contentsOf: service.cluster(
                     featurePrints: bucketFeaturePrints,
                     embeddings: bucketEmbeddings,
                     modelIdentity: modelIdentity,
-                    thresholds: thresholds
+                    thresholds: thresholds,
+                    onProgress: { completed, _ in
+                        onProgress?(
+                            LibrarySlimmingScanProgress(
+                                phase: .clustering,
+                                completed: completedBeforeBucket + completed,
+                                total: max(clusteringTotal, 1)
+                            )
+                        )
+                    }
                 )
             )
+            clusteringCompleted += members.count
         }
+        onProgress?(
+            LibrarySlimmingScanProgress(
+                phase: .clustering,
+                completed: max(clusteringTotal, 1),
+                total: max(clusteringTotal, 1)
+            )
+        )
         return clusters
     }
 
@@ -568,12 +613,47 @@ struct LibrarySlimmingAnalysisJobSummary: Sendable, Equatable, Identifiable {
     let state: JobState
     let controlRequest: JobControlRequest
     let progress: JobProgress
+    let attempts: Int
+    let maxAttempts: Int
     let memberCount: Int
     let seedCount: Int
     let clusterCount: Int
     let hasResult: Bool
     let createdAtMs: Int64
     let updatedAtMs: Int64
+    let sourceNames: [String]
+
+    init(
+        jobID: UUID,
+        mode: LibrarySlimmingAnalyzeMode,
+        state: JobState,
+        controlRequest: JobControlRequest,
+        progress: JobProgress,
+        attempts: Int,
+        maxAttempts: Int,
+        memberCount: Int,
+        seedCount: Int,
+        clusterCount: Int,
+        hasResult: Bool,
+        createdAtMs: Int64,
+        updatedAtMs: Int64,
+        sourceNames: [String] = []
+    ) {
+        self.jobID = jobID
+        self.mode = mode
+        self.state = state
+        self.controlRequest = controlRequest
+        self.progress = progress
+        self.attempts = attempts
+        self.maxAttempts = maxAttempts
+        self.memberCount = memberCount
+        self.seedCount = seedCount
+        self.clusterCount = clusterCount
+        self.hasResult = hasResult
+        self.createdAtMs = createdAtMs
+        self.updatedAtMs = updatedAtMs
+        self.sourceNames = sourceNames
+    }
 }
 
 protocol LibrarySlimmingAnalysisJobPort: Sendable {
@@ -596,7 +676,7 @@ enum LibrarySlimmingAnalysisJobFactory {
     static let payloadVersion = 1
     static let checkpointVersion = 1
     static let priority = 10
-    static let maxAttempts = 5
+    static let maxAttempts = 10
     static let fingerprintBatchSize = 16
     static let vectorBatchSize = 16
     static let automaticCompletionPasses = 3
@@ -744,6 +824,8 @@ struct LibrarySlimmingAnalysisService: LibrarySlimmingAnalysisJobPort {
     }
 
     func runPending() throws {
+        try queue.recoverExpiredRunningJobs()
+        try reconcileActiveRetryBudgets()
         try queue.settleRetryableJobs()
         let claim = ClaimNextInput(
             owner: "imageall-library-slimming-analysis-\(UUID().uuidString.lowercased())",
@@ -768,6 +850,11 @@ struct LibrarySlimmingAnalysisService: LibrarySlimmingAnalysisJobPort {
     }
 
     func resume(jobID: UUID) throws -> LibrarySlimmingAnalysisJobSnapshot {
+        try reconcileActiveRetryBudgets(jobID: jobID)
+        let current = try queue.fetchJob(id: jobID)
+        if current.state == .pending, current.attempts < current.maxAttempts {
+            return try snapshot(jobID: jobID)
+        }
         _ = try queue.applyStateCommand(
             JobStateCommand(
                 jobID: jobID,
@@ -824,7 +911,33 @@ struct LibrarySlimmingAnalysisService: LibrarySlimmingAnalysisJobPort {
     }
 
     func listJobs() throws -> [LibrarySlimmingAnalysisJobSummary] {
-        try database.pool.read { db in
+        try queue.recoverExpiredRunningJobs()
+        try reconcileActiveRetryBudgets()
+        return try database.pool.read { db in
+            let sourceRows = try Row.fetchAll(
+                db,
+                sql: """
+                SELECT
+                    member.job_id AS job_id,
+                    source.display_name AS display_name,
+                    MIN(member.ordinal) AS first_ordinal
+                FROM library_slimming_scan_member member
+                INNER JOIN asset ON asset.id = member.asset_id
+                INNER JOIN source ON source.id = asset.source_id
+                INNER JOIN job ON job.id = member.job_id
+                WHERE job.kind = ?
+                GROUP BY member.job_id, source.id, source.display_name
+                ORDER BY member.job_id, first_ordinal, source.id
+                """,
+                arguments: [LibrarySlimmingAnalysisJobFactory.kind]
+            )
+            var sourceNamesByJobID: [String: [String]] = [:]
+            for sourceRow in sourceRows {
+                let jobID: String = sourceRow["job_id"]
+                let displayName: String = sourceRow["display_name"]
+                sourceNamesByJobID[jobID, default: []].append(displayName)
+            }
+
             let rows = try Row.fetchAll(
                 db,
                 sql: """
@@ -835,6 +948,8 @@ struct LibrarySlimmingAnalysisService: LibrarySlimmingAnalysisJobPort {
                     job.control_request AS control_request,
                     job.progress_completed AS progress_completed,
                     job.progress_total AS progress_total,
+                    job.attempts AS attempts,
+                    job.max_attempts AS max_attempts,
                     job.created_at_ms AS created_at_ms,
                     job.updated_at_ms AS updated_at_ms,
                     (
@@ -888,14 +1003,63 @@ struct LibrarySlimmingAnalysisService: LibrarySlimmingAnalysisJobPort {
                         completed: row["progress_completed"],
                         total: row["progress_total"]
                     ),
+                    attempts: row["attempts"],
+                    maxAttempts: row["max_attempts"],
                     memberCount: row["member_count"],
                     seedCount: row["seed_count"],
                     clusterCount: clusterCount,
                     hasResult: resultData != nil,
                     createdAtMs: row["created_at_ms"],
-                    updatedAtMs: row["updated_at_ms"]
+                    updatedAtMs: row["updated_at_ms"],
+                    sourceNames: sourceNamesByJobID[rawID, default: []]
                 )
             }
+        }
+    }
+
+    private func reconcileActiveRetryBudgets(jobID: UUID? = nil) throws {
+        var filterArguments: [DatabaseValueConvertible] = [
+            LibrarySlimmingAnalysisJobFactory.kind,
+            LibrarySlimmingAnalysisJobFactory.maxAttempts,
+        ]
+        let jobFilter: String
+        if let jobID {
+            jobFilter = "AND id = ?"
+            filterArguments.append(jobID.uuidString.lowercased())
+        } else {
+            jobFilter = ""
+        }
+        let needsUpgrade = try database.pool.read { db in
+            try Int.fetchOne(
+                db,
+                sql: """
+                SELECT EXISTS(
+                    SELECT 1
+                    FROM job
+                    WHERE kind = ?
+                        AND state IN ('pending', 'running', 'paused', 'retryableFailed')
+                        AND max_attempts < ?
+                        \(jobFilter)
+                )
+                """,
+                arguments: StatementArguments(filterArguments)
+            ) == 1
+        }
+        guard needsUpgrade else { return }
+
+        try database.pool.write { db in
+            let arguments = [LibrarySlimmingAnalysisJobFactory.maxAttempts] + filterArguments
+            try db.execute(
+                sql: """
+                UPDATE job
+                SET max_attempts = ?
+                WHERE kind = ?
+                    AND state IN ('pending', 'running', 'paused', 'retryableFailed')
+                    AND max_attempts < ?
+                    \(jobFilter)
+                """,
+                arguments: StatementArguments(arguments)
+            )
         }
     }
 
@@ -1019,6 +1183,14 @@ private struct LibrarySlimmingAnalysisHandler: LeaseBoundJobHandler {
                     if batch.isEmpty {
                         state.phase = .clustering
                         state.nextOrdinal = 0
+                        if let settled = try commitProgress(
+                            lease: lease,
+                            state: state,
+                            total: total,
+                            progressTotal: progressTotal
+                        ) {
+                            return settled
+                        }
                         continue
                     }
                     for member in batch {
@@ -1037,18 +1209,65 @@ private struct LibrarySlimmingAnalysisHandler: LeaseBoundJobHandler {
                         return settled
                     }
                 case .clustering:
+                    if let settled = try commitProgress(
+                        lease: lease,
+                        state: state,
+                        total: total,
+                        progressTotal: progressTotal
+                    ) {
+                        return settled
+                    }
                     let members = try allMembers(jobID: lease.jobID)
                     let assetIDs = members.map(\.assetID)
                     let seeds = members.filter(\.isSeed).map(\.assetID)
+                    let clusteringCheckpoint =
+                        try LibrarySlimmingAnalysisJobFactory.encodeCheckpoint(state)
+                    let clusteringProgress = progress(
+                        state: state,
+                        total: total,
+                        progressTotal: progressTotal
+                    )
+                    let heartbeat = LibrarySlimmingAnalysisLeaseHeartbeat(
+                        queue: queue,
+                        clock: clock,
+                        lease: lease,
+                        checkpoint: clusteringCheckpoint,
+                        progress: clusteringProgress,
+                        leaseDurationMs: LibrarySlimmingAnalysisJobFactory.leaseDurationMs
+                    )
+                    let scanProgress: LibrarySlimmingScanProgressHandler = { progress in
+                        if progress.phase == .clustering
+                            || progress.completed == progress.total
+                            || progress.completed.isMultiple(of: 256)
+                        {
+                            heartbeat.renewIfDue()
+                        }
+                    }
                     let result: LibrarySlimmingScanResult
                     if payload.mode == .seeds {
                         result = try scanner.scanSeeds(
                             seedAssetIDs: seeds,
                             universeAssetIDs: assetIDs,
-                            onProgress: nil
+                            onProgress: scanProgress
                         )
                     } else {
-                        result = try scanner.scan(assetIDs: assetIDs, onProgress: nil)
+                        result = try scanner.scan(
+                            assetIDs: assetIDs,
+                            onProgress: scanProgress
+                        )
+                    }
+                    switch heartbeat.status() {
+                    case .active:
+                        break
+                    case .settled:
+                        return JobHandlerExecutionResult(
+                            outcome: .continue,
+                            checkpoint: clusteringCheckpoint,
+                            progress: clusteringProgress,
+                            settledByHandler: true
+                        )
+                    case let .failed(error):
+                        throw error
                     }
                     if !result.pendingAnalysisAssetIDs.isEmpty,
                        state.completionPass
@@ -1231,5 +1450,73 @@ private struct LibrarySlimmingAnalysisHandler: LeaseBoundJobHandler {
             checkpoint: checkpoint,
             progress: JobProgress(completed: 0, total: nil)
         )
+    }
+}
+
+private final class LibrarySlimmingAnalysisLeaseHeartbeat: @unchecked Sendable {
+    enum Status {
+        case active
+        case settled
+        case failed(Error)
+    }
+
+    private let queue: GRDBJobQueue
+    private let clock: any JobClock
+    private let lease: JobLeaseToken
+    private let checkpoint: JobCheckpoint
+    private let progress: JobProgress
+    private let leaseDurationMs: Int64
+    private let minimumRenewIntervalMs: Int64
+    private let lock = NSLock()
+    private var lastRenewedAtMs: Int64
+    private var storedStatus: Status = .active
+
+    init(
+        queue: GRDBJobQueue,
+        clock: any JobClock,
+        lease: JobLeaseToken,
+        checkpoint: JobCheckpoint,
+        progress: JobProgress,
+        leaseDurationMs: Int64
+    ) {
+        self.queue = queue
+        self.clock = clock
+        self.lease = lease
+        self.checkpoint = checkpoint
+        self.progress = progress
+        self.leaseDurationMs = leaseDurationMs
+        minimumRenewIntervalMs = max(1_000, leaseDurationMs / 3)
+        lastRenewedAtMs = clock.nowMs
+    }
+
+    func renewIfDue() {
+        lock.lock()
+        defer { lock.unlock() }
+        guard case .active = storedStatus else { return }
+        let nowMs = clock.nowMs
+        guard nowMs - lastRenewedAtMs >= minimumRenewIntervalMs else { return }
+        do {
+            let snapshot = try queue.submitSafeBatch(
+                SafeBatchCommitInput(
+                    lease: lease,
+                    outcome: .continue,
+                    checkpoint: checkpoint,
+                    progress: progress,
+                    leaseDurationMs: leaseDurationMs
+                )
+            )
+            lastRenewedAtMs = nowMs
+            if snapshot.state != .running {
+                storedStatus = .settled
+            }
+        } catch {
+            storedStatus = .failed(error)
+        }
+    }
+
+    func status() -> Status {
+        lock.lock()
+        defer { lock.unlock() }
+        return storedStatus
     }
 }

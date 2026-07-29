@@ -117,14 +117,17 @@ struct RemoteHostSettingsView: View {
                     Button("开始配对") {
                         Task { await model.startPairing() }
                     }
+                    .persistentHelp("生成一次性配对信息，供移动端安全连接这台 Mac。")
                     Button("取消配对", role: .destructive) {
                         Task { await model.cancelPairing() }
                     }
                     .disabled(model.offer == nil)
+                    .persistentHelp("作废当前尚未完成的配对信息，移动端将不能再用它连接。")
                     Button("复制配对 JSON") {
                         model.copyOfferJSON()
                     }
                     .disabled(model.offer == nil)
+                    .persistentHelp("把当前配对信息复制到剪贴板，便于手动传给移动端。")
                 }
                 if let offer = model.offer {
                     if let image = qrImage(for: offer) {
@@ -160,6 +163,7 @@ struct RemoteHostSettingsView: View {
                             Button("撤销", role: .destructive) {
                                 Task { await model.revoke(device.id) }
                             }
+                            .persistentHelp("撤销这台设备的访问授权；设备之后需要重新配对。")
                         }
                     }
                 }

@@ -11,25 +11,51 @@ struct LibrarySlimmingClusterPresentation: Identifiable, Equatable, Sendable {
 
     var kindTitle: String {
         switch kind {
-        case .byteIdentical: "相同 · 字节"
-        case .perceptualDuplicate: "相同 · 感知"
-        case .nearDuplicateScene: "相似 · 场景"
+        case .byteIdentical: "完全相同"
+        case .perceptualDuplicate: "视觉重复"
+        case .nearDuplicateScene: "同场景相似"
         }
     }
 
     var scoreCaption: String {
         switch kind {
         case .byteIdentical:
+            "内容完全一致"
+        case .perceptualDuplicate:
+            String(format: "画面高度相似 · 匹配度 %.0f%%", score * 100)
+        case .nearDuplicateScene:
+            String(format: "同场景相似度 %.0f%%", score * 100)
+        }
+    }
+
+    var technicalDetailsCaption: String {
+        switch kind {
+        case .byteIdentical:
             "SHA-256 一致 · \(modelIdentity.revisionCaption)"
         case .perceptualDuplicate:
             String(
-                format: "感知相近 · %.0f%% · %@",
+                format: "感知匹配 %.0f%% · %@",
                 score * 100,
                 modelIdentity.revisionCaption
             )
         case .nearDuplicateScene:
-            String(format: "DINOv2 %.2f · %@", score, modelIdentity.revisionCaption)
+            String(
+                format: "DINOv2 余弦 %.3f · %@",
+                score,
+                modelIdentity.revisionCaption
+            )
         }
+    }
+
+    var cluster: SlimmingCluster {
+        SlimmingCluster(
+            id: id,
+            kind: kind,
+            memberAssetIDs: memberAssetIDs,
+            representativeAssetID: representativeAssetID,
+            score: score,
+            modelIdentity: modelIdentity
+        )
     }
 
     init(_ cluster: SlimmingCluster) {
@@ -48,16 +74,19 @@ struct LibrarySlimmingAnalysisJobPresentation: Identifiable, Equatable, Sendable
     let state: JobState
     let controlRequest: JobControlRequest
     let progress: JobProgress
+    let attempts: Int
+    let maxAttempts: Int
     let memberCount: Int
     let seedCount: Int
     let clusterCount: Int
     let hasResult: Bool
     let createdAtMs: Int64
     let updatedAtMs: Int64
+    let sourceNames: [String]
 
     var modeTitle: String {
         switch mode {
-        case .catalog: "当前库"
+        case .catalog: "全部来源"
         case .currentFilter: "当前筛选"
         case .seeds: "种子检索"
         }
@@ -85,10 +114,27 @@ struct LibrarySlimmingAnalysisJobPresentation: Identifiable, Equatable, Sendable
         if hasResult {
             parts.append("\(clusterCount) 个簇")
         }
+        parts.append("尝试 \(attempts)/\(maxAttempts)")
         if let progressCaption = scanProgressCaption {
             parts.append(progressCaption)
         }
         return parts.joined(separator: " · ")
+    }
+
+    var attemptCaption: String {
+        "\(attempts) / \(maxAttempts)"
+    }
+
+    var sourceNamesText: String {
+        guard !sourceNames.isEmpty else { return "任务来源不可用" }
+        return sourceNames.joined(separator: "、")
+    }
+
+    var sourceCaption: String {
+        guard sourceNames.count > 1 else {
+            return "来源：\(sourceNamesText)"
+        }
+        return "来源（\(sourceNames.count)）：\(sourceNamesText)"
     }
 
     private var scanProgressCaption: String? {
@@ -120,12 +166,15 @@ struct LibrarySlimmingAnalysisJobPresentation: Identifiable, Equatable, Sendable
         state = summary.state
         controlRequest = summary.controlRequest
         progress = summary.progress
+        attempts = summary.attempts
+        maxAttempts = summary.maxAttempts
         memberCount = summary.memberCount
         seedCount = summary.seedCount
         clusterCount = summary.clusterCount
         hasResult = summary.hasResult
         createdAtMs = summary.createdAtMs
         updatedAtMs = summary.updatedAtMs
+        sourceNames = summary.sourceNames
     }
 }
 
@@ -136,6 +185,9 @@ struct LibrarySlimmingWorkspaceView: View {
     @State private var confirmMoveToRecycle = false
     @State private var suppressMoveToRecycleConfirmation = false
     @State private var confirmPurgeEntryID: UUID?
+    @State private var identicalCleanupPlan: LibrarySlimmingIdenticalCleanupPlan?
+    @State private var slimmingGridCellFrames = LibraryGridCellFrameStore()
+    @State private var isSlimmingMarqueeSelecting = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -149,30 +201,54 @@ struct LibrarySlimmingWorkspaceView: View {
                 Text("回收站").tag(LibrarySlimmingWorkspaceTab.recycleBin)
             }
             .pickerStyle(.segmented)
+            .persistentHelp("在分析结果和 ImageAll 回收站之间切换；不会启动、删除或恢复任务。")
             .padding(.horizontal, 16)
             .padding(.vertical, 8)
 
             if model.isAnalyzingLibrarySlimming, let progress = model.librarySlimmingScanProgress {
                 progressBanner(progress)
                 Divider()
-            } else if let message = model.librarySlimmingStatusMessage {
+            }
+            if let message = model.librarySlimmingRecycleActionMessage {
+                statusBanner(message)
+                Divider()
+            } else if !model.isAnalyzingLibrarySlimming,
+                      let message = model.librarySlimmingStatusMessage
+            {
                 statusBanner(message)
                 Divider()
             }
 
-            Group {
-                if model.librarySlimmingWorkspaceTab == .recycleBin {
-                    recycleBinList
-                } else {
-                    HSplitView {
-                        analysisHistoryAndClusters
-                            .frame(minWidth: 260, idealWidth: 320, maxWidth: 420)
-                        clusterDetail
-                            .frame(minWidth: 380, maxWidth: .infinity, maxHeight: .infinity)
+            // Size-locked workspace body.
+            //
+            // Under NavigationSplitView + .inspector, HSplitView/List often receive an
+            // unbounded height proposal. A long cluster List then sizes to its full
+            // content height, expands the detail column, and clips the header/picker
+            // out of view. Color.clear flexes to the remaining offered space; its
+            // overlay proposes that exact size to children, so List must scroll.
+            Color.clear
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .overlay {
+                    if model.librarySlimmingWorkspaceTab == .recycleBin {
+                        recycleBinList
+                    } else {
+                        GeometryReader { proxy in
+                            let navigatorWidth = analysisNavigatorWidth(
+                                availableWidth: proxy.size.width
+                            )
+                            HStack(spacing: 0) {
+                                analysisHistoryAndClusters
+                                    .frame(width: navigatorWidth, height: proxy.size.height)
+                                Divider()
+                                clusterDetail
+                                    .frame(
+                                        width: max(proxy.size.width - navigatorWidth - 1, 0),
+                                        height: proxy.size.height
+                                    )
+                            }
+                        }
                     }
                 }
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .navigationTitle("图库瘦身")
@@ -180,7 +256,16 @@ struct LibrarySlimmingWorkspaceView: View {
         .focusable()
         .focused($keyboardFocused)
         .focusEffectDisabled()
-        .onAppear { keyboardFocused = true }
+        .onAppear {
+            keyboardFocused = true
+            model.ensureLibrarySlimmingClusterSelection()
+        }
+        .onChange(of: model.librarySlimmingClusters.map(\.id)) { _, _ in
+            model.ensureLibrarySlimmingClusterSelection()
+        }
+        .onChange(of: model.selectedLibrarySlimmingClusterID) { _, _ in
+            model.ensureLibrarySlimmingClusterSelection()
+        }
         .onKeyPress(.delete, action: handleMoveToRecycleKeyPress)
         .onKeyPress(.deleteForward, action: handleMoveToRecycleKeyPress)
         .task {
@@ -209,6 +294,29 @@ struct LibrarySlimmingWorkspaceView: View {
                 }
             )
         }
+        .sheet(
+            isPresented: Binding(
+                get: { identicalCleanupPlan != nil },
+                set: { if !$0 { identicalCleanupPlan = nil } }
+            )
+        ) {
+            if let plan = identicalCleanupPlan {
+                LibrarySlimmingIdenticalCleanupConfirmationSheet(
+                    plan: plan,
+                    onConfirm: {
+                        identicalCleanupPlan = nil
+                        Task {
+                            await model.moveLibrarySlimmingIdenticalRedundancyToRecycle(
+                                plan: plan
+                            )
+                        }
+                    },
+                    onCancel: {
+                        identicalCleanupPlan = nil
+                    }
+                )
+            }
+        }
         .confirmationDialog(
             "立即永久删除",
             isPresented: Binding(
@@ -223,163 +331,277 @@ struct LibrarySlimmingWorkspaceView: View {
                 }
                 confirmPurgeEntryID = nil
             }
+            .persistentHelp("永久删除回收站中的这张文件夹原图；此操作不可撤销。")
             Button("取消", role: .cancel) {
                 confirmPurgeEntryID = nil
             }
+            .persistentHelp("关闭确认窗口并保留回收站中的照片。")
         } message: {
             Text("此操作不可撤销，将删除回收站中的原图文件。")
         }
     }
 
     private var header: some View {
-        HStack(spacing: 12) {
-            Button {
-                Task { await model.analyzeLibrarySlimming(mode: .catalog) }
-            } label: {
-                if model.isAnalyzingLibrarySlimming, model.librarySlimmingAnalyzeMode == .catalog {
-                    ProgressView()
-                        .controlSize(.small)
-                    Text("分析中…")
-                } else {
-                    Label("分析当前库", systemImage: "wand.and.stars")
-                }
-            }
-            .buttonStyle(.borderedProminent)
-            .disabled(!model.supportsLibrarySlimming)
-            .help("发起新的全库分析；不会取消已有分析记录")
-
-            Button {
-                Task { await model.analyzeLibrarySlimming(mode: .currentFilter) }
-            } label: {
-                Label("分析当前筛选", systemImage: "line.3.horizontal.decrease.circle")
-            }
-            .disabled(
-                !model.supportsLibrarySlimming
-                    || !model.hasLibrarySlimmingFilterScope
-            )
-            .help("使用侧栏目的地与图库当前标签/来源/搜索筛选作为分析宇宙；不会取消已有分析记录")
-
-            if !model.librarySlimmingSeedAssetIDs.isEmpty {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 10) {
                 Button {
-                    Task { await model.analyzeLibrarySlimming(mode: .seeds) }
+                    Task { await model.analyzeLibrarySlimming(mode: .catalog) }
                 } label: {
-                    Label(
-                        "按种子查找 (\(model.librarySlimmingSeedAssetIDs.count))",
-                        systemImage: "target"
-                    )
-                }
-                .disabled(!model.supportsLibrarySlimming)
-                .help("以当前种子发起新的检索任务；不会取消已有分析记录")
-            }
-
-            if model.canPauseLibrarySlimmingAnalysis {
-                Button {
-                    Task { await model.pauseLibrarySlimmingAnalysis() }
-                } label: {
-                    Label("暂停当前", systemImage: "pause.fill")
-                }
-                .help("暂停当前选中的分析任务")
-            } else if model.canResumeLibrarySlimmingAnalysis {
-                Button {
-                    Task { await model.resumeLibrarySlimmingAnalysis() }
-                } label: {
-                    Label("继续当前", systemImage: "play.fill")
-                }
-                .buttonStyle(.borderedProminent)
-                .help("从已保存进度继续当前选中的分析任务")
-            }
-
-            if model.canDeleteSelectedLibrarySlimmingAnalysisJob {
-                Button(role: .destructive) {
-                    if let id = model.librarySlimmingAnalysisJobID {
-                        Task { await model.deleteLibrarySlimmingAnalysisJob(id) }
-                    }
-                } label: {
-                    Label("删除记录", systemImage: "trash")
-                }
-                .help("永久删除当前选中的分析任务与结果")
-            }
-
-            if model.selectedLibrarySlimmingCluster != nil {
-                Button(role: .destructive) {
-                    requestMoveToRecycleConfirmation()
-                } label: {
-                    if model.selectedLibrarySlimmingMemberIDs.isEmpty {
-                        Label("移入回收站", systemImage: "trash.slash")
+                    if model.isAnalyzingLibrarySlimming,
+                       model.librarySlimmingAnalyzeMode == .catalog
+                    {
+                        ProgressView()
+                            .controlSize(.small)
+                        Text(model.librarySlimmingCatalogAnalyzeRunningTitle)
                     } else {
                         Label(
-                            "移入回收站 (\(model.selectedLibrarySlimmingMemberIDs.count))",
-                            systemImage: "trash.slash"
+                            model.librarySlimmingCatalogAnalyzeActionTitle,
+                            systemImage: "wand.and.stars"
                         )
                     }
                 }
-                .disabled(!model.canMoveSelectedLibrarySlimmingMembersToRecycle)
-                .help(
-                    model.librarySlimmingMoveToRecycleDisabledReason
-                        ?? "将簇内选中的照片移入回收站（⌫ / Delete 或右键菜单）"
+                .buttonStyle(.borderedProminent)
+                .disabled(!model.canAnalyzeLibrarySlimmingCatalog)
+                .persistentHelp(
+                    "\(model.librarySlimmingCatalogSourceScopeCaption)；不会取消已有分析记录"
                 )
-            }
 
-            if model.librarySlimmingPendingCount > 0 {
-                Text("待分析 \(model.librarySlimmingPendingCount) 张")
-                    .foregroundStyle(.secondary)
-                    .font(.callout)
-            }
+                Menu {
+                    Button {
+                        model.selectAllLibrarySlimmingCatalogSources()
+                    } label: {
+                        Label(
+                            "全选",
+                            systemImage: allLibrarySlimmingCatalogSourcesSelected
+                                ? "checkmark"
+                                : "square"
+                        )
+                    }
 
-            if model.supportsSourceSimilarityIndex {
-                Button {
-                    Task { await model.initializeSourceSimilarityIndex() }
+                    Button {
+                        model.clearLibrarySlimmingCatalogSourceSelection()
+                    } label: {
+                        Label("清空选择", systemImage: "xmark")
+                    }
+                    .disabled(
+                        !model.activeLibrarySlimmingSources.contains {
+                            model.isLibrarySlimmingCatalogSourceIncluded($0.id)
+                        }
+                    )
+
+                    Divider()
+
+                    ForEach(model.activeLibrarySlimmingSources) { source in
+                        Toggle(
+                            isOn: Binding(
+                                get: {
+                                    model.isLibrarySlimmingCatalogSourceIncluded(source.id)
+                                },
+                                set: {
+                                    model.setLibrarySlimmingCatalogSourceIncluded(
+                                        source.id,
+                                        $0
+                                    )
+                                }
+                            )
+                        ) {
+                            Label(
+                                source.displayName,
+                                systemImage: source.kind == .photos
+                                    ? "photo.on.rectangle.angled"
+                                    : "folder"
+                            )
+                        }
+                    }
                 } label: {
-                    if model.isInitializingSourceSimilarityIndex {
+                    Label(
+                        model.librarySlimmingCatalogSourceSelectionTitle,
+                        systemImage: "square.stack.3d.up"
+                    )
+                }
+                .disabled(model.activeLibrarySlimmingSources.isEmpty)
+                .persistentHelp(
+                    "选择一个或多个要分析的来源；只列出当前可用来源"
+                )
+
+                Button {
+                    Task { await model.analyzeLibrarySlimming(mode: .currentFilter) }
+                } label: {
+                    if model.isAnalyzingLibrarySlimming,
+                       model.librarySlimmingAnalyzeMode == .currentFilter
+                    {
                         ProgressView()
                             .controlSize(.small)
-                        Text("初始化中…")
+                        Text(model.librarySlimmingCurrentFilterRunningTitle)
                     } else {
-                        Label("初始化来源索引", systemImage: "point.3.connected.trianglepath.dotted")
+                        Label(
+                            model.librarySlimmingCurrentFilterActionTitle,
+                            systemImage: "line.3.horizontal.decrease.circle"
+                        )
                     }
                 }
-                .disabled(!model.canInitializeSourceSimilarityIndex)
-                .help("为当前选中的单个来源建立 Feature Print 邻域索引，加速后续按种子检索")
+                .disabled(
+                    !model.supportsLibrarySlimming
+                        || !model.hasLibrarySlimmingFilterScope
+                )
+                .persistentHelp(
+                    "\(model.librarySlimmingFilterScopeCaption)；不会取消已有分析记录"
+                )
 
-                if let caption = model.sourceSimilarityIndexCaption {
-                    Text(caption)
+                if !model.librarySlimmingSeedAssetIDs.isEmpty {
+                    Button {
+                        Task { await model.analyzeLibrarySlimming(mode: .seeds) }
+                    } label: {
+                        Label(
+                            "按种子查找 (\(model.librarySlimmingSeedAssetIDs.count))",
+                            systemImage: "target"
+                        )
+                    }
+                    .disabled(!model.supportsLibrarySlimming)
+                    .persistentHelp("以当前种子发起新的检索任务；不会取消已有分析记录")
+                }
+
+                if model.supportsLibrarySlimmingThresholds {
+                    Button {
+                        model.showsLibrarySlimmingThresholdEditor.toggle()
+                    } label: {
+                        Label("阈值", systemImage: "slider.horizontal.3")
+                    }
+                    .popover(
+                        isPresented: $model.showsLibrarySlimmingThresholdEditor,
+                        arrowEdge: .bottom
+                    ) {
+                        LibrarySlimmingThresholdEditor(model: model)
+                            .frame(width: 320)
+                            .padding(16)
+                    }
+                    .persistentHelp("调整相似召回与精排阈值；下次分析生效")
+                }
+
+                Spacer()
+
+                Button("返回图库", systemImage: "photo.on.rectangle") {
+                    onReturnToLibrary()
+                }
+                .persistentHelp("退出图库瘦身工作区并返回照片图库；已有分析任务不会被删除。")
+            }
+
+            HStack(spacing: 10) {
+                if model.canPauseLibrarySlimmingAnalysis {
+                    Button {
+                        Task { await model.pauseLibrarySlimmingAnalysis() }
+                    } label: {
+                        Label("暂停当前", systemImage: "pause.fill")
+                    }
+                    .persistentHelp("暂停当前选中的分析任务")
+                } else if model.canResumeLibrarySlimmingAnalysis {
+                    Button {
+                        Task { await model.resumeLibrarySlimmingAnalysis() }
+                    } label: {
+                        Label("继续当前", systemImage: "play.fill")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .persistentHelp("从已保存进度继续当前选中的分析任务")
+                }
+
+                if model.canDeleteSelectedLibrarySlimmingAnalysisJob {
+                    Button(role: .destructive) {
+                        if let id = model.librarySlimmingAnalysisJobID {
+                            Task { await model.deleteLibrarySlimmingAnalysisJob(id) }
+                        }
+                    } label: {
+                        Label("删除记录", systemImage: "trash")
+                    }
+                    .persistentHelp("永久删除当前选中的分析任务与结果")
+                }
+
+                if model.librarySlimmingIdenticalGroupCount > 0 {
+                    Button(role: .destructive) {
+                        Task {
+                            identicalCleanupPlan =
+                                await model.prepareLibrarySlimmingIdenticalCleanup()
+                        }
+                    } label: {
+                        if model.isPreparingLibrarySlimmingIdenticalCleanup {
+                            ProgressView()
+                                .controlSize(.small)
+                            Text("正在计算清理方案…")
+                        } else {
+                            Label(
+                                "一键清理完全相同（\(model.librarySlimmingIdenticalGroupCount) 组）",
+                                systemImage: "trash.square"
+                            )
+                        }
+                    }
+                    .disabled(!model.canPrepareLibrarySlimmingIdenticalCleanup)
+                    .persistentHelp(
+                        model.librarySlimmingIdenticalCleanupDisabledReason
+                            ?? "为当前分析结果的每个完全相同分组保留一张，并预览其余照片的批量回收方案。"
+                    )
+                }
+
+                if model.selectedLibrarySlimmingCluster != nil {
+                    Button(role: .destructive) {
+                        requestMoveToRecycleConfirmation()
+                    } label: {
+                        if model.selectedLibrarySlimmingMemberIDs.isEmpty {
+                            Label("移入回收站", systemImage: "trash.slash")
+                        } else {
+                            Label(
+                                "移入回收站 (\(model.selectedLibrarySlimmingMemberIDs.count))",
+                                systemImage: "trash.slash"
+                            )
+                        }
+                    }
+                    .disabled(!model.canMoveSelectedLibrarySlimmingMembersToRecycle)
+                    .persistentHelp(
+                        model.librarySlimmingMoveToRecycleDisabledReason
+                            ?? "将簇内选中的照片移入回收站（⌫ / Delete 或右键菜单）"
+                    )
+                }
+
+                if model.librarySlimmingPendingCount > 0 {
+                    Text("待分析 \(model.librarySlimmingPendingCount) 张")
                         .foregroundStyle(.secondary)
-                        .font(.caption)
+                        .font(.callout)
                 }
-            }
 
-            if model.supportsLibrarySlimmingThresholds {
-                Button {
-                    model.showsLibrarySlimmingThresholdEditor.toggle()
-                } label: {
-                    Label("阈值", systemImage: "slider.horizontal.3")
+                if model.supportsSourceSimilarityIndex {
+                    Button {
+                        Task { await model.initializeSourceSimilarityIndex() }
+                    } label: {
+                        if model.isInitializingSourceSimilarityIndex {
+                            ProgressView()
+                                .controlSize(.small)
+                            Text("初始化中…")
+                        } else {
+                            Label(
+                                "初始化来源索引",
+                                systemImage: "point.3.connected.trianglepath.dotted"
+                            )
+                        }
+                    }
+                    .disabled(!model.canInitializeSourceSimilarityIndex)
+                    .persistentHelp("为当前选中的单个来源建立 Feature Print 邻域索引，加速后续按种子检索")
+
+                    if let caption = model.sourceSimilarityIndexCaption {
+                        Text(caption)
+                            .foregroundStyle(.secondary)
+                            .font(.caption)
+                    }
                 }
-                .popover(isPresented: $model.showsLibrarySlimmingThresholdEditor, arrowEdge: .bottom) {
-                    LibrarySlimmingThresholdEditor(model: model)
-                        .frame(width: 320)
-                        .padding(16)
-                }
-                .help("调整相似召回与精排阈值；下次分析生效")
-            }
 
-            Spacer()
+                Spacer()
 
-            if model.librarySlimmingAnalyzeMode == .currentFilter
-                || model.librarySlimmingAnalyzeMode == .seeds
-            {
-                Text(model.librarySlimmingFilterScopeSummary)
+                Text(model.librarySlimmingFilterScopeCaption)
                     .foregroundStyle(.tertiary)
                     .font(.caption)
                     .lineLimit(2)
-                    .help("当前筛选范围")
-            }
+                    .persistentHelp("“分析来源”或“分析当前筛选”将覆盖的来源、标签和搜索条件。")
 
-            Text(modeCaption)
-                .foregroundStyle(.tertiary)
-                .font(.caption)
-
-            Button("返回图库", systemImage: "photo.on.rectangle") {
-                onReturnToLibrary()
+                Text(modeCaption)
+                    .foregroundStyle(.tertiary)
+                    .font(.caption)
             }
         }
         .padding(.horizontal, 16)
@@ -388,10 +610,17 @@ struct LibrarySlimmingWorkspaceView: View {
 
     private var modeCaption: String {
         switch model.librarySlimmingAnalyzeMode {
-        case .catalog: "模式：当前库"
+        case .catalog: "模式：\(model.librarySlimmingCatalogSourceSelectionTitle)"
         case .currentFilter: "模式：当前筛选"
         case .seeds: "模式：种子检索"
         }
+    }
+
+    private var allLibrarySlimmingCatalogSourcesSelected: Bool {
+        !model.activeLibrarySlimmingSources.isEmpty
+            && model.activeLibrarySlimmingSources.allSatisfy {
+                model.isLibrarySlimmingCatalogSourceIncluded($0.id)
+            }
     }
 
     private func handleMoveToRecycleKeyPress() -> KeyPress.Result {
@@ -447,12 +676,19 @@ struct LibrarySlimmingWorkspaceView: View {
             .padding(.vertical, 8)
     }
 
+    private func analysisNavigatorWidth(availableWidth: CGFloat) -> CGFloat {
+        guard availableWidth > 0 else { return 0 }
+        let preferred = min(340, max(220, availableWidth * 0.34))
+        // Never consume more than half the locked pane when the inspector is open.
+        return min(preferred, availableWidth * 0.5)
+    }
+
     private var analysisHistoryAndClusters: some View {
         List(selection: Binding(
             get: { model.librarySlimmingAnalysisJobID },
             set: { model.selectLibrarySlimmingAnalysisJob($0) }
         )) {
-            Section("分析记录") {
+            Section {
                 if model.librarySlimmingAnalysisJobs.isEmpty {
                     Text("尚无分析记录。发起分析后会永久保存在这里，除非手动删除。")
                         .font(.caption)
@@ -471,6 +707,11 @@ struct LibrarySlimmingWorkspaceView: View {
                             Text(job.detailCaption)
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
+                            Text(job.sourceCaption)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(2)
+                                .help(job.sourceCaption)
                             Text(job.createdCaption)
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
@@ -481,18 +722,26 @@ struct LibrarySlimmingWorkspaceView: View {
                                 Button("删除记录", role: .destructive) {
                                     Task { await model.deleteLibrarySlimmingAnalysisJob(job.id) }
                                 }
+                                .persistentHelp("永久删除这条分析任务记录和结果；不会删除任何原照片。")
                             }
                         }
                         .accessibilityLabel(
-                            "\(job.modeTitle)，\(job.stateTitle)，\(job.detailCaption)"
+                            "\(job.modeTitle)，\(job.stateTitle)，\(job.detailCaption)，\(job.sourceCaption)"
                         )
                     }
                 }
+            } header: {
+                HStack {
+                    Text("分析记录")
+                    Spacer()
+                    Text("\(model.librarySlimmingAnalysisJobs.count) 条")
+                        .foregroundStyle(.secondary)
+                }
             }
 
-            Section("簇（相同优先）") {
+            Section {
                 if model.librarySlimmingAnalysisJobID == nil {
-                    Text("选择左侧一条分析记录查看结果。")
+                    Text("请先选择一条分析记录。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 } else if model.librarySlimmingClusters.isEmpty {
@@ -515,23 +764,26 @@ struct LibrarySlimmingWorkspaceView: View {
                     }
                 } else {
                     ForEach(model.librarySlimmingClusters) { cluster in
-                        VStack(alignment: .leading, spacing: 4) {
-                            HStack {
-                                Text(cluster.kindTitle)
-                                    .font(.body.weight(.semibold))
-                                Spacer()
-                                Text("\(cluster.memberAssetIDs.count) 张")
-                                    .foregroundStyle(.secondary)
-                                    .font(.caption)
-                            }
-                            Text(cluster.scoreCaption)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                        .contentShape(Rectangle())
-                        .onTapGesture {
+                        Button {
                             model.selectLibrarySlimmingCluster(cluster.id)
+                        } label: {
+                            VStack(alignment: .leading, spacing: 4) {
+                                HStack {
+                                    Text(cluster.kindTitle)
+                                        .font(.body.weight(.semibold))
+                                    Spacer()
+                                    Text("\(cluster.memberAssetIDs.count) 张")
+                                        .foregroundStyle(.secondary)
+                                        .font(.caption)
+                                }
+                                Text(cluster.scoreCaption)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .contentShape(Rectangle())
                         }
+                        .buttonStyle(.plain)
                         .listRowBackground(
                             model.selectedLibrarySlimmingClusterID == cluster.id
                                 ? Color.accentColor.opacity(0.12)
@@ -540,8 +792,19 @@ struct LibrarySlimmingWorkspaceView: View {
                         .accessibilityLabel("\(cluster.kindTitle)，\(cluster.memberAssetIDs.count) 张")
                     }
                 }
+            } header: {
+                HStack {
+                    Text("结果分组")
+                    Spacer()
+                    if !model.librarySlimmingClusters.isEmpty {
+                        Text("\(model.librarySlimmingClusters.count) 组")
+                            .foregroundStyle(.secondary)
+                    }
+                }
             }
         }
+        .listStyle(.inset)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
     private var clusterDetail: some View {
@@ -557,57 +820,107 @@ struct LibrarySlimmingWorkspaceView: View {
                     }
                     .padding(.horizontal, 16)
                     .padding(.top, 12)
+                    .fixedSize(horizontal: false, vertical: true)
 
                     Text(
-                        "成员 \(cluster.memberAssetIDs.count) · 已选 \(model.selectedLibrarySlimmingMemberIDs.count) · ⌘点击多选"
+                        "成员 \(cluster.memberAssetIDs.count) · 已选 \(model.selectedLibrarySlimmingMemberIDs.count) · ⌘点击多选 · Shift 点击连续选择 · 拖拽框选"
                     )
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .padding(.horizontal, 16)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                    if let sourceSummary = model.librarySlimmingSelectedClusterSourceSummary {
+                        Text("来源：\(sourceSummary)")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                            .padding(.horizontal, 16)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
 
                     GeometryReader { proxy in
+                        let layoutWidth = LibraryGridLayout.layoutWidth(
+                            containerWidth: proxy.size.width
+                        )
                         ScrollView {
-                            LazyVGrid(
-                                columns: LibraryGridLayout.gridItems(
-                                    containerWidth: proxy.size.width,
-                                    density: model.gridDensity
-                                ),
-                                spacing: LibraryGridLayout.spacing
+                            LibraryGridMarqueeContainer(
+                                cellFrames: slimmingGridCellFrames,
+                                isMarqueeSelecting: $isSlimmingMarqueeSelecting,
+                                viewportHeight: proxy.size.height,
+                                contentWidth: layoutWidth,
+                                currentSelection: model.selectedLibrarySlimmingMemberIDs,
+                                onSelectionChange: { assetIDs, _ in
+                                    keyboardFocused = true
+                                    model.selectLibrarySlimmingMembers(assetIDs)
+                                }
                             ) {
-                                ForEach(cluster.memberAssetIDs, id: \.self) { assetID in
-                                    SlimmingThumbnailCell(
-                                        model: model,
-                                        assetID: assetID,
-                                        isSelected: model.selectedLibrarySlimmingMemberIDs.contains(assetID)
-                                    )
-                                    .onTapGesture {
-                                        let flags = NSEvent.modifierFlags.intersection(.deviceIndependentFlagsMask)
-                                        model.selectLibrarySlimmingMember(
-                                            assetID,
-                                            additive: flags.contains(.command)
+                                LazyVGrid(
+                                    columns: LibraryGridLayout.gridItems(
+                                        containerWidth: proxy.size.width,
+                                        density: model.gridDensity
+                                    ),
+                                    spacing: LibraryGridLayout.spacing
+                                ) {
+                                    ForEach(cluster.memberAssetIDs, id: \.self) { assetID in
+                                        SlimmingThumbnailCell(
+                                            model: model,
+                                            assetID: assetID,
+                                            isSelected: model.selectedLibrarySlimmingMemberIDs.contains(assetID)
                                         )
-                                    }
-                                    .contextMenu {
-                                        moveToRecycleContextMenu(for: assetID)
+                                        .libraryGridCellFrameReporter(assetID: assetID)
+                                        .onTapGesture {
+                                            guard !isSlimmingMarqueeSelecting else { return }
+                                            keyboardFocused = true
+                                            let flags = NSEvent.modifierFlags.intersection(
+                                                .deviceIndependentFlagsMask
+                                            )
+                                            model.selectLibrarySlimmingMember(
+                                                assetID,
+                                                additive: flags.contains(.command),
+                                                extendRange: flags.contains(.shift)
+                                            )
+                                        }
+                                        .contextMenu {
+                                            moveToRecycleContextMenu(for: assetID)
+                                        }
                                     }
                                 }
+                                .padding(LibraryGridLayout.horizontalPadding)
                             }
-                            .padding(LibraryGridLayout.horizontalPadding)
                         }
+                        .scrollDisabled(isSlimmingMarqueeSelecting)
                     }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             } else if model.librarySlimmingClusters.isEmpty, model.hasCompletedLibrarySlimmingScan {
                 ContentUnavailableView {
                     Label("无相似结果", systemImage: "checkmark.circle")
                 } description: {
                     Text("本次分析未发现相同或相似簇。")
                 }
+            } else if model.librarySlimmingAnalysisJobID == nil {
+                ContentUnavailableView {
+                    Label("选择分析记录", systemImage: "clock.arrow.circlepath")
+                } description: {
+                    Text("请先从左侧“分析记录”选择一个任务。")
+                }
             } else if model.librarySlimmingClusters.isEmpty {
-                Color.clear
+                ContentUnavailableView {
+                    Label("正在准备结果", systemImage: "photo.stack")
+                } description: {
+                    Text("任务仍在处理，或暂时还没有形成相同、相似照片分组。")
+                }
             } else {
-                ContentUnavailableView("选择一个簇", systemImage: "photo.stack")
+                ContentUnavailableView {
+                    Label("选择结果分组", systemImage: "photo.stack")
+                } description: {
+                    Text("请从左侧“结果分组”选择一组照片。")
+                }
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
     @ViewBuilder
@@ -619,6 +932,7 @@ struct LibrarySlimmingWorkspaceView: View {
             presentMoveToRecycle(for: assetID)
         }
         .disabled(!model.supportsLibrarySlimmingRecycle || model.isMutatingLibrarySlimmingRecycle)
+        .persistentHelp("把当前照片或已选照片移入回收站；确认前不会改动原照片。")
     }
 
     private var recycleBinList: some View {
@@ -678,11 +992,17 @@ struct LibrarySlimmingWorkspaceView: View {
                                 Task { await model.restoreLibrarySlimmingRecycleEntry(entry.id) }
                             }
                             .disabled(model.isMutatingLibrarySlimmingRecycle)
+                            .persistentHelp(
+                                entry.sourceKind == .photos
+                                    ? "查看如何从 Apple Photos“最近删除”中恢复这张照片。"
+                                    : "把这张文件夹照片从 ImageAll 回收站恢复到原位置。"
+                            )
                             if entry.sourceKind == .file {
                                 Button("立即删除", role: .destructive) {
                                     confirmPurgeEntryID = entry.id
                                 }
                                 .disabled(model.isMutatingLibrarySlimmingRecycle)
+                                .persistentHelp("打开永久删除确认；确认后这张原图将不可恢复。")
                             }
                         }
                     }
@@ -698,50 +1018,69 @@ struct LibrarySlimmingInspectorView: View {
     @ObservedObject var model: LibraryWorkspaceModel
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("图库瘦身")
-                .font(.headline)
-            Text(
-                "查找相同与相似照片。文件夹资产使用 ImageAll 的 30 天回收机制；Photos 资产使用 macOS「照片」App 的系统删除与恢复机制。"
-            )
-                .font(.callout)
-                .foregroundStyle(.secondary)
-            LabeledContent("分析记录", value: "\(model.librarySlimmingAnalysisJobs.count) 条")
-            if let job = model.selectedLibrarySlimmingAnalysisJob {
-                LabeledContent("当前任务", value: job.modeTitle)
-                LabeledContent("状态", value: job.stateTitle)
-                LabeledContent("范围", value: "\(job.memberCount) 张")
-                if job.seedCount > 0 {
-                    LabeledContent("种子", value: "\(job.seedCount) 张")
-                }
-            } else if !model.librarySlimmingSeedAssetIDs.isEmpty {
-                LabeledContent("待用种子", value: "\(model.librarySlimmingSeedAssetIDs.count) 张")
-            }
-            if model.librarySlimmingAnalyzeMode == .currentFilter
-                || model.librarySlimmingAnalyzeMode == .seeds
-            {
-                LabeledContent("筛选", value: model.librarySlimmingFilterScopeSummary)
-            }
-            LabeledContent("回收站", value: "\(model.librarySlimmingRecycleEntries.count) 项")
-            if let caption = model.sourceSimilarityIndexCaption {
-                LabeledContent("来源索引", value: caption.replacingOccurrences(of: "来源索引：", with: ""))
-            }
-            if let cluster = model.selectedLibrarySlimmingCluster {
-                Divider()
-                LabeledContent("类型", value: cluster.kindTitle)
-                LabeledContent("成员", value: "\(cluster.memberAssetIDs.count)")
-                LabeledContent("已选", value: "\(model.selectedLibrarySlimmingMemberIDs.count)")
-                LabeledContent("分数", value: cluster.scoreCaption)
-            }
-            if model.librarySlimmingPendingCount > 0 {
-                Divider()
-                Text("有 \(model.librarySlimmingPendingCount) 张照片缺少 Feature Print 或 DINOv2，已标为待分析。")
-                    .font(.caption)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("图库瘦身")
+                    .font(.headline)
+                Text(
+                    "查找相同与相似照片。文件夹资产使用 ImageAll 的 30 天回收机制；Photos 资产使用 macOS「照片」App 的系统删除与恢复机制。"
+                )
+                    .font(.callout)
                     .foregroundStyle(.secondary)
+                LabeledContent("分析记录", value: "\(model.librarySlimmingAnalysisJobs.count) 条")
+                if let job = model.selectedLibrarySlimmingAnalysisJob {
+                    LabeledContent("当前任务", value: job.modeTitle)
+                    LabeledContent("任务来源") {
+                        Text(job.sourceNamesText)
+                            .multilineTextAlignment(.trailing)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .help(job.sourceCaption)
+                    }
+                    LabeledContent("状态", value: job.stateTitle)
+                    LabeledContent("尝试次数", value: job.attemptCaption)
+                    LabeledContent("范围", value: "\(job.memberCount) 张")
+                    if job.seedCount > 0 {
+                        LabeledContent("种子", value: "\(job.seedCount) 张")
+                    }
+                } else if !model.librarySlimmingSeedAssetIDs.isEmpty {
+                    LabeledContent("待用种子", value: "\(model.librarySlimmingSeedAssetIDs.count) 张")
+                }
+                if model.librarySlimmingAnalyzeMode == .currentFilter
+                    || model.librarySlimmingAnalyzeMode == .seeds
+                {
+                    LabeledContent("筛选", value: model.librarySlimmingFilterScopeSummary)
+                }
+                LabeledContent("回收站", value: "\(model.librarySlimmingRecycleEntries.count) 项")
+                if let caption = model.sourceSimilarityIndexCaption {
+                    LabeledContent("来源索引", value: caption.replacingOccurrences(of: "来源索引：", with: ""))
+                }
+                if let cluster = model.selectedLibrarySlimmingCluster {
+                    Divider()
+                    LabeledContent("类型", value: cluster.kindTitle)
+                    LabeledContent("成员", value: "\(cluster.memberAssetIDs.count)")
+                    LabeledContent("已选", value: "\(model.selectedLibrarySlimmingMemberIDs.count)")
+                    LabeledContent(
+                        "来源",
+                        value: model.librarySlimmingSelectedClusterSourceSummary ?? "正在读取…"
+                    )
+                    LabeledContent("结果", value: cluster.scoreCaption)
+                    LabeledContent("技术详情") {
+                        Text(cluster.technicalDetailsCaption)
+                            .multilineTextAlignment(.trailing)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .textSelection(.enabled)
+                    }
+                }
+                if model.librarySlimmingPendingCount > 0 {
+                    Divider()
+                    Text("有 \(model.librarySlimmingPendingCount) 张照片缺少 Feature Print 或 DINOv2，已标为待分析。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
-            Spacer()
+            .padding(16)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
         }
-        .padding(16)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 }
@@ -780,6 +1119,21 @@ private struct SlimmingThumbnailCell: View {
                 RoundedRectangle(cornerRadius: 6, style: .continuous)
                     .strokeBorder(isSelected ? Color.accentColor : Color.clear, lineWidth: 3)
             )
+            .overlay(alignment: .bottomLeading) {
+                if let sourceName = model.librarySlimmingSourceName(for: assetID) {
+                    Text(sourceName)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 5)
+                        .background(.black.opacity(0.68), in: Capsule())
+                        .padding(7)
+                        .help("来源：\(sourceName)")
+                        .accessibilityLabel("来源：\(sourceName)")
+                }
+            }
         }
         .aspectRatio(1, contentMode: .fit)
         .task(id: loadID) {
@@ -849,7 +1203,77 @@ private struct LibrarySlimmingMoveToRecycleConfirmationSheet: View {
                     dismiss()
                 }
                 .keyboardShortcut(.cancelAction)
+                .persistentHelp("关闭窗口并保留所有照片，不执行回收操作。")
                 Button("移入回收站（\(selectedCount) 张）", role: .destructive) {
+                    onConfirm()
+                    dismiss()
+                }
+                .keyboardShortcut(.defaultAction)
+                .persistentHelp("确认把列出的照片移入回收站，之后仍可按来源规则恢复。")
+            }
+        }
+        .padding(20)
+        .frame(width: 420)
+    }
+}
+
+private struct LibrarySlimmingIdenticalCleanupConfirmationSheet: View {
+    let plan: LibrarySlimmingIdenticalCleanupPlan
+    let onConfirm: () -> Void
+    let onCancel: () -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Label("一键清理完全相同照片", systemImage: "trash.square")
+                .font(.headline)
+
+            Text(
+                "将处理 \(plan.groupCount) 个完全相同分组，移入回收站 \(plan.assetIDsToRecycle.count) 张，每组保留 1 张。"
+            )
+            .font(.callout)
+            .fixedSize(horizontal: false, vertical: true)
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("删除优先级")
+                    .font(.subheadline.weight(.semibold))
+                Text("1. Apple Photos")
+                Text("2. 来源显示名较长的照片")
+                Text("3. 来源显示名较短的照片")
+                Text("同长度时使用稳定顺序，只用于保证每次结果一致。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            LabeledContent("Apple Photos", value: "\(plan.photosAssetCount) 张")
+            LabeledContent("文件夹来源", value: "\(plan.fileAssetCount) 张")
+
+            if plan.photosAssetCount > 0 {
+                Text("macOS 仍会对全部 Apple Photos 待删项集中显示一次系统确认。")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if plan.skippedGroupCount > 0 {
+                Text(
+                    "另有 \(plan.skippedGroupCount) 组因成员或来源状态变化已安全跳过，不会删除。"
+                )
+                .font(.caption)
+                .foregroundStyle(.orange)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+
+            HStack {
+                Spacer()
+                Button("取消") {
+                    onCancel()
+                    dismiss()
+                }
+                .keyboardShortcut(.cancelAction)
+                Button(
+                    "清理 \(plan.assetIDsToRecycle.count) 张",
+                    role: .destructive
+                ) {
                     onConfirm()
                     dismiss()
                 }
@@ -857,7 +1281,7 @@ private struct LibrarySlimmingMoveToRecycleConfirmationSheet: View {
             }
         }
         .padding(20)
-        .frame(width: 420)
+        .frame(width: 460)
     }
 }
 
@@ -869,27 +1293,71 @@ private struct LibrarySlimmingThresholdEditor: View {
     @State private var bucket: Double = Double(
         NearDuplicateSceneThresholds.factory.sceneBucketActivationAssetCount
     )
+    @State private var recallMode = NearDuplicateSceneThresholds.factory.featurePrintRecallMode
+    @State private var l2Mode = NearDuplicateSceneThresholds.factory.featurePrintL2Mode
+    @State private var dinoMode = NearDuplicateSceneThresholds.factory.dinoCosineMode
+    @State private var bucketingMode = NearDuplicateSceneThresholds.factory.sceneBucketingMode
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("相似度阈值")
                 .font(.headline)
-            Text("修改后下次分析生效。分桶仅作用于「当前库 / 当前筛选」的场景相似；相同档与种子检索不受分桶限制。")
+            Text("修改后下次分析生效。极限模式会扩大或收紧场景相似召回；完全相同、视觉重复不受影响。")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
-            labeledSlider("Feature Print Top-K", value: $topK, range: 4...64, step: 1) {
+            labeledSlider("Feature Print Top-K", value: $topK, range: 1...128, step: 1) {
                 "\(Int(topK.rounded()))"
             }
-            labeledSlider("Feature Print L2 半径", value: $maxL2, range: 5...80, step: 1) {
+            .disabled(recallMode == .allCandidates)
+            Toggle("召回全部候选（完整扫描）", isOn: Binding(
+                get: { recallMode == .allCandidates },
+                set: { recallMode = $0 ? .allCandidates : .topK }
+            ))
+            .toggleStyle(.checkbox)
+
+            labeledSlider("Feature Print L2 半径", value: $maxL2, range: 0...200, step: 1) {
                 String(format: "%.0f", maxL2)
             }
-            labeledSlider("DINOv2 余弦下限", value: $dino, range: 0.70...0.99, step: 0.01) {
+            .disabled(l2Mode == .unlimited)
+            Toggle("L2 半径不限", isOn: Binding(
+                get: { l2Mode == .unlimited },
+                set: { l2Mode = $0 ? .unlimited : .radius }
+            ))
+            .toggleStyle(.checkbox)
+
+            labeledSlider("DINOv2 余弦下限", value: $dino, range: 0...1, step: 0.01) {
                 String(format: "%.2f", dino)
             }
-            labeledSlider("分桶激活资产数", value: $bucket, range: 16...2000, step: 16) {
-                "\(Int(bucket.rounded()))"
+            .disabled(dinoMode == .unlimited)
+            Toggle("DINOv2 精排不设下限", isOn: Binding(
+                get: { dinoMode == .unlimited },
+                set: { dinoMode = $0 ? .unlimited : .minimum }
+            ))
+            .toggleStyle(.checkbox)
+
+            Picker("按拍摄日分桶", selection: $bucketingMode) {
+                Text("始终").tag(SceneBucketingMode.always)
+                Text("自动").tag(SceneBucketingMode.automatic)
+                Text("从不").tag(SceneBucketingMode.never)
+            }
+            .pickerStyle(.segmented)
+
+            if bucketingMode == .automatic {
+                labeledSlider("分桶激活资产数", value: $bucket, range: 2...10_000, step: 1) {
+                    "\(Int(bucket.rounded()))"
+                }
+            }
+
+            if usesExtremeMode {
+                Label(
+                    "极限设置可能显著增加分析时间和相似结果数量；“全部候选”会绕过大分组的 64 个候选上限。",
+                    systemImage: "exclamationmark.triangle"
+                )
+                .font(.caption)
+                .foregroundStyle(.orange)
+                .fixedSize(horizontal: false, vertical: true)
             }
 
             HStack {
@@ -897,6 +1365,7 @@ private struct LibrarySlimmingThresholdEditor: View {
                     model.resetLibrarySlimmingSceneThresholds()
                     syncFromModel()
                 }
+                .persistentHelp("把相似照片召回和精排参数恢复为 ImageAll 默认值。")
                 Spacer()
                 Button("应用") {
                     model.updateLibrarySlimmingSceneThresholds(
@@ -904,14 +1373,21 @@ private struct LibrarySlimmingThresholdEditor: View {
                             featurePrintRecallTopK: Int(topK.rounded()),
                             featurePrintMaxL2Distance: maxL2,
                             dinoCosineMinSimilarity: dino,
-                            sceneBucketActivationAssetCount: Int(bucket.rounded())
+                            sceneBucketActivationAssetCount: Int(bucket.rounded()),
+                            featurePrintRecallMode: recallMode,
+                            featurePrintL2Mode: l2Mode,
+                            dinoCosineMode: dinoMode,
+                            sceneBucketingMode: bucketingMode
                         )
                     )
                 }
                 .keyboardShortcut(.defaultAction)
+                .persistentHelp("保存当前相似判断参数；它们会从下一次分析开始生效。")
             }
         }
         .onAppear(perform: syncFromModel)
+        .padding(16)
+        .frame(width: 440)
     }
 
     private func syncFromModel() {
@@ -920,6 +1396,17 @@ private struct LibrarySlimmingThresholdEditor: View {
         maxL2 = current.featurePrintMaxL2Distance
         dino = current.dinoCosineMinSimilarity
         bucket = Double(current.sceneBucketActivationAssetCount)
+        recallMode = current.featurePrintRecallMode
+        l2Mode = current.featurePrintL2Mode
+        dinoMode = current.dinoCosineMode
+        bucketingMode = current.sceneBucketingMode
+    }
+
+    private var usesExtremeMode: Bool {
+        recallMode == .allCandidates
+            || l2Mode == .unlimited
+            || dinoMode == .unlimited
+            || bucketingMode != .automatic
     }
 
     private func labeledSlider(

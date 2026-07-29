@@ -748,6 +748,7 @@ final class FolderAuthorizationReviewGapTests: XCTestCase {
                 sourceID: sourceID,
                 displayName: "After Display",
                 bookmark: newBookmark,
+                mutationBookmark: newBookmark,
                 jobID: UUID(),
                 nowMs: attemptedNowMs
             )
@@ -780,6 +781,7 @@ final class FolderAuthorizationReviewGapTests: XCTestCase {
                 sourceID: sourceID,
                 displayName: "After",
                 bookmark: bookmark,
+                mutationBookmark: bookmark,
                 jobID: UUID(),
                 nowMs: FolderAuthorizationTestSupport.baseTimeMs
             )

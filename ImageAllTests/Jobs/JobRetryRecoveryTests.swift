@@ -110,6 +110,52 @@ final class JobRetryRecoveryTests: XCTestCase {
         XCTAssertEqual(try queue.fetchJob(id: terminalID).lastErrorCode, .interrupted)
     }
 
+    func testRecoverExpiredRunningJobsLeavesLiveLeaseAndRecoversExpiredControlPaths() throws {
+        let url = try makeTempDatabaseURL()
+        let database = try CatalogDatabase.open(at: url)
+        let queue = JobTestSupport.makeQueue(
+            database: database,
+            nowMs: JobTestSupport.baseTimeMs + JobTestSupport.leaseDurationMs
+        )
+        let liveID = UUID()
+        let retryID = UUID()
+        let pauseID = UUID()
+
+        try JobTestSupport.insertRunningJobForRecovery(
+            database: database,
+            id: liveID,
+            control: .none
+        )
+        try JobTestSupport.insertRunningJobForRecovery(
+            database: database,
+            id: retryID,
+            control: .none,
+            attempts: 1,
+            maxAttempts: 3
+        )
+        try JobTestSupport.insertRunningJobForRecovery(
+            database: database,
+            id: pauseID,
+            control: .pause
+        )
+        try database.pool.write { db in
+            try db.execute(
+                sql: "UPDATE job SET lease_expires_at_ms = ? WHERE id = ?",
+                arguments: [
+                    JobTestSupport.baseTimeMs + JobTestSupport.leaseDurationMs + 1,
+                    liveID.uuidString.lowercased(),
+                ]
+            )
+        }
+
+        try queue.recoverExpiredRunningJobs()
+
+        XCTAssertEqual(try queue.fetchJob(id: liveID).state, .running)
+        XCTAssertEqual(try queue.fetchJob(id: retryID).state, .retryableFailed)
+        XCTAssertEqual(try queue.fetchJob(id: retryID).lastErrorCode, .interrupted)
+        XCTAssertEqual(try queue.fetchJob(id: pauseID).state, .paused)
+    }
+
     func testRecoveryIsIdempotent() throws {
         let url = try makeTempDatabaseURL()
         let database = try CatalogDatabase.open(at: url)

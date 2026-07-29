@@ -192,6 +192,7 @@ enum FolderAuthorizationTestSupport {
         private let lock = NSLock()
         private var _configuredResponses: [URL?] = []
         private var _callCount = 0
+        private var _initialDirectoryURLs: [URL?] = []
 
         var configuredResponses: [URL?] {
             get {
@@ -212,10 +213,17 @@ enum FolderAuthorizationTestSupport {
             return _callCount
         }
 
-        func pickDirectory() -> URL? {
+        var initialDirectoryURLs: [URL?] {
+            lock.lock()
+            defer { lock.unlock() }
+            return _initialDirectoryURLs
+        }
+
+        func pickDirectory(initialDirectoryURL: URL?) -> URL? {
             lock.lock()
             defer { lock.unlock() }
             _callCount += 1
+            _initialDirectoryURLs.append(initialDirectoryURL)
             if _configuredResponses.isEmpty {
                 return nil
             }
@@ -226,8 +234,10 @@ enum FolderAuthorizationTestSupport {
     final class MappingBookmarkPort: SecurityScopedBookmarkPort, @unchecked Sendable {
         var urlByBookmark: [Data: URL] = [:]
         var createdBookmarks: [URL: Data] = [:]
+        var createdWritableBookmarks: [URL: Data] = [:]
         private(set) var startCount = 0
         private(set) var stopCount = 0
+        private(set) var writableCreationCount = 0
         var forceStartResult: Bool = true
         var createBookmarkFailure = false
         var resolveFailure = false
@@ -259,6 +269,20 @@ enum FolderAuthorizationTestSupport {
             return register(url: url)
         }
 
+        func createWritableBookmark(for url: URL) throws -> Data {
+            if createBookmarkFailure {
+                throw NSError(domain: "test", code: 1)
+            }
+            writableCreationCount += 1
+            if let existing = createdWritableBookmarks[url] {
+                return existing
+            }
+            let bookmark = Data("writable-bookmark-\(url.absoluteString.hashValue)".utf8)
+            urlByBookmark[bookmark] = url
+            createdWritableBookmarks[url] = bookmark
+            return bookmark
+        }
+
         func resolveBookmark(_ bookmark: Data) throws -> BookmarkResolveResult {
             if let resolveError {
                 throw resolveError
@@ -286,6 +310,7 @@ enum FolderAuthorizationTestSupport {
         let underlying: FoundationSecurityScopedBookmarkAdapter
         private(set) var startCount = 0
         private(set) var stopCount = 0
+        private(set) var writableCreationCount = 0
         var forceStartResult: Bool?
         var createBookmarkFailure = false
         var resolveFailure = false
@@ -302,6 +327,14 @@ enum FolderAuthorizationTestSupport {
                 throw NSError(domain: "test", code: 1)
             }
             return try underlying.createReadOnlyBookmark(for: url)
+        }
+
+        func createWritableBookmark(for url: URL) throws -> Data {
+            if createBookmarkFailure {
+                throw NSError(domain: "test", code: 1)
+            }
+            writableCreationCount += 1
+            return try underlying.createWritableBookmark(for: url)
         }
 
         func resolveBookmark(_ bookmark: Data) throws -> BookmarkResolveResult {

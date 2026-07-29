@@ -21,11 +21,13 @@ final class FolderOverlapAndConnectTests: XCTestCase {
         let database = try FolderAuthorizationTestSupport.makeDatabase()
         let root = try registry.makeRoot(label: "connect")
         let picker = FolderAuthorizationTestSupport.FakeDirectoryPicker()
+        let bookmarkPort = FolderAuthorizationTestSupport.MappingBookmarkPort()
         let sourceID = UUID(uuidString: "11111111-1111-1111-1111-111111111111")!
         let jobID = UUID(uuidString: "22222222-2222-2222-2222-222222222222")!
         let (coordinator, _, _, _) = FolderAuthorizationTestSupport.makeCoordinator(
             database: database,
             picker: picker,
+            bookmarkPort: bookmarkPort,
             ids: [sourceID, jobID]
         )
 
@@ -34,6 +36,36 @@ final class FolderOverlapAndConnectTests: XCTestCase {
         XCTAssertEqual(outcome, .connected(sourceID: sourceID))
         XCTAssertEqual(try FolderAuthorizationTestSupport.sourceCount(database), 1)
         XCTAssertEqual(try FolderAuthorizationTestSupport.jobCount(database), 1)
+        let storedBookmarks: (Data, Data)? = try await database.pool.read { db in
+            guard let row = try Row.fetchOne(
+                db,
+                sql: """
+                SELECT source.bookmark AS catalog_bookmark,
+                       authorization.bookmark AS mutation_bookmark
+                FROM source
+                JOIN source_mutation_authorization AS authorization
+                    ON authorization.source_id = source.id
+                WHERE source.id = ?
+                """,
+                arguments: [sourceID.uuidString.lowercased()]
+            ) else {
+                return nil
+            }
+            return (row["catalog_bookmark"], row["mutation_bookmark"])
+        }
+        let bookmarks = try XCTUnwrap(storedBookmarks)
+        XCTAssertEqual(bookmarks.0, bookmarkPort.createdBookmarks[root])
+        XCTAssertEqual(bookmarks.1, bookmarkPort.createdWritableBookmarks[root])
+        XCTAssertNotEqual(bookmarks.0, bookmarks.1)
+        XCTAssertEqual(bookmarkPort.writableCreationCount, 1)
+        let authorizedRootName = try FolderMutationAccessService(
+            database: database,
+            bookmarkPort: bookmarkPort
+        ).withWritableSourceRoot(sourceID: sourceID) { authorizedRoot in
+            authorizedRoot.lastPathComponent
+        }
+        XCTAssertEqual(authorizedRootName, root.lastPathComponent)
+        XCTAssertEqual(picker.callCount, 1)
 
         let row = try database.pool.read { db in
             try Row.fetchOne(db, sql: "SELECT * FROM job WHERE id = ?", arguments: [jobID.uuidString.lowercased()])
@@ -91,6 +123,13 @@ final class FolderOverlapAndConnectTests: XCTestCase {
         }
         XCTAssertEqual(try FolderAuthorizationTestSupport.sourceCount(database), 0)
         XCTAssertEqual(try FolderAuthorizationTestSupport.jobCount(database), 0)
+        let mutationAuthorizationCount = try await database.pool.read { db in
+            try Int.fetchOne(
+                db,
+                sql: "SELECT COUNT(*) FROM source_mutation_authorization"
+            ) ?? 0
+        }
+        XCTAssertEqual(mutationAuthorizationCount, 0)
     }
 
     func testFoundationRelationshipDetectsSameAncestorAndDescendantOverlap() throws {

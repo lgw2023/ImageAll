@@ -37,3 +37,35 @@ final class ToolbarDisplayModeTests: XCTestCase {
         XCTAssertEqual(store.displayMode, .iconAndTitle)
     }
 }
+
+final class PersistentHoverHelpSessionTests: XCTestCase {
+    func testHelpRemainsVisibleUntilPointerLeavesSameButton() {
+        let owner = UUID()
+        var session = PersistentHoverHelpSession()
+
+        session.enter(owner: owner)
+        XCTAssertTrue(session.reveal(owner: owner))
+        XCTAssertEqual(session.visibleOwner, owner)
+
+        XCTAssertTrue(session.reveal(owner: owner))
+        XCTAssertEqual(session.visibleOwner, owner)
+
+        XCTAssertTrue(session.leave(owner: owner))
+        XCTAssertNil(session.hoveredOwner)
+        XCTAssertNil(session.visibleOwner)
+    }
+
+    func testStaleButtonCannotRevealOrHideCurrentButtonsHelp() {
+        let firstOwner = UUID()
+        let secondOwner = UUID()
+        var session = PersistentHoverHelpSession()
+
+        session.enter(owner: firstOwner)
+        session.enter(owner: secondOwner)
+
+        XCTAssertFalse(session.reveal(owner: firstOwner))
+        XCTAssertTrue(session.reveal(owner: secondOwner))
+        XCTAssertFalse(session.leave(owner: firstOwner))
+        XCTAssertEqual(session.visibleOwner, secondOwner)
+    }
+}

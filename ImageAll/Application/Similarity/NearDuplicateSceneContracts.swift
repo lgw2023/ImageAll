@@ -2,7 +2,7 @@ import Foundation
 
 /// Versioned policy for S2 near-duplicate scene clustering (Feature Print recall + DINOv2 refine).
 enum NearDuplicateScenePolicy {
-    static let policyVersion = "near-dup-scene-v1"
+    static let policyVersion = "near-dup-scene-v3"
 
     /// Feature Print coarse recall: keep up to this many nearest neighbors per asset (by L2).
     static let featurePrintRecallTopK = 16
@@ -15,6 +15,34 @@ enum NearDuplicateScenePolicy {
 
     /// Closed-world scene clustering activates capture-day buckets at or above this count.
     static let sceneBucketActivationAssetCount = 256
+
+    /// Small buckets keep exhaustive Feature Print recall. Larger buckets use bounded,
+    /// deterministic LSH candidates before the same exact L2 + DINOv2 checks.
+    static let largeBucketActivationAssetCount = 512
+    static let largeBucketLSHBitCount = 24
+    static let largeBucketNeighborMaxHamming = 1
+    static let largeBucketCandidateLimit = 64
+}
+
+enum FeaturePrintRecallMode: String, CaseIterable, Sendable {
+    case topK
+    case allCandidates
+}
+
+enum FeaturePrintL2Mode: String, CaseIterable, Sendable {
+    case radius
+    case unlimited
+}
+
+enum DINOCosineMode: String, CaseIterable, Sendable {
+    case minimum
+    case unlimited
+}
+
+enum SceneBucketingMode: String, CaseIterable, Sendable {
+    case always
+    case automatic
+    case never
 }
 
 /// User-overridable scene-clustering thresholds. Factory defaults match `NearDuplicateScenePolicy`.
@@ -23,6 +51,30 @@ struct NearDuplicateSceneThresholds: Sendable, Equatable {
     var featurePrintMaxL2Distance: Double
     var dinoCosineMinSimilarity: Double
     var sceneBucketActivationAssetCount: Int
+    var featurePrintRecallMode: FeaturePrintRecallMode
+    var featurePrintL2Mode: FeaturePrintL2Mode
+    var dinoCosineMode: DINOCosineMode
+    var sceneBucketingMode: SceneBucketingMode
+
+    init(
+        featurePrintRecallTopK: Int,
+        featurePrintMaxL2Distance: Double,
+        dinoCosineMinSimilarity: Double,
+        sceneBucketActivationAssetCount: Int,
+        featurePrintRecallMode: FeaturePrintRecallMode = .topK,
+        featurePrintL2Mode: FeaturePrintL2Mode = .radius,
+        dinoCosineMode: DINOCosineMode = .minimum,
+        sceneBucketingMode: SceneBucketingMode = .automatic
+    ) {
+        self.featurePrintRecallTopK = featurePrintRecallTopK
+        self.featurePrintMaxL2Distance = featurePrintMaxL2Distance
+        self.dinoCosineMinSimilarity = dinoCosineMinSimilarity
+        self.sceneBucketActivationAssetCount = sceneBucketActivationAssetCount
+        self.featurePrintRecallMode = featurePrintRecallMode
+        self.featurePrintL2Mode = featurePrintL2Mode
+        self.dinoCosineMode = dinoCosineMode
+        self.sceneBucketingMode = sceneBucketingMode
+    }
 
     static let factory = NearDuplicateSceneThresholds(
         featurePrintRecallTopK: NearDuplicateScenePolicy.featurePrintRecallTopK,
@@ -33,23 +85,62 @@ struct NearDuplicateSceneThresholds: Sendable, Equatable {
 
     /// Encodes base policy identity plus effective numeric thresholds.
     var policyVersion: String {
-        String(
-            format: "%@;topk=%d;l2=%.2f;dino=%.3f;bucket=%d",
-            NearDuplicateScenePolicy.policyVersion,
-            featurePrintRecallTopK,
-            featurePrintMaxL2Distance,
-            dinoCosineMinSimilarity,
-            sceneBucketActivationAssetCount
-        )
+        let topK = featurePrintRecallMode == .allCandidates
+            ? "all"
+            : "\(featurePrintRecallTopK)"
+        let l2 = featurePrintL2Mode == .unlimited
+            ? "unlimited"
+            : String(format: "%.2f", featurePrintMaxL2Distance)
+        let dino = dinoCosineMode == .unlimited
+            ? "unlimited"
+            : String(format: "%.3f", dinoCosineMinSimilarity)
+        let bucket: String
+        switch sceneBucketingMode {
+        case .always:
+            bucket = "always"
+        case .automatic:
+            bucket = "auto:\(sceneBucketActivationAssetCount)"
+        case .never:
+            bucket = "never"
+        }
+        return "\(NearDuplicateScenePolicy.policyVersion);topk=\(topK);l2=\(l2);dino=\(dino);bucket=\(bucket)"
     }
 
     func clamped() -> NearDuplicateSceneThresholds {
         NearDuplicateSceneThresholds(
             featurePrintRecallTopK: min(max(featurePrintRecallTopK, 1), 128),
-            featurePrintMaxL2Distance: min(max(featurePrintMaxL2Distance, 0.1), 200),
-            dinoCosineMinSimilarity: min(max(dinoCosineMinSimilarity, 0.5), 0.999),
-            sceneBucketActivationAssetCount: min(max(sceneBucketActivationAssetCount, 2), 10_000)
+            featurePrintMaxL2Distance: min(max(featurePrintMaxL2Distance, 0), 200),
+            dinoCosineMinSimilarity: min(max(dinoCosineMinSimilarity, -1), 1),
+            sceneBucketActivationAssetCount: min(max(sceneBucketActivationAssetCount, 2), 10_000),
+            featurePrintRecallMode: featurePrintRecallMode,
+            featurePrintL2Mode: featurePrintL2Mode,
+            dinoCosineMode: dinoCosineMode,
+            sceneBucketingMode: sceneBucketingMode
         )
+    }
+
+    var usesExhaustiveFeaturePrintRecall: Bool {
+        featurePrintRecallMode == .allCandidates
+    }
+
+    func acceptsFeaturePrintDistance(_ distance: Double) -> Bool {
+        featurePrintL2Mode == .unlimited || distance <= featurePrintMaxL2Distance
+    }
+
+    func acceptsDINOCosine(_ similarity: Double) -> Bool {
+        dinoCosineMode == .unlimited || similarity >= dinoCosineMinSimilarity
+    }
+
+    func usesCaptureDayBuckets(assetCount: Int) -> Bool {
+        guard assetCount >= 2 else { return false }
+        switch sceneBucketingMode {
+        case .always:
+            return true
+        case .automatic:
+            return assetCount >= sceneBucketActivationAssetCount
+        case .never:
+            return false
+        }
     }
 }
 

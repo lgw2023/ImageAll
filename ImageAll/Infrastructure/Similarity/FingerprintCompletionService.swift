@@ -782,6 +782,52 @@ struct PhotosOriginalCacheService: Sendable {
         )
     }
 
+    func removePixelObject(assetID: UUID) throws {
+        guard let objectName = try database.pool.read({ db in
+            try String.fetchOne(
+                db,
+                sql: "SELECT object_name FROM photos_original_cache_entry WHERE asset_id = ?",
+                arguments: [assetID.uuidString.lowercased()]
+            )
+        }) else {
+            return
+        }
+
+        let objectURL = try validatedObjectURL(objectName: objectName)
+        if FileManager.default.fileExists(atPath: objectURL.path) {
+            let values: URLResourceValues
+            do {
+                values = try objectURL.resourceValues(
+                    forKeys: [.isRegularFileKey, .isSymbolicLinkKey]
+                )
+            } catch {
+                throw PhotosOriginalCacheError.persistenceFailed
+            }
+            guard values.isRegularFile == true, values.isSymbolicLink != true else {
+                throw PhotosOriginalCacheError.unsafePath
+            }
+            do {
+                try FileManager.default.removeItem(at: objectURL)
+            } catch {
+                throw PhotosOriginalCacheError.persistenceFailed
+            }
+        }
+
+        do {
+            try database.pool.write { db in
+                try db.execute(
+                    sql: """
+                    DELETE FROM photos_original_cache_entry
+                    WHERE asset_id = ? AND object_name = ?
+                    """,
+                    arguments: [assetID.uuidString.lowercased(), objectName]
+                )
+            }
+        } catch {
+            throw PhotosOriginalCacheError.persistenceFailed
+        }
+    }
+
     func load(
         assetID: UUID,
         contentRevision: Int,

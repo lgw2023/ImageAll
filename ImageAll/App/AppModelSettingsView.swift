@@ -192,6 +192,7 @@ struct AppModelSettingsView: View {
                     }
                     .pickerStyle(.segmented)
                     .accessibilityIdentifier("toolbarDisplayModePicker")
+                    .persistentHelp("切换工具栏只显示图标，或同时显示图标与功能名称。")
                     Text("选择顶部工具栏仅显示图标，或同时显示图标与功能名称。鼠标悬停时始终显示详细说明。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -249,6 +250,7 @@ struct AppModelSettingsView: View {
                             model.refreshSuggestionThresholds()
                             showingOverrides = true
                         }
+                        .persistentHelp("打开按标签设置页，为不同标签单独调整各类建议的最低分数。")
                     }
                 }
             }
@@ -310,6 +312,7 @@ private struct ThresholdEditableField: View {
                 step: 0.05
             )
             .labelsHidden()
+            .persistentHelp("以 0.05 为步长调高或调低当前建议分数门槛。")
         }
         .onAppear { text = String(format: "%.2f", value) }
         .onChange(of: value) { _, newValue in
@@ -347,7 +350,9 @@ private struct SuggestionThresholdOverridesSheet: View {
             HStack {
                 Text("按标签覆盖").font(.headline)
                 Spacer()
-                Button("完成") { dismiss() }.keyboardShortcut(.defaultAction)
+                Button("完成") { dismiss() }
+                    .keyboardShortcut(.defaultAction)
+                    .persistentHelp("保存当前设置并关闭按标签覆盖窗口。")
             }
             Text("每个标签、每种方法独立设置；清除后继承方法默认。参考值优先取同轨正负样本中位分隔，否则用近期拒绝分数的第 90 百分位；点“采用”后写入覆盖。")
                 .font(.caption)
@@ -388,6 +393,7 @@ private struct SuggestionThresholdOverridesSheet: View {
                                             )
                                         }
                                         .buttonStyle(.borderless)
+                                        .persistentHelp("清除这个标签的单独设置，恢复使用该方法的全局默认分数。")
                                     }
                                 }
                                 if let reference = model.suggestionReference(
@@ -404,6 +410,7 @@ private struct SuggestionThresholdOverridesSheet: View {
                                             )
                                         }
                                         .buttonStyle(.borderless)
+                                        .persistentHelp("采用根据近期正负样本计算出的参考分数，作为这个标签的最低门槛。")
                                     }
                                 } else {
                                     Text("暂无参考建议；至少需要同轨 5 个可追溯拒绝分数，或正负样本各 5 个。")

@@ -482,6 +482,18 @@ final class FolderDisableReauthorizeTests: XCTestCase {
         XCTAssertEqual(try FolderAuthorizationTestSupport.fetchSourceState(database, sourceID: sourceID), .active)
         XCTAssertEqual(try FolderAuthorizationTestSupport.activeReconcileJobs(database, sourceID: sourceID), 1)
         XCTAssertEqual(try FolderAuthorizationTestSupport.jobCount(database), 1)
+        let mutationBookmark: Data? = try await database.pool.read { db in
+            try Data.fetchOne(
+                db,
+                sql: """
+                SELECT bookmark
+                FROM source_mutation_authorization
+                WHERE source_id = ?
+                """,
+                arguments: [sourceID.uuidString.lowercased()]
+            )
+        }
+        XCTAssertNotNil(mutationBookmark)
     }
 
     func testReauthorizeRejectsActiveDisabledMismatchIndeterminateAndCancel() async throws {

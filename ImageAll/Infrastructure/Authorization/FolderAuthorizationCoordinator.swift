@@ -30,8 +30,10 @@ struct FolderAuthorizationCoordinator: FolderAuthorizationCommandPort {
         }
 
         let bookmark: Data
+        let mutationBookmark: Data
         do {
             bookmark = try dependencies.bookmarkPort.createReadOnlyBookmark(for: selectedURL)
+            mutationBookmark = try dependencies.bookmarkPort.createWritableBookmark(for: selectedURL)
         } catch {
             throw FolderAuthorizationError.bookmarkCreationFailed
         }
@@ -47,6 +49,7 @@ struct FolderAuthorizationCoordinator: FolderAuthorizationCommandPort {
                 sourceID: sourceID,
                 displayName: displayName,
                 bookmark: bookmark,
+                mutationBookmark: mutationBookmark,
                 jobID: jobID,
                 nowMs: nowMs
             )
@@ -85,8 +88,10 @@ struct FolderAuthorizationCoordinator: FolderAuthorizationCommandPort {
         }
 
         let newBookmark: Data
+        let newMutationBookmark: Data
         do {
             newBookmark = try dependencies.bookmarkPort.createReadOnlyBookmark(for: selectedURL)
+            newMutationBookmark = try dependencies.bookmarkPort.createWritableBookmark(for: selectedURL)
         } catch {
             throw FolderAuthorizationError.bookmarkCreationFailed
         }
@@ -112,6 +117,7 @@ struct FolderAuthorizationCoordinator: FolderAuthorizationCommandPort {
                 sourceID: sourceID,
                 displayName: displayName,
                 bookmark: newBookmark,
+                mutationBookmark: newMutationBookmark,
                 jobID: jobID,
                 nowMs: nowMs
             )

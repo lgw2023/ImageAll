@@ -35,6 +35,8 @@ enum CatalogMigrationID {
         "v023_add_source_similarity_index"
     static let v024RepairSourceMutationAuthorization =
         "v024_repair_source_mutation_authorization"
+    static let v025RetainPurgedAssetKnowledge =
+        "v025_retain_purged_asset_knowledge"
 
     static let knownOrdered: [String] = [
         v001CreateCatalogCore,
@@ -61,5 +63,6 @@ enum CatalogMigrationID {
         v022HardenLibrarySlimmingAnalysis,
         v023AddSourceSimilarityIndex,
         v024RepairSourceMutationAuthorization,
+        v025RetainPurgedAssetKnowledge,
     ]
 }

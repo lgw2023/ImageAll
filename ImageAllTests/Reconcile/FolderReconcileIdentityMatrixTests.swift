@@ -37,6 +37,92 @@ final class FolderReconcileIdentityMatrixTests: XCTestCase {
         XCTAssertEqual(second[0].resourceID, first[0].resourceID)
     }
 
+    func testIdempotentRescanPreservesCompletedSHA256() throws {
+        let fixture = FolderReconcileTestSupport.TempFixtureRoot()
+        defer { fixture.cleanup() }
+        let (database, sourceID, coordinator, queue) = try makeScanHarness(
+            fixture: fixture,
+            label: "preserve-sha"
+        )
+        _ = try runOnce(coordinator: coordinator)
+        let first = try XCTUnwrap(
+            FolderReconcileTestSupport.fetchAssetRows(
+                database: database,
+                sourceID: sourceID
+            ).first
+        )
+        let completedSHA256 = Data(repeating: 0xA5, count: 32)
+        try database.pool.write { db in
+            try db.execute(
+                sql: "UPDATE file_fingerprint SET sha256 = ? WHERE asset_id = ?",
+                arguments: [completedSHA256, first.id]
+            )
+        }
+
+        _ = try FolderReconcileTestSupport.enqueueReconcileJob(
+            queue: queue,
+            sourceID: sourceID,
+            jobID: UUID()
+        )
+        _ = try runOnce(coordinator: coordinator, owner: "w2")
+
+        let rescanned = try XCTUnwrap(
+            FolderReconcileTestSupport.fetchAssetRows(
+                database: database,
+                sourceID: sourceID
+            ).first
+        )
+        XCTAssertEqual(rescanned.id, first.id)
+        XCTAssertEqual(rescanned.contentRevision, first.contentRevision)
+        XCTAssertEqual(rescanned.sha256, completedSHA256)
+    }
+
+    func testRescanClearsCompletedSHA256WhenFileMetadataChanges() throws {
+        let fixture = FolderReconcileTestSupport.TempFixtureRoot()
+        defer { fixture.cleanup() }
+        let root = try fixture.makeRoot(label: "clear-stale-sha")
+        let fileURL = try fixture.writeFile(
+            root: root,
+            relativePath: "a.png",
+            contents: FolderReconcileTestSupport.minimalPNGData()
+        )
+        let (database, sourceID, coordinator, queue) = try makeScanHarness(
+            fixture: fixture,
+            label: "clear-stale-sha",
+            root: root
+        )
+        _ = try runOnce(coordinator: coordinator)
+        let first = try XCTUnwrap(
+            FolderReconcileTestSupport.fetchAssetRows(
+                database: database,
+                sourceID: sourceID
+            ).first
+        )
+        try database.pool.write { db in
+            try db.execute(
+                sql: "UPDATE file_fingerprint SET sha256 = ? WHERE asset_id = ?",
+                arguments: [Data(repeating: 0xA5, count: 32), first.id]
+            )
+        }
+        try (FolderReconcileTestSupport.minimalPNGData() + Data([0xFF])).write(to: fileURL)
+
+        _ = try FolderReconcileTestSupport.enqueueReconcileJob(
+            queue: queue,
+            sourceID: sourceID,
+            jobID: UUID()
+        )
+        _ = try runOnce(coordinator: coordinator, owner: "w2")
+
+        let rescanned = try XCTUnwrap(
+            FolderReconcileTestSupport.fetchAssetRows(
+                database: database,
+                sourceID: sourceID
+            ).first { $0.locatorState == "current" }
+        )
+        XCTAssertNil(rescanned.sha256)
+        XCTAssertEqual(rescanned.contentRevision, 2)
+    }
+
     func testMoveReconnectPreservesAssetIDTagAndLocator() throws {
         let fixture = FolderReconcileTestSupport.TempFixtureRoot()
         defer { fixture.cleanup() }

@@ -429,6 +429,99 @@ final class IdenticalDuplicateDetectionTests: XCTestCase {
         XCTAssertEqual(finished.result?.pendingAnalysisAssetIDs, [])
     }
 
+    func testLibraryAnalysisResumeKeepsAlreadyPendingJobClaimable() throws {
+        let env = try SimilarityTestSupport.Environment(label: #function)
+        defer { env.cleanup() }
+        let bytes = try XCTUnwrap(SimilarityTestSupport.patternedImageData(seed: 94, uti: .png))
+        let asset = try env.seedAsset(
+            relativePath: "already-pending.png",
+            contents: bytes,
+            mediaType: "public.png"
+        )
+        let completion = env.makeCompletionService()
+        let featureLoader = DictionarySlimmingFeatureLoader(vectors: [:])
+        let embeddingLoader = DictionarySlimmingEmbeddingLoader(vectors: [:])
+        let scanner = LibrarySlimmingScanService(
+            database: env.database,
+            identicalScan: IdenticalDuplicateClusterService(database: env.database),
+            fingerprintCompletion: completion,
+            featureLoader: featureLoader,
+            embeddingLoader: embeddingLoader
+        )
+        let queue = JobTestSupport.makeQueue(database: env.database)
+        let analysis = LibrarySlimmingAnalysisService(
+            database: env.database,
+            queue: queue,
+            fingerprintCompletion: completion,
+            featureLoader: featureLoader,
+            embeddingLoader: embeddingLoader,
+            scanner: scanner,
+            clock: FixedJobClock(nowMs: JobTestSupport.baseTimeMs)
+        )
+        let enqueued = try analysis.enqueue(
+            mode: .catalog,
+            assetIDs: [asset.assetID],
+            seedAssetIDs: []
+        )
+
+        let resumed = try analysis.resume(jobID: enqueued.jobID)
+
+        XCTAssertEqual(resumed.state, .pending)
+        XCTAssertEqual(
+            try JobTestSupport.claimDefault(queue: queue)?.jobID,
+            enqueued.jobID
+        )
+    }
+
+    func testLibraryAnalysisListJobsUpgradesActiveRetryBudgetAndExposesAttempts() throws {
+        let env = try SimilarityTestSupport.Environment(label: #function)
+        defer { env.cleanup() }
+        let bytes = try XCTUnwrap(SimilarityTestSupport.patternedImageData(seed: 95, uti: .png))
+        let asset = try env.seedAsset(
+            relativePath: "retry-budget.png",
+            contents: bytes,
+            mediaType: "public.png"
+        )
+        let completion = env.makeCompletionService()
+        let featureLoader = DictionarySlimmingFeatureLoader(vectors: [:])
+        let embeddingLoader = DictionarySlimmingEmbeddingLoader(vectors: [:])
+        let scanner = LibrarySlimmingScanService(
+            database: env.database,
+            identicalScan: IdenticalDuplicateClusterService(database: env.database),
+            fingerprintCompletion: completion,
+            featureLoader: featureLoader,
+            embeddingLoader: embeddingLoader
+        )
+        let queue = JobTestSupport.makeQueue(database: env.database)
+        let analysis = LibrarySlimmingAnalysisService(
+            database: env.database,
+            queue: queue,
+            fingerprintCompletion: completion,
+            featureLoader: featureLoader,
+            embeddingLoader: embeddingLoader,
+            scanner: scanner,
+            clock: FixedJobClock(nowMs: JobTestSupport.baseTimeMs)
+        )
+        let enqueued = try analysis.enqueue(
+            mode: .catalog,
+            assetIDs: [asset.assetID],
+            seedAssetIDs: []
+        )
+        try env.database.pool.write { db in
+            try db.execute(
+                sql: "UPDATE job SET attempts = 3, max_attempts = 5 WHERE id = ?",
+                arguments: [enqueued.jobID.uuidString.lowercased()]
+            )
+        }
+
+        let summary = try XCTUnwrap(analysis.listJobs().first)
+
+        XCTAssertEqual(summary.attempts, 3)
+        XCTAssertEqual(summary.maxAttempts, 10)
+        XCTAssertEqual(summary.sourceNames, ["Fixture"])
+        XCTAssertEqual(try queue.fetchJob(id: enqueued.jobID).maxAttempts, 10)
+    }
+
     func testLibraryAnalysisEnqueuePreservesPausedJob() throws {
         let env = try SimilarityTestSupport.Environment(label: #function)
         defer { env.cleanup() }
@@ -487,6 +580,112 @@ final class IdenticalDuplicateDetectionTests: XCTestCase {
         let remaining = try analysis.listJobs()
         XCTAssertEqual(remaining.map(\.jobID), [second.jobID])
         XCTAssertThrowsError(try analysis.snapshot(jobID: first.jobID))
+    }
+
+    func testLibraryAnalysisClusteringHeartbeatCompletesBeyondOriginalLease() throws {
+        let env = try SimilarityTestSupport.Environment(label: #function)
+        defer { env.cleanup() }
+        let bytes = try XCTUnwrap(
+            SimilarityTestSupport.patternedImageData(seed: 96, uti: .png)
+        )
+        let asset = try env.seedAsset(
+            relativePath: "heartbeat.png",
+            contents: bytes,
+            mediaType: "public.png"
+        )
+        let completion = env.makeCompletionService()
+        let featureLoader = DictionarySlimmingFeatureLoader(vectors: [
+            asset.assetID: [1, 0],
+        ])
+        let embeddingLoader = DictionarySlimmingEmbeddingLoader(vectors: [
+            asset.assetID: [1, 0],
+        ])
+        let clock = MutableJobClock(nowMs: JobTestSupport.baseTimeMs)
+        let scanner = LeaseAdvancingSlimmingScanner(
+            clock: clock,
+            heartbeatAtMs: JobTestSupport.baseTimeMs
+                + LibrarySlimmingAnalysisJobFactory.leaseDurationMs / 2,
+            finishAtMs: JobTestSupport.baseTimeMs
+                + LibrarySlimmingAnalysisJobFactory.leaseDurationMs
+                + LibrarySlimmingAnalysisJobFactory.leaseDurationMs / 5
+        )
+        let queue = GRDBJobQueue(
+            database: env.database,
+            clock: clock,
+            retryPolicy: FixedDelayRetryPolicy(
+                delayMs: JobTestSupport.retryDelayMs
+            )
+        )
+        let analysis = LibrarySlimmingAnalysisService(
+            database: env.database,
+            queue: queue,
+            fingerprintCompletion: completion,
+            featureLoader: featureLoader,
+            embeddingLoader: embeddingLoader,
+            scanner: scanner,
+            clock: clock
+        )
+        let enqueued = try analysis.enqueue(
+            mode: .catalog,
+            assetIDs: [asset.assetID],
+            seedAssetIDs: []
+        )
+
+        try analysis.runPending()
+
+        let finished = try analysis.snapshot(jobID: enqueued.jobID)
+        XCTAssertEqual(finished.state, .completed)
+        XCTAssertEqual(finished.progress.completed, finished.progress.total)
+    }
+}
+
+private final class LeaseAdvancingSlimmingScanner: LibrarySlimmingScanPort,
+    @unchecked Sendable
+{
+    private let clock: MutableJobClock
+    private let heartbeatAtMs: Int64
+    private let finishAtMs: Int64
+
+    init(clock: MutableJobClock, heartbeatAtMs: Int64, finishAtMs: Int64) {
+        self.clock = clock
+        self.heartbeatAtMs = heartbeatAtMs
+        self.finishAtMs = finishAtMs
+    }
+
+    func scan(
+        assetIDs: [UUID],
+        onProgress: LibrarySlimmingScanProgressHandler?
+    ) throws -> LibrarySlimmingScanResult {
+        clock.setNowMs(heartbeatAtMs)
+        onProgress?(
+            LibrarySlimmingScanProgress(
+                phase: .clustering,
+                completed: 1,
+                total: 2
+            )
+        )
+        clock.setNowMs(finishAtMs)
+        return LibrarySlimmingScanResult(
+            clusters: [],
+            pendingAnalysisAssetIDs: [],
+            analyzedAssetCount: assetIDs.count,
+            policyVersion: NearDuplicateScenePolicy.policyVersion
+        )
+    }
+
+    func scanCatalog(
+        onProgress: LibrarySlimmingScanProgressHandler?
+    ) throws -> LibrarySlimmingScanResult {
+        try scan(assetIDs: [], onProgress: onProgress)
+    }
+
+    func scanSeeds(
+        seedAssetIDs: [UUID],
+        universeAssetIDs: [UUID],
+        onProgress: LibrarySlimmingScanProgressHandler?
+    ) throws -> LibrarySlimmingScanResult {
+        _ = seedAssetIDs
+        return try scan(assetIDs: universeAssetIDs, onProgress: onProgress)
     }
 }
 

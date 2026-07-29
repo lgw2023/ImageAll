@@ -40,15 +40,6 @@ struct FolderMutationAuthorizationCoordinator: FolderMutationAuthorizationPort {
             throw FolderAuthorizationError.invalidSourceState
         }
 
-        guard let selectedURL = picker.pickDirectory() else {
-            return .cancelled
-        }
-        defer { bookmarkPort.stopAccessing(selectedURL) }
-
-        guard case .valid = rootValidator.validateRoot(at: selectedURL) else {
-            throw FolderAuthorizationError.invalidRoot
-        }
-
         let resolved: BookmarkResolveResult
         do {
             resolved = try bookmarkPort.resolveBookmark(stored.bookmark)
@@ -59,6 +50,15 @@ struct FolderMutationAuthorizationCoordinator: FolderMutationAuthorizationPort {
             throw FolderAuthorizationError.identityIndeterminate
         }
         defer { bookmarkPort.stopAccessing(resolved.url) }
+
+        guard let selectedURL = picker.pickDirectory(initialDirectoryURL: resolved.url) else {
+            return .cancelled
+        }
+        defer { bookmarkPort.stopAccessing(selectedURL) }
+
+        guard case .valid = rootValidator.validateRoot(at: selectedURL) else {
+            throw FolderAuthorizationError.invalidRoot
+        }
 
         guard relationshipChecker.relationship(
             between: selectedURL,
@@ -165,10 +165,10 @@ struct FolderMutationAccessService: FolderMutationAccessing {
         do {
             resolved = try bookmarkPort.resolveBookmark(mutationBookmark)
         } catch {
-            throw LibrarySlimmingRecycleError.mutationAuthorizationRequired
+            throw LibrarySlimmingRecycleError.mutationAuthorizationInvalid
         }
         guard bookmarkPort.startAccessing(resolved.url) else {
-            throw LibrarySlimmingRecycleError.mutationAuthorizationRequired
+            throw LibrarySlimmingRecycleError.mutationAuthorizationInvalid
         }
         defer { bookmarkPort.stopAccessing(resolved.url) }
         return try perform(resolved.url)

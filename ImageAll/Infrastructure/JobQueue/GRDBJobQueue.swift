@@ -261,16 +261,32 @@ struct GRDBJobQueue: JobQueue, Sendable {
     }
 
     func recoverInterruptedRunningJobs() throws {
+        try recoverRunningJobs(expiredOnly: false)
+    }
+
+    /// Runtime recovery for a worker that disappeared without a clean settlement.
+    /// Unlike startup recovery, this leaves every still-live lease untouched.
+    func recoverExpiredRunningJobs() throws {
+        try recoverRunningJobs(expiredOnly: true)
+    }
+
+    private func recoverRunningJobs(expiredOnly: Bool) throws {
         let nowMs = clock.nowMs
 
         try database.pool.write { db in
+            let expiryFilter = expiredOnly ? "AND lease_expires_at_ms <= ?" : ""
+            let arguments: StatementArguments = expiredOnly
+                ? StatementArguments([nowMs])
+                : StatementArguments()
             let runningRows = try Row.fetchAll(
                 db,
                 sql: """
                 SELECT * FROM job
                 WHERE state = 'running'
+                    \(expiryFilter)
                 ORDER BY priority DESC, not_before_ms ASC, id ASC
-                """
+                """,
+                arguments: arguments
             )
 
             for row in runningRows {
@@ -469,7 +485,12 @@ private extension GRDBJobQueue {
     }
 
     func applyResume(db: Database, snapshot: JobRecordSnapshot, notBeforeMs: Int64, nowMs: Int64) throws {
-        guard snapshot.state == .paused || snapshot.state == .retryableFailed else {
+        let hasExhaustedAttemptBudget = snapshot.attempts >= snapshot.maxAttempts
+        let isRecoverablePending = snapshot.state == .pending && hasExhaustedAttemptBudget
+        guard snapshot.state == .paused
+                || snapshot.state == .retryableFailed
+                || isRecoverablePending
+        else {
             throw JobQueueError.invalidTransition(currentState: snapshot.state, operation: "resume")
         }
 
@@ -483,6 +504,7 @@ private extension GRDBJobQueue {
             clearErrors: true,
             clearLease: true,
             controlRequest: .none,
+            resetAttempts: hasExhaustedAttemptBudget,
             nowMs: nowMs
         )
     }
@@ -649,6 +671,7 @@ private extension GRDBJobQueue {
         clearErrors: Bool,
         clearLease: Bool,
         controlRequest: JobControlRequest,
+        resetAttempts: Bool = false,
         nowMs: Int64
     ) throws {
         let errorCodeValue = clearErrors ? nil : errorCode?.rawValue
@@ -665,6 +688,7 @@ private extension GRDBJobQueue {
                 lease_owner = ?,
                 lease_expires_at_ms = ?,
                 control_request = ?,
+                attempts = CASE WHEN ? THEN 0 ELSE attempts END,
                 updated_at_ms = ?
             WHERE id = ? AND state = ?
             """,
@@ -675,6 +699,7 @@ private extension GRDBJobQueue {
                 leaseOwner,
                 leaseExpires,
                 controlRequest.rawValue,
+                resetAttempts ? 1 : 0,
                 nowMs,
                 jobID.uuidString.lowercased(),
                 expectedState.rawValue,

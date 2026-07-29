@@ -1,6 +1,58 @@
 import Foundation
 import GRDB
 
+struct AppOwnedAssetPixelCachePurger: Sendable {
+    let database: CatalogDatabase
+    let derivedCachesDirectory: URL
+    let photosOriginalCache: PhotosOriginalCacheService
+
+    func purge(assetID: UUID) throws {
+        let entries: [(id: UUID, format: DerivedImageStorageFormat)] = try database.pool.read { db in
+            try Row.fetchAll(
+                db,
+                sql: """
+                SELECT id, storage_format
+                FROM derived_image_cache_entry
+                WHERE asset_id = ?
+                ORDER BY id
+                """,
+                arguments: [assetID.uuidString.lowercased()]
+            ).compactMap { row in
+                guard let id = UUID(uuidString: row["id"]),
+                      let format = DerivedImageStorageFormat(rawValue: row["storage_format"])
+                else { return nil }
+                return (id, format)
+            }
+        }
+
+        if !entries.isEmpty {
+            let store = DerivedImageCacheStore(cachesDirectory: derivedCachesDirectory)
+            let session = try store.ensureLayout()
+            for entry in entries {
+                try store.deleteObject(
+                    entryID: entry.id,
+                    format: entry.format,
+                    session: session
+                )
+                try database.pool.write { db in
+                    try db.execute(
+                        sql: """
+                        DELETE FROM derived_image_cache_entry
+                        WHERE id = ? AND asset_id = ?
+                        """,
+                        arguments: [
+                            entry.id.uuidString.lowercased(),
+                            assetID.uuidString.lowercased(),
+                        ]
+                    )
+                }
+            }
+        }
+
+        try photosOriginalCache.removePixelObject(assetID: assetID)
+    }
+}
+
 struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
     let database: CatalogDatabase
     let mutationAccess: any FolderMutationAccessing
@@ -8,6 +60,7 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
     let quarantineRootURL: URL
     let clock: any JobClock
     let jobQueue: (any JobQueue)?
+    let pixelCachePurger: AppOwnedAssetPixelCachePurger?
     var quarantineIO: FolderQuarantineIO
     var idGenerator: @Sendable () -> UUID
 
@@ -18,6 +71,7 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
         clock: any JobClock,
         jobQueue: (any JobQueue)? = nil,
         photosMutation: (any PhotosLibraryMutationPort)? = nil,
+        pixelCachePurger: AppOwnedAssetPixelCachePurger? = nil,
         quarantineIO: FolderQuarantineIO = FolderQuarantineIO(),
         idGenerator: @escaping @Sendable () -> UUID = { UUID() }
     ) {
@@ -27,8 +81,84 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
         self.quarantineRootURL = quarantineRootURL
         self.clock = clock
         self.jobQueue = jobQueue
+        self.pixelCachePurger = pixelCachePurger
         self.quarantineIO = quarantineIO
         self.idGenerator = idGenerator
+    }
+
+    func makeIdenticalCleanupPlan(
+        clusters: [SlimmingCluster]
+    ) throws -> LibrarySlimmingIdenticalCleanupPlan {
+        let assetIDs = Array(
+            Set(
+                clusters
+                    .filter { $0.kind == .byteIdentical }
+                    .flatMap(\.memberAssetIDs)
+            )
+        )
+        guard !assetIDs.isEmpty else {
+            return LibrarySlimmingIdenticalCleanupPlanner.makePlan(
+                clusters: clusters,
+                candidates: []
+            )
+        }
+
+        let candidates = try database.pool.read { db in
+            var loaded: [LibrarySlimmingIdenticalCleanupCandidate] = []
+            loaded.reserveCapacity(assetIDs.count)
+            let idStrings = assetIDs.map { $0.uuidString.lowercased() }
+            let chunkSize = 400
+            for start in stride(from: 0, to: idStrings.count, by: chunkSize) {
+                let end = min(start + chunkSize, idStrings.count)
+                let chunk = Array(idStrings[start ..< end])
+                let placeholders = Array(repeating: "?", count: chunk.count)
+                    .joined(separator: ",")
+                let rows = try Row.fetchAll(
+                    db,
+                    sql: """
+                    SELECT
+                        a.id AS asset_id,
+                        a.source_id AS source_id,
+                        a.locator_kind AS locator_kind,
+                        s.display_name AS source_display_name
+                    FROM asset a
+                    JOIN source s ON s.id = a.source_id
+                    WHERE a.id IN (\(placeholders))
+                      AND a.locator_state = 'current'
+                      AND a.availability = 'available'
+                      AND s.state = 'active'
+                    """,
+                    arguments: StatementArguments(chunk)
+                )
+                for row in rows {
+                    guard let assetID = UUID(uuidString: row["asset_id"]),
+                          let sourceID = UUID(uuidString: row["source_id"])
+                    else { continue }
+                    let sourceKind: RecycleSourceKind
+                    switch row["locator_kind"] as String {
+                    case AssetLocatorKind.photos.rawValue:
+                        sourceKind = .photos
+                    case AssetLocatorKind.file.rawValue:
+                        sourceKind = .file
+                    default:
+                        continue
+                    }
+                    loaded.append(
+                        LibrarySlimmingIdenticalCleanupCandidate(
+                            assetID: assetID,
+                            sourceID: sourceID,
+                            sourceKind: sourceKind,
+                            sourceDisplayName: row["source_display_name"]
+                        )
+                    )
+                }
+            }
+            return loaded
+        }
+        return LibrarySlimmingIdenticalCleanupPlanner.makePlan(
+            clusters: clusters,
+            candidates: candidates
+        )
     }
 
     func moveAssetsToRecycle(assetIDs: [UUID]) throws -> LibrarySlimmingRecycleMoveOutcome {
@@ -42,10 +172,28 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
         )
         try quarantineIO.ensureQuarantineRoot(at: quarantineRootURL)
 
+        var photosAssets: [AssetSnapshot] = []
         for assetID in assetIDs {
             do {
-                let entryID = try recycleOne(assetID: assetID)
-                outcome.recycledEntryIDs.append(entryID)
+                let asset = try loadAsset(assetID: assetID)
+                guard asset.availability == AssetAvailability.available.rawValue else {
+                    throw asset.availability == AssetAvailability.recycled.rawValue
+                        ? LibrarySlimmingRecycleError.alreadyRecycled
+                        : LibrarySlimmingRecycleError.invalidState
+                }
+                switch asset.locatorKind {
+                case AssetLocatorKind.file.rawValue:
+                    outcome.recycledEntryIDs.append(try recycleFileAsset(asset))
+                case AssetLocatorKind.photos.rawValue:
+                    guard let localIdentifier = asset.photosLocalIdentifier,
+                          !localIdentifier.isEmpty
+                    else {
+                        throw LibrarySlimmingRecycleError.invalidState
+                    }
+                    photosAssets.append(asset)
+                default:
+                    throw LibrarySlimmingRecycleError.invalidState
+                }
             } catch LibrarySlimmingRecycleError.mutationAuthorizationRequired {
                 if let sourceID = try? loadSourceID(assetID: assetID) {
                     if !outcome.authorizationRequiredSourceIDs.contains(sourceID) {
@@ -59,6 +207,19 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
                 outcome.authorizationDeniedPhotosAssetIDs.append(assetID)
             } catch {
                 outcome.failedAssetIDs.append(assetID)
+            }
+        }
+        if !photosAssets.isEmpty {
+            let photosAssetIDs = photosAssets.map(\.assetID)
+            do {
+                outcome.recycledEntryIDs.append(
+                    contentsOf: try recyclePhotosAssets(photosAssets)
+                )
+            } catch LibrarySlimmingRecycleError.photosAuthorizationRequired {
+                outcome.failedAssetIDs.append(contentsOf: photosAssetIDs)
+                outcome.authorizationDeniedPhotosAssetIDs.append(contentsOf: photosAssetIDs)
+            } catch {
+                outcome.failedAssetIDs.append(contentsOf: photosAssetIDs)
             }
         }
         return outcome
@@ -240,6 +401,7 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
                         to: .purging,
                         errorCode: nil
                     )
+                    try pixelCachePurger?.purge(assetID: entry.assetID)
                     try finalizePurged(entry)
                     converged += 1
                 }
@@ -251,6 +413,7 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
                         to: .purging,
                         errorCode: nil
                     )
+                    try pixelCachePurger?.purge(assetID: entry.assetID)
                     try finalizePurged(entry)
                     converged += 1
                 }
@@ -388,24 +551,6 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
         let purgeAfterMs: Int64
     }
 
-    private func recycleOne(assetID: UUID) throws -> UUID {
-        let asset = try loadAsset(assetID: assetID)
-        guard asset.availability == AssetAvailability.available.rawValue else {
-            if asset.availability == AssetAvailability.recycled.rawValue {
-                throw LibrarySlimmingRecycleError.alreadyRecycled
-            }
-            throw LibrarySlimmingRecycleError.invalidState
-        }
-        switch asset.locatorKind {
-        case AssetLocatorKind.file.rawValue:
-            return try recycleFileAsset(asset)
-        case AssetLocatorKind.photos.rawValue:
-            return try recyclePhotosAsset(asset)
-        default:
-            throw LibrarySlimmingRecycleError.invalidState
-        }
-    }
-
     private func recycleFileAsset(_ asset: AssetSnapshot) throws -> UUID {
         guard let relativePath = asset.relativePath else {
             throw LibrarySlimmingRecycleError.invalidState
@@ -470,6 +615,9 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
         } catch LibrarySlimmingRecycleError.mutationAuthorizationRequired {
             try markFailed(entryID: entryID, code: "mutationAuthorizationRequired")
             throw LibrarySlimmingRecycleError.mutationAuthorizationRequired
+        } catch LibrarySlimmingRecycleError.mutationAuthorizationInvalid {
+            try markFailed(entryID: entryID, code: "mutationAuthorizationInvalid")
+            throw LibrarySlimmingRecycleError.mutationAuthorizationInvalid
         } catch FolderQuarantineIOError.verificationFailed {
             try markFailed(entryID: entryID, code: "sourceChanged")
             throw LibrarySlimmingRecycleError.sourceChanged
@@ -509,12 +657,8 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
         return entryID
     }
 
-    private func recyclePhotosAsset(_ asset: AssetSnapshot) throws -> UUID {
-        guard let localIdentifier = asset.photosLocalIdentifier,
-              !localIdentifier.isEmpty
-        else {
-            throw LibrarySlimmingRecycleError.invalidState
-        }
+    private func recyclePhotosAssets(_ assets: [AssetSnapshot]) throws -> [UUID] {
+        guard !assets.isEmpty else { return [] }
         guard let photosMutation else {
             throw LibrarySlimmingRecycleError.photosAuthorizationRequired
         }
@@ -525,68 +669,89 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
             throw LibrarySlimmingRecycleError.photosAuthorizationRequired
         }
 
-        let entryID = idGenerator()
         let now = clock.nowMs
         let purgeAfter = LibrarySlimmingRecyclePolicy.purgeAfterMs(trashedAtMs: now)
-        let displayPath = asset.fileName ?? localIdentifier
+        let pendingEntries: [(asset: AssetSnapshot, entryID: UUID, localIdentifier: String)] =
+            try assets.map { asset in
+                guard let localIdentifier = asset.photosLocalIdentifier,
+                      !localIdentifier.isEmpty
+                else {
+                    throw LibrarySlimmingRecycleError.invalidState
+                }
+                return (asset, idGenerator(), localIdentifier)
+            }
 
         try database.pool.write { db in
-            try db.execute(
-                sql: """
-                INSERT INTO recycle_entry (
-                    id, asset_id, source_kind, trashed_at_ms, purge_after_ms, state,
-                    quarantine_relative_path, original_relative_path, photos_local_identifier,
-                    error_code, created_at_ms, updated_at_ms
-                ) VALUES (?, ?, 'photos', ?, ?, 'pending', NULL, ?, ?, NULL, ?, ?)
-                """,
-                arguments: [
-                    entryID.uuidString.lowercased(),
-                    asset.assetID.uuidString.lowercased(),
-                    now,
-                    purgeAfter,
-                    displayPath,
-                    localIdentifier,
-                    now,
-                    now,
-                ]
-            )
+            for pending in pendingEntries {
+                let displayPath = pending.asset.fileName ?? pending.localIdentifier
+                try db.execute(
+                    sql: """
+                    INSERT INTO recycle_entry (
+                        id, asset_id, source_kind, trashed_at_ms, purge_after_ms, state,
+                        quarantine_relative_path, original_relative_path, photos_local_identifier,
+                        error_code, created_at_ms, updated_at_ms
+                    ) VALUES (?, ?, 'photos', ?, ?, 'pending', NULL, ?, ?, NULL, ?, ?)
+                    """,
+                    arguments: [
+                        pending.entryID.uuidString.lowercased(),
+                        pending.asset.assetID.uuidString.lowercased(),
+                        now,
+                        purgeAfter,
+                        displayPath,
+                        pending.localIdentifier,
+                        now,
+                        now,
+                    ]
+                )
+            }
         }
 
         do {
-            try photosMutation.moveToRecentlyDeleted(localIdentifiers: [localIdentifier])
+            try photosMutation.moveToRecentlyDeleted(
+                localIdentifiers: pendingEntries.map(\.localIdentifier)
+            )
         } catch PhotosLibraryMutationError.authorizationDenied,
                 PhotosLibraryMutationError.authorizationRestricted,
                 PhotosLibraryMutationError.notDetermined
         {
-            try markFailed(entryID: entryID, code: "photosAuthorizationRequired")
+            for pending in pendingEntries {
+                try markFailed(
+                    entryID: pending.entryID,
+                    code: "photosAuthorizationRequired"
+                )
+            }
             throw LibrarySlimmingRecycleError.photosAuthorizationRequired
         } catch {
-            try markFailed(entryID: entryID, code: "photosMutationFailed")
+            for pending in pendingEntries {
+                try markFailed(entryID: pending.entryID, code: "photosMutationFailed")
+            }
             throw LibrarySlimmingRecycleError.photosMutationFailed
         }
 
         try database.pool.write { db in
-            try db.execute(
-                sql: """
-                UPDATE recycle_entry
-                SET state = 'recycled', error_code = NULL, updated_at_ms = ?
-                WHERE id = ?
-                """,
-                arguments: [clock.nowMs, entryID.uuidString.lowercased()]
-            )
-            try db.execute(
-                sql: """
-                UPDATE asset
-                SET availability = 'recycled', record_updated_at_ms = ?
-                WHERE id = ?
-                """,
-                arguments: [
-                    clock.nowMs,
-                    asset.assetID.uuidString.lowercased(),
-                ]
-            )
+            for pending in pendingEntries {
+                try db.execute(
+                    sql: """
+                    UPDATE recycle_entry
+                    SET state = 'recycled', error_code = NULL, updated_at_ms = ?
+                    WHERE id = ?
+                    """,
+                    arguments: [clock.nowMs, pending.entryID.uuidString.lowercased()]
+                )
+                try db.execute(
+                    sql: """
+                    UPDATE asset
+                    SET availability = 'recycled', record_updated_at_ms = ?
+                    WHERE id = ?
+                    """,
+                    arguments: [
+                        clock.nowMs,
+                        pending.asset.assetID.uuidString.lowercased(),
+                    ]
+                )
+            }
         }
-        return entryID
+        return pendingEntries.map(\.entryID)
     }
 
     private func restoreFileEntry(_ snapshot: EntrySnapshot) throws {
@@ -628,6 +793,14 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
                 errorCode: "mutationAuthorizationRequired"
             )
             throw LibrarySlimmingRecycleError.mutationAuthorizationRequired
+        } catch LibrarySlimmingRecycleError.mutationAuthorizationInvalid {
+            try? transitionEntry(
+                entryID: snapshot.id,
+                from: .restoring,
+                to: .recycled,
+                errorCode: "mutationAuthorizationInvalid"
+            )
+            throw LibrarySlimmingRecycleError.mutationAuthorizationInvalid
         } catch {
             try? transitionEntry(
                 entryID: snapshot.id,
@@ -683,6 +856,7 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
             errorCode: nil
         )
         do {
+            try pixelCachePurger?.purge(assetID: snapshot.assetID)
             try quarantineIO.deleteQuarantineObject(
                 quarantineRootURL: quarantineRootURL,
                 quarantineRelativePath: quarantinePath
@@ -929,6 +1103,7 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
             )
             return
         }
+        try pixelCachePurger?.purge(assetID: entry.assetID)
         if let quarantinePath = entry.quarantineRelativePath {
             let quarantineExists = try quarantineIO.objectExists(
                 rootURL: quarantineRootURL,
@@ -964,33 +1139,22 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
                     original_relative_path = NULL,
                     photos_local_identifier = NULL,
                     error_code = NULL,
+                    state = 'purged',
                     updated_at_ms = ?
-                WHERE asset_id = ?
+                WHERE id = ? AND asset_id = ? AND state = 'purging'
                 """,
-                arguments: [clock.nowMs, assetID]
-            )
-            try db.execute(
-                sql: "DELETE FROM asset_tag_decision WHERE asset_id = ?",
-                arguments: [assetID]
-            )
-            try db.execute(
-                sql: "DELETE FROM asset WHERE id = ?",
-                arguments: [assetID]
-            )
-            guard db.changesCount == 1 else {
-                throw LibrarySlimmingRecycleError.notFound
-            }
-            try db.execute(
-                sql: """
-                UPDATE recycle_entry
-                SET state = 'purged', updated_at_ms = ?
-                WHERE id = ? AND state = 'purging' AND asset_id IS NULL
-                """,
-                arguments: [clock.nowMs, entry.id.uuidString.lowercased()]
+                arguments: [
+                    clock.nowMs,
+                    entry.id.uuidString.lowercased(),
+                    assetID,
+                ]
             )
             guard db.changesCount == 1 else {
                 throw LibrarySlimmingRecycleError.invalidState
             }
+            // Keep the recycled catalog row as a non-browseable tombstone. Its
+            // tag decisions, fingerprints/features, training samples, and model
+            // provenance remain useful knowledge after the original bytes are gone.
         }
     }
 
@@ -1084,9 +1248,13 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
                 SELECT
                     a.id, a.source_id, a.locator_kind, a.relative_path,
                     a.photos_local_identifier, a.file_name, a.availability,
-                    f.size_bytes, f.modified_at_ns, f.resource_id, f.sha256
+                    f.size_bytes, f.modified_at_ns, f.resource_id,
+                    COALESCE(f.sha256, sf.content_sha256) AS sha256
                 FROM asset a
                 LEFT JOIN file_fingerprint f ON f.asset_id = a.id
+                LEFT JOIN asset_similarity_fingerprint sf
+                    ON sf.asset_id = a.id
+                   AND sf.content_revision = a.content_revision
                 WHERE a.id = ?
                 """,
                 arguments: [assetID.uuidString.lowercased()]

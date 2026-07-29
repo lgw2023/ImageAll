@@ -44,6 +44,26 @@ final class FolderAuthorizationEntitlementPanelTests: XCTestCase {
         XCTAssertFalse(panel.canCreateDirectories)
     }
 
+    @MainActor
+    func testLegacyMutationAuthorizationPanelExplainsOneTimeUpgrade() {
+        let panel = AppKitFolderDirectoryPicker.makeMutationAuthorizationPanel()
+
+        XCTAssertEqual(panel.title, "升级旧来源的一次性权限")
+        XCTAssertEqual(panel.prompt, "授权并继续")
+        XCTAssertTrue(panel.message.contains("旧版本"))
+        XCTAssertTrue(panel.message.contains("今后各功能不会再次要求授权"))
+    }
+
+    @MainActor
+    func testSourceImportPanelExplainsOneImportGrantsDurableAccess() {
+        let panel = AppKitFolderDirectoryPicker.makeSourceImportPanel()
+
+        XCTAssertEqual(panel.title, "导入 ImageAll 图库来源")
+        XCTAssertEqual(panel.prompt, "导入来源")
+        XCTAssertTrue(panel.message.contains("选择一次来源文件夹"))
+        XCTAssertTrue(panel.message.contains("确认移入回收站"))
+    }
+
     func testPickerIsNotTriggeredBeforeExplicitConnectCommand() async throws {
         let database = try FolderAuthorizationTestSupport.makeDatabase()
         let picker = FolderAuthorizationTestSupport.FakeDirectoryPicker()
@@ -61,28 +81,32 @@ final class FolderAuthorizationEntitlementPanelTests: XCTestCase {
     }
 
     @MainActor
-    func testAppKitPickerUsesInjectedPanelWithoutShowingSystemUI() {
+    func testAppKitPickerUsesInjectedPanelAndInitialDirectoryWithoutShowingSystemUI() {
         final class CallTracker: @unchecked Sendable {
             var factoryCalled = false
             var modalCalled = false
+            var displayedDirectoryURL: URL?
         }
         let tracker = CallTracker()
         let panel = AppKitFolderDirectoryPicker.makeProductionPanel()
+        let initialDirectoryURL = URL(fileURLWithPath: "/tmp/source-root", isDirectory: true)
 
         let picker = AppKitFolderDirectoryPicker(
             panelFactory: {
                 tracker.factoryCalled = true
                 return panel
             },
-            runModal: { _ in
+            runModal: { presentedPanel in
                 tracker.modalCalled = true
+                tracker.displayedDirectoryURL = presentedPanel.directoryURL
                 return .cancel
             }
         )
 
-        XCTAssertNil(picker.pickDirectory())
+        XCTAssertNil(picker.pickDirectory(initialDirectoryURL: initialDirectoryURL))
         XCTAssertTrue(tracker.factoryCalled)
         XCTAssertTrue(tracker.modalCalled)
+        XCTAssertEqual(tracker.displayedDirectoryURL, initialDirectoryURL)
     }
 
     private static func loadSourceEntitlements() throws -> [String: Any] {

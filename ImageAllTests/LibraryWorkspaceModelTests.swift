@@ -3917,15 +3917,261 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         await model.analyzeLibrarySlimming(mode: .seeds)
 
         XCTAssertEqual(model.librarySlimmingClusters.count, 1)
+        model.selectLibrarySlimmingCluster(nil)
+        XCTAssertNil(model.selectedLibrarySlimmingCluster)
+        model.ensureLibrarySlimmingClusterSelection()
+        XCTAssertEqual(model.selectedLibrarySlimmingClusterID, cluster.id)
+
         model.selectLibrarySlimmingCluster(model.librarySlimmingClusters[0].id)
         model.selectLibrarySlimmingMember(a, additive: false)
         model.selectLibrarySlimmingMember(b, additive: true)
         XCTAssertEqual(model.selectedLibrarySlimmingMemberIDs, Set([a, b]))
     }
 
+    func testLibrarySlimmingShiftClickSelectsContiguousMemberRange() async {
+        let sourceID = UUID()
+        let seed = Self.makeAsset(sourceID: sourceID, fileName: "gallery.jpg")
+        let members = [
+            UUID(uuidString: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")!,
+            UUID(uuidString: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")!,
+            UUID(uuidString: "cccccccc-cccc-4ccc-8ccc-cccccccccccc")!,
+            UUID(uuidString: "dddddddd-dddd-4ddd-8ddd-dddddddddddd")!,
+        ]
+        let cluster = SlimmingCluster(
+            id: UUID(),
+            kind: .nearDuplicateScene,
+            memberAssetIDs: members,
+            representativeAssetID: members[0],
+            score: 0.95,
+            modelIdentity: .featurePrintOnly
+        )
+        let scan = StubLibrarySlimmingScanPort()
+        scan.seedClusters = [cluster]
+        let model = LibraryWorkspaceModel(
+            service: FakeLibraryWorkspaceService(
+                connectedSource: LibrarySourceSummary(
+                    id: sourceID,
+                    displayName: "Fixture",
+                    state: .active
+                ),
+                reconciledItems: [seed],
+                initialItems: [seed]
+            ),
+            librarySlimming: scan
+        )
+        await model.start()
+        await model.connectFolder()
+        await waitForCatalogScanToFinish(model)
+        await model.selectAssets([seed.assetID])
+        await model.findLibrarySlimmingFromSelection()
+        await model.analyzeLibrarySlimming(mode: .seeds)
+
+        model.selectLibrarySlimmingMember(members[1], additive: false)
+        model.selectLibrarySlimmingMember(
+            members[3],
+            additive: false,
+            extendRange: true
+        )
+
+        XCTAssertEqual(
+            model.selectedLibrarySlimmingMemberIDs,
+            Set(members[1 ... 3])
+        )
+    }
+
+    func testLibrarySlimmingMarqueeSelectionKeepsOnlyCurrentClusterMembers() async {
+        let sourceID = UUID()
+        let seed = Self.makeAsset(sourceID: sourceID, fileName: "gallery.jpg")
+        let members = [
+            UUID(uuidString: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")!,
+            UUID(uuidString: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")!,
+            UUID(uuidString: "cccccccc-cccc-4ccc-8ccc-cccccccccccc")!,
+        ]
+        let cluster = SlimmingCluster(
+            id: UUID(),
+            kind: .nearDuplicateScene,
+            memberAssetIDs: members,
+            representativeAssetID: members[0],
+            score: 0.95,
+            modelIdentity: .featurePrintOnly
+        )
+        let scan = StubLibrarySlimmingScanPort()
+        scan.seedClusters = [cluster]
+        let model = LibraryWorkspaceModel(
+            service: FakeLibraryWorkspaceService(
+                connectedSource: LibrarySourceSummary(
+                    id: sourceID,
+                    displayName: "Fixture",
+                    state: .active
+                ),
+                reconciledItems: [seed],
+                initialItems: [seed]
+            ),
+            librarySlimming: scan
+        )
+        await model.start()
+        await model.connectFolder()
+        await waitForCatalogScanToFinish(model)
+        await model.selectAssets([seed.assetID])
+        await model.findLibrarySlimmingFromSelection()
+        await model.analyzeLibrarySlimming(mode: .seeds)
+
+        model.selectLibrarySlimmingMembers(
+            Set([members[1], members[2], UUID()])
+        )
+
+        XCTAssertEqual(
+            model.selectedLibrarySlimmingMemberIDs,
+            Set([members[1], members[2]])
+        )
+    }
+
+    func testLibrarySlimmingSelectedClusterPublishesEveryMemberSource() async {
+        let sourceAID = UUID()
+        let sourceBID = UUID()
+        let assetA = Self.makeAsset(
+            sourceID: sourceAID,
+            fileName: "a.jpg",
+            sourceDisplayName: "Apple Photos"
+        )
+        let assetB = Self.makeAsset(
+            sourceID: sourceBID,
+            fileName: "b.jpg",
+            sourceDisplayName: "2024 下半年 iCloud 备份"
+        )
+        let cluster = SlimmingCluster(
+            id: UUID(),
+            kind: .byteIdentical,
+            memberAssetIDs: [assetA.assetID, assetB.assetID],
+            representativeAssetID: assetA.assetID,
+            score: 1,
+            modelIdentity: .featurePrintOnly
+        )
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: sourceAID,
+                displayName: "Apple Photos",
+                state: .active
+            ),
+            reconciledItems: [assetA, assetB],
+            initialItems: [assetA, assetB],
+            startsConnected: true,
+            additionalSources: [
+                LibrarySourceSummary(
+                    id: sourceBID,
+                    displayName: "2024 下半年 iCloud 备份",
+                    state: .active
+                )
+            ],
+            assetPageSize: 1,
+            hasPendingCatalogReconcileJobs: false
+        )
+        let slimming = StubLibrarySlimmingScanPort()
+        slimming.seedClusters = [cluster]
+        let model = LibraryWorkspaceModel(service: service, librarySlimming: slimming)
+
+        await model.start()
+        XCTAssertEqual(model.items.map(\.assetID), [assetA.assetID])
+        await model.selectAssets([assetA.assetID], additive: false)
+        await model.findLibrarySlimmingFromSelection()
+        await model.analyzeLibrarySlimming(mode: .seeds)
+
+        for _ in 0 ..< 10_000 {
+            if model.librarySlimmingSourceName(for: assetB.assetID) != nil {
+                break
+            }
+            await Task.yield()
+        }
+
+        XCTAssertEqual(
+            model.librarySlimmingSourceName(for: assetA.assetID),
+            "Apple Photos"
+        )
+        XCTAssertEqual(
+            model.librarySlimmingSourceName(for: assetB.assetID),
+            "2024 下半年 iCloud 备份"
+        )
+        XCTAssertEqual(
+            model.librarySlimmingSelectedClusterSourceSummary,
+            "Apple Photos · 2024 下半年 iCloud 备份"
+        )
+    }
+
+    func testLibrarySlimmingSelectionSurvivesBackgroundSnapshotRefresh() async {
+        let sourceID = UUID()
+        let asset = Self.makeAsset(sourceID: sourceID, fileName: "gallery.jpg")
+        let a = UUID(uuidString: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")!
+        let b = UUID(uuidString: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")!
+        let c = UUID(uuidString: "cccccccc-cccc-4ccc-8ccc-cccccccccccc")!
+        let cluster = SlimmingCluster(
+            id: UUID(),
+            kind: .nearDuplicateScene,
+            memberAssetIDs: [a, b, c],
+            representativeAssetID: a,
+            score: 0.95,
+            modelIdentity: .featurePrintOnly
+        )
+        let result = LibrarySlimmingScanResult(
+            clusters: [cluster],
+            pendingAnalysisAssetIDs: [],
+            analyzedAssetCount: 3,
+            policyVersion: NearDuplicateScenePolicy.policyVersion
+        )
+        let jobID = UUID()
+        let analysis = FakeLibrarySlimmingAnalysisJobPort(
+            snapshot: LibrarySlimmingAnalysisJobSnapshot(
+                jobID: jobID,
+                state: .completed,
+                controlRequest: .none,
+                progress: JobProgress(completed: 3, total: 3),
+                result: result
+            ),
+            summary: LibrarySlimmingAnalysisJobSummary(
+                jobID: jobID,
+                mode: .catalog,
+                state: .completed,
+                controlRequest: .none,
+                progress: JobProgress(completed: 3, total: 3),
+                attempts: 1,
+                maxAttempts: 10,
+                memberCount: 3,
+                seedCount: 0,
+                clusterCount: 1,
+                hasResult: true,
+                createdAtMs: 1,
+                updatedAtMs: 1
+            )
+        )
+        let model = LibraryWorkspaceModel(
+            service: FakeLibraryWorkspaceService(
+                connectedSource: LibrarySourceSummary(
+                    id: sourceID,
+                    displayName: "Fixture",
+                    state: .active
+                ),
+                reconciledItems: [asset],
+                initialItems: [asset],
+                startsConnected: true,
+                hasPendingCatalogReconcileJobs: false
+            ),
+            librarySlimmingAnalysis: analysis,
+            librarySlimmingRecycle: FakeLibrarySlimmingRecyclePort(),
+            idlePrewarmInstallEventMonitor: false
+        )
+
+        await model.start()
+        model.selectLibrarySlimmingCluster(cluster.id)
+        model.selectLibrarySlimmingMember(b, additive: false)
+        XCTAssertEqual(model.selectedLibrarySlimmingMemberIDs, [b])
+
+        await model.applicationDidBecomeActive()
+
+        XCTAssertEqual(model.selectedLibrarySlimmingClusterID, cluster.id)
+        XCTAssertEqual(model.selectedLibrarySlimmingMemberIDs, [b])
+    }
+
     func testLibrarySlimmingRestoredHistoricalMemberUsesCurrentSuccessor() async {
         let sourceID = UUID()
-        let galleryAsset = Self.makeAsset(sourceID: sourceID, fileName: "gallery.jpg")
         let historical = UUID(uuidString: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")!
         let successor = UUID(uuidString: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")!
         let companion = UUID(uuidString: "cccccccc-cccc-4ccc-8ccc-cccccccccccc")!
@@ -3937,8 +4183,37 @@ final class LibraryWorkspaceModelTests: XCTestCase {
             score: 0.95,
             modelIdentity: .featurePrintOnly
         )
-        let stub = StubLibrarySlimmingScanPort()
-        stub.seedClusters = [cluster]
+        let result = LibrarySlimmingScanResult(
+            clusters: [cluster],
+            pendingAnalysisAssetIDs: [],
+            analyzedAssetCount: 2,
+            policyVersion: NearDuplicateScenePolicy.policyVersion
+        )
+        let jobID = UUID()
+        let analysis = FakeLibrarySlimmingAnalysisJobPort(
+            snapshot: LibrarySlimmingAnalysisJobSnapshot(
+                jobID: jobID,
+                state: .completed,
+                controlRequest: .none,
+                progress: JobProgress(completed: 2, total: 2),
+                result: result
+            ),
+            summary: LibrarySlimmingAnalysisJobSummary(
+                jobID: jobID,
+                mode: .seeds,
+                state: .completed,
+                controlRequest: .none,
+                progress: JobProgress(completed: 2, total: 2),
+                attempts: 1,
+                maxAttempts: 5,
+                memberCount: 2,
+                seedCount: 1,
+                clusterCount: 1,
+                hasResult: true,
+                createdAtMs: 1,
+                updatedAtMs: 1
+            )
+        )
         let recycle = FakeLibrarySlimmingRecyclePort(
             restoredAssetReplacements: [historical: successor]
         )
@@ -3949,19 +4224,18 @@ final class LibraryWorkspaceModelTests: XCTestCase {
                     displayName: "Fixture",
                     state: .active
                 ),
-                reconciledItems: [galleryAsset],
-                initialItems: [galleryAsset]
+                reconciledItems: [
+                    Self.makeAsset(sourceID: sourceID, assetID: successor),
+                    Self.makeAsset(sourceID: sourceID, assetID: companion),
+                ],
+                startsConnected: true
             ),
-            librarySlimming: stub,
-            librarySlimmingRecycle: recycle
+            librarySlimmingAnalysis: analysis,
+            librarySlimmingRecycle: recycle,
+            idlePrewarmInstallEventMonitor: false
         )
 
         await model.start()
-        await model.connectFolder()
-        await waitForCatalogScanToFinish(model)
-        await model.selectAssets([galleryAsset.assetID], additive: false)
-        await model.findLibrarySlimmingFromSelection()
-        await model.analyzeLibrarySlimming(mode: .seeds)
 
         XCTAssertEqual(
             model.selectedLibrarySlimmingCluster?.memberAssetIDs,
@@ -3970,6 +4244,84 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertEqual(
             model.selectedLibrarySlimmingCluster?.representativeAssetID,
             successor
+        )
+    }
+
+    func testResumeLibrarySlimmingAnalysisRunsImmediatelyAndRefreshesSelectedJob() async {
+        let jobID = UUID()
+        let analysis = ResumeLibrarySlimmingAnalysisJobPort(jobID: jobID)
+        let model = makeResumeLibrarySlimmingModel(analysis: analysis)
+
+        await model.start()
+        XCTAssertEqual(model.librarySlimmingAnalysisJobID, jobID)
+        XCTAssertTrue(model.canResumeLibrarySlimmingAnalysis)
+
+        await model.resumeLibrarySlimmingAnalysis()
+
+        XCTAssertEqual(analysis.resumeCallCount, 1)
+        XCTAssertEqual(analysis.runPendingCallCount, 1)
+        XCTAssertEqual(model.selectedLibrarySlimmingAnalysisJob?.state, .completed)
+        XCTAssertFalse(model.isAnalyzingLibrarySlimming)
+    }
+
+    func testResumeLibrarySlimmingAnalysisRunsImmediatelyAndSurfacesWorkerFailure() async {
+        let jobID = UUID()
+        let analysis = ResumeLibrarySlimmingAnalysisJobPort(
+            jobID: jobID,
+            failsRunPending: true
+        )
+        let model = makeResumeLibrarySlimmingModel(analysis: analysis)
+
+        await model.start()
+        XCTAssertEqual(model.librarySlimmingAnalysisJobID, jobID)
+        XCTAssertTrue(model.canResumeLibrarySlimmingAnalysis)
+
+        await model.resumeLibrarySlimmingAnalysis()
+
+        XCTAssertEqual(analysis.resumeCallCount, 1)
+        XCTAssertEqual(analysis.runPendingCallCount, 1)
+        XCTAssertEqual(
+            model.librarySlimmingStatusMessage,
+            "继续分析失败：测试工作器启动失败"
+        )
+        XCTAssertFalse(model.isAnalyzingLibrarySlimming)
+    }
+
+    func testResumePendingLibrarySlimmingAnalysisRearmsJobBeforeRunning() async {
+        let jobID = UUID()
+        let analysis = ResumeLibrarySlimmingAnalysisJobPort(jobID: jobID)
+        let model = makeResumeLibrarySlimmingModel(analysis: analysis)
+
+        await model.start()
+        analysis.setState(.pending)
+        await model.refreshLibrarySlimmingAnalysisJobs()
+        XCTAssertTrue(model.canResumeLibrarySlimmingAnalysis)
+
+        await model.resumeLibrarySlimmingAnalysis()
+
+        XCTAssertEqual(analysis.resumeCallCount, 1)
+        XCTAssertEqual(analysis.runPendingCallCount, 1)
+        XCTAssertEqual(model.selectedLibrarySlimmingAnalysisJob?.state, .completed)
+    }
+
+    private func makeResumeLibrarySlimmingModel(
+        analysis: any LibrarySlimmingAnalysisJobPort
+    ) -> LibraryWorkspaceModel {
+        LibraryWorkspaceModel(
+            service: FakeLibraryWorkspaceService(
+                connectedSource: LibrarySourceSummary(
+                    id: UUID(),
+                    displayName: "Fixture",
+                    state: .active
+                ),
+                reconciledItems: [],
+                initialItems: [],
+                startsConnected: true,
+                hasPendingCatalogReconcileJobs: false
+            ),
+            librarySlimmingAnalysis: analysis,
+            librarySlimmingRecycle: FakeLibrarySlimmingRecyclePort(),
+            idlePrewarmInstallEventMonitor: false
         )
     }
 
@@ -4097,6 +4449,166 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertTrue(model.hasCompletedLibrarySlimmingScan)
     }
 
+    func testLibrarySlimmingCatalogSourceSelectionSupportsSingleMultipleAndAll() async {
+        let firstSourceID = UUID()
+        let secondSourceID = UUID()
+        let disabledSourceID = UUID()
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: firstSourceID,
+                displayName: "Apple Photos",
+                state: .active
+            ),
+            reconciledItems: [],
+            startsConnected: true,
+            additionalSources: [
+                LibrarySourceSummary(
+                    id: secondSourceID,
+                    displayName: "2026",
+                    state: .active
+                ),
+                LibrarySourceSummary(
+                    id: disabledSourceID,
+                    displayName: "已停用来源",
+                    state: .disabled
+                ),
+            ],
+            hasPendingCatalogReconcileJobs: false
+        )
+        let model = LibraryWorkspaceModel(
+            service: service,
+            librarySlimming: StubLibrarySlimmingScanPort()
+        )
+
+        await model.start()
+
+        XCTAssertEqual(
+            Set(model.activeLibrarySlimmingSources.map(\.id)),
+            Set([firstSourceID, secondSourceID])
+        )
+        XCTAssertEqual(model.librarySlimmingCatalogSourceSelectionTitle, "全部来源（2）")
+        XCTAssertTrue(model.canAnalyzeLibrarySlimmingCatalog)
+
+        model.setLibrarySlimmingCatalogSourceIncluded(firstSourceID, false)
+        XCTAssertFalse(model.isLibrarySlimmingCatalogSourceIncluded(firstSourceID))
+        XCTAssertTrue(model.isLibrarySlimmingCatalogSourceIncluded(secondSourceID))
+        XCTAssertEqual(model.librarySlimmingCatalogSourceSelectionTitle, "2026")
+
+        model.setLibrarySlimmingCatalogSourceIncluded(secondSourceID, false)
+        XCTAssertEqual(model.librarySlimmingCatalogSourceSelectionTitle, "未选择来源")
+        XCTAssertFalse(model.canAnalyzeLibrarySlimmingCatalog)
+        await model.analyzeLibrarySlimming(mode: .catalog)
+        XCTAssertEqual(
+            model.librarySlimmingStatusMessage,
+            "请至少选择一个要分析的来源。"
+        )
+
+        model.setLibrarySlimmingCatalogSourceIncluded(firstSourceID, true)
+        XCTAssertEqual(model.librarySlimmingCatalogSourceSelectionTitle, "Apple Photos")
+        XCTAssertTrue(model.canAnalyzeLibrarySlimmingCatalog)
+
+        model.selectAllLibrarySlimmingCatalogSources()
+        XCTAssertEqual(model.librarySlimmingCatalogSourceSelectionTitle, "全部来源（2）")
+        XCTAssertTrue(model.isLibrarySlimmingCatalogSourceIncluded(firstSourceID))
+        XCTAssertTrue(model.isLibrarySlimmingCatalogSourceIncluded(secondSourceID))
+    }
+
+    func testAnalyzeLibrarySlimmingCatalogUsesSelectedSourceIDs() async {
+        let firstSourceID = UUID()
+        let secondSourceID = UUID()
+        let firstAsset = Self.makeAsset(sourceID: firstSourceID, fileName: "first.jpg")
+        let secondAsset = Self.makeAsset(sourceID: secondSourceID, fileName: "second.jpg")
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: firstSourceID,
+                displayName: "Apple Photos",
+                state: .active
+            ),
+            reconciledItems: [firstAsset, secondAsset],
+            initialItems: [firstAsset, secondAsset],
+            startsConnected: true,
+            additionalSources: [
+                LibrarySourceSummary(
+                    id: secondSourceID,
+                    displayName: "2026",
+                    state: .active
+                ),
+            ],
+            hasPendingCatalogReconcileJobs: false
+        )
+        let stub = StubLibrarySlimmingScanPort()
+        let model = LibraryWorkspaceModel(service: service, librarySlimming: stub)
+        await model.start()
+        model.clearLibrarySlimmingCatalogSourceSelection()
+        model.setLibrarySlimmingCatalogSourceIncluded(secondSourceID, true)
+
+        await model.analyzeLibrarySlimming(mode: .catalog)
+
+        XCTAssertEqual(Set(stub.lastScanAssetIDs), Set([secondAsset.assetID]))
+        XCTAssertTrue(model.hasCompletedLibrarySlimmingScan)
+    }
+
+    func testResumableLibrarySlimmingCatalogJobUsesSelectedSourceIDs() async {
+        let firstSourceID = UUID()
+        let secondSourceID = UUID()
+        let firstAsset = Self.makeAsset(sourceID: firstSourceID, fileName: "first.jpg")
+        let secondAsset = Self.makeAsset(sourceID: secondSourceID, fileName: "second.jpg")
+        let jobID = UUID()
+        let analysis = FakeLibrarySlimmingAnalysisJobPort(
+            snapshot: LibrarySlimmingAnalysisJobSnapshot(
+                jobID: jobID,
+                state: .pending,
+                controlRequest: .none,
+                progress: JobProgress(completed: 0, total: 1),
+                result: nil
+            ),
+            summary: LibrarySlimmingAnalysisJobSummary(
+                jobID: jobID,
+                mode: .catalog,
+                state: .pending,
+                controlRequest: .none,
+                progress: JobProgress(completed: 0, total: 1),
+                attempts: 0,
+                maxAttempts: 10,
+                memberCount: 1,
+                seedCount: 0,
+                clusterCount: 0,
+                hasResult: false,
+                createdAtMs: 1,
+                updatedAtMs: 1
+            )
+        )
+        let model = LibraryWorkspaceModel(
+            service: FakeLibraryWorkspaceService(
+                connectedSource: LibrarySourceSummary(
+                    id: firstSourceID,
+                    displayName: "Apple Photos",
+                    state: .active
+                ),
+                reconciledItems: [firstAsset, secondAsset],
+                initialItems: [firstAsset, secondAsset],
+                startsConnected: true,
+                additionalSources: [
+                    LibrarySourceSummary(
+                        id: secondSourceID,
+                        displayName: "2026",
+                        state: .active
+                    ),
+                ],
+                hasPendingCatalogReconcileJobs: false
+            ),
+            librarySlimming: StubLibrarySlimmingScanPort(),
+            librarySlimmingAnalysis: analysis
+        )
+        await model.start()
+        model.clearLibrarySlimmingCatalogSourceSelection()
+        model.setLibrarySlimmingCatalogSourceIncluded(firstSourceID, true)
+
+        await model.analyzeLibrarySlimming(mode: .catalog)
+
+        XCTAssertEqual(Set(analysis.enqueuedAssetIDs), Set([firstAsset.assetID]))
+    }
+
     func testLibrarySlimmingFilterScopeSummaryIncludesSidebarAndSearch() async {
         let sourceID = UUID()
         let asset = Self.makeAsset(sourceID: sourceID, fileName: "gallery.jpg")
@@ -4119,6 +4631,32 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         let summary = model.librarySlimmingFilterScopeSummary
         XCTAssertTrue(summary.contains("无标签"))
         XCTAssertTrue(summary.contains("sunset"))
+    }
+
+    func testLibrarySlimmingFilterActionNamesSelectedSourceAndVisibleScope() async {
+        let sourceID = UUID()
+        let asset = Self.makeAsset(sourceID: sourceID, fileName: "gallery.jpg")
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: sourceID,
+                displayName: "2026",
+                state: .active
+            ),
+            reconciledItems: [asset],
+            initialItems: [asset],
+            startsConnected: true
+        )
+        let model = LibraryWorkspaceModel(
+            service: service,
+            librarySlimming: StubLibrarySlimmingScanPort()
+        )
+
+        await model.start()
+        await model.selectSource(sourceID)
+
+        XCTAssertEqual(model.librarySlimmingCurrentFilterActionTitle, "分析来源：2026")
+        XCTAssertEqual(model.librarySlimmingCurrentFilterRunningTitle, "正在分析：2026…")
+        XCTAssertEqual(model.librarySlimmingFilterScopeCaption, "筛选范围：2026")
     }
 
     func testLibrarySlimmingEmptyScanShowsCompletedState() async {
@@ -4146,7 +4684,186 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertTrue(model.librarySlimmingClusters.isEmpty)
         XCTAssertEqual(
             model.librarySlimmingStatusMessage,
-            "已分析 0 张，未发现相同或相似簇。"
+            "已分析 1 张，未发现相同或相似簇。"
+        )
+    }
+
+    func testLibrarySlimmingIdenticalCleanupPreviewsAndMovesEveryPlannedRedundantAsset() async {
+        let sourceID = UUID()
+        let assets = ["a.jpg", "b.jpg", "c.jpg", "d.jpg", "e.jpg"].map {
+            Self.makeAsset(sourceID: sourceID, fileName: $0)
+        }
+        let firstCluster = SlimmingCluster(
+            id: UUID(),
+            kind: .byteIdentical,
+            memberAssetIDs: [assets[0].assetID, assets[1].assetID],
+            representativeAssetID: assets[0].assetID,
+            score: 1,
+            modelIdentity: .featurePrintOnly
+        )
+        let secondCluster = SlimmingCluster(
+            id: UUID(),
+            kind: .byteIdentical,
+            memberAssetIDs: [assets[2].assetID, assets[3].assetID, assets[4].assetID],
+            representativeAssetID: assets[2].assetID,
+            score: 1,
+            modelIdentity: .featurePrintOnly
+        )
+        let plan = LibrarySlimmingIdenticalCleanupPlan(
+            decisions: [
+                LibrarySlimmingIdenticalCleanupDecision(
+                    clusterID: firstCluster.id,
+                    survivorAssetID: assets[0].assetID,
+                    assetIDsToRecycle: [assets[1].assetID]
+                ),
+                LibrarySlimmingIdenticalCleanupDecision(
+                    clusterID: secondCluster.id,
+                    survivorAssetID: assets[2].assetID,
+                    assetIDsToRecycle: [assets[3].assetID, assets[4].assetID]
+                ),
+            ],
+            skippedGroupCount: 0,
+            photosAssetCount: 0,
+            fileAssetCount: 3
+        )
+        let entries = plan.assetIDsToRecycle.map {
+            RecycleEntryRecord(
+                id: UUID(),
+                assetID: $0,
+                sourceID: sourceID,
+                sourceKind: .file,
+                trashedAtMs: 1,
+                purgeAfterMs: 2,
+                state: .recycled,
+                quarantineRelativePath: "objects/\($0.uuidString).jpg",
+                originalRelativePath: "\($0.uuidString).jpg",
+                photosLocalIdentifier: nil,
+                errorCode: nil,
+                fileName: "\($0.uuidString).jpg"
+            )
+        }
+        let recycle = FakeLibrarySlimmingRecyclePort(
+            identicalCleanupPlan: plan,
+            moveOutcomes: [
+                LibrarySlimmingRecycleMoveOutcome(
+                    recycledEntryIDs: entries.map(\.id),
+                    skippedPhotosAssetIDs: [],
+                    failedAssetIDs: [],
+                    authorizationRequiredSourceIDs: [],
+                    authorizationRequiredAssetIDs: [],
+                    authorizationDeniedPhotosAssetIDs: []
+                ),
+            ],
+            entriesAfterMoves: [entries]
+        )
+        let scan = StubLibrarySlimmingScanPort()
+        scan.seedClusters = [firstCluster, secondCluster]
+        let model = LibraryWorkspaceModel(
+            service: FakeLibraryWorkspaceService(
+                connectedSource: LibrarySourceSummary(
+                    id: sourceID,
+                    displayName: "Fixture",
+                    state: .active
+                ),
+                reconciledItems: assets,
+                initialItems: assets,
+                hasPendingCatalogReconcileJobs: false
+            ),
+            librarySlimming: scan,
+            librarySlimmingRecycle: recycle,
+            idlePrewarmInstallEventMonitor: false
+        )
+        await model.start()
+        await model.connectFolder()
+        await waitForCatalogScanToFinish(model)
+        await model.selectAssets([assets[0].assetID], additive: false)
+        await model.findLibrarySlimmingFromSelection()
+        await model.analyzeLibrarySlimming(mode: .seeds)
+
+        let prepared = await model.prepareLibrarySlimmingIdenticalCleanup()
+        XCTAssertEqual(prepared, plan)
+
+        await model.moveLibrarySlimmingIdenticalRedundancyToRecycle(plan: plan)
+
+        XCTAssertEqual(Set(recycle.moveAssetIDCalls[0]), Set(plan.assetIDsToRecycle))
+        XCTAssertTrue(model.librarySlimmingClusters.isEmpty)
+        XCTAssertEqual(
+            model.librarySlimmingRecycleActionMessage,
+            "已清理 2 组完全相同照片 · 已移入回收站 3 张"
+        )
+    }
+
+    func testLibrarySlimmingIdenticalCleanupStopsWhenPlanChangesAfterPreview() async {
+        let sourceID = UUID()
+        let assets = ["a.jpg", "b.jpg"].map {
+            Self.makeAsset(sourceID: sourceID, fileName: $0)
+        }
+        let cluster = SlimmingCluster(
+            id: UUID(),
+            kind: .byteIdentical,
+            memberAssetIDs: assets.map(\.assetID),
+            representativeAssetID: assets[0].assetID,
+            score: 1,
+            modelIdentity: .featurePrintOnly
+        )
+        let previewed = LibrarySlimmingIdenticalCleanupPlan(
+            decisions: [
+                LibrarySlimmingIdenticalCleanupDecision(
+                    clusterID: cluster.id,
+                    survivorAssetID: assets[0].assetID,
+                    assetIDsToRecycle: [assets[1].assetID]
+                ),
+            ],
+            skippedGroupCount: 0,
+            photosAssetCount: 0,
+            fileAssetCount: 1
+        )
+        let changed = LibrarySlimmingIdenticalCleanupPlan(
+            decisions: [
+                LibrarySlimmingIdenticalCleanupDecision(
+                    clusterID: cluster.id,
+                    survivorAssetID: assets[1].assetID,
+                    assetIDsToRecycle: [assets[0].assetID]
+                ),
+            ],
+            skippedGroupCount: 0,
+            photosAssetCount: 0,
+            fileAssetCount: 1
+        )
+        let recycle = FakeLibrarySlimmingRecyclePort(identicalCleanupPlan: previewed)
+        let scan = StubLibrarySlimmingScanPort()
+        scan.seedClusters = [cluster]
+        let model = LibraryWorkspaceModel(
+            service: FakeLibraryWorkspaceService(
+                connectedSource: LibrarySourceSummary(
+                    id: sourceID,
+                    displayName: "Fixture",
+                    state: .active
+                ),
+                reconciledItems: assets,
+                initialItems: assets,
+                hasPendingCatalogReconcileJobs: false
+            ),
+            librarySlimming: scan,
+            librarySlimmingRecycle: recycle,
+            idlePrewarmInstallEventMonitor: false
+        )
+        await model.start()
+        await model.connectFolder()
+        await waitForCatalogScanToFinish(model)
+        await model.selectAssets([assets[0].assetID], additive: false)
+        await model.findLibrarySlimmingFromSelection()
+        await model.analyzeLibrarySlimming(mode: .seeds)
+        let prepared = await model.prepareLibrarySlimmingIdenticalCleanup()
+        XCTAssertEqual(prepared, previewed)
+        recycle.setIdenticalCleanupPlan(changed)
+
+        await model.moveLibrarySlimmingIdenticalRedundancyToRecycle(plan: previewed)
+
+        XCTAssertTrue(recycle.moveAssetIDCalls.isEmpty)
+        XCTAssertEqual(
+            model.librarySlimmingRecycleActionMessage,
+            "分析结果或来源状态已变化，请重新预览一键清理方案。"
         )
     }
 
@@ -4166,6 +4883,20 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         let scan = StubLibrarySlimmingScanPort()
         scan.seedClusters = [cluster]
         let recycleEntryID = UUID()
+        let recycledEntry = RecycleEntryRecord(
+            id: recycleEntryID,
+            assetID: assetB.assetID,
+            sourceID: sourceID,
+            sourceKind: .file,
+            trashedAtMs: 1,
+            purgeAfterMs: 2,
+            state: .recycled,
+            quarantineRelativePath: "objects/b.jpg",
+            originalRelativePath: "b.jpg",
+            photosLocalIdentifier: nil,
+            errorCode: nil,
+            fileName: "b.jpg"
+        )
         let recycle = FakeLibrarySlimmingRecyclePort(
             moveOutcomes: [
                 LibrarySlimmingRecycleMoveOutcome(
@@ -4184,7 +4915,8 @@ final class LibraryWorkspaceModelTests: XCTestCase {
                     authorizationRequiredAssetIDs: [],
                     authorizationDeniedPhotosAssetIDs: []
                 ),
-            ]
+            ],
+            entriesAfterMoves: [[], [recycledEntry]]
         )
         let mutationAuthorization = FakeFolderMutationAuthorizationPort()
         let service = FakeLibraryWorkspaceService(
@@ -4219,6 +4951,364 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertEqual(recycle.moveAssetIDCalls[1], [assetB.assetID])
         XCTAssertEqual(mutationAuthorization.authorizedSourceIDs, [sourceID])
         XCTAssertEqual(model.librarySlimmingStatusMessage, "已移入回收站 1 张 · 失败 1 张")
+        XCTAssertEqual(
+            model.librarySlimmingRecycleActionMessage,
+            "已移入回收站 1 张 · 失败 1 张"
+        )
+        XCTAssertEqual(model.selectedLibrarySlimmingMemberIDs, [assetC.assetID])
+    }
+
+    func testSuccessfulRecycleMoveUpdatesClusterAndInAppRecycleBin() async {
+        let sourceID = UUID()
+        let assetA = Self.makeAsset(sourceID: sourceID, fileName: "a.jpg")
+        let assetB = Self.makeAsset(sourceID: sourceID, fileName: "b.jpg")
+        let assetC = Self.makeAsset(sourceID: sourceID, fileName: "c.jpg")
+        let tag = TagListItem(id: UUID(), displayName: "Family", state: .active)
+        let reviewItem = ReviewQueueItemProjection(
+            assetID: assetB.assetID,
+            fileName: assetB.fileName,
+            availability: assetB.availability,
+            acceptedTagCount: 0,
+            rejectedTagCount: 0
+        )
+        let cluster = SlimmingCluster(
+            id: UUID(),
+            kind: .nearDuplicateScene,
+            memberAssetIDs: [assetA.assetID, assetB.assetID, assetC.assetID],
+            representativeAssetID: assetA.assetID,
+            score: 0.99,
+            modelIdentity: .featurePrintOnly
+        )
+        let entryID = UUID()
+        let entry = RecycleEntryRecord(
+            id: entryID,
+            assetID: assetB.assetID,
+            sourceID: sourceID,
+            sourceKind: .file,
+            trashedAtMs: 1,
+            purgeAfterMs: 2,
+            state: .recycled,
+            quarantineRelativePath: "objects/b.jpg",
+            originalRelativePath: "b.jpg",
+            photosLocalIdentifier: nil,
+            errorCode: nil,
+            fileName: "b.jpg"
+        )
+        let scan = StubLibrarySlimmingScanPort()
+        scan.seedClusters = [cluster]
+        let recycle = FakeLibrarySlimmingRecyclePort(
+            moveOutcomes: [
+                LibrarySlimmingRecycleMoveOutcome(
+                    recycledEntryIDs: [entryID],
+                    skippedPhotosAssetIDs: [],
+                    failedAssetIDs: [],
+                    authorizationRequiredSourceIDs: [],
+                    authorizationRequiredAssetIDs: [],
+                    authorizationDeniedPhotosAssetIDs: []
+                ),
+            ],
+            entriesAfterMoves: [[entry]]
+        )
+        let model = LibraryWorkspaceModel(
+            service: FakeLibraryWorkspaceService(
+                connectedSource: LibrarySourceSummary(
+                    id: sourceID,
+                    displayName: "Fixture",
+                    state: .active
+                ),
+                reconciledItems: [assetA, assetB, assetC],
+                tags: [tag],
+                initialItems: [assetA, assetB, assetC],
+                startsConnected: true,
+                hasPendingCatalogReconcileJobs: false
+            ),
+            review: FakePersonalizationReviewPort(queueItems: [reviewItem]),
+            librarySlimming: scan,
+            librarySlimmingRecycle: recycle,
+            idlePrewarmInstallEventMonitor: false
+        )
+        await model.start()
+        await model.selectAssets([assetA.assetID, assetB.assetID], additive: false)
+        await model.findLibrarySlimmingFromSelection()
+        await model.analyzeLibrarySlimming(mode: .seeds)
+        await model.enterReviewQueue(tagID: tag.id, displayName: tag.displayName)
+        await model.selectReviewItem(reviewItem.id)
+        model.selectLibrarySlimmingCluster(cluster.id)
+        model.selectLibrarySlimmingMember(assetB.assetID, additive: false)
+
+        await model.moveSelectedLibrarySlimmingMembersToRecycle()
+        model.selectLibrarySlimmingWorkspaceTab(.recycleBin)
+
+        XCTAssertEqual(model.librarySlimmingWorkspaceTab, .recycleBin)
+        XCTAssertEqual(model.librarySlimmingRecycleEntries, [entry])
+        XCTAssertEqual(model.librarySlimmingClusters.first?.memberAssetIDs, [
+            assetA.assetID,
+            assetC.assetID,
+        ])
+        XCTAssertFalse(model.librarySlimmingClusters.flatMap(\.memberAssetIDs).contains(assetB.assetID))
+        XCTAssertFalse(model.items.contains(where: { $0.assetID == assetB.assetID }))
+        XCTAssertFalse(model.reviewQueueItems.contains(where: { $0.assetID == assetB.assetID }))
+        XCTAssertFalse(model.selectedAssetIDs.contains(assetB.assetID))
+        XCTAssertFalse(model.librarySlimmingSeedAssetIDs.contains(assetB.assetID))
+        XCTAssertNil(model.inspectorDetail)
+        XCTAssertEqual(model.localModelSuggestionState, .hidden)
+    }
+
+    func testCompletedGalleryRequestStartedBeforeRecycleCannotReinsertAsset() async {
+        let sourceID = UUID()
+        let asset = Self.makeAsset(sourceID: sourceID, fileName: "old.jpg")
+        let cluster = SlimmingCluster(
+            id: UUID(),
+            kind: .nearDuplicateScene,
+            memberAssetIDs: [asset.assetID],
+            representativeAssetID: asset.assetID,
+            score: 1,
+            modelIdentity: .featurePrintOnly
+        )
+        let entryID = UUID()
+        let entry = RecycleEntryRecord(
+            id: entryID,
+            assetID: asset.assetID,
+            sourceID: sourceID,
+            sourceKind: .file,
+            trashedAtMs: 1,
+            purgeAfterMs: 2,
+            state: .recycled,
+            quarantineRelativePath: "objects/old.jpg",
+            originalRelativePath: "old.jpg",
+            photosLocalIdentifier: nil,
+            errorCode: nil,
+            fileName: "old.jpg"
+        )
+        let scan = StubLibrarySlimmingScanPort()
+        scan.seedClusters = [cluster]
+        let recycle = FakeLibrarySlimmingRecyclePort(
+            moveOutcomes: [
+                LibrarySlimmingRecycleMoveOutcome(
+                    recycledEntryIDs: [entryID],
+                    skippedPhotosAssetIDs: [],
+                    failedAssetIDs: [],
+                    authorizationRequiredSourceIDs: [],
+                    authorizationRequiredAssetIDs: [],
+                    authorizationDeniedPhotosAssetIDs: []
+                ),
+            ],
+            entriesAfterMoves: [[entry]]
+        )
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: sourceID,
+                displayName: "Fixture",
+                state: .active
+            ),
+            reconciledItems: [asset],
+            initialItems: [asset],
+            startsConnected: true,
+            blockedSearchText: "old",
+            hasPendingCatalogReconcileJobs: false
+        )
+        let model = LibraryWorkspaceModel(
+            service: service,
+            librarySlimming: scan,
+            librarySlimmingRecycle: recycle,
+            idlePrewarmInstallEventMonitor: false
+        )
+        await model.start()
+        await model.selectAssets([asset.assetID], additive: false)
+        await model.findLibrarySlimmingFromSelection()
+        await model.analyzeLibrarySlimming(mode: .seeds)
+        model.selectLibrarySlimmingCluster(cluster.id)
+        model.selectLibrarySlimmingMember(asset.assetID, additive: false)
+
+        let staleRequest = Task { await model.submitSearchText("old") }
+        await waitForAssetPageFetchToBlock(service)
+
+        await model.moveSelectedLibrarySlimmingMembersToRecycle()
+        XCTAssertFalse(model.items.contains(where: { $0.assetID == asset.assetID }))
+
+        service.releaseBlockedAssetPageFetch()
+        await staleRequest.value
+
+        XCTAssertFalse(model.items.contains(where: { $0.assetID == asset.assetID }))
+    }
+
+    func testSuccessfulRestoreRefreshesCurrentGalleryAndReviewQueue() async {
+        let sourceID = UUID()
+        let tag = TagListItem(id: UUID(), displayName: "Family", state: .active)
+        let asset = Self.makeAsset(sourceID: sourceID, fileName: "restored.jpg")
+        let reviewItem = ReviewQueueItemProjection(
+            assetID: asset.assetID,
+            fileName: asset.fileName,
+            availability: .available,
+            acceptedTagCount: 0,
+            rejectedTagCount: 0
+        )
+        let entryID = UUID()
+        let entry = RecycleEntryRecord(
+            id: entryID,
+            assetID: asset.assetID,
+            sourceID: sourceID,
+            sourceKind: .file,
+            trashedAtMs: 1,
+            purgeAfterMs: 2,
+            state: .recycled,
+            quarantineRelativePath: "objects/restored.jpg",
+            originalRelativePath: "restored.jpg",
+            photosLocalIdentifier: nil,
+            errorCode: nil,
+            fileName: "restored.jpg"
+        )
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: sourceID,
+                displayName: "Fixture",
+                state: .active
+            ),
+            reconciledItems: [],
+            tags: [tag],
+            startsConnected: true,
+            hasPendingCatalogReconcileJobs: false
+        )
+        let review = FakePersonalizationReviewPort()
+        let recycle = FakeLibrarySlimmingRecyclePort(
+            entries: [entry],
+            entriesAfterRestores: [[]]
+        )
+        let model = LibraryWorkspaceModel(
+            service: service,
+            review: review,
+            librarySlimmingRecycle: recycle,
+            idlePrewarmInstallEventMonitor: false
+        )
+        await model.start()
+        await model.enterReviewQueue(tagID: tag.id, displayName: tag.displayName)
+        await model.refreshLibrarySlimmingRecycleEntries()
+        service.replaceItems([asset])
+        review.replaceQueueItems([reviewItem])
+
+        await model.restoreLibrarySlimmingRecycleEntry(entryID)
+
+        XCTAssertEqual(model.items.map(\.assetID), [asset.assetID])
+        XCTAssertEqual(model.reviewQueueItems.map(\.assetID), [asset.assetID])
+        XCTAssertTrue(model.librarySlimmingRecycleEntries.isEmpty)
+    }
+
+    func testCancelledRecycleWriteAuthorizationKeepsFailedPhotoSelected() async {
+        let sourceID = UUID()
+        let assetA = Self.makeAsset(sourceID: sourceID, fileName: "a.jpg")
+        let assetB = Self.makeAsset(sourceID: sourceID, fileName: "b.jpg")
+        let cluster = SlimmingCluster(
+            id: UUID(),
+            kind: .nearDuplicateScene,
+            memberAssetIDs: [assetA.assetID, assetB.assetID],
+            representativeAssetID: assetA.assetID,
+            score: 0.99,
+            modelIdentity: .featurePrintOnly
+        )
+        let scan = StubLibrarySlimmingScanPort()
+        scan.seedClusters = [cluster]
+        let recycle = FakeLibrarySlimmingRecyclePort(
+            moveOutcomes: [
+                LibrarySlimmingRecycleMoveOutcome(
+                    recycledEntryIDs: [],
+                    skippedPhotosAssetIDs: [],
+                    failedAssetIDs: [assetB.assetID],
+                    authorizationRequiredSourceIDs: [sourceID],
+                    authorizationRequiredAssetIDs: [assetB.assetID],
+                    authorizationDeniedPhotosAssetIDs: []
+                ),
+            ]
+        )
+        let mutationAuthorization = FakeFolderMutationAuthorizationPort(outcome: .cancelled)
+        let model = LibraryWorkspaceModel(
+            service: FakeLibraryWorkspaceService(
+                connectedSource: LibrarySourceSummary(
+                    id: sourceID,
+                    displayName: "Fixture",
+                    state: .active
+                ),
+                reconciledItems: [assetA, assetB],
+                initialItems: [assetA, assetB],
+                startsConnected: true,
+                hasPendingCatalogReconcileJobs: false
+            ),
+            librarySlimming: scan,
+            librarySlimmingRecycle: recycle,
+            librarySlimmingMutationAuthorization: mutationAuthorization,
+            idlePrewarmInstallEventMonitor: false
+        )
+        await model.start()
+        await model.selectAssets([assetA.assetID], additive: false)
+        await model.findLibrarySlimmingFromSelection()
+        await model.analyzeLibrarySlimming(mode: .seeds)
+        model.selectLibrarySlimmingCluster(cluster.id)
+        model.selectLibrarySlimmingMember(assetB.assetID, additive: false)
+
+        await model.moveSelectedLibrarySlimmingMembersToRecycle()
+
+        XCTAssertEqual(model.selectedLibrarySlimmingMemberIDs, [assetB.assetID])
+        XCTAssertTrue(model.librarySlimmingStatusMessage?.contains("需要写入授权") == true)
+        XCTAssertTrue(model.librarySlimmingRecycleEntries.isEmpty)
+    }
+
+    func testPersistedRecycleAuthorizationFailureDoesNotRequestFinderAgain() async {
+        let sourceID = UUID()
+        let asset = Self.makeAsset(sourceID: sourceID, fileName: "a.jpg")
+        let cluster = SlimmingCluster(
+            id: UUID(),
+            kind: .nearDuplicateScene,
+            memberAssetIDs: [asset.assetID],
+            representativeAssetID: asset.assetID,
+            score: 0.99,
+            modelIdentity: .featurePrintOnly
+        )
+        let scan = StubLibrarySlimmingScanPort()
+        scan.seedClusters = [cluster]
+        let recycle = FakeLibrarySlimmingRecyclePort(
+            moveOutcomes: [
+                LibrarySlimmingRecycleMoveOutcome(
+                    recycledEntryIDs: [],
+                    skippedPhotosAssetIDs: [],
+                    failedAssetIDs: [asset.assetID],
+                    authorizationRequiredSourceIDs: [],
+                    authorizationRequiredAssetIDs: [],
+                    authorizationDeniedPhotosAssetIDs: []
+                ),
+            ]
+        )
+        let mutationAuthorization = FakeFolderMutationAuthorizationPort()
+        let model = LibraryWorkspaceModel(
+            service: FakeLibraryWorkspaceService(
+                connectedSource: LibrarySourceSummary(
+                    id: sourceID,
+                    displayName: "Fixture",
+                    state: .active
+                ),
+                reconciledItems: [asset],
+                initialItems: [asset],
+                startsConnected: true,
+                hasPendingCatalogReconcileJobs: false
+            ),
+            librarySlimming: scan,
+            librarySlimmingRecycle: recycle,
+            librarySlimmingMutationAuthorization: mutationAuthorization,
+            idlePrewarmInstallEventMonitor: false
+        )
+        await model.start()
+        await model.selectAssets([asset.assetID])
+        await model.findLibrarySlimmingFromSelection()
+        await model.analyzeLibrarySlimming(mode: .seeds)
+        model.selectLibrarySlimmingCluster(cluster.id)
+        model.selectLibrarySlimmingMember(asset.assetID, additive: false)
+
+        await model.moveSelectedLibrarySlimmingMembersToRecycle()
+
+        XCTAssertTrue(mutationAuthorization.authorizedSourceIDs.isEmpty)
+        XCTAssertEqual(model.selectedLibrarySlimmingMemberIDs, [asset.assetID])
+        XCTAssertEqual(
+            model.librarySlimmingStatusMessage,
+            "失败 1 张（已有来源权限不可用；请从左侧来源菜单更新回收权限后重试）"
+        )
     }
 
     func testLibrarySlimmingRestoreRequestsWriteAuthorizationAndRetries() async {
@@ -8211,12 +9301,13 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         assetID: UUID = UUID(),
         fileName: String = "sample.jpg",
         mediaType: String = "public.jpeg",
-        availability: AssetAvailability = .available
+        availability: AssetAvailability = .available,
+        sourceDisplayName: String = "Fixture"
     ) -> AssetGridItemProjection {
         AssetGridItemProjection(
             assetID: assetID,
             sourceID: sourceID,
-            sourceDisplayName: "Fixture",
+            sourceDisplayName: sourceDisplayName,
             sourceState: .active,
             relativePath: fileName,
             fileName: fileName,
@@ -8287,31 +9378,220 @@ private final class StubLibrarySlimmingScanPort: LibrarySlimmingScanPort, @unche
     }
 }
 
+private final class FakeLibrarySlimmingAnalysisJobPort:
+    LibrarySlimmingAnalysisJobPort,
+    @unchecked Sendable
+{
+    private let lock = NSLock()
+    private let snapshotValue: LibrarySlimmingAnalysisJobSnapshot
+    private let summaryValue: LibrarySlimmingAnalysisJobSummary
+    private var storedEnqueuedAssetIDs: [UUID] = []
+
+    init(
+        snapshot: LibrarySlimmingAnalysisJobSnapshot,
+        summary: LibrarySlimmingAnalysisJobSummary
+    ) {
+        snapshotValue = snapshot
+        summaryValue = summary
+    }
+
+    var enqueuedAssetIDs: [UUID] {
+        lock.withLock { storedEnqueuedAssetIDs }
+    }
+
+    func enqueue(
+        mode _: LibrarySlimmingAnalyzeMode,
+        assetIDs: [UUID],
+        seedAssetIDs _: [UUID]
+    ) throws -> LibrarySlimmingAnalysisJobSnapshot {
+        lock.withLock {
+            storedEnqueuedAssetIDs = assetIDs
+        }
+        return snapshotValue
+    }
+
+    func runPending() throws {}
+
+    func pause(jobID _: UUID) throws -> LibrarySlimmingAnalysisJobSnapshot {
+        snapshotValue
+    }
+
+    func resume(jobID _: UUID) throws -> LibrarySlimmingAnalysisJobSnapshot {
+        snapshotValue
+    }
+
+    func snapshot(jobID _: UUID) throws -> LibrarySlimmingAnalysisJobSnapshot {
+        snapshotValue
+    }
+
+    func latestActiveOrCompleted() throws -> LibrarySlimmingAnalysisJobSnapshot? {
+        snapshotValue
+    }
+
+    func listJobs() throws -> [LibrarySlimmingAnalysisJobSummary] {
+        [summaryValue]
+    }
+
+    func delete(jobID _: UUID) throws {}
+}
+
+private final class ResumeLibrarySlimmingAnalysisJobPort:
+    LibrarySlimmingAnalysisJobPort,
+    @unchecked Sendable
+{
+    private let lock = NSLock()
+    private let jobID: UUID
+    private let failsRunPending: Bool
+    private var storedState: JobState = .paused
+    private var storedResumeCallCount = 0
+    private var storedRunPendingCallCount = 0
+
+    init(jobID: UUID, failsRunPending: Bool = false) {
+        self.jobID = jobID
+        self.failsRunPending = failsRunPending
+    }
+
+    var resumeCallCount: Int {
+        lock.withLock { storedResumeCallCount }
+    }
+
+    var runPendingCallCount: Int {
+        lock.withLock { storedRunPendingCallCount }
+    }
+
+    func setState(_ state: JobState) {
+        lock.withLock {
+            storedState = state
+        }
+    }
+
+    func enqueue(
+        mode _: LibrarySlimmingAnalyzeMode,
+        assetIDs _: [UUID],
+        seedAssetIDs _: [UUID]
+    ) throws -> LibrarySlimmingAnalysisJobSnapshot {
+        snapshotValue()
+    }
+
+    func runPending() throws {
+        lock.withLock {
+            storedRunPendingCallCount += 1
+        }
+        if failsRunPending {
+            throw NSError(
+                domain: "ImageAllTests.LibrarySlimming",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "测试工作器启动失败"]
+            )
+        }
+        lock.withLock {
+            storedState = .completed
+        }
+    }
+
+    func pause(jobID _: UUID) throws -> LibrarySlimmingAnalysisJobSnapshot {
+        snapshotValue()
+    }
+
+    func resume(jobID _: UUID) throws -> LibrarySlimmingAnalysisJobSnapshot {
+        lock.withLock {
+            storedResumeCallCount += 1
+            storedState = .pending
+        }
+        return snapshotValue()
+    }
+
+    func snapshot(jobID _: UUID) throws -> LibrarySlimmingAnalysisJobSnapshot {
+        snapshotValue()
+    }
+
+    func latestActiveOrCompleted() throws -> LibrarySlimmingAnalysisJobSnapshot? {
+        snapshotValue()
+    }
+
+    func listJobs() throws -> [LibrarySlimmingAnalysisJobSummary] {
+        let state = lock.withLock { storedState }
+        return [
+            LibrarySlimmingAnalysisJobSummary(
+                jobID: jobID,
+                mode: .currentFilter,
+                state: state,
+                controlRequest: .none,
+                progress: JobProgress(completed: 23_040, total: 28_645),
+                attempts: 1,
+                maxAttempts: 10,
+                memberCount: 28_645,
+                seedCount: 0,
+                clusterCount: 0,
+                hasResult: false,
+                createdAtMs: 1,
+                updatedAtMs: 1
+            ),
+        ]
+    }
+
+    func delete(jobID _: UUID) throws {}
+
+    private func snapshotValue() -> LibrarySlimmingAnalysisJobSnapshot {
+        LibrarySlimmingAnalysisJobSnapshot(
+            jobID: jobID,
+            state: lock.withLock { storedState },
+            controlRequest: .none,
+            progress: JobProgress(completed: 23_040, total: 28_645),
+            result: nil
+        )
+    }
+}
+
 private final class FakeLibrarySlimmingRecyclePort: LibrarySlimmingRecyclePort, @unchecked Sendable {
     private let lock = NSLock()
     private var storedMoveOutcomes: [LibrarySlimmingRecycleMoveOutcome]
     private var storedEntries: [RecycleEntryRecord]
+    private var storedEntriesAfterMoves: [[RecycleEntryRecord]]
+    private var storedEntriesAfterRestores: [[RecycleEntryRecord]]
     private var remainingRestoreAuthorizationFailures: Int
     private var storedMoveAssetIDCalls: [[UUID]] = []
     private var storedRestoreEntryIDCalls: [UUID] = []
     private var storedRecoverCallCount = 0
     private var storedEnqueuePurgeCallCount = 0
     private let storedRestoredAssetReplacements: [UUID: UUID]
+    private var storedIdenticalCleanupPlan: LibrarySlimmingIdenticalCleanupPlan?
 
     init(
+        identicalCleanupPlan: LibrarySlimmingIdenticalCleanupPlan? = nil,
         moveOutcomes: [LibrarySlimmingRecycleMoveOutcome] = [],
         entries: [RecycleEntryRecord] = [],
+        entriesAfterMoves: [[RecycleEntryRecord]] = [],
+        entriesAfterRestores: [[RecycleEntryRecord]] = [],
         restoreAuthorizationFailures: Int = 0,
         restoredAssetReplacements: [UUID: UUID] = [:]
     ) {
+        storedIdenticalCleanupPlan = identicalCleanupPlan
         storedMoveOutcomes = moveOutcomes
         storedEntries = entries
+        storedEntriesAfterMoves = entriesAfterMoves
+        storedEntriesAfterRestores = entriesAfterRestores
         remainingRestoreAuthorizationFailures = restoreAuthorizationFailures
         storedRestoredAssetReplacements = restoredAssetReplacements
     }
 
+    func makeIdenticalCleanupPlan(
+        clusters _: [SlimmingCluster]
+    ) throws -> LibrarySlimmingIdenticalCleanupPlan {
+        try lock.withLock {
+            guard let storedIdenticalCleanupPlan else {
+                throw LibrarySlimmingRecycleError.cleanupPlanningUnavailable
+            }
+            return storedIdenticalCleanupPlan
+        }
+    }
+
     var moveAssetIDCalls: [[UUID]] {
         lock.withLock { storedMoveAssetIDCalls }
+    }
+
+    func setIdenticalCleanupPlan(_ plan: LibrarySlimmingIdenticalCleanupPlan?) {
+        lock.withLock { storedIdenticalCleanupPlan = plan }
     }
 
     var restoreEntryIDCalls: [UUID] {
@@ -8341,7 +9621,11 @@ private final class FakeLibrarySlimmingRecyclePort: LibrarySlimmingRecyclePort, 
                     authorizationDeniedPhotosAssetIDs: []
                 )
             }
-            return storedMoveOutcomes.removeFirst()
+            let outcome = storedMoveOutcomes.removeFirst()
+            if !storedEntriesAfterMoves.isEmpty {
+                storedEntries = storedEntriesAfterMoves.removeFirst()
+            }
+            return outcome
         }
     }
 
@@ -8355,6 +9639,9 @@ private final class FakeLibrarySlimmingRecyclePort: LibrarySlimmingRecyclePort, 
             if remainingRestoreAuthorizationFailures > 0 {
                 remainingRestoreAuthorizationFailures -= 1
                 throw LibrarySlimmingRecycleError.mutationAuthorizationRequired
+            }
+            if !storedEntriesAfterRestores.isEmpty {
+                storedEntries = storedEntriesAfterRestores.removeFirst()
             }
         }
     }
@@ -8399,10 +9686,20 @@ private final class FakeLibrarySlimmingRecyclePort: LibrarySlimmingRecyclePort, 
 @MainActor
 private final class FakeFolderMutationAuthorizationPort: FolderMutationAuthorizationPort {
     private(set) var authorizedSourceIDs: [UUID] = []
+    private let outcome: FolderMutationAuthorizationOutcome
+
+    init(outcome: FolderMutationAuthorizationOutcome? = nil) {
+        self.outcome = outcome ?? .authorized(sourceID: UUID())
+    }
 
     func authorizeMutation(sourceID: UUID) async throws -> FolderMutationAuthorizationOutcome {
         authorizedSourceIDs.append(sourceID)
-        return .authorized(sourceID: sourceID)
+        switch outcome {
+        case .authorized:
+            return .authorized(sourceID: sourceID)
+        case .cancelled:
+            return .cancelled
+        }
     }
 }
 
@@ -8750,6 +10047,10 @@ final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecked Sendab
 
     func releaseBlockedAssetPageFetch() {
         assetPageFetchGate.signal()
+    }
+
+    func replaceItems(_ items: [AssetGridItemProjection]) {
+        lock.withLock { storedItems = items }
     }
 
     var jobActivityFetchCallCount: Int {

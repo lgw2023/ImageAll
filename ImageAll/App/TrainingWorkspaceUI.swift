@@ -53,6 +53,7 @@ struct TrainingWorkspaceView: View {
                     || model.isRebuildingPersonalAdamWModel
                     || model.isGeneratingPersonalLibrarySuggestions
             )
+            .persistentHelp("打开训练设置，选择目标标签、训练方法和照片范围，再确认创建任务。")
 
             Button {
                 Task { await model.refreshTrainingWorkspace() }
@@ -65,11 +66,13 @@ struct TrainingWorkspaceView: View {
                 }
             }
             .disabled(model.isRefreshingTrainingWorkspace)
+            .persistentHelp("重新读取训练记录、模型槽位和当前任务进度；不会启动新的训练。")
 
             Spacer()
             Button("返回图库", systemImage: "photo.on.rectangle") {
                 onReturnToLibrary()
             }
+            .persistentHelp("退出训练工作台并返回照片图库；正在运行的后台任务不会被取消。")
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
@@ -206,6 +209,7 @@ struct TrainingWorkspaceView: View {
                 .labelsHidden()
                 .pickerStyle(.menu)
                 .fixedSize()
+                .persistentHelp("筛选左侧训练记录；只改变显示范围，不会删除或停止任何任务。")
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
@@ -495,6 +499,7 @@ private struct TrainingWorkspaceLaunchSheet: View {
                 Button("取消", role: .cancel) {
                     dismiss()
                 }
+                .persistentHelp("放弃本次训练设置并关闭窗口，不创建任务。")
                 Spacer()
                 Button(launchButtonTitle) {
                     launch()
@@ -502,6 +507,7 @@ private struct TrainingWorkspaceLaunchSheet: View {
                 .buttonStyle(.borderedProminent)
                 .controlSize(.large)
                 .disabled(!canLaunch)
+                .persistentHelp("按当前标签、方法和照片范围创建训练或建议生成任务。")
             }
             .padding(.horizontal, 28)
             .padding(.top, 16)
@@ -592,6 +598,11 @@ private struct TrainingWorkspaceLaunchSheet: View {
         .accessibilityLabel(
             "\(presentation.title)，\(presentation.technicalName)"
         )
+        .persistentHelp(
+            isAvailable
+                ? "\(presentation.title)：\(presentation.detail) \(presentation.requirement)"
+                : "\(presentation.title) 当前不可用：\(unavailableText(method))"
+        )
     }
 
     private var configurationPanel: some View {
@@ -629,6 +640,7 @@ private struct TrainingWorkspaceLaunchSheet: View {
                     }
                 }
                 .pickerStyle(.menu)
+                .persistentHelp("选择要为哪个标签寻找相似照片；列表同时显示现有正反样本数。")
                 Text("下一步可以选择要扫描的照片来源，并确认建议阈值。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -704,6 +716,7 @@ private struct TrainingWorkspaceLaunchSheet: View {
                     }
                 }
                 .pickerStyle(.radioGroup)
+                .persistentHelp("选择训练使用全部来源中的确认照片，或只使用图库当前选中的照片。")
                 Text("默认使用所有来源；只有你在这里明确选择时，才会限制为图库中的当前选择。")
                     .font(.caption)
                     .foregroundStyle(.secondary)

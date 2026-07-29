@@ -100,6 +100,35 @@ final class JobStateTransitionTests: XCTestCase {
         XCTAssertEqual(try JobTestSupport.claimDefault(queue: queue)?.jobID, jobID)
     }
 
+    func testResumeExhaustedPendingJobRestoresClaimableAttemptBudget() throws {
+        let database = try CatalogDatabase.open(at: makeTempDatabaseURL())
+        let queue = JobTestSupport.makeQueue(database: database)
+        let jobID = try JobTestSupport.prepareJobInState(
+            queue: queue,
+            database: database,
+            state: .pending,
+            maxAttempts: 5
+        )
+        try database.pool.write { db in
+            try db.execute(
+                sql: "UPDATE job SET attempts = max_attempts WHERE id = ?",
+                arguments: [jobID.uuidString.lowercased()]
+            )
+        }
+        XCTAssertNil(try JobTestSupport.claimDefault(queue: queue))
+
+        let resumed = try queue.applyStateCommand(
+            JobStateCommand(
+                jobID: jobID,
+                operation: .resume(notBeforeMs: JobTestSupport.baseTimeMs)
+            )
+        )
+
+        XCTAssertEqual(resumed.state, .pending)
+        XCTAssertEqual(resumed.attempts, 0)
+        XCTAssertEqual(try JobTestSupport.claimDefault(queue: queue)?.jobID, jobID)
+    }
+
     func testRunningControlRequestsAreIdempotentNoOps() throws {
         let url = try makeTempDatabaseURL()
         let database = try CatalogDatabase.open(at: url)

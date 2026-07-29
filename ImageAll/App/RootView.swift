@@ -50,6 +50,7 @@ struct RootView: View {
                     onRetryBootstrap?()
                 }
                 .accessibilityIdentifier("startupRetryButton")
+                .persistentHelp("重新初始化目录和数据库，然后再次进入 ImageAll。")
             }
         }
         .padding(24)
@@ -74,6 +75,7 @@ struct RootView: View {
                     onCancelStorageMigration?()
                 }
                 .accessibilityIdentifier("storageMigrationCancelButton")
+                .persistentHelp("停止当前存储迁移；已经安全完成的步骤会保留，原照片不会被修改。")
             }
         }
         .frame(maxWidth: 360, alignment: .leading)

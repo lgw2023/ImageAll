@@ -26,6 +26,7 @@ struct ReviewOverviewView: View {
                 } actions: {
                     Button("返回图库", action: onBack)
                         .buttonStyle(.borderedProminent)
+                        .persistentHelp("返回照片图库，为照片添加标签或积累更多确认和拒绝样本。")
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
@@ -81,6 +82,7 @@ private struct ReviewOverviewHeader: View {
     var body: some View {
         HStack(spacing: 12) {
             Button("返回图库", systemImage: "photo.on.rectangle", action: onBack)
+                .persistentHelp("退出待审核建议工作区并返回照片图库。")
 
             Divider()
                 .frame(height: 18)
@@ -106,7 +108,7 @@ private struct ReviewOverviewHeader: View {
                         .font(.caption.monospacedDigit())
                         .frame(minWidth: 40, alignment: .trailing)
                 }
-                .help("特征向量、个人模型、超级个人模型与抽检路径均按此上限保留分数最高的待审核建议。")
+                .persistentHelp("调整每个标签最多保留的待审核建议数；四种建议生成路径都使用这个上限。")
             }
 
             if model.pendingSuggestionTotal > 0 {
@@ -131,6 +133,7 @@ private struct ReviewSourceFilterMenu: View {
                 Task { await model.selectAllReviewSources() }
             }
             .disabled(model.reviewFilterSourceIDs == nil)
+            .persistentHelp("恢复使用所有已启用来源生成建议并显示待审照片。")
             Divider()
             ForEach(model.activeReviewSources) { source in
                 Toggle(
@@ -156,7 +159,7 @@ private struct ReviewSourceFilterMenu: View {
         }
         .menuStyle(.borderlessButton)
         .fixedSize(horizontal: false, vertical: true)
-        .help("控制建议生成与待审列表的扫描范围；与侧栏「浏览某一来源」相互独立。")
+        .persistentHelp("选择建议生成和待审列表要覆盖的照片来源；不会改变图库侧栏当前浏览位置。")
     }
 }
 
@@ -186,7 +189,7 @@ private struct ReviewLocalModelPanel: View {
                         }
                     }
                     .disabled(model.localModelServiceHealthState == .checking)
-                    .help("只检查本机回环服务，不会启动服务或下载模型")
+                    .persistentHelp("重新检查本机模型服务是否可用；不会启动服务、下载模型或读取照片。")
                 }
                 .padding(12)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -285,7 +288,7 @@ private struct ReviewLocalModelPanel: View {
             .buttonStyle(.borderedProminent)
             .controlSize(.small)
             .disabled(isDisabled)
-            .help(help)
+            .persistentHelp(help)
             if let jobActivity, !jobActivity.availableActions.isEmpty {
                 HStack(spacing: 8) {
                     ForEach(jobActivity.availableActions, id: \.self) { jobAction in
@@ -294,6 +297,7 @@ private struct ReviewLocalModelPanel: View {
                         }
                         .font(.caption)
                         .disabled(model.isApplyingJobActivityAction(jobActivity.id))
+                        .persistentHelp(reviewJobActionHelp(jobAction))
                     }
                 }
             }
@@ -463,6 +467,7 @@ private struct ReviewTagOverviewCard: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.regular)
+                .persistentHelp("打开“\(overview.displayName)”的待审核照片队列，逐张确认、拒绝或稍后处理。")
             }
 
             ReviewTagGenerateActions(model: model, overview: overview)
@@ -502,7 +507,7 @@ private struct ReviewOriginCountBadges: View {
                     .background(.secondary.opacity(0.1), in: Capsule())
             }
             .buttonStyle(.plain)
-            .help("打开待审核队列")
+            .persistentHelp("打开这个标签的待审核照片队列。")
         }
     }
 }
@@ -572,6 +577,7 @@ private struct ReviewTagGenerateActions: View {
                             Label("暂停", systemImage: "pause.fill")
                         }
                         .controlSize(.small)
+                        .persistentHelp("暂停这个标签的建议生成任务，并保存当前进度。")
                     }
                     if overview.canResume {
                         Button {
@@ -580,6 +586,7 @@ private struct ReviewTagGenerateActions: View {
                             Label("继续", systemImage: "play.fill")
                         }
                         .controlSize(.small)
+                        .persistentHelp("从保存的进度继续这个标签的建议生成任务。")
                     }
                     if overview.canCancel {
                         Button(role: .destructive) {
@@ -588,6 +595,7 @@ private struct ReviewTagGenerateActions: View {
                             Label("取消", systemImage: "xmark")
                         }
                         .controlSize(.small)
+                        .persistentHelp("取消这个标签的建议生成任务；已经生成的待审建议会保留。")
                     }
                 }
                 .buttonStyle(.bordered)
@@ -623,6 +631,9 @@ private struct ReviewTagGenerateActions: View {
             }
         }
         .buttonStyle(.bordered)
+        .persistentHelp(
+            "\(title)：按顶部选择的来源生成或更新“\(overview.displayName)”的待审核建议。"
+        )
         .controlSize(.small)
     }
 }
@@ -632,6 +643,17 @@ private func reviewJobActionTitle(_ action: JobActivityAction) -> String {
     case .pause: "暂停"
     case .resume: "继续"
     case .cancel: "取消"
+    }
+}
+
+private func reviewJobActionHelp(_ action: JobActivityAction) -> String {
+    switch action {
+    case .pause:
+        "暂停当前建议生成任务，并保存已完成的进度。"
+    case .resume:
+        "从保存的进度继续当前建议生成任务。"
+    case .cancel:
+        "取消当前建议生成任务；已经写入的待审建议会保留。"
     }
 }
 
@@ -696,6 +718,7 @@ struct TagSuggestionThresholdControls: View {
                         )
                         .labelsHidden()
                         .controlSize(.mini)
+                        .persistentHelp("以 0.05 为步长调整这条建议轨道的最低分数。")
                         Button("刷新") {
                             commitText(for: method)
                             model.prunePendingSuggestionsBelowThreshold(
@@ -706,7 +729,7 @@ struct TagSuggestionThresholdControls: View {
                         }
                         .font(.caption2)
                         .buttonStyle(.borderless)
-                        .help("按当前生效门槛删除本轨低于门槛的 pending，不重跑全库扫描")
+                        .persistentHelp("按当前门槛移除分数过低的待审建议；不会重新扫描图库。")
                     }
                     if let reference = references[method] {
                         HStack(spacing: 4) {
@@ -716,6 +739,7 @@ struct TagSuggestionThresholdControls: View {
                                 apply(method: method, minScore: reference.minScore)
                             }
                             .buttonStyle(.borderless)
+                            .persistentHelp("采用根据近期样本计算出的参考分数，作为这条建议轨道的最低门槛。")
                         }
                         .font(.caption2)
                     }
@@ -873,12 +897,14 @@ struct SuggestionEnqueueConfirmationSheet: View {
                     model.cancelPendingSuggestionEnqueue()
                 }
                 .keyboardShortcut(.cancelAction)
+                .persistentHelp("关闭确认窗口，不创建本次建议生成任务。")
                 Button("开始") {
                     let captured = model.pendingSuggestionConfirmation ?? pending
                     Task { _ = await model.confirmPendingSuggestionEnqueue(captured) }
                 }
                 .keyboardShortcut(.defaultAction)
                 .disabled(!(model.pendingSuggestionConfirmation?.canStart ?? pending.canStart))
+                .persistentHelp("使用当前选择的来源创建建议生成任务。")
             }
         }
         .padding(24)
@@ -1264,7 +1290,7 @@ private struct ReviewThumbnailView: View {
             "\(isSelected ? "已选择" : "未选择")，\(item.suggestionOrigin.reviewDisplayName)建议，分数 \(String(format: "%.2f", item.score))"
         )
         .accessibilityHint("选择待审核照片；双击可预览，也可按 P、X 或 U 处理")
-        .help(LibraryAssetDetailText.reviewHoverText(item))
+        .persistentHelp(LibraryAssetDetailText.reviewHoverText(item))
         .accessibilityAction {
             onSelect()
         }
@@ -1356,11 +1382,13 @@ struct InspectorSuggestionSection: View {
                                 await model.applyInspectorSuggestion(tagID: suggestion.tagID, action: .accept)
                             }
                         }
+                        .persistentHelp("确认这张照片属于“\(suggestion.displayName)”标签，并写入人工决定。")
                         Button("不属于") {
                             Task {
                                 await model.applyInspectorSuggestion(tagID: suggestion.tagID, action: .reject)
                             }
                         }
+                        .persistentHelp("确认这张照片不属于“\(suggestion.displayName)”标签，并写入人工决定。")
                     }
                     .font(.caption)
                 }
@@ -1369,6 +1397,7 @@ struct InspectorSuggestionSection: View {
                         expanded = true
                     }
                     .font(.caption)
+                    .persistentHelp("展开并显示这张照片剩余的全部模型建议。")
                 }
             }
             .onChange(of: model.primarySelectedAssetID) { _, _ in
@@ -1424,7 +1453,7 @@ struct InspectorLocalModelSuggestionSection: View {
                                     Image(systemName: "xmark")
                                 }
                                 .buttonStyle(.borderless)
-                                .help("标记为不合适")
+                                .persistentHelp("拒绝这条模型建议，不把该标签添加到照片。")
                                 Button {
                                     Task {
                                         await model.applyLocalModelSuggestionDecision(
@@ -1436,7 +1465,7 @@ struct InspectorLocalModelSuggestionSection: View {
                                     Image(systemName: "checkmark")
                                 }
                                 .buttonStyle(.borderless)
-                                .help("确认并添加标签")
+                                .persistentHelp("接受这条模型建议，并把对应标签添加到照片。")
                             } else {
                                 Text(suggestion.recommendedState == .autoAssigned ? "自动匹配" : "建议复核")
                                     .foregroundStyle(.secondary)
@@ -1496,6 +1525,7 @@ struct InspectorLocalModelSuggestionSection: View {
             Task { await model.requestLocalModelSuggestions() }
         }
         .buttonStyle(.bordered)
+        .persistentHelp("使用标准场景模型分析当前照片，并显示建议标签。")
     }
 
     private func personalRequestButton(_ title: String) -> some View {
@@ -1503,6 +1533,7 @@ struct InspectorLocalModelSuggestionSection: View {
             Task { await model.requestPersonalModelSuggestions() }
         }
         .buttonStyle(.bordered)
+        .persistentHelp("使用你的个人模型分析当前照片，并显示建议标签。")
     }
 
     @ViewBuilder

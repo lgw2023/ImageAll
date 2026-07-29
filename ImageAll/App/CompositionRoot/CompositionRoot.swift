@@ -36,7 +36,11 @@ struct CompositionRoot {
         let authorization = FolderAuthorizationCoordinator(
             dependencies: FolderAuthorizationDependencies(
                 repository: sourceRepository,
-                picker: AppKitFolderDirectoryPicker(),
+                picker: AppKitFolderDirectoryPicker(
+                    panelFactory: {
+                        AppKitFolderDirectoryPicker.makeSourceImportPanel()
+                    }
+                ),
                 bookmarkPort: bookmark,
                 rootValidator: rootValidator,
                 relationshipChecker: FoundationFolderRootRelationshipChecker(),
@@ -53,6 +57,12 @@ struct CompositionRoot {
         let quarantineRootURL = QuarantinePathLayout.rootURL(
             applicationSupportDirectory: runtime.paths.applicationSupportDirectory
         )
+        let photosOriginalCache = PhotosOriginalCacheService(
+            database: runtime.database,
+            rootURL: runtime.paths.applicationSupportDirectory
+                .appendingPathComponent("Photos Originals/v1", isDirectory: true),
+            clock: clock
+        )
         let photosAccess = PhotoKitPhotosLibraryAdapter()
         let photosMutation = PhotoKitPhotosLibraryMutationAdapter()
         let librarySlimmingRecycle = LibrarySlimmingRecycleService(
@@ -64,11 +74,20 @@ struct CompositionRoot {
             quarantineRootURL: quarantineRootURL,
             clock: clock,
             jobQueue: runtime.jobQueue,
-            photosMutation: photosMutation
+            photosMutation: photosMutation,
+            pixelCachePurger: AppOwnedAssetPixelCachePurger(
+                database: runtime.database,
+                derivedCachesDirectory: runtime.paths.cachesDirectory,
+                photosOriginalCache: photosOriginalCache
+            )
         )
         let librarySlimmingMutationAuthorization = FolderMutationAuthorizationCoordinator(
             database: runtime.database,
-            picker: AppKitFolderDirectoryPicker(),
+            picker: AppKitFolderDirectoryPicker(
+                panelFactory: {
+                    AppKitFolderDirectoryPicker.makeMutationAuthorizationPanel()
+                }
+            ),
             bookmarkPort: bookmark,
             rootValidator: rootValidator,
             relationshipChecker: FoundationFolderRootRelationshipChecker(),
@@ -108,12 +127,6 @@ struct CompositionRoot {
             database: runtime.database,
             cachesDirectory: runtime.paths.cachesDirectory,
             sourceAccess: sourceAccess,
-            clock: clock
-        )
-        let photosOriginalCache = PhotosOriginalCacheService(
-            database: runtime.database,
-            rootURL: runtime.paths.applicationSupportDirectory
-                .appendingPathComponent("Photos Originals/v1", isDirectory: true),
             clock: clock
         )
         let featureInputImages = PrioritizedDownloadedPreviewCache(

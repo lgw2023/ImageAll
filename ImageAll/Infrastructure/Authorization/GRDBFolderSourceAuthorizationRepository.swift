@@ -50,6 +50,7 @@ struct GRDBFolderSourceAuthorizationRepository: Sendable {
         sourceID: UUID,
         displayName: String,
         bookmark: Data,
+        mutationBookmark: Data,
         jobID: UUID,
         nowMs: Int64
     ) throws {
@@ -67,6 +68,19 @@ struct GRDBFolderSourceAuthorizationRepository: Sendable {
                         displayName,
                         bookmark,
                         nowMs,
+                        nowMs,
+                    ]
+                )
+
+                try db.execute(
+                    sql: """
+                    INSERT INTO source_mutation_authorization (
+                        source_id, bookmark, updated_at_ms
+                    ) VALUES (?, ?, ?)
+                    """,
+                    arguments: [
+                        sourceID.uuidString.lowercased(),
+                        mutationBookmark,
                         nowMs,
                     ]
                 )
@@ -149,6 +163,7 @@ struct GRDBFolderSourceAuthorizationRepository: Sendable {
         sourceID: UUID,
         displayName: String,
         bookmark: Data,
+        mutationBookmark: Data,
         jobID: UUID,
         nowMs: Int64
     ) throws {
@@ -186,6 +201,22 @@ struct GRDBFolderSourceAuthorizationRepository: Sendable {
                 guard db.changesCount == 1 else {
                     throw FolderAuthorizationError.invalidSourceState
                 }
+
+                try db.execute(
+                    sql: """
+                    INSERT INTO source_mutation_authorization (
+                        source_id, bookmark, updated_at_ms
+                    ) VALUES (?, ?, ?)
+                    ON CONFLICT(source_id) DO UPDATE SET
+                        bookmark = excluded.bookmark,
+                        updated_at_ms = excluded.updated_at_ms
+                    """,
+                    arguments: [
+                        sourceID.uuidString.lowercased(),
+                        mutationBookmark,
+                        nowMs,
+                    ]
+                )
 
                 let coalescingKey = FolderReconcileJobFactory.coalescingKey(sourceID: sourceID)
                 let activeExists = try Int.fetchOne(

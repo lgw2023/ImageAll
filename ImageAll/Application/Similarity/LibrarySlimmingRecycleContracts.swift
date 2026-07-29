@@ -80,6 +80,7 @@ enum LibrarySlimmingRecycleError: Error, Equatable, Sendable {
     case ineligiblePhotos
     case alreadyRecycled
     case mutationAuthorizationRequired
+    case mutationAuthorizationInvalid
     case photosAuthorizationRequired
     case photosRestoreRequiresPhotosApp
     case photosManagedBySystem
@@ -88,6 +89,115 @@ enum LibrarySlimmingRecycleError: Error, Equatable, Sendable {
     case ioFailure
     case sourceChanged
     case invalidState
+    case cleanupPlanningUnavailable
+}
+
+struct LibrarySlimmingIdenticalCleanupCandidate: Sendable, Equatable {
+    let assetID: UUID
+    let sourceID: UUID
+    let sourceKind: RecycleSourceKind
+    let sourceDisplayName: String
+}
+
+struct LibrarySlimmingIdenticalCleanupDecision: Sendable, Equatable {
+    let clusterID: UUID
+    let survivorAssetID: UUID
+    let assetIDsToRecycle: [UUID]
+}
+
+struct LibrarySlimmingIdenticalCleanupPlan: Sendable, Equatable {
+    let decisions: [LibrarySlimmingIdenticalCleanupDecision]
+    let skippedGroupCount: Int
+    let photosAssetCount: Int
+    let fileAssetCount: Int
+
+    var groupCount: Int {
+        decisions.count
+    }
+
+    var assetIDsToRecycle: [UUID] {
+        decisions.flatMap(\.assetIDsToRecycle)
+    }
+
+    var survivorAssetIDs: [UUID] {
+        decisions.map(\.survivorAssetID)
+    }
+
+    var isEmpty: Bool {
+        decisions.isEmpty || assetIDsToRecycle.isEmpty
+    }
+}
+
+enum LibrarySlimmingIdenticalCleanupPlanner {
+    static func makePlan(
+        clusters: [SlimmingCluster],
+        candidates: [LibrarySlimmingIdenticalCleanupCandidate]
+    ) -> LibrarySlimmingIdenticalCleanupPlan {
+        let candidatesByAssetID = Dictionary(
+            candidates.map { ($0.assetID, $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        var decisions: [LibrarySlimmingIdenticalCleanupDecision] = []
+        var skippedGroupCount = 0
+        var photosAssetCount = 0
+        var fileAssetCount = 0
+
+        for cluster in clusters where cluster.kind == .byteIdentical {
+            var seen = Set<UUID>()
+            let memberIDs = cluster.memberAssetIDs.filter { seen.insert($0).inserted }
+            guard memberIDs.count >= 2 else { continue }
+            let resolved = memberIDs.compactMap { candidatesByAssetID[$0] }
+            guard resolved.count == memberIDs.count else {
+                skippedGroupCount += 1
+                continue
+            }
+
+            let deletionOrder = resolved.sorted(by: shouldDeleteBefore)
+            guard let survivor = deletionOrder.last else {
+                skippedGroupCount += 1
+                continue
+            }
+            let redundant = deletionOrder.dropLast()
+            photosAssetCount += redundant.filter { $0.sourceKind == .photos }.count
+            fileAssetCount += redundant.filter { $0.sourceKind == .file }.count
+            decisions.append(
+                LibrarySlimmingIdenticalCleanupDecision(
+                    clusterID: cluster.id,
+                    survivorAssetID: survivor.assetID,
+                    assetIDsToRecycle: redundant.map(\.assetID)
+                )
+            )
+        }
+
+        return LibrarySlimmingIdenticalCleanupPlan(
+            decisions: decisions,
+            skippedGroupCount: skippedGroupCount,
+            photosAssetCount: photosAssetCount,
+            fileAssetCount: fileAssetCount
+        )
+    }
+
+    /// Earlier entries are removed first; the final entry is the single survivor.
+    private static func shouldDeleteBefore(
+        _ lhs: LibrarySlimmingIdenticalCleanupCandidate,
+        _ rhs: LibrarySlimmingIdenticalCleanupCandidate
+    ) -> Bool {
+        if lhs.sourceKind != rhs.sourceKind {
+            return lhs.sourceKind == .photos
+        }
+        if lhs.sourceDisplayName.count != rhs.sourceDisplayName.count {
+            return lhs.sourceDisplayName.count > rhs.sourceDisplayName.count
+        }
+        if lhs.sourceDisplayName != rhs.sourceDisplayName {
+            return lhs.sourceDisplayName > rhs.sourceDisplayName
+        }
+        let lhsSourceID = lhs.sourceID.uuidString.lowercased()
+        let rhsSourceID = rhs.sourceID.uuidString.lowercased()
+        if lhsSourceID != rhsSourceID {
+            return lhsSourceID > rhsSourceID
+        }
+        return lhs.assetID.uuidString.lowercased() > rhs.assetID.uuidString.lowercased()
+    }
 }
 
 struct LibrarySlimmingRecycleMoveOutcome: Sendable, Equatable {
@@ -101,6 +211,9 @@ struct LibrarySlimmingRecycleMoveOutcome: Sendable, Equatable {
 }
 
 protocol LibrarySlimmingRecyclePort: Sendable {
+    func makeIdenticalCleanupPlan(
+        clusters: [SlimmingCluster]
+    ) throws -> LibrarySlimmingIdenticalCleanupPlan
     func moveAssetsToRecycle(assetIDs: [UUID]) throws -> LibrarySlimmingRecycleMoveOutcome
     func listRecycledEntries() throws -> [RecycleEntryRecord]
     func restore(entryID: UUID) throws
@@ -119,6 +232,12 @@ protocol LibrarySlimmingRecyclePort: Sendable {
 }
 
 extension LibrarySlimmingRecyclePort {
+    func makeIdenticalCleanupPlan(
+        clusters _: [SlimmingCluster]
+    ) throws -> LibrarySlimmingIdenticalCleanupPlan {
+        throw LibrarySlimmingRecycleError.cleanupPlanningUnavailable
+    }
+
     /// Compatibility alias used by older call sites / stubs.
     func moveFolderAssetsToRecycle(assetIDs: [UUID]) throws -> LibrarySlimmingRecycleMoveOutcome {
         try moveAssetsToRecycle(assetIDs: assetIDs)

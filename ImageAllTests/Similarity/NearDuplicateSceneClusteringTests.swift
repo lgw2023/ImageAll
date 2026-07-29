@@ -95,6 +95,164 @@ final class NearDuplicateSceneClusteringTests: XCTestCase {
         XCTAssertEqual(clusters[0].memberAssetIDs.count, 2)
     }
 
+    func testLargeUnknownDateStyleBucketBoundsFeatureDistanceWorkAndKeepsClosePair() {
+        let count = 1_024
+        let ids = (0..<count).map { index in
+            UUID(uuidString: String(format: "00000000-0000-4000-8000-%012x", index + 1))!
+        }
+        let closeA = ids[0]
+        let closeB = ids[1]
+        var featurePrints: [UUID: [Float]] = [:]
+        var embeddings: [UUID: [Float]] = [:]
+
+        for (index, id) in ids.enumerated() {
+            if index < 2 {
+                featurePrints[id] = [1, 0, 0, 0, 0, 0, 0, 0]
+                embeddings[id] = [1, 0, 0, 0]
+                continue
+            }
+            featurePrints[id] = (0..<8).map { dimension in
+                Float(((index * 37 + dimension * 19) % 211) - 105) / 105
+            }
+            embeddings[id] = (0..<4).map { dimension in
+                Float(((index * 17 + dimension * 23) % 97) - 48) / 48
+            }
+        }
+
+        final class EvaluationCounter: @unchecked Sendable {
+            private let lock = NSLock()
+            private var storedValue = 0
+
+            func increment() {
+                lock.lock()
+                storedValue += 1
+                lock.unlock()
+            }
+
+            var value: Int {
+                lock.lock()
+                defer { lock.unlock() }
+                return storedValue
+            }
+        }
+        let evaluations = EvaluationCounter()
+
+        var thresholds = NearDuplicateSceneThresholds.factory
+        thresholds.featurePrintMaxL2Distance = 0.05
+        let clusters = NearDuplicateSceneClusterService().cluster(
+            featurePrints: featurePrints,
+            embeddings: embeddings,
+            modelIdentity: sceneModelIdentity,
+            thresholds: thresholds,
+            onFeatureDistanceEvaluation: {
+                evaluations.increment()
+            }
+        )
+
+        XCTAssertLessThanOrEqual(
+            evaluations.value,
+            count * NearDuplicateScenePolicy.largeBucketCandidateLimit
+        )
+        XCTAssertTrue(
+            clusters.contains {
+                Set($0.memberAssetIDs).isSuperset(of: [closeA, closeB])
+            },
+            "bounded recall must retain an obvious close pair"
+        )
+    }
+
+    func testAllCandidateRecallBypassesLargeBucketCandidateLimit() {
+        let count = NearDuplicateScenePolicy.largeBucketActivationAssetCount + 1
+        let ids = (0..<count).map { index in
+            UUID(uuidString: String(format: "10000000-0000-4000-8000-%012x", index + 1))!
+        }
+        let featurePrints = Dictionary(uniqueKeysWithValues: ids.enumerated().map { index, id in
+            (id, [Float(index), Float(index % 7)])
+        })
+        let embeddings = Dictionary(uniqueKeysWithValues: ids.enumerated().map { index, id in
+            let angle = Double(index + 1) * .pi / Double(count + 1)
+            return (id, [Float(cos(angle)), Float(sin(angle))])
+        })
+
+        final class EvaluationCounter: @unchecked Sendable {
+            private let lock = NSLock()
+            private var storedValue = 0
+
+            func increment() {
+                lock.lock()
+                storedValue += 1
+                lock.unlock()
+            }
+
+            var value: Int {
+                lock.lock()
+                defer { lock.unlock() }
+                return storedValue
+            }
+        }
+        let evaluations = EvaluationCounter()
+        var thresholds = NearDuplicateSceneThresholds.factory
+        thresholds.featurePrintRecallMode = .allCandidates
+        thresholds.dinoCosineMinSimilarity = 1
+
+        _ = NearDuplicateSceneClusterService().cluster(
+            featurePrints: featurePrints,
+            embeddings: embeddings,
+            modelIdentity: sceneModelIdentity,
+            thresholds: thresholds,
+            onFeatureDistanceEvaluation: {
+                evaluations.increment()
+            }
+        )
+
+        XCTAssertEqual(evaluations.value, count * (count - 1))
+    }
+
+    func testUnlimitedL2AndDINOExtremesHaveLiteralSemantics() {
+        let a = UUID(uuidString: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")!
+        let b = UUID(uuidString: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")!
+        let featurePrints: [UUID: [Float]] = [
+            a: [0, 0],
+            b: [1_000, 0],
+        ]
+        let embeddings: [UUID: [Float]] = [
+            a: [1, 0],
+            b: [0, 1],
+        ]
+
+        var thresholds = NearDuplicateSceneThresholds.factory
+        thresholds.featurePrintL2Mode = .unlimited
+        thresholds.dinoCosineMode = .unlimited
+        let unlimited = NearDuplicateSceneClusterService().cluster(
+            featurePrints: featurePrints,
+            embeddings: embeddings,
+            modelIdentity: sceneModelIdentity,
+            thresholds: thresholds
+        )
+        XCTAssertEqual(unlimited.count, 1)
+
+        thresholds.featurePrintL2Mode = .radius
+        thresholds.featurePrintMaxL2Distance = 0
+        let exactL2Only = NearDuplicateSceneClusterService().cluster(
+            featurePrints: featurePrints,
+            embeddings: embeddings,
+            modelIdentity: sceneModelIdentity,
+            thresholds: thresholds
+        )
+        XCTAssertTrue(exactL2Only.isEmpty)
+
+        thresholds.featurePrintL2Mode = .unlimited
+        thresholds.dinoCosineMode = .minimum
+        thresholds.dinoCosineMinSimilarity = 1
+        let exactDINOOnly = NearDuplicateSceneClusterService().cluster(
+            featurePrints: featurePrints,
+            embeddings: embeddings,
+            modelIdentity: sceneModelIdentity,
+            thresholds: thresholds
+        )
+        XCTAssertTrue(exactDINOOnly.isEmpty)
+    }
+
     func testIdenticalMembersExcludedFromSceneClusters() throws {
         let env = try SimilarityTestSupport.Environment(label: #function)
         defer { env.cleanup() }
@@ -230,6 +388,71 @@ final class NearDuplicateSceneClusteringTests: XCTestCase {
         XCTAssertEqual(mapped?.phase, .loadingFeaturePrints)
         XCTAssertEqual(mapped?.completed, 40)
         XCTAssertEqual(mapped?.total, memberCount)
+    }
+
+    func testAnalysisJobPresentationShowsCurrentAndMaximumAttemptCount() {
+        let presentation = LibrarySlimmingAnalysisJobPresentation(
+            LibrarySlimmingAnalysisJobSummary(
+                jobID: UUID(),
+                mode: .catalog,
+                state: .running,
+                controlRequest: .none,
+                progress: JobProgress(completed: 40, total: 201),
+                attempts: 3,
+                maxAttempts: 10,
+                memberCount: 100,
+                seedCount: 0,
+                clusterCount: 0,
+                hasResult: false,
+                createdAtMs: 1,
+                updatedAtMs: 1,
+                sourceNames: ["Apple Photos", "2024"]
+            )
+        )
+
+        XCTAssertEqual(presentation.modeTitle, "全部来源")
+        XCTAssertEqual(presentation.sourceCaption, "来源（2）：Apple Photos、2024")
+        XCTAssertEqual(presentation.attemptCaption, "3 / 10")
+        XCTAssertTrue(presentation.detailCaption.contains("尝试 3/10"))
+    }
+
+    func testClusterPresentationKeepsTechnicalRevisionOutOfPrimaryCaption() {
+        let memberIDs = [UUID(), UUID()]
+        let presentation = LibrarySlimmingClusterPresentation(
+            SlimmingCluster(
+                id: UUID(),
+                kind: .nearDuplicateScene,
+                memberAssetIDs: memberIDs,
+                representativeAssetID: memberIDs[0],
+                score: 0.923,
+                modelIdentity: sceneModelIdentity
+            )
+        )
+
+        XCTAssertEqual(presentation.kindTitle, "同场景相似")
+        XCTAssertEqual(presentation.scoreCaption, "同场景相似度 92%")
+        XCTAssertFalse(presentation.scoreCaption.contains("DINOv2"))
+        XCTAssertFalse(presentation.scoreCaption.contains("policy:"))
+        XCTAssertTrue(presentation.technicalDetailsCaption.contains("DINOv2 余弦 0.923"))
+        XCTAssertTrue(presentation.technicalDetailsCaption.contains("policy:"))
+    }
+
+    func testIdenticalClusterPresentationUsesPlainLanguageResult() {
+        let memberIDs = [UUID(), UUID()]
+        let presentation = LibrarySlimmingClusterPresentation(
+            SlimmingCluster(
+                id: UUID(),
+                kind: .byteIdentical,
+                memberAssetIDs: memberIDs,
+                representativeAssetID: memberIDs[0],
+                score: 1,
+                modelIdentity: .featurePrintOnly
+            )
+        )
+
+        XCTAssertEqual(presentation.kindTitle, "完全相同")
+        XCTAssertEqual(presentation.scoreCaption, "内容完全一致")
+        XCTAssertTrue(presentation.technicalDetailsCaption.contains("SHA-256 一致"))
     }
 
     func testSeedQueryRetrievesUniverseNeighborNotJustSeedClosure() throws {
@@ -417,7 +640,54 @@ final class NearDuplicateSceneClusteringTests: XCTestCase {
             result.clusters.filter { $0.kind == .nearDuplicateScene }.isEmpty,
             "cross-day assets should not form a scene cluster under bucketing"
         )
-        XCTAssertTrue(result.policyVersion.contains("bucket=2"))
+        XCTAssertTrue(result.policyVersion.contains("bucket=auto:2"))
+    }
+
+    func testNeverBucketingAllowsCrossDaySceneCluster() throws {
+        let env = try SimilarityTestSupport.Environment(label: #function)
+        defer { env.cleanup() }
+
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let dayA = calendar.date(from: DateComponents(year: 2024, month: 1, day: 1))!
+        let dayB = calendar.date(from: DateComponents(year: 2024, month: 1, day: 3))!
+        let a = try env.seedAsset(
+            relativePath: "a.jpg",
+            contents: try XCTUnwrap(SimilarityTestSupport.patternedImageData(seed: 51, uti: .jpeg)),
+            mediaCreatedAtMs: Int64(dayA.timeIntervalSince1970 * 1_000)
+        )
+        let b = try env.seedAsset(
+            relativePath: "b.jpg",
+            contents: try XCTUnwrap(SimilarityTestSupport.patternedImageData(seed: 52, uti: .jpeg)),
+            mediaCreatedAtMs: Int64(dayB.timeIntervalSince1970 * 1_000)
+        )
+
+        var thresholds = NearDuplicateSceneThresholds.factory
+        thresholds.sceneBucketingMode = .never
+        thresholds.sceneBucketActivationAssetCount = 2
+        let scan = LibrarySlimmingScanService(
+            database: env.database,
+            identicalScan: IdenticalDuplicateClusterService(database: env.database),
+            fingerprintCompletion: nil,
+            featureLoader: DictionarySlimmingFeatureLoader(vectors: [
+                a.assetID: [1, 0],
+                b.assetID: [0.99, 0.01],
+            ]),
+            embeddingLoader: DictionarySlimmingEmbeddingLoader(
+                vectors: [
+                    a.assetID: [1, 0],
+                    b.assetID: [0.99, 0.01],
+                ],
+                modelIdentity: sceneModelIdentity
+            ),
+            thresholdReader: StaticNearDuplicateSceneThresholds(value: thresholds),
+            bucketCalendar: calendar
+        )
+
+        let result = try scan.scan(assetIDs: [a.assetID, b.assetID])
+        let scene = result.clusters.filter { $0.kind == .nearDuplicateScene }
+        XCTAssertEqual(scene.count, 1)
+        XCTAssertTrue(result.policyVersion.contains("bucket=never"))
     }
 
     func testSameDayStillClustersUnderBucketing() throws {
@@ -518,6 +788,21 @@ final class NearDuplicateSceneClusteringTests: XCTestCase {
 
         var thresholds = NearDuplicateSceneThresholds.factory
         thresholds.sceneBucketActivationAssetCount = 2
+        thresholds.featurePrintRecallMode = .allCandidates
+
+        final class UnexpectedSourceIndex: SourceSimilarityIndexPort, @unchecked Sendable {
+            func status(sourceID _: UUID) throws -> SourceSimilarityIndexStatus? { nil }
+            func enqueueBuild(sourceID _: UUID) throws -> UUID { UUID() }
+            func runPending() throws {}
+
+            func candidateAssetIDs(
+                seedAssetIDs _: [UUID],
+                universeAssetIDs _: [UUID]
+            ) throws -> SourceSimilarityCandidatePlan {
+                XCTFail("all-candidate seed search must bypass source-index narrowing")
+                return .restricted(candidates: [])
+            }
+        }
 
         let scan = LibrarySlimmingScanService(
             database: env.database,
@@ -535,7 +820,8 @@ final class NearDuplicateSceneClusteringTests: XCTestCase {
                 modelIdentity: sceneModelIdentity
             ),
             thresholdReader: StaticNearDuplicateSceneThresholds(value: thresholds),
-            bucketCalendar: calendar
+            bucketCalendar: calendar,
+            sourceIndex: UnexpectedSourceIndex()
         )
 
         let result = try scan.scanSeeds(
@@ -555,11 +841,42 @@ final class NearDuplicateSceneClusteringTests: XCTestCase {
         var custom = NearDuplicateSceneThresholds.factory
         custom.dinoCosineMinSimilarity = 0.93
         custom.featurePrintRecallTopK = 8
+        custom.featurePrintRecallMode = .allCandidates
+        custom.featurePrintL2Mode = .unlimited
+        custom.dinoCosineMode = .unlimited
+        custom.sceneBucketingMode = .never
         store.setThresholds(custom)
         XCTAssertEqual(store.thresholds().dinoCosineMinSimilarity, 0.93, accuracy: 1e-9)
         XCTAssertEqual(store.thresholds().featurePrintRecallTopK, 8)
+        XCTAssertEqual(store.thresholds().featurePrintRecallMode, .allCandidates)
+        XCTAssertEqual(store.thresholds().featurePrintL2Mode, .unlimited)
+        XCTAssertEqual(store.thresholds().dinoCosineMode, .unlimited)
+        XCTAssertEqual(store.thresholds().sceneBucketingMode, .never)
 
         store.resetToFactory()
         XCTAssertEqual(store.thresholds(), .factory)
+    }
+
+    func testThresholdClampPreservesNumericExtremes() {
+        var thresholds = NearDuplicateSceneThresholds.factory
+        thresholds.featurePrintRecallTopK = 1
+        thresholds.featurePrintMaxL2Distance = 0
+        thresholds.dinoCosineMinSimilarity = 1
+        thresholds.sceneBucketActivationAssetCount = 2
+
+        XCTAssertEqual(thresholds.clamped(), thresholds)
+        XCTAssertTrue(thresholds.policyVersion.contains("topk=1"))
+        XCTAssertTrue(thresholds.policyVersion.contains("l2=0.00"))
+        XCTAssertTrue(thresholds.policyVersion.contains("dino=1.000"))
+        XCTAssertTrue(thresholds.policyVersion.contains("bucket=auto:2"))
+
+        thresholds.sceneBucketingMode = .always
+        thresholds.sceneBucketActivationAssetCount = 10_000
+        XCTAssertTrue(thresholds.usesCaptureDayBuckets(assetCount: 2))
+        XCTAssertTrue(thresholds.policyVersion.contains("bucket=always"))
+
+        thresholds.sceneBucketingMode = .never
+        XCTAssertFalse(thresholds.usesCaptureDayBuckets(assetCount: 10_000))
+        XCTAssertTrue(thresholds.policyVersion.contains("bucket=never"))
     }
 }

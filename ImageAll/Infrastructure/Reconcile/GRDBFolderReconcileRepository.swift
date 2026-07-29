@@ -1029,7 +1029,12 @@ struct GRDBFolderReconcileRepository: FolderReconcileBatchPort, Sendable {
                 size_bytes = excluded.size_bytes,
                 modified_at_ns = excluded.modified_at_ns,
                 resource_id = excluded.resource_id,
-                sha256 = NULL
+                sha256 = CASE
+                    WHEN file_fingerprint.size_bytes = excluded.size_bytes
+                     AND file_fingerprint.modified_at_ns = excluded.modified_at_ns
+                    THEN file_fingerprint.sha256
+                    ELSE NULL
+                END
             """,
             arguments: [
                 assetID.uuidString.lowercased(),

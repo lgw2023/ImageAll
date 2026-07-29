@@ -244,7 +244,11 @@ final class FolderReconcileTransactionTests: XCTestCase {
         )
         try database.pool.write { db in
             try db.execute(
-                sql: "UPDATE asset SET availability = 'missing' WHERE id = ?",
+                sql: """
+                UPDATE asset
+                SET availability = 'missing'
+                WHERE id = ?
+                """,
                 arguments: [assetID.uuidString.lowercased()]
             )
             try db.execute(
@@ -339,6 +343,115 @@ final class FolderReconcileTransactionTests: XCTestCase {
             rows.first?["availability"] as String?,
             AssetAvailability.missing.rawValue
         )
+    }
+
+    func testObservedFileAtPurgedTombstonePathCreatesNewAssetIdentity() throws {
+        let database = try CatalogDatabase.open(at: makeTempDatabaseURL())
+        let queue = FolderReconcileTestSupport.makeQueue(database: database)
+        let repository = GRDBFolderReconcileRepository(queue: queue)
+        let sourceID = UUID()
+        let purgedAssetID = UUID()
+        try FolderReconcileTestSupport.seedActiveFolderSource(
+            database: database,
+            sourceID: sourceID,
+            bookmark: Data("bookmark".utf8)
+        )
+        try CatalogRepository(database: database).insertAsset(
+            NewAssetInput(
+                assetID: purgedAssetID,
+                sourceID: sourceID,
+                locatorKind: .file,
+                relativePath: "reused.jpg",
+                photosLocalIdentifier: nil,
+                mediaType: UTType.jpeg.identifier,
+                timestampMs: FolderReconcileTestSupport.baseTimeMs
+            )
+        )
+        try database.pool.write { db in
+            try db.execute(
+                sql: "UPDATE asset SET availability = 'recycled' WHERE id = ?",
+                arguments: [purgedAssetID.uuidString.lowercased()]
+            )
+            try db.execute(
+                sql: """
+                INSERT INTO recycle_entry (
+                    id, asset_id, source_kind, trashed_at_ms, purge_after_ms, state,
+                    quarantine_relative_path, original_relative_path, photos_local_identifier,
+                    error_code, created_at_ms, updated_at_ms
+                ) VALUES (?, ?, 'file', ?, ?, 'purged', NULL, NULL, NULL, NULL, ?, ?)
+                """,
+                arguments: [
+                    UUID().uuidString.lowercased(),
+                    purgedAssetID.uuidString.lowercased(),
+                    FolderReconcileTestSupport.baseTimeMs,
+                    FolderReconcileTestSupport.baseTimeMs,
+                    FolderReconcileTestSupport.baseTimeMs,
+                    FolderReconcileTestSupport.baseTimeMs,
+                ]
+            )
+        }
+        _ = try FolderReconcileTestSupport.enqueueReconcileJob(queue: queue, sourceID: sourceID)
+        let lease = try XCTUnwrap(
+            try queue.claimNext(ClaimNextInput(owner: "purged-path", leaseDurationMs: 1_000))
+        )
+        let begin = try repository.beginGeneration(
+            FolderReconcileTestSupport.beginGenerationInput(
+                lease: lease,
+                sourceID: sourceID,
+                leaseDurationMs: 1_000
+            )
+        )
+
+        _ = try repository.commitAssetBatch(
+            FolderAssetBatchInput(
+                lease: lease,
+                sourceID: sourceID,
+                generation: begin.generation,
+                startedDirtyEpoch: begin.startedDirtyEpoch,
+                checkpoint: begin.checkpoint,
+                observations: [
+                    FolderReconcileAssetObservation(
+                        relativePath: "reused.jpg",
+                        fileName: "reused.jpg",
+                        mediaType: UTType.jpeg.identifier,
+                        width: 2,
+                        height: 1,
+                        mediaCreatedAtMs: nil,
+                        availability: .available,
+                        sizeBytes: 100,
+                        modifiedAtNs: 1,
+                        resourceID: nil,
+                        movePathProbe: nil
+                    ),
+                ],
+                leaseDurationMs: 1_000,
+                outcome: .continue
+            )
+        )
+
+        let rows = try database.pool.read { db in
+            try Row.fetchAll(
+                db,
+                sql: """
+                SELECT id, locator_state, availability
+                FROM asset
+                WHERE source_id = ? AND relative_path = ?
+                ORDER BY locator_state ASC, id ASC
+                """,
+                arguments: [sourceID.uuidString.lowercased(), "reused.jpg"]
+            )
+        }
+        XCTAssertEqual(rows.count, 2)
+        let old = try XCTUnwrap(rows.first(where: {
+            ($0["id"] as String) == purgedAssetID.uuidString.lowercased()
+        }))
+        let current = try XCTUnwrap(rows.first(where: {
+            ($0["locator_state"] as String) == AssetLocatorState.current.rawValue
+        }))
+        XCTAssertEqual(old["locator_state"] as String, AssetLocatorState.historical.rawValue)
+        XCTAssertEqual(old["availability"] as String, AssetAvailability.recycled.rawValue)
+        XCTAssertNotEqual(current["id"] as String, purgedAssetID.uuidString.lowercased())
+        XCTAssertEqual(current["availability"] as String, AssetAvailability.available.rawValue)
     }
 
     func testBeginFailureRollsBackGenerationIncrement() throws {

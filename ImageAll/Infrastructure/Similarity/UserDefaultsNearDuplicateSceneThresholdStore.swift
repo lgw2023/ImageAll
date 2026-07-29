@@ -8,6 +8,10 @@ final class UserDefaultsNearDuplicateSceneThresholdStore: NearDuplicateSceneThre
     private static let l2Key = "library.slimming.thresholds.v1.featurePrintMaxL2Distance"
     private static let dinoKey = "library.slimming.thresholds.v1.dinoCosineMinSimilarity"
     private static let bucketKey = "library.slimming.thresholds.v1.sceneBucketActivationAssetCount"
+    private static let recallModeKey = "library.slimming.thresholds.v1.featurePrintRecallMode"
+    private static let l2ModeKey = "library.slimming.thresholds.v1.featurePrintL2Mode"
+    private static let dinoModeKey = "library.slimming.thresholds.v1.dinoCosineMode"
+    private static let bucketingModeKey = "library.slimming.thresholds.v1.sceneBucketingMode"
 
     private let defaults: UserDefaults
     private let lock = NSLock()
@@ -28,11 +32,27 @@ final class UserDefaultsNearDuplicateSceneThresholdStore: NearDuplicateSceneThre
             ?? factory.dinoCosineMinSimilarity
         let bucket = defaults.object(forKey: Self.bucketKey) as? Int
             ?? factory.sceneBucketActivationAssetCount
+        let recallMode = (defaults.string(forKey: Self.recallModeKey))
+            .flatMap(FeaturePrintRecallMode.init(rawValue:))
+            ?? factory.featurePrintRecallMode
+        let l2Mode = (defaults.string(forKey: Self.l2ModeKey))
+            .flatMap(FeaturePrintL2Mode.init(rawValue:))
+            ?? factory.featurePrintL2Mode
+        let dinoMode = (defaults.string(forKey: Self.dinoModeKey))
+            .flatMap(DINOCosineMode.init(rawValue:))
+            ?? factory.dinoCosineMode
+        let bucketingMode = (defaults.string(forKey: Self.bucketingModeKey))
+            .flatMap(SceneBucketingMode.init(rawValue:))
+            ?? factory.sceneBucketingMode
         return NearDuplicateSceneThresholds(
             featurePrintRecallTopK: topK,
             featurePrintMaxL2Distance: l2,
             dinoCosineMinSimilarity: dino,
-            sceneBucketActivationAssetCount: bucket
+            sceneBucketActivationAssetCount: bucket,
+            featurePrintRecallMode: recallMode,
+            featurePrintL2Mode: l2Mode,
+            dinoCosineMode: dinoMode,
+            sceneBucketingMode: bucketingMode
         ).clamped()
     }
 
@@ -44,6 +64,10 @@ final class UserDefaultsNearDuplicateSceneThresholdStore: NearDuplicateSceneThre
         defaults.set(value.featurePrintMaxL2Distance, forKey: Self.l2Key)
         defaults.set(value.dinoCosineMinSimilarity, forKey: Self.dinoKey)
         defaults.set(value.sceneBucketActivationAssetCount, forKey: Self.bucketKey)
+        defaults.set(value.featurePrintRecallMode.rawValue, forKey: Self.recallModeKey)
+        defaults.set(value.featurePrintL2Mode.rawValue, forKey: Self.l2ModeKey)
+        defaults.set(value.dinoCosineMode.rawValue, forKey: Self.dinoModeKey)
+        defaults.set(value.sceneBucketingMode.rawValue, forKey: Self.bucketingModeKey)
     }
 
     func resetToFactory() {

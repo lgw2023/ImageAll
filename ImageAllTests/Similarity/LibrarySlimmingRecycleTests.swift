@@ -6,6 +6,142 @@ import XCTest
 @testable import ImageAll
 
 final class LibrarySlimmingRecycleTests: XCTestCase {
+    func testIdenticalCleanupPlannerDeletesPhotosThenLongerSourceNamesAndKeepsOne() {
+        let photosID = UUID(uuidString: "00000000-0000-0000-0000-000000000003")!
+        let longNameID = UUID(uuidString: "00000000-0000-0000-0000-000000000002")!
+        let shortNameID = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
+        let cluster = SlimmingCluster(
+            id: UUID(),
+            kind: .byteIdentical,
+            memberAssetIDs: [photosID, longNameID, shortNameID],
+            representativeAssetID: photosID,
+            score: 1,
+            modelIdentity: .featurePrintOnly
+        )
+        let candidates = [
+            LibrarySlimmingIdenticalCleanupCandidate(
+                assetID: photosID,
+                sourceID: UUID(),
+                sourceKind: .photos,
+                sourceDisplayName: "Apple Photos"
+            ),
+            LibrarySlimmingIdenticalCleanupCandidate(
+                assetID: longNameID,
+                sourceID: UUID(),
+                sourceKind: .file,
+                sourceDisplayName: "2024 下半年 粒粒和卫卫 iCloud 备份"
+            ),
+            LibrarySlimmingIdenticalCleanupCandidate(
+                assetID: shortNameID,
+                sourceID: UUID(),
+                sourceKind: .file,
+                sourceDisplayName: "2024"
+            ),
+        ]
+
+        let plan = LibrarySlimmingIdenticalCleanupPlanner.makePlan(
+            clusters: [cluster],
+            candidates: candidates
+        )
+
+        XCTAssertEqual(plan.groupCount, 1)
+        XCTAssertEqual(plan.assetIDsToRecycle, [photosID, longNameID])
+        XCTAssertEqual(plan.survivorAssetIDs, [shortNameID])
+        XCTAssertEqual(plan.photosAssetCount, 1)
+        XCTAssertEqual(plan.fileAssetCount, 1)
+        XCTAssertEqual(plan.skippedGroupCount, 0)
+    }
+
+    func testIdenticalCleanupPlannerHandlesAllGroupsButIgnoresSimilarGroups() {
+        let firstIDs = [
+            UUID(uuidString: "00000000-0000-0000-0000-000000000010")!,
+            UUID(uuidString: "00000000-0000-0000-0000-000000000011")!,
+        ]
+        let secondIDs = [
+            UUID(uuidString: "00000000-0000-0000-0000-000000000020")!,
+            UUID(uuidString: "00000000-0000-0000-0000-000000000021")!,
+            UUID(uuidString: "00000000-0000-0000-0000-000000000022")!,
+        ]
+        let similarIDs = [
+            UUID(uuidString: "00000000-0000-0000-0000-000000000030")!,
+            UUID(uuidString: "00000000-0000-0000-0000-000000000031")!,
+        ]
+        let clusters = [
+            SlimmingCluster(
+                id: UUID(),
+                kind: .byteIdentical,
+                memberAssetIDs: firstIDs,
+                representativeAssetID: firstIDs[0],
+                score: 1,
+                modelIdentity: .featurePrintOnly
+            ),
+            SlimmingCluster(
+                id: UUID(),
+                kind: .byteIdentical,
+                memberAssetIDs: secondIDs,
+                representativeAssetID: secondIDs[0],
+                score: 1,
+                modelIdentity: .featurePrintOnly
+            ),
+            SlimmingCluster(
+                id: UUID(),
+                kind: .nearDuplicateScene,
+                memberAssetIDs: similarIDs,
+                representativeAssetID: similarIDs[0],
+                score: 0.95,
+                modelIdentity: .featurePrintOnly
+            ),
+        ]
+        let sharedSourceID = UUID()
+        let candidates = (firstIDs + secondIDs + similarIDs).map {
+            LibrarySlimmingIdenticalCleanupCandidate(
+                assetID: $0,
+                sourceID: sharedSourceID,
+                sourceKind: .file,
+                sourceDisplayName: "同名来源"
+            )
+        }
+
+        let plan = LibrarySlimmingIdenticalCleanupPlanner.makePlan(
+            clusters: clusters,
+            candidates: candidates
+        )
+
+        XCTAssertEqual(plan.groupCount, 2)
+        XCTAssertEqual(plan.assetIDsToRecycle.count, 3)
+        XCTAssertEqual(Set(plan.survivorAssetIDs), Set([firstIDs[0], secondIDs[0]]))
+        XCTAssertTrue(plan.assetIDsToRecycle.allSatisfy { !similarIDs.contains($0) })
+    }
+
+    func testRecycleServicePlansIdenticalCleanupFromCurrentCatalogSourceFacts() throws {
+        let env = try RecycleTestEnv(label: #function)
+        defer { env.cleanup() }
+        let file = try env.seedAsset(
+            relativePath: "2024/keep.jpg",
+            contents: Data("identical".utf8)
+        )
+        let photosID = try env.seedPhotosAsset(localIdentifier: "cleanup-plan-photo")
+        let cluster = SlimmingCluster(
+            id: UUID(),
+            kind: .byteIdentical,
+            memberAssetIDs: [file.assetID, photosID],
+            representativeAssetID: photosID,
+            score: 1,
+            modelIdentity: .featurePrintOnly
+        )
+
+        let plan = try env.makeRecycleService().makeIdenticalCleanupPlan(
+            clusters: [cluster]
+        )
+
+        XCTAssertEqual(plan.groupCount, 1)
+        XCTAssertEqual(plan.assetIDsToRecycle, [photosID])
+        XCTAssertEqual(plan.survivorAssetIDs, [file.assetID])
+        XCTAssertEqual(plan.photosAssetCount, 1)
+        XCTAssertEqual(plan.fileAssetCount, 0)
+        XCTAssertEqual(plan.skippedGroupCount, 0)
+    }
+
     func testCountdownFormatterUsesDaysAndHours() {
         let now: Int64 = 1_700_000_000_000
         XCTAssertEqual(
@@ -93,7 +229,7 @@ final class LibrarySlimmingRecycleTests: XCTestCase {
         XCTAssertEqual(bookmarks.resolveCount, 0)
     }
 
-    func testMutationAccessTreatsUnresolvableWriteBookmarkAsAuthorizationRequired() throws {
+    func testMutationAccessTreatsPersistedButUnresolvableWriteBookmarkAsInvalid() throws {
         let env = try RecycleTestEnv(label: #function)
         defer { env.cleanup() }
         _ = try env.seedAsset(
@@ -124,9 +260,28 @@ final class LibrarySlimmingRecycleTests: XCTestCase {
         ) { error in
             XCTAssertEqual(
                 error as? LibrarySlimmingRecycleError,
-                .mutationAuthorizationRequired
+                .mutationAuthorizationInvalid
             )
         }
+    }
+
+    func testMoveDoesNotRequestInteractiveAuthorizationForInvalidPersistedBookmark() throws {
+        let env = try RecycleTestEnv(label: #function)
+        defer { env.cleanup() }
+        let seeded = try env.seedAsset(
+            relativePath: "album/invalid-auth.jpg",
+            contents: Data("invalid-auth".utf8)
+        )
+        let service = env.makeRecycleService(
+            mutationAccess: InvalidFolderMutationAccess()
+        )
+
+        let outcome = try service.moveAssetsToRecycle(assetIDs: [seeded.assetID])
+
+        XCTAssertEqual(outcome.failedAssetIDs, [seeded.assetID])
+        XCTAssertTrue(outcome.authorizationRequiredSourceIDs.isEmpty)
+        XCTAssertTrue(outcome.authorizationRequiredAssetIDs.isEmpty)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: seeded.fileURL.path))
     }
 
     @MainActor
@@ -155,6 +310,7 @@ final class LibrarySlimmingRecycleTests: XCTestCase {
         let outcome = try await authorization.authorizeMutation(sourceID: sourceID)
 
         XCTAssertEqual(outcome, .authorized(sourceID: sourceID))
+        XCTAssertEqual(picker.initialDirectoryURLs, [env.sourceRoot])
         let stored: Data? = try await database.pool.read { db in
             try Data.fetchOne(
                 db,
@@ -254,14 +410,14 @@ final class LibrarySlimmingRecycleTests: XCTestCase {
         let recycled = try XCTUnwrap(try service.listRecycledEntries().first)
         try service.purgeNow(entryID: recycled.id)
         XCTAssertTrue(try service.listRecycledEntries().isEmpty)
-        let assetStillThere = try env.database.pool.read { db in
-            try Int.fetchOne(
+        let retainedAsset = try env.database.pool.read { db -> Row? in
+            try Row.fetchOne(
                 db,
-                sql: "SELECT COUNT(*) FROM asset WHERE id = ?",
+                sql: "SELECT availability FROM asset WHERE id = ?",
                 arguments: [seeded.assetID.uuidString.lowercased()]
-            ) ?? 0
+            )
         }
-        XCTAssertEqual(assetStillThere, 0)
+        XCTAssertEqual(retainedAsset?["availability"] as String?, AssetAvailability.recycled.rawValue)
     }
 
     func testRestoredHistoricalAssetResolvesToMatchingCurrentSuccessor() throws {
@@ -378,7 +534,7 @@ final class LibrarySlimmingRecycleTests: XCTestCase {
         XCTAssertEqual(assetCount, 1)
     }
 
-    func testSuccessfulPurgeRetainsOnlyScrubbedAuditTombstone() throws {
+    func testSuccessfulPurgeRetainsScrubbedAuditAndKnowledgeTombstone() throws {
         let env = try RecycleTestEnv(label: #function)
         defer { env.cleanup() }
         let seeded = try env.seedAsset(
@@ -402,19 +558,20 @@ final class LibrarySlimmingRecycleTests: XCTestCase {
             )
         }
         let row = try XCTUnwrap(tombstone)
-        XCTAssertNil(row["asset_id"] as String?)
+        XCTAssertEqual(row["asset_id"] as String?, seeded.assetID.uuidString.lowercased())
         XCTAssertEqual(row["state"] as String, RecycleEntryState.purged.rawValue)
         XCTAssertNil(row["quarantine_relative_path"] as String?)
         XCTAssertNil(row["original_relative_path"] as String?)
     }
 
-    func testPurgeRemovesTagDecisionsBeforeDeletingCatalogAsset() throws {
+    func testPurgeDeletesPixelCacheButRetainsTagDecisionsAndCatalogKnowledge() throws {
         let env = try RecycleTestEnv(label: #function)
         defer { env.cleanup() }
         let seeded = try env.seedAsset(
             relativePath: "purge/tagged.jpg",
             contents: Data("tagged".utf8)
         )
+        let derivedCacheObjectURL = try env.seedDerivedImageCache(assetID: seeded.assetID)
         let tagID = UUID()
         try env.database.pool.write { db in
             try db.execute(
@@ -448,14 +605,37 @@ final class LibrarySlimmingRecycleTests: XCTestCase {
 
         try service.purgeNow(entryID: entry.id)
 
-        let decisionCount = try env.database.pool.read { db in
-            try Int.fetchOne(
-                db,
-                sql: "SELECT COUNT(*) FROM asset_tag_decision WHERE asset_id = ?",
-                arguments: [seeded.assetID.uuidString.lowercased()]
-            ) ?? 0
+        let retainedCounts = try env.database.pool.read {
+            db -> (asset: Int, decision: Int, fingerprint: Int, pixelCache: Int) in
+            let key = seeded.assetID.uuidString.lowercased()
+            return (
+                try Int.fetchOne(
+                    db,
+                    sql: "SELECT COUNT(*) FROM asset WHERE id = ? AND availability = 'recycled'",
+                    arguments: [key]
+                ) ?? 0,
+                try Int.fetchOne(
+                    db,
+                    sql: "SELECT COUNT(*) FROM asset_tag_decision WHERE asset_id = ?",
+                    arguments: [key]
+                ) ?? 0,
+                try Int.fetchOne(
+                    db,
+                    sql: "SELECT COUNT(*) FROM file_fingerprint WHERE asset_id = ?",
+                    arguments: [key]
+                ) ?? 0,
+                try Int.fetchOne(
+                    db,
+                    sql: "SELECT COUNT(*) FROM derived_image_cache_entry WHERE asset_id = ?",
+                    arguments: [key]
+                ) ?? 0
+            )
         }
-        XCTAssertEqual(decisionCount, 0)
+        XCTAssertEqual(retainedCounts.asset, 1)
+        XCTAssertEqual(retainedCounts.decision, 1)
+        XCTAssertEqual(retainedCounts.fingerprint, 1)
+        XCTAssertEqual(retainedCounts.pixelCache, 0)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: derivedCacheObjectURL.path))
     }
 
     func testCrossVolumeCopyPathViaForceFlag() throws {
@@ -633,6 +813,49 @@ final class LibrarySlimmingRecycleTests: XCTestCase {
         XCTAssertTrue(second.failedAssetIDs.isEmpty)
         XCTAssertFalse(FileManager.default.fileExists(atPath: seeded.fileURL.path))
         XCTAssertEqual(try granted.listRecycledEntries().count, 1)
+    }
+
+    func testRecycleUsesCurrentSimilaritySHAWhenRescanClearedFileSHA() throws {
+        let env = try RecycleTestEnv(label: #function)
+        defer { env.cleanup() }
+        let bytes = Data("completed-similarity-fingerprint".utf8)
+        let seeded = try env.seedAsset(
+            relativePath: "retry/rescan-race.jpg",
+            contents: bytes
+        )
+        try env.database.pool.write { db in
+            try db.execute(
+                sql: """
+                UPDATE file_fingerprint
+                SET sha256 = NULL
+                WHERE asset_id = ?
+                """,
+                arguments: [seeded.assetID.uuidString.lowercased()]
+            )
+            try db.execute(
+                sql: """
+                INSERT INTO asset_similarity_fingerprint (
+                    asset_id, content_revision, algo_version, perceptual_hash,
+                    content_sha256, created_at_ms, updated_at_ms
+                ) VALUES (?, 1, 'fixture-v1', ?, ?, ?, ?)
+                """,
+                arguments: [
+                    seeded.assetID.uuidString.lowercased(),
+                    Data(repeating: 0x5A, count: 8),
+                    Data(SHA256.hash(data: bytes)),
+                    FolderReconcileTestSupport.baseTimeMs,
+                    FolderReconcileTestSupport.baseTimeMs,
+                ]
+            )
+        }
+        let service = env.makeRecycleService()
+
+        let outcome = try service.moveFolderAssetsToRecycle(assetIDs: [seeded.assetID])
+
+        XCTAssertEqual(outcome.recycledEntryIDs.count, 1)
+        XCTAssertTrue(outcome.failedAssetIDs.isEmpty)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: seeded.fileURL.path))
+        XCTAssertEqual(try service.listRecycledEntries().count, 1)
     }
 
     func testRecoveryFinalizesMoveInterruptedAfterFilesystemSuccess() throws {
@@ -815,7 +1038,7 @@ final class LibrarySlimmingRecycleTests: XCTestCase {
             )
         }
         let row = try XCTUnwrap(tombstone)
-        XCTAssertNil(row["asset_id"] as String?)
+        XCTAssertEqual(row["asset_id"] as String?, seeded.assetID.uuidString.lowercased())
         XCTAssertEqual(row["state"] as String, RecycleEntryState.purged.rawValue)
         XCTAssertNil(row["quarantine_relative_path"] as String?)
         XCTAssertNil(row["original_relative_path"] as String?)
@@ -826,7 +1049,7 @@ final class LibrarySlimmingRecycleTests: XCTestCase {
                 arguments: [seeded.assetID.uuidString.lowercased()]
             ) ?? 0
         }
-        XCTAssertEqual(assetCount, 0)
+        XCTAssertEqual(assetCount, 1)
     }
 
     func testPhotosAssetIsSkipped() throws {
@@ -866,6 +1089,25 @@ final class LibrarySlimmingRecycleTests: XCTestCase {
             )
         }
         XCTAssertEqual(availability, "recycled")
+    }
+
+    func testPhotosSoftDeleteBatchesMultipleAssetsIntoOneSystemMutationRequest() throws {
+        let env = try RecycleTestEnv(label: #function)
+        defer { env.cleanup() }
+        let firstID = try env.seedPhotosAsset(localIdentifier: "batch-photos-1")
+        let secondID = try env.seedPhotosAsset(localIdentifier: "batch-photos-2")
+        let fake = FakePhotosLibraryMutationPort()
+        fake.presenceByID["batch-photos-1"] = .available
+        fake.presenceByID["batch-photos-2"] = .available
+        let service = env.makeRecycleService(photosMutation: fake)
+
+        let outcome = try service.moveAssetsToRecycle(assetIDs: [firstID, secondID])
+
+        XCTAssertEqual(outcome.recycledEntryIDs.count, 2)
+        XCTAssertEqual(
+            fake.moveRequestBatches,
+            [["batch-photos-1", "batch-photos-2"]]
+        )
     }
 
     func testPhotosAuthorizationDeniedDoesNotMutate() throws {
@@ -1059,6 +1301,11 @@ final class LibrarySlimmingRecycleTests: XCTestCase {
         let fake = FakePhotosLibraryMutationPort()
         fake.presenceByID["missing-id"] = .available
         let service = env.makeRecycleService(clock: clock, photosMutation: fake)
+        let cachedOriginalURL = try env.seedPhotosOriginalCache(
+            assetID: photosID,
+            localIdentifier: "missing-id",
+            clock: clock
+        )
         _ = try service.moveAssetsToRecycle(assetIDs: [photosID])
         let entry = try XCTUnwrap(try service.listRecycledEntries().first)
         try env.database.pool.write { db in
@@ -1075,6 +1322,24 @@ final class LibrarySlimmingRecycleTests: XCTestCase {
         let converged = try service.reconcilePhotosRecycleEntries()
         XCTAssertEqual(converged, 1)
         XCTAssertTrue(try service.listRecycledEntries().isEmpty)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: cachedOriginalURL.path))
+        let retained = try env.database.pool.read { db -> (asset: Int, pixelCache: Int) in
+            let key = photosID.uuidString.lowercased()
+            return (
+                try Int.fetchOne(
+                    db,
+                    sql: "SELECT COUNT(*) FROM asset WHERE id = ? AND availability = 'recycled'",
+                    arguments: [key]
+                ) ?? 0,
+                try Int.fetchOne(
+                    db,
+                    sql: "SELECT COUNT(*) FROM photos_original_cache_entry WHERE asset_id = ?",
+                    arguments: [key]
+                ) ?? 0
+            )
+        }
+        XCTAssertEqual(retained.asset, 1)
+        XCTAssertEqual(retained.pixelCache, 0)
     }
 
     func testPurgeExpiredRemovesDueEntries() throws {
@@ -1177,10 +1442,21 @@ private struct FailingMutationBookmarkPort: SecurityScopedBookmarkPort {
     func stopAccessing(_ url: URL) {}
 }
 
+private struct InvalidFolderMutationAccess: FolderMutationAccessing {
+    func withWritableSourceRoot<T>(
+        sourceID _: UUID,
+        perform _: (URL) throws -> T
+    ) throws -> T {
+        throw LibrarySlimmingRecycleError.mutationAuthorizationInvalid
+    }
+}
+
 private final class RecycleTestEnv {
     let root: URL
     let sourceRoot: URL
     let quarantineRoot: URL
+    let derivedCachesDirectory: URL
+    let photosOriginalRoot: URL
     let database: CatalogDatabase
     let sourceID: UUID
     private var didInsertSource = false
@@ -1196,6 +1472,8 @@ private final class RecycleTestEnv {
         sourceRoot = root.appendingPathComponent("Source", isDirectory: true)
         let support = root.appendingPathComponent("Application Support/ImageAll", isDirectory: true)
         quarantineRoot = QuarantinePathLayout.rootURL(applicationSupportDirectory: support)
+        derivedCachesDirectory = root.appendingPathComponent("Caches/ImageAll", isDirectory: true)
+        photosOriginalRoot = support.appendingPathComponent("Photos Originals/v1", isDirectory: true)
         try FileManager.default.createDirectory(at: sourceRoot, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
         database = try CatalogDatabase.open(at: root.appendingPathComponent("catalog.sqlite"))
@@ -1219,8 +1497,81 @@ private final class RecycleTestEnv {
             quarantineRootURL: quarantineRoot,
             clock: clock,
             jobQueue: jobQueue,
-            photosMutation: photosMutation
+            photosMutation: photosMutation,
+            pixelCachePurger: AppOwnedAssetPixelCachePurger(
+                database: database,
+                derivedCachesDirectory: derivedCachesDirectory,
+                photosOriginalCache: PhotosOriginalCacheService(
+                    database: database,
+                    rootURL: photosOriginalRoot,
+                    clock: clock
+                )
+            )
         )
+    }
+
+    func seedDerivedImageCache(assetID: UUID) throws -> URL {
+        let entryID = UUID()
+        let bytes = Data("derived-pixel-bytes".utf8)
+        let store = DerivedImageCacheStore(cachesDirectory: derivedCachesDirectory)
+        _ = try store.ensureLayout()
+        let objectURL = DerivedImageCachePathLayout.objectURL(
+            versionRoot: store.versionRoot,
+            entryID: entryID,
+            format: .jpeg
+        )
+        try FileManager.default.createDirectory(
+            at: objectURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try bytes.write(to: objectURL)
+        try database.pool.write { db in
+            try db.execute(
+                sql: """
+                INSERT INTO derived_image_cache_entry (
+                    id, asset_id, content_revision, representation_version,
+                    variant, storage_format, pixel_width, pixel_height,
+                    byte_size, encoded_sha256, created_at_ms, last_accessed_at_ms
+                ) VALUES (?, ?, 1, 1, 'gridSmall', 'jpeg', 256, 256, ?, ?, ?, ?)
+                """,
+                arguments: [
+                    entryID.uuidString.lowercased(),
+                    assetID.uuidString.lowercased(),
+                    Int64(bytes.count),
+                    Data(SHA256.hash(data: bytes)),
+                    FolderReconcileTestSupport.baseTimeMs,
+                    FolderReconcileTestSupport.baseTimeMs,
+                ]
+            )
+        }
+        return objectURL
+    }
+
+    func seedPhotosOriginalCache(
+        assetID: UUID,
+        localIdentifier: String,
+        clock: any JobClock
+    ) throws -> URL {
+        let cache = PhotosOriginalCacheService(
+            database: database,
+            rootURL: photosOriginalRoot,
+            clock: clock
+        )
+        _ = try cache.store(
+            assetID: assetID,
+            contentRevision: 1,
+            localIdentifier: localIdentifier,
+            mediaType: "public.jpeg",
+            sourceBytes: Data("photos-original-pixels".utf8)
+        )
+        let objectName = try database.pool.read { db in
+            try String.fetchOne(
+                db,
+                sql: "SELECT object_name FROM photos_original_cache_entry WHERE asset_id = ?",
+                arguments: [assetID.uuidString.lowercased()]
+            )
+        }
+        return photosOriginalRoot.appendingPathComponent(try XCTUnwrap(objectName))
     }
 
     @discardableResult
@@ -1334,6 +1685,7 @@ private final class FakePhotosLibraryMutationPort: PhotosLibraryMutationPort, @u
     var authorization: PhotosAuthorizationState = .authorized
     var presenceByID: [String: PhotosAssetPresence] = [:]
     private(set) var movedToRecentlyDeleted: [String] = []
+    private(set) var moveRequestBatches: [[String]] = []
 
     func authorizationState() -> PhotosAuthorizationState {
         authorization
@@ -1347,6 +1699,7 @@ private final class FakePhotosLibraryMutationPort: PhotosLibraryMutationPort, @u
         guard authorization == .authorized else {
             throw PhotosLibraryMutationError.authorizationDenied
         }
+        moveRequestBatches.append(localIdentifiers)
         for id in localIdentifiers {
             guard presenceByID[id] == .available else {
                 throw PhotosLibraryMutationError.assetNotFound
