@@ -47,6 +47,9 @@ final class LibrarySlimmingRecycleTests: XCTestCase {
         XCTAssertEqual(plan.groupCount, 1)
         XCTAssertEqual(plan.assetIDsToRecycle, [photosID, longNameID])
         XCTAssertEqual(plan.survivorAssetIDs, [shortNameID])
+        XCTAssertEqual(plan.retainedAssetCount, 1)
+        XCTAssertEqual(plan.verifiedAssetCount, 3)
+        XCTAssertEqual(plan.groupSizeHistogram, [3: 1])
         XCTAssertEqual(plan.photosAssetCount, 1)
         XCTAssertEqual(plan.fileAssetCount, 1)
         XCTAssertEqual(plan.skippedGroupCount, 0)
@@ -110,6 +113,9 @@ final class LibrarySlimmingRecycleTests: XCTestCase {
         XCTAssertEqual(plan.groupCount, 2)
         XCTAssertEqual(plan.assetIDsToRecycle.count, 3)
         XCTAssertEqual(Set(plan.survivorAssetIDs), Set([firstIDs[0], secondIDs[0]]))
+        XCTAssertEqual(plan.retainedAssetCount, 2)
+        XCTAssertEqual(plan.verifiedAssetCount, 5)
+        XCTAssertEqual(plan.groupSizeHistogram, [2: 1, 3: 1])
         XCTAssertTrue(plan.assetIDsToRecycle.allSatisfy { !similarIDs.contains($0) })
     }
 

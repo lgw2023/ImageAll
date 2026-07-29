@@ -1,4 +1,5 @@
 import AppKit
+import Charts
 import SwiftUI
 
 struct LibrarySlimmingClusterPresentation: Identifiable, Equatable, Sendable {
@@ -1224,65 +1225,318 @@ private struct LibrarySlimmingIdenticalCleanupConfirmationSheet: View {
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Label("一键清理完全相同照片", systemImage: "trash.square")
-                .font(.headline)
-
-            Text(
-                "将处理 \(plan.groupCount) 个完全相同分组，移入回收站 \(plan.assetIDsToRecycle.count) 张，每组保留 1 张。"
-            )
-            .font(.callout)
-            .fixedSize(horizontal: false, vertical: true)
-
-            VStack(alignment: .leading, spacing: 6) {
-                Text("删除优先级")
-                    .font(.subheadline.weight(.semibold))
-                Text("1. Apple Photos")
-                Text("2. 来源显示名较长的照片")
-                Text("3. 来源显示名较短的照片")
-                Text("同长度时使用稳定顺序，只用于保证每次结果一致。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+        VStack(spacing: 0) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 20) {
+                    header
+                    runtimeMetrics
+                    charts
+                    cleanupRules
+                    notices
+                }
+                .padding(24)
             }
 
-            LabeledContent("Apple Photos", value: "\(plan.photosAssetCount) 张")
-            LabeledContent("文件夹来源", value: "\(plan.fileAssetCount) 张")
-
-            if plan.photosAssetCount > 0 {
-                Text("macOS 仍会对全部 Apple Photos 待删项集中显示一次系统确认。")
-                    .font(.caption)
-                    .foregroundStyle(.orange)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            if plan.skippedGroupCount > 0 {
-                Text(
-                    "另有 \(plan.skippedGroupCount) 组因成员或来源状态变化已安全跳过，不会删除。"
-                )
-                .font(.caption)
-                .foregroundStyle(.orange)
-                .fixedSize(horizontal: false, vertical: true)
-            }
+            Divider()
 
             HStack {
+                Text("执行前会再次读取当前资产与来源状态；统计变化时将停止清理。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 Spacer()
                 Button("取消") {
-                    onCancel()
-                    dismiss()
+                    cancel()
                 }
                 .keyboardShortcut(.cancelAction)
                 Button(
-                    "清理 \(plan.assetIDsToRecycle.count) 张",
+                    "清理 \(plan.assetIDsToRecycle.count.formatted()) 张",
                     role: .destructive
                 ) {
-                    onConfirm()
-                    dismiss()
+                    confirm()
                 }
                 .keyboardShortcut(.defaultAction)
             }
+            .padding(.horizontal, 24)
+            .padding(.vertical, 16)
         }
-        .padding(20)
-        .frame(width: 460)
+        .frame(width: 820, height: 720)
     }
+
+    private var header: some View {
+        HStack(alignment: .top, spacing: 14) {
+            Image(systemName: "trash.square")
+                .font(.system(size: 28))
+                .foregroundStyle(.orange)
+                .frame(width: 42, height: 42)
+                .background(.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 10))
+            VStack(alignment: .leading, spacing: 5) {
+                Text("一键清理完全相同照片")
+                    .font(.title2.weight(.semibold))
+                Text("这是基于当前运行时资产与来源状态生成的实际清理预览。")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private var runtimeMetrics: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("本次实际统计")
+                .font(.headline)
+            HStack(spacing: 12) {
+                CleanupMetricCard(
+                    title: "已核验照片",
+                    value: plan.verifiedAssetCount,
+                    systemImage: "checkmark.seal",
+                    tint: .blue
+                )
+                CleanupMetricCard(
+                    title: "会保留",
+                    value: plan.retainedAssetCount,
+                    systemImage: "photo.badge.checkmark",
+                    tint: .green
+                )
+                CleanupMetricCard(
+                    title: "将清理",
+                    value: plan.assetIDsToRecycle.count,
+                    systemImage: "trash",
+                    tint: .orange
+                )
+                CleanupMetricCard(
+                    title: "处理分组",
+                    value: plan.groupCount,
+                    systemImage: "square.stack.3d.up",
+                    tint: .indigo
+                )
+            }
+            Text("统计由本次预览中逐组核验通过的实际资产 ID 汇总；安全跳过的分组不计入以上数字。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private var charts: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("数据概览")
+                .font(.headline)
+            HStack(alignment: .top, spacing: 16) {
+                GroupBox("去留比例") {
+                    ZStack {
+                        Chart(dispositionData) { item in
+                            SectorMark(
+                                angle: .value("照片数", item.count),
+                                innerRadius: .ratio(0.62),
+                                angularInset: 1.5
+                            )
+                            .foregroundStyle(item.color)
+                        }
+                        VStack(spacing: 2) {
+                            Text(plan.verifiedAssetCount.formatted())
+                                .font(.title3.weight(.semibold))
+                            Text("张已核验")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .chartLegend(.hidden)
+                    .frame(height: 180)
+
+                    HStack {
+                        chartLegend(color: .green, title: "保留", count: plan.retainedAssetCount)
+                        Spacer()
+                        chartLegend(
+                            color: .orange,
+                            title: "清理",
+                            count: plan.assetIDsToRecycle.count
+                        )
+                    }
+                }
+                .frame(width: 260)
+
+                GroupBox("完全相同组规模") {
+                    Chart(groupSizeData) { item in
+                        BarMark(
+                            x: .value("每组照片数", item.label),
+                            y: .value("分组数", item.groupCount)
+                        )
+                        .foregroundStyle(.indigo.gradient)
+                        .annotation(position: .top) {
+                            Text(item.groupCount.formatted())
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .chartXAxisLabel("每组照片数")
+                    .chartYAxisLabel("分组数")
+                    .frame(height: 180)
+                    .accessibilityLabel("完全相同组规模分布")
+                }
+                .frame(maxWidth: .infinity)
+            }
+
+            GroupBox("待清理照片来源") {
+                Chart(recycleSourceData) { item in
+                    BarMark(
+                        x: .value("照片数", item.count),
+                        y: .value("来源", item.label)
+                    )
+                    .foregroundStyle(item.color.gradient)
+                    .annotation(position: .trailing) {
+                        Text("\(item.count.formatted()) 张")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .chartXAxisLabel("待清理照片数")
+                .frame(height: 105)
+                .accessibilityLabel("待清理照片来源分布")
+            }
+        }
+    }
+
+    private var cleanupRules: some View {
+        GroupBox("删除优先级") {
+            HStack(alignment: .top, spacing: 28) {
+                Label("1. Apple Photos", systemImage: "photo.on.rectangle")
+                Label("2. 来源名较长", systemImage: "textformat.size.larger")
+                Label("3. 来源名较短", systemImage: "textformat.size.smaller")
+            }
+            .font(.callout)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            Text("同长度时使用稳定顺序，只用于保证每次结果一致；每个已核验分组严格保留一张。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .padding(.top, 6)
+        }
+    }
+
+    @ViewBuilder
+    private var notices: some View {
+        if plan.photosAssetCount > 0 {
+            Label(
+                "macOS 仍会对全部 Apple Photos 待删项集中显示一次系统确认。",
+                systemImage: "exclamationmark.triangle"
+            )
+            .font(.caption)
+            .foregroundStyle(.orange)
+        }
+        if plan.skippedGroupCount > 0 {
+            Label(
+                "另有 \(plan.skippedGroupCount.formatted()) 组因成员或来源状态变化已安全跳过，不会删除。",
+                systemImage: "shield"
+            )
+            .font(.caption)
+            .foregroundStyle(.orange)
+        }
+    }
+
+    private var dispositionData: [CleanupChartItem] {
+        [
+            CleanupChartItem(
+                id: "retained",
+                label: "保留",
+                count: plan.retainedAssetCount,
+                color: .green
+            ),
+            CleanupChartItem(
+                id: "recycle",
+                label: "清理",
+                count: plan.assetIDsToRecycle.count,
+                color: .orange
+            ),
+        ]
+    }
+
+    private var recycleSourceData: [CleanupChartItem] {
+        [
+            CleanupChartItem(
+                id: "photos",
+                label: "Apple Photos",
+                count: plan.photosAssetCount,
+                color: .pink
+            ),
+            CleanupChartItem(
+                id: "files",
+                label: "文件夹来源",
+                count: plan.fileAssetCount,
+                color: .blue
+            ),
+        ]
+    }
+
+    private var groupSizeData: [CleanupGroupSizeChartItem] {
+        var bucketCounts: [String: Int] = [:]
+        for (memberCount, groupCount) in plan.groupSizeHistogram {
+            let label = memberCount >= 5 ? "5+" : "\(memberCount)"
+            bucketCounts[label, default: 0] += groupCount
+        }
+        return ["2", "3", "4", "5+"].compactMap { label in
+            guard let count = bucketCounts[label], count > 0 else { return nil }
+            return CleanupGroupSizeChartItem(
+                id: label,
+                label: label,
+                groupCount: count
+            )
+        }
+    }
+
+    private func chartLegend(color: Color, title: String, count: Int) -> some View {
+        HStack(spacing: 5) {
+            Circle()
+                .fill(color)
+                .frame(width: 8, height: 8)
+            Text("\(title) \(count.formatted())")
+                .font(.caption)
+        }
+    }
+
+    private func cancel() {
+        onCancel()
+        dismiss()
+    }
+
+    private func confirm() {
+        onConfirm()
+        dismiss()
+    }
+}
+
+private struct CleanupMetricCard: View {
+    let title: String
+    let value: Int
+    let systemImage: String
+    let tint: Color
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label(title, systemImage: systemImage)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Text(value.formatted())
+                .font(.title2.monospacedDigit().weight(.semibold))
+                .foregroundStyle(tint)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(12)
+        .background(tint.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
+        .overlay {
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(tint.opacity(0.18))
+        }
+    }
+}
+
+private struct CleanupChartItem: Identifiable {
+    let id: String
+    let label: String
+    let count: Int
+    let color: Color
+}
+
+private struct CleanupGroupSizeChartItem: Identifiable {
+    let id: String
+    let label: String
+    let groupCount: Int
 }
 
 private struct LibrarySlimmingThresholdEditor: View {

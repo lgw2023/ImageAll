@@ -123,6 +123,26 @@ struct LibrarySlimmingIdenticalCleanupPlan: Sendable, Equatable {
         decisions.map(\.survivorAssetID)
     }
 
+    /// Exact count of distinct survivor asset IDs selected by the runtime plan.
+    var retainedAssetCount: Int {
+        Set(survivorAssetIDs).count
+    }
+
+    /// Exact count of distinct assets covered by executable cleanup decisions.
+    var verifiedAssetCount: Int {
+        Set(survivorAssetIDs).union(assetIDsToRecycle).count
+    }
+
+    /// Runtime distribution of executable groups by their actual member count.
+    var groupSizeHistogram: [Int: Int] {
+        decisions.reduce(into: [:]) { histogram, decision in
+            let memberCount = Set(
+                decision.assetIDsToRecycle + [decision.survivorAssetID]
+            ).count
+            histogram[memberCount, default: 0] += 1
+        }
+    }
+
     var isEmpty: Bool {
         decisions.isEmpty || assetIDsToRecycle.isEmpty
     }

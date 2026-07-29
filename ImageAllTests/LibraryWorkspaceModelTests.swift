@@ -4782,6 +4782,9 @@ final class LibraryWorkspaceModelTests: XCTestCase {
 
         let prepared = await model.prepareLibrarySlimmingIdenticalCleanup()
         XCTAssertEqual(prepared, plan)
+        XCTAssertEqual(prepared?.retainedAssetCount, 2)
+        XCTAssertEqual(prepared?.verifiedAssetCount, 5)
+        XCTAssertEqual(prepared?.groupSizeHistogram, [2: 1, 3: 1])
 
         await model.moveLibrarySlimmingIdenticalRedundancyToRecycle(plan: plan)
 
