@@ -71,6 +71,30 @@ final class RemoteHostSelectionTests: XCTestCase {
         )
     }
 
+    func testPairingRejectsLoopbackWhenNoMatchingHostWasDiscovered() {
+        XCTAssertThrowsError(
+            try RemotePairingHostResolver.resolve(
+                hostID: expectedHostID,
+                displayName: "Mac Studio",
+                currentHost: "127.0.0.1",
+                discoveredHosts: []
+            )
+        ) { error in
+            XCTAssertEqual(error as? RemotePairingHostError, .lanAddressRequired)
+        }
+    }
+
+    func testPairingUsesExplicitLANAddressWhenNoMatchingHostWasDiscovered() throws {
+        let resolved = try RemotePairingHostResolver.resolve(
+            hostID: expectedHostID,
+            displayName: "Mac Studio",
+            currentHost: " 192.0.2.20 ",
+            discoveredHosts: []
+        )
+
+        XCTAssertEqual(resolved, "192.0.2.20")
+    }
+
     private func makeHost(
         name: String,
         address: String,

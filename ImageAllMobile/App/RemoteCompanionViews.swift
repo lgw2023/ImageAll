@@ -98,6 +98,9 @@ struct RemoteCompanionRootView: View {
                 if model.discoveredHosts.isEmpty {
                     Text(model.isBrowsing ? "正在搜索…" : "未开始搜索")
                         .foregroundStyle(.secondary)
+                    Text("若持续搜索不到，请在下方输入 Mac 的局域网地址后再扫码；127.0.0.1 只代表当前 iPhone。")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
                 } else {
                     ForEach(model.discoveredHosts) { discovered in
                         Button {
@@ -140,6 +143,9 @@ struct RemoteCompanionRootView: View {
                     TextEditor(text: $model.pairingOfferJSON)
                         .frame(minHeight: 88)
                         .font(.system(.footnote, design: .monospaced))
+                    Button("从剪贴板读取") {
+                        model.loadPairingOfferFromPasteboard()
+                    }
                     Button("使用配对 JSON") {
                         Task { await model.pairUsingOfferJSON() }
                     }
@@ -152,12 +158,18 @@ struct RemoteCompanionRootView: View {
                 }
             }
 
-            Section("调试连接") {
+            Section("手动 Host / 调试连接") {
                 TextField("主机", text: $model.host)
                     .textInputAutapitalizationNever()
                     .keyboardType(.URL)
+                    .onChange(of: model.host) { _, _ in
+                        model.rememberEndpointHint()
+                    }
                 TextField("端口", text: $model.port)
                     .keyboardType(.numberPad)
+                    .onChange(of: model.port) { _, _ in
+                        model.rememberEndpointHint()
+                    }
                 SecureField("Access Token", text: $model.accessToken)
                     .textInputAutapitalizationNever()
                 Button {

@@ -135,19 +135,19 @@ final class RemoteCompanionModel: ObservableObject {
         defer { isBusy = false }
         do {
             let offer = try RemotePairingPayloadDecoder.decode(payload)
-            if let discovered = RemoteHostSelection.bestMatch(
+            let pairingHost = try RemotePairingHostResolver.resolve(
                 hostID: offer.hostID,
                 displayName: offer.hostDisplayName,
-                in: discoveredHosts
-            ) {
-                selectDiscoveredHost(discovered)
-            }
+                currentHost: host,
+                discoveredHosts: discoveredHosts
+            )
+            host = pairingHost
             port = String(offer.listenPort)
             let deviceKey = SHA256.hash(data: Data(UUID().uuidString.utf8))
                 .map { String(format: "%02x", $0) }.joined()
             let bootstrap = try RemoteLibraryClient(
                 endpoint: RemoteHostEndpoint(
-                    host: host.trimmingCharacters(in: .whitespacesAndNewlines),
+                    host: pairingHost,
                     port: offer.listenPort,
                     accessToken: "",
                     usesTLS: offer.usesTLS
@@ -189,6 +189,29 @@ final class RemoteCompanionModel: ObservableObject {
             }
         } catch {
             statusMessage = error.localizedDescription
+        }
+    }
+
+    func loadPairingOfferFromPasteboard() {
+        guard let payload = UIPasteboard.general.string?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+            !payload.isEmpty
+        else {
+            statusMessage = "剪贴板中没有配对 JSON"
+            return
+        }
+        pairingOfferJSON = payload
+        statusMessage = "已从剪贴板读取配对 JSON"
+    }
+
+    func rememberEndpointHint() {
+        let trimmedHost = host.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedHost.isEmpty {
+            defaults.set(trimmedHost, forKey: DefaultsKey.host)
+        }
+        let trimmedPort = port.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedPort.isEmpty {
+            defaults.set(trimmedPort, forKey: DefaultsKey.port)
         }
     }
 

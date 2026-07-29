@@ -198,7 +198,7 @@ final class RemoteHTTPServerTests: XCTestCase {
         )
         XCTAssertEqual(service.type, RemoteBonjour.serviceType)
         XCTAssertEqual(service.name, "ImageAll-Test-Host")
-        let txtRecord = NWTXTRecord(try XCTUnwrap(service.txtRecord))
+        let txtRecord = try XCTUnwrap(service.txtRecordObject)
         XCTAssertEqual(
             txtRecord.dictionary[RemoteBonjour.TXTKey.hostID],
             hostID.uuidString

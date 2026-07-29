@@ -106,3 +106,46 @@ public enum RemoteHostSelection {
         }
     }
 }
+
+public enum RemotePairingHostError: Error, Equatable, Sendable {
+    case lanAddressRequired
+}
+
+extension RemotePairingHostError: LocalizedError {
+    public var errorDescription: String? {
+        switch self {
+        case .lanAddressRequired:
+            "未发现配对的 Mac Host；请允许“本地网络”，或输入 Mac 的局域网地址后重试"
+        }
+    }
+}
+
+public enum RemotePairingHostResolver {
+    public static func resolve(
+        hostID: UUID,
+        displayName: String,
+        currentHost: String,
+        discoveredHosts: [RemoteDiscoveredHost]
+    ) throws -> String {
+        if let discovered = RemoteHostSelection.bestMatch(
+            hostID: hostID,
+            displayName: displayName,
+            in: discoveredHosts
+        ) {
+            return discovered.host
+        }
+
+        let trimmed = currentHost.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalized = trimmed
+            .trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
+            .lowercased()
+        guard !normalized.isEmpty,
+              normalized != "localhost",
+              normalized != "::1",
+              !normalized.hasPrefix("127.")
+        else {
+            throw RemotePairingHostError.lanAddressRequired
+        }
+        return trimmed
+    }
+}
