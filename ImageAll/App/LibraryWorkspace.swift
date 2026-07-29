@@ -1955,6 +1955,22 @@ final class LibraryWorkspaceModel: ObservableObject {
                 try recycle.verifyIdenticalCleanup(plan: plan)
             }
             librarySlimmingIdenticalCleanupPostDeleteReport = .verified(verification)
+            var parts = [
+                "已完成去重 \(verification.verifiedGroupCount)/\(verification.targetGroupCount) 组",
+                "已移入回收站 \(verification.recycledRedundantAssetCount) 张",
+            ]
+            if verification.unresolvedGroupCount > 0 {
+                parts.append("尚未完成 \(verification.unresolvedGroupCount) 组")
+            }
+            if verification.remainingRedundantAssetCount > 0 {
+                parts.append("仍有冗余 \(verification.remainingRedundantAssetCount) 张")
+            }
+            if verification.unresolvedAssetCount > 0 {
+                parts.append("状态待确认 \(verification.unresolvedAssetCount) 张")
+            }
+            let message = parts.joined(separator: " · ")
+            librarySlimmingStatusMessage = message
+            librarySlimmingRecycleActionMessage = message
         } catch {
             librarySlimmingIdenticalCleanupPostDeleteReport = .unavailable(
                 message: "删除动作已经结束，但无法读取删除后的实际资产状态：\(error.localizedDescription)"

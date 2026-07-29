@@ -1610,13 +1610,20 @@ private struct LibrarySlimmingIdenticalCleanupVerificationSheet: View {
     ) -> some View {
         VStack(alignment: .leading, spacing: 18) {
             VStack(spacing: 6) {
-                Text(verification.retainedNonredundantAssetCount.formatted())
+                Text(
+                    "\(verification.verifiedGroupCount.formatted())"
+                        + " / "
+                        + verification.targetGroupCount.formatted()
+                )
                     .font(.system(size: 54, weight: .bold, design: .rounded))
                     .monospacedDigit()
                     .foregroundStyle(verification.isComplete ? Color.green : Color.orange)
-                Text("张非冗余照片已确认保留")
+                Text("组完全相同照片已完成去重")
                     .font(.title3.weight(.medium))
-                Text("只统计删除后确实达到“每组仅剩一张”的分组。")
+                Text(
+                    "目标是每组保留 1 张，共 \(verification.targetRetainedAssetCount.formatted()) 张；"
+                        + "只把删除后确实仅剩 1 张的分组计入已完成。"
+                )
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -1625,25 +1632,25 @@ private struct LibrarySlimmingIdenticalCleanupVerificationSheet: View {
 
             HStack(spacing: 12) {
                 CleanupMetricCard(
-                    title: "实际读取资产",
-                    value: verification.observedAssetCount,
-                    systemImage: "checkmark.seal",
+                    title: "目标保留",
+                    value: verification.targetRetainedAssetCount,
+                    systemImage: "scope",
                     tint: .blue
                 )
                 CleanupMetricCard(
-                    title: "确认已清理",
-                    value: verification.recycledRedundantAssetCount,
-                    systemImage: "trash.square",
+                    title: "当前实际可用",
+                    value: verification.currentAvailableAssetCount,
+                    systemImage: "photo.stack",
                     tint: .green
                 )
                 CleanupMetricCard(
-                    title: "完成分组",
+                    title: "完成去重",
                     value: verification.verifiedGroupCount,
                     systemImage: "square.stack.3d.up.fill",
                     tint: .indigo
                 )
                 CleanupMetricCard(
-                    title: "未通过分组",
+                    title: "尚未完成",
                     value: verification.unresolvedGroupCount,
                     systemImage: "exclamationmark.triangle",
                     tint: verification.unresolvedGroupCount == 0 ? .gray : .orange
@@ -1652,7 +1659,9 @@ private struct LibrarySlimmingIdenticalCleanupVerificationSheet: View {
 
             if verification.isComplete {
                 Label(
-                    "核验完成：处理范围内没有仍处于可用状态的计划删除项。",
+                    "核验完成：实际读取 \(verification.observedAssetCount.formatted()) 张，"
+                        + "确认已清理 \(verification.recycledRedundantAssetCount.formatted()) 张；"
+                        + "处理范围内没有仍处于可用状态的计划删除项。",
                     systemImage: "checkmark.circle.fill"
                 )
                 .font(.callout.weight(.medium))
@@ -1663,9 +1672,11 @@ private struct LibrarySlimmingIdenticalCleanupVerificationSheet: View {
                         .font(.callout.weight(.semibold))
                         .foregroundStyle(.orange)
                     Text(
-                        "仍可用的冗余照片 \(verification.remainingRedundantAssetCount.formatted()) 张；"
-                            + "状态无法确认 \(verification.unresolvedAssetCount.formatted()) 张；"
-                            + "当前范围实际仍可用 \(verification.currentAvailableAssetCount.formatted()) 张。"
+                        "本次实际读取 \(verification.observedAssetCount.formatted()) 张；"
+                            + "确认已清理 \(verification.recycledRedundantAssetCount.formatted()) 张；"
+                            + "当前实际可用 \(verification.currentAvailableAssetCount.formatted()) 张；"
+                            + "其中仍可用的冗余照片 \(verification.remainingRedundantAssetCount.formatted()) 张；"
+                            + "状态无法确认 \(verification.unresolvedAssetCount.formatted()) 张。"
                     )
                     .font(.callout)
                     .foregroundStyle(.secondary)
@@ -1675,7 +1686,10 @@ private struct LibrarySlimmingIdenticalCleanupVerificationSheet: View {
                 .background(.orange.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
             }
 
-            Text("以上数字来自删除完成后对资产当前可用状态和回收记录的再次读取，不复用删除前预览值，也不按分组数推算。")
+            Text(
+                "“完成去重”“确认已清理”和“当前实际可用”均来自删除后的再次读取；"
+                    + "“目标保留”来自本次运行时逐组清理计划，不代表所有分组均已完成。"
+            )
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)

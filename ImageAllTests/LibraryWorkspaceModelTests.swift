@@ -4803,7 +4803,7 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertTrue(model.librarySlimmingClusters.isEmpty)
         XCTAssertEqual(
             model.librarySlimmingRecycleActionMessage,
-            "已清理 2 组完全相同照片 · 已移入回收站 3 张"
+            "已完成去重 2/2 组 · 已移入回收站 3 张"
         )
         XCTAssertEqual(recycle.identicalCleanupVerificationCallCount, 1)
         XCTAssertEqual(

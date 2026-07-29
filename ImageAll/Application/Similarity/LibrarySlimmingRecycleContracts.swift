@@ -197,6 +197,17 @@ struct LibrarySlimmingIdenticalCleanupVerification: Sendable, Equatable {
         Set(unresolvedGroupIDs).count
     }
 
+    /// Every runtime cleanup group represented by the post-delete verification.
+    var targetGroupCount: Int {
+        Set(verifiedGroupIDs).union(unresolvedGroupIDs).count
+    }
+
+    /// The runtime cleanup target keeps exactly one canonical photo per group.
+    /// This is a labeled target, not a claim that every group completed cleanup.
+    var targetRetainedAssetCount: Int {
+        targetGroupCount
+    }
+
     var isComplete: Bool {
         !verifiedGroupIDs.isEmpty
             && unresolvedGroupIDs.isEmpty

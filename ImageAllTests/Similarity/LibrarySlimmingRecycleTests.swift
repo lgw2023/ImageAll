@@ -192,6 +192,8 @@ final class LibrarySlimmingRecycleTests: XCTestCase {
         XCTAssertEqual(verification.recycledRedundantAssetCount, 2)
         XCTAssertEqual(verification.verifiedGroupIDs, [clusterID])
         XCTAssertEqual(verification.verifiedGroupCount, 1)
+        XCTAssertEqual(verification.targetGroupCount, 1)
+        XCTAssertEqual(verification.targetRetainedAssetCount, 1)
         XCTAssertTrue(verification.remainingRedundantAssetIDs.isEmpty)
         XCTAssertTrue(verification.unresolvedAssetIDs.isEmpty)
         XCTAssertTrue(verification.unresolvedGroupIDs.isEmpty)
@@ -239,6 +241,8 @@ final class LibrarySlimmingRecycleTests: XCTestCase {
         XCTAssertTrue(verification.unresolvedAssetIDs.isEmpty)
         XCTAssertTrue(verification.verifiedGroupIDs.isEmpty)
         XCTAssertEqual(verification.unresolvedGroupIDs, [clusterID])
+        XCTAssertEqual(verification.targetGroupCount, 1)
+        XCTAssertEqual(verification.targetRetainedAssetCount, 1)
         XCTAssertFalse(verification.isComplete)
     }
 
