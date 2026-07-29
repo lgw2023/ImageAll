@@ -4448,6 +4448,39 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertFalse(model.isAnalyzingLibrarySlimming)
     }
 
+    func testResumeLibrarySlimmingAnalysisShowsRunningWhileWorkerIsActive() async {
+        let jobID = UUID()
+        let analysis = ResumeLibrarySlimmingAnalysisJobPort(
+            jobID: jobID,
+            blocksRunPending: true
+        )
+        let model = makeResumeLibrarySlimmingModel(analysis: analysis)
+
+        await model.start()
+        let resumeTask = Task { await model.resumeLibrarySlimmingAnalysis() }
+        defer { analysis.releaseBlockedRunPending() }
+
+        for _ in 0 ..< 10_000 {
+            if analysis.hasStartedBlockedRunPending {
+                break
+            }
+            await Task.yield()
+        }
+        for _ in 0 ..< 10_000 {
+            if model.selectedLibrarySlimmingAnalysisJob?.state == .running {
+                break
+            }
+            await Task.yield()
+        }
+
+        XCTAssertEqual(model.selectedLibrarySlimmingAnalysisJob?.state, .running)
+        XCTAssertTrue(model.canPauseLibrarySlimmingAnalysis)
+        XCTAssertFalse(model.canResumeLibrarySlimmingAnalysis)
+
+        analysis.releaseBlockedRunPending()
+        await resumeTask.value
+    }
+
     func testResumeLibrarySlimmingAnalysisRunsImmediatelyAndSurfacesWorkerFailure() async {
         let jobID = UUID()
         let analysis = ResumeLibrarySlimmingAnalysisJobPort(
@@ -4488,6 +4521,30 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertEqual(model.selectedLibrarySlimmingAnalysisJob?.state, .completed)
     }
 
+    func testSwitchingToVideoStartsMonitoringPendingAnalysisJob() async {
+        let jobID = UUID()
+        let analysis = ResumeLibrarySlimmingAnalysisJobPort(
+            jobID: jobID,
+            mediaKind: .video,
+            initialState: .pending
+        )
+        let model = makeResumeLibrarySlimmingModel(analysis: analysis)
+
+        await model.start()
+        await model.setLibrarySlimmingWorkspaceMediaKind(.video)
+
+        for _ in 0 ..< 10_000 {
+            if model.librarySlimmingAnalysisJobs.first?.state == .completed {
+                break
+            }
+            await Task.yield()
+        }
+
+        XCTAssertEqual(analysis.runPendingCallCount, 1)
+        XCTAssertEqual(model.librarySlimmingAnalysisJobs.first?.state, .completed)
+        XCTAssertFalse(model.canResumeLibrarySlimmingAnalysis)
+    }
+
     private func makeResumeLibrarySlimmingModel(
         analysis: any LibrarySlimmingAnalysisJobPort
     ) -> LibraryWorkspaceModel {
@@ -4505,6 +4562,7 @@ final class LibraryWorkspaceModelTests: XCTestCase {
             ),
             librarySlimmingAnalysis: analysis,
             librarySlimmingRecycle: FakeLibrarySlimmingRecyclePort(),
+            catalogProgressRefreshInterval: .milliseconds(1),
             idlePrewarmInstallEventMonitor: false
         )
     }
@@ -9879,13 +9937,26 @@ private final class ResumeLibrarySlimmingAnalysisJobPort:
     private let lock = NSLock()
     private let jobID: UUID
     private let failsRunPending: Bool
-    private var storedState: JobState = .paused
+    private let blocksRunPending: Bool
+    private let runPendingReleaseSemaphore = DispatchSemaphore(value: 0)
+    private let mediaKind: MediaKind
+    private var storedState: JobState
     private var storedResumeCallCount = 0
     private var storedRunPendingCallCount = 0
+    private var storedHasStartedBlockedRunPending = false
 
-    init(jobID: UUID, failsRunPending: Bool = false) {
+    init(
+        jobID: UUID,
+        failsRunPending: Bool = false,
+        blocksRunPending: Bool = false,
+        mediaKind: MediaKind = .image,
+        initialState: JobState = .paused
+    ) {
         self.jobID = jobID
         self.failsRunPending = failsRunPending
+        self.blocksRunPending = blocksRunPending
+        self.mediaKind = mediaKind
+        storedState = initialState
     }
 
     var resumeCallCount: Int {
@@ -9894,6 +9965,14 @@ private final class ResumeLibrarySlimmingAnalysisJobPort:
 
     var runPendingCallCount: Int {
         lock.withLock { storedRunPendingCallCount }
+    }
+
+    var hasStartedBlockedRunPending: Bool {
+        lock.withLock { storedHasStartedBlockedRunPending }
+    }
+
+    func releaseBlockedRunPending() {
+        runPendingReleaseSemaphore.signal()
     }
 
     func setState(_ state: JobState) {
@@ -9913,6 +9992,8 @@ private final class ResumeLibrarySlimmingAnalysisJobPort:
     func runPending() throws {
         lock.withLock {
             storedRunPendingCallCount += 1
+            storedState = .running
+            storedHasStartedBlockedRunPending = blocksRunPending
         }
         if failsRunPending {
             throw NSError(
@@ -9920,6 +10001,9 @@ private final class ResumeLibrarySlimmingAnalysisJobPort:
                 code: 1,
                 userInfo: [NSLocalizedDescriptionKey: "测试工作器启动失败"]
             )
+        }
+        if blocksRunPending {
+            runPendingReleaseSemaphore.wait()
         }
         lock.withLock {
             storedState = .completed
@@ -9952,6 +10036,7 @@ private final class ResumeLibrarySlimmingAnalysisJobPort:
             LibrarySlimmingAnalysisJobSummary(
                 jobID: jobID,
                 mode: .currentFilter,
+                mediaKind: mediaKind,
                 state: state,
                 controlRequest: .none,
                 progress: JobProgress(completed: 23_040, total: 28_645),
