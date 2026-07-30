@@ -11,6 +11,8 @@
 		RH0000010000000000000001 /* RemoteCatalogServing.swift in Sources */ = {isa = PBXBuildFile; fileRef = RH0001010000000000000001 /* RemoteCatalogServing.swift */; };
 		RH0000010000000000000002 /* RemoteCatalogFacade.swift in Sources */ = {isa = PBXBuildFile; fileRef = RH0001010000000000000002 /* RemoteCatalogFacade.swift */; };
 		RH0000010000000000000003 /* RemoteHTTPServer.swift in Sources */ = {isa = PBXBuildFile; fileRef = RH0001010000000000000003 /* RemoteHTTPServer.swift */; };
+		WC0000010000000000000001 /* RemoteWebCompanion.swift in Sources */ = {isa = PBXBuildFile; fileRef = WC0001010000000000000001 /* RemoteWebCompanion.swift */; };
+		WC0000010000000000000002 /* WebCompanion in Resources */ = {isa = PBXBuildFile; fileRef = WC0001010000000000000002 /* WebCompanion */; };
 		RH0000010000000000000004 /* RemoteHostProcessHolder.swift in Sources */ = {isa = PBXBuildFile; fileRef = RH0001010000000000000004 /* RemoteHostProcessHolder.swift */; };
 		RH0000010000000000000101 /* RemoteCatalogFacadeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = RH0001010000000000000101 /* RemoteCatalogFacadeTests.swift */; };
 		RH0000010000000000000102 /* RemoteHTTPServerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = RH0001010000000000000102 /* RemoteHTTPServerTests.swift */; };
@@ -536,6 +538,8 @@
 		RH0001010000000000000001 /* RemoteCatalogServing.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteCatalogServing.swift; sourceTree = "<group>"; };
 		RH0001010000000000000002 /* RemoteCatalogFacade.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteCatalogFacade.swift; sourceTree = "<group>"; };
 		RH0001010000000000000003 /* RemoteHTTPServer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteHTTPServer.swift; sourceTree = "<group>"; };
+		WC0001010000000000000001 /* RemoteWebCompanion.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteWebCompanion.swift; sourceTree = "<group>"; };
+		WC0001010000000000000002 /* WebCompanion */ = {isa = PBXFileReference; lastKnownFileType = folder; path = Resources/WebCompanion; sourceTree = "<group>"; };
 		RH0001010000000000000004 /* RemoteHostProcessHolder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteHostProcessHolder.swift; sourceTree = "<group>"; };
 		RH0001010000000000000101 /* RemoteCatalogFacadeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteCatalogFacadeTests.swift; sourceTree = "<group>"; };
 		RH0001010000000000000102 /* RemoteHTTPServerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteHTTPServerTests.swift; sourceTree = "<group>"; };
@@ -664,6 +668,7 @@
 			isa = PBXGroup;
 			children = (
 				IC0001010000000000000001 /* Assets.xcassets */,
+				WC0001010000000000000002 /* WebCompanion */,
 				CM0001010000000000000201 /* DINOv2Small */,
 				AA0006010000000000000005 /* App */,
 				AA0006010000000000000006 /* Application */,
@@ -1308,6 +1313,7 @@
 			isa = PBXGroup;
 			children = (
 				RH0001010000000000000003 /* RemoteHTTPServer.swift */,
+				WC0001010000000000000001 /* RemoteWebCompanion.swift */,
 				RH0001010000000000000004 /* RemoteHostProcessHolder.swift */,
 				RH0001010000000000000005 /* RemoteHostIdentity.swift */,
 				RH0001010000000000000006 /* RemotePairingStore.swift */,
@@ -1424,6 +1430,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				IC0000010000000000000001 /* Assets.xcassets in Resources */,
+				WC0000010000000000000002 /* WebCompanion in Resources */,
 				CM0000010000000000000201 /* DINOv2Small in Resources */,
 				RR0000010000000000000201 /* PrivacyInfo.xcprivacy in Resources */,
 			);
@@ -1513,6 +1520,7 @@
 				RH0000010000000000000001 /* RemoteCatalogServing.swift in Sources */,
 				RH0000010000000000000002 /* RemoteCatalogFacade.swift in Sources */,
 				RH0000010000000000000003 /* RemoteHTTPServer.swift in Sources */,
+				WC0000010000000000000001 /* RemoteWebCompanion.swift in Sources */,
 				RH0000010000000000000004 /* RemoteHostProcessHolder.swift in Sources */,
 				RH0000010000000000000007 /* RemoteHostIdentity.swift in Sources */,
 				RH0000010000000000000008 /* RemotePairingStore.swift in Sources */,

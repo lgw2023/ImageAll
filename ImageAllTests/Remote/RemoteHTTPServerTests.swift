@@ -89,7 +89,8 @@ final class RemoteHTTPServerTests: XCTestCase {
         port: UInt16,
         catalog: any RemoteCatalogServing = RemoteHTTPServerTestCatalog(),
         pairingStore: RemotePairingStore? = nil,
-        hostAppVersion: String = "1.0.0"
+        hostAppVersion: String = "1.0.0",
+        webAssetStore: RemoteWebCompanionAssetStore = RemoteWebCompanionAssetStore()
     ) -> (RemoteHTTPServer, RemotePairingStore) {
         let store = pairingStore ?? makePairingStore(listenPort: Int(port))
         let facade = RemoteCatalogFacade(
@@ -103,6 +104,7 @@ final class RemoteHTTPServerTests: XCTestCase {
             facade: facade,
             pairingStore: store,
             eventBroker: RemoteEventBroker(),
+            webAssetStore: webAssetStore,
             secIdentity: nil,
             port: port
         )
@@ -283,6 +285,268 @@ final class RemoteHTTPServerTests: XCTestCase {
         let tokens = try JSONDecoder().decode(RemoteSessionTokens.self, from: data)
         XCTAssertFalse(tokens.accessToken.isEmpty)
         XCTAssertFalse(tokens.refreshToken.isEmpty)
+    }
+
+    func testWebPairingURLKeepsOneTimeTokenInFragment() throws {
+        let offer = RemotePairingOffer(
+            hostID: UUID(),
+            hostDisplayName: "Test Host",
+            listenPort: 8787,
+            usesTLS: true,
+            certificateFingerprintSHA256: "fingerprint",
+            pairingToken: "one-time-secret",
+            expiresAtMs: 123,
+            publicBaseURL: "https://imageall.example.com"
+        )
+
+        let url = try XCTUnwrap(RemoteWebCompanionSession.webPairingURL(for: offer))
+        XCTAssertEqual(url.scheme, "https")
+        XCTAssertEqual(url.host, "imageall.example.com")
+        XCTAssertNil(url.query)
+        XCTAssertEqual(url.fragment, "pair=one-time-secret")
+    }
+
+    func testWebSessionRequiresMatchingOriginAndHost() {
+        XCTAssertTrue(
+            RemoteWebCompanionSession.isTrustedSameOrigin(
+                headers: [
+                    "origin": "https://imageall.example.com",
+                    "host": "imageall.example.com",
+                    "sec-fetch-site": "same-origin",
+                ]
+            )
+        )
+        XCTAssertTrue(
+            RemoteWebCompanionSession.isTrustedSameOrigin(
+                headers: [
+                    "origin": "http://127.0.0.1:8787",
+                    "host": "127.0.0.1:8787",
+                ]
+            )
+        )
+        XCTAssertFalse(
+            RemoteWebCompanionSession.isTrustedSameOrigin(
+                headers: [
+                    "origin": "https://attacker.example",
+                    "host": "imageall.example.com",
+                    "sec-fetch-site": "cross-site",
+                ]
+            )
+        )
+        XCTAssertFalse(
+            RemoteWebCompanionSession.isTrustedSameOrigin(
+                headers: ["host": "imageall.example.com"]
+            )
+        )
+    }
+
+    func testWebSessionCookiesAreSecureHttpOnlyAndStrict() {
+        let tokens = RemoteSessionTokens(
+            deviceID: UUID(),
+            hostID: UUID(),
+            accessToken: "access-secret",
+            accessExpiresAtMs: Int64((Date().timeIntervalSince1970 + 3_600) * 1_000),
+            refreshToken: "refresh-secret",
+            certificateFingerprintSHA256: "fingerprint",
+            usesTLS: true,
+            listenPort: 8787
+        )
+
+        let values = RemoteWebCompanionSession.sessionCookieHeaders(tokens: tokens)
+            .map(\.1)
+        XCTAssertEqual(values.count, 3)
+        XCTAssertTrue(values.allSatisfy { $0.contains("Secure") })
+        XCTAssertTrue(values.allSatisfy { $0.contains("HttpOnly") })
+        XCTAssertTrue(values.allSatisfy { $0.contains("SameSite=Strict") })
+        XCTAssertTrue(values.contains { $0.hasPrefix("__Host-imageall_access=") })
+        XCTAssertTrue(values.contains { $0.hasPrefix("__Secure-imageall_refresh=") })
+        XCTAssertTrue(values.contains { $0.hasPrefix("__Secure-imageall_device=") })
+    }
+
+    func testWebPairingReturnsSafeSummaryAndSessionCookies() async throws {
+        let port = UInt16.random(in: 19_000...29_000)
+        let (server, store) = makeServer(port: port)
+        try await server.start()
+        try await Task.sleep(nanoseconds: 150_000_000)
+        let offer = await store.issueOffer()
+
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.httpShouldSetCookies = false
+        let session = URLSession(configuration: configuration)
+        defer { session.invalidateAndCancel() }
+
+        var request = URLRequest(
+            url: URL(string: "http://127.0.0.1:\(port)/web/session/pair")!
+        )
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue(
+            "http://127.0.0.1:\(port)",
+            forHTTPHeaderField: "Origin"
+        )
+        request.setValue("same-origin", forHTTPHeaderField: "Sec-Fetch-Site")
+        request.httpBody = try JSONEncoder().encode(
+            RemoteWebCompanionSession.PairingRequest(
+                pairingToken: offer.pairingToken,
+                deviceName: "Safari",
+                clientID: UUID().uuidString
+            )
+        )
+
+        let (data, response) = try await session.data(for: request)
+        await server.stop()
+
+        let http = try XCTUnwrap(response as? HTTPURLResponse)
+        XCTAssertEqual(http.statusCode, 200)
+        let summary = try JSONDecoder().decode(
+            RemoteWebCompanionSession.StatusResponse.self,
+            from: data
+        )
+        XCTAssertTrue(summary.authenticated)
+        XCTAssertNotNil(summary.deviceID)
+        let responseText = String(decoding: data, as: UTF8.self)
+        XCTAssertFalse(responseText.contains("accessToken"))
+        XCTAssertFalse(responseText.contains("refreshToken"))
+        let cookieHeader = try XCTUnwrap(
+            http.value(forHTTPHeaderField: "Set-Cookie")
+        )
+        XCTAssertTrue(cookieHeader.contains(RemoteWebCompanionSession.accessCookieName))
+        XCTAssertTrue(cookieHeader.contains(RemoteWebCompanionSession.refreshCookieName))
+        XCTAssertTrue(cookieHeader.contains(RemoteWebCompanionSession.deviceCookieName))
+    }
+
+    func testWebAssetStoreServesOnlyFixedPublicRoutes() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(
+                "RemoteHTTPServerTests-Web-\(UUID().uuidString)",
+                isDirectory: true
+            )
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try Data("<h1>ImageAll</h1>".utf8)
+            .write(to: directory.appendingPathComponent("index.html"))
+
+        let store = RemoteWebCompanionAssetStore(directoryURL: directory)
+        let root = try XCTUnwrap(store.asset(for: "/"))
+        XCTAssertEqual(root.contentType, "text/html; charset=utf-8")
+        XCTAssertEqual(String(decoding: root.body, as: UTF8.self), "<h1>ImageAll</h1>")
+        XCTAssertNil(store.asset(for: "/../pairing.json"))
+        XCTAssertNil(store.asset(for: "/v1/capabilities"))
+    }
+
+    func testWebRootLoadsWithoutAuthenticationAndUsesBrowserSecurityHeaders() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(
+                "RemoteHTTPServerTests-Web-\(UUID().uuidString)",
+                isDirectory: true
+            )
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try Data("<main>ImageAll Web</main>".utf8)
+            .write(to: directory.appendingPathComponent("index.html"))
+
+        let port = UInt16.random(in: 19_000...29_000)
+        let (server, _) = makeServer(
+            port: port,
+            webAssetStore: RemoteWebCompanionAssetStore(directoryURL: directory)
+        )
+        try await server.start()
+        try await Task.sleep(nanoseconds: 150_000_000)
+        defer { Task { await server.stop() } }
+
+        let (data, response) = try await URLSession.shared.data(
+            from: URL(string: "http://127.0.0.1:\(port)/")!
+        )
+        let http = try XCTUnwrap(response as? HTTPURLResponse)
+        XCTAssertEqual(http.statusCode, 200)
+        XCTAssertEqual(String(decoding: data, as: UTF8.self), "<main>ImageAll Web</main>")
+        XCTAssertEqual(http.value(forHTTPHeaderField: "X-Frame-Options"), "DENY")
+        XCTAssertEqual(http.value(forHTTPHeaderField: "X-Content-Type-Options"), "nosniff")
+        XCTAssertTrue(
+            try XCTUnwrap(http.value(forHTTPHeaderField: "Content-Security-Policy"))
+                .contains("frame-ancestors 'none'")
+        )
+    }
+
+    func testCookieAuthenticationReadsCapabilitiesAndRejectsCrossOriginWrites() async throws {
+        let port = UInt16.random(in: 19_000...29_000)
+        let (server, store) = makeServer(port: port, hostAppVersion: "3.0.0")
+        let offer = await store.issueOffer()
+        let tokens = try await store.completePairing(
+            RemotePairingCompleteRequest(
+                pairingToken: offer.pairingToken,
+                deviceName: "Safari",
+                devicePublicKeySPKI_SHA256: "web-client"
+            )
+        )
+        try await server.start()
+        try await Task.sleep(nanoseconds: 150_000_000)
+        defer { Task { await server.stop() } }
+
+        var capabilitiesRequest = URLRequest(
+            url: URL(string: "http://127.0.0.1:\(port)/v1/capabilities")!
+        )
+        capabilitiesRequest.setValue(
+            "\(RemoteWebCompanionSession.accessCookieName)=\(tokens.accessToken)",
+            forHTTPHeaderField: "Cookie"
+        )
+        let (capabilitiesData, capabilitiesResponse) = try await URLSession.shared.data(
+            for: capabilitiesRequest
+        )
+        XCTAssertEqual(
+            try XCTUnwrap(capabilitiesResponse as? HTTPURLResponse).statusCode,
+            200
+        )
+        XCTAssertEqual(
+            try JSONDecoder().decode(RemoteCapabilities.self, from: capabilitiesData)
+                .hostAppVersion,
+            "3.0.0"
+        )
+
+        var rejectedRequest = URLRequest(
+            url: URL(string: "http://127.0.0.1:\(port)/v1/tag-decisions/batch")!
+        )
+        rejectedRequest.httpMethod = "POST"
+        rejectedRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        rejectedRequest.setValue(
+            "\(RemoteWebCompanionSession.accessCookieName)=\(tokens.accessToken)",
+            forHTTPHeaderField: "Cookie"
+        )
+        rejectedRequest.setValue(
+            "https://attacker.example",
+            forHTTPHeaderField: "Origin"
+        )
+        rejectedRequest.httpBody = try JSONEncoder().encode(
+            RemoteBatchTagDecisionRequest(
+                operationID: UUID(),
+                tagID: UUID(),
+                assetIDs: [UUID()],
+                action: .accept
+            )
+        )
+        let (_, rejectedResponse) = try await URLSession.shared.data(for: rejectedRequest)
+        XCTAssertEqual(
+            try XCTUnwrap(rejectedResponse as? HTTPURLResponse).statusCode,
+            403
+        )
+
+        var acceptedRequest = rejectedRequest
+        acceptedRequest.setValue(
+            "http://127.0.0.1:\(port)",
+            forHTTPHeaderField: "Origin"
+        )
+        acceptedRequest.setValue("same-origin", forHTTPHeaderField: "Sec-Fetch-Site")
+        let (_, acceptedResponse) = try await URLSession.shared.data(for: acceptedRequest)
+        XCTAssertEqual(
+            try XCTUnwrap(acceptedResponse as? HTTPURLResponse).statusCode,
+            200
+        )
     }
 
     func testWebSocketAcceptValueMatchesRFC6455Example() {

@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#f2f2f4" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#1e1e20" media="(prefers-color-scheme: dark)">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="ImageAll">
+  <title>ImageAll 网页版</title>
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="stylesheet" href="/app.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <div id="bootView" class="centered-state">
+    <div class="spinner" aria-hidden="true"></div>
+    <p>正在连接这台 Mac…</p>
+  </div>
+
+  <main id="pairingView" class="pairing-view hidden" aria-labelledby="pairingTitle">
+    <section class="pairing-card">
+      <div class="app-mark" aria-hidden="true">
+        <span class="app-mark-sun"></span>
+        <span class="app-mark-frame"></span>
+      </div>
+      <div class="pairing-copy">
+        <p class="eyebrow">IMAGEALL COMPANION</p>
+        <h1 id="pairingTitle">连接你的 Mac 图库</h1>
+        <p class="secondary">
+          在 Mac 版 ImageAll 的“设置 → 移动辅助 Host”中开始配对，然后打开复制的网页版配对链接。
+        </p>
+      </div>
+      <form id="pairingForm" class="pairing-form">
+        <label for="pairingToken">一次性配对码</label>
+        <input
+          id="pairingToken"
+          name="pairingToken"
+          type="text"
+          inputmode="text"
+          autocomplete="one-time-code"
+          spellcheck="false"
+          placeholder="粘贴 Mac 上显示的配对码"
+          required
+        >
+        <label for="deviceName">设备名称</label>
+        <input
+          id="deviceName"
+          name="deviceName"
+          type="text"
+          autocomplete="off"
+          maxlength="80"
+          placeholder="例如：我的 iPhone"
+          required
+        >
+        <button id="pairButton" class="button button-primary" type="submit">连接图库</button>
+        <p id="pairingError" class="form-error" role="alert"></p>
+      </form>
+      <p class="pairing-footnote">
+        网页只在 Mac App 与公网 Tunnel 在线时可用。照片与数据库不会同步到云端。
+      </p>
+    </section>
+  </main>
+
+  <main id="appView" class="app-shell hidden">
+    <header class="titlebar">
+      <div class="titlebar-leading">
+        <button id="sidebarToggle" class="icon-button mobile-only" type="button" aria-label="显示来源">
+          <span aria-hidden="true">☰</span>
+        </button>
+        <div class="mini-mark" aria-hidden="true"></div>
+        <strong>ImageAll</strong>
+        <span class="titlebar-separator" aria-hidden="true"></span>
+        <span id="libraryTitle" class="secondary">全部照片</span>
+      </div>
+      <div class="titlebar-actions">
+        <span id="connectionStatus" class="connection-status" data-state="connecting">
+          <span class="status-dot" aria-hidden="true"></span>
+          <span class="connection-label">正在连接</span>
+        </span>
+        <button id="refreshButton" class="icon-button" type="button" aria-label="刷新图库" title="刷新图库">↻</button>
+        <button id="logoutButton" class="button button-plain" type="button">退出</button>
+      </div>
+    </header>
+
+    <div id="offlineBanner" class="offline-banner hidden" role="status">
+      Mac Host 暂时不可用。恢复连接后会自动刷新；离线期间不能修改标签。
+    </div>
+
+    <div class="workspace">
+      <aside id="sourceSidebar" class="source-sidebar" aria-label="图库来源">
+        <div class="sidebar-section">
+          <h2>图库</h2>
+          <nav id="libraryNavigation" class="sidebar-list">
+            <button class="sidebar-row selected" type="button" data-source-id="">
+              <span class="sidebar-icon" aria-hidden="true">▦</span>
+              <span>全部照片</span>
+              <span id="allAssetCount" class="sidebar-count"></span>
+            </button>
+          </nav>
+        </div>
+        <div class="sidebar-section source-section">
+          <h2>来源</h2>
+          <nav id="sourceList" class="sidebar-list"></nav>
+          <p id="sourceEmpty" class="sidebar-empty hidden">尚无可用来源</p>
+        </div>
+        <div class="sidebar-footer">
+          <span id="hostVersion">Mac Host</span>
+          <span>数据保留在这台 Mac</span>
+        </div>
+      </aside>
+
+      <section class="library-pane" aria-label="照片图库">
+        <div class="toolbar">
+          <form id="searchForm" class="search-field" role="search">
+            <span aria-hidden="true">⌕</span>
+            <input id="searchInput" type="search" placeholder="搜索文件名" autocomplete="off">
+            <button id="clearSearchButton" class="search-clear hidden" type="button" aria-label="清除搜索">×</button>
+          </form>
+          <label class="sort-control">
+            <span class="visually-hidden">排序方式</span>
+            <select id="sortSelect">
+              <option value="newest">最新优先</option>
+              <option value="oldest">最早优先</option>
+              <option value="fileNameAscending">按文件名</option>
+            </select>
+          </label>
+          <span id="assetSummary" class="toolbar-summary secondary"></span>
+        </div>
+
+        <div id="libraryScroll" class="library-scroll">
+          <div id="emptyState" class="empty-state hidden">
+            <div class="empty-symbol" aria-hidden="true">▧</div>
+            <h2>没有找到照片</h2>
+            <p>尝试选择其他来源或清除搜索条件。</p>
+          </div>
+          <div id="assetGrid" class="asset-grid" aria-live="polite"></div>
+          <div class="load-more-wrap">
+            <button id="loadMoreButton" class="button hidden" type="button">载入更多</button>
+          </div>
+        </div>
+      </section>
+
+      <aside id="inspector" class="inspector" aria-label="照片检查器">
+        <div id="inspectorPlaceholder" class="inspector-placeholder">
+          <div class="placeholder-symbol" aria-hidden="true">ⓘ</div>
+          <p>选择一张照片以查看详细信息和标签</p>
+        </div>
+        <div id="inspectorContent" class="inspector-content hidden">
+          <div class="inspector-header mobile-only">
+            <button id="closeInspectorButton" class="button button-plain" type="button">完成</button>
+          </div>
+          <div class="preview-wrap">
+            <img id="previewImage" alt="">
+            <div id="previewLoading" class="preview-loading">
+              <div class="spinner" aria-hidden="true"></div>
+            </div>
+          </div>
+          <div class="inspector-scroll">
+            <section class="inspector-section">
+              <h2 id="assetFileName">未命名照片</h2>
+              <dl id="assetMetadata" class="metadata-list"></dl>
+            </section>
+            <section class="inspector-section tag-section">
+              <div class="section-heading">
+                <h3>标签</h3>
+                <span id="tagSummary" class="secondary"></span>
+              </div>
+              <div id="inspectorTags" class="tag-list"></div>
+              <p id="tagEmpty" class="secondary hidden">尚无活动标签</p>
+            </section>
+          </div>
+        </div>
+      </aside>
+    </div>
+  </main>
+
+  <div id="toast" class="toast hidden" role="status"></div>
+</body>
+</html>

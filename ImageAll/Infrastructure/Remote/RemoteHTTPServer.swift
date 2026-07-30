@@ -33,6 +33,7 @@ actor RemoteHTTPServer {
     private let facade: RemoteCatalogFacade
     private let pairingStore: RemotePairingStore
     private let eventBroker: RemoteEventBroker
+    private let webAssetStore: RemoteWebCompanionAssetStore
     private let secIdentity: SecIdentity?
     private let port: UInt16
     private let advertisementName: String
@@ -49,6 +50,7 @@ actor RemoteHTTPServer {
         facade: RemoteCatalogFacade,
         pairingStore: RemotePairingStore,
         eventBroker: RemoteEventBroker,
+        webAssetStore: RemoteWebCompanionAssetStore = RemoteWebCompanionAssetStore(),
         secIdentity: SecIdentity? = nil,
         port: UInt16 = RemoteHTTPServer.defaultPort,
         advertisementName: String = RemoteHTTPServer.defaultAdvertisementName(),
@@ -57,6 +59,7 @@ actor RemoteHTTPServer {
         self.facade = facade
         self.pairingStore = pairingStore
         self.eventBroker = eventBroker
+        self.webAssetStore = webAssetStore
         self.secIdentity = secIdentity
         self.port = port
         self.advertisementName = advertisementName
@@ -337,10 +340,195 @@ actor RemoteHTTPServer {
     ) async {
         let (path, query) = Self.splitPathAndQuery(pathAndQuery)
 
+        if method == "GET", RemoteWebCompanionAssetStore.isPublicAssetPath(path) {
+            guard let asset = webAssetStore.asset(for: path) else {
+                timeoutTask.cancel()
+                await respond(
+                    connection,
+                    status: 404,
+                    error: .init(code: .notFound, message: "web companion asset unavailable")
+                )
+                return
+            }
+            await respond(
+                connection,
+                status: 200,
+                contentType: asset.contentType,
+                body: asset.body,
+                timeoutTask: timeoutTask,
+                additionalHeaders: RemoteWebCompanionSession.browserSecurityHeaders
+            )
+            return
+        }
+
+        if method == "POST", path == RemoteWebCompanionSession.pairingPath {
+            guard RemoteWebCompanionSession.isTrustedSameOrigin(headers: headers) else {
+                await respond(
+                    connection,
+                    status: 403,
+                    error: .init(code: .unauthorized, message: "untrusted browser origin"),
+                    timeoutTask: timeoutTask
+                )
+                return
+            }
+            do {
+                let request = try jsonDecoder.decode(
+                    RemoteWebCompanionSession.PairingRequest.self,
+                    from: body
+                )
+                let deviceName = request.deviceName.trimmingCharacters(
+                    in: .whitespacesAndNewlines
+                )
+                guard !deviceName.isEmpty,
+                      deviceName.count <= 80,
+                      request.pairingToken.count <= 512,
+                      request.clientID.count >= 8,
+                      request.clientID.count <= 256
+                else {
+                    throw RemoteAPIError(
+                        code: .badRequest,
+                        message: "invalid browser pairing request"
+                    )
+                }
+                let tokens = try await pairingStore.completePairing(
+                    RemotePairingCompleteRequest(
+                        pairingToken: request.pairingToken,
+                        deviceName: deviceName,
+                        devicePublicKeySPKI_SHA256: RemoteWebCompanionSession.fingerprint(
+                            for: request.clientID
+                        )
+                    )
+                )
+                await respondJSON(
+                    connection,
+                    status: 200,
+                    value: RemoteWebCompanionSession.StatusResponse(
+                        authenticated: true,
+                        deviceID: tokens.deviceID
+                    ),
+                    timeoutTask: timeoutTask,
+                    additionalHeaders: RemoteWebCompanionSession.sessionCookieHeaders(
+                        tokens: tokens
+                    )
+                )
+            } catch is DecodingError {
+                await respond(
+                    connection,
+                    status: 400,
+                    error: .init(code: .badRequest, message: "malformed request body"),
+                    timeoutTask: timeoutTask
+                )
+            } catch let pairingError as RemotePairingStore.PairingError {
+                await respond(
+                    connection,
+                    status: 400,
+                    error: .init(
+                        code: .badRequest,
+                        message: String(describing: pairingError)
+                    ),
+                    timeoutTask: timeoutTask
+                )
+            } catch let api as RemoteAPIError {
+                await respond(
+                    connection,
+                    status: 400,
+                    error: api,
+                    timeoutTask: timeoutTask
+                )
+            } catch {
+                logger.error(
+                    "Web pairing failed: \(String(describing: error), privacy: .private)"
+                )
+                await respond(
+                    connection,
+                    status: 500,
+                    error: .init(code: .internalError, message: "internal server error"),
+                    timeoutTask: timeoutTask
+                )
+            }
+            return
+        }
+
+        if method == "POST", path == RemoteWebCompanionSession.refreshPath {
+            guard RemoteWebCompanionSession.isTrustedSameOrigin(headers: headers) else {
+                await respond(
+                    connection,
+                    status: 403,
+                    error: .init(code: .unauthorized, message: "untrusted browser origin"),
+                    timeoutTask: timeoutTask
+                )
+                return
+            }
+            do {
+                guard let deviceValue = RemoteWebCompanionSession.cookieValue(
+                    named: RemoteWebCompanionSession.deviceCookieName,
+                    headers: headers
+                ),
+                let deviceID = UUID(uuidString: deviceValue),
+                let refreshToken = RemoteWebCompanionSession.cookieValue(
+                    named: RemoteWebCompanionSession.refreshCookieName,
+                    headers: headers
+                )
+                else {
+                    throw RemotePairingStore.PairingError.invalidRefreshToken
+                }
+                let tokens = try await pairingStore.refresh(
+                    RemoteTokenRefreshRequest(
+                        deviceID: deviceID,
+                        refreshToken: refreshToken
+                    )
+                )
+                await respondJSON(
+                    connection,
+                    status: 200,
+                    value: RemoteWebCompanionSession.StatusResponse(
+                        authenticated: true,
+                        deviceID: tokens.deviceID
+                    ),
+                    timeoutTask: timeoutTask,
+                    additionalHeaders: RemoteWebCompanionSession.sessionCookieHeaders(
+                        tokens: tokens
+                    )
+                )
+            } catch {
+                await respond(
+                    connection,
+                    status: 401,
+                    error: .init(code: .unauthorized, message: "browser session expired"),
+                    timeoutTask: timeoutTask,
+                    additionalHeaders: RemoteWebCompanionSession.clearingCookieHeaders
+                )
+            }
+            return
+        }
+
+        if method == "POST", path == RemoteWebCompanionSession.logoutPath {
+            guard RemoteWebCompanionSession.isTrustedSameOrigin(headers: headers) else {
+                await respond(
+                    connection,
+                    status: 403,
+                    error: .init(code: .unauthorized, message: "untrusted browser origin"),
+                    timeoutTask: timeoutTask
+                )
+                return
+            }
+            await respond(
+                connection,
+                status: 204,
+                contentType: "application/json",
+                body: Data(),
+                timeoutTask: timeoutTask,
+                additionalHeaders: RemoteWebCompanionSession.clearingCookieHeaders
+            )
+            return
+        }
+
         if method == "GET",
            path == RemoteHTTPPaths.eventsWebSocket,
            Self.isWebSocketUpgrade(headers: headers) {
-            guard (await pairingStore.authenticate(bearer: bearerToken(headers: headers))).isAuthorized else {
+            guard (await pairingStore.authenticate(
+                bearer: authenticationToken(headers: headers)
+            )).isAuthorized else {
                 timeoutTask.cancel()
                 await respond(connection, status: 401, error: .init(code: .unauthorized, message: "invalid or missing bearer token"))
                 return
@@ -357,10 +545,33 @@ actor RemoteHTTPServer {
             return
         }
 
+        var authenticatedDeviceID: UUID?
         if !Self.unauthenticatedPaths.contains(path) {
-            guard (await pairingStore.authenticate(bearer: bearerToken(headers: headers))).isAuthorized else {
+            let outcome = await pairingStore.authenticate(
+                bearer: authenticationToken(headers: headers)
+            )
+            guard outcome.isAuthorized else {
                 timeoutTask.cancel()
                 await respond(connection, status: 401, error: .init(code: .unauthorized, message: "invalid or missing bearer token"))
+                return
+            }
+            if case let .device(deviceID) = outcome {
+                authenticatedDeviceID = deviceID
+            }
+            if Self.isMutationMethod(method),
+               bearerToken(headers: headers).isEmpty,
+               RemoteWebCompanionSession.cookieValue(
+                   named: RemoteWebCompanionSession.accessCookieName,
+                   headers: headers
+               ) != nil,
+               !RemoteWebCompanionSession.isTrustedSameOrigin(headers: headers)
+            {
+                await respond(
+                    connection,
+                    status: 403,
+                    error: .init(code: .unauthorized, message: "untrusted browser origin"),
+                    timeoutTask: timeoutTask
+                )
                 return
             }
         }
@@ -370,6 +581,16 @@ actor RemoteHTTPServer {
             case ("GET", RemoteHTTPPaths.capabilities):
                 let payload = await facade.capabilities()
                 await respondJSON(connection, status: 200, value: payload, timeoutTask: timeoutTask)
+            case ("GET", RemoteWebCompanionSession.statusPath):
+                await respondJSON(
+                    connection,
+                    status: 200,
+                    value: RemoteWebCompanionSession.StatusResponse(
+                        authenticated: true,
+                        deviceID: authenticatedDeviceID
+                    ),
+                    timeoutTask: timeoutTask
+                )
             case ("GET", RemoteHTTPPaths.sources):
                 let payload = try await facade.fetchSources()
                 await respondJSON(connection, status: 200, value: payload, timeoutTask: timeoutTask)
@@ -477,6 +698,21 @@ actor RemoteHTTPServer {
         return String(value.dropFirst(prefix.count))
     }
 
+    private func authenticationToken(headers: [String: String]) -> String {
+        let bearer = bearerToken(headers: headers)
+        if !bearer.isEmpty {
+            return bearer
+        }
+        return RemoteWebCompanionSession.cookieValue(
+            named: RemoteWebCompanionSession.accessCookieName,
+            headers: headers
+        ) ?? ""
+    }
+
+    private static func isMutationMethod(_ method: String) -> Bool {
+        ["POST", "PUT", "PATCH", "DELETE"].contains(method)
+    }
+
     // MARK: - WebSocket upgrade
 
     private static func isWebSocketUpgrade(headers: [String: String]) -> Bool {
@@ -566,10 +802,23 @@ actor RemoteHTTPServer {
 
     // MARK: - Response helpers
 
-    private func respondJSON<T: Encodable>(_ connection: NWConnection, status: Int, value: T, timeoutTask: Task<Void, Never>) async {
+    private func respondJSON<T: Encodable>(
+        _ connection: NWConnection,
+        status: Int,
+        value: T,
+        timeoutTask: Task<Void, Never>,
+        additionalHeaders: [(String, String)] = []
+    ) async {
         do {
             let data = try jsonEncoder.encode(value)
-            await respond(connection, status: status, contentType: "application/json", body: data, timeoutTask: timeoutTask)
+            await respond(
+                connection,
+                status: status,
+                contentType: "application/json",
+                body: data,
+                timeoutTask: timeoutTask,
+                additionalHeaders: additionalHeaders
+            )
         } catch {
             await respond(
                 connection,
@@ -584,10 +833,18 @@ actor RemoteHTTPServer {
         _ connection: NWConnection,
         status: Int,
         error: RemoteAPIError,
-        timeoutTask: Task<Void, Never>? = nil
+        timeoutTask: Task<Void, Never>? = nil,
+        additionalHeaders: [(String, String)] = []
     ) async {
         let data = (try? jsonEncoder.encode(error)) ?? Data(#"{"code":"internalError","message":"encode"}"#.utf8)
-        await respond(connection, status: status, contentType: "application/json", body: data, timeoutTask: timeoutTask)
+        await respond(
+            connection,
+            status: status,
+            contentType: "application/json",
+            body: data,
+            timeoutTask: timeoutTask,
+            additionalHeaders: additionalHeaders
+        )
     }
 
     private func respond(
@@ -595,7 +852,8 @@ actor RemoteHTTPServer {
         status: Int,
         contentType: String,
         body: Data,
-        timeoutTask: Task<Void, Never>? = nil
+        timeoutTask: Task<Void, Never>? = nil,
+        additionalHeaders: [(String, String)] = []
     ) async {
         timeoutTask?.cancel()
         let reason: String = {
@@ -604,6 +862,7 @@ actor RemoteHTTPServer {
             case 204: "No Content"
             case 400: "Bad Request"
             case 401: "Unauthorized"
+            case 403: "Forbidden"
             case 404: "Not Found"
             case 409: "Conflict"
             case 413: "Payload Too Large"
@@ -614,6 +873,9 @@ actor RemoteHTTPServer {
         header += "Content-Type: \(contentType)\r\n"
         header += "Cache-Control: no-store\r\n"
         header += "Pragma: no-cache\r\n"
+        for (name, value) in additionalHeaders {
+            header += "\(name): \(value)\r\n"
+        }
         header += "Content-Length: \(body.count)\r\n"
         header += "Connection: close\r\n\r\n"
         var payload = Data(header.utf8)

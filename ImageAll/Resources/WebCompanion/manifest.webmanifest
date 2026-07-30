@@ -1,0 +1,11 @@
+{
+  "name": "ImageAll 网页版",
+  "short_name": "ImageAll",
+  "description": "连接你的 Mac ImageAll 图库",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#f2f2f4",
+  "theme_color": "#f2f2f4",
+  "orientation": "any"
+}

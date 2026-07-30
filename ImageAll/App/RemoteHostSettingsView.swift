@@ -137,6 +137,20 @@ final class RemoteHostSettingsModel: ObservableObject {
         statusMessage = "配对载荷已复制到剪贴板"
     }
 
+    var webPairingURL: URL? {
+        offer.flatMap(RemoteWebCompanionSession.webPairingURL(for:))
+    }
+
+    func copyWebPairingURL() {
+        guard let url = webPairingURL else {
+            statusMessage = "请先保存公网入口并重新开始配对。"
+            return
+        }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(url.absoluteString, forType: .string)
+        statusMessage = "网页版配对链接已复制；链接中的一次性令牌不会发送给 Cloudflare。"
+    }
+
     private func applyStoredConfiguration(runningMessage: String) {
         isApplyingConfiguration = true
         statusMessage = "正在应用 Host 设置…"
@@ -260,6 +274,11 @@ struct RemoteHostSettingsView: View {
                     }
                     .disabled(model.offer == nil)
                     .persistentHelp("把当前配对信息复制到剪贴板，便于手动传给移动端。")
+                    Button("复制网页版配对链接") {
+                        model.copyWebPairingURL()
+                    }
+                    .disabled(model.webPairingURL == nil)
+                    .persistentHelp("复制可在 Safari 中打开的一次性配对链接。")
                 }
                 if let offer = model.offer {
                     if let image = qrImage(for: offer) {
@@ -274,6 +293,15 @@ struct RemoteHostSettingsView: View {
                     LabeledContent("TLS", value: offer.usesTLS ? "是" : "否")
                     if let publicBaseURL = offer.publicBaseURL {
                         LabeledContent("公网入口", value: publicBaseURL)
+                        if let webPairingURL = model.webPairingURL {
+                            LabeledContent("网页版") {
+                                Text(webPairingURL.absoluteString)
+                                    .font(.system(.caption, design: .monospaced))
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                                    .textSelection(.enabled)
+                            }
+                        }
                     }
                 } else {
                     Text("尚未开始配对会话")
