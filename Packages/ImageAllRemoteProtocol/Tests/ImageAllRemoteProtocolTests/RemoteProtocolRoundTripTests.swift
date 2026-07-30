@@ -131,6 +131,25 @@ final class RemoteProtocolRoundTripTests: XCTestCase {
         try assertRoundTrip(original)
     }
 
+    func testAdvancedAssetPageRequestRoundTrip() throws {
+        let tagID = UUID(uuidString: "44444444-4444-4444-4444-444444444444")!
+        let original = RemoteAssetPageRequest(
+            searchText: "sunset",
+            sort: .oldest,
+            limit: 48,
+            tagDecisionFilters: [
+                RemoteAssetTagDecisionFilter(tagID: tagID, decision: .accepted),
+            ],
+            excludedTagIDs: [UUID(uuidString: "55555555-5555-5555-5555-555555555555")!],
+            tagMatchMode: .any,
+            availabilities: [.available],
+            mediaKinds: [.image],
+            mediaTypes: ["public.jpeg"],
+            tagPresence: .tagged
+        )
+        try assertRoundTrip(original)
+    }
+
     func testBatchTagDecisionRoundTrip() throws {
         let request = RemoteBatchTagDecisionRequest(
             operationID: UUID(uuidString: "33333333-3333-3333-3333-333333333333")!,

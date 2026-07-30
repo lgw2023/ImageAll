@@ -75,6 +75,15 @@
         <span id="libraryTitle" class="secondary">全部照片</span>
       </div>
       <div class="titlebar-actions">
+        <button id="reviewButton" class="button button-compact" type="button" title="打开建议审核">
+          <span aria-hidden="true">✓⃝</span>
+          <span>审核</span>
+        </button>
+        <button id="jobsButton" class="button button-compact badge-button" type="button" title="查看后台任务">
+          <span aria-hidden="true">◷</span>
+          <span>任务</span>
+          <span id="jobsBadge" class="count-badge hidden"></span>
+        </button>
         <span id="connectionStatus" class="connection-status" data-state="connecting">
           <span class="status-dot" aria-hidden="true"></span>
           <span class="connection-label">正在连接</span>
@@ -126,7 +135,107 @@
               <option value="fileNameAscending">按文件名</option>
             </select>
           </label>
+          <button id="filterButton" class="button toolbar-button" type="button" aria-expanded="false">
+            <span aria-hidden="true">≡</span>
+            <span>筛选</span>
+            <span id="filterBadge" class="count-badge hidden"></span>
+          </button>
+          <button id="selectionModeButton" class="button toolbar-button" type="button" aria-pressed="false">
+            选择
+          </button>
           <span id="assetSummary" class="toolbar-summary secondary"></span>
+        </div>
+
+        <section id="filterPopover" class="popover filter-popover hidden" aria-label="高级筛选">
+          <div class="popover-heading">
+            <div>
+              <h2>筛选照片</h2>
+              <p>条件由这台 Mac 查询完整图库</p>
+            </div>
+            <button id="closeFilterButton" class="icon-button" type="button" aria-label="关闭筛选">×</button>
+          </div>
+          <div class="filter-grid">
+            <label>
+              <span>媒体</span>
+              <select id="mediaKindFilter">
+                <option value="">照片与视频</option>
+                <option value="image">照片</option>
+                <option value="video">视频</option>
+              </select>
+            </label>
+            <label>
+              <span>可用状态</span>
+              <select id="availabilityFilter">
+                <option value="">全部状态</option>
+                <option value="available">可用</option>
+                <option value="missing">文件缺失</option>
+                <option value="unreadable">不可读取</option>
+                <option value="unsupported">格式不支持</option>
+              </select>
+            </label>
+            <label>
+              <span>文件格式</span>
+              <select id="mediaTypeFilter">
+                <option value="">全部格式</option>
+                <option value="public.jpeg">JPEG</option>
+                <option value="public.png">PNG</option>
+                <option value="public.heic,public.heif">HEIC / HEIF</option>
+                <option value="public.tiff">TIFF</option>
+                <option value="org.webmproject.webp">WebP</option>
+                <option value="com.compuserve.gif">GIF</option>
+                <option value="public.mpeg-4,com.apple.quicktime-movie">MP4 / MOV</option>
+              </select>
+            </label>
+            <label>
+              <span>标签状态</span>
+              <select id="tagPresenceFilter">
+                <option value="any">全部照片</option>
+                <option value="tagged">已有标签</option>
+                <option value="untagged">尚无标签</option>
+              </select>
+            </label>
+          </div>
+          <div class="filter-tag-builder">
+            <span class="field-label">标签条件</span>
+            <div class="filter-tag-controls">
+              <select id="filterTagSelect" aria-label="选择标签"></select>
+              <select id="filterTagDecision" aria-label="标签条件">
+                <option value="accepted">已确认</option>
+                <option value="rejected">已拒绝</option>
+                <option value="excluded">不包含</option>
+              </select>
+              <button id="addTagFilterButton" class="button" type="button">添加</button>
+            </div>
+            <div id="filterTagChips" class="filter-chips"></div>
+            <label id="tagMatchModeLabel" class="inline-control hidden">
+              <span>多个标签</span>
+              <select id="tagMatchMode">
+                <option value="all">全部符合</option>
+                <option value="any">任一符合</option>
+              </select>
+            </label>
+          </div>
+          <div class="popover-footer">
+            <button id="resetFiltersButton" class="button button-plain" type="button">清除全部</button>
+            <button id="applyFiltersButton" class="button button-primary" type="button">应用筛选</button>
+          </div>
+        </section>
+
+        <div id="batchBar" class="batch-bar hidden" role="region" aria-label="批量标签操作">
+          <strong id="selectionSummary">已选择 0 项</strong>
+          <button id="selectAllLoadedButton" class="button button-plain" type="button">全选已载入</button>
+          <span class="batch-spacer"></span>
+          <label>
+            <span class="visually-hidden">批量标签</span>
+            <select id="batchTagSelect"></select>
+          </label>
+          <span id="batchAggregate" class="secondary"></span>
+          <div class="segmented-actions" role="group" aria-label="批量标签决定">
+            <button class="batch-action write-action" data-action="accept" type="button" title="确认标签">✓ 确认</button>
+            <button class="batch-action write-action" data-action="reject" type="button" title="拒绝标签">× 拒绝</button>
+            <button class="batch-action write-action" data-action="clear" type="button" title="清除决定">− 清除</button>
+          </div>
+          <button id="cancelSelectionButton" class="icon-button" type="button" aria-label="结束选择">×</button>
         </div>
 
         <div id="libraryScroll" class="library-scroll">
@@ -153,6 +262,9 @@
           </div>
           <div class="preview-wrap">
             <img id="previewImage" alt="">
+            <button id="openLightboxButton" class="preview-overlay-button" type="button" title="全屏查看" aria-label="全屏查看">
+              ⛶
+            </button>
             <div id="previewLoading" class="preview-loading">
               <div class="spinner" aria-hidden="true"></div>
             </div>
@@ -175,6 +287,97 @@
       </aside>
     </div>
   </main>
+
+  <section id="jobsPopover" class="popover jobs-popover hidden" aria-label="后台任务">
+    <div class="popover-heading">
+      <div>
+        <h2>后台任务</h2>
+        <p>与 Mac 端任务活动保持同步</p>
+      </div>
+      <button id="closeJobsButton" class="icon-button" type="button" aria-label="关闭任务">×</button>
+    </div>
+    <div id="jobsList" class="jobs-list"></div>
+    <p id="jobsEmpty" class="popover-empty hidden">当前没有后台任务</p>
+  </section>
+
+  <section id="reviewWorkspace" class="review-workspace hidden" aria-label="建议审核工作区">
+    <header class="review-titlebar">
+      <div class="review-title-copy">
+        <button id="closeReviewButton" class="icon-button" type="button" aria-label="关闭审核">×</button>
+        <div>
+          <strong>建议审核</strong>
+          <span id="reviewSummary" class="secondary">选择标签开始审核</span>
+        </div>
+      </div>
+      <div class="review-controls">
+        <label>
+          <span class="visually-hidden">审核标签</span>
+          <select id="reviewTagSelect"></select>
+        </label>
+        <label class="checkbox-control">
+          <input id="reviewCurrentSourceOnly" type="checkbox">
+          <span>仅当前来源</span>
+        </label>
+        <button id="refreshReviewButton" class="icon-button" type="button" title="刷新审核队列" aria-label="刷新审核队列">↻</button>
+      </div>
+    </header>
+    <div class="review-body">
+      <aside class="review-queue-pane">
+        <div id="reviewEmpty" class="review-empty">
+          <span aria-hidden="true">✓</span>
+          <strong>没有待审核建议</strong>
+          <p>选择其他标签，或等待 Mac 生成新建议。</p>
+        </div>
+        <div id="reviewGrid" class="review-grid"></div>
+        <button id="loadMoreReviewButton" class="button review-load-more hidden" type="button">载入更多</button>
+      </aside>
+      <main class="review-detail-pane">
+        <div id="reviewPlaceholder" class="review-detail-placeholder">
+          <span aria-hidden="true">▧</span>
+          <p>从左侧选择一项建议</p>
+        </div>
+        <div id="reviewDetail" class="review-detail hidden">
+          <div class="review-preview-wrap">
+            <img id="reviewPreviewImage" alt="">
+            <button id="reviewOpenLightboxButton" class="preview-overlay-button" type="button" title="全屏查看" aria-label="全屏查看">⛶</button>
+          </div>
+          <div class="review-info">
+            <div>
+              <h2 id="reviewFileName">未命名照片</h2>
+              <p id="reviewOrigin" class="secondary"></p>
+            </div>
+            <div class="review-navigation">
+              <button id="previousReviewButton" class="icon-button" type="button" aria-label="上一项">‹</button>
+              <span id="reviewPosition" class="secondary"></span>
+              <button id="nextReviewButton" class="icon-button" type="button" aria-label="下一项">›</button>
+            </div>
+          </div>
+          <div class="review-decision-bar">
+            <button class="review-action write-action reject" data-action="reject" type="button">
+              <kbd>R</kbd><span>拒绝</span>
+            </button>
+            <button class="review-action write-action clear" data-action="clear" type="button">
+              <kbd>C</kbd><span>稍后决定</span>
+            </button>
+            <button class="review-action write-action accept" data-action="accept" type="button">
+              <kbd>A</kbd><span>确认</span>
+            </button>
+          </div>
+        </div>
+      </main>
+    </div>
+  </section>
+
+  <div id="lightbox" class="lightbox hidden" role="dialog" aria-modal="true" aria-label="照片全屏预览">
+    <header class="lightbox-toolbar">
+      <span id="lightboxTitle">照片预览</span>
+      <button id="closeLightboxButton" class="icon-button" type="button" aria-label="关闭全屏预览">×</button>
+    </header>
+    <button id="lightboxPreviousButton" class="lightbox-nav previous" type="button" aria-label="上一张">‹</button>
+    <img id="lightboxImage" alt="">
+    <button id="lightboxNextButton" class="lightbox-nav next" type="button" aria-label="下一张">›</button>
+    <span id="lightboxPosition" class="lightbox-position"></span>
+  </div>
 
   <div id="toast" class="toast hidden" role="status"></div>
 </body>

@@ -437,6 +437,37 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertNil(store.asset(for: "/v1/capabilities"))
     }
 
+    func testBundledWebCompanionExposesDailyWorkflowSurfaces() throws {
+        let store = RemoteWebCompanionAssetStore()
+        let html = String(
+            decoding: try XCTUnwrap(store.asset(for: "/")?.body),
+            as: UTF8.self
+        )
+        let script = String(
+            decoding: try XCTUnwrap(store.asset(for: "/app.js")?.body),
+            as: UTF8.self
+        )
+
+        for controlID in [
+            "filterPopover",
+            "batchBar",
+            "reviewWorkspace",
+            "jobsPopover",
+            "lightbox",
+        ] {
+            XCTAssertTrue(html.contains("id=\"\(controlID)\""))
+        }
+        for endpoint in [
+            "/v1/tag-selection",
+            "/v1/tag-decisions/batch",
+            "/v1/review-queue",
+            "/v1/review-decisions/batch",
+            "/v1/jobs/",
+        ] {
+            XCTAssertTrue(script.contains(endpoint))
+        }
+    }
+
     func testWebRootLoadsWithoutAuthenticationAndUsesBrowserSecurityHeaders() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent(
@@ -549,6 +580,56 @@ final class RemoteHTTPServerTests: XCTestCase {
         )
     }
 
+    func testAssetRouteMapsAdvancedWebQueryFilters() async throws {
+        let sourceID = UUID()
+        let acceptedTagID = UUID()
+        let excludedTagID = UUID()
+        let catalog = RemoteHTTPServerTestCatalog()
+        let port = UInt16.random(in: 19_000...29_000)
+        let (server, _) = makeServer(port: port, catalog: catalog)
+        try await server.start()
+        try await Task.sleep(nanoseconds: 150_000_000)
+        defer { Task { await server.stop() } }
+
+        var components = URLComponents(
+            string: "http://127.0.0.1:\(port)/v1/assets"
+        )!
+        components.queryItems = [
+            URLQueryItem(name: "sourceIDs", value: sourceID.uuidString),
+            URLQueryItem(name: "acceptedTagIDs", value: acceptedTagID.uuidString),
+            URLQueryItem(name: "excludedTagIDs", value: excludedTagID.uuidString),
+            URLQueryItem(name: "tagMatchMode", value: "any"),
+            URLQueryItem(name: "availabilities", value: "available,missing"),
+            URLQueryItem(name: "mediaKinds", value: "video"),
+            URLQueryItem(name: "mediaTypes", value: "public.mpeg-4"),
+            URLQueryItem(name: "tagPresence", value: "tagged"),
+        ]
+        var request = URLRequest(url: try XCTUnwrap(components.url))
+        request.setValue(
+            "Bearer \(Self.legacyDebugToken)",
+            forHTTPHeaderField: "Authorization"
+        )
+
+        let (_, response) = try await URLSession.shared.data(for: request)
+
+        XCTAssertEqual(
+            try XCTUnwrap(response as? HTTPURLResponse).statusCode,
+            200
+        )
+        let filter = try XCTUnwrap(catalog.lastRequestedFilter)
+        XCTAssertEqual(filter.sourceIDs, [sourceID])
+        XCTAssertEqual(
+            filter.tagDecisionFilters,
+            [TagDecisionFilter(tagID: acceptedTagID, decision: .accepted)]
+        )
+        XCTAssertEqual(filter.excludedTagIDs, [excludedTagID])
+        XCTAssertEqual(filter.tagMatchMode, .any)
+        XCTAssertEqual(filter.availabilities, [.available, .missing])
+        XCTAssertEqual(filter.mediaKinds, [.video])
+        XCTAssertEqual(filter.mediaTypes, ["public.mpeg-4"])
+        XCTAssertEqual(filter.tagPresence, .tagged)
+    }
+
     func testWebSocketAcceptValueMatchesRFC6455Example() {
         // RFC 6455 §1.3 canonical example.
         let accept = RemoteHTTPServer.webSocketAcceptValue(secWebSocketKey: "dGhlIHNhbXBsZSBub25jZQ==")
@@ -556,7 +637,16 @@ final class RemoteHTTPServerTests: XCTestCase {
     }
 }
 
-private struct RemoteHTTPServerTestCatalog: RemoteCatalogServing {
+private final class RemoteHTTPServerTestCatalog: RemoteCatalogServing, @unchecked Sendable {
+    private let lock = NSLock()
+    private var storedLastRequestedFilter: AssetPageFilter?
+
+    var lastRequestedFilter: AssetPageFilter? {
+        lock.lock()
+        defer { lock.unlock() }
+        return storedLastRequestedFilter
+    }
+
     func fetchSources() throws -> [LibrarySourceSummary] { [] }
 
     func listTags() throws -> [TagListItem] { [] }
@@ -567,7 +657,12 @@ private struct RemoteHTTPServerTestCatalog: RemoteCatalogServing {
         cursor: AssetPageCursor?,
         limit: Int
     ) throws -> AssetPageResult {
+        _ = sort
+        _ = cursor
         _ = limit
+        lock.lock()
+        storedLastRequestedFilter = filter
+        lock.unlock()
         return AssetPageResult(items: [], nextCursor: nil)
     }
 

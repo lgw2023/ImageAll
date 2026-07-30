@@ -914,6 +914,15 @@ actor RemoteHTTPServer {
         let sourceIDs = (query["sourceIDs"] ?? "")
             .split(separator: ",")
             .compactMap { UUID(uuidString: String($0)) }
+        let acceptedTagIDs = (query["acceptedTagIDs"] ?? "")
+            .split(separator: ",")
+            .compactMap { UUID(uuidString: String($0)) }
+        let rejectedTagIDs = (query["rejectedTagIDs"] ?? "")
+            .split(separator: ",")
+            .compactMap { UUID(uuidString: String($0)) }
+        let excludedTagIDs = (query["excludedTagIDs"] ?? "")
+            .split(separator: ",")
+            .compactMap { UUID(uuidString: String($0)) }
         let sort = RemoteAssetSort(rawValue: query["sort"] ?? "") ?? .newest
         let limit = Int(query["limit"] ?? "60") ?? 60
         return RemoteAssetPageRequest(
@@ -921,7 +930,24 @@ actor RemoteHTTPServer {
             searchText: query["q"],
             sort: sort,
             limit: limit,
-            cursor: query["cursor"]
+            cursor: query["cursor"],
+            tagDecisionFilters: acceptedTagIDs.map {
+                RemoteAssetTagDecisionFilter(tagID: $0, decision: .accepted)
+            } + rejectedTagIDs.map {
+                RemoteAssetTagDecisionFilter(tagID: $0, decision: .rejected)
+            },
+            excludedTagIDs: excludedTagIDs,
+            tagMatchMode: RemoteAssetTagMatchMode(rawValue: query["tagMatchMode"] ?? "") ?? .all,
+            availabilities: (query["availabilities"] ?? "")
+                .split(separator: ",")
+                .compactMap { RemoteAssetAvailability(rawValue: String($0)) },
+            mediaKinds: (query["mediaKinds"] ?? "")
+                .split(separator: ",")
+                .compactMap { RemoteAssetMediaKind(rawValue: String($0)) },
+            mediaTypes: (query["mediaTypes"] ?? "")
+                .split(separator: ",")
+                .map(String.init),
+            tagPresence: RemoteAssetTagPresence(rawValue: query["tagPresence"] ?? "") ?? .any
         )
     }
 

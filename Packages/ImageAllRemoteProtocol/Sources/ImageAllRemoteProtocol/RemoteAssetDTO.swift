@@ -13,6 +13,37 @@ public enum RemoteAssetAvailability: String, Codable, Sendable, Equatable {
     case unsupported
 }
 
+public enum RemoteAssetTagDecision: String, Codable, Sendable, Equatable {
+    case accepted
+    case rejected
+}
+
+public struct RemoteAssetTagDecisionFilter: Codable, Sendable, Equatable {
+    public let tagID: UUID
+    public let decision: RemoteAssetTagDecision
+
+    public init(tagID: UUID, decision: RemoteAssetTagDecision) {
+        self.tagID = tagID
+        self.decision = decision
+    }
+}
+
+public enum RemoteAssetTagMatchMode: String, Codable, Sendable, Equatable {
+    case all
+    case any
+}
+
+public enum RemoteAssetMediaKind: String, Codable, Sendable, Equatable {
+    case image
+    case video
+}
+
+public enum RemoteAssetTagPresence: String, Codable, Sendable, Equatable {
+    case any
+    case tagged
+    case untagged
+}
+
 public struct RemoteAssetSummary: Codable, Sendable, Equatable, Identifiable {
     public let id: UUID
     public let sourceID: UUID
@@ -62,19 +93,40 @@ public struct RemoteAssetPageRequest: Codable, Sendable, Equatable {
     public var sort: RemoteAssetSort
     public var limit: Int
     public var cursor: String?
+    public var tagDecisionFilters: [RemoteAssetTagDecisionFilter]
+    public var excludedTagIDs: [UUID]
+    public var tagMatchMode: RemoteAssetTagMatchMode
+    public var availabilities: [RemoteAssetAvailability]
+    public var mediaKinds: [RemoteAssetMediaKind]
+    public var mediaTypes: [String]
+    public var tagPresence: RemoteAssetTagPresence
 
     public init(
         sourceIDs: [UUID] = [],
         searchText: String? = nil,
         sort: RemoteAssetSort = .newest,
         limit: Int = 60,
-        cursor: String? = nil
+        cursor: String? = nil,
+        tagDecisionFilters: [RemoteAssetTagDecisionFilter] = [],
+        excludedTagIDs: [UUID] = [],
+        tagMatchMode: RemoteAssetTagMatchMode = .all,
+        availabilities: [RemoteAssetAvailability] = [],
+        mediaKinds: [RemoteAssetMediaKind] = [],
+        mediaTypes: [String] = [],
+        tagPresence: RemoteAssetTagPresence = .any
     ) {
         self.sourceIDs = sourceIDs
         self.searchText = searchText
         self.sort = sort
         self.limit = limit
         self.cursor = cursor
+        self.tagDecisionFilters = tagDecisionFilters
+        self.excludedTagIDs = excludedTagIDs
+        self.tagMatchMode = tagMatchMode
+        self.availabilities = availabilities
+        self.mediaKinds = mediaKinds
+        self.mediaTypes = mediaTypes
+        self.tagPresence = tagPresence
     }
 }
 

@@ -143,6 +143,51 @@ final class RemoteCatalogFacadeTests: XCTestCase {
         XCTAssertEqual(catalog.lastRequestedLimit, 60)
     }
 
+    func testAssetPageMapsAdvancedWebFiltersToCatalogQuery() async throws {
+        let sourceID = UUID()
+        let acceptedTagID = UUID()
+        let rejectedTagID = UUID()
+        let excludedTagID = UUID()
+        let catalog = RemoteCatalogServingStub()
+        let facade = makeFacade(catalog: catalog)
+
+        _ = try await facade.fetchAssets(
+            RemoteAssetPageRequest(
+                sourceIDs: [sourceID],
+                searchText: "sunset",
+                sort: .oldest,
+                limit: 24,
+                tagDecisionFilters: [
+                    RemoteAssetTagDecisionFilter(tagID: acceptedTagID, decision: .accepted),
+                    RemoteAssetTagDecisionFilter(tagID: rejectedTagID, decision: .rejected),
+                ],
+                excludedTagIDs: [excludedTagID],
+                tagMatchMode: .any,
+                availabilities: [.available, .missing],
+                mediaKinds: [.video],
+                mediaTypes: ["public.mpeg-4"],
+                tagPresence: .tagged
+            )
+        )
+
+        let filter = try XCTUnwrap(catalog.lastRequestedFilter)
+        XCTAssertEqual(filter.sourceIDs, [sourceID])
+        XCTAssertEqual(
+            filter.tagDecisionFilters,
+            [
+                TagDecisionFilter(tagID: acceptedTagID, decision: .accepted),
+                TagDecisionFilter(tagID: rejectedTagID, decision: .rejected),
+            ]
+        )
+        XCTAssertEqual(filter.excludedTagIDs, [excludedTagID])
+        XCTAssertEqual(filter.tagMatchMode, .any)
+        XCTAssertEqual(filter.availabilities, [.available, .missing])
+        XCTAssertEqual(filter.mediaKinds, [.video])
+        XCTAssertEqual(filter.mediaTypes, ["public.mpeg-4"])
+        XCTAssertEqual(filter.tagPresence, .tagged)
+        XCTAssertEqual(filter.searchText, "sunset")
+    }
+
     func testReusingOperationIDForDifferentMutationIsConflict() async throws {
         let catalog = RemoteCatalogServingStub()
         let facade = makeFacade(catalog: catalog)
@@ -312,6 +357,7 @@ private final class RemoteCatalogServingStub: RemoteCatalogServing, @unchecked S
     private let jobs: [JobActivityItem]
     private var storedMutateCallCount = 0
     private var storedLastRequestedLimit: Int?
+    private var storedLastRequestedFilter: AssetPageFilter?
     private var storedLastJobAction: JobActivityAction?
     private var storedLastJobActionID: UUID?
 
@@ -325,6 +371,12 @@ private final class RemoteCatalogServingStub: RemoteCatalogServing, @unchecked S
         lock.lock()
         defer { lock.unlock() }
         return storedLastRequestedLimit
+    }
+
+    var lastRequestedFilter: AssetPageFilter? {
+        lock.lock()
+        defer { lock.unlock() }
+        return storedLastRequestedFilter
     }
 
     var lastJobAction: JobActivityAction? {
@@ -400,6 +452,7 @@ private final class RemoteCatalogServingStub: RemoteCatalogServing, @unchecked S
         _ = cursor
         lock.lock()
         storedLastRequestedLimit = limit
+        storedLastRequestedFilter = filter
         lock.unlock()
         return AssetPageResult(items: items, nextCursor: nil)
     }

@@ -58,6 +58,33 @@ actor RemoteCatalogFacade {
         let page = try catalog.fetchAssetPage(
             filter: AssetPageFilter(
                 sourceIDs: request.sourceIDs,
+                tagDecisionFilters: request.tagDecisionFilters.map {
+                    TagDecisionFilter(
+                        tagID: $0.tagID,
+                        decision: $0.decision == .accepted ? .accepted : .rejected
+                    )
+                },
+                excludedTagIDs: request.excludedTagIDs,
+                tagMatchMode: request.tagMatchMode == .all ? .all : .any,
+                availabilities: request.availabilities.map {
+                    switch $0 {
+                    case .available: .available
+                    case .missing: .missing
+                    case .unreadable: .unreadable
+                    case .unsupported: .unsupported
+                    }
+                },
+                mediaKinds: request.mediaKinds.map {
+                    $0 == .image ? .image : .video
+                },
+                mediaTypes: request.mediaTypes,
+                tagPresence: {
+                    switch request.tagPresence {
+                    case .any: .any
+                    case .tagged: .tagged
+                    case .untagged: .untagged
+                    }
+                }(),
                 searchText: request.searchText
             ),
             sort: Self.mapSort(request.sort),
