@@ -190,156 +190,431 @@ struct RemoteHostSettingsView: View {
     @StateObject private var model = RemoteHostSettingsModel()
 
     var body: some View {
-        Form {
-            Section("移动辅助 Host") {
-                Toggle(
-                    "启用移动 Host",
-                    isOn: Binding(
-                        get: { model.isEnabled },
-                        set: { model.setEnabled($0) }
-                    )
-                )
-                .disabled(model.isApplyingConfiguration)
-                LabeledContent("运行状态", value: model.isRunning ? "运行中" : "未运行")
-                LabeledContent("Host ID", value: model.identityText)
-                LabeledContent("证书指纹") {
-                    Text(model.fingerprintText)
-                        .font(.system(.caption, design: .monospaced))
-                        .textSelection(.enabled)
+        ScrollView {
+            VStack(spacing: 16) {
+                hostOverviewCard
+
+                if let statusMessage = model.statusMessage {
+                    statusBanner(statusMessage)
+                        .transition(.move(edge: .top).combined(with: .opacity))
                 }
+
+                publicEndpointCard
+                pairingCard
+                pairedDevicesCard
+            }
+            .frame(maxWidth: 680)
+            .padding(.horizontal, 24)
+            .padding(.vertical, 20)
+            .frame(maxWidth: .infinity)
+        }
+        .background(Color(nsColor: .windowBackgroundColor))
+        .animation(.easeInOut(duration: 0.2), value: model.statusMessage)
+        .task { await model.refreshUntilStartupSettles() }
+    }
+
+    private var hostOverviewCard: some View {
+        settingsCard {
+            VStack(alignment: .leading, spacing: 16) {
+                HStack(spacing: 14) {
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .fill(Color.accentColor.opacity(0.13))
+                        Image(systemName: "iphone.and.arrow.forward")
+                            .font(.system(size: 22, weight: .medium))
+                            .foregroundStyle(Color.accentColor)
+                    }
+                    .frame(width: 46, height: 46)
+
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("移动 Host")
+                            .font(.title3.weight(.semibold))
+                        Text("让 iPhone 和网页端安全访问这台 Mac 上的 ImageAll")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    Spacer(minLength: 12)
+
+                    statusPill
+
+                    Toggle(
+                        "启用移动 Host",
+                        isOn: Binding(
+                            get: { model.isEnabled },
+                            set: { model.setEnabled($0) }
+                        )
+                    )
+                    .labelsHidden()
+                    .toggleStyle(.switch)
+                    .disabled(model.isApplyingConfiguration)
+                    .accessibilityLabel("启用移动 Host")
+                }
+
+                Divider()
+
+                DisclosureGroup {
+                    VStack(alignment: .leading, spacing: 10) {
+                        technicalDetail("Host ID", value: model.identityText)
+                        technicalDetail("证书指纹", value: model.fingerprintText)
+#if DEBUG
+                        if let token = model.legacyDebugToken {
+                            technicalDetail("Debug Token", value: token)
+                        }
+#endif
+                    }
+                    .padding(.top, 10)
+                } label: {
+                    Label("Host 身份与证书", systemImage: "checkmark.shield")
+                        .font(.callout.weight(.medium))
+                }
+            }
+        }
+    }
+
+    private var publicEndpointCard: some View {
+        settingsCard {
+            VStack(alignment: .leading, spacing: 14) {
+                sectionHeading(
+                    "公网访问",
+                    subtitle: "通过专用 HTTPS 域名，在蜂窝网络或外网连接",
+                    systemImage: "globe"
+                )
+
+                HStack(spacing: 10) {
+                    Image(systemName: "lock.fill")
+                        .foregroundStyle(.secondary)
+                        .accessibilityHidden(true)
+
+                    TextField(
+                        "https://imageall.example.com",
+                        text: $model.publicBaseURL
+                    )
+                    .textFieldStyle(.plain)
+
+                    Button("保存") {
+                        model.savePublicBaseURL()
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(model.isApplyingConfiguration)
+                    .persistentHelp("保存公网入口并重新加载移动 Host。")
+                }
+                .padding(.leading, 11)
+                .padding(.trailing, 6)
+                .padding(.vertical, 6)
+                .background(.background, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 9, style: .continuous)
+                        .stroke(.separator, lineWidth: 1)
+                }
+
+                if let activeURL = model.offer?.publicBaseURL {
+                    Label {
+                        Text("当前生效：\(activeURL)")
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            .textSelection(.enabled)
+                    } icon: {
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundStyle(.green)
+                    }
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                }
+
+                Text("使用 Cloudflare 等出站 Tunnel 时填写专用 HTTPS 根域名。留空则仅允许局域网连接。")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
                 if model.isRunning,
                    model.offer?.publicBaseURL == nil,
                    model.publicBaseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 {
-                    Text(
-                        """
-                        若手机持续连接超时，请打开“系统设置 > 网络 > 防火墙 > 选项”，\
-                        关闭“阻止所有传入连接”，并将 ImageAll 设为“允许传入连接”。
-                        """
+                    Label(
+                        "局域网连接超时时，请在系统防火墙中允许 ImageAll 接收入站连接。",
+                        systemImage: "exclamationmark.shield"
                     )
                     .font(.footnote)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.orange)
                 }
-#if DEBUG
-                if let token = model.legacyDebugToken {
-                    LabeledContent("Debug Token") {
-                        Text(token)
-                            .font(.system(.caption, design: .monospaced))
-                            .textSelection(.enabled)
-                    }
-                }
-#endif
             }
+        }
+    }
 
-            Section("公网 Tunnel") {
-                TextField(
-                    "https://imageall.example.com",
-                    text: $model.publicBaseURL
-                )
-                .textFieldStyle(.roundedBorder)
-                HStack {
-                    Button("保存公网入口") {
-                        model.savePublicBaseURL()
-                    }
-                    .disabled(model.isApplyingConfiguration)
-                    if let activeURL = model.offer?.publicBaseURL {
-                        Text("当前 Host：\(activeURL)")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+    private var pairingCard: some View {
+        settingsCard {
+            VStack(alignment: .leading, spacing: 16) {
+                HStack(alignment: .top, spacing: 12) {
+                    sectionHeading(
+                        "连接新设备",
+                        subtitle: model.offer == nil
+                            ? "生成约 5 分钟有效的一次性二维码"
+                            : "二维码已就绪，使用 ImageAll 移动端扫描",
+                        systemImage: "qrcode.viewfinder"
+                    )
+
+                    Spacer()
+
+                    if model.offer == nil {
+                        Button {
+                            Task { await model.startPairing() }
+                        } label: {
+                            Label("开始配对", systemImage: "plus")
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(!model.isRunning)
+                        .persistentHelp("生成一次性配对信息，供移动端安全连接这台 Mac。")
+                    } else {
+                        Button("取消配对", role: .destructive) {
+                            Task { await model.cancelPairing() }
+                        }
+                        .buttonStyle(.bordered)
+                        .persistentHelp("作废当前尚未完成的配对信息。")
                     }
                 }
-                Text(
-                    """
-                    使用 Cloudflare 等出站 Tunnel 时填写专用 HTTPS 根域名。公网模式不需要关闭 \
-                    Mac 防火墙；保存后 Host 会立即切换并要求生成新的配对二维码。
-                    """
-                )
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-            }
 
-            Section("配对") {
-                HStack {
-                    Button("开始配对") {
-                        Task { await model.startPairing() }
-                    }
-                    .persistentHelp("生成一次性配对信息，供移动端安全连接这台 Mac。")
-                    Button("取消配对", role: .destructive) {
-                        Task { await model.cancelPairing() }
-                    }
-                    .disabled(model.offer == nil)
-                    .persistentHelp("作废当前尚未完成的配对信息，移动端将不能再用它连接。")
-                    Button("复制配对 JSON") {
-                        model.copyOfferJSON()
-                    }
-                    .disabled(model.offer == nil)
-                    .persistentHelp("把当前配对信息复制到剪贴板，便于手动传给移动端。")
-                    Button("复制网页版配对链接") {
-                        model.copyWebPairingURL()
-                    }
-                    .disabled(model.webPairingURL == nil)
-                    .persistentHelp("复制可在 Safari 中打开的一次性配对链接。")
-                }
                 if let offer = model.offer {
-                    if let image = qrImage(for: offer) {
-                        Image(nsImage: image)
-                            .resizable()
-                            .interpolation(.none)
-                            .frame(width: 180, height: 180)
-                            .padding(.vertical, 8)
+                    ViewThatFits(in: .horizontal) {
+                        HStack(alignment: .top, spacing: 22) {
+                            pairingQRCode(offer)
+                            pairingDetails(offer)
+                        }
+
+                        VStack(alignment: .leading, spacing: 18) {
+                            pairingQRCode(offer)
+                            pairingDetails(offer)
+                        }
                     }
-                    LabeledContent("配对码", value: offer.pairingToken)
-                    LabeledContent("端口", value: String(offer.listenPort))
-                    LabeledContent("TLS", value: offer.usesTLS ? "是" : "否")
-                    if let publicBaseURL = offer.publicBaseURL {
-                        LabeledContent("公网入口", value: publicBaseURL)
-                        if let webPairingURL = model.webPairingURL {
-                            LabeledContent("网页版") {
-                                Text(webPairingURL.absoluteString)
-                                    .font(.system(.caption, design: .monospaced))
+                } else {
+                    HStack(spacing: 12) {
+                        Image(systemName: model.isRunning ? "iphone.gen3" : "power")
+                            .font(.title2)
+                            .foregroundStyle(.tertiary)
+                            .frame(width: 34)
+
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(model.isRunning ? "尚未开始配对" : "移动 Host 当前未运行")
+                                .font(.callout.weight(.medium))
+                            Text(model.isRunning ? "点击“开始配对”后，二维码会显示在这里。" : "请先在页面顶部启用移动 Host。")
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(16)
+                    .background(.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 10))
+                }
+            }
+        }
+    }
+
+    private var pairedDevicesCard: some View {
+        settingsCard {
+            VStack(alignment: .leading, spacing: 14) {
+                sectionHeading(
+                    "已配对设备",
+                    subtitle: model.devices.isEmpty ? "还没有设备获得访问权限" : "管理可以访问此 Host 的设备",
+                    systemImage: "iphone.gen3"
+                )
+
+                if model.devices.isEmpty {
+                    Text("新设备完成扫码配对后会显示在这里。")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(Array(model.devices.enumerated()), id: \.element.id) { index, device in
+                        if index > 0 {
+                            Divider()
+                        }
+
+                        HStack(spacing: 12) {
+                            Image(systemName: "iphone")
+                                .font(.title3)
+                                .foregroundStyle(Color.accentColor)
+                                .frame(width: 28)
+
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(device.deviceName)
+                                    .font(.callout.weight(.medium))
+                                Text(device.deviceID.uuidString)
+                                    .font(.system(.caption2, design: .monospaced))
+                                    .foregroundStyle(.secondary)
                                     .lineLimit(1)
                                     .truncationMode(.middle)
                                     .textSelection(.enabled)
                             }
-                        }
-                    }
-                } else {
-                    Text("尚未开始配对会话")
-                        .foregroundStyle(.secondary)
-                }
-            }
 
-            Section("已配对设备") {
-                if model.devices.isEmpty {
-                    Text("无")
-                        .foregroundStyle(.secondary)
-                } else {
-                    ForEach(model.devices) { device in
-                        HStack {
-                            VStack(alignment: .leading) {
-                                Text(device.deviceName)
-                                Text(device.deviceID.uuidString)
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
                             Spacer()
+
                             Button("撤销", role: .destructive) {
                                 Task { await model.revoke(device.id) }
                             }
+                            .buttonStyle(.bordered)
                             .persistentHelp("撤销这台设备的访问授权；设备之后需要重新配对。")
                         }
                     }
                 }
             }
+        }
+    }
 
-            if let statusMessage = model.statusMessage {
-                Section("状态") {
-                    Text(statusMessage)
-                        .foregroundStyle(.secondary)
-                }
+    @ViewBuilder
+    private var statusPill: some View {
+        HStack(spacing: 6) {
+            Circle()
+                .fill(model.isRunning ? Color.green : Color.secondary.opacity(0.65))
+                .frame(width: 7, height: 7)
+            Text(model.isApplyingConfiguration ? "正在更新" : (model.isRunning ? "运行中" : "已停止"))
+                .font(.caption.weight(.medium))
+        }
+        .foregroundStyle(.secondary)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(.secondary.opacity(0.08), in: Capsule())
+    }
+
+    private func statusBanner(_ message: String) -> some View {
+        Label(message, systemImage: model.isApplyingConfiguration ? "arrow.triangle.2.circlepath" : "info.circle.fill")
+            .font(.callout)
+            .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 11)
+            .background(Color.accentColor.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
+            .overlay {
+                RoundedRectangle(cornerRadius: 10)
+                    .stroke(Color.accentColor.opacity(0.12), lineWidth: 1)
+            }
+    }
+
+    private func pairingQRCode(_ offer: RemotePairingOffer) -> some View {
+        Group {
+            if let image = qrImage(for: offer) {
+                Image(nsImage: image)
+                    .resizable()
+                    .interpolation(.none)
+                    .frame(width: 176, height: 176)
+                    .padding(12)
+                    .background(.white, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .stroke(.separator, lineWidth: 1)
+                    }
+                    .accessibilityLabel("移动 Host 配对二维码")
             }
         }
-        .task { await model.refreshUntilStartupSettles() }
+    }
+
+    private func pairingDetails(_ offer: RemotePairingOffer) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Label("等待设备扫描", systemImage: "dot.radiowaves.left.and.right")
+                .font(.callout.weight(.medium))
+                .foregroundStyle(Color.accentColor)
+
+            pairingValue("配对码", value: offer.pairingToken)
+
+            HStack(spacing: 22) {
+                compactValue("端口", value: String(offer.listenPort))
+                compactValue("TLS", value: offer.usesTLS ? "已启用" : "未启用")
+            }
+
+            if let publicBaseURL = offer.publicBaseURL {
+                pairingValue("公网入口", value: publicBaseURL)
+            }
+
+            HStack(spacing: 8) {
+                Button {
+                    model.copyOfferJSON()
+                } label: {
+                    Label("复制配对信息", systemImage: "doc.on.doc")
+                }
+                .buttonStyle(.bordered)
+                .persistentHelp("把当前配对信息复制到剪贴板，便于手动传给移动端。")
+
+                Button {
+                    model.copyWebPairingURL()
+                } label: {
+                    Label("复制网页链接", systemImage: "link")
+                }
+                .buttonStyle(.bordered)
+                .disabled(model.webPairingURL == nil)
+                .persistentHelp("复制可在 Safari 中打开的一次性配对链接。")
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func settingsCard<Content: View>(
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        content()
+            .padding(18)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(.background, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .stroke(.separator.opacity(0.75), lineWidth: 1)
+            }
+            .shadow(color: .black.opacity(0.035), radius: 10, y: 3)
+    }
+
+    private func sectionHeading(
+        _ title: String,
+        subtitle: String,
+        systemImage: String
+    ) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: systemImage)
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(Color.accentColor)
+                .frame(width: 22, height: 22)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.headline)
+                Text(subtitle)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private func technicalDetail(_ label: String, value: String) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(label)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Text(value)
+                .font(.system(.caption, design: .monospaced))
+                .lineLimit(2)
+                .truncationMode(.middle)
+                .textSelection(.enabled)
+        }
+    }
+
+    private func pairingValue(_ label: String, value: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(label)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Text(value)
+                .font(.system(.caption, design: .monospaced))
+                .lineLimit(2)
+                .truncationMode(.middle)
+                .textSelection(.enabled)
+        }
+    }
+
+    private func compactValue(_ label: String, value: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(label)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            Text(value)
+                .font(.callout.weight(.medium))
+        }
     }
 
     private func qrImage(for offer: RemotePairingOffer) -> NSImage? {
