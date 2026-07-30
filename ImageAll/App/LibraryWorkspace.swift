@@ -10834,6 +10834,7 @@ struct LibraryWorkspaceView: View {
                     }
                     .padding(16)
                 }
+                .scrollIndicators(.visible, axes: .vertical)
             }
         }
         .navigationTitle("检查器")
