@@ -162,6 +162,62 @@ final class SourceThumbnailPrewarmTests: XCTestCase {
         }
     }
 
+    func testSecondOriginalAspectPrewarmSkipsAlreadyCachedAssets() async {
+        let sourceID = UUID()
+        let assets = [
+            makeAsset(
+                sourceID: sourceID,
+                fileName: "cached-photo.jpg",
+                mediaKind: .image
+            ),
+            makeAsset(
+                sourceID: sourceID,
+                fileName: "cached-video.mov",
+                mediaKind: .video
+            ),
+        ]
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: sourceID,
+                kind: .folder,
+                displayName: "Cached Mixed Media",
+                state: .active
+            ),
+            reconciledItems: assets,
+            initialItems: assets,
+            startsConnected: true,
+            originalAspectPrewarmData: Data("original-aspect".utf8),
+            hasPendingCatalogReconcileJobs: false
+        )
+        let model = LibraryWorkspaceModel(
+            service: service,
+            idlePrewarmInstallEventMonitor: false
+        )
+        await model.start()
+
+        model.prewarmSourceOriginalAspectThumbnails(sourceID: sourceID)
+        await waitForPrewarmToFinish(model)
+        XCTAssertEqual(service.originalAspectPrewarmCallCount, assets.count)
+
+        model.prewarmSourceOriginalAspectThumbnails(sourceID: sourceID)
+        await waitForPrewarmToFinish(model)
+
+        XCTAssertEqual(service.originalAspectPrewarmCallCount, assets.count)
+        XCTAssertEqual(service.originalAspectCacheInventoryCallCount, 2)
+        XCTAssertEqual(
+            model.notice,
+            .sourceOriginalAspectThumbnailPrewarmCompleted(
+                sourceDisplayName: "Cached Mixed Media",
+                warmed: 0,
+                failed: 0,
+                total: assets.count
+            )
+        )
+        XCTAssertTrue(
+            LibraryWorkspaceView.noticeText(model.notice!).contains("已全部跳过")
+        )
+    }
+
     func testSecondPrewarmIgnoredWhileFirstRunning() async {
         let sourceID = UUID()
         let otherSourceID = UUID()
@@ -250,5 +306,17 @@ final class SourceThumbnailPrewarmTests: XCTestCase {
             acceptedTagCount: 0,
             rejectedTagCount: 0
         )
+    }
+
+    private func waitForPrewarmToFinish(
+        _ model: LibraryWorkspaceModel,
+        timeout: TimeInterval = 5
+    ) async {
+        let deadline = Date().addingTimeInterval(timeout)
+        while model.isPrewarmingSourceThumbnails, Date() < deadline {
+            await Task.yield()
+            try? await Task.sleep(nanoseconds: 20_000_000)
+        }
+        XCTAssertFalse(model.isPrewarmingSourceThumbnails)
     }
 }

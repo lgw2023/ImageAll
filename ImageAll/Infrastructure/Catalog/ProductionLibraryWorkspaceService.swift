@@ -336,6 +336,35 @@ struct ProductionLibraryWorkspaceService: LibraryWorkspacePort, RemoteCatalogSer
         try await assetImages.loadOriginalAspectThumbnailIfCached(assetID: assetID)
     }
 
+    func cachedOriginalAspectThumbnailAssetIDs(sourceID: UUID) async throws -> Set<UUID> {
+        let database = queue.database
+        return try await Task.detached(priority: .utility) {
+            try database.pool.read { db in
+                let rows = try String.fetchAll(
+                    db,
+                    sql: """
+                    SELECT a.id
+                    FROM asset a
+                    JOIN derived_image_cache_entry e
+                      ON e.asset_id = a.id
+                     AND e.content_revision = a.content_revision
+                    WHERE a.source_id = ?
+                      AND a.locator_state = 'current'
+                      AND e.representation_version = ?
+                      AND e.variant = ?
+                    ORDER BY a.id
+                    """,
+                    arguments: [
+                        sourceID.uuidString.lowercased(),
+                        DerivedImageRepresentationVersion.production,
+                        DerivedImageVariant.gridOriginal.rawValue,
+                    ]
+                )
+                return Set(rows.compactMap(UUID.init(uuidString:)))
+            }
+        }.value
+    }
+
     func prewarmOriginalAspectThumbnail(assetID: UUID) async throws -> Data {
         try await assetImages.prewarmOriginalAspectThumbnail(assetID: assetID)
     }

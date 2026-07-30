@@ -4139,19 +4139,49 @@ final class LibraryWorkspaceModel: ObservableObject {
         }
 
         guard sourceThumbnailPrewarmGeneration == generation else { return }
+        var assetIDsToWarm = assetIDs
+        if kind == .originalAspect {
+            do {
+                let cachedAssetIDs = try await service.cachedOriginalAspectThumbnailAssetIDs(
+                    sourceID: sourceID
+                )
+                assetIDsToWarm = assetIDs.filter { !cachedAssetIDs.contains($0) }
+            } catch {
+                var uncachedAssetIDs: [UUID] = []
+                uncachedAssetIDs.reserveCapacity(assetIDs.count)
+                for assetID in assetIDs {
+                    guard sourceThumbnailPrewarmGeneration == generation, !Task.isCancelled else {
+                        return
+                    }
+                    do {
+                        if try await service.loadOriginalAspectThumbnailIfCached(assetID: assetID) == nil {
+                            uncachedAssetIDs.append(assetID)
+                        }
+                    } catch is CancellationError {
+                        return
+                    } catch {
+                        // A failed cache probe must not prevent repair through explicit prewarm.
+                        uncachedAssetIDs.append(assetID)
+                    }
+                }
+                assetIDsToWarm = uncachedAssetIDs
+            }
+        }
+
+        guard sourceThumbnailPrewarmGeneration == generation else { return }
         sourceThumbnailPrewarmProgress = SourceThumbnailPrewarmProgress(
             sourceID: sourceID,
             sourceDisplayName: sourceDisplayName,
             kind: kind,
             completed: 0,
-            total: assetIDs.count,
+            total: assetIDsToWarm.count,
             warmed: 0,
             failed: 0
         )
 
         var warmed = 0
         var failed = 0
-        for (index, assetID) in assetIDs.enumerated() {
+        for (index, assetID) in assetIDsToWarm.enumerated() {
             guard sourceThumbnailPrewarmGeneration == generation, !Task.isCancelled else { return }
             do {
                 try Task.checkCancellation()
@@ -4178,7 +4208,7 @@ final class LibraryWorkspaceModel: ObservableObject {
                 sourceDisplayName: sourceDisplayName,
                 kind: kind,
                 completed: index + 1,
-                total: assetIDs.count,
+                total: assetIDsToWarm.count,
                 warmed: warmed,
                 failed: failed
             )
@@ -11696,11 +11726,12 @@ struct LibraryWorkspaceView: View {
             failed,
             total
         ):
-            if failed == 0 {
-                "已为“\(sourceDisplayName)”生成 \(warmed)/\(total) 个照片和视频原比例缓存。"
-            } else {
-                "已为“\(sourceDisplayName)”生成 \(warmed)/\(total) 个原比例缓存（失败 \(failed) 个）；未缓存项目仍显示正方形。"
-            }
+            originalAspectPrewarmNoticeText(
+                sourceDisplayName: sourceDisplayName,
+                warmed: warmed,
+                failed: failed,
+                total: total
+            )
         case let .sourceOriginalAspectThumbnailPrewarmCancelled(
             sourceDisplayName,
             completed,
@@ -11809,6 +11840,25 @@ struct LibraryWorkspaceView: View {
         case .originalOpenFailed:
             "无法用“预览”打开原图。请确认来源仍可用、授权有效且照片已可从本机读取。"
         }
+    }
+
+    private static func originalAspectPrewarmNoticeText(
+        sourceDisplayName: String,
+        warmed: Int,
+        failed: Int,
+        total: Int
+    ) -> String {
+        let skipped = max(0, total - warmed - failed)
+        if total > 0, skipped == total {
+            return "“\(sourceDisplayName)”已有 \(total) 个照片和视频原比例缓存，已全部跳过，无需重新生成。"
+        }
+        if failed == 0, skipped > 0 {
+            return "已为“\(sourceDisplayName)”新生成 \(warmed) 个原比例缓存，跳过已有缓存 \(skipped) 个，共 \(total) 个。"
+        }
+        if failed == 0 {
+            return "已为“\(sourceDisplayName)”生成 \(warmed)/\(total) 个照片和视频原比例缓存。"
+        }
+        return "已为“\(sourceDisplayName)”新生成 \(warmed) 个原比例缓存，跳过 \(skipped) 个，失败 \(failed) 个，共 \(total) 个；未缓存项目仍显示正方形。"
     }
 
     private static func selectedAssetEmbeddingBatchNoticeText(

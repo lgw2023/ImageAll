@@ -10595,6 +10595,7 @@ final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecked Sendab
     private let thumbnailLoadDelayNanoseconds: UInt64
     private var storedPreviewLoadCallCount = 0
     private var storedOriginalAspectPrewarmCallCount = 0
+    private var storedOriginalAspectCacheInventoryCallCount = 0
     private var storedOriginalAspectThumbnailData: [UUID: Data] = [:]
     private var storedPortableExportCallCount = 0
     private var storedPreviewCacheClearCallCount = 0
@@ -10851,6 +10852,10 @@ final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecked Sendab
 
     var originalAspectPrewarmCallCount: Int {
         lock.withLock { storedOriginalAspectPrewarmCallCount }
+    }
+
+    var originalAspectCacheInventoryCallCount: Int {
+        lock.withLock { storedOriginalAspectCacheInventoryCallCount }
     }
 
     var portableExportCallCount: Int {
@@ -11368,6 +11373,13 @@ final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecked Sendab
 
     func loadOriginalAspectThumbnailIfCached(assetID: UUID) async throws -> Data? {
         lock.withLock { storedOriginalAspectThumbnailData[assetID] }
+    }
+
+    func cachedOriginalAspectThumbnailAssetIDs(sourceID _: UUID) async throws -> Set<UUID> {
+        lock.withLock {
+            storedOriginalAspectCacheInventoryCallCount += 1
+            return Set(storedOriginalAspectThumbnailData.keys)
+        }
     }
 
     func prewarmOriginalAspectThumbnail(assetID: UUID) async throws -> Data {

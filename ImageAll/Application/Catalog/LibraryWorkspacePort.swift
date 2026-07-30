@@ -395,6 +395,7 @@ protocol LibraryWorkspacePort: Sendable {
     ) throws -> AssetPageResult
     func loadThumbnail(assetID: UUID) async throws -> Data
     func loadOriginalAspectThumbnailIfCached(assetID: UUID) async throws -> Data?
+    func cachedOriginalAspectThumbnailAssetIDs(sourceID: UUID) async throws -> Set<UUID>
     func prewarmOriginalAspectThumbnail(assetID: UUID) async throws -> Data
     func loadPreview(assetID: UUID) async throws -> Data
     func downloadCloudPreview(
@@ -433,6 +434,10 @@ extension LibraryWorkspacePort {
 
     func loadOriginalAspectThumbnailIfCached(assetID _: UUID) async throws -> Data? {
         nil
+    }
+
+    func cachedOriginalAspectThumbnailAssetIDs(sourceID _: UUID) async throws -> Set<UUID> {
+        []
     }
 
     func prewarmOriginalAspectThumbnail(assetID _: UUID) async throws -> Data {
