@@ -184,6 +184,42 @@ final class SecurityScopedBookmarkTests: XCTestCase {
         XCTAssertEqual(bookmarkPort.stopCount, 1)
     }
 
+    func testFolderAccessLeaseKeepsScopeUntilExplicitReleaseAndStopsExactlyOnce() throws {
+        let database = try FolderAuthorizationTestSupport.makeDatabase()
+        let root = try registry.makeRoot(label: "playback-lease")
+        let bookmarkPort = FolderAuthorizationTestSupport.MappingBookmarkPort()
+        let bookmark = bookmarkPort.register(url: root)
+        let sourceID = UUID()
+        try FolderAuthorizationTestSupport.insertFolderSource(
+            database: database,
+            sourceID: sourceID,
+            bookmark: bookmark,
+            state: .active
+        )
+        let coordinator = FolderAuthorizationCoordinator(
+            dependencies: FolderAuthorizationDependencies(
+                repository: GRDBFolderSourceAuthorizationRepository(database: database),
+                picker: FolderAuthorizationTestSupport.FakeDirectoryPicker(),
+                bookmarkPort: bookmarkPort,
+                rootValidator: FolderRootValidator(),
+                relationshipChecker: FoundationFolderRootRelationshipChecker(),
+                clock: FixedJobClock(nowMs: FolderAuthorizationTestSupport.baseTimeMs),
+                idGenerator: UUID.init
+            )
+        )
+
+        let lease = try coordinator.acquireFolderSourceAccess(sourceID: sourceID)
+
+        XCTAssertEqual(lease.rootURL, root)
+        XCTAssertEqual(bookmarkPort.startCount, 1)
+        XCTAssertEqual(bookmarkPort.stopCount, 0)
+
+        lease.release()
+        lease.release()
+
+        XCTAssertEqual(bookmarkPort.stopCount, 1)
+    }
+
     func testStaleSQLReplaceFailureKeepsOldBlob() throws {
         let database = try FolderAuthorizationTestSupport.makeDatabase()
         try FolderAuthorizationTestSupport.AuthorizationDatabaseTestFaults

@@ -438,6 +438,11 @@ struct CompositionRoot {
                 folderAuthorization: authorization,
                 photosLibrary: photosAccess
             ),
+            videoPlaybackProvider: AppKitLibraryVideoPlaybackProvider(
+                database: runtime.database,
+                folderAuthorization: authorization,
+                photosLibrary: photosAccess
+            ),
             clock: clock
         )
     }

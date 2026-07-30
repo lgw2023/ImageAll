@@ -10,6 +10,32 @@ struct FolderAuthorizationDependencies: Sendable {
     let idGenerator: @Sendable () -> UUID
 }
 
+final class FolderSourceAccessLease: @unchecked Sendable {
+    let rootURL: URL
+    private let lock = NSLock()
+    private var releaseAction: (@Sendable () -> Void)?
+
+    init(
+        rootURL: URL,
+        release: @escaping @Sendable () -> Void
+    ) {
+        self.rootURL = rootURL
+        releaseAction = release
+    }
+
+    func release() {
+        lock.lock()
+        let action = releaseAction
+        releaseAction = nil
+        lock.unlock()
+        action?()
+    }
+
+    deinit {
+        release()
+    }
+}
+
 struct FolderAuthorizationCoordinator: FolderAuthorizationCommandPort {
     let dependencies: FolderAuthorizationDependencies
 
@@ -162,7 +188,8 @@ struct FolderAuthorizationCoordinator: FolderAuthorizationCommandPort {
         }
 
         do {
-            _ = try resolveAccess(source: source) { _ in () }
+            let lease = try resolveAccessLease(source: source)
+            lease.release()
             try dependencies.repository.updateSourceState(
                 sourceID: sourceID,
                 state: .active,
@@ -178,6 +205,14 @@ struct FolderAuthorizationCoordinator: FolderAuthorizationCommandPort {
         sourceID: UUID,
         perform: (URL) throws -> T
     ) throws -> T {
+        let lease = try acquireFolderSourceAccess(sourceID: sourceID)
+        defer {
+            lease.release()
+        }
+        return try perform(lease.rootURL)
+    }
+
+    func acquireFolderSourceAccess(sourceID: UUID) throws -> FolderSourceAccessLease {
         let source = try requireFolderSource(id: sourceID)
 
         switch source.state {
@@ -189,7 +224,7 @@ struct FolderAuthorizationCoordinator: FolderAuthorizationCommandPort {
             break
         }
 
-        return try resolveAccess(source: source, perform: perform)
+        return try resolveAccessLease(source: source)
     }
 
     private enum IdentityVerificationResult {
@@ -276,10 +311,9 @@ struct FolderAuthorizationCoordinator: FolderAuthorizationCommandPort {
         return resolved.url
     }
 
-    private func resolveAccess<T>(
-        source: StoredFolderSourceRecord,
-        perform: (URL) throws -> T
-    ) throws -> T {
+    private func resolveAccessLease(
+        source: StoredFolderSourceRecord
+    ) throws -> FolderSourceAccessLease {
         let resolved: BookmarkResolveResult
         do {
             resolved = try dependencies.bookmarkPort.resolveBookmark(source.bookmark)
@@ -299,8 +333,9 @@ struct FolderAuthorizationCoordinator: FolderAuthorizationCommandPort {
             )
             throw FolderAuthorizationError.authorizationUnavailable
         }
-        defer {
-            dependencies.bookmarkPort.stopAccessing(resolved.url)
+        let bookmarkPort = dependencies.bookmarkPort
+        let lease = FolderSourceAccessLease(rootURL: resolved.url) {
+            bookmarkPort.stopAccessing(resolved.url)
         }
 
         switch dependencies.rootValidator.validateRoot(at: resolved.url) {
@@ -324,11 +359,7 @@ struct FolderAuthorizationCoordinator: FolderAuthorizationCommandPort {
             }
         }
 
-        do {
-            return try perform(resolved.url)
-        } catch {
-            throw error
-        }
+        return lease
     }
 
     private func refreshStaleBookmarkInCurrentScope(sourceID: UUID, resolvedURL: URL) throws {

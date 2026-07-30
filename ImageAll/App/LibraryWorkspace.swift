@@ -1,4 +1,6 @@
 import AppKit
+@preconcurrency import AVFoundation
+@preconcurrency import AVKit
 import CryptoKit
 import Foundation
 import ImageIO
@@ -128,6 +130,69 @@ enum LibraryGridDensity: Int, CaseIterable, Sendable {
         (455, 761),
         (620, 1038),
     ]
+}
+
+@MainActor
+final class LibraryVideoHoverPlayback: ObservableObject {
+    let assetID: UUID
+    let player: AVQueuePlayer
+    @Published private(set) var isReady = false
+    @Published private(set) var didFail = false
+
+    private let looper: AVPlayerLooper
+    private let resource: LibraryVideoPlaybackResource
+    private let asset: AVAsset
+    private var readinessTask: Task<Void, Never>?
+    private var isStopped = false
+
+    init(assetID: UUID, resource: LibraryVideoPlaybackResource) {
+        self.assetID = assetID
+        self.resource = resource
+        let item = AVPlayerItem(url: resource.url)
+        asset = item.asset
+        let player = AVQueuePlayer()
+        player.isMuted = true
+        player.actionAtItemEnd = .none
+        self.player = player
+        looper = AVPlayerLooper(player: player, templateItem: item)
+    }
+
+    func play() {
+        guard !isStopped else { return }
+        readinessTask?.cancel()
+        let asset = asset
+        readinessTask = Task { @MainActor [weak self, asset] in
+            do {
+                let isPlayable = try await asset.load(.isPlayable)
+                guard let self, !Task.isCancelled, !self.isStopped else { return }
+                guard isPlayable else {
+                    self.fail()
+                    return
+                }
+                self.isReady = true
+                self.player.play()
+            } catch {
+                guard let self, !Task.isCancelled, !self.isStopped else { return }
+                self.fail()
+            }
+        }
+    }
+
+    func stop() {
+        guard !isStopped else { return }
+        isStopped = true
+        readinessTask?.cancel()
+        readinessTask = nil
+        player.pause()
+        looper.disableLooping()
+        player.removeAllItems()
+        resource.release()
+    }
+
+    private func fail() {
+        didFail = true
+        stop()
+    }
 }
 
 enum LibraryThumbnailAspectMode: String, CaseIterable, Sendable {
@@ -1068,6 +1133,7 @@ final class LibraryWorkspaceModel: ObservableObject {
     @Published private(set) var sourceOrderRevision = 0
     @Published private(set) var tagOrderRevision = 0
     @Published private(set) var isOpeningOriginal = false
+    @Published private(set) var videoHoverPlayback: LibraryVideoHoverPlayback?
     @Published private(set) var trainingRuns: [TrainingRunRecord] = []
     @Published private(set) var trainingSlots: [TrainingWorkspaceSlot] =
         TrainingRunMethod.allCases.map {
@@ -1140,6 +1206,7 @@ final class LibraryWorkspaceModel: ObservableObject {
     private let appPersonalAdamWTagLibrarySuggester: (any AppPersonalTagLibrarySuggesting)?
     private let suggestionThresholds: (any SuggestionThresholdPort)?
     private let originalAssetOpener: any LibraryOriginalAssetOpening
+    private let videoPlaybackProvider: any LibraryVideoPlaybackProviding
     private let sourceOrderPreferences: LibrarySourceOrderPreferences
     private let tagOrderPreferences: LibraryTagOrderPreferences
     private let tagGroupCollapsePreferences: LibraryTagGroupCollapsePreferences
@@ -1162,6 +1229,9 @@ final class LibraryWorkspaceModel: ObservableObject {
     private var cloudPreviewRequestID: UUID?
     private var localModelSuggestionRequestID: UUID?
     private var searchDebounceTask: Task<Void, Never>?
+    private var videoHoverTask: Task<Void, Never>?
+    private var videoHoverRequestID: UUID?
+    private var pendingVideoHoverAssetID: UUID?
     private var assetPageRequestID: UUID?
     private var reviewPageRequestID: UUID?
     private var hiddenRecycledAssetIDs: Set<UUID> = []
@@ -1201,6 +1271,7 @@ final class LibraryWorkspaceModel: ObservableObject {
     fileprivate var isLoadingMoreReviewQueue = false
     private let catalogProgressRefreshInterval: Duration
     private let searchDebounceInterval: Duration
+    private let videoHoverDelay: Duration
 
     init(
         service: any LibraryWorkspacePort,
@@ -1228,12 +1299,15 @@ final class LibraryWorkspaceModel: ObservableObject {
         pendingSuggestionCountPreferences: any PendingSuggestionCountPreferenceStore =
             UserDefaultsPendingSuggestionCountPreferenceStore(),
         originalAssetOpener: any LibraryOriginalAssetOpening = UnavailableLibraryOriginalAssetOpener(),
+        videoPlaybackProvider: any LibraryVideoPlaybackProviding =
+            UnavailableLibraryVideoPlaybackProvider(),
         sourceOrderPreferences: LibrarySourceOrderPreferences = LibrarySourceOrderPreferences(),
         tagOrderPreferences: LibraryTagOrderPreferences = LibraryTagOrderPreferences(),
         tagGroupCollapsePreferences: LibraryTagGroupCollapsePreferences = LibraryTagGroupCollapsePreferences(),
         clock: any JobClock = SystemJobClock(),
         catalogProgressRefreshInterval: Duration = .milliseconds(750),
         searchDebounceInterval: Duration = .milliseconds(300),
+        videoHoverDelay: Duration = .milliseconds(350),
         thumbnailLoadConcurrencyLimit: Int = 4,
         idleThumbnailPrewarmPreferenceStore: any IdleThumbnailPrewarmPreferenceStore =
             UserDefaultsIdleThumbnailPrewarmPreferenceStore(),
@@ -1273,12 +1347,14 @@ final class LibraryWorkspaceModel: ObservableObject {
         self.suggestionThresholds = suggestionThresholds
         self.pendingSuggestionCountPreferences = pendingSuggestionCountPreferences
         self.originalAssetOpener = originalAssetOpener
+        self.videoPlaybackProvider = videoPlaybackProvider
         self.sourceOrderPreferences = sourceOrderPreferences
         self.tagOrderPreferences = tagOrderPreferences
         self.tagGroupCollapsePreferences = tagGroupCollapsePreferences
         self.clock = clock
         self.catalogProgressRefreshInterval = catalogProgressRefreshInterval
         self.searchDebounceInterval = searchDebounceInterval
+        self.videoHoverDelay = videoHoverDelay
         self.thumbnailLoadGate = LibraryThumbnailLoadGate(limit: thumbnailLoadConcurrencyLimit)
     }
 
@@ -3333,6 +3409,7 @@ final class LibraryWorkspaceModel: ObservableObject {
 
     deinit {
         searchDebounceTask?.cancel()
+        videoHoverTask?.cancel()
         librarySlimmingSourceLoadTask?.cancel()
         service.stopCatalogSourceMonitoring()
     }
@@ -4609,6 +4686,7 @@ final class LibraryWorkspaceModel: ObservableObject {
 
     func selectSource(_ sourceID: UUID?) async {
         guard selectedSourceID != sourceID else { return }
+        stopVideoHoverPlayback()
         selectedSourceID = sourceID
         // Navigation only swaps the visible filter. Photos integrity / sync is
         // handled once at start() so switching sources stays flicker-free.
@@ -4617,6 +4695,7 @@ final class LibraryWorkspaceModel: ObservableObject {
     }
 
     func beginBrowsingNavigation() -> UUID {
+        stopVideoHoverPlayback()
         let requestID = UUID()
         browsingNavigationRequestID = requestID
         // Invalidate a page query started by the prior sidebar selection even
@@ -6445,6 +6524,7 @@ final class LibraryWorkspaceModel: ObservableObject {
 
     func toggleSinglePhotoView() {
         guard primarySelectedAssetID != nil else { return }
+        stopVideoHoverPlayback()
         isSinglePhotoPresented.toggle()
     }
 
@@ -6452,18 +6532,82 @@ final class LibraryWorkspaceModel: ObservableObject {
         guard items.contains(where: { $0.assetID == assetID })
             || reviewQueueItems.contains(where: { $0.assetID == assetID })
         else { return }
+        stopVideoHoverPlayback()
         await selectAsset(assetID)
         isSinglePhotoPresented = true
     }
 
     func openSinglePhotoView(reviewItemID: ReviewQueueItemID) async {
         guard reviewQueueItems.contains(where: { $0.id == reviewItemID }) else { return }
+        stopVideoHoverPlayback()
         await selectReviewItem(reviewItemID)
         isSinglePhotoPresented = true
     }
 
     func closeSinglePhotoView() {
         isSinglePhotoPresented = false
+    }
+
+    func beginVideoHover(assetID: UUID) {
+        guard let item = items.first(where: { $0.assetID == assetID }),
+              item.mediaKind == .video,
+              item.availability == .available
+        else {
+            return
+        }
+        if videoHoverPlayback?.assetID == assetID || pendingVideoHoverAssetID == assetID {
+            return
+        }
+
+        stopVideoHoverPlayback()
+        let requestID = UUID()
+        videoHoverRequestID = requestID
+        pendingVideoHoverAssetID = assetID
+        let provider = videoPlaybackProvider
+        let delay = videoHoverDelay
+        videoHoverTask = Task { @MainActor [weak self] in
+            do {
+                try await Task.sleep(for: delay)
+                try Task.checkCancellation()
+                let resource = try await provider.prepareVideoPlayback(assetID: assetID)
+                guard let self,
+                      !Task.isCancelled,
+                      self.videoHoverRequestID == requestID,
+                      self.pendingVideoHoverAssetID == assetID
+                else {
+                    resource.release()
+                    return
+                }
+                let playback = LibraryVideoHoverPlayback(
+                    assetID: assetID,
+                    resource: resource
+                )
+                self.videoHoverPlayback = playback
+                self.pendingVideoHoverAssetID = nil
+                self.videoHoverTask = nil
+                playback.play()
+            } catch {
+                guard let self, self.videoHoverRequestID == requestID else { return }
+                self.pendingVideoHoverAssetID = nil
+                self.videoHoverTask = nil
+            }
+        }
+    }
+
+    func endVideoHover(assetID: UUID) {
+        guard pendingVideoHoverAssetID == assetID || videoHoverPlayback?.assetID == assetID else {
+            return
+        }
+        stopVideoHoverPlayback()
+    }
+
+    func stopVideoHoverPlayback() {
+        videoHoverRequestID = nil
+        pendingVideoHoverAssetID = nil
+        videoHoverTask?.cancel()
+        videoHoverTask = nil
+        videoHoverPlayback?.stop()
+        videoHoverPlayback = nil
     }
 
     func moveSinglePhotoSelection(by offset: Int) async {
@@ -7327,6 +7471,7 @@ final class LibraryWorkspaceModel: ObservableObject {
 
     func setMediaKind(_ mediaKind: MediaKind) async {
         guard selectedMediaKind != mediaKind else { return }
+        stopVideoHoverPlayback()
         assetPageRequestID = UUID()
         searchDebounceTask?.cancel()
         selectedMediaKind = mediaKind
@@ -9250,6 +9395,14 @@ struct LibraryWorkspaceView: View {
                 LibrarySlimmingIdenticalCleanupBlockingOverlay(progress: progress)
                     .zIndex(100)
             }
+        }
+        .onReceive(
+            NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)
+        ) { _ in
+            model.stopVideoHoverPlayback()
+        }
+        .onDisappear {
+            model.stopVideoHoverPlayback()
         }
         .alert(
             "重命名标签",
@@ -11970,6 +12123,16 @@ private struct AssetThumbnailView: View {
                         .font(.title)
                         .foregroundStyle(.secondary)
                 }
+                if let playback = model.videoHoverPlayback,
+                   playback.assetID == item.assetID
+                {
+                    LibraryHoverVideoPlaybackView(
+                        playback: playback,
+                        aspectMode: model.thumbnailAspectMode
+                    )
+                    .allowsHitTesting(false)
+                    .transition(.opacity)
+                }
             }
             .clipShape(RoundedRectangle(cornerRadius: 5))
             .overlay {
@@ -12019,10 +12182,12 @@ private struct AssetThumbnailView: View {
         .accessibilityValue(isSelected ? "已选择" : "未选择")
         .accessibilityHint(
             item.mediaKind == .video
-                ? "选择视频；双击或选择后按空格查看代表缩略图和播放入口"
+                ? "悬停静音播放；单击选择；双击或选择后按空格查看视频"
                 : "选择照片；双击或选择后按空格查看单张照片"
         )
-        .persistentHelp(LibraryAssetDetailText.hoverText(item))
+        .conditionalPersistentHelp(
+            item.mediaKind == .video ? nil : LibraryAssetDetailText.hoverText(item)
+        )
         .accessibilityAction {
             onSelect()
         }
@@ -12031,6 +12196,16 @@ private struct AssetThumbnailView: View {
         }
         .task(id: thumbnailLoadID) {
             await loadGridThumbnailWhileVisible()
+        }
+        .onHover { isInside in
+            if isInside {
+                model.beginVideoHover(assetID: item.assetID)
+            } else {
+                model.endVideoHover(assetID: item.assetID)
+            }
+        }
+        .onDisappear {
+            model.endVideoHover(assetID: item.assetID)
         }
     }
 
@@ -12138,6 +12313,48 @@ private struct AssetThumbnailView: View {
         case .unsupported: return "nosign"
         case .recycled: return "trash"
         }
+    }
+}
+
+private struct LibraryHoverVideoPlaybackView: View {
+    @ObservedObject var playback: LibraryVideoHoverPlayback
+    let aspectMode: LibraryThumbnailAspectMode
+
+    @ViewBuilder
+    var body: some View {
+        if playback.isReady, !playback.didFail {
+            LibraryHoverVideoPlayerView(
+                player: playback.player,
+                aspectMode: aspectMode
+            )
+        }
+    }
+}
+
+private struct LibraryHoverVideoPlayerView: NSViewRepresentable {
+    let player: AVPlayer
+    let aspectMode: LibraryThumbnailAspectMode
+
+    func makeNSView(context _: Context) -> AVPlayerView {
+        let view = AVPlayerView()
+        view.controlsStyle = .none
+        view.player = player
+        view.videoGravity = videoGravity
+        return view
+    }
+
+    func updateNSView(_ view: AVPlayerView, context _: Context) {
+        view.player = player
+        view.controlsStyle = .none
+        view.videoGravity = videoGravity
+    }
+
+    static func dismantleNSView(_ view: AVPlayerView, coordinator _: ()) {
+        view.player = nil
+    }
+
+    private var videoGravity: AVLayerVideoGravity {
+        aspectMode == .square ? .resizeAspectFill : .resizeAspect
     }
 }
 

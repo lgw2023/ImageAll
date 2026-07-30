@@ -249,6 +249,39 @@ struct UnavailableLibraryOriginalAssetOpener: LibraryOriginalAssetOpening {
     }
 }
 
+@MainActor
+final class LibraryVideoPlaybackResource {
+    let url: URL
+    private var releaseAction: (@Sendable () -> Void)?
+
+    init(url: URL, release: @escaping @Sendable () -> Void = {}) {
+        self.url = url
+        releaseAction = release
+    }
+
+    func release() {
+        let action = releaseAction
+        releaseAction = nil
+        action?()
+    }
+
+    deinit {
+        releaseAction?()
+    }
+}
+
+@MainActor
+protocol LibraryVideoPlaybackProviding: Sendable {
+    func prepareVideoPlayback(assetID: UUID) async throws -> LibraryVideoPlaybackResource
+}
+
+@MainActor
+struct UnavailableLibraryVideoPlaybackProvider: LibraryVideoPlaybackProviding {
+    func prepareVideoPlayback(assetID _: UUID) async throws -> LibraryVideoPlaybackResource {
+        throw LibraryOriginalAssetOpenError.unavailable
+    }
+}
+
 enum CloudPreviewPresentationState: Equatable, Sendable {
     case hidden
     case available(assetID: UUID)

@@ -169,6 +169,15 @@ extension View {
     }
 
     @ViewBuilder
+    func conditionalPersistentHelp(_ text: String?) -> some View {
+        if let text {
+            persistentHelp(text)
+        } else {
+            self
+        }
+    }
+
+    @ViewBuilder
     func libraryToolbarLabelStyle(_ displayMode: LibraryToolbarDisplayMode) -> some View {
         switch displayMode {
         case .iconOnly:

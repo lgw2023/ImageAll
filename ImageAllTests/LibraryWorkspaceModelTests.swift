@@ -8250,6 +8250,172 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertFalse(model.isSinglePhotoPresented)
     }
 
+    func testVideoHoverStartsOnePlaybackAndReleasesItOnExit() async {
+        let sourceID = UUID()
+        let video = Self.makeAsset(
+            sourceID: sourceID,
+            fileName: "hover.mov",
+            mediaType: "com.apple.quicktime-movie",
+            mediaKind: .video,
+            durationMs: 4_000
+        )
+        let provider = FakeLibraryVideoPlaybackProvider()
+        let model = LibraryWorkspaceModel(
+            service: FakeLibraryWorkspaceService(
+                connectedSource: LibrarySourceSummary(
+                    id: sourceID,
+                    displayName: "Fixture",
+                    state: .active
+                ),
+                reconciledItems: [video],
+                startsConnected: true
+            ),
+            videoPlaybackProvider: provider,
+            videoHoverDelay: .zero,
+            idlePrewarmInstallEventMonitor: false
+        )
+        await model.start()
+        await waitForCatalogScanToFinish(model)
+        await model.setMediaKind(.video)
+        await waitForItems([video.assetID], model: model)
+
+        model.beginVideoHover(assetID: video.assetID)
+        await waitForVideoHoverPlayback(video.assetID, model: model)
+
+        XCTAssertEqual(provider.preparedAssetIDs, [video.assetID])
+        XCTAssertEqual(model.videoHoverPlayback?.assetID, video.assetID)
+
+        model.endVideoHover(assetID: video.assetID)
+
+        XCTAssertNil(model.videoHoverPlayback)
+        XCTAssertEqual(provider.releaseCount, 1)
+    }
+
+    func testVideoHoverSwitchKeepsOnlyNewestPlayerAndMediaSwitchStopsIt() async {
+        let sourceID = UUID()
+        let first = Self.makeAsset(
+            sourceID: sourceID,
+            fileName: "first.mov",
+            mediaType: "com.apple.quicktime-movie",
+            mediaKind: .video,
+            durationMs: 4_000
+        )
+        let second = Self.makeAsset(
+            sourceID: sourceID,
+            fileName: "second.mp4",
+            mediaType: "public.mpeg-4",
+            mediaKind: .video,
+            durationMs: 5_000
+        )
+        let provider = FakeLibraryVideoPlaybackProvider()
+        let model = LibraryWorkspaceModel(
+            service: FakeLibraryWorkspaceService(
+                connectedSource: LibrarySourceSummary(
+                    id: sourceID,
+                    displayName: "Fixture",
+                    state: .active
+                ),
+                reconciledItems: [first, second],
+                startsConnected: true
+            ),
+            videoPlaybackProvider: provider,
+            videoHoverDelay: .zero,
+            idlePrewarmInstallEventMonitor: false
+        )
+        await model.start()
+        await waitForCatalogScanToFinish(model)
+        await model.setMediaKind(.video)
+        await waitForItems([first.assetID, second.assetID], model: model)
+
+        model.beginVideoHover(assetID: first.assetID)
+        await waitForVideoHoverPlayback(first.assetID, model: model)
+        model.beginVideoHover(assetID: second.assetID)
+        await waitForVideoHoverPlayback(second.assetID, model: model)
+
+        XCTAssertEqual(provider.preparedAssetIDs, [first.assetID, second.assetID])
+        XCTAssertEqual(model.videoHoverPlayback?.assetID, second.assetID)
+
+        await model.setMediaKind(.image)
+
+        XCTAssertNil(model.videoHoverPlayback)
+        XCTAssertEqual(provider.releaseCount, 2)
+    }
+
+    func testVideoHoverExitDuringDelayDoesNotPreparePlayback() async {
+        let sourceID = UUID()
+        let video = Self.makeAsset(
+            sourceID: sourceID,
+            fileName: "quick-pass.mov",
+            mediaType: "com.apple.quicktime-movie",
+            mediaKind: .video,
+            durationMs: 4_000
+        )
+        let provider = FakeLibraryVideoPlaybackProvider()
+        let model = LibraryWorkspaceModel(
+            service: FakeLibraryWorkspaceService(
+                connectedSource: LibrarySourceSummary(
+                    id: sourceID,
+                    displayName: "Fixture",
+                    state: .active
+                ),
+                reconciledItems: [video],
+                startsConnected: true
+            ),
+            videoPlaybackProvider: provider,
+            videoHoverDelay: .seconds(30),
+            idlePrewarmInstallEventMonitor: false
+        )
+        await model.start()
+        await waitForCatalogScanToFinish(model)
+        await model.setMediaKind(.video)
+        await waitForItems([video.assetID], model: model)
+
+        model.beginVideoHover(assetID: video.assetID)
+        model.endVideoHover(assetID: video.assetID)
+        await Task.yield()
+
+        XCTAssertTrue(provider.preparedAssetIDs.isEmpty)
+        XCTAssertNil(model.videoHoverPlayback)
+        XCTAssertEqual(provider.releaseCount, 0)
+    }
+
+    func testVideoHoverPlaybackFailureFallsBackAndReleasesResource() async {
+        let sourceID = UUID()
+        let video = Self.makeAsset(
+            sourceID: sourceID,
+            fileName: "unplayable.mov",
+            mediaType: "com.apple.quicktime-movie",
+            mediaKind: .video,
+            durationMs: 4_000
+        )
+        let provider = FakeLibraryVideoPlaybackProvider()
+        let model = LibraryWorkspaceModel(
+            service: FakeLibraryWorkspaceService(
+                connectedSource: LibrarySourceSummary(
+                    id: sourceID,
+                    displayName: "Fixture",
+                    state: .active
+                ),
+                reconciledItems: [video],
+                startsConnected: true
+            ),
+            videoPlaybackProvider: provider,
+            videoHoverDelay: .zero,
+            idlePrewarmInstallEventMonitor: false
+        )
+        await model.start()
+        await waitForCatalogScanToFinish(model)
+        await model.setMediaKind(.video)
+        await waitForItems([video.assetID], model: model)
+
+        model.beginVideoHover(assetID: video.assetID)
+        await waitForVideoHoverFailure(video.assetID, model: model)
+
+        XCTAssertEqual(model.videoHoverPlayback?.assetID, video.assetID)
+        XCTAssertEqual(model.videoHoverPlayback?.isReady, false)
+        XCTAssertEqual(provider.releaseCount, 1)
+    }
+
     func testReviewVideoTabClearsPhotoQueueAndShowsNoPhotoCounts() async {
         let sourceID = UUID()
         let tag = TagListItem(id: UUID(), displayName: "Family", state: .active)
@@ -9696,6 +9862,32 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTFail("catalog items did not publish")
     }
 
+    private func waitForVideoHoverPlayback(
+        _ assetID: UUID,
+        model: LibraryWorkspaceModel
+    ) async {
+        for _ in 0 ..< 10_000 {
+            if model.videoHoverPlayback?.assetID == assetID { return }
+            await Task.yield()
+        }
+        XCTFail("video hover playback did not start")
+    }
+
+    private func waitForVideoHoverFailure(
+        _ assetID: UUID,
+        model: LibraryWorkspaceModel
+    ) async {
+        for _ in 0 ..< 10_000 {
+            if model.videoHoverPlayback?.assetID == assetID,
+               model.videoHoverPlayback?.didFail == true
+            {
+                return
+            }
+            await Task.yield()
+        }
+        XCTFail("video hover playback did not report failure")
+    }
+
     private func waitForCloudPreviewState(
         _ expected: CloudPreviewPresentationState,
         model: LibraryWorkspaceModel
@@ -9862,6 +10054,39 @@ private final class FakeLibraryOriginalAssetOpener: LibraryOriginalAssetOpening 
 
     func openOriginalAsset(assetID: UUID) async throws {
         openedAssetIDs.append(assetID)
+    }
+}
+
+@MainActor
+private final class FakeLibraryVideoPlaybackProvider: LibraryVideoPlaybackProviding {
+    private(set) var preparedAssetIDs: [UUID] = []
+    private let releases = VideoPlaybackReleaseCounter()
+
+    var releaseCount: Int {
+        releases.value
+    }
+
+    func prepareVideoPlayback(assetID: UUID) async throws -> LibraryVideoPlaybackResource {
+        preparedAssetIDs.append(assetID)
+        let releases = releases
+        return LibraryVideoPlaybackResource(
+            url: URL(fileURLWithPath: "/tmp/\(assetID.uuidString).mov")
+        ) {
+            releases.increment()
+        }
+    }
+}
+
+private final class VideoPlaybackReleaseCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+
+    var value: Int {
+        lock.withLock { count }
+    }
+
+    func increment() {
+        lock.withLock { count += 1 }
     }
 }
 

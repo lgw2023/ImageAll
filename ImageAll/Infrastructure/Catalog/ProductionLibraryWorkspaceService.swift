@@ -470,7 +470,10 @@ struct AppKitLibraryOriginalAssetOpener: LibraryOriginalAssetOpening {
     let photosLibrary: PhotoKitPhotosLibraryAdapter
 
     func openOriginalAsset(assetID: UUID) async throws {
-        let locator = try fetchLocator(assetID: assetID)
+        let locator = try fetchLibraryOriginalAssetLocator(
+            database: database,
+            assetID: assetID
+        )
         guard locator.availability == .available else {
             throw LibraryOriginalAssetOpenError.unavailable
         }
@@ -510,45 +513,6 @@ struct AppKitLibraryOriginalAssetOpener: LibraryOriginalAssetOpening {
         }
     }
 
-    private func fetchLocator(assetID: UUID) throws -> LibraryOriginalAssetLocator {
-        try database.pool.read { db in
-            guard let row = try Row.fetchOne(
-                db,
-                sql: """
-                SELECT
-                    asset.source_id,
-                    source.kind AS source_kind,
-                    asset.locator_kind,
-                    asset.media_kind,
-                    asset.relative_path,
-                    asset.photos_local_identifier,
-                    asset.availability
-                FROM asset
-                INNER JOIN source ON source.id = asset.source_id
-                WHERE asset.id = ? AND asset.locator_state = 'current'
-                """,
-                arguments: [assetID.uuidString.lowercased()]
-            ),
-                let sourceID = UUID(uuidString: row["source_id"]),
-                let sourceKind = SourceKind(rawValue: row["source_kind"]),
-                let locatorKind = AssetLocatorKind(rawValue: row["locator_kind"]),
-                let mediaKind = MediaKind(rawValue: row["media_kind"]),
-                let availability = AssetAvailability(rawValue: row["availability"])
-            else {
-                throw LibraryOriginalAssetOpenError.unavailable
-            }
-            return LibraryOriginalAssetLocator(
-                sourceID: sourceID,
-                sourceKind: sourceKind,
-                locatorKind: locatorKind,
-                mediaKind: mediaKind,
-                relativePath: row["relative_path"],
-                photosLocalIdentifier: row["photos_local_identifier"],
-                availability: availability
-            )
-        }
-    }
-
     private func openWithPreview(_ url: URL) throws {
         guard let previewURL = NSWorkspace.shared.urlForApplication(
             withBundleIdentifier: "com.apple.Preview"
@@ -570,5 +534,93 @@ struct AppKitLibraryOriginalAssetOpener: LibraryOriginalAssetOpening {
         guard NSWorkspace.shared.open(url) else {
             throw LibraryOriginalAssetOpenError.previewUnavailable
         }
+    }
+}
+
+@MainActor
+struct AppKitLibraryVideoPlaybackProvider: LibraryVideoPlaybackProviding {
+    let database: CatalogDatabase
+    let folderAuthorization: FolderAuthorizationCoordinator
+    let photosLibrary: PhotoKitPhotosLibraryAdapter
+
+    func prepareVideoPlayback(assetID: UUID) async throws -> LibraryVideoPlaybackResource {
+        let locator = try fetchLibraryOriginalAssetLocator(
+            database: database,
+            assetID: assetID
+        )
+        guard locator.availability == .available, locator.mediaKind == .video else {
+            throw LibraryOriginalAssetOpenError.unavailable
+        }
+
+        switch (locator.sourceKind, locator.locatorKind) {
+        case (.folder, .file):
+            guard let relativePath = locator.relativePath,
+                  case let .success(validatedPath) = RelativePathRules.validate(relativePath)
+            else {
+                throw LibraryOriginalAssetOpenError.unsafeLocator
+            }
+            let accessLease = try folderAuthorization.acquireFolderSourceAccess(
+                sourceID: locator.sourceID
+            )
+            let url = accessLease.rootURL.appendingPathComponent(
+                validatedPath,
+                isDirectory: false
+            )
+            return LibraryVideoPlaybackResource(url: url) {
+                accessLease.release()
+            }
+        case (.photos, .photos):
+            guard let localIdentifier = locator.photosLocalIdentifier else {
+                throw LibraryOriginalAssetOpenError.unsafeLocator
+            }
+            let url = try await photosLibrary.requestOriginalVideoURL(
+                localIdentifier: localIdentifier
+            )
+            return LibraryVideoPlaybackResource(url: url)
+        default:
+            throw LibraryOriginalAssetOpenError.unsafeLocator
+        }
+    }
+}
+
+private func fetchLibraryOriginalAssetLocator(
+    database: CatalogDatabase,
+    assetID: UUID
+) throws -> LibraryOriginalAssetLocator {
+    try database.pool.read { db in
+        guard let row = try Row.fetchOne(
+            db,
+            sql: """
+            SELECT
+                asset.source_id,
+                source.kind AS source_kind,
+                asset.locator_kind,
+                asset.media_kind,
+                asset.relative_path,
+                asset.photos_local_identifier,
+                asset.availability
+            FROM asset
+            INNER JOIN source ON source.id = asset.source_id
+            WHERE asset.id = ? AND asset.locator_state = 'current'
+            """,
+            arguments: [assetID.uuidString.lowercased()]
+        ),
+            let sourceID = UUID(uuidString: row["source_id"]),
+            let sourceKind = SourceKind(rawValue: row["source_kind"]),
+            let locatorKind = AssetLocatorKind(rawValue: row["locator_kind"]),
+            let mediaKind = MediaKind(rawValue: row["media_kind"]),
+            let availability = AssetAvailability(rawValue: row["availability"])
+        else {
+            throw LibraryOriginalAssetOpenError.unavailable
+        }
+        return LibraryOriginalAssetLocator(
+            sourceID: sourceID,
+            sourceKind: sourceKind,
+            locatorKind: locatorKind,
+            mediaKind: mediaKind,
+            relativePath: row["relative_path"],
+            photosLocalIdentifier: row["photos_local_identifier"],
+            availability: availability
+        )
     }
 }
