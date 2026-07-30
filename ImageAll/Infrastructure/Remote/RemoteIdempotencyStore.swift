@@ -13,9 +13,10 @@ actor RemoteIdempotencyStore {
     /// operationID collisions across different mutations.
     struct MutationKey: Codable, Equatable, Sendable {
         let kind: String
-        let tagID: UUID
+        let tagID: UUID?
         let assetIDs: [UUID]
         let action: String
+        let subject: String?
 
         /// Normalizes `assetIDs` so unordered-but-equal sets compare equal.
         init(kind: String, tagID: UUID, assetIDs: [UUID], action: String) {
@@ -23,6 +24,15 @@ actor RemoteIdempotencyStore {
             self.tagID = tagID
             self.assetIDs = Array(Set(assetIDs)).sorted { $0.uuidString < $1.uuidString }
             self.action = action
+            self.subject = nil
+        }
+
+        init(kind: String, subject: String, assetIDs: [UUID], action: String) {
+            self.kind = kind
+            self.tagID = nil
+            self.assetIDs = Array(Set(assetIDs)).sorted { $0.uuidString < $1.uuidString }
+            self.action = action
+            self.subject = subject
         }
     }
 

@@ -337,7 +337,7 @@ final class RemoteCompanionModel: ObservableObject {
             let page = try await client.fetchAssets(
                 RemoteAssetPageRequest(
                     sourceIDs: selectedSourceID.map { [$0] } ?? [],
-                    sort: .newest,
+                    sort: .fileNameAscending,
                     limit: 60,
                     cursor: reset ? nil : nextCursor
                 )

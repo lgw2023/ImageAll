@@ -24,6 +24,86 @@ final class RemotePairingStoreTests: XCTestCase {
         )
     }
 
+    func testAccessAccountWhitelistAuthenticatesOnlyPersistedCorrectCredentials() async throws {
+        let storageURL = tempStorageURL()
+            .deletingLastPathComponent()
+            .appendingPathComponent("access-accounts.json")
+        let firstStore = RemoteAccessAccountStore(
+            storageURL: storageURL,
+            passwordHashIterations: 100
+        )
+
+        let account = try await firstStore.upsert(
+            username: "photo-owner",
+            password: "correct horse battery staple"
+        )
+
+        XCTAssertEqual(account.username, "photo-owner")
+        let accountNames = await firstStore.listAccounts().map(\.username)
+        let correctCredentials = await firstStore.authenticate(
+            username: "photo-owner",
+            password: "correct horse battery staple"
+        )
+        let wrongPassword = await firstStore.authenticate(
+            username: "photo-owner",
+            password: "wrong-password"
+        )
+        let unknownAccount = await firstStore.authenticate(
+            username: "not-whitelisted",
+            password: "correct horse battery staple"
+        )
+        XCTAssertEqual(accountNames, ["photo-owner"])
+        XCTAssertTrue(correctCredentials)
+        XCTAssertFalse(wrongPassword)
+        XCTAssertFalse(unknownAccount)
+
+        let restartedStore = RemoteAccessAccountStore(
+            storageURL: storageURL,
+            passwordHashIterations: 100
+        )
+        let persistedCredentials = await restartedStore.authenticate(
+            username: "photo-owner",
+            password: "correct horse battery staple"
+        )
+        XCTAssertTrue(persistedCredentials)
+    }
+
+    func testAccessAccountPasswordUpdateAndRemovalTakeEffectImmediately() async throws {
+        let store = RemoteAccessAccountStore(
+            storageURL: tempStorageURL()
+                .deletingLastPathComponent()
+                .appendingPathComponent("access-accounts.json"),
+            passwordHashIterations: 100
+        )
+        _ = try await store.upsert(username: "web-owner", password: "first-password")
+        let initiallyAuthorized = await store.authenticate(
+            username: "web-owner",
+            password: "first-password"
+        )
+        XCTAssertTrue(initiallyAuthorized)
+
+        _ = try await store.upsert(username: "web-owner", password: "second-password")
+        let oldPasswordAuthorized = await store.authenticate(
+            username: "web-owner",
+            password: "first-password"
+        )
+        let newPasswordAuthorized = await store.authenticate(
+            username: "web-owner",
+            password: "second-password"
+        )
+        XCTAssertFalse(oldPasswordAuthorized)
+        XCTAssertTrue(newPasswordAuthorized)
+
+        try await store.remove(username: "web-owner")
+        let removedAccountAuthorized = await store.authenticate(
+            username: "web-owner",
+            password: "second-password"
+        )
+        XCTAssertFalse(removedAccountAuthorized)
+        let accounts = await store.listAccounts()
+        XCTAssertTrue(accounts.isEmpty)
+    }
+
     func testCompletePairingConsumesOfferAndIssuesTokens() async throws {
         let store = RemotePairingStore(hostContext: makeContext(), storageURL: tempStorageURL())
         let offer = await store.issueOffer()

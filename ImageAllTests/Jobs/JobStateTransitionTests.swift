@@ -332,6 +332,38 @@ final class JobStateTransitionTests: XCTestCase {
         XCTAssertEqual(item.kind, .personalizationSuggestions)
     }
 
+    func testRecycleExpiryActivityUsesDedicatedPresentation() throws {
+        let database = try CatalogDatabase.open(at: makeTempDatabaseURL())
+        let queue = JobTestSupport.makeQueue(database: database)
+        let jobID = UUID()
+
+        _ = try JobTestSupport.enqueueDefault(
+            queue: queue,
+            id: jobID,
+            kind: LibrarySlimmingPurgeJobFactory.kind
+        )
+
+        let item = try XCTUnwrap(queue.fetchActivityItems().first { $0.id == jobID })
+        XCTAssertEqual(item.kind, .librarySlimmingPurge)
+    }
+
+    func testPendingRecycleExpiryActivityExplainsWhyItIsWaiting() {
+        let item = JobActivityItem(
+            id: UUID(),
+            kind: .librarySlimmingPurge,
+            state: .pending,
+            controlRequest: .none,
+            progress: JobProgress(completed: 0, total: nil)
+        )
+
+        XCTAssertEqual(JobActivityPresentation.title(for: item.kind), "回收站到期清理")
+        XCTAssertEqual(JobActivityPresentation.stateText(for: item), "等待到期")
+        XCTAssertEqual(
+            JobActivityPresentation.progressText(for: item),
+            "首批项目到期后自动清理"
+        )
+    }
+
     func testActivityProjectionLimitsResultsToOneHundredNewestActiveJobs() throws {
         let database = try CatalogDatabase.open(at: makeTempDatabaseURL())
         let queue = JobTestSupport.makeQueue(database: database)

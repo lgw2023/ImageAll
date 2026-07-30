@@ -29,10 +29,53 @@
         <p class="eyebrow">IMAGEALL COMPANION</p>
         <h1 id="pairingTitle">连接你的 Mac 图库</h1>
         <p class="secondary">
-          在 Mac 版 ImageAll 的“设置 → 移动辅助 Host”中开始配对，然后打开复制的网页版配对链接。
+          使用 Mac 版 ImageAll 白名单中的账号直接登录，或继续使用一次性配对码。
         </p>
       </div>
-      <form id="pairingForm" class="pairing-form">
+      <div class="auth-method-tabs" role="tablist" aria-label="登录方式">
+        <button
+          id="accountLoginTab"
+          class="auth-method-tab active"
+          type="button"
+          role="tab"
+          aria-selected="true"
+          aria-controls="accountLoginForm"
+        >账号登录</button>
+        <button
+          id="pairingLoginTab"
+          class="auth-method-tab"
+          type="button"
+          role="tab"
+          aria-selected="false"
+          aria-controls="pairingForm"
+        >配对码</button>
+      </div>
+      <form id="accountLoginForm" class="pairing-form" autocomplete="on">
+        <label for="accountUsername">账号名</label>
+        <input
+          id="accountUsername"
+          name="username"
+          type="text"
+          autocomplete="username"
+          maxlength="64"
+          spellcheck="false"
+          placeholder="输入 Mac 白名单中的账号"
+          required
+        >
+        <label for="accountPassword">密码</label>
+        <input
+          id="accountPassword"
+          name="password"
+          type="password"
+          autocomplete="current-password"
+          maxlength="256"
+          placeholder="输入账号密码"
+          required
+        >
+        <button id="accountLoginButton" class="button button-primary" type="submit">登录图库</button>
+        <p id="accountLoginError" class="form-error" role="alert"></p>
+      </form>
+      <form id="pairingForm" class="pairing-form hidden">
         <label for="pairingToken">一次性配对码</label>
         <input
           id="pairingToken"
@@ -58,7 +101,7 @@
         <p id="pairingError" class="form-error" role="alert"></p>
       </form>
       <p class="pairing-footnote">
-        网页只在 Mac App 与公网 Tunnel 在线时可用。照片与数据库不会同步到云端。
+        只有 Mac 白名单账号或已配对设备可以访问。账号登录不会创建配对 token；照片与数据库不会同步到云端。
       </p>
     </section>
   </main>
@@ -132,7 +175,7 @@
             <select id="sortSelect">
               <option value="newest">最新优先</option>
               <option value="oldest">最早优先</option>
-              <option value="fileNameAscending">按文件名</option>
+              <option value="fileNameAscending" selected>按文件名</option>
             </select>
           </label>
           <button id="filterButton" class="button toolbar-button" type="button" aria-expanded="false">
@@ -230,6 +273,7 @@
             <select id="batchTagSelect"></select>
           </label>
           <span id="batchAggregate" class="secondary"></span>
+          <button id="batchNewTagButton" class="button write-action" type="button">＋ 新增标签</button>
           <div class="segmented-actions" role="group" aria-label="批量标签决定">
             <button class="batch-action write-action" data-action="accept" type="button" title="确认标签">✓ 确认</button>
             <button class="batch-action write-action" data-action="reject" type="button" title="拒绝标签">× 拒绝</button>
@@ -277,7 +321,12 @@
             <section class="inspector-section tag-section">
               <div class="section-heading">
                 <h3>标签</h3>
-                <span id="tagSummary" class="secondary"></span>
+                <div class="section-heading-actions">
+                  <span id="tagSummary" class="secondary"></span>
+                  <button id="inspectorNewTagButton" class="button button-plain write-action" type="button">
+                    ＋ 新增
+                  </button>
+                </div>
               </div>
               <div id="inspectorTags" class="tag-list"></div>
               <p id="tagEmpty" class="secondary hidden">尚无活动标签</p>
@@ -378,6 +427,28 @@
     <button id="lightboxNextButton" class="lightbox-nav next" type="button" aria-label="下一张">›</button>
     <span id="lightboxPosition" class="lightbox-position"></span>
   </div>
+
+  <dialog id="newTagDialog" class="sheet-dialog">
+    <form id="newTagForm" method="dialog">
+      <header class="sheet-dialog-heading">
+        <div>
+          <h2>新增标签</h2>
+          <p id="newTagTargetSummary">将应用到所选照片</p>
+        </div>
+        <button id="cancelNewTagButton" class="icon-button" type="button" aria-label="取消新增标签">×</button>
+      </header>
+      <label class="sheet-dialog-field">
+        <span>标签名称</span>
+        <input id="newTagName" type="text" autocomplete="off" maxlength="80" required
+          placeholder="例如：家人、猫、旅行">
+      </label>
+      <p id="newTagError" class="form-error" role="alert"></p>
+      <footer class="sheet-dialog-actions">
+        <button id="cancelNewTagFooterButton" class="button button-plain" type="button">取消</button>
+        <button id="createTagButton" class="button button-primary write-action" type="submit">创建并确认</button>
+      </footer>
+    </form>
+  </dialog>
 
   <div id="toast" class="toast hidden" role="status"></div>
 </body>

@@ -273,6 +273,40 @@ button {
   line-height: 1.55;
 }
 
+.auth-method-tabs {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 3px;
+  margin: 0 0 14px;
+  padding: 3px;
+  border: 1px solid var(--separator);
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--control) 84%, var(--separator));
+}
+
+.auth-method-tab {
+  min-height: 30px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--secondary);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.auth-method-tab.active {
+  background: var(--content);
+  color: var(--text);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.12);
+}
+
+.auth-method-tab:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
 .pairing-form {
   display: grid;
   gap: 8px;
@@ -1073,6 +1107,94 @@ button {
 
 .section-heading .secondary {
   font-size: 10px;
+}
+
+.section-heading-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.section-heading-actions .button {
+  min-height: 24px;
+  padding: 2px 7px;
+  color: var(--accent);
+  font-size: 10px;
+}
+
+.sheet-dialog {
+  width: min(390px, calc(100vw - 32px));
+  padding: 0;
+  border: 1px solid var(--separator);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--inspector), transparent 2%);
+  color: var(--text);
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.28);
+  -webkit-backdrop-filter: blur(28px) saturate(1.25);
+  backdrop-filter: blur(28px) saturate(1.25);
+}
+
+.sheet-dialog::backdrop {
+  background: rgba(0, 0, 0, 0.24);
+  -webkit-backdrop-filter: blur(2px);
+  backdrop-filter: blur(2px);
+}
+
+.sheet-dialog form {
+  display: grid;
+  gap: 14px;
+  padding: 18px;
+}
+
+.sheet-dialog-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.sheet-dialog-heading h2 {
+  margin: 0 0 4px;
+  font-size: 16px;
+}
+
+.sheet-dialog-heading p {
+  margin: 0;
+  color: var(--secondary);
+  font-size: 11px;
+}
+
+.sheet-dialog-field {
+  display: grid;
+  gap: 6px;
+  color: var(--secondary);
+  font-size: 11px;
+}
+
+.sheet-dialog-field input {
+  height: 34px;
+  padding: 0 10px;
+  border: 1px solid var(--separator);
+  border-radius: 8px;
+  outline: 0;
+  background: var(--control);
+  color: var(--text);
+}
+
+.sheet-dialog-field input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--selection);
+}
+
+.sheet-dialog .form-error {
+  min-height: 16px;
+  margin: -6px 0 0;
+}
+
+.sheet-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
 }
 
 .metadata-list {

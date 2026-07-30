@@ -134,6 +134,40 @@ final class RemoteCatalogFacadeTests: XCTestCase {
         XCTAssertEqual(catalog.mutateCallCount, 1)
     }
 
+    func testCreateTagAndApplyIsIdempotentByOperationID() async throws {
+        let tagID = UUID()
+        let assetIDs = [UUID(), UUID()]
+        let catalog = RemoteCatalogServingStub(
+            createTagResult: TagCreateAndApplyResult(
+                tagID: tagID,
+                displayName: "旅行",
+                normalizedName: "旅行",
+                priorStates: assetIDs.map {
+                    TagMutationPriorState(assetID: $0, priorState: .unknown)
+                }
+            )
+        )
+        let facade = makeFacade(catalog: catalog)
+        let operationID = UUID()
+        let request = RemoteCreateTagAndApplyRequest(
+            operationID: operationID,
+            name: "  旅行  ",
+            assetIDs: assetIDs
+        )
+
+        let first = try await facade.createTagAndApply(request)
+        let second = try await facade.createTagAndApply(request)
+
+        XCTAssertEqual(first.tagID, tagID)
+        XCTAssertEqual(first.displayName, "旅行")
+        XCTAssertEqual(first.appliedAssetCount, 2)
+        XCTAssertFalse(first.replayed)
+        XCTAssertTrue(second.replayed)
+        XCTAssertEqual(catalog.createTagCallCount, 1)
+        XCTAssertEqual(catalog.lastCreateTagName, "  旅行  ")
+        XCTAssertEqual(catalog.lastCreateTagAssetIDs, assetIDs)
+    }
+
     func testAssetPagePassesRequestedLimitToCatalogWithoutSkipping() async throws {
         let catalog = RemoteCatalogServingStub()
         let facade = makeFacade(catalog: catalog)
@@ -351,11 +385,15 @@ private final class RemoteCatalogServingStub: RemoteCatalogServing, @unchecked S
     private let tags: [TagListItem]
     private let items: [AssetGridItemProjection]
     private let mutateResult: TagMutationPriorStateSnapshot
+    private let createTagResult: TagCreateAndApplyResult
     private let previewData: Data
     private let detail: AssetInspectorDetail
     private let aggregates: [TagSelectionAggregate]
     private let jobs: [JobActivityItem]
     private var storedMutateCallCount = 0
+    private var storedCreateTagCallCount = 0
+    private var storedLastCreateTagName: String?
+    private var storedLastCreateTagAssetIDs: [UUID]?
     private var storedLastRequestedLimit: Int?
     private var storedLastRequestedFilter: AssetPageFilter?
     private var storedLastJobAction: JobActivityAction?
@@ -365,6 +403,24 @@ private final class RemoteCatalogServingStub: RemoteCatalogServing, @unchecked S
         lock.lock()
         defer { lock.unlock() }
         return storedMutateCallCount
+    }
+
+    var createTagCallCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return storedCreateTagCallCount
+    }
+
+    var lastCreateTagName: String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return storedLastCreateTagName
+    }
+
+    var lastCreateTagAssetIDs: [UUID]? {
+        lock.lock()
+        defer { lock.unlock() }
+        return storedLastCreateTagAssetIDs
     }
 
     var lastRequestedLimit: Int? {
@@ -399,6 +455,12 @@ private final class RemoteCatalogServingStub: RemoteCatalogServing, @unchecked S
             tagID: UUID(),
             priorStates: []
         ),
+        createTagResult: TagCreateAndApplyResult = TagCreateAndApplyResult(
+            tagID: UUID(),
+            displayName: "新标签",
+            normalizedName: "新标签",
+            priorStates: []
+        ),
         previewData: Data = Data(),
         detail: AssetInspectorDetail = AssetInspectorDetail(
             assetID: UUID(),
@@ -427,6 +489,7 @@ private final class RemoteCatalogServingStub: RemoteCatalogServing, @unchecked S
         self.tags = tags
         self.items = items
         self.mutateResult = mutateResult
+        self.createTagResult = createTagResult
         self.previewData = previewData
         self.detail = detail
         self.aggregates = aggregates
@@ -490,6 +553,18 @@ private final class RemoteCatalogServingStub: RemoteCatalogServing, @unchecked S
         storedMutateCallCount += 1
         lock.unlock()
         return mutateResult
+    }
+
+    func createTagAndAccept(
+        rawName: String,
+        assetIDs: [UUID]
+    ) throws -> TagCreateAndApplyResult {
+        lock.lock()
+        storedCreateTagCallCount += 1
+        storedLastCreateTagName = rawName
+        storedLastCreateTagAssetIDs = assetIDs
+        lock.unlock()
+        return createTagResult
     }
 
     func fetchJobActivity() throws -> [JobActivityItem] {

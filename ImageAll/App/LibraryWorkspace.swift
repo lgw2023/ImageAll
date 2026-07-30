@@ -1081,7 +1081,7 @@ final class LibraryWorkspaceModel: ObservableObject {
     @Published private(set) var selectedAvailabilities: [AssetAvailability] = []
     @Published private(set) var selectedMediaKind: MediaKind = .image
     @Published private(set) var selectedMediaTypes: [String] = []
-    @Published private(set) var sort: AssetPageSort = .newest
+    @Published private(set) var sort: AssetPageSort = .fileNameAscending
     @Published private(set) var gridDensity: LibraryGridDensity = .default
     @Published private(set) var thumbnailAspectMode: LibraryThumbnailAspectMode = .default
     @Published private(set) var notice: LibraryWorkspaceNotice?
@@ -8881,6 +8881,51 @@ private struct LibrarySlimmingIdenticalCleanupBlockingOverlay: View {
     }
 }
 
+enum JobActivityPresentation {
+    static func title(for kind: JobActivityKind) -> String {
+        switch kind {
+        case .folderReconcile: "文件夹同步"
+        case .photosReconcile: "Apple Photos 同步"
+        case .personalizationSuggestions: "个性化建议"
+        case .standardSuggestions: "标准模型建议"
+        case .librarySlimmingAnalysis: "图库瘦身分析"
+        case .librarySlimmingSourceIndex: "来源相似索引"
+        case .librarySlimmingPurge: "回收站到期清理"
+        case .background: "后台任务"
+        }
+    }
+
+    static func stateText(for item: JobActivityItem) -> String {
+        if item.kind == .librarySlimmingPurge, item.state == .pending {
+            return "等待到期"
+        }
+        return switch (item.state, item.controlRequest) {
+        case (.running, .pause): "正在暂停"
+        case (.running, .cancel): "正在取消"
+        case (.pending, _): "等待中"
+        case (.running, _): "运行中"
+        case (.paused, _): "已暂停"
+        case (.retryableFailed, _): "等待重试"
+        case (.completed, _): "已完成"
+        case (.terminalFailed, _): "失败"
+        case (.cancelled, _): "已取消"
+        }
+    }
+
+    static func progressText(for item: JobActivityItem) -> String {
+        if item.kind == .librarySlimmingPurge {
+            if item.state == .pending {
+                return "首批项目到期后自动清理"
+            }
+            return "已清理 \(item.progress.completed)"
+        }
+        if let total = item.progress.total {
+            return "进度 \(item.progress.completed) / \(total)"
+        }
+        return "已处理 \(item.progress.completed)"
+    }
+}
+
 struct LibraryWorkspaceView: View {
     @EnvironmentObject private var toolbarDisplayModeSettings: ToolbarDisplayModeSettingsModel
     private static let sourceDropRowHeight: CGFloat = 40
@@ -9333,14 +9378,14 @@ struct LibraryWorkspaceView: View {
     private func jobActivityRow(_ item: JobActivityItem) -> some View {
         VStack(alignment: .leading, spacing: 7) {
             HStack(alignment: .firstTextBaseline) {
-                Text(jobActivityTitle(item.kind))
+                Text(JobActivityPresentation.title(for: item.kind))
                     .font(.subheadline.weight(.semibold))
                 Spacer()
-                Text(jobActivityStateText(item))
+                Text(JobActivityPresentation.stateText(for: item))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
-            Text(jobActivityProgressText(item.progress))
+            Text(JobActivityPresentation.progressText(for: item))
                 .font(.caption.monospacedDigit())
                 .foregroundStyle(.secondary)
             if !item.availableActions.isEmpty {
@@ -9357,39 +9402,6 @@ struct LibraryWorkspaceView: View {
             }
         }
         .padding(.vertical, 10)
-    }
-
-    private func jobActivityTitle(_ kind: JobActivityKind) -> String {
-        switch kind {
-        case .folderReconcile: "文件夹同步"
-        case .photosReconcile: "Apple Photos 同步"
-        case .personalizationSuggestions: "个性化建议"
-        case .standardSuggestions: "标准模型建议"
-        case .librarySlimmingAnalysis: "图库瘦身分析"
-        case .librarySlimmingSourceIndex: "来源相似索引"
-        case .background: "后台任务"
-        }
-    }
-
-    private func jobActivityStateText(_ item: JobActivityItem) -> String {
-        switch (item.state, item.controlRequest) {
-        case (.running, .pause): "正在暂停"
-        case (.running, .cancel): "正在取消"
-        case (.pending, _): "等待中"
-        case (.running, _): "运行中"
-        case (.paused, _): "已暂停"
-        case (.retryableFailed, _): "等待重试"
-        case (.completed, _): "已完成"
-        case (.terminalFailed, _): "失败"
-        case (.cancelled, _): "已取消"
-        }
-    }
-
-    private func jobActivityProgressText(_ progress: JobProgress) -> String {
-        if let total = progress.total {
-            return "进度 \(progress.completed) / \(total)"
-        }
-        return "已处理 \(progress.completed)"
     }
 
     private func jobActivityActionTitle(_ action: JobActivityAction) -> String {

@@ -20,6 +20,7 @@ protocol RemoteCatalogServing: Sendable {
         assetIDs: [UUID],
         action: LibraryTagDecisionAction
     ) throws -> TagMutationPriorStateSnapshot
+    func createTagAndAccept(rawName: String, assetIDs: [UUID]) throws -> TagCreateAndApplyResult
     func fetchJobActivity() throws -> [JobActivityItem]
     func applyJobActivityAction(_ action: JobActivityAction, jobID: UUID) throws
 }

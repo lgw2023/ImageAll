@@ -7,14 +7,18 @@ import SwiftUI
 final class RemoteHostSettingsModel: ObservableObject {
     @Published var isEnabled: Bool
     @Published var publicBaseURL: String
+    @Published var accountUsername = ""
+    @Published var accountPassword = ""
     @Published private(set) var isRunning = false
     @Published private(set) var identityText = "—"
     @Published private(set) var fingerprintText = "—"
     @Published private(set) var offer: RemotePairingOffer?
     @Published private(set) var devices: [RemotePairedDeviceSummary] = []
+    @Published private(set) var accessAccounts: [RemoteAccessAccountSummary] = []
     @Published private(set) var statusMessage: String?
     @Published private(set) var legacyDebugToken: String?
     @Published private(set) var isApplyingConfiguration = false
+    @Published private(set) var isSavingAccount = false
 
     init() {
         isEnabled = RemoteHostProcessHolder.isEnabled()
@@ -40,6 +44,7 @@ final class RemoteHostSettingsModel: ObservableObject {
         }
         offer = await RemoteHostProcessHolder.currentOffer()
         devices = await RemoteHostProcessHolder.pairedDevices()
+        accessAccounts = await RemoteHostProcessHolder.accessAccounts()
 #if DEBUG
         legacyDebugToken = RemoteHostProcessHolder.currentAccessToken()
 #endif
@@ -127,6 +132,41 @@ final class RemoteHostSettingsModel: ObservableObject {
         await refresh()
     }
 
+    func saveAccessAccount() async {
+        guard !isSavingAccount else { return }
+        let username = accountUsername.trimmingCharacters(in: .whitespacesAndNewlines)
+        let wasExisting = accessAccounts.contains { $0.username == username }
+        isSavingAccount = true
+        defer { isSavingAccount = false }
+        do {
+            _ = try await RemoteHostProcessHolder.upsertAccessAccount(
+                username: username,
+                password: accountPassword
+            )
+            accountUsername = ""
+            accountPassword = ""
+            accessAccounts = await RemoteHostProcessHolder.accessAccounts()
+            statusMessage = wasExisting
+                ? "已更新网页账号“\(username)”的密码。"
+                : "已将网页账号“\(username)”加入访问白名单。"
+        } catch {
+            statusMessage = error.localizedDescription
+        }
+    }
+
+    func removeAccessAccount(username: String) async {
+        guard !isSavingAccount else { return }
+        isSavingAccount = true
+        defer { isSavingAccount = false }
+        do {
+            try await RemoteHostProcessHolder.removeAccessAccount(username: username)
+            accessAccounts = await RemoteHostProcessHolder.accessAccounts()
+            statusMessage = "已从网页访问白名单移除“\(username)”。"
+        } catch {
+            statusMessage = error.localizedDescription
+        }
+    }
+
     func copyOfferJSON() {
         guard let offer,
               let data = try? JSONEncoder().encode(offer),
@@ -149,6 +189,25 @@ final class RemoteHostSettingsModel: ObservableObject {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(url.absoluteString, forType: .string)
         statusMessage = "网页版配对链接已复制；链接中的一次性令牌不会发送给 Cloudflare。"
+    }
+
+    var localWebURL: URL {
+        RemoteHostProcessHolder.localWebURL
+    }
+
+    func openLocalWeb() {
+        guard isRunning else {
+            statusMessage = "Host 尚未运行，请先启用移动 Host。"
+            return
+        }
+        NSWorkspace.shared.open(localWebURL)
+        statusMessage = "已在浏览器打开本机网页版。"
+    }
+
+    func copyLocalWebURL() {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(localWebURL.absoluteString, forType: .string)
+        statusMessage = "本机网页版地址已复制。"
     }
 
     private func applyStoredConfiguration(runningMessage: String) {
@@ -199,7 +258,9 @@ struct RemoteHostSettingsView: View {
                         .transition(.move(edge: .top).combined(with: .opacity))
                 }
 
+                localEndpointCard
                 publicEndpointCard
+                accessAccountsCard
                 pairingCard
                 pairedDevicesCard
             }
@@ -342,6 +403,55 @@ struct RemoteHostSettingsView: View {
         }
     }
 
+    private var localEndpointCard: some View {
+        settingsCard {
+            VStack(alignment: .leading, spacing: 14) {
+                sectionHeading(
+                    "本机调试",
+                    subtitle: "绕过公网链路，直接在这台 Mac 的浏览器访问",
+                    systemImage: "desktopcomputer"
+                )
+
+                HStack(spacing: 10) {
+                    Image(systemName: "network")
+                        .foregroundStyle(.secondary)
+                        .accessibilityHidden(true)
+
+                    Text(model.localWebURL.absoluteString)
+                        .font(.system(.body, design: .monospaced))
+                        .textSelection(.enabled)
+
+                    Spacer()
+
+                    Button {
+                        model.copyLocalWebURL()
+                    } label: {
+                        Label("复制", systemImage: "doc.on.doc")
+                    }
+                    .buttonStyle(.bordered)
+
+                    Button {
+                        model.openLocalWeb()
+                    } label: {
+                        Label("打开", systemImage: "safari")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(!model.isRunning)
+                }
+                .padding(12)
+                .background(
+                    .secondary.opacity(0.055),
+                    in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+                )
+
+                Text("该 HTTP 端口只绑定 127.0.0.1，局域网和公网设备无法访问；登录账号与公网网页版共用同一份白名单。")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
     private var pairingCard: some View {
         settingsCard {
             VStack(alignment: .leading, spacing: 16) {
@@ -404,6 +514,101 @@ struct RemoteHostSettingsView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(16)
                     .background(.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 10))
+                }
+            }
+        }
+    }
+
+    private var accessAccountsCard: some View {
+        settingsCard {
+            VStack(alignment: .leading, spacing: 16) {
+                sectionHeading(
+                    "网页访问白名单",
+                    subtitle: "账号密码可直接登录网页版，无需配对码或设备 token",
+                    systemImage: "person.badge.key"
+                )
+
+                VStack(spacing: 10) {
+                    TextField("账号名（3–64 个字符）", text: $model.accountUsername)
+                        .textContentType(.username)
+                        .textFieldStyle(.roundedBorder)
+
+                    SecureField("账号密码（至少 8 个字符）", text: $model.accountPassword)
+                        .textContentType(.newPassword)
+                        .textFieldStyle(.roundedBorder)
+
+                    HStack {
+                        Text("输入已有账号名可随时更新密码。密码只保存为加盐派生值。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Button {
+                            Task { await model.saveAccessAccount() }
+                        } label: {
+                            if model.isSavingAccount {
+                                ProgressView()
+                                    .controlSize(.small)
+                            } else {
+                                Label("添加或更新", systemImage: "plus")
+                            }
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(
+                            model.isSavingAccount
+                                || model.accountUsername
+                                    .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                                || model.accountPassword.isEmpty
+                        )
+                    }
+                }
+                .padding(14)
+                .background(
+                    .secondary.opacity(0.055),
+                    in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+                )
+
+                if model.accessAccounts.isEmpty {
+                    Label(
+                        "尚未添加网页账号；当前仍可使用一次性配对码。",
+                        systemImage: "person.crop.circle.badge.questionmark"
+                    )
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                } else {
+                    ForEach(Array(model.accessAccounts.enumerated()), id: \.element.id) {
+                        index,
+                        account in
+                        if index > 0 {
+                            Divider()
+                        }
+                        HStack(spacing: 12) {
+                            Image(systemName: "person.crop.circle.fill")
+                                .font(.title3)
+                                .foregroundStyle(Color.accentColor)
+                                .frame(width: 28)
+
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(account.username)
+                                    .font(.callout.weight(.medium))
+                                Text("可使用账号密码直接访问")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+
+                            Spacer()
+
+                            Button("移除", role: .destructive) {
+                                Task {
+                                    await model.removeAccessAccount(
+                                        username: account.username
+                                    )
+                                }
+                            }
+                            .buttonStyle(.bordered)
+                            .disabled(model.isSavingAccount)
+                            .persistentHelp("立即停止此账号访问网页版。")
+                        }
+                    }
                 }
             }
         }

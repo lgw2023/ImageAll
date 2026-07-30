@@ -163,6 +163,54 @@ actor RemoteCatalogFacade {
         )
     }
 
+    func createTagAndApply(
+        _ request: RemoteCreateTagAndApplyRequest
+    ) async throws -> RemoteCreateTagAndApplyResponse {
+        guard !request.assetIDs.isEmpty else {
+            throw RemoteAPIError(code: .badRequest, message: "请先选择至少一张照片")
+        }
+        let catalog = self.catalog
+        let key = RemoteIdempotencyStore.MutationKey(
+            kind: "createTagAndApply",
+            subject: request.name,
+            assetIDs: request.assetIDs,
+            action: RemoteTagDecisionAction.accept.rawValue
+        )
+        do {
+            let (result, replayed): (CreateTagResult, Bool) = try await idempotency.perform(
+                operationID: request.operationID,
+                key: key
+            ) {
+                let created: TagCreateAndApplyResult
+                do {
+                    created = try catalog.createTagAndAccept(
+                        rawName: request.name,
+                        assetIDs: request.assetIDs
+                    )
+                } catch let error as CatalogQueryError {
+                    throw Self.mapCreateTagError(error)
+                }
+                return CreateTagResult(
+                    tagID: created.tagID,
+                    displayName: created.displayName,
+                    appliedAssetCount: created.priorStates.count
+                )
+            }
+            return RemoteCreateTagAndApplyResponse(
+                operationID: request.operationID,
+                tagID: result.tagID,
+                displayName: result.displayName,
+                appliedAssetCount: result.appliedAssetCount,
+                replayed: replayed
+            )
+        } catch is RemoteIdempotencyStore.IdempotencyError {
+            throw RemoteAPIError(
+                code: .conflict,
+                message: "operationID was already used for a different mutation"
+            )
+        }
+    }
+
     func applyReviewDecision(
         _ request: RemoteBatchReviewDecisionRequest
     ) async throws -> RemoteBatchReviewDecisionResponse {
@@ -330,6 +378,7 @@ actor RemoteCatalogFacade {
                 case .standardSuggestions: .standardSuggestions
                 case .librarySlimmingAnalysis: .librarySlimmingAnalysis
                 case .librarySlimmingSourceIndex: .librarySlimmingSourceIndex
+                case .librarySlimmingPurge: .background
                 case .background: .background
                 }
             }(),
@@ -407,6 +456,29 @@ actor RemoteCatalogFacade {
         case .reject: .reject
         case .clear: .clear
         }
+    }
+
+    private static func mapCreateTagError(_ error: CatalogQueryError) -> RemoteAPIError {
+        switch error {
+        case .invalidTagName:
+            RemoteAPIError(code: .badRequest, message: "标签名称无效")
+        case .duplicateTag:
+            RemoteAPIError(code: .conflict, message: "已有同名标签")
+        case .emptySelection:
+            RemoteAPIError(code: .badRequest, message: "请先选择至少一张照片")
+        case .selectionTooLarge:
+            RemoteAPIError(code: .badRequest, message: "一次选择的照片过多")
+        case .notFound:
+            RemoteAPIError(code: .notFound, message: "所选照片已不存在")
+        default:
+            RemoteAPIError(code: .internalError, message: "无法创建标签")
+        }
+    }
+
+    private struct CreateTagResult: Codable, Sendable {
+        let tagID: UUID
+        let displayName: String
+        let appliedAssetCount: Int
     }
 
     private static func encodeCursor(_ cursor: AssetPageCursor?) throws -> String? {

@@ -137,6 +137,7 @@ enum JobActivityKind: Sendable, Equatable {
     case standardSuggestions
     case librarySlimmingAnalysis
     case librarySlimmingSourceIndex
+    case librarySlimmingPurge
     case background
 
     init(persistedKind: String) {
@@ -155,6 +156,8 @@ enum JobActivityKind: Sendable, Equatable {
             self = .librarySlimmingAnalysis
         case "librarySlimming.sourceIndex.v1":
             self = .librarySlimmingSourceIndex
+        case "librarySlimming.purgeExpired.v1":
+            self = .librarySlimmingPurge
         default:
             self = .background
         }

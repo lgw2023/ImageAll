@@ -32,6 +32,7 @@ enum RemoteHostProcessHolder {
     private struct Runtime {
         let server: RemoteHTTPServer
         let pairingStore: RemotePairingStore
+        let accessAccountStore: RemoteAccessAccountStore
         let eventBroker: RemoteEventBroker
         let identity: RemoteHostIdentity
         let port: UInt16
@@ -53,6 +54,7 @@ enum RemoteHostProcessHolder {
         var attachment: Attachment?
         var server: RemoteHTTPServer?
         var pairingStore: RemotePairingStore?
+        var accessAccountStore: RemoteAccessAccountStore?
         var eventBroker: RemoteEventBroker?
         var identity: RemoteHostIdentity?
         private var configurationGeneration = 0
@@ -86,6 +88,7 @@ enum RemoteHostProcessHolder {
                 let runtime = try RemoteHostProcessHolder.makeRuntime(attachment: attachment)
                 server = runtime.server
                 pairingStore = runtime.pairingStore
+                accessAccountStore = runtime.accessAccountStore
                 eventBroker = runtime.eventBroker
                 identity = runtime.identity
                 try await runtime.server.start()
@@ -113,6 +116,7 @@ enum RemoteHostProcessHolder {
             await server?.stop()
             server = nil
             pairingStore = nil
+            accessAccountStore = nil
             eventBroker = nil
             identity = nil
         }
@@ -205,6 +209,40 @@ enum RemoteHostProcessHolder {
         await state.pairingStore?.revoke(deviceID: deviceID)
     }
 
+    static func accessAccounts() async -> [RemoteAccessAccountSummary] {
+        let store: RemoteAccessAccountStore
+        if let runningStore = await state.accessAccountStore {
+            store = runningStore
+        } else {
+            store = makeAccessAccountStore()
+        }
+        return await store.listAccounts()
+    }
+
+    @discardableResult
+    static func upsertAccessAccount(
+        username: String,
+        password: String
+    ) async throws -> RemoteAccessAccountSummary {
+        let store: RemoteAccessAccountStore
+        if let runningStore = await state.accessAccountStore {
+            store = runningStore
+        } else {
+            store = makeAccessAccountStore()
+        }
+        return try await store.upsert(username: username, password: password)
+    }
+
+    static func removeAccessAccount(username: String) async throws {
+        let store: RemoteAccessAccountStore
+        if let runningStore = await state.accessAccountStore {
+            store = runningStore
+        } else {
+            store = makeAccessAccountStore()
+        }
+        try await store.remove(username: username)
+    }
+
     struct IdentitySummary: Equatable {
         let hostID: UUID
         let usesTLS: Bool
@@ -253,6 +291,7 @@ enum RemoteHostProcessHolder {
             storageURL: remoteHostDirectory().appendingPathComponent("pairing.json"),
             legacyDebugToken: existingOrCreateLegacyDebugToken(defaults: defaults)
         )
+        let accessAccountStore = makeAccessAccountStore()
         let idempotency = RemoteIdempotencyStore(
             storageURL: remoteHostDirectory().appendingPathComponent("idempotency.json")
         )
@@ -273,17 +312,24 @@ enum RemoteHostProcessHolder {
             server: RemoteHTTPServer(
                 facade: facade,
                 pairingStore: pairingStore,
+                accessAccountStore: accessAccountStore,
                 eventBroker: eventBroker,
                 secIdentity: identity.secIdentity,
                 port: port,
+                localWebPort: RemoteHTTPServer.defaultLocalWebPort,
                 hostID: identity.hostID
             ),
             pairingStore: pairingStore,
+            accessAccountStore: accessAccountStore,
             eventBroker: eventBroker,
             identity: identity,
             port: port,
             hasPublicBaseURL: publicBaseURL != nil
         )
+    }
+
+    static var localWebURL: URL {
+        URL(string: "http://127.0.0.1:\(RemoteHTTPServer.defaultLocalWebPort)")!
     }
 
     private static func remoteHostDirectory() -> URL {
@@ -296,6 +342,12 @@ enum RemoteHostProcessHolder {
         return base
             .appendingPathComponent("ImageAll", isDirectory: true)
             .appendingPathComponent("RemoteHost", isDirectory: true)
+    }
+
+    private static func makeAccessAccountStore() -> RemoteAccessAccountStore {
+        RemoteAccessAccountStore(
+            storageURL: remoteHostDirectory().appendingPathComponent("access-accounts.json")
+        )
     }
 
     private static func existingOrCreateLegacyDebugToken(defaults: UserDefaults) -> String? {

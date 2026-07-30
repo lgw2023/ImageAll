@@ -60,3 +60,37 @@ public struct RemoteBatchTagDecisionResponse: Codable, Sendable, Equatable {
         self.replayed = replayed
     }
 }
+
+public struct RemoteCreateTagAndApplyRequest: Codable, Sendable, Equatable {
+    public let operationID: UUID
+    public let name: String
+    public let assetIDs: [UUID]
+
+    public init(operationID: UUID, name: String, assetIDs: [UUID]) {
+        self.operationID = operationID
+        self.name = name
+        self.assetIDs = assetIDs
+    }
+}
+
+public struct RemoteCreateTagAndApplyResponse: Codable, Sendable, Equatable {
+    public let operationID: UUID
+    public let tagID: UUID
+    public let displayName: String
+    public let appliedAssetCount: Int
+    public let replayed: Bool
+
+    public init(
+        operationID: UUID,
+        tagID: UUID,
+        displayName: String,
+        appliedAssetCount: Int,
+        replayed: Bool
+    ) {
+        self.operationID = operationID
+        self.tagID = tagID
+        self.displayName = displayName
+        self.appliedAssetCount = appliedAssetCount
+        self.replayed = replayed
+    }
+}

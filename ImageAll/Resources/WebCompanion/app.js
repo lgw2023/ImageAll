@@ -4,6 +4,13 @@ const $ = (selector) => document.querySelector(selector);
 const elements = {
   bootView: $("#bootView"),
   pairingView: $("#pairingView"),
+  accountLoginTab: $("#accountLoginTab"),
+  pairingLoginTab: $("#pairingLoginTab"),
+  accountLoginForm: $("#accountLoginForm"),
+  accountUsername: $("#accountUsername"),
+  accountPassword: $("#accountPassword"),
+  accountLoginButton: $("#accountLoginButton"),
+  accountLoginError: $("#accountLoginError"),
   pairingForm: $("#pairingForm"),
   pairingToken: $("#pairingToken"),
   deviceName: $("#deviceName"),
@@ -71,7 +78,17 @@ const elements = {
   selectAllLoadedButton: $("#selectAllLoadedButton"),
   batchTagSelect: $("#batchTagSelect"),
   batchAggregate: $("#batchAggregate"),
+  batchNewTagButton: $("#batchNewTagButton"),
   cancelSelectionButton: $("#cancelSelectionButton"),
+  inspectorNewTagButton: $("#inspectorNewTagButton"),
+  newTagDialog: $("#newTagDialog"),
+  newTagForm: $("#newTagForm"),
+  newTagName: $("#newTagName"),
+  newTagTargetSummary: $("#newTagTargetSummary"),
+  newTagError: $("#newTagError"),
+  createTagButton: $("#createTagButton"),
+  cancelNewTagButton: $("#cancelNewTagButton"),
+  cancelNewTagFooterButton: $("#cancelNewTagFooterButton"),
   reviewWorkspace: $("#reviewWorkspace"),
   closeReviewButton: $("#closeReviewButton"),
   reviewSummary: $("#reviewSummary"),
@@ -126,12 +143,15 @@ const state = {
   selectedAssetID: null,
   selectedDetail: null,
   searchText: "",
-  sort: "newest",
+  sort: "fileNameAscending",
   filters: emptyFilters(),
   filterDraft: null,
   selectionMode: false,
   selectedAssetIDs: new Set(),
+  selectionAnchorID: null,
   online: false,
+  authMode: null,
+  accountAuthorization: null,
   loadingAssets: false,
   loadingAggregate: false,
   review: {
@@ -146,8 +166,10 @@ const state = {
   socketGeneration: 0,
   reconnectAttempt: 0,
   eventRefreshTimer: null,
+  accountPollTimer: null,
   aggregateTimer: null,
   toastTimer: null,
+  newTagOperationID: null,
 };
 
 class APIError extends Error {
@@ -176,8 +198,18 @@ function defaultDeviceName() {
   return "浏览器网页版";
 }
 
+function basicAuthorization(username, password) {
+  const bytes = new TextEncoder().encode(`${username}:${password}`);
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return `Basic ${btoa(binary)}`;
+}
+
 async function rawFetch(path, options = {}) {
   const headers = new Headers(options.headers || {});
+  if (state.accountAuthorization && !headers.has("Authorization")) {
+    headers.set("Authorization", state.accountAuthorization);
+  }
   if (options.body && !headers.has("Content-Type")) {
     headers.set("Content-Type", "application/json");
   }
@@ -196,7 +228,28 @@ async function parseResponse(response) {
   return response.text();
 }
 
+function setProtectedImageSource(image, path) {
+  if (!state.accountAuthorization) {
+    image.src = path;
+    return;
+  }
+  rawFetch(path)
+    .then(async (response) => {
+      if (!response.ok) throw new Error(`图片请求失败（${response.status}）`);
+      const objectURL = URL.createObjectURL(await response.blob());
+      const release = () => URL.revokeObjectURL(objectURL);
+      image.addEventListener("load", release, { once: true });
+      image.addEventListener("error", release, { once: true });
+      image.src = objectURL;
+    })
+    .catch(() => {
+      image.removeAttribute("src");
+      image.dispatchEvent(new Event("error"));
+    });
+}
+
 async function refreshSession() {
+  if (state.authMode === "account") return false;
   try {
     const response = await rawFetch("/web/session/refresh", {
       method: "POST",
@@ -246,12 +299,28 @@ function closeOverlays() {
   state.lightboxAssetID = null;
 }
 
+function selectAuthMethod(method) {
+  const account = method === "account";
+  elements.accountLoginTab.classList.toggle("active", account);
+  elements.accountLoginTab.setAttribute("aria-selected", String(account));
+  elements.pairingLoginTab.classList.toggle("active", !account);
+  elements.pairingLoginTab.setAttribute("aria-selected", String(!account));
+  elements.accountLoginForm.classList.toggle("hidden", !account);
+  elements.pairingForm.classList.toggle("hidden", account);
+  if (account) {
+    elements.accountUsername.focus({ preventScroll: true });
+  } else {
+    elements.pairingToken.focus({ preventScroll: true });
+  }
+}
+
 function showPairing(message = "") {
   disconnectEvents();
   closeOverlays();
   showOnly(elements.pairingView);
+  elements.accountLoginError.textContent = message;
   elements.pairingError.textContent = message;
-  elements.pairingToken.focus({ preventScroll: true });
+  selectAuthMethod(elements.pairingToken.value.trim() ? "pairing" : "account");
 }
 
 function showApp() {
@@ -378,9 +447,13 @@ function unavailableBadge(text) {
   return badge;
 }
 
-function appendAssetImage(container, asset, variant = "thumbnail") {
+function appendAssetImage(container, asset, variant = "thumbnail", before = null) {
+  const insert = (node) => {
+    const reference = before?.parentNode === container ? before : container.firstChild;
+    container.insertBefore(node, reference);
+  };
   if (asset.availability !== "available") {
-    container.append(unavailableBadge(availabilityText(asset.availability)));
+    insert(unavailableBadge(availabilityText(asset.availability)));
     return;
   }
   const image = document.createElement("img");
@@ -391,16 +464,101 @@ function appendAssetImage(container, asset, variant = "thumbnail") {
   image.addEventListener("load", () => image.classList.remove("loading"), { once: true });
   image.addEventListener("error", () => {
     image.remove();
-    container.append(unavailableBadge("缩略图不可用"));
+    insert(unavailableBadge("缩略图不可用"));
   }, { once: true });
   const revision = asset.contentRevision == null ? "" : `&r=${asset.contentRevision}`;
-  image.src = `/v1/assets/${asset.id || asset.assetID}/${variant}?w=420${revision}`;
+  setProtectedImageSource(
+    image,
+    `/v1/assets/${asset.id || asset.assetID}/${variant}?w=420${revision}`
+  );
   if (image.complete && image.naturalWidth > 0) image.classList.remove("loading");
-  container.append(image);
+  insert(image);
+}
+
+function syncAssetCardImage(button, asset) {
+  const imageKey = [
+    asset.id,
+    asset.availability,
+    asset.contentRevision == null ? "" : asset.contentRevision,
+  ].join(":");
+  const current = button.querySelector("img, .asset-unavailable");
+  if (button.dataset.imageKey === imageKey && current) return;
+  current?.remove();
+  button.dataset.imageKey = imageKey;
+  appendAssetImage(button, asset, "thumbnail", button.firstChild);
+}
+
+function syncAssetCardSelectionMark(button) {
+  let mark = button.querySelector(".asset-selection-mark");
+  if (!state.selectionMode) {
+    mark?.remove();
+    return;
+  }
+  if (!mark) {
+    mark = document.createElement("span");
+    mark.className = "asset-selection-mark";
+    mark.setAttribute("aria-hidden", "true");
+    button.append(mark);
+  }
+  mark.textContent = state.selectedAssetIDs.has(button.dataset.assetId) ? "✓" : "";
+}
+
+function syncAssetCardMeta(button, asset) {
+  let meta = button.querySelector(".asset-card-meta");
+  if (!asset.acceptedTagCount && !asset.rejectedTagCount) {
+    meta?.remove();
+    return;
+  }
+  if (!meta) {
+    meta = document.createElement("span");
+    meta.className = "asset-card-meta";
+    button.append(meta);
+  }
+  clearElement(meta);
+  if (asset.acceptedTagCount) {
+    const accepted = document.createElement("span");
+    accepted.className = "asset-tag-count";
+    accepted.textContent = `✓ ${asset.acceptedTagCount}`;
+    meta.append(accepted);
+  }
+  if (asset.rejectedTagCount) {
+    const rejected = document.createElement("span");
+    rejected.className = "asset-tag-count";
+    rejected.textContent = `× ${asset.rejectedTagCount}`;
+    meta.append(rejected);
+  }
+}
+
+function syncAssetCard(button, asset) {
+  button.type = "button";
+  button.className = "asset-card";
+  button.dataset.assetId = asset.id;
+  button.classList.toggle("selected", state.selectedAssetID === asset.id && !state.selectionMode);
+  button.classList.toggle("batch-selected", state.selectedAssetIDs.has(asset.id));
+  button.setAttribute(
+    "aria-label",
+    `${asset.fileName || "未命名照片"}，${asset.sourceName}，已确认 ${asset.acceptedTagCount} 个标签`
+  );
+  button.setAttribute("aria-pressed", String(state.selectedAssetIDs.has(asset.id)));
+  button.title = [
+    asset.fileName || "未命名照片",
+    `来源：${asset.sourceName}`,
+    asset.width && asset.height ? `尺寸：${asset.width} × ${asset.height}` : "",
+    `标签：已确认 ${asset.acceptedTagCount} · 已拒绝 ${asset.rejectedTagCount}`,
+  ].filter(Boolean).join("\n");
+  syncAssetCardImage(button, asset);
+  syncAssetCardSelectionMark(button);
+  syncAssetCardMeta(button, asset);
+}
+
+function syncAssetCardPosition(button, index) {
+  const currentButton = elements.assetGrid.children[index] || null;
+  if (currentButton !== button) {
+    elements.assetGrid.insertBefore(button, currentButton);
+  }
 }
 
 function renderAssets() {
-  clearElement(elements.assetGrid);
   elements.emptyState.classList.toggle("hidden", state.assets.length > 0 || state.loadingAssets);
   elements.loadMoreButton.classList.toggle("hidden", !state.nextCursor);
   elements.allAssetCount.textContent = state.assets.length ? String(state.assets.length) : "";
@@ -408,53 +566,19 @@ function renderAssets() {
     ? `已载入 ${state.assets.length} 项${state.nextCursor ? " · 还有更多" : ""}`
     : "";
 
-  for (const asset of state.assets) {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "asset-card";
-    button.dataset.assetId = asset.id;
-    button.classList.toggle("selected", state.selectedAssetID === asset.id && !state.selectionMode);
-    button.classList.toggle("batch-selected", state.selectedAssetIDs.has(asset.id));
-    button.setAttribute(
-      "aria-label",
-      `${asset.fileName || "未命名照片"}，${asset.sourceName}，已确认 ${asset.acceptedTagCount} 个标签`
-    );
-    button.setAttribute("aria-pressed", String(state.selectedAssetIDs.has(asset.id)));
-    button.title = [
-      asset.fileName || "未命名照片",
-      `来源：${asset.sourceName}`,
-      asset.width && asset.height ? `尺寸：${asset.width} × ${asset.height}` : "",
-      `标签：已确认 ${asset.acceptedTagCount} · 已拒绝 ${asset.rejectedTagCount}`,
-    ].filter(Boolean).join("\n");
-
-    appendAssetImage(button, asset);
-
-    if (state.selectionMode) {
-      const selectionMark = document.createElement("span");
-      selectionMark.className = "asset-selection-mark";
-      selectionMark.setAttribute("aria-hidden", "true");
-      selectionMark.textContent = state.selectedAssetIDs.has(asset.id) ? "✓" : "";
-      button.append(selectionMark);
-    }
-
-    if (asset.acceptedTagCount || asset.rejectedTagCount) {
-      const meta = document.createElement("span");
-      meta.className = "asset-card-meta";
-      if (asset.acceptedTagCount) {
-        const accepted = document.createElement("span");
-        accepted.className = "asset-tag-count";
-        accepted.textContent = `✓ ${asset.acceptedTagCount}`;
-        meta.append(accepted);
-      }
-      if (asset.rejectedTagCount) {
-        const rejected = document.createElement("span");
-        rejected.className = "asset-tag-count";
-        rejected.textContent = `× ${asset.rejectedTagCount}`;
-        meta.append(rejected);
-      }
-      button.append(meta);
-    }
-    elements.assetGrid.append(button);
+  const existing = new Map(
+    [...elements.assetGrid.querySelectorAll(":scope > .asset-card")]
+      .map((button) => [button.dataset.assetId, button])
+  );
+  const visibleIDs = new Set();
+  for (const [index, asset] of state.assets.entries()) {
+    const button = existing.get(asset.id) || document.createElement("button");
+    visibleIDs.add(asset.id);
+    syncAssetCard(button, asset);
+    syncAssetCardPosition(button, index);
+  }
+  for (const button of existing.values()) {
+    if (!visibleIDs.has(button.dataset.assetId)) button.remove();
   }
 }
 
@@ -476,7 +600,10 @@ function renderInspector(detail) {
   elements.previewLoading.classList.remove("hidden");
   elements.previewImage.classList.add("hidden");
   elements.previewImage.alt = detail.fileName || "所选照片预览";
-  elements.previewImage.src = `/v1/assets/${detail.assetID}/preview?r=${detail.contentRevision}`;
+  setProtectedImageSource(
+    elements.previewImage,
+    `/v1/assets/${detail.assetID}/preview?r=${detail.contentRevision}`
+  );
 
   clearElement(elements.assetMetadata);
   const rows = [
@@ -625,40 +752,111 @@ function appendAdvancedFilterQuery(query) {
   if (state.filters.tagPresence !== "any") query.set("tagPresence", state.filters.tagPresence);
 }
 
-async function loadAssets({ append = false, preserveSelection = false } = {}) {
-  if (state.loadingAssets) return;
-  state.loadingAssets = true;
-  elements.loadMoreButton.disabled = true;
-  if (!append) {
-    state.nextCursor = null;
-    state.assets = [];
-    if (!preserveSelection) state.selectedAssetIDs.clear();
-    renderAssets();
-  }
+function assetPageFingerprint(items, nextCursor) {
+  return JSON.stringify([
+    nextCursor || null,
+    items.map((asset) => [
+      asset.id,
+      asset.sourceID,
+      asset.sourceName,
+      asset.fileName,
+      asset.mediaType,
+      asset.availability,
+      asset.contentRevision,
+      asset.acceptedTagCount,
+      asset.rejectedTagCount,
+      asset.mediaCreatedAtMs,
+      asset.width,
+      asset.height,
+    ]),
+  ]);
+}
 
+function assetPageQuery({ cursor = null, limit = 72 } = {}) {
   const query = new URLSearchParams({
     sort: state.sort,
-    limit: "72",
+    limit: String(limit),
   });
   if (state.selectedSourceID) query.set("sourceIDs", state.selectedSourceID);
   if (state.searchText) query.set("q", state.searchText);
-  if (append && state.nextCursor) query.set("cursor", state.nextCursor);
+  if (cursor) query.set("cursor", cursor);
   appendAdvancedFilterQuery(query);
+  return query;
+}
+
+async function fetchLoadedAssetWindow(targetCount) {
+  const items = [];
+  const seenCursors = new Set();
+  let nextCursor = null;
+
+  do {
+    const remaining = Math.max(1, targetCount - items.length);
+    const query = assetPageQuery({
+      cursor: nextCursor,
+      limit: Math.min(200, remaining),
+    });
+    const page = await api(`/v1/assets?${query}`);
+    items.push(...page.items);
+    nextCursor = page.nextCursor || null;
+    if (!nextCursor || seenCursors.has(nextCursor)) break;
+    seenCursors.add(nextCursor);
+  } while (items.length < targetCount);
+
+  return { items, nextCursor };
+}
+
+async function loadAssets({
+  append = false,
+  preserveSelection = false,
+  preserveUnchangedGrid = false,
+  preserveLoadedWindow = false,
+} = {}) {
+  if (state.loadingAssets) return;
+  const loadedTargetCount = preserveLoadedWindow
+    ? Math.max(72, state.assets.length)
+    : 72;
+  state.loadingAssets = true;
+  elements.loadMoreButton.disabled = true;
+  let shouldRender = !preserveUnchangedGrid;
+  if (!append) {
+    if (!preserveSelection) {
+      state.selectedAssetIDs.clear();
+      state.selectionAnchorID = null;
+    }
+    if (!preserveUnchangedGrid) {
+      state.nextCursor = null;
+      state.assets = [];
+      renderAssets();
+    }
+  }
 
   try {
-    const page = await api(`/v1/assets?${query}`);
-    state.assets = append ? state.assets.concat(page.items) : page.items;
-    state.nextCursor = page.nextCursor || null;
+    const page = append
+      ? await api(`/v1/assets?${assetPageQuery({ cursor: state.nextCursor })}`)
+      : await fetchLoadedAssetWindow(loadedTargetCount);
+    const nextAssets = append ? state.assets.concat(page.items) : page.items;
+    const nextCursor = page.nextCursor || null;
+    shouldRender = shouldRender
+      || assetPageFingerprint(state.assets, state.nextCursor)
+        !== assetPageFingerprint(nextAssets, nextCursor);
+    state.assets = nextAssets;
+    state.nextCursor = nextCursor;
     const visibleIDs = new Set(state.assets.map((asset) => asset.id));
     state.selectedAssetIDs = new Set(
       [...state.selectedAssetIDs].filter((assetID) => visibleIDs.has(assetID))
     );
+    if (state.selectionAnchorID && !visibleIDs.has(state.selectionAnchorID)) {
+      state.selectionAnchorID = null;
+    }
   } finally {
     state.loadingAssets = false;
     elements.loadMoreButton.disabled = false;
-    renderAssets();
-    renderSelectionBar();
+    if (shouldRender) {
+      renderAssets();
+      renderSelectionBar();
+    }
   }
+  return shouldRender;
 }
 
 async function loadInspector(assetID) {
@@ -704,9 +902,17 @@ async function mutateTag(tagID, action, button) {
   }
 }
 
-function setSelectionMode(enabled) {
+function setSelectionMode(enabled, { seedCurrent = false } = {}) {
+  if (enabled && seedCurrent && state.selectedAssetID
+    && state.assets.some((asset) => asset.id === state.selectedAssetID)) {
+    state.selectedAssetIDs.add(state.selectedAssetID);
+    state.selectionAnchorID = state.selectedAssetID;
+  }
   state.selectionMode = enabled;
-  if (!enabled) state.selectedAssetIDs.clear();
+  if (!enabled) {
+    state.selectedAssetIDs.clear();
+    state.selectionAnchorID = null;
+  }
   elements.selectionModeButton.setAttribute("aria-pressed", String(enabled));
   elements.selectionModeButton.textContent = enabled ? "完成" : "选择";
   elements.batchBar.classList.toggle("hidden", !enabled);
@@ -723,6 +929,118 @@ function toggleAssetSelection(assetID) {
   renderAssets();
   renderSelectionBar();
   scheduleSelectionAggregate();
+}
+
+function selectAssetRange(assetID, additive = false) {
+  const anchorID = state.selectionAnchorID || state.selectedAssetID || assetID;
+  const anchorIndex = state.assets.findIndex((asset) => asset.id === anchorID);
+  const targetIndex = state.assets.findIndex((asset) => asset.id === assetID);
+  if (anchorIndex < 0 || targetIndex < 0) return;
+  const start = Math.min(anchorIndex, targetIndex);
+  const end = Math.max(anchorIndex, targetIndex);
+  const next = additive ? new Set(state.selectedAssetIDs) : new Set();
+  for (const asset of state.assets.slice(start, end + 1)) next.add(asset.id);
+  state.selectedAssetIDs = next;
+  state.selectionAnchorID = anchorID;
+  renderAssets();
+  renderSelectionBar();
+  scheduleSelectionAggregate();
+}
+
+function handleAssetSelection(assetID, { additive = false, range = false } = {}) {
+  if (range) {
+    if (!state.selectionMode) setSelectionMode(true, { seedCurrent: true });
+    selectAssetRange(assetID, additive);
+    return;
+  }
+  if (additive) {
+    if (!state.selectionMode) setSelectionMode(true, { seedCurrent: true });
+    toggleAssetSelection(assetID);
+    state.selectionAnchorID = state.selectedAssetIDs.has(assetID) ? assetID : null;
+    return;
+  }
+  if (state.selectionMode) {
+    state.selectedAssetIDs = new Set([assetID]);
+    state.selectionAnchorID = assetID;
+    renderAssets();
+    renderSelectionBar();
+    scheduleSelectionAggregate();
+    return;
+  }
+  loadInspector(assetID);
+}
+
+function selectAllLoadedAssets() {
+  if (!state.assets.length) return;
+  if (!state.selectionMode) setSelectionMode(true);
+  state.selectedAssetIDs = new Set(state.assets.map((asset) => asset.id));
+  state.selectionAnchorID = state.assets[0]?.id || null;
+  renderAssets();
+  renderSelectionBar();
+  scheduleSelectionAggregate();
+}
+
+function currentTagTargetAssetIDs() {
+  if (state.selectionMode) return [...state.selectedAssetIDs];
+  return state.selectedAssetID ? [state.selectedAssetID] : [];
+}
+
+function closeNewTagDialog() {
+  if (elements.newTagDialog.open) elements.newTagDialog.close();
+  elements.newTagError.textContent = "";
+  elements.newTagName.value = "";
+  state.newTagOperationID = null;
+}
+
+function openNewTagDialog() {
+  const assetIDs = currentTagTargetAssetIDs();
+  if (!assetIDs.length) {
+    toast("请先选择至少一张照片");
+    return;
+  }
+  state.newTagOperationID = crypto.randomUUID();
+  elements.newTagTargetSummary.textContent = `创建后将为 ${assetIDs.length} 张照片确认此标签`;
+  elements.newTagError.textContent = "";
+  elements.newTagName.value = "";
+  elements.newTagDialog.showModal();
+  elements.newTagName.focus({ preventScroll: true });
+}
+
+async function createTagAndApply(event) {
+  event.preventDefault();
+  const name = elements.newTagName.value.trim();
+  const assetIDs = currentTagTargetAssetIDs();
+  if (!name || !assetIDs.length || !state.online) return;
+  const operationID = state.newTagOperationID || crypto.randomUUID();
+  state.newTagOperationID = operationID;
+  elements.createTagButton.disabled = true;
+  elements.createTagButton.textContent = "正在创建…";
+  elements.newTagError.textContent = "";
+  try {
+    const result = await api("/v1/tags/create-and-apply", {
+      method: "POST",
+      body: JSON.stringify({ operationID, name, assetIDs }),
+    });
+    state.tags = await api("/v1/tags");
+    renderTagSelects();
+    await loadAssets({
+      preserveSelection: true,
+      preserveLoadedWindow: true,
+    });
+    if (state.selectionMode) {
+      elements.batchTagSelect.value = result.tagID;
+      await loadSelectionAggregate();
+    } else if (state.selectedAssetID) {
+      await loadInspector(state.selectedAssetID);
+    }
+    closeNewTagDialog();
+    toast(`已新增标签“${result.displayName}”并应用到 ${result.appliedAssetCount} 张照片`);
+  } catch (error) {
+    elements.newTagError.textContent = error.message || "新增标签失败";
+  } finally {
+    elements.createTagButton.disabled = !state.online;
+    elements.createTagButton.textContent = "创建并确认";
+  }
 }
 
 function renderSelectionBar() {
@@ -752,7 +1070,7 @@ async function loadSelectionAggregate() {
   state.loadingAggregate = true;
   elements.batchAggregate.textContent = "正在统计…";
   try {
-    const aggregates = await api("/v1/tag-selection", {
+    const aggregates = await api("/v1/tags/selection", {
       method: "POST",
       body: JSON.stringify({ tagIDs: [tagID], assetIDs }),
     });
@@ -768,10 +1086,24 @@ async function loadSelectionAggregate() {
   }
 }
 
+function confirmBatchTagDecision(action, tagName, assetCount) {
+  const actionText = {
+    accept: "确认",
+    reject: "拒绝",
+    clear: "清除",
+  }[action];
+  if (!actionText) return false;
+  return window.confirm(
+    `确认要为 ${assetCount} 张照片${actionText}标签“${tagName}”吗？`
+  );
+}
+
 async function applyBatchTagDecision(action) {
   const tagID = elements.batchTagSelect.value;
   const assetIDs = [...state.selectedAssetIDs];
   if (!state.online || !tagID || !assetIDs.length) return;
+  const tagName = tagByID(tagID)?.displayName || "所选";
+  if (!confirmBatchTagDecision(action, tagName, assetIDs.length)) return;
   document.querySelectorAll(".batch-action").forEach((button) => { button.disabled = true; });
   try {
     const result = await api("/v1/tag-decisions/batch", {
@@ -944,7 +1276,10 @@ function renderReviewDetail() {
   if (!item) return;
 
   elements.reviewPreviewImage.alt = item.fileName || "审核照片预览";
-  elements.reviewPreviewImage.src = `/v1/assets/${item.assetID}/preview`;
+  setProtectedImageSource(
+    elements.reviewPreviewImage,
+    `/v1/assets/${item.assetID}/preview`
+  );
   elements.reviewFileName.textContent = item.fileName || "未命名照片";
   elements.reviewOrigin.textContent = [
     reviewOriginText(item.suggestionOrigin),
@@ -972,23 +1307,45 @@ function selectReviewIndex(index) {
   });
 }
 
-async function loadReviewQueue({ append = false } = {}) {
+function reviewPageFingerprint(items, nextCursor) {
+  return JSON.stringify([
+    nextCursor || null,
+    items.map((item) => [
+      item.assetID,
+      item.fileName,
+      item.availability,
+      item.acceptedTagCount,
+      item.rejectedTagCount,
+      item.suggestionOrigin,
+      item.score,
+    ]),
+  ]);
+}
+
+async function loadReviewQueue({
+  append = false,
+  preserveUnchangedGrid = false,
+} = {}) {
   const tagID = elements.reviewTagSelect.value;
-  if (!tagID || state.review.loading) {
+  if (state.review.loading) return false;
+  if (!tagID) {
     state.review.items = [];
     state.review.nextCursor = null;
     state.review.selectedIndex = -1;
     renderReview();
-    return;
+    return true;
   }
 
   state.review.loading = true;
+  let shouldRender = !preserveUnchangedGrid;
   if (!append) {
-    state.review.items = [];
-    state.review.nextCursor = null;
-    state.review.selectedIndex = -1;
+    if (!preserveUnchangedGrid) {
+      state.review.items = [];
+      state.review.nextCursor = null;
+      state.review.selectedIndex = -1;
+    }
   }
-  renderReview();
+  if (shouldRender) renderReview();
   const query = new URLSearchParams({ tagID, limit: "48" });
   if (elements.reviewCurrentSourceOnly.checked && state.selectedSourceID) {
     query.set("sourceIDs", state.selectedSourceID);
@@ -997,17 +1354,25 @@ async function loadReviewQueue({ append = false } = {}) {
 
   try {
     const page = await api(`/v1/review-queue?${query}`);
-    state.review.items = append ? state.review.items.concat(page.items) : page.items;
-    state.review.nextCursor = page.nextCursor || null;
+    const nextItems = append ? state.review.items.concat(page.items) : page.items;
+    const nextCursor = page.nextCursor || null;
+    shouldRender = shouldRender
+      || reviewPageFingerprint(state.review.items, state.review.nextCursor)
+        !== reviewPageFingerprint(nextItems, nextCursor);
+    state.review.items = nextItems;
+    state.review.nextCursor = nextCursor;
     if (state.review.selectedIndex < 0 && state.review.items.length) {
       state.review.selectedIndex = 0;
+    } else if (state.review.selectedIndex >= state.review.items.length) {
+      state.review.selectedIndex = state.review.items.length - 1;
     }
   } catch (error) {
     toast(error.message || "审核队列载入失败");
   } finally {
     state.review.loading = false;
-    renderReview();
+    if (shouldRender) renderReview();
   }
+  return shouldRender;
 }
 
 async function openReviewWorkspace() {
@@ -1079,7 +1444,7 @@ function renderLightbox() {
   const item = items[index];
   elements.lightboxTitle.textContent = item.fileName || "未命名照片";
   elements.lightboxImage.alt = item.fileName || "照片全屏预览";
-  elements.lightboxImage.src = `/v1/assets/${item.id}/preview`;
+  setProtectedImageSource(elements.lightboxImage, `/v1/assets/${item.id}/preview`);
   elements.lightboxPosition.textContent = `${index + 1} / ${items.length}`;
   elements.lightboxPreviousButton.disabled = index <= 0;
   elements.lightboxNextButton.disabled = index >= items.length - 1;
@@ -1138,9 +1503,17 @@ async function refreshWorkspace({ quiet = false } = {}) {
     renderTagSelects();
     renderJobs();
     renderFilterChips();
-    await loadAssets({ preserveSelection: true });
-    if (state.selectedAssetID) await loadInspector(state.selectedAssetID);
-    if (!elements.reviewWorkspace.classList.contains("hidden")) await loadReviewQueue();
+    const assetsChanged = await loadAssets({
+      preserveSelection: true,
+      preserveUnchangedGrid: quiet,
+      preserveLoadedWindow: true,
+    });
+    if (state.selectedAssetID && (!quiet || assetsChanged)) {
+      await loadInspector(state.selectedAssetID);
+    }
+    if (!elements.reviewWorkspace.classList.contains("hidden")) {
+      await loadReviewQueue({ preserveUnchangedGrid: quiet });
+    }
     if (!quiet) toast("图库已刷新");
   } catch (error) {
     if (!quiet) toast(error.message || "刷新失败");
@@ -1154,11 +1527,37 @@ function socketURL() {
 
 function disconnectEvents() {
   state.socketGeneration += 1;
+  clearTimeout(state.accountPollTimer);
+  state.accountPollTimer = null;
   if (state.socket) {
     state.socket.onclose = null;
     state.socket.close();
     state.socket = null;
   }
+}
+
+function scheduleAccountPoll(generation) {
+  clearTimeout(state.accountPollTimer);
+  state.accountPollTimer = setTimeout(async () => {
+    if (generation !== state.socketGeneration
+      || state.authMode !== "account"
+      || elements.appView.classList.contains("hidden")) return;
+    try {
+      await api("/web/session", {}, false);
+      await refreshWorkspace({ quiet: true });
+      setConnection(true, "账号已登录");
+      scheduleAccountPoll(generation);
+    } catch (error) {
+      if (error.status === 401) {
+        state.accountAuthorization = null;
+        state.authMode = null;
+        showPairing("账号密码无效或已从 Mac 白名单移除。");
+      } else {
+        setConnection(false);
+        scheduleAccountPoll(generation);
+      }
+    }
+  }, 10_000);
 }
 
 function scheduleEventReconnect(generation) {
@@ -1175,6 +1574,25 @@ function scheduleEventReconnect(generation) {
 async function connectEvents() {
   disconnectEvents();
   const generation = state.socketGeneration;
+  if (state.authMode === "account") {
+    try {
+      await api("/web/session", {}, false);
+      if (generation !== state.socketGeneration) return;
+      state.reconnectAttempt = 0;
+      setConnection(true, "账号已登录");
+      scheduleAccountPoll(generation);
+    } catch (error) {
+      if (error.status === 401) {
+        state.accountAuthorization = null;
+        state.authMode = null;
+        showPairing("账号密码无效或已从 Mac 白名单移除。");
+      } else {
+        setConnection(false);
+        scheduleAccountPoll(generation);
+      }
+    }
+    return;
+  }
   setConnection(true, "正在连接实时更新");
   try {
     await api("/web/session");
@@ -1229,6 +1647,7 @@ async function pair(event) {
   elements.pairButton.textContent = "正在连接…";
   elements.pairingError.textContent = "";
   try {
+    state.accountAuthorization = null;
     await api("/web/session/pair", {
       method: "POST",
       body: JSON.stringify({
@@ -1237,6 +1656,7 @@ async function pair(event) {
         clientID: clientID(),
       }),
     }, false);
+    state.authMode = "pairedDevice";
     elements.pairingToken.value = "";
     await loadWorkspace();
   } catch (error) {
@@ -1250,14 +1670,48 @@ async function pair(event) {
   }
 }
 
+async function loginWithAccount(event) {
+  event.preventDefault();
+  const username = elements.accountUsername.value.trim();
+  const password = elements.accountPassword.value;
+  if (!username || !password) return;
+
+  elements.accountLoginButton.disabled = true;
+  elements.accountLoginButton.textContent = "正在登录…";
+  elements.accountLoginError.textContent = "";
+  const authorization = basicAuthorization(username, password);
+  state.accountAuthorization = authorization;
+  try {
+    const session = await api("/web/account/login", {
+      method: "POST",
+      body: "{}",
+    }, false);
+    state.authMode = session.authMode || "account";
+    elements.accountPassword.value = "";
+    await loadWorkspace();
+  } catch (error) {
+    state.accountAuthorization = null;
+    state.authMode = null;
+    elements.accountLoginError.textContent = error.status === 401
+      ? "账号名或密码不正确，或该账号不在 Mac 白名单中。"
+      : (error.message || "无法登录图库");
+  } finally {
+    elements.accountLoginButton.disabled = false;
+    elements.accountLoginButton.textContent = "登录图库";
+  }
+}
+
 async function logout() {
   try {
     await rawFetch("/web/session/logout", { method: "POST", body: "{}" });
   } finally {
+    state.accountAuthorization = null;
+    state.authMode = null;
     state.assets = [];
     state.selectedAssetID = null;
     state.selectedDetail = null;
     state.selectedAssetIDs.clear();
+    state.selectionAnchorID = null;
     showPairing("已退出这台设备上的网页会话。");
   }
 }
@@ -1295,6 +1749,9 @@ function isTextInputTarget(target) {
 }
 
 function bindEvents() {
+  elements.accountLoginTab.addEventListener("click", () => selectAuthMethod("account"));
+  elements.pairingLoginTab.addEventListener("click", () => selectAuthMethod("pairing"));
+  elements.accountLoginForm.addEventListener("submit", loginWithAccount);
   elements.pairingForm.addEventListener("submit", pair);
   elements.sourceList.addEventListener("click", (event) => {
     const button = event.target.closest("[data-source-id]");
@@ -1304,11 +1761,10 @@ function bindEvents() {
   elements.assetGrid.addEventListener("click", (event) => {
     const card = event.target.closest("[data-asset-id]");
     if (!card) return;
-    if (state.selectionMode) {
-      toggleAssetSelection(card.dataset.assetId);
-    } else {
-      loadInspector(card.dataset.assetId);
-    }
+    handleAssetSelection(card.dataset.assetId, {
+      additive: event.metaKey || event.ctrlKey,
+      range: event.shiftKey,
+    });
   });
   elements.assetGrid.addEventListener("dblclick", (event) => {
     const card = event.target.closest("[data-asset-id]");
@@ -1414,14 +1870,25 @@ function bindEvents() {
   elements.selectAllLoadedButton.addEventListener("click", () => {
     if (state.selectedAssetIDs.size === state.assets.length && state.assets.length) {
       state.selectedAssetIDs.clear();
+      state.selectionAnchorID = null;
+      renderAssets();
+      renderSelectionBar();
+      scheduleSelectionAggregate();
     } else {
-      state.selectedAssetIDs = new Set(state.assets.map((asset) => asset.id));
+      selectAllLoadedAssets();
     }
-    renderAssets();
-    renderSelectionBar();
-    scheduleSelectionAggregate();
   });
   elements.batchTagSelect.addEventListener("change", scheduleSelectionAggregate);
+  elements.batchNewTagButton.addEventListener("click", openNewTagDialog);
+  elements.inspectorNewTagButton.addEventListener("click", openNewTagDialog);
+  elements.newTagForm.addEventListener("submit", createTagAndApply);
+  elements.cancelNewTagButton.addEventListener("click", closeNewTagDialog);
+  elements.cancelNewTagFooterButton.addEventListener("click", closeNewTagDialog);
+  elements.newTagDialog.addEventListener("cancel", () => {
+    state.newTagOperationID = null;
+    elements.newTagError.textContent = "";
+    elements.newTagName.value = "";
+  });
   elements.batchBar.addEventListener("click", (event) => {
     const button = event.target.closest(".batch-action");
     if (button) applyBatchTagDecision(button.dataset.action);
@@ -1492,6 +1959,10 @@ function bindEvents() {
   });
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape") {
+      if (elements.newTagDialog.open) {
+        closeNewTagDialog();
+        return;
+      }
       if (!elements.lightbox.classList.contains("hidden")) {
         elements.lightbox.classList.add("hidden");
         state.lightboxContext = null;
@@ -1522,6 +1993,11 @@ function bindEvents() {
       if (event.key.toLowerCase() === "c") applyReviewDecision("clear");
       return;
     }
+    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "a") {
+      event.preventDefault();
+      selectAllLoadedAssets();
+      return;
+    }
     if (state.selectedAssetID && elements.inspector.classList.contains("open")) {
       if (event.key === "ArrowLeft") navigateLibrarySelection(-1);
       if (event.key === "ArrowRight") navigateLibrarySelection(1);
@@ -1544,11 +2020,13 @@ async function boot() {
   const pairingToken = hash.get("pair");
   if (pairingToken) {
     elements.pairingToken.value = pairingToken;
+    selectAuthMethod("pairing");
     history.replaceState(null, "", `${location.pathname}${location.search}`);
   }
 
   try {
-    await api("/web/session");
+    const session = await api("/web/session");
+    state.authMode = session.authMode || "pairedDevice";
     await loadWorkspace();
   } catch (error) {
     const message = error.status && error.status !== 401

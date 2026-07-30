@@ -1,6 +1,8 @@
 import Foundation
+import ImageIO
 import ImageAllRemoteProtocol
 import Network
+import UniformTypeIdentifiers
 import XCTest
 @testable import ImageAll
 
@@ -56,6 +58,13 @@ final class RemoteHTTPServerTests: XCTestCase {
         )
     }
 
+    func testLocalWebURLUsesStableLoopbackOnlyHTTPPort() {
+        XCTAssertEqual(
+            RemoteHostProcessHolder.localWebURL.absoluteString,
+            "http://127.0.0.1:8788"
+        )
+    }
+
     private func makeIdempotencyStore() -> RemoteIdempotencyStore {
         RemoteIdempotencyStore(storageURL: tempStorageURL(name: "idempotency.json"))
     }
@@ -85,10 +94,18 @@ final class RemoteHTTPServerTests: XCTestCase {
         )
     }
 
+    private func makeAccessAccountStore() -> RemoteAccessAccountStore {
+        RemoteAccessAccountStore(
+            storageURL: tempStorageURL(name: "access-accounts.json"),
+            passwordHashIterations: 100
+        )
+    }
+
     private func makeServer(
         port: UInt16,
         catalog: any RemoteCatalogServing = RemoteHTTPServerTestCatalog(),
         pairingStore: RemotePairingStore? = nil,
+        accessAccountStore: RemoteAccessAccountStore? = nil,
         hostAppVersion: String = "1.0.0",
         webAssetStore: RemoteWebCompanionAssetStore = RemoteWebCompanionAssetStore()
     ) -> (RemoteHTTPServer, RemotePairingStore) {
@@ -103,12 +120,103 @@ final class RemoteHTTPServerTests: XCTestCase {
         let server = RemoteHTTPServer(
             facade: facade,
             pairingStore: store,
+            accessAccountStore: accessAccountStore ?? makeAccessAccountStore(),
             eventBroker: RemoteEventBroker(),
             webAssetStore: webAssetStore,
             secIdentity: nil,
             port: port
         )
         return (server, store)
+    }
+
+    func testWhitelistedAccountLogsInWithoutPairingTokenOrSessionToken() async throws {
+        let port = UInt16.random(in: 19_000...29_000)
+        let accountStore = makeAccessAccountStore()
+        _ = try await accountStore.upsert(
+            username: "web-owner",
+            password: "safe-web-password"
+        )
+        let (server, _) = makeServer(
+            port: port,
+            accessAccountStore: accountStore,
+            hostAppVersion: "2.4.0"
+        )
+        try await server.start()
+        try await Task.sleep(nanoseconds: 150_000_000)
+        defer { Task { await server.stop() } }
+
+        let basic = Data("web-owner:safe-web-password".utf8).base64EncodedString()
+        var login = URLRequest(
+            url: URL(string: "http://127.0.0.1:\(port)/web/account/login")!
+        )
+        login.httpMethod = "POST"
+        login.setValue("Basic \(basic)", forHTTPHeaderField: "Authorization")
+        login.setValue(
+            "http://127.0.0.1:\(port)",
+            forHTTPHeaderField: "Origin"
+        )
+        login.setValue(
+            "127.0.0.1:\(port)",
+            forHTTPHeaderField: "Host"
+        )
+        login.setValue("same-origin", forHTTPHeaderField: "Sec-Fetch-Site")
+
+        let (loginData, loginResponse) = try await URLSession.shared.data(for: login)
+        let loginHTTP = try XCTUnwrap(loginResponse as? HTTPURLResponse)
+        XCTAssertEqual(loginHTTP.statusCode, 200)
+        XCTAssertNil(loginHTTP.value(forHTTPHeaderField: "Set-Cookie"))
+        let loginText = try XCTUnwrap(String(data: loginData, encoding: .utf8))
+        XCTAssertFalse(loginText.contains("token"))
+        XCTAssertTrue(loginText.contains("\"authMode\":\"account\""))
+
+        var capabilities = URLRequest(
+            url: URL(string: "http://127.0.0.1:\(port)/v1/capabilities")!
+        )
+        capabilities.setValue("Basic \(basic)", forHTTPHeaderField: "Authorization")
+        let (data, response) = try await URLSession.shared.data(for: capabilities)
+        let http = try XCTUnwrap(response as? HTTPURLResponse)
+        XCTAssertEqual(http.statusCode, 200)
+        XCTAssertEqual(
+            try JSONDecoder().decode(RemoteCapabilities.self, from: data).hostAppVersion,
+            "2.4.0"
+        )
+
+        var crossSiteMutation = URLRequest(
+            url: URL(string: "http://127.0.0.1:\(port)/v1/tags/selection")!
+        )
+        crossSiteMutation.httpMethod = "POST"
+        crossSiteMutation.httpBody = Data("{}".utf8)
+        crossSiteMutation.setValue(
+            "application/json",
+            forHTTPHeaderField: "Content-Type"
+        )
+        crossSiteMutation.setValue(
+            "Basic \(basic)",
+            forHTTPHeaderField: "Authorization"
+        )
+        crossSiteMutation.setValue(
+            "https://attacker.example",
+            forHTTPHeaderField: "Origin"
+        )
+        crossSiteMutation.setValue(
+            "cross-site",
+            forHTTPHeaderField: "Sec-Fetch-Site"
+        )
+        let (_, crossSiteResponse) = try await URLSession.shared.data(
+            for: crossSiteMutation
+        )
+        XCTAssertEqual(
+            try XCTUnwrap(crossSiteResponse as? HTTPURLResponse).statusCode,
+            403
+        )
+
+        let wrongBasic = Data("web-owner:wrong-password".utf8).base64EncodedString()
+        capabilities.setValue("Basic \(wrongBasic)", forHTTPHeaderField: "Authorization")
+        let (_, rejectedResponse) = try await URLSession.shared.data(for: capabilities)
+        XCTAssertEqual(
+            try XCTUnwrap(rejectedResponse as? HTTPURLResponse).statusCode,
+            401
+        )
     }
 
     func testParserRejectsNegativeContentLength() {
@@ -220,6 +328,68 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertEqual(capabilities.protocolVersion, RemoteProtocolVersion.current)
     }
 
+    func testCreateTagAndApplyRouteUsesAtomicCatalogMutationOnceAcrossReplay() async throws {
+        let port = UInt16.random(in: 19_000...29_000)
+        let tagID = UUID()
+        let assetIDs = [UUID(), UUID()]
+        let catalog = RemoteHTTPServerTestCatalog(
+            createTagResult: TagCreateAndApplyResult(
+                tagID: tagID,
+                displayName: "旅行",
+                normalizedName: "旅行",
+                priorStates: assetIDs.map {
+                    TagMutationPriorState(assetID: $0, priorState: .unknown)
+                }
+            )
+        )
+        let (server, _) = makeServer(port: port, catalog: catalog)
+        try await server.start()
+        try await Task.sleep(nanoseconds: 150_000_000)
+        defer { Task { await server.stop() } }
+
+        var request = URLRequest(
+            url: URL(string: "http://127.0.0.1:\(port)/v1/tags/create-and-apply")!
+        )
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue(
+            "Bearer \(Self.legacyDebugToken)",
+            forHTTPHeaderField: "Authorization"
+        )
+        request.httpBody = try JSONEncoder().encode(
+            RemoteCreateTagAndApplyRequest(
+                operationID: UUID(),
+                name: "  旅行  ",
+                assetIDs: assetIDs
+            )
+        )
+
+        let (firstData, firstResponse) = try await URLSession.shared.data(for: request)
+        let (secondData, secondResponse) = try await URLSession.shared.data(for: request)
+
+        XCTAssertEqual(
+            try XCTUnwrap(firstResponse as? HTTPURLResponse).statusCode,
+            200
+        )
+        XCTAssertEqual(
+            try XCTUnwrap(secondResponse as? HTTPURLResponse).statusCode,
+            200
+        )
+        let first = try JSONDecoder().decode(
+            RemoteCreateTagAndApplyResponse.self,
+            from: firstData
+        )
+        let second = try JSONDecoder().decode(
+            RemoteCreateTagAndApplyResponse.self,
+            from: secondData
+        )
+        XCTAssertEqual(first.tagID, tagID)
+        XCTAssertEqual(first.appliedAssetCount, 2)
+        XCTAssertFalse(first.replayed)
+        XCTAssertTrue(second.replayed)
+        XCTAssertEqual(catalog.createTagCallCount, 1)
+    }
+
     func testBonjourServiceIsAdvertisedOnStart() async throws {
         let port = UInt16.random(in: 19_000...29_000)
         let hostID = UUID(uuidString: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")!
@@ -233,6 +403,7 @@ final class RemoteHTTPServerTests: XCTestCase {
         let server = RemoteHTTPServer(
             facade: facade,
             pairingStore: makePairingStore(listenPort: Int(port)),
+            accessAccountStore: makeAccessAccountStore(),
             eventBroker: RemoteEventBroker(),
             secIdentity: nil,
             port: port,
@@ -454,18 +625,51 @@ final class RemoteHTTPServerTests: XCTestCase {
             "reviewWorkspace",
             "jobsPopover",
             "lightbox",
+            "accountLoginForm",
+            "accountUsername",
+            "accountPassword",
+            "newTagDialog",
+            "newTagForm",
+            "newTagName",
+            "batchNewTagButton",
+            "inspectorNewTagButton",
         ] {
             XCTAssertTrue(html.contains("id=\"\(controlID)\""))
         }
         for endpoint in [
-            "/v1/tag-selection",
+            "/v1/tags/selection",
             "/v1/tag-decisions/batch",
             "/v1/review-queue",
             "/v1/review-decisions/batch",
             "/v1/jobs/",
+            "/web/account/login",
+            "/v1/tags/create-and-apply",
         ] {
             XCTAssertTrue(script.contains(endpoint))
         }
+        XCTAssertTrue(script.contains("setProtectedImageSource"))
+        XCTAssertTrue(script.contains("Basic ${btoa(binary)}"))
+        XCTAssertTrue(script.contains("assetPageFingerprint"))
+        XCTAssertTrue(script.contains("fetchLoadedAssetWindow"))
+        XCTAssertTrue(script.contains("reviewPageFingerprint"))
+        XCTAssertTrue(script.contains("preserveUnchangedGrid: quiet"))
+        XCTAssertTrue(script.contains("preserveLoadedWindow: true"))
+        XCTAssertTrue(script.contains("syncAssetCardImage"))
+        XCTAssertTrue(script.contains("button.dataset.imageKey === imageKey"))
+        XCTAssertTrue(script.contains("syncAssetCardPosition(button, index)"))
+        XCTAssertFalse(script.contains("elements.assetGrid.append(button);"))
+        XCTAssertTrue(script.contains("confirmBatchTagDecision(action, tagName, assetCount)"))
+        XCTAssertTrue(script.contains("确认要为 ${assetCount} 张照片${actionText}标签"))
+        XCTAssertTrue(script.contains("event.metaKey || event.ctrlKey"))
+        XCTAssertTrue(script.contains("event.shiftKey"))
+        XCTAssertTrue(script.contains("selectAssetRange"))
+        XCTAssertTrue(script.contains("selectAllLoadedAssets"))
+        XCTAssertTrue(script.contains("sort: \"fileNameAscending\""))
+        XCTAssertTrue(
+            html.contains(
+                "<option value=\"fileNameAscending\" selected>按文件名</option>"
+            )
+        )
     }
 
     func testWebRootLoadsWithoutAuthenticationAndUsesBrowserSecurityHeaders() async throws {
@@ -503,6 +707,113 @@ final class RemoteHTTPServerTests: XCTestCase {
             try XCTUnwrap(http.value(forHTTPHeaderField: "Content-Security-Policy"))
                 .contains("frame-ancestors 'none'")
         )
+    }
+
+    func testLoopbackWebPortServesTheSameCompanionWithoutChangingPrimaryPort() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(
+                "RemoteHTTPServerTests-LoopbackWeb-\(UUID().uuidString)",
+                isDirectory: true
+            )
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try Data("<main>Local ImageAll Web</main>".utf8)
+            .write(to: directory.appendingPathComponent("index.html"))
+
+        let primaryPort = UInt16.random(in: 19_000...23_000)
+        let localWebPort = UInt16.random(in: 25_000...29_000)
+        let store = makePairingStore(listenPort: Int(primaryPort))
+        let accountStore = makeAccessAccountStore()
+        _ = try await accountStore.upsert(
+            username: "local-owner",
+            password: "local-debug-password"
+        )
+        let server = RemoteHTTPServer(
+            facade: RemoteCatalogFacade(
+                catalog: RemoteHTTPServerTestCatalog(),
+                review: EmptyPersonalizationReviewPort(),
+                idempotency: makeIdempotencyStore(),
+                hostAppVersion: "1.0.0",
+                listenPort: Int(primaryPort)
+            ),
+            pairingStore: store,
+            accessAccountStore: accountStore,
+            eventBroker: RemoteEventBroker(),
+            webAssetStore: RemoteWebCompanionAssetStore(directoryURL: directory),
+            secIdentity: nil,
+            port: primaryPort,
+            localWebPort: localWebPort
+        )
+        try await server.start()
+        try await Task.sleep(nanoseconds: 150_000_000)
+        defer { Task { await server.stop() } }
+
+        for port in [primaryPort, localWebPort] {
+            let (data, response) = try await URLSession.shared.data(
+                from: URL(string: "http://127.0.0.1:\(port)/")!
+            )
+            XCTAssertEqual(
+                try XCTUnwrap(response as? HTTPURLResponse).statusCode,
+                200
+            )
+            XCTAssertEqual(
+                String(decoding: data, as: UTF8.self),
+                "<main>Local ImageAll Web</main>"
+            )
+        }
+
+        let basic = Data("local-owner:local-debug-password".utf8).base64EncodedString()
+        var login = URLRequest(
+            url: URL(
+                string: "http://127.0.0.1:\(localWebPort)/web/account/login"
+            )!
+        )
+        login.httpMethod = "POST"
+        login.setValue("Basic \(basic)", forHTTPHeaderField: "Authorization")
+        login.setValue(
+            "http://127.0.0.1:\(localWebPort)",
+            forHTTPHeaderField: "Origin"
+        )
+        login.setValue(
+            "127.0.0.1:\(localWebPort)",
+            forHTTPHeaderField: "Host"
+        )
+        login.setValue("same-origin", forHTTPHeaderField: "Sec-Fetch-Site")
+
+        let (loginData, loginResponse) = try await URLSession.shared.data(for: login)
+        XCTAssertEqual(
+            try XCTUnwrap(loginResponse as? HTTPURLResponse).statusCode,
+            200
+        )
+        XCTAssertTrue(String(decoding: loginData, as: UTF8.self).contains(
+            "\"authMode\":\"account\""
+        ))
+
+        if let nonLoopbackIPv4 = Host.current().addresses.first(where: {
+            $0.contains(".") && !$0.hasPrefix("127.")
+        }) {
+            let configuration = URLSessionConfiguration.ephemeral
+            configuration.timeoutIntervalForRequest = 0.5
+            configuration.timeoutIntervalForResource = 0.5
+            let session = URLSession(configuration: configuration)
+            defer { session.invalidateAndCancel() }
+
+            do {
+                let (_, response) = try await session.data(
+                    from: URL(
+                        string: "http://\(nonLoopbackIPv4):\(localWebPort)/"
+                    )!
+                )
+                XCTFail(
+                    "Loopback Web port unexpectedly accepted a non-loopback request: \(response)"
+                )
+            } catch {
+                // Expected: the local Web listener is bound only to 127.0.0.1.
+            }
+        }
     }
 
     func testCookieAuthenticationReadsCapabilitiesAndRejectsCrossOriginWrites() async throws {
@@ -628,6 +939,40 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertEqual(filter.mediaKinds, [.video])
         XCTAssertEqual(filter.mediaTypes, ["public.mpeg-4"])
         XCTAssertEqual(filter.tagPresence, .tagged)
+        XCTAssertEqual(catalog.lastRequestedSort, .fileNameAscending)
+    }
+
+    func testPreviewRouteConvertsPhotoKitTIFFIntoBrowserCompatibleImage() async throws {
+        let assetID = UUID()
+        let sourceTIFF = try XCTUnwrap(FolderReconcileTestSupport.minimalTIFFData())
+        let catalog = RemoteHTTPServerTestCatalog(previewData: sourceTIFF)
+        let port = UInt16.random(in: 19_000...29_000)
+        let (server, _) = makeServer(port: port, catalog: catalog)
+        try await server.start()
+        try await Task.sleep(nanoseconds: 150_000_000)
+        defer { Task { await server.stop() } }
+
+        var request = URLRequest(
+            url: URL(
+                string: "http://127.0.0.1:\(port)/v1/assets/\(assetID.uuidString)/preview"
+            )!
+        )
+        request.setValue(
+            "Bearer \(Self.legacyDebugToken)",
+            forHTTPHeaderField: "Authorization"
+        )
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        let http = try XCTUnwrap(response as? HTTPURLResponse)
+        XCTAssertEqual(http.statusCode, 200)
+
+        let source = try XCTUnwrap(CGImageSourceCreateWithData(data as CFData, nil))
+        let outputType = try XCTUnwrap(CGImageSourceGetType(source) as String?)
+        XCTAssertTrue([UTType.jpeg.identifier, UTType.png.identifier].contains(outputType))
+        XCTAssertEqual(
+            http.value(forHTTPHeaderField: "Content-Type"),
+            outputType == UTType.png.identifier ? "image/png" : "image/jpeg"
+        )
     }
 
     func testWebSocketAcceptValueMatchesRFC6455Example() {
@@ -640,11 +985,35 @@ final class RemoteHTTPServerTests: XCTestCase {
 private final class RemoteHTTPServerTestCatalog: RemoteCatalogServing, @unchecked Sendable {
     private let lock = NSLock()
     private var storedLastRequestedFilter: AssetPageFilter?
+    private var storedLastRequestedSort: AssetPageSort?
+    private let previewData: Data
+    private let createTagResult: TagCreateAndApplyResult?
+    private var storedCreateTagCallCount = 0
+
+    init(
+        previewData: Data = Data(),
+        createTagResult: TagCreateAndApplyResult? = nil
+    ) {
+        self.previewData = previewData
+        self.createTagResult = createTagResult
+    }
 
     var lastRequestedFilter: AssetPageFilter? {
         lock.lock()
         defer { lock.unlock() }
         return storedLastRequestedFilter
+    }
+
+    var lastRequestedSort: AssetPageSort? {
+        lock.lock()
+        defer { lock.unlock() }
+        return storedLastRequestedSort
+    }
+
+    var createTagCallCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return storedCreateTagCallCount
     }
 
     func fetchSources() throws -> [LibrarySourceSummary] { [] }
@@ -657,11 +1026,11 @@ private final class RemoteHTTPServerTestCatalog: RemoteCatalogServing, @unchecke
         cursor: AssetPageCursor?,
         limit: Int
     ) throws -> AssetPageResult {
-        _ = sort
         _ = cursor
         _ = limit
         lock.lock()
         storedLastRequestedFilter = filter
+        storedLastRequestedSort = sort
         lock.unlock()
         return AssetPageResult(items: [], nextCursor: nil)
     }
@@ -671,7 +1040,7 @@ private final class RemoteHTTPServerTestCatalog: RemoteCatalogServing, @unchecke
     }
 
     func loadPreview(assetID: UUID) async throws -> Data {
-        Data()
+        previewData
     }
 
     func fetchInspectorDetail(assetID: UUID) throws -> AssetInspectorDetail {
@@ -705,6 +1074,23 @@ private final class RemoteHTTPServerTestCatalog: RemoteCatalogServing, @unchecke
         action: LibraryTagDecisionAction
     ) throws -> TagMutationPriorStateSnapshot {
         TagMutationPriorStateSnapshot(tagID: tagID, priorStates: [])
+    }
+
+    func createTagAndAccept(
+        rawName: String,
+        assetIDs: [UUID]
+    ) throws -> TagCreateAndApplyResult {
+        lock.lock()
+        storedCreateTagCallCount += 1
+        lock.unlock()
+        return createTagResult ?? TagCreateAndApplyResult(
+            tagID: UUID(),
+            displayName: rawName,
+            normalizedName: rawName,
+            priorStates: assetIDs.map {
+                TagMutationPriorState(assetID: $0, priorState: .unknown)
+            }
+        )
     }
 
     func fetchJobActivity() throws -> [JobActivityItem] { [] }

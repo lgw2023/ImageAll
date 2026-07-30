@@ -5,6 +5,25 @@ import XCTest
 
 @MainActor
 final class LibraryWorkspaceModelTests: XCTestCase {
+    func testLibraryStartsWithFileNameSort() async {
+        let sourceID = UUID()
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: sourceID,
+                displayName: "Fixture",
+                state: .active
+            ),
+            reconciledItems: [],
+            startsConnected: true
+        )
+        let model = LibraryWorkspaceModel(service: service)
+
+        await model.start()
+
+        XCTAssertEqual(model.sort, .fileNameAscending)
+        XCTAssertEqual(service.lastSort, .fileNameAscending)
+    }
+
     func testRefreshingLocalModelServiceHealthPublishesReadyProvider() async {
         let provider = PersonalTrainingEncoderIdentity(
             provider: "dinov2",

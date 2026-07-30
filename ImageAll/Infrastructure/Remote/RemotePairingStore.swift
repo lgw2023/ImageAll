@@ -327,3 +327,321 @@ enum RemoteAuthOutcome: Equatable {
         }
     }
 }
+
+struct RemoteAccessAccountSummary: Identifiable, Sendable, Equatable {
+    var id: String { username }
+
+    let username: String
+    let createdAtMs: Int64
+    let updatedAtMs: Int64
+}
+
+/// Persistent username/password whitelist used by the Web Companion.
+///
+/// Passwords are never written to disk. Each record stores a unique salt and a
+/// PBKDF2-HMAC-SHA256 derived key in an owner-readable Application Support file.
+/// Successful credential checks are cached briefly so HTTP Basic authentication
+/// can be verified on every request without repeating the expensive password KDF.
+actor RemoteAccessAccountStore {
+    enum AccountError: LocalizedError, Equatable {
+        case invalidUsername
+        case invalidPassword
+        case tooManyAccounts
+        case persistenceFailed
+
+        var errorDescription: String? {
+            switch self {
+            case .invalidUsername:
+                "账号名需为 3–64 个字符，且不能包含冒号或控制字符。"
+            case .invalidPassword:
+                "密码需为 8–256 个字符。"
+            case .tooManyAccounts:
+                "白名单最多可保存 32 个账号。"
+            case .persistenceFailed:
+                "无法安全保存网页访问账号。"
+            }
+        }
+    }
+
+    static let defaultPasswordHashIterations = 210_000
+    static let maximumAccountCount = 32
+
+    private struct AccountRecord: Codable, Sendable {
+        let username: String
+        let saltBase64: String
+        let passwordHashBase64: String
+        let passwordHashIterations: Int
+        let createdAtMs: Int64
+        let updatedAtMs: Int64
+    }
+
+    private struct PersistedState: Codable {
+        let accounts: [AccountRecord]
+    }
+
+    private struct AuthenticationCacheEntry {
+        let username: String
+        let expiresAt: Date
+    }
+
+    private struct FailedAttemptWindow {
+        var count: Int
+        var startedAt: Date
+    }
+
+    private let logger = Logger(
+        subsystem: "com.gwlee.ImageAll",
+        category: "RemoteAccessAccountStore"
+    )
+    private let storageURL: URL
+    private let passwordHashIterations: Int
+    private var accounts: [String: AccountRecord]
+    private var authenticationCache: [String: AuthenticationCacheEntry] = [:]
+    private var failedAttempts: [String: FailedAttemptWindow] = [:]
+
+    init(
+        storageURL: URL,
+        passwordHashIterations: Int = RemoteAccessAccountStore.defaultPasswordHashIterations
+    ) {
+        self.storageURL = storageURL
+        self.passwordHashIterations = max(passwordHashIterations, 1)
+        self.accounts = Self.loadAccounts(from: storageURL)
+    }
+
+    func listAccounts() -> [RemoteAccessAccountSummary] {
+        accounts.values
+            .sorted {
+                if $0.createdAtMs == $1.createdAtMs {
+                    return $0.username.localizedStandardCompare($1.username) == .orderedAscending
+                }
+                return $0.createdAtMs < $1.createdAtMs
+            }
+            .map {
+                RemoteAccessAccountSummary(
+                    username: $0.username,
+                    createdAtMs: $0.createdAtMs,
+                    updatedAtMs: $0.updatedAtMs
+                )
+            }
+    }
+
+    @discardableResult
+    func upsert(username rawUsername: String, password: String) throws
+        -> RemoteAccessAccountSummary
+    {
+        let username = try Self.validatedUsername(rawUsername)
+        guard password.count >= 8, password.count <= 256 else {
+            throw AccountError.invalidPassword
+        }
+        guard accounts[username] != nil || accounts.count < Self.maximumAccountCount else {
+            throw AccountError.tooManyAccounts
+        }
+
+        let nowMs = Self.milliseconds(Date())
+        let salt = Self.randomData(byteCount: 16)
+        let derivedKey = Self.derivePasswordKey(
+            password: password,
+            salt: salt,
+            iterations: passwordHashIterations
+        )
+        let prior = accounts[username]
+        let record = AccountRecord(
+            username: username,
+            saltBase64: salt.base64EncodedString(),
+            passwordHashBase64: derivedKey.base64EncodedString(),
+            passwordHashIterations: passwordHashIterations,
+            createdAtMs: prior?.createdAtMs ?? nowMs,
+            updatedAtMs: nowMs
+        )
+        accounts[username] = record
+        do {
+            try save()
+        } catch {
+            accounts[username] = prior
+            throw AccountError.persistenceFailed
+        }
+        authenticationCache.removeAll()
+        failedAttempts[username] = nil
+        return RemoteAccessAccountSummary(
+            username: username,
+            createdAtMs: record.createdAtMs,
+            updatedAtMs: record.updatedAtMs
+        )
+    }
+
+    func remove(username rawUsername: String) throws {
+        let username = try Self.validatedUsername(rawUsername)
+        guard let prior = accounts.removeValue(forKey: username) else { return }
+        do {
+            try save()
+        } catch {
+            accounts[username] = prior
+            throw AccountError.persistenceFailed
+        }
+        authenticationCache = authenticationCache.filter { $0.value.username != username }
+        failedAttempts[username] = nil
+    }
+
+    func authenticate(username rawUsername: String, password: String) -> Bool {
+        guard let username = try? Self.validatedUsername(rawUsername),
+              password.count <= 256
+        else {
+            return false
+        }
+
+        let now = Date()
+        purgeExpiredAuthenticationCache(now: now)
+        let cacheKey = Self.sha256Hex("\(username)\u{0}\(password)")
+        if let cached = authenticationCache[cacheKey],
+           cached.username == username,
+           cached.expiresAt > now,
+           accounts[username] != nil
+        {
+            return true
+        }
+        if isRateLimited(username: username, now: now) {
+            return false
+        }
+
+        guard let record = accounts[username],
+              let salt = Data(base64Encoded: record.saltBase64),
+              let expected = Data(base64Encoded: record.passwordHashBase64)
+        else {
+            recordFailedAttempt(username: username, now: now)
+            return false
+        }
+        let actual = Self.derivePasswordKey(
+            password: password,
+            salt: salt,
+            iterations: max(record.passwordHashIterations, 1)
+        )
+        guard Self.constantTimeEquals(actual, expected) else {
+            recordFailedAttempt(username: username, now: now)
+            return false
+        }
+
+        failedAttempts[username] = nil
+        authenticationCache[cacheKey] = AuthenticationCacheEntry(
+            username: username,
+            expiresAt: now.addingTimeInterval(5 * 60)
+        )
+        return true
+    }
+
+    private func isRateLimited(username: String, now: Date) -> Bool {
+        guard let window = failedAttempts[username] else { return false }
+        if now.timeIntervalSince(window.startedAt) >= 60 {
+            failedAttempts[username] = nil
+            return false
+        }
+        return window.count >= 5
+    }
+
+    private func recordFailedAttempt(username: String, now: Date) {
+        if var window = failedAttempts[username],
+           now.timeIntervalSince(window.startedAt) < 60
+        {
+            window.count += 1
+            failedAttempts[username] = window
+        } else {
+            failedAttempts[username] = FailedAttemptWindow(count: 1, startedAt: now)
+        }
+    }
+
+    private func purgeExpiredAuthenticationCache(now: Date) {
+        authenticationCache = authenticationCache.filter { $0.value.expiresAt > now }
+    }
+
+    private static func validatedUsername(_ raw: String) throws -> String {
+        let username = raw
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .precomposedStringWithCanonicalMapping
+        guard username.count >= 3,
+              username.count <= 64,
+              !username.contains(":"),
+              !username.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains)
+        else {
+            throw AccountError.invalidUsername
+        }
+        return username
+    }
+
+    private static func loadAccounts(from storageURL: URL) -> [String: AccountRecord] {
+        guard let data = try? Data(contentsOf: storageURL),
+              let state = try? JSONDecoder().decode(PersistedState.self, from: data)
+        else {
+            return [:]
+        }
+        return Dictionary(
+            uniqueKeysWithValues: state.accounts.map { ($0.username, $0) }
+        )
+    }
+
+    private func save() throws {
+        try FileManager.default.createDirectory(
+            at: storageURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        let data = try JSONEncoder().encode(
+            PersistedState(accounts: Array(accounts.values))
+        )
+        try data.write(to: storageURL, options: [.atomic, .completeFileProtection])
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o600],
+            ofItemAtPath: storageURL.path
+        )
+    }
+
+    private static func derivePasswordKey(
+        password: String,
+        salt: Data,
+        iterations: Int
+    ) -> Data {
+        let key = SymmetricKey(data: Data(password.utf8))
+        var blockIndex = UInt32(1).bigEndian
+        let firstInput = withUnsafeBytes(of: &blockIndex) { salt + Data($0) }
+        var previous = Data(
+            HMAC<SHA256>.authenticationCode(for: firstInput, using: key)
+        )
+        var accumulator = [UInt8](previous)
+
+        if iterations > 1 {
+            for _ in 1 ..< iterations {
+                previous = Data(
+                    HMAC<SHA256>.authenticationCode(for: previous, using: key)
+                )
+                for index in accumulator.indices {
+                    accumulator[index] ^= previous[index]
+                }
+            }
+        }
+        return Data(accumulator)
+    }
+
+    private static func constantTimeEquals(_ lhs: Data, _ rhs: Data) -> Bool {
+        guard lhs.count == rhs.count else { return false }
+        var difference: UInt8 = 0
+        for index in lhs.indices {
+            difference |= lhs[index] ^ rhs[index]
+        }
+        return difference == 0
+    }
+
+    private static func randomData(byteCount: Int) -> Data {
+        var bytes = [UInt8](repeating: 0, count: byteCount)
+        if SecRandomCopyBytes(kSecRandomDefault, byteCount, &bytes) != errSecSuccess {
+            bytes = (0 ..< byteCount).map { _ in UInt8.random(in: .min ... .max) }
+        }
+        return Data(bytes)
+    }
+
+    private static func sha256Hex(_ value: String) -> String {
+        SHA256.hash(data: Data(value.utf8))
+            .map { String(format: "%02x", $0) }
+            .joined()
+    }
+
+    private static func milliseconds(_ date: Date) -> Int64 {
+        Int64((date.timeIntervalSince1970 * 1_000).rounded())
+    }
+}

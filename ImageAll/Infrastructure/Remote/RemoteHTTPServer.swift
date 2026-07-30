@@ -1,8 +1,10 @@
 import CryptoKit
 import Foundation
+import ImageIO
 import ImageAllRemoteProtocol
 import Network
 import Security
+import UniformTypeIdentifiers
 import os
 
 struct RemoteHTTPParsedRequest: Sendable {
@@ -25,6 +27,7 @@ enum RemoteHTTPRequestParseResult: Sendable {
 /// Debug static token.
 actor RemoteHTTPServer {
     static let defaultPort: UInt16 = 8787
+    static let defaultLocalWebPort: UInt16 = 8788
     static let maximumRequestBytes = 256 * 1_024
     static let maximumHeaderBytes = 32 * 1_024
     static let requestTimeout: Duration = .seconds(15)
@@ -32,14 +35,17 @@ actor RemoteHTTPServer {
 
     private let facade: RemoteCatalogFacade
     private let pairingStore: RemotePairingStore
+    private let accessAccountStore: RemoteAccessAccountStore
     private let eventBroker: RemoteEventBroker
     private let webAssetStore: RemoteWebCompanionAssetStore
     private let secIdentity: SecIdentity?
     private let port: UInt16
+    private let localWebPort: UInt16?
     private let advertisementName: String
     private let hostID: UUID?
     private let logger = Logger(subsystem: "com.gwlee.ImageAll", category: "RemoteHTTPServer")
     private var listener: NWListener?
+    private var localWebListener: NWListener?
     private var webSocketConnections: [ObjectIdentifier: NWConnection] = [:]
     private let jsonEncoder = JSONEncoder()
     private let jsonDecoder = JSONDecoder()
@@ -49,19 +55,23 @@ actor RemoteHTTPServer {
     init(
         facade: RemoteCatalogFacade,
         pairingStore: RemotePairingStore,
+        accessAccountStore: RemoteAccessAccountStore,
         eventBroker: RemoteEventBroker,
         webAssetStore: RemoteWebCompanionAssetStore = RemoteWebCompanionAssetStore(),
         secIdentity: SecIdentity? = nil,
         port: UInt16 = RemoteHTTPServer.defaultPort,
+        localWebPort: UInt16? = nil,
         advertisementName: String = RemoteHTTPServer.defaultAdvertisementName(),
         hostID: UUID? = nil
     ) {
         self.facade = facade
         self.pairingStore = pairingStore
+        self.accessAccountStore = accessAccountStore
         self.eventBroker = eventBroker
         self.webAssetStore = webAssetStore
         self.secIdentity = secIdentity
         self.port = port
+        self.localWebPort = localWebPort
         self.advertisementName = advertisementName
         self.hostID = hostID
     }
@@ -78,23 +88,38 @@ actor RemoteHTTPServer {
         let parameters = Self.makeListenerParameters(secIdentity: secIdentity)
         let listener = try NWListener(using: parameters, on: NWEndpoint.Port(rawValue: port)!)
         listener.service = Self.makeBonjourService(name: advertisementName, hostID: hostID)
-        listener.newConnectionHandler = { [weak self] connection in
-            Task { await self?.handle(connection: connection) }
+        configure(listener)
+
+        let localWebListener: NWListener?
+        if let localWebPort {
+            let localParameters = Self.makeLoopbackWebListenerParameters(port: localWebPort)
+            let createdListener = try NWListener(using: localParameters)
+            configure(createdListener)
+            localWebListener = createdListener
+        } else {
+            localWebListener = nil
         }
-        listener.stateUpdateHandler = { [weak self] state in
-            Task { await self?.handleListenerState(state) }
-        }
+
         listener.start(queue: .global(qos: .utility))
+        localWebListener?.start(queue: .global(qos: .utility))
         self.listener = listener
+        self.localWebListener = localWebListener
         logger.info(
             "Remote host listening on port \(self.port, privacy: .public) (tls=\(self.usesTLS, privacy: .public)); Bonjour \(RemoteBonjour.serviceType, privacy: .public) as \(self.advertisementName, privacy: .public)"
         )
+        if let localWebPort {
+            logger.info(
+                "Local Web Companion ready at http://127.0.0.1:\(localWebPort, privacy: .public)"
+            )
+        }
         Task { await eventBroker.startPingLoop() }
     }
 
     func stop() {
         listener?.cancel()
         listener = nil
+        localWebListener?.cancel()
+        localWebListener = nil
         for connection in webSocketConnections.values {
             connection.cancel()
         }
@@ -132,6 +157,25 @@ actor RemoteHTTPServer {
         let parameters = NWParameters(tls: tlsOptions, tcp: .init())
         parameters.allowLocalEndpointReuse = true
         return parameters
+    }
+
+    private static func makeLoopbackWebListenerParameters(port: UInt16) -> NWParameters {
+        let parameters = NWParameters.tcp
+        parameters.allowLocalEndpointReuse = true
+        parameters.requiredLocalEndpoint = .hostPort(
+            host: .ipv4(.loopback),
+            port: NWEndpoint.Port(rawValue: port)!
+        )
+        return parameters
+    }
+
+    private func configure(_ listener: NWListener) {
+        listener.newConnectionHandler = { [weak self] connection in
+            Task { await self?.handle(connection: connection) }
+        }
+        listener.stateUpdateHandler = { [weak self] state in
+            Task { await self?.handleListenerState(state) }
+        }
     }
 
     private func handleListenerState(_ state: NWListener.State) {
@@ -449,6 +493,44 @@ actor RemoteHTTPServer {
             return
         }
 
+        if method == "POST", path == RemoteWebCompanionSession.accountLoginPath {
+            guard RemoteWebCompanionSession.isTrustedSameOrigin(headers: headers) else {
+                await respond(
+                    connection,
+                    status: 403,
+                    error: .init(code: .unauthorized, message: "untrusted browser origin"),
+                    timeoutTask: timeoutTask
+                )
+                return
+            }
+            guard let credentials = RemoteWebCompanionSession.basicCredentials(headers: headers),
+                  await accessAccountStore.authenticate(
+                      username: credentials.username,
+                      password: credentials.password
+                  )
+            else {
+                await respond(
+                    connection,
+                    status: 401,
+                    error: .init(code: .unauthorized, message: "invalid account credentials"),
+                    timeoutTask: timeoutTask
+                )
+                return
+            }
+            await respondJSON(
+                connection,
+                status: 200,
+                value: RemoteWebCompanionSession.StatusResponse(
+                    authenticated: true,
+                    deviceID: nil,
+                    authMode: "account",
+                    username: credentials.username
+                ),
+                timeoutTask: timeoutTask
+            )
+            return
+        }
+
         if method == "POST", path == RemoteWebCompanionSession.refreshPath {
             guard RemoteWebCompanionSession.isTrustedSameOrigin(headers: headers) else {
                 await respond(
@@ -526,11 +608,9 @@ actor RemoteHTTPServer {
         if method == "GET",
            path == RemoteHTTPPaths.eventsWebSocket,
            Self.isWebSocketUpgrade(headers: headers) {
-            guard (await pairingStore.authenticate(
-                bearer: authenticationToken(headers: headers)
-            )).isAuthorized else {
+            guard (await authenticateRequest(headers: headers)).isAuthorized else {
                 timeoutTask.cancel()
-                await respond(connection, status: 401, error: .init(code: .unauthorized, message: "invalid or missing bearer token"))
+                await respond(connection, status: 401, error: .init(code: .unauthorized, message: "invalid credentials"))
                 return
             }
             guard let secWebSocketKey = headers["sec-websocket-key"] else {
@@ -545,25 +625,16 @@ actor RemoteHTTPServer {
             return
         }
 
-        var authenticatedDeviceID: UUID?
+        var requestAuthentication = RemoteRequestAuthentication.unauthorized
         if !Self.unauthenticatedPaths.contains(path) {
-            let outcome = await pairingStore.authenticate(
-                bearer: authenticationToken(headers: headers)
-            )
-            guard outcome.isAuthorized else {
+            requestAuthentication = await authenticateRequest(headers: headers)
+            guard requestAuthentication.isAuthorized else {
                 timeoutTask.cancel()
-                await respond(connection, status: 401, error: .init(code: .unauthorized, message: "invalid or missing bearer token"))
+                await respond(connection, status: 401, error: .init(code: .unauthorized, message: "invalid credentials"))
                 return
             }
-            if case let .device(deviceID) = outcome {
-                authenticatedDeviceID = deviceID
-            }
             if Self.isMutationMethod(method),
-               bearerToken(headers: headers).isEmpty,
-               RemoteWebCompanionSession.cookieValue(
-                   named: RemoteWebCompanionSession.accessCookieName,
-                   headers: headers
-               ) != nil,
+               requestAuthentication.requiresSameOriginMutationCheck,
                !RemoteWebCompanionSession.isTrustedSameOrigin(headers: headers)
             {
                 await respond(
@@ -587,7 +658,9 @@ actor RemoteHTTPServer {
                     status: 200,
                     value: RemoteWebCompanionSession.StatusResponse(
                         authenticated: true,
-                        deviceID: authenticatedDeviceID
+                        deviceID: requestAuthentication.deviceID,
+                        authMode: requestAuthentication.authMode,
+                        username: requestAuthentication.username
                     ),
                     timeoutTask: timeoutTask
                 )
@@ -604,6 +677,10 @@ actor RemoteHTTPServer {
             case ("POST", RemoteHTTPPaths.tagDecisionsBatch):
                 let request = try jsonDecoder.decode(RemoteBatchTagDecisionRequest.self, from: body)
                 let payload = try await facade.applyTagDecision(request)
+                await respondJSON(connection, status: 200, value: payload, timeoutTask: timeoutTask)
+            case ("POST", RemoteHTTPPaths.tagsCreateAndApply):
+                let request = try jsonDecoder.decode(RemoteCreateTagAndApplyRequest.self, from: body)
+                let payload = try await facade.createTagAndApply(request)
                 await respondJSON(connection, status: 200, value: payload, timeoutTask: timeoutTask)
             case ("POST", RemoteHTTPPaths.tagSelection):
                 let request = try jsonDecoder.decode(RemoteTagSelectionRequest.self, from: body)
@@ -641,10 +718,12 @@ actor RemoteHTTPServer {
                 if method == "GET", let assetID = Self.thumbnailAssetID(from: path) {
                     let width = Int(query["w"] ?? query["width"] ?? "320") ?? 320
                     let data = try await facade.loadThumbnail(assetID: assetID, targetPixelWidth: width)
-                    await respond(connection, status: 200, contentType: "image/jpeg", body: data, timeoutTask: timeoutTask)
+                    let image = try Self.browserImageResponse(data)
+                    await respond(connection, status: 200, contentType: image.contentType, body: image.body, timeoutTask: timeoutTask)
                 } else if method == "GET", let assetID = Self.previewAssetID(from: path) {
                     let data = try await facade.loadPreview(assetID: assetID)
-                    await respond(connection, status: 200, contentType: "image/jpeg", body: data, timeoutTask: timeoutTask)
+                    let image = try Self.browserImageResponse(data)
+                    await respond(connection, status: 200, contentType: image.contentType, body: image.body, timeoutTask: timeoutTask)
                 } else if method == "GET", let assetID = Self.assetDetailID(from: path) {
                     let payload = try await facade.fetchInspectorDetail(assetID: assetID)
                     await respondJSON(connection, status: 200, value: payload, timeoutTask: timeoutTask)
@@ -707,6 +786,31 @@ actor RemoteHTTPServer {
             named: RemoteWebCompanionSession.accessCookieName,
             headers: headers
         ) ?? ""
+    }
+
+    private func authenticateRequest(
+        headers: [String: String]
+    ) async -> RemoteRequestAuthentication {
+        let pairingOutcome = await pairingStore.authenticate(
+            bearer: authenticationToken(headers: headers)
+        )
+        switch pairingOutcome {
+        case let .device(deviceID):
+            return .device(deviceID)
+        case .legacyDebugToken:
+            return .legacyDebugToken
+        case .unauthorized:
+            break
+        }
+        guard let credentials = RemoteWebCompanionSession.basicCredentials(headers: headers),
+              await accessAccountStore.authenticate(
+                  username: credentials.username,
+                  password: credentials.password
+              )
+        else {
+            return .unauthorized
+        }
+        return .account(credentials.username)
     }
 
     private static func isMutationMethod(_ method: String) -> Bool {
@@ -923,7 +1027,7 @@ actor RemoteHTTPServer {
         let excludedTagIDs = (query["excludedTagIDs"] ?? "")
             .split(separator: ",")
             .compactMap { UUID(uuidString: String($0)) }
-        let sort = RemoteAssetSort(rawValue: query["sort"] ?? "") ?? .newest
+        let sort = RemoteAssetSort(rawValue: query["sort"] ?? "") ?? .fileNameAscending
         let limit = Int(query["limit"] ?? "60") ?? 60
         return RemoteAssetPageRequest(
             sourceIDs: sourceIDs,
@@ -960,6 +1064,38 @@ actor RemoteHTTPServer {
             .compactMap { UUID(uuidString: String($0)) }
         let limit = Int(query["limit"] ?? "40") ?? 40
         return RemoteReviewQueueRequest(tagID: tagID, sourceIDs: sourceIDs, limit: limit, cursor: query["cursor"])
+    }
+
+    private static func browserImageResponse(
+        _ sourceBytes: Data
+    ) throws -> (contentType: String, body: Data) {
+        guard let source = CGImageSourceCreateWithData(sourceBytes as CFData, nil),
+              let sourceType = CGImageSourceGetType(source) as String?
+        else {
+            throw RemoteAPIError(
+                code: .internalError,
+                message: "image response is not decodable"
+            )
+        }
+
+        if sourceType == UTType.jpeg.identifier {
+            return ("image/jpeg", sourceBytes)
+        }
+        if sourceType == UTType.png.identifier {
+            return ("image/png", sourceBytes)
+        }
+
+        let artifact = try DerivedImageRenderer().render(
+            sourceBytes: sourceBytes,
+            variant: .preview,
+            expectedMediaType: sourceType
+        )
+        switch artifact.storageFormat {
+        case .jpeg:
+            return ("image/jpeg", artifact.bytes)
+        case .png:
+            return ("image/png", artifact.bytes)
+        }
     }
 
     private static func thumbnailAssetID(from path: String) -> UUID? {
@@ -1002,6 +1138,56 @@ actor RemoteHTTPServer {
             }
         }
         return found
+    }
+}
+
+private enum RemoteRequestAuthentication {
+    case device(UUID)
+    case legacyDebugToken
+    case account(String)
+    case unauthorized
+
+    var isAuthorized: Bool {
+        switch self {
+        case .device, .legacyDebugToken, .account:
+            true
+        case .unauthorized:
+            false
+        }
+    }
+
+    var deviceID: UUID? {
+        guard case let .device(deviceID) = self else { return nil }
+        return deviceID
+    }
+
+    var username: String? {
+        guard case let .account(username) = self else { return nil }
+        return username
+    }
+
+    var authMode: String {
+        switch self {
+        case .device:
+            "pairedDevice"
+        case .legacyDebugToken:
+            "debug"
+        case .account:
+            "account"
+        case .unauthorized:
+            "none"
+        }
+    }
+
+    var requiresSameOriginMutationCheck: Bool {
+        switch self {
+        case .device:
+            true
+        case .account:
+            true
+        case .legacyDebugToken, .unauthorized:
+            false
+        }
     }
 }
 

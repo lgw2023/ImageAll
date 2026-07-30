@@ -104,7 +104,7 @@ public struct RemoteAssetPageRequest: Codable, Sendable, Equatable {
     public init(
         sourceIDs: [UUID] = [],
         searchText: String? = nil,
-        sort: RemoteAssetSort = .newest,
+        sort: RemoteAssetSort = .fileNameAscending,
         limit: Int = 60,
         cursor: String? = nil,
         tagDecisionFilters: [RemoteAssetTagDecisionFilter] = [],

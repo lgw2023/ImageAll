@@ -41,6 +41,7 @@ struct RemoteWebCompanionAssetStore {
 
 enum RemoteWebCompanionSession {
     static let pairingPath = "/web/session/pair"
+    static let accountLoginPath = "/web/account/login"
     static let refreshPath = "/web/session/refresh"
     static let logoutPath = "/web/session/logout"
     static let statusPath = "/web/session"
@@ -58,6 +59,20 @@ enum RemoteWebCompanionSession {
     struct StatusResponse: Codable {
         let authenticated: Bool
         let deviceID: UUID?
+        let authMode: String?
+        let username: String?
+
+        init(
+            authenticated: Bool,
+            deviceID: UUID?,
+            authMode: String? = "pairedDevice",
+            username: String? = nil
+        ) {
+            self.authenticated = authenticated
+            self.deviceID = deviceID
+            self.authMode = authMode
+            self.username = username
+        }
     }
 
     static func webPairingURL(for offer: RemotePairingOffer) -> URL? {
@@ -82,6 +97,23 @@ enum RemoteWebCompanionSession {
             return String(pieces[1]).trimmingCharacters(in: .whitespaces)
         }
         return nil
+    }
+
+    static func basicCredentials(headers: [String: String]) -> (username: String, password: String)? {
+        guard let value = headers["authorization"] else { return nil }
+        let pieces = value.split(separator: " ", maxSplits: 1, omittingEmptySubsequences: true)
+        guard pieces.count == 2,
+              pieces[0].lowercased() == "basic",
+              let decoded = Data(base64Encoded: String(pieces[1])),
+              let decodedText = String(data: decoded, encoding: .utf8),
+              let separator = decodedText.firstIndex(of: ":")
+        else {
+            return nil
+        }
+        return (
+            String(decodedText[..<separator]),
+            String(decodedText[decodedText.index(after: separator)...])
+        )
     }
 
     static func isTrustedSameOrigin(headers: [String: String]) -> Bool {

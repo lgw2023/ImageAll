@@ -28,6 +28,7 @@ public enum RemoteHTTPPaths {
     public static let tags = "/v1/tags"
     public static let assets = "/v1/assets"
     public static let tagDecisionsBatch = "/v1/tag-decisions/batch"
+    public static let tagsCreateAndApply = "/v1/tags/create-and-apply"
     public static let tagSelection = "/v1/tags/selection"
     public static let reviewQueue = "/v1/review/queue"
     public static let reviewDecisionsBatch = "/v1/review/decisions/batch"

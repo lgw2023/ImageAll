@@ -3,6 +3,13 @@ import ImageAllRemoteProtocol
 import XCTest
 
 final class RemoteProtocolRoundTripTests: XCTestCase {
+    func testAssetPageRequestDefaultsToFileNameSort() {
+        XCTAssertEqual(
+            RemoteAssetPageRequest().sort,
+            .fileNameAscending
+        )
+    }
+
     private let encoder: JSONEncoder = {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
@@ -21,6 +28,29 @@ final class RemoteProtocolRoundTripTests: XCTestCase {
             certificateFingerprintSHA256: "deadbeef"
         )
         try assertRoundTrip(original)
+    }
+
+    func testCreateTagAndApplyRoundTrip() throws {
+        let operationID = UUID()
+        let tagID = UUID()
+        let assetIDs = [UUID(), UUID()]
+
+        try assertRoundTrip(
+            RemoteCreateTagAndApplyRequest(
+                operationID: operationID,
+                name: "旅行",
+                assetIDs: assetIDs
+            )
+        )
+        try assertRoundTrip(
+            RemoteCreateTagAndApplyResponse(
+                operationID: operationID,
+                tagID: tagID,
+                displayName: "旅行",
+                appliedAssetCount: 2,
+                replayed: false
+            )
+        )
     }
 
     func testPairingOfferRoundTrip() throws {
