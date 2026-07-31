@@ -35,6 +35,7 @@ struct CatalogDatabase: Sendable {
         V027PartitionPersonalizationByMediaKindMigration.register(on: &migrator)
         V028PartitionSlimmingByMediaKindMigration.register(on: &migrator)
         V029AddOriginalAspectThumbnailCacheMigration.register(on: &migrator)
+        V030AddSimilarityDigestProvenanceMigration.register(on: &migrator)
         return migrator
     }
 
@@ -562,6 +563,83 @@ enum V029AddOriginalAspectThumbnailCacheMigration {
                 CREATE INDEX derived_image_cache_lru_idx ON derived_image_cache_entry (
                     last_accessed_at_ms,
                     id
+                )
+                """
+            )
+        }
+    }
+}
+
+enum V030AddSimilarityDigestProvenanceMigration {
+    static func register(on migrator: inout DatabaseMigrator) {
+        migrator.registerMigration(CatalogMigrationID.v030AddSimilarityDigestProvenance) { db in
+            try db.execute(
+                sql: """
+                ALTER TABLE asset_similarity_fingerprint
+                ADD COLUMN content_digest_origin TEXT NOT NULL DEFAULT 'unverifiedLegacy'
+                CHECK(
+                    content_digest_origin IN (
+                        'verifiedOriginalBytes',
+                        'visualDerivative',
+                        'unverifiedLegacy'
+                    )
+                )
+                """
+            )
+
+            // Folder still-image digests were always computed from the opened
+            // encoded source file, so their legacy provenance is recoverable.
+            try db.execute(
+                sql: """
+                UPDATE asset_similarity_fingerprint
+                SET content_digest_origin = 'verifiedOriginalBytes'
+                WHERE content_sha256 IS NOT NULL
+                  AND asset_id IN (
+                    SELECT a.id
+                    FROM asset a
+                    JOIN source s ON s.id = a.source_id
+                    WHERE a.locator_kind = 'file'
+                      AND a.media_kind = 'image'
+                      AND s.kind = 'folder'
+                  )
+                """
+            )
+
+            // A legacy Photos digest is deletion-grade only when the durable
+            // original cache independently records the same encoded bytes.
+            try db.execute(
+                sql: """
+                UPDATE asset_similarity_fingerprint
+                SET content_digest_origin = 'verifiedOriginalBytes'
+                WHERE content_sha256 IS NOT NULL
+                  AND EXISTS (
+                    SELECT 1
+                    FROM asset a
+                    JOIN photos_original_cache_entry c ON c.asset_id = a.id
+                    WHERE a.id = asset_similarity_fingerprint.asset_id
+                      AND a.locator_kind = 'photos'
+                      AND a.media_kind = 'image'
+                      AND c.content_revision = asset_similarity_fingerprint.content_revision
+                      AND c.photos_local_identifier = a.photos_local_identifier
+                      AND c.encoded_sha256 = asset_similarity_fingerprint.content_sha256
+                  )
+                """
+            )
+
+            // Everything else is conservatively retained for perceptual use
+            // but cannot establish exact byte identity.
+            try db.execute(
+                sql: """
+                UPDATE asset_similarity_fingerprint
+                SET content_digest_origin = 'visualDerivative'
+                WHERE content_digest_origin = 'unverifiedLegacy'
+                """
+            )
+            try db.execute(
+                sql: """
+                CREATE INDEX asset_similarity_fingerprint_exact_idx
+                ON asset_similarity_fingerprint (
+                    content_digest_origin, content_sha256, asset_id
                 )
                 """
             )

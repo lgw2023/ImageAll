@@ -418,12 +418,12 @@ final class PhotoKitPhotosLibraryAdapter: NSObject, PhotosLibraryAccessPort, Pho
     }
 
 
-    static func makeLocalOnlyOriginalImageRequestOptions() -> PHImageRequestOptions {
+    static func makeExactAnalysisOriginalImageRequestOptions() -> PHImageRequestOptions {
         let options = PHImageRequestOptions()
         options.version = .original
         options.deliveryMode = .highQualityFormat
         options.isSynchronous = true
-        options.isNetworkAccessAllowed = false
+        options.isNetworkAccessAllowed = true
         return options
     }
 
@@ -438,7 +438,7 @@ final class PhotoKitPhotosLibraryAdapter: NSObject, PhotosLibraryAccessPort, Pho
         let result = SynchronousImageResult()
         imageManager.requestImageDataAndOrientation(
             for: asset,
-            options: Self.makeLocalOnlyOriginalImageRequestOptions()
+            options: Self.makeExactAnalysisOriginalImageRequestOptions()
         ) {
             data,
             _,

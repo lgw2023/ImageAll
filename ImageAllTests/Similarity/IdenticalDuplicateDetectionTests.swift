@@ -336,6 +336,10 @@ final class IdenticalDuplicateDetectionTests: XCTestCase {
         let previewBytes = try XCTUnwrap(
             SimilarityTestSupport.patternedImageData(seed: 44, uti: .jpeg)
         )
+        let folderAsset = try env.seedAsset(
+            relativePath: "same-preview-bytes.jpg",
+            contents: previewBytes
+        )
         let originals = SimilarityPhotosOriginalStub(error: .cloudOnly)
         let featureImages = SimilarityPhotosFeatureImageStub(bytes: previewBytes)
         let completion = env.makeCompletionService(
@@ -349,11 +353,18 @@ final class IdenticalDuplicateDetectionTests: XCTestCase {
         )
 
         let fingerprint = try completion.completeAsset(assetID: photosAssetID)
+        _ = try completion.completeAsset(assetID: folderAsset.assetID)
+        let clusters = try IdenticalDuplicateClusterService(database: env.database)
+            .clusterIdenticalDuplicates(assetIDs: [photosAssetID, folderAsset.assetID])
 
         XCTAssertEqual(originals.requestCount, 1)
         XCTAssertEqual(featureImages.requestCount, 1)
         XCTAssertEqual(try cache.storageUsage(), .zero, "preview/thumbnail bytes must not be stored as originals")
         XCTAssertEqual(fingerprint.sha256, Data(SHA256.hash(data: previewBytes)))
+        XCTAssertFalse(
+            clusters.contains { $0.kind == .byteIdentical },
+            "feature/preview bytes must never prove deletion-grade byte identity"
+        )
     }
 
     func testPhotosFingerprintSkipsWhenNoLocalBytesAvailable() throws {

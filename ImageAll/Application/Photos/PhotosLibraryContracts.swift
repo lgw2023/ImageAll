@@ -125,9 +125,8 @@ protocol PhotosCloudPreviewPort: Sendable {
     ) async throws -> Data
 }
 
-/// Full-resolution still bytes for durable local analysis. Production PhotoKit
-/// access is **local-only**; iCloud-only assets return `cloudOnly` unless a
-/// prior user-granted download already materialized the original on disk.
+/// Original encoded still bytes for durable exact analysis. A user-started
+/// Library Slimming scan may let PhotoKit materialize an iCloud-backed original.
 protocol PhotosOriginalContentPort: Sendable {
     func requestOriginalImageData(localIdentifier: String) throws -> Data
 }
@@ -173,6 +172,8 @@ enum PhotosLibraryMutationError: Error, Equatable, Sendable {
 protocol PhotosLibraryMutationPort: Sendable {
     func authorizationState() -> PhotosAuthorizationState
     func requestAuthorization() async -> PhotosAuthorizationState
-    func moveToRecentlyDeleted(localIdentifiers: [String]) throws
+    /// Returns the exact normalized identifiers included in the completed
+    /// PhotoKit mutation. Partial resolution must fail before mutation.
+    func moveToRecentlyDeleted(localIdentifiers: [String]) throws -> [String]
     func presence(localIdentifier: String) throws -> PhotosAssetPresence
 }

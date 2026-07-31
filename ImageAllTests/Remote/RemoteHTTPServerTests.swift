@@ -633,37 +633,113 @@ final class RemoteHTTPServerTests: XCTestCase {
             "newTagName",
             "batchNewTagButton",
             "inspectorNewTagButton",
+            "mediaKindTabs",
+            "gridDensitySlider",
+            "tagNavigation",
+            "commandPalette",
+            "shortcutDialog",
+            "inspectorPreviousButton",
+            "inspectorNextButton",
+            "inspectorTagSearch",
+            "assetContextMenu",
+            "sidebarVisibilityButton",
+            "inspectorVisibilityButton",
         ] {
             XCTAssertTrue(html.contains("id=\"\(controlID)\""))
         }
         for endpoint in [
             "/v1/tags/selection",
             "/v1/tag-decisions/batch",
-            "/v1/review-queue",
-            "/v1/review-decisions/batch",
+            "/v1/review/queue",
+            "/v1/review/decisions/batch",
             "/v1/jobs/",
             "/web/account/login",
             "/v1/tags/create-and-apply",
         ] {
             XCTAssertTrue(script.contains(endpoint))
         }
+        XCTAssertFalse(script.contains("/v1/review-queue"))
+        XCTAssertFalse(script.contains("/v1/review-decisions/batch"))
         XCTAssertTrue(script.contains("setProtectedImageSource"))
         XCTAssertTrue(script.contains("Basic ${btoa(binary)}"))
         XCTAssertTrue(script.contains("assetPageFingerprint"))
         XCTAssertTrue(script.contains("fetchLoadedAssetWindow"))
         XCTAssertTrue(script.contains("reviewPageFingerprint"))
-        XCTAssertTrue(script.contains("preserveUnchangedGrid: quiet"))
+        XCTAssertTrue(script.contains("preserveUnchangedGrid: true"))
         XCTAssertTrue(script.contains("preserveLoadedWindow: true"))
         XCTAssertTrue(script.contains("syncAssetCardImage"))
         XCTAssertTrue(script.contains("button.dataset.imageKey === imageKey"))
         XCTAssertTrue(script.contains("syncAssetCardPosition(button, index)"))
         XCTAssertFalse(script.contains("elements.assetGrid.append(button);"))
         XCTAssertTrue(script.contains("confirmBatchTagDecision(action, tagName, assetCount)"))
-        XCTAssertTrue(script.contains("确认要为 ${assetCount} 张照片${actionText}标签"))
+        XCTAssertTrue(script.contains("确认要为 ${mediaItemCountText(assetCount)}${actionText}标签"))
         XCTAssertTrue(script.contains("event.metaKey || event.ctrlKey"))
         XCTAssertTrue(script.contains("event.shiftKey"))
         XCTAssertTrue(script.contains("selectAssetRange"))
         XCTAssertTrue(script.contains("selectAllLoadedAssets"))
+        XCTAssertTrue(script.contains("renderTagNavigation"))
+        XCTAssertTrue(script.contains("applyQuickTagFilter"))
+        XCTAssertTrue(script.contains("moveLibrarySelection"))
+        XCTAssertTrue(script.contains("startMarqueeSelection"))
+        XCTAssertTrue(script.contains("renderAssetSelectionState"))
+        XCTAssertTrue(script.contains("openCommandPalette"))
+        XCTAssertTrue(script.contains("persistWorkspacePreferences"))
+        XCTAssertTrue(script.contains("new IntersectionObserver"))
+        XCTAssertTrue(script.contains("expandedRefreshKinds"))
+        XCTAssertTrue(script.contains("assetLoadPromise"))
+        XCTAssertTrue(script.contains("assetQuerySignature"))
+        XCTAssertTrue(script.contains("protectedImageRequests"))
+        XCTAssertTrue(script.contains("protectedImageAbortControllers"))
+        XCTAssertTrue(script.contains("new AbortController()"))
+        XCTAssertTrue(script.contains("imageall-protected-load"))
+        XCTAssertTrue(script.contains("button.dataset.reviewKey = key"))
+        XCTAssertTrue(script.contains("scheduleProjectionPoll"))
+        XCTAssertTrue(script.contains("currentReviewScopeKey"))
+        XCTAssertTrue(script.contains("state.workspaceGeneration"))
+        XCTAssertTrue(script.contains("state.inspectorRequestGeneration"))
+        XCTAssertTrue(script.contains("state.inspectorDismissed"))
+        XCTAssertTrue(script.contains("state.pendingInspectorRefresh"))
+        XCTAssertTrue(script.contains("preserveExisting: true"))
+        XCTAssertTrue(script.contains("function closeReviewWorkspace()"))
+        XCTAssertTrue(script.contains("function closeLightbox()"))
+        XCTAssertTrue(script.contains("function trapOverlayFocus"))
+        XCTAssertTrue(script.contains("state.review.mutating"))
+        XCTAssertTrue(script.contains("state.tagMutating"))
+        XCTAssertTrue(script.contains("throwOnError: true"))
+        XCTAssertTrue(script.contains("界面同步暂时失败，正在重试"))
+        XCTAssertTrue(script.contains("applyReviewDecision(\"accept\")"))
+        XCTAssertTrue(script.contains("deferReviewSelection"))
+        XCTAssertFalse(script.contains("applyReviewDecision(\"clear\")"))
+        XCTAssertTrue(script.contains("event.key.toLowerCase() === \"p\""))
+        XCTAssertTrue(script.contains("event.key.toLowerCase() === \"x\""))
+        XCTAssertTrue(script.contains("event.key.toLowerCase() === \"u\""))
+        let selectReviewStart = try XCTUnwrap(
+            script.range(of: "function selectReviewIndex")
+        )
+        let reviewFingerprintStart = try XCTUnwrap(
+            script.range(
+                of: "function reviewPageFingerprint",
+                range: selectReviewStart.upperBound..<script.endIndex
+            )
+        )
+        let selectReviewScript = String(
+            script[selectReviewStart.lowerBound..<reviewFingerprintStart.lowerBound]
+        )
+        XCTAssertFalse(selectReviewScript.contains("renderReview();"))
+        let reviewDecisionStart = try XCTUnwrap(
+            script.range(of: "async function applyReviewDecision")
+        )
+        let deferReviewStart = try XCTUnwrap(
+            script.range(
+                of: "function deferReviewSelection",
+                range: reviewDecisionStart.upperBound..<script.endIndex
+            )
+        )
+        let reviewDecisionScript = String(
+            script[reviewDecisionStart.lowerBound..<deferReviewStart.lowerBound]
+        )
+        XCTAssertTrue(reviewDecisionScript.contains("preserveLoadedWindow: true"))
+        XCTAssertTrue(reviewDecisionScript.contains("preserveUnchangedGrid: true"))
         XCTAssertTrue(script.contains("sort: \"fileNameAscending\""))
         XCTAssertTrue(
             html.contains(

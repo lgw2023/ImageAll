@@ -20,6 +20,10 @@ enum FolderQuarantineIOError: Error, Equatable {
     case ioFailure
     case targetExists
     case verificationFailed
+    /// The namespace mutation succeeded, but a following directory sync did
+    /// not. Callers must keep their transient DB intent for recovery instead
+    /// of pretending that the move/delete never happened.
+    case durabilityUncertain
 }
 
 struct FolderQuarantineExpectedIdentity: Sendable, Equatable {
@@ -35,6 +39,12 @@ struct FolderQuarantineIO: Sendable {
     var forceCrossVolumeCopy: Bool = false
     /// Deterministic test seam for a writer racing the final source check.
     var beforeSourceFinalVerification: @Sendable () -> Void = {}
+    /// Deterministic test seam for failures after a namespace mutation commits.
+    var synchronizeDirectoryFD: @Sendable (Int32) throws -> Void = { fd in
+        guard fsync(fd) == 0 else {
+            throw FolderQuarantineIOError.ioFailure
+        }
+    }
 
     func ensureQuarantineRoot(at url: URL) throws {
         try DerivedImageSecureIO.ensureDirectory(at: url)
@@ -105,12 +115,20 @@ struct FolderQuarantineIO: Sendable {
                     toDirectoryFD: destParentFD,
                     toName: destName
                 )
-                return
             } catch DerivedImageSecureIOError.targetExists {
                 throw FolderQuarantineIOError.targetExists
             } catch {
                 throw FolderQuarantineIOError.ioFailure
             }
+            do {
+                try synchronizeDirectory(fd: destParentFD)
+                if sourceParentFD != destParentFD {
+                    try synchronizeDirectory(fd: sourceParentFD)
+                }
+            } catch {
+                throw FolderQuarantineIOError.durabilityUncertain
+            }
+            return
         }
 
         try copyVerifiedOpenFileAndUnlink(
@@ -128,7 +146,8 @@ struct FolderQuarantineIO: Sendable {
         quarantineRootURL: URL,
         quarantineRelativePath: String,
         sourceRootURL: URL,
-        originalRelativePath: String
+        originalRelativePath: String,
+        expectedIdentity: FolderQuarantineExpectedIdentity? = nil
     ) throws {
         guard case let .success(validatedQuarantine) = RelativePathRules.validate(quarantineRelativePath),
               case let .success(validatedOriginal) = RelativePathRules.validate(originalRelativePath)
@@ -165,7 +184,7 @@ struct FolderQuarantineIO: Sendable {
         let openedSource = try openVerifiedRegularFile(
             parentFD: qParentFD,
             name: qName,
-            expectedIdentity: nil
+            expectedIdentity: expectedIdentity
         )
         defer { Darwin.close(openedSource.fd) }
 
@@ -186,12 +205,20 @@ struct FolderQuarantineIO: Sendable {
                     toDirectoryFD: destParentFD,
                     toName: destName
                 )
-                return
             } catch DerivedImageSecureIOError.targetExists {
                 throw FolderQuarantineIOError.targetExists
             } catch {
                 throw FolderQuarantineIOError.ioFailure
             }
+            do {
+                try synchronizeDirectory(fd: destParentFD)
+                if qParentFD != destParentFD {
+                    try synchronizeDirectory(fd: qParentFD)
+                }
+            } catch {
+                throw FolderQuarantineIOError.durabilityUncertain
+            }
+            return
         }
 
         try copyVerifiedOpenFileAndUnlink(
@@ -222,6 +249,11 @@ struct FolderQuarantineIO: Sendable {
             if ownsParent { Darwin.close(parentFD) }
         }
         try DerivedImageSecureIO.unlinkatEntry(directoryFD: parentFD, name: name)
+        do {
+            try synchronizeDirectory(fd: parentFD)
+        } catch {
+            throw FolderQuarantineIOError.durabilityUncertain
+        }
     }
 
     func objectExists(rootURL: URL, relativePath: String) throws -> Bool {
@@ -482,8 +514,15 @@ struct FolderQuarantineIO: Sendable {
         // Only unlink after the metadata-complete destination is durable and the
         // still-open source has been rehashed under an advisory exclusive lock.
         try DerivedImageSecureIO.unlinkatEntry(directoryFD: sourceParentFD, name: sourceName)
-        try synchronizeDirectory(fd: sourceParentFD)
+        // From this point onward the verified destination is the only known
+        // copy. Never let the cleanup defer remove it, even if the source
+        // directory sync reports an error.
         keepDestination = true
+        do {
+            try synchronizeDirectory(fd: sourceParentFD)
+        } catch {
+            throw FolderQuarantineIOError.durabilityUncertain
+        }
     }
 
     private func synchronizeFile(fd: Int32) throws {
@@ -496,9 +535,7 @@ struct FolderQuarantineIO: Sendable {
     }
 
     private func synchronizeDirectory(fd: Int32) throws {
-        guard fsync(fd) == 0 else {
-            throw FolderQuarantineIOError.ioFailure
-        }
+        try synchronizeDirectoryFD(fd)
     }
 
     private func requireOpenFileUnchanged(

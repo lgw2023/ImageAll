@@ -468,11 +468,18 @@ MVP 已冻结为 macOS 15+ 并采用 persistent change history；change token �
 ADR-044 增加一个窄例外：Photos「相同」检测遇到 iCloud-only 资产时，分析 Job 可隐式请求 `.original`
 高质量原始内容，并原子保存到 Application Support 的 `Photos Originals/v1` 作为长期可用产品数据。
 长期对象不进入派生预览 LRU，索引绑定 asset、content revision、Photos local identifier、字节数和
-SHA-256；身份或校验不一致即 fail closed。该授权不扩展到普通建议、批量预览或其它分析任务，也不授权
+SHA-256；内容摘要另记录 `verifiedOriginalBytes` / `visualDerivative` / `unverifiedLegacy` provenance，
+只有第一类可以生成删除级 `byteIdentical`。身份或校验不一致即 fail closed。该授权不扩展到普通建议、批量预览或其它分析任务，也不授权
 写回 Photos。长期对象默认无限期保留，不按 TTL 或容量自动淘汰；用户可在存储面板查看独立用量并经
 二次确认清除全部，运行中或待运行分析拒绝清理。清理只删除安全校验通过的 App 副本与索引，不删除
 Photos 资产、人工标签、指纹或分析结果；以后分析可重新下载。受保护真实图库上的云下载 smoke 仍需
 `LOCAL-TEST-DATA-SAFETY.md` 规定的单次授权。
+
+ADR-044 回收执行边界同时要求：一键清理计划冻结每个成员的 active source、当前 locator、
+`content_revision` 与原始字节 SHA-256，并在文件系统或 PhotoKit mutation 前逐项重新读取；PhotoKit
+fetch 集合必须与请求集合精确相等。普通回收的持久化「永不再确认」只对 1–5 张生效，普通 >5 张和
+一键清理完全相同每次确认。PhotoKit 删除后的短暂仍可见状态在 2 分钟内保持 pending；文件夹恢复前
+复核 quarantine 对象大小、mtime 与摘要，同卷 rename 后刷新两侧父目录。
 
 原生 macOS 当前 SDK 将 `PHAuthorizationStatusLimited` 标为 iOS-only，因此 MVP 不假设持续 Photos Source 存在“受限照片库”授权。`PhotosPicker` 的 `Transferable` 选择结果也不作为可持续增量索引的 Locator。若未来要支持只选少量 Photos 资产并跨启动保留，必须先单独验证标识和数据保留契约。
 

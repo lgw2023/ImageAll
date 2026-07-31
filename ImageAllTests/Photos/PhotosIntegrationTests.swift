@@ -100,10 +100,11 @@ final class PhotosIntegrationTests: XCTestCase {
 
     func testPhotoKitOriginalOpenPolicyStaysLocalOnlyWithoutCloudDownloadGrant() {
         let options = PhotoKitPhotosLibraryAdapter.makeOriginalContentEditingInputRequestOptions()
-        let originalOptions = PhotoKitPhotosLibraryAdapter.makeLocalOnlyOriginalImageRequestOptions()
+        let originalOptions =
+            PhotoKitPhotosLibraryAdapter.makeExactAnalysisOriginalImageRequestOptions()
 
         XCTAssertFalse(options.isNetworkAccessAllowed)
-        XCTAssertFalse(originalOptions.isNetworkAccessAllowed)
+        XCTAssertTrue(originalOptions.isNetworkAccessAllowed)
         XCTAssertTrue(originalOptions.isSynchronous)
         XCTAssertFalse(PhotoKitPhotosLibraryAdapter.makeLocalOnlyImageRequestOptions().isNetworkAccessAllowed)
         XCTAssertFalse(PhotoKitPhotosLibraryAdapter.makeLocalOnlyFeaturePrintRequestOptions().isNetworkAccessAllowed)

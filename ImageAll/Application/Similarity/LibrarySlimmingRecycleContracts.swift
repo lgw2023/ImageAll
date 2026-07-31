@@ -121,6 +121,26 @@ enum LibrarySlimmingRecycleError: Error, Equatable, Sendable {
     case sourceChanged
     case invalidState
     case cleanupPlanningUnavailable
+    case cleanupPlanChanged
+}
+
+enum LibrarySlimmingMoveConfirmationPolicy {
+    static let maximumPersistentlySkippableAssetCount = 5
+
+    static func canPersistentlySkip(assetCount: Int) -> Bool {
+        (1 ... maximumPersistentlySkippableAssetCount).contains(assetCount)
+    }
+
+    static func requiresConfirmation(
+        assetCount: Int,
+        skipsSmallMoveConfirmation: Bool,
+        isIdenticalCleanup: Bool
+    ) -> Bool {
+        if isIdenticalCleanup {
+            return true
+        }
+        return !(skipsSmallMoveConfirmation && canPersistentlySkip(assetCount: assetCount))
+    }
 }
 
 struct LibrarySlimmingIdenticalCleanupCandidate: Sendable, Equatable {
@@ -128,6 +148,15 @@ struct LibrarySlimmingIdenticalCleanupCandidate: Sendable, Equatable {
     let sourceID: UUID
     let sourceKind: RecycleSourceKind
     let sourceDisplayName: String
+}
+
+struct LibrarySlimmingIdenticalCleanupAssetProof: Sendable, Equatable {
+    let assetID: UUID
+    let sourceID: UUID
+    let sourceKind: RecycleSourceKind
+    let locatorIdentity: String
+    let contentRevision: Int
+    let verifiedOriginalSHA256: Data
 }
 
 struct LibrarySlimmingIdenticalCleanupDecision: Sendable, Equatable {
@@ -141,6 +170,21 @@ struct LibrarySlimmingIdenticalCleanupPlan: Sendable, Equatable {
     let skippedGroupCount: Int
     let photosAssetCount: Int
     let fileAssetCount: Int
+    let assetProofs: [LibrarySlimmingIdenticalCleanupAssetProof]
+
+    init(
+        decisions: [LibrarySlimmingIdenticalCleanupDecision],
+        skippedGroupCount: Int,
+        photosAssetCount: Int,
+        fileAssetCount: Int,
+        assetProofs: [LibrarySlimmingIdenticalCleanupAssetProof] = []
+    ) {
+        self.decisions = decisions
+        self.skippedGroupCount = skippedGroupCount
+        self.photosAssetCount = photosAssetCount
+        self.fileAssetCount = fileAssetCount
+        self.assetProofs = assetProofs
+    }
 
     var groupCount: Int {
         decisions.count
@@ -354,6 +398,10 @@ protocol LibrarySlimmingRecyclePort: Sendable {
         assetIDs: [UUID],
         onProgress: @escaping LibrarySlimmingRecycleMoveProgressHandler
     ) throws -> LibrarySlimmingRecycleMoveOutcome
+    func moveIdenticalCleanupAssetsToRecycle(
+        plan: LibrarySlimmingIdenticalCleanupPlan,
+        onProgress: @escaping LibrarySlimmingRecycleMoveProgressHandler
+    ) throws -> LibrarySlimmingRecycleMoveOutcome
     func listRecycledEntries() throws -> [RecycleEntryRecord]
     func restore(entryID: UUID) throws
     func purgeNow(entryID: UUID) throws
@@ -395,6 +443,16 @@ extension LibrarySlimmingRecyclePort {
             )
         )
         return outcome
+    }
+
+    func moveIdenticalCleanupAssetsToRecycle(
+        plan: LibrarySlimmingIdenticalCleanupPlan,
+        onProgress: @escaping LibrarySlimmingRecycleMoveProgressHandler
+    ) throws -> LibrarySlimmingRecycleMoveOutcome {
+        try moveAssetsToRecycle(
+            assetIDs: plan.assetIDsToRecycle,
+            onProgress: onProgress
+        )
     }
 
     /// Compatibility alias used by older call sites / stubs.

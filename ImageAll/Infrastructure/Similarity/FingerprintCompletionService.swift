@@ -129,6 +129,8 @@ struct FingerprintCompletionService: FingerprintCompletionPort {
         }
         let sha256 = input.contentBytes.map { Data(SHA256.hash(data: $0)) }
             ?? PerceptualImageHash.visualContentDigest(analysis)
+        let digestOrigin: AssetContentDigestOrigin =
+            input.contentBytes == nil ? .visualDerivative : .verifiedOriginalBytes
         let perceptual = PerceptualImageHash.encodeHash(analysis.dHash)
 
         let nowMs = clock.nowMs
@@ -141,6 +143,7 @@ struct FingerprintCompletionService: FingerprintCompletionPort {
                 expectedResourceID: context.fingerprintResourceID,
                 fileSHA256: input.contentBytes == nil ? nil : sha256,
                 sha256: sha256,
+                digestOrigin: digestOrigin,
                 perceptualHash: perceptual,
                 verificationSignature: analysis.verificationSignature,
                 pixelWidth: analysis.pixelWidth,
@@ -158,6 +161,7 @@ struct FingerprintCompletionService: FingerprintCompletionPort {
             assetID: assetID,
             contentRevision: context.contentRevision,
             sha256: sha256,
+            digestOrigin: digestOrigin,
             perceptualHash: perceptual,
             verificationSignature: analysis.verificationSignature,
             pixelWidth: analysis.pixelWidth,
@@ -308,6 +312,7 @@ struct FingerprintCompletionService: FingerprintCompletionPort {
                 sql: """
                 SELECT
                     p.content_sha256,
+                    p.content_digest_origin,
                     p.perceptual_hash,
                     p.verification_signature,
                     p.pixel_width,
@@ -332,6 +337,11 @@ struct FingerprintCompletionService: FingerprintCompletionPort {
                 return nil
             }
             let sha256: Data = row["content_sha256"]
+            guard let digestOrigin = AssetContentDigestOrigin(
+                rawValue: row["content_digest_origin"]
+            ) else {
+                return nil
+            }
             let perceptual: Data = row["perceptual_hash"]
             let verification: Data = row["verification_signature"]
             let pixelWidth: Int = row["pixel_width"]
@@ -349,6 +359,7 @@ struct FingerprintCompletionService: FingerprintCompletionPort {
                 assetID: assetID,
                 contentRevision: contentRevision,
                 sha256: sha256,
+                digestOrigin: digestOrigin,
                 perceptualHash: perceptual,
                 verificationSignature: verification,
                 pixelWidth: pixelWidth,
@@ -380,7 +391,7 @@ struct FingerprintCompletionService: FingerprintCompletionPort {
         if let existing = try loadCompletedFingerprint(
             assetID: assetID,
             contentRevision: context.contentRevision
-        ) {
+        ), existing.digestOrigin == .verifiedOriginalBytes {
             return existing
         }
         guard photosOriginals != nil
@@ -423,6 +434,13 @@ struct FingerprintCompletionService: FingerprintCompletionPort {
         }
 
         let sha256 = Data(SHA256.hash(data: bytes))
+        let digestOrigin: AssetContentDigestOrigin
+        switch loaded.origin {
+        case .durableCache, .localOriginal:
+            digestOrigin = .verifiedOriginalBytes
+        case .previewCache, .localFeatureImage:
+            digestOrigin = .visualDerivative
+        }
         let analysis: PerceptualImageAnalysis
         do {
             analysis = try PerceptualImageHash.analyze(
@@ -438,6 +456,7 @@ struct FingerprintCompletionService: FingerprintCompletionPort {
                 assetID: assetID,
                 context: context,
                 sha256: sha256,
+                digestOrigin: digestOrigin,
                 perceptualHash: perceptual,
                 verificationSignature: analysis.verificationSignature,
                 pixelWidth: analysis.pixelWidth,
@@ -452,6 +471,7 @@ struct FingerprintCompletionService: FingerprintCompletionPort {
             assetID: assetID,
             contentRevision: context.contentRevision,
             sha256: sha256,
+            digestOrigin: digestOrigin,
             perceptualHash: perceptual,
             verificationSignature: analysis.verificationSignature,
             pixelWidth: analysis.pixelWidth,
@@ -511,6 +531,7 @@ struct FingerprintCompletionService: FingerprintCompletionPort {
                 assetID: assetID,
                 context: context,
                 sha256: sha256,
+                digestOrigin: .visualDerivative,
                 perceptualHash: perceptual,
                 verificationSignature: analysis.verificationSignature,
                 pixelWidth: analysis.pixelWidth,
@@ -526,6 +547,7 @@ struct FingerprintCompletionService: FingerprintCompletionPort {
             assetID: assetID,
             contentRevision: context.contentRevision,
             sha256: sha256,
+            digestOrigin: .visualDerivative,
             perceptualHash: perceptual,
             verificationSignature: analysis.verificationSignature,
             pixelWidth: analysis.pixelWidth,
@@ -636,6 +658,7 @@ struct FingerprintCompletionService: FingerprintCompletionPort {
         assetID: UUID,
         context: PhotosCompletionContext,
         sha256: Data,
+        digestOrigin: AssetContentDigestOrigin,
         perceptualHash: Data,
         verificationSignature: Data,
         pixelWidth: Int,
@@ -676,6 +699,7 @@ struct FingerprintCompletionService: FingerprintCompletionPort {
                 assetID: assetID,
                 contentRevision: context.contentRevision,
                 sha256: sha256,
+                digestOrigin: digestOrigin,
                 perceptualHash: perceptualHash,
                 verificationSignature: verificationSignature,
                 pixelWidth: pixelWidth,
@@ -694,6 +718,7 @@ struct FingerprintCompletionService: FingerprintCompletionPort {
         expectedResourceID: Data?,
         fileSHA256: Data?,
         sha256: Data,
+        digestOrigin: AssetContentDigestOrigin,
         perceptualHash: Data,
         verificationSignature: Data,
         pixelWidth: Int,
@@ -732,6 +757,7 @@ struct FingerprintCompletionService: FingerprintCompletionPort {
                 assetID: assetID,
                 contentRevision: contentRevision,
                 sha256: sha256,
+                digestOrigin: digestOrigin,
                 perceptualHash: perceptualHash,
                 verificationSignature: verificationSignature,
                 pixelWidth: pixelWidth,
@@ -747,6 +773,7 @@ struct FingerprintCompletionService: FingerprintCompletionPort {
         assetID: UUID,
         contentRevision: Int,
         sha256: Data,
+        digestOrigin: AssetContentDigestOrigin,
         perceptualHash: Data,
         verificationSignature: Data,
         pixelWidth: Int,
@@ -758,14 +785,15 @@ struct FingerprintCompletionService: FingerprintCompletionPort {
             sql: """
             INSERT INTO asset_similarity_fingerprint (
                 asset_id, content_revision, algo_version, perceptual_hash,
-                created_at_ms, updated_at_ms, content_sha256,
+                created_at_ms, updated_at_ms, content_sha256, content_digest_origin,
                 verification_signature, pixel_width, pixel_height
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(asset_id) DO UPDATE SET
                 content_revision = excluded.content_revision,
                 algo_version = excluded.algo_version,
                 perceptual_hash = excluded.perceptual_hash,
                 content_sha256 = excluded.content_sha256,
+                content_digest_origin = excluded.content_digest_origin,
                 verification_signature = excluded.verification_signature,
                 pixel_width = excluded.pixel_width,
                 pixel_height = excluded.pixel_height,
@@ -779,6 +807,7 @@ struct FingerprintCompletionService: FingerprintCompletionPort {
                 nowMs,
                 nowMs,
                 sha256,
+                digestOrigin.rawValue,
                 verificationSignature,
                 pixelWidth,
                 pixelHeight,

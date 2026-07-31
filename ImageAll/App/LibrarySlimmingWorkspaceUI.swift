@@ -307,9 +307,13 @@ struct LibrarySlimmingWorkspaceView: View {
             LibrarySlimmingMoveToRecycleConfirmationSheet(
                 selectedCount: model.selectedLibrarySlimmingMemberIDs.count,
                 mediaKind: model.selectedMediaKind,
+                allowsSuppressingFutureConfirmation:
+                    model.canPersistentlySkipSelectedLibrarySlimmingMoveConfirmation,
                 suppressFutureConfirmation: $suppressMoveToRecycleConfirmation,
                 onConfirm: {
-                    if suppressMoveToRecycleConfirmation {
+                    if model.canPersistentlySkipSelectedLibrarySlimmingMoveConfirmation,
+                       suppressMoveToRecycleConfirmation
+                    {
                         model.setSkipsLibrarySlimmingMoveToRecycleConfirmation(true)
                     }
                     confirmMoveToRecycle = false
@@ -696,7 +700,7 @@ struct LibrarySlimmingWorkspaceView: View {
 
     private func requestMoveToRecycleConfirmation() {
         guard model.canMoveSelectedLibrarySlimmingMembersToRecycle else { return }
-        if model.skipsLibrarySlimmingMoveToRecycleConfirmation {
+        if !model.shouldConfirmSelectedLibrarySlimmingMoveToRecycle {
             Task { await model.moveSelectedLibrarySlimmingMembersToRecycle() }
             return
         }
@@ -999,6 +1003,51 @@ struct LibrarySlimmingWorkspaceView: View {
     }
 
     private var recycleBinList: some View {
+        VStack(spacing: 0) {
+            recycleBinSearchBar
+            Divider()
+            recycleBinSearchResults
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    private var recycleBinSearchBar: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "magnifyingglass")
+                .foregroundStyle(.secondary)
+            TextField(
+                "按文件名搜索",
+                text: Binding(
+                    get: { model.librarySlimmingRecycleSearchText },
+                    set: { model.updateLibrarySlimmingRecycleSearchText($0) }
+                )
+            )
+            .textFieldStyle(.plain)
+            .accessibilityIdentifier("librarySlimmingRecycleFilenameSearch")
+            .persistentHelp("输入文件名的一部分，即时筛选当前回收站条目。")
+            if !model.trimmedLibrarySlimmingRecycleSearchText.isEmpty {
+                Text(
+                    "\(model.filteredLibrarySlimmingRecycleEntries.count) / "
+                        + "\(model.librarySlimmingRecycleEntries.count)"
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                Button {
+                    model.updateLibrarySlimmingRecycleSearchText("")
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("清除回收站文件名搜索")
+                .persistentHelp("清除文件名搜索并显示全部回收站条目。")
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+    }
+
+    @ViewBuilder
+    private var recycleBinSearchResults: some View {
         Group {
             if model.librarySlimmingRecycleEntries.isEmpty {
                 ContentUnavailableView {
@@ -1009,8 +1058,23 @@ struct LibrarySlimmingWorkspaceView: View {
                     )
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if model.filteredLibrarySlimmingRecycleEntries.isEmpty {
+                ContentUnavailableView {
+                    Label("没有匹配的媒体", systemImage: "magnifyingglass")
+                } description: {
+                    Text(
+                        "没有文件名包含“\(model.trimmedLibrarySlimmingRecycleSearchText)”"
+                            + "的回收站条目。"
+                    )
+                } actions: {
+                    Button("清除搜索") {
+                        model.updateLibrarySlimmingRecycleSearchText("")
+                    }
+                    .persistentHelp("清除文件名搜索并显示全部回收站条目。")
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                List(model.librarySlimmingRecycleEntries) { entry in
+                List(model.filteredLibrarySlimmingRecycleEntries) { entry in
                     HStack(alignment: .top, spacing: 12) {
                         SlimmingThumbnailCell(model: model, assetID: entry.assetID, isSelected: false)
                             .frame(width: 72, height: 72)
@@ -1073,7 +1137,6 @@ struct LibrarySlimmingWorkspaceView: View {
                 }
             }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 }
 
@@ -1285,6 +1348,7 @@ private struct SlimmingThumbnailLoadID: Hashable {
 private struct LibrarySlimmingMoveToRecycleConfirmationSheet: View {
     let selectedCount: Int
     let mediaKind: MediaKind
+    let allowsSuppressingFutureConfirmation: Bool
     @Binding var suppressFutureConfirmation: Bool
     let onConfirm: () -> Void
     let onCancel: () -> Void
@@ -1300,7 +1364,16 @@ private struct LibrarySlimmingMoveToRecycleConfirmationSheet: View {
             .font(.callout)
             .foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
-            Toggle("不再弹出该消息", isOn: $suppressFutureConfirmation)
+            if allowsSuppressingFutureConfirmation {
+                Toggle(
+                    "不再确认单张或 5 张以内的普通回收",
+                    isOn: $suppressFutureConfirmation
+                )
+            } else {
+                Text("超过 5 个媒体的批量回收每次都需要确认。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
             HStack {
                 Spacer()
                 Button("取消") {

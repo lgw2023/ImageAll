@@ -127,6 +127,7 @@ enum CatalogSchemaExpectations {
         "asset_generation_missing_idx",
         "asset_current_media_kind_idx",
         "asset_similarity_fingerprint_hash_idx",
+        "asset_similarity_fingerprint_exact_idx",
         "asset_source_availability_idx",
         "decision_tag_idx",
         "derived_image_cache_key_uq",
@@ -330,6 +331,13 @@ enum CatalogSchemaExpectations {
             .init(name: "verification_signature", type: "BLOB", notNull: false, defaultValue: nil, primaryKeyOrder: 0),
             .init(name: "pixel_width", type: "INTEGER", notNull: false, defaultValue: nil, primaryKeyOrder: 0),
             .init(name: "pixel_height", type: "INTEGER", notNull: false, defaultValue: nil, primaryKeyOrder: 0),
+            .init(
+                name: "content_digest_origin",
+                type: "TEXT",
+                notNull: true,
+                defaultValue: "'unverifiedLegacy'",
+                primaryKeyOrder: 0
+            ),
         ],
         "photos_original_cache_entry": [
             .init(name: "asset_id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 1),
@@ -662,6 +670,7 @@ enum CatalogSchemaExpectations {
         "asset_generation_missing_idx": "asset",
         "asset_current_media_kind_idx": "asset",
         "asset_similarity_fingerprint_hash_idx": "asset_similarity_fingerprint",
+        "asset_similarity_fingerprint_exact_idx": "asset_similarity_fingerprint",
         "asset_source_availability_idx": "asset",
         "tag_normalized_name_uq": "tag",
         "tag_group_id_idx": "tag",
@@ -876,6 +885,15 @@ enum CatalogSchemaExpectations {
             keyColumns: [
                 .init(name: "algo_version", descending: false, collation: "BINARY"),
                 .init(name: "perceptual_hash", descending: false, collation: "BINARY"),
+                .init(name: "asset_id", descending: false, collation: "BINARY"),
+            ],
+            unique: false
+        ),
+        .init(
+            name: "asset_similarity_fingerprint_exact_idx",
+            keyColumns: [
+                .init(name: "content_digest_origin", descending: false, collation: "BINARY"),
+                .init(name: "content_sha256", descending: false, collation: "BINARY"),
                 .init(name: "asset_id", descending: false, collation: "BINARY"),
             ],
             unique: false

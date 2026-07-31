@@ -1,7 +1,7 @@
 # ImageAll 图库瘦身规格
 
-> 状态：Implemented（所有者批准 LS-P1…P19，2026-07-29）
-> 日期：2026-07-29
+> 状态：Implemented（所有者批准 LS-P1…P21，2026-07-30）
+> 日期：2026-07-30
 > 基线：撰写时 `main@adc81917ca29ca022f38f797b2c957934bee3db4`；实施开工前以文档提交后的精确 HEAD 为准  
 > 权威决策：[`ADR-044-LIBRARY-SLIMMING-AND-RECYCLE.md`](ADR-044-LIBRARY-SLIMMING-AND-RECYCLE.md)
 > 角色边界：本文定义范围、契约、验收门与切片顺序；可执行实现须另发 Cursor 交接单（临时授权期内可由 Codex 直接实施）
@@ -28,7 +28,7 @@
 | LS-P4 | 相似 = Feature Print 粗筛 + DINOv2 精排 | 已批准 |
 | LS-P5 | 授权文件夹资产：用户确认后移入回收站 / 到期永久删除 | 已批准 |
 | LS-P6 | Photos 仅经公开 PhotoKit 移入系统「最近删除」；恢复、保留期限和永久删除由 macOS「照片」App 管理；不进 App quarantine | **所有者批准（2026-07-27）** |
-| LS-P7 | 禁止自动删除；所有销毁性动作需确认 | **本规格锁定** |
+| LS-P7 | 禁止自动删除；普通回收 1–5 张可遵循用户已启用的「永不再确认」，超过 5 张、一键清理完全相同及永久删除始终再次确认 | **所有者批准（2026-07-30）** |
 | LS-P8 | Photos「相同」检测遇到 iCloud-only 资产时隐式下载原始内容，并在 App 内长期保存 | **所有者批准（2026-07-27）** |
 | LS-P9 | 大图库分析支持持久化暂停、续跑、启动恢复和自动补全 | **所有者批准（2026-07-27）** |
 | LS-P10 | 用户可对单个来源显式「初始化相似索引」（Feature Print LSH 邻域 + 桶内软簇） | **所有者批准（2026-07-28）**；见 ADR-045 |
@@ -41,6 +41,8 @@
 | LS-P17 | 图库瘦身工作区抑制来源变更自动触发的 catalog 对账；回收动作合并到离开工作区后的一次补扫，用户也可显式手动刷新 | **所有者批准（2026-07-29）** |
 | LS-P18 | 一键清理从执行前复核起成为前台独占任务；全界面锁定并持续显示实际回收计数及各阶段，结束后才恢复操作 | **所有者批准（2026-07-29）** |
 | LS-P19 | Photos 回收记录可读取删除前已校验的最近一版 App 缩略图，即使 catalog 对账已推进 revision；普通缺失资产不允许这样复用 | **所有者批准（2026-07-29）** |
+| LS-P20 | 回收站支持按文件名即时搜索；使用包含匹配并忽略大小写、重音和查询首尾空白，无匹配时保留原始回收条目并显示专用空状态 | **所有者批准（2026-07-30）** |
+| LS-P21 | 删除级「字节完全相同」只接受经原始编码字节验证的 SHA-256；一键计划在 PhotoKit / 文件系统 mutation 前按来源、locator、revision、摘要与完整成员集再次 fail-closed 复核；普通回收的「永不再确认」只对 1–5 张生效 | **所有者批准（2026-07-30）** |
 
 未纳入本轮：人脸身份合并、以图搜视频、NAS 来源、云端去重、自动保留策略（如「一律留最大分辨率」）的无人值守执行、跨来源自动后台预热。
 
@@ -95,7 +97,7 @@
 
 | 产品档 | 内部 kind | 定义 |
 |---|---|---|
-| 相同 | `byteIdentical` | `sha256` 相等且非空 |
+| 相同 | `byteIdentical` | `sha256` 相等且非空，且每个摘要均明确标记为 `verifiedOriginalBytes` |
 | 相同 | `perceptualDuplicate` | 哈希未命中，但感知近重复分数 ≤ 版本化阈值 `τ_dup` |
 | 相似 | `nearDuplicateScene` | Feature Print 召回且 DINOv2 精排分数 ≥ 版本化阈值 `τ_sim`，且未进入相同档 |
 
@@ -104,7 +106,9 @@
 ### 4.2 算法流水线
 
 1. **准备**：补全缺失 `sha256`、感知指纹、Feature Print、DINOv2 embedding（content-revision 感知缓存）。
-2. **相同 · 字节**：`sha256` group by。
+2. **相同 · 字节**：只对 `content_digest_origin = verifiedOriginalBytes` 的 `sha256` group by。
+   预览、缩略图、视觉分析缩放图等派生内容即使摘要相同，也只能进入感知/场景候选，禁止生成删除级
+   `byteIdentical` 结论。旧数据库中无法证明来源的摘要迁移后按未验证/视觉派生处理，不能沿用为精确重复。
 3. **相同 · 感知**：在未归入字节簇的资产上，dHash v2 只做候选召回；候选必须再通过宽高比约束和
    归一化 `16 × 16 RGB` 像素签名距离校验，并用 complete-link 保守成簇，禁止用单纯连通分量造成链式误合并。
 4. **相似 · 粗筛**：Feature Print 余弦/距离召回 Top-K 或半径候选。默认模式下，单个拍摄日桶
@@ -112,7 +116,9 @@
    24-bit LSH、Hamming 邻域 ≤ 1，并把每个资产进入精确 L2 的候选限制为 64 个。用户选择
    「全部候选」时改走真实穷举召回，同时绕过大桶 64 候选上限和种子来源索引裁剪；L2「不限」
    只关闭精确距离半径，不自动切换 Top-K。LSH 只缩小候选，不替代后续精确阈值与 DINOv2 校验。
-5. **相似 · 精排**：对候选算 DINOv2 余弦相似度，按 `τ_sim` 与连通分量/层级聚类成簇。
+5. **相似 · 精排**：对候选算 DINOv2 余弦相似度，并以 Feature Print 与 DINOv2 双门槛的
+   complete-link 条件保守成簇；种子模式中的同一候选全局只能归属一个输出簇，禁止共享邻居被多个
+   种子重复认领或用单纯连通分量把不相似的两端链式并入同一簇。
    用户可把下限设到 `1.00`，也可显式选择「不限制」；「不限制」只关闭 DINOv2 门槛，不关闭
    Feature Print 召回。
 6. **排序**：簇按「风险/收益」排序（默认：成员数降序，再按最高相似度）；簇内按与代表图的相似度降序。代表图默认取最高分辨率或用户已选「保留」标记。
@@ -155,14 +161,20 @@
    用户只能从左侧来源菜单显式执行「更新回收权限…」。
 2. 用户确认「移入回收站」。
 3. 事务意图先写入 DB（`recycle_entry` pending）。
-4. 同卷：目录 FD / no-follow 安全语义下 `rename` 进 quarantine；跨卷：完整复制数据、权限、扩展属性与文件时间 → 刷盘 → 校验目标和源文件仍未变化 → 删除源（任一步失败都不得删源）。
+4. 同卷：目录 FD / no-follow 安全语义下 `rename` 进 quarantine，并对目标及源父目录执行持久化刷新；
+   跨卷：完整复制数据、权限、扩展属性与文件时间 → 刷盘 → 校验目标和源文件仍未变化 → 删除源
+   （任一步失败都不得删源）。若 namespace mutation 已提交而随后的目录刷盘失败，必须保留
+   `pending` 事务意图；跨卷路径不得再清掉唯一的已验证目标，恢复器按源/目标实际存在性收敛。
    普通来源重扫在 size / mtime 未变化时必须保留已完成的 `file_fingerprint.sha256`，不得用空观察值
    覆盖；若历史竞态已清空该字段，回收路径可复用相同 `content_revision` 的
    `asset_similarity_fingerprint.content_sha256` 完成同一份源文件校验，禁止跨 revision 复用。
 5. 成功后 asset `availability`/locator 进入 `recycled` 状态；全部照片、来源图库、标签筛选、
    待审核建议、当前选择与后续训练/建议候选必须同步退出活动面，不能依赖用户手动刷新。
 6. `purge_after_ms = trashed_at_ms + 30d`。
-7. 恢复：逆移回原 `relative_path`；目标存在则失败并保持回收站。
+7. 恢复：先按回收记录校验 quarantine 对象的常规文件身份、大小、mtime 及已登记 SHA-256，再逆移回
+   原 `relative_path`；任何失配或目标冲突都失败并保持 quarantine，成功 rename 同样刷新两侧父目录。
+   已提交 rename/unlink 后的刷盘失败分别保留 `restoring` / `purging`，不得回滚成与磁盘事实矛盾的
+   普通失败；启动恢复按两侧实际存在性完成或安全保留冲突。
 8. 到期或用户「立即删除」：删除 quarantine 中的原图字节，以及 App 持有的缩略图、预览和
    Photos 长期原图等可还原像素缓存；但保留 catalog 墓碑、人工标签、不可逆特征/指纹、
    训练样本关系、训练记录与已发布模型。这些历史知识不得重新进入活动图库、新建议候选或
@@ -174,8 +186,11 @@ Quarantine 根位于 App 容器内（Application Support），按 source/asset �
 ### 5.2 Photos 轨道
 
 1. 需要 Photos 写入授权；否则拒绝执行并说明。
-2. 经 PhotoKit 将资产移入系统「最近删除」；同一次一键清理中的全部 Photos 待删资产必须合并为
-   一次公开 PhotoKit change request，系统确认仍由 macOS 展示，ImageAll 不绕过。
+2. 经 PhotoKit 将资产移入系统「最近删除」；mutation 前按当前 active Photos Source、当前 locator、
+   `content_revision` 与请求的 local identifier 精确复核，并要求 PhotoKit fetch 返回的去重资产集合与
+   请求集合完全相等；少一项、多一项或重复语义不明均不得提交 change request。同一次一键清理中的
+   全部 Photos 待删资产必须合并为一次公开 PhotoKit change request，系统确认仍由 macOS 展示，
+   ImageAll 不绕过。
 3. ImageAll 写 `recycle_entry`（`kind=photos`，保存 `photos_local_identifier`）。
 4. 公开 PhotoKit 只能可靠区分「当前图库可见」与「当前不可见」，不得使用未公开的「最近删除」相册 subtype 猜测更细状态。
 5. 用户只能在 macOS「照片」App 恢复或永久删除；ImageAll 检测到资产重新可见时恢复本地 catalog 状态。
@@ -185,6 +200,8 @@ Quarantine 根位于 App 容器内（Application Support），按 source/asset �
    `recycle_entry` 仍为活动回收状态，回收站应读取删除前已登记并通过完整性校验的最近一版 App
    缩略图。该回退不得访问系统「最近删除」、不得触发网络下载；没有活动回收记录的普通缺失资产
    仍禁止跨 revision 显示旧缩略图。
+9. PhotoKit mutation 成功后短时间内仍可查询到资产时保持 `pending`，给予 2 分钟可见性收敛宽限；
+   宽限内不得误报失败或重复提交删除。资产变为不可见后才完成回收，超过宽限仍可见才标记失败。
 
 ### 5.3 UI
 
@@ -210,9 +227,14 @@ Quarantine 根位于 App 容器内（Application Support），按 source/asset �
 - 工作区顶部按「发起分析」与「当前任务/范围」分为两行；分析范围在发起前常驻可见，
   避免按钮、状态和内部索引信息挤在同一行。
 - 回收站列表：缩略图、来源徽章、原文件名/标识与来源对应的时间提示。
+- 回收站文件名搜索：仅筛选当前媒体类型已加载的回收条目，包含匹配忽略大小写、重音和查询首尾空白；
+  查询无结果时显示专用空状态，清除查询后立即恢复全部条目。
 - 文件夹条目显示永久删除倒计时，并提供恢复、立即删除；不足 24h 显示小时，否则显示天。
 - Photos 条目显示「ImageAll 将在 N 天/小时后清理此记录」和「恢复说明」，明确提示实际恢复与永久删除由 macOS「照片」App 管理；不显示 ImageAll 立即删除按钮。
 - 文件夹批量恢复/永久删除需二次确认，文案含数量与不可撤销警告（仅永久删除）。
+- 普通「移入回收站」的「永不再确认」只对单张或 5 张以内批量生效；超过 5 张时每次显示数量确认，
+  且不提供持久跳过选项。「一键清理完全相同」每次都使用独立计划确认，不能读取或写入普通回收的
+  跳过偏好。永久删除仍始终二次确认。
 - 回收成功后所有已打开的活动照片界面必须立即失效该资产；回收站是唯一允许继续展示其缩略图和恢复动作的产品界面。
 - 回收动作的成功、部分失败或失败摘要必须独立于后台分析进度持续可见；分析进度不得遮盖或覆盖
   回收结果。
@@ -227,9 +249,12 @@ Quarantine 根位于 App 容器内（Application Support），按 source/asset �
   打破平局，不加入画质、分辨率或时间等未批准保留规则。
 - 确认页必须显示运行时逐组核验后实际选出的保留资产数、待删总数、核验资产总数、分组数、
   Photos/文件夹待删数量、跳过分组数与上述规则；不得用分析列表行数或“每组一张”文案代替实际
-  资产 ID 汇总。预览同时提供去留比例、完全相同组规模和待清理来源图表；安全跳过组不计入核验、
-  保留与待删统计。用户确认后、实际回收前必须重新读取当前资产/来源状态并重算；计划有任何变化
-  即停止并要求重新预览。
+  资产 ID 汇总。每个计划成员还必须冻结 source identity/kind、当前 locator、`content_revision` 与
+  经原始字节验证的 SHA-256 证明。预览同时提供去留比例、完全相同组规模和待清理来源图表；安全
+  跳过组不计入核验、保留与待删统计。用户确认后、实际回收前必须重新读取当前资产/来源/locator/
+  revision/摘要来源与完整组成员并逐项比对；任何变化即停止并要求重新预览。
+- 一键清理在第一项物理 mutation 前预检所有待删文件夹来源的写入授权及 Photos 读写授权；任一来源
+  缺失或失效时整批不得开始。用户补授权后的重试仍必须走完整一键计划证明校验，禁止退回普通回收接口。
 - 批量动作结束后必须对本次计划涉及的资产执行独立结果核验：重新读取实际 `asset` 可用状态与
   `recycle_entry` 完成状态，不得复用预览保留数或按分组数推断结果。只有某组当前恰好保留计划中的
   survivor，且其余计划删除资产均处于已回收状态，才把该 survivor 计入“已确认保留的非冗余照片”。
@@ -247,11 +272,13 @@ Quarantine 根位于 App 容器内（Application Support），按 source/asset �
 
 ## 6. 数据模型（逻辑）
 
-逻辑实体（名称为契约，非强制最终 SQL 标识符）。仓库现已使用 **v025** 保留永久清理后的知识墓碑，不再使用文内早期草稿的 “V005” 称呼。
+逻辑实体（名称为契约，非强制最终 SQL 标识符）。仓库现已使用 **v030** 记录相似摘要来源；
+v025 保留永久清理后的知识墓碑，不再使用文内早期草稿的 “V005” 称呼。
 
 - `recycle_entry`：id, asset_id, source_kind(`file`/`photos`), trashed_at_ms, purge_after_ms, state(`pending`/`recycled`/`restored`/`purged`/`failed`), quarantine_relative_path?, photos_local_identifier?, error_code?
 - `asset_similarity_fingerprint`：asset_id, content_revision, algo_version, perceptual_hash,
-  content_sha256, verification_signature, pixel_width, pixel_height
+  content_sha256, content_digest_origin(`verifiedOriginalBytes`/`visualDerivative`/`unverifiedLegacy`),
+  verification_signature, pixel_width, pixel_height
 - `photos_original_cache_entry`：长期 Photos 原图的 asset/revision/local identifier、对象名、媒体类型、字节数、SHA-256 与时间
 - `library_slimming_scan_member`：按 Job 冻结的资产宇宙、稳定 ordinal 与 seed 标记
 - `library_slimming_scan_result`：分析 Job 的版本化 JSON 结果；与 Job 完成状态原子提交
@@ -278,11 +305,12 @@ Quarantine 根位于 App 容器内（Application Support），按 source/asset �
 
 | 主题 | 必须证明 |
 |---|---|
-| 相同 | 字节相同成簇；转码近全等进 perceptualDuplicate；不同场景不进相同档 |
-| 相似 | 粗筛召回含真近邻；精排阈值边界；缺 embedding 显示待分析 |
-| 文件夹回收 | 同卷 rename、跨卷 copy+校验、恢复冲突、到期 purge、失败不丢源 |
-| Photos 回收 | 仅公开 PhotoKit 软删除路径；无 `.photoslibrary` 直写；无私有「最近删除」探测；无 ImageAll 永久删除；授权拒绝；崩溃恢复与对账收敛 |
-| 完全相同一键清理 | 只处理 `byteIdentical`；多组各留一张；Photos 优先、再按来源显示名长度；预览按实际资产 ID 显示保留/清理/核验统计与图表；过期预览停止；全部 Photos 合并一次 mutation |
+| 相同 | 只有原始字节验证摘要可成字节簇；派生预览相同不得冒充；转码近全等进 perceptualDuplicate；不同场景不进相同档 |
+| 相似 | 粗筛召回含真近邻；精排阈值边界；seed 候选单簇归属与 complete-link；缺 embedding 显示待分析 |
+| 文件夹回收 | 当前来源/locator/revision 资格；同卷 rename+目录刷盘、跨卷 copy+校验、恢复对象篡改/冲突、到期 purge、失败不丢源 |
+| Photos 回收 | 仅公开 PhotoKit 软删除路径；fetch 集合精确相等；可见性宽限；历史 locator 拒绝；无 `.photoslibrary` 直写；无私有「最近删除」探测；无 ImageAll 永久删除；授权拒绝；崩溃恢复与对账收敛 |
+| 完全相同一键清理 | 只处理验证过原始字节的 `byteIdentical`；多组各留一张；Photos 优先、再按来源显示名长度；预览冻结逐资产证明；执行前逐项重校验；过期预览停止；全部 Photos 合并一次 mutation；始终独立确认 |
+| 回收确认 | 普通 1–5 张可持久跳过；普通 >5 张与一键清理始终确认；永久删除始终二次确认 |
 | Photos 原图 | iCloud-only 允许网络原始请求；长期对象原子发布；revision/local identifier/SHA 失配拒绝；派生预览不能伪装成原图 |
 | 大库续跑 | 入队与冻结成员集原子；批次 checkpoint；暂停/继续；重启接管；待分析成员最多自动补全 3 轮；完成状态与结果原子 |
 | 安全 | 非瘦身代码路径零删除；保护路径零触及；sentinel 文件保留 |

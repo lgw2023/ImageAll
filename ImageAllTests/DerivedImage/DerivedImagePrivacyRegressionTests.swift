@@ -52,6 +52,7 @@ final class DerivedImagePrivacyRegressionTests: XCTestCase {
             CatalogMigrationID.v027PartitionPersonalizationByMediaKind,
             CatalogMigrationID.v028PartitionSlimmingByMediaKind,
             CatalogMigrationID.v029AddOriginalAspectThumbnailCache,
+            CatalogMigrationID.v030AddSimilarityDigestProvenance,
         ])
     }
 

@@ -280,8 +280,8 @@ struct NearDuplicateSceneClusterService: Sendable {
         }
     }
 
-    /// Query-style clustering: each seed independently retrieves similar neighbors.
-    /// The same universe member may appear in multiple seed clusters.
+    /// Query-style clustering: seeds are evaluated in stable order and each
+    /// universe candidate is claimed by at most one complete-link seed cluster.
     func clusterAroundSeeds(
         seedAssetIDs: [UUID],
         featurePrints: [UUID: [Float]],
@@ -303,6 +303,7 @@ struct NearDuplicateSceneClusterService: Sendable {
             : effective.featurePrintRecallTopK
 
         var clusters: [SlimmingCluster] = []
+        var claimedCandidates = Set<UUID>()
 
         for seed in seeds {
             guard let seedFP = featurePrints[seed],
@@ -310,7 +311,7 @@ struct NearDuplicateSceneClusterService: Sendable {
             else { continue }
 
             var neighbors: [(id: UUID, distance: Double, cosine: Double)] = []
-            for candidate in candidates {
+            for candidate in candidates where !claimedCandidates.contains(candidate) {
                 guard let candidateFP = featurePrints[candidate],
                       let distance = SimilarityVectorMath.l2Distance(seedFP, candidateFP),
                       effective.acceptsFeaturePrintDistance(distance),
@@ -325,14 +326,51 @@ struct NearDuplicateSceneClusterService: Sendable {
                 if $0.cosine != $1.cosine { return $0.cosine > $1.cosine }
                 return $0.id.uuidString.lowercased() < $1.id.uuidString.lowercased()
             }
-            let hits = neighbors.prefix(topK).map(\.id)
+            var hits: [UUID] = []
+            for neighbor in neighbors {
+                if hits.count == topK {
+                    break
+                }
+                let isCompleteLink = hits.allSatisfy { existingID in
+                    guard let existingFP = featurePrints[existingID],
+                          let candidateFP = featurePrints[neighbor.id],
+                          let distance = SimilarityVectorMath.l2Distance(
+                              existingFP,
+                              candidateFP
+                          ),
+                          effective.acceptsFeaturePrintDistance(distance),
+                          let existingEmbedding = embeddings[existingID],
+                          let candidateEmbedding = embeddings[neighbor.id],
+                          let cosine = SimilarityVectorMath.cosineSimilarity(
+                              existingEmbedding,
+                              candidateEmbedding
+                          )
+                    else {
+                        return false
+                    }
+                    return effective.acceptsDINOCosine(cosine)
+                }
+                if isCompleteLink {
+                    hits.append(neighbor.id)
+                }
+            }
             guard !hits.isEmpty else { continue }
+            claimedCandidates.formUnion(hits)
 
             let members = ([seed] + hits).sorted {
                 $0.uuidString.lowercased() < $1.uuidString.lowercased()
             }
-            let score = neighbors.prefix(topK).map(\.cosine).min()
-                ?? effective.dinoCosineMinSimilarity
+            var score = 1.0
+            for i in 0 ..< members.count {
+                for j in (i + 1) ..< members.count {
+                    if let left = embeddings[members[i]],
+                       let right = embeddings[members[j]],
+                       let cosine = SimilarityVectorMath.cosineSimilarity(left, right)
+                    {
+                        score = min(score, cosine)
+                    }
+                }
+            }
             clusters.append(
                 SlimmingCluster(
                     id: Self.stableClusterID(kind: .nearDuplicateScene, members: members),

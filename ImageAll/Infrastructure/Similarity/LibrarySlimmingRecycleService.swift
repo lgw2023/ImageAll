@@ -103,8 +103,53 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
             )
         }
 
-        let candidates = try database.pool.read { db in
-            var loaded: [LibrarySlimmingIdenticalCleanupCandidate] = []
+        let facts = try loadIdenticalCleanupFacts(assetIDs: assetIDs)
+        let factsByAssetID = Dictionary(
+            facts.map { ($0.proof.assetID, $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        var validatedClusters: [SlimmingCluster] = []
+        var invalidGroupCount = 0
+        for cluster in clusters where cluster.kind == .byteIdentical {
+            let memberIDs = Array(Set(cluster.memberAssetIDs))
+            let memberFacts = memberIDs.compactMap { factsByAssetID[$0] }
+            guard memberIDs.count >= 2,
+                  memberFacts.count == memberIDs.count,
+                  Set(memberFacts.map(\.proof.verifiedOriginalSHA256)).count == 1
+            else {
+                invalidGroupCount += 1
+                continue
+            }
+            validatedClusters.append(cluster)
+        }
+
+        let basePlan = LibrarySlimmingIdenticalCleanupPlanner.makePlan(
+            clusters: validatedClusters,
+            candidates: facts.map(\.candidate)
+        )
+        let plannedAssetIDs = Set(basePlan.survivorAssetIDs + basePlan.assetIDsToRecycle)
+        let proofs = plannedAssetIDs.compactMap { factsByAssetID[$0]?.proof }.sorted {
+            $0.assetID.uuidString.lowercased() < $1.assetID.uuidString.lowercased()
+        }
+        return LibrarySlimmingIdenticalCleanupPlan(
+            decisions: basePlan.decisions,
+            skippedGroupCount: basePlan.skippedGroupCount + invalidGroupCount,
+            photosAssetCount: basePlan.photosAssetCount,
+            fileAssetCount: basePlan.fileAssetCount,
+            assetProofs: proofs
+        )
+    }
+
+    private struct IdenticalCleanupFact {
+        let candidate: LibrarySlimmingIdenticalCleanupCandidate
+        let proof: LibrarySlimmingIdenticalCleanupAssetProof
+    }
+
+    private func loadIdenticalCleanupFacts(
+        assetIDs: [UUID]
+    ) throws -> [IdenticalCleanupFact] {
+        try database.pool.read { db in
+            var loaded: [IdenticalCleanupFact] = []
             loaded.reserveCapacity(assetIDs.count)
             let idStrings = assetIDs.map { $0.uuidString.lowercased() }
             let chunkSize = 400
@@ -120,19 +165,37 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
                         a.id AS asset_id,
                         a.source_id AS source_id,
                         a.locator_kind AS locator_kind,
-                        s.display_name AS source_display_name
+                        COALESCE(a.relative_path, a.photos_local_identifier) AS locator_identity,
+                        a.content_revision AS content_revision,
+                        s.display_name AS source_display_name,
+                        sf.content_sha256 AS content_sha256
                     FROM asset a
                     JOIN source s ON s.id = a.source_id
+                    JOIN asset_similarity_fingerprint sf
+                      ON sf.asset_id = a.id
+                     AND sf.content_revision = a.content_revision
                     WHERE a.id IN (\(placeholders))
                       AND a.locator_state = 'current'
                       AND a.availability = 'available'
+                      AND a.media_kind = 'image'
                       AND s.state = 'active'
+                      AND (
+                        (a.locator_kind = 'file' AND s.kind = 'folder')
+                        OR (a.locator_kind = 'photos' AND s.kind = 'photos')
+                      )
+                      AND sf.content_digest_origin = 'verifiedOriginalBytes'
+                      AND sf.content_sha256 IS NOT NULL
                     """,
                     arguments: StatementArguments(chunk)
                 )
                 for row in rows {
                     guard let assetID = UUID(uuidString: row["asset_id"]),
                           let sourceID = UUID(uuidString: row["source_id"])
+                    else { continue }
+                    guard let locatorIdentity: String = row["locator_identity"],
+                          !locatorIdentity.isEmpty,
+                          let sha256: Data = row["content_sha256"],
+                          sha256.count == 32
                     else { continue }
                     let sourceKind: RecycleSourceKind
                     switch row["locator_kind"] as String {
@@ -144,21 +207,27 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
                         continue
                     }
                     loaded.append(
-                        LibrarySlimmingIdenticalCleanupCandidate(
-                            assetID: assetID,
-                            sourceID: sourceID,
-                            sourceKind: sourceKind,
-                            sourceDisplayName: row["source_display_name"]
+                        IdenticalCleanupFact(
+                            candidate: LibrarySlimmingIdenticalCleanupCandidate(
+                                assetID: assetID,
+                                sourceID: sourceID,
+                                sourceKind: sourceKind,
+                                sourceDisplayName: row["source_display_name"]
+                            ),
+                            proof: LibrarySlimmingIdenticalCleanupAssetProof(
+                                assetID: assetID,
+                                sourceID: sourceID,
+                                sourceKind: sourceKind,
+                                locatorIdentity: locatorIdentity,
+                                contentRevision: row["content_revision"],
+                                verifiedOriginalSHA256: sha256
+                            )
                         )
                     )
                 }
             }
             return loaded
         }
-        return LibrarySlimmingIdenticalCleanupPlanner.makePlan(
-            clusters: clusters,
-            candidates: candidates
-        )
     }
 
     func verifyIdenticalCleanup(
@@ -315,7 +384,7 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
         for assetID in assetIDs {
             var reachedTerminalOutcome = true
             do {
-                let asset = try loadAsset(assetID: assetID)
+                let asset = try loadAssetForRecycle(assetID: assetID)
                 guard asset.availability == AssetAvailability.available.rawValue else {
                     throw asset.availability == AssetAvailability.recycled.rawValue
                         ? LibrarySlimmingRecycleError.alreadyRecycled
@@ -374,6 +443,125 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
             }
         }
         return outcome
+    }
+
+    func moveIdenticalCleanupAssetsToRecycle(
+        plan: LibrarySlimmingIdenticalCleanupPlan,
+        onProgress: @escaping LibrarySlimmingRecycleMoveProgressHandler
+    ) throws -> LibrarySlimmingRecycleMoveOutcome {
+        try validateIdenticalCleanupProofs(plan)
+        if let blocked = preflightIdenticalCleanupMutationAuthorization(plan) {
+            return blocked
+        }
+        return try moveAssetsToRecycle(
+            assetIDs: plan.assetIDsToRecycle,
+            onProgress: onProgress
+        )
+    }
+
+    private func preflightIdenticalCleanupMutationAuthorization(
+        _ plan: LibrarySlimmingIdenticalCleanupPlan
+    ) -> LibrarySlimmingRecycleMoveOutcome? {
+        let deletionIDs = Set(plan.assetIDsToRecycle)
+        let deletionProofs = plan.assetProofs.filter {
+            deletionIDs.contains($0.assetID)
+        }
+        var failedAssetIDs = Set<UUID>()
+        var authorizationRequiredSourceIDs = Set<UUID>()
+        var authorizationRequiredAssetIDs = Set<UUID>()
+        var authorizationDeniedPhotosAssetIDs = Set<UUID>()
+
+        let fileProofsBySource = Dictionary(grouping: deletionProofs.filter {
+            $0.sourceKind == .file
+        }, by: \.sourceID)
+        for (sourceID, proofs) in fileProofsBySource {
+            do {
+                try mutationAccess.withWritableSourceRoot(sourceID: sourceID) { _ in () }
+            } catch LibrarySlimmingRecycleError.mutationAuthorizationRequired {
+                authorizationRequiredSourceIDs.insert(sourceID)
+                authorizationRequiredAssetIDs.formUnion(proofs.map(\.assetID))
+                failedAssetIDs.formUnion(proofs.map(\.assetID))
+            } catch {
+                failedAssetIDs.formUnion(proofs.map(\.assetID))
+            }
+        }
+
+        let photosAssetIDs = Set(
+            deletionProofs
+                .filter { $0.sourceKind == .photos }
+                .map(\.assetID)
+        )
+        if !photosAssetIDs.isEmpty {
+            let isAuthorized = photosMutation?.authorizationState() == .authorized
+            if !isAuthorized {
+                authorizationDeniedPhotosAssetIDs.formUnion(photosAssetIDs)
+                failedAssetIDs.formUnion(photosAssetIDs)
+            }
+        }
+
+        guard !failedAssetIDs.isEmpty else {
+            return nil
+        }
+        // One-click cleanup is all-or-nothing at the authorization gate: do
+        // not start any file or PhotoKit mutation while another member still
+        // needs authorization or has an invalid writable source.
+        failedAssetIDs.formUnion(deletionIDs)
+        func sorted(_ ids: Set<UUID>) -> [UUID] {
+            ids.sorted {
+                $0.uuidString.lowercased() < $1.uuidString.lowercased()
+            }
+        }
+        return LibrarySlimmingRecycleMoveOutcome(
+            recycledEntryIDs: [],
+            skippedPhotosAssetIDs: [],
+            failedAssetIDs: sorted(failedAssetIDs),
+            authorizationRequiredSourceIDs: sorted(authorizationRequiredSourceIDs),
+            authorizationRequiredAssetIDs: sorted(authorizationRequiredAssetIDs),
+            authorizationDeniedPhotosAssetIDs: sorted(authorizationDeniedPhotosAssetIDs)
+        )
+    }
+
+    private func validateIdenticalCleanupProofs(
+        _ plan: LibrarySlimmingIdenticalCleanupPlan
+    ) throws {
+        let plannedAssetIDs = Set(plan.survivorAssetIDs + plan.assetIDsToRecycle)
+        guard !plannedAssetIDs.isEmpty,
+              plan.assetProofs.count == plannedAssetIDs.count,
+              Set(plan.assetProofs.map(\.assetID)) == plannedAssetIDs
+        else {
+            throw LibrarySlimmingRecycleError.cleanupPlanChanged
+        }
+        let current = try loadIdenticalCleanupFacts(assetIDs: Array(plannedAssetIDs))
+        let currentProofs = Dictionary(
+            current.map { ($0.proof.assetID, $0.proof) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        let previewedProofs = Dictionary(
+            plan.assetProofs.map { ($0.assetID, $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        guard currentProofs == previewedProofs else {
+            throw LibrarySlimmingRecycleError.cleanupPlanChanged
+        }
+        var assignedAssetIDs = Set<UUID>()
+        for decision in plan.decisions {
+            let groupIDs = Set(decision.assetIDsToRecycle + [decision.survivorAssetID])
+            let hashes = Set(groupIDs.compactMap {
+                currentProofs[$0]?.verifiedOriginalSHA256
+            })
+            guard !decision.assetIDsToRecycle.contains(decision.survivorAssetID),
+                  Set(decision.assetIDsToRecycle).count == decision.assetIDsToRecycle.count,
+                  hashes.count == 1,
+                  groupIDs.count >= 2,
+                  assignedAssetIDs.isDisjoint(with: groupIDs)
+            else {
+                throw LibrarySlimmingRecycleError.cleanupPlanChanged
+            }
+            assignedAssetIDs.formUnion(groupIDs)
+        }
+        guard assignedAssetIDs == plannedAssetIDs else {
+            throw LibrarySlimmingRecycleError.cleanupPlanChanged
+        }
     }
 
     func listRecycledEntries() throws -> [RecycleEntryRecord] {
@@ -500,8 +688,9 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
             do {
                 switch entry.state {
                 case .pending:
-                    try recoverPending(entry)
-                    recovered += 1
+                    if try recoverPending(entry) {
+                        recovered += 1
+                    }
                 case .restoring:
                     try recoverRestoring(entry)
                     recovered += 1
@@ -773,6 +962,10 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
         } catch FolderQuarantineIOError.verificationFailed {
             try markFailed(entryID: entryID, code: "sourceChanged")
             throw LibrarySlimmingRecycleError.sourceChanged
+        } catch FolderQuarantineIOError.durabilityUncertain {
+            // Keep `pending`: recovery compares both namespace locations and
+            // converges to recycled without risking a second destructive move.
+            throw LibrarySlimmingRecycleError.ioFailure
         } catch {
             try markFailed(entryID: entryID, code: "ioFailure")
             throw LibrarySlimmingRecycleError.ioFailure
@@ -859,9 +1052,14 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
         }
 
         do {
-            try photosMutation.moveToRecentlyDeleted(
+            let movedIdentifiers = try photosMutation.moveToRecentlyDeleted(
                 localIdentifiers: pendingEntries.map(\.localIdentifier)
             )
+            guard Set(movedIdentifiers) == Set(pendingEntries.map(\.localIdentifier)),
+                  movedIdentifiers.count == Set(movedIdentifiers).count
+            else {
+                throw PhotosLibraryMutationError.changeFailed
+            }
         } catch PhotosLibraryMutationError.authorizationDenied,
                 PhotosLibraryMutationError.authorizationRestricted,
                 PhotosLibraryMutationError.notDetermined
@@ -912,7 +1110,19 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
         else {
             throw LibrarySlimmingRecycleError.invalidState
         }
-        let sourceID = try loadSourceID(assetID: snapshot.assetID)
+        let asset = try loadAsset(assetID: snapshot.assetID)
+        guard let sizeBytes = asset.sizeBytes,
+              let modifiedAtNs = asset.modifiedAtNs,
+              asset.sha256 == nil || asset.sha256?.count == 32
+        else {
+            throw LibrarySlimmingRecycleError.sourceChanged
+        }
+        let expectedIdentity = FolderQuarantineExpectedIdentity(
+            sizeBytes: sizeBytes,
+            modifiedAtNs: modifiedAtNs,
+            resourceID: nil,
+            sha256: asset.sha256
+        )
         try transitionEntry(
             entryID: snapshot.id,
             from: .recycled,
@@ -921,12 +1131,13 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
         )
 
         do {
-            try mutationAccess.withWritableSourceRoot(sourceID: sourceID) { sourceRoot in
+            try mutationAccess.withWritableSourceRoot(sourceID: asset.sourceID) { sourceRoot in
                 try quarantineIO.moveOutOfQuarantine(
                     quarantineRootURL: quarantineRootURL,
                     quarantineRelativePath: quarantinePath,
                     sourceRootURL: sourceRoot,
-                    originalRelativePath: originalRelativePath
+                    originalRelativePath: originalRelativePath,
+                    expectedIdentity: expectedIdentity
                 )
             }
         } catch FolderQuarantineIOError.targetExists {
@@ -953,6 +1164,10 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
                 errorCode: "mutationAuthorizationInvalid"
             )
             throw LibrarySlimmingRecycleError.mutationAuthorizationInvalid
+        } catch FolderQuarantineIOError.durabilityUncertain {
+            // Keep `restoring`: recovery determines which side contains the
+            // committed object and finalizes the matching catalog state.
+            throw LibrarySlimmingRecycleError.ioFailure
         } catch {
             try? transitionEntry(
                 entryID: snapshot.id,
@@ -1013,6 +1228,10 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
                 quarantineRootURL: quarantineRootURL,
                 quarantineRelativePath: quarantinePath
             )
+        } catch FolderQuarantineIOError.durabilityUncertain {
+            // Keep `purging`: recovery finalizes the tombstone if the object is
+            // gone, or retries safely if it still exists.
+            throw LibrarySlimmingRecycleError.ioFailure
         } catch {
             try? transitionEntry(
                 entryID: snapshot.id,
@@ -1042,13 +1261,13 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
         }
     }
 
-    private func recoverPending(_ entry: EntrySnapshot) throws {
+    private func recoverPending(_ entry: EntrySnapshot) throws -> Bool {
         if entry.sourceKind == .photos {
             guard let localIdentifier = entry.photosLocalIdentifier,
                   let photosMutation
             else {
                 try markFailed(entryID: entry.id, code: "interruptedPhotosPending")
-                return
+                return true
             }
             let presence: PhotosAssetPresence
             do {
@@ -1063,17 +1282,22 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
             }
             switch presence {
             case .available:
+                if clock.nowMs - entry.trashedAtMs
+                    < LibrarySlimmingRecyclePolicy.photosDeleteConvergenceGraceMs
+                {
+                    return false
+                }
                 try markFailed(entryID: entry.id, code: "interruptedBeforePhotosMove")
             case .recentlyDeleted, .missing:
                 try finalizeRecycled(entry)
             }
-            return
+            return true
         }
         guard let quarantinePath = entry.quarantineRelativePath,
               let originalRelativePath = entry.originalRelativePath
         else {
             try markFailed(entryID: entry.id, code: "interruptedBeforeMove")
-            return
+            return true
         }
         let quarantineExists = try quarantineIO.objectExists(
             rootURL: quarantineRootURL,
@@ -1100,6 +1324,7 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
         case (false, false):
             try markFailed(entryID: entry.id, code: "interruptedMissingBoth")
         }
+        return true
     }
 
     private func finalizeRecycled(_ entry: EntrySnapshot) throws {
@@ -1267,6 +1492,10 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
                         quarantineRootURL: quarantineRootURL,
                         quarantineRelativePath: quarantinePath
                     )
+                } catch FolderQuarantineIOError.durabilityUncertain {
+                    // The unlink committed; keep `purging` so a later recovery
+                    // can observe the missing object and finalize the tombstone.
+                    throw LibrarySlimmingRecycleError.ioFailure
                 } catch {
                     try? transitionEntry(
                         entryID: entry.id,
@@ -1403,7 +1632,13 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
                     f.size_bytes, f.modified_at_ns, f.resource_id,
                     CASE a.media_kind
                         WHEN 'video' THEN f.sha256
-                        ELSE COALESCE(f.sha256, sf.content_sha256)
+                        ELSE COALESCE(
+                            f.sha256,
+                            CASE
+                                WHEN sf.content_digest_origin = 'verifiedOriginalBytes'
+                                THEN sf.content_sha256
+                            END
+                        )
                     END AS sha256
                 FROM asset a
                 LEFT JOIN file_fingerprint f ON f.asset_id = a.id
@@ -1433,6 +1668,34 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
                 sha256: row["sha256"]
             )
         }
+    }
+
+    private func loadAssetForRecycle(assetID: UUID) throws -> AssetSnapshot {
+        let eligible = try database.pool.read { db in
+            try Bool.fetchOne(
+                db,
+                sql: """
+                SELECT EXISTS(
+                    SELECT 1
+                    FROM asset a
+                    JOIN source s ON s.id = a.source_id
+                    WHERE a.id = ?
+                      AND a.locator_state = 'current'
+                      AND a.availability = 'available'
+                      AND s.state = 'active'
+                      AND (
+                        (a.locator_kind = 'file' AND s.kind = 'folder')
+                        OR (a.locator_kind = 'photos' AND s.kind = 'photos')
+                      )
+                )
+                """,
+                arguments: [assetID.uuidString.lowercased()]
+            ) ?? false
+        }
+        guard eligible else {
+            throw LibrarySlimmingRecycleError.invalidState
+        }
+        return try loadAsset(assetID: assetID)
     }
 
     private func loadSourceID(assetID: UUID) throws -> UUID {

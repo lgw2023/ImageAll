@@ -5,6 +5,42 @@ import XCTest
 
 @MainActor
 final class LibraryWorkspaceModelTests: XCTestCase {
+    func testReviewKeyboardShortcutRecognizesPlainPXUAndRejectsModifiedInput() {
+        XCTAssertEqual(
+            ReviewKeyboardShortcutAction.resolve(
+                charactersIgnoringModifiers: "p",
+                modifiers: []
+            ),
+            .accept
+        )
+        XCTAssertEqual(
+            ReviewKeyboardShortcutAction.resolve(
+                charactersIgnoringModifiers: "X",
+                modifiers: [.shift]
+            ),
+            .reject
+        )
+        XCTAssertEqual(
+            ReviewKeyboardShortcutAction.resolve(
+                charactersIgnoringModifiers: "u",
+                modifiers: []
+            ),
+            .deferSelection
+        )
+        XCTAssertNil(
+            ReviewKeyboardShortcutAction.resolve(
+                charactersIgnoringModifiers: "p",
+                modifiers: [.command]
+            )
+        )
+        XCTAssertNil(
+            ReviewKeyboardShortcutAction.resolve(
+                charactersIgnoringModifiers: "a",
+                modifiers: []
+            )
+        )
+    }
+
     func testLibraryStartsWithFileNameSort() async {
         let sourceID = UUID()
         let service = FakeLibraryWorkspaceService(
@@ -5091,6 +5127,7 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         await cleanupTask.value
 
         XCTAssertEqual(Set(recycle.moveAssetIDCalls[0]), Set(plan.assetIDsToRecycle))
+        XCTAssertEqual(recycle.identicalCleanupMoveCallCount, 1)
         XCTAssertTrue(model.librarySlimmingClusters.isEmpty)
         XCTAssertEqual(
             model.librarySlimmingRecycleActionMessage,
@@ -5364,6 +5401,65 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertFalse(model.librarySlimmingSeedAssetIDs.contains(assetB.assetID))
         XCTAssertNil(model.inspectorDetail)
         XCTAssertEqual(model.localModelSuggestionState, .hidden)
+    }
+
+    func testLibrarySlimmingRecycleSearchFiltersByFilenameWithoutMutatingEntries() async {
+        let sourceID = UUID()
+        let summerEntry = RecycleEntryRecord(
+            id: UUID(),
+            assetID: UUID(),
+            sourceID: sourceID,
+            sourceKind: .file,
+            trashedAtMs: 3,
+            purgeAfterMs: 4,
+            state: .recycled,
+            quarantineRelativePath: "objects/summer.jpg",
+            originalRelativePath: "albums/2026/summer.jpg",
+            photosLocalIdentifier: nil,
+            errorCode: nil,
+            fileName: "Été-SUMMER.JPG"
+        )
+        let winterEntry = RecycleEntryRecord(
+            id: UUID(),
+            assetID: UUID(),
+            sourceID: sourceID,
+            sourceKind: .photos,
+            trashedAtMs: 1,
+            purgeAfterMs: 2,
+            state: .recycled,
+            quarantineRelativePath: nil,
+            originalRelativePath: nil,
+            photosLocalIdentifier: "photos-winter",
+            errorCode: nil,
+            fileName: "winter.heic"
+        )
+        let model = LibraryWorkspaceModel(
+            service: FakeLibraryWorkspaceService(
+                connectedSource: LibrarySourceSummary(
+                    id: sourceID,
+                    displayName: "Fixture",
+                    state: .active
+                ),
+                reconciledItems: []
+            ),
+            librarySlimmingRecycle: FakeLibrarySlimmingRecyclePort(
+                entries: [summerEntry, winterEntry]
+            ),
+            idlePrewarmInstallEventMonitor: false
+        )
+
+        await model.refreshLibrarySlimmingRecycleEntries()
+        XCTAssertEqual(model.filteredLibrarySlimmingRecycleEntries, [summerEntry, winterEntry])
+
+        model.updateLibrarySlimmingRecycleSearchText("  ete-summer  ")
+        XCTAssertEqual(model.filteredLibrarySlimmingRecycleEntries, [summerEntry])
+
+        model.updateLibrarySlimmingRecycleSearchText("missing")
+        XCTAssertTrue(model.filteredLibrarySlimmingRecycleEntries.isEmpty)
+        XCTAssertEqual(model.librarySlimmingRecycleEntries, [summerEntry, winterEntry])
+
+        model.updateLibrarySlimmingRecycleSearchText("")
+        XCTAssertEqual(model.filteredLibrarySlimmingRecycleEntries, [summerEntry, winterEntry])
     }
 
     func testCompletedGalleryRequestStartedBeforeRecycleCannotReinsertAsset() async {
@@ -8719,6 +8815,45 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertTrue(model.isSinglePhotoPresented)
     }
 
+    func testDeferReviewMultiSelectionAdvancesPastSelectedAssetsWithoutReorderingQueue() async {
+        let sourceID = UUID()
+        let tag = TagListItem(id: UUID(), displayName: "Family", state: .active)
+        let assets = (0 ..< 4).map {
+            Self.makeAsset(sourceID: sourceID, fileName: "item-\($0).jpg")
+        }
+        let queueItems = assets.map {
+            ReviewQueueItemProjection(
+                assetID: $0.assetID,
+                fileName: $0.fileName,
+                availability: $0.availability,
+                acceptedTagCount: 0,
+                rejectedTagCount: 0
+            )
+        }
+        let model = LibraryWorkspaceModel(
+            service: FakeLibraryWorkspaceService(
+                connectedSource: LibrarySourceSummary(
+                    id: sourceID,
+                    displayName: "Fixture",
+                    state: .active
+                ),
+                reconciledItems: assets,
+                tags: [tag]
+            ),
+            review: FakePersonalizationReviewPort(queueItems: queueItems)
+        )
+
+        await model.enterReviewQueue(tagID: tag.id, displayName: tag.displayName)
+        await model.selectAssets(Set(assets[1 ... 2].map(\.assetID)))
+        let originalOrder = model.reviewQueueItems.map(\.id)
+
+        await model.deferReviewSelection()
+
+        XCTAssertEqual(model.reviewQueueItems.map(\.id), originalOrder)
+        XCTAssertEqual(model.selectedReviewItemID, queueItems[3].id)
+        XCTAssertEqual(model.selectedAssetIDs, [assets[3].assetID])
+    }
+
     func testDeferReviewSelectionAdvancesAcrossOriginsForTheSameAsset() async {
         let sourceID = UUID()
         let tag = TagListItem(id: UUID(), displayName: "Family", state: .active)
@@ -10357,6 +10492,7 @@ private final class FakeLibrarySlimmingRecyclePort: LibrarySlimmingRecyclePort, 
     private var storedRestoreEntryIDCalls: [UUID] = []
     private var storedRecoverCallCount = 0
     private var storedEnqueuePurgeCallCount = 0
+    private var storedIdenticalCleanupMoveCallCount = 0
     private var storedIdenticalCleanupVerificationCallCount = 0
     private let storedRestoredAssetReplacements: [UUID: UUID]
     private var storedIdenticalCleanupPlan: LibrarySlimmingIdenticalCleanupPlan?
@@ -10408,6 +10544,23 @@ private final class FakeLibrarySlimmingRecyclePort: LibrarySlimmingRecyclePort, 
 
     var identicalCleanupVerificationCallCount: Int {
         lock.withLock { storedIdenticalCleanupVerificationCallCount }
+    }
+
+    var identicalCleanupMoveCallCount: Int {
+        lock.withLock { storedIdenticalCleanupMoveCallCount }
+    }
+
+    func moveIdenticalCleanupAssetsToRecycle(
+        plan: LibrarySlimmingIdenticalCleanupPlan,
+        onProgress: @escaping LibrarySlimmingRecycleMoveProgressHandler
+    ) throws -> LibrarySlimmingRecycleMoveOutcome {
+        lock.withLock {
+            storedIdenticalCleanupMoveCallCount += 1
+        }
+        return try moveAssetsToRecycle(
+            assetIDs: plan.assetIDsToRecycle,
+            onProgress: onProgress
+        )
     }
 
     func verifyIdenticalCleanup(

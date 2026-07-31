@@ -46,10 +46,21 @@ enum FingerprintCompletionError: Error, Equatable, Sendable {
     case persistenceFailed
 }
 
+/// Provenance of the bytes represented by `content_sha256`.
+///
+/// Only `verifiedOriginalBytes` may participate in deletion-grade exact
+/// duplicate grouping. Visual derivatives remain useful for perceptual lanes.
+enum AssetContentDigestOrigin: String, Sendable, Equatable {
+    case verifiedOriginalBytes
+    case visualDerivative
+    case unverifiedLegacy
+}
+
 struct AssetContentFingerprint: Sendable, Equatable {
     let assetID: UUID
     let contentRevision: Int
     let sha256: Data
+    let digestOrigin: AssetContentDigestOrigin
     let perceptualHash: Data
     let verificationSignature: Data
     let pixelWidth: Int

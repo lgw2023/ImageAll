@@ -1013,9 +1013,6 @@ struct ReviewQueueContentView: View {
         .focusable()
         .focused($contentFocused)
         .focusEffectDisabled()
-        .onKeyPress("p") { handleReviewKey(.accept) }
-        .onKeyPress("x") { handleReviewKey(.reject) }
-        .onKeyPress("u") { handleReviewDefer() }
         .onKeyPress(.space) {
             guard model.primarySelectedAssetID != nil else { return .ignored }
             model.toggleSinglePhotoView()
@@ -1129,18 +1126,6 @@ struct ReviewQueueContentView: View {
                 }
             }
         }
-    }
-
-    private func handleReviewKey(_ action: LibraryTagDecisionAction) -> KeyPress.Result {
-        guard contentFocused else { return .ignored }
-        Task { await model.applyReviewDecision(action: action) }
-        return .handled
-    }
-
-    private func handleReviewDefer() -> KeyPress.Result {
-        guard contentFocused else { return .ignored }
-        Task { await model.deferReviewSelection() }
-        return .handled
     }
 
     private func handleSelectAllKeyPress(_ keyPress: KeyPress) -> KeyPress.Result {

@@ -13,18 +13,19 @@ final class PhotoKitPhotosLibraryMutationAdapter: PhotosLibraryMutationPort, @un
         return mapAuthorization(status)
     }
 
-    func moveToRecentlyDeleted(localIdentifiers: [String]) throws {
+    func moveToRecentlyDeleted(localIdentifiers: [String]) throws -> [String] {
         try requireAuthorized()
         let identifiers = normalized(localIdentifiers)
-        guard !identifiers.isEmpty else { return }
+        guard !identifiers.isEmpty else { return [] }
         let fetch = PHAsset.fetchAssets(withLocalIdentifiers: identifiers, options: nil)
-        guard fetch.count > 0 else {
-            throw PhotosLibraryMutationError.assetNotFound
-        }
         var assets: [PHAsset] = []
         assets.reserveCapacity(fetch.count)
         fetch.enumerateObjects { asset, _, _ in
             assets.append(asset)
+        }
+        let fetchedIdentifiers = Set(assets.map(\.localIdentifier))
+        guard fetchedIdentifiers == Set(identifiers) else {
+            throw PhotosLibraryMutationError.assetNotFound
         }
         do {
             try PHPhotoLibrary.shared().performChangesAndWait {
@@ -33,6 +34,7 @@ final class PhotoKitPhotosLibraryMutationAdapter: PhotosLibraryMutationPort, @un
         } catch {
             throw PhotosLibraryMutationError.changeFailed
         }
+        return identifiers
     }
 
     func presence(localIdentifier: String) throws -> PhotosAssetPresence {
@@ -62,9 +64,10 @@ final class PhotoKitPhotosLibraryMutationAdapter: PhotosLibraryMutationPort, @un
     }
 
     private func normalized(_ localIdentifiers: [String]) -> [String] {
-        localIdentifiers
+        Array(Set(localIdentifiers
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
+            .filter { !$0.isEmpty }))
+            .sorted()
     }
 
     private func mapAuthorization(_ status: PHAuthorizationStatus) -> PhotosAuthorizationState {

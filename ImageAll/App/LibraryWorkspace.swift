@@ -1167,6 +1167,7 @@ final class LibraryWorkspaceModel: ObservableObject {
     @Published private(set) var hasCompletedLibrarySlimmingScan = false
     @Published private(set) var librarySlimmingWorkspaceTab: LibrarySlimmingWorkspaceTab = .clusters
     @Published private(set) var librarySlimmingRecycleEntries: [RecycleEntryRecord] = []
+    @Published private(set) var librarySlimmingRecycleSearchText = ""
     @Published private var librarySlimmingThumbnailReloadVersions: [UUID: Int] = [:]
     @Published private(set) var librarySlimmingMemberSourceNames: [UUID: String] = [:]
     @Published private(set) var librarySlimmingSceneThresholds = NearDuplicateSceneThresholds.factory
@@ -1915,12 +1916,53 @@ final class LibraryWorkspaceModel: ObservableObject {
         }
     }
 
+    var filteredLibrarySlimmingRecycleEntries: [RecycleEntryRecord] {
+        let query = trimmedLibrarySlimmingRecycleSearchText
+        guard !query.isEmpty else {
+            return librarySlimmingRecycleEntries
+        }
+        let foldedQuery = query.folding(
+            options: [.caseInsensitive, .diacriticInsensitive],
+            locale: .current
+        )
+        return librarySlimmingRecycleEntries.filter { entry in
+            guard let fileName = entry.fileName else { return false }
+            return fileName.folding(
+                options: [.caseInsensitive, .diacriticInsensitive],
+                locale: .current
+            )
+            .contains(foldedQuery)
+        }
+    }
+
+    var trimmedLibrarySlimmingRecycleSearchText: String {
+        TagNameNormalizer.trimUnicodeWhiteSpace(librarySlimmingRecycleSearchText)
+    }
+
+    func updateLibrarySlimmingRecycleSearchText(_ text: String) {
+        librarySlimmingRecycleSearchText = text
+    }
+
     var skipsLibrarySlimmingMoveToRecycleConfirmation: Bool {
         librarySlimmingRecycleConfirmationPreferences.skipsMoveConfirmation
     }
 
     func setSkipsLibrarySlimmingMoveToRecycleConfirmation(_ skips: Bool) {
         librarySlimmingRecycleConfirmationPreferences.skipsMoveConfirmation = skips
+    }
+
+    var shouldConfirmSelectedLibrarySlimmingMoveToRecycle: Bool {
+        LibrarySlimmingMoveConfirmationPolicy.requiresConfirmation(
+            assetCount: selectedLibrarySlimmingMemberIDs.count,
+            skipsSmallMoveConfirmation: skipsLibrarySlimmingMoveToRecycleConfirmation,
+            isIdenticalCleanup: false
+        )
+    }
+
+    var canPersistentlySkipSelectedLibrarySlimmingMoveConfirmation: Bool {
+        LibrarySlimmingMoveConfirmationPolicy.canPersistentlySkip(
+            assetCount: selectedLibrarySlimmingMemberIDs.count
+        )
     }
 
     var canMoveSelectedLibrarySlimmingMembersToRecycle: Bool {
@@ -2109,10 +2151,17 @@ final class LibraryWorkspaceModel: ObservableObject {
                 overallTotalAssetCount: totalAssetCount
             )
             var outcome = try await Self.offMain {
-                try recycle.moveAssetsToRecycle(
-                    assetIDs: assetIDs,
-                    onProgress: initialProgressHandler
-                )
+                if let identicalCleanupPlan {
+                    try recycle.moveIdenticalCleanupAssetsToRecycle(
+                        plan: identicalCleanupPlan,
+                        onProgress: initialProgressHandler
+                    )
+                } else {
+                    try recycle.moveAssetsToRecycle(
+                        assetIDs: assetIDs,
+                        onProgress: initialProgressHandler
+                    )
+                }
             }
             if !outcome.authorizationRequiredSourceIDs.isEmpty,
                let mutationAuthorization = librarySlimmingMutationAuthorization
@@ -2138,10 +2187,12 @@ final class LibraryWorkspaceModel: ObservableObject {
                 }
                 if authorizedAtLeastOneSource, !outcome.authorizationRequiredAssetIDs.isEmpty {
                     let retryAssetIDs = outcome.authorizationRequiredAssetIDs
-                    let baseCompletedAssetCount = completedLibrarySlimmingRecycleAssetCount(
-                        totalAssetCount: totalAssetCount,
-                        outcome: outcome
-                    )
+                    let baseCompletedAssetCount = identicalCleanupPlan == nil
+                        ? completedLibrarySlimmingRecycleAssetCount(
+                            totalAssetCount: totalAssetCount,
+                            outcome: outcome
+                        )
+                        : 0
                     if let cleanupExecutionID {
                         setLibrarySlimmingIdenticalCleanupExecutionPhase(
                             .recyclingAssets,
@@ -2160,19 +2211,34 @@ final class LibraryWorkspaceModel: ObservableObject {
                         !authorizationFailures.contains($0)
                     }
                     let retry = try await Self.offMain {
-                        try recycle.moveAssetsToRecycle(
-                            assetIDs: retryAssetIDs,
-                            onProgress: retryProgressHandler
-                        )
+                        if let identicalCleanupPlan {
+                            try recycle.moveIdenticalCleanupAssetsToRecycle(
+                                plan: identicalCleanupPlan,
+                                onProgress: retryProgressHandler
+                            )
+                        } else {
+                            try recycle.moveAssetsToRecycle(
+                                assetIDs: retryAssetIDs,
+                                onProgress: retryProgressHandler
+                            )
+                        }
                     }
-                    outcome.recycledEntryIDs.append(contentsOf: retry.recycledEntryIDs)
-                    outcome.skippedPhotosAssetIDs.append(contentsOf: retry.skippedPhotosAssetIDs)
-                    outcome.authorizationDeniedPhotosAssetIDs.append(
-                        contentsOf: retry.authorizationDeniedPhotosAssetIDs
-                    )
-                    outcome.failedAssetIDs = otherFailedAssetIDs + retry.failedAssetIDs
-                    outcome.authorizationRequiredSourceIDs = retry.authorizationRequiredSourceIDs
-                    outcome.authorizationRequiredAssetIDs = retry.authorizationRequiredAssetIDs
+                    if identicalCleanupPlan != nil {
+                        outcome = retry
+                    } else {
+                        outcome.recycledEntryIDs.append(contentsOf: retry.recycledEntryIDs)
+                        outcome.skippedPhotosAssetIDs.append(
+                            contentsOf: retry.skippedPhotosAssetIDs
+                        )
+                        outcome.authorizationDeniedPhotosAssetIDs.append(
+                            contentsOf: retry.authorizationDeniedPhotosAssetIDs
+                        )
+                        outcome.failedAssetIDs = otherFailedAssetIDs + retry.failedAssetIDs
+                        outcome.authorizationRequiredSourceIDs =
+                            retry.authorizationRequiredSourceIDs
+                        outcome.authorizationRequiredAssetIDs =
+                            retry.authorizationRequiredAssetIDs
+                    }
                 }
             }
             if !outcome.authorizationDeniedPhotosAssetIDs.isEmpty,
@@ -2188,10 +2254,12 @@ final class LibraryWorkspaceModel: ObservableObject {
                 let auth = await photosLibraryMutation.requestAuthorization()
                 if auth == .authorized {
                     let retryAssetIDs = outcome.authorizationDeniedPhotosAssetIDs
-                    let baseCompletedAssetCount = completedLibrarySlimmingRecycleAssetCount(
-                        totalAssetCount: totalAssetCount,
-                        outcome: outcome
-                    )
+                    let baseCompletedAssetCount = identicalCleanupPlan == nil
+                        ? completedLibrarySlimmingRecycleAssetCount(
+                            totalAssetCount: totalAssetCount,
+                            outcome: outcome
+                        )
+                        : 0
                     if let cleanupExecutionID {
                         setLibrarySlimmingIdenticalCleanupExecutionPhase(
                             .recyclingAssets,
@@ -2210,22 +2278,35 @@ final class LibraryWorkspaceModel: ObservableObject {
                         !photosAuthorizationFailures.contains($0)
                     }
                     let retry = try await Self.offMain {
-                        try recycle.moveAssetsToRecycle(
-                            assetIDs: retryAssetIDs,
-                            onProgress: retryProgressHandler
+                        if let identicalCleanupPlan {
+                            try recycle.moveIdenticalCleanupAssetsToRecycle(
+                                plan: identicalCleanupPlan,
+                                onProgress: retryProgressHandler
+                            )
+                        } else {
+                            try recycle.moveAssetsToRecycle(
+                                assetIDs: retryAssetIDs,
+                                onProgress: retryProgressHandler
+                            )
+                        }
+                    }
+                    if identicalCleanupPlan != nil {
+                        outcome = retry
+                    } else {
+                        outcome.recycledEntryIDs.append(contentsOf: retry.recycledEntryIDs)
+                        outcome.skippedPhotosAssetIDs.append(
+                            contentsOf: retry.skippedPhotosAssetIDs
+                        )
+                        outcome.authorizationDeniedPhotosAssetIDs =
+                            retry.authorizationDeniedPhotosAssetIDs
+                        outcome.failedAssetIDs = otherFailedAssetIDs + retry.failedAssetIDs
+                        outcome.authorizationRequiredSourceIDs.append(
+                            contentsOf: retry.authorizationRequiredSourceIDs
+                        )
+                        outcome.authorizationRequiredAssetIDs.append(
+                            contentsOf: retry.authorizationRequiredAssetIDs
                         )
                     }
-                    outcome.recycledEntryIDs.append(contentsOf: retry.recycledEntryIDs)
-                    outcome.skippedPhotosAssetIDs.append(contentsOf: retry.skippedPhotosAssetIDs)
-                    outcome.authorizationDeniedPhotosAssetIDs =
-                        retry.authorizationDeniedPhotosAssetIDs
-                    outcome.failedAssetIDs = otherFailedAssetIDs + retry.failedAssetIDs
-                    outcome.authorizationRequiredSourceIDs.append(
-                        contentsOf: retry.authorizationRequiredSourceIDs
-                    )
-                    outcome.authorizationRequiredAssetIDs.append(
-                        contentsOf: retry.authorizationRequiredAssetIDs
-                    )
                 }
             }
             if let cleanupExecutionID {
@@ -8548,12 +8629,10 @@ extension LibraryWorkspaceModel {
     }
 
     func deferReviewSelection() async {
-        guard case .tagQueue = reviewMode,
-              let selectedReviewItemID,
-              !reviewQueueItems.isEmpty
-        else { return }
+        guard case .tagQueue = reviewMode, !reviewQueueItems.isEmpty else { return }
         if let next = Self.deferredReviewSelection(
             in: reviewQueueItems,
+            selectedAssetIDs: selectedAssetIDs,
             selectedRow: selectedReviewItemID
         ) {
             await selectReviewItem(next)
@@ -8562,12 +8641,28 @@ extension LibraryWorkspaceModel {
 
     private static func deferredReviewSelection(
         in queue: [ReviewQueueItemProjection],
-        selectedRow: ReviewQueueItemID
+        selectedAssetIDs: Set<UUID>,
+        selectedRow: ReviewQueueItemID?
     ) -> ReviewQueueItemID? {
-        guard let selectedIndex = queue.firstIndex(where: { $0.id == selectedRow })
-        else { return nil }
-        let nextIndex = queue.index(after: selectedIndex)
-        return nextIndex < queue.endIndex ? queue[nextIndex].id : queue.first?.id
+        if let selectedRow,
+           let selectedIndex = queue.firstIndex(where: { $0.id == selectedRow })
+        {
+            let nextIndex = queue.index(after: selectedIndex)
+            return nextIndex < queue.endIndex ? queue[nextIndex].id : queue.first?.id
+        }
+        guard !selectedAssetIDs.isEmpty else { return nil }
+        let lastSelectedIndex = queue.enumerated()
+            .filter { selectedAssetIDs.contains($0.element.assetID) }
+            .map(\.offset)
+            .max()
+        guard let lastSelectedIndex else { return nil }
+        if let next = queue.dropFirst(lastSelectedIndex + 1).first(where: {
+            !selectedAssetIDs.contains($0.assetID)
+        }) {
+            return next.id
+        }
+        return queue.first(where: { !selectedAssetIDs.contains($0.assetID) })?.id
+            ?? queue.first?.id
     }
 
     private static func nextReviewQueueSelection(
@@ -9171,9 +9266,10 @@ struct LibraryWorkspaceView: View {
                 model.closeSinglePhotoView()
                 return .handled
             }
-            .onKeyPress("p") { handleReviewDecisionKey(.accept) }
-            .onKeyPress("x") { handleReviewDecisionKey(.reject) }
-            .onKeyPress("u") { handleSinglePhotoReviewDeferKey() }
+            .reviewKeyboardShortcutHandling(
+                isEnabled: reviewKeyboardShortcutsEnabled,
+                onShortcut: handleReviewShortcut
+            )
             .onKeyPress(keys: [.init("a")], action: handleSelectAllKeyPress)
             .onKeyPress(
                 keys: [.leftArrow, .rightArrow, .upArrow, .downArrow],
@@ -9830,25 +9926,22 @@ struct LibraryWorkspaceView: View {
         }
     }
 
-    private func handleReviewDecisionKey(
-        _ action: LibraryTagDecisionAction
-    ) -> KeyPress.Result {
-        guard contentFocused,
-              model.reviewMode != nil,
-              !model.selectedAssetIDs.isEmpty
-        else { return .ignored }
-        Task { await model.applyReviewDecision(action: action) }
-        return .handled
+    private func handleReviewShortcut(_ action: ReviewKeyboardShortcutAction) {
+        switch action {
+        case .accept:
+            Task { await model.applyReviewDecision(action: .accept) }
+        case .reject:
+            Task { await model.applyReviewDecision(action: .reject) }
+        case .deferSelection:
+            Task { await model.deferReviewSelection() }
+        }
     }
 
-    private func handleSinglePhotoReviewDeferKey() -> KeyPress.Result {
-        guard contentFocused,
-              model.isSinglePhotoPresented,
-              model.reviewMode != nil,
-              !model.selectedAssetIDs.isEmpty
-        else { return .ignored }
-        Task { await model.deferReviewSelection() }
-        return .handled
+    private var reviewKeyboardShortcutsEnabled: Bool {
+        if case .tagQueue = model.reviewMode {
+            return true
+        }
+        return false
     }
 
     private var sidebar: some View {
@@ -10819,10 +10912,14 @@ struct LibraryWorkspaceView: View {
                             if model.reviewMode == nil {
                                 InspectorLocalModelSuggestionSection(model: model)
                                 InspectorSuggestionSection(model: model)
-                            } else if case let .tagQueue(tagID, displayName) = model.reviewMode {
-                                reviewInspectorActions(tagID: tagID, displayName: displayName)
                             }
+                        }
 
+                        if case let .tagQueue(tagID, displayName) = model.reviewMode {
+                            reviewInspectorActions(tagID: tagID, displayName: displayName)
+                        }
+
+                        if let detail = model.inspectorDetail {
                             Divider()
                             metadata(detail)
                         } else if !model.assetPendingSuggestions.isEmpty {

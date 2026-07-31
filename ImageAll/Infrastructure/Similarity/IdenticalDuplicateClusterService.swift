@@ -21,7 +21,7 @@ struct IdenticalDuplicateClusterService: IdenticalDuplicateScanPort {
         // identical. Only still images may enter deletion-grade SHA groups.
         if mediaKind == .image {
             var bySHA: [Data: [FingerprintRecord]] = [:]
-            for record in records {
+            for record in records where record.digestOrigin == .verifiedOriginalBytes {
                 bySHA[record.sha256, default: []].append(record)
             }
             for (_, group) in bySHA.sorted(by: { $0.key.lexicographicallyPrecedes($1.key) }) {
@@ -109,6 +109,7 @@ struct IdenticalDuplicateClusterService: IdenticalDuplicateScanPort {
     private struct FingerprintRecord: Sendable {
         let assetID: UUID
         let sha256: Data
+        let digestOrigin: AssetContentDigestOrigin
         let dHash: UInt64
         let verificationSignature: Data
         let pixelWidth: Int
@@ -146,6 +147,7 @@ struct IdenticalDuplicateClusterService: IdenticalDuplicateScanPort {
                 SELECT
                     p.asset_id,
                     p.content_sha256,
+                    p.content_digest_origin,
                     p.perceptual_hash,
                     p.verification_signature,
                     p.pixel_width,
@@ -172,6 +174,9 @@ struct IdenticalDuplicateClusterService: IdenticalDuplicateScanPort {
                 guard let assetID = UUID(uuidString: row["asset_id"]),
                       let sha256: Data = row["content_sha256"],
                       sha256.count == 32,
+                      let digestOrigin = AssetContentDigestOrigin(
+                          rawValue: row["content_digest_origin"]
+                      ),
                       let perceptual: Data = row["perceptual_hash"],
                       let hashValue = PerceptualImageHash.decodeHash(perceptual),
                       let verification: Data = row["verification_signature"],
@@ -186,6 +191,7 @@ struct IdenticalDuplicateClusterService: IdenticalDuplicateScanPort {
                 return FingerprintRecord(
                     assetID: assetID,
                     sha256: sha256,
+                    digestOrigin: digestOrigin,
                     dHash: hashValue,
                     verificationSignature: verification,
                     pixelWidth: pixelWidth,

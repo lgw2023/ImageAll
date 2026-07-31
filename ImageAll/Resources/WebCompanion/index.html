@@ -112,12 +112,26 @@
         <button id="sidebarToggle" class="icon-button mobile-only" type="button" aria-label="显示来源">
           <span aria-hidden="true">☰</span>
         </button>
+        <button
+          id="sidebarVisibilityButton"
+          class="icon-button desktop-layout-button"
+          type="button"
+          aria-label="隐藏侧栏"
+          aria-pressed="true"
+          title="隐藏侧栏"
+        >◫</button>
         <div class="mini-mark" aria-hidden="true"></div>
         <strong>ImageAll</strong>
         <span class="titlebar-separator" aria-hidden="true"></span>
         <span id="libraryTitle" class="secondary">全部照片</span>
       </div>
       <div class="titlebar-actions">
+        <button id="commandButton" class="icon-button" type="button" aria-label="打开命令面板" title="命令（⌘K）">
+          ⌘
+        </button>
+        <button id="shortcutButton" class="icon-button" type="button" aria-label="查看快捷键" title="快捷键">
+          ?
+        </button>
         <button id="reviewButton" class="button button-compact" type="button" title="打开建议审核">
           <span aria-hidden="true">✓⃝</span>
           <span>审核</span>
@@ -132,7 +146,16 @@
           <span class="connection-label">正在连接</span>
         </span>
         <button id="refreshButton" class="icon-button" type="button" aria-label="刷新图库" title="刷新图库">↻</button>
-        <button id="logoutButton" class="button button-plain" type="button">退出</button>
+        <button
+          id="inspectorVisibilityButton"
+          class="icon-button desktop-layout-button"
+          type="button"
+          aria-label="隐藏检查器"
+          aria-pressed="true"
+          title="隐藏检查器"
+        >◧</button>
+        <button id="logoutButton" class="button button-plain" type="button"
+          aria-label="退出网页账号" title="退出网页账号">退出</button>
       </div>
     </header>
 
@@ -140,15 +163,25 @@
       Mac Host 暂时不可用。恢复连接后会自动刷新；离线期间不能修改标签。
     </div>
 
-    <div class="workspace">
+    <div id="workspace" class="workspace">
       <aside id="sourceSidebar" class="source-sidebar" aria-label="图库来源">
         <div class="sidebar-section">
           <h2>图库</h2>
           <nav id="libraryNavigation" class="sidebar-list">
             <button class="sidebar-row selected" type="button" data-source-id="">
               <span class="sidebar-icon" aria-hidden="true">▦</span>
-              <span>全部照片</span>
+              <span id="allMediaLabel">全部照片</span>
               <span id="allAssetCount" class="sidebar-count"></span>
+            </button>
+            <button id="untaggedNavigationButton" class="sidebar-row" type="button">
+              <span class="sidebar-icon" aria-hidden="true">⊘</span>
+              <span>无标签</span>
+              <span class="sidebar-count"></span>
+            </button>
+            <button id="reviewNavigationButton" class="sidebar-row" type="button">
+              <span class="sidebar-icon" aria-hidden="true">✦</span>
+              <span>待审核建议</span>
+              <span id="reviewNavigationCount" class="sidebar-count"></span>
             </button>
           </nav>
         </div>
@@ -157,14 +190,31 @@
           <nav id="sourceList" class="sidebar-list"></nav>
           <p id="sourceEmpty" class="sidebar-empty hidden">尚无可用来源</p>
         </div>
+        <div class="sidebar-section tag-navigation-section">
+          <div class="sidebar-section-heading">
+            <h2>标签</h2>
+            <button id="sidebarNewTagButton" class="sidebar-add-button write-action" type="button"
+              aria-label="新增标签" title="为所选照片新增标签">＋</button>
+          </div>
+          <label class="sidebar-search">
+            <span aria-hidden="true">⌕</span>
+            <input id="tagNavigationSearch" type="search" placeholder="搜索标签" autocomplete="off">
+          </label>
+          <nav id="tagNavigation" class="tag-navigation" aria-label="标签快捷筛选"></nav>
+          <p id="tagNavigationEmpty" class="sidebar-empty hidden">没有匹配的标签</p>
+        </div>
         <div class="sidebar-footer">
           <span id="hostVersion">Mac Host</span>
           <span>数据保留在这台 Mac</span>
         </div>
       </aside>
 
-      <section class="library-pane" aria-label="照片图库">
+      <section id="libraryPane" class="library-pane" aria-label="照片图库">
         <div class="toolbar">
+          <div id="mediaKindTabs" class="toolbar-segmented" role="group" aria-label="媒体类型">
+            <button type="button" data-media-kind="image" aria-pressed="true">照片</button>
+            <button type="button" data-media-kind="video" aria-pressed="false">视频</button>
+          </div>
           <form id="searchForm" class="search-field" role="search">
             <span aria-hidden="true">⌕</span>
             <input id="searchInput" type="search" placeholder="搜索文件名" autocomplete="off">
@@ -186,19 +236,25 @@
           <button id="selectionModeButton" class="button toolbar-button" type="button" aria-pressed="false">
             选择
           </button>
+          <label class="grid-density-control" title="调整缩略图大小">
+            <span aria-hidden="true">▦</span>
+            <input id="gridDensitySlider" type="range" min="0" max="8" step="1" value="4"
+              aria-label="缩略图大小">
+            <span aria-hidden="true">▦</span>
+          </label>
           <span id="assetSummary" class="toolbar-summary secondary"></span>
         </div>
 
         <section id="filterPopover" class="popover filter-popover hidden" aria-label="高级筛选">
           <div class="popover-heading">
             <div>
-              <h2>筛选照片</h2>
+              <h2 id="filterTitle">筛选照片</h2>
               <p>条件由这台 Mac 查询完整图库</p>
             </div>
             <button id="closeFilterButton" class="icon-button" type="button" aria-label="关闭筛选">×</button>
           </div>
           <div class="filter-grid">
-            <label>
+            <label class="hidden">
               <span>媒体</span>
               <select id="mediaKindFilter">
                 <option value="">照片与视频</option>
@@ -232,7 +288,7 @@
             <label>
               <span>标签状态</span>
               <select id="tagPresenceFilter">
-                <option value="any">全部照片</option>
+                <option id="tagPresenceAnyOption" value="any">全部照片</option>
                 <option value="tagged">已有标签</option>
                 <option value="untagged">尚无标签</option>
               </select>
@@ -283,29 +339,51 @@
         </div>
 
         <div id="libraryScroll" class="library-scroll">
+          <div id="marqueeSelection" class="marquee-selection hidden" aria-hidden="true"></div>
           <div id="emptyState" class="empty-state hidden">
             <div class="empty-symbol" aria-hidden="true">▧</div>
-            <h2>没有找到照片</h2>
-            <p>尝试选择其他来源或清除搜索条件。</p>
+            <h2 id="emptyStateTitle">没有找到照片</h2>
+            <p id="emptyStateCopy">尝试选择其他来源或清除搜索条件。</p>
           </div>
           <div id="assetGrid" class="asset-grid" aria-live="polite"></div>
-          <div class="load-more-wrap">
+          <div id="loadMoreSentinel" class="load-more-wrap">
             <button id="loadMoreButton" class="button hidden" type="button">载入更多</button>
           </div>
         </div>
       </section>
 
       <aside id="inspector" class="inspector" aria-label="照片检查器">
+        <div class="inspector-header mobile-only">
+          <button id="closeInspectorButton" class="button button-plain" type="button">完成</button>
+        </div>
         <div id="inspectorPlaceholder" class="inspector-placeholder">
           <div class="placeholder-symbol" aria-hidden="true">ⓘ</div>
-          <p>选择一张照片以查看详细信息和标签</p>
+          <p id="inspectorPlaceholderText">选择一张照片以查看详细信息和标签</p>
+        </div>
+        <div id="selectionInspector" class="selection-inspector hidden">
+          <header class="selection-inspector-heading">
+            <div>
+              <h2 id="selectionInspectorTitle">已选择 0 张照片</h2>
+              <p>像 Mac 检查器一样批量查看并修改全部标签状态</p>
+            </div>
+            <button id="selectionInspectorNewTagButton" class="button button-plain write-action" type="button">
+              ＋ 新增
+            </button>
+          </header>
+          <label class="inspector-tag-search">
+            <span aria-hidden="true">⌕</span>
+            <input id="selectionTagSearch" type="search" placeholder="搜索标签" autocomplete="off">
+          </label>
+          <div id="selectionInspectorTags" class="selection-tag-list"></div>
         </div>
         <div id="inspectorContent" class="inspector-content hidden">
-          <div class="inspector-header mobile-only">
-            <button id="closeInspectorButton" class="button button-plain" type="button">完成</button>
-          </div>
           <div class="preview-wrap">
             <img id="previewImage" alt="">
+            <div id="inspectorNavigation" class="inspector-navigation" aria-label="照片导航">
+              <button id="inspectorPreviousButton" type="button" aria-label="上一张照片">‹</button>
+              <span id="inspectorPosition" aria-live="polite"></span>
+              <button id="inspectorNextButton" type="button" aria-label="下一张照片">›</button>
+            </div>
             <button id="openLightboxButton" class="preview-overlay-button" type="button" title="全屏查看" aria-label="全屏查看">
               ⛶
             </button>
@@ -328,6 +406,10 @@
                   </button>
                 </div>
               </div>
+              <label class="inspector-tag-search">
+                <span aria-hidden="true">⌕</span>
+                <input id="inspectorTagSearch" type="search" placeholder="搜索标签" autocomplete="off">
+              </label>
               <div id="inspectorTags" class="tag-list"></div>
               <p id="tagEmpty" class="secondary hidden">尚无活动标签</p>
             </section>
@@ -349,7 +431,8 @@
     <p id="jobsEmpty" class="popover-empty hidden">当前没有后台任务</p>
   </section>
 
-  <section id="reviewWorkspace" class="review-workspace hidden" aria-label="建议审核工作区">
+  <section id="reviewWorkspace" class="review-workspace hidden" role="dialog" aria-modal="true"
+    aria-label="建议审核工作区">
     <header class="review-titlebar">
       <div class="review-title-copy">
         <button id="closeReviewButton" class="icon-button" type="button" aria-label="关闭审核">×</button>
@@ -402,14 +485,14 @@
             </div>
           </div>
           <div class="review-decision-bar">
-            <button class="review-action write-action reject" data-action="reject" type="button">
-              <kbd>R</kbd><span>拒绝</span>
-            </button>
-            <button class="review-action write-action clear" data-action="clear" type="button">
-              <kbd>C</kbd><span>稍后决定</span>
-            </button>
             <button class="review-action write-action accept" data-action="accept" type="button">
-              <kbd>A</kbd><span>确认</span>
+              <kbd>P</kbd><span>属于</span>
+            </button>
+            <button class="review-action write-action reject" data-action="reject" type="button">
+              <kbd>X</kbd><span>不属于</span>
+            </button>
+            <button class="review-action clear" data-action="defer" type="button">
+              <kbd>U</kbd><span>稍后</span>
             </button>
           </div>
         </div>
@@ -428,11 +511,11 @@
     <span id="lightboxPosition" class="lightbox-position"></span>
   </div>
 
-  <dialog id="newTagDialog" class="sheet-dialog">
+  <dialog id="newTagDialog" class="sheet-dialog" aria-labelledby="newTagDialogTitle">
     <form id="newTagForm" method="dialog">
       <header class="sheet-dialog-heading">
         <div>
-          <h2>新增标签</h2>
+          <h2 id="newTagDialogTitle">新增标签</h2>
           <p id="newTagTargetSummary">将应用到所选照片</p>
         </div>
         <button id="cancelNewTagButton" class="icon-button" type="button" aria-label="取消新增标签">×</button>
@@ -449,6 +532,43 @@
       </footer>
     </form>
   </dialog>
+
+  <dialog id="commandPalette" class="command-palette" aria-label="命令面板">
+    <form method="dialog" class="command-palette-shell">
+      <header>
+        <span aria-hidden="true">⌘</span>
+        <input id="commandSearchInput" type="search" placeholder="搜索命令" autocomplete="off"
+          aria-label="搜索命令">
+        <kbd>Esc</kbd>
+      </header>
+      <div id="commandList" class="command-list" role="listbox" aria-label="可用命令"></div>
+      <footer>↑↓ 选择 · Enter 执行 · ⌘K 打开</footer>
+    </form>
+  </dialog>
+
+  <dialog id="shortcutDialog" class="shortcut-dialog" aria-labelledby="shortcutDialogTitle">
+    <section>
+      <header>
+        <h2 id="shortcutDialogTitle">快捷键</h2>
+        <button id="closeShortcutButton" class="icon-button" type="button" aria-label="关闭快捷键">×</button>
+      </header>
+      <dl>
+        <div><dt>打开命令面板</dt><dd><kbd>⌘K</kbd></dd></div>
+        <div><dt>全选当前项目</dt><dd><kbd>⌘A</kbd></dd></div>
+        <div><dt>切换单图查看</dt><dd><kbd>Space</kbd></dd></div>
+        <div><dt>返回媒体网格</dt><dd><kbd>Esc</kbd></dd></div>
+        <div><dt>移动项目选择</dt><dd><kbd>← ↑ ↓ →</kbd></dd></div>
+        <div><dt>按当前页幅翻页</dt><dd><kbd>Page Up / Down</kbd></dd></div>
+        <div><dt>审核：属于 / 不属于 / 稍后</dt><dd><kbd>P / X / U</kbd></dd></div>
+      </dl>
+    </section>
+  </dialog>
+
+  <div id="assetContextMenu" class="context-menu hidden" role="menu" aria-label="项目操作">
+    <button type="button" role="menuitem" data-context-action="preview">单图查看 <kbd>Space</kbd></button>
+    <button type="button" role="menuitem" data-context-action="toggleSelection">加入或移出选择</button>
+    <button type="button" role="menuitem" data-context-action="filterSource">只看此来源</button>
+  </div>
 
   <div id="toast" class="toast hidden" role="status"></div>
 </body>

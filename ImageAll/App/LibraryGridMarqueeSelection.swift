@@ -52,6 +52,26 @@ enum LibraryGridMarqueeSelectionLogic {
     }
 }
 
+enum ReviewKeyboardShortcutAction: Equatable {
+    case accept
+    case reject
+    case deferSelection
+
+    static func resolve(
+        charactersIgnoringModifiers: String?,
+        modifiers: NSEvent.ModifierFlags
+    ) -> ReviewKeyboardShortcutAction? {
+        let disallowedModifiers: NSEvent.ModifierFlags = [.command, .control, .option]
+        guard modifiers.intersection(disallowedModifiers).isEmpty else { return nil }
+        switch charactersIgnoringModifiers?.lowercased() {
+        case "p": return .accept
+        case "x": return .reject
+        case "u": return .deferSelection
+        default: return nil
+        }
+    }
+}
+
 /// Stores cell frames for marquee hit-testing without publishing.
 /// Preference updates must not write `@State` dictionaries, or SwiftUI can enter a
 /// layout feedback loop (especially when opening a fresh review grid of ~100 cells).
@@ -257,6 +277,108 @@ private struct LibraryGridPageKeyMonitor: NSViewRepresentable {
     }
 }
 
+private struct ReviewKeyboardShortcutHandlingModifier: ViewModifier {
+    let isEnabled: Bool
+    let onShortcut: (ReviewKeyboardShortcutAction) -> Void
+
+    func body(content: Content) -> some View {
+        content.background {
+            ReviewKeyboardShortcutMonitor(
+                isEnabled: isEnabled,
+                onShortcut: onShortcut
+            )
+        }
+    }
+}
+
+private struct ReviewKeyboardShortcutMonitor: NSViewRepresentable {
+    let isEnabled: Bool
+    let onShortcut: (ReviewKeyboardShortcutAction) -> Void
+
+    func makeNSView(context: Context) -> ShortcutMonitorView {
+        ShortcutMonitorView()
+    }
+
+    func updateNSView(_ nsView: ShortcutMonitorView, context: Context) {
+        nsView.configure(isEnabled: isEnabled, onShortcut: onShortcut)
+    }
+
+    static func dismantleNSView(_ nsView: ShortcutMonitorView, coordinator: ()) {
+        nsView.stopMonitoring()
+    }
+
+    final class ShortcutMonitorView: NSView {
+        private var monitor: Any?
+        private var isEnabled = false
+        private var onShortcut: ((ReviewKeyboardShortcutAction) -> Void)?
+
+        func configure(
+            isEnabled: Bool,
+            onShortcut: @escaping (ReviewKeyboardShortcutAction) -> Void
+        ) {
+            self.isEnabled = isEnabled
+            self.onShortcut = onShortcut
+            if isEnabled {
+                installMonitorIfNeeded()
+            } else {
+                removeMonitor()
+            }
+        }
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            if window == nil {
+                removeMonitor()
+            } else if isEnabled {
+                installMonitorIfNeeded()
+            }
+        }
+
+        private func installMonitorIfNeeded() {
+            guard monitor == nil, window != nil else { return }
+            monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+                guard let self,
+                      self.isEnabled,
+                      !event.isARepeat,
+                      self.shouldHandle(event),
+                      let action = ReviewKeyboardShortcutAction.resolve(
+                          charactersIgnoringModifiers: event.charactersIgnoringModifiers,
+                          modifiers: event.modifierFlags
+                      )
+                else {
+                    return event
+                }
+                self.onShortcut?(action)
+                return nil
+            }
+        }
+
+        func stopMonitoring() {
+            isEnabled = false
+            onShortcut = nil
+            removeMonitor()
+        }
+
+        private func removeMonitor() {
+            if let monitor {
+                NSEvent.removeMonitor(monitor)
+                self.monitor = nil
+            }
+        }
+
+        private func shouldHandle(_ event: NSEvent) -> Bool {
+            guard let eventWindow = event.window,
+                  let hostWindow = window,
+                  eventWindow === hostWindow
+            else { return false }
+            guard let responder = eventWindow.firstResponder else { return true }
+            return !(responder is NSTextView
+                || responder is NSTextField
+                || responder is NSSearchField)
+        }
+    }
+}
+
 extension View {
     func libraryGridPageKeyHandling(
         isEnabled: Bool,
@@ -266,6 +388,18 @@ extension View {
             LibraryGridPageKeyHandlingModifier(
                 isEnabled: isEnabled,
                 onPageKey: onPageKey
+            )
+        )
+    }
+
+    func reviewKeyboardShortcutHandling(
+        isEnabled: Bool,
+        onShortcut: @escaping (ReviewKeyboardShortcutAction) -> Void
+    ) -> some View {
+        modifier(
+            ReviewKeyboardShortcutHandlingModifier(
+                isEnabled: isEnabled,
+                onShortcut: onShortcut
             )
         )
     }
