@@ -376,6 +376,27 @@ struct LibrarySlimmingRecycleMoveOutcome: Sendable, Equatable {
     var authorizationRequiredSourceIDs: [UUID]
     var authorizationRequiredAssetIDs: [UUID]
     var authorizationDeniedPhotosAssetIDs: [UUID]
+    /// Folder mutation bookmark resolve/startAccessing failed; UI should point to「更新回收权限…」.
+    var mutationAuthorizationInvalidAssetIDs: [UUID] = []
+    /// PhotoKit soft-delete failed after authorization was available (cancel, changeFailed, etc.).
+    var photosMutationFailedAssetIDs: [UUID] = []
+    /// The source no longer matches the identity captured by the analysis snapshot.
+    var sourceChangedAssetIDs: [UUID] = []
+
+    var hasOnlyMutationAuthorizationInvalidFailures: Bool {
+        let failures = Set(failedAssetIDs)
+        return !failures.isEmpty && failures == Set(mutationAuthorizationInvalidAssetIDs)
+    }
+
+    var hasOnlyPhotosMutationFailures: Bool {
+        let failures = Set(failedAssetIDs)
+        return !failures.isEmpty && failures == Set(photosMutationFailedAssetIDs)
+    }
+
+    var hasOnlySourceChangedFailures: Bool {
+        let failures = Set(failedAssetIDs)
+        return !failures.isEmpty && failures == Set(sourceChangedAssetIDs)
+    }
 }
 
 struct LibrarySlimmingRecycleMoveProgress: Sendable, Equatable {

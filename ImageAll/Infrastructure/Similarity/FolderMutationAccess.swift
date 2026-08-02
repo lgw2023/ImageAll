@@ -51,7 +51,7 @@ struct FolderMutationAuthorizationCoordinator: FolderMutationAuthorizationPort {
         }
         defer { bookmarkPort.stopAccessing(resolved.url) }
 
-        guard let selectedURL = picker.pickDirectory(initialDirectoryURL: resolved.url) else {
+        guard let selectedURL = await picker.pickDirectory(initialDirectoryURL: resolved.url) else {
             return .cancelled
         }
         defer { bookmarkPort.stopAccessing(selectedURL) }

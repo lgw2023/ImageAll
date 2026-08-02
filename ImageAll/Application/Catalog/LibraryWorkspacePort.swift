@@ -384,8 +384,8 @@ protocol LibraryWorkspacePort: Sendable {
     func hasPendingCatalogReconcileJobs() throws -> Bool
     func sourceIsReconcileClean(sourceID: UUID) throws -> Bool
     func fetchCatalogReconcileProgress() throws -> CatalogReconcileProgress?
-    func runPendingReconcileJobs() throws
-    func runPendingPhotosReconcileJobs() throws
+    func runPendingReconcileJobs(sourceIDs: Set<UUID>?) throws
+    func runPendingPhotosReconcileJobs(sourceIDs: Set<UUID>?) throws
     func runPendingLibrarySlimmingJobs() throws
     func runPendingPersonalizationJobs() throws
     func fetchAssetPage(

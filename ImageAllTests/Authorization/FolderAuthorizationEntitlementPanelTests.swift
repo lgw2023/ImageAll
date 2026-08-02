@@ -81,7 +81,7 @@ final class FolderAuthorizationEntitlementPanelTests: XCTestCase {
     }
 
     @MainActor
-    func testAppKitPickerUsesInjectedPanelAndInitialDirectoryWithoutShowingSystemUI() {
+    func testAppKitPickerUsesInjectedPanelAndInitialDirectoryWithoutShowingSystemUI() async {
         final class CallTracker: @unchecked Sendable {
             var factoryCalled = false
             var modalCalled = false
@@ -103,7 +103,8 @@ final class FolderAuthorizationEntitlementPanelTests: XCTestCase {
             }
         )
 
-        XCTAssertNil(picker.pickDirectory(initialDirectoryURL: initialDirectoryURL))
+        let result = await picker.pickDirectory(initialDirectoryURL: initialDirectoryURL)
+        XCTAssertNil(result)
         XCTAssertTrue(tracker.factoryCalled)
         XCTAssertTrue(tracker.modalCalled)
         XCTAssertEqual(tracker.displayedDirectoryURL, initialDirectoryURL)

@@ -13,6 +13,7 @@ actor RemoteCatalogFacade {
     private let hostID: UUID?
     private let usesTLS: Bool
     private let certificateFingerprintSHA256: String?
+    private var latestUndo: LatestUndo?
 
     init(
         catalog: any RemoteCatalogServing,
@@ -50,6 +51,10 @@ actor RemoteCatalogFacade {
 
     func fetchTags() throws -> [RemoteTagSummary] {
         try catalog.listTags().map(Self.mapTag)
+    }
+
+    func fetchTagGroups() throws -> [RemoteTagGroupSummary] {
+        try catalog.listTagGroups().map(Self.mapTagGroup)
     }
 
     func fetchAssets(_ request: RemoteAssetPageRequest) throws -> RemoteAssetPage {
@@ -127,6 +132,7 @@ actor RemoteCatalogFacade {
     func fetchReviewQueue(_ request: RemoteReviewQueueRequest) throws -> RemoteReviewQueuePage {
         let cursor = try Self.decodeReviewCursor(request.cursor)
         let page = try review.fetchReviewQueue(
+            mediaKind: Self.mapMediaKind(request.mediaKind),
             tagID: request.tagID,
             sourceIDs: request.sourceIDs.isEmpty ? nil : request.sourceIDs,
             cursor: cursor,
@@ -138,28 +144,46 @@ actor RemoteCatalogFacade {
         )
     }
 
+    func fetchReviewOverview(
+        mediaKind: RemoteAssetMediaKind,
+        sourceIDs: [UUID]
+    ) throws -> RemoteReviewOverview {
+        let resolvedSourceIDs: [UUID]? = sourceIDs.isEmpty ? nil : sourceIDs
+        let mappedMediaKind = Self.mapMediaKind(mediaKind)
+        return RemoteReviewOverview(
+            totalPendingSuggestionCount: try review.totalPendingSuggestionCount(
+                mediaKind: mappedMediaKind,
+                sourceIDs: resolvedSourceIDs
+            ),
+            tags: try review.tagOverviews(
+                mediaKind: mappedMediaKind,
+                sourceIDs: resolvedSourceIDs
+            ).map(Self.mapSuggestionOverview)
+        )
+    }
+
     func applyTagDecision(
         _ request: RemoteBatchTagDecisionRequest
     ) async throws -> RemoteBatchTagDecisionResponse {
         let catalog = self.catalog
-        let (appliedAssetCount, replayed) = try await applyDecision(
+        let (appliedAssetCount, replayed, undoID) = try await applyDecision(
             operationID: request.operationID,
             kind: "tagDecision",
             tagID: request.tagID,
             assetIDs: request.assetIDs,
             actionRawValue: request.action.rawValue
         ) {
-            let snapshot = try catalog.mutateTag(
+            try catalog.mutateTag(
                 tagID: request.tagID,
                 assetIDs: request.assetIDs,
                 action: Self.mapTagAction(request.action)
             )
-            return snapshot.priorStates.count
         }
         return RemoteBatchTagDecisionResponse(
             operationID: request.operationID,
             appliedAssetCount: appliedAssetCount,
-            replayed: replayed
+            replayed: replayed,
+            undoID: undoID
         )
     }
 
@@ -176,6 +200,7 @@ actor RemoteCatalogFacade {
             assetIDs: request.assetIDs,
             action: RemoteTagDecisionAction.accept.rawValue
         )
+        let snapshotBox = SnapshotBox()
         do {
             let (result, replayed): (CreateTagResult, Bool) = try await idempotency.perform(
                 operationID: request.operationID,
@@ -190,10 +215,18 @@ actor RemoteCatalogFacade {
                 } catch let error as CatalogQueryError {
                     throw Self.mapCreateTagError(error)
                 }
+                snapshotBox.store(created.restoreSnapshot())
                 return CreateTagResult(
                     tagID: created.tagID,
                     displayName: created.displayName,
                     appliedAssetCount: created.priorStates.count
+                )
+            }
+            if !replayed, let snapshot = snapshotBox.value {
+                latestUndo = LatestUndo(
+                    id: UUID(),
+                    operationID: request.operationID,
+                    snapshot: snapshot
                 )
             }
             return RemoteCreateTagAndApplyResponse(
@@ -201,7 +234,8 @@ actor RemoteCatalogFacade {
                 tagID: result.tagID,
                 displayName: result.displayName,
                 appliedAssetCount: result.appliedAssetCount,
-                replayed: replayed
+                replayed: replayed,
+                undoID: latestUndo?.operationID == request.operationID ? latestUndo?.id : nil
             )
         } catch is RemoteIdempotencyStore.IdempotencyError {
             throw RemoteAPIError(
@@ -215,25 +249,220 @@ actor RemoteCatalogFacade {
         _ request: RemoteBatchReviewDecisionRequest
     ) async throws -> RemoteBatchReviewDecisionResponse {
         let catalog = self.catalog
-        let (appliedAssetCount, replayed) = try await applyDecision(
+        let (appliedAssetCount, replayed, undoID) = try await applyDecision(
             operationID: request.operationID,
             kind: "reviewDecision",
             tagID: request.tagID,
             assetIDs: request.assetIDs,
             actionRawValue: request.action.rawValue
         ) {
-            let snapshot = try catalog.mutateTag(
+            try catalog.mutateTag(
                 tagID: request.tagID,
                 assetIDs: request.assetIDs,
                 action: Self.mapReviewAction(request.action)
             )
-            return snapshot.priorStates.count
         }
         return RemoteBatchReviewDecisionResponse(
             operationID: request.operationID,
             appliedAssetCount: appliedAssetCount,
-            replayed: replayed
+            replayed: replayed,
+            undoID: undoID
         )
+    }
+
+    func undoTagDecision(
+        _ request: RemoteUndoTagDecisionRequest
+    ) async throws -> RemoteUndoTagDecisionResponse {
+        let candidate = latestUndo?.id == request.undoID ? latestUndo : nil
+        let catalog = self.catalog
+        let key = RemoteIdempotencyStore.MutationKey(
+            kind: "undoTagDecision",
+            subject: request.undoID.uuidString.lowercased(),
+            assetIDs: [],
+            action: "restore"
+        )
+        do {
+            let (restoredAssetCount, replayed): (Int, Bool) = try await idempotency.perform(
+                operationID: request.operationID,
+                key: key
+            ) {
+                guard let candidate else {
+                    throw RemoteAPIError(code: .notFound, message: "这次撤销已过期")
+                }
+                try catalog.restoreTagMutation(candidate.snapshot)
+                return candidate.snapshot.priorStates.count
+            }
+            if !replayed, latestUndo?.id == request.undoID {
+                latestUndo = nil
+            }
+            return RemoteUndoTagDecisionResponse(
+                operationID: request.operationID,
+                restoredAssetCount: restoredAssetCount,
+                replayed: replayed
+            )
+        } catch is RemoteIdempotencyStore.IdempotencyError {
+            throw RemoteAPIError(code: .conflict, message: "operationID was already used for a different mutation")
+        }
+    }
+
+    func renameTag(tagID: UUID, request: RemoteRenameTagRequest) async throws -> RemoteTagMutationResponse {
+        let catalog = self.catalog
+        let key = RemoteIdempotencyStore.MutationKey(
+            kind: "renameTag",
+            tagID: tagID,
+            assetIDs: [],
+            action: request.name
+        )
+        do {
+            let (tag, replayed): (RemoteTagSummary, Bool) = try await idempotency.perform(
+                operationID: request.operationID,
+                key: key
+            ) {
+                do {
+                    return Self.mapTag(try catalog.renameTag(tagID: tagID, rawName: request.name))
+                } catch let error as CatalogQueryError {
+                    throw Self.mapTagCatalogError(error)
+                }
+            }
+            return RemoteTagMutationResponse(operationID: request.operationID, tag: tag, replayed: replayed)
+        } catch is RemoteIdempotencyStore.IdempotencyError {
+            throw RemoteAPIError(code: .conflict, message: "operationID was already used for a different mutation")
+        }
+    }
+
+    func archiveTag(tagID: UUID, request: RemoteArchiveTagRequest) async throws -> RemoteTagMutationResponse {
+        let catalog = self.catalog
+        let key = RemoteIdempotencyStore.MutationKey(
+            kind: "archiveTag",
+            tagID: tagID,
+            assetIDs: [],
+            action: "archive"
+        )
+        do {
+            let (_, replayed): (Bool, Bool) = try await idempotency.perform(
+                operationID: request.operationID,
+                key: key
+            ) {
+                do {
+                    try catalog.archiveTag(tagID: tagID)
+                    return true
+                } catch let error as CatalogQueryError {
+                    throw Self.mapTagCatalogError(error)
+                }
+            }
+            return RemoteTagMutationResponse(operationID: request.operationID, tag: nil, replayed: replayed)
+        } catch is RemoteIdempotencyStore.IdempotencyError {
+            throw RemoteAPIError(code: .conflict, message: "operationID was already used for a different mutation")
+        }
+    }
+
+    func moveTag(tagID: UUID, request: RemoteMoveTagRequest) async throws -> RemoteTagMutationResponse {
+        let catalog = self.catalog
+        let key = RemoteIdempotencyStore.MutationKey(
+            kind: "moveTag",
+            tagID: tagID,
+            assetIDs: [],
+            action: request.groupID.uuidString.lowercased()
+        )
+        do {
+            let (tag, replayed): (RemoteTagSummary, Bool) = try await idempotency.perform(
+                operationID: request.operationID,
+                key: key
+            ) {
+                do {
+                    return Self.mapTag(try catalog.moveTag(tagID: tagID, toGroupID: request.groupID))
+                } catch let error as CatalogQueryError {
+                    throw Self.mapTagCatalogError(error)
+                }
+            }
+            return RemoteTagMutationResponse(operationID: request.operationID, tag: tag, replayed: replayed)
+        } catch is RemoteIdempotencyStore.IdempotencyError {
+            throw RemoteAPIError(code: .conflict, message: "operationID was already used for a different mutation")
+        }
+    }
+
+    func createTagGroup(
+        _ request: RemoteCreateTagGroupRequest
+    ) async throws -> RemoteTagGroupMutationResponse {
+        let catalog = self.catalog
+        let key = RemoteIdempotencyStore.MutationKey(
+            kind: "createTagGroup",
+            subject: request.name,
+            assetIDs: [],
+            action: "create"
+        )
+        do {
+            let (group, replayed): (RemoteTagGroupSummary, Bool) = try await idempotency.perform(
+                operationID: request.operationID,
+                key: key
+            ) {
+                do {
+                    return Self.mapTagGroup(try catalog.createTagGroup(rawName: request.name))
+                } catch let error as CatalogQueryError {
+                    throw Self.mapTagCatalogError(error)
+                }
+            }
+            return RemoteTagGroupMutationResponse(operationID: request.operationID, group: group, replayed: replayed)
+        } catch is RemoteIdempotencyStore.IdempotencyError {
+            throw RemoteAPIError(code: .conflict, message: "operationID was already used for a different mutation")
+        }
+    }
+
+    func renameTagGroup(
+        groupID: UUID,
+        request: RemoteRenameTagGroupRequest
+    ) async throws -> RemoteTagGroupMutationResponse {
+        let catalog = self.catalog
+        let key = RemoteIdempotencyStore.MutationKey(
+            kind: "renameTagGroup",
+            subject: "\(groupID.uuidString.lowercased()):\(request.name)",
+            assetIDs: [],
+            action: "rename"
+        )
+        do {
+            let (group, replayed): (RemoteTagGroupSummary, Bool) = try await idempotency.perform(
+                operationID: request.operationID,
+                key: key
+            ) {
+                do {
+                    return Self.mapTagGroup(try catalog.renameTagGroup(groupID: groupID, rawName: request.name))
+                } catch let error as CatalogQueryError {
+                    throw Self.mapTagCatalogError(error)
+                }
+            }
+            return RemoteTagGroupMutationResponse(operationID: request.operationID, group: group, replayed: replayed)
+        } catch is RemoteIdempotencyStore.IdempotencyError {
+            throw RemoteAPIError(code: .conflict, message: "operationID was already used for a different mutation")
+        }
+    }
+
+    func deleteTagGroup(
+        groupID: UUID,
+        request: RemoteDeleteTagGroupRequest
+    ) async throws -> RemoteTagGroupMutationResponse {
+        let catalog = self.catalog
+        let key = RemoteIdempotencyStore.MutationKey(
+            kind: "deleteTagGroup",
+            subject: groupID.uuidString.lowercased(),
+            assetIDs: [],
+            action: "delete"
+        )
+        do {
+            let (_, replayed): (Bool, Bool) = try await idempotency.perform(
+                operationID: request.operationID,
+                key: key
+            ) {
+                do {
+                    try catalog.deleteTagGroup(groupID: groupID)
+                    return true
+                } catch let error as CatalogQueryError {
+                    throw Self.mapTagCatalogError(error)
+                }
+            }
+            return RemoteTagGroupMutationResponse(operationID: request.operationID, group: nil, replayed: replayed)
+        } catch is RemoteIdempotencyStore.IdempotencyError {
+            throw RemoteAPIError(code: .conflict, message: "operationID was already used for a different mutation")
+        }
     }
 
     /// Shared idempotent-mutation plumbing for both tag and review decisions: both mutate
@@ -246,8 +475,8 @@ actor RemoteCatalogFacade {
         tagID: UUID,
         assetIDs: [UUID],
         actionRawValue: String,
-        mutate: @escaping @Sendable () throws -> Int
-    ) async throws -> (appliedAssetCount: Int, replayed: Bool) {
+        mutate: @escaping @Sendable () throws -> TagMutationPriorStateSnapshot
+    ) async throws -> (appliedAssetCount: Int, replayed: Bool, undoID: UUID?) {
         guard !assetIDs.isEmpty else {
             throw RemoteAPIError(code: .badRequest, message: "assetIDs must not be empty")
         }
@@ -257,13 +486,29 @@ actor RemoteCatalogFacade {
             assetIDs: assetIDs,
             action: actionRawValue
         )
+        let snapshotBox = SnapshotBox()
         do {
-            let (appliedAssetCount, replayed) = try await idempotency.perform(
+            let (appliedAssetCount, replayed): (Int, Bool) = try await idempotency.perform(
                 operationID: operationID,
                 key: key,
-                mutate: mutate
+                mutate: {
+                    let snapshot = try mutate()
+                    snapshotBox.store(snapshot)
+                    return snapshot.priorStates.count
+                }
             )
-            return (appliedAssetCount, replayed)
+            if !replayed, let snapshot = snapshotBox.value {
+                latestUndo = LatestUndo(
+                    id: UUID(),
+                    operationID: operationID,
+                    snapshot: snapshot
+                )
+            }
+            return (
+                appliedAssetCount,
+                replayed,
+                latestUndo?.operationID == operationID ? latestUndo?.id : nil
+            )
         } catch is RemoteIdempotencyStore.IdempotencyError {
             throw RemoteAPIError(
                 code: .conflict,
@@ -294,6 +539,15 @@ actor RemoteCatalogFacade {
             displayName: tag.displayName,
             state: tag.state == .archived ? .archived : .active,
             groupID: tag.groupID
+        )
+    }
+
+    private static func mapTagGroup(_ group: TagGroupListItem) -> RemoteTagGroupSummary {
+        RemoteTagGroupSummary(
+            id: group.id,
+            displayName: group.displayName,
+            sortOrder: group.sortOrder,
+            isSystem: group.isSystem
         )
     }
 
@@ -434,6 +688,51 @@ actor RemoteCatalogFacade {
         )
     }
 
+    private static func mapSuggestionOverview(
+        _ overview: SuggestionTagOverview
+    ) -> RemoteSuggestionTagOverview {
+        RemoteSuggestionTagOverview(
+            id: overview.id,
+            displayName: overview.displayName,
+            acceptedSampleCount: overview.acceptedSampleCount,
+            rejectedSampleCount: overview.rejectedSampleCount,
+            pendingSuggestionCount: overview.pendingSuggestionCount,
+            pendingSuggestionCounts: RemoteSuggestionOriginCounts(
+                featurePrint: overview.pendingSuggestionCounts.featurePrint,
+                standardModel: overview.pendingSuggestionCounts.standardModel,
+                personalModel: overview.pendingSuggestionCounts.personalModel,
+                personalAdamW: overview.pendingSuggestionCounts.personalAdamW
+            ),
+            taskStatus: mapSuggestionTaskStatus(overview.taskStatus),
+            checkedCount: overview.checkedCount,
+            totalCount: overview.totalCount,
+            skippedCount: overview.skippedCount,
+            missingPositiveCount: overview.missingPositiveCount,
+            missingNegativeCount: overview.missingNegativeCount,
+            canReview: overview.canReview
+        )
+    }
+
+    private static func mapSuggestionTaskStatus(
+        _ status: SuggestionTaskPresentation
+    ) -> RemoteSuggestionTaskStatus {
+        switch status {
+        case .notReady: .notReady
+        case .ready: .ready
+        case .waiting: .waiting
+        case .running: .running
+        case .paused: .paused
+        case .retryableFailure: .retryableFailure
+        case .completed: .completed
+        case .terminalFailure: .terminalFailure
+        case .cancelled: .cancelled
+        }
+    }
+
+    private static func mapMediaKind(_ kind: RemoteAssetMediaKind) -> MediaKind {
+        kind == .video ? .video : .image
+    }
+
     private static func mapSort(_ sort: RemoteAssetSort) -> AssetPageSort {
         switch sort {
         case .newest: .newest
@@ -475,10 +774,46 @@ actor RemoteCatalogFacade {
         }
     }
 
+    private static func mapTagCatalogError(_ error: CatalogQueryError) -> RemoteAPIError {
+        switch error {
+        case .invalidTagName:
+            RemoteAPIError(code: .badRequest, message: "名称无效")
+        case .duplicateTag:
+            RemoteAPIError(code: .conflict, message: "已有同名标签或分组")
+        case .archivedTag:
+            RemoteAPIError(code: .conflict, message: "归档标签不能执行此操作")
+        case .systemGroupProtected:
+            RemoteAPIError(code: .conflict, message: "系统标签分组不能修改或删除")
+        case .notFound:
+            RemoteAPIError(code: .notFound, message: "标签或分组已不存在")
+        default:
+            RemoteAPIError(code: .internalError, message: "标签操作失败")
+        }
+    }
+
     private struct CreateTagResult: Codable, Sendable {
         let tagID: UUID
         let displayName: String
         let appliedAssetCount: Int
+    }
+
+    private struct LatestUndo: Sendable {
+        let id: UUID
+        let operationID: UUID
+        let snapshot: TagMutationPriorStateSnapshot
+    }
+
+    private final class SnapshotBox: @unchecked Sendable {
+        private let lock = NSLock()
+        private var storedValue: TagMutationPriorStateSnapshot?
+
+        var value: TagMutationPriorStateSnapshot? {
+            lock.withLock { storedValue }
+        }
+
+        func store(_ value: TagMutationPriorStateSnapshot) {
+            lock.withLock { storedValue = value }
+        }
     }
 
     private static func encodeCursor(_ cursor: AssetPageCursor?) throws -> String? {

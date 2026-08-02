@@ -84,6 +84,47 @@ final class FolderReconcileContractTests: XCTestCase {
         XCTAssertEqual(bookmarkPort.scopeStopCount, 1)
     }
 
+    func testFolderMonitorCanSkipStartupReconcileAndStillObserveLaterChanges() throws {
+        let fixture = FolderReconcileTestSupport.TempFixtureRoot()
+        defer { fixture.cleanup() }
+        let root = try fixture.makeRoot(label: "watch-without-startup-reconcile")
+        let bookmark = Data("watch-bookmark".utf8)
+        let database = try CatalogDatabase.open(at: makeTempDatabaseURL())
+        let sourceID = UUID()
+        try FolderReconcileTestSupport.seedActiveFolderSource(
+            database: database,
+            sourceID: sourceID,
+            bookmark: bookmark
+        )
+        let streamFactory = TestFolderEventStreamFactory()
+        let monitor = FolderSourceMonitoringCoordinator(
+            repository: GRDBFolderSourceAuthorizationRepository(database: database),
+            bookmarkPort: FolderReconcileTestSupport.TestBookmarkPort(
+                rootByBookmark: [bookmark: root]
+            ),
+            rootValidator: FolderRootValidator(),
+            dirtyTrigger: FolderSourceDirtyTrigger(database: database),
+            streamFactory: streamFactory
+        )
+
+        try monitor.start(onChange: {}, enqueueInitialReconciles: false)
+
+        XCTAssertEqual(try activeFolderReconcileJobCount(database: database), 0)
+        streamFactory.send(FolderFileSystemEventBatch(eventCount: 1, flags: []))
+        XCTAssertEqual(try activeFolderReconcileJobCount(database: database), 1)
+        XCTAssertEqual(
+            try database.pool.read { db in
+                try Int.fetchOne(
+                    db,
+                    sql: "SELECT dirty_epoch FROM source WHERE id = ?",
+                    arguments: [sourceID.uuidString.lowercased()]
+                )
+            },
+            1
+        )
+        monitor.stop()
+    }
+
     func testFSEventAutomaticallyReconcilesSyntheticFolderChange() throws {
         let fixture = FolderReconcileTestSupport.TempFixtureRoot()
         defer { fixture.cleanup() }
@@ -342,6 +383,19 @@ final class FolderReconcileContractTests: XCTestCase {
         let result = try XCTUnwrap(try coordinator.claimAndExecuteOnce(ClaimNextInput(owner: "w", leaseDurationMs: 1000)))
         XCTAssertEqual(result.snapshot.state, .completed)
         XCTAssertEqual(result.snapshot.checkpoint, JobTestSupport.testCheckpoint)
+    }
+}
+
+private func activeFolderReconcileJobCount(database: CatalogDatabase) throws -> Int {
+    try database.pool.read { db in
+        try Int.fetchOne(
+            db,
+            sql: """
+            SELECT COUNT(*) FROM job
+            WHERE kind = ? AND state IN ('pending', 'running', 'paused', 'retryableFailed')
+            """,
+            arguments: [FolderReconcileJobFactory.kind]
+        ) ?? 0
     }
 }
 

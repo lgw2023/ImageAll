@@ -192,6 +192,7 @@ final class RemoteLibraryClientTests: XCTestCase {
                 let map = Dictionary(uniqueKeysWithValues: items.map { ($0.name, $0.value ?? "") })
                 XCTAssertEqual(map["tagID"], tagID.uuidString)
                 XCTAssertEqual(map["sourceIDs"], sourceID.uuidString)
+                XCTAssertEqual(map["mediaKind"], "video")
                 XCTAssertEqual(map["limit"], "20")
                 XCTAssertEqual(map["cursor"], "next")
                 return try Self.jsonResponse(
@@ -225,6 +226,7 @@ final class RemoteLibraryClientTests: XCTestCase {
             RemoteReviewQueueRequest(
                 tagID: tagID,
                 sourceIDs: [sourceID],
+                mediaKind: .video,
                 limit: 20,
                 cursor: "next"
             )

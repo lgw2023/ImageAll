@@ -1,6 +1,23 @@
 import Darwin
 import CryptoKit
 import Foundation
+import OSLog
+
+private let folderQuarantinePerformanceLogger = Logger(
+    subsystem: "com.gwlee.ImageAll",
+    category: "RecyclePerformance"
+)
+
+enum FolderQuarantineIOPhase: String, Sendable, Equatable {
+    case sourceInitialHash
+    case copy
+    case destinationSync
+    case destinationHash
+    case destinationDirectorySync
+    case sourceFinalVerification
+    case unlinkSource
+    case sourceDirectorySync
+}
 
 enum QuarantinePathLayout {
     static let rootFolderName = "Quarantine"
@@ -39,6 +56,14 @@ struct FolderQuarantineIO: Sendable {
     var forceCrossVolumeCopy: Bool = false
     /// Deterministic test seam for a writer racing the final source check.
     var beforeSourceFinalVerification: @Sendable () -> Void = {}
+    /// Phase-only telemetry deliberately excludes paths and asset identifiers.
+    var onPhaseCompleted: @Sendable (FolderQuarantineIOPhase, Double) -> Void = {
+        phase,
+        elapsedMs in
+        folderQuarantinePerformanceLogger.debug(
+            "phase=\(phase.rawValue, privacy: .public) elapsed_ms=\(elapsedMs, privacy: .public)"
+        )
+    }
     /// Deterministic test seam for failures after a namespace mutation commits.
     var synchronizeDirectoryFD: @Sendable (Int32) throws -> Void = { fd in
         guard fsync(fd) == 0 else {
@@ -91,17 +116,18 @@ struct FolderQuarantineIO: Sendable {
             throw FolderQuarantineIOError.targetExists
         }
 
-        let openedSource = try openVerifiedRegularFile(
-            parentFD: sourceParentFD,
-            name: sourceName,
-            expectedIdentity: expectedIdentity
-        )
-        defer { Darwin.close(openedSource.fd) }
-
         let sameVolume = !forceCrossVolumeCopy && isSameDevice(
             leftFD: sourceParentFD,
             rightFD: destParentFD
         )
+        let openedSource = try openVerifiedRegularFile(
+            parentFD: sourceParentFD,
+            name: sourceName,
+            expectedIdentity: expectedIdentity,
+            verifyExpectedDigest: sameVolume
+        )
+        defer { Darwin.close(openedSource.fd) }
+
         if sameVolume {
             try requirePathStillReferencesOpenFile(
                 parentFD: sourceParentFD,
@@ -134,7 +160,7 @@ struct FolderQuarantineIO: Sendable {
         try copyVerifiedOpenFileAndUnlink(
             sourceFD: openedSource.fd,
             sourceStat: openedSource.stat,
-            expectedDigest: try (openedSource.digest ?? hashFile(fd: openedSource.fd)),
+            expectedDigest: expectedIdentity.sha256,
             sourceParentFD: sourceParentFD,
             sourceName: sourceName,
             destParentFD: destParentFD,
@@ -181,17 +207,18 @@ struct FolderQuarantineIO: Sendable {
             throw FolderQuarantineIOError.targetExists
         }
 
-        let openedSource = try openVerifiedRegularFile(
-            parentFD: qParentFD,
-            name: qName,
-            expectedIdentity: expectedIdentity
-        )
-        defer { Darwin.close(openedSource.fd) }
-
         let sameVolume = !forceCrossVolumeCopy && isSameDevice(
             leftFD: qParentFD,
             rightFD: destParentFD
         )
+        let openedSource = try openVerifiedRegularFile(
+            parentFD: qParentFD,
+            name: qName,
+            expectedIdentity: expectedIdentity,
+            verifyExpectedDigest: sameVolume
+        )
+        defer { Darwin.close(openedSource.fd) }
+
         if sameVolume {
             try requirePathStillReferencesOpenFile(
                 parentFD: qParentFD,
@@ -224,7 +251,7 @@ struct FolderQuarantineIO: Sendable {
         try copyVerifiedOpenFileAndUnlink(
             sourceFD: openedSource.fd,
             sourceStat: openedSource.stat,
-            expectedDigest: try (openedSource.digest ?? hashFile(fd: openedSource.fd)),
+            expectedDigest: expectedIdentity?.sha256,
             sourceParentFD: qParentFD,
             sourceName: qName,
             destParentFD: destParentFD,
@@ -354,7 +381,8 @@ struct FolderQuarantineIO: Sendable {
     private func openVerifiedRegularFile(
         parentFD: Int32,
         name: String,
-        expectedIdentity: FolderQuarantineExpectedIdentity?
+        expectedIdentity: FolderQuarantineExpectedIdentity?,
+        verifyExpectedDigest: Bool = true
     ) throws -> OpenedRegularFile {
         let fd = openat(parentFD, name, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
         guard fd >= 0 else { throw FolderQuarantineIOError.ioFailure }
@@ -384,9 +412,11 @@ struct FolderQuarantineIO: Sendable {
                 Darwin.close(fd)
                 throw FolderQuarantineIOError.verificationFailed
             }
-            if let expectedSHA256 = expectedIdentity.sha256 {
+            if verifyExpectedDigest, let expectedSHA256 = expectedIdentity.sha256 {
                 do {
-                    digest = try hashFile(fd: fd)
+                    digest = try measurePhase(.sourceInitialHash) {
+                        try hashFile(fd: fd)
+                    }
                 } catch {
                     Darwin.close(fd)
                     throw error
@@ -426,7 +456,7 @@ struct FolderQuarantineIO: Sendable {
     private func copyVerifiedOpenFileAndUnlink(
         sourceFD: Int32,
         sourceStat: Darwin.stat,
-        expectedDigest: Data,
+        expectedDigest: Data?,
         sourceParentFD: Int32,
         sourceName: String,
         destParentFD: Int32,
@@ -461,18 +491,22 @@ struct FolderQuarantineIO: Sendable {
         }
         defer { flock(sourceFD, LOCK_UN) }
 
-        guard lseek(sourceFD, 0, SEEK_SET) >= 0,
-              lseek(destFD, 0, SEEK_SET) >= 0,
-              fcopyfile(
-                sourceFD,
-                destFD,
-                nil,
-                copyfile_flags_t(COPYFILE_ALL | COPYFILE_NOCACHE)
-              ) == 0
-        else {
-            throw FolderQuarantineIOError.ioFailure
+        try measurePhase(.copy) {
+            guard lseek(sourceFD, 0, SEEK_SET) >= 0,
+                  lseek(destFD, 0, SEEK_SET) >= 0,
+                  fcopyfile(
+                    sourceFD,
+                    destFD,
+                    nil,
+                    copyfile_flags_t(COPYFILE_ALL | COPYFILE_NOCACHE)
+                  ) == 0
+            else {
+                throw FolderQuarantineIOError.ioFailure
+            }
         }
-        try synchronizeFile(fd: destFD)
+        try measurePhase(.destinationSync) {
+            try synchronizeFile(fd: destFD)
+        }
 
         let written = try DerivedImageSecureIO.fstatatEntry(
             directoryFD: destParentFD,
@@ -489,37 +523,50 @@ struct FolderQuarantineIO: Sendable {
         }
         let writtenDigest: Data
         do {
-            writtenDigest = try hashFile(fd: verifyFD)
+            writtenDigest = try measurePhase(.destinationHash) {
+                try hashFile(fd: verifyFD)
+            }
         } catch {
             Darwin.close(verifyFD)
             throw error
         }
         Darwin.close(verifyFD)
-        guard writtenDigest == expectedDigest else {
+        guard expectedDigest == nil || writtenDigest == expectedDigest else {
             throw FolderQuarantineIOError.verificationFailed
         }
 
-        try synchronizeDirectory(fd: destParentFD)
+        try measurePhase(.destinationDirectorySync) {
+            try synchronizeDirectory(fd: destParentFD)
+        }
         beforeSourceFinalVerification()
-        try requireOpenFileUnchanged(
-            fd: sourceFD,
-            openedStat: sourceStat,
-            expectedDigest: expectedDigest
-        )
-        try requirePathStillReferencesOpenFile(
-            parentFD: sourceParentFD,
-            name: sourceName,
-            openedStat: sourceStat
-        )
+        try measurePhase(.sourceFinalVerification) {
+            try requireOpenFileUnchanged(
+                fd: sourceFD,
+                openedStat: sourceStat,
+                expectedDigest: expectedDigest ?? writtenDigest
+            )
+            try requirePathStillReferencesOpenFile(
+                parentFD: sourceParentFD,
+                name: sourceName,
+                openedStat: sourceStat
+            )
+        }
         // Only unlink after the metadata-complete destination is durable and the
         // still-open source has been rehashed under an advisory exclusive lock.
-        try DerivedImageSecureIO.unlinkatEntry(directoryFD: sourceParentFD, name: sourceName)
+        try measurePhase(.unlinkSource) {
+            try DerivedImageSecureIO.unlinkatEntry(
+                directoryFD: sourceParentFD,
+                name: sourceName
+            )
+        }
         // From this point onward the verified destination is the only known
         // copy. Never let the cleanup defer remove it, even if the source
         // directory sync reports an error.
         keepDestination = true
         do {
-            try synchronizeDirectory(fd: sourceParentFD)
+            try measurePhase(.sourceDirectorySync) {
+                try synchronizeDirectory(fd: sourceParentFD)
+            }
         } catch {
             throw FolderQuarantineIOError.durabilityUncertain
         }
@@ -572,6 +619,19 @@ struct FolderQuarantineIO: Sendable {
             hasher.update(data: Data(buffer.prefix(count)))
         }
         return Data(hasher.finalize())
+    }
+
+    private func measurePhase<T>(
+        _ phase: FolderQuarantineIOPhase,
+        operation: () throws -> T
+    ) rethrows -> T {
+        let startedAt = DispatchTime.now().uptimeNanoseconds
+        defer {
+            let finishedAt = DispatchTime.now().uptimeNanoseconds
+            let elapsedMs = Double(finishedAt - startedAt) / 1_000_000
+            onPhaseCompleted(phase, elapsedMs)
+        }
+        return try operation()
     }
 
     private func requirePathStillReferencesOpenFile(

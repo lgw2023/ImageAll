@@ -131,6 +131,7 @@ struct FolderReconcileHandler: LeaseBoundJobHandler {
     let enumerationConfig: FolderEnumerationConfig
     let fileResourceReader: any FolderFileResourceReading
     let enumerationResourceReader: any FolderEnumerationResourceReading
+    let interactiveIOGate: InteractiveIOPriorityGate?
 
     var kind: String { FolderReconcileJobFactory.kind }
     var supportedPayloadVersions: Set<Int> { [FolderReconcileJobFactory.payloadVersion] }
@@ -140,12 +141,14 @@ struct FolderReconcileHandler: LeaseBoundJobHandler {
         rootAccess: FolderReconcileSourceAccessService,
         enumerationConfig: FolderEnumerationConfig = .productionDefault,
         fileResourceReader: any FolderFileResourceReading = FoundationFolderFileResourceReader(),
-        enumerationResourceReader: any FolderEnumerationResourceReading = FoundationEnumerationResourceReader()
+        enumerationResourceReader: any FolderEnumerationResourceReading = FoundationEnumerationResourceReader(),
+        interactiveIOGate: InteractiveIOPriorityGate? = nil
     ) {
         self.rootAccess = rootAccess
         self.enumerationConfig = enumerationConfig
         self.fileResourceReader = fileResourceReader
         self.enumerationResourceReader = enumerationResourceReader
+        self.interactiveIOGate = interactiveIOGate
     }
 
     func execute(
@@ -284,7 +287,13 @@ struct FolderReconcileHandler: LeaseBoundJobHandler {
                     resourceReader: enumerationResourceReader
                 ).makeSession()
 
-                while let entry = try session.nextEntry() {
+                while true {
+                    // Yield before the next directory lookup and again before
+                    // file metadata/decode work. A recycle request therefore
+                    // waits for at most the current enumeration item.
+                    interactiveIOGate?.waitForInteractiveWorkToFinish()
+                    guard let entry = try session.nextEntry() else { break }
+                    interactiveIOGate?.waitForInteractiveWorkToFinish()
                     currentCheckpoint = incrementEnumerated(currentCheckpoint)
 
                     switch entry {
@@ -295,54 +304,83 @@ struct FolderReconcileHandler: LeaseBoundJobHandler {
                     case let .candidateFile(relativePath, fileName):
                         currentCheckpoint = incrementCandidate(currentCheckpoint)
                         let fileURL = rootURL.appendingPathComponent(relativePath)
-                        switch classifier.classify(fileURL: fileURL, fileName: fileName, relativePath: relativePath) {
-                        case .ignored:
-                            currentCheckpoint = incrementIgnored(currentCheckpoint)
-                        case let .available(metadata):
-                            try requireProvenFingerprint(metadata)
-                            let (observation, conflicts) = try resolveClassifiedObservation(
-                                rootURL: rootURL,
+                        let liveSizeBytes = fileResourceReader.fileSizeBytes(for: fileURL)
+                        let liveModifiedAtNs = fileResourceReader.modifiedAtNs(for: fileURL)
+                        let liveResourceID = fileResourceReader.resourceIdentifier(for: fileURL)
+                        let reusableObservation: FolderReconcileAssetObservation?
+                        if let liveSizeBytes, let liveModifiedAtNs {
+                            reusableObservation = try context.reconcileBatch.lookupReusableObservation(
+                                sourceID: sourceID,
                                 relativePath: relativePath,
                                 fileName: fileName,
-                                availability: .available,
-                                metadata: metadata,
-                                batchPort: context.reconcileBatch,
-                                sourceID: sourceID,
-                                generation: begin.generation
+                                sizeBytes: liveSizeBytes,
+                                modifiedAtNs: liveModifiedAtNs,
+                                resourceID: liveResourceID
                             )
-                            currentCheckpoint = addIdentityConflicts(currentCheckpoint, by: conflicts)
-                            pendingObservations.append(observation)
-                            currentCheckpoint = incrementCommitted(currentCheckpoint)
-                        case let .unsupported(metadata):
-                            try requireProvenFingerprint(metadata)
-                            let (observation, conflicts) = try resolveClassifiedObservation(
-                                rootURL: rootURL,
-                                relativePath: relativePath,
-                                fileName: fileName,
-                                availability: .unsupported,
-                                metadata: metadata,
-                                batchPort: context.reconcileBatch,
-                                sourceID: sourceID,
-                                generation: begin.generation
-                            )
-                            currentCheckpoint = addIdentityConflicts(currentCheckpoint, by: conflicts)
-                            pendingObservations.append(observation)
-                            currentCheckpoint = incrementCommitted(currentCheckpoint, unsupported: true)
-                        case let .unreadable(metadata):
-                            try requireProvenFingerprint(metadata)
-                            let (observation, conflicts) = try resolveClassifiedObservation(
-                                rootURL: rootURL,
-                                relativePath: relativePath,
-                                fileName: fileName,
-                                availability: .unreadable,
-                                metadata: metadata,
-                                batchPort: context.reconcileBatch,
-                                sourceID: sourceID,
-                                generation: begin.generation
-                            )
-                            currentCheckpoint = addIdentityConflicts(currentCheckpoint, by: conflicts)
-                            pendingObservations.append(observation)
-                            currentCheckpoint = incrementCommitted(currentCheckpoint, unreadable: true)
+                        } else {
+                            reusableObservation = nil
+                        }
+
+                        if let reusableObservation {
+                            pendingObservations.append(reusableObservation)
+                            switch reusableObservation.availability {
+                            case .unsupported:
+                                currentCheckpoint = incrementCommitted(currentCheckpoint, unsupported: true)
+                            case .unreadable:
+                                currentCheckpoint = incrementCommitted(currentCheckpoint, unreadable: true)
+                            default:
+                                currentCheckpoint = incrementCommitted(currentCheckpoint)
+                            }
+                        } else {
+                            switch classifier.classify(fileURL: fileURL, fileName: fileName, relativePath: relativePath) {
+                            case .ignored:
+                                currentCheckpoint = incrementIgnored(currentCheckpoint)
+                            case let .available(metadata):
+                                try requireProvenFingerprint(metadata)
+                                let (observation, conflicts) = try resolveClassifiedObservation(
+                                    rootURL: rootURL,
+                                    relativePath: relativePath,
+                                    fileName: fileName,
+                                    availability: .available,
+                                    metadata: metadata,
+                                    batchPort: context.reconcileBatch,
+                                    sourceID: sourceID,
+                                    generation: begin.generation
+                                )
+                                currentCheckpoint = addIdentityConflicts(currentCheckpoint, by: conflicts)
+                                pendingObservations.append(observation)
+                                currentCheckpoint = incrementCommitted(currentCheckpoint)
+                            case let .unsupported(metadata):
+                                try requireProvenFingerprint(metadata)
+                                let (observation, conflicts) = try resolveClassifiedObservation(
+                                    rootURL: rootURL,
+                                    relativePath: relativePath,
+                                    fileName: fileName,
+                                    availability: .unsupported,
+                                    metadata: metadata,
+                                    batchPort: context.reconcileBatch,
+                                    sourceID: sourceID,
+                                    generation: begin.generation
+                                )
+                                currentCheckpoint = addIdentityConflicts(currentCheckpoint, by: conflicts)
+                                pendingObservations.append(observation)
+                                currentCheckpoint = incrementCommitted(currentCheckpoint, unsupported: true)
+                            case let .unreadable(metadata):
+                                try requireProvenFingerprint(metadata)
+                                let (observation, conflicts) = try resolveClassifiedObservation(
+                                    rootURL: rootURL,
+                                    relativePath: relativePath,
+                                    fileName: fileName,
+                                    availability: .unreadable,
+                                    metadata: metadata,
+                                    batchPort: context.reconcileBatch,
+                                    sourceID: sourceID,
+                                    generation: begin.generation
+                                )
+                                currentCheckpoint = addIdentityConflicts(currentCheckpoint, by: conflicts)
+                                pendingObservations.append(observation)
+                                currentCheckpoint = incrementCommitted(currentCheckpoint, unreadable: true)
+                            }
                         }
                     }
 

@@ -17,6 +17,67 @@ struct GRDBFolderReconcileRepository: FolderReconcileBatchPort, Sendable {
         )
     }
 
+    func lookupReusableObservation(
+        sourceID: UUID,
+        relativePath: String,
+        fileName: String,
+        sizeBytes: Int64,
+        modifiedAtNs: Int64,
+        resourceID: Data?
+    ) throws -> FolderReconcileAssetObservation? {
+        try queue.database.pool.read { db in
+            guard let row = try Row.fetchOne(
+                db,
+                sql: """
+                SELECT a.media_kind, a.media_type, a.duration_ms, a.width, a.height,
+                       a.media_created_at_ms, a.availability
+                FROM asset a
+                JOIN file_fingerprint f ON f.asset_id = a.id
+                WHERE a.source_id = ?
+                    AND a.locator_kind = 'file'
+                    AND a.locator_state = 'current'
+                    AND a.relative_path = ?
+                    AND a.availability IN ('available', 'unsupported', 'unreadable')
+                    AND f.size_bytes = ?
+                    AND f.modified_at_ns = ?
+                    AND NOT EXISTS (
+                        SELECT 1
+                        FROM recycle_entry r
+                        WHERE r.asset_id = a.id
+                          AND r.state IN ('pending', 'recycled', 'restoring', 'purging')
+                    )
+                """,
+                arguments: [
+                    sourceID.uuidString.lowercased(),
+                    relativePath,
+                    sizeBytes,
+                    modifiedAtNs,
+                ]
+            ),
+            let mediaKind = MediaKind(rawValue: row["media_kind"]),
+            let availability = AssetAvailability(rawValue: row["availability"])
+            else {
+                return nil
+            }
+
+            return FolderReconcileAssetObservation(
+                relativePath: relativePath,
+                fileName: fileName,
+                mediaKind: mediaKind,
+                mediaType: row["media_type"],
+                durationMs: row["duration_ms"],
+                width: row["width"],
+                height: row["height"],
+                mediaCreatedAtMs: row["media_created_at_ms"],
+                availability: availability,
+                sizeBytes: sizeBytes,
+                modifiedAtNs: modifiedAtNs,
+                resourceID: resourceID,
+                movePathProbe: nil
+            )
+        }
+    }
+
     func lookupMoveCandidates(
         sourceID: UUID,
         resourceID: Data,

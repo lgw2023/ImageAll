@@ -357,9 +357,12 @@ final class FolderSourceMonitoringCoordinator: @unchecked Sendable {
         stop()
     }
 
-    func start(onChange: @escaping @Sendable () -> Void) throws {
+    func start(
+        onChange: @escaping @Sendable () -> Void,
+        enqueueInitialReconciles: Bool = true
+    ) throws {
         lock.withLock { self.onChange = onChange }
-        try synchronize()
+        try synchronize(enqueueInitialReconciles: enqueueInitialReconciles)
     }
 
     func synchronize(enqueueInitialReconciles: Bool = true) throws {

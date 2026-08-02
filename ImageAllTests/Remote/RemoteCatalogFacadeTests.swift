@@ -4,6 +4,10 @@ import XCTest
 @testable import ImageAll
 
 final class RemoteCatalogFacadeTests: XCTestCase {
+    func testLegacyRemoteTagFallbackMatchesCatalogOtherGroup() {
+        XCTAssertEqual(RemoteTagSummary.legacyFallbackGroupID, TagGroupSeed.other.id)
+    }
+
     private func makeIdempotencyStore() -> RemoteIdempotencyStore {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("RemoteCatalogFacadeTests-\(UUID().uuidString)", isDirectory: true)
@@ -128,10 +132,41 @@ final class RemoteCatalogFacadeTests: XCTestCase {
         let second = try await facade.applyTagDecision(request)
 
         XCTAssertEqual(first.appliedAssetCount, 1)
+        XCTAssertNotNil(first.undoID)
         XCTAssertFalse(first.replayed)
         XCTAssertEqual(second.appliedAssetCount, 1)
         XCTAssertTrue(second.replayed)
         XCTAssertEqual(catalog.mutateCallCount, 1)
+    }
+
+    func testLatestTagDecisionCanBeUndoneOnceAndUndoReplayIsIdempotent() async throws {
+        let tagID = UUID()
+        let assetID = UUID()
+        let catalog = RemoteCatalogServingStub(
+            mutateResult: TagMutationPriorStateSnapshot(
+                tagID: tagID,
+                priorStates: [TagMutationPriorState(assetID: assetID, priorState: .rejected)]
+            )
+        )
+        let facade = makeFacade(catalog: catalog)
+        let mutation = try await facade.applyTagDecision(
+            RemoteBatchTagDecisionRequest(
+                operationID: UUID(),
+                tagID: tagID,
+                assetIDs: [assetID],
+                action: .accept
+            )
+        )
+        let undoID = try XCTUnwrap(mutation.undoID)
+        let request = RemoteUndoTagDecisionRequest(operationID: UUID(), undoID: undoID)
+
+        let first = try await facade.undoTagDecision(request)
+        let replay = try await facade.undoTagDecision(request)
+
+        XCTAssertEqual(first.restoredAssetCount, 1)
+        XCTAssertFalse(first.replayed)
+        XCTAssertTrue(replay.replayed)
+        XCTAssertEqual(catalog.restoreCallCount, 1)
     }
 
     func testCreateTagAndApplyIsIdempotentByOperationID() async throws {
@@ -377,6 +412,50 @@ final class RemoteCatalogFacadeTests: XCTestCase {
         XCTAssertEqual(page.items[0].suggestionOrigin, .personalModel)
         XCTAssertEqual(review.lastRequestedTagID, tagID)
     }
+
+    func testFetchesReviewOverviewFromSameAuthoritativeProjection() async throws {
+        let tagID = UUID()
+        let overview = SuggestionTagOverview(
+            id: tagID,
+            displayName: "猫",
+            acceptedSampleCount: 8,
+            rejectedSampleCount: 5,
+            pendingSuggestionCount: 7,
+            pendingSuggestionCounts: SuggestionOriginCounts(
+                featurePrint: 2,
+                standardModel: 1,
+                personalModel: 3,
+                personalAdamW: 1
+            ),
+            taskStatus: .completed,
+            checkedCount: 120,
+            totalCount: 120,
+            skippedCount: 4,
+            missingPositiveCount: 0,
+            missingNegativeCount: 0,
+            canGenerate: true,
+            canUpdate: true,
+            canGeneratePersonalModel: true,
+            canReview: true,
+            canPause: false,
+            canResume: false,
+            canCancel: false,
+            activeJobID: nil
+        )
+        let review = RemoteReviewPortStub(
+            page: ReviewQueuePage(items: [], nextCursor: nil),
+            totalPendingCount: 7,
+            overviews: [overview]
+        )
+        let facade = makeFacade(catalog: RemoteCatalogServingStub(), review: review)
+
+        let result = try await facade.fetchReviewOverview(mediaKind: .image, sourceIDs: [])
+
+        XCTAssertEqual(result.totalPendingSuggestionCount, 7)
+        XCTAssertEqual(result.tags.first?.id, tagID)
+        XCTAssertEqual(result.tags.first?.pendingSuggestionCounts.personalModel, 3)
+        XCTAssertEqual(result.tags.first?.taskStatus, .completed)
+    }
 }
 
 private final class RemoteCatalogServingStub: RemoteCatalogServing, @unchecked Sendable {
@@ -392,6 +471,7 @@ private final class RemoteCatalogServingStub: RemoteCatalogServing, @unchecked S
     private let jobs: [JobActivityItem]
     private var storedMutateCallCount = 0
     private var storedCreateTagCallCount = 0
+    private var storedRestoreCallCount = 0
     private var storedLastCreateTagName: String?
     private var storedLastCreateTagAssetIDs: [UUID]?
     private var storedLastRequestedLimit: Int?
@@ -409,6 +489,12 @@ private final class RemoteCatalogServingStub: RemoteCatalogServing, @unchecked S
         lock.lock()
         defer { lock.unlock() }
         return storedCreateTagCallCount
+    }
+
+    var restoreCallCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return storedRestoreCallCount
     }
 
     var lastCreateTagName: String? {
@@ -567,6 +653,13 @@ private final class RemoteCatalogServingStub: RemoteCatalogServing, @unchecked S
         return createTagResult
     }
 
+    func restoreTagMutation(_ snapshot: TagMutationPriorStateSnapshot) throws {
+        _ = snapshot
+        lock.lock()
+        storedRestoreCallCount += 1
+        lock.unlock()
+    }
+
     func fetchJobActivity() throws -> [JobActivityItem] {
         jobs
     }
@@ -582,6 +675,8 @@ private final class RemoteCatalogServingStub: RemoteCatalogServing, @unchecked S
 private final class RemoteReviewPortStub: PersonalizationReviewPort, @unchecked Sendable {
     private let lock = NSLock()
     private let page: ReviewQueuePage
+    private let totalPendingCount: Int
+    private let overviews: [SuggestionTagOverview]
     private var storedLastRequestedTagID: UUID?
 
     var lastRequestedTagID: UUID? {
@@ -590,12 +685,18 @@ private final class RemoteReviewPortStub: PersonalizationReviewPort, @unchecked 
         return storedLastRequestedTagID
     }
 
-    init(page: ReviewQueuePage) {
+    init(
+        page: ReviewQueuePage,
+        totalPendingCount: Int = 0,
+        overviews: [SuggestionTagOverview] = []
+    ) {
         self.page = page
+        self.totalPendingCount = totalPendingCount
+        self.overviews = overviews
     }
 
-    func totalPendingSuggestionCount(sourceIDs: [UUID]?) throws -> Int { 0 }
-    func tagOverviews(sourceIDs: [UUID]?) throws -> [SuggestionTagOverview] { [] }
+    func totalPendingSuggestionCount(sourceIDs: [UUID]?) throws -> Int { totalPendingCount }
+    func tagOverviews(sourceIDs: [UUID]?) throws -> [SuggestionTagOverview] { overviews }
     func enqueuePersonalModelRebuildIfReady() throws -> UUID? { nil }
 
     func fetchReviewQueue(

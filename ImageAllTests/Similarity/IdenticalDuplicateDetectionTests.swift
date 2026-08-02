@@ -814,6 +814,7 @@ final class IdenticalDuplicateDetectionTests: XCTestCase {
         )
         XCTAssertNotEqual(second.jobID, first.jobID)
         XCTAssertEqual(second.state, .pending)
+        XCTAssertEqual(second.seedAssetIDs, [seed.assetID])
         XCTAssertEqual(try analysis.snapshot(jobID: first.jobID).state, .paused)
 
         let jobs = try analysis.listJobs()

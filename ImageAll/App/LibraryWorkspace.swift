@@ -1164,6 +1164,7 @@ final class LibraryWorkspaceModel: ObservableObject {
     @Published private(set) var librarySlimmingAnalysisControlRequest: JobControlRequest = .none
     @Published private(set) var librarySlimmingSeedAssetIDs: [UUID] = []
     @Published private(set) var selectedLibrarySlimmingMemberIDs: Set<UUID> = []
+    @Published private(set) var librarySlimmingRecyclePendingAssetIDs: Set<UUID> = []
     @Published private(set) var hasCompletedLibrarySlimmingScan = false
     @Published private(set) var librarySlimmingWorkspaceTab: LibrarySlimmingWorkspaceTab = .clusters
     @Published private(set) var librarySlimmingRecycleEntries: [RecycleEntryRecord] = []
@@ -1253,6 +1254,8 @@ final class LibraryWorkspaceModel: ObservableObject {
     private var idlePrewarmEmbeddingUnavailable = false
     private var sourceThumbnailPrewarmTask: Task<Void, Never>?
     private var sourceThumbnailPrewarmGeneration = 0
+    private var suspendedSourceThumbnailPrewarm:
+        (sourceID: UUID, kind: SourceThumbnailPrewarmKind)?
     private var browsingNavigationRequestID: UUID?
     private var selectionAnchorID: UUID?
     private var librarySlimmingSelectionAnchorID: UUID?
@@ -1267,6 +1270,7 @@ final class LibraryWorkspaceModel: ObservableObject {
     private var selectedSourceID: UUID?
     private var nextCursor: AssetPageCursor?
     private var started = false
+    private var catalogSourceMonitoringTask: Task<Void, Never>?
     private var isLibrarySlimmingMaintenanceRunning = false
     private var isLoadingMore = false
     fileprivate var isLoadingMoreReviewQueue = false
@@ -1907,8 +1911,7 @@ final class LibraryWorkspaceModel: ObservableObject {
         let mediaKind = selectedMediaKind
         do {
             let entries = try await Self.offMain {
-                _ = try recycle.reconcilePhotosRecycleEntries()
-                return try recycle.listRecycledEntries()
+                try recycle.listRecycledEntries()
             }
             librarySlimmingRecycleEntries = entries.filter { $0.mediaKind == mediaKind }
         } catch {
@@ -2126,8 +2129,15 @@ final class LibraryWorkspaceModel: ObservableObject {
             guard !isMutatingLibrarySlimmingRecycle else { return }
             isMutatingLibrarySlimmingRecycle = true
         }
+        let pendingAssetIDs = Set(assetIDs)
+        librarySlimmingRecyclePendingAssetIDs.formUnion(pendingAssetIDs)
+        suspendBackgroundThumbnailWorkForRecycle()
         librarySlimmingRecycleActionMessage = nil
+        librarySlimmingStatusMessage =
+            "已接收操作，正在暂停后台读取并安全移入回收站…"
         defer {
+            librarySlimmingRecyclePendingAssetIDs.subtract(pendingAssetIDs)
+            resumeBackgroundThumbnailWorkAfterRecycle()
             if !mutationStateAlreadyHeld {
                 isMutatingLibrarySlimmingRecycle = false
             }
@@ -2173,6 +2183,9 @@ final class LibraryWorkspaceModel: ObservableObject {
                         executionID: cleanupExecutionID
                     )
                 }
+                librarySlimmingStatusMessage = "请在系统文件夹窗口中确认来源写入权限…"
+                librarySlimmingRecycleActionMessage = librarySlimmingStatusMessage
+                NSApp?.activate(ignoringOtherApps: true)
                 var authorizedAtLeastOneSource = false
                 for sourceID in outcome.authorizationRequiredSourceIDs {
                     do {
@@ -2238,6 +2251,15 @@ final class LibraryWorkspaceModel: ObservableObject {
                             retry.authorizationRequiredSourceIDs
                         outcome.authorizationRequiredAssetIDs =
                             retry.authorizationRequiredAssetIDs
+                        outcome.mutationAuthorizationInvalidAssetIDs.append(
+                            contentsOf: retry.mutationAuthorizationInvalidAssetIDs
+                        )
+                        outcome.photosMutationFailedAssetIDs.append(
+                            contentsOf: retry.photosMutationFailedAssetIDs
+                        )
+                        outcome.sourceChangedAssetIDs.append(
+                            contentsOf: retry.sourceChangedAssetIDs
+                        )
                     }
                 }
             }
@@ -2251,6 +2273,9 @@ final class LibraryWorkspaceModel: ObservableObject {
                         executionID: cleanupExecutionID
                     )
                 }
+                librarySlimmingStatusMessage = "请在系统对话框中允许 ImageAll 访问照片库…"
+                librarySlimmingRecycleActionMessage = librarySlimmingStatusMessage
+                NSApp?.activate(ignoringOtherApps: true)
                 let auth = await photosLibraryMutation.requestAuthorization()
                 if auth == .authorized {
                     let retryAssetIDs = outcome.authorizationDeniedPhotosAssetIDs
@@ -2305,6 +2330,15 @@ final class LibraryWorkspaceModel: ObservableObject {
                         )
                         outcome.authorizationRequiredAssetIDs.append(
                             contentsOf: retry.authorizationRequiredAssetIDs
+                        )
+                        outcome.mutationAuthorizationInvalidAssetIDs.append(
+                            contentsOf: retry.mutationAuthorizationInvalidAssetIDs
+                        )
+                        outcome.photosMutationFailedAssetIDs.append(
+                            contentsOf: retry.photosMutationFailedAssetIDs
+                        )
+                        outcome.sourceChangedAssetIDs.append(
+                            contentsOf: retry.sourceChangedAssetIDs
                         )
                     }
                 }
@@ -2362,12 +2396,34 @@ final class LibraryWorkspaceModel: ObservableObject {
                 parts.append("部分来源需要写入授权")
             }
             if !outcome.failedAssetIDs.isEmpty {
-                if outcome.recycledEntryIDs.isEmpty,
+                if outcome.hasOnlySourceChangedFailures,
+                   outcome.recycledEntryIDs.isEmpty,
                    outcome.authorizationRequiredSourceIDs.isEmpty,
-                   outcome.authorizationDeniedPhotosAssetIDs.isEmpty
+                   outcome.authorizationDeniedPhotosAssetIDs.isEmpty,
+                   outcome.mutationAuthorizationInvalidAssetIDs.isEmpty,
+                   outcome.photosMutationFailedAssetIDs.isEmpty
+                {
+                    parts.append(
+                        "失败 \(outcome.failedAssetIDs.count) 张（来源已变化；请立即刷新照片来源，等待完成后重新分析，再重试移入回收站）"
+                    )
+                } else if outcome.hasOnlyMutationAuthorizationInvalidFailures,
+                   outcome.recycledEntryIDs.isEmpty,
+                   outcome.authorizationRequiredSourceIDs.isEmpty,
+                   outcome.authorizationDeniedPhotosAssetIDs.isEmpty,
+                   outcome.photosMutationFailedAssetIDs.isEmpty,
+                   outcome.sourceChangedAssetIDs.isEmpty
                 {
                     parts.append(
                         "失败 \(outcome.failedAssetIDs.count) 张（已有来源权限不可用；请从左侧来源菜单更新回收权限后重试）"
+                    )
+                } else if outcome.hasOnlyPhotosMutationFailures,
+                          outcome.mutationAuthorizationInvalidAssetIDs.isEmpty,
+                          outcome.authorizationRequiredSourceIDs.isEmpty,
+                          outcome.authorizationDeniedPhotosAssetIDs.isEmpty,
+                          outcome.sourceChangedAssetIDs.isEmpty
+                {
+                    parts.append(
+                        "失败 \(outcome.failedAssetIDs.count) 张（未能移入系统「最近删除」；若已取消系统确认请重试，或从左侧来源菜单请求照片写入权限）"
                     )
                 } else {
                     parts.append("失败 \(outcome.failedAssetIDs.count) 张")
@@ -2376,6 +2432,9 @@ final class LibraryWorkspaceModel: ObservableObject {
             let message = parts.isEmpty ? "未移动任何照片" : parts.joined(separator: " · ")
             librarySlimmingStatusMessage = message
             librarySlimmingRecycleActionMessage = message
+            if !mutationStateAlreadyHeld {
+                isMutatingLibrarySlimmingRecycle = false
+            }
             await refreshLibrarySlimmingRecycleEntries()
             noteLibrarySlimmingCatalogMutation(assetIDs: recycled)
             if let identicalCleanupPlan {
@@ -2438,20 +2497,27 @@ final class LibraryWorkspaceModel: ObservableObject {
         overallTotalAssetCount: Int
     ) -> LibrarySlimmingRecycleMoveProgressHandler {
         { [weak self] progress in
-            guard let executionID else { return }
             Task { @MainActor [weak self] in
-                guard let self,
-                      self.librarySlimmingIdenticalCleanupExecutionID == executionID,
-                      self.librarySlimmingIdenticalCleanupExecutionProgress?.phase
-                        == .recyclingAssets
-                else { return }
-                self.setLibrarySlimmingIdenticalCleanupExecutionPhase(
-                    .recyclingAssets,
-                    completedAssetCount: baseCompletedAssetCount
-                        + progress.completedAssetCount,
-                    totalAssetCount: overallTotalAssetCount,
-                    executionID: executionID
+                guard let self else { return }
+                let completed = min(
+                    overallTotalAssetCount,
+                    baseCompletedAssetCount + progress.completedAssetCount
                 )
+                if let executionID {
+                    guard self.librarySlimmingIdenticalCleanupExecutionID == executionID,
+                          self.librarySlimmingIdenticalCleanupExecutionProgress?.phase
+                            == .recyclingAssets
+                    else { return }
+                    self.setLibrarySlimmingIdenticalCleanupExecutionPhase(
+                        .recyclingAssets,
+                        completedAssetCount: completed,
+                        totalAssetCount: overallTotalAssetCount,
+                        executionID: executionID
+                    )
+                } else if self.isMutatingLibrarySlimmingRecycle {
+                    self.librarySlimmingStatusMessage =
+                        "正在安全移入回收站…(completed)/(overallTotalAssetCount)"
+                }
             }
         }
     }
@@ -2578,6 +2644,9 @@ final class LibraryWorkspaceModel: ObservableObject {
                 return
             }
             do {
+                librarySlimmingStatusMessage = "请在系统文件夹窗口中确认来源写入权限…"
+                librarySlimmingRecycleActionMessage = librarySlimmingStatusMessage
+                NSApp?.activate(ignoringOtherApps: true)
                 guard case .authorized = try await mutationAuthorization.authorizeMutation(
                     sourceID: sourceID
                 ) else {
@@ -2887,6 +2956,7 @@ final class LibraryWorkspaceModel: ObservableObject {
         _ snapshot: LibrarySlimmingAnalysisJobSnapshot,
         forceSelect: Bool
     ) {
+        librarySlimmingSeedAssetIDs = snapshot.seedAssetIDs
         let wasAlreadySelected = librarySlimmingAnalysisJobID == snapshot.jobID
         if forceSelect || librarySlimmingAnalysisJobID == nil {
             librarySlimmingAnalysisJobID = snapshot.jobID
@@ -2955,9 +3025,25 @@ final class LibraryWorkspaceModel: ObservableObject {
         let previousMemberIDs = selectedLibrarySlimmingMemberIDs
         let resolvedClusters = resolveRestoredLibrarySlimmingMembers(result.clusters)
         let filteredClusters = filterLibrarySlimmingClustersForHiddenAssets(resolvedClusters)
-        librarySlimmingClusters = filteredClusters.map {
+        var presentations = filteredClusters.map {
             LibrarySlimmingClusterPresentation($0, mediaKind: selectedMediaKind)
         }
+        let clusteredAssetIDs = Set(filteredClusters.flatMap(\.memberAssetIDs))
+        let seedOnlyAssetIDs = filteredClusters.isEmpty
+            ? visibleUnclusteredLibrarySlimmingSeedAssetIDs(
+                excluding: clusteredAssetIDs,
+                pending: Set(result.pendingAnalysisAssetIDs)
+            )
+            : []
+        if !seedOnlyAssetIDs.isEmpty {
+            presentations.append(
+                LibrarySlimmingClusterPresentation(
+                    seedAssetIDs: seedOnlyAssetIDs,
+                    mediaKind: selectedMediaKind
+                )
+            )
+        }
+        librarySlimmingClusters = presentations
         librarySlimmingPendingCount = result.pendingAnalysisAssetIDs.count
         hasCompletedLibrarySlimmingScan = true
         if preserveSelection,
@@ -2981,7 +3067,12 @@ final class LibraryWorkspaceModel: ObservableObject {
             librarySlimmingSelectionAnchorID = nil
         }
         refreshSelectedLibrarySlimmingMemberSources()
-        if filteredClusters.isEmpty, result.pendingAnalysisAssetIDs.isEmpty {
+        if filteredClusters.isEmpty, !seedOnlyAssetIDs.isEmpty,
+           result.pendingAnalysisAssetIDs.isEmpty
+        {
+            librarySlimmingStatusMessage =
+                "未发现相似项；已保留 \(seedOnlyAssetIDs.count) 张种子照片，可继续选择操作。"
+        } else if filteredClusters.isEmpty, result.pendingAnalysisAssetIDs.isEmpty {
             librarySlimmingStatusMessage = "已分析 \(result.analyzedAssetCount) 张，未发现相同或相似簇。"
         } else if filteredClusters.isEmpty {
             librarySlimmingStatusMessage =
@@ -2993,6 +3084,35 @@ final class LibraryWorkspaceModel: ObservableObject {
             librarySlimmingStatusMessage =
                 "完成：\(filteredClusters.count) 个簇 · \(result.pendingAnalysisAssetIDs.count) 张因不可读取或格式问题待处理。"
         }
+    }
+
+    private func visibleUnclusteredLibrarySlimmingSeedAssetIDs(
+        excluding clusteredAssetIDs: Set<UUID>,
+        pending: Set<UUID>
+    ) -> [UUID] {
+        guard librarySlimmingAnalyzeMode == .seeds,
+              !librarySlimmingSeedAssetIDs.isEmpty
+        else { return [] }
+        var seeds = librarySlimmingSeedAssetIDs
+        if let recycle = librarySlimmingRecycle,
+           let replacements = try? recycle.restoredAssetReplacements(from: seeds),
+           !replacements.isEmpty
+        {
+            seeds = seeds.map { replacements[$0] ?? $0 }
+        }
+        var seen = Set<UUID>()
+        seeds = seeds.filter {
+            seen.insert($0).inserted
+                && !clusteredAssetIDs.contains($0)
+                && !pending.contains($0)
+        }
+        if let recycle = librarySlimmingRecycle,
+           let hidden = try? recycle.slimmingHiddenAssetIDs(from: seeds),
+           !hidden.isEmpty
+        {
+            seeds.removeAll(where: hidden.contains)
+        }
+        return seeds
     }
 
     private func resolveRestoredLibrarySlimmingMembers(
@@ -3065,7 +3185,14 @@ final class LibraryWorkspaceModel: ObservableObject {
     ) -> [LibrarySlimmingClusterPresentation] {
         clusters.compactMap { cluster in
             let remaining = cluster.memberAssetIDs.filter { !hidden.contains($0) }
-            guard remaining.count >= 2 else { return nil }
+            let minimumMemberCount = cluster.isSeedOnlyResult ? 1 : 2
+            guard remaining.count >= minimumMemberCount else { return nil }
+            if cluster.isSeedOnlyResult {
+                return LibrarySlimmingClusterPresentation(
+                    seedAssetIDs: remaining,
+                    mediaKind: cluster.mediaKind
+                )
+            }
             return LibrarySlimmingClusterPresentation(
                 SlimmingCluster(
                     id: cluster.id,
@@ -3492,6 +3619,7 @@ final class LibraryWorkspaceModel: ObservableObject {
         searchDebounceTask?.cancel()
         videoHoverTask?.cancel()
         librarySlimmingSourceLoadTask?.cancel()
+        catalogSourceMonitoringTask?.cancel()
         service.stopCatalogSourceMonitoring()
     }
 
@@ -3819,15 +3947,7 @@ final class LibraryWorkspaceModel: ObservableObject {
     func start() async {
         guard !started else { return }
         started = true
-        do {
-            try service.startCatalogSourceMonitoring { [weak self] in
-                Task { @MainActor [weak self] in
-                    self?.startCatalogReconcileRunnerIfNeeded()
-                }
-            }
-        } catch {
-            notice = .backgroundScanFailed
-        }
+        startCatalogSourceMonitoring()
         await reload(runPendingJobs: false)
         await runLibrarySlimmingMaintenance()
         await restoreDefaultSourceAuthorizations()
@@ -3841,10 +3961,32 @@ final class LibraryWorkspaceModel: ObservableObject {
         startIdleThumbnailPrewarmIfNeeded()
     }
 
+    private func startCatalogSourceMonitoring() {
+        guard catalogSourceMonitoringTask == nil else { return }
+        let service = service
+        catalogSourceMonitoringTask = Task.detached(priority: .utility) { [weak self] in
+            do {
+                try service.startCatalogSourceMonitoring { [weak self] in
+                    Task { @MainActor [weak self] in
+                        self?.startCatalogReconcileRunnerIfNeeded()
+                    }
+                }
+                if Task.isCancelled {
+                    service.stopCatalogSourceMonitoring()
+                }
+            } catch {
+                guard !Task.isCancelled else { return }
+                await MainActor.run { [weak self] in
+                    self?.notice = .backgroundScanFailed
+                }
+            }
+        }
+    }
+
     var canRefreshLibrarySlimmingCatalog: Bool {
         !isCatalogScanning
             && !isMutatingLibrarySlimmingRecycle
-            && sources.contains { $0.state == .active }
+            && !resolvedLibrarySlimmingCatalogSources.isEmpty
     }
 
     /// Catalog source events are still recorded while this workspace is open,
@@ -3869,8 +4011,13 @@ final class LibraryWorkspaceModel: ObservableObject {
     /// Explicit user refresh is the only catalog reconcile allowed to start
     /// while the library-slimming workspace remains visible.
     func refreshLibrarySlimmingCatalog() async {
+        let selectedSourceIDs = Set(resolvedLibrarySlimmingCatalogSourceIDs)
+        guard !selectedSourceIDs.isEmpty else {
+            librarySlimmingStatusMessage = "请至少选择一个要刷新的照片来源。"
+            return
+        }
         await refreshLibrarySlimmingCatalog(
-            preferredSourceIDs: [],
+            preferredSourceIDs: selectedSourceIDs,
             reportsStatus: true
         )
     }
@@ -3909,7 +4056,10 @@ final class LibraryWorkspaceModel: ObservableObject {
                 librarySlimmingStatusMessage = "正在刷新照片来源…"
                 reportsLibrarySlimmingCatalogRefreshCompletion = true
             }
-            startCatalogReconcileRunnerIfNeeded(allowInLibrarySlimming: true)
+            startCatalogReconcileRunnerIfNeeded(
+                allowInLibrarySlimming: true,
+                sourceIDs: requestedSourceIDs
+            )
         } catch {
             if reportsStatus {
                 librarySlimmingStatusMessage = "刷新来源失败：\(error.localizedDescription)"
@@ -4110,6 +4260,35 @@ final class LibraryWorkspaceModel: ObservableObject {
 
     func prewarmSourceOriginalAspectThumbnails(sourceID: UUID) {
         startSourceThumbnailPrewarm(sourceID: sourceID, kind: .originalAspect)
+    }
+
+    /// Explicit source prewarming can issue sustained reads against the same
+    /// external disk as recycle. Suspend it for the short interactive window
+    /// and resume the requested source afterward. Idle prewarming is cancelled
+    /// by recording this user interaction and can restart after the idle delay.
+    private func suspendBackgroundThumbnailWorkForRecycle() {
+        idleThumbnailPrewarmController?.noteUserInteraction()
+        guard suspendedSourceThumbnailPrewarm == nil,
+              let progress = sourceThumbnailPrewarmProgress
+        else { return }
+
+        suspendedSourceThumbnailPrewarm = (progress.sourceID, progress.kind)
+        sourceThumbnailPrewarmGeneration += 1
+        sourceThumbnailPrewarmTask?.cancel()
+        sourceThumbnailPrewarmTask = nil
+        sourceThumbnailPrewarmProgress = nil
+        if progress.kind == .originalAspect, progress.warmed > 0 {
+            originalAspectThumbnailCacheGeneration &+= 1
+        }
+    }
+
+    private func resumeBackgroundThumbnailWorkAfterRecycle() {
+        guard let suspended = suspendedSourceThumbnailPrewarm else { return }
+        suspendedSourceThumbnailPrewarm = nil
+        startSourceThumbnailPrewarm(
+            sourceID: suspended.sourceID,
+            kind: suspended.kind
+        )
     }
 
     private func startSourceThumbnailPrewarm(
@@ -4617,6 +4796,25 @@ final class LibraryWorkspaceModel: ObservableObject {
             }
         } catch {
             notice = .sourceActionFailed
+        }
+    }
+
+    func requestPhotosLibraryWriteAuthorization(for sourceID: UUID) async {
+        guard !isBusy,
+              sources.contains(where: {
+                  $0.id == sourceID && $0.kind == .photos && $0.state == .active
+              }),
+              let photosLibraryMutation
+        else { return }
+        let auth = await photosLibraryMutation.requestAuthorization()
+        switch auth {
+        case .authorized:
+            librarySlimmingStatusMessage = "已获得照片库写入权限，可以重新执行移入回收站。"
+        case .denied, .restricted:
+            librarySlimmingStatusMessage =
+                "未获得照片库写入权限，请在系统设置中允许 ImageAll 访问照片库后重试。"
+        case .notDetermined:
+            librarySlimmingStatusMessage = "尚未完成照片库写入授权，请重试。"
         }
     }
 
@@ -7129,7 +7327,8 @@ final class LibraryWorkspaceModel: ObservableObject {
     }
 
     private func startCatalogReconcileRunnerIfNeeded(
-        allowInLibrarySlimming: Bool = false
+        allowInLibrarySlimming: Bool = false,
+        sourceIDs: Set<UUID>? = nil
     ) {
         guard allowInLibrarySlimming || !isLibrarySlimmingWorkspaceActive else { return }
         catalogReconcileRunRequested = true
@@ -7152,8 +7351,8 @@ final class LibraryWorkspaceModel: ObservableObject {
                     // Keep catalog reconcile below interactive QoS so sidebar
                     // navigation and thumbnail reads stay responsive mid-scan.
                     try await Self.offMain(priority: .utility) {
-                        try service.runPendingReconcileJobs()
-                        try service.runPendingPhotosReconcileJobs()
+                        try service.runPendingReconcileJobs(sourceIDs: sourceIDs)
+                        try service.runPendingPhotosReconcileJobs(sourceIDs: sourceIDs)
                     }
                     if let refreshed = try? await Self.offMain({ try service.fetchSources() }) {
                         self.sources = refreshed
@@ -8853,6 +9052,86 @@ private struct LibraryTagGroupContainerFramePreferenceKey: PreferenceKey {
     }
 }
 
+private struct LibraryInspectorTagChipFramePreferenceKey: PreferenceKey {
+    static let defaultValue: [UUID: CGRect] = [:]
+
+    static func reduce(value: inout [UUID: CGRect], nextValue: () -> [UUID: CGRect]) {
+        value.merge(nextValue()) { _, latest in latest }
+    }
+}
+
+private struct LibraryInspectorTagGroupContainerFramePreferenceKey: PreferenceKey {
+    static let defaultValue: [UUID: CGRect] = [:]
+
+    static func reduce(value: inout [UUID: CGRect], nextValue: () -> [UUID: CGRect]) {
+        value.merge(nextValue()) { _, latest in latest }
+    }
+}
+
+private enum LibraryTagReorderSurface: Equatable {
+    case sidebar
+    case inspector
+}
+
+/// Captures macOS right-clicks without stealing left-click / drag from SwiftUI.
+private struct LibraryRightClickCatcher: NSViewRepresentable {
+    var enabled: Bool
+    var action: () -> Void
+
+    func makeNSView(context: Context) -> NSView {
+        let view = RightClickNSView()
+        view.enabled = enabled
+        view.action = action
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        guard let view = nsView as? RightClickNSView else { return }
+        view.enabled = enabled
+        view.action = action
+    }
+
+    private final class RightClickNSView: NSView {
+        var enabled = true
+        var action: (() -> Void)?
+        private var monitor: Any?
+
+        override func hitTest(_ point: CGPoint) -> NSView? { nil }
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            if window != nil {
+                installMonitorIfNeeded()
+            } else {
+                removeMonitor()
+            }
+        }
+
+        private func installMonitorIfNeeded() {
+            guard monitor == nil else { return }
+            monitor = NSEvent.addLocalMonitorForEvents(matching: [.rightMouseDown]) { [weak self] event in
+                guard let self, self.enabled, let window = self.window else { return event }
+                guard event.window === window else { return event }
+                let locationInView = self.convert(event.locationInWindow, from: nil)
+                guard self.bounds.contains(locationInView) else { return event }
+                self.action?()
+                return nil
+            }
+        }
+
+        fileprivate func removeMonitor() {
+            if let monitor {
+                NSEvent.removeMonitor(monitor)
+                self.monitor = nil
+            }
+        }
+    }
+
+    static func dismantleNSView(_ nsView: NSView, coordinator: ()) {
+        (nsView as? RightClickNSView)?.removeMonitor()
+    }
+}
+
 private struct LibrarySlimmingIdenticalCleanupBlockingOverlay: View {
     let progress: LibrarySlimmingIdenticalCleanupExecutionProgress
 
@@ -9025,6 +9304,7 @@ struct LibraryWorkspaceView: View {
     @EnvironmentObject private var toolbarDisplayModeSettings: ToolbarDisplayModeSettingsModel
     private static let sourceDropRowHeight: CGFloat = 40
     private static let sourceReorderCoordinateSpace = "library-source-reorder"
+    private static let inspectorTagReorderCoordinateSpace = "library-inspector-tag-reorder"
     private static let mediaFormatFilterOptions = [
         LibraryMediaFormatFilterOption(title: "JPEG", mediaTypes: [UTType.jpeg.identifier]),
         LibraryMediaFormatFilterOption(title: "PNG", mediaTypes: [UTType.png.identifier]),
@@ -9077,8 +9357,11 @@ struct LibraryWorkspaceView: View {
     @State private var sourceInsertionOffset: Int?
     @State private var draggedTagID: UUID?
     @State private var draggedTagGroupID: UUID?
+    @State private var activeTagReorderSurface: LibraryTagReorderSurface?
     @State private var tagChipFrames: [UUID: CGRect] = [:]
     @State private var tagGroupContainerFrames: [UUID: CGRect] = [:]
+    @State private var inspectorTagChipFrames: [UUID: CGRect] = [:]
+    @State private var inspectorTagGroupContainerFrames: [UUID: CGRect] = [:]
     @State private var tagInsertionGroupID: UUID?
     @State private var tagInsertionOffset: Int?
     @State private var isMarqueeSelecting = false
@@ -10086,14 +10369,24 @@ struct LibraryWorkspaceView: View {
                                             }
                                         }
                                         .overlay {
-                                            tagInsertionIndicator(for: tag.id, in: section)
+                                            tagInsertionIndicator(
+                                                for: tag.id,
+                                                in: section,
+                                                surface: .sidebar
+                                            )
                                         }
-                                        .opacity(draggedTagID == tag.id ? 0.55 : 1)
+                                        .opacity(
+                                            draggedTagID == tag.id &&
+                                                activeTagReorderSurface == .sidebar
+                                                ? 0.55
+                                                : 1
+                                        )
                                         .simultaneousGesture(
                                             tagReorderGesture(
                                                 tagID: tag.id,
                                                 groupID: section.group.id,
-                                                tagIDs: section.tags.map(\.id)
+                                                tagIDs: section.tags.map(\.id),
+                                                surface: .sidebar
                                             )
                                         )
                                 }
@@ -10114,7 +10407,9 @@ struct LibraryWorkspaceView: View {
                                     ]
                                 )
                                 .overlay {
-                                    if tagDropTargetGroupID == section.group.id {
+                                    if tagDropTargetGroupID == section.group.id,
+                                       activeTagReorderSurface == .sidebar
+                                    {
                                         RoundedRectangle(cornerRadius: 8)
                                             .fill(Color.accentColor.opacity(0.12))
                                     }
@@ -10203,21 +10498,29 @@ struct LibraryWorkspaceView: View {
     private func tagReorderGesture(
         tagID: UUID,
         groupID: UUID,
-        tagIDs: [UUID]
+        tagIDs: [UUID],
+        surface: LibraryTagReorderSurface
     ) -> some Gesture {
         DragGesture(
             minimumDistance: 12,
             coordinateSpace: .local
         )
         .onChanged { value in
-            guard let pointer = tagReorderPointer(tagID: tagID, location: value.location) else {
+            guard let pointer = tagReorderPointer(
+                tagID: tagID,
+                location: value.location,
+                surface: surface
+            ) else {
                 return
             }
             draggedTagID = tagID
             draggedTagGroupID = groupID
+            activeTagReorderSurface = surface
+            let containers = groupContainerFrames(for: surface)
+            let frames = chipFrames(for: surface)
             if let targetGroupID = LibraryTagReorderLayout.targetGroupID(
                 pointer: pointer,
-                groupFrames: tagGroupContainerFrames
+                groupFrames: containers
             ) {
                 tagDropTargetGroupID = targetGroupID
                 if targetGroupID != groupID {
@@ -10226,29 +10529,36 @@ struct LibraryWorkspaceView: View {
                     return
                 }
             }
-            let visibleTagIDs = tagIDs.filter { tagChipFrames[$0] != nil }
+            let visibleTagIDs = tagIDs.filter { frames[$0] != nil }
             guard visibleTagIDs.count == tagIDs.count else { return }
             tagInsertionGroupID = groupID
             tagInsertionOffset = LibraryTagReorderLayout.destinationOffset(
                 pointer: pointer,
                 tagIDs: tagIDs,
-                frames: tagChipFrames
+                frames: frames
             )
         }
         .onEnded { value in
             defer {
                 draggedTagID = nil
                 draggedTagGroupID = nil
+                activeTagReorderSurface = nil
                 tagInsertionOffset = nil
                 tagInsertionGroupID = nil
                 tagDropTargetGroupID = nil
             }
-            guard let pointer = tagReorderPointer(tagID: tagID, location: value.location) else {
+            guard let pointer = tagReorderPointer(
+                tagID: tagID,
+                location: value.location,
+                surface: surface
+            ) else {
                 return
             }
+            let containers = groupContainerFrames(for: surface)
+            let frames = chipFrames(for: surface)
             if let targetGroupID = LibraryTagReorderLayout.targetGroupID(
                 pointer: pointer,
-                groupFrames: tagGroupContainerFrames
+                groupFrames: containers
             ), targetGroupID != groupID {
                 _ = model.acceptAndEnqueueMoveTag(tagID, toGroupID: targetGroupID)
                 return
@@ -10257,7 +10567,7 @@ struct LibraryWorkspaceView: View {
                 tagID: tagID,
                 pointer: pointer,
                 tagIDs: tagIDs,
-                frames: tagChipFrames
+                frames: frames
             ) else { return }
             model.moveTags(
                 in: groupID,
@@ -10267,8 +10577,26 @@ struct LibraryWorkspaceView: View {
         }
     }
 
-    private func tagReorderPointer(tagID: UUID, location: CGPoint) -> CGPoint? {
-        guard let sourceFrame = tagChipFrames[tagID] else { return nil }
+    private func chipFrames(for surface: LibraryTagReorderSurface) -> [UUID: CGRect] {
+        switch surface {
+        case .sidebar: tagChipFrames
+        case .inspector: inspectorTagChipFrames
+        }
+    }
+
+    private func groupContainerFrames(for surface: LibraryTagReorderSurface) -> [UUID: CGRect] {
+        switch surface {
+        case .sidebar: tagGroupContainerFrames
+        case .inspector: inspectorTagGroupContainerFrames
+        }
+    }
+
+    private func tagReorderPointer(
+        tagID: UUID,
+        location: CGPoint,
+        surface: LibraryTagReorderSurface
+    ) -> CGPoint? {
+        guard let sourceFrame = chipFrames(for: surface)[tagID] else { return nil }
         return CGPoint(
             x: sourceFrame.minX + location.x,
             y: sourceFrame.minY + location.y
@@ -10278,9 +10606,11 @@ struct LibraryWorkspaceView: View {
     @ViewBuilder
     private func tagInsertionIndicator(
         for tagID: UUID,
-        in section: LibraryTagGroupSection
+        in section: LibraryTagGroupSection,
+        surface: LibraryTagReorderSurface
     ) -> some View {
-        if draggedTagGroupID == section.group.id,
+        if activeTagReorderSurface == surface,
+           draggedTagGroupID == section.group.id,
            tagInsertionGroupID == section.group.id,
            let insertionOffset = tagInsertionOffset,
            let tagIndex = section.tags.firstIndex(where: { $0.id == tagID })
@@ -10500,6 +10830,14 @@ struct LibraryWorkspaceView: View {
                 }
                 .disabled(model.isBusy)
                 .persistentHelp("打开确认窗口，重新扫描整个 Apple Photos 图库并修复缺失状态。")
+
+                Button("请求照片写入权限…") {
+                    Task { await model.requestPhotosLibraryWriteAuthorization(for: source.id) }
+                }
+                .disabled(model.isBusy)
+                .persistentHelp(
+                    "仅在移入回收站提示需要照片写入权限或未能移入「最近删除」时使用；会请求系统照片库读写授权。"
+                )
             }
 
             if source.kind == .photos && source.state == .unavailable {
@@ -10894,46 +11232,46 @@ struct LibraryWorkspaceView: View {
     }
 
     private var inspector: some View {
-        Group {
-            if model.selectedAssetIDs.isEmpty {
-                ContentUnavailableView(
-                    "未选择照片",
-                    systemImage: "sidebar.right",
-                    description: Text("选择一张或多张照片以查看信息并编辑人工标签。")
-                )
-            } else {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 18) {
-                        Text(model.selectionSummaryTitle)
-                            .font(.headline)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                if model.selectedAssetIDs.isEmpty {
+                    ContentUnavailableView(
+                        "未选择照片",
+                        systemImage: "sidebar.right",
+                        description: Text("选择一张或多张照片后，可左键打上标签、右键取消标签。")
+                    )
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 12)
+                } else {
+                    Text(model.selectionSummaryTitle)
+                        .font(.headline)
 
-                        if let detail = model.inspectorDetail {
-                            InspectorPreview(assetID: detail.assetID, model: model)
-                            if model.reviewMode == nil {
-                                InspectorLocalModelSuggestionSection(model: model)
-                                InspectorSuggestionSection(model: model)
-                            }
-                        }
-
-                        if case let .tagQueue(tagID, displayName) = model.reviewMode {
-                            reviewInspectorActions(tagID: tagID, displayName: displayName)
-                        }
-
-                        if let detail = model.inspectorDetail {
-                            Divider()
-                            metadata(detail)
-                        } else if !model.assetPendingSuggestions.isEmpty {
+                    if let detail = model.inspectorDetail {
+                        InspectorPreview(assetID: detail.assetID, model: model)
+                        if model.reviewMode == nil {
+                            InspectorLocalModelSuggestionSection(model: model)
                             InspectorSuggestionSection(model: model)
                         }
-
-                        Divider()
-                        tagEditor
                     }
-                    .padding(16)
+
+                    if case let .tagQueue(tagID, displayName) = model.reviewMode {
+                        reviewInspectorActions(tagID: tagID, displayName: displayName)
+                    }
+
+                    if let detail = model.inspectorDetail {
+                        Divider()
+                        metadata(detail)
+                    } else if !model.assetPendingSuggestions.isEmpty {
+                        InspectorSuggestionSection(model: model)
+                    }
                 }
-                .scrollIndicators(.visible, axes: .vertical)
+
+                Divider()
+                tagEditor
             }
+            .padding(16)
         }
+        .scrollIndicators(.visible, axes: .vertical)
         .navigationTitle("检查器")
     }
 
@@ -10941,6 +11279,10 @@ struct LibraryWorkspaceView: View {
         VStack(alignment: .leading, spacing: 10) {
             Text("人工标签")
                 .font(.headline)
+
+            Text("左键打上标签，右键取消；拖拽可调整分组与顺序。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
 
             HStack(spacing: 6) {
                 TextField("新标签名称", text: $newTagName)
@@ -10958,72 +11300,214 @@ struct LibraryWorkspaceView: View {
                 )
             }
 
-            if model.inspectorTags.isEmpty {
+            if model.tags.isEmpty {
                 Text("尚无标签。可在上方创建并应用。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else {
-                ForEach(model.inspectorTags) { tag in
-                    inspectorTagRow(tag)
+                ForEach(model.tagGroupSections) { section in
+                    inspectorTagGroupSection(section)
                 }
             }
         }
+        .coordinateSpace(name: Self.inspectorTagReorderCoordinateSpace)
+        .onPreferenceChange(LibraryInspectorTagChipFramePreferenceKey.self) { frames in
+            inspectorTagChipFrames = frames
+        }
+        .onPreferenceChange(LibraryInspectorTagGroupContainerFramePreferenceKey.self) { frames in
+            inspectorTagGroupContainerFrames = frames
+        }
     }
 
-    private func inspectorTagRow(_ tag: LibraryInspectorTagPresentation) -> some View {
-        HStack(spacing: 6) {
-            Text(tag.displayName)
-                .lineLimit(1)
-            Spacer(minLength: 4)
-            if tag.decision == .mixed {
-                Text("混合")
-                    .font(.caption)
+    private func inspectorTagGroupSection(_ section: LibraryTagGroupSection) -> some View {
+        let isCollapsed = model.isTagGroupCollapsed(section.group.id)
+        return VStack(alignment: .leading, spacing: 6) {
+            Button {
+                model.toggleTagGroupCollapsed(section.group.id)
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: isCollapsed ? "chevron.right" : "chevron.down")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 10)
+                    Text(section.group.displayName)
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .textCase(nil)
+                    if !section.tags.isEmpty {
+                        Text("\(section.tags.count)")
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                    }
+                    Spacer(minLength: 0)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .persistentHelp(
+                isCollapsed
+                    ? "展开“\(section.group.displayName)”分组，显示其中标签。"
+                    : "折叠“\(section.group.displayName)”分组，暂时隐藏其中标签。"
+            )
+            .contextMenu {
+                if !section.group.isSystem {
+                    Button("重命名分组…") {
+                        renamedTagGroupName = section.group.displayName
+                        tagGroupPendingRename = section.group
+                    }
+                    .persistentHelp("打开重命名窗口，修改这个分组的显示名称。")
+                    Button("删除分组", role: .destructive) {
+                        tagGroupPendingDelete = section.group
+                    }
+                    .persistentHelp("打开删除确认；组内标签会移到“其他”。")
+                }
+            }
+
+            if !isCollapsed {
+                LibraryTagFlowLayout {
+                    ForEach(section.tags, id: \.id) { tag in
+                        inspectorTagChip(tag)
+                            .background {
+                                GeometryReader { proxy in
+                                    Color.clear.preference(
+                                        key: LibraryInspectorTagChipFramePreferenceKey.self,
+                                        value: [
+                                            tag.id: proxy.frame(
+                                                in: .named(Self.inspectorTagReorderCoordinateSpace)
+                                            ),
+                                        ]
+                                    )
+                                }
+                            }
+                            .overlay {
+                                tagInsertionIndicator(
+                                    for: tag.id,
+                                    in: section,
+                                    surface: .inspector
+                                )
+                            }
+                            .opacity(
+                                draggedTagID == tag.id &&
+                                    activeTagReorderSurface == .inspector
+                                    ? 0.55
+                                    : 1
+                            )
+                            .simultaneousGesture(
+                                tagReorderGesture(
+                                    tagID: tag.id,
+                                    groupID: section.group.id,
+                                    tagIDs: section.tags.map(\.id),
+                                    surface: .inspector
+                                )
+                            )
+                    }
+                }
+            }
+        }
+        .padding(.vertical, 3)
+        .padding(4)
+        .background {
+            GeometryReader { proxy in
+                Color.clear
+                    .preference(
+                        key: LibraryInspectorTagGroupContainerFramePreferenceKey.self,
+                        value: [
+                            section.group.id: proxy.frame(
+                                in: .named(Self.inspectorTagReorderCoordinateSpace)
+                            ),
+                        ]
+                    )
+                    .overlay {
+                        if tagDropTargetGroupID == section.group.id,
+                           activeTagReorderSurface == .inspector
+                        {
+                            RoundedRectangle(cornerRadius: 8)
+                                .fill(Color.accentColor.opacity(0.12))
+                        }
+                    }
+            }
+        }
+    }
+
+    private func inspectorDecision(for tagID: UUID) -> LibraryInspectorTagDecisionState {
+        model.inspectorTags.first(where: { $0.id == tagID })?.decision ?? .unknown
+    }
+
+    private func inspectorTagChip(_ tag: TagListItem) -> some View {
+        let decision = inspectorDecision(for: tag.id)
+        let labelingEnabled = !model.selectedAssetIDs.isEmpty
+        let isAccepted = decision == .accepted
+        let isMixed = decision == .mixed
+
+        return HStack(spacing: 5) {
+            Label {
+                Text(tag.displayName)
+                    .lineLimit(1)
+            } icon: {
+                Image(systemName: "tag")
+            }
+            if isAccepted {
+                Image(systemName: "checkmark")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+            } else if isMixed {
+                Text("混")
+                    .font(.caption2.weight(.semibold))
                     .foregroundStyle(.secondary)
             }
-            tagDecisionButton(
-                systemImage: "checkmark",
-                label: "确认 \(tag.displayName)",
-                isActive: tag.decision == .accepted
-            ) {
-                await model.requestTagDecision(tagID: tag.id, action: .accept)
-            }
-            tagDecisionButton(
-                systemImage: "xmark",
-                label: "拒绝 \(tag.displayName)",
-                isActive: tag.decision == .rejected
-            ) {
-                await model.requestTagDecision(tagID: tag.id, action: .reject)
-            }
-            tagDecisionButton(
-                systemImage: "minus",
-                label: "清除 \(tag.displayName) 的决定",
-                isActive: tag.decision == .unknown
-            ) {
-                await model.requestTagDecision(tagID: tag.id, action: .clear)
+        }
+        .padding(.horizontal, 8)
+        .frame(height: 28)
+        .frame(maxWidth: 180, alignment: .leading)
+        .fixedSize(horizontal: true, vertical: false)
+        .contentShape(Rectangle())
+        .background {
+            if isAccepted {
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(Color.accentColor.opacity(0.18))
+            } else if isMixed {
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(Color.accentColor.opacity(0.08))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 6)
+                            .strokeBorder(
+                                Color.accentColor.opacity(0.55),
+                                style: StrokeStyle(lineWidth: 1, dash: [3, 2])
+                            )
+                    }
+            } else {
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(Color(nsColor: .controlBackgroundColor).opacity(0.75))
             }
         }
-    }
-
-    private func tagDecisionButton(
-        systemImage: String,
-        label: String,
-        isActive: Bool,
-        action: @escaping @MainActor () async -> Void
-    ) -> some View {
-        Button {
-            Task { await action() }
-        } label: {
-            Image(systemName: systemImage)
-                .frame(width: 14, height: 14)
+        .foregroundStyle(Color.primary)
+        .opacity(labelingEnabled ? 1 : 0.72)
+        .onTapGesture {
+            guard labelingEnabled else { return }
+            Task { await model.requestTagDecision(tagID: tag.id, action: .accept) }
         }
-        .buttonStyle(.bordered)
-        .tint(isActive ? .accentColor : .secondary)
-        .background(
-            isActive ? Color.accentColor.opacity(0.14) : Color.clear,
-            in: RoundedRectangle(cornerRadius: 5)
+        .background {
+            LibraryRightClickCatcher(enabled: labelingEnabled) {
+                Task { await model.requestTagDecision(tagID: tag.id, action: .clear) }
+            }
+        }
+        .persistentHelp(
+            labelingEnabled
+                ? (
+                    isAccepted
+                        ? "已打上“\(tag.displayName)”；左键保持打上，右键取消；拖拽可调整顺序"
+                        : isMixed
+                            ? "所选照片对该标签状态不一致；左键全部打上，右键全部取消；拖拽可调整顺序"
+                            : "左键打上“\(tag.displayName)”，右键取消；拖拽可调整顺序"
+                )
+                : "选择照片后，左键打上标签，右键取消；拖拽仍可调整分组与顺序"
         )
-        .persistentHelp(label)
-        .accessibilityLabel(label)
+        .accessibilityLabel(tag.displayName)
+        .accessibilityHint(
+            labelingEnabled
+                ? "左键打上标签，右键取消标签"
+                : "先选择照片再打标签"
+        )
     }
 
     private func metadata(_ detail: AssetInspectorDetail) -> some View {

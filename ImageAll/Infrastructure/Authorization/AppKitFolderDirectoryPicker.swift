@@ -16,13 +16,20 @@ struct AppKitFolderDirectoryPicker: FolderDirectoryPickerPort {
         self.runModal = runModal
     }
 
-    func pickDirectory(initialDirectoryURL: URL?) -> URL? {
+    func pickDirectory(initialDirectoryURL: URL?) async -> URL? {
         let panel = panelFactory()
         panel.directoryURL = initialDirectoryURL
-        guard runModal(panel) == .OK, let url = panel.url else {
-            return nil
+        NSApp.activate(ignoringOtherApps: true)
+        // Escape the current Swift concurrency / MainActor stack before entering
+        // AppKit's nested modal run loop. Calling `runModal()` directly after an
+        // `await` (e.g. recycle → authorizeMutation) can leave the panel invisible
+        // or never return, which freezes the UI on「正在移入回收站…」.
+        return await withCheckedContinuation { continuation in
+            DispatchQueue.main.async {
+                let response = self.runModal(panel)
+                continuation.resume(returning: response == .OK ? panel.url : nil)
+            }
         }
-        return url
     }
 
     static func makeProductionPanel() -> NSOpenPanel {
@@ -57,6 +64,11 @@ struct AppKitFolderDirectoryPicker: FolderDirectoryPickerPort {
 
 extension AppKitFolderDirectoryPicker: AppStorageRootPicking {
     func pickCacheRoot() -> URL? {
-        pickDirectory()
+        let panel = panelFactory()
+        NSApp.activate(ignoringOtherApps: true)
+        guard runModal(panel) == .OK, let url = panel.url else {
+            return nil
+        }
+        return url
     }
 }

@@ -6,6 +6,7 @@ enum FolderReconcileJobFactory {
     static let contractVersion = 1
     static let maxAttempts = 5
     static let priority = 0
+    static let leaseDurationMs: Int64 = 10 * 60 * 1_000
 
     static func coalescingKey(sourceID: UUID) -> String {
         "\(kind):\(sourceID.uuidString.lowercased())"

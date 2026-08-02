@@ -9,7 +9,10 @@ struct FolderEnumerationConfig: Sendable, Equatable {
         self.assetBatchLimit = assetBatchLimit
     }
 
-    static let productionDefault = FolderEnumerationConfig(workUnitLimit: 256, assetBatchLimit: 256)
+    // External disks can spend tens of seconds loading one large video's
+    // metadata. Commit a checkpoint frequently enough to renew the job lease
+    // and expose visible progress without turning every file into a DB write.
+    static let productionDefault = FolderEnumerationConfig(workUnitLimit: 16, assetBatchLimit: 64)
 }
 
 enum FolderEnumerationEntryKind: Equatable, Sendable {

@@ -176,4 +176,21 @@ protocol PhotosLibraryMutationPort: Sendable {
     /// PhotoKit mutation. Partial resolution must fail before mutation.
     func moveToRecentlyDeleted(localIdentifiers: [String]) throws -> [String]
     func presence(localIdentifier: String) throws -> PhotosAssetPresence
+    func presences(
+        localIdentifiers: [String]
+    ) throws -> [String: PhotosAssetPresence]
+}
+
+extension PhotosLibraryMutationPort {
+    func presences(
+        localIdentifiers: [String]
+    ) throws -> [String: PhotosAssetPresence] {
+        var facts: [String: PhotosAssetPresence] = [:]
+        for localIdentifier in localIdentifiers {
+            let identifier = localIdentifier.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !identifier.isEmpty, facts[identifier] == nil else { continue }
+            facts[identifier] = try presence(localIdentifier: identifier)
+        }
+        return facts
+    }
 }

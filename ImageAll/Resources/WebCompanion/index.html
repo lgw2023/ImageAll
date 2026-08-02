@@ -193,8 +193,12 @@
         <div class="sidebar-section tag-navigation-section">
           <div class="sidebar-section-heading">
             <h2>标签</h2>
-            <button id="sidebarNewTagButton" class="sidebar-add-button write-action" type="button"
-              aria-label="新增标签" title="为所选照片新增标签">＋</button>
+            <div class="sidebar-heading-actions">
+              <button id="tagManagerButton" class="sidebar-add-button write-action" type="button"
+                aria-label="管理标签和分组" title="管理标签和分组">•••</button>
+              <button id="sidebarNewTagButton" class="sidebar-add-button write-action" type="button"
+                aria-label="新增标签" title="为所选照片新增标签">＋</button>
+            </div>
           </div>
           <label class="sidebar-search">
             <span aria-hidden="true">⌕</span>
@@ -378,6 +382,7 @@
         </div>
         <div id="inspectorContent" class="inspector-content hidden">
           <div class="preview-wrap">
+            <img id="previewPlaceholderImage" class="hidden" alt="" aria-hidden="true">
             <img id="previewImage" alt="">
             <div id="inspectorNavigation" class="inspector-navigation" aria-label="照片导航">
               <button id="inspectorPreviousButton" type="button" aria-label="上一张照片">‹</button>
@@ -436,13 +441,14 @@
     <header class="review-titlebar">
       <div class="review-title-copy">
         <button id="closeReviewButton" class="icon-button" type="button" aria-label="关闭审核">×</button>
+        <button id="reviewBackButton" class="icon-button hidden" type="button" aria-label="返回审核总览">‹</button>
         <div>
           <strong>建议审核</strong>
           <span id="reviewSummary" class="secondary">选择标签开始审核</span>
         </div>
       </div>
       <div class="review-controls">
-        <label>
+        <label id="reviewTagControl" class="hidden">
           <span class="visually-hidden">审核标签</span>
           <select id="reviewTagSelect"></select>
         </label>
@@ -453,7 +459,15 @@
         <button id="refreshReviewButton" class="icon-button" type="button" title="刷新审核队列" aria-label="刷新审核队列">↻</button>
       </div>
     </header>
-    <div class="review-body">
+    <section id="reviewOverview" class="review-overview">
+      <div id="reviewOverviewEmpty" class="review-overview-empty hidden">
+        <span aria-hidden="true">✦</span>
+        <strong>暂无待审核标签</strong>
+        <p>先在图库中积累确认与拒绝样本，或等待 Mac 端生成新建议。</p>
+      </div>
+      <div id="reviewOverviewGrid" class="review-overview-grid"></div>
+    </section>
+    <div id="reviewQueueLayout" class="review-body hidden">
       <aside class="review-queue-pane">
         <div id="reviewEmpty" class="review-empty">
           <span aria-hidden="true">✓</span>
@@ -533,6 +547,69 @@
     </form>
   </dialog>
 
+  <dialog id="tagManagerDialog" class="tag-manager-dialog" aria-labelledby="tagManagerDialogTitle">
+    <form method="dialog" class="tag-manager-shell">
+      <header class="sheet-dialog-heading">
+        <div>
+          <h2 id="tagManagerDialogTitle">管理标签</h2>
+          <p>名称、分组和归档状态与 Mac 端共用</p>
+        </div>
+        <button id="closeTagManagerButton" class="icon-button" type="button" aria-label="关闭标签管理">×</button>
+      </header>
+      <section class="tag-manager-section">
+        <h3>标签</h3>
+        <label class="sheet-dialog-field">
+          <span>选择标签</span>
+          <select id="tagManagerTagSelect"></select>
+        </label>
+        <label class="sheet-dialog-field">
+          <span>名称</span>
+          <input id="tagManagerTagName" type="text" autocomplete="off" maxlength="80">
+        </label>
+        <label class="sheet-dialog-field">
+          <span>所在分组</span>
+          <select id="tagManagerTagGroupSelect"></select>
+        </label>
+        <div class="tag-manager-actions">
+          <button id="renameManagedTagButton" class="button write-action" type="button">重命名</button>
+          <button id="moveManagedTagButton" class="button write-action" type="button">移动到分组</button>
+          <button id="archiveManagedTagButton" class="button button-danger write-action" type="button">归档标签</button>
+        </div>
+      </section>
+      <section class="tag-manager-section">
+        <h3>分组</h3>
+        <label class="sheet-dialog-field">
+          <span>选择分组</span>
+          <select id="tagManagerGroupSelect"></select>
+        </label>
+        <label class="sheet-dialog-field">
+          <span>分组名称</span>
+          <input id="tagManagerGroupName" type="text" autocomplete="off" maxlength="80"
+            placeholder="输入新分组名称或修改当前名称">
+        </label>
+        <div class="tag-manager-actions">
+          <button id="createTagGroupButton" class="button button-primary write-action" type="button">新建分组</button>
+          <button id="renameTagGroupButton" class="button write-action" type="button">重命名</button>
+          <button id="deleteTagGroupButton" class="button button-danger write-action" type="button">删除分组</button>
+        </div>
+        <p id="tagManagerError" class="form-error" role="alert"></p>
+      </section>
+    </form>
+  </dialog>
+
+  <dialog id="confirmDialog" class="confirm-dialog" aria-labelledby="confirmDialogTitle">
+    <section>
+      <header>
+        <h2 id="confirmDialogTitle">确认操作</h2>
+      </header>
+      <p id="confirmDialogMessage"></p>
+      <footer class="sheet-dialog-actions">
+        <button id="cancelConfirmButton" class="button button-plain" type="button">取消</button>
+        <button id="confirmActionButton" class="button button-danger write-action" type="button">确认</button>
+      </footer>
+    </section>
+  </dialog>
+
   <dialog id="commandPalette" class="command-palette" aria-label="命令面板">
     <form method="dialog" class="command-palette-shell">
       <header>
@@ -570,6 +647,9 @@
     <button type="button" role="menuitem" data-context-action="filterSource">只看此来源</button>
   </div>
 
-  <div id="toast" class="toast hidden" role="status"></div>
+  <div id="toast" class="toast hidden" role="status">
+    <span id="toastMessage"></span>
+    <button id="undoToastButton" class="toast-action hidden" type="button">撤销</button>
+  </div>
 </body>
 </html>

@@ -3,11 +3,11 @@ import Foundation
 @preconcurrency
 @MainActor
 protocol FolderDirectoryPickerPort: Sendable {
-    func pickDirectory(initialDirectoryURL: URL?) -> URL?
+    func pickDirectory(initialDirectoryURL: URL?) async -> URL?
 }
 
 extension FolderDirectoryPickerPort {
-    func pickDirectory() -> URL? {
-        pickDirectory(initialDirectoryURL: nil)
+    func pickDirectory() async -> URL? {
+        await pickDirectory(initialDirectoryURL: nil)
     }
 }

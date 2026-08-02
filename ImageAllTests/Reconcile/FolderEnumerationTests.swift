@@ -3,6 +3,12 @@ import XCTest
 @testable import ImageAll
 
 final class FolderEnumerationTests: XCTestCase {
+    func testProductionEnumerationUsesLeaseSafeBoundariesForSlowExternalMedia() {
+        XCTAssertLessThanOrEqual(FolderEnumerationConfig.productionDefault.workUnitLimit, 16)
+        XCTAssertLessThanOrEqual(FolderEnumerationConfig.productionDefault.assetBatchLimit, 64)
+        XCTAssertGreaterThanOrEqual(FolderReconcileJobFactory.leaseDurationMs, 10 * 60 * 1_000)
+    }
+
     func testRelativePathRulesRejectTraversal() {
         XCTAssertEqual(RelativePathRules.validate("../secret"), .failure(.invalidComponent))
         XCTAssertEqual(RelativePathRules.validate("a/../b"), .failure(.invalidComponent))

@@ -34,6 +34,7 @@ const elements = {
   tagNavigationSearch: $("#tagNavigationSearch"),
   tagNavigationEmpty: $("#tagNavigationEmpty"),
   sidebarNewTagButton: $("#sidebarNewTagButton"),
+  tagManagerButton: $("#tagManagerButton"),
   hostVersion: $("#hostVersion"),
   mediaKindTabs: $("#mediaKindTabs"),
   libraryPane: $("#libraryPane"),
@@ -62,6 +63,7 @@ const elements = {
   selectionInspectorNewTagButton: $("#selectionInspectorNewTagButton"),
   selectionTagSearch: $("#selectionTagSearch"),
   inspectorContent: $("#inspectorContent"),
+  previewPlaceholderImage: $("#previewPlaceholderImage"),
   previewImage: $("#previewImage"),
   previewLoading: $("#previewLoading"),
   openLightboxButton: $("#openLightboxButton"),
@@ -123,10 +125,16 @@ const elements = {
   cancelNewTagFooterButton: $("#cancelNewTagFooterButton"),
   reviewWorkspace: $("#reviewWorkspace"),
   closeReviewButton: $("#closeReviewButton"),
+  reviewBackButton: $("#reviewBackButton"),
   reviewSummary: $("#reviewSummary"),
+  reviewTagControl: $("#reviewTagControl"),
   reviewTagSelect: $("#reviewTagSelect"),
   reviewCurrentSourceOnly: $("#reviewCurrentSourceOnly"),
   refreshReviewButton: $("#refreshReviewButton"),
+  reviewOverview: $("#reviewOverview"),
+  reviewOverviewGrid: $("#reviewOverviewGrid"),
+  reviewOverviewEmpty: $("#reviewOverviewEmpty"),
+  reviewQueueLayout: $("#reviewQueueLayout"),
   reviewGrid: $("#reviewGrid"),
   reviewEmpty: $("#reviewEmpty"),
   loadMoreReviewButton: $("#loadMoreReviewButton"),
@@ -155,6 +163,27 @@ const elements = {
   closeShortcutButton: $("#closeShortcutButton"),
   assetContextMenu: $("#assetContextMenu"),
   toast: $("#toast"),
+  toastMessage: $("#toastMessage"),
+  undoToastButton: $("#undoToastButton"),
+  tagManagerDialog: $("#tagManagerDialog"),
+  closeTagManagerButton: $("#closeTagManagerButton"),
+  tagManagerTagSelect: $("#tagManagerTagSelect"),
+  tagManagerTagName: $("#tagManagerTagName"),
+  tagManagerTagGroupSelect: $("#tagManagerTagGroupSelect"),
+  renameManagedTagButton: $("#renameManagedTagButton"),
+  moveManagedTagButton: $("#moveManagedTagButton"),
+  archiveManagedTagButton: $("#archiveManagedTagButton"),
+  tagManagerGroupSelect: $("#tagManagerGroupSelect"),
+  tagManagerGroupName: $("#tagManagerGroupName"),
+  createTagGroupButton: $("#createTagGroupButton"),
+  renameTagGroupButton: $("#renameTagGroupButton"),
+  deleteTagGroupButton: $("#deleteTagGroupButton"),
+  tagManagerError: $("#tagManagerError"),
+  confirmDialog: $("#confirmDialog"),
+  confirmDialogTitle: $("#confirmDialogTitle"),
+  confirmDialogMessage: $("#confirmDialogMessage"),
+  cancelConfirmButton: $("#cancelConfirmButton"),
+  confirmActionButton: $("#confirmActionButton"),
 };
 
 const emptyFilters = () => ({
@@ -176,6 +205,7 @@ const state = {
   capabilities: null,
   sources: [],
   tags: [],
+  tagGroups: [],
   jobs: [],
   assets: [],
   nextCursor: null,
@@ -205,10 +235,16 @@ const state = {
   selectionAggregates: [],
   aggregateGeneration: 0,
   tagMutating: false,
+  tagManagementMutating: false,
   jobMutatingIDs: new Set(),
   inspectorTagSearchText: "",
   selectionTagSearchText: "",
   review: {
+    mode: "overview",
+    overview: [],
+    overviewTotal: 0,
+    overviewLoading: false,
+    overviewGeneration: 0,
     items: [],
     nextCursor: null,
     selectedIndex: -1,
@@ -234,6 +270,10 @@ const state = {
   refreshRetryTimer: null,
   refreshRetryAttempt: 0,
   toastTimer: null,
+  latestUndoID: null,
+  latestUndoOperationID: null,
+  undoMutating: false,
+  pendingConfirmAction: null,
   newTagOperationID: null,
   autoLoadObserver: null,
   searchTimer: null,
@@ -254,6 +294,22 @@ const densityWidths = [74, 86, 100, 116, 132, 156, 184, 220, 268];
 const protectedImageRequests = new WeakMap();
 const protectedImageAbortControllers = new WeakMap();
 let protectedImageRequestSequence = 0;
+const protectedImageIntersectionObserver = "IntersectionObserver" in globalThis
+  ? new IntersectionObserver((entries) => {
+    for (const entry of entries) {
+      if (!entry.isIntersecting) continue;
+      const image = entry.target;
+      protectedImageIntersectionObserver.unobserve(image);
+      const requestID = Number(image.dataset.protectedRequestId);
+      const path = image.dataset.protectedPath;
+      if (!path || protectedImageRequests.get(image) !== requestID) continue;
+      startProtectedImageRequest(image, path, requestID, "low");
+    }
+  }, {
+    root: elements.libraryScroll,
+    rootMargin: "600px",
+  })
+  : null;
 
 class APIError extends Error {
   constructor(status, payload) {
@@ -338,25 +394,11 @@ async function monitorProtectedImageDecode(image, requestID, objectURL = null) {
   }
 }
 
-function setProtectedImageSource(image, path) {
-  if (image.dataset.protectedPath === path) return;
-  protectedImageAbortControllers.get(image)?.abort();
-  protectedImageAbortControllers.delete(image);
-  const requestID = ++protectedImageRequestSequence;
-  protectedImageRequests.set(image, requestID);
-  image.dataset.protectedRequestId = String(requestID);
-  image.dataset.protectedPath = path;
-  delete image.dataset.protectedAssignedRequestId;
-  image.removeAttribute("src");
-  if (!state.accountAuthorization) {
-    image.dataset.protectedAssignedRequestId = String(requestID);
-    image.src = path;
-    void monitorProtectedImageDecode(image, requestID);
-    return;
-  }
+function startProtectedImageRequest(image, path, requestID, priority = "auto") {
+  if (protectedImageRequests.get(image) !== requestID) return;
   const controller = new AbortController();
   protectedImageAbortControllers.set(image, controller);
-  rawFetch(path, { signal: controller.signal })
+  rawFetch(path, { signal: controller.signal, priority })
     .then(async (response) => {
       if (!response.ok) throw new Error(`图片请求失败（${response.status}）`);
       const blob = await response.blob();
@@ -381,7 +423,32 @@ function setProtectedImageSource(image, path) {
     });
 }
 
+function setProtectedImageSource(image, path, { priority = "auto" } = {}) {
+  if (image.dataset.protectedPath === path) return;
+  protectedImageIntersectionObserver?.unobserve(image);
+  protectedImageAbortControllers.get(image)?.abort();
+  protectedImageAbortControllers.delete(image);
+  const requestID = ++protectedImageRequestSequence;
+  protectedImageRequests.set(image, requestID);
+  image.dataset.protectedRequestId = String(requestID);
+  image.dataset.protectedPath = path;
+  delete image.dataset.protectedAssignedRequestId;
+  image.removeAttribute("src");
+  if (!state.accountAuthorization) {
+    image.dataset.protectedAssignedRequestId = String(requestID);
+    image.src = path;
+    void monitorProtectedImageDecode(image, requestID);
+    return;
+  }
+  if (image.loading === "lazy" && protectedImageIntersectionObserver) {
+    protectedImageIntersectionObserver.observe(image);
+    return;
+  }
+  startProtectedImageRequest(image, path, requestID, priority);
+}
+
 function clearProtectedImageSource(image) {
+  protectedImageIntersectionObserver?.unobserve(image);
   protectedImageAbortControllers.get(image)?.abort();
   protectedImageAbortControllers.delete(image);
   const requestID = ++protectedImageRequestSequence;
@@ -443,6 +510,9 @@ function closeOverlays() {
   if (elements.commandPalette.open) elements.commandPalette.close();
   if (elements.shortcutDialog.open) elements.shortcutDialog.close();
   if (elements.newTagDialog.open) closeNewTagDialog();
+  if (elements.tagManagerDialog.open) elements.tagManagerDialog.close();
+  if (elements.confirmDialog.open) elements.confirmDialog.close();
+  state.pendingConfirmAction = null;
   elements.reviewWorkspace.classList.add("hidden");
   elements.reviewWorkspace.inert = false;
   elements.lightbox.classList.add("hidden");
@@ -567,9 +637,26 @@ function setConnection(online, label) {
 
 function toast(message) {
   clearTimeout(state.toastTimer);
-  elements.toast.textContent = message;
+  elements.toastMessage.textContent = message;
+  elements.undoToastButton.classList.add("hidden");
   elements.toast.classList.remove("hidden");
   state.toastTimer = setTimeout(() => elements.toast.classList.add("hidden"), 2600);
+}
+
+function undoToast(message, undoID) {
+  clearTimeout(state.toastTimer);
+  const nextUndoID = undoID || null;
+  if (state.latestUndoID !== nextUndoID) {
+    state.latestUndoOperationID = nextUndoID ? crypto.randomUUID() : null;
+  } else if (nextUndoID && !state.latestUndoOperationID) {
+    state.latestUndoOperationID = crypto.randomUUID();
+  }
+  state.latestUndoID = nextUndoID;
+  elements.toastMessage.textContent = message;
+  elements.undoToastButton.classList.toggle("hidden", !undoID);
+  elements.undoToastButton.disabled = !undoID || state.undoMutating;
+  elements.toast.classList.remove("hidden");
+  state.toastTimer = setTimeout(() => elements.toast.classList.add("hidden"), 7000);
 }
 
 function clearElement(element) {
@@ -590,7 +677,9 @@ function syncWriteActionControls() {
       && (state.review.loading || state.review.mutating);
     const jobLocked = isJobAction
       && state.jobMutatingIDs.has(button.dataset.jobId);
-    const tagLocked = !isReviewAction && !isJobAction && state.tagMutating;
+    const tagLocked = !isReviewAction
+      && !isJobAction
+      && (state.tagMutating || state.tagManagementMutating);
     const batchUnavailable = isBatchAction
       && (!state.selectedAssetIDs.size || !elements.batchTagSelect.value);
     const aggregateUnavailable = isSelectionTagAction
@@ -602,6 +691,11 @@ function syncWriteActionControls() {
       || batchUnavailable
       || aggregateUnavailable;
   });
+  elements.undoToastButton.disabled = !state.online
+    || !state.latestUndoID
+    || state.undoMutating;
+  syncManagedTagFields({ updateValues: false });
+  syncManagedGroupFields({ updateValues: false });
 }
 
 function persistWorkspacePreferences() {
@@ -845,6 +939,17 @@ function activeTags() {
   return state.tags.filter((tag) => tag.state === "active");
 }
 
+function orderedTagGroups() {
+  return [...state.tagGroups].sort((left, right) => (
+    left.sortOrder - right.sortOrder
+      || left.displayName.localeCompare(right.displayName, "zh-CN")
+  ));
+}
+
+function groupByID(groupID) {
+  return state.tagGroups.find((group) => group.id === groupID);
+}
+
 function projectionFingerprint(value) {
   return JSON.stringify(value);
 }
@@ -880,6 +985,7 @@ function renderTagSelects() {
     || state.review.loading
     || state.review.mutating;
   renderTagNavigation();
+  renderTagManager();
   renderCommandItems();
 }
 
@@ -902,16 +1008,59 @@ function renderTagNavigation() {
   clearElement(elements.tagNavigation);
   elements.tagNavigationEmpty.classList.toggle("hidden", tags.length > 0);
 
-  for (const tag of tags) {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "sidebar-tag-chip";
-    button.dataset.quickTagId = tag.id;
-    button.textContent = tag.displayName;
-    button.title = `只显示已确认“${tag.displayName}”的${state.mediaKind === "video" ? "视频" : "照片"}`;
-    button.classList.toggle("selected", selectedTagID === tag.id);
-    button.setAttribute("aria-pressed", String(selectedTagID === tag.id));
-    elements.tagNavigation.append(button);
+  const knownGroups = orderedTagGroups();
+  const groups = knownGroups.length
+    ? knownGroups
+    : [{ id: "", displayName: "标签", sortOrder: 0, isSystem: true }];
+  for (const group of groups) {
+    const groupTags = tags.filter((tag) => (
+      knownGroups.length ? tag.groupID === group.id : true
+    ));
+    if (!groupTags.length) continue;
+    const section = document.createElement("section");
+    section.className = "tag-navigation-group";
+    const title = document.createElement("h3");
+    title.className = "tag-navigation-group-title";
+    title.textContent = group.displayName;
+    const list = document.createElement("div");
+    list.className = "tag-navigation-group-tags";
+    for (const tag of groupTags) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "sidebar-tag-chip";
+      button.dataset.quickTagId = tag.id;
+      button.textContent = tag.displayName;
+      button.title = `只显示已确认“${tag.displayName}”的${state.mediaKind === "video" ? "视频" : "照片"}`;
+      button.classList.toggle("selected", selectedTagID === tag.id);
+      button.setAttribute("aria-pressed", String(selectedTagID === tag.id));
+      list.append(button);
+    }
+    section.append(title, list);
+    elements.tagNavigation.append(section);
+  }
+  const orphanedTags = knownGroups.length
+    ? tags.filter((tag) => !groupByID(tag.groupID))
+    : [];
+  if (orphanedTags.length) {
+    const section = document.createElement("section");
+    section.className = "tag-navigation-group";
+    const title = document.createElement("h3");
+    title.className = "tag-navigation-group-title";
+    title.textContent = "其他";
+    const list = document.createElement("div");
+    list.className = "tag-navigation-group-tags";
+    for (const tag of orphanedTags) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "sidebar-tag-chip";
+      button.dataset.quickTagId = tag.id;
+      button.textContent = tag.displayName;
+      button.classList.toggle("selected", selectedTagID === tag.id);
+      button.setAttribute("aria-pressed", String(selectedTagID === tag.id));
+      list.append(button);
+    }
+    section.append(title, list);
+    elements.tagNavigation.append(section);
   }
   elements.untaggedNavigationButton.classList.toggle(
     "selected",
@@ -941,6 +1090,236 @@ async function applyUntaggedFilter() {
   renderTagNavigation();
   syncFilterControlsFromState();
   await loadAssets();
+}
+
+function renderTagManager() {
+  const previousTagID = elements.tagManagerTagSelect.value;
+  const previousGroupID = elements.tagManagerGroupSelect.value;
+  setSelectOptions(
+    elements.tagManagerTagSelect,
+    activeTags(),
+    activeTags().length ? null : "尚无活动标签"
+  );
+  setSelectOptions(
+    elements.tagManagerTagGroupSelect,
+    orderedTagGroups(),
+    state.tagGroups.length ? null : "尚无标签分组"
+  );
+  setSelectOptions(
+    elements.tagManagerGroupSelect,
+    orderedTagGroups(),
+    state.tagGroups.length ? null : "尚无标签分组"
+  );
+  if (previousTagID && tagByID(previousTagID)) {
+    elements.tagManagerTagSelect.value = previousTagID;
+  }
+  if (previousGroupID && groupByID(previousGroupID)) {
+    elements.tagManagerGroupSelect.value = previousGroupID;
+  }
+  syncManagedTagFields();
+  syncManagedGroupFields();
+}
+
+function syncManagedTagFields({ updateValues = true } = {}) {
+  const tag = tagByID(elements.tagManagerTagSelect.value);
+  if (updateValues) {
+    elements.tagManagerTagName.value = tag?.displayName || "";
+    elements.tagManagerTagGroupSelect.value = tag?.groupID || "";
+  }
+  const disabled = !tag || state.tagManagementMutating;
+  elements.tagManagerTagName.disabled = disabled;
+  elements.tagManagerTagGroupSelect.disabled = disabled;
+  elements.renameManagedTagButton.disabled = disabled || !state.online;
+  elements.moveManagedTagButton.disabled = disabled || !state.online;
+  elements.archiveManagedTagButton.disabled = disabled || !state.online;
+}
+
+function syncManagedGroupFields({ updateValues = true } = {}) {
+  const group = groupByID(elements.tagManagerGroupSelect.value);
+  if (updateValues) elements.tagManagerGroupName.value = group?.displayName || "";
+  const protectedGroup = !group || group.isSystem;
+  elements.renameTagGroupButton.disabled = protectedGroup
+    || state.tagManagementMutating
+    || !state.online;
+  elements.deleteTagGroupButton.disabled = protectedGroup
+    || state.tagManagementMutating
+    || !state.online;
+  elements.createTagGroupButton.disabled = state.tagManagementMutating || !state.online;
+}
+
+function openTagManager() {
+  elements.tagManagerError.textContent = "";
+  renderTagManager();
+  elements.tagManagerDialog.showModal();
+  elements.tagManagerTagSelect.focus({ preventScroll: true });
+}
+
+function requestConfirmation({ title, message, actionLabel, action }) {
+  state.pendingConfirmAction = action;
+  elements.confirmDialogTitle.textContent = title;
+  elements.confirmDialogMessage.textContent = message;
+  elements.confirmActionButton.textContent = actionLabel;
+  elements.confirmDialog.showModal();
+  elements.confirmActionButton.focus({ preventScroll: true });
+}
+
+function closeConfirmation() {
+  state.pendingConfirmAction = null;
+  elements.confirmDialog.close();
+}
+
+async function refreshTagCatalogAfterMutation() {
+  const [tags, groups] = await Promise.all([
+    api("/v1/tags"),
+    api("/v1/tag-groups"),
+  ]);
+  state.tags = tags;
+  state.tagGroups = groups;
+  const activeTagIDs = new Set(activeTags().map((tag) => tag.id));
+  state.filters.tagConditions = state.filters.tagConditions.filter(
+    (condition) => activeTagIDs.has(condition.tagID)
+  );
+  renderTagSelects();
+  renderFilterChips();
+}
+
+async function performTagCatalogMutation(path, body, successMessage) {
+  if (!state.online || state.tagManagementMutating) return;
+  const generation = state.workspaceGeneration;
+  state.tagManagementMutating = true;
+  elements.tagManagerError.textContent = "";
+  syncWriteActionControls();
+  renderTagManager();
+  try {
+    await api(path, { method: "POST", body: JSON.stringify(body) });
+    if (generation !== state.workspaceGeneration) return;
+    await refreshTagCatalogAfterMutation();
+    if (generation !== state.workspaceGeneration) return;
+    await loadAssets({
+      preserveSelection: true,
+      preserveUnchangedGrid: true,
+      preserveLoadedWindow: true,
+    });
+    toast(successMessage);
+  } catch (error) {
+    if (generation === state.workspaceGeneration) {
+      elements.tagManagerError.textContent = error.message || "标签操作失败";
+    }
+  } finally {
+    if (generation === state.workspaceGeneration) {
+      state.tagManagementMutating = false;
+      renderTagManager();
+      syncWriteActionControls();
+    }
+  }
+}
+
+async function renameManagedTag() {
+  const tag = tagByID(elements.tagManagerTagSelect.value);
+  const name = elements.tagManagerTagName.value.trim();
+  if (!tag || !name) return;
+  await performTagCatalogMutation(
+    `/v1/tags/${tag.id}/rename`,
+    { operationID: crypto.randomUUID(), name },
+    `已将标签重命名为“${name}”`
+  );
+}
+
+async function moveManagedTag() {
+  const tag = tagByID(elements.tagManagerTagSelect.value);
+  const group = groupByID(elements.tagManagerTagGroupSelect.value);
+  if (!tag || !group) return;
+  await performTagCatalogMutation(
+    `/v1/tags/${tag.id}/move`,
+    { operationID: crypto.randomUUID(), groupID: group.id },
+    `已将“${tag.displayName}”移动到“${group.displayName}”`
+  );
+}
+
+function confirmArchiveManagedTag() {
+  const tag = tagByID(elements.tagManagerTagSelect.value);
+  if (!tag) return;
+  requestConfirmation({
+    title: "归档标签？",
+    message: `“${tag.displayName}”会从活动标签和网页筛选中移除，已有照片决定仍保留。`,
+    actionLabel: "归档",
+    action: () => performTagCatalogMutation(
+      `/v1/tags/${tag.id}/archive`,
+      { operationID: crypto.randomUUID() },
+      `已归档标签“${tag.displayName}”`
+    ),
+  });
+}
+
+async function createManagedTagGroup() {
+  const name = elements.tagManagerGroupName.value.trim();
+  if (!name) return;
+  await performTagCatalogMutation(
+    "/v1/tag-groups",
+    { operationID: crypto.randomUUID(), name },
+    `已新建分组“${name}”`
+  );
+}
+
+async function renameManagedTagGroup() {
+  const group = groupByID(elements.tagManagerGroupSelect.value);
+  const name = elements.tagManagerGroupName.value.trim();
+  if (!group || group.isSystem || !name) return;
+  await performTagCatalogMutation(
+    `/v1/tag-groups/${group.id}/rename`,
+    { operationID: crypto.randomUUID(), name },
+    `已将分组重命名为“${name}”`
+  );
+}
+
+function confirmDeleteManagedTagGroup() {
+  const group = groupByID(elements.tagManagerGroupSelect.value);
+  if (!group || group.isSystem) return;
+  requestConfirmation({
+    title: "删除标签分组？",
+    message: `“${group.displayName}”会被删除，其中的标签会移到 Mac 端默认分组，标签本身不会归档。`,
+    actionLabel: "删除分组",
+    action: () => performTagCatalogMutation(
+      `/v1/tag-groups/${group.id}/delete`,
+      { operationID: crypto.randomUUID() },
+      `已删除分组“${group.displayName}”`
+    ),
+  });
+}
+
+async function undoLatestTagDecision() {
+  const undoID = state.latestUndoID;
+  if (!state.online || !undoID || state.undoMutating) return;
+  if (!state.latestUndoOperationID) {
+    state.latestUndoOperationID = crypto.randomUUID();
+  }
+  const operationID = state.latestUndoOperationID;
+  const generation = state.workspaceGeneration;
+  state.undoMutating = true;
+  syncWriteActionControls();
+  try {
+    const result = await api("/v1/tag-decisions/undo", {
+      method: "POST",
+      body: JSON.stringify({ operationID, undoID }),
+    });
+    if (generation !== state.workspaceGeneration) return;
+    state.latestUndoID = null;
+    state.latestUndoOperationID = null;
+    await refreshWorkspace({
+      quiet: true,
+      kinds: ["assetsChanged", "tagsChanged", "reviewChanged"],
+    });
+    toast(`已撤销 ${result.restoredAssetCount} 项标签决定`);
+  } catch (error) {
+    if (generation === state.workspaceGeneration) {
+      undoToast(error.message || "撤销失败，可重试", undoID);
+    }
+  } finally {
+    if (generation === state.workspaceGeneration) {
+      state.undoMutating = false;
+      syncWriteActionControls();
+    }
+  }
 }
 
 function renderSources() {
@@ -1138,6 +1517,44 @@ function metadataRow(label, value) {
   return [term, detail];
 }
 
+function assetThumbnailPlaceholder(assetID) {
+  const card = [...elements.assetGrid.querySelectorAll(":scope > .asset-card")]
+    .find((candidate) => candidate.dataset.assetId === assetID);
+  const thumbnail = card?.querySelector("img");
+  if (!thumbnail?.complete || thumbnail.naturalWidth <= 0 || thumbnail.naturalHeight <= 0) {
+    return null;
+  }
+  try {
+    const canvas = document.createElement("canvas");
+    canvas.width = thumbnail.naturalWidth;
+    canvas.height = thumbnail.naturalHeight;
+    canvas.getContext("2d")?.drawImage(thumbnail, 0, 0);
+    return canvas.toDataURL("image/jpeg", 0.84);
+  } catch {
+    return null;
+  }
+}
+
+function showPreviewPlaceholder(assetID) {
+  const source = assetThumbnailPlaceholder(assetID);
+  if (!source) {
+    elements.previewPlaceholderImage.classList.add("hidden");
+    elements.previewPlaceholderImage.removeAttribute("src");
+    delete elements.previewPlaceholderImage.dataset.assetId;
+    return false;
+  }
+  elements.previewPlaceholderImage.dataset.assetId = assetID;
+  elements.previewPlaceholderImage.src = source;
+  elements.previewPlaceholderImage.classList.remove("hidden");
+  return true;
+}
+
+function hidePreviewPlaceholder() {
+  elements.previewPlaceholderImage.classList.add("hidden");
+  elements.previewPlaceholderImage.removeAttribute("src");
+  delete elements.previewPlaceholderImage.dataset.assetId;
+}
+
 function renderInspector(detail) {
   state.selectedDetail = detail;
   if (!state.inspectorDismissed) elements.inspector.classList.add("open");
@@ -1152,12 +1569,14 @@ function renderInspector(detail) {
     && elements.previewImage.complete
     && elements.previewImage.naturalWidth > 0;
   if (!previewReady) {
-    elements.previewLoading.classList.remove("hidden");
+    const showsPlaceholder = showPreviewPlaceholder(detail.assetID);
+    elements.previewLoading.classList.toggle("hidden", showsPlaceholder);
     elements.previewImage.classList.add("hidden");
-    setProtectedImageSource(elements.previewImage, previewPath);
+    setProtectedImageSource(elements.previewImage, previewPath, { priority: "high" });
   } else {
     elements.previewLoading.classList.add("hidden");
     elements.previewImage.classList.remove("hidden");
+    hidePreviewPlaceholder();
   }
 
   clearElement(elements.assetMetadata);
@@ -1305,6 +1724,7 @@ function renderInspectorSurface() {
   elements.inspectorPlaceholder.classList.toggle("hidden", showsSelection || showsDetail);
   elements.selectionInspector.classList.toggle("hidden", !showsSelection);
   elements.inspectorContent.classList.toggle("hidden", !showsDetail);
+  if (!showsDetail) hidePreviewPlaceholder();
   if (showsSelection && !state.inspectorDismissed) {
     elements.inspector.classList.add("open");
     renderSelectionInspector();
@@ -1674,11 +2094,11 @@ async function mutateTag(tagID, action) {
           : null,
       ]);
       if (generation !== state.workspaceGeneration) return;
-      toast(result.replayed ? "标签操作已恢复" : "标签已更新");
+      undoToast(result.replayed ? "标签操作已恢复" : "标签已更新", result.undoID);
     } catch {
       if (generation !== state.workspaceGeneration) return;
       void refreshWorkspace({ quiet: true, kinds: ["assetsChanged"] });
-      toast("标签已更新，界面同步暂时失败，正在重试");
+      undoToast("标签已更新，界面同步暂时失败，正在重试", result.undoID);
     }
   } catch (error) {
     if (generation === state.workspaceGeneration) {
@@ -1836,7 +2256,10 @@ async function createTagAndApply(event) {
       }
       if (generation !== state.workspaceGeneration) return;
       closeNewTagDialog();
-      toast(`已新增标签“${result.displayName}”并应用到 ${mediaItemCountText(result.appliedAssetCount)}`);
+      undoToast(
+        `已新增标签“${result.displayName}”并应用到 ${mediaItemCountText(result.appliedAssetCount)}`,
+        result.undoID
+      );
     } catch {
       if (generation !== state.workspaceGeneration) return;
       closeNewTagDialog();
@@ -1844,7 +2267,10 @@ async function createTagAndApply(event) {
         quiet: true,
         kinds: ["tagsChanged", "assetsChanged"],
       });
-      toast(`标签“${result.displayName}”已创建并应用，界面同步暂时失败，正在重试`);
+      undoToast(
+        `标签“${result.displayName}”已创建并应用，界面同步暂时失败，正在重试`,
+        result.undoID
+      );
     }
   } catch (error) {
     if (generation === state.workspaceGeneration) {
@@ -1974,14 +2400,17 @@ async function applyBatchTagDecision(action, requestedTagID = null) {
       });
       await loadSelectionAggregate();
       if (generation !== state.workspaceGeneration) return;
-      toast(`已更新 ${result.appliedAssetCount} 项`);
+      undoToast(`已更新 ${result.appliedAssetCount} 项`, result.undoID);
     } catch {
       if (generation !== state.workspaceGeneration) return;
       void refreshWorkspace({
         quiet: true,
         kinds: ["tagsChanged", "assetsChanged"],
       });
-      toast(`已更新 ${result.appliedAssetCount} 项，界面同步暂时失败，正在重试`);
+      undoToast(
+        `已更新 ${result.appliedAssetCount} 项，界面同步暂时失败，正在重试`,
+        result.undoID
+      );
     }
   } catch (error) {
     if (generation === state.workspaceGeneration) {
@@ -2127,14 +2556,156 @@ function reviewOriginText(origin) {
 }
 
 function syncReviewControls() {
-  const controlsLocked = state.review.loading || state.review.mutating;
+  const controlsLocked = state.review.loading
+    || state.review.overviewLoading
+    || state.review.mutating;
   elements.loadMoreReviewButton.disabled = controlsLocked;
   elements.reviewTagSelect.disabled = controlsLocked || activeTags().length === 0;
-  elements.reviewCurrentSourceOnly.disabled = controlsLocked;
+  elements.reviewCurrentSourceOnly.disabled = controlsLocked || !state.selectedSourceID;
   elements.refreshReviewButton.disabled = controlsLocked;
+  elements.reviewBackButton.disabled = controlsLocked;
   document.querySelectorAll(".review-action").forEach((button) => {
     button.disabled = !state.online || controlsLocked;
   });
+}
+
+function reviewTaskStatusText(status, overview) {
+  const progress = overview.totalCount == null
+    ? `${overview.checkedCount} 项已检查`
+    : `${overview.checkedCount} / ${overview.totalCount} 项已检查`;
+  return {
+    notReady: `样本尚未就绪 · ${progress}`,
+    ready: `可以生成建议 · ${progress}`,
+    waiting: `等待处理 · ${progress}`,
+    running: `正在生成建议 · ${progress}`,
+    paused: `生成已暂停 · ${progress}`,
+    retryableFailure: `生成遇到问题，可在 Mac 端重试 · ${progress}`,
+    completed: `本轮生成完成 · ${progress}`,
+    terminalFailure: `生成失败，请在 Mac 端检查 · ${progress}`,
+    cancelled: `生成已取消 · ${progress}`,
+  }[status] || progress;
+}
+
+function renderReviewOverview() {
+  const loading = state.review.overviewLoading;
+  if (state.review.mode === "overview") {
+    elements.reviewSummary.textContent = loading
+      ? "正在载入审核总览…"
+      : `${state.review.overviewTotal} 条待审 · ${currentMediaNoun()}`;
+    elements.reviewNavigationCount.textContent = state.review.overviewTotal
+      ? String(state.review.overviewTotal)
+      : "";
+  }
+  elements.reviewOverviewEmpty.classList.toggle(
+    "hidden",
+    loading || state.review.overview.length > 0
+  );
+  clearElement(elements.reviewOverviewGrid);
+  for (const overview of state.review.overview) {
+    const card = document.createElement("button");
+    card.type = "button";
+    card.className = "review-overview-card";
+    card.dataset.reviewOverviewTagId = overview.id;
+    card.disabled = !overview.canReview || overview.pendingSuggestionCount === 0;
+    card.setAttribute("aria-disabled", String(card.disabled));
+
+    const heading = document.createElement("div");
+    heading.className = "review-overview-card-heading";
+    const name = document.createElement("strong");
+    name.textContent = overview.displayName;
+    const pending = document.createElement("span");
+    pending.className = "review-pending-count";
+    pending.textContent = String(overview.pendingSuggestionCount);
+    heading.append(name, pending);
+
+    const stats = document.createElement("div");
+    stats.className = "review-overview-stats";
+    stats.textContent = `已确认 ${overview.acceptedSampleCount} · 已拒绝 ${overview.rejectedSampleCount}`;
+
+    const origins = document.createElement("div");
+    origins.className = "review-origin-counts";
+    const originLabels = [
+      ["personalAdamW", "超级个人"],
+      ["personalModel", "个人模型"],
+      ["featurePrint", "特征向量"],
+      ["standardModel", "标准模型"],
+    ];
+    for (const [key, label] of originLabels) {
+      const count = overview.pendingSuggestionCounts?.[key] || 0;
+      if (!count) continue;
+      const badge = document.createElement("span");
+      badge.textContent = `${label} ${count}`;
+      origins.append(badge);
+    }
+
+    const status = document.createElement("div");
+    status.className = "review-overview-status";
+    status.textContent = reviewTaskStatusText(overview.taskStatus, overview);
+    card.append(heading, stats);
+    if (origins.childElementCount) card.append(origins);
+    card.append(status);
+    elements.reviewOverviewGrid.append(card);
+  }
+  syncReviewControls();
+}
+
+function renderReviewMode() {
+  const overviewMode = state.review.mode === "overview";
+  elements.reviewOverview.classList.toggle("hidden", !overviewMode);
+  elements.reviewQueueLayout.classList.toggle("hidden", overviewMode);
+  elements.reviewBackButton.classList.toggle("hidden", overviewMode);
+  elements.reviewTagControl.classList.toggle("hidden", overviewMode);
+  if (overviewMode) {
+    renderReviewOverview();
+  } else {
+    renderReview();
+  }
+}
+
+async function loadReviewOverview({ throwOnError = false } = {}) {
+  const generation = ++state.review.overviewGeneration;
+  const workspaceGeneration = state.workspaceGeneration;
+  state.review.overviewLoading = true;
+  renderReviewOverview();
+  const query = new URLSearchParams({ mediaKind: state.mediaKind });
+  if (elements.reviewCurrentSourceOnly.checked && state.selectedSourceID) {
+    query.set("sourceIDs", state.selectedSourceID);
+  }
+  try {
+    const overview = await api(`/v1/review/overview?${query}`);
+    if (generation !== state.review.overviewGeneration
+      || workspaceGeneration !== state.workspaceGeneration) return false;
+    state.review.overview = overview.tags || [];
+    state.review.overviewTotal = overview.totalPendingSuggestionCount || 0;
+    return true;
+  } catch (error) {
+    if (generation === state.review.overviewGeneration && !throwOnError) {
+      toast(error.message || "审核总览载入失败");
+    }
+    if (throwOnError) throw error;
+    return false;
+  } finally {
+    if (generation === state.review.overviewGeneration) {
+      state.review.overviewLoading = false;
+      renderReviewOverview();
+    }
+  }
+}
+
+async function enterReviewQueue(tagID) {
+  const overview = state.review.overview.find((item) => item.id === tagID);
+  if (!overview) return;
+  state.review.mode = "queue";
+  elements.reviewTagSelect.value = tagID;
+  state.review.deferredItemIDs.clear();
+  renderReviewMode();
+  await loadReviewQueue({ preserveLoadedWindow: true });
+}
+
+async function returnToReviewOverview() {
+  state.review.mode = "overview";
+  renderReviewMode();
+  await loadReviewOverview();
 }
 
 function renderReview() {
@@ -2143,8 +2714,8 @@ function renderReview() {
   elements.reviewSummary.textContent = state.review.loading
     ? "正在载入…"
     : `待审核 ${state.review.items.length} 项${state.review.nextCursor ? " · 还有更多" : ""}`;
-  elements.reviewNavigationCount.textContent = state.review.items.length
-    ? `${state.review.items.length}${state.review.nextCursor ? "+" : ""}`
+  elements.reviewNavigationCount.textContent = state.review.overviewTotal
+    ? String(state.review.overviewTotal)
     : "";
   syncReviewControls();
 
@@ -2260,6 +2831,7 @@ function reviewItemKey(item) {
 function currentReviewScopeKey() {
   return JSON.stringify({
     tagID: elements.reviewTagSelect.value,
+    mediaKind: state.mediaKind,
     sourceID: elements.reviewCurrentSourceOnly.checked
       ? state.selectedSourceID
       : "",
@@ -2312,7 +2884,7 @@ async function loadReviewQueue({
     ? state.selectedSourceID
     : "";
   const fetchPage = (cursor = null) => {
-    const query = new URLSearchParams({ tagID, limit: "48" });
+    const query = new URLSearchParams({ tagID, mediaKind: state.mediaKind, limit: "48" });
     if (sourceID) query.set("sourceIDs", sourceID);
     if (cursor) query.set("cursor", cursor);
     return api(`/v1/review/queue?${query}`);
@@ -2388,10 +2960,9 @@ async function openReviewWorkspace() {
   requestAnimationFrame(() => {
     elements.closeReviewButton.focus({ preventScroll: true });
   });
-  if (!elements.reviewTagSelect.value && activeTags().length) {
-    elements.reviewTagSelect.value = activeTags()[0].id;
-  }
-  await loadReviewQueue({ preserveLoadedWindow: true });
+  state.review.mode = "overview";
+  renderReviewMode();
+  await loadReviewOverview();
 }
 
 async function applyReviewDecision(action) {
@@ -2420,6 +2991,7 @@ async function applyReviewDecision(action) {
     const previousIndex = state.review.selectedIndex;
     try {
       await Promise.all([
+        loadReviewOverview({ throwOnError: true }),
         loadReviewQueue({
           preserveLoadedWindow: true,
           throwOnError: true,
@@ -2434,14 +3006,14 @@ async function applyReviewDecision(action) {
       if (state.review.items.length) {
         selectReviewIndex(Math.min(previousIndex, state.review.items.length - 1));
       }
-      toast(result.replayed ? "审核操作已恢复" : "审核决定已保存");
+      undoToast(result.replayed ? "审核操作已恢复" : "审核决定已保存", result.undoID);
     } catch {
       if (generation === state.workspaceGeneration) {
         void refreshWorkspace({
           quiet: true,
           kinds: ["reviewChanged", "assetsChanged"],
         });
-        toast("审核决定已保存，界面同步暂时失败，正在重试");
+        undoToast("审核决定已保存，界面同步暂时失败，正在重试", result.undoID);
       }
     }
   } catch (error) {
@@ -2622,16 +3194,18 @@ async function loadWorkspace() {
   const generation = state.workspaceGeneration;
   showApp();
   setConnection(true, "正在同步");
-  const [capabilities, sources, tags, jobs] = await Promise.all([
+  const [capabilities, sources, tags, tagGroups, jobs] = await Promise.all([
     api("/v1/capabilities"),
     api("/v1/sources"),
     api("/v1/tags"),
+    api("/v1/tag-groups"),
     api("/v1/jobs"),
   ]);
   if (generation !== state.workspaceGeneration) return;
   state.capabilities = capabilities;
   state.sources = sources;
   state.tags = tags;
+  state.tagGroups = tagGroups;
   state.jobs = jobs;
   elements.hostVersion.textContent = `Mac Host ${capabilities.hostAppVersion}`;
   renderSources();
@@ -2694,9 +3268,10 @@ async function refreshWorkspace({ quiet = false, kinds = null } = {}) {
       state.pendingInspectorRefresh = false;
       failedInspectorRefresh = refreshInspectorForBatch;
 
-      const [sources, tags, jobs] = await Promise.all([
+      const [sources, tags, tagGroups, jobs] = await Promise.all([
         batch.has("sourcesChanged") ? api("/v1/sources") : null,
         batch.has("tagsChanged") ? api("/v1/tags") : null,
+        batch.has("tagsChanged") ? api("/v1/tag-groups") : null,
         batch.has("jobsChanged") ? api("/v1/jobs") : null,
       ]);
       if (refreshGeneration !== state.workspaceGeneration) {
@@ -2711,6 +3286,10 @@ async function refreshWorkspace({ quiet = false, kinds = null } = {}) {
       const tagsChanged = Boolean(
         tags
         && projectionFingerprint(tags) !== projectionFingerprint(state.tags)
+      );
+      const tagGroupsChanged = Boolean(
+        tagGroups
+        && projectionFingerprint(tagGroups) !== projectionFingerprint(state.tagGroups)
       );
       const jobsChanged = Boolean(
         jobs
@@ -2727,8 +3306,9 @@ async function refreshWorkspace({ quiet = false, kinds = null } = {}) {
         renderSources();
         updateLibraryTitle();
       }
-      if (tagsChanged) {
-        state.tags = tags;
+      if (tagsChanged || tagGroupsChanged) {
+        if (tags) state.tags = tags;
+        if (tagGroups) state.tagGroups = tagGroups;
         const activeTagIDs = new Set(activeTags().map((tag) => tag.id));
         state.filters.tagConditions = state.filters.tagConditions.filter(
           (condition) => activeTagIDs.has(condition.tagID)
@@ -2774,11 +3354,14 @@ async function refreshWorkspace({ quiet = false, kinds = null } = {}) {
         !elements.reviewWorkspace.classList.contains("hidden")
         && (batch.has("reviewChanged") || batch.has("assetsChanged") || batch.has("tagsChanged"))
       ) {
-        await loadReviewQueue({
-          preserveUnchangedGrid: true,
-          preserveLoadedWindow: true,
-          throwOnError: true,
-        });
+        await loadReviewOverview({ throwOnError: true });
+        if (state.review.mode === "queue") {
+          await loadReviewQueue({
+            preserveUnchangedGrid: true,
+            preserveLoadedWindow: true,
+            throwOnError: true,
+          });
+        }
       }
       failedBatch = null;
       failedInspectorRefresh = false;
@@ -3010,6 +3593,7 @@ function resetWorkspaceSessionState() {
   state.capabilities = null;
   state.sources = [];
   state.tags = [];
+  state.tagGroups = [];
   state.jobs = [];
   state.assets = [];
   state.nextCursor = null;
@@ -3030,8 +3614,17 @@ function resetWorkspaceSessionState() {
   state.selectionAggregates = [];
   state.aggregateGeneration += 1;
   state.tagMutating = false;
+  state.tagManagementMutating = false;
+  state.latestUndoID = null;
+  state.latestUndoOperationID = null;
+  state.undoMutating = false;
   state.jobMutatingIDs.clear();
   state.review.items = [];
+  state.review.mode = "overview";
+  state.review.overview = [];
+  state.review.overviewTotal = 0;
+  state.review.overviewLoading = false;
+  state.review.overviewGeneration += 1;
   state.review.nextCursor = null;
   state.review.selectedIndex = -1;
   state.review.loading = false;
@@ -3056,6 +3649,7 @@ function resetWorkspaceSessionState() {
   elements.clearSearchButton.classList.add("hidden");
   elements.sortSelect.value = state.sort;
   clearProtectedImageSource(elements.previewImage);
+  hidePreviewPlaceholder();
   clearProtectedImageSource(elements.reviewPreviewImage);
   clearProtectedImageSource(elements.lightboxImage);
   elements.appView.inert = false;
@@ -3090,7 +3684,8 @@ async function selectSource(sourceID) {
   await loadAssets();
   if (!elements.reviewWorkspace.classList.contains("hidden")
     && elements.reviewCurrentSourceOnly.checked) {
-    await loadReviewQueue();
+    await loadReviewOverview();
+    if (state.review.mode === "queue") await loadReviewQueue();
   }
 }
 
@@ -3427,6 +4022,26 @@ function bindEvents() {
   });
   elements.tagNavigationSearch.addEventListener("input", renderTagNavigation);
   elements.sidebarNewTagButton.addEventListener("click", openNewTagDialog);
+  elements.tagManagerButton.addEventListener("click", openTagManager);
+  elements.closeTagManagerButton.addEventListener("click", () => elements.tagManagerDialog.close());
+  elements.tagManagerTagSelect.addEventListener("change", syncManagedTagFields);
+  elements.tagManagerGroupSelect.addEventListener("change", syncManagedGroupFields);
+  elements.renameManagedTagButton.addEventListener("click", renameManagedTag);
+  elements.moveManagedTagButton.addEventListener("click", moveManagedTag);
+  elements.archiveManagedTagButton.addEventListener("click", confirmArchiveManagedTag);
+  elements.createTagGroupButton.addEventListener("click", createManagedTagGroup);
+  elements.renameTagGroupButton.addEventListener("click", renameManagedTagGroup);
+  elements.deleteTagGroupButton.addEventListener("click", confirmDeleteManagedTagGroup);
+  elements.cancelConfirmButton.addEventListener("click", closeConfirmation);
+  elements.confirmDialog.addEventListener("cancel", () => {
+    state.pendingConfirmAction = null;
+  });
+  elements.confirmActionButton.addEventListener("click", async () => {
+    const action = state.pendingConfirmAction;
+    closeConfirmation();
+    if (action) await action();
+  });
+  elements.undoToastButton.addEventListener("click", undoLatestTagDecision);
   elements.mediaKindTabs.addEventListener("click", (event) => {
     const button = event.target.closest("[data-media-kind]");
     if (button) switchMediaKind(button.dataset.mediaKind);
@@ -3476,6 +4091,7 @@ function bindEvents() {
     }
     elements.previewLoading.classList.add("hidden");
     elements.previewImage.classList.remove("hidden");
+    hidePreviewPlaceholder();
   });
   elements.previewImage.addEventListener("imageall-protected-error", (event) => {
     if (String(event.detail?.requestID) !== elements.previewImage.dataset.protectedRequestId) {
@@ -3483,7 +4099,11 @@ function bindEvents() {
     }
     delete elements.previewImage.dataset.protectedPath;
     elements.previewLoading.classList.add("hidden");
-    toast("预览暂不可用");
+    if (elements.previewPlaceholderImage.hasAttribute("src")) {
+      toast("已显示缩略图，大图暂不可用");
+    } else {
+      toast("预览暂不可用");
+    }
   });
   elements.openLightboxButton.addEventListener("click", () => {
     openLightbox("library", state.selectedAssetID);
@@ -3635,14 +4255,25 @@ function bindEvents() {
 
   elements.reviewButton.addEventListener("click", openReviewWorkspace);
   elements.closeReviewButton.addEventListener("click", closeReviewWorkspace);
+  elements.reviewBackButton.addEventListener("click", returnToReviewOverview);
+  elements.reviewOverviewGrid.addEventListener("click", (event) => {
+    const card = event.target.closest("[data-review-overview-tag-id]");
+    if (card && !card.disabled) enterReviewQueue(card.dataset.reviewOverviewTagId);
+  });
   elements.reviewTagSelect.addEventListener("change", () => {
     state.review.deferredItemIDs.clear();
     loadReviewQueue();
   });
-  elements.reviewCurrentSourceOnly.addEventListener("change", () => loadReviewQueue());
-  elements.refreshReviewButton.addEventListener("click", () => (
-    loadReviewQueue({ preserveLoadedWindow: true })
-  ));
+  elements.reviewCurrentSourceOnly.addEventListener("change", async () => {
+    await loadReviewOverview();
+    if (state.review.mode === "queue") await loadReviewQueue();
+  });
+  elements.refreshReviewButton.addEventListener("click", async () => {
+    await loadReviewOverview();
+    if (state.review.mode === "queue") {
+      await loadReviewQueue({ preserveLoadedWindow: true });
+    }
+  });
   elements.loadMoreReviewButton.addEventListener("click", () => loadReviewQueue({ append: true }));
   elements.reviewGrid.addEventListener("click", (event) => {
     const card = event.target.closest("[data-review-index]");
@@ -3739,7 +4370,10 @@ function bindEvents() {
   document.addEventListener("keydown", (event) => {
     if (event.defaultPrevented) return;
     if (elements.appView.classList.contains("hidden")) return;
-    const blockingDialogOpen = elements.shortcutDialog.open || elements.newTagDialog.open;
+    const blockingDialogOpen = elements.shortcutDialog.open
+      || elements.newTagDialog.open
+      || elements.tagManagerDialog.open
+      || elements.confirmDialog.open;
     const lightboxOpen = !elements.lightbox.classList.contains("hidden");
     const reviewOpen = !elements.reviewWorkspace.classList.contains("hidden");
     const inspectorOverlayOpen = globalThis.matchMedia("(max-width: 980px)").matches
@@ -3781,6 +4415,14 @@ function bindEvents() {
         closeNewTagDialog();
         return;
       }
+      if (elements.confirmDialog.open) {
+        closeConfirmation();
+        return;
+      }
+      if (elements.tagManagerDialog.open) {
+        elements.tagManagerDialog.close();
+        return;
+      }
       if (lightboxOpen) {
         closeLightbox();
         return;
@@ -3805,7 +4447,9 @@ function bindEvents() {
     }
     if (elements.commandPalette.open
       || elements.shortcutDialog.open
-      || elements.newTagDialog.open) return;
+      || elements.newTagDialog.open
+      || elements.tagManagerDialog.open
+      || elements.confirmDialog.open) return;
     if (lightboxOpen) {
       if (trapOverlayFocus(event, elements.lightbox)) return;
     } else if (reviewOpen) {
@@ -3830,6 +4474,7 @@ function bindEvents() {
       return;
     }
     if (reviewOpen) {
+      if (state.review.mode !== "queue") return;
       if (event.metaKey || event.ctrlKey || event.altKey) return;
       if (event.key === "ArrowLeft") {
         event.preventDefault();
@@ -3853,12 +4498,12 @@ function bindEvents() {
       }
       return;
     }
-    if (isInteractiveControlTarget(event.target)) return;
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "a") {
       event.preventDefault();
       selectAllLoadedAssets();
       return;
     }
+    if (isInteractiveControlTarget(event.target)) return;
     if (event.code === "Space") {
       const assetID = state.selectionMode && state.selectedAssetIDs.size === 1
         ? [...state.selectedAssetIDs][0]

@@ -10,8 +10,12 @@ struct LibrarySlimmingClusterPresentation: Identifiable, Equatable, Sendable {
     let representativeAssetID: UUID
     let score: Double
     let modelIdentity: SlimmingVectorModelIdentity
+    let isSeedOnlyResult: Bool
 
     var kindTitle: String {
+        if isSeedOnlyResult {
+            return mediaKind == .video ? "种子视频" : "种子照片"
+        }
         if mediaKind == .video {
             switch kind {
             case .byteIdentical: return "完全相同视频"
@@ -27,6 +31,9 @@ struct LibrarySlimmingClusterPresentation: Identifiable, Equatable, Sendable {
     }
 
     var scoreCaption: String {
+        if isSeedOnlyResult {
+            return "未找到相似项 · 可继续选择操作"
+        }
         if mediaKind == .video {
             switch kind {
             case .byteIdentical:
@@ -48,7 +55,10 @@ struct LibrarySlimmingClusterPresentation: Identifiable, Equatable, Sendable {
     }
 
     var technicalDetailsCaption: String {
-        switch kind {
+        if isSeedOnlyResult {
+            return "种子检索未形成相似分组"
+        }
+        return switch kind {
         case .byteIdentical:
             "SHA-256 一致 · \(modelIdentity.revisionCaption)"
         case .perceptualDuplicate:
@@ -85,6 +95,25 @@ struct LibrarySlimmingClusterPresentation: Identifiable, Equatable, Sendable {
         representativeAssetID = cluster.representativeAssetID
         score = cluster.score
         modelIdentity = cluster.modelIdentity
+        isSeedOnlyResult = false
+    }
+
+    init(seedAssetIDs: [UUID], mediaKind: MediaKind) {
+        precondition(!seedAssetIDs.isEmpty)
+        let members = Array(Set(seedAssetIDs)).sorted {
+            $0.uuidString.lowercased() < $1.uuidString.lowercased()
+        }
+        id = NearDuplicateSceneClusterService.stableClusterID(
+            kind: .nearDuplicateScene,
+            members: members
+        )
+        self.mediaKind = mediaKind
+        kind = .nearDuplicateScene
+        memberAssetIDs = members
+        representativeAssetID = members[0]
+        score = 1
+        modelIdentity = .featurePrintOnly
+        isSeedOnlyResult = true
     }
 }
 
@@ -201,6 +230,46 @@ struct LibrarySlimmingAnalysisJobPresentation: Identifiable, Equatable, Sendable
     }
 }
 
+enum LibrarySlimmingMoveConfirmationAction {
+    static func confirm(
+        canPersistSkip: Bool,
+        suppressFutureConfirmation: Bool,
+        setSkipsConfirmation: (Bool) -> Void,
+        submit: () -> Void
+    ) {
+        if canPersistSkip, suppressFutureConfirmation {
+            setSkipsConfirmation(true)
+        }
+        submit()
+    }
+}
+
+enum LibrarySlimmingClusterPagination {
+    static let initialLimit = 100
+    static let pageSize = 100
+
+    static func visibleCount(totalCount: Int, limit: Int) -> Int {
+        min(max(limit, 0), max(totalCount, 0))
+    }
+
+    static func nextLimit(currentLimit: Int, totalCount: Int) -> Int {
+        min(max(totalCount, 0), max(currentLimit, 0) + pageSize)
+    }
+}
+
+enum LibrarySlimmingRecyclePagination {
+    static let initialLimit = 100
+    static let pageSize = 100
+
+    static func visibleCount(totalCount: Int, limit: Int) -> Int {
+        min(max(limit, 0), max(totalCount, 0))
+    }
+
+    static func nextLimit(currentLimit: Int, totalCount: Int) -> Int {
+        min(max(totalCount, 0), max(currentLimit, 0) + pageSize)
+    }
+}
+
 struct LibrarySlimmingWorkspaceView: View {
     @ObservedObject var model: LibraryWorkspaceModel
     let onReturnToLibrary: () -> Void
@@ -211,6 +280,10 @@ struct LibrarySlimmingWorkspaceView: View {
     @State private var identicalCleanupPlan: LibrarySlimmingIdenticalCleanupPlan?
     @State private var slimmingGridCellFrames = LibraryGridCellFrameStore()
     @State private var isSlimmingMarqueeSelecting = false
+    @State private var librarySlimmingClusterLimit =
+        LibrarySlimmingClusterPagination.initialLimit
+    @State private var librarySlimmingRecycleLimit =
+        LibrarySlimmingRecyclePagination.initialLimit
 
     var body: some View {
         VStack(spacing: 0) {
@@ -286,10 +359,17 @@ struct LibrarySlimmingWorkspaceView: View {
             model.ensureLibrarySlimmingClusterSelection()
         }
         .onChange(of: model.librarySlimmingClusters.map(\.id)) { _, _ in
+            librarySlimmingClusterLimit = LibrarySlimmingClusterPagination.initialLimit
             model.ensureLibrarySlimmingClusterSelection()
         }
         .onChange(of: model.selectedLibrarySlimmingClusterID) { _, _ in
             model.ensureLibrarySlimmingClusterSelection()
+        }
+        .onChange(of: model.librarySlimmingRecycleEntries.count) { _, _ in
+            librarySlimmingRecycleLimit = LibrarySlimmingRecyclePagination.initialLimit
+        }
+        .onChange(of: model.librarySlimmingRecycleSearchText) { _, _ in
+            librarySlimmingRecycleLimit = LibrarySlimmingRecyclePagination.initialLimit
         }
         .onKeyPress(.delete, action: handleMoveToRecycleKeyPress)
         .onKeyPress(.deleteForward, action: handleMoveToRecycleKeyPress)
@@ -311,13 +391,18 @@ struct LibrarySlimmingWorkspaceView: View {
                     model.canPersistentlySkipSelectedLibrarySlimmingMoveConfirmation,
                 suppressFutureConfirmation: $suppressMoveToRecycleConfirmation,
                 onConfirm: {
-                    if model.canPersistentlySkipSelectedLibrarySlimmingMoveConfirmation,
-                       suppressMoveToRecycleConfirmation
-                    {
-                        model.setSkipsLibrarySlimmingMoveToRecycleConfirmation(true)
-                    }
                     confirmMoveToRecycle = false
-                    Task { await model.moveSelectedLibrarySlimmingMembersToRecycle() }
+                    LibrarySlimmingMoveConfirmationAction.confirm(
+                        canPersistSkip:
+                            model.canPersistentlySkipSelectedLibrarySlimmingMoveConfirmation,
+                        suppressFutureConfirmation: suppressMoveToRecycleConfirmation,
+                        setSkipsConfirmation: {
+                            model.setSkipsLibrarySlimmingMoveToRecycleConfirmation($0)
+                        },
+                        submit: {
+                            Task { await model.moveSelectedLibrarySlimmingMembersToRecycle() }
+                        }
+                    )
                 },
                 onCancel: {
                     confirmMoveToRecycle = false
@@ -607,7 +692,11 @@ struct LibrarySlimmingWorkspaceView: View {
                     Button(role: .destructive) {
                         requestMoveToRecycleConfirmation()
                     } label: {
-                        if model.selectedLibrarySlimmingMemberIDs.isEmpty {
+                        if model.isMutatingLibrarySlimmingRecycle {
+                            ProgressView()
+                                .controlSize(.small)
+                            Text("正在移入回收站…")
+                        } else if model.selectedLibrarySlimmingMemberIDs.isEmpty {
                             Label("移入回收站", systemImage: "trash.slash")
                         } else {
                             Label(
@@ -830,7 +919,14 @@ struct LibrarySlimmingWorkspaceView: View {
                             .foregroundStyle(.secondary)
                     }
                 } else {
-                    ForEach(model.librarySlimmingClusters) { cluster in
+                    ForEach(
+                        model.librarySlimmingClusters.prefix(
+                            LibrarySlimmingClusterPagination.visibleCount(
+                                totalCount: model.librarySlimmingClusters.count,
+                                limit: librarySlimmingClusterLimit
+                            )
+                        )
+                    ) { cluster in
                         Button {
                             model.selectLibrarySlimmingCluster(cluster.id)
                         } label: {
@@ -857,6 +953,25 @@ struct LibrarySlimmingWorkspaceView: View {
                                 : Color.clear
                         )
                         .accessibilityLabel("\(cluster.kindTitle)，\(cluster.memberAssetIDs.count) 张")
+                    }
+                    if librarySlimmingClusterLimit < model.librarySlimmingClusters.count {
+                        let remaining = model.librarySlimmingClusters.count
+                            - librarySlimmingClusterLimit
+                        Button {
+                            librarySlimmingClusterLimit =
+                                LibrarySlimmingClusterPagination.nextLimit(
+                                    currentLimit: librarySlimmingClusterLimit,
+                                    totalCount: model.librarySlimmingClusters.count
+                                )
+                        } label: {
+                            Text(
+                                "再显示 \(min(LibrarySlimmingClusterPagination.pageSize, remaining)) 组（剩余 \(remaining) 组）"
+                            )
+                            .frame(maxWidth: .infinity, alignment: .center)
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(.tint)
+                        .accessibilityLabel("加载更多结果分组，剩余 \(remaining) 组")
                     }
                 }
             } header: {
@@ -938,6 +1053,9 @@ struct LibrarySlimmingWorkspaceView: View {
                                         .libraryGridCellFrameReporter(assetID: assetID)
                                         .onTapGesture {
                                             guard !isSlimmingMarqueeSelecting else { return }
+                                            guard !model.librarySlimmingRecyclePendingAssetIDs
+                                                .contains(assetID)
+                                            else { return }
                                             keyboardFocused = true
                                             let flags = NSEvent.modifierFlags.intersection(
                                                 .deviceIndependentFlagsMask
@@ -1074,7 +1192,15 @@ struct LibrarySlimmingWorkspaceView: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                List(model.filteredLibrarySlimmingRecycleEntries) { entry in
+                List {
+                    ForEach(
+                        model.filteredLibrarySlimmingRecycleEntries.prefix(
+                            LibrarySlimmingRecyclePagination.visibleCount(
+                                totalCount: model.filteredLibrarySlimmingRecycleEntries.count,
+                                limit: librarySlimmingRecycleLimit
+                            )
+                        )
+                    ) { entry in
                     HStack(alignment: .top, spacing: 12) {
                         SlimmingThumbnailCell(model: model, assetID: entry.assetID, isSelected: false)
                             .frame(width: 72, height: 72)
@@ -1133,7 +1259,30 @@ struct LibrarySlimmingWorkspaceView: View {
                             }
                         }
                     }
-                    .padding(.vertical, 4)
+                        .padding(.vertical, 4)
+                    }
+                    if librarySlimmingRecycleLimit
+                        < model.filteredLibrarySlimmingRecycleEntries.count
+                    {
+                        let remaining = model.filteredLibrarySlimmingRecycleEntries.count
+                            - librarySlimmingRecycleLimit
+                        Button {
+                            librarySlimmingRecycleLimit =
+                                LibrarySlimmingRecyclePagination.nextLimit(
+                                    currentLimit: librarySlimmingRecycleLimit,
+                                    totalCount:
+                                        model.filteredLibrarySlimmingRecycleEntries.count
+                                )
+                        } label: {
+                            Text(
+                                "再显示 \(min(LibrarySlimmingRecyclePagination.pageSize, remaining)) 项（剩余 \(remaining) 项）"
+                            )
+                            .frame(maxWidth: .infinity, alignment: .center)
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(.tint)
+                        .accessibilityLabel("加载更多回收站条目，剩余 \(remaining) 项")
+                    }
                 }
             }
         }
@@ -1234,6 +1383,10 @@ private struct SlimmingThumbnailCell: View {
     @State private var image: NSImage?
     @State private var loadState: SlimmingThumbnailLoadState = .loading
 
+    private var isPendingRecycle: Bool {
+        model.librarySlimmingRecyclePendingAssetIDs.contains(assetID)
+    }
+
     var body: some View {
         GeometryReader { proxy in
             ZStack {
@@ -1285,6 +1438,23 @@ private struct SlimmingThumbnailCell: View {
                         .background(.black.opacity(0.68), in: Circle())
                         .padding(7)
                         .accessibilityLabel("视频代表缩略图")
+                }
+            }
+            .overlay {
+                if isPendingRecycle {
+                    ZStack {
+                        Color.black.opacity(0.55)
+                        VStack(spacing: 7) {
+                            ProgressView()
+                                .controlSize(.small)
+                                .tint(.white)
+                            Text("正在移动")
+                                .font(.caption2.weight(.semibold))
+                                .foregroundStyle(.white)
+                        }
+                    }
+                    .accessibilityElement(children: .combine)
+                    .accessibilityLabel("正在安全移入回收站")
                 }
             }
         }

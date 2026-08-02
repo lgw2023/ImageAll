@@ -4,6 +4,110 @@ import XCTest
 @testable import ImageAll
 
 final class FolderReconcileTransactionTests: XCTestCase {
+    func testReusableObservationSkipsMetadataDecodeOnlyForAnUnchangedCurrentAsset() throws {
+        let database = try CatalogDatabase.open(at: makeTempDatabaseURL())
+        let queue = FolderReconcileTestSupport.makeQueue(database: database)
+        let repository = GRDBFolderReconcileRepository(queue: queue)
+        let sourceID = UUID()
+        let assetID = UUID()
+        try FolderReconcileTestSupport.seedActiveFolderSource(
+            database: database,
+            sourceID: sourceID,
+            bookmark: Data("bookmark".utf8)
+        )
+        try CatalogRepository(database: database).insertAsset(
+            NewAssetInput(
+                assetID: assetID,
+                sourceID: sourceID,
+                locatorKind: .file,
+                relativePath: "unchanged.mov",
+                photosLocalIdentifier: nil,
+                mediaType: UTType.quickTimeMovie.identifier,
+                timestampMs: FolderReconcileTestSupport.baseTimeMs
+            )
+        )
+        try CatalogRepository(database: database).upsertFileFingerprint(
+            FileFingerprintInput(
+                assetID: assetID,
+                sizeBytes: 1_234,
+                modifiedAtNs: 5_678,
+                resourceID: Data("old-volume-id".utf8),
+                sha256: nil
+            )
+        )
+        try database.pool.write { db in
+            try db.execute(
+                sql: """
+                UPDATE asset SET
+                    file_name = 'unchanged.mov',
+                    media_kind = 'video',
+                    duration_ms = 4_321,
+                    width = 1_920,
+                    height = 1_080,
+                    media_created_at_ms = 1_700_000_000_000,
+                    availability = 'available'
+                WHERE id = ?
+                """,
+                arguments: [assetID.uuidString.lowercased()]
+            )
+        }
+
+        let reused = try repository.lookupReusableObservation(
+            sourceID: sourceID,
+            relativePath: "unchanged.mov",
+            fileName: "unchanged.mov",
+            sizeBytes: 1_234,
+            modifiedAtNs: 5_678,
+            resourceID: Data("remounted-volume-id".utf8)
+        )
+
+        XCTAssertEqual(
+            reused,
+            FolderReconcileAssetObservation(
+                relativePath: "unchanged.mov",
+                fileName: "unchanged.mov",
+                mediaKind: .video,
+                mediaType: UTType.quickTimeMovie.identifier,
+                durationMs: 4_321,
+                width: 1_920,
+                height: 1_080,
+                mediaCreatedAtMs: 1_700_000_000_000,
+                availability: .available,
+                sizeBytes: 1_234,
+                modifiedAtNs: 5_678,
+                resourceID: Data("remounted-volume-id".utf8),
+                movePathProbe: nil
+            )
+        )
+        XCTAssertNil(
+            try repository.lookupReusableObservation(
+                sourceID: sourceID,
+                relativePath: "unchanged.mov",
+                fileName: "unchanged.mov",
+                sizeBytes: 1_234,
+                modifiedAtNs: 5_679,
+                resourceID: Data("remounted-volume-id".utf8)
+            )
+        )
+
+        try database.pool.write { db in
+            try db.execute(
+                sql: "UPDATE asset SET availability = 'recycled' WHERE id = ?",
+                arguments: [assetID.uuidString.lowercased()]
+            )
+        }
+        XCTAssertNil(
+            try repository.lookupReusableObservation(
+                sourceID: sourceID,
+                relativePath: "unchanged.mov",
+                fileName: "unchanged.mov",
+                sizeBytes: 1_234,
+                modifiedAtNs: 5_678,
+                resourceID: Data("remounted-volume-id".utf8)
+            )
+        )
+    }
+
     func testCompleteGenerationDoesNotOverwriteRecycledAvailability() throws {
         let url = try makeTempDatabaseURL()
         let database = try CatalogDatabase.open(at: url)

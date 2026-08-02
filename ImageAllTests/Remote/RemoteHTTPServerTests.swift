@@ -387,6 +387,7 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertEqual(first.appliedAssetCount, 2)
         XCTAssertFalse(first.replayed)
         XCTAssertTrue(second.replayed)
+        XCTAssertNotNil(first.undoID)
         XCTAssertEqual(catalog.createTagCallCount, 1)
     }
 
@@ -640,17 +641,28 @@ final class RemoteHTTPServerTests: XCTestCase {
             "shortcutDialog",
             "inspectorPreviousButton",
             "inspectorNextButton",
+            "previewPlaceholderImage",
             "inspectorTagSearch",
             "assetContextMenu",
             "sidebarVisibilityButton",
             "inspectorVisibilityButton",
+            "tagManagerDialog",
+            "tagManagerButton",
+            "reviewOverview",
+            "reviewOverviewGrid",
+            "reviewBackButton",
+            "undoToastButton",
         ] {
             XCTAssertTrue(html.contains("id=\"\(controlID)\""))
         }
         for endpoint in [
             "/v1/tags/selection",
             "/v1/tag-decisions/batch",
+            "/v1/tag-decisions/undo",
+            "/v1/tag-groups",
+            "/v1/tags/${tag.id}/rename",
             "/v1/review/queue",
+            "/v1/review/overview",
             "/v1/review/decisions/batch",
             "/v1/jobs/",
             "/web/account/login",
@@ -688,8 +700,22 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertTrue(script.contains("expandedRefreshKinds"))
         XCTAssertTrue(script.contains("assetLoadPromise"))
         XCTAssertTrue(script.contains("assetQuerySignature"))
+        XCTAssertTrue(script.contains("renderReviewOverview"))
+        XCTAssertTrue(script.contains("renderTagManager"))
+        XCTAssertTrue(script.contains("undoLatestTagDecision"))
+        XCTAssertTrue(script.contains("state.latestUndoOperationID"))
+        XCTAssertFalse(script.contains("operationID: crypto.randomUUID(), undoID"))
         XCTAssertTrue(script.contains("protectedImageRequests"))
         XCTAssertTrue(script.contains("protectedImageAbortControllers"))
+        XCTAssertTrue(script.contains("protectedImageIntersectionObserver"))
+        XCTAssertTrue(script.contains("startProtectedImageRequest"))
+        XCTAssertTrue(script.contains("image.loading === \"lazy\""))
+        XCTAssertTrue(script.contains("rootMargin: \"600px\""))
+        XCTAssertTrue(script.contains("{ priority: \"high\" }"))
+        XCTAssertTrue(script.contains("assetThumbnailPlaceholder"))
+        XCTAssertTrue(script.contains("showPreviewPlaceholder"))
+        XCTAssertTrue(script.contains("hidePreviewPlaceholder"))
+        XCTAssertTrue(script.contains("已显示缩略图，大图暂不可用"))
         XCTAssertTrue(script.contains("new AbortController()"))
         XCTAssertTrue(script.contains("imageall-protected-load"))
         XCTAssertTrue(script.contains("button.dataset.reviewKey = key"))
@@ -713,6 +739,18 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertTrue(script.contains("event.key.toLowerCase() === \"p\""))
         XCTAssertTrue(script.contains("event.key.toLowerCase() === \"x\""))
         XCTAssertTrue(script.contains("event.key.toLowerCase() === \"u\""))
+        let selectAllShortcut = try XCTUnwrap(
+            script.range(
+                of: "if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === \"a\")"
+            )
+        )
+        let interactiveControlGuard = try XCTUnwrap(
+            script.range(
+                of: "if (isInteractiveControlTarget(event.target)) return;",
+                range: selectAllShortcut.lowerBound..<script.endIndex
+            )
+        )
+        XCTAssertLessThan(selectAllShortcut.lowerBound, interactiveControlGuard.lowerBound)
         let selectReviewStart = try XCTUnwrap(
             script.range(of: "function selectReviewIndex")
         )

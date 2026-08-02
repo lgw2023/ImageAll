@@ -30,7 +30,13 @@ struct ProductionLibraryWorkspaceService: LibraryWorkspacePort, RemoteCatalogSer
     let clock: any JobClock
 
     func startCatalogSourceMonitoring(onChange: @escaping @Sendable () -> Void) throws {
-        try folderSourceMonitor.start(onChange: onChange)
+        // Startup restores event streams only. A full reconcile for every active
+        // external source would monopolize mechanical disks before the user asks
+        // to refresh a source; persisted jobs and later FSEvents still reconcile.
+        try folderSourceMonitor.start(
+            onChange: onChange,
+            enqueueInitialReconciles: false
+        )
         photosSourceMonitor.start(onChange: onChange)
     }
 
@@ -198,7 +204,7 @@ struct ProductionLibraryWorkspaceService: LibraryWorkspacePort, RemoteCatalogSer
                 sourceID: source.id,
                 notBeforeMs: clock.nowMs
             )
-            _ = try queue.enqueue(command)
+            _ = try queue.enqueueOrReuseActive(command)
         }
         for source in try photosConnection.fetchSources()
             where source.kind == .photos && source.state == .active && requested.contains(source.id)
@@ -253,12 +259,13 @@ struct ProductionLibraryWorkspaceService: LibraryWorkspacePort, RemoteCatalogSer
         }
     }
 
-    func runPendingReconcileJobs() throws {
+    func runPendingReconcileJobs(sourceIDs: Set<UUID>?) throws {
         defer { try? folderSourceMonitor.synchronize() }
         let claim = ClaimNextInput(
             owner: "imageall-reconcile-\(UUID().uuidString.lowercased())",
-            leaseDurationMs: 60_000,
-            allowedKinds: [FolderReconcileJobFactory.kind]
+            leaseDurationMs: FolderReconcileJobFactory.leaseDurationMs,
+            allowedKinds: [FolderReconcileJobFactory.kind],
+            allowedSourceIDs: sourceIDs
         )
         while let result = try executionCoordinator.claimAndExecuteOnce(claim) {
             guard result.snapshot.state == .completed else {
@@ -267,11 +274,12 @@ struct ProductionLibraryWorkspaceService: LibraryWorkspacePort, RemoteCatalogSer
         }
     }
 
-    func runPendingPhotosReconcileJobs() throws {
+    func runPendingPhotosReconcileJobs(sourceIDs: Set<UUID>?) throws {
         let claim = ClaimNextInput(
             owner: "imageall-photos-reconcile-\(UUID().uuidString.lowercased())",
             leaseDurationMs: 60_000,
-            allowedKinds: [PhotosReconcileJobFactory.kind]
+            allowedKinds: [PhotosReconcileJobFactory.kind],
+            allowedSourceIDs: sourceIDs
         )
         while let result = try executionCoordinator.claimAndExecuteOnce(claim) {
             guard result.snapshot.state == .completed else {

@@ -248,11 +248,18 @@ struct ClaimNextInput: Sendable, Equatable {
     let owner: String
     let leaseDurationMs: Int64
     let allowedKinds: Set<String>?
+    let allowedSourceIDs: Set<UUID>?
 
-    init(owner: String, leaseDurationMs: Int64, allowedKinds: Set<String>? = nil) {
+    init(
+        owner: String,
+        leaseDurationMs: Int64,
+        allowedKinds: Set<String>? = nil,
+        allowedSourceIDs: Set<UUID>? = nil
+    ) {
         self.owner = owner
         self.leaseDurationMs = leaseDurationMs
         self.allowedKinds = allowedKinds
+        self.allowedSourceIDs = allowedSourceIDs
     }
 }
 

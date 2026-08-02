@@ -670,6 +670,13 @@ actor RemoteHTTPServer {
             case ("GET", RemoteHTTPPaths.tags):
                 let payload = try await facade.fetchTags()
                 await respondJSON(connection, status: 200, value: payload, timeoutTask: timeoutTask)
+            case ("GET", RemoteHTTPPaths.tagGroups):
+                let payload = try await facade.fetchTagGroups()
+                await respondJSON(connection, status: 200, value: payload, timeoutTask: timeoutTask)
+            case ("POST", RemoteHTTPPaths.tagGroups):
+                let request = try jsonDecoder.decode(RemoteCreateTagGroupRequest.self, from: body)
+                let payload = try await facade.createTagGroup(request)
+                await respondJSON(connection, status: 200, value: payload, timeoutTask: timeoutTask)
             case ("GET", RemoteHTTPPaths.assets):
                 let request = Self.parseAssetPageRequest(query: query)
                 let payload = try await facade.fetchAssets(request)
@@ -677,6 +684,10 @@ actor RemoteHTTPServer {
             case ("POST", RemoteHTTPPaths.tagDecisionsBatch):
                 let request = try jsonDecoder.decode(RemoteBatchTagDecisionRequest.self, from: body)
                 let payload = try await facade.applyTagDecision(request)
+                await respondJSON(connection, status: 200, value: payload, timeoutTask: timeoutTask)
+            case ("POST", RemoteHTTPPaths.tagDecisionsUndo):
+                let request = try jsonDecoder.decode(RemoteUndoTagDecisionRequest.self, from: body)
+                let payload = try await facade.undoTagDecision(request)
                 await respondJSON(connection, status: 200, value: payload, timeoutTask: timeoutTask)
             case ("POST", RemoteHTTPPaths.tagsCreateAndApply):
                 let request = try jsonDecoder.decode(RemoteCreateTagAndApplyRequest.self, from: body)
@@ -689,6 +700,16 @@ actor RemoteHTTPServer {
             case ("GET", RemoteHTTPPaths.reviewQueue):
                 let request = try Self.parseReviewQueueRequest(query: query)
                 let payload = try await facade.fetchReviewQueue(request)
+                await respondJSON(connection, status: 200, value: payload, timeoutTask: timeoutTask)
+            case ("GET", RemoteHTTPPaths.reviewOverview):
+                let mediaKind = RemoteAssetMediaKind(rawValue: query["mediaKind"] ?? "") ?? .image
+                let sourceIDs = (query["sourceIDs"] ?? "")
+                    .split(separator: ",")
+                    .compactMap { UUID(uuidString: String($0)) }
+                let payload = try await facade.fetchReviewOverview(
+                    mediaKind: mediaKind,
+                    sourceIDs: sourceIDs
+                )
                 await respondJSON(connection, status: 200, value: payload, timeoutTask: timeoutTask)
             case ("POST", RemoteHTTPPaths.reviewDecisionsBatch):
                 let request = try jsonDecoder.decode(RemoteBatchReviewDecisionRequest.self, from: body)
@@ -731,6 +752,36 @@ actor RemoteHTTPServer {
                     let request = try jsonDecoder.decode(RemoteJobActionRequest.self, from: body)
                     try await facade.applyJobActivityAction(jobID: jobID, request: request)
                     await respondJSON(connection, status: 200, value: RemoteJobActionAcceptedResponse(jobID: jobID), timeoutTask: timeoutTask)
+                } else if method == "POST", let (tagID, action) = Self.tagAction(from: path) {
+                    switch action {
+                    case "rename":
+                        let request = try jsonDecoder.decode(RemoteRenameTagRequest.self, from: body)
+                        let payload = try await facade.renameTag(tagID: tagID, request: request)
+                        await respondJSON(connection, status: 200, value: payload, timeoutTask: timeoutTask)
+                    case "archive":
+                        let request = try jsonDecoder.decode(RemoteArchiveTagRequest.self, from: body)
+                        let payload = try await facade.archiveTag(tagID: tagID, request: request)
+                        await respondJSON(connection, status: 200, value: payload, timeoutTask: timeoutTask)
+                    case "move":
+                        let request = try jsonDecoder.decode(RemoteMoveTagRequest.self, from: body)
+                        let payload = try await facade.moveTag(tagID: tagID, request: request)
+                        await respondJSON(connection, status: 200, value: payload, timeoutTask: timeoutTask)
+                    default:
+                        await respond(connection, status: 404, error: .init(code: .notFound, message: "unknown route"), timeoutTask: timeoutTask)
+                    }
+                } else if method == "POST", let (groupID, action) = Self.tagGroupAction(from: path) {
+                    switch action {
+                    case "rename":
+                        let request = try jsonDecoder.decode(RemoteRenameTagGroupRequest.self, from: body)
+                        let payload = try await facade.renameTagGroup(groupID: groupID, request: request)
+                        await respondJSON(connection, status: 200, value: payload, timeoutTask: timeoutTask)
+                    case "delete":
+                        let request = try jsonDecoder.decode(RemoteDeleteTagGroupRequest.self, from: body)
+                        let payload = try await facade.deleteTagGroup(groupID: groupID, request: request)
+                        await respondJSON(connection, status: 200, value: payload, timeoutTask: timeoutTask)
+                    default:
+                        await respond(connection, status: 404, error: .init(code: .notFound, message: "unknown route"), timeoutTask: timeoutTask)
+                    }
                 } else if method == "DELETE", let deviceID = Self.pairingDeviceID(from: path) {
                     await pairingStore.revoke(deviceID: deviceID)
                     await respond(connection, status: 204, contentType: "application/json", body: Data(), timeoutTask: timeoutTask)
@@ -1063,7 +1114,13 @@ actor RemoteHTTPServer {
             .split(separator: ",")
             .compactMap { UUID(uuidString: String($0)) }
         let limit = Int(query["limit"] ?? "40") ?? 40
-        return RemoteReviewQueueRequest(tagID: tagID, sourceIDs: sourceIDs, limit: limit, cursor: query["cursor"])
+        return RemoteReviewQueueRequest(
+            tagID: tagID,
+            sourceIDs: sourceIDs,
+            mediaKind: RemoteAssetMediaKind(rawValue: query["mediaKind"] ?? "") ?? .image,
+            limit: limit,
+            cursor: query["cursor"]
+        )
     }
 
     private static func browserImageResponse(
@@ -1106,6 +1163,30 @@ actor RemoteHTTPServer {
     private static func previewAssetID(from path: String) -> UUID? {
         // /v1/assets/{uuid}/preview
         pathParameter(path, expectedSegments: ["v1", "assets", nil, "preview"])
+    }
+
+    private static func tagAction(from path: String) -> (UUID, String)? {
+        let segments = path.split(separator: "/").map(String.init)
+        guard segments.count == 4,
+              segments[0] == "v1",
+              segments[1] == "tags",
+              let tagID = UUID(uuidString: segments[2])
+        else {
+            return nil
+        }
+        return (tagID, segments[3])
+    }
+
+    private static func tagGroupAction(from path: String) -> (UUID, String)? {
+        let segments = path.split(separator: "/").map(String.init)
+        guard segments.count == 4,
+              segments[0] == "v1",
+              segments[1] == "tag-groups",
+              let groupID = UUID(uuidString: segments[2])
+        else {
+            return nil
+        }
+        return (groupID, segments[3])
     }
 
     private static func assetDetailID(from path: String) -> UUID? {

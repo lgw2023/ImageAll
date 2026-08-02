@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import Photos
 
@@ -5,12 +6,17 @@ import Photos
 /// (`PHAssetChangeRequest` / `performChanges` / `deleteAssets`).
 final class PhotoKitPhotosLibraryMutationAdapter: PhotosLibraryMutationPort, @unchecked Sendable {
     func authorizationState() -> PhotosAuthorizationState {
-        mapAuthorization(PHPhotoLibrary.authorizationStatus(for: .readWrite))
+        Self.mapAuthorizationForMutation(
+            PHPhotoLibrary.authorizationStatus(for: .readWrite)
+        )
     }
 
     func requestAuthorization() async -> PhotosAuthorizationState {
+        await MainActor.run {
+            NSApp?.activate(ignoringOtherApps: true)
+        }
         let status = await PHPhotoLibrary.requestAuthorization(for: .readWrite)
-        return mapAuthorization(status)
+        return Self.mapAuthorizationForMutation(status)
     }
 
     func moveToRecentlyDeleted(localIdentifiers: [String]) throws -> [String] {
@@ -27,6 +33,17 @@ final class PhotoKitPhotosLibraryMutationAdapter: PhotosLibraryMutationPort, @un
         guard fetchedIdentifiers == Set(identifiers) else {
             throw PhotosLibraryMutationError.assetNotFound
         }
+        // Bring ImageAll forward so the system delete confirmation is visible.
+        // Use async activate when off the main thread to avoid nested sync deadlocks.
+        if Thread.isMainThread {
+            MainActor.assumeIsolated {
+                NSApp?.activate(ignoringOtherApps: true)
+            }
+        } else {
+            DispatchQueue.main.async {
+                NSApp?.activate(ignoringOtherApps: true)
+            }
+        }
         do {
             try PHPhotoLibrary.shared().performChangesAndWait {
                 PHAssetChangeRequest.deleteAssets(assets as NSArray)
@@ -38,16 +55,31 @@ final class PhotoKitPhotosLibraryMutationAdapter: PhotosLibraryMutationPort, @un
     }
 
     func presence(localIdentifier: String) throws -> PhotosAssetPresence {
-        try requireAuthorized()
         let identifier = localIdentifier.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !identifier.isEmpty else {
-            return .missing
+        guard !identifier.isEmpty else { return .missing }
+        return try presences(localIdentifiers: [identifier])[identifier] ?? .missing
+    }
+
+    func presences(
+        localIdentifiers: [String]
+    ) throws -> [String: PhotosAssetPresence] {
+        try requireAuthorized()
+        let identifiers = normalized(localIdentifiers)
+        guard !identifiers.isEmpty else { return [:] }
+        let live = PHAsset.fetchAssets(withLocalIdentifiers: identifiers, options: nil)
+        var availableIdentifiers = Set<String>()
+        availableIdentifiers.reserveCapacity(live.count)
+        live.enumerateObjects { asset, _, _ in
+            availableIdentifiers.insert(asset.localIdentifier)
         }
-        let live = PHAsset.fetchAssets(withLocalIdentifiers: [identifier], options: nil)
-        if live.count > 0 {
-            return .available
-        }
-        return .missing
+        return Dictionary(
+            uniqueKeysWithValues: identifiers.map { identifier in
+                (
+                    identifier,
+                    availableIdentifiers.contains(identifier) ? .available : .missing
+                )
+            }
+        )
     }
 
     private func requireAuthorized() throws {
@@ -70,7 +102,9 @@ final class PhotoKitPhotosLibraryMutationAdapter: PhotosLibraryMutationPort, @un
             .sorted()
     }
 
-    private func mapAuthorization(_ status: PHAuthorizationStatus) -> PhotosAuthorizationState {
+    static func mapAuthorizationForMutation(
+        _ status: PHAuthorizationStatus
+    ) -> PhotosAuthorizationState {
         switch status {
         case .notDetermined:
             return .notDetermined
@@ -78,8 +112,14 @@ final class PhotoKitPhotosLibraryMutationAdapter: PhotosLibraryMutationPort, @un
             return .restricted
         case .denied:
             return .denied
-        case .authorized, .limited:
+        case .authorized:
             return .authorized
+        case .limited:
+            // Limited library access is readable for catalog, but mutation
+            // (move to Recently Deleted) requires full read-write authorization.
+            // It is already a determined state, so retrying the system request
+            // cannot upgrade it; the UI must direct the user to System Settings.
+            return .denied
         @unknown default:
             return .denied
         }

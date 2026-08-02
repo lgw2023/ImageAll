@@ -65,29 +65,31 @@ protocol FolderVideoMetadataReading: Sendable {
 
 struct AVFoundationFolderVideoMetadataReader: FolderVideoMetadataReading {
     func metadata(fileURL: URL, declaredType: String) -> FolderVideoMetadata? {
-        let asset = AVURLAsset(url: fileURL)
-        let durationSeconds = CMTimeGetSeconds(asset.duration)
-        guard durationSeconds.isFinite, durationSeconds > 0,
-              durationSeconds <= Double(Int64.max) / 1_000,
-              let track = asset.tracks(withMediaType: .video).first
-        else {
-            return nil
-        }
+        autoreleasepool {
+            let asset = AVURLAsset(url: fileURL)
+            let durationSeconds = CMTimeGetSeconds(asset.duration)
+            guard durationSeconds.isFinite, durationSeconds > 0,
+                  durationSeconds <= Double(Int64.max) / 1_000,
+                  let track = asset.tracks(withMediaType: .video).first
+            else {
+                return nil
+            }
 
-        let transformedSize = track.naturalSize.applying(track.preferredTransform)
-        let width = Int(abs(transformedSize.width).rounded())
-        let height = Int(abs(transformedSize.height).rounded())
-        guard width > 0, height > 0 else {
-            return nil
-        }
+            let transformedSize = track.naturalSize.applying(track.preferredTransform)
+            let width = Int(abs(transformedSize.width).rounded())
+            let height = Int(abs(transformedSize.height).rounded())
+            guard width > 0, height > 0 else {
+                return nil
+            }
 
-        return FolderVideoMetadata(
-            mediaType: declaredType,
-            width: width,
-            height: height,
-            durationMs: max(1, Int64((durationSeconds * 1_000).rounded())),
-            mediaCreatedAtMs: nil
-        )
+            return FolderVideoMetadata(
+                mediaType: declaredType,
+                width: width,
+                height: height,
+                durationMs: max(1, Int64((durationSeconds * 1_000).rounded())),
+                mediaCreatedAtMs: nil
+            )
+        }
     }
 }
 

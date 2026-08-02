@@ -63,6 +63,40 @@ final class JobEnqueueTests: XCTestCase {
         }
     }
 
+    func testEnqueueOrReuseActiveReturnsTheExistingCoalescedJob() throws {
+        let url = try makeTempDatabaseURL()
+        let database = try CatalogDatabase.open(at: url)
+        let queue = JobTestSupport.makeQueue(database: database)
+        let firstID = UUID()
+        let key = "scan:source-1"
+
+        let first = try JobTestSupport.enqueueDefault(
+            queue: queue,
+            id: firstID,
+            coalescingKey: key
+        )
+        let duplicate = EnqueueJobCommand(
+            id: UUID(),
+            kind: JobTestSupport.testKind,
+            payloadVersion: 1,
+            payload: Data([0x01]),
+            sourceID: nil,
+            coalescingKey: key,
+            priority: 0,
+            maxAttempts: 3,
+            notBeforeMs: JobTestSupport.baseTimeMs
+        )
+
+        let reused = try queue.enqueueOrReuseActive(duplicate)
+
+        XCTAssertEqual(reused.id, first.id)
+        XCTAssertEqual(reused.state, .pending)
+        let count = try database.pool.read { db in
+            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM job") ?? 0
+        }
+        XCTAssertEqual(count, 1)
+    }
+
     func testTerminalCoalescingKeyAllowsNewJob() throws {
         let url = try makeTempDatabaseURL()
         let database = try CatalogDatabase.open(at: url)

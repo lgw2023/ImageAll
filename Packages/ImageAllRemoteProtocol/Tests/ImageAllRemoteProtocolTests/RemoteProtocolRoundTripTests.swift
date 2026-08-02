@@ -48,7 +48,84 @@ final class RemoteProtocolRoundTripTests: XCTestCase {
                 tagID: tagID,
                 displayName: "旅行",
                 appliedAssetCount: 2,
+                replayed: false,
+                undoID: UUID()
+            )
+        )
+    }
+
+    func testTagManagementAndUndoRoundTrip() throws {
+        let operationID = UUID()
+        let tagID = UUID()
+        let groupID = UUID()
+        try assertRoundTrip(
+            RemoteTagGroupSummary(
+                id: groupID,
+                displayName: "旅行",
+                sortOrder: 20,
+                isSystem: false
+            )
+        )
+        try assertRoundTrip(RemoteRenameTagRequest(operationID: operationID, name: "家人"))
+        try assertRoundTrip(RemoteMoveTagRequest(operationID: operationID, groupID: groupID))
+        try assertRoundTrip(RemoteArchiveTagRequest(operationID: operationID))
+        try assertRoundTrip(
+            RemoteTagMutationResponse(
+                operationID: operationID,
+                tag: RemoteTagSummary(
+                    id: tagID,
+                    displayName: "家人",
+                    state: .active,
+                    groupID: groupID
+                ),
                 replayed: false
+            )
+        )
+        let undoID = UUID()
+        try assertRoundTrip(RemoteUndoTagDecisionRequest(operationID: operationID, undoID: undoID))
+        try assertRoundTrip(
+            RemoteUndoTagDecisionResponse(
+                operationID: operationID,
+                restoredAssetCount: 2,
+                replayed: false
+            )
+        )
+    }
+
+    func testReviewOverviewRoundTrip() throws {
+        let overview = RemoteReviewOverview(
+            totalPendingSuggestionCount: 7,
+            tags: [
+                RemoteSuggestionTagOverview(
+                    id: UUID(),
+                    displayName: "猫",
+                    acceptedSampleCount: 8,
+                    rejectedSampleCount: 5,
+                    pendingSuggestionCount: 7,
+                    pendingSuggestionCounts: RemoteSuggestionOriginCounts(
+                        featurePrint: 2,
+                        standardModel: 1,
+                        personalModel: 3,
+                        personalAdamW: 1
+                    ),
+                    taskStatus: .completed,
+                    checkedCount: 120,
+                    totalCount: 120,
+                    skippedCount: 4,
+                    missingPositiveCount: 0,
+                    missingNegativeCount: 0,
+                    canReview: true
+                ),
+            ]
+        )
+        try assertRoundTrip(overview)
+        try assertRoundTrip(
+            RemoteReviewQueueRequest(
+                tagID: overview.tags[0].id,
+                sourceIDs: [UUID()],
+                mediaKind: .video,
+                limit: 48,
+                cursor: "cursor"
             )
         )
     }
@@ -122,6 +199,41 @@ final class RemoteProtocolRoundTripTests: XCTestCase {
         try assertRoundTrip(original)
     }
 
+    func testTagSummaryWithoutGroupIDUsesLegacyFallbackGroup() throws {
+        let payload = Data(
+            """
+            {
+              "id":"55555555-5555-5555-5555-555555555555",
+              "displayName":"风景",
+              "state":"active"
+            }
+            """.utf8
+        )
+
+        let summary = try decoder.decode(RemoteTagSummary.self, from: payload)
+
+        XCTAssertEqual(
+            summary.groupID,
+            UUID(uuidString: "a0000000-0000-4000-8000-000000000007")!
+        )
+    }
+
+    func testReviewQueueRequestWithoutMediaKindDefaultsToImage() throws {
+        let payload = Data(
+            """
+            {
+              "tagID":"55555555-5555-5555-5555-555555555555",
+              "sourceIDs":[],
+              "limit":40
+            }
+            """.utf8
+        )
+
+        let request = try decoder.decode(RemoteReviewQueueRequest.self, from: payload)
+
+        XCTAssertEqual(request.mediaKind, .image)
+    }
+
     func testBonjourTXTRoundTripHelpers() {
         let hostID = UUID(uuidString: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")!
         let txt = RemoteBonjour.txtRecord(protocolVersion: 1, hostID: hostID)
@@ -192,7 +304,8 @@ final class RemoteProtocolRoundTripTests: XCTestCase {
         let response = RemoteBatchTagDecisionResponse(
             operationID: request.operationID,
             appliedAssetCount: 1,
-            replayed: false
+            replayed: false,
+            undoID: UUID()
         )
         try assertRoundTrip(response)
     }

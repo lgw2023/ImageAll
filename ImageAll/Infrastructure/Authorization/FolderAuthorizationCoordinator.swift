@@ -235,7 +235,7 @@ struct FolderAuthorizationCoordinator: FolderAuthorizationCommandPort {
 
     @MainActor
     private func pickDirectoryOnMainActor() async -> URL? {
-        dependencies.picker.pickDirectory()
+        await dependencies.picker.pickDirectory()
     }
 
     private func requireFolderSource(id: UUID) throws -> StoredFolderSourceRecord {

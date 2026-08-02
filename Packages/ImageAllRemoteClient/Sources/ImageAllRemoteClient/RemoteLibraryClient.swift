@@ -179,6 +179,7 @@ public struct RemoteLibraryClient: Sendable {
     ) async throws -> RemoteReviewQueuePage {
         var items: [URLQueryItem] = [
             URLQueryItem(name: "tagID", value: request.tagID.uuidString),
+            URLQueryItem(name: "mediaKind", value: request.mediaKind.rawValue),
             URLQueryItem(name: "limit", value: String(request.limit)),
         ]
         if !request.sourceIDs.isEmpty {

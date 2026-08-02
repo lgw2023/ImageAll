@@ -145,6 +145,24 @@ final class RecordingReconcileBatchPort: FolderReconcileBatchPort, @unchecked Se
         )
     }
 
+    func lookupReusableObservation(
+        sourceID: UUID,
+        relativePath: String,
+        fileName: String,
+        sizeBytes: Int64,
+        modifiedAtNs: Int64,
+        resourceID: Data?
+    ) throws -> FolderReconcileAssetObservation? {
+        try inner.lookupReusableObservation(
+            sourceID: sourceID,
+            relativePath: relativePath,
+            fileName: fileName,
+            sizeBytes: sizeBytes,
+            modifiedAtNs: modifiedAtNs,
+            resourceID: resourceID
+        )
+    }
+
     func beginGeneration(_ input: FolderBeginGenerationInput) throws -> FolderBeginGenerationResult {
         let result = try inner.beginGeneration(input)
         beginEnumeratedEntries = result.checkpoint.enumeratedEntries

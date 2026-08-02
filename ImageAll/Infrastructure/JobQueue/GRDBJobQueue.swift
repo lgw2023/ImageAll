@@ -29,6 +29,18 @@ struct GRDBJobQueue: JobQueue, Sendable {
         }
     }
 
+    /// Treats an active coalescing match as an idempotent enqueue and returns
+    /// the already persisted job. Manual source refresh uses this so an
+    /// interrupted/pending reconcile can be resumed instead of surfacing an
+    /// unrelated "analysis already running" error to the user.
+    func enqueueOrReuseActive(_ command: EnqueueJobCommand) throws -> JobRecordSnapshot {
+        do {
+            return try enqueue(command)
+        } catch let JobQueueError.activeCoalescingConflict(existingJobID) {
+            return try fetchJob(id: existingJobID)
+        }
+    }
+
     func fetchJob(id: UUID) throws -> JobRecordSnapshot {
         try database.pool.read { db in
             guard let snapshot = try JobRowReader.fetchSnapshot(db, jobID: id) else {
@@ -100,6 +112,28 @@ struct GRDBJobQueue: JobQueue, Sendable {
                 kindArguments = []
             }
 
+            let sourceFilterSQL: String
+            let sourceArguments: [DatabaseValueConvertible]
+            if let allowedSourceIDs = input.allowedSourceIDs {
+                if allowedSourceIDs.isEmpty {
+                    sourceFilterSQL = "AND 0"
+                    sourceArguments = []
+                } else {
+                    let placeholders = Array(
+                        repeating: "?",
+                        count: allowedSourceIDs.count
+                    ).joined(separator: ", ")
+                    sourceFilterSQL = "AND source_id IN (\(placeholders))"
+                    sourceArguments = allowedSourceIDs
+                        .map { $0.uuidString.lowercased() }
+                        .sorted()
+                        .map { $0 as DatabaseValueConvertible }
+                }
+            } else {
+                sourceFilterSQL = ""
+                sourceArguments = []
+            }
+
             guard let candidate = try Row.fetchOne(
                 db,
                 sql: """
@@ -108,10 +142,13 @@ struct GRDBJobQueue: JobQueue, Sendable {
                     AND not_before_ms <= ?
                     AND attempts < max_attempts
                     \(kindFilterSQL)
+                    \(sourceFilterSQL)
                 ORDER BY priority DESC, not_before_ms ASC, id ASC
                 LIMIT 1
                 """,
-                arguments: StatementArguments([nowMs] + kindArguments)
+                arguments: StatementArguments(
+                    [nowMs] + kindArguments + sourceArguments
+                )
             ) else {
                 return nil
             }

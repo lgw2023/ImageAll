@@ -38,6 +38,42 @@ final class FolderMediaClassificationTests: XCTestCase {
         )
     }
 
+    func testProductionVideoMetadataReaderDoesNotAccumulateFileDescriptors() async throws {
+        let fixture = FolderReconcileTestSupport.TempFixtureRoot()
+        defer { fixture.cleanup() }
+        let root = try fixture.makeRoot(label: "video-fd-release")
+        let original = root.appendingPathComponent("clip-0.mov")
+        try await Self.writeSyntheticMOV(to: original)
+        let copies = try (1 ... 12).map { index in
+            let copy = root.appendingPathComponent("clip-\(index).mov")
+            try FileManager.default.copyItem(at: original, to: copy)
+            return copy
+        }
+        let reader = AVFoundationFolderVideoMetadataReader()
+        XCTAssertNotNil(
+            reader.metadata(
+                fileURL: original,
+                declaredType: "com.apple.quicktime-movie"
+            )
+        )
+        let baseline = try Self.openFileDescriptorCount()
+
+        for copy in copies {
+            XCTAssertNotNil(
+                reader.metadata(
+                    fileURL: copy,
+                    declaredType: "com.apple.quicktime-movie"
+                )
+            )
+        }
+
+        XCTAssertLessThanOrEqual(
+            try Self.openFileDescriptorCount(),
+            baseline + 2,
+            "per-file AVURLAsset handles must be released before a long folder scan continues"
+        )
+    }
+
     func testMOVUsesVideoMetadataReaderAndBecomesAvailable() throws {
         let fixture = FolderReconcileTestSupport.TempFixtureRoot()
         defer { fixture.cleanup() }
@@ -288,6 +324,10 @@ final class FolderMediaClassificationTests: XCTestCase {
         guard writer.status == .completed else {
             throw writer.error ?? NSError(domain: "FolderMediaClassificationTests", code: 5)
         }
+    }
+
+    private static func openFileDescriptorCount() throws -> Int {
+        try FileManager.default.contentsOfDirectory(atPath: "/dev/fd").count
     }
 }
 

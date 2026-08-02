@@ -6,6 +6,67 @@ import XCTest
 @testable import ImageAll
 
 final class LibrarySlimmingRecycleTests: XCTestCase {
+    func testInteractiveIOPriorityGateBlocksBackgroundWorkUntilRecycleFinishes() async {
+        let gate = InteractiveIOPriorityGate()
+        let interactiveStarted = DispatchSemaphore(value: 0)
+        let releaseInteractive = DispatchSemaphore(value: 0)
+        let backgroundPassed = DispatchSemaphore(value: 0)
+
+        let interactiveTask = Task.detached {
+            gate.withInteractiveWork {
+                interactiveStarted.signal()
+                _ = releaseInteractive.wait(timeout: .now() + 2)
+            }
+        }
+        XCTAssertEqual(interactiveStarted.wait(timeout: .now() + 1), .success)
+        XCTAssertTrue(gate.hasInteractiveWork)
+
+        let backgroundTask = Task.detached {
+            gate.waitForInteractiveWorkToFinish()
+            backgroundPassed.signal()
+        }
+        XCTAssertEqual(backgroundPassed.wait(timeout: .now() + 0.05), .timedOut)
+
+        releaseInteractive.signal()
+        XCTAssertEqual(backgroundPassed.wait(timeout: .now() + 1), .success)
+        await interactiveTask.value
+        await backgroundTask.value
+        XCTAssertFalse(gate.hasInteractiveWork)
+    }
+
+    func testRecycleFailureCauseIsExclusiveOnlyWhenItCoversEveryFailure() {
+        let folderFailureID = UUID()
+        let photosFailureID = UUID()
+        let unclassifiedFailureID = UUID()
+        let folderOnly = LibrarySlimmingRecycleMoveOutcome(
+            recycledEntryIDs: [],
+            skippedPhotosAssetIDs: [],
+            failedAssetIDs: [folderFailureID],
+            authorizationRequiredSourceIDs: [],
+            authorizationRequiredAssetIDs: [],
+            authorizationDeniedPhotosAssetIDs: [],
+            mutationAuthorizationInvalidAssetIDs: [folderFailureID]
+        )
+        var folderMixed = folderOnly
+        folderMixed.failedAssetIDs.append(unclassifiedFailureID)
+        let photosOnly = LibrarySlimmingRecycleMoveOutcome(
+            recycledEntryIDs: [],
+            skippedPhotosAssetIDs: [],
+            failedAssetIDs: [photosFailureID],
+            authorizationRequiredSourceIDs: [],
+            authorizationRequiredAssetIDs: [],
+            authorizationDeniedPhotosAssetIDs: [],
+            photosMutationFailedAssetIDs: [photosFailureID]
+        )
+        var photosMixed = photosOnly
+        photosMixed.failedAssetIDs.append(unclassifiedFailureID)
+
+        XCTAssertTrue(folderOnly.hasOnlyMutationAuthorizationInvalidFailures)
+        XCTAssertFalse(folderMixed.hasOnlyMutationAuthorizationInvalidFailures)
+        XCTAssertTrue(photosOnly.hasOnlyPhotosMutationFailures)
+        XCTAssertFalse(photosMixed.hasOnlyPhotosMutationFailures)
+    }
+
     func testMoveConfirmationPolicyOnlySkipsOrdinaryBatchesUpToFive() {
         for count in 1 ... 5 {
             XCTAssertFalse(
@@ -587,8 +648,10 @@ final class LibrarySlimmingRecycleTests: XCTestCase {
         let outcome = try service.moveAssetsToRecycle(assetIDs: [seeded.assetID])
 
         XCTAssertEqual(outcome.failedAssetIDs, [seeded.assetID])
+        XCTAssertEqual(outcome.mutationAuthorizationInvalidAssetIDs, [seeded.assetID])
         XCTAssertTrue(outcome.authorizationRequiredSourceIDs.isEmpty)
         XCTAssertTrue(outcome.authorizationRequiredAssetIDs.isEmpty)
+        XCTAssertTrue(outcome.photosMutationFailedAssetIDs.isEmpty)
         XCTAssertTrue(FileManager.default.fileExists(atPath: seeded.fileURL.path))
     }
 
@@ -987,7 +1050,11 @@ final class LibrarySlimmingRecycleTests: XCTestCase {
         let bytes = Data(repeating: 7, count: 4096)
         let seeded = try env.seedAsset(relativePath: "cross.jpg", contents: bytes)
         var service = env.makeRecycleService()
+        let phaseProbe = FolderQuarantinePhaseProbe()
         service.quarantineIO.forceCrossVolumeCopy = true
+        service.quarantineIO.onPhaseCompleted = { phase, elapsedMs in
+            phaseProbe.append(phase, elapsedMs: elapsedMs)
+        }
 
         let outcome = try service.moveFolderAssetsToRecycle(assetIDs: [seeded.assetID])
         XCTAssertEqual(outcome.recycledEntryIDs.count, 1)
@@ -995,6 +1062,69 @@ final class LibrarySlimmingRecycleTests: XCTestCase {
         let entry = try XCTUnwrap(try service.listRecycledEntries().first)
         let quarantineURL = env.quarantineRoot.appendingPathComponent(entry.quarantineRelativePath!)
         XCTAssertEqual(try Data(contentsOf: quarantineURL), bytes)
+        XCTAssertFalse(phaseProbe.phases.contains(.sourceInitialHash))
+        XCTAssertTrue(phaseProbe.phases.contains(.copy))
+        XCTAssertTrue(phaseProbe.phases.contains(.destinationHash))
+        XCTAssertTrue(phaseProbe.phases.contains(.sourceFinalVerification))
+        XCTAssertTrue(phaseProbe.elapsedMilliseconds.allSatisfy { $0 >= 0 })
+    }
+
+    func testCrossVolumeCopyRepresentativeTemporaryFixture() throws {
+        let fixturePath = ProcessInfo.processInfo.environment[
+            "IMAGEALL_RECYCLE_PERF_FIXTURE"
+        ].flatMap { $0.isEmpty ? nil : $0 }
+            ?? "/tmp/ImageAllRecycleRepresentativeFixture"
+        guard FileManager.default.fileExists(atPath: fixturePath) else {
+            throw XCTSkip("No disposable performance fixture was supplied")
+        }
+
+        let fixtureURL = URL(fileURLWithPath: fixturePath)
+            .resolvingSymlinksInPath()
+            .standardizedFileURL
+        let allowedRoots = [
+            FileManager.default.temporaryDirectory,
+            URL(fileURLWithPath: "/tmp", isDirectory: true),
+        ].map { $0.resolvingSymlinksInPath().standardizedFileURL }
+        guard allowedRoots.contains(where: {
+            fixtureURL.path.hasPrefix($0.path + "/")
+        }) else {
+            XCTFail("Performance fixture must be a disposable copy in a temporary directory")
+            return
+        }
+
+        let values = try fixtureURL.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
+        guard values.isRegularFile == true, let fileSize = values.fileSize, fileSize > 0 else {
+            XCTFail("Performance fixture must be a non-empty regular file")
+            return
+        }
+        let bytes = try Data(contentsOf: fixtureURL, options: .mappedIfSafe)
+        let env = try RecycleTestEnv(label: #function)
+        defer { env.cleanup() }
+        let seeded = try env.seedAsset(
+            relativePath: "representative-image.jpg",
+            contents: bytes
+        )
+        var service = env.makeRecycleService()
+        let phaseProbe = FolderQuarantinePhaseProbe()
+        service.quarantineIO.forceCrossVolumeCopy = true
+        service.quarantineIO.onPhaseCompleted = { phase, elapsedMs in
+            phaseProbe.append(phase, elapsedMs: elapsedMs)
+        }
+
+        let startedAt = DispatchTime.now().uptimeNanoseconds
+        let outcome = try service.moveFolderAssetsToRecycle(assetIDs: [seeded.assetID])
+        let totalMs = Double(DispatchTime.now().uptimeNanoseconds - startedAt) / 1_000_000
+
+        XCTAssertEqual(outcome.recycledEntryIDs.count, 1)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: seeded.fileURL.path))
+        XCTAssertFalse(phaseProbe.phases.contains(.sourceInitialHash))
+        let phaseSummary = zip(phaseProbe.phases, phaseProbe.elapsedMilliseconds)
+            .map { "\($0.0.rawValue)=\(String(format: "%.3f", $0.1))ms" }
+            .joined(separator: ",")
+        let performanceSummary = "IMAGEALL_RECYCLE_PERF bytes=\(fileSize) "
+            + "total_ms=\(String(format: "%.3f", totalMs)) phases=\(phaseSummary)"
+        XCTContext.runActivity(named: performanceSummary) { _ in }
+        print(performanceSummary)
     }
 
     func testCrossVolumeRoundTripPreservesFileMetadata() throws {
@@ -1110,6 +1240,7 @@ final class LibrarySlimmingRecycleTests: XCTestCase {
         let outcome = try service.moveFolderAssetsToRecycle(assetIDs: [seeded.assetID])
 
         XCTAssertEqual(outcome.failedAssetIDs, [seeded.assetID])
+        XCTAssertEqual(outcome.sourceChangedAssetIDs, [seeded.assetID])
         XCTAssertTrue(outcome.recycledEntryIDs.isEmpty)
         XCTAssertEqual(try Data(contentsOf: seeded.fileURL), replacement)
         XCTAssertTrue(try service.listRecycledEntries().isEmpty)
@@ -1576,6 +1707,8 @@ final class LibrarySlimmingRecycleTests: XCTestCase {
 
         XCTAssertTrue(outcome.recycledEntryIDs.isEmpty)
         XCTAssertEqual(Set(outcome.failedAssetIDs), Set([firstID, secondID]))
+        XCTAssertEqual(Set(outcome.photosMutationFailedAssetIDs), Set([firstID, secondID]))
+        XCTAssertTrue(outcome.mutationAuthorizationInvalidAssetIDs.isEmpty)
         XCTAssertTrue(try service.listRecycledEntries().isEmpty)
     }
 
@@ -1609,6 +1742,21 @@ final class LibrarySlimmingRecycleTests: XCTestCase {
         let outcome = try service.moveAssetsToRecycle(assetIDs: [photosID])
         XCTAssertTrue(outcome.recycledEntryIDs.isEmpty)
         XCTAssertEqual(outcome.authorizationDeniedPhotosAssetIDs, [photosID])
+        XCTAssertTrue(outcome.photosMutationFailedAssetIDs.isEmpty)
+        XCTAssertTrue(fake.movedToRecentlyDeleted.isEmpty)
+    }
+
+    func testPhotosAuthorizationNotDeterminedDoesNotMutate() throws {
+        let env = try RecycleTestEnv(label: #function)
+        defer { env.cleanup() }
+        let photosID = try env.seedPhotosAsset(localIdentifier: "not-determined-id")
+        let fake = FakePhotosLibraryMutationPort()
+        fake.authorization = .notDetermined
+        let service = env.makeRecycleService(photosMutation: fake)
+        let outcome = try service.moveAssetsToRecycle(assetIDs: [photosID])
+        XCTAssertTrue(outcome.recycledEntryIDs.isEmpty)
+        XCTAssertEqual(outcome.authorizationDeniedPhotosAssetIDs, [photosID])
+        XCTAssertTrue(outcome.photosMutationFailedAssetIDs.isEmpty)
         XCTAssertTrue(fake.movedToRecentlyDeleted.isEmpty)
     }
 
@@ -1735,6 +1883,37 @@ final class LibrarySlimmingRecycleTests: XCTestCase {
             )
         }
         XCTAssertEqual(availability, AssetAvailability.recycled.rawValue)
+    }
+
+    func testPhotosReconcileLoadsAllPresenceFactsInOneBatch() throws {
+        let env = try RecycleTestEnv(label: #function)
+        defer { env.cleanup() }
+        let firstID = try env.seedPhotosAsset(localIdentifier: "batch-presence-1")
+        let secondID = try env.seedPhotosAsset(localIdentifier: "batch-presence-2")
+        let fake = FakePhotosLibraryMutationPort()
+        fake.presenceByID["batch-presence-1"] = .available
+        fake.presenceByID["batch-presence-2"] = .available
+        let service = env.makeRecycleService(photosMutation: fake)
+        _ = try service.moveAssetsToRecycle(assetIDs: [firstID, secondID])
+        fake.presenceByID["batch-presence-1"] = .available
+        fake.presenceByID["batch-presence-2"] = .available
+        let advancedClock = FixedJobClock(
+            nowMs: FolderReconcileTestSupport.baseTimeMs
+                + LibrarySlimmingRecyclePolicy.photosDeleteConvergenceGraceMs
+                + 1
+        )
+        let advancedService = env.makeRecycleService(
+            clock: advancedClock,
+            photosMutation: fake
+        )
+
+        let converged = try advancedService.reconcilePhotosRecycleEntries()
+
+        XCTAssertEqual(converged, 2)
+        XCTAssertEqual(
+            fake.presenceRequestBatches.map(Set.init),
+            [Set(["batch-presence-1", "batch-presence-2"])]
+        )
     }
 
     func testSlimmingHiddenAssetIDsIncludesRecycledAssets() throws {
@@ -1931,6 +2110,27 @@ private final class RecycleMoveProgressProbe: @unchecked Sendable {
     func append(_ progress: LibrarySlimmingRecycleMoveProgress) {
         lock.withLock {
             storedValues.append(progress)
+        }
+    }
+}
+
+private final class FolderQuarantinePhaseProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storedPhases: [FolderQuarantineIOPhase] = []
+    private var storedElapsedMilliseconds: [Double] = []
+
+    var phases: [FolderQuarantineIOPhase] {
+        lock.withLock { storedPhases }
+    }
+
+    var elapsedMilliseconds: [Double] {
+        lock.withLock { storedElapsedMilliseconds }
+    }
+
+    func append(_ phase: FolderQuarantineIOPhase, elapsedMs: Double) {
+        lock.withLock {
+            storedPhases.append(phase)
+            storedElapsedMilliseconds.append(elapsedMs)
         }
     }
 }
@@ -2254,6 +2454,7 @@ private final class FakePhotosLibraryMutationPort: PhotosLibraryMutationPort, @u
     var presenceByID: [String: PhotosAssetPresence] = [:]
     private(set) var movedToRecentlyDeleted: [String] = []
     private(set) var moveRequestBatches: [[String]] = []
+    private(set) var presenceRequestBatches: [[String]] = []
     var reportedMovedIdentifiers: [String]?
 
     func authorizationState() -> PhotosAuthorizationState {
@@ -2284,6 +2485,18 @@ private final class FakePhotosLibraryMutationPort: PhotosLibraryMutationPort, @u
             throw PhotosLibraryMutationError.authorizationDenied
         }
         return presenceByID[localIdentifier] ?? .missing
+    }
+
+    func presences(localIdentifiers: [String]) throws -> [String: PhotosAssetPresence] {
+        guard authorization == .authorized else {
+            throw PhotosLibraryMutationError.authorizationDenied
+        }
+        presenceRequestBatches.append(localIdentifiers)
+        return Dictionary(
+            uniqueKeysWithValues: localIdentifiers.map {
+                ($0, presenceByID[$0] ?? .missing)
+            }
+        )
     }
 
 }

@@ -87,6 +87,7 @@ struct CompositionRoot {
         )
         let photosAccess = PhotoKitPhotosLibraryAdapter()
         let photosMutation = PhotoKitPhotosLibraryMutationAdapter()
+        let interactiveIOGate = InteractiveIOPriorityGate()
         let librarySlimmingRecycle = LibrarySlimmingRecycleService(
             database: runtime.database,
             mutationAccess: FolderMutationAccessService(
@@ -101,7 +102,8 @@ struct CompositionRoot {
                 database: runtime.database,
                 derivedCachesDirectory: runtime.paths.cachesDirectory,
                 photosOriginalCache: photosOriginalCache
-            )
+            ),
+            interactiveIOGate: interactiveIOGate
         )
         let librarySlimmingMutationAuthorization = FolderMutationAuthorizationCoordinator(
             database: runtime.database,
@@ -126,7 +128,10 @@ struct CompositionRoot {
             streamFactory: FoundationFolderFileSystemEventStreamFactory(),
             clock: clock
         )
-        let handler = FolderReconcileHandler(rootAccess: sourceAccess)
+        let handler = FolderReconcileHandler(
+            rootAccess: sourceAccess,
+            interactiveIOGate: interactiveIOGate
+        )
         let photosConnection = PhotosLibraryConnectionService(
             database: runtime.database,
             access: photosAccess,

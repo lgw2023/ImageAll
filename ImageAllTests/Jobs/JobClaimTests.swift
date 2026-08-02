@@ -67,6 +67,57 @@ final class JobClaimTests: XCTestCase {
         XCTAssertNil(try JobTestSupport.claimDefault(queue: queue))
     }
 
+    func testClaimRestrictsCandidatesToAllowedSourceIDs() throws {
+        let url = try makeTempDatabaseURL()
+        let database = try CatalogDatabase.open(at: url)
+        let queue = JobTestSupport.makeQueue(database: database)
+        let otherSourceID = UUID()
+        let allowedSourceID = UUID()
+        try database.pool.write { db in
+            for (id, name) in [(otherSourceID, "Other"), (allowedSourceID, "Allowed")] {
+                try db.execute(
+                    sql: """
+                    INSERT INTO source (
+                        id, kind, display_name, bookmark, state,
+                        created_at_ms, updated_at_ms
+                    ) VALUES (?, 'photos', ?, NULL, 'active', ?, ?)
+                    """,
+                    arguments: [
+                        id.uuidString.lowercased(),
+                        name,
+                        JobTestSupport.baseTimeMs,
+                        JobTestSupport.baseTimeMs,
+                    ]
+                )
+            }
+        }
+        let otherJobID = UUID()
+        let allowedJobID = UUID()
+        _ = try JobTestSupport.enqueueDefault(
+            queue: queue,
+            id: otherJobID,
+            sourceID: otherSourceID,
+            priority: 100
+        )
+        _ = try JobTestSupport.enqueueDefault(
+            queue: queue,
+            id: allowedJobID,
+            sourceID: allowedSourceID,
+            priority: 1
+        )
+
+        let lease = try queue.claimNext(
+            ClaimNextInput(
+                owner: "scoped-worker",
+                leaseDurationMs: JobTestSupport.leaseDurationMs,
+                allowedSourceIDs: [allowedSourceID]
+            )
+        )
+
+        XCTAssertEqual(lease?.jobID, allowedJobID)
+        XCTAssertEqual(try queue.fetchJob(id: otherJobID).state, .pending)
+    }
+
     func testClaimSkipsWhenAttemptsEqualMaxAttempts() throws {
         let url = try makeTempDatabaseURL()
         let database = try CatalogDatabase.open(at: url)

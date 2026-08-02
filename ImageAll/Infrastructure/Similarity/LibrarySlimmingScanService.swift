@@ -691,6 +691,23 @@ struct LibrarySlimmingAnalysisJobSnapshot: Sendable, Equatable {
     let controlRequest: JobControlRequest
     let progress: JobProgress
     let result: LibrarySlimmingScanResult?
+    let seedAssetIDs: [UUID]
+
+    init(
+        jobID: UUID,
+        state: JobState,
+        controlRequest: JobControlRequest,
+        progress: JobProgress,
+        result: LibrarySlimmingScanResult?,
+        seedAssetIDs: [UUID] = []
+    ) {
+        self.jobID = jobID
+        self.state = state
+        self.controlRequest = controlRequest
+        self.progress = progress
+        self.result = result
+        self.seedAssetIDs = seedAssetIDs
+    }
 }
 
 struct LibrarySlimmingAnalysisJobSummary: Sendable, Equatable, Identifiable {
@@ -1035,22 +1052,36 @@ struct LibrarySlimmingAnalysisService: LibrarySlimmingAnalysisJobPort {
 
     func snapshot(jobID: UUID) throws -> LibrarySlimmingAnalysisJobSnapshot {
         let job = try queue.fetchJob(id: jobID)
-        let result = try database.pool.read { db -> LibrarySlimmingScanResult? in
-            guard let data: Data = try Data.fetchOne(
+        let persisted = try database.pool.read { db -> (LibrarySlimmingScanResult?, [UUID]) in
+            let result: LibrarySlimmingScanResult?
+            if let data: Data = try Data.fetchOne(
                 db,
                 sql: "SELECT result_json FROM library_slimming_scan_result WHERE job_id = ?",
                 arguments: [jobID.uuidString.lowercased()]
-            ) else {
-                return nil
+            ) {
+                result = try JSONDecoder().decode(LibrarySlimmingScanResult.self, from: data)
+            } else {
+                result = nil
             }
-            return try JSONDecoder().decode(LibrarySlimmingScanResult.self, from: data)
+            let rawSeedIDs = try String.fetchAll(
+                db,
+                sql: """
+                SELECT asset_id
+                FROM library_slimming_scan_member
+                WHERE job_id = ? AND is_seed = 1
+                ORDER BY ordinal ASC
+                """,
+                arguments: [jobID.uuidString.lowercased()]
+            )
+            return (result, rawSeedIDs.compactMap { UUID(uuidString: $0) })
         }
         return LibrarySlimmingAnalysisJobSnapshot(
             jobID: job.id,
             state: job.state,
             controlRequest: job.controlRequest,
             progress: job.progress,
-            result: result
+            result: persisted.0,
+            seedAssetIDs: persisted.1
         )
     }
 

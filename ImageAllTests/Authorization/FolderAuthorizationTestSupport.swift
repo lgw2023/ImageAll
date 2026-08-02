@@ -219,7 +219,11 @@ enum FolderAuthorizationTestSupport {
             return _initialDirectoryURLs
         }
 
-        func pickDirectory(initialDirectoryURL: URL?) -> URL? {
+        func pickDirectory(initialDirectoryURL: URL?) async -> URL? {
+            pickDirectoryLocked(initialDirectoryURL: initialDirectoryURL)
+        }
+
+        private func pickDirectoryLocked(initialDirectoryURL: URL?) -> URL? {
             lock.lock()
             defer { lock.unlock() }
             _callCount += 1

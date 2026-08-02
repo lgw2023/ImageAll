@@ -61,6 +61,7 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
     let clock: any JobClock
     let jobQueue: (any JobQueue)?
     let pixelCachePurger: AppOwnedAssetPixelCachePurger?
+    let interactiveIOGate: InteractiveIOPriorityGate?
     var quarantineIO: FolderQuarantineIO
     var idGenerator: @Sendable () -> UUID
 
@@ -72,6 +73,7 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
         jobQueue: (any JobQueue)? = nil,
         photosMutation: (any PhotosLibraryMutationPort)? = nil,
         pixelCachePurger: AppOwnedAssetPixelCachePurger? = nil,
+        interactiveIOGate: InteractiveIOPriorityGate? = nil,
         quarantineIO: FolderQuarantineIO = FolderQuarantineIO(),
         idGenerator: @escaping @Sendable () -> UUID = { UUID() }
     ) {
@@ -82,6 +84,7 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
         self.clock = clock
         self.jobQueue = jobQueue
         self.pixelCachePurger = pixelCachePurger
+        self.interactiveIOGate = interactiveIOGate
         self.quarantineIO = quarantineIO
         self.idGenerator = idGenerator
     }
@@ -358,13 +361,34 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
         assetIDs: [UUID],
         onProgress: @escaping LibrarySlimmingRecycleMoveProgressHandler
     ) throws -> LibrarySlimmingRecycleMoveOutcome {
+        if let interactiveIOGate {
+            return try interactiveIOGate.withInteractiveWork {
+                try moveAssetsToRecycleWithInteractivePriority(
+                    assetIDs: assetIDs,
+                    onProgress: onProgress
+                )
+            }
+        }
+        return try moveAssetsToRecycleWithInteractivePriority(
+            assetIDs: assetIDs,
+            onProgress: onProgress
+        )
+    }
+
+    private func moveAssetsToRecycleWithInteractivePriority(
+        assetIDs: [UUID],
+        onProgress: @escaping LibrarySlimmingRecycleMoveProgressHandler
+    ) throws -> LibrarySlimmingRecycleMoveOutcome {
         var outcome = LibrarySlimmingRecycleMoveOutcome(
             recycledEntryIDs: [],
             skippedPhotosAssetIDs: [],
             failedAssetIDs: [],
             authorizationRequiredSourceIDs: [],
             authorizationRequiredAssetIDs: [],
-            authorizationDeniedPhotosAssetIDs: []
+            authorizationDeniedPhotosAssetIDs: [],
+            mutationAuthorizationInvalidAssetIDs: [],
+            photosMutationFailedAssetIDs: [],
+            sourceChangedAssetIDs: []
         )
         try quarantineIO.ensureQuarantineRoot(at: quarantineRootURL)
 
@@ -413,10 +437,19 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
                 }
                 outcome.failedAssetIDs.append(assetID)
                 outcome.authorizationRequiredAssetIDs.append(assetID)
+            } catch LibrarySlimmingRecycleError.mutationAuthorizationInvalid {
+                outcome.failedAssetIDs.append(assetID)
+                outcome.mutationAuthorizationInvalidAssetIDs.append(assetID)
             } catch LibrarySlimmingRecycleError.photosAuthorizationRequired {
                 reachedTerminalOutcome = false
                 outcome.failedAssetIDs.append(assetID)
                 outcome.authorizationDeniedPhotosAssetIDs.append(assetID)
+            } catch LibrarySlimmingRecycleError.photosMutationFailed {
+                outcome.failedAssetIDs.append(assetID)
+                outcome.photosMutationFailedAssetIDs.append(assetID)
+            } catch LibrarySlimmingRecycleError.sourceChanged {
+                outcome.failedAssetIDs.append(assetID)
+                outcome.sourceChangedAssetIDs.append(assetID)
             } catch {
                 outcome.failedAssetIDs.append(assetID)
             }
@@ -435,6 +468,9 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
                 reachedTerminalOutcome = false
                 outcome.failedAssetIDs.append(contentsOf: photosAssetIDs)
                 outcome.authorizationDeniedPhotosAssetIDs.append(contentsOf: photosAssetIDs)
+            } catch LibrarySlimmingRecycleError.photosMutationFailed {
+                outcome.failedAssetIDs.append(contentsOf: photosAssetIDs)
+                outcome.photosMutationFailedAssetIDs.append(contentsOf: photosAssetIDs)
             } catch {
                 outcome.failedAssetIDs.append(contentsOf: photosAssetIDs)
             }
@@ -470,6 +506,7 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
         var authorizationRequiredSourceIDs = Set<UUID>()
         var authorizationRequiredAssetIDs = Set<UUID>()
         var authorizationDeniedPhotosAssetIDs = Set<UUID>()
+        var mutationAuthorizationInvalidAssetIDs = Set<UUID>()
 
         let fileProofsBySource = Dictionary(grouping: deletionProofs.filter {
             $0.sourceKind == .file
@@ -480,6 +517,9 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
             } catch LibrarySlimmingRecycleError.mutationAuthorizationRequired {
                 authorizationRequiredSourceIDs.insert(sourceID)
                 authorizationRequiredAssetIDs.formUnion(proofs.map(\.assetID))
+                failedAssetIDs.formUnion(proofs.map(\.assetID))
+            } catch LibrarySlimmingRecycleError.mutationAuthorizationInvalid {
+                mutationAuthorizationInvalidAssetIDs.formUnion(proofs.map(\.assetID))
                 failedAssetIDs.formUnion(proofs.map(\.assetID))
             } catch {
                 failedAssetIDs.formUnion(proofs.map(\.assetID))
@@ -517,7 +557,10 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
             failedAssetIDs: sorted(failedAssetIDs),
             authorizationRequiredSourceIDs: sorted(authorizationRequiredSourceIDs),
             authorizationRequiredAssetIDs: sorted(authorizationRequiredAssetIDs),
-            authorizationDeniedPhotosAssetIDs: sorted(authorizationDeniedPhotosAssetIDs)
+            authorizationDeniedPhotosAssetIDs: sorted(authorizationDeniedPhotosAssetIDs),
+            mutationAuthorizationInvalidAssetIDs: sorted(mutationAuthorizationInvalidAssetIDs),
+            photosMutationFailedAssetIDs: [],
+            sourceChangedAssetIDs: []
         )
     }
 
@@ -712,20 +755,28 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
     func reconcilePhotosRecycleEntries() throws -> Int {
         guard let photosMutation else { return 0 }
         let entries = try loadPhotosRecycledEntries()
+        let indexedEntries = entries.compactMap { entry -> (EntrySnapshot, String)? in
+            guard let rawIdentifier = entry.photosLocalIdentifier else { return nil }
+            let identifier = rawIdentifier.trimmingCharacters(in: .whitespacesAndNewlines)
+            return identifier.isEmpty ? nil : (entry, identifier)
+        }
+        guard !indexedEntries.isEmpty else { return 0 }
+        let presenceByIdentifier: [String: PhotosAssetPresence]
+        do {
+            presenceByIdentifier = try photosMutation.presences(
+                localIdentifiers: indexedEntries.map(\.1)
+            )
+        } catch PhotosLibraryMutationError.authorizationDenied,
+                PhotosLibraryMutationError.authorizationRestricted,
+                PhotosLibraryMutationError.notDetermined
+        {
+            return 0
+        } catch {
+            return 0
+        }
         var converged = 0
-        for entry in entries {
-            guard let localIdentifier = entry.photosLocalIdentifier else { continue }
-            let presence: PhotosAssetPresence
-            do {
-                presence = try photosMutation.presence(localIdentifier: localIdentifier)
-            } catch PhotosLibraryMutationError.authorizationDenied,
-                    PhotosLibraryMutationError.authorizationRestricted,
-                    PhotosLibraryMutationError.notDetermined
-            {
-                continue
-            } catch {
-                continue
-            }
+        for (entry, localIdentifier) in indexedEntries {
+            guard let presence = presenceByIdentifier[localIdentifier] else { continue }
             switch presence {
             case .available:
                 if clock.nowMs - entry.trashedAtMs
