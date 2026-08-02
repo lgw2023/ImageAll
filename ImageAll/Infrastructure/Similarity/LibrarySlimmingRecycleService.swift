@@ -7,6 +7,11 @@ private let librarySlimmingRecyclePerformanceLogger = Logger(
     category: "RecyclePerformance"
 )
 
+private enum SpaceFirstDeleteMarker {
+    static let sourceDeletionPending = "spaceFirstSourceDeletionPending"
+    static let appCacheCleanupPending = "spaceFirstAppCacheCleanupPending"
+}
+
 private final class RecycleMoveProgressReporter: @unchecked Sendable {
     private let lock = NSLock()
     private let totalAssetCount: Int
@@ -454,20 +459,63 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
             ) {
                 try moveAssetsToRecycleWithInteractivePriority(
                     assetIDs: assetIDs,
-                    reporter: reporter
+                    reporter: reporter,
+                    mode: .recoverableRecycle
                 )
             }
         }
         reporter.report(.preparing)
         return try moveAssetsToRecycleWithInteractivePriority(
             assetIDs: assetIDs,
-            reporter: reporter
+            reporter: reporter,
+            mode: .recoverableRecycle
+        )
+    }
+
+    func deleteAssetsImmediately(
+        assetIDs: [UUID],
+        onProgress: @escaping LibrarySlimmingRecycleMoveProgressHandler
+    ) throws -> LibrarySlimmingRecycleMoveOutcome {
+        let reporter = RecycleMoveProgressReporter(
+            totalAssetCount: assetIDs.count,
+            totalFileBytes: 0,
+            handler: onProgress
+        )
+        let startedAt = DispatchTime.now().uptimeNanoseconds
+        defer {
+            let elapsedMs = Double(DispatchTime.now().uptimeNanoseconds - startedAt) / 1_000_000
+            librarySlimmingRecyclePerformanceLogger.notice(
+                "space_first_batch_completed assets=\(assetIDs.count, privacy: .public) elapsed_ms=\(elapsedMs, privacy: .public)"
+            )
+        }
+        if let interactiveIOGate {
+            return try interactiveIOGate.withInteractiveWork(
+                onWaitingForBackground: {
+                    reporter.report(.waitingForBackgroundIO)
+                },
+                onReady: {
+                    reporter.report(.preparing)
+                }
+            ) {
+                try moveAssetsToRecycleWithInteractivePriority(
+                    assetIDs: assetIDs,
+                    reporter: reporter,
+                    mode: .releaseSourceSpace
+                )
+            }
+        }
+        reporter.report(.preparing)
+        return try moveAssetsToRecycleWithInteractivePriority(
+            assetIDs: assetIDs,
+            reporter: reporter,
+            mode: .releaseSourceSpace
         )
     }
 
     private func moveAssetsToRecycleWithInteractivePriority(
         assetIDs: [UUID],
-        reporter: RecycleMoveProgressReporter
+        reporter: RecycleMoveProgressReporter,
+        mode: LibrarySlimmingRemovalMode
     ) throws -> LibrarySlimmingRecycleMoveOutcome {
         var outcome = LibrarySlimmingRecycleMoveOutcome(
             recycledEntryIDs: [],
@@ -480,7 +528,9 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
             photosMutationFailedAssetIDs: [],
             sourceChangedAssetIDs: []
         )
-        try quarantineIO.ensureQuarantineRoot(at: quarantineRootURL)
+        if mode == .recoverableRecycle {
+            try quarantineIO.ensureQuarantineRoot(at: quarantineRootURL)
+        }
 
         var photosAssets: [AssetSnapshot] = []
         for assetID in assetIDs {
@@ -494,9 +544,15 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
                 }
                 switch asset.locatorKind {
                 case AssetLocatorKind.file.rawValue:
-                    outcome.recycledEntryIDs.append(
-                        try recycleFileAsset(asset, reporter: reporter)
-                    )
+                    switch mode {
+                    case .recoverableRecycle:
+                        outcome.recycledEntryIDs.append(
+                            try recycleFileAsset(asset, reporter: reporter)
+                        )
+                    case .releaseSourceSpace:
+                        _ = try deleteFileAssetImmediately(asset, reporter: reporter)
+                        outcome.permanentlyDeletedAssetIDs.append(asset.assetID)
+                    }
                 case AssetLocatorKind.photos.rawValue:
                     guard let localIdentifier = asset.photosLocalIdentifier,
                           !localIdentifier.isEmpty
@@ -530,6 +586,8 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
             } catch LibrarySlimmingRecycleError.sourceChanged {
                 outcome.failedAssetIDs.append(assetID)
                 outcome.sourceChangedAssetIDs.append(assetID)
+            } catch LibrarySlimmingRecycleError.durabilityPending {
+                outcome.durabilityPendingAssetIDs.append(assetID)
             } catch {
                 outcome.failedAssetIDs.append(assetID)
             }
@@ -585,6 +643,20 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
             return blocked
         }
         return try moveAssetsToRecycle(
+            assetIDs: plan.assetIDsToRecycle,
+            onProgress: onProgress
+        )
+    }
+
+    func deleteIdenticalCleanupAssetsImmediately(
+        plan: LibrarySlimmingIdenticalCleanupPlan,
+        onProgress: @escaping LibrarySlimmingRecycleMoveProgressHandler
+    ) throws -> LibrarySlimmingRecycleMoveOutcome {
+        try validateIdenticalCleanupProofs(plan)
+        if let blocked = preflightIdenticalCleanupMutationAuthorization(plan) {
+            return blocked
+        }
+        return try deleteAssetsImmediately(
             assetIDs: plan.assetIDsToRecycle,
             onProgress: onProgress
         )
@@ -772,6 +844,18 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
 
     func purgeExpired(nowMs: Int64) throws -> Int {
         _ = try? reconcilePhotosRecycleEntries()
+        let interruptedPurges = try loadInterruptedEntries().filter {
+            $0.state == .purging
+        }
+        var purged = 0
+        for entry in interruptedPurges {
+            do {
+                try recoverPurging(entry)
+                purged += 1
+            } catch {
+                continue
+            }
+        }
         let dueIDs: [UUID] = try database.pool.read { db in
             let rows = try Row.fetchAll(
                 db,
@@ -784,7 +868,6 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
             )
             return rows.compactMap { UUID(uuidString: $0["id"]) }
         }
-        var purged = 0
         for id in dueIDs {
             do {
                 try purgeNow(entryID: id)
@@ -801,7 +884,13 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
         guard let earliestPurgeAfterMs = try database.pool.read({ db in
             try Int64.fetchOne(
                 db,
-                sql: "SELECT MIN(purge_after_ms) FROM recycle_entry WHERE state = 'recycled'"
+                sql: """
+                SELECT MIN(
+                    CASE WHEN state = 'purging' THEN updated_at_ms ELSE purge_after_ms END
+                )
+                FROM recycle_entry
+                WHERE state IN ('recycled', 'purging')
+                """
             )
         }) else {
             return
@@ -1035,6 +1124,7 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
         let quarantineRelativePath: String?
         let originalRelativePath: String?
         let photosLocalIdentifier: String?
+        let errorCode: String?
         let trashedAtMs: Int64
         let purgeAfterMs: Int64
     }
@@ -1164,6 +1254,146 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
             )
         }
         return entryID
+    }
+
+    private func deleteFileAssetImmediately(
+        _ asset: AssetSnapshot,
+        reporter: RecycleMoveProgressReporter
+    ) throws -> UUID {
+        guard let relativePath = asset.relativePath,
+              let sizeBytes = asset.sizeBytes,
+              let modifiedAtNs = asset.modifiedAtNs,
+              asset.resourceID != nil || asset.sha256 != nil,
+              asset.sha256 == nil || asset.sha256?.count == 32
+        else {
+            throw LibrarySlimmingRecycleError.sourceChanged
+        }
+        let entryID = idGenerator()
+        let now = clock.nowMs
+        let expectedIdentity = FolderQuarantineExpectedIdentity(
+            sizeBytes: sizeBytes,
+            modifiedAtNs: modifiedAtNs,
+            resourceID: asset.resourceID,
+            sha256: asset.sha256
+        )
+
+        try database.pool.write { db in
+            try db.execute(
+                sql: """
+                INSERT INTO recycle_entry (
+                    id, asset_id, source_kind, trashed_at_ms, purge_after_ms, state,
+                    quarantine_relative_path, original_relative_path, photos_local_identifier,
+                    error_code, created_at_ms, updated_at_ms
+                ) VALUES (?, ?, 'file', ?, ?, 'pending', NULL, ?, NULL, ?, ?, ?)
+                """,
+                arguments: [
+                    entryID.uuidString.lowercased(),
+                    asset.assetID.uuidString.lowercased(),
+                    now,
+                    now,
+                    relativePath,
+                    SpaceFirstDeleteMarker.sourceDeletionPending,
+                    now,
+                    now,
+                ]
+            )
+        }
+
+        do {
+            try mutationAccess.withWritableSourceRoot(sourceID: asset.sourceID) { sourceRoot in
+                var instrumentedIO = quarantineIO
+                let existingStarted = instrumentedIO.onPhaseStarted
+                let existingCompleted = instrumentedIO.onPhaseCompleted
+                instrumentedIO.onPhaseStarted = { phase in
+                    existingStarted(phase)
+                    reporter.report(Self.recycleMovePhase(for: phase))
+                }
+                instrumentedIO.onPhaseCompleted = { phase, elapsedMs in
+                    existingCompleted(phase, elapsedMs)
+                }
+                try instrumentedIO.deleteSourceImmediately(
+                    sourceRootURL: sourceRoot,
+                    sourceRelativePath: relativePath,
+                    expectedIdentity: expectedIdentity
+                )
+            }
+        } catch LibrarySlimmingRecycleError.mutationAuthorizationRequired {
+            try markFailed(entryID: entryID, code: "mutationAuthorizationRequired")
+            throw LibrarySlimmingRecycleError.mutationAuthorizationRequired
+        } catch LibrarySlimmingRecycleError.mutationAuthorizationInvalid {
+            try markFailed(entryID: entryID, code: "mutationAuthorizationInvalid")
+            throw LibrarySlimmingRecycleError.mutationAuthorizationInvalid
+        } catch FolderQuarantineIOError.verificationFailed {
+            try markFailed(entryID: entryID, code: "sourceChanged")
+            throw LibrarySlimmingRecycleError.sourceChanged
+        } catch FolderQuarantineIOError.durabilityUncertain {
+            // The unlink committed in the current namespace. Keep the pending
+            // intent so recovery can observe whether the source path exists.
+            throw LibrarySlimmingRecycleError.durabilityPending
+        } catch {
+            try markFailed(entryID: entryID, code: "ioFailure")
+            throw LibrarySlimmingRecycleError.ioFailure
+        }
+
+        do {
+            try markSpaceFirstSourceDeleted(
+                entryID: entryID,
+                assetID: asset.assetID
+            )
+        } catch {
+            // The source unlink already committed in the live namespace. Do not
+            // report a normal failure and make the optimistic card reappear;
+            // the durable pending intent lets startup/background recovery
+            // converge the catalog transaction without deleting source bytes a
+            // second time.
+            throw LibrarySlimmingRecycleError.durabilityPending
+        }
+        return entryID
+    }
+
+    private func markSpaceFirstSourceDeleted(
+        entryID: UUID,
+        assetID: UUID
+    ) throws {
+        try database.pool.write { db in
+            try db.execute(
+                sql: """
+                UPDATE recycle_entry
+                SET state = 'purging',
+                    original_relative_path = NULL,
+                    error_code = ?,
+                    updated_at_ms = ?
+                WHERE id = ?
+                  AND asset_id = ?
+                  AND state = 'pending'
+                  AND error_code = ?
+                """,
+                arguments: [
+                    SpaceFirstDeleteMarker.appCacheCleanupPending,
+                    clock.nowMs,
+                    entryID.uuidString.lowercased(),
+                    assetID.uuidString.lowercased(),
+                    SpaceFirstDeleteMarker.sourceDeletionPending,
+                ]
+            )
+            guard db.changesCount == 1 else {
+                throw LibrarySlimmingRecycleError.invalidState
+            }
+            try db.execute(
+                sql: """
+                UPDATE asset
+                SET availability = 'recycled', record_updated_at_ms = ?
+                WHERE id = ?
+                """,
+                arguments: [
+                    clock.nowMs,
+                    assetID.uuidString.lowercased(),
+                ]
+            )
+            guard db.changesCount == 1 else {
+                throw LibrarySlimmingRecycleError.notFound
+            }
+        }
     }
 
     private static func recycleMovePhase(
@@ -1539,6 +1769,44 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
             }
             return true
         }
+        if entry.errorCode == SpaceFirstDeleteMarker.sourceDeletionPending {
+            guard let originalRelativePath = entry.originalRelativePath else {
+                try markFailed(entryID: entry.id, code: "interruptedFastDeleteMissingPath")
+                return true
+            }
+            let sourceID = try loadSourceID(assetID: entry.assetID)
+            let sourceExists = try mutationAccess.withWritableSourceRoot(
+                sourceID: sourceID
+            ) { root in
+                try quarantineIO.objectExists(
+                    rootURL: root,
+                    relativePath: originalRelativePath
+                )
+            }
+            if sourceExists {
+                try markFailed(entryID: entry.id, code: "interruptedBeforeFastDelete")
+            } else {
+                try markSpaceFirstSourceDeleted(
+                    entryID: entry.id,
+                    assetID: entry.assetID
+                )
+                try recoverPurging(
+                    EntrySnapshot(
+                        id: entry.id,
+                        assetID: entry.assetID,
+                        sourceKind: entry.sourceKind,
+                        state: .purging,
+                        quarantineRelativePath: nil,
+                        originalRelativePath: nil,
+                        photosLocalIdentifier: nil,
+                        errorCode: SpaceFirstDeleteMarker.appCacheCleanupPending,
+                        trashedAtMs: entry.trashedAtMs,
+                        purgeAfterMs: entry.purgeAfterMs
+                    )
+                )
+            }
+            return true
+        }
         guard let quarantinePath = entry.quarantineRelativePath,
               let originalRelativePath = entry.originalRelativePath
         else {
@@ -1819,7 +2087,8 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
                 sql: """
                 SELECT
                     id, asset_id, source_kind, state, quarantine_relative_path,
-                    original_relative_path, photos_local_identifier, trashed_at_ms, purge_after_ms
+                    original_relative_path, photos_local_identifier, error_code,
+                    trashed_at_ms, purge_after_ms
                 FROM recycle_entry
                 WHERE state IN ('pending', 'restoring', 'purging')
                 ORDER BY updated_at_ms ASC, id ASC
@@ -1836,7 +2105,8 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
                 sql: """
                 SELECT
                     id, asset_id, source_kind, state, quarantine_relative_path,
-                    original_relative_path, photos_local_identifier, trashed_at_ms, purge_after_ms
+                    original_relative_path, photos_local_identifier, error_code,
+                    trashed_at_ms, purge_after_ms
                 FROM recycle_entry
                 WHERE state = 'recycled' AND source_kind = 'photos'
                 ORDER BY updated_at_ms ASC, id ASC
@@ -1862,6 +2132,7 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
             quarantineRelativePath: row["quarantine_relative_path"],
             originalRelativePath: row["original_relative_path"],
             photosLocalIdentifier: row["photos_local_identifier"],
+            errorCode: row["error_code"],
             trashedAtMs: row["trashed_at_ms"],
             purgeAfterMs: row["purge_after_ms"]
         )
@@ -1955,7 +2226,8 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
                 sql: """
                 SELECT
                     id, asset_id, source_kind, state, quarantine_relative_path,
-                    original_relative_path, photos_local_identifier, trashed_at_ms, purge_after_ms
+                    original_relative_path, photos_local_identifier, error_code,
+                    trashed_at_ms, purge_after_ms
                 FROM recycle_entry WHERE id = ?
                 """,
                 arguments: [entryID.uuidString.lowercased()]

@@ -1421,6 +1421,183 @@ final class LibrarySlimmingRecycleTests: XCTestCase {
         XCTAssertEqual(try service.listRecycledEntries().count, 1)
     }
 
+    func testSpaceFirstDeleteRemovesSourceWithoutCreatingQuarantineAndCleansCachesLater()
+        throws
+    {
+        let env = try RecycleTestEnv(label: #function)
+        defer { env.cleanup() }
+        let seeded = try env.seedAsset(
+            relativePath: "fast/delete.jpg",
+            contents: Data("release-source-space".utf8)
+        )
+        let cachedPreview = try env.seedDerivedImageCache(assetID: seeded.assetID)
+        let service = env.makeRecycleService()
+        let phaseProbe = FolderQuarantinePhaseProbe()
+        var instrumented = service
+        instrumented.quarantineIO.onPhaseStarted = {
+            phaseProbe.append($0, elapsedMs: 0)
+        }
+
+        let outcome = try instrumented.deleteAssetsImmediately(
+            assetIDs: [seeded.assetID],
+            onProgress: { _ in }
+        )
+
+        XCTAssertEqual(outcome.permanentlyDeletedAssetIDs, [seeded.assetID])
+        XCTAssertTrue(outcome.recycledEntryIDs.isEmpty)
+        XCTAssertTrue(outcome.failedAssetIDs.isEmpty)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: seeded.fileURL.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: env.quarantineRoot.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: cachedPreview.path))
+        XCTAssertEqual(
+            phaseProbe.phases,
+            [.sourceFinalVerification, .unlinkSource, .sourceDirectorySync]
+        )
+        let pendingCleanupState = try env.database.pool.read { db in
+            try String.fetchOne(
+                db,
+                sql: "SELECT state FROM recycle_entry WHERE asset_id = ?",
+                arguments: [seeded.assetID.uuidString.lowercased()]
+            )
+        }
+        XCTAssertEqual(pendingCleanupState, RecycleEntryState.purging.rawValue)
+        XCTAssertTrue(try instrumented.listRecycledEntries().isEmpty)
+
+        XCTAssertEqual(
+            try instrumented.purgeExpired(nowMs: FolderReconcileTestSupport.baseTimeMs),
+            1
+        )
+        XCTAssertFalse(FileManager.default.fileExists(atPath: cachedPreview.path))
+        let final = try env.database.pool.read { db in
+            try Row.fetchOne(
+                db,
+                sql: "SELECT state, original_relative_path FROM recycle_entry WHERE asset_id = ?",
+                arguments: [seeded.assetID.uuidString.lowercased()]
+            )
+        }
+        XCTAssertEqual(final?["state"] as String?, RecycleEntryState.purged.rawValue)
+        XCTAssertNil(final?["original_relative_path"] as String?)
+    }
+
+    func testSpaceFirstDeleteRejectsChangedSourceAndKeepsOriginal() throws {
+        let env = try RecycleTestEnv(label: #function)
+        defer { env.cleanup() }
+        let seeded = try env.seedAsset(
+            relativePath: "fast/changed.jpg",
+            contents: Data("before".utf8)
+        )
+        try Data("after-with-different-size".utf8).write(to: seeded.fileURL)
+        let service = env.makeRecycleService()
+
+        let outcome = try service.deleteAssetsImmediately(
+            assetIDs: [seeded.assetID],
+            onProgress: { _ in }
+        )
+
+        XCTAssertEqual(outcome.failedAssetIDs, [seeded.assetID])
+        XCTAssertEqual(outcome.sourceChangedAssetIDs, [seeded.assetID])
+        XCTAssertTrue(outcome.permanentlyDeletedAssetIDs.isEmpty)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: seeded.fileURL.path))
+        XCTAssertEqual(try Data(contentsOf: seeded.fileURL), Data("after-with-different-size".utf8))
+    }
+
+    func testSpaceFirstDeleteSyncFailureRecoversCommittedUnlink() throws {
+        let env = try RecycleTestEnv(label: #function)
+        defer { env.cleanup() }
+        let seeded = try env.seedAsset(
+            relativePath: "fast/sync-recovery.jpg",
+            contents: Data("fast-sync-recovery".utf8)
+        )
+        var service = env.makeRecycleService()
+        service.quarantineIO.synchronizeDirectoryFD = { _ in
+            throw FolderQuarantineIOError.ioFailure
+        }
+
+        let outcome = try service.deleteAssetsImmediately(
+            assetIDs: [seeded.assetID],
+            onProgress: { _ in }
+        )
+
+        XCTAssertTrue(outcome.failedAssetIDs.isEmpty)
+        XCTAssertEqual(outcome.durabilityPendingAssetIDs, [seeded.assetID])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: seeded.fileURL.path))
+        let interrupted = try env.database.pool.read { db in
+            try String.fetchOne(
+                db,
+                sql: "SELECT state FROM recycle_entry WHERE asset_id = ?",
+                arguments: [seeded.assetID.uuidString.lowercased()]
+            )
+        }
+        XCTAssertEqual(interrupted, RecycleEntryState.pending.rawValue)
+
+        service.quarantineIO = FolderQuarantineIO()
+        XCTAssertEqual(try service.recoverInterruptedOperations(), 1)
+        let recovered = try env.database.pool.read { db in
+            try String.fetchOne(
+                db,
+                sql: "SELECT state FROM recycle_entry WHERE asset_id = ?",
+                arguments: [seeded.assetID.uuidString.lowercased()]
+            )
+        }
+        XCTAssertEqual(recovered, RecycleEntryState.purged.rawValue)
+    }
+
+    func testSpaceFirstDeleteCatalogCommitFailureKeepsDurablePendingIntent() throws {
+        let env = try RecycleTestEnv(label: #function)
+        defer { env.cleanup() }
+        let seeded = try env.seedAsset(
+            relativePath: "fast/catalog-recovery.jpg",
+            contents: Data("fast-catalog-recovery".utf8)
+        )
+        let service = env.makeRecycleService()
+        try env.database.pool.write { db in
+            try db.execute(
+                sql: """
+                    CREATE TRIGGER reject_space_first_completion
+                    BEFORE UPDATE OF state ON recycle_entry
+                    WHEN NEW.state = 'purging'
+                    BEGIN
+                        SELECT RAISE(ABORT, 'fixture completion failure');
+                    END
+                    """
+            )
+        }
+
+        let outcome = try service.deleteAssetsImmediately(
+            assetIDs: [seeded.assetID],
+            onProgress: { _ in }
+        )
+
+        XCTAssertTrue(outcome.failedAssetIDs.isEmpty)
+        XCTAssertEqual(outcome.durabilityPendingAssetIDs, [seeded.assetID])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: seeded.fileURL.path))
+        let pending = try env.database.pool.read { db in
+            try Row.fetchOne(
+                db,
+                sql: "SELECT state, error_code FROM recycle_entry WHERE asset_id = ?",
+                arguments: [seeded.assetID.uuidString.lowercased()]
+            )
+        }
+        XCTAssertEqual(pending?["state"] as String?, RecycleEntryState.pending.rawValue)
+        XCTAssertEqual(
+            pending?["error_code"] as String?,
+            "spaceFirstSourceDeletionPending"
+        )
+
+        try env.database.pool.write { db in
+            try db.execute(sql: "DROP TRIGGER reject_space_first_completion")
+        }
+        XCTAssertEqual(try service.recoverInterruptedOperations(), 1)
+        let recovered = try env.database.pool.read { db in
+            try String.fetchOne(
+                db,
+                sql: "SELECT state FROM recycle_entry WHERE asset_id = ?",
+                arguments: [seeded.assetID.uuidString.lowercased()]
+            )
+        }
+        XCTAssertEqual(recovered, RecycleEntryState.purged.rawValue)
+    }
+
     func testRecoveryFinalizesMoveInterruptedAfterFilesystemSuccess() throws {
         let env = try RecycleTestEnv(label: #function)
         defer { env.cleanup() }
@@ -1913,6 +2090,25 @@ final class LibrarySlimmingRecycleTests: XCTestCase {
             )
         }
         XCTAssertEqual(availability, AssetAvailability.recycled.rawValue)
+    }
+
+    func testSpaceFirstModeStillUsesSystemRecentlyDeletedForPhotos() throws {
+        let env = try RecycleTestEnv(label: #function)
+        defer { env.cleanup() }
+        let photosID = try env.seedPhotosAsset(localIdentifier: "space-first-photos")
+        let fake = FakePhotosLibraryMutationPort()
+        fake.presenceByID["space-first-photos"] = .available
+        let service = env.makeRecycleService(photosMutation: fake)
+
+        let outcome = try service.deleteAssetsImmediately(
+            assetIDs: [photosID],
+            onProgress: { _ in }
+        )
+
+        XCTAssertEqual(outcome.recycledEntryIDs.count, 1)
+        XCTAssertTrue(outcome.permanentlyDeletedAssetIDs.isEmpty)
+        XCTAssertEqual(fake.movedToRecentlyDeleted, ["space-first-photos"])
+        XCTAssertEqual(try service.listRecycledEntries().first?.sourceKind, .photos)
     }
 
     func testPhotosPendingRecoveryKeepsAmbiguousAvailableAssetDuringConvergenceGrace() throws {

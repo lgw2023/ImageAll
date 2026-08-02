@@ -289,6 +289,74 @@ struct FolderQuarantineIO: Sendable {
         }
     }
 
+    /// Permanently removes a source file without first copying it to App
+    /// quarantine. A stable resource identifier is the O(1) fast path. If the
+    /// catalog does not have one, the registered SHA-256 is verified before
+    /// deletion; callers must provide at least one of those identities.
+    func deleteSourceImmediately(
+        sourceRootURL: URL,
+        sourceRelativePath: String,
+        expectedIdentity: FolderQuarantineExpectedIdentity
+    ) throws {
+        guard case let .success(validatedSource) = RelativePathRules.validate(
+            sourceRelativePath
+        ),
+            expectedIdentity.resourceID != nil || expectedIdentity.sha256 != nil
+        else {
+            throw FolderQuarantineIOError.verificationFailed
+        }
+
+        let sourceRootFD = try DerivedImageSecureIO.openDirectoryNoFollow(at: sourceRootURL)
+        defer { Darwin.close(sourceRootFD) }
+        let (sourceParentFD, ownsSourceParent, sourceName) =
+            try DerivedImageSecureIO.openRelativeDirectory(
+                directoryFD: sourceRootFD,
+                relativePath: validatedSource
+            )
+        defer {
+            if ownsSourceParent { Darwin.close(sourceParentFD) }
+        }
+
+        let openedSource = try openVerifiedRegularFile(
+            parentFD: sourceParentFD,
+            name: sourceName,
+            expectedIdentity: expectedIdentity,
+            verifyExpectedDigest: expectedIdentity.resourceID == nil
+        )
+        defer { Darwin.close(openedSource.fd) }
+
+        guard flock(openedSource.fd, LOCK_EX | LOCK_NB) == 0 else {
+            throw FolderQuarantineIOError.verificationFailed
+        }
+        defer { flock(openedSource.fd, LOCK_UN) }
+
+        beforeSourceFinalVerification()
+        try measurePhase(.sourceFinalVerification) {
+            try requireOpenFileMetadataUnchanged(
+                fd: openedSource.fd,
+                openedStat: openedSource.stat
+            )
+            try requirePathStillReferencesOpenFile(
+                parentFD: sourceParentFD,
+                name: sourceName,
+                openedStat: openedSource.stat
+            )
+        }
+        try measurePhase(.unlinkSource) {
+            try DerivedImageSecureIO.unlinkatEntry(
+                directoryFD: sourceParentFD,
+                name: sourceName
+            )
+        }
+        do {
+            try measurePhase(.sourceDirectorySync) {
+                try synchronizeDirectory(fd: sourceParentFD)
+            }
+        } catch {
+            throw FolderQuarantineIOError.durabilityUncertain
+        }
+    }
+
     func objectExists(rootURL: URL, relativePath: String) throws -> Bool {
         guard case let .success(validated) = RelativePathRules.validate(relativePath) else {
             throw FolderQuarantineIOError.unsafePath
@@ -606,6 +674,23 @@ struct FolderQuarantineIO: Sendable {
               modificationTimeNanoseconds(currentStat)
                 == modificationTimeNanoseconds(openedStat),
               try hashFile(fd: fd) == expectedDigest
+        else {
+            throw FolderQuarantineIOError.verificationFailed
+        }
+    }
+
+    private func requireOpenFileMetadataUnchanged(
+        fd: Int32,
+        openedStat: Darwin.stat
+    ) throws {
+        var currentStat = Darwin.stat()
+        guard fstat(fd, &currentStat) == 0,
+              (currentStat.st_mode & S_IFMT) == S_IFREG,
+              currentStat.st_dev == openedStat.st_dev,
+              currentStat.st_ino == openedStat.st_ino,
+              currentStat.st_size == openedStat.st_size,
+              modificationTimeNanoseconds(currentStat)
+                == modificationTimeNanoseconds(openedStat)
         else {
             throw FolderQuarantineIOError.verificationFailed
         }

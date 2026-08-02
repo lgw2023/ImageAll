@@ -275,6 +275,7 @@ struct LibrarySlimmingWorkspaceView: View {
     let onReturnToLibrary: () -> Void
     @FocusState private var keyboardFocused: Bool
     @State private var confirmMoveToRecycle = false
+    @State private var confirmFastDelete = false
     @State private var suppressMoveToRecycleConfirmation = false
     @State private var confirmPurgeEntryID: UUID?
     @State private var identicalCleanupPlan: LibrarySlimmingIdenticalCleanupPlan?
@@ -409,6 +410,19 @@ struct LibrarySlimmingWorkspaceView: View {
                 }
             )
         }
+        .sheet(isPresented: $confirmFastDelete) {
+            LibrarySlimmingFastDeleteConfirmationSheet(
+                selectedCount: model.selectedLibrarySlimmingMemberIDs.count,
+                mediaKind: model.selectedMediaKind,
+                onConfirm: {
+                    confirmFastDelete = false
+                    Task { await model.deleteSelectedLibrarySlimmingMembersImmediately() }
+                },
+                onCancel: {
+                    confirmFastDelete = false
+                }
+            )
+        }
         .sheet(
             isPresented: Binding(
                 get: { identicalCleanupPlan != nil },
@@ -418,7 +432,15 @@ struct LibrarySlimmingWorkspaceView: View {
             if let plan = identicalCleanupPlan {
                 LibrarySlimmingIdenticalCleanupConfirmationSheet(
                     plan: plan,
-                    onConfirm: {
+                    onFastDelete: {
+                        identicalCleanupPlan = nil
+                        Task {
+                            await model.deleteLibrarySlimmingIdenticalRedundancyImmediately(
+                                plan: plan
+                            )
+                        }
+                    },
+                    onRecoverableRecycle: {
                         identicalCleanupPlan = nil
                         Task {
                             await model.moveLibrarySlimmingIdenticalRedundancyToRecycle(
@@ -690,26 +712,37 @@ struct LibrarySlimmingWorkspaceView: View {
 
                 if model.selectedLibrarySlimmingCluster != nil {
                     Button(role: .destructive) {
-                        requestMoveToRecycleConfirmation()
+                        requestFastDeleteConfirmation()
                     } label: {
                         if model.isMutatingLibrarySlimmingRecycle {
                             ProgressView()
                                 .controlSize(.small)
-                            Text("正在移入回收站…")
+                            Text("正在处理…")
                         } else if model.selectedLibrarySlimmingMemberIDs.isEmpty {
-                            Label("移入回收站", systemImage: "trash.slash")
+                            Label("快速清理", systemImage: "trash.fill")
                         } else {
                             Label(
-                                "移入回收站 (\(model.selectedLibrarySlimmingMemberIDs.count))",
-                                systemImage: "trash.slash"
+                                "快速清理 (\(model.selectedLibrarySlimmingMemberIDs.count))",
+                                systemImage: "trash.fill"
                             )
                         }
                     }
                     .disabled(!model.canMoveSelectedLibrarySlimmingMembersToRecycle)
                     .persistentHelp(
                         model.librarySlimmingMoveToRecycleDisabledReason
-                            ?? "将簇内选中的媒体移入回收站（⌫ / Delete 或右键菜单）"
+                            ?? "文件夹媒体将永久删除，使来源空间立即可回收；Photos 使用系统“最近删除”（⌫ / Delete）"
                     )
+
+                    Menu {
+                        Button("移入可恢复回收站") {
+                            requestMoveToRecycleConfirmation()
+                        }
+                        .persistentHelp("文件夹媒体复制到 ImageAll 回收站后再删除源文件，跨磁盘时可能较慢。")
+                    } label: {
+                        Label("更多", systemImage: "ellipsis.circle")
+                    }
+                    .disabled(!model.canMoveSelectedLibrarySlimmingMembersToRecycle)
+                    .persistentHelp("选择保留恢复能力的安全回收方式。")
                 }
 
                 if model.librarySlimmingPendingCount > 0 {
@@ -783,8 +816,13 @@ struct LibrarySlimmingWorkspaceView: View {
         guard model.librarySlimmingWorkspaceTab == .clusters,
               model.canMoveSelectedLibrarySlimmingMembersToRecycle
         else { return .ignored }
-        requestMoveToRecycleConfirmation()
+        requestFastDeleteConfirmation()
         return .handled
+    }
+
+    private func requestFastDeleteConfirmation() {
+        guard model.canMoveSelectedLibrarySlimmingMembersToRecycle else { return }
+        confirmFastDelete = true
     }
 
     private func requestMoveToRecycleConfirmation() {
@@ -1123,11 +1161,19 @@ struct LibrarySlimmingWorkspaceView: View {
         let moveCount = model.selectedLibrarySlimmingMemberIDs.contains(assetID)
             ? model.selectedLibrarySlimmingMemberIDs.count
             : 1
-        Button("移入回收站 (\(moveCount))", role: .destructive) {
+        Button("快速删除并释放空间 (\(moveCount))", role: .destructive) {
+            if !model.selectedLibrarySlimmingMemberIDs.contains(assetID) {
+                model.selectLibrarySlimmingMember(assetID, additive: false)
+            }
+            requestFastDeleteConfirmation()
+        }
+        .disabled(!model.supportsLibrarySlimmingRecycle || model.isMutatingLibrarySlimmingRecycle)
+        .persistentHelp("文件夹媒体会在身份核验后永久删除；Photos 仍由系统移入“最近删除”。")
+        Button("移入可恢复回收站 (\(moveCount))") {
             presentMoveToRecycle(for: assetID)
         }
         .disabled(!model.supportsLibrarySlimmingRecycle || model.isMutatingLibrarySlimmingRecycle)
-        .persistentHelp("把当前媒体或已选媒体移入回收站；确认前不会改动原文件。")
+        .persistentHelp("把当前媒体或已选媒体移入可恢复回收站；跨磁盘时可能较慢。")
     }
 
     private var recycleBinList: some View {
@@ -1309,8 +1355,8 @@ struct LibrarySlimmingInspectorView: View {
                     .font(.headline)
                 Text(
                     model.selectedMediaKind == .video
-                        ? "按代表缩略图查找视觉重复或相似的视频。文件夹资产使用 ImageAll 的 30 天回收机制；Photos 资产使用 macOS「照片」App 的系统删除与恢复机制。"
-                        : "查找相同与相似照片。文件夹资产使用 ImageAll 的 30 天回收机制；Photos 资产使用 macOS「照片」App 的系统删除与恢复机制。"
+                        ? "按代表缩略图查找视觉重复或相似的视频。文件夹资产默认快速永久删除以释放来源空间，也可选择 ImageAll 的 30 天可恢复回收；Photos 使用系统“最近删除”。"
+                        : "查找相同与相似照片。文件夹资产默认快速永久删除以释放来源空间，也可选择 ImageAll 的 30 天可恢复回收；Photos 使用系统“最近删除”。"
                 )
                     .font(.callout)
                     .foregroundStyle(.secondary)
@@ -1536,10 +1582,10 @@ private struct LibrarySlimmingMoveToRecycleConfirmationSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("移入回收站")
+            Text("移入可恢复回收站")
                 .font(.headline)
             Text(
-                "文件夹媒体将移入 ImageAll 回收站，默认保留 30 天；Photos 资产将由 macOS 移入系统「最近删除」，恢复和永久删除均由「照片」App 管理。"
+                "文件夹媒体会先复制到 ImageAll 回收站再从来源删除，默认保留 30 天；跨磁盘处理可能较慢。Photos 资产由 macOS 移入系统「最近删除」。"
             )
             .font(.callout)
             .foregroundStyle(.secondary)
@@ -1564,8 +1610,8 @@ private struct LibrarySlimmingMoveToRecycleConfirmationSheet: View {
                 .persistentHelp("关闭窗口并保留所有媒体，不执行回收操作。")
                 Button(
                     mediaKind == .video
-                        ? "移入回收站（\(selectedCount) 个）"
-                        : "移入回收站（\(selectedCount) 张）",
+                        ? "可恢复回收（\(selectedCount) 个）"
+                        : "可恢复回收（\(selectedCount) 张）",
                     role: .destructive
                 ) {
                     onConfirm()
@@ -1580,9 +1626,55 @@ private struct LibrarySlimmingMoveToRecycleConfirmationSheet: View {
     }
 }
 
+private struct LibrarySlimmingFastDeleteConfirmationSheet: View {
+    let selectedCount: Int
+    let mediaKind: MediaKind
+    let onConfirm: () -> Void
+    let onCancel: () -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Label("快速删除并释放空间", systemImage: "externaldrive.badge.minus")
+                .font(.headline)
+                .foregroundStyle(.red)
+            Text(
+                "文件夹来源中的原始媒体会在身份核验后直接永久删除，不复制到 ImageAll 回收站，因此来源空间会立即变为可回收，但无法通过 ImageAll 恢复。Apple Photos 资产仍只会进入系统「最近删除」。系统快照可能让磁盘容量显示稍后才更新。"
+            )
+            .font(.callout)
+            .fixedSize(horizontal: false, vertical: true)
+            Text("此确认每次都会显示，不能设置为不再提醒。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            HStack {
+                Spacer()
+                Button("取消") {
+                    onCancel()
+                    dismiss()
+                }
+                .keyboardShortcut(.cancelAction)
+                Button(
+                    mediaKind == .video
+                        ? "永久删除（\(selectedCount) 个）"
+                        : "永久删除（\(selectedCount) 张）",
+                    role: .destructive
+                ) {
+                    onConfirm()
+                    dismiss()
+                }
+                .keyboardShortcut(.defaultAction)
+                .persistentHelp("永久删除文件夹原始媒体并释放来源空间；此操作不可撤销。")
+            }
+        }
+        .padding(20)
+        .frame(width: 460)
+    }
+}
+
 private struct LibrarySlimmingIdenticalCleanupConfirmationSheet: View {
     let plan: LibrarySlimmingIdenticalCleanupPlan
-    let onConfirm: () -> Void
+    let onFastDelete: () -> Void
+    let onRecoverableRecycle: () -> Void
     let onCancel: () -> Void
     @Environment(\.dismiss) private var dismiss
 
@@ -1602,7 +1694,7 @@ private struct LibrarySlimmingIdenticalCleanupConfirmationSheet: View {
             Divider()
 
             HStack {
-                Text("执行前会再次读取当前资产与来源状态；统计变化时将停止清理。")
+                Text("文件夹可快速永久删除以释放空间，也可选择较慢的可恢复回收。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Spacer()
@@ -1610,13 +1702,18 @@ private struct LibrarySlimmingIdenticalCleanupConfirmationSheet: View {
                     cancel()
                 }
                 .keyboardShortcut(.cancelAction)
+                Button("可恢复回收") {
+                    recoverableRecycle()
+                }
+                .persistentHelp("文件夹媒体复制到 ImageAll 回收站；跨磁盘时可能较慢。")
                 Button(
-                    "清理 \(plan.assetIDsToRecycle.count.formatted()) 张",
+                    "快速清理 \(plan.assetIDsToRecycle.count.formatted()) 张",
                     role: .destructive
                 ) {
-                    confirm()
+                    fastDelete()
                 }
                 .keyboardShortcut(.defaultAction)
+                .persistentHelp("文件夹媒体直接永久删除并释放来源空间；Photos 进入系统“最近删除”。")
             }
             .padding(.horizontal, 24)
             .padding(.vertical, 16)
@@ -1774,6 +1871,14 @@ private struct LibrarySlimmingIdenticalCleanupConfirmationSheet: View {
 
     @ViewBuilder
     private var notices: some View {
+        if plan.fileAssetCount > 0 {
+            Label(
+                "“快速清理”会永久删除 \(plan.fileAssetCount.formatted()) 个文件夹媒体，ImageAll 无法恢复。",
+                systemImage: "externaldrive.badge.exclamationmark"
+            )
+            .font(.caption)
+            .foregroundStyle(.red)
+        }
         if plan.photosAssetCount > 0 {
             Label(
                 "macOS 仍会对全部 Apple Photos 待删项集中显示一次系统确认。",
@@ -1857,8 +1962,13 @@ private struct LibrarySlimmingIdenticalCleanupConfirmationSheet: View {
         dismiss()
     }
 
-    private func confirm() {
-        onConfirm()
+    private func fastDelete() {
+        onFastDelete()
+        dismiss()
+    }
+
+    private func recoverableRecycle() {
+        onRecoverableRecycle()
         dismiss()
     }
 }

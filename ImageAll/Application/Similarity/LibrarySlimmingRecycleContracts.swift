@@ -15,6 +15,14 @@ enum RecycleSourceKind: String, Sendable, Equatable {
     case photos
 }
 
+enum LibrarySlimmingRemovalMode: Sendable, Equatable {
+    /// Keep folder bytes in ImageAll quarantine so the user can restore them.
+    case recoverableRecycle
+    /// Delete folder bytes from their source volume after identity validation.
+    /// Apple Photos assets still use the system Recently Deleted workflow.
+    case releaseSourceSpace
+}
+
 struct RecycleEntryRecord: Identifiable, Sendable, Equatable {
     let id: UUID
     let assetID: UUID
@@ -119,6 +127,7 @@ enum LibrarySlimmingRecycleError: Error, Equatable, Sendable {
     case restoreConflict
     case ioFailure
     case sourceChanged
+    case durabilityPending
     case invalidState
     case cleanupPlanningUnavailable
     case cleanupPlanChanged
@@ -370,6 +379,12 @@ enum LibrarySlimmingIdenticalCleanupPlanner {
 
 struct LibrarySlimmingRecycleMoveOutcome: Sendable, Equatable {
     var recycledEntryIDs: [UUID]
+    /// File assets deleted directly from their source volume. They cannot be
+    /// restored by ImageAll and therefore do not appear in the recycle bin.
+    var permanentlyDeletedAssetIDs: [UUID] = []
+    /// The source unlink committed, but the source-directory durability sync
+    /// failed. The item stays hidden while crash recovery confirms the namespace.
+    var durabilityPendingAssetIDs: [UUID] = []
     /// Retained for compatibility; S5 no longer skips Photos on the success path.
     var skippedPhotosAssetIDs: [UUID]
     var failedAssetIDs: [UUID]
@@ -459,6 +474,14 @@ protocol LibrarySlimmingRecyclePort: Sendable {
         plan: LibrarySlimmingIdenticalCleanupPlan,
         onProgress: @escaping LibrarySlimmingRecycleMoveProgressHandler
     ) throws -> LibrarySlimmingRecycleMoveOutcome
+    func deleteAssetsImmediately(
+        assetIDs: [UUID],
+        onProgress: @escaping LibrarySlimmingRecycleMoveProgressHandler
+    ) throws -> LibrarySlimmingRecycleMoveOutcome
+    func deleteIdenticalCleanupAssetsImmediately(
+        plan: LibrarySlimmingIdenticalCleanupPlan,
+        onProgress: @escaping LibrarySlimmingRecycleMoveProgressHandler
+    ) throws -> LibrarySlimmingRecycleMoveOutcome
     func listRecycledEntries() throws -> [RecycleEntryRecord]
     func restore(entryID: UUID) throws
     func purgeNow(entryID: UUID) throws
@@ -507,6 +530,23 @@ extension LibrarySlimmingRecyclePort {
         onProgress: @escaping LibrarySlimmingRecycleMoveProgressHandler
     ) throws -> LibrarySlimmingRecycleMoveOutcome {
         try moveAssetsToRecycle(
+            assetIDs: plan.assetIDsToRecycle,
+            onProgress: onProgress
+        )
+    }
+
+    func deleteAssetsImmediately(
+        assetIDs _: [UUID],
+        onProgress _: @escaping LibrarySlimmingRecycleMoveProgressHandler
+    ) throws -> LibrarySlimmingRecycleMoveOutcome {
+        throw LibrarySlimmingRecycleError.invalidState
+    }
+
+    func deleteIdenticalCleanupAssetsImmediately(
+        plan: LibrarySlimmingIdenticalCleanupPlan,
+        onProgress: @escaping LibrarySlimmingRecycleMoveProgressHandler
+    ) throws -> LibrarySlimmingRecycleMoveOutcome {
+        try deleteAssetsImmediately(
             assetIDs: plan.assetIDsToRecycle,
             onProgress: onProgress
         )

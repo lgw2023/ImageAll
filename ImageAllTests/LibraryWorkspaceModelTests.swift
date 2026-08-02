@@ -4858,6 +4858,54 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertEqual(recycle.moveAssetIDCalls, [[a]])
     }
 
+    func testLibrarySlimmingSpaceFirstDeleteUsesPermanentDeletePath() async {
+        let sourceID = UUID()
+        let asset = Self.makeAsset(sourceID: sourceID, fileName: "fast-delete.jpg")
+        let cluster = SlimmingCluster(
+            id: UUID(),
+            kind: .nearDuplicateScene,
+            memberAssetIDs: [asset.assetID],
+            representativeAssetID: asset.assetID,
+            score: 0.98,
+            modelIdentity: .featurePrintOnly
+        )
+        let scan = StubLibrarySlimmingScanPort()
+        scan.seedClusters = [cluster]
+        let recycle = FakeLibrarySlimmingRecyclePort()
+        let model = LibraryWorkspaceModel(
+            service: FakeLibraryWorkspaceService(
+                connectedSource: LibrarySourceSummary(
+                    id: sourceID,
+                    displayName: "Fixture",
+                    state: .active
+                ),
+                reconciledItems: [asset],
+                initialItems: [asset],
+                startsConnected: true,
+                hasPendingCatalogReconcileJobs: false
+            ),
+            librarySlimming: scan,
+            librarySlimmingRecycle: recycle,
+            idlePrewarmInstallEventMonitor: false
+        )
+        await model.start()
+        await model.selectAssets([asset.assetID])
+        await model.findLibrarySlimmingFromSelection()
+        await model.analyzeLibrarySlimming(mode: .seeds)
+        model.selectLibrarySlimmingCluster(cluster.id)
+        model.selectLibrarySlimmingMember(asset.assetID, additive: false)
+
+        await model.deleteSelectedLibrarySlimmingMembersImmediately()
+
+        XCTAssertEqual(recycle.fastDeleteAssetIDCalls, [[asset.assetID]])
+        XCTAssertTrue(recycle.moveAssetIDCalls.isEmpty)
+        XCTAssertTrue(model.librarySlimmingClusters.isEmpty)
+        XCTAssertEqual(
+            model.librarySlimmingStatusMessage,
+            "已永久删除 1 张并释放来源空间"
+        )
+    }
+
     func testLibrarySlimmingRecyclePublishesPendingStateBeforePhysicalMoveFinishes() async {
         let sourceID = UUID()
         let asset = Self.makeAsset(sourceID: sourceID, fileName: "slow-disk.jpg")
@@ -4912,7 +4960,7 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         )
         XCTAssertEqual(
             model.librarySlimmingMoveToRecycleDisabledReason,
-            "正在移入回收站…"
+            "正在处理删除或回收…"
         )
 
         recycle.releaseBlockedMove()
@@ -5545,10 +5593,10 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertEqual(Set(recycle.moveAssetIDCalls[0]), Set([assetB.assetID, assetC.assetID]))
         XCTAssertEqual(recycle.moveAssetIDCalls[1], [assetB.assetID])
         XCTAssertEqual(mutationAuthorization.authorizedSourceIDs, [sourceID])
-        XCTAssertEqual(model.librarySlimmingStatusMessage, "已移入回收站 1 张 · 失败 1 张")
+        XCTAssertEqual(model.librarySlimmingStatusMessage, "已移入可恢复回收站 1 张 · 失败 1 张")
         XCTAssertEqual(
             model.librarySlimmingRecycleActionMessage,
-            "已移入回收站 1 张 · 失败 1 张"
+            "已移入可恢复回收站 1 张 · 失败 1 张"
         )
         XCTAssertEqual(model.selectedLibrarySlimmingMemberIDs, [assetC.assetID])
     }
@@ -6059,7 +6107,7 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertEqual(model.selectedLibrarySlimmingMemberIDs, [asset.assetID])
         XCTAssertEqual(
             model.librarySlimmingStatusMessage,
-            "失败 1 张（来源已变化；请立即刷新照片来源，等待完成后重新分析，再重试移入回收站）"
+            "失败 1 张（来源已变化；请立即刷新照片来源，等待完成后重新分析，再重试）"
         )
     }
 
@@ -11079,6 +11127,8 @@ private final class FakeLibrarySlimmingRecyclePort: LibrarySlimmingRecyclePort, 
     private var storedEntriesAfterRestores: [[RecycleEntryRecord]]
     private var remainingRestoreAuthorizationFailures: Int
     private var storedMoveAssetIDCalls: [[UUID]] = []
+    private var storedFastDeleteAssetIDCalls: [[UUID]] = []
+    private var storedFastDeletedAssetIDs: Set<UUID> = []
     private var storedRestoreEntryIDCalls: [UUID] = []
     private var storedRecoverCallCount = 0
     private var storedReconcileCallCount = 0
@@ -11132,6 +11182,10 @@ private final class FakeLibrarySlimmingRecyclePort: LibrarySlimmingRecyclePort, 
 
     var moveAssetIDCalls: [[UUID]] {
         lock.withLock { storedMoveAssetIDCalls }
+    }
+
+    var fastDeleteAssetIDCalls: [[UUID]] {
+        lock.withLock { storedFastDeleteAssetIDCalls }
     }
 
     func setIdenticalCleanupPlan(_ plan: LibrarySlimmingIdenticalCleanupPlan?) {
@@ -11227,6 +11281,36 @@ private final class FakeLibrarySlimmingRecyclePort: LibrarySlimmingRecyclePort, 
         return try moveAssetsToRecycle(assetIDs: assetIDs)
     }
 
+    func deleteAssetsImmediately(
+        assetIDs: [UUID],
+        onProgress: @escaping LibrarySlimmingRecycleMoveProgressHandler
+    ) throws -> LibrarySlimmingRecycleMoveOutcome {
+        onProgress(
+            LibrarySlimmingRecycleMoveProgress(
+                completedAssetCount: assetIDs.count,
+                totalAssetCount: assetIDs.count
+            )
+        )
+        return lock.withLock {
+            storedFastDeleteAssetIDCalls.append(assetIDs)
+            guard !storedMoveOutcomes.isEmpty else {
+                storedFastDeletedAssetIDs.formUnion(assetIDs)
+                return LibrarySlimmingRecycleMoveOutcome(
+                    recycledEntryIDs: [],
+                    permanentlyDeletedAssetIDs: assetIDs,
+                    skippedPhotosAssetIDs: [],
+                    failedAssetIDs: [],
+                    authorizationRequiredSourceIDs: [],
+                    authorizationRequiredAssetIDs: [],
+                    authorizationDeniedPhotosAssetIDs: []
+                )
+            }
+            let outcome = storedMoveOutcomes.removeFirst()
+            storedFastDeletedAssetIDs.formUnion(outcome.permanentlyDeletedAssetIDs)
+            return outcome
+        }
+    }
+
     func releaseBlockedMove() {
         moveReleaseSemaphore.signal()
     }
@@ -11292,6 +11376,7 @@ private final class FakeLibrarySlimmingRecyclePort: LibrarySlimmingRecyclePort, 
                     }
                     .map(\.assetID)
             )
+            .union(storedFastDeletedAssetIDs.intersection(assetIDs))
         }
     }
 

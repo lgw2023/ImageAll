@@ -2017,7 +2017,7 @@ final class LibraryWorkspaceModel: ObservableObject {
             return "请先等待来源索引初始化完成"
         }
         if isMutatingLibrarySlimmingRecycle {
-            return "正在移入回收站…"
+            return "正在处理删除或回收…"
         }
         return nil
     }
@@ -2027,10 +2027,10 @@ final class LibraryWorkspaceModel: ObservableObject {
             return "回收站服务未就绪"
         }
         if isMutatingLibrarySlimmingRecycle {
-            return "正在移入回收站…"
+            return "正在处理删除或回收…"
         }
         if selectedLibrarySlimmingMemberIDs.isEmpty {
-            return "请先选择要移入回收站的照片"
+            return "请先选择要删除或回收的照片"
         }
         return nil
     }
@@ -2041,7 +2041,19 @@ final class LibraryWorkspaceModel: ObservableObject {
         else { return }
         await moveLibrarySlimmingAssetsToRecycle(
             Array(selectedLibrarySlimmingMemberIDs),
-            identicalCleanupPlan: nil
+            identicalCleanupPlan: nil,
+            removalMode: .recoverableRecycle
+        )
+    }
+
+    func deleteSelectedLibrarySlimmingMembersImmediately() async {
+        guard canMoveSelectedLibrarySlimmingMembersToRecycle,
+              !selectedLibrarySlimmingMemberIDs.isEmpty
+        else { return }
+        await moveLibrarySlimmingAssetsToRecycle(
+            Array(selectedLibrarySlimmingMemberIDs),
+            identicalCleanupPlan: nil,
+            removalMode: .releaseSourceSpace
         )
     }
 
@@ -2080,6 +2092,25 @@ final class LibraryWorkspaceModel: ObservableObject {
 
     func moveLibrarySlimmingIdenticalRedundancyToRecycle(
         plan: LibrarySlimmingIdenticalCleanupPlan
+    ) async {
+        await removeLibrarySlimmingIdenticalRedundancy(
+            plan: plan,
+            removalMode: .recoverableRecycle
+        )
+    }
+
+    func deleteLibrarySlimmingIdenticalRedundancyImmediately(
+        plan: LibrarySlimmingIdenticalCleanupPlan
+    ) async {
+        await removeLibrarySlimmingIdenticalRedundancy(
+            plan: plan,
+            removalMode: .releaseSourceSpace
+        )
+    }
+
+    private func removeLibrarySlimmingIdenticalRedundancy(
+        plan: LibrarySlimmingIdenticalCleanupPlan,
+        removalMode: LibrarySlimmingRemovalMode
     ) async {
         guard !plan.isEmpty,
               canPrepareLibrarySlimmingIdenticalCleanup,
@@ -2120,6 +2151,7 @@ final class LibraryWorkspaceModel: ObservableObject {
         await moveLibrarySlimmingAssetsToRecycle(
             plan.assetIDsToRecycle,
             identicalCleanupPlan: plan,
+            removalMode: removalMode,
             mutationStateAlreadyHeld: true
         )
     }
@@ -2131,6 +2163,7 @@ final class LibraryWorkspaceModel: ObservableObject {
     private func moveLibrarySlimmingAssetsToRecycle(
         _ assetIDs: [UUID],
         identicalCleanupPlan: LibrarySlimmingIdenticalCleanupPlan?,
+        removalMode: LibrarySlimmingRemovalMode,
         mutationStateAlreadyHeld: Bool = false
     ) async {
         guard !assetIDs.isEmpty,
@@ -2148,8 +2181,9 @@ final class LibraryWorkspaceModel: ObservableObject {
         )
         librarySlimmingRecyclePendingAssetIDs.formUnion(pendingAssetIDs)
         librarySlimmingRecycleActionMessage = nil
-        librarySlimmingStatusMessage =
-            "已从结果中隐藏，正在等待后台磁盘任务暂停…"
+        librarySlimmingStatusMessage = removalMode == .releaseSourceSpace
+            ? "已从结果中隐藏，正在准备快速释放来源空间…"
+            : "已从结果中隐藏，正在等待后台磁盘任务暂停…"
         await suspendBackgroundThumbnailWorkForRecycle()
         defer {
             librarySlimmingRecyclePendingAssetIDs.subtract(pendingAssetIDs)
@@ -2174,20 +2208,17 @@ final class LibraryWorkspaceModel: ObservableObject {
             let initialProgressHandler = makeLibrarySlimmingRecycleProgressHandler(
                 executionID: cleanupExecutionID,
                 baseCompletedAssetCount: 0,
-                overallTotalAssetCount: totalAssetCount
+                overallTotalAssetCount: totalAssetCount,
+                removalMode: removalMode
             )
             var outcome = try await Self.offMain {
-                if let identicalCleanupPlan {
-                    try recycle.moveIdenticalCleanupAssetsToRecycle(
-                        plan: identicalCleanupPlan,
-                        onProgress: initialProgressHandler
-                    )
-                } else {
-                    try recycle.moveAssetsToRecycle(
-                        assetIDs: assetIDs,
-                        onProgress: initialProgressHandler
-                    )
-                }
+                try Self.performLibrarySlimmingRemoval(
+                    recycle: recycle,
+                    assetIDs: assetIDs,
+                    identicalCleanupPlan: identicalCleanupPlan,
+                    removalMode: removalMode,
+                    onProgress: initialProgressHandler
+                )
             }
             if !outcome.authorizationRequiredSourceIDs.isEmpty,
                let mutationAuthorization = librarySlimmingMutationAuthorization
@@ -2233,29 +2264,32 @@ final class LibraryWorkspaceModel: ObservableObject {
                     let retryProgressHandler = makeLibrarySlimmingRecycleProgressHandler(
                         executionID: cleanupExecutionID,
                         baseCompletedAssetCount: baseCompletedAssetCount,
-                        overallTotalAssetCount: totalAssetCount
+                        overallTotalAssetCount: totalAssetCount,
+                        removalMode: removalMode
                     )
                     let authorizationFailures = Set(retryAssetIDs)
                     let otherFailedAssetIDs = outcome.failedAssetIDs.filter {
                         !authorizationFailures.contains($0)
                     }
                     let retry = try await Self.offMain {
-                        if let identicalCleanupPlan {
-                            try recycle.moveIdenticalCleanupAssetsToRecycle(
-                                plan: identicalCleanupPlan,
-                                onProgress: retryProgressHandler
-                            )
-                        } else {
-                            try recycle.moveAssetsToRecycle(
-                                assetIDs: retryAssetIDs,
-                                onProgress: retryProgressHandler
-                            )
-                        }
+                        try Self.performLibrarySlimmingRemoval(
+                            recycle: recycle,
+                            assetIDs: retryAssetIDs,
+                            identicalCleanupPlan: identicalCleanupPlan,
+                            removalMode: removalMode,
+                            onProgress: retryProgressHandler
+                        )
                     }
                     if identicalCleanupPlan != nil {
                         outcome = retry
                     } else {
                         outcome.recycledEntryIDs.append(contentsOf: retry.recycledEntryIDs)
+                        outcome.permanentlyDeletedAssetIDs.append(
+                            contentsOf: retry.permanentlyDeletedAssetIDs
+                        )
+                        outcome.durabilityPendingAssetIDs.append(
+                            contentsOf: retry.durabilityPendingAssetIDs
+                        )
                         outcome.skippedPhotosAssetIDs.append(
                             contentsOf: retry.skippedPhotosAssetIDs
                         )
@@ -2318,29 +2352,32 @@ final class LibraryWorkspaceModel: ObservableObject {
                     let retryProgressHandler = makeLibrarySlimmingRecycleProgressHandler(
                         executionID: cleanupExecutionID,
                         baseCompletedAssetCount: baseCompletedAssetCount,
-                        overallTotalAssetCount: totalAssetCount
+                        overallTotalAssetCount: totalAssetCount,
+                        removalMode: removalMode
                     )
                     let photosAuthorizationFailures = Set(retryAssetIDs)
                     let otherFailedAssetIDs = outcome.failedAssetIDs.filter {
                         !photosAuthorizationFailures.contains($0)
                     }
                     let retry = try await Self.offMain {
-                        if let identicalCleanupPlan {
-                            try recycle.moveIdenticalCleanupAssetsToRecycle(
-                                plan: identicalCleanupPlan,
-                                onProgress: retryProgressHandler
-                            )
-                        } else {
-                            try recycle.moveAssetsToRecycle(
-                                assetIDs: retryAssetIDs,
-                                onProgress: retryProgressHandler
-                            )
-                        }
+                        try Self.performLibrarySlimmingRemoval(
+                            recycle: recycle,
+                            assetIDs: retryAssetIDs,
+                            identicalCleanupPlan: identicalCleanupPlan,
+                            removalMode: removalMode,
+                            onProgress: retryProgressHandler
+                        )
                     }
                     if identicalCleanupPlan != nil {
                         outcome = retry
                     } else {
                         outcome.recycledEntryIDs.append(contentsOf: retry.recycledEntryIDs)
+                        outcome.permanentlyDeletedAssetIDs.append(
+                            contentsOf: retry.permanentlyDeletedAssetIDs
+                        )
+                        outcome.durabilityPendingAssetIDs.append(
+                            contentsOf: retry.durabilityPendingAssetIDs
+                        )
                         outcome.skippedPhotosAssetIDs.append(
                             contentsOf: retry.skippedPhotosAssetIDs
                         )
@@ -2401,7 +2438,20 @@ final class LibraryWorkspaceModel: ObservableObject {
                 }
             }
             if !outcome.recycledEntryIDs.isEmpty {
-                parts.append("已移入回收站 \(outcome.recycledEntryIDs.count) 张")
+                let title = removalMode == .releaseSourceSpace
+                    ? "已移入系统最近删除"
+                    : "已移入可恢复回收站"
+                parts.append("\(title) \(outcome.recycledEntryIDs.count) 张")
+            }
+            if !outcome.permanentlyDeletedAssetIDs.isEmpty {
+                parts.append(
+                    "已永久删除 \(outcome.permanentlyDeletedAssetIDs.count) 张，来源空间已可回收"
+                )
+            }
+            if !outcome.durabilityPendingAssetIDs.isEmpty {
+                parts.append(
+                    "已提交快速删除 \(outcome.durabilityPendingAssetIDs.count) 张，等待后台确认磁盘状态"
+                )
             }
             if !outcome.authorizationDeniedPhotosAssetIDs.isEmpty {
                 parts.append(
@@ -2414,16 +2464,18 @@ final class LibraryWorkspaceModel: ObservableObject {
             if !outcome.failedAssetIDs.isEmpty {
                 if outcome.hasOnlySourceChangedFailures,
                    outcome.recycledEntryIDs.isEmpty,
+                   outcome.permanentlyDeletedAssetIDs.isEmpty,
                    outcome.authorizationRequiredSourceIDs.isEmpty,
                    outcome.authorizationDeniedPhotosAssetIDs.isEmpty,
                    outcome.mutationAuthorizationInvalidAssetIDs.isEmpty,
                    outcome.photosMutationFailedAssetIDs.isEmpty
                 {
                     parts.append(
-                        "失败 \(outcome.failedAssetIDs.count) 张（来源已变化；请立即刷新照片来源，等待完成后重新分析，再重试移入回收站）"
+                        "失败 \(outcome.failedAssetIDs.count) 张（来源已变化；请立即刷新照片来源，等待完成后重新分析，再重试）"
                     )
                 } else if outcome.hasOnlyMutationAuthorizationInvalidFailures,
                    outcome.recycledEntryIDs.isEmpty,
+                   outcome.permanentlyDeletedAssetIDs.isEmpty,
                    outcome.authorizationRequiredSourceIDs.isEmpty,
                    outcome.authorizationDeniedPhotosAssetIDs.isEmpty,
                    outcome.photosMutationFailedAssetIDs.isEmpty,
@@ -2443,7 +2495,7 @@ final class LibraryWorkspaceModel: ObservableObject {
                     parts.append("失败 \(outcome.failedAssetIDs.count) 张")
                 }
             }
-            let message = parts.isEmpty ? "未移动任何照片" : parts.joined(separator: " · ")
+            let message = parts.isEmpty ? "未处理任何照片" : parts.joined(separator: " · ")
             librarySlimmingStatusMessage = message
             librarySlimmingRecycleActionMessage = message
             if !mutationStateAlreadyHeld {
@@ -2461,18 +2513,32 @@ final class LibraryWorkspaceModel: ObservableObject {
                 }
                 await verifyLibrarySlimmingIdenticalCleanupAfterDeletion(
                     plan: identicalCleanupPlan,
-                    recycle: recycle
+                    recycle: recycle,
+                    removalMode: removalMode
                 )
             }
             _ = try? await Self.offMain {
                 try recycle.enqueuePurgeExpired()
+            }
+            if removalMode == .releaseSourceSpace,
+               !outcome.permanentlyDeletedAssetIDs.isEmpty
+                || !outcome.durabilityPendingAssetIDs.isEmpty
+            {
+                let cleanupNowMs = Int64(Date().timeIntervalSince1970 * 1_000)
+                Task.detached(priority: .utility) {
+                    _ = try? recycle.recoverInterruptedOperations()
+                    _ = try? recycle.purgeExpired(nowMs: cleanupNowMs)
+                }
             }
         } catch {
             settleOptimisticLibrarySlimmingRecycle(
                 snapshot: optimisticSnapshot,
                 recycledAssetIDs: []
             )
-            let message = "移入回收站失败：\(error.localizedDescription)"
+            let action = removalMode == .releaseSourceSpace
+                ? "快速删除"
+                : "移入可恢复回收站"
+            let message = "\(action)失败：\(error.localizedDescription)"
             librarySlimmingStatusMessage = message
             librarySlimmingRecycleActionMessage = message
             if let identicalCleanupPlan {
@@ -2485,9 +2551,41 @@ final class LibraryWorkspaceModel: ObservableObject {
                 }
                 await verifyLibrarySlimmingIdenticalCleanupAfterDeletion(
                     plan: identicalCleanupPlan,
-                    recycle: recycle
+                    recycle: recycle,
+                    removalMode: removalMode
                 )
             }
+        }
+    }
+
+    nonisolated private static func performLibrarySlimmingRemoval(
+        recycle: any LibrarySlimmingRecyclePort,
+        assetIDs: [UUID],
+        identicalCleanupPlan: LibrarySlimmingIdenticalCleanupPlan?,
+        removalMode: LibrarySlimmingRemovalMode,
+        onProgress: @escaping LibrarySlimmingRecycleMoveProgressHandler
+    ) throws -> LibrarySlimmingRecycleMoveOutcome {
+        switch (removalMode, identicalCleanupPlan) {
+        case let (.recoverableRecycle, .some(plan)):
+            try recycle.moveIdenticalCleanupAssetsToRecycle(
+                plan: plan,
+                onProgress: onProgress
+            )
+        case (.recoverableRecycle, .none):
+            try recycle.moveAssetsToRecycle(
+                assetIDs: assetIDs,
+                onProgress: onProgress
+            )
+        case let (.releaseSourceSpace, .some(plan)):
+            try recycle.deleteIdenticalCleanupAssetsImmediately(
+                plan: plan,
+                onProgress: onProgress
+            )
+        case (.releaseSourceSpace, .none):
+            try recycle.deleteAssetsImmediately(
+                assetIDs: assetIDs,
+                onProgress: onProgress
+            )
         }
     }
 
@@ -2512,7 +2610,8 @@ final class LibraryWorkspaceModel: ObservableObject {
     private func makeLibrarySlimmingRecycleProgressHandler(
         executionID: UUID?,
         baseCompletedAssetCount: Int,
-        overallTotalAssetCount: Int
+        overallTotalAssetCount: Int,
+        removalMode: LibrarySlimmingRemovalMode
     ) -> LibrarySlimmingRecycleMoveProgressHandler {
         { [weak self] progress in
             Task { @MainActor [weak self] in
@@ -2536,7 +2635,8 @@ final class LibraryWorkspaceModel: ObservableObject {
                     self.librarySlimmingStatusMessage = self.librarySlimmingRecycleProgressMessage(
                         progress,
                         completedAssetCount: completed,
-                        totalAssetCount: overallTotalAssetCount
+                        totalAssetCount: overallTotalAssetCount,
+                        removalMode: removalMode
                     )
                 }
             }
@@ -2634,7 +2734,8 @@ final class LibraryWorkspaceModel: ObservableObject {
     private func librarySlimmingRecycleProgressMessage(
         _ progress: LibrarySlimmingRecycleMoveProgress,
         completedAssetCount: Int,
-        totalAssetCount: Int
+        totalAssetCount: Int,
+        removalMode: LibrarySlimmingRemovalMode
     ) -> String {
         let count = "\(completedAssetCount)/\(totalAssetCount)"
         let bytes: String
@@ -2642,6 +2743,26 @@ final class LibraryWorkspaceModel: ObservableObject {
             bytes = " · \(ByteCountFormatter.string(fromByteCount: progress.copiedBytes, countStyle: .file))/\(ByteCountFormatter.string(fromByteCount: progress.totalFileBytes, countStyle: .file))"
         } else {
             bytes = ""
+        }
+        if removalMode == .releaseSourceSpace {
+            return switch progress.phase {
+            case .waitingForBackgroundIO:
+                "等待后台磁盘任务暂停…\(count)"
+            case .preparing:
+                "快速清理中：正在核对删除范围…\(count)"
+            case .verifyingSource:
+                "快速清理中：正在确认原文件身份…\(count)"
+            case .deletingSource:
+                "快速清理中：正在释放来源空间…\(count)"
+            case .syncingSourceDirectory:
+                "快速清理中：正在同步来源目录…\(count)"
+            case .photosSystemMutation:
+                "等待系统照片服务移入“最近删除”…\(count)"
+            case .completedAsset:
+                "快速清理中：已完成 \(count)"
+            case .copying, .syncingDestination, .verifyingDestination:
+                "快速清理中：正在处理…\(count)"
+            }
         }
         return switch progress.phase {
         case .waitingForBackgroundIO:
@@ -2710,7 +2831,8 @@ final class LibraryWorkspaceModel: ObservableObject {
 
     private func verifyLibrarySlimmingIdenticalCleanupAfterDeletion(
         plan: LibrarySlimmingIdenticalCleanupPlan,
-        recycle: any LibrarySlimmingRecyclePort
+        recycle: any LibrarySlimmingRecyclePort,
+        removalMode: LibrarySlimmingRemovalMode
     ) async {
         do {
             let verification = try await Self.offMain {
@@ -2719,7 +2841,9 @@ final class LibraryWorkspaceModel: ObservableObject {
             librarySlimmingIdenticalCleanupPostDeleteReport = .verified(verification)
             var parts = [
                 "已完成去重 \(verification.verifiedGroupCount)/\(verification.targetGroupCount) 组",
-                "已移入回收站 \(verification.recycledRedundantAssetCount) 张",
+                removalMode == .releaseSourceSpace
+                    ? "已从活动图库永久移除 \(verification.recycledRedundantAssetCount) 张"
+                    : "已移入回收站 \(verification.recycledRedundantAssetCount) 张",
             ]
             if verification.unresolvedGroupCount > 0 {
                 parts.append("尚未完成 \(verification.unresolvedGroupCount) 组")

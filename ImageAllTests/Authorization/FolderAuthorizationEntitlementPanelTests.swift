@@ -61,7 +61,7 @@ final class FolderAuthorizationEntitlementPanelTests: XCTestCase {
         XCTAssertEqual(panel.title, "导入 ImageAll 图库来源")
         XCTAssertEqual(panel.prompt, "导入来源")
         XCTAssertTrue(panel.message.contains("选择一次来源文件夹"))
-        XCTAssertTrue(panel.message.contains("确认移入回收站"))
+        XCTAssertTrue(panel.message.contains("确认快速删除或可恢复回收"))
     }
 
     func testPickerIsNotTriggeredBeforeExplicitConnectCommand() async throws {

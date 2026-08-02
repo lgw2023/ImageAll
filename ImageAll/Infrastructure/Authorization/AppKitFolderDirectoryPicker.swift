@@ -57,7 +57,7 @@ struct AppKitFolderDirectoryPicker: FolderDirectoryPickerPort {
         panel.title = "导入 ImageAll 图库来源"
         panel.prompt = "导入来源"
         panel.message =
-            "选择一次来源文件夹后，ImageAll 将保存持续访问权限；只有您确认移入回收站时才会移动原文件。"
+            "选择一次来源文件夹后，ImageAll 将保存持续访问权限；只有您确认快速删除或可恢复回收时才会改动原文件。"
         return panel
     }
 }
