@@ -85,9 +85,11 @@ struct CompositionRoot {
                 .appendingPathComponent("Photos Originals/v1", isDirectory: true),
             clock: clock
         )
-        let photosAccess = PhotoKitPhotosLibraryAdapter()
-        let photosMutation = PhotoKitPhotosLibraryMutationAdapter()
         let interactiveIOGate = InteractiveIOPriorityGate()
+        let photosAccess = PhotoKitPhotosLibraryAdapter(
+            interactiveIOGate: interactiveIOGate
+        )
+        let photosMutation = PhotoKitPhotosLibraryMutationAdapter()
         let appOwnedAssetPixelCachePurger = AppOwnedAssetPixelCachePurger(
             database: runtime.database,
             derivedCachesDirectory: runtime.paths.cachesDirectory,
@@ -155,6 +157,7 @@ struct CompositionRoot {
             database: runtime.database,
             cachesDirectory: runtime.paths.cachesDirectory,
             sourceAccess: sourceAccess,
+            interactiveIOGate: interactiveIOGate,
             clock: clock
         )
         let featureInputImages = PrioritizedDownloadedPreviewCache(
@@ -174,6 +177,7 @@ struct CompositionRoot {
             sourceAccess: sourceAccess,
             photosImages: photosAccess,
             downloadedPreviews: featureInputImages,
+            interactiveIOGate: interactiveIOGate,
             clock: clock
         )
         let suggestionThresholds = GRDBSuggestionThresholdRepository(database: runtime.database)
@@ -368,13 +372,15 @@ struct CompositionRoot {
             photosOriginalCache: photosOriginalCache,
             photosFeatureImages: photosAccess,
             downloadedPreviews: featureInputImages,
+            interactiveIOGate: interactiveIOGate,
             clock: clock
         )
         let featurePrintInputLoader = LibraryFeaturePrintInputLoader(
             database: runtime.database,
             sourceAccess: sourceAccess,
             photosImages: photosAccess,
-            downloadedPreviews: featureInputImages
+            downloadedPreviews: featureInputImages,
+            interactiveIOGate: interactiveIOGate
         )
         let slimmingEmbeddingService = makeAppCoreMLEmbeddingService(isEnabled: true)
         let slimmingEmbeddingLoader: CatalogSlimmingEmbeddingLoader?

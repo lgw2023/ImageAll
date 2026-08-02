@@ -34,6 +34,55 @@ final class LibrarySlimmingRecycleTests: XCTestCase {
         XCTAssertFalse(gate.hasInteractiveWork)
     }
 
+    func testInteractiveGateDrainsCurrentBackgroundBeforeStarting() async {
+        let gate = InteractiveIOPriorityGate()
+        let firstBackgroundStarted = DispatchSemaphore(value: 0)
+        let releaseFirstBackground = DispatchSemaphore(value: 0)
+        let interactiveWaiting = DispatchSemaphore(value: 0)
+        let interactiveStarted = DispatchSemaphore(value: 0)
+        let releaseInteractive = DispatchSemaphore(value: 0)
+        let secondBackgroundStarted = DispatchSemaphore(value: 0)
+
+        let firstBackground = Task.detached {
+            gate.withBackgroundWork {
+                firstBackgroundStarted.signal()
+                _ = releaseFirstBackground.wait(timeout: .now() + 2)
+            }
+        }
+        XCTAssertEqual(firstBackgroundStarted.wait(timeout: .now() + 1), .success)
+        XCTAssertTrue(gate.hasBackgroundWork)
+
+        let interactive = Task.detached {
+            gate.withInteractiveWork(
+                onWaitingForBackground: { interactiveWaiting.signal() }
+            ) {
+                interactiveStarted.signal()
+                _ = releaseInteractive.wait(timeout: .now() + 2)
+            }
+        }
+        XCTAssertEqual(interactiveWaiting.wait(timeout: .now() + 1), .success)
+
+        let secondBackground = Task.detached {
+            gate.withBackgroundWork {
+                secondBackgroundStarted.signal()
+            }
+        }
+        XCTAssertEqual(secondBackgroundStarted.wait(timeout: .now() + 0.05), .timedOut)
+        XCTAssertEqual(interactiveStarted.wait(timeout: .now() + 0.05), .timedOut)
+
+        releaseFirstBackground.signal()
+        XCTAssertEqual(interactiveStarted.wait(timeout: .now() + 1), .success)
+        XCTAssertEqual(secondBackgroundStarted.wait(timeout: .now() + 0.05), .timedOut)
+
+        releaseInteractive.signal()
+        XCTAssertEqual(secondBackgroundStarted.wait(timeout: .now() + 1), .success)
+        await firstBackground.value
+        await interactive.value
+        _ = await secondBackground.value
+        XCTAssertFalse(gate.hasInteractiveWork)
+        XCTAssertFalse(gate.hasBackgroundWork)
+    }
+
     func testRecycleFailureCauseIsExclusiveOnlyWhenItCoversEveryFailure() {
         let folderFailureID = UUID()
         let photosFailureID = UUID()
@@ -450,16 +499,19 @@ final class LibrarySlimmingRecycleTests: XCTestCase {
             onProgress: { progress.append($0) }
         )
 
+        XCTAssertEqual(progress.values.first?.phase, .preparing)
         XCTAssertEqual(
-            progress.values,
+            progress.values.filter { $0.phase == .completedAsset },
             [
                 LibrarySlimmingRecycleMoveProgress(
                     completedAssetCount: 1,
-                    totalAssetCount: 2
+                    totalAssetCount: 2,
+                    totalFileBytes: 11
                 ),
                 LibrarySlimmingRecycleMoveProgress(
                     completedAssetCount: 2,
-                    totalAssetCount: 2
+                    totalAssetCount: 2,
+                    totalFileBytes: 11
                 ),
             ]
         )
@@ -1051,12 +1103,16 @@ final class LibrarySlimmingRecycleTests: XCTestCase {
         let seeded = try env.seedAsset(relativePath: "cross.jpg", contents: bytes)
         var service = env.makeRecycleService()
         let phaseProbe = FolderQuarantinePhaseProbe()
+        let moveProgressProbe = RecycleMoveProgressProbe()
         service.quarantineIO.forceCrossVolumeCopy = true
         service.quarantineIO.onPhaseCompleted = { phase, elapsedMs in
             phaseProbe.append(phase, elapsedMs: elapsedMs)
         }
 
-        let outcome = try service.moveFolderAssetsToRecycle(assetIDs: [seeded.assetID])
+        let outcome = try service.moveAssetsToRecycle(
+            assetIDs: [seeded.assetID],
+            onProgress: { moveProgressProbe.append($0) }
+        )
         XCTAssertEqual(outcome.recycledEntryIDs.count, 1)
         XCTAssertFalse(FileManager.default.fileExists(atPath: seeded.fileURL.path))
         let entry = try XCTUnwrap(try service.listRecycledEntries().first)
@@ -1067,6 +1123,13 @@ final class LibrarySlimmingRecycleTests: XCTestCase {
         XCTAssertTrue(phaseProbe.phases.contains(.destinationHash))
         XCTAssertTrue(phaseProbe.phases.contains(.sourceFinalVerification))
         XCTAssertTrue(phaseProbe.elapsedMilliseconds.allSatisfy { $0 >= 0 })
+        XCTAssertTrue(moveProgressProbe.values.map(\.phase).contains(.preparing))
+        XCTAssertTrue(moveProgressProbe.values.map(\.phase).contains(.copying))
+        XCTAssertTrue(moveProgressProbe.values.map(\.phase).contains(.verifyingDestination))
+        XCTAssertTrue(moveProgressProbe.values.map(\.phase).contains(.verifyingSource))
+        XCTAssertEqual(moveProgressProbe.values.last?.phase, .completedAsset)
+        XCTAssertEqual(moveProgressProbe.values.last?.copiedBytes, Int64(bytes.count))
+        XCTAssertEqual(moveProgressProbe.values.last?.totalFileBytes, Int64(bytes.count))
     }
 
     func testCrossVolumeCopyRepresentativeTemporaryFixture() throws {

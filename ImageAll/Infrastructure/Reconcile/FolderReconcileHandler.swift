@@ -287,13 +287,8 @@ struct FolderReconcileHandler: LeaseBoundJobHandler {
                     resourceReader: enumerationResourceReader
                 ).makeSession()
 
-                while true {
-                    // Yield before the next directory lookup and again before
-                    // file metadata/decode work. A recycle request therefore
-                    // waits for at most the current enumeration item.
-                    interactiveIOGate?.waitForInteractiveWorkToFinish()
-                    guard let entry = try session.nextEntry() else { break }
-                    interactiveIOGate?.waitForInteractiveWorkToFinish()
+                func processNextEntry() throws -> Bool {
+                    guard let entry = try session.nextEntry() else { return false }
                     currentCheckpoint = incrementEnumerated(currentCheckpoint)
 
                     switch entry {
@@ -383,6 +378,23 @@ struct FolderReconcileHandler: LeaseBoundJobHandler {
                             }
                         }
                     }
+                    return true
+                }
+
+                while true {
+                    // One guarded item includes directory lookup, metadata,
+                    // decode, and source hashing. A recycle request prevents
+                    // the next item from starting and waits until this one has
+                    // released its HDD read lease.
+                    let processed: Bool
+                    if let interactiveIOGate {
+                        processed = try interactiveIOGate.withBackgroundWork {
+                            try processNextEntry()
+                        }
+                    } else {
+                        processed = try processNextEntry()
+                    }
+                    guard processed else { break }
 
                     if pendingObservations.count >= enumerationConfig.assetBatchLimit
                         || session.needsBoundaryFlush

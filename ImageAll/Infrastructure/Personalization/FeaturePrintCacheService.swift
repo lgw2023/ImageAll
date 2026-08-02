@@ -83,6 +83,7 @@ struct LibraryFeaturePrintInputLoader: FeaturePrintInputLoading, Sendable {
     let sourceAccess: FolderReconcileSourceAccessService
     let photosImages: (any PhotosFeaturePrintImagePort)?
     let downloadedPreviews: (any DownloadedPreviewCachePort)?
+    let interactiveIOGate: InteractiveIOPriorityGate?
     let sourceReader: DerivedImageSourceReader
     let videoPosterGenerator: any DerivedVideoPosterGenerating
 
@@ -95,6 +96,7 @@ struct LibraryFeaturePrintInputLoader: FeaturePrintInputLoading, Sendable {
         sourceAccess: FolderReconcileSourceAccessService,
         photosImages: (any PhotosFeaturePrintImagePort)? = nil,
         downloadedPreviews: (any DownloadedPreviewCachePort)? = nil,
+        interactiveIOGate: InteractiveIOPriorityGate? = nil,
         sourceReader: DerivedImageSourceReader = DerivedImageSourceReader(),
         videoPosterGenerator: any DerivedVideoPosterGenerating =
             AVFoundationDerivedVideoPosterGenerator()
@@ -103,6 +105,7 @@ struct LibraryFeaturePrintInputLoader: FeaturePrintInputLoading, Sendable {
         self.sourceAccess = sourceAccess
         self.photosImages = photosImages
         self.downloadedPreviews = downloadedPreviews
+        self.interactiveIOGate = interactiveIOGate
         self.sourceReader = sourceReader
         self.videoPosterGenerator = videoPosterGenerator
     }
@@ -136,29 +139,48 @@ struct LibraryFeaturePrintInputLoader: FeaturePrintInputLoading, Sendable {
     }
 
     func loadInput(assetID: UUID, expectedIdentity: FeatureIdentity) throws -> FeaturePrintInput {
-        switch try sourceKinds(assetID: assetID) {
-        case let .some((locatorKind, sourceKind))
-            where locatorKind == AssetLocatorKind.file.rawValue
-                && sourceKind == SourceKind.folder.rawValue:
-            return try loadFolderInput(assetID: assetID, expectedIdentity: expectedIdentity)
-        case let .some((locatorKind, sourceKind))
-            where locatorKind == AssetLocatorKind.photos.rawValue
-                && sourceKind == SourceKind.photos.rawValue:
-            return try loadPhotosInput(assetID: assetID, expectedIdentity: expectedIdentity)
-        case nil:
-            throw FeaturePrintError.assetNotFound
-        default:
-            throw FeaturePrintError.assetIneligible
+        let load = {
+            switch try self.sourceKinds(assetID: assetID) {
+            case let .some((locatorKind, sourceKind))
+                where locatorKind == AssetLocatorKind.file.rawValue
+                    && sourceKind == SourceKind.folder.rawValue:
+                return try self.loadFolderInput(
+                    assetID: assetID,
+                    expectedIdentity: expectedIdentity
+                )
+            case let .some((locatorKind, sourceKind))
+                where locatorKind == AssetLocatorKind.photos.rawValue
+                    && sourceKind == SourceKind.photos.rawValue:
+                return try self.loadPhotosInput(
+                    assetID: assetID,
+                    expectedIdentity: expectedIdentity
+                )
+            case nil:
+                throw FeaturePrintError.assetNotFound
+            default:
+                throw FeaturePrintError.assetIneligible
+            }
         }
+        if let interactiveIOGate {
+            return try interactiveIOGate.withBackgroundWork(load)
+        }
+        return try load()
     }
 
     func isCurrent(_ input: FeaturePrintInput) throws -> Bool {
-        guard let currentToken = try validationToken(
-            assetID: input.identity.assetID,
-            expectedIdentity: input.identity
-        ) else {
-            return false
+        let validate = {
+            try self.validationToken(
+                assetID: input.identity.assetID,
+                expectedIdentity: input.identity
+            )
         }
+        let currentToken: Data?
+        if let interactiveIOGate {
+            currentToken = try interactiveIOGate.withBackgroundWork(validate)
+        } else {
+            currentToken = try validate()
+        }
+        guard let currentToken else { return false }
         return currentToken == input.validationToken
     }
 
@@ -497,6 +519,7 @@ final class FeaturePrintCacheService: FeatureVectorLoading, SyncFeatureVectorLoa
         photosImages: (any PhotosFeaturePrintImagePort)? = nil,
         downloadedPreviews: (any DownloadedPreviewCachePort)? = nil,
         sourceReader: DerivedImageSourceReader = DerivedImageSourceReader(),
+        interactiveIOGate: InteractiveIOPriorityGate? = nil,
         clock: any JobClock = SystemJobClock()
     ) {
         self.init(
@@ -507,6 +530,7 @@ final class FeaturePrintCacheService: FeatureVectorLoading, SyncFeatureVectorLoa
                 sourceAccess: sourceAccess,
                 photosImages: photosImages,
                 downloadedPreviews: downloadedPreviews,
+                interactiveIOGate: interactiveIOGate,
                 sourceReader: sourceReader
             ),
             clock: clock

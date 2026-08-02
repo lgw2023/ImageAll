@@ -4905,7 +4905,11 @@ final class LibraryWorkspaceModelTests: XCTestCase {
 
         XCTAssertTrue(model.isMutatingLibrarySlimmingRecycle)
         XCTAssertEqual(model.librarySlimmingRecyclePendingAssetIDs, [asset.assetID])
-        XCTAssertEqual(model.librarySlimmingStatusMessage, "正在安全移入回收站…1/1")
+        XCTAssertTrue(model.librarySlimmingClusters.isEmpty)
+        XCTAssertEqual(
+            model.librarySlimmingStatusMessage,
+            "后台安全转移中：已完成 1/1"
+        )
         XCTAssertEqual(
             model.librarySlimmingMoveToRecycleDisabledReason,
             "正在移入回收站…"
@@ -4915,6 +4919,8 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         await moveTask.value
         XCTAssertTrue(model.librarySlimmingRecyclePendingAssetIDs.isEmpty)
         XCTAssertFalse(model.isMutatingLibrarySlimmingRecycle)
+        XCTAssertEqual(model.librarySlimmingClusters.map(\.id), [cluster.id])
+        XCTAssertEqual(model.selectedLibrarySlimmingMemberIDs, [asset.assetID])
     }
 
     func testLibrarySlimmingMoveConfirmationSubmitsExactlyOnce() {

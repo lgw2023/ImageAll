@@ -188,6 +188,7 @@ final class DerivedImageCacheService: DerivedImageCachePort, DownloadedPreviewCa
     private let repository: GRDBDerivedImageCacheRepository
     private let sourceAccess: FolderReconcileSourceAccessService
     private let sourceReader: DerivedImageSourceReader
+    private let interactiveIOGate: InteractiveIOPriorityGate?
     private let renderer: DerivedImageRenderer
     private let videoPosterGenerator: any DerivedVideoPosterGenerating
     private let volumeReader: any DerivedImageVolumeCapacityReading
@@ -205,6 +206,7 @@ final class DerivedImageCacheService: DerivedImageCachePort, DownloadedPreviewCa
         cachesDirectory: URL,
         sourceAccess: FolderReconcileSourceAccessService,
         sourceReader: DerivedImageSourceReader = DerivedImageSourceReader(),
+        interactiveIOGate: InteractiveIOPriorityGate? = nil,
         renderer: DerivedImageRenderer = DerivedImageRenderer(),
         videoPosterGenerator: any DerivedVideoPosterGenerating = AVFoundationDerivedVideoPosterGenerator(),
         volumeReader: any DerivedImageVolumeCapacityReading = FoundationDerivedImageVolumeCapacityReader(),
@@ -223,6 +225,7 @@ final class DerivedImageCacheService: DerivedImageCachePort, DownloadedPreviewCa
         )
         self.sourceAccess = sourceAccess
         self.sourceReader = sourceReader
+        self.interactiveIOGate = interactiveIOGate
         self.renderer = renderer
         self.videoPosterGenerator = videoPosterGenerator
         self.volumeReader = volumeReader
@@ -856,66 +859,74 @@ final class DerivedImageCacheService: DerivedImageCachePort, DownloadedPreviewCa
 
         let artifact: DerivedImageEncodedArtifact
         do {
-            artifact = try sourceAccess.withActiveSourceRootURL(sourceID: context.sourceID) { rootURL in
-                switch context.mediaKind {
-                case .image:
-                    let initial = try self.sourceReader.readSourceBytes(
-                        rootURL: rootURL,
-                        relativePath: context.relativePath
-                    )
-                    guard context.matchesHandleFacts(initial.initialFingerprint) else {
-                        throw DerivedImageError.derivedSourceChanged
-                    }
-                    guard initial.preHandleFstat.sizeBytes == initial.postHandleFstat.sizeBytes,
-                          initial.preHandleFstat.modifiedAtNs == initial.postHandleFstat.modifiedAtNs,
-                          initial.initialFingerprint.resourceID == initial.postResourceID
-                    else {
-                        throw DerivedImageError.derivedSourceChanged
-                    }
-                    if let source = CGImageSourceCreateWithData(initial.bytes as CFData, nil),
-                       let actualUTI = CGImageSourceGetType(source) as String?,
-                       actualUTI != context.mediaType
-                    {
-                        throw DerivedImageError.derivedSourceChanged
-                    }
-                    let rendered = try self.renderer.render(
-                        sourceBytes: initial.bytes,
-                        variant: request.variant
-                    )
-                    let reopened = try self.sourceReader.reopenedLocatorFingerprint(
-                        rootURL: rootURL,
-                        relativePath: context.relativePath
-                    )
-                    guard context.matches(reopened) else {
-                        throw DerivedImageError.derivedSourceChanged
-                    }
-                    return rendered
-                case .video:
-                    guard let durationMs = context.durationMs, durationMs > 0 else {
-                        throw DerivedImageError.derivedAssetIneligible
-                    }
-                    return try self.sourceReader.withOpenSourceFileDescriptorURL(
-                        rootURL: rootURL,
-                        relativePath: context.relativePath
-                    ) { sourceURL, initialFingerprint in
-                        guard context.matchesHandleFacts(initialFingerprint) else {
+            let generateFromSource = {
+                try self.sourceAccess.withActiveSourceRootURL(sourceID: context.sourceID) { rootURL in
+                    switch context.mediaKind {
+                    case .image:
+                        let initial = try self.sourceReader.readSourceBytes(
+                            rootURL: rootURL,
+                            relativePath: context.relativePath
+                        )
+                        guard context.matchesHandleFacts(initial.initialFingerprint) else {
                             throw DerivedImageError.derivedSourceChanged
                         }
-                        let posterBytes = try self.videoPosterGenerator.makePosterBytes(
-                            sourceFileDescriptorURL: sourceURL,
-                            mediaType: context.mediaType,
-                            durationMs: durationMs,
-                            maximumPixelSize: DerivedImageRenderer.thumbnailMaxPixelSize(
-                                for: request.variant
+                        guard initial.preHandleFstat.sizeBytes == initial.postHandleFstat.sizeBytes,
+                              initial.preHandleFstat.modifiedAtNs
+                                == initial.postHandleFstat.modifiedAtNs,
+                              initial.initialFingerprint.resourceID == initial.postResourceID
+                        else {
+                            throw DerivedImageError.derivedSourceChanged
+                        }
+                        if let source = CGImageSourceCreateWithData(initial.bytes as CFData, nil),
+                           let actualUTI = CGImageSourceGetType(source) as String?,
+                           actualUTI != context.mediaType
+                        {
+                            throw DerivedImageError.derivedSourceChanged
+                        }
+                        let rendered = try self.renderer.render(
+                            sourceBytes: initial.bytes,
+                            variant: request.variant
+                        )
+                        let reopened = try self.sourceReader.reopenedLocatorFingerprint(
+                            rootURL: rootURL,
+                            relativePath: context.relativePath
+                        )
+                        guard context.matches(reopened) else {
+                            throw DerivedImageError.derivedSourceChanged
+                        }
+                        return rendered
+                    case .video:
+                        guard let durationMs = context.durationMs, durationMs > 0 else {
+                            throw DerivedImageError.derivedAssetIneligible
+                        }
+                        return try self.sourceReader.withOpenSourceFileDescriptorURL(
+                            rootURL: rootURL,
+                            relativePath: context.relativePath
+                        ) { sourceURL, initialFingerprint in
+                            guard context.matchesHandleFacts(initialFingerprint) else {
+                                throw DerivedImageError.derivedSourceChanged
+                            }
+                            let posterBytes = try self.videoPosterGenerator.makePosterBytes(
+                                sourceFileDescriptorURL: sourceURL,
+                                mediaType: context.mediaType,
+                                durationMs: durationMs,
+                                maximumPixelSize: DerivedImageRenderer.thumbnailMaxPixelSize(
+                                    for: request.variant
+                                )
                             )
-                        )
-                        return try self.renderer.render(
-                            sourceBytes: posterBytes,
-                            variant: request.variant,
-                            expectedMediaType: UTType.png.identifier
-                        )
+                            return try self.renderer.render(
+                                sourceBytes: posterBytes,
+                                variant: request.variant,
+                                expectedMediaType: UTType.png.identifier
+                            )
+                        }
                     }
                 }
+            }
+            if let interactiveIOGate {
+                artifact = try interactiveIOGate.withBackgroundWork(generateFromSource)
+            } else {
+                artifact = try generateFromSource()
             }
         } catch let error as FolderReconcileHandlerError {
             switch error {

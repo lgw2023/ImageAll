@@ -2,42 +2,101 @@ import Foundation
 
 /// Gives user-initiated filesystem mutations priority over background work.
 ///
-/// Background scanners wait only at safe item boundaries, so an in-flight
-/// database batch is never abandoned. A recycle operation holds an interactive
-/// lease while it validates, copies, verifies, and unlinks the source. This
-/// avoids competing seeks on mechanical disks without weakening durability.
+/// Background readers cooperate at safe item boundaries. An interactive
+/// recycle request first prevents new background items from starting, waits
+/// for the current guarded item to finish, and only then begins source I/O.
+/// This gives the mutation an acknowledged quiet window instead of merely
+/// hoping that an already-running HDD read reaches its next checkpoint soon.
 final class InteractiveIOPriorityGate: @unchecked Sendable {
     private let condition = NSCondition()
     private var interactiveWorkCount = 0
+    private var interactiveWaiterCount = 0
+    private var backgroundWorkCount = 0
 
-    func withInteractiveWork<T>(_ operation: () throws -> T) rethrows -> T {
-        beginInteractiveWork()
+    func withInteractiveWork<T>(
+        onWaitingForBackground: () -> Void = {},
+        onReady: () -> Void = {},
+        _ operation: () throws -> T
+    ) rethrows -> T {
+        let waitsForBackground = beginInteractiveWorkRequest()
+        if waitsForBackground {
+            onWaitingForBackground()
+        }
+        acquireInteractiveWork()
+        onReady()
         defer { endInteractiveWork() }
+        return try operation()
+    }
+
+    /// Marks one bounded background I/O item. Multiple background items may
+    /// overlap, but writer preference prevents new ones from entering once a
+    /// recycle request is waiting.
+    func withBackgroundWork<T>(_ operation: () throws -> T) rethrows -> T {
+        beginBackgroundWork()
+        defer { endBackgroundWork() }
         return try operation()
     }
 
     func waitForInteractiveWorkToFinish() {
         condition.lock()
-        while interactiveWorkCount > 0 {
+        while interactiveWorkCount > 0 || interactiveWaiterCount > 0 {
             condition.wait()
         }
         condition.unlock()
     }
 
     var hasInteractiveWork: Bool {
-        condition.withLock { interactiveWorkCount > 0 }
+        condition.withLock {
+            interactiveWorkCount > 0 || interactiveWaiterCount > 0
+        }
     }
 
-    private func beginInteractiveWork() {
+    var hasBackgroundWork: Bool {
+        condition.withLock { backgroundWorkCount > 0 }
+    }
+
+    /// Returns whether the caller will have to wait for an already-running
+    /// background item. The waiter is registered before returning so no later
+    /// background work can jump ahead of the interactive request.
+    private func beginInteractiveWorkRequest() -> Bool {
         condition.withLock {
-            interactiveWorkCount += 1
+            interactiveWaiterCount += 1
+            return backgroundWorkCount > 0 || interactiveWorkCount > 0
         }
+    }
+
+    private func acquireInteractiveWork() {
+        condition.lock()
+        while backgroundWorkCount > 0 || interactiveWorkCount > 0 {
+            condition.wait()
+        }
+        interactiveWaiterCount = max(0, interactiveWaiterCount - 1)
+        interactiveWorkCount += 1
+        condition.unlock()
     }
 
     private func endInteractiveWork() {
         condition.lock()
         interactiveWorkCount = max(0, interactiveWorkCount - 1)
         if interactiveWorkCount == 0 {
+            condition.broadcast()
+        }
+        condition.unlock()
+    }
+
+    private func beginBackgroundWork() {
+        condition.lock()
+        while interactiveWorkCount > 0 || interactiveWaiterCount > 0 {
+            condition.wait()
+        }
+        backgroundWorkCount += 1
+        condition.unlock()
+    }
+
+    private func endBackgroundWork() {
+        condition.lock()
+        backgroundWorkCount = max(0, backgroundWorkCount - 1)
+        if backgroundWorkCount == 0 {
             condition.broadcast()
         }
         condition.unlock()

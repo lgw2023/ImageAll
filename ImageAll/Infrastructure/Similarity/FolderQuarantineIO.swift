@@ -56,6 +56,12 @@ struct FolderQuarantineIO: Sendable {
     var forceCrossVolumeCopy: Bool = false
     /// Deterministic test seam for a writer racing the final source check.
     var beforeSourceFinalVerification: @Sendable () -> Void = {}
+    /// Progress starts before a potentially blocking disk phase. This is kept
+    /// path-free so UI and logs never expose protected source locations.
+    var onPhaseStarted: @Sendable (FolderQuarantineIOPhase) -> Void = { _ in }
+    /// Invoked only after the cross-volume copy stage succeeds. Same-volume
+    /// rename does not report copied bytes because no payload copy occurs.
+    var onBytesCopied: @Sendable (Int64) -> Void = { _ in }
     /// Phase-only telemetry deliberately excludes paths and asset identifiers.
     var onPhaseCompleted: @Sendable (FolderQuarantineIOPhase, Double) -> Void = {
         phase,
@@ -504,6 +510,7 @@ struct FolderQuarantineIO: Sendable {
                 throw FolderQuarantineIOError.ioFailure
             }
         }
+        onBytesCopied(expectedSize)
         try measurePhase(.destinationSync) {
             try synchronizeFile(fd: destFD)
         }
@@ -625,6 +632,7 @@ struct FolderQuarantineIO: Sendable {
         _ phase: FolderQuarantineIOPhase,
         operation: () throws -> T
     ) rethrows -> T {
+        onPhaseStarted(phase)
         let startedAt = DispatchTime.now().uptimeNanoseconds
         defer {
             let finishedAt = DispatchTime.now().uptimeNanoseconds

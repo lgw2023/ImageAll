@@ -10,6 +10,7 @@ struct FingerprintCompletionService: FingerprintCompletionPort {
     let photosOriginalCache: PhotosOriginalCacheService?
     let photosFeatureImages: (any PhotosFeaturePrintImagePort)?
     let downloadedPreviews: (any DownloadedPreviewCachePort)?
+    let interactiveIOGate: InteractiveIOPriorityGate?
     let clock: any JobClock
     let assetRepository: GRDBDerivedImageCacheRepository
     let videoPosterGenerator: any DerivedVideoPosterGenerating
@@ -22,6 +23,7 @@ struct FingerprintCompletionService: FingerprintCompletionPort {
         photosOriginalCache: PhotosOriginalCacheService? = nil,
         photosFeatureImages: (any PhotosFeaturePrintImagePort)? = nil,
         downloadedPreviews: (any DownloadedPreviewCachePort)? = nil,
+        interactiveIOGate: InteractiveIOPriorityGate? = nil,
         clock: any JobClock,
         assetRepository: GRDBDerivedImageCacheRepository? = nil,
         videoPosterGenerator: any DerivedVideoPosterGenerating =
@@ -34,6 +36,7 @@ struct FingerprintCompletionService: FingerprintCompletionPort {
         self.photosOriginalCache = photosOriginalCache
         self.photosFeatureImages = photosFeatureImages
         self.downloadedPreviews = downloadedPreviews
+        self.interactiveIOGate = interactiveIOGate
         self.clock = clock
         self.assetRepository = assetRepository ?? GRDBDerivedImageCacheRepository(database: database)
         self.videoPosterGenerator = videoPosterGenerator
@@ -67,43 +70,46 @@ struct FingerprintCompletionService: FingerprintCompletionPort {
 
         let input: (contentBytes: Data?, visualBytes: Data, expectedMediaType: String?)
         do {
-            input = try sourceAccess.withActiveSourceRootURL(sourceID: context.sourceID) { rootURL in
-                guard context.mediaKind == .video else {
-                    let initial = try sourceReader.readSourceBytes(
-                        rootURL: rootURL,
-                        relativePath: context.relativePath
-                    )
-                    guard context.matchesHandleFacts(initial.initialFingerprint),
-                          initial.preHandleFstat.sizeBytes == initial.postHandleFstat.sizeBytes,
-                          initial.preHandleFstat.modifiedAtNs == initial.postHandleFstat.modifiedAtNs,
-                          initial.initialFingerprint.resourceID == initial.postResourceID
-                    else {
-                        throw FingerprintCompletionError.sourceChanged
-                    }
-                    return (initial.bytes, initial.bytes, context.mediaType)
-                }
-                guard let durationMs = context.durationMs, durationMs > 0 else {
-                    throw FingerprintCompletionError.decodeFailed
-                }
-                let poster = try sourceReader.withOpenSourceFileDescriptorURL(
-                    rootURL: rootURL,
-                    relativePath: context.relativePath
-                ) { descriptorURL, openedFingerprint in
-                    guard context.matchesHandleFacts(openedFingerprint) else {
-                        throw FingerprintCompletionError.sourceChanged
-                    }
-                    do {
-                        return try videoPosterGenerator.makePosterBytes(
-                            sourceFileDescriptorURL: descriptorURL,
-                            mediaType: context.mediaType,
-                            durationMs: durationMs,
-                            maximumPixelSize: 1_024
+            input = try withBackgroundIO {
+                try sourceAccess.withActiveSourceRootURL(sourceID: context.sourceID) { rootURL in
+                    guard context.mediaKind == .video else {
+                        let initial = try sourceReader.readSourceBytes(
+                            rootURL: rootURL,
+                            relativePath: context.relativePath
                         )
-                    } catch {
+                        guard context.matchesHandleFacts(initial.initialFingerprint),
+                              initial.preHandleFstat.sizeBytes == initial.postHandleFstat.sizeBytes,
+                              initial.preHandleFstat.modifiedAtNs
+                                == initial.postHandleFstat.modifiedAtNs,
+                              initial.initialFingerprint.resourceID == initial.postResourceID
+                        else {
+                            throw FingerprintCompletionError.sourceChanged
+                        }
+                        return (initial.bytes, initial.bytes, context.mediaType)
+                    }
+                    guard let durationMs = context.durationMs, durationMs > 0 else {
                         throw FingerprintCompletionError.decodeFailed
                     }
+                    let poster = try sourceReader.withOpenSourceFileDescriptorURL(
+                        rootURL: rootURL,
+                        relativePath: context.relativePath
+                    ) { descriptorURL, openedFingerprint in
+                        guard context.matchesHandleFacts(openedFingerprint) else {
+                            throw FingerprintCompletionError.sourceChanged
+                        }
+                        do {
+                            return try videoPosterGenerator.makePosterBytes(
+                                sourceFileDescriptorURL: descriptorURL,
+                                mediaType: context.mediaType,
+                                durationMs: durationMs,
+                                maximumPixelSize: 1_024
+                            )
+                        } catch {
+                            throw FingerprintCompletionError.decodeFailed
+                        }
+                    }
+                    return (nil, poster, nil)
                 }
-                return (nil, poster, nil)
             }
         } catch let error as FingerprintCompletionError {
             throw error
@@ -404,7 +410,9 @@ struct FingerprintCompletionService: FingerprintCompletionPort {
 
         let loaded: (bytes: Data, origin: PhotosSourceBytesOrigin)
         do {
-            loaded = try loadPhotosSourceBytes(assetID: assetID, context: context)
+            loaded = try withBackgroundIO {
+                try loadPhotosSourceBytes(assetID: assetID, context: context)
+            }
         } catch let error as FingerprintCompletionError {
             throw error
         } catch let error as PhotosLibraryError {
@@ -498,9 +506,11 @@ struct FingerprintCompletionService: FingerprintCompletionPort {
 
         let posterBytes: Data
         do {
-            posterBytes = try photosFeatureImages.requestLocalFeatureImage(
-                localIdentifier: context.localIdentifier
-            )
+            posterBytes = try withBackgroundIO {
+                try photosFeatureImages.requestLocalFeatureImage(
+                    localIdentifier: context.localIdentifier
+                )
+            }
         } catch let error as PhotosLibraryError {
             switch error {
             case .authorizationDenied, .authorizationRestricted:
@@ -615,6 +625,13 @@ struct FingerprintCompletionService: FingerprintCompletionPort {
         }
 
         throw FingerprintCompletionError.sourceUnavailable
+    }
+
+    private func withBackgroundIO<T>(_ operation: () throws -> T) rethrows -> T {
+        if let interactiveIOGate {
+            return try interactiveIOGate.withBackgroundWork(operation)
+        }
+        return try operation()
     }
 
     private func loadPhotosContext(assetID: UUID) throws -> PhotosCompletionContext {

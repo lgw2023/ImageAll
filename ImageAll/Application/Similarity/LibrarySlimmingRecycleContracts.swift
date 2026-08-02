@@ -403,9 +403,41 @@ struct LibrarySlimmingRecycleMoveOutcome: Sendable, Equatable {
     }
 }
 
+enum LibrarySlimmingRecycleMovePhase: String, Sendable, Equatable {
+    case waitingForBackgroundIO
+    case preparing
+    case copying
+    case syncingDestination
+    case verifyingDestination
+    case verifyingSource
+    case deletingSource
+    case syncingSourceDirectory
+    case photosSystemMutation
+    case completedAsset
+}
+
 struct LibrarySlimmingRecycleMoveProgress: Sendable, Equatable {
+    let phase: LibrarySlimmingRecycleMovePhase
     let completedAssetCount: Int
     let totalAssetCount: Int
+    /// Bytes belonging to file assets that have completed the copy stage.
+    /// PhotoKit-managed assets intentionally do not contribute.
+    let copiedBytes: Int64
+    let totalFileBytes: Int64
+
+    init(
+        phase: LibrarySlimmingRecycleMovePhase = .completedAsset,
+        completedAssetCount: Int,
+        totalAssetCount: Int,
+        copiedBytes: Int64 = 0,
+        totalFileBytes: Int64 = 0
+    ) {
+        self.phase = phase
+        self.completedAssetCount = completedAssetCount
+        self.totalAssetCount = totalAssetCount
+        self.copiedBytes = max(0, copiedBytes)
+        self.totalFileBytes = max(0, totalFileBytes)
+    }
 }
 
 typealias LibrarySlimmingRecycleMoveProgressHandler =

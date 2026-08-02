@@ -110,6 +110,18 @@ final class IdleThumbnailPrewarmController {
         cancelPrewarm()
     }
 
+    /// Cancels the current prewarm and waits until its in-flight source read
+    /// has observed cancellation. The generation is cleared before awaiting,
+    /// so no stale result can publish while an interactive recycle is waiting.
+    func noteUserInteractionAndWaitForPrewarmToStop() async {
+        lastInteractionAt = clock.now
+        prewarmGeneration &+= 1
+        let task = prewarmTask
+        prewarmTask = nil
+        task?.cancel()
+        await task?.value
+    }
+
     /// Test / manual hook to re-evaluate without waiting for the monitor tick.
     func evaluateIdleState() {
         guard isStarted else { return }

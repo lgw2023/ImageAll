@@ -1265,6 +1265,13 @@ final class LibraryWorkspaceModel: ObservableObject {
     private var browsingNavigationRequestID: UUID?
     private var selectionAnchorID: UUID?
     private var librarySlimmingSelectionAnchorID: UUID?
+    private struct LibrarySlimmingOptimisticRecycleSnapshot {
+        let clusters: [LibrarySlimmingClusterPresentation]
+        let selectedClusterID: UUID?
+        let selectedMemberIDs: Set<UUID>
+        let selectionAnchorID: UUID?
+        let attemptedAssetIDs: Set<UUID>
+    }
     private struct FeatureSuggestionCompletionContext: Equatable {
         let tagID: UUID
         let displayName: String
@@ -2136,11 +2143,14 @@ final class LibraryWorkspaceModel: ObservableObject {
             isMutatingLibrarySlimmingRecycle = true
         }
         let pendingAssetIDs = Set(assetIDs)
+        let optimisticSnapshot = beginOptimisticLibrarySlimmingRecycle(
+            assetIDs: pendingAssetIDs
+        )
         librarySlimmingRecyclePendingAssetIDs.formUnion(pendingAssetIDs)
-        suspendBackgroundThumbnailWorkForRecycle()
         librarySlimmingRecycleActionMessage = nil
         librarySlimmingStatusMessage =
-            "已接收操作，正在暂停后台读取并安全移入回收站…"
+            "已从结果中隐藏，正在等待后台磁盘任务暂停…"
+        await suspendBackgroundThumbnailWorkForRecycle()
         defer {
             librarySlimmingRecyclePendingAssetIDs.subtract(pendingAssetIDs)
             resumeBackgroundThumbnailWorkAfterRecycle()
@@ -2373,22 +2383,10 @@ final class LibraryWorkspaceModel: ObservableObject {
             }
             noteLibrarySlimmingCatalogMutation(assetIDs: recycled)
             invalidateRecycledAssetsInActiveWorkspace(recycled)
-            selectedLibrarySlimmingMemberIDs.subtract(recycled)
-            if let anchorID = librarySlimmingSelectionAnchorID,
-               recycled.contains(anchorID)
-            {
-                librarySlimmingSelectionAnchorID = nil
-            }
-            librarySlimmingClusters = filterLibrarySlimmingClustersRemoving(
-                assetIDs: recycled,
-                from: librarySlimmingClusters
+            settleOptimisticLibrarySlimmingRecycle(
+                snapshot: optimisticSnapshot,
+                recycledAssetIDs: recycled
             )
-            if let selected = selectedLibrarySlimmingClusterID,
-               !librarySlimmingClusters.contains(where: { $0.id == selected })
-            {
-                selectedLibrarySlimmingClusterID = librarySlimmingClusters.first?.id
-            }
-            refreshSelectedLibrarySlimmingMemberSources()
             var parts: [String] = []
             if let identicalCleanupPlan {
                 let completedGroups = identicalCleanupPlan.decisions.filter { decision in
@@ -2470,6 +2468,10 @@ final class LibraryWorkspaceModel: ObservableObject {
                 try recycle.enqueuePurgeExpired()
             }
         } catch {
+            settleOptimisticLibrarySlimmingRecycle(
+                snapshot: optimisticSnapshot,
+                recycledAssetIDs: []
+            )
             let message = "移入回收站失败：\(error.localizedDescription)"
             librarySlimmingStatusMessage = message
             librarySlimmingRecycleActionMessage = message
@@ -2531,10 +2533,137 @@ final class LibraryWorkspaceModel: ObservableObject {
                         executionID: executionID
                     )
                 } else if self.isMutatingLibrarySlimmingRecycle {
-                    self.librarySlimmingStatusMessage =
-                        "正在安全移入回收站…\(completed)/\(overallTotalAssetCount)"
+                    self.librarySlimmingStatusMessage = self.librarySlimmingRecycleProgressMessage(
+                        progress,
+                        completedAssetCount: completed,
+                        totalAssetCount: overallTotalAssetCount
+                    )
                 }
             }
+        }
+    }
+
+    private func beginOptimisticLibrarySlimmingRecycle(
+        assetIDs: Set<UUID>
+    ) -> LibrarySlimmingOptimisticRecycleSnapshot {
+        let snapshot = LibrarySlimmingOptimisticRecycleSnapshot(
+            clusters: librarySlimmingClusters,
+            selectedClusterID: selectedLibrarySlimmingClusterID,
+            selectedMemberIDs: selectedLibrarySlimmingMemberIDs,
+            selectionAnchorID: librarySlimmingSelectionAnchorID,
+            attemptedAssetIDs: assetIDs
+        )
+        librarySlimmingClusters = filterLibrarySlimmingClustersRemoving(
+            assetIDs: assetIDs,
+            from: librarySlimmingClusters
+        )
+        selectedLibrarySlimmingMemberIDs.subtract(assetIDs)
+        if let anchorID = librarySlimmingSelectionAnchorID,
+           assetIDs.contains(anchorID)
+        {
+            librarySlimmingSelectionAnchorID = nil
+        }
+        if let selected = selectedLibrarySlimmingClusterID,
+           !librarySlimmingClusters.contains(where: { $0.id == selected })
+        {
+            selectedLibrarySlimmingClusterID = librarySlimmingClusters.first?.id
+            selectedLibrarySlimmingMemberIDs = []
+            librarySlimmingSelectionAnchorID = nil
+        }
+        refreshSelectedLibrarySlimmingMemberSources()
+        return snapshot
+    }
+
+    private func settleOptimisticLibrarySlimmingRecycle(
+        snapshot: LibrarySlimmingOptimisticRecycleSnapshot,
+        recycledAssetIDs: Set<UUID>
+    ) {
+        let failedAssetIDs = snapshot.attemptedAssetIDs.subtracting(recycledAssetIDs)
+        librarySlimmingClusters = snapshot.clusters.compactMap { cluster in
+            let remaining = cluster.memberAssetIDs.filter { !recycledAssetIDs.contains($0) }
+            guard !remaining.isEmpty else { return nil }
+            let minimumMemberCount = cluster.isSeedOnlyResult ? 1 : 2
+            // A failed optimistic item must visibly return even when it was the
+            // only selected seed or the only member left after a partial move.
+            guard remaining.count >= minimumMemberCount
+                || !failedAssetIDs.isDisjoint(with: remaining)
+            else { return nil }
+            if cluster.isSeedOnlyResult {
+                return LibrarySlimmingClusterPresentation(
+                    seedAssetIDs: remaining,
+                    mediaKind: cluster.mediaKind
+                )
+            }
+            return LibrarySlimmingClusterPresentation(
+                SlimmingCluster(
+                    id: cluster.id,
+                    kind: cluster.kind,
+                    memberAssetIDs: remaining,
+                    representativeAssetID: remaining.contains(cluster.representativeAssetID)
+                        ? cluster.representativeAssetID
+                        : remaining[0],
+                    score: cluster.score,
+                    modelIdentity: cluster.modelIdentity
+                ),
+                mediaKind: cluster.mediaKind
+            )
+        }
+        if let previous = snapshot.selectedClusterID,
+           let restoredCluster = librarySlimmingClusters.first(where: { $0.id == previous })
+        {
+            selectedLibrarySlimmingClusterID = previous
+            selectedLibrarySlimmingMemberIDs = snapshot.selectedMemberIDs
+                .subtracting(recycledAssetIDs)
+                .intersection(restoredCluster.memberAssetIDs)
+            if let anchor = snapshot.selectionAnchorID,
+               !recycledAssetIDs.contains(anchor),
+               restoredCluster.memberAssetIDs.contains(anchor)
+            {
+                librarySlimmingSelectionAnchorID = anchor
+            } else {
+                librarySlimmingSelectionAnchorID = nil
+            }
+        } else {
+            selectedLibrarySlimmingClusterID = librarySlimmingClusters.first?.id
+            selectedLibrarySlimmingMemberIDs = []
+            librarySlimmingSelectionAnchorID = nil
+        }
+        refreshSelectedLibrarySlimmingMemberSources()
+    }
+
+    private func librarySlimmingRecycleProgressMessage(
+        _ progress: LibrarySlimmingRecycleMoveProgress,
+        completedAssetCount: Int,
+        totalAssetCount: Int
+    ) -> String {
+        let count = "\(completedAssetCount)/\(totalAssetCount)"
+        let bytes: String
+        if progress.totalFileBytes > 0 {
+            bytes = " · \(ByteCountFormatter.string(fromByteCount: progress.copiedBytes, countStyle: .file))/\(ByteCountFormatter.string(fromByteCount: progress.totalFileBytes, countStyle: .file))"
+        } else {
+            bytes = ""
+        }
+        return switch progress.phase {
+        case .waitingForBackgroundIO:
+            "等待后台磁盘任务暂停…\(count)"
+        case .preparing:
+            "后台安全转移中：正在准备…\(count)"
+        case .copying:
+            "后台安全转移中：正在复制…\(count)\(bytes)"
+        case .syncingDestination:
+            "后台安全转移中：正在同步目标文件…\(count)\(bytes)"
+        case .verifyingDestination:
+            "后台安全转移中：正在校验目标文件…\(count)\(bytes)"
+        case .verifyingSource:
+            "后台安全转移中：正在复核源文件…\(count)\(bytes)"
+        case .deletingSource:
+            "后台安全转移中：正在移除源文件…\(count)\(bytes)"
+        case .syncingSourceDirectory:
+            "后台安全转移中：正在同步源目录…\(count)\(bytes)"
+        case .photosSystemMutation:
+            "等待系统照片服务移入“最近删除”…\(count)"
+        case .completedAsset:
+            "后台安全转移中：已完成 \(count)\(bytes)"
         }
     }
 
@@ -3193,10 +3322,14 @@ final class LibraryWorkspaceModel: ObservableObject {
     private func filterLibrarySlimmingClustersForHiddenAssets(
         _ clusters: [SlimmingCluster]
     ) -> [SlimmingCluster] {
-        guard let recycle = librarySlimmingRecycle else { return clusters }
         let memberIDs = clusters.flatMap(\.memberAssetIDs)
         guard !memberIDs.isEmpty else { return clusters }
-        let hidden = (try? recycle.slimmingHiddenAssetIDs(from: memberIDs)) ?? []
+        var hidden = librarySlimmingRecyclePendingAssetIDs
+        if let recycle = librarySlimmingRecycle {
+            hidden.formUnion(
+                (try? recycle.slimmingHiddenAssetIDs(from: memberIDs)) ?? []
+            )
+        }
         guard !hidden.isEmpty else { return clusters }
         return filterLibrarySlimmingClustersRemoving(assetIDs: hidden, from: clusters)
     }
@@ -4308,20 +4441,25 @@ final class LibraryWorkspaceModel: ObservableObject {
     /// external disk as recycle. Suspend it for the short interactive window
     /// and resume the requested source afterward. Idle prewarming is cancelled
     /// by recording this user interaction and can restart after the idle delay.
-    private func suspendBackgroundThumbnailWorkForRecycle() {
-        idleThumbnailPrewarmController?.noteUserInteraction()
-        guard suspendedSourceThumbnailPrewarm == nil,
-              let progress = sourceThumbnailPrewarmProgress
-        else { return }
+    private func suspendBackgroundThumbnailWorkForRecycle() async {
+        await idleThumbnailPrewarmController?.noteUserInteractionAndWaitForPrewarmToStop()
 
-        suspendedSourceThumbnailPrewarm = (progress.sourceID, progress.kind)
-        sourceThumbnailPrewarmGeneration += 1
-        sourceThumbnailPrewarmTask?.cancel()
-        sourceThumbnailPrewarmTask = nil
-        sourceThumbnailPrewarmProgress = nil
-        if progress.kind == .originalAspect, progress.warmed > 0 {
-            originalAspectThumbnailCacheGeneration &+= 1
+        let runningTask = sourceThumbnailPrewarmTask
+        if suspendedSourceThumbnailPrewarm == nil,
+           let progress = sourceThumbnailPrewarmProgress
+        {
+            suspendedSourceThumbnailPrewarm = (progress.sourceID, progress.kind)
+            if progress.kind == .originalAspect, progress.warmed > 0 {
+                originalAspectThumbnailCacheGeneration &+= 1
+            }
         }
+        if runningTask != nil {
+            sourceThumbnailPrewarmGeneration &+= 1
+            runningTask?.cancel()
+            sourceThumbnailPrewarmTask = nil
+            sourceThumbnailPrewarmProgress = nil
+        }
+        await runningTask?.value
     }
 
     private func resumeBackgroundThumbnailWorkAfterRecycle() {

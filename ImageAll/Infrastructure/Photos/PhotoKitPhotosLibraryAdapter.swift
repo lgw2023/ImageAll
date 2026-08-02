@@ -11,6 +11,7 @@ final class PhotoKitPhotosLibraryAdapter: NSObject, PhotosLibraryAccessPort, Pho
     @unchecked Sendable
 {
     private let imageManager = PHCachingImageManager()
+    private let interactiveIOGate: InteractiveIOPriorityGate?
     private let observerLock = NSLock()
     private var onLibraryChange: (@Sendable () -> Void)?
     private var isObservingChanges = false
@@ -18,6 +19,11 @@ final class PhotoKitPhotosLibraryAdapter: NSObject, PhotosLibraryAccessPort, Pho
     private var isObservingAvailability = false
 
     static let cloudPreviewTargetSize = NSSize(width: 2_048, height: 2_048)
+
+    init(interactiveIOGate: InteractiveIOPriorityGate? = nil) {
+        self.interactiveIOGate = interactiveIOGate
+        super.init()
+    }
 
     func authorizationState() -> PhotosAuthorizationState {
         mapAuthorization(PHPhotoLibrary.authorizationStatus(for: .readWrite))
@@ -37,10 +43,24 @@ final class PhotoKitPhotosLibraryAdapter: NSObject, PhotosLibraryAccessPort, Pho
         }
         let result = PHAsset.fetchAssets(with: nil)
         var count = 0
-        result.enumerateObjects { asset, _, _ in
-            // Match catalog upsert: only count assets that resolve to supported still metadata.
-            if self.metadata(for: asset) != nil {
-                count += 1
+        let pauseBoundarySize = 32
+        for batchStart in stride(from: 0, to: result.count, by: pauseBoundarySize) {
+            let batchEnd = min(batchStart + pauseBoundarySize, result.count)
+            let countBatch = {
+                var batchCount = 0
+                for index in batchStart ..< batchEnd {
+                    // Match catalog upsert: only count assets that resolve to
+                    // supported still metadata.
+                    if self.metadata(for: result.object(at: index)) != nil {
+                        batchCount += 1
+                    }
+                }
+                return batchCount
+            }
+            if let interactiveIOGate {
+                count += interactiveIOGate.withBackgroundWork(countBatch)
+            } else {
+                count += countBatch()
             }
         }
         return count
@@ -82,12 +102,34 @@ final class PhotoKitPhotosLibraryAdapter: NSObject, PhotosLibraryAccessPort, Pho
             let batchEnd = min(batchStart + batchSize, totalCount)
             var metadataBatch: [PhotosAssetMetadata] = []
             metadataBatch.reserveCapacity(batchEnd - batchStart)
-            for index in batchStart ..< batchEnd {
-                let asset = result.object(at: index)
-                if let metadata = metadata(for: asset) {
-                    metadataBatch.append(metadata)
+            let pauseBoundarySize = 32
+            for chunkStart in stride(
+                from: batchStart,
+                to: batchEnd,
+                by: pauseBoundarySize
+            ) {
+                let chunkEnd = min(chunkStart + pauseBoundarySize, batchEnd)
+                func enumerateChunk() throws -> [PhotosAssetMetadata] {
+                    var metadataChunk: [PhotosAssetMetadata] = []
+                    metadataChunk.reserveCapacity(chunkEnd - chunkStart)
+                    for index in chunkStart ..< chunkEnd {
+                        let asset = result.object(at: index)
+                        if let metadata = self.metadata(for: asset) {
+                            metadataChunk.append(metadata)
+                        }
+                        try onAssetEnumerated()
+                    }
+                    return metadataChunk
                 }
-                try onAssetEnumerated()
+                if let interactiveIOGate {
+                    metadataBatch.append(
+                        contentsOf: try interactiveIOGate.withBackgroundWork {
+                            try enumerateChunk()
+                        }
+                    )
+                } else {
+                    metadataBatch.append(contentsOf: try enumerateChunk())
+                }
             }
             try onBatch(
                 PhotosAssetEnumerationBatch(
@@ -145,21 +187,28 @@ final class PhotoKitPhotosLibraryAdapter: NSObject, PhotosLibraryAccessPort, Pho
 
         do {
             for change in changes {
-                let details = try change.changeDetails(for: .asset)
-                let changedIdentifiers = details.insertedLocalIdentifiers
-                    .union(details.updatedLocalIdentifiers)
-                let upsertedAssets = metadata(localIdentifiers: changedIdentifiers)
-                // Only PhotoKit-reported deletes become missing. Inserts/updates that fail
-                // metadata resolution (empty resources, unsupported UTI, transient cloud
-                // eviction) must not be treated as deletions — full generation remains
-                // the sole unseen → missing convergence path.
-                try onBatch(
-                    Self.makePersistentChangeBatch(
+                func processChange() throws {
+                    let details = try change.changeDetails(for: .asset)
+                    let changedIdentifiers = details.insertedLocalIdentifiers
+                        .union(details.updatedLocalIdentifiers)
+                    let upsertedAssets = self.metadata(localIdentifiers: changedIdentifiers)
+                    // Only PhotoKit-reported deletes become missing. Inserts/updates that fail
+                    // metadata resolution (empty resources, unsupported UTI, transient cloud
+                    // eviction) must not be treated as deletions — full generation remains
+                    // the sole unseen → missing convergence path.
+                    try onBatch(Self.makePersistentChangeBatch(
                         upsertedAssets: upsertedAssets,
                         deletedLocalIdentifiers: details.deletedLocalIdentifiers,
-                        changeToken: try archiveChangeToken(change.changeToken)
-                    )
-                )
+                        changeToken: try self.archiveChangeToken(change.changeToken)
+                    ))
+                }
+                if let interactiveIOGate {
+                    try interactiveIOGate.withBackgroundWork {
+                        try processChange()
+                    }
+                } else {
+                    try processChange()
+                }
             }
         } catch let error as PhotosLibraryError {
             throw error

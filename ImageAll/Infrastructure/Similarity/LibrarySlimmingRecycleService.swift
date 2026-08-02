@@ -1,5 +1,71 @@
 import Foundation
 import GRDB
+import OSLog
+
+private let librarySlimmingRecyclePerformanceLogger = Logger(
+    subsystem: "com.gwlee.ImageAll",
+    category: "RecyclePerformance"
+)
+
+private final class RecycleMoveProgressReporter: @unchecked Sendable {
+    private let lock = NSLock()
+    private let totalAssetCount: Int
+    private let totalFileBytes: Int64
+    private let handler: LibrarySlimmingRecycleMoveProgressHandler
+    private var completedAssetCount = 0
+    private var copiedBytes: Int64 = 0
+
+    init(
+        totalAssetCount: Int,
+        totalFileBytes: Int64,
+        handler: @escaping LibrarySlimmingRecycleMoveProgressHandler
+    ) {
+        self.totalAssetCount = max(0, totalAssetCount)
+        self.totalFileBytes = max(0, totalFileBytes)
+        self.handler = handler
+    }
+
+    func report(_ phase: LibrarySlimmingRecycleMovePhase) {
+        handler(snapshot(phase: phase))
+    }
+
+    func recordCopiedBytes(_ byteCount: Int64) {
+        lock.lock()
+        copiedBytes = min(totalFileBytes, copiedBytes + max(0, byteCount))
+        let progress = snapshotLocked(phase: .copying)
+        lock.unlock()
+        handler(progress)
+    }
+
+    func recordCompletedAsset() {
+        lock.lock()
+        completedAssetCount = min(totalAssetCount, completedAssetCount + 1)
+        let progress = snapshotLocked(phase: .completedAsset)
+        lock.unlock()
+        handler(progress)
+    }
+
+    private func snapshot(phase: LibrarySlimmingRecycleMovePhase)
+        -> LibrarySlimmingRecycleMoveProgress
+    {
+        lock.lock()
+        let progress = snapshotLocked(phase: phase)
+        lock.unlock()
+        return progress
+    }
+
+    private func snapshotLocked(phase: LibrarySlimmingRecycleMovePhase)
+        -> LibrarySlimmingRecycleMoveProgress
+    {
+        LibrarySlimmingRecycleMoveProgress(
+            phase: phase,
+            completedAssetCount: completedAssetCount,
+            totalAssetCount: totalAssetCount,
+            copiedBytes: copiedBytes,
+            totalFileBytes: totalFileBytes
+        )
+    }
+}
 
 private struct PhotosMutationAttemptFailure: Error {
     let diagnostic: PhotosLibraryMutationFailureDiagnostic
@@ -365,23 +431,43 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
         assetIDs: [UUID],
         onProgress: @escaping LibrarySlimmingRecycleMoveProgressHandler
     ) throws -> LibrarySlimmingRecycleMoveOutcome {
+        let reporter = RecycleMoveProgressReporter(
+            totalAssetCount: assetIDs.count,
+            totalFileBytes: (try? estimatedTotalFileBytes(assetIDs: assetIDs)) ?? 0,
+            handler: onProgress
+        )
+        let startedAt = DispatchTime.now().uptimeNanoseconds
+        defer {
+            let elapsedMs = Double(DispatchTime.now().uptimeNanoseconds - startedAt) / 1_000_000
+            librarySlimmingRecyclePerformanceLogger.notice(
+                "batch_completed assets=\(assetIDs.count, privacy: .public) elapsed_ms=\(elapsedMs, privacy: .public)"
+            )
+        }
         if let interactiveIOGate {
-            return try interactiveIOGate.withInteractiveWork {
+            return try interactiveIOGate.withInteractiveWork(
+                onWaitingForBackground: {
+                    reporter.report(.waitingForBackgroundIO)
+                },
+                onReady: {
+                    reporter.report(.preparing)
+                }
+            ) {
                 try moveAssetsToRecycleWithInteractivePriority(
                     assetIDs: assetIDs,
-                    onProgress: onProgress
+                    reporter: reporter
                 )
             }
         }
+        reporter.report(.preparing)
         return try moveAssetsToRecycleWithInteractivePriority(
             assetIDs: assetIDs,
-            onProgress: onProgress
+            reporter: reporter
         )
     }
 
     private func moveAssetsToRecycleWithInteractivePriority(
         assetIDs: [UUID],
-        onProgress: @escaping LibrarySlimmingRecycleMoveProgressHandler
+        reporter: RecycleMoveProgressReporter
     ) throws -> LibrarySlimmingRecycleMoveOutcome {
         var outcome = LibrarySlimmingRecycleMoveOutcome(
             recycledEntryIDs: [],
@@ -396,18 +482,6 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
         )
         try quarantineIO.ensureQuarantineRoot(at: quarantineRootURL)
 
-        let totalAssetCount = assetIDs.count
-        var completedAssetCount = 0
-        func reportCompleted(_ count: Int = 1) {
-            completedAssetCount = min(totalAssetCount, completedAssetCount + count)
-            onProgress(
-                LibrarySlimmingRecycleMoveProgress(
-                    completedAssetCount: completedAssetCount,
-                    totalAssetCount: totalAssetCount
-                )
-            )
-        }
-
         var photosAssets: [AssetSnapshot] = []
         for assetID in assetIDs {
             var reachedTerminalOutcome = true
@@ -420,7 +494,9 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
                 }
                 switch asset.locatorKind {
                 case AssetLocatorKind.file.rawValue:
-                    outcome.recycledEntryIDs.append(try recycleFileAsset(asset))
+                    outcome.recycledEntryIDs.append(
+                        try recycleFileAsset(asset, reporter: reporter)
+                    )
                 case AssetLocatorKind.photos.rawValue:
                     guard let localIdentifier = asset.photosLocalIdentifier,
                           !localIdentifier.isEmpty
@@ -458,13 +534,14 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
                 outcome.failedAssetIDs.append(assetID)
             }
             if reachedTerminalOutcome {
-                reportCompleted()
+                reporter.recordCompletedAsset()
             }
         }
         if !photosAssets.isEmpty {
             let photosAssetIDs = photosAssets.map(\.assetID)
             var reachedTerminalOutcome = true
             do {
+                reporter.report(.photosSystemMutation)
                 outcome.recycledEntryIDs.append(
                     contentsOf: try recyclePhotosAssets(photosAssets)
                 )
@@ -491,7 +568,9 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
                 outcome.failedAssetIDs.append(contentsOf: photosAssetIDs)
             }
             if reachedTerminalOutcome {
-                reportCompleted(photosAssetIDs.count)
+                for _ in photosAssetIDs {
+                    reporter.recordCompletedAsset()
+                }
             }
         }
         return outcome
@@ -960,7 +1039,10 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
         let purgeAfterMs: Int64
     }
 
-    private func recycleFileAsset(_ asset: AssetSnapshot) throws -> UUID {
+    private func recycleFileAsset(
+        _ asset: AssetSnapshot,
+        reporter: RecycleMoveProgressReporter
+    ) throws -> UUID {
         guard let relativePath = asset.relativePath else {
             throw LibrarySlimmingRecycleError.invalidState
         }
@@ -1012,7 +1094,22 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
 
         do {
             try mutationAccess.withWritableSourceRoot(sourceID: asset.sourceID) { sourceRoot in
-                try quarantineIO.moveIntoQuarantine(
+                var instrumentedIO = quarantineIO
+                let existingStarted = instrumentedIO.onPhaseStarted
+                let existingCompleted = instrumentedIO.onPhaseCompleted
+                let existingBytesCopied = instrumentedIO.onBytesCopied
+                instrumentedIO.onPhaseStarted = { phase in
+                    existingStarted(phase)
+                    reporter.report(Self.recycleMovePhase(for: phase))
+                }
+                instrumentedIO.onPhaseCompleted = { phase, elapsedMs in
+                    existingCompleted(phase, elapsedMs)
+                }
+                instrumentedIO.onBytesCopied = { copiedBytes in
+                    existingBytesCopied(copiedBytes)
+                    reporter.recordCopiedBytes(copiedBytes)
+                }
+                try instrumentedIO.moveIntoQuarantine(
                     sourceRootURL: sourceRoot,
                     sourceRelativePath: relativePath,
                     quarantineRootURL: quarantineRootURL,
@@ -1067,6 +1164,53 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
             )
         }
         return entryID
+    }
+
+    private static func recycleMovePhase(
+        for phase: FolderQuarantineIOPhase
+    ) -> LibrarySlimmingRecycleMovePhase {
+        switch phase {
+        case .sourceInitialHash, .sourceFinalVerification:
+            .verifyingSource
+        case .copy:
+            .copying
+        case .destinationSync, .destinationDirectorySync:
+            .syncingDestination
+        case .destinationHash:
+            .verifyingDestination
+        case .unlinkSource:
+            .deletingSource
+        case .sourceDirectorySync:
+            .syncingSourceDirectory
+        }
+    }
+
+    private func estimatedTotalFileBytes(assetIDs: [UUID]) throws -> Int64 {
+        let keys = assetIDs.map { $0.uuidString.lowercased() }
+        guard !keys.isEmpty else { return 0 }
+        return try database.pool.read { db in
+            var total: Int64 = 0
+            for chunkStart in stride(from: 0, to: keys.count, by: 500) {
+                let chunkEnd = min(chunkStart + 500, keys.count)
+                let chunk = Array(keys[chunkStart ..< chunkEnd])
+                let placeholders = Array(repeating: "?", count: chunk.count)
+                    .joined(separator: ", ")
+                let subtotal = try Int64.fetchOne(
+                    db,
+                    sql: """
+                    SELECT COALESCE(SUM(f.size_bytes), 0)
+                    FROM asset AS a
+                    JOIN file_fingerprint AS f ON f.asset_id = a.id
+                    WHERE a.id IN (\(placeholders))
+                      AND a.locator_kind = 'file'
+                    """,
+                    arguments: StatementArguments(chunk)
+                ) ?? 0
+                let addition = total.addingReportingOverflow(max(0, subtotal))
+                total = addition.overflow ? Int64.max : addition.partialValue
+            }
+            return total
+        }
     }
 
     private func recyclePhotosAssets(_ assets: [AssetSnapshot]) throws -> [UUID] {
