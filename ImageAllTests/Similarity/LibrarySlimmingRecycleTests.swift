@@ -1712,6 +1712,63 @@ final class LibrarySlimmingRecycleTests: XCTestCase {
         XCTAssertTrue(try service.listRecycledEntries().isEmpty)
     }
 
+    func testPhotosSystemMutationFailurePersistsSafeDiagnostic() throws {
+        let env = try RecycleTestEnv(label: #function)
+        defer { env.cleanup() }
+        let photosID = try env.seedPhotosAsset(localIdentifier: "diagnostic-photo")
+        let fake = FakePhotosLibraryMutationPort()
+        fake.presenceByID["diagnostic-photo"] = .available
+        let diagnostic = PhotosLibraryMutationFailureDiagnostic(
+            category: .libraryUnavailable,
+            domain: "PHPhotosErrorDomain",
+            code: 3114
+        )
+        fake.moveError = .systemChangeFailed(diagnostic)
+        let service = env.makeRecycleService(photosMutation: fake)
+
+        let outcome = try service.moveAssetsToRecycle(assetIDs: [photosID])
+
+        XCTAssertEqual(outcome.failedAssetIDs, [photosID])
+        XCTAssertEqual(outcome.photosMutationFailedAssetIDs, [photosID])
+        XCTAssertEqual(outcome.photosMutationFailureCategories, [.libraryUnavailable])
+        XCTAssertEqual(outcome.photosMutationFailureCodes, ["PHPhotosErrorDomain#3114"])
+        let persistedCode = try env.database.pool.read { db in
+            try String.fetchOne(
+                db,
+                sql: "SELECT error_code FROM recycle_entry WHERE asset_id = ?",
+                arguments: [photosID.uuidString.lowercased()]
+            )
+        }
+        XCTAssertEqual(
+            persistedCode,
+            "photosMutationFailed.libraryUnavailable.PHPhotosErrorDomain.3114"
+        )
+    }
+
+    func testPhotosAssetNotFoundIsReportedAsSourceChanged() throws {
+        let env = try RecycleTestEnv(label: #function)
+        defer { env.cleanup() }
+        let photosID = try env.seedPhotosAsset(localIdentifier: "stale-photo")
+        let fake = FakePhotosLibraryMutationPort()
+        fake.presenceByID["stale-photo"] = .available
+        fake.moveError = .assetNotFound
+        let service = env.makeRecycleService(photosMutation: fake)
+
+        let outcome = try service.moveAssetsToRecycle(assetIDs: [photosID])
+
+        XCTAssertEqual(outcome.failedAssetIDs, [photosID])
+        XCTAssertEqual(outcome.sourceChangedAssetIDs, [photosID])
+        XCTAssertTrue(outcome.photosMutationFailedAssetIDs.isEmpty)
+        let persistedCode = try env.database.pool.read { db in
+            try String.fetchOne(
+                db,
+                sql: "SELECT error_code FROM recycle_entry WHERE asset_id = ?",
+                arguments: [photosID.uuidString.lowercased()]
+            )
+        }
+        XCTAssertEqual(persistedCode, "photosAssetNotFound")
+    }
+
     func testRecycleRejectsHistoricalPhotosLocatorBeforePhotoKitMutation() throws {
         let env = try RecycleTestEnv(label: #function)
         defer { env.cleanup() }
@@ -2456,6 +2513,7 @@ private final class FakePhotosLibraryMutationPort: PhotosLibraryMutationPort, @u
     private(set) var moveRequestBatches: [[String]] = []
     private(set) var presenceRequestBatches: [[String]] = []
     var reportedMovedIdentifiers: [String]?
+    var moveError: PhotosLibraryMutationError?
 
     func authorizationState() -> PhotosAuthorizationState {
         authorization
@@ -2470,6 +2528,9 @@ private final class FakePhotosLibraryMutationPort: PhotosLibraryMutationPort, @u
             throw PhotosLibraryMutationError.authorizationDenied
         }
         moveRequestBatches.append(localIdentifiers)
+        if let moveError {
+            throw moveError
+        }
         for id in localIdentifiers {
             guard presenceByID[id] == .available else {
                 throw PhotosLibraryMutationError.assetNotFound

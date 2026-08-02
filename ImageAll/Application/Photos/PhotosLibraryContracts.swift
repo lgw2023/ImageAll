@@ -159,12 +159,41 @@ enum PhotosAssetPresence: Equatable, Sendable {
     case missing
 }
 
+enum PhotosLibraryMutationFailureCategory: String, Equatable, Sendable {
+    case userCancelled
+    case authorization
+    case libraryUnavailable
+    case unsupported
+    case system
+}
+
+struct PhotosLibraryMutationFailureDiagnostic: Equatable, Sendable {
+    let category: PhotosLibraryMutationFailureCategory
+    let domain: String
+    let code: Int
+
+    var persistenceCode: String {
+        let sanitizedDomain = String(domain.map { character in
+            character.isLetter || character.isNumber || ".-_".contains(character)
+                ? character
+                : "-"
+        }.prefix(96))
+        let stableDomain = sanitizedDomain.isEmpty ? "unknown" : sanitizedDomain
+        return "photosMutationFailed.\(category.rawValue).\(stableDomain).\(code)"
+    }
+
+    var displayCode: String {
+        "\(domain.isEmpty ? "unknown" : domain)#\(code)"
+    }
+}
+
 enum PhotosLibraryMutationError: Error, Equatable, Sendable {
     case authorizationDenied
     case authorizationRestricted
     case notDetermined
     case assetNotFound
     case changeFailed
+    case systemChangeFailed(PhotosLibraryMutationFailureDiagnostic)
 }
 
 /// Sole application contract for PhotoKit write operations used by Library Slimming.

@@ -824,12 +824,22 @@ struct LibrarySlimmingWorkspaceView: View {
     }
 
     private func statusBanner(_ message: String) -> some View {
-        Text(message)
-            .font(.callout)
-            .foregroundStyle(.secondary)
+        let isFailure = message.contains("失败") || message.hasPrefix("未移动")
+        return HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Image(systemName: isFailure ? "exclamationmark.triangle.fill" : "info.circle.fill")
+            Text(message)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+            .font(.callout.weight(isFailure ? .semibold : .regular))
+            .foregroundStyle(isFailure ? Color.red : Color.primary)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 16)
-            .padding(.vertical, 8)
+            .padding(.vertical, 10)
+            .background(
+                (isFailure ? Color.red : Color.accentColor).opacity(0.1)
+            )
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel(message)
     }
 
     private func analysisNavigatorWidth(availableWidth: CGFloat) -> CGFloat {

@@ -1,6 +1,10 @@
 import Foundation
 import GRDB
 
+private struct PhotosMutationAttemptFailure: Error {
+    let diagnostic: PhotosLibraryMutationFailureDiagnostic
+}
+
 struct AppOwnedAssetPixelCachePurger: Sendable {
     let database: CatalogDatabase
     let derivedCachesDirectory: URL
@@ -471,6 +475,18 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
             } catch LibrarySlimmingRecycleError.photosMutationFailed {
                 outcome.failedAssetIDs.append(contentsOf: photosAssetIDs)
                 outcome.photosMutationFailedAssetIDs.append(contentsOf: photosAssetIDs)
+            } catch LibrarySlimmingRecycleError.sourceChanged {
+                outcome.failedAssetIDs.append(contentsOf: photosAssetIDs)
+                outcome.sourceChangedAssetIDs.append(contentsOf: photosAssetIDs)
+            } catch let failure as PhotosMutationAttemptFailure {
+                outcome.failedAssetIDs.append(contentsOf: photosAssetIDs)
+                outcome.photosMutationFailedAssetIDs.append(contentsOf: photosAssetIDs)
+                outcome.photosMutationFailureCategories.append(
+                    failure.diagnostic.category
+                )
+                outcome.photosMutationFailureCodes.append(
+                    failure.diagnostic.displayCode
+                )
             } catch {
                 outcome.failedAssetIDs.append(contentsOf: photosAssetIDs)
             }
@@ -1122,11 +1138,46 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
                 )
             }
             throw LibrarySlimmingRecycleError.photosAuthorizationRequired
-        } catch {
+        } catch PhotosLibraryMutationError.assetNotFound {
             for pending in pendingEntries {
-                try markFailed(entryID: pending.entryID, code: "photosMutationFailed")
+                try markFailed(entryID: pending.entryID, code: "photosAssetNotFound")
             }
-            throw LibrarySlimmingRecycleError.photosMutationFailed
+            throw LibrarySlimmingRecycleError.sourceChanged
+        } catch let PhotosLibraryMutationError.systemChangeFailed(diagnostic) {
+            for pending in pendingEntries {
+                try markFailed(
+                    entryID: pending.entryID,
+                    code: diagnostic.persistenceCode
+                )
+            }
+            throw PhotosMutationAttemptFailure(diagnostic: diagnostic)
+        } catch PhotosLibraryMutationError.changeFailed {
+            let diagnostic = PhotosLibraryMutationFailureDiagnostic(
+                category: .system,
+                domain: "ImageAll.PhotosMutation",
+                code: 1
+            )
+            for pending in pendingEntries {
+                try markFailed(
+                    entryID: pending.entryID,
+                    code: diagnostic.persistenceCode
+                )
+            }
+            throw PhotosMutationAttemptFailure(diagnostic: diagnostic)
+        } catch {
+            let systemError = error as NSError
+            let diagnostic = PhotosLibraryMutationFailureDiagnostic(
+                category: .system,
+                domain: systemError.domain,
+                code: systemError.code
+            )
+            for pending in pendingEntries {
+                try markFailed(
+                    entryID: pending.entryID,
+                    code: diagnostic.persistenceCode
+                )
+            }
+            throw PhotosMutationAttemptFailure(diagnostic: diagnostic)
         }
 
         try database.pool.write { db in

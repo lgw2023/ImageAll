@@ -380,6 +380,10 @@ struct LibrarySlimmingRecycleMoveOutcome: Sendable, Equatable {
     var mutationAuthorizationInvalidAssetIDs: [UUID] = []
     /// PhotoKit soft-delete failed after authorization was available (cancel, changeFailed, etc.).
     var photosMutationFailedAssetIDs: [UUID] = []
+    /// Safe aggregate PhotoKit failure categories for user-facing recovery guidance.
+    var photosMutationFailureCategories: [PhotosLibraryMutationFailureCategory] = []
+    /// Safe system domain/code pairs; never contains Photos local identifiers or paths.
+    var photosMutationFailureCodes: [String] = []
     /// The source no longer matches the identity captured by the analysis snapshot.
     var sourceChangedAssetIDs: [UUID] = []
 

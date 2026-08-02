@@ -1,10 +1,16 @@
 import AppKit
 import Foundation
+import OSLog
 import Photos
 
 /// The only production module allowed to call PhotoKit mutation APIs
 /// (`PHAssetChangeRequest` / `performChanges` / `deleteAssets`).
 final class PhotoKitPhotosLibraryMutationAdapter: PhotosLibraryMutationPort, @unchecked Sendable {
+    private static let logger = Logger(
+        subsystem: "com.gwlee.ImageAll",
+        category: "PhotosMutation"
+    )
+
     func authorizationState() -> PhotosAuthorizationState {
         Self.mapAuthorizationForMutation(
             PHPhotoLibrary.authorizationStatus(for: .readWrite)
@@ -13,7 +19,7 @@ final class PhotoKitPhotosLibraryMutationAdapter: PhotosLibraryMutationPort, @un
 
     func requestAuthorization() async -> PhotosAuthorizationState {
         await MainActor.run {
-            NSApp?.activate(ignoringOtherApps: true)
+            Self.activateAppForSystemPrompt()
         }
         let status = await PHPhotoLibrary.requestAuthorization(for: .readWrite)
         return Self.mapAuthorizationForMutation(status)
@@ -33,23 +39,20 @@ final class PhotoKitPhotosLibraryMutationAdapter: PhotosLibraryMutationPort, @un
         guard fetchedIdentifiers == Set(identifiers) else {
             throw PhotosLibraryMutationError.assetNotFound
         }
-        // Bring ImageAll forward so the system delete confirmation is visible.
-        // Use async activate when off the main thread to avoid nested sync deadlocks.
-        if Thread.isMainThread {
-            MainActor.assumeIsolated {
-                NSApp?.activate(ignoringOtherApps: true)
-            }
-        } else {
-            DispatchQueue.main.async {
-                NSApp?.activate(ignoringOtherApps: true)
-            }
-        }
+        // PhotoKit owns the confirmation alert. Make the App key before submitting
+        // the synchronous background mutation so the alert cannot race an async
+        // activation request and end up invisible behind another window.
+        activateAppForSystemPromptAndWait()
         do {
             try PHPhotoLibrary.shared().performChangesAndWait {
                 PHAssetChangeRequest.deleteAssets(assets as NSArray)
             }
         } catch {
-            throw PhotosLibraryMutationError.changeFailed
+            let diagnostic = Self.mapMutationFailure(error as NSError)
+            Self.logger.error(
+                "PhotoKit mutation failed category=\(diagnostic.category.rawValue, privacy: .public) domain=\(diagnostic.domain, privacy: .public) code=\(diagnostic.code, privacy: .public)"
+            )
+            throw PhotosLibraryMutationError.systemChangeFailed(diagnostic)
         }
         return identifiers
     }
@@ -100,6 +103,57 @@ final class PhotoKitPhotosLibraryMutationAdapter: PhotosLibraryMutationPort, @un
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }))
             .sorted()
+    }
+
+    private func activateAppForSystemPromptAndWait() {
+        if Thread.isMainThread {
+            MainActor.assumeIsolated {
+                Self.activateAppForSystemPrompt()
+            }
+        } else {
+            DispatchQueue.main.sync {
+                MainActor.assumeIsolated {
+                    Self.activateAppForSystemPrompt()
+                }
+            }
+        }
+    }
+
+    @MainActor
+    private static func activateAppForSystemPrompt() {
+        NSApp?.activate(ignoringOtherApps: true)
+        NSApp?.mainWindow?.makeKeyAndOrderFront(nil)
+    }
+
+    static func mapMutationFailure(
+        _ error: NSError
+    ) -> PhotosLibraryMutationFailureDiagnostic {
+        let category: PhotosLibraryMutationFailureCategory
+        if error.domain == PHPhotosError.errorDomain,
+           let photosCode = PHPhotosError.Code(rawValue: error.code)
+        {
+            switch photosCode {
+            case .userCancelled:
+                category = .userCancelled
+            case .accessRestricted, .accessUserDenied:
+                category = .authorization
+            case .libraryVolumeOffline,
+                    .relinquishingLibraryBundleToWriter,
+                    .switchingSystemPhotoLibrary:
+                category = .libraryUnavailable
+            case .changeNotSupported, .requestNotSupportedForAsset:
+                category = .unsupported
+            default:
+                category = .system
+            }
+        } else {
+            category = .system
+        }
+        return PhotosLibraryMutationFailureDiagnostic(
+            category: category,
+            domain: error.domain,
+            code: error.code
+        )
     }
 
     static func mapAuthorizationForMutation(

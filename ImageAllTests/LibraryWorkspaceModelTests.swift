@@ -13,6 +13,28 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         )
     }
 
+    func testPhotoKitMutationFailureMappingKeepsSafeSystemDiagnostics() {
+        let cancellation = PhotoKitPhotosLibraryMutationAdapter.mapMutationFailure(
+            NSError(
+                domain: PHPhotosError.errorDomain,
+                code: PHPhotosError.Code.userCancelled.rawValue
+            )
+        )
+        XCTAssertEqual(cancellation.category, .userCancelled)
+        XCTAssertEqual(cancellation.domain, PHPhotosError.errorDomain)
+        XCTAssertEqual(cancellation.code, PHPhotosError.Code.userCancelled.rawValue)
+        XCTAssertTrue(cancellation.persistenceCode.hasPrefix("photosMutationFailed.userCancelled."))
+
+        let unknown = PhotoKitPhotosLibraryMutationAdapter.mapMutationFailure(
+            NSError(domain: "example unsafe/domain", code: 42)
+        )
+        XCTAssertEqual(unknown.category, .system)
+        XCTAssertEqual(
+            unknown.persistenceCode,
+            "photosMutationFailed.system.example-unsafe-domain.42"
+        )
+    }
+
     func testReviewKeyboardShortcutRecognizesPlainPXUAndRejectsModifiedInput() {
         XCTAssertEqual(
             ReviewKeyboardShortcutAction.resolve(
@@ -4883,7 +4905,11 @@ final class LibraryWorkspaceModelTests: XCTestCase {
 
         XCTAssertTrue(model.isMutatingLibrarySlimmingRecycle)
         XCTAssertEqual(model.librarySlimmingRecyclePendingAssetIDs, [asset.assetID])
-        XCTAssertTrue(model.librarySlimmingStatusMessage?.contains("正在安全移入回收站") == true)
+        XCTAssertEqual(model.librarySlimmingStatusMessage, "正在安全移入回收站…1/1")
+        XCTAssertEqual(
+            model.librarySlimmingMoveToRecycleDisabledReason,
+            "正在移入回收站…"
+        )
 
         recycle.releaseBlockedMove()
         await moveTask.value
@@ -6118,7 +6144,9 @@ final class LibraryWorkspaceModelTests: XCTestCase {
                     authorizationRequiredSourceIDs: [],
                     authorizationRequiredAssetIDs: [],
                     authorizationDeniedPhotosAssetIDs: [],
-                    photosMutationFailedAssetIDs: [asset.assetID]
+                    photosMutationFailedAssetIDs: [asset.assetID],
+                    photosMutationFailureCategories: [.system],
+                    photosMutationFailureCodes: ["PHPhotosErrorDomain#-1"]
                 ),
             ]
         )
@@ -6150,7 +6178,7 @@ final class LibraryWorkspaceModelTests: XCTestCase {
 
         XCTAssertEqual(
             model.librarySlimmingStatusMessage,
-            "失败 1 张（未能移入系统「最近删除」；若已取消系统确认请重试，或从左侧来源菜单请求照片写入权限）"
+            "失败 1 张（系统照片服务未完成操作，照片仍保留；请重试，若持续失败请打开「照片」App确认系统图库可用；诊断码 PHPhotosErrorDomain#-1）"
         )
         XCTAssertFalse(
             model.librarySlimmingStatusMessage?.contains("更新回收权限") == true

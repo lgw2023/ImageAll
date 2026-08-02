@@ -2013,11 +2013,11 @@ final class LibraryWorkspaceModel: ObservableObject {
         if !supportsLibrarySlimmingRecycle {
             return "回收站服务未就绪"
         }
-        if selectedLibrarySlimmingMemberIDs.isEmpty {
-            return "请先选择要移入回收站的照片"
-        }
         if isMutatingLibrarySlimmingRecycle {
             return "正在移入回收站…"
+        }
+        if selectedLibrarySlimmingMemberIDs.isEmpty {
+            return "请先选择要移入回收站的照片"
         }
         return nil
     }
@@ -2257,6 +2257,12 @@ final class LibraryWorkspaceModel: ObservableObject {
                         outcome.photosMutationFailedAssetIDs.append(
                             contentsOf: retry.photosMutationFailedAssetIDs
                         )
+                        outcome.photosMutationFailureCategories.append(
+                            contentsOf: retry.photosMutationFailureCategories
+                        )
+                        outcome.photosMutationFailureCodes.append(
+                            contentsOf: retry.photosMutationFailureCodes
+                        )
                         outcome.sourceChangedAssetIDs.append(
                             contentsOf: retry.sourceChangedAssetIDs
                         )
@@ -2336,6 +2342,12 @@ final class LibraryWorkspaceModel: ObservableObject {
                         )
                         outcome.photosMutationFailedAssetIDs.append(
                             contentsOf: retry.photosMutationFailedAssetIDs
+                        )
+                        outcome.photosMutationFailureCategories.append(
+                            contentsOf: retry.photosMutationFailureCategories
+                        )
+                        outcome.photosMutationFailureCodes.append(
+                            contentsOf: retry.photosMutationFailureCodes
                         )
                         outcome.sourceChangedAssetIDs.append(
                             contentsOf: retry.sourceChangedAssetIDs
@@ -2422,9 +2434,7 @@ final class LibraryWorkspaceModel: ObservableObject {
                           outcome.authorizationDeniedPhotosAssetIDs.isEmpty,
                           outcome.sourceChangedAssetIDs.isEmpty
                 {
-                    parts.append(
-                        "失败 \(outcome.failedAssetIDs.count) 张（未能移入系统「最近删除」；若已取消系统确认请重试，或从左侧来源菜单请求照片写入权限）"
-                    )
+                    parts.append(photosMutationFailureMessage(for: outcome))
                 } else {
                     parts.append("失败 \(outcome.failedAssetIDs.count) 张")
                 }
@@ -2516,10 +2526,36 @@ final class LibraryWorkspaceModel: ObservableObject {
                     )
                 } else if self.isMutatingLibrarySlimmingRecycle {
                     self.librarySlimmingStatusMessage =
-                        "正在安全移入回收站…(completed)/(overallTotalAssetCount)"
+                        "正在安全移入回收站…\(completed)/\(overallTotalAssetCount)"
                 }
             }
         }
+    }
+
+    private func photosMutationFailureMessage(
+        for outcome: LibrarySlimmingRecycleMoveOutcome
+    ) -> String {
+        let count = outcome.failedAssetIDs.count
+        let categories = outcome.photosMutationFailureCategories
+        if !categories.isEmpty,
+           categories.allSatisfy({ $0 == .userCancelled })
+        {
+            return "失败 \(count) 张（已取消系统删除确认，照片未移动）"
+        }
+        if categories.contains(.authorization) {
+            return "失败 \(count) 张（系统拒绝照片写入；请在系统设置中允许 ImageAll 完全访问照片库后重试）"
+        }
+        if categories.contains(.libraryUnavailable) {
+            return "失败 \(count) 张（系统照片库暂不可用；请打开「照片」App，确认系统图库已载入后重试）"
+        }
+        if categories.contains(.unsupported) {
+            return "失败 \(count) 张（当前照片或系统不支持这次删除请求；请刷新来源后重试）"
+        }
+        let diagnosticCodes = Array(Set(outcome.photosMutationFailureCodes)).sorted()
+        let diagnostic = diagnosticCodes.isEmpty
+            ? ""
+            : "；诊断码 \(diagnosticCodes.joined(separator: ", "))"
+        return "失败 \(count) 张（系统照片服务未完成操作，照片仍保留；请重试，若持续失败请打开「照片」App确认系统图库可用\(diagnostic)）"
     }
 
     private func completedLibrarySlimmingRecycleAssetCount(
