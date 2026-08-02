@@ -667,6 +667,12 @@ final class LibrarySourceOrderPreferences {
         defaults.set(ids.map(\.uuidString), forKey: key)
     }
 
+    func remove(_ sourceID: UUID) {
+        var ids = loadIDs()
+        ids.removeAll { $0 == sourceID }
+        defaults.set(ids.map(\.uuidString), forKey: key)
+    }
+
     private func loadIDs() -> [UUID] {
         (defaults.stringArray(forKey: key) ?? []).compactMap(UUID.init(uuidString:))
     }
@@ -4865,6 +4871,67 @@ final class LibraryWorkspaceModel: ObservableObject {
         } catch {
             notice = .sourceActionFailed
         }
+    }
+
+    func deleteSource(_ sourceID: UUID) async -> Bool {
+        guard !isBusy,
+              let source = sources.first(where: { $0.id == sourceID })
+        else { return false }
+        notice = nil
+        stopSourceThumbnailPrewarmForDeletion(sourceID: sourceID)
+        let service = service
+        do {
+            let outcome = try await service.deleteLibrarySource(sourceID: sourceID)
+            selectedSourceID = nil
+            sourceOrderPreferences.remove(sourceID)
+            sourceOrderRevision &+= 1
+            if var selectedSourceIDs = librarySlimmingCatalogSourceIDs {
+                selectedSourceIDs.remove(sourceID)
+                librarySlimmingCatalogSourceIDs = selectedSourceIDs
+            }
+            librarySlimmingCatalogRefreshSourceIDs.remove(sourceID)
+            sourceSimilarityIndexStatus = nil
+            assetPageRequestID = UUID()
+            reviewPageRequestID = UUID()
+            thumbnailLoadEpoch &+= 1
+            thumbnailDataCache.removeAll()
+            thumbnailCacheVersions.removeAll()
+            thumbnailCacheOrder.removeAll()
+            selectedAssetIDs = []
+            selectedReviewItemID = nil
+            isSinglePhotoPresented = false
+            inspectorDetail = nil
+            inspectorTags = []
+            await reload(runPendingJobs: false)
+            notice = .sourceDeleted(
+                displayName: source.displayName,
+                assetCount: outcome.deletedAssetCount
+            )
+            return true
+        } catch let error as DeleteLibrarySourceError {
+            if case let .unresolvedRecycleEntries(count) = error {
+                notice = .sourceDeletionBlockedByRecycle(itemCount: count)
+            } else {
+                notice = .sourceActionFailed
+            }
+            return false
+        } catch {
+            notice = .sourceActionFailed
+            return false
+        }
+    }
+
+    private func stopSourceThumbnailPrewarmForDeletion(sourceID: UUID) {
+        if sourceThumbnailPrewarmProgress?.sourceID == sourceID {
+            sourceThumbnailPrewarmGeneration &+= 1
+            sourceThumbnailPrewarmTask?.cancel()
+            sourceThumbnailPrewarmTask = nil
+            sourceThumbnailPrewarmProgress = nil
+        }
+        if suspendedSourceThumbnailPrewarm?.sourceID == sourceID {
+            suspendedSourceThumbnailPrewarm = nil
+        }
+        idleThumbnailPrewarmController?.noteUserInteraction()
     }
 
     func rescan() async {
@@ -9366,7 +9433,7 @@ struct LibraryWorkspaceView: View {
     @State private var selection: LibrarySidebarSelection? = .all
     @State private var searchText = ""
     @State private var newTagName = ""
-    @State private var sourcePendingDisable: LibrarySourceSummary?
+    @State private var sourcePendingDeletion: LibrarySourceSummary?
     @State private var photosSourcePendingRebind: LibrarySourceSummary?
     @State private var photosSourcePendingFullRepair: LibrarySourceSummary?
     @State private var tagPendingRename: TagListItem?
@@ -9463,25 +9530,29 @@ struct LibraryWorkspaceView: View {
             }
         }
         .confirmationDialog(
-            sourcePendingDisable.map { "停用“\($0.displayName)”来源？" } ?? "停用来源？",
+            sourcePendingDeletion.map { "从 ImageAll 删除“\($0.displayName)”？" } ?? "删除来源？",
             isPresented: Binding(
-                get: { sourcePendingDisable != nil },
-                set: { if !$0 { sourcePendingDisable = nil } }
+                get: { sourcePendingDeletion != nil },
+                set: { if !$0 { sourcePendingDeletion = nil } }
             ),
             titleVisibility: .visible,
-            presenting: sourcePendingDisable
+            presenting: sourcePendingDeletion
         ) { source in
-            Button("停用来源", role: .destructive) {
-                sourcePendingDisable = nil
-                Task { await model.disableSource(source.id) }
+            Button("删除来源", role: .destructive) {
+                sourcePendingDeletion = nil
+                Task {
+                    if await model.deleteSource(source.id) {
+                        selection = .all
+                    }
+                }
             }
-            .persistentHelp("停止扫描这个来源，但保留索引、人工标签和历史；不会修改原照片。")
+            .persistentHelp("删除这个来源及其照片在 ImageAll 中的记录、预览和原图缓存；不会删除原照片。")
             Button("取消", role: .cancel) {
-                sourcePendingDisable = nil
+                sourcePendingDeletion = nil
             }
-            .persistentHelp("关闭确认窗口并保持来源启用。")
+            .persistentHelp("关闭确认窗口，不删除任何内容。")
         } message: { _ in
-            Text("ImageAll 会停止该来源的扫描任务，但保留已索引的照片、人工标签和历史；原照片不会被修改。")
+            Text("该来源、照片索引、与这些照片直接关联的标签/审核/分析明细及预览/原图缓存会从 ImageAll 中删除，且无法在 App 内撤销。磁盘原文件或 Apple Photos 中的照片不会被修改或删除。")
         }
         .confirmationDialog(
             "连接当前系统照片图库？",
@@ -10910,14 +10981,11 @@ struct LibraryWorkspaceView: View {
 
             Divider()
 
-            Button("停用来源", role: .destructive) {
-                sourcePendingDisable = source
+            Button("删除来源…", role: .destructive) {
+                sourcePendingDeletion = source
             }
-            .disabled(
-                model.isBusy || source.state == .disabled ||
-                (source.kind == .photos && source.state == .unavailable)
-            )
-            .persistentHelp("停止扫描这个来源，但保留索引、人工标签和历史；不会修改原照片。")
+            .disabled(model.isBusy)
+            .persistentHelp("从 ImageAll 删除来源及其照片记录、预览和原图缓存；不会修改或删除原照片。")
         }
     }
 
@@ -12284,7 +12352,8 @@ struct LibraryWorkspaceView: View {
              .personalAdamWTagLibrarySuggestionsCompleted,
              .suggestionThresholdPruned,
              .tagBatchMutationApplied, .photosAlreadyConnected,
-             .photosSyncQueued, .photosFullRepairQueued:
+             .photosSyncQueued, .photosFullRepairQueued,
+             .sourceDeleted:
             "checkmark.circle"
         default:
             "exclamationmark.triangle"
@@ -12304,6 +12373,10 @@ struct LibraryWorkspaceView: View {
         case .tagMutationFailed: "标签操作未保存，请重试。"
         case .tagSelectionRefreshFailed: "标签已保存，但当前选择刷新失败；请重新选择照片后继续。"
         case .sourceActionFailed: "来源操作未完成。原照片没有被修改，请重试。"
+        case let .sourceDeletionBlockedByRecycle(itemCount):
+            "该来源还有 \(itemCount) 个未完成的回收站项目。请先在图库瘦身回收站中恢复或清理，再删除来源；原照片没有被修改。"
+        case let .sourceDeleted(displayName, assetCount):
+            "已从 ImageAll 删除“\(displayName)”及其 \(assetCount) 个照片记录；磁盘原文件或 Apple Photos 中的照片未被修改。"
         case .backgroundScanFailed: "后台扫描未完成，已索引的照片仍可继续浏览。"
         case .photosAuthorizationRequired: "ImageAll 当前没有照片访问权限。授权后请重新检查并同步。"
         case .reviewActionFailed: "建议任务操作未完成，请重试。"

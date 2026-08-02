@@ -132,8 +132,10 @@ Apple 明确要求成功开始访问后成对停止，否则会泄漏内核资�
 | 外置卷未挂载或根目录暂时不存在 | `unavailable` | 停止 watcher，暂停相关 Job，保留 locator |
 | bookmark 无法解析、scope 被拒绝或 stale bookmark 无法更新 | `authorizationRequired` | 停止访问，等待重新授权 |
 | 用户明确停用来源 | `disabled` | 停止 watcher与新任务，不删除 Source/Asset |
+| 用户确认删除来源（ADR-049） | 记录删除 | 先停用并收敛任务，再原子删除关联 Asset/事实与 Source；不修改原照片 |
 
-任何非 active 状态都不能释放 current locator，不能把全部资产标记为 missing，也不能清除人工标签。
+任何非 active 状态都不能隐式释放 current locator，不能把全部资产标记为 missing，也不能清除人工标签。
+只有 ADR-049 的显式删除确认可删除该来源的目录事实；未完成回收项目会阻断操作。
 
 ### 5.2 根目录验证
 

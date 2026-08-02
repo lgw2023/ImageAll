@@ -120,6 +120,8 @@ enum LibraryWorkspaceNotice: Equatable, Sendable {
     case tagMutationFailed
     case tagSelectionRefreshFailed
     case sourceActionFailed
+    case sourceDeletionBlockedByRecycle(itemCount: Int)
+    case sourceDeleted(displayName: String, assetCount: Int)
     case backgroundScanFailed
     case photosAuthorizationRequired
     case reviewActionFailed
@@ -380,6 +382,7 @@ protocol LibraryWorkspacePort: Sendable {
     func rebindPhotos(unavailableSourceID: UUID) async throws -> RebindPhotosOutcome
     func reauthorizeFolder(sourceID: UUID) async throws -> ReauthorizeFolderOutcome
     func disableFolderSource(sourceID: UUID) async throws -> DisableFolderOutcome
+    func deleteLibrarySource(sourceID: UUID) async throws -> DeleteLibrarySourceOutcome
     func enqueueReconcile(sourceIDs: [UUID]) throws
     func hasPendingCatalogReconcileJobs() throws -> Bool
     func sourceIsReconcileClean(sourceID: UUID) throws -> Bool

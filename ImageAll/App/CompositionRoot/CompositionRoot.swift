@@ -88,6 +88,11 @@ struct CompositionRoot {
         let photosAccess = PhotoKitPhotosLibraryAdapter()
         let photosMutation = PhotoKitPhotosLibraryMutationAdapter()
         let interactiveIOGate = InteractiveIOPriorityGate()
+        let appOwnedAssetPixelCachePurger = AppOwnedAssetPixelCachePurger(
+            database: runtime.database,
+            derivedCachesDirectory: runtime.paths.cachesDirectory,
+            photosOriginalCache: photosOriginalCache
+        )
         let librarySlimmingRecycle = LibrarySlimmingRecycleService(
             database: runtime.database,
             mutationAccess: FolderMutationAccessService(
@@ -98,11 +103,7 @@ struct CompositionRoot {
             clock: clock,
             jobQueue: runtime.jobQueue,
             photosMutation: photosMutation,
-            pixelCachePurger: AppOwnedAssetPixelCachePurger(
-                database: runtime.database,
-                derivedCachesDirectory: runtime.paths.cachesDirectory,
-                photosOriginalCache: photosOriginalCache
-            ),
+            pixelCachePurger: appOwnedAssetPixelCachePurger,
             interactiveIOGate: interactiveIOGate
         )
         let librarySlimmingMutationAuthorization = FolderMutationAuthorizationCoordinator(
@@ -340,6 +341,10 @@ struct CompositionRoot {
             personalizationReview: personalizationReview,
             derivedImageCache: derivedImages,
             photosOriginalCache: photosOriginalCache,
+            sourceDeletion: LibrarySourceDeletionService(
+                database: runtime.database,
+                cachePurger: appOwnedAssetPixelCachePurger
+            ),
             appStorageLocationController: appStorageLocationController,
             portableExportDestinationPicker: AppKitPortableExportDestinationPicker(),
             portableExportSourceIsolation: PortableExportSourceIsolationValidator(

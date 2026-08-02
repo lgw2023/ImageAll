@@ -13,3 +13,15 @@ enum ReauthorizeFolderOutcome: Sendable, Equatable {
 enum DisableFolderOutcome: Sendable, Equatable {
     case disabled(sourceID: UUID)
 }
+
+struct DeleteLibrarySourceOutcome: Sendable, Equatable {
+    let sourceID: UUID
+    let deletedAssetCount: Int
+}
+
+enum DeleteLibrarySourceError: Error, Sendable, Equatable {
+    case sourceNotFound
+    case unresolvedRecycleEntries(count: Int)
+    case cacheCleanupFailed
+    case persistenceFailure
+}

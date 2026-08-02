@@ -437,6 +437,140 @@ final class FolderDisableReauthorizeTests: XCTestCase {
         XCTAssertEqual(try FolderAuthorizationTestSupport.fetchJobSnapshot(database, jobID: runningID), runningBefore)
     }
 
+    func testDeleteLibrarySourceRemovesAppRecordsButLeavesOriginalFileUntouched() throws {
+        let database = try FolderAuthorizationTestSupport.makeDatabase()
+        let sourceID = UUID(uuidString: "20202020-2020-2020-2020-202020202020")!
+        let assetID = UUID(uuidString: "21212121-2121-2121-2121-212121212121")!
+        let tagID = UUID(uuidString: "22222222-2222-2222-2222-222222222222")!
+        let jobID = UUID(uuidString: "23232323-2323-2323-2323-232323232323")!
+        let root = try registry.makeRoot(label: "delete-source")
+        let originalURL = root.appendingPathComponent("photo.jpg")
+        let originalBytes = Data("original-photo-bytes".utf8)
+        try originalBytes.write(to: originalURL)
+        let bookmark = try FoundationSecurityScopedBookmarkAdapter().createReadOnlyBookmark(for: root)
+        try FolderAuthorizationTestSupport.insertFolderSource(
+            database: database,
+            sourceID: sourceID,
+            bookmark: bookmark,
+            state: .disabled
+        )
+        try FolderAuthorizationTestSupport.insertFolderAssetGraph(
+            database: database,
+            sourceID: sourceID,
+            assetID: assetID,
+            tagID: tagID
+        )
+        _ = try JobTestSupport.makeQueue(database: database).enqueue(
+            EnqueueJobCommand(
+                id: jobID,
+                kind: FolderReconcileJobFactory.kind,
+                payloadVersion: 1,
+                payload: try FolderReconcileJobFactory.makePayload(sourceID: sourceID),
+                sourceID: sourceID,
+                coalescingKey: FolderReconcileJobFactory.coalescingKey(sourceID: sourceID),
+                priority: 0,
+                maxAttempts: 5,
+                notBeforeMs: JobTestSupport.baseTimeMs
+            )
+        )
+        let purger = RecordingAssetCachePurger()
+        let service = LibrarySourceDeletionService(database: database, cachePurger: purger)
+
+        let preparation = try service.prepare(sourceID: sourceID)
+        let outcome = try service.delete(preparation: preparation)
+
+        XCTAssertEqual(
+            outcome,
+            DeleteLibrarySourceOutcome(sourceID: sourceID, deletedAssetCount: 1)
+        )
+        XCTAssertEqual(purger.assetIDs, [assetID])
+        XCTAssertEqual(try Data(contentsOf: originalURL), originalBytes)
+        try database.pool.read { db in
+            XCTAssertEqual(
+                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM source WHERE id = ?", arguments: [sourceID.uuidString.lowercased()]),
+                0
+            )
+            XCTAssertEqual(
+                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM asset WHERE id = ?", arguments: [assetID.uuidString.lowercased()]),
+                0
+            )
+            XCTAssertEqual(
+                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM asset_tag_decision WHERE asset_id = ?", arguments: [assetID.uuidString.lowercased()]),
+                0
+            )
+            XCTAssertEqual(
+                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM job WHERE id = ?", arguments: [jobID.uuidString.lowercased()]),
+                0
+            )
+            XCTAssertEqual(
+                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM tag WHERE id = ?", arguments: [tagID.uuidString.lowercased()]),
+                1,
+                "Global tag definitions are not owned by one source"
+            )
+        }
+    }
+
+    func testDeleteLibrarySourceRejectsUnresolvedRecycleEntryWithoutChangingCatalog() throws {
+        let database = try FolderAuthorizationTestSupport.makeDatabase()
+        let sourceID = UUID(uuidString: "24242424-2424-2424-2424-242424242424")!
+        let assetID = UUID(uuidString: "25252525-2525-2525-2525-252525252525")!
+        let tagID = UUID(uuidString: "26262626-2626-2626-2626-262626262626")!
+        let recycleID = UUID(uuidString: "27272727-2727-2727-2727-272727272727")!
+        let root = try registry.makeRoot(label: "delete-source-recycle-block")
+        let bookmark = try FoundationSecurityScopedBookmarkAdapter().createReadOnlyBookmark(for: root)
+        try FolderAuthorizationTestSupport.insertFolderSource(
+            database: database,
+            sourceID: sourceID,
+            bookmark: bookmark,
+            state: .disabled
+        )
+        try FolderAuthorizationTestSupport.insertFolderAssetGraph(
+            database: database,
+            sourceID: sourceID,
+            assetID: assetID,
+            tagID: tagID
+        )
+        try database.pool.write { db in
+            try db.execute(
+                sql: "UPDATE asset SET availability = 'recycled' WHERE id = ?",
+                arguments: [assetID.uuidString.lowercased()]
+            )
+            try db.execute(
+                sql: """
+                INSERT INTO recycle_entry (
+                    id, asset_id, source_kind, trashed_at_ms, purge_after_ms,
+                    state, quarantine_relative_path, original_relative_path,
+                    created_at_ms, updated_at_ms
+                ) VALUES (?, ?, 'file', 100, 200, 'recycled', ?, 'photo.jpg', 100, 100)
+                """,
+                arguments: [
+                    recycleID.uuidString.lowercased(),
+                    assetID.uuidString.lowercased(),
+                    "objects/recycled-photo.jpg",
+                ]
+            )
+        }
+        let purger = RecordingAssetCachePurger()
+        let service = LibrarySourceDeletionService(database: database, cachePurger: purger)
+
+        XCTAssertThrowsError(try service.prepare(sourceID: sourceID)) { error in
+            XCTAssertEqual(
+                error as? DeleteLibrarySourceError,
+                .unresolvedRecycleEntries(count: 1)
+            )
+        }
+        XCTAssertTrue(purger.assetIDs.isEmpty)
+        XCTAssertEqual(try FolderAuthorizationTestSupport.fetchSourceState(database, sourceID: sourceID), .disabled)
+        let assetCount = try database.pool.read { db in
+            try Int.fetchOne(
+                db,
+                sql: "SELECT COUNT(*) FROM asset WHERE id = ?",
+                arguments: [assetID.uuidString.lowercased()]
+            ) ?? 0
+        }
+        XCTAssertEqual(assetCount, 1)
+    }
+
     func testReauthorizeSameRootSucceedsAndReusesActiveJob() async throws {
         let database = try FolderAuthorizationTestSupport.makeDatabase()
         let sourceID = UUID(uuidString: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")!
@@ -603,5 +737,18 @@ final class FolderDisableReauthorizeTests: XCTestCase {
             try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM asset WHERE source_id = ?", arguments: [sourceID.uuidString.lowercased()]) ?? 0
         }
         XCTAssertEqual(assetCount, 1)
+    }
+}
+
+private final class RecordingAssetCachePurger: AppOwnedAssetCachePurging, @unchecked Sendable {
+    private let lock = NSLock()
+    private var storedAssetIDs: [UUID] = []
+
+    var assetIDs: [UUID] {
+        lock.withLock { storedAssetIDs }
+    }
+
+    func purge(assetID: UUID) throws {
+        lock.withLock { storedAssetIDs.append(assetID) }
     }
 }

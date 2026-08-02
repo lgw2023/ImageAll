@@ -8,6 +8,156 @@ enum ProductionLibraryWorkspaceError: Error {
     case librarySlimmingAnalysisInProgress
 }
 
+protocol AppOwnedAssetCachePurging: Sendable {
+    func purge(assetID: UUID) throws
+}
+
+extension AppOwnedAssetPixelCachePurger: AppOwnedAssetCachePurging {}
+
+struct LibrarySourceDeletionPreparation: Sendable, Equatable {
+    let sourceID: UUID
+    let kind: SourceKind
+    let assetIDs: [UUID]
+}
+
+struct LibrarySourceDeletionService: Sendable {
+    let database: CatalogDatabase
+    let cachePurger: any AppOwnedAssetCachePurging
+
+    func prepare(sourceID: UUID) throws -> LibrarySourceDeletionPreparation {
+        try database.pool.read { db in
+            let sourceToken = sourceID.uuidString.lowercased()
+            guard let kindToken = try String.fetchOne(
+                db,
+                sql: "SELECT kind FROM source WHERE id = ?",
+                arguments: [sourceToken]
+            ), let kind = SourceKind(rawValue: kindToken) else {
+                throw DeleteLibrarySourceError.sourceNotFound
+            }
+
+            let unresolvedRecycleCount = try Int.fetchOne(
+                db,
+                sql: """
+                SELECT COUNT(*)
+                FROM recycle_entry AS recycle
+                JOIN asset ON asset.id = recycle.asset_id
+                WHERE asset.source_id = ?
+                  AND recycle.state NOT IN ('restored', 'purged')
+                """,
+                arguments: [sourceToken]
+            ) ?? 0
+            guard unresolvedRecycleCount == 0 else {
+                throw DeleteLibrarySourceError.unresolvedRecycleEntries(
+                    count: unresolvedRecycleCount
+                )
+            }
+
+            let assetIDs = try String.fetchAll(
+                db,
+                sql: "SELECT id FROM asset WHERE source_id = ? ORDER BY id",
+                arguments: [sourceToken]
+            ).compactMap(UUID.init(uuidString:))
+            return LibrarySourceDeletionPreparation(
+                sourceID: sourceID,
+                kind: kind,
+                assetIDs: assetIDs
+            )
+        }
+    }
+
+    func delete(
+        preparation: LibrarySourceDeletionPreparation
+    ) throws -> DeleteLibrarySourceOutcome {
+        do {
+            for assetID in preparation.assetIDs {
+                try cachePurger.purge(assetID: assetID)
+            }
+        } catch {
+            throw DeleteLibrarySourceError.cacheCleanupFailed
+        }
+
+        do {
+            return try database.pool.write { db in
+                let sourceToken = preparation.sourceID.uuidString.lowercased()
+                guard let kindToken = try String.fetchOne(
+                    db,
+                    sql: "SELECT kind FROM source WHERE id = ? AND state = 'disabled'",
+                    arguments: [sourceToken]
+                ), kindToken == preparation.kind.rawValue else {
+                    throw DeleteLibrarySourceError.persistenceFailure
+                }
+
+                let unresolvedRecycleCount = try Int.fetchOne(
+                    db,
+                    sql: """
+                    SELECT COUNT(*)
+                    FROM recycle_entry AS recycle
+                    JOIN asset ON asset.id = recycle.asset_id
+                    WHERE asset.source_id = ?
+                      AND recycle.state NOT IN ('restored', 'purged')
+                    """,
+                    arguments: [sourceToken]
+                ) ?? 0
+                guard unresolvedRecycleCount == 0 else {
+                    throw DeleteLibrarySourceError.unresolvedRecycleEntries(
+                        count: unresolvedRecycleCount
+                    )
+                }
+
+                let currentAssetIDs = try String.fetchAll(
+                    db,
+                    sql: "SELECT id FROM asset WHERE source_id = ? ORDER BY id",
+                    arguments: [sourceToken]
+                ).compactMap(UUID.init(uuidString:))
+                guard currentAssetIDs == preparation.assetIDs else {
+                    throw DeleteLibrarySourceError.persistenceFailure
+                }
+
+                try db.execute(
+                    sql: """
+                    DELETE FROM recycle_entry
+                    WHERE asset_id IN (SELECT id FROM asset WHERE source_id = ?)
+                    """,
+                    arguments: [sourceToken]
+                )
+                try db.execute(
+                    sql: """
+                    DELETE FROM asset_tag_decision
+                    WHERE asset_id IN (SELECT id FROM asset WHERE source_id = ?)
+                    """,
+                    arguments: [sourceToken]
+                )
+                try db.execute(
+                    sql: "DELETE FROM job WHERE source_id = ?",
+                    arguments: [sourceToken]
+                )
+                try db.execute(
+                    sql: "DELETE FROM asset WHERE source_id = ?",
+                    arguments: [sourceToken]
+                )
+                guard db.changesCount == preparation.assetIDs.count else {
+                    throw DeleteLibrarySourceError.persistenceFailure
+                }
+                try db.execute(
+                    sql: "DELETE FROM source WHERE id = ?",
+                    arguments: [sourceToken]
+                )
+                guard db.changesCount == 1 else {
+                    throw DeleteLibrarySourceError.persistenceFailure
+                }
+                return DeleteLibrarySourceOutcome(
+                    sourceID: preparation.sourceID,
+                    deletedAssetCount: preparation.assetIDs.count
+                )
+            }
+        } catch let error as DeleteLibrarySourceError {
+            throw error
+        } catch {
+            throw DeleteLibrarySourceError.persistenceFailure
+        }
+    }
+}
+
 struct ProductionLibraryWorkspaceService: LibraryWorkspacePort, RemoteCatalogServing, Sendable {
     let sourceRepository: GRDBFolderSourceAuthorizationRepository
     let folderSourceMonitor: FolderSourceMonitoringCoordinator
@@ -22,6 +172,7 @@ struct ProductionLibraryWorkspaceService: LibraryWorkspacePort, RemoteCatalogSer
     let personalizationReview: PersonalizationReviewService
     let derivedImageCache: DerivedImageCacheService
     let photosOriginalCache: PhotosOriginalCacheService
+    let sourceDeletion: LibrarySourceDeletionService
     let appStorageLocationController: AppStorageLocationController
     let portableExportDestinationPicker: any PortableExportDestinationPicking
     let portableExportSourceIsolation: PortableExportSourceIsolationValidator
@@ -191,6 +342,22 @@ struct ProductionLibraryWorkspaceService: LibraryWorkspacePort, RemoteCatalogSer
         }
         let outcome = try await authorization.disableFolderSource(sourceID: sourceID)
         try folderSourceMonitor.synchronize()
+        return outcome
+    }
+
+    func deleteLibrarySource(sourceID: UUID) async throws -> DeleteLibrarySourceOutcome {
+        let preparation = try sourceDeletion.prepare(sourceID: sourceID)
+        switch preparation.kind {
+        case .folder:
+            _ = try await authorization.disableFolderSource(sourceID: sourceID)
+            try folderSourceMonitor.synchronize(enqueueInitialReconciles: false)
+        case .photos:
+            _ = try photosConnection.disable(sourceID: sourceID)
+        }
+        let outcome = try sourceDeletion.delete(preparation: preparation)
+        if preparation.kind == .folder {
+            try folderSourceMonitor.synchronize(enqueueInitialReconciles: false)
+        }
         return outcome
     }
 

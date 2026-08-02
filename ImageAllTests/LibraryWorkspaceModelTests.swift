@@ -6592,6 +6592,62 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertEqual(service.reconcileRunCount, 1)
     }
 
+    func testDeletingSourceRemovesSourceAndItsCatalogItemsFromWorkspace() async {
+        let sourceID = UUID()
+        let asset = Self.makeAsset(sourceID: sourceID)
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: sourceID,
+                displayName: "Downloads",
+                state: .disabled
+            ),
+            reconciledItems: [],
+            initialItems: [asset],
+            startsConnected: true,
+            hasPendingCatalogReconcileJobs: false
+        )
+        let model = LibraryWorkspaceModel(service: service)
+
+        await model.start()
+        let deleted = await model.deleteSource(sourceID)
+
+        XCTAssertTrue(deleted)
+        XCTAssertTrue(model.sources.isEmpty)
+        XCTAssertTrue(model.items.isEmpty)
+        XCTAssertEqual(model.phase, .empty)
+        XCTAssertEqual(service.deleteSourceCallCount, 1)
+        XCTAssertEqual(
+            model.notice,
+            .sourceDeleted(displayName: "Downloads", assetCount: 1)
+        )
+    }
+
+    func testDeletingSourceWithUnresolvedRecycleEntriesKeepsSourceVisible() async {
+        let sourceID = UUID()
+        let asset = Self.makeAsset(sourceID: sourceID)
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: sourceID,
+                displayName: "Fixture",
+                state: .active
+            ),
+            reconciledItems: [],
+            sourceDeletionError: .unresolvedRecycleEntries(count: 2),
+            initialItems: [asset],
+            startsConnected: true,
+            hasPendingCatalogReconcileJobs: false
+        )
+        let model = LibraryWorkspaceModel(service: service)
+
+        await model.start()
+        let deleted = await model.deleteSource(sourceID)
+
+        XCTAssertFalse(deleted)
+        XCTAssertEqual(model.sources.map(\.id), [sourceID])
+        XCTAssertEqual(model.items.map(\.assetID), [asset.assetID])
+        XCTAssertEqual(model.notice, .sourceDeletionBlockedByRecycle(itemCount: 2))
+    }
+
     func testSourceActionFailureKeepsVisibleCatalogAndShowsNotice() async {
         let sourceID = UUID()
         let asset = Self.makeAsset(sourceID: sourceID)
@@ -11310,6 +11366,7 @@ final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecked Sendab
     private var storedPhotosReconcileRunCount = 0
     private var storedReauthorizeCallCount = 0
     private var storedDisableCallCount = 0
+    private var storedDeleteSourceCallCount = 0
     private var storedMutateTagCallCount = 0
     private var storedLastFilter = AssetPageFilter()
     private var storedLastSort: AssetPageSort = .newest
@@ -11318,6 +11375,7 @@ final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecked Sendab
     private let inspectorDetailFails: Bool
     private var remainingInspectorDetailFailuresAfterTagCreation: Int
     private let sourceMutationFails: Bool
+    private let sourceDeletionError: DeleteLibrarySourceError?
     private let blocksReconcileRuns: Bool
     private let photosAuthorizationFails: Bool
     private let reboundSource: LibrarySourceSummary?
@@ -11399,6 +11457,7 @@ final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecked Sendab
         inspectorDetailFails: Bool = false,
         inspectorDetailFailuresAfterTagCreation: Int = 0,
         sourceMutationFails: Bool = false,
+        sourceDeletionError: DeleteLibrarySourceError? = nil,
         initialItems: [AssetGridItemProjection] = [],
         startsConnected: Bool = false,
         additionalSources: [LibrarySourceSummary] = [],
@@ -11446,6 +11505,7 @@ final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecked Sendab
         self.inspectorDetailFails = inspectorDetailFails
         remainingInspectorDetailFailuresAfterTagCreation = inspectorDetailFailuresAfterTagCreation
         self.sourceMutationFails = sourceMutationFails
+        self.sourceDeletionError = sourceDeletionError
         self.blocksReconcileRuns = blocksReconcileRuns
         self.photosAuthorizationFails = photosAuthorizationFails
         self.reboundSource = reboundSource
@@ -11580,6 +11640,10 @@ final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecked Sendab
 
     var disableCallCount: Int {
         lock.withLock { storedDisableCallCount }
+    }
+
+    var deleteSourceCallCount: Int {
+        lock.withLock { storedDeleteSourceCallCount }
     }
 
     var mutateTagCallCount: Int {
@@ -11966,6 +12030,28 @@ final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecked Sendab
             }
         }
         return .disabled(sourceID: sourceID)
+    }
+
+    func deleteLibrarySource(sourceID: UUID) async throws -> DeleteLibrarySourceOutcome {
+        if sourceMutationFails {
+            throw FakeWorkspaceError.sourceActionFailed
+        }
+        if let sourceDeletionError {
+            throw sourceDeletionError
+        }
+        return try lock.withLock {
+            guard storedSources.contains(where: { $0.id == sourceID }) else {
+                throw DeleteLibrarySourceError.sourceNotFound
+            }
+            storedDeleteSourceCallCount += 1
+            storedSources.removeAll { $0.id == sourceID }
+            let deletedAssetCount = storedItems.filter { $0.sourceID == sourceID }.count
+            storedItems.removeAll { $0.sourceID == sourceID }
+            return DeleteLibrarySourceOutcome(
+                sourceID: sourceID,
+                deletedAssetCount: deletedAssetCount
+            )
+        }
     }
 
     func enqueueReconcile(sourceIDs: [UUID]) throws {
