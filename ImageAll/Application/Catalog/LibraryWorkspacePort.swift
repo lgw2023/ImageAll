@@ -120,7 +120,11 @@ enum LibraryWorkspaceNotice: Equatable, Sendable {
     case tagMutationFailed
     case tagSelectionRefreshFailed
     case sourceActionFailed
-    case sourceDeletionBlockedByRecycle(itemCount: Int)
+    case sourceDeletionBlockedByRecycle(
+        sourceID: UUID,
+        displayName: String,
+        blockers: LibrarySourceDeletionBlockers
+    )
     case sourceDeleted(displayName: String, assetCount: Int)
     case backgroundScanFailed
     case photosAuthorizationRequired

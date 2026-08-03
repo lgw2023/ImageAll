@@ -443,6 +443,7 @@ final class FolderDisableReauthorizeTests: XCTestCase {
         let assetID = UUID(uuidString: "21212121-2121-2121-2121-212121212121")!
         let tagID = UUID(uuidString: "22222222-2222-2222-2222-222222222222")!
         let jobID = UUID(uuidString: "23232323-2323-2323-2323-232323232323")!
+        let recycleID = UUID(uuidString: "24232323-2323-2323-2323-232323232323")!
         let root = try registry.makeRoot(label: "delete-source")
         let originalURL = root.appendingPathComponent("photo.jpg")
         let originalBytes = Data("original-photo-bytes".utf8)
@@ -460,6 +461,33 @@ final class FolderDisableReauthorizeTests: XCTestCase {
             assetID: assetID,
             tagID: tagID
         )
+        try database.pool.write { db in
+            try db.execute(
+                sql: """
+                INSERT INTO source_mutation_authorization (
+                    source_id, bookmark, updated_at_ms
+                ) VALUES (?, ?, 100)
+                """,
+                arguments: [
+                    sourceID.uuidString.lowercased(),
+                    Data("fixture-write-bookmark".utf8),
+                ]
+            )
+            try db.execute(
+                sql: """
+                INSERT INTO recycle_entry (
+                    id, asset_id, source_kind, trashed_at_ms, purge_after_ms,
+                    state, quarantine_relative_path, original_relative_path,
+                    created_at_ms, updated_at_ms
+                ) VALUES (?, ?, 'file', 100, 200, 'restored', ?, 'photo.jpg', 100, 100)
+                """,
+                arguments: [
+                    recycleID.uuidString.lowercased(),
+                    assetID.uuidString.lowercased(),
+                    "objects/restored-photo.jpg",
+                ]
+            )
+        }
         _ = try JobTestSupport.makeQueue(database: database).enqueue(
             EnqueueJobCommand(
                 id: jobID,
@@ -503,6 +531,22 @@ final class FolderDisableReauthorizeTests: XCTestCase {
                 0
             )
             XCTAssertEqual(
+                try Int.fetchOne(
+                    db,
+                    sql: "SELECT COUNT(*) FROM recycle_entry WHERE id = ?",
+                    arguments: [recycleID.uuidString.lowercased()]
+                ),
+                0
+            )
+            XCTAssertEqual(
+                try Int.fetchOne(
+                    db,
+                    sql: "SELECT COUNT(*) FROM source_mutation_authorization WHERE source_id = ?",
+                    arguments: [sourceID.uuidString.lowercased()]
+                ),
+                0
+            )
+            XCTAssertEqual(
                 try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM tag WHERE id = ?", arguments: [tagID.uuidString.lowercased()]),
                 1,
                 "Global tag definitions are not owned by one source"
@@ -516,6 +560,7 @@ final class FolderDisableReauthorizeTests: XCTestCase {
         let assetID = UUID(uuidString: "25252525-2525-2525-2525-252525252525")!
         let tagID = UUID(uuidString: "26262626-2626-2626-2626-262626262626")!
         let recycleID = UUID(uuidString: "27272727-2727-2727-2727-272727272727")!
+        let failedID = UUID(uuidString: "37373737-3737-3737-3737-373737373737")!
         let root = try registry.makeRoot(label: "delete-source-recycle-block")
         let bookmark = try FoundationSecurityScopedBookmarkAdapter().createReadOnlyBookmark(for: root)
         try FolderAuthorizationTestSupport.insertFolderSource(
@@ -549,6 +594,21 @@ final class FolderDisableReauthorizeTests: XCTestCase {
                     "objects/recycled-photo.jpg",
                 ]
             )
+            try db.execute(
+                sql: """
+                INSERT INTO recycle_entry (
+                    id, asset_id, source_kind, trashed_at_ms, purge_after_ms,
+                    state, quarantine_relative_path, original_relative_path,
+                    error_code, created_at_ms, updated_at_ms
+                ) VALUES (?, ?, 'file', 90, 200, 'failed', ?, 'photo.jpg', ?, 90, 90)
+                """,
+                arguments: [
+                    failedID.uuidString.lowercased(),
+                    assetID.uuidString.lowercased(),
+                    "objects/recycled-photo.jpg",
+                    RecycleFailureCode.mutationAuthorizationRequired,
+                ]
+            )
         }
         let purger = RecordingAssetCachePurger()
         let service = LibrarySourceDeletionService(database: database, cachePurger: purger)
@@ -556,10 +616,38 @@ final class FolderDisableReauthorizeTests: XCTestCase {
         XCTAssertThrowsError(try service.prepare(sourceID: sourceID)) { error in
             XCTAssertEqual(
                 error as? DeleteLibrarySourceError,
-                .unresolvedRecycleEntries(count: 1)
+                .unresolvedRecycleEntries(
+                    blockers: LibrarySourceDeletionBlockers(
+                        recycledItemCount: 1,
+                        discardableAuthorizationFailureCount: 1,
+                        inspectionRequiredCount: 0
+                    )
+                )
             )
         }
         XCTAssertTrue(purger.assetIDs.isEmpty)
+        let recycle = LibrarySlimmingRecycleService(
+            database: database,
+            mutationAccess: DirectFolderMutationAccess(
+                rootsBySourceID: [sourceID: root]
+            ),
+            quarantineRootURL: root.appendingPathComponent("Quarantine"),
+            clock: FixedJobClock(nowMs: 300)
+        )
+        try recycle.discardFailedPreflightEntry(entryID: failedID)
+        XCTAssertEqual(try recycle.listRecycleBinEntries().map(\.id), [recycleID])
+        XCTAssertThrowsError(try service.prepare(sourceID: sourceID)) { error in
+            XCTAssertEqual(
+                error as? DeleteLibrarySourceError,
+                .unresolvedRecycleEntries(
+                    blockers: LibrarySourceDeletionBlockers(
+                        recycledItemCount: 1,
+                        discardableAuthorizationFailureCount: 0,
+                        inspectionRequiredCount: 0
+                    )
+                )
+            )
+        }
         XCTAssertEqual(try FolderAuthorizationTestSupport.fetchSourceState(database, sourceID: sourceID), .disabled)
         let assetCount = try database.pool.read { db in
             try Int.fetchOne(
@@ -569,6 +657,229 @@ final class FolderDisableReauthorizeTests: XCTestCase {
             ) ?? 0
         }
         XCTAssertEqual(assetCount, 1)
+    }
+
+    func testPreflightAuthorizationFailureCanBeDiscardedBeforeSourceDeletion() throws {
+        let database = try FolderAuthorizationTestSupport.makeDatabase()
+        let sourceID = UUID(uuidString: "28282828-2828-2828-2828-282828282828")!
+        let assetID = UUID(uuidString: "29292929-2929-2929-2929-292929292929")!
+        let tagID = UUID(uuidString: "30303030-3030-3030-3030-303030303030")!
+        let recycleID = UUID(uuidString: "31313131-3131-3131-3131-313131313131")!
+        let root = try registry.makeRoot(label: "delete-source-preflight-failure")
+        let originalURL = root.appendingPathComponent("photo.jpg")
+        let originalBytes = Data("preflight-original".utf8)
+        try originalBytes.write(to: originalURL)
+        let bookmark = try FoundationSecurityScopedBookmarkAdapter()
+            .createReadOnlyBookmark(for: root)
+        try FolderAuthorizationTestSupport.insertFolderSource(
+            database: database,
+            sourceID: sourceID,
+            bookmark: bookmark,
+            state: .disabled
+        )
+        try FolderAuthorizationTestSupport.insertFolderAssetGraph(
+            database: database,
+            sourceID: sourceID,
+            assetID: assetID,
+            tagID: tagID
+        )
+        try database.pool.write { db in
+            try db.execute(
+                sql: """
+                INSERT INTO recycle_entry (
+                    id, asset_id, source_kind, trashed_at_ms, purge_after_ms,
+                    state, quarantine_relative_path, original_relative_path,
+                    error_code, created_at_ms, updated_at_ms
+                ) VALUES (?, ?, 'file', 100, 200, 'failed', ?, 'photo.jpg', ?, 100, 100)
+                """,
+                arguments: [
+                    recycleID.uuidString.lowercased(),
+                    assetID.uuidString.lowercased(),
+                    "objects/preflight-photo.jpg",
+                    RecycleFailureCode.mutationAuthorizationRequired,
+                ]
+            )
+        }
+        let purger = RecordingAssetCachePurger()
+        let deletion = LibrarySourceDeletionService(
+            database: database,
+            cachePurger: purger
+        )
+
+        XCTAssertThrowsError(try deletion.prepare(sourceID: sourceID)) { error in
+            XCTAssertEqual(
+                error as? DeleteLibrarySourceError,
+                .unresolvedRecycleEntries(
+                    blockers: LibrarySourceDeletionBlockers(
+                        recycledItemCount: 0,
+                        discardableAuthorizationFailureCount: 1,
+                        inspectionRequiredCount: 0
+                    )
+                )
+            )
+        }
+        XCTAssertTrue(purger.assetIDs.isEmpty)
+
+        let recycle = LibrarySlimmingRecycleService(
+            database: database,
+            mutationAccess: DirectFolderMutationAccess(
+                rootsBySourceID: [sourceID: root]
+            ),
+            quarantineRootURL: root.appendingPathComponent("Quarantine"),
+            clock: FixedJobClock(nowMs: 300)
+        )
+        let visible = try recycle.listRecycleBinEntries()
+        XCTAssertEqual(visible.map(\.id), [recycleID])
+        XCTAssertEqual(visible.first?.resolution, .discardPreflightFailure)
+
+        try recycle.discardFailedPreflightEntry(entryID: recycleID)
+
+        XCTAssertTrue(try recycle.listRecycleBinEntries().isEmpty)
+        XCTAssertEqual(try Data(contentsOf: originalURL), originalBytes)
+        XCTAssertFalse(
+            FileManager.default.fileExists(
+                atPath: root.appendingPathComponent("Quarantine").path
+            )
+        )
+
+        let preparation = try deletion.prepare(sourceID: sourceID)
+        let outcome = try deletion.delete(preparation: preparation)
+
+        XCTAssertEqual(outcome.deletedAssetCount, 1)
+        XCTAssertEqual(purger.assetIDs, [assetID])
+        XCTAssertEqual(try Data(contentsOf: originalURL), originalBytes)
+        try database.pool.read { db in
+            XCTAssertEqual(
+                try Int.fetchOne(
+                    db,
+                    sql: "SELECT COUNT(*) FROM source WHERE id = ?",
+                    arguments: [sourceID.uuidString.lowercased()]
+                ),
+                0
+            )
+            XCTAssertEqual(
+                try Int.fetchOne(
+                    db,
+                    sql: "SELECT COUNT(*) FROM asset WHERE source_id = ?",
+                    arguments: [sourceID.uuidString.lowercased()]
+                ),
+                0
+            )
+            XCTAssertEqual(
+                try Int.fetchOne(
+                    db,
+                    sql: "SELECT COUNT(*) FROM recycle_entry WHERE asset_id = ?",
+                    arguments: [assetID.uuidString.lowercased()]
+                ),
+                0
+            )
+        }
+    }
+
+    func testIndeterminateFailedAndPendingEntriesRemainVisibleAndBlockWithoutCacheCleanup() throws {
+        let database = try FolderAuthorizationTestSupport.makeDatabase()
+        let sourceID = UUID(uuidString: "32323232-3232-3232-3232-323232323232")!
+        let assetID = UUID(uuidString: "33333333-3333-3333-3333-333333333333")!
+        let tagID = UUID(uuidString: "34343434-3434-3434-3434-343434343434")!
+        let failedID = UUID(uuidString: "35353535-3535-3535-3535-353535353535")!
+        let pendingID = UUID(uuidString: "36363636-3636-3636-3636-363636363636")!
+        let root = try registry.makeRoot(label: "delete-source-indeterminate")
+        let originalURL = root.appendingPathComponent("photo.jpg")
+        let originalBytes = Data("indeterminate-original".utf8)
+        try originalBytes.write(to: originalURL)
+        let quarantineRoot = root.appendingPathComponent("Quarantine", isDirectory: true)
+        let quarantineRelativePath = "objects/indeterminate-photo.jpg"
+        let quarantineURL = quarantineRoot.appendingPathComponent(quarantineRelativePath)
+        try FileManager.default.createDirectory(
+            at: quarantineURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        let quarantineBytes = Data("retained-quarantine".utf8)
+        try quarantineBytes.write(to: quarantineURL)
+        let bookmark = try FoundationSecurityScopedBookmarkAdapter()
+            .createReadOnlyBookmark(for: root)
+        try FolderAuthorizationTestSupport.insertFolderSource(
+            database: database,
+            sourceID: sourceID,
+            bookmark: bookmark,
+            state: .disabled
+        )
+        try FolderAuthorizationTestSupport.insertFolderAssetGraph(
+            database: database,
+            sourceID: sourceID,
+            assetID: assetID,
+            tagID: tagID
+        )
+        try database.pool.write { db in
+            for (entryID, state, errorCode) in [
+                (failedID, "failed", "ioFailure"),
+                (pendingID, "pending", nil),
+            ] {
+                try db.execute(
+                    sql: """
+                    INSERT INTO recycle_entry (
+                        id, asset_id, source_kind, trashed_at_ms, purge_after_ms,
+                        state, quarantine_relative_path, original_relative_path,
+                        error_code, created_at_ms, updated_at_ms
+                    ) VALUES (?, ?, 'file', 100, 200, ?, ?, 'photo.jpg', ?, 100, 100)
+                    """,
+                    arguments: [
+                        entryID.uuidString.lowercased(),
+                        assetID.uuidString.lowercased(),
+                        state,
+                        quarantineRelativePath,
+                        errorCode,
+                    ]
+                )
+            }
+        }
+        let purger = RecordingAssetCachePurger()
+        let deletion = LibrarySourceDeletionService(
+            database: database,
+            cachePurger: purger
+        )
+        let recycle = LibrarySlimmingRecycleService(
+            database: database,
+            mutationAccess: DirectFolderMutationAccess(
+                rootsBySourceID: [sourceID: root]
+            ),
+            quarantineRootURL: quarantineRoot,
+            clock: FixedJobClock(nowMs: 300)
+        )
+
+        XCTAssertThrowsError(try deletion.prepare(sourceID: sourceID)) { error in
+            XCTAssertEqual(
+                error as? DeleteLibrarySourceError,
+                .unresolvedRecycleEntries(
+                    blockers: LibrarySourceDeletionBlockers(
+                        recycledItemCount: 0,
+                        discardableAuthorizationFailureCount: 0,
+                        inspectionRequiredCount: 2
+                    )
+                )
+            )
+        }
+        XCTAssertThrowsError(
+            try recycle.discardFailedPreflightEntry(entryID: failedID)
+        ) { error in
+            XCTAssertEqual(error as? LibrarySlimmingRecycleError, .invalidState)
+        }
+        let visible = try recycle.listRecycleBinEntries()
+        XCTAssertEqual(Set(visible.map(\.id)), Set([failedID, pendingID]))
+        XCTAssertEqual(
+            Set(visible.map(\.resolution)),
+            Set([.inspect, .retryInterruptedOperation])
+        )
+        XCTAssertTrue(purger.assetIDs.isEmpty)
+        XCTAssertEqual(try Data(contentsOf: originalURL), originalBytes)
+        XCTAssertEqual(try Data(contentsOf: quarantineURL), quarantineBytes)
+        XCTAssertEqual(
+            try FolderAuthorizationTestSupport.fetchSourceState(
+                database,
+                sourceID: sourceID
+            ),
+            .disabled
+        )
     }
 
     func testReauthorizeSameRootSucceedsAndReusesActiveJob() async throws {

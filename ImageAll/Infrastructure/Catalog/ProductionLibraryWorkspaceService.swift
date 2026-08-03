@@ -24,6 +24,53 @@ struct LibrarySourceDeletionService: Sendable {
     let database: CatalogDatabase
     let cachePurger: any AppOwnedAssetCachePurging
 
+    private func recycleBlockers(
+        in db: Database,
+        sourceToken: String
+    ) throws -> LibrarySourceDeletionBlockers {
+        guard let row = try Row.fetchOne(
+            db,
+            sql: """
+            SELECT
+                COALESCE(SUM(CASE WHEN recycle.state = 'recycled' THEN 1 ELSE 0 END), 0)
+                    AS recycled_count,
+                COALESCE(SUM(CASE
+                    WHEN recycle.state = 'failed'
+                     AND recycle.source_kind = 'file'
+                     AND recycle.error_code = ?
+                     AND recycle.original_relative_path IS NOT NULL
+                     AND recycle.photos_local_identifier IS NULL
+                    THEN 1 ELSE 0 END), 0) AS discardable_authorization_count,
+                COUNT(*) AS total_count
+            FROM recycle_entry AS recycle
+            JOIN asset ON asset.id = recycle.asset_id
+            WHERE asset.source_id = ?
+              AND recycle.state NOT IN ('restored', 'purged')
+            """,
+            arguments: [
+                RecycleFailureCode.mutationAuthorizationRequired,
+                sourceToken,
+            ]
+        ) else {
+            throw DeleteLibrarySourceError.persistenceFailure
+        }
+        let recycledItemCount: Int = row["recycled_count"]
+        let discardableAuthorizationFailureCount: Int =
+            row["discardable_authorization_count"]
+        let totalCount: Int = row["total_count"]
+        return LibrarySourceDeletionBlockers(
+            recycledItemCount: recycledItemCount,
+            discardableAuthorizationFailureCount:
+                discardableAuthorizationFailureCount,
+            inspectionRequiredCount: max(
+                0,
+                totalCount
+                    - recycledItemCount
+                    - discardableAuthorizationFailureCount
+            )
+        )
+    }
+
     func prepare(sourceID: UUID) throws -> LibrarySourceDeletionPreparation {
         try database.pool.read { db in
             let sourceToken = sourceID.uuidString.lowercased()
@@ -35,20 +82,10 @@ struct LibrarySourceDeletionService: Sendable {
                 throw DeleteLibrarySourceError.sourceNotFound
             }
 
-            let unresolvedRecycleCount = try Int.fetchOne(
-                db,
-                sql: """
-                SELECT COUNT(*)
-                FROM recycle_entry AS recycle
-                JOIN asset ON asset.id = recycle.asset_id
-                WHERE asset.source_id = ?
-                  AND recycle.state NOT IN ('restored', 'purged')
-                """,
-                arguments: [sourceToken]
-            ) ?? 0
-            guard unresolvedRecycleCount == 0 else {
+            let blockers = try recycleBlockers(in: db, sourceToken: sourceToken)
+            guard blockers.totalCount == 0 else {
                 throw DeleteLibrarySourceError.unresolvedRecycleEntries(
-                    count: unresolvedRecycleCount
+                    blockers: blockers
                 )
             }
 
@@ -87,20 +124,10 @@ struct LibrarySourceDeletionService: Sendable {
                     throw DeleteLibrarySourceError.persistenceFailure
                 }
 
-                let unresolvedRecycleCount = try Int.fetchOne(
-                    db,
-                    sql: """
-                    SELECT COUNT(*)
-                    FROM recycle_entry AS recycle
-                    JOIN asset ON asset.id = recycle.asset_id
-                    WHERE asset.source_id = ?
-                      AND recycle.state NOT IN ('restored', 'purged')
-                    """,
-                    arguments: [sourceToken]
-                ) ?? 0
-                guard unresolvedRecycleCount == 0 else {
+                let blockers = try recycleBlockers(in: db, sourceToken: sourceToken)
+                guard blockers.totalCount == 0 else {
                     throw DeleteLibrarySourceError.unresolvedRecycleEntries(
-                        count: unresolvedRecycleCount
+                        blockers: blockers
                     )
                 }
 
@@ -173,6 +200,7 @@ struct ProductionLibraryWorkspaceService: LibraryWorkspacePort, RemoteCatalogSer
     let derivedImageCache: DerivedImageCacheService
     let photosOriginalCache: PhotosOriginalCacheService
     let sourceDeletion: LibrarySourceDeletionService
+    let interactiveIOGate: InteractiveIOPriorityGate?
     let appStorageLocationController: AppStorageLocationController
     let portableExportDestinationPicker: any PortableExportDestinationPicking
     let portableExportSourceIsolation: PortableExportSourceIsolationValidator
@@ -346,13 +374,35 @@ struct ProductionLibraryWorkspaceService: LibraryWorkspacePort, RemoteCatalogSer
     }
 
     func deleteLibrarySource(sourceID: UUID) async throws -> DeleteLibrarySourceOutcome {
-        let preparation = try sourceDeletion.prepare(sourceID: sourceID)
-        switch preparation.kind {
+        if let interactiveIOGate {
+            return try await interactiveIOGate.withInteractiveWork {
+                try await deleteLibrarySourceWithExclusiveMutationWindow(
+                    sourceID: sourceID
+                )
+            }
+        }
+        return try await deleteLibrarySourceWithExclusiveMutationWindow(
+            sourceID: sourceID
+        )
+    }
+
+    private func deleteLibrarySourceWithExclusiveMutationWindow(
+        sourceID: UUID
+    ) async throws -> DeleteLibrarySourceOutcome {
+        let initialPreparation = try sourceDeletion.prepare(sourceID: sourceID)
+        switch initialPreparation.kind {
         case .folder:
             _ = try await authorization.disableFolderSource(sourceID: sourceID)
             try folderSourceMonitor.synchronize(enqueueInitialReconciles: false)
         case .photos:
             _ = try photosConnection.disable(sourceID: sourceID)
+        }
+        // Disabling prevents new recycle intents. Re-read blockers and asset IDs
+        // before deleting any App-owned cache so an operation that raced with the
+        // initial preflight cannot cause a half-completed rejected deletion.
+        let preparation = try sourceDeletion.prepare(sourceID: sourceID)
+        guard preparation.kind == initialPreparation.kind else {
+            throw DeleteLibrarySourceError.persistenceFailure
         }
         let outcome = try sourceDeletion.delete(preparation: preparation)
         if preparation.kind == .folder {

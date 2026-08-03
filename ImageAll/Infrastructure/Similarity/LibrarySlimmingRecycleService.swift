@@ -774,7 +774,7 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
         }
     }
 
-    func listRecycledEntries() throws -> [RecycleEntryRecord] {
+    func listRecycleBinEntries() throws -> [RecycleEntryRecord] {
         try database.pool.read { db in
             let rows = try Row.fetchAll(
                 db,
@@ -785,34 +785,79 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
                     r.photos_local_identifier, r.error_code, a.file_name, a.media_kind
                 FROM recycle_entry r
                 JOIN asset a ON a.id = r.asset_id
-                WHERE r.state = 'recycled'
+                WHERE r.state NOT IN ('restored', 'purged')
                 ORDER BY r.trashed_at_ms DESC, r.id ASC
                 """
             )
-            return rows.compactMap { row in
-                guard let id = UUID(uuidString: row["id"]),
-                      let assetID = UUID(uuidString: row["asset_id"]),
-                      let sourceID = UUID(uuidString: row["source_id"]),
-                      let sourceKind = RecycleSourceKind(rawValue: row["source_kind"]),
-                      let mediaKind = MediaKind(rawValue: row["media_kind"]),
-                      let state = RecycleEntryState(rawValue: row["state"])
-                else { return nil }
-                return RecycleEntryRecord(
-                    id: id,
-                    assetID: assetID,
-                    sourceID: sourceID,
-                    sourceKind: sourceKind,
-                    mediaKind: mediaKind,
-                    trashedAtMs: row["trashed_at_ms"],
-                    purgeAfterMs: row["purge_after_ms"],
-                    state: state,
-                    quarantineRelativePath: row["quarantine_relative_path"],
-                    originalRelativePath: row["original_relative_path"],
-                    photosLocalIdentifier: row["photos_local_identifier"],
-                    errorCode: row["error_code"],
-                    fileName: row["file_name"]
-                )
+            return rows.compactMap(Self.mapRecycleEntryRecord)
+        }
+    }
+
+    func listRecycledEntries() throws -> [RecycleEntryRecord] {
+        try listRecycleBinEntries().filter { $0.state == .recycled }
+    }
+
+    func discardFailedPreflightEntry(entryID: UUID) throws {
+        try database.pool.write { db in
+            guard let row = try Row.fetchOne(
+                db,
+                sql: """
+                SELECT
+                    r.source_kind, r.state, r.original_relative_path,
+                    r.photos_local_identifier, r.error_code
+                FROM recycle_entry AS r
+                JOIN asset AS a ON a.id = r.asset_id
+                WHERE r.id = ?
+                """,
+                arguments: [entryID.uuidString.lowercased()]
+            ) else {
+                throw LibrarySlimmingRecycleError.notFound
             }
+            let sourceKind: String = row["source_kind"]
+            let state: String = row["state"]
+            let originalRelativePath: String? = row["original_relative_path"]
+            let photosLocalIdentifier: String? = row["photos_local_identifier"]
+            let errorCode: String? = row["error_code"]
+            guard sourceKind == RecycleSourceKind.file.rawValue,
+                  state == RecycleEntryState.failed.rawValue,
+                  originalRelativePath != nil,
+                  photosLocalIdentifier == nil,
+                  errorCode == RecycleFailureCode.mutationAuthorizationRequired
+            else {
+                throw LibrarySlimmingRecycleError.invalidState
+            }
+            try db.execute(
+                sql: """
+                DELETE FROM recycle_entry
+                WHERE id = ?
+                  AND state = 'failed'
+                  AND source_kind = 'file'
+                  AND error_code = ?
+                """,
+                arguments: [
+                    entryID.uuidString.lowercased(),
+                    RecycleFailureCode.mutationAuthorizationRequired,
+                ]
+            )
+            guard db.changesCount == 1 else {
+                throw LibrarySlimmingRecycleError.invalidState
+            }
+        }
+    }
+
+    func retryInterruptedEntry(entryID: UUID) throws {
+        let snapshot = try loadActiveEntry(entryID: entryID)
+        switch snapshot.state {
+        case .pending:
+            _ = try recoverPending(snapshot)
+        case .restoring:
+            try recoverRestoring(snapshot)
+        case .purging:
+            try recoverPurging(snapshot)
+        case .failed:
+            try reinspectFailedEntry(snapshot)
+        case .recycled, .restored, .purged:
+            throw LibrarySlimmingRecycleError.invalidState
         }
     }
 
@@ -1167,19 +1212,32 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
                     id, asset_id, source_kind, trashed_at_ms, purge_after_ms, state,
                     quarantine_relative_path, original_relative_path, photos_local_identifier,
                     error_code, created_at_ms, updated_at_ms
-                ) VALUES (?, ?, 'file', ?, ?, 'pending', ?, ?, NULL, NULL, ?, ?)
+                )
+                SELECT ?, asset.id, 'file', ?, ?, 'pending', ?, ?, NULL, NULL, ?, ?
+                FROM asset
+                JOIN source ON source.id = asset.source_id
+                WHERE asset.id = ?
+                  AND asset.source_id = ?
+                  AND asset.locator_state = 'current'
+                  AND asset.availability = 'available'
+                  AND source.kind = 'folder'
+                  AND source.state = 'active'
                 """,
                 arguments: [
                     entryID.uuidString.lowercased(),
-                    asset.assetID.uuidString.lowercased(),
                     now,
                     purgeAfter,
                     quarantineRelative,
                     relativePath,
                     now,
                     now,
+                    asset.assetID.uuidString.lowercased(),
+                    asset.sourceID.uuidString.lowercased(),
                 ]
             )
+            guard db.changesCount == 1 else {
+                throw LibrarySlimmingRecycleError.invalidState
+            }
         }
 
         do {
@@ -1208,7 +1266,10 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
                 )
             }
         } catch LibrarySlimmingRecycleError.mutationAuthorizationRequired {
-            try markFailed(entryID: entryID, code: "mutationAuthorizationRequired")
+            try markFailed(
+                entryID: entryID,
+                code: RecycleFailureCode.mutationAuthorizationRequired
+            )
             throw LibrarySlimmingRecycleError.mutationAuthorizationRequired
         } catch LibrarySlimmingRecycleError.mutationAuthorizationInvalid {
             try markFailed(entryID: entryID, code: "mutationAuthorizationInvalid")
@@ -1284,19 +1345,32 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
                     id, asset_id, source_kind, trashed_at_ms, purge_after_ms, state,
                     quarantine_relative_path, original_relative_path, photos_local_identifier,
                     error_code, created_at_ms, updated_at_ms
-                ) VALUES (?, ?, 'file', ?, ?, 'pending', NULL, ?, NULL, ?, ?, ?)
+                )
+                SELECT ?, asset.id, 'file', ?, ?, 'pending', NULL, ?, NULL, ?, ?, ?
+                FROM asset
+                JOIN source ON source.id = asset.source_id
+                WHERE asset.id = ?
+                  AND asset.source_id = ?
+                  AND asset.locator_state = 'current'
+                  AND asset.availability = 'available'
+                  AND source.kind = 'folder'
+                  AND source.state = 'active'
                 """,
                 arguments: [
                     entryID.uuidString.lowercased(),
-                    asset.assetID.uuidString.lowercased(),
                     now,
                     now,
                     relativePath,
                     SpaceFirstDeleteMarker.sourceDeletionPending,
                     now,
                     now,
+                    asset.assetID.uuidString.lowercased(),
+                    asset.sourceID.uuidString.lowercased(),
                 ]
             )
+            guard db.changesCount == 1 else {
+                throw LibrarySlimmingRecycleError.invalidState
+            }
         }
 
         do {
@@ -1318,7 +1392,10 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
                 )
             }
         } catch LibrarySlimmingRecycleError.mutationAuthorizationRequired {
-            try markFailed(entryID: entryID, code: "mutationAuthorizationRequired")
+            try markFailed(
+                entryID: entryID,
+                code: RecycleFailureCode.mutationAuthorizationRequired
+            )
             throw LibrarySlimmingRecycleError.mutationAuthorizationRequired
         } catch LibrarySlimmingRecycleError.mutationAuthorizationInvalid {
             try markFailed(entryID: entryID, code: "mutationAuthorizationInvalid")
@@ -1476,19 +1553,32 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
                         id, asset_id, source_kind, trashed_at_ms, purge_after_ms, state,
                         quarantine_relative_path, original_relative_path, photos_local_identifier,
                         error_code, created_at_ms, updated_at_ms
-                    ) VALUES (?, ?, 'photos', ?, ?, 'pending', NULL, ?, ?, NULL, ?, ?)
+                    )
+                    SELECT ?, asset.id, 'photos', ?, ?, 'pending', NULL, ?, ?, NULL, ?, ?
+                    FROM asset
+                    JOIN source ON source.id = asset.source_id
+                    WHERE asset.id = ?
+                      AND asset.source_id = ?
+                      AND asset.locator_state = 'current'
+                      AND asset.availability = 'available'
+                      AND source.kind = 'photos'
+                      AND source.state = 'active'
                     """,
                     arguments: [
                         pending.entryID.uuidString.lowercased(),
-                        pending.asset.assetID.uuidString.lowercased(),
                         now,
                         purgeAfter,
                         displayPath,
                         pending.localIdentifier,
                         now,
                         now,
+                        pending.asset.assetID.uuidString.lowercased(),
+                        pending.asset.sourceID.uuidString.lowercased(),
                     ]
                 )
+                guard db.changesCount == 1 else {
+                    throw LibrarySlimmingRecycleError.invalidState
+                }
             }
         }
 
@@ -1841,6 +1931,102 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
         return true
     }
 
+    private func reinspectFailedEntry(_ entry: EntrySnapshot) throws {
+        guard entry.sourceKind == .file,
+              let quarantinePath = entry.quarantineRelativePath,
+              let originalRelativePath = entry.originalRelativePath
+        else {
+            throw LibrarySlimmingRecycleError.durabilityPending
+        }
+        let quarantineExists = try quarantineIO.objectExists(
+            rootURL: quarantineRootURL,
+            relativePath: quarantinePath
+        )
+        let sourceID = try loadSourceID(assetID: entry.assetID)
+        let sourceExists = try mutationAccess.withWritableSourceRoot(
+            sourceID: sourceID
+        ) { root in
+            try quarantineIO.objectExists(
+                rootURL: root,
+                relativePath: originalRelativePath
+            )
+        }
+
+        switch (sourceExists, quarantineExists) {
+        case (true, false):
+            try resolveFailedEntry(
+                entry,
+                as: .restored,
+                availability: .available
+            )
+        case (false, true):
+            try resolveFailedEntry(
+                entry,
+                as: .recycled,
+                availability: .recycled
+            )
+        case (true, true):
+            try transitionEntry(
+                entryID: entry.id,
+                from: .failed,
+                to: .failed,
+                errorCode: "interruptedConflict"
+            )
+            throw LibrarySlimmingRecycleError.durabilityPending
+        case (false, false):
+            try transitionEntry(
+                entryID: entry.id,
+                from: .failed,
+                to: .failed,
+                errorCode: "interruptedMissingBoth"
+            )
+            throw LibrarySlimmingRecycleError.durabilityPending
+        }
+    }
+
+    private func resolveFailedEntry(
+        _ entry: EntrySnapshot,
+        as state: RecycleEntryState,
+        availability: AssetAvailability
+    ) throws {
+        guard state == .restored || state == .recycled else {
+            throw LibrarySlimmingRecycleError.invalidState
+        }
+        try database.pool.write { db in
+            try db.execute(
+                sql: """
+                UPDATE recycle_entry
+                SET state = ?, error_code = NULL, updated_at_ms = ?
+                WHERE id = ? AND asset_id = ? AND state = 'failed'
+                """,
+                arguments: [
+                    state.rawValue,
+                    clock.nowMs,
+                    entry.id.uuidString.lowercased(),
+                    entry.assetID.uuidString.lowercased(),
+                ]
+            )
+            guard db.changesCount == 1 else {
+                throw LibrarySlimmingRecycleError.invalidState
+            }
+            try db.execute(
+                sql: """
+                UPDATE asset
+                SET availability = ?, record_updated_at_ms = ?
+                WHERE id = ?
+                """,
+                arguments: [
+                    availability.rawValue,
+                    clock.nowMs,
+                    entry.assetID.uuidString.lowercased(),
+                ]
+            )
+            guard db.changesCount == 1 else {
+                throw LibrarySlimmingRecycleError.notFound
+            }
+        }
+    }
+
     private func finalizeRecycled(_ entry: EntrySnapshot) throws {
         try database.pool.write { db in
             try db.execute(
@@ -2114,6 +2300,33 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
             )
             return rows.compactMap(Self.mapEntrySnapshot)
         }
+    }
+
+    private static func mapRecycleEntryRecord(_ row: Row) -> RecycleEntryRecord? {
+        guard let id = UUID(uuidString: row["id"]),
+              let assetID = UUID(uuidString: row["asset_id"]),
+              let sourceID = UUID(uuidString: row["source_id"]),
+              let sourceKind = RecycleSourceKind(rawValue: row["source_kind"]),
+              let mediaKind = MediaKind(rawValue: row["media_kind"]),
+              let state = RecycleEntryState(rawValue: row["state"])
+        else {
+            return nil
+        }
+        return RecycleEntryRecord(
+            id: id,
+            assetID: assetID,
+            sourceID: sourceID,
+            sourceKind: sourceKind,
+            mediaKind: mediaKind,
+            trashedAtMs: row["trashed_at_ms"],
+            purgeAfterMs: row["purge_after_ms"],
+            state: state,
+            quarantineRelativePath: row["quarantine_relative_path"],
+            originalRelativePath: row["original_relative_path"],
+            photosLocalIdentifier: row["photos_local_identifier"],
+            errorCode: row["error_code"],
+            fileName: row["file_name"]
+        )
     }
 
     private static func mapEntrySnapshot(_ row: Row) -> EntrySnapshot? {

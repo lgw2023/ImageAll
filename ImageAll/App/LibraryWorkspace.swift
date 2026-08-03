@@ -1175,6 +1175,7 @@ final class LibraryWorkspaceModel: ObservableObject {
     @Published private(set) var librarySlimmingWorkspaceTab: LibrarySlimmingWorkspaceTab = .clusters
     @Published private(set) var librarySlimmingRecycleEntries: [RecycleEntryRecord] = []
     @Published private(set) var librarySlimmingRecycleSearchText = ""
+    @Published private(set) var librarySlimmingRecycleSourceFilterID: UUID?
     @Published private var librarySlimmingThumbnailReloadVersions: [UUID: Int] = [:]
     @Published private(set) var librarySlimmingMemberSourceNames: [UUID: String] = [:]
     @Published private(set) var librarySlimmingSceneThresholds = NearDuplicateSceneThresholds.factory
@@ -1916,6 +1917,22 @@ final class LibraryWorkspaceModel: ObservableObject {
         }
     }
 
+    func openLibrarySlimmingRecycleBin(for sourceID: UUID) {
+        librarySlimmingRecycleSourceFilterID = sourceID
+        librarySlimmingRecycleSearchText = ""
+        librarySlimmingWorkspaceTab = .recycleBin
+        librarySlimmingNavigationNonce = UUID()
+    }
+
+    func clearLibrarySlimmingRecycleSourceFilter() {
+        librarySlimmingRecycleSourceFilterID = nil
+    }
+
+    var librarySlimmingRecycleSourceFilterTitle: String? {
+        guard let sourceID = librarySlimmingRecycleSourceFilterID else { return nil }
+        return sources.first(where: { $0.id == sourceID })?.displayName ?? "指定来源"
+    }
+
     func refreshLibrarySlimmingRecycleEntries() async {
         guard let recycle = librarySlimmingRecycle else {
             librarySlimmingRecycleEntries = []
@@ -1924,7 +1941,7 @@ final class LibraryWorkspaceModel: ObservableObject {
         let mediaKind = selectedMediaKind
         do {
             let entries = try await Self.offMain {
-                try recycle.listRecycledEntries()
+                try recycle.listRecycleBinEntries()
             }
             librarySlimmingRecycleEntries = entries.filter { $0.mediaKind == mediaKind }
         } catch {
@@ -1933,15 +1950,23 @@ final class LibraryWorkspaceModel: ObservableObject {
     }
 
     var filteredLibrarySlimmingRecycleEntries: [RecycleEntryRecord] {
+        let sourceFilteredEntries: [RecycleEntryRecord]
+        if let sourceID = librarySlimmingRecycleSourceFilterID {
+            sourceFilteredEntries = librarySlimmingRecycleEntries.filter {
+                $0.sourceID == sourceID
+            }
+        } else {
+            sourceFilteredEntries = librarySlimmingRecycleEntries
+        }
         let query = trimmedLibrarySlimmingRecycleSearchText
         guard !query.isEmpty else {
-            return librarySlimmingRecycleEntries
+            return sourceFilteredEntries
         }
         let foldedQuery = query.folding(
             options: [.caseInsensitive, .diacriticInsensitive],
             locale: .current
         )
-        return librarySlimmingRecycleEntries.filter { entry in
+        return sourceFilteredEntries.filter { entry in
             guard let fileName = entry.fileName else { return false }
             return fileName.folding(
                 options: [.caseInsensitive, .diacriticInsensitive],
@@ -2972,6 +2997,52 @@ final class LibraryWorkspaceModel: ObservableObject {
         } catch {
             librarySlimmingStatusMessage = "恢复失败：\(error.localizedDescription)"
         }
+    }
+
+    func discardLibrarySlimmingPreflightFailure(_ entryID: UUID) async {
+        guard let recycle = librarySlimmingRecycle else { return }
+        isMutatingLibrarySlimmingRecycle = true
+        defer { isMutatingLibrarySlimmingRecycle = false }
+        do {
+            try await Self.offMain {
+                try recycle.discardFailedPreflightEntry(entryID: entryID)
+            }
+            librarySlimmingStatusMessage =
+                "已撤销未执行的回收意图；原位置和 ImageAll 隔离区中的文件均未修改"
+            await refreshLibrarySlimmingRecycleEntries()
+        } catch {
+            librarySlimmingStatusMessage =
+                "无法安全撤销：该项目不再符合“文件操作开始前失败”的条件"
+            await refreshLibrarySlimmingRecycleEntries()
+        }
+    }
+
+    func retryInterruptedLibrarySlimmingRecycleEntry(_ entryID: UUID) async {
+        guard let recycle = librarySlimmingRecycle else { return }
+        isMutatingLibrarySlimmingRecycle = true
+        defer { isMutatingLibrarySlimmingRecycle = false }
+        do {
+            try await Self.offMain {
+                try recycle.retryInterruptedEntry(entryID: entryID)
+            }
+            librarySlimmingStatusMessage = "已重新检查并协调回收状态"
+            await refreshLibrarySlimmingRecycleEntries()
+        } catch LibrarySlimmingRecycleError.mutationAuthorizationRequired {
+            librarySlimmingStatusMessage =
+                "重新检查需要来源写入授权；请从左侧来源菜单更新回收权限后重试"
+        } catch {
+            librarySlimmingStatusMessage =
+                "仍无法确定文件位置，项目会继续阻止来源删除以保护可恢复内容"
+            await refreshLibrarySlimmingRecycleEntries()
+        }
+    }
+
+    func explainUnresolvedLibrarySlimmingRecycleEntry(_ entryID: UUID) {
+        guard let entry = librarySlimmingRecycleEntries.first(where: { $0.id == entryID })
+        else { return }
+        let code = entry.errorCode ?? entry.state.rawValue
+        librarySlimmingStatusMessage =
+            "该项目状态（\(code)）无法证明文件只在原位置或隔离区；ImageAll 会继续保留并阻止来源删除，请先重新检查或恢复文件位置。"
     }
 
     private func refreshActiveWorkspaceAfterRecycleRestore() async {
@@ -5151,6 +5222,9 @@ final class LibraryWorkspaceModel: ObservableObject {
                 selectedSourceIDs.remove(sourceID)
                 librarySlimmingCatalogSourceIDs = selectedSourceIDs
             }
+            if librarySlimmingRecycleSourceFilterID == sourceID {
+                librarySlimmingRecycleSourceFilterID = nil
+            }
             librarySlimmingCatalogRefreshSourceIDs.remove(sourceID)
             sourceSimilarityIndexStatus = nil
             assetPageRequestID = UUID()
@@ -5171,8 +5245,12 @@ final class LibraryWorkspaceModel: ObservableObject {
             )
             return true
         } catch let error as DeleteLibrarySourceError {
-            if case let .unresolvedRecycleEntries(count) = error {
-                notice = .sourceDeletionBlockedByRecycle(itemCount: count)
+            if case let .unresolvedRecycleEntries(blockers) = error {
+                notice = .sourceDeletionBlockedByRecycle(
+                    sourceID: sourceID,
+                    displayName: source.displayName,
+                    blockers: blockers
+                )
             } else {
                 notice = .sourceActionFailed
             }
@@ -9665,6 +9743,39 @@ enum JobActivityPresentation {
     }
 }
 
+private struct SourceDeletionBlockedAlertModifier: ViewModifier {
+    @ObservedObject var model: LibraryWorkspaceModel
+
+    func body(content: Content) -> some View {
+        content.alert(
+            "来源尚未删除",
+            isPresented: Binding(
+                get: { blockedNotice != nil },
+                set: { if !$0 { model.dismissNotice() } }
+            ),
+            presenting: blockedNotice
+        ) { notice in
+            if case let .sourceDeletionBlockedByRecycle(sourceID, _, _) = notice {
+                Button("前往回收站") {
+                    model.openLibrarySlimmingRecycleBin(for: sourceID)
+                }
+                Button("稍后处理", role: .cancel) {}
+            }
+        } message: { notice in
+            Text(LibraryWorkspaceView.noticeText(notice))
+        }
+    }
+
+    private var blockedNotice: LibraryWorkspaceNotice? {
+        guard let notice = model.notice,
+              case .sourceDeletionBlockedByRecycle = notice
+        else {
+            return nil
+        }
+        return notice
+    }
+}
+
 struct LibraryWorkspaceView: View {
     @EnvironmentObject private var toolbarDisplayModeSettings: ToolbarDisplayModeSettingsModel
     private static let sourceDropRowHeight: CGFloat = 40
@@ -9816,6 +9927,7 @@ struct LibraryWorkspaceView: View {
         } message: { _ in
             Text("该来源、照片索引、与这些照片直接关联的标签/审核/分析明细及预览/原图缓存会从 ImageAll 中删除，且无法在 App 内撤销。磁盘原文件或 Apple Photos 中的照片不会被修改或删除。")
         }
+        .modifier(SourceDeletionBlockedAlertModifier(model: model))
         .confirmationDialog(
             "连接当前系统照片图库？",
             isPresented: Binding(
@@ -12578,6 +12690,22 @@ struct LibraryWorkspaceView: View {
                 Button("关闭") { model.dismissNotice() }
                     .buttonStyle(.plain)
                     .persistentHelp("关闭这条状态提示。")
+            } else if case let .sourceDeletionBlockedByRecycle(
+                sourceID,
+                _,
+                _
+            ) = notice {
+                Text(Self.noticeText(notice))
+                    .font(.caption)
+                Spacer()
+                Button("前往回收站") {
+                    model.openLibrarySlimmingRecycleBin(for: sourceID)
+                }
+                .buttonStyle(.plain)
+                .persistentHelp("打开图库瘦身回收站，并只显示阻止该来源删除的项目。")
+                Button("关闭") { model.dismissNotice() }
+                    .buttonStyle(.plain)
+                    .persistentHelp("关闭这条状态提示；删除不会在后台继续。")
             } else {
                 Text(Self.noticeText(notice))
                     .font(.caption)
@@ -12635,8 +12763,11 @@ struct LibraryWorkspaceView: View {
         case .tagMutationFailed: "标签操作未保存，请重试。"
         case .tagSelectionRefreshFailed: "标签已保存，但当前选择刷新失败；请重新选择照片后继续。"
         case .sourceActionFailed: "来源操作未完成。原照片没有被修改，请重试。"
-        case let .sourceDeletionBlockedByRecycle(itemCount):
-            "该来源还有 \(itemCount) 个未完成的回收站项目。请先在图库瘦身回收站中恢复或清理，再删除来源；原照片没有被修改。"
+        case let .sourceDeletionBlockedByRecycle(_, displayName, blockers):
+            sourceDeletionBlockedNoticeText(
+                displayName: displayName,
+                blockers: blockers
+            )
         case let .sourceDeleted(displayName, assetCount):
             "已从 ImageAll 删除“\(displayName)”及其 \(assetCount) 个照片记录；磁盘原文件或 Apple Photos 中的照片未被修改。"
         case .backgroundScanFailed: "后台扫描未完成，已索引的照片仍可继续浏览。"
@@ -12805,6 +12936,27 @@ struct LibraryWorkspaceView: View {
         case .originalOpenFailed:
             "无法用“预览”打开原图。请确认来源仍可用、授权有效且照片已可从本机读取。"
         }
+    }
+
+    private static func sourceDeletionBlockedNoticeText(
+        displayName: String,
+        blockers: LibrarySourceDeletionBlockers
+    ) -> String {
+        var parts: [String] = []
+        if blockers.recycledItemCount > 0 {
+            parts.append("\(blockers.recycledItemCount) 个待恢复或永久清理")
+        }
+        if blockers.discardableAuthorizationFailureCount > 0 {
+            parts.append(
+                "\(blockers.discardableAuthorizationFailureCount) 个未执行的授权失败待撤销"
+            )
+        }
+        if blockers.inspectionRequiredCount > 0 {
+            parts.append("\(blockers.inspectionRequiredCount) 个位置待检查")
+        }
+        return "“\(displayName)”尚未删除，且没有在后台继续。回收站中还有"
+            + parts.joined(separator: "、")
+            + "；请处理后重试。原照片没有被修改。"
     }
 
     private static func originalAspectPrewarmNoticeText(

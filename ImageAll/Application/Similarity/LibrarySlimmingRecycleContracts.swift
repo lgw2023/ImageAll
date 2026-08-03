@@ -15,6 +15,18 @@ enum RecycleSourceKind: String, Sendable, Equatable {
     case photos
 }
 
+enum RecycleFailureCode {
+    /// FolderMutationAccessService emits this before it invokes the file-I/O closure.
+    static let mutationAuthorizationRequired = "mutationAuthorizationRequired"
+}
+
+enum RecycleEntryResolution: Sendable, Equatable, Hashable {
+    case restoreOrPurge
+    case discardPreflightFailure
+    case retryInterruptedOperation
+    case inspect
+}
+
 enum LibrarySlimmingRemovalMode: Sendable, Equatable {
     /// Keep folder bytes in ImageAll quarantine so the user can restore them.
     case recoverableRecycle
@@ -66,6 +78,27 @@ struct RecycleEntryRecord: Identifiable, Sendable, Equatable {
         self.photosLocalIdentifier = photosLocalIdentifier
         self.errorCode = errorCode
         self.fileName = fileName
+    }
+
+    var isDiscardablePreflightFailure: Bool {
+        state == .failed
+            && sourceKind == .file
+            && errorCode == RecycleFailureCode.mutationAuthorizationRequired
+            && originalRelativePath != nil
+            && photosLocalIdentifier == nil
+    }
+
+    var resolution: RecycleEntryResolution {
+        if state == .recycled {
+            return .restoreOrPurge
+        }
+        if isDiscardablePreflightFailure {
+            return .discardPreflightFailure
+        }
+        if state == .pending || state == .restoring || state == .purging {
+            return .retryInterruptedOperation
+        }
+        return .inspect
     }
 }
 
@@ -482,7 +515,15 @@ protocol LibrarySlimmingRecyclePort: Sendable {
         plan: LibrarySlimmingIdenticalCleanupPlan,
         onProgress: @escaping LibrarySlimmingRecycleMoveProgressHandler
     ) throws -> LibrarySlimmingRecycleMoveOutcome
+    /// All unresolved entries that belong in the user-facing recycle lifecycle,
+    /// including failed/interrupted blockers as well as truly recycled items.
+    func listRecycleBinEntries() throws -> [RecycleEntryRecord]
     func listRecycledEntries() throws -> [RecycleEntryRecord]
+    /// Removes only a proven pre-file-I/O authorization failure intent.
+    /// This operation never reads, writes, moves, or deletes source/quarantine files.
+    func discardFailedPreflightEntry(entryID: UUID) throws
+    /// Re-runs deterministic recovery for an interrupted transitional entry.
+    func retryInterruptedEntry(entryID: UUID) throws
     func restore(entryID: UUID) throws
     func purgeNow(entryID: UUID) throws
     func purgeExpired(nowMs: Int64) throws -> Int
@@ -499,6 +540,18 @@ protocol LibrarySlimmingRecyclePort: Sendable {
 }
 
 extension LibrarySlimmingRecyclePort {
+    func listRecycleBinEntries() throws -> [RecycleEntryRecord] {
+        try listRecycledEntries()
+    }
+
+    func discardFailedPreflightEntry(entryID _: UUID) throws {
+        throw LibrarySlimmingRecycleError.invalidState
+    }
+
+    func retryInterruptedEntry(entryID _: UUID) throws {
+        throw LibrarySlimmingRecycleError.invalidState
+    }
+
     func makeIdenticalCleanupPlan(
         clusters _: [SlimmingCluster]
     ) throws -> LibrarySlimmingIdenticalCleanupPlan {

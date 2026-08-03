@@ -372,6 +372,9 @@ struct LibrarySlimmingWorkspaceView: View {
         .onChange(of: model.librarySlimmingRecycleSearchText) { _, _ in
             librarySlimmingRecycleLimit = LibrarySlimmingRecyclePagination.initialLimit
         }
+        .onChange(of: model.librarySlimmingRecycleSourceFilterID) { _, _ in
+            librarySlimmingRecycleLimit = LibrarySlimmingRecyclePagination.initialLimit
+        }
         .onKeyPress(.delete, action: handleMoveToRecycleKeyPress)
         .onKeyPress(.deleteForward, action: handleMoveToRecycleKeyPress)
         .task {
@@ -1178,6 +1181,24 @@ struct LibrarySlimmingWorkspaceView: View {
 
     private var recycleBinList: some View {
         VStack(spacing: 0) {
+            if let sourceTitle = model.librarySlimmingRecycleSourceFilterTitle {
+                HStack(spacing: 8) {
+                    Label(
+                        "仅显示阻止“\(sourceTitle)”删除的项目",
+                        systemImage: "line.3.horizontal.decrease.circle.fill"
+                    )
+                    .font(.callout.weight(.medium))
+                    Spacer()
+                    Button("显示全部") {
+                        model.clearLibrarySlimmingRecycleSourceFilter()
+                    }
+                    .persistentHelp("清除来源范围，显示所有来源的回收站项目。")
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 9)
+                .background(Color.orange.opacity(0.12))
+                Divider()
+            }
             recycleBinSearchBar
             Divider()
             recycleBinSearchResults
@@ -1236,15 +1257,28 @@ struct LibrarySlimmingWorkspaceView: View {
                 ContentUnavailableView {
                     Label("没有匹配的媒体", systemImage: "magnifyingglass")
                 } description: {
-                    Text(
-                        "没有文件名包含“\(model.trimmedLibrarySlimmingRecycleSearchText)”"
-                            + "的回收站条目。"
-                    )
-                } actions: {
-                    Button("清除搜索") {
-                        model.updateLibrarySlimmingRecycleSearchText("")
+                    if let sourceTitle = model.librarySlimmingRecycleSourceFilterTitle,
+                       model.trimmedLibrarySlimmingRecycleSearchText.isEmpty
+                    {
+                        Text("“\(sourceTitle)”当前没有未解决的回收站项目。")
+                    } else {
+                        Text(
+                            "没有文件名包含“\(model.trimmedLibrarySlimmingRecycleSearchText)”"
+                                + "的回收站条目。"
+                        )
                     }
-                    .persistentHelp("清除文件名搜索并显示全部回收站条目。")
+                } actions: {
+                    if !model.trimmedLibrarySlimmingRecycleSearchText.isEmpty {
+                        Button("清除搜索") {
+                            model.updateLibrarySlimmingRecycleSearchText("")
+                        }
+                        .persistentHelp("清除文件名搜索并显示全部回收站条目。")
+                    } else if model.librarySlimmingRecycleSourceFilterID != nil {
+                        Button("显示全部来源") {
+                            model.clearLibrarySlimmingRecycleSourceFilter()
+                        }
+                        .persistentHelp("清除来源范围并显示全部回收站条目。")
+                    }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
@@ -1272,7 +1306,19 @@ struct LibrarySlimmingWorkspaceView: View {
                             Text(entry.sourceKind == .file ? "文件夹" : "Photos")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
-                            if entry.sourceKind == .photos {
+                            if entry.state != .recycled {
+                                Label(
+                                    recycleEntryStateText(entry),
+                                    systemImage: recycleEntryStateIcon(entry)
+                                )
+                                .font(.caption)
+                                .foregroundStyle(
+                                    entry.isDiscardablePreflightFailure
+                                        ? Color.orange
+                                        : Color.red
+                                )
+                                .fixedSize(horizontal: false, vertical: true)
+                            } else if entry.sourceKind == .photos {
                                 Text(
                                     RecycleCountdownFormatter.recordCleanupText(
                                         cleanupAfterMs: entry.purgeAfterMs,
@@ -1297,21 +1343,64 @@ struct LibrarySlimmingWorkspaceView: View {
                         }
                         Spacer()
                         VStack(spacing: 8) {
-                            Button(entry.sourceKind == .photos ? "恢复说明" : "恢复") {
-                                Task { await model.restoreLibrarySlimmingRecycleEntry(entry.id) }
-                            }
-                            .disabled(model.isMutatingLibrarySlimmingRecycle)
-                            .persistentHelp(
-                                entry.sourceKind == .photos
-                                    ? "查看如何从 Apple Photos“最近删除”中恢复这个媒体。"
-                                    : "把这个文件夹媒体从 ImageAll 回收站恢复到原位置。"
-                            )
-                            if entry.sourceKind == .file {
-                                Button("立即删除", role: .destructive) {
-                                    confirmPurgeEntryID = entry.id
+                            switch entry.resolution {
+                            case .restoreOrPurge:
+                                Button(entry.sourceKind == .photos ? "恢复说明" : "恢复") {
+                                    Task {
+                                        await model.restoreLibrarySlimmingRecycleEntry(entry.id)
+                                    }
                                 }
                                 .disabled(model.isMutatingLibrarySlimmingRecycle)
-                                .persistentHelp("打开永久删除确认；确认后这个原始媒体将不可恢复。")
+                                .persistentHelp(
+                                    entry.sourceKind == .photos
+                                        ? "查看如何从 Apple Photos“最近删除”中恢复这个媒体。"
+                                        : "把这个文件夹媒体从 ImageAll 回收站恢复到原位置。"
+                                )
+                                if entry.sourceKind == .file {
+                                    Button("立即删除", role: .destructive) {
+                                        confirmPurgeEntryID = entry.id
+                                    }
+                                    .disabled(model.isMutatingLibrarySlimmingRecycle)
+                                    .persistentHelp("打开永久删除确认；确认后这个原始媒体将不可恢复。")
+                                }
+                            case .discardPreflightFailure:
+                                Button("撤销失败记录") {
+                                    Task {
+                                        await model.discardLibrarySlimmingPreflightFailure(
+                                            entry.id
+                                        )
+                                    }
+                                }
+                                .disabled(model.isMutatingLibrarySlimmingRecycle)
+                                .persistentHelp(
+                                    "仅撤销在文件操作开始前失败的回收意图；不会读写、移动或删除原文件。"
+                                )
+                            case .retryInterruptedOperation:
+                                Button("重新检查状态") {
+                                    Task {
+                                        await model.retryInterruptedLibrarySlimmingRecycleEntry(
+                                            entry.id
+                                        )
+                                    }
+                                }
+                                .disabled(model.isMutatingLibrarySlimmingRecycle)
+                                .persistentHelp("重新检查原位置与隔离区，并按确定结果继续恢复状态。")
+                            case .inspect:
+                                Button("重新检查状态") {
+                                    Task {
+                                        await model.retryInterruptedLibrarySlimmingRecycleEntry(
+                                            entry.id
+                                        )
+                                    }
+                                }
+                                .disabled(model.isMutatingLibrarySlimmingRecycle)
+                                .persistentHelp(
+                                    "仅检查原位置与隔离区；只有位置结果唯一时才更新记录，不会删除任何一侧文件。"
+                                )
+                                Button("查看处理说明") {
+                                    model.explainUnresolvedLibrarySlimmingRecycleEntry(entry.id)
+                                }
+                                .persistentHelp("说明为什么此项目仍需保留并阻止来源删除。")
                             }
                         }
                     }
@@ -1342,6 +1431,28 @@ struct LibrarySlimmingWorkspaceView: View {
                 }
             }
         }
+    }
+
+    private func recycleEntryStateText(_ entry: RecycleEntryRecord) -> String {
+        if entry.isDiscardablePreflightFailure {
+            return "未执行：缺少来源写入授权，可安全撤销此失败意图"
+        }
+        return switch entry.state {
+        case .pending: "转移结果待确认，需重新检查原位置与隔离区"
+        case .restoring: "恢复被中断，需重新检查"
+        case .purging: "永久清理被中断，需重新检查"
+        case .failed:
+            "位置或持久化状态不明确（\(entry.errorCode ?? "未知错误")）"
+        case .recycled: "可恢复"
+        case .restored: "已恢复"
+        case .purged: "已永久清理"
+        }
+    }
+
+    private func recycleEntryStateIcon(_ entry: RecycleEntryRecord) -> String {
+        entry.isDiscardablePreflightFailure
+            ? "exclamationmark.circle"
+            : "exclamationmark.triangle.fill"
     }
 }
 

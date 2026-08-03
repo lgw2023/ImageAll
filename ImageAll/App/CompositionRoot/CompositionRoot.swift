@@ -349,6 +349,7 @@ struct CompositionRoot {
                 database: runtime.database,
                 cachePurger: appOwnedAssetPixelCachePurger
             ),
+            interactiveIOGate: interactiveIOGate,
             appStorageLocationController: appStorageLocationController,
             portableExportDestinationPicker: AppKitPortableExportDestinationPicker(),
             portableExportSourceIsolation: PortableExportSourceIsolationValidator(

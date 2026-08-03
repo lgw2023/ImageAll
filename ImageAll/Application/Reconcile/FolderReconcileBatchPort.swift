@@ -28,6 +28,23 @@ final class InteractiveIOPriorityGate: @unchecked Sendable {
         return try operation()
     }
 
+    /// Async variant used by lifecycle commands that must keep the same
+    /// exclusive mutation window across awaited catalog coordination.
+    func withInteractiveWork<T>(
+        onWaitingForBackground: () -> Void = {},
+        onReady: () -> Void = {},
+        _ operation: () async throws -> T
+    ) async rethrows -> T {
+        let waitsForBackground = beginInteractiveWorkRequest()
+        if waitsForBackground {
+            onWaitingForBackground()
+        }
+        acquireInteractiveWork()
+        onReady()
+        defer { endInteractiveWork() }
+        return try await operation()
+    }
+
     /// Marks one bounded background I/O item. Multiple background items may
     /// overlap, but writer preference prevents new ones from entering once a
     /// recycle request is waiting.

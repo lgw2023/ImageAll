@@ -5756,6 +5756,108 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertEqual(model.filteredLibrarySlimmingRecycleEntries, [summerEntry, winterEntry])
     }
 
+    func testRecycleBinShowsAndScopesEverySourceDeletionBlockerWithActions() async {
+        let sourceID = UUID()
+        let otherSourceID = UUID()
+        let safeFailure = RecycleEntryRecord(
+            id: UUID(),
+            assetID: UUID(),
+            sourceID: sourceID,
+            sourceKind: .file,
+            trashedAtMs: 4,
+            purgeAfterMs: 5,
+            state: .failed,
+            quarantineRelativePath: "objects/safe.jpg",
+            originalRelativePath: "safe.jpg",
+            photosLocalIdentifier: nil,
+            errorCode: RecycleFailureCode.mutationAuthorizationRequired,
+            fileName: "safe.jpg"
+        )
+        let recycled = RecycleEntryRecord(
+            id: UUID(),
+            assetID: UUID(),
+            sourceID: sourceID,
+            sourceKind: .file,
+            trashedAtMs: 3,
+            purgeAfterMs: 5,
+            state: .recycled,
+            quarantineRelativePath: "objects/recycled.jpg",
+            originalRelativePath: "recycled.jpg",
+            photosLocalIdentifier: nil,
+            errorCode: nil,
+            fileName: "recycled.jpg"
+        )
+        let pending = RecycleEntryRecord(
+            id: UUID(),
+            assetID: UUID(),
+            sourceID: sourceID,
+            sourceKind: .file,
+            trashedAtMs: 2,
+            purgeAfterMs: 5,
+            state: .pending,
+            quarantineRelativePath: "objects/pending.jpg",
+            originalRelativePath: "pending.jpg",
+            photosLocalIdentifier: nil,
+            errorCode: nil,
+            fileName: "pending.jpg"
+        )
+        let unrelated = RecycleEntryRecord(
+            id: UUID(),
+            assetID: UUID(),
+            sourceID: otherSourceID,
+            sourceKind: .file,
+            trashedAtMs: 1,
+            purgeAfterMs: 5,
+            state: .failed,
+            quarantineRelativePath: "objects/other.jpg",
+            originalRelativePath: "other.jpg",
+            photosLocalIdentifier: nil,
+            errorCode: "ioFailure",
+            fileName: "other.jpg"
+        )
+        let recycle = FakeLibrarySlimmingRecyclePort(
+            entries: [safeFailure, recycled, pending, unrelated]
+        )
+        let model = LibraryWorkspaceModel(
+            service: FakeLibraryWorkspaceService(
+                connectedSource: LibrarySourceSummary(
+                    id: sourceID,
+                    displayName: "Downloads",
+                    state: .disabled
+                ),
+                reconciledItems: [],
+                startsConnected: true,
+                hasPendingCatalogReconcileJobs: false
+            ),
+            librarySlimmingRecycle: recycle,
+            idlePrewarmInstallEventMonitor: false
+        )
+
+        await model.start()
+        await model.refreshLibrarySlimmingRecycleEntries()
+        model.openLibrarySlimmingRecycleBin(for: sourceID)
+
+        XCTAssertEqual(model.librarySlimmingWorkspaceTab, .recycleBin)
+        XCTAssertEqual(model.librarySlimmingRecycleSourceFilterTitle, "Downloads")
+        XCTAssertEqual(
+            Set(model.filteredLibrarySlimmingRecycleEntries.map(\.id)),
+            Set([safeFailure.id, recycled.id, pending.id])
+        )
+        XCTAssertEqual(safeFailure.resolution, .discardPreflightFailure)
+        XCTAssertEqual(recycled.resolution, .restoreOrPurge)
+        XCTAssertEqual(pending.resolution, .retryInterruptedOperation)
+
+        await model.discardLibrarySlimmingPreflightFailure(safeFailure.id)
+        await model.retryInterruptedLibrarySlimmingRecycleEntry(pending.id)
+
+        XCTAssertEqual(recycle.discardPreflightEntryIDCalls, [safeFailure.id])
+        XCTAssertEqual(recycle.retryInterruptedEntryIDCalls, [pending.id])
+        XCTAssertEqual(
+            Set(model.filteredLibrarySlimmingRecycleEntries.map(\.id)),
+            Set([recycled.id, pending.id])
+        )
+    }
+
     func testLibrarySlimmingRecycleRefreshListsEntriesWithoutPhotosReconciliation() async {
         let sourceID = UUID()
         let entry = RecycleEntryRecord(
@@ -6686,7 +6788,13 @@ final class LibraryWorkspaceModelTests: XCTestCase {
                 state: .active
             ),
             reconciledItems: [],
-            sourceDeletionError: .unresolvedRecycleEntries(count: 2),
+            sourceDeletionError: .unresolvedRecycleEntries(
+                blockers: LibrarySourceDeletionBlockers(
+                    recycledItemCount: 1,
+                    discardableAuthorizationFailureCount: 1,
+                    inspectionRequiredCount: 0
+                )
+            ),
             initialItems: [asset],
             startsConnected: true,
             hasPendingCatalogReconcileJobs: false
@@ -6699,7 +6807,39 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertFalse(deleted)
         XCTAssertEqual(model.sources.map(\.id), [sourceID])
         XCTAssertEqual(model.items.map(\.assetID), [asset.assetID])
-        XCTAssertEqual(model.notice, .sourceDeletionBlockedByRecycle(itemCount: 2))
+        XCTAssertEqual(
+            model.notice,
+            .sourceDeletionBlockedByRecycle(
+                sourceID: sourceID,
+                displayName: "Fixture",
+                blockers: LibrarySourceDeletionBlockers(
+                    recycledItemCount: 1,
+                    discardableAuthorizationFailureCount: 1,
+                    inspectionRequiredCount: 0
+                )
+            )
+        )
+    }
+
+    func testSourceDeletionBlockedNoticeNamesEveryActionableClassAndStops() {
+        let notice = LibraryWorkspaceNotice.sourceDeletionBlockedByRecycle(
+            sourceID: UUID(),
+            displayName: "Downloads",
+            blockers: LibrarySourceDeletionBlockers(
+                recycledItemCount: 11,
+                discardableAuthorizationFailureCount: 4,
+                inspectionRequiredCount: 2
+            )
+        )
+
+        let message = LibraryWorkspaceView.noticeText(notice)
+
+        XCTAssertTrue(message.contains("Downloads"))
+        XCTAssertTrue(message.contains("尚未删除"))
+        XCTAssertTrue(message.contains("没有在后台继续"))
+        XCTAssertTrue(message.contains("11 个待恢复或永久清理"))
+        XCTAssertTrue(message.contains("4 个未执行的授权失败待撤销"))
+        XCTAssertTrue(message.contains("2 个位置待检查"))
     }
 
     func testSourceActionFailureKeepsVisibleCatalogAndShowsNotice() async {
@@ -11130,6 +11270,8 @@ private final class FakeLibrarySlimmingRecyclePort: LibrarySlimmingRecyclePort, 
     private var storedFastDeleteAssetIDCalls: [[UUID]] = []
     private var storedFastDeletedAssetIDs: Set<UUID> = []
     private var storedRestoreEntryIDCalls: [UUID] = []
+    private var storedDiscardPreflightEntryIDCalls: [UUID] = []
+    private var storedRetryInterruptedEntryIDCalls: [UUID] = []
     private var storedRecoverCallCount = 0
     private var storedReconcileCallCount = 0
     private var storedEnqueuePurgeCallCount = 0
@@ -11227,6 +11369,14 @@ private final class FakeLibrarySlimmingRecyclePort: LibrarySlimmingRecyclePort, 
 
     var restoreEntryIDCalls: [UUID] {
         lock.withLock { storedRestoreEntryIDCalls }
+    }
+
+    var discardPreflightEntryIDCalls: [UUID] {
+        lock.withLock { storedDiscardPreflightEntryIDCalls }
+    }
+
+    var retryInterruptedEntryIDCalls: [UUID] {
+        lock.withLock { storedRetryInterruptedEntryIDCalls }
     }
 
     var recoverCallCount: Int {
@@ -11341,6 +11491,29 @@ private final class FakeLibrarySlimmingRecyclePort: LibrarySlimmingRecyclePort, 
             if !storedEntriesAfterRestores.isEmpty {
                 storedEntries = storedEntriesAfterRestores.removeFirst()
             }
+        }
+    }
+
+    func discardFailedPreflightEntry(entryID: UUID) throws {
+        try lock.withLock {
+            guard let entry = storedEntries.first(where: { $0.id == entryID }),
+                  entry.isDiscardablePreflightFailure
+            else {
+                throw LibrarySlimmingRecycleError.invalidState
+            }
+            storedDiscardPreflightEntryIDCalls.append(entryID)
+            storedEntries.removeAll { $0.id == entryID }
+        }
+    }
+
+    func retryInterruptedEntry(entryID: UUID) throws {
+        try lock.withLock {
+            guard let entry = storedEntries.first(where: { $0.id == entryID }),
+                  entry.resolution == .retryInterruptedOperation
+            else {
+                throw LibrarySlimmingRecycleError.invalidState
+            }
+            storedRetryInterruptedEntryIDCalls.append(entryID)
         }
     }
 

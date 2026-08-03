@@ -6,6 +6,33 @@ import XCTest
 @testable import ImageAll
 
 final class LibrarySlimmingRecycleTests: XCTestCase {
+    func testAsyncInteractiveIOPriorityGateKeepsExclusiveLifecycleWindow() async {
+        let gate = InteractiveIOPriorityGate()
+        let interactiveStarted = DispatchSemaphore(value: 0)
+        let competingWorkStarted = DispatchSemaphore(value: 0)
+
+        let lifecycleTask = Task.detached {
+            await gate.withInteractiveWork {
+                await Task.yield()
+                interactiveStarted.signal()
+                try? await Task.sleep(nanoseconds: 200_000_000)
+            }
+        }
+        XCTAssertEqual(interactiveStarted.wait(timeout: .now() + 1), .success)
+
+        let competingTask = Task.detached {
+            gate.withInteractiveWork {
+                competingWorkStarted.signal()
+            }
+        }
+        XCTAssertEqual(competingWorkStarted.wait(timeout: .now() + 0.05), .timedOut)
+
+        XCTAssertEqual(competingWorkStarted.wait(timeout: .now() + 1), .success)
+        await lifecycleTask.value
+        _ = await competingTask.value
+        XCTAssertFalse(gate.hasInteractiveWork)
+    }
+
     func testInteractiveIOPriorityGateBlocksBackgroundWorkUntilRecycleFinishes() async {
         let gate = InteractiveIOPriorityGate()
         let interactiveStarted = DispatchSemaphore(value: 0)
@@ -607,7 +634,55 @@ final class LibrarySlimmingRecycleTests: XCTestCase {
         XCTAssertEqual(bookmarks.resolveCount, 0)
     }
 
-    func testMutationAccessRejectsWritableBookmarkForDisabledSource() throws {
+    func testPreflightAuthorizationFailureIsVisibleAndDiscardableWithoutFileIO() throws {
+        let env = try RecycleTestEnv(label: #function)
+        defer { env.cleanup() }
+        let originalBytes = Data("authorization-gated-original".utf8)
+        let seeded = try env.seedAsset(
+            relativePath: "album/preflight.jpg",
+            contents: originalBytes
+        )
+        let service = env.makeRecycleService(
+            mutationAccess: DirectFolderMutationAccess(rootsBySourceID: [:])
+        )
+
+        let outcome = try service.moveAssetsToRecycle(assetIDs: [seeded.assetID])
+
+        XCTAssertEqual(outcome.failedAssetIDs, [seeded.assetID])
+        XCTAssertEqual(outcome.authorizationRequiredAssetIDs, [seeded.assetID])
+        XCTAssertEqual(try Data(contentsOf: seeded.fileURL), originalBytes)
+        XCTAssertEqual(
+            try FileManager.default.contentsOfDirectory(
+                at: env.quarantineRoot,
+                includingPropertiesForKeys: nil
+            ),
+            []
+        )
+        XCTAssertTrue(try service.listRecycledEntries().isEmpty)
+        let visible = try service.listRecycleBinEntries()
+        let failure = try XCTUnwrap(visible.first)
+        XCTAssertEqual(visible.count, 1)
+        XCTAssertEqual(failure.state, .failed)
+        XCTAssertEqual(
+            failure.errorCode,
+            RecycleFailureCode.mutationAuthorizationRequired
+        )
+        XCTAssertEqual(failure.resolution, .discardPreflightFailure)
+
+        try service.discardFailedPreflightEntry(entryID: failure.id)
+
+        XCTAssertTrue(try service.listRecycleBinEntries().isEmpty)
+        XCTAssertEqual(try Data(contentsOf: seeded.fileURL), originalBytes)
+        XCTAssertEqual(
+            try FileManager.default.contentsOfDirectory(
+                at: env.quarantineRoot,
+                includingPropertiesForKeys: nil
+            ),
+            []
+        )
+    }
+
+    func testMutationAccessAllowsExplicitRestoreAccessForDisabledSource() throws {
         let env = try RecycleTestEnv(label: #function)
         defer { env.cleanup() }
         _ = try env.seedAsset(
@@ -642,12 +717,12 @@ final class LibrarySlimmingRecycleTests: XCTestCase {
             bookmarkPort: bookmarks
         )
 
-        XCTAssertThrowsError(
-            try access.withWritableSourceRoot(sourceID: env.sourceID) { _ in () }
-        ) { error in
-            XCTAssertEqual(error as? LibrarySlimmingRecycleError, .invalidState)
-        }
-        XCTAssertEqual(bookmarks.resolveCount, 0)
+        let resolvedPath = try access.withWritableSourceRoot(
+            sourceID: env.sourceID
+        ) { $0.path }
+
+        XCTAssertEqual(resolvedPath, env.sourceRoot.path)
+        XCTAssertEqual(bookmarks.resolveCount, 1)
     }
 
     func testMutationAccessTreatsPersistedButUnresolvableWriteBookmarkAsInvalid() throws {
@@ -1742,6 +1817,49 @@ final class LibrarySlimmingRecycleTests: XCTestCase {
         }
         XCTAssertEqual(row?["state"] as String?, RecycleEntryState.failed.rawValue)
         XCTAssertEqual(row?["error_code"] as String?, "interruptedConflict")
+    }
+
+    func testRetryFailedEntryFinalizesRecycleWhenOnlyQuarantineExists() throws {
+        let env = try RecycleTestEnv(label: #function)
+        defer { env.cleanup() }
+        let bytes = Data("failed-reinspection".utf8)
+        let seeded = try env.seedAsset(
+            relativePath: "recovery/failed-reinspection.jpg",
+            contents: bytes
+        )
+        let service = env.makeRecycleService()
+        _ = try service.moveFolderAssetsToRecycle(assetIDs: [seeded.assetID])
+        let entry = try XCTUnwrap(try service.listRecycledEntries().first)
+        let quarantineURL = env.quarantineRoot.appendingPathComponent(
+            try XCTUnwrap(entry.quarantineRelativePath)
+        )
+        try env.database.pool.write { db in
+            try db.execute(
+                sql: "UPDATE recycle_entry SET state = 'failed', error_code = 'ioFailure' WHERE id = ?",
+                arguments: [entry.id.uuidString.lowercased()]
+            )
+            try db.execute(
+                sql: "UPDATE asset SET availability = 'available' WHERE id = ?",
+                arguments: [seeded.assetID.uuidString.lowercased()]
+            )
+        }
+
+        try service.retryInterruptedEntry(entryID: entry.id)
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: seeded.fileURL.path))
+        XCTAssertEqual(try Data(contentsOf: quarantineURL), bytes)
+        let resolved = try XCTUnwrap(try service.listRecycleBinEntries().first)
+        XCTAssertEqual(resolved.id, entry.id)
+        XCTAssertEqual(resolved.state, .recycled)
+        XCTAssertNil(resolved.errorCode)
+        let availability = try env.database.pool.read { db in
+            try String.fetchOne(
+                db,
+                sql: "SELECT availability FROM asset WHERE id = ?",
+                arguments: [seeded.assetID.uuidString.lowercased()]
+            )
+        }
+        XCTAssertEqual(availability, AssetAvailability.recycled.rawValue)
     }
 
     func testRecoveryFinalizesRestoreInterruptedAfterFilesystemSuccess() throws {

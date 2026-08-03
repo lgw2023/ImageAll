@@ -36,7 +36,9 @@ struct FolderMutationAuthorizationCoordinator: FolderMutationAuthorizationPort {
             }
             return (bookmark, row["state"])
         }
-        guard stored.state == SourceState.active.rawValue else {
+        guard stored.state == SourceState.active.rawValue
+            || stored.state == SourceState.disabled.rawValue
+        else {
             throw FolderAuthorizationError.invalidSourceState
         }
 
@@ -86,7 +88,10 @@ struct FolderMutationAuthorizationCoordinator: FolderMutationAuthorizationPort {
                     )
                     SELECT id, ?, ?
                     FROM source
-                    WHERE id = ? AND kind = 'folder' AND state = 'active' AND bookmark = ?
+                    WHERE id = ?
+                      AND kind = 'folder'
+                      AND state IN ('active', 'disabled')
+                      AND bookmark = ?
                     ON CONFLICT(source_id) DO UPDATE SET
                         bookmark = excluded.bookmark,
                         updated_at_ms = excluded.updated_at_ms
@@ -154,7 +159,13 @@ struct FolderMutationAccessService: FolderMutationAccessing {
             return (row["mutation_bookmark"], row["state"])
         }
 
-        guard stored.state == SourceState.active.rawValue else {
+        // Disabled sources cannot start a new recycle operation (the recycle
+        // insert independently requires an active source), but an explicit
+        // restore must remain possible so its real quarantine blockers can be
+        // resolved before the source is deleted from ImageAll.
+        guard stored.state == SourceState.active.rawValue
+            || stored.state == SourceState.disabled.rawValue
+        else {
             throw LibrarySlimmingRecycleError.invalidState
         }
         guard let mutationBookmark = stored.mutationBookmark, !mutationBookmark.isEmpty else {
