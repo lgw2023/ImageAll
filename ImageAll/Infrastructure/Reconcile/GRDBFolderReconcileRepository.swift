@@ -703,7 +703,9 @@ struct GRDBFolderReconcileRepository: FolderReconcileBatchPort, Sendable {
         observation: FolderReconcileAssetObservation
     ) -> SamePathResolution {
         if existing.availability == AssetAvailability.recycled.rawValue {
-            if existing.recycleState == RecycleEntryState.purged.rawValue {
+            if existing.recycleState == RecycleEntryState.recycled.rawValue
+                || existing.recycleState == RecycleEntryState.purged.rawValue
+            {
                 return .replace(newAssetID: UUID())
             }
             return .preserveRecycled
