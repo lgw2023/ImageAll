@@ -30,9 +30,12 @@ struct GRDBFolderReconcileRepository: FolderReconcileBatchPort, Sendable {
                 db,
                 sql: """
                 SELECT a.media_kind, a.media_type, a.duration_ms, a.width, a.height,
-                       a.media_created_at_ms, a.availability
+                       a.media_created_at_ms, a.availability,
+                       location.asset_id AS location_observation_asset_id,
+                       location.latitude, location.longitude
                 FROM asset a
                 JOIN file_fingerprint f ON f.asset_id = a.id
+                LEFT JOIN asset_location AS location ON location.asset_id = a.id
                 WHERE a.source_id = ?
                     AND a.locator_kind = 'file'
                     AND a.locator_state = 'current'
@@ -59,6 +62,24 @@ struct GRDBFolderReconcileRepository: FolderReconcileBatchPort, Sendable {
             else {
                 return nil
             }
+            let locationObservationAssetID: String? = row["location_observation_asset_id"]
+            if mediaKind == .image, locationObservationAssetID == nil {
+                // v031 intentionally leaves existing assets without a row so
+                // the first later reconcile re-reads metadata exactly once.
+                return nil
+            }
+            let latitude: Double? = row["latitude"]
+            let longitude: Double? = row["longitude"]
+            let location: AssetLocationCoordinate?
+            if let latitude, let longitude {
+                let candidate = AssetLocationCoordinate(
+                    latitude: latitude,
+                    longitude: longitude
+                )
+                location = candidate.isValid ? candidate : nil
+            } else {
+                location = nil
+            }
 
             return FolderReconcileAssetObservation(
                 relativePath: relativePath,
@@ -69,6 +90,7 @@ struct GRDBFolderReconcileRepository: FolderReconcileBatchPort, Sendable {
                 width: row["width"],
                 height: row["height"],
                 mediaCreatedAtMs: row["media_created_at_ms"],
+                location: location,
                 availability: availability,
                 sizeBytes: sizeBytes,
                 modifiedAtNs: modifiedAtNs,
@@ -829,6 +851,12 @@ struct GRDBFolderReconcileRepository: FolderReconcileBatchPort, Sendable {
             ]
         )
         try upsertFingerprint(db: db, assetID: assetID, observation: observation)
+        try upsertLocation(
+            db: db,
+            assetID: assetID,
+            observation: observation,
+            nowMs: nowMs
+        )
     }
 
     private func updateRetainedAsset(
@@ -871,6 +899,12 @@ struct GRDBFolderReconcileRepository: FolderReconcileBatchPort, Sendable {
             ]
         )
         try upsertFingerprint(db: db, assetID: assetID, observation: observation)
+        try upsertLocation(
+            db: db,
+            assetID: assetID,
+            observation: observation,
+            nowMs: nowMs
+        )
     }
 
     private func updateConflictAsset(
@@ -1066,6 +1100,12 @@ struct GRDBFolderReconcileRepository: FolderReconcileBatchPort, Sendable {
             ]
         )
         try upsertFingerprint(db: db, assetID: assetID, observation: observation)
+        try upsertLocation(
+            db: db,
+            assetID: assetID,
+            observation: observation,
+            nowMs: nowMs
+        )
     }
 
     private func fetchAssetByID(db: Database, assetID: UUID) throws -> ExistingAssetRecord? {
@@ -1168,6 +1208,36 @@ struct GRDBFolderReconcileRepository: FolderReconcileBatchPort, Sendable {
 
     private func makeJobCheckpoint(_ checkpoint: FolderReconcileCheckpointV1) throws -> JobCheckpoint {
         JobCheckpoint(version: 1, data: try FolderReconcileCheckpointCodec.encode(checkpoint))
+    }
+
+    private func upsertLocation(
+        db: Database,
+        assetID: UUID,
+        observation: FolderReconcileAssetObservation,
+        nowMs: Int64
+    ) throws {
+        let location = observation.location?.isValid == true ? observation.location : nil
+        try db.execute(
+            sql: """
+            INSERT INTO asset_location (
+                asset_id, latitude, longitude, altitude_m, source_kind, updated_at_ms
+            ) VALUES (?, ?, ?, NULL, ?, ?)
+            ON CONFLICT(asset_id) DO UPDATE SET
+                latitude = excluded.latitude,
+                longitude = excluded.longitude,
+                altitude_m = NULL,
+                source_kind = excluded.source_kind,
+                place_id = NULL,
+                updated_at_ms = excluded.updated_at_ms
+            """,
+            arguments: [
+                assetID.uuidString.lowercased(),
+                location?.latitude,
+                location?.longitude,
+                location == nil ? "none" : "embeddedGPS",
+                nowMs,
+            ]
+        )
     }
 }
 

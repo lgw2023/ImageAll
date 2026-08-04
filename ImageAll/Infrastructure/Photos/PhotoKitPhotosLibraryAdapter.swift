@@ -686,6 +686,12 @@ final class PhotoKitPhotosLibraryAdapter: NSObject, PhotosLibraryAccessPort, Pho
         let durationMs: Int64? = mediaKind == .video
             ? max(1, Int64((asset.duration * 1_000).rounded()))
             : nil
+        let location: AssetLocationCoordinate? = asset.location.map {
+            AssetLocationCoordinate(
+                latitude: $0.coordinate.latitude,
+                longitude: $0.coordinate.longitude
+            )
+        }.flatMap { $0.isValid ? $0 : nil }
         return PhotosAssetMetadata(
             localIdentifier: asset.localIdentifier,
             fileName: safeFileName(resource.originalFilename),
@@ -695,7 +701,8 @@ final class PhotoKitPhotosLibraryAdapter: NSObject, PhotosLibraryAccessPort, Pho
             createdAtMs: milliseconds(asset.creationDate),
             modifiedAtMs: milliseconds(asset.modificationDate),
             mediaKind: mediaKind,
-            durationMs: durationMs
+            durationMs: durationMs,
+            location: location
         )
     }
 

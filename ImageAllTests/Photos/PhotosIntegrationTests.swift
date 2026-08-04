@@ -222,7 +222,16 @@ final class PhotosIntegrationTests: XCTestCase {
     }
 
     func testSyncCursorWithoutCompletedFullScanRunsFullEnumeration() async throws {
-        let first = metadata("photos-a", name: "A.HEIC", type: "public.heic")
+        let first = PhotosAssetMetadata(
+            localIdentifier: "photos-a",
+            fileName: "A.HEIC",
+            mediaType: "public.heic",
+            width: 1_200,
+            height: 800,
+            createdAtMs: DatabaseTestSupport.timestampMs,
+            modifiedAtMs: DatabaseTestSupport.timestampMs,
+            location: AssetLocationCoordinate(latitude: 35.6895, longitude: 139.6917)
+        )
         let second = metadata("photos-b", name: "B.PNG", type: "public.png")
         let database = try FolderAuthorizationTestSupport.makeDatabase()
         let access = FakePhotosLibraryAccess(
@@ -274,6 +283,20 @@ final class PhotosIntegrationTests: XCTestCase {
             )
         }
         XCTAssertEqual(assetCount, 2)
+        let storedLocation = try await database.pool.read { db in
+            try Row.fetchOne(
+                db,
+                sql: """
+                SELECT location.latitude, location.longitude, location.source_kind
+                FROM asset_location AS location
+                JOIN asset ON asset.id = location.asset_id
+                WHERE asset.photos_local_identifier = 'photos-a'
+                """
+            )
+        }
+        XCTAssertEqual(storedLocation?["latitude"] as Double?, 35.6895)
+        XCTAssertEqual(storedLocation?["longitude"] as Double?, 139.6917)
+        XCTAssertEqual(storedLocation?["source_kind"] as String?, "photosGPS")
     }
 
     func testIncrementalUpdateWithoutUpsertDoesNotMarkExistingAssetMissing() async throws {

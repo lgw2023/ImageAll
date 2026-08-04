@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data: blob:; font-src 'self' data:; worker-src 'self' blob:; child-src 'self' blob:">
+  <title>ImageAll Photo Atlas</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="maplibre-gl.css">
+  <link rel="stylesheet" href="world-map.css">
+</head>
+<body>
+  <main id="map" aria-label="可交互照片世界地图"></main>
+  <div id="paper-wash" aria-hidden="true"></div>
+  <div id="paper-texture" aria-hidden="true"></div>
+  <div id="tooltip" role="status" aria-live="polite"></div>
+  <div id="fallback-badge">LOCAL ATLAS · OFFLINE READY</div>
+  <script src="maplibre-gl.js"></script>
+  <script src="maplibre-gl-worker-source.js"></script>
+  <script src="deck.gl.min.js"></script>
+  <script src="natural-earth-countries.js"></script>
+  <script src="world-map.js"></script>
+</body>
+</html>

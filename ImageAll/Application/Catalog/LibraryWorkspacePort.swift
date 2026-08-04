@@ -373,6 +373,22 @@ protocol LibraryWorkspacePort: Sendable {
     func fetchJobActivity() throws -> [JobActivityItem]
     func applyJobActivityAction(_ action: JobActivityAction, jobID: UUID) throws
     func fetchSources() throws -> [LibrarySourceSummary]
+    func fetchGalleryOverview() throws -> GalleryOverviewSnapshot
+    func fetchWorldMapSnapshot(query: WorldMapCatalogQuery) throws -> WorldMapCatalogSnapshot
+    func fetchWorldMapSelection(
+        query: WorldMapCatalogSelectionQuery
+    ) throws -> WorldMapCatalogSelection
+    func fetchWorldMapLocationBackfillSnapshots() throws
+        -> [WorldMapLocationBackfillSnapshot]
+    func startWorldMapLocationBackfill(sourceID: UUID) throws
+    func cancelWorldMapLocationBackfill(sourceID: UUID) throws
+    func fetchWorldMapPlaceTagResolutions() throws -> [WorldMapPlaceTagResolution]
+    func resolveWorldMapPlaceTag(tagID: UUID) async throws -> WorldMapPlaceTagResolution
+    func confirmWorldMapPlaceCandidate(
+        tagID: UUID,
+        placeID: String
+    ) throws -> WorldMapPlaceTagResolution
+    func ignoreWorldMapPlaceTag(tagID: UUID) throws -> WorldMapPlaceTagResolution
     func connectFolder() async throws -> ConnectFolderOutcome
     func connectPhotos() async throws -> ConnectPhotosOutcome
     func syncPhotosLibrary(sourceID: UUID) async throws
@@ -438,6 +454,49 @@ protocol LibraryWorkspacePort: Sendable {
 extension LibraryWorkspacePort {
     func startCatalogSourceMonitoring(onChange: @escaping @Sendable () -> Void) throws {}
     func stopCatalogSourceMonitoring() {}
+
+    func fetchGalleryOverview() throws -> GalleryOverviewSnapshot {
+        .empty
+    }
+
+    func fetchWorldMapSnapshot(query _: WorldMapCatalogQuery) throws -> WorldMapCatalogSnapshot {
+        .empty
+    }
+
+    func fetchWorldMapSelection(
+        query _: WorldMapCatalogSelectionQuery
+    ) throws -> WorldMapCatalogSelection {
+        .empty
+    }
+
+    func fetchWorldMapLocationBackfillSnapshots() throws
+        -> [WorldMapLocationBackfillSnapshot]
+    {
+        []
+    }
+
+    func startWorldMapLocationBackfill(sourceID _: UUID) throws {}
+
+    func cancelWorldMapLocationBackfill(sourceID _: UUID) throws {}
+
+    func fetchWorldMapPlaceTagResolutions() throws -> [WorldMapPlaceTagResolution] {
+        []
+    }
+
+    func resolveWorldMapPlaceTag(tagID _: UUID) async throws -> WorldMapPlaceTagResolution {
+        throw WorldMapPlaceResolutionError.tagUnavailable
+    }
+
+    func confirmWorldMapPlaceCandidate(
+        tagID _: UUID,
+        placeID _: String
+    ) throws -> WorldMapPlaceTagResolution {
+        throw WorldMapPlaceResolutionError.candidateUnavailable
+    }
+
+    func ignoreWorldMapPlaceTag(tagID _: UUID) throws -> WorldMapPlaceTagResolution {
+        throw WorldMapPlaceResolutionError.tagUnavailable
+    }
 
     func loadOriginalAspectThumbnailIfCached(assetID _: UUID) async throws -> Data? {
         nil

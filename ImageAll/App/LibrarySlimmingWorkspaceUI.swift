@@ -230,6 +230,22 @@ struct LibrarySlimmingAnalysisJobPresentation: Identifiable, Equatable, Sendable
     }
 }
 
+enum LibrarySlimmingWorkspaceLayout {
+    static let navigatorMinimumWidth: CGFloat = 196
+    static let navigatorMaximumWidth: CGFloat = 244
+    static let navigatorMaximumFraction: CGFloat = 0.42
+
+    static func navigatorWidth(availableWidth: CGFloat) -> CGFloat {
+        guard availableWidth > 0 else { return 0 }
+        let proportional = availableWidth * 0.22
+        let preferred = min(
+            navigatorMaximumWidth,
+            max(navigatorMinimumWidth, proportional)
+        )
+        return min(preferred, availableWidth * navigatorMaximumFraction)
+    }
+}
+
 enum LibrarySlimmingMoveConfirmationAction {
     static func confirm(
         canPersistSkip: Bool,
@@ -285,69 +301,51 @@ struct LibrarySlimmingWorkspaceView: View {
         LibrarySlimmingClusterPagination.initialLimit
     @State private var librarySlimmingRecycleLimit =
         LibrarySlimmingRecyclePagination.initialLimit
+    @State private var showsAnalysisNavigator = true
 
     var body: some View {
-        VStack(spacing: 0) {
-            MediaKindWorkspaceTabs(
-                selection: model.selectedMediaKind,
-                accessibilityIdentifier: "librarySlimmingMediaKindTabs",
-                help: "在图库瘦身内切换照片和视频；分析任务、结果和回收记录不会跨媒体混用。"
-            ) { mediaKind in
-                Task { await model.setLibrarySlimmingWorkspaceMediaKind(mediaKind) }
-            }
-            Divider()
-            header
-            Divider()
-            Picker("工作台", selection: Binding(
-                get: { model.librarySlimmingWorkspaceTab },
-                set: { model.selectLibrarySlimmingWorkspaceTab($0) }
-            )) {
-                Text("分析结果").tag(LibrarySlimmingWorkspaceTab.clusters)
-                Text("回收站").tag(LibrarySlimmingWorkspaceTab.recycleBin)
-            }
-            .pickerStyle(.segmented)
-            .persistentHelp("在分析结果和 ImageAll 回收站之间切换；不会启动、删除或恢复任务。")
-            .padding(.horizontal, 16)
-            .padding(.vertical, 8)
+        ZStack {
+            VStack(spacing: 0) {
+                compactCommandBar
+                Divider()
 
-            if model.isAnalyzingLibrarySlimming, let progress = model.librarySlimmingScanProgress {
-                progressBanner(progress)
-                Divider()
-            }
-            if let message = model.librarySlimmingRecycleActionMessage {
-                statusBanner(message)
-                Divider()
-            } else if !model.isAnalyzingLibrarySlimming,
-                      let message = model.librarySlimmingStatusMessage
-            {
-                statusBanner(message)
-                Divider()
-            }
-
-            // Lock the workspace body to the remaining height so long Lists scroll.
-            Color.clear
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .overlay {
-                    if model.librarySlimmingWorkspaceTab == .recycleBin {
-                        recycleBinList
-                    } else {
-                        GeometryReader { proxy in
-                            let navigatorWidth = analysisNavigatorWidth(
-                                availableWidth: proxy.size.width
-                            )
-                            HStack(spacing: 0) {
-                                analysisHistoryAndClusters
-                                    .frame(width: navigatorWidth, height: proxy.size.height)
-                                Divider()
-                                clusterDetail
-                                    .frame(
-                                        width: max(proxy.size.width - navigatorWidth - 1, 0),
-                                        height: proxy.size.height
-                                    )
+                // Lock the workspace body to the remaining height so long Lists scroll.
+                Color.clear
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .overlay {
+                        if model.librarySlimmingWorkspaceTab == .recycleBin {
+                            recycleBinList
+                        } else {
+                            GeometryReader { proxy in
+                                HStack(spacing: 0) {
+                                    if showsAnalysisNavigator {
+                                        analysisHistoryAndClusters
+                                            .frame(
+                                                width: LibrarySlimmingWorkspaceLayout.navigatorWidth(
+                                                    availableWidth: proxy.size.width
+                                                ),
+                                                height: proxy.size.height
+                                            )
+                                        Divider()
+                                    }
+                                    clusterDetail
+                                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                                }
+                                .animation(.easeInOut(duration: 0.16), value: showsAnalysisNavigator)
                             }
                         }
                     }
-                }
+            }
+
+            if let navigation = model.librarySlimmingPreviewNavigation {
+                LibrarySlimmingQuickLookView(
+                    model: model,
+                    navigation: navigation,
+                    onRequestDelete: requestFastDeleteFromPreview
+                )
+                .transition(.opacity)
+                .zIndex(10)
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .navigationTitle("图库瘦身")
@@ -375,6 +373,15 @@ struct LibrarySlimmingWorkspaceView: View {
         .onChange(of: model.librarySlimmingRecycleSourceFilterID) { _, _ in
             librarySlimmingRecycleLimit = LibrarySlimmingRecyclePagination.initialLimit
         }
+        .onChange(of: model.librarySlimmingPreviewAssetID) { _, _ in
+            keyboardFocused = true
+        }
+        .onKeyPress(.space, action: handlePreviewSpaceKeyPress)
+        .onKeyPress(.escape, action: handlePreviewEscapeKeyPress)
+        .onKeyPress(
+            keys: [.leftArrow, .rightArrow],
+            action: handlePreviewNavigationKeyPress
+        )
         .onKeyPress(.delete, action: handleMoveToRecycleKeyPress)
         .onKeyPress(.deleteForward, action: handleMoveToRecycleKeyPress)
         .task {
@@ -504,307 +511,325 @@ struct LibrarySlimmingWorkspaceView: View {
         }
     }
 
-    private var header: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 10) {
-                Button {
-                    Task { await model.analyzeLibrarySlimming(mode: .catalog) }
-                } label: {
-                    if model.isAnalyzingLibrarySlimming,
-                       model.librarySlimmingAnalyzeMode == .catalog
-                    {
-                        ProgressView()
-                            .controlSize(.small)
-                        Text(model.librarySlimmingCatalogAnalyzeRunningTitle)
-                    } else {
-                        Label(
-                            model.librarySlimmingCatalogAnalyzeActionTitle,
-                            systemImage: "wand.and.stars"
-                        )
+    private var compactCommandBar: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                Picker("媒体", selection: Binding(
+                    get: { model.selectedMediaKind },
+                    set: { mediaKind in
+                        Task { await model.setLibrarySlimmingWorkspaceMediaKind(mediaKind) }
                     }
+                )) {
+                    Label("照片", systemImage: MediaKind.image.systemImage)
+                        .tag(MediaKind.image)
+                    Label("视频", systemImage: MediaKind.video.systemImage)
+                        .tag(MediaKind.video)
                 }
-                .buttonStyle(.borderedProminent)
-                .disabled(!model.canAnalyzeLibrarySlimmingCatalog)
-                .persistentHelp(
-                    "\(model.librarySlimmingCatalogSourceScopeCaption)；不会取消已有分析记录"
-                )
+                .labelsHidden()
+                .pickerStyle(.segmented)
+                .frame(width: 146)
+                .accessibilityLabel("媒体类型")
+                .accessibilityIdentifier("librarySlimmingMediaKindTabs")
+                .persistentHelp("切换照片和视频；分析任务、结果和回收记录不会跨媒体混用。")
 
-                Menu {
+                Picker("工作台", selection: Binding(
+                    get: { model.librarySlimmingWorkspaceTab },
+                    set: { model.selectLibrarySlimmingWorkspaceTab($0) }
+                )) {
+                    Text("分析结果").tag(LibrarySlimmingWorkspaceTab.clusters)
+                    Text("回收站").tag(LibrarySlimmingWorkspaceTab.recycleBin)
+                }
+                .labelsHidden()
+                .pickerStyle(.segmented)
+                .frame(width: 154)
+                .persistentHelp("切换分析结果和 ImageAll 回收站；不会启动、删除或恢复任务。")
+
+                if model.librarySlimmingWorkspaceTab == .clusters {
                     Button {
-                        model.selectAllLibrarySlimmingCatalogSources()
+                        Task { await model.analyzeLibrarySlimming(mode: .catalog) }
                     } label: {
-                        Label(
-                            "全选",
-                            systemImage: allLibrarySlimmingCatalogSourcesSelected
-                                ? "checkmark"
-                                : "square"
-                        )
-                    }
-
-                    Button {
-                        model.clearLibrarySlimmingCatalogSourceSelection()
-                    } label: {
-                        Label("清空选择", systemImage: "xmark")
-                    }
-                    .disabled(
-                        !model.activeLibrarySlimmingSources.contains {
-                            model.isLibrarySlimmingCatalogSourceIncluded($0.id)
-                        }
-                    )
-
-                    Divider()
-
-                    ForEach(model.activeLibrarySlimmingSources) { source in
-                        Toggle(
-                            isOn: Binding(
-                                get: {
-                                    model.isLibrarySlimmingCatalogSourceIncluded(source.id)
-                                },
-                                set: {
-                                    model.setLibrarySlimmingCatalogSourceIncluded(
-                                        source.id,
-                                        $0
-                                    )
-                                }
-                            )
-                        ) {
+                        if model.isAnalyzingLibrarySlimming,
+                           model.librarySlimmingAnalyzeMode == .catalog
+                        {
+                            ProgressView()
+                                .controlSize(.small)
+                            Text(model.librarySlimmingCatalogAnalyzeRunningTitle)
+                        } else {
                             Label(
-                                source.displayName,
-                                systemImage: source.kind == .photos
-                                    ? "photo.on.rectangle.angled"
-                                    : "folder"
+                                model.librarySlimmingCatalogAnalyzeActionTitle,
+                                systemImage: "wand.and.stars"
                             )
                         }
                     }
-                } label: {
-                    Label(
-                        model.librarySlimmingCatalogSourceSelectionTitle,
-                        systemImage: "square.stack.3d.up"
+                    .buttonStyle(.borderedProminent)
+                    .disabled(!model.canAnalyzeLibrarySlimmingCatalog)
+                    .persistentHelp(
+                        "\(model.librarySlimmingCatalogSourceScopeCaption)；不会取消已有分析记录"
+                    )
+
+                    catalogSourceMenu
+                    analysisOptionsMenu
+
+                    if model.librarySlimmingIdenticalGroupCount > 0 {
+                        Button(role: .destructive) {
+                            Task {
+                                identicalCleanupPlan =
+                                    await model.prepareLibrarySlimmingIdenticalCleanup()
+                            }
+                        } label: {
+                            if model.isPreparingLibrarySlimmingIdenticalCleanup {
+                                ProgressView()
+                                    .controlSize(.small)
+                                Text("正在计算清理方案…")
+                            } else {
+                                Label(
+                                    "一键清理完全相同（\(model.librarySlimmingIdenticalGroupCount) 组）",
+                                    systemImage: "trash.square"
+                                )
+                            }
+                        }
+                        .disabled(!model.canPrepareLibrarySlimmingIdenticalCleanup)
+                        .persistentHelp(
+                            model.librarySlimmingIdenticalCleanupDisabledReason
+                                ?? "为当前分析结果的每个完全相同分组保留一个，并预览其余媒体的批量回收方案。"
+                        )
+                    }
+
+                    if model.selectedLibrarySlimmingCluster != nil {
+                        Button(role: .destructive) {
+                            requestFastDeleteConfirmation()
+                        } label: {
+                            if model.isMutatingLibrarySlimmingRecycle {
+                                ProgressView()
+                                    .controlSize(.small)
+                                Text("正在处理…")
+                            } else if model.selectedLibrarySlimmingMemberIDs.isEmpty {
+                                Label("快速清理", systemImage: "trash.fill")
+                            } else {
+                                Label(
+                                    "快速清理 (\(model.selectedLibrarySlimmingMemberIDs.count))",
+                                    systemImage: "trash.fill"
+                                )
+                            }
+                        }
+                        .disabled(!model.canMoveSelectedLibrarySlimmingMembersToRecycle)
+                        .persistentHelp(
+                            model.librarySlimmingMoveToRecycleDisabledReason
+                                ?? "文件夹媒体将永久删除，使来源空间立即可回收；Photos 使用系统“最近删除”（⌫ / Delete）"
+                        )
+
+                        Menu {
+                            Button("移入可恢复回收站") {
+                                requestMoveToRecycleConfirmation()
+                            }
+                            .persistentHelp("文件夹媒体复制到 ImageAll 回收站后再删除源文件，跨磁盘时可能较慢。")
+                        } label: {
+                            Label("更多", systemImage: "ellipsis.circle")
+                        }
+                        .disabled(!model.canMoveSelectedLibrarySlimmingMembersToRecycle)
+                        .persistentHelp("选择保留恢复能力的安全回收方式。")
+                    }
+
+                    Button {
+                        showsAnalysisNavigator.toggle()
+                    } label: {
+                        Label(
+                            showsAnalysisNavigator ? "隐藏记录" : "显示记录",
+                            systemImage: "rectangle.leadinghalf.inset.filled"
+                        )
+                        .labelStyle(.iconOnly)
+                    }
+                    .accessibilityLabel(showsAnalysisNavigator ? "隐藏分析记录" : "显示分析记录")
+                    .persistentHelp(
+                        showsAnalysisNavigator
+                            ? "隐藏分析记录与结果分组栏，让照片网格使用全部宽度。"
+                            : "显示分析记录与结果分组栏。"
                     )
                 }
-                .disabled(model.activeLibrarySlimmingSources.isEmpty)
-                .persistentHelp(
-                    "选择一个或多个要分析的来源；只列出当前可用来源"
-                )
 
-                Button {
-                    Task { await model.analyzeLibrarySlimming(mode: .currentFilter) }
-                } label: {
-                    if model.isAnalyzingLibrarySlimming,
-                       model.librarySlimmingAnalyzeMode == .currentFilter
-                    {
-                        ProgressView()
-                            .controlSize(.small)
-                        Text(model.librarySlimmingCurrentFilterRunningTitle)
-                    } else {
-                        Label(
-                            model.librarySlimmingCurrentFilterActionTitle,
-                            systemImage: "line.3.horizontal.decrease.circle"
-                        )
-                    }
-                }
-                .disabled(
-                    !model.supportsLibrarySlimming
-                        || !model.hasLibrarySlimmingFilterScope
-                )
-                .persistentHelp(
-                    "\(model.librarySlimmingFilterScopeCaption)；不会取消已有分析记录"
-                )
-
-                if !model.librarySlimmingSeedAssetIDs.isEmpty {
-                    Button {
-                        Task { await model.analyzeLibrarySlimming(mode: .seeds) }
-                    } label: {
-                        Label(
-                            "按种子查找 (\(model.librarySlimmingSeedAssetIDs.count))",
-                            systemImage: "target"
-                        )
-                    }
-                    .disabled(!model.supportsLibrarySlimming)
-                    .persistentHelp("以当前种子发起新的检索任务；不会取消已有分析记录")
-                }
-
-                if model.supportsLibrarySlimmingThresholds {
-                    Button {
-                        model.showsLibrarySlimmingThresholdEditor.toggle()
-                    } label: {
-                        Label("阈值", systemImage: "slider.horizontal.3")
-                    }
-                    .popover(
-                        isPresented: $model.showsLibrarySlimmingThresholdEditor,
-                        arrowEdge: .bottom
-                    ) {
-                        LibrarySlimmingThresholdEditor(model: model)
-                            .frame(width: 320)
-                            .padding(16)
-                    }
-                    .persistentHelp("调整相似召回与精排阈值；下次分析生效")
-                }
-
-                Button {
-                    Task { await model.refreshLibrarySlimmingCatalog() }
-                } label: {
-                    Label("刷新来源", systemImage: "arrow.clockwise")
-                }
-                .disabled(!model.canRefreshLibrarySlimmingCatalog)
-                .persistentHelp(
-                    "手动校对媒体来源并更新目录；停留在图库瘦身期间，来源变化不会自动触发扫描。"
-                )
-
-                Spacer()
+                Spacer(minLength: 12)
+                inlineActivityStatus
 
                 Button("返回图库", systemImage: "photo.on.rectangle") {
                     onReturnToLibrary()
                 }
                 .persistentHelp("退出图库瘦身工作区并返回图库；已有分析任务不会被删除。")
             }
-
-            HStack(spacing: 10) {
-                if model.canPauseLibrarySlimmingAnalysis {
-                    Button {
-                        Task { await model.pauseLibrarySlimmingAnalysis() }
-                    } label: {
-                        Label("暂停当前", systemImage: "pause.fill")
-                    }
-                    .persistentHelp("暂停当前选中的分析任务")
-                } else if model.canResumeLibrarySlimmingAnalysis {
-                    Button {
-                        Task { await model.resumeLibrarySlimmingAnalysis() }
-                    } label: {
-                        Label("继续当前", systemImage: "play.fill")
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .persistentHelp("从已保存进度继续当前选中的分析任务")
-                }
-
-                if model.canDeleteSelectedLibrarySlimmingAnalysisJob {
-                    Button(role: .destructive) {
-                        if let id = model.librarySlimmingAnalysisJobID {
-                            Task { await model.deleteLibrarySlimmingAnalysisJob(id) }
-                        }
-                    } label: {
-                        Label("删除记录", systemImage: "trash")
-                    }
-                    .persistentHelp("永久删除当前选中的分析任务与结果")
-                }
-
-                if model.librarySlimmingIdenticalGroupCount > 0 {
-                    Button(role: .destructive) {
-                        Task {
-                            identicalCleanupPlan =
-                                await model.prepareLibrarySlimmingIdenticalCleanup()
-                        }
-                    } label: {
-                        if model.isPreparingLibrarySlimmingIdenticalCleanup {
-                            ProgressView()
-                                .controlSize(.small)
-                            Text("正在计算清理方案…")
-                        } else {
-                            Label(
-                                "一键清理完全相同（\(model.librarySlimmingIdenticalGroupCount) 组）",
-                                systemImage: "trash.square"
-                            )
-                        }
-                    }
-                    .disabled(!model.canPrepareLibrarySlimmingIdenticalCleanup)
-                    .persistentHelp(
-                        model.librarySlimmingIdenticalCleanupDisabledReason
-                            ?? "为当前分析结果的每个完全相同分组保留一个，并预览其余媒体的批量回收方案。"
-                    )
-                }
-
-                if model.selectedLibrarySlimmingCluster != nil {
-                    Button(role: .destructive) {
-                        requestFastDeleteConfirmation()
-                    } label: {
-                        if model.isMutatingLibrarySlimmingRecycle {
-                            ProgressView()
-                                .controlSize(.small)
-                            Text("正在处理…")
-                        } else if model.selectedLibrarySlimmingMemberIDs.isEmpty {
-                            Label("快速清理", systemImage: "trash.fill")
-                        } else {
-                            Label(
-                                "快速清理 (\(model.selectedLibrarySlimmingMemberIDs.count))",
-                                systemImage: "trash.fill"
-                            )
-                        }
-                    }
-                    .disabled(!model.canMoveSelectedLibrarySlimmingMembersToRecycle)
-                    .persistentHelp(
-                        model.librarySlimmingMoveToRecycleDisabledReason
-                            ?? "文件夹媒体将永久删除，使来源空间立即可回收；Photos 使用系统“最近删除”（⌫ / Delete）"
-                    )
-
-                    Menu {
-                        Button("移入可恢复回收站") {
-                            requestMoveToRecycleConfirmation()
-                        }
-                        .persistentHelp("文件夹媒体复制到 ImageAll 回收站后再删除源文件，跨磁盘时可能较慢。")
-                    } label: {
-                        Label("更多", systemImage: "ellipsis.circle")
-                    }
-                    .disabled(!model.canMoveSelectedLibrarySlimmingMembersToRecycle)
-                    .persistentHelp("选择保留恢复能力的安全回收方式。")
-                }
-
-                if model.librarySlimmingPendingCount > 0 {
-                    Text(
-                        model.selectedMediaKind == .video
-                            ? "待分析 \(model.librarySlimmingPendingCount) 个"
-                            : "待分析 \(model.librarySlimmingPendingCount) 张"
-                    )
-                        .foregroundStyle(.secondary)
-                        .font(.callout)
-                }
-
-                if model.supportsSourceSimilarityIndex {
-                    Button {
-                        Task { await model.initializeSourceSimilarityIndex() }
-                    } label: {
-                        if model.isInitializingSourceSimilarityIndex {
-                            ProgressView()
-                                .controlSize(.small)
-                            Text("初始化中…")
-                        } else {
-                            Label(
-                                "初始化来源索引",
-                                systemImage: "point.3.connected.trianglepath.dotted"
-                            )
-                        }
-                    }
-                    .disabled(!model.canInitializeSourceSimilarityIndex)
-                    .persistentHelp("为当前选中的单个来源建立 Feature Print 邻域索引，加速后续按种子检索")
-
-                    if let caption = model.sourceSimilarityIndexCaption {
-                        Text(caption)
-                            .foregroundStyle(.secondary)
-                            .font(.caption)
-                    }
-                }
-
-                Spacer()
-
-                Text(model.librarySlimmingFilterScopeCaption)
-                    .foregroundStyle(.tertiary)
-                    .font(.caption)
-                    .lineLimit(2)
-                    .persistentHelp("“分析来源”或“分析当前筛选”将覆盖的来源、标签和搜索条件。")
-
-                Text(modeCaption)
-                    .foregroundStyle(.tertiary)
-                    .font(.caption)
-            }
+            .controlSize(.small)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 7)
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 10)
     }
 
-    private var modeCaption: String {
-        switch model.librarySlimmingAnalyzeMode {
-        case .catalog: "模式：\(model.librarySlimmingCatalogSourceSelectionTitle)"
-        case .currentFilter: "模式：当前筛选"
-        case .seeds: "模式：种子检索"
+    private var catalogSourceMenu: some View {
+        Menu {
+            Button {
+                model.selectAllLibrarySlimmingCatalogSources()
+            } label: {
+                Label(
+                    "全选",
+                    systemImage: allLibrarySlimmingCatalogSourcesSelected
+                        ? "checkmark"
+                        : "square"
+                )
+            }
+
+            Button {
+                model.clearLibrarySlimmingCatalogSourceSelection()
+            } label: {
+                Label("清空选择", systemImage: "xmark")
+            }
+            .disabled(
+                !model.activeLibrarySlimmingSources.contains {
+                    model.isLibrarySlimmingCatalogSourceIncluded($0.id)
+                }
+            )
+
+            Divider()
+
+            ForEach(model.activeLibrarySlimmingSources) { source in
+                Toggle(
+                    isOn: Binding(
+                        get: { model.isLibrarySlimmingCatalogSourceIncluded(source.id) },
+                        set: { model.setLibrarySlimmingCatalogSourceIncluded(source.id, $0) }
+                    )
+                ) {
+                    Label(
+                        source.displayName,
+                        systemImage: source.kind == .photos
+                            ? "photo.on.rectangle.angled"
+                            : "folder"
+                    )
+                }
+            }
+        } label: {
+            Label(
+                model.librarySlimmingCatalogSourceSelectionTitle,
+                systemImage: "square.stack.3d.up"
+            )
+        }
+        .disabled(model.activeLibrarySlimmingSources.isEmpty)
+        .persistentHelp("选择一个或多个要分析的来源；只列出当前可用来源。")
+    }
+
+    private var analysisOptionsMenu: some View {
+        Menu {
+            Button {
+                Task { await model.analyzeLibrarySlimming(mode: .currentFilter) }
+            } label: {
+                Label(
+                    model.librarySlimmingCurrentFilterActionTitle,
+                    systemImage: "line.3.horizontal.decrease.circle"
+                )
+            }
+            .disabled(!model.supportsLibrarySlimming || !model.hasLibrarySlimmingFilterScope)
+
+            if !model.librarySlimmingSeedAssetIDs.isEmpty {
+                Button {
+                    Task { await model.analyzeLibrarySlimming(mode: .seeds) }
+                } label: {
+                    Label(
+                        "按种子查找（\(model.librarySlimmingSeedAssetIDs.count)）",
+                        systemImage: "target"
+                    )
+                }
+                .disabled(!model.supportsLibrarySlimming)
+            }
+
+            Divider()
+
+            if model.canPauseLibrarySlimmingAnalysis {
+                Button("暂停当前", systemImage: "pause.fill") {
+                    Task { await model.pauseLibrarySlimmingAnalysis() }
+                }
+            } else if model.canResumeLibrarySlimmingAnalysis {
+                Button("继续当前", systemImage: "play.fill") {
+                    Task { await model.resumeLibrarySlimmingAnalysis() }
+                }
+            }
+
+            if model.canDeleteSelectedLibrarySlimmingAnalysisJob {
+                Button("删除当前记录", systemImage: "trash", role: .destructive) {
+                    if let id = model.librarySlimmingAnalysisJobID {
+                        Task { await model.deleteLibrarySlimmingAnalysisJob(id) }
+                    }
+                }
+            }
+
+            Divider()
+
+            if model.supportsLibrarySlimmingThresholds {
+                Button("调整相似阈值…", systemImage: "slider.horizontal.3") {
+                    model.showsLibrarySlimmingThresholdEditor = true
+                }
+            }
+
+            Button("刷新来源", systemImage: "arrow.clockwise") {
+                Task { await model.refreshLibrarySlimmingCatalog() }
+            }
+            .disabled(!model.canRefreshLibrarySlimmingCatalog)
+
+            if model.supportsSourceSimilarityIndex {
+                Button(
+                    model.isInitializingSourceSimilarityIndex ? "正在初始化来源索引…" : "初始化来源索引",
+                    systemImage: "point.3.connected.trianglepath.dotted"
+                ) {
+                    Task { await model.initializeSourceSimilarityIndex() }
+                }
+                .disabled(!model.canInitializeSourceSimilarityIndex)
+            }
+        } label: {
+            Label("分析选项", systemImage: "ellipsis.circle")
+        }
+        .popover(
+            isPresented: $model.showsLibrarySlimmingThresholdEditor,
+            arrowEdge: .bottom
+        ) {
+            LibrarySlimmingThresholdEditor(model: model)
+                .frame(width: 320)
+                .padding(16)
+        }
+        .persistentHelp("当前筛选、种子检索、任务控制、阈值、刷新和来源索引。")
+    }
+
+    @ViewBuilder
+    private var inlineActivityStatus: some View {
+        if model.isAnalyzingLibrarySlimming, let progress = model.librarySlimmingScanProgress {
+            HStack(spacing: 6) {
+                ProgressView(value: progress.fraction)
+                    .progressViewStyle(.linear)
+                    .frame(width: 54)
+                Text(progress.caption)
+                    .lineLimit(1)
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel(progress.caption)
+        } else if let message = model.librarySlimmingRecycleActionMessage
+                    ?? model.librarySlimmingStatusMessage
+        {
+            let isFailure = message.contains("失败") || message.hasPrefix("未移动")
+            Label(
+                message,
+                systemImage: isFailure
+                    ? "exclamationmark.triangle.fill"
+                    : "info.circle"
+            )
+            .font(.caption)
+            .foregroundStyle(isFailure ? Color.red : Color.secondary)
+            .lineLimit(1)
+            .frame(maxWidth: 250, alignment: .trailing)
+            .help(message)
+            .accessibilityLabel(message)
+        } else if model.librarySlimmingPendingCount > 0 {
+            Text(
+                model.selectedMediaKind == .video
+                    ? "待分析 \(model.librarySlimmingPendingCount) 个"
+                    : "待分析 \(model.librarySlimmingPendingCount) 张"
+            )
+            .font(.caption)
+            .foregroundStyle(.secondary)
         }
     }
 
@@ -816,11 +841,48 @@ struct LibrarySlimmingWorkspaceView: View {
     }
 
     private func handleMoveToRecycleKeyPress() -> KeyPress.Result {
+        if model.librarySlimmingPreviewAssetID != nil {
+            requestFastDeleteFromPreview()
+            return .handled
+        }
         guard model.librarySlimmingWorkspaceTab == .clusters,
               model.canMoveSelectedLibrarySlimmingMembersToRecycle
         else { return .ignored }
         requestFastDeleteConfirmation()
         return .handled
+    }
+
+    private func handlePreviewSpaceKeyPress() -> KeyPress.Result {
+        guard model.librarySlimmingWorkspaceTab == .clusters,
+              model.librarySlimmingPreviewAssetID != nil
+                || !model.selectedLibrarySlimmingMemberIDs.isEmpty
+        else { return .ignored }
+        model.toggleLibrarySlimmingPreview()
+        return .handled
+    }
+
+    private func handlePreviewEscapeKeyPress() -> KeyPress.Result {
+        guard model.librarySlimmingPreviewAssetID != nil else { return .ignored }
+        model.closeLibrarySlimmingPreview()
+        return .handled
+    }
+
+    private func handlePreviewNavigationKeyPress(_ keyPress: KeyPress) -> KeyPress.Result {
+        guard model.librarySlimmingPreviewAssetID != nil else { return .ignored }
+        switch keyPress.key {
+        case .leftArrow:
+            model.moveLibrarySlimmingPreview(by: -1)
+        case .rightArrow:
+            model.moveLibrarySlimmingPreview(by: 1)
+        default:
+            return .ignored
+        }
+        return .handled
+    }
+
+    private func requestFastDeleteFromPreview() {
+        guard model.prepareLibrarySlimmingPreviewDeletion() else { return }
+        confirmFastDelete = true
     }
 
     private func requestFastDeleteConfirmation() {
@@ -847,49 +909,6 @@ struct LibrarySlimmingWorkspaceView: View {
         requestMoveToRecycleConfirmation()
     }
 
-    private func progressBanner(_ progress: LibrarySlimmingScanProgress) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(progress.caption)
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .contentTransition(.numericText())
-            ProgressView(value: progress.fraction)
-                .progressViewStyle(.linear)
-                .animation(.linear(duration: 0.25), value: progress.fraction)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 16)
-        .padding(.vertical, 8)
-        .accessibilityLabel(progress.caption)
-        .animation(.default, value: progress.caption)
-    }
-
-    private func statusBanner(_ message: String) -> some View {
-        let isFailure = message.contains("失败") || message.hasPrefix("未移动")
-        return HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Image(systemName: isFailure ? "exclamationmark.triangle.fill" : "info.circle.fill")
-            Text(message)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-            .font(.callout.weight(isFailure ? .semibold : .regular))
-            .foregroundStyle(isFailure ? Color.red : Color.primary)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 16)
-            .padding(.vertical, 10)
-            .background(
-                (isFailure ? Color.red : Color.accentColor).opacity(0.1)
-            )
-            .accessibilityElement(children: .combine)
-            .accessibilityLabel(message)
-    }
-
-    private func analysisNavigatorWidth(availableWidth: CGFloat) -> CGFloat {
-        guard availableWidth > 0 else { return 0 }
-        let preferred = min(340, max(220, availableWidth * 0.34))
-        // Never consume more than half the locked pane when the inspector is open.
-        return min(preferred, availableWidth * 0.5)
-    }
-
     private var analysisHistoryAndClusters: some View {
         List(selection: Binding(
             get: { model.librarySlimmingAnalysisJobID },
@@ -902,10 +921,10 @@ struct LibrarySlimmingWorkspaceView: View {
                         .foregroundStyle(.secondary)
                 } else {
                     ForEach(model.librarySlimmingAnalysisJobs) { job in
-                        VStack(alignment: .leading, spacing: 4) {
+                        VStack(alignment: .leading, spacing: 3) {
                             HStack {
                                 Text(job.modeTitle)
-                                    .font(.headline)
+                                    .font(.subheadline.weight(.semibold))
                                 Spacer()
                                 Text(job.stateTitle)
                                     .font(.caption)
@@ -915,13 +934,10 @@ struct LibrarySlimmingWorkspaceView: View {
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                             Text(job.sourceCaption)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .lineLimit(2)
-                                .help(job.sourceCaption)
-                            Text(job.createdCaption)
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .help(job.sourceCaption)
                         }
                         .tag(Optional(job.id))
                         .contextMenu {
@@ -1037,40 +1053,46 @@ struct LibrarySlimmingWorkspaceView: View {
             }
         }
         .listStyle(.inset)
+        .environment(\.defaultMinListRowHeight, 30)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
     private var clusterDetail: some View {
         Group {
             if let cluster = model.selectedLibrarySlimmingCluster {
-                VStack(alignment: .leading, spacing: 12) {
-                    HStack {
+                VStack(alignment: .leading, spacing: 0) {
+                    HStack(spacing: 8) {
                         Text(cluster.kindTitle)
-                            .font(.title2.weight(.semibold))
+                            .font(.headline)
+
+                        Text("\(cluster.memberAssetIDs.count) 张")
+                            .foregroundStyle(.secondary)
+
+                        if !model.selectedLibrarySlimmingMemberIDs.isEmpty {
+                            Text("已选 \(model.selectedLibrarySlimmingMemberIDs.count)")
+                                .foregroundStyle(Color.accentColor)
+                        }
+
+                        Text("⌘ / Shift 多选 · 拖拽框选")
+                            .foregroundStyle(.tertiary)
+
+                        if let sourceSummary = model.librarySlimmingSelectedClusterSourceSummary {
+                            Label(sourceSummary, systemImage: "photo.on.rectangle.angled")
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .help("来源：\(sourceSummary)")
+                        }
+
                         Spacer()
+
                         Text(cluster.scoreCaption)
                             .foregroundStyle(.secondary)
                     }
-                    .padding(.horizontal, 16)
-                    .padding(.top, 12)
+                    .font(.caption)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
                     .fixedSize(horizontal: false, vertical: true)
-
-                    Text(
-                        "成员 \(cluster.memberAssetIDs.count) · 已选 \(model.selectedLibrarySlimmingMemberIDs.count) · ⌘点击多选 · Shift 点击连续选择 · 拖拽框选"
-                    )
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 16)
-                    .fixedSize(horizontal: false, vertical: true)
-
-                    if let sourceSummary = model.librarySlimmingSelectedClusterSourceSummary {
-                        Text("来源：\(sourceSummary)")
-                            .font(.callout)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(2)
-                            .padding(.horizontal, 16)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
+                    Divider()
 
                     GeometryReader { proxy in
                         let layoutWidth = LibraryGridLayout.layoutWidth(
@@ -1468,6 +1490,379 @@ struct LibrarySlimmingWorkspaceView: View {
         entry.isDiscardablePreflightFailure
             ? "exclamationmark.circle"
             : "exclamationmark.triangle.fill"
+    }
+}
+
+struct LibrarySlimmingPreviewViewportState: Equatable {
+    static let minimumScale: CGFloat = 1
+    static let maximumScale: CGFloat = 8
+
+    private(set) var scale: CGFloat = minimumScale
+    private(set) var offset: CGSize = .zero
+
+    mutating func zoom(
+        wheelDelta: CGFloat,
+        isPrecise: Bool,
+        fittedImageSize: CGSize,
+        viewportSize: CGSize
+    ) {
+        let sensitivity: CGFloat = isPrecise ? 0.012 : 0.08
+        let limitedDelta = min(500, max(-500, wheelDelta))
+        let factor = exp(limitedDelta * sensitivity)
+        scale = min(
+            Self.maximumScale,
+            max(Self.minimumScale, scale * factor)
+        )
+        offset = constrainedOffset(
+            offset,
+            fittedImageSize: fittedImageSize,
+            viewportSize: viewportSize
+        )
+    }
+
+    func canPan(fittedImageSize: CGSize, viewportSize: CGSize) -> Bool {
+        let limit = panLimit(
+            fittedImageSize: fittedImageSize,
+            viewportSize: viewportSize
+        )
+        return limit.width > 0 || limit.height > 0
+    }
+
+    mutating func drag(
+        by translation: CGSize,
+        fittedImageSize: CGSize,
+        viewportSize: CGSize
+    ) {
+        guard canPan(
+            fittedImageSize: fittedImageSize,
+            viewportSize: viewportSize
+        ) else {
+            offset = .zero
+            return
+        }
+        offset = constrainedOffset(
+            CGSize(
+                width: offset.width + translation.width,
+                height: offset.height + translation.height
+            ),
+            fittedImageSize: fittedImageSize,
+            viewportSize: viewportSize
+        )
+    }
+
+    private func constrainedOffset(
+        _ proposed: CGSize,
+        fittedImageSize: CGSize,
+        viewportSize: CGSize
+    ) -> CGSize {
+        let limit = panLimit(
+            fittedImageSize: fittedImageSize,
+            viewportSize: viewportSize
+        )
+        return CGSize(
+            width: min(limit.width, max(-limit.width, proposed.width)),
+            height: min(limit.height, max(-limit.height, proposed.height))
+        )
+    }
+
+    private func panLimit(
+        fittedImageSize: CGSize,
+        viewportSize: CGSize
+    ) -> CGSize {
+        CGSize(
+            width: max(0, (fittedImageSize.width * scale - viewportSize.width) / 2),
+            height: max(0, (fittedImageSize.height * scale - viewportSize.height) / 2)
+        )
+    }
+}
+
+private struct LibrarySlimmingQuickLookView: View {
+    @ObservedObject var model: LibraryWorkspaceModel
+    let navigation: LibrarySlimmingPreviewNavigationPresentation
+    let onRequestDelete: () -> Void
+    @State private var image: NSImage?
+    @State private var loadFailed = false
+    @State private var viewport = LibrarySlimmingPreviewViewportState()
+    @State private var lastDragTranslation: CGSize = .zero
+
+    var body: some View {
+        GeometryReader { proxy in
+            let viewportSize = CGSize(
+                width: max(0, proxy.size.width - 120),
+                height: max(0, proxy.size.height - 110)
+            )
+            ZStack {
+                Color.black.opacity(0.96)
+
+                previewContent(viewportSize: viewportSize)
+
+                VStack(spacing: 0) {
+                    quickLookToolbar
+                    Spacer()
+                    Text(
+                        "滚轮缩放  ·  放大后按住左键拖动  ·  空格 / Esc 退出  ·  ← → 切换  ·  Delete 删除"
+                    )
+                        .font(.caption)
+                        .foregroundStyle(.white.opacity(0.78))
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 7)
+                        .background(.black.opacity(0.62), in: Capsule())
+                        .padding(.bottom, 14)
+                }
+
+                HStack {
+                    navigationButton(
+                        title: "上一张",
+                        systemImage: "chevron.left",
+                        isEnabled: navigation.canMovePrevious
+                    ) {
+                        model.moveLibrarySlimmingPreview(by: -1)
+                    }
+                    Spacer()
+                    navigationButton(
+                        title: "下一张",
+                        systemImage: "chevron.right",
+                        isEnabled: navigation.canMoveNext
+                    ) {
+                        model.moveLibrarySlimmingPreview(by: 1)
+                    }
+                }
+                .padding(.horizontal, 18)
+            }
+            .background {
+                LibrarySlimmingPreviewScrollWheelMonitor { wheelDelta, isPrecise in
+                    guard let image else { return }
+                    let fittedImageSize = Self.fittedImageSize(
+                        for: image,
+                        in: viewportSize
+                    )
+                    viewport.zoom(
+                        wheelDelta: wheelDelta,
+                        isPrecise: isPrecise,
+                        fittedImageSize: fittedImageSize,
+                        viewportSize: viewportSize
+                    )
+                    lastDragTranslation = .zero
+                }
+            }
+        }
+        .accessibilityIdentifier("librarySlimmingQuickLook")
+        .accessibilityLabel("图库瘦身大图预览，当前缩放 \(zoomPercentage)%")
+        .task(id: navigation.assetID) {
+            image = nil
+            loadFailed = false
+            viewport = LibrarySlimmingPreviewViewportState()
+            lastDragTranslation = .zero
+            guard let data = await model.previewData(assetID: navigation.assetID),
+                  let decoded = NSImage(data: data)
+            else {
+                guard !Task.isCancelled else { return }
+                loadFailed = true
+                return
+            }
+            guard !Task.isCancelled else { return }
+            image = decoded
+        }
+    }
+
+    private var quickLookToolbar: some View {
+        HStack(spacing: 10) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("第 \(navigation.position) 张，共 \(navigation.totalCount) 张")
+                    .font(.headline)
+                if let sourceName = navigation.sourceName {
+                    Text(sourceName)
+                        .font(.caption)
+                        .foregroundStyle(.white.opacity(0.72))
+                        .lineLimit(1)
+                }
+            }
+            Spacer()
+            Text("\(zoomPercentage)%")
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.white.opacity(0.78))
+                .padding(.horizontal, 9)
+                .padding(.vertical, 5)
+                .background(.white.opacity(0.12), in: Capsule())
+                .accessibilityLabel("当前缩放 \(zoomPercentage)%")
+            Button(role: .destructive, action: onRequestDelete) {
+                Label("删除", systemImage: "trash")
+            }
+            .buttonStyle(.bordered)
+            .tint(.red)
+            .accessibilityHint("退出预览并打开当前照片的快速删除确认")
+            Button {
+                model.closeLibrarySlimmingPreview()
+            } label: {
+                Label("关闭", systemImage: "xmark")
+            }
+            .buttonStyle(.bordered)
+            .keyboardShortcut(.cancelAction)
+            .accessibilityHint("关闭大图预览并保留当前照片选择")
+        }
+        .foregroundStyle(.white)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+        .background(.black.opacity(0.58))
+    }
+
+    @ViewBuilder
+    private func previewContent(viewportSize: CGSize) -> some View {
+        if let image {
+            let fittedImageSize = Self.fittedImageSize(for: image, in: viewportSize)
+            ZStack {
+                Image(nsImage: image)
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: fittedImageSize.width, height: fittedImageSize.height)
+                    .scaleEffect(viewport.scale)
+                    .offset(viewport.offset)
+                    .contentShape(Rectangle())
+                    .gesture(
+                        DragGesture(minimumDistance: 1)
+                            .onChanged { value in
+                                let incrementalTranslation = CGSize(
+                                    width: value.translation.width - lastDragTranslation.width,
+                                    height: value.translation.height - lastDragTranslation.height
+                                )
+                                viewport.drag(
+                                    by: incrementalTranslation,
+                                    fittedImageSize: fittedImageSize,
+                                    viewportSize: viewportSize
+                                )
+                                lastDragTranslation = value.translation
+                            }
+                            .onEnded { _ in
+                                lastDragTranslation = .zero
+                            }
+                    )
+                    .accessibilityLabel("当前预览照片")
+            }
+            .frame(width: viewportSize.width, height: viewportSize.height)
+            .clipped()
+        } else if loadFailed {
+            ContentUnavailableView {
+                Label("无法载入大图预览", systemImage: "exclamationmark.triangle")
+            } description: {
+                Text("照片可能仅存于 iCloud，或当前来源暂时不可读取。")
+            }
+            .foregroundStyle(.white)
+            .frame(width: viewportSize.width, height: viewportSize.height)
+        } else {
+            ProgressView("正在载入预览…")
+                .controlSize(.large)
+                .tint(.white)
+                .foregroundStyle(.white)
+                .frame(width: viewportSize.width, height: viewportSize.height)
+        }
+    }
+
+    private var zoomPercentage: Int {
+        Int((viewport.scale * 100).rounded())
+    }
+
+    private static func fittedImageSize(for image: NSImage, in viewportSize: CGSize) -> CGSize {
+        guard image.size.width > 0,
+              image.size.height > 0,
+              viewportSize.width > 0,
+              viewportSize.height > 0
+        else { return .zero }
+        let fitScale = min(
+            viewportSize.width / image.size.width,
+            viewportSize.height / image.size.height
+        )
+        return CGSize(
+            width: image.size.width * fitScale,
+            height: image.size.height * fitScale
+        )
+    }
+
+    private func navigationButton(
+        title: String,
+        systemImage: String,
+        isEnabled: Bool,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .font(.system(size: 23, weight: .semibold))
+                .foregroundStyle(.white)
+                .frame(width: 44, height: 56)
+                .background(.black.opacity(0.58), in: Capsule())
+        }
+        .buttonStyle(.plain)
+        .disabled(!isEnabled)
+        .opacity(isEnabled ? 1 : 0.25)
+        .accessibilityLabel(title)
+    }
+}
+
+private struct LibrarySlimmingPreviewScrollWheelMonitor: NSViewRepresentable {
+    let onScroll: (_ wheelDelta: CGFloat, _ isPrecise: Bool) -> Void
+
+    func makeNSView(context: Context) -> ScrollWheelMonitorView {
+        ScrollWheelMonitorView()
+    }
+
+    func updateNSView(_ nsView: ScrollWheelMonitorView, context: Context) {
+        nsView.configure(onScroll: onScroll)
+    }
+
+    static func dismantleNSView(_ nsView: ScrollWheelMonitorView, coordinator: ()) {
+        nsView.stopMonitoring()
+    }
+
+    final class ScrollWheelMonitorView: NSView {
+        private var monitor: Any?
+        private var onScroll: ((_ wheelDelta: CGFloat, _ isPrecise: Bool) -> Void)?
+
+        func configure(
+            onScroll: @escaping (_ wheelDelta: CGFloat, _ isPrecise: Bool) -> Void
+        ) {
+            self.onScroll = onScroll
+            installMonitorIfNeeded()
+        }
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            if window == nil {
+                removeMonitor()
+            } else {
+                installMonitorIfNeeded()
+            }
+        }
+
+        func stopMonitoring() {
+            onScroll = nil
+            removeMonitor()
+        }
+
+        private func installMonitorIfNeeded() {
+            guard monitor == nil, window != nil else { return }
+            monitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) {
+                [weak self] event in
+                guard let self,
+                      let hostWindow = self.window,
+                      event.window === hostWindow
+                else { return event }
+                let localPoint = self.convert(event.locationInWindow, from: nil)
+                guard self.bounds.contains(localPoint) else { return event }
+                let rawDelta = event.scrollingDeltaY
+                guard rawDelta != 0 else { return event }
+                let wheelDelta = event.isDirectionInvertedFromDevice
+                    ? -rawDelta
+                    : rawDelta
+                self.onScroll?(wheelDelta, event.hasPreciseScrollingDeltas)
+                return nil
+            }
+        }
+
+        private func removeMonitor() {
+            if let monitor {
+                NSEvent.removeMonitor(monitor)
+                self.monitor = nil
+            }
+        }
     }
 }
 

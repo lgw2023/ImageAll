@@ -36,6 +36,8 @@ struct CatalogDatabase: Sendable {
         V028PartitionSlimmingByMediaKindMigration.register(on: &migrator)
         V029AddOriginalAspectThumbnailCacheMigration.register(on: &migrator)
         V030AddSimilarityDigestProvenanceMigration.register(on: &migrator)
+        V031AddAssetLocationMigration.register(on: &migrator)
+        V032AddPlaceTagResolutionMigration.register(on: &migrator)
         return migrator
     }
 
@@ -641,6 +643,171 @@ enum V030AddSimilarityDigestProvenanceMigration {
                 ON asset_similarity_fingerprint (
                     content_digest_origin, content_sha256, asset_id
                 )
+                """
+            )
+        }
+    }
+}
+
+enum V031AddAssetLocationMigration {
+    static func register(on migrator: inout DatabaseMigrator) {
+        migrator.registerMigration(CatalogMigrationID.v031AddAssetLocation) { db in
+            try db.execute(
+                sql: """
+                CREATE TABLE asset_location (
+                    asset_id TEXT NOT NULL PRIMARY KEY
+                        REFERENCES asset(id) ON DELETE CASCADE,
+                    latitude REAL,
+                    longitude REAL,
+                    altitude_m REAL,
+                    source_kind TEXT NOT NULL CHECK(
+                        source_kind IN ('none', 'embeddedGPS', 'photosGPS', 'placeTag')
+                    ),
+                    updated_at_ms INTEGER NOT NULL CHECK(updated_at_ms >= 0),
+                    CHECK(
+                        (
+                            source_kind = 'none'
+                            AND latitude IS NULL
+                            AND longitude IS NULL
+                            AND altitude_m IS NULL
+                        )
+                        OR (
+                            source_kind != 'none'
+                            AND latitude IS NOT NULL
+                            AND longitude IS NOT NULL
+                            AND latitude BETWEEN -90.0 AND 90.0
+                            AND longitude BETWEEN -180.0 AND 180.0
+                        )
+                    )
+                ) STRICT
+                """
+            )
+            try db.execute(
+                sql: """
+                CREATE INDEX asset_location_coordinate_idx
+                ON asset_location(latitude, longitude, asset_id)
+                WHERE latitude IS NOT NULL AND longitude IS NOT NULL
+                """
+            )
+        }
+    }
+}
+
+enum V032AddPlaceTagResolutionMigration {
+    static func register(on migrator: inout DatabaseMigrator) {
+        migrator.registerMigration(CatalogMigrationID.v032AddPlaceTagResolution) { db in
+            try db.execute(
+                sql: """
+                CREATE TABLE place (
+                    id TEXT NOT NULL PRIMARY KEY CHECK(length(id) > 0),
+                    canonical_name TEXT NOT NULL CHECK(length(canonical_name) > 0),
+                    subtitle TEXT,
+                    latitude REAL NOT NULL CHECK(latitude BETWEEN -90.0 AND 90.0),
+                    longitude REAL NOT NULL CHECK(longitude BETWEEN -180.0 AND 180.0),
+                    kind TEXT NOT NULL CHECK(kind IN ('poi', 'city', 'region', 'country')),
+                    created_at_ms INTEGER NOT NULL CHECK(created_at_ms >= 0),
+                    updated_at_ms INTEGER NOT NULL CHECK(updated_at_ms >= 0)
+                ) STRICT
+                """
+            )
+            try db.execute(sql: "DROP INDEX asset_location_coordinate_idx")
+            try db.execute(sql: "ALTER TABLE asset_location RENAME TO asset_location_pre_v032")
+            try db.execute(
+                sql: """
+                CREATE TABLE asset_location (
+                    asset_id TEXT NOT NULL PRIMARY KEY
+                        REFERENCES asset(id) ON DELETE CASCADE,
+                    latitude REAL,
+                    longitude REAL,
+                    altitude_m REAL,
+                    source_kind TEXT NOT NULL CHECK(
+                        source_kind IN ('none', 'embeddedGPS', 'photosGPS', 'placeTag')
+                    ),
+                    updated_at_ms INTEGER NOT NULL CHECK(updated_at_ms >= 0),
+                    place_id TEXT REFERENCES place(id) ON DELETE RESTRICT,
+                    CHECK(
+                        (
+                            source_kind = 'none'
+                            AND latitude IS NULL
+                            AND longitude IS NULL
+                            AND altitude_m IS NULL
+                            AND place_id IS NULL
+                        )
+                        OR (
+                            source_kind IN ('embeddedGPS', 'photosGPS')
+                            AND latitude IS NOT NULL
+                            AND longitude IS NOT NULL
+                            AND latitude BETWEEN -90.0 AND 90.0
+                            AND longitude BETWEEN -180.0 AND 180.0
+                            AND place_id IS NULL
+                        )
+                        OR (
+                            source_kind = 'placeTag'
+                            AND latitude IS NOT NULL
+                            AND longitude IS NOT NULL
+                            AND latitude BETWEEN -90.0 AND 90.0
+                            AND longitude BETWEEN -180.0 AND 180.0
+                            AND place_id IS NOT NULL
+                        )
+                    )
+                ) STRICT
+                """
+            )
+            try db.execute(
+                sql: """
+                INSERT INTO asset_location (
+                    asset_id, latitude, longitude, altitude_m, source_kind,
+                    updated_at_ms, place_id
+                )
+                SELECT
+                    asset_id, latitude, longitude, altitude_m, source_kind,
+                    updated_at_ms, NULL
+                FROM asset_location_pre_v032
+                """
+            )
+            try db.execute(sql: "DROP TABLE asset_location_pre_v032")
+            try db.execute(
+                sql: """
+                CREATE INDEX asset_location_coordinate_idx
+                ON asset_location(latitude, longitude, asset_id)
+                WHERE latitude IS NOT NULL AND longitude IS NOT NULL
+                """
+            )
+            try db.execute(
+                sql: """
+                CREATE TABLE tag_place_binding (
+                    tag_id TEXT NOT NULL PRIMARY KEY
+                        REFERENCES tag(id) ON DELETE CASCADE,
+                    place_id TEXT REFERENCES place(id) ON DELETE RESTRICT,
+                    status TEXT NOT NULL CHECK(
+                        status IN ('resolved', 'ambiguous', 'ignored', 'failed')
+                    ),
+                    resolver_version INTEGER NOT NULL CHECK(resolver_version >= 1),
+                    resolved_at_ms INTEGER CHECK(resolved_at_ms IS NULL OR resolved_at_ms >= 0),
+                    updated_at_ms INTEGER NOT NULL CHECK(updated_at_ms >= 0),
+                    CHECK(
+                        (status = 'resolved' AND place_id IS NOT NULL AND resolved_at_ms IS NOT NULL)
+                        OR (status != 'resolved' AND place_id IS NULL AND resolved_at_ms IS NULL)
+                    )
+                ) STRICT
+                """
+            )
+            try db.execute(
+                sql: """
+                CREATE TABLE tag_place_candidate (
+                    tag_id TEXT NOT NULL
+                        REFERENCES tag_place_binding(tag_id) ON DELETE CASCADE,
+                    place_id TEXT NOT NULL REFERENCES place(id) ON DELETE RESTRICT,
+                    rank INTEGER NOT NULL CHECK(rank >= 0),
+                    PRIMARY KEY (tag_id, place_id),
+                    UNIQUE (tag_id, rank)
+                ) STRICT
+                """
+            )
+            try db.execute(
+                sql: """
+                CREATE INDEX tag_place_binding_status_idx
+                ON tag_place_binding(status, tag_id)
                 """
             )
         }

@@ -2,6 +2,94 @@ import XCTest
 @testable import ImageAll
 
 final class AssetCatalogQueryTests: XCTestCase {
+    func testGalleryOverviewAggregatesExactUniqueSourcesPositiveTagsAndYears() throws {
+        let fixture = try CatalogQueryTestSupport.openGalleryOverviewDatabase()
+
+        let overview = try fixture.query.fetchGalleryOverview()
+
+        XCTAssertEqual(overview.totalCount, 6)
+        XCTAssertEqual(
+            overview.summary(for: .image),
+            GalleryOverviewMediaSummary(
+                mediaKind: .image,
+                totalCount: 4,
+                exactUniqueCount: 3,
+                exactRedundantCount: 1,
+                exactFingerprintCount: 3
+            )
+        )
+        XCTAssertEqual(
+            overview.summary(for: .video),
+            GalleryOverviewMediaSummary(
+                mediaKind: .video,
+                totalCount: 2,
+                exactUniqueCount: 2,
+                exactRedundantCount: 0,
+                exactFingerprintCount: 0
+            )
+        )
+        XCTAssertEqual(overview.exactUniqueCount, 5)
+        XCTAssertEqual(overview.exactRedundantCount, 1)
+        XCTAssertEqual(overview.exactFingerprintCount, 3)
+
+        XCTAssertEqual(overview.sources.map(\.displayName), ["相机归档", "Apple Photos"])
+        XCTAssertEqual(overview.sources.map(\.imageCount), [3, 1])
+        XCTAssertEqual(overview.sources.map(\.videoCount), [1, 1])
+
+        XCTAssertEqual(overview.positiveTags.map(\.displayName), ["家人", "旅行"])
+        XCTAssertEqual(overview.positiveTags.map(\.imageCount), [2, 1])
+        XCTAssertEqual(overview.positiveTags.map(\.videoCount), [1, 1])
+        XCTAssertEqual(overview.positiveLabeledAssetCount, 5)
+        XCTAssertEqual(overview.acceptedDecisionCount, 5)
+
+        XCTAssertEqual(
+            overview.years,
+            [
+                GalleryOverviewYearSummary(year: 2023, imageCount: 1, videoCount: 0),
+                GalleryOverviewYearSummary(year: 2024, imageCount: 2, videoCount: 2),
+            ]
+        )
+        XCTAssertEqual(overview.undatedCount, 1)
+        XCTAssertEqual(
+            overview.availability,
+            [
+                GalleryOverviewAvailabilitySummary(
+                    availability: .available,
+                    imageCount: 3,
+                    videoCount: 2
+                ),
+                GalleryOverviewAvailabilitySummary(
+                    availability: .missing,
+                    imageCount: 1,
+                    videoCount: 0
+                ),
+            ]
+        )
+    }
+
+    func testGalleryOverviewKeepsHundredThousandAssetTotalsAndEvidenceCoverageExact() throws {
+        let databaseURL = try DatabaseTestSupport.makeTempDatabaseURL()
+        let fixture = try CatalogQueryTestSupport.openScaleDatabase(
+            at: databaseURL,
+            assetCount: 100_000
+        )
+
+        let overview = try fixture.query.fetchGalleryOverview()
+
+        XCTAssertEqual(overview.totalCount, 100_000)
+        XCTAssertEqual(overview.summary(for: .image).totalCount, 100_000)
+        XCTAssertEqual(overview.summary(for: .image).exactUniqueCount, 100_000)
+        XCTAssertEqual(overview.exactFingerprintCount, 0)
+        XCTAssertEqual(overview.exactRedundantCount, 0)
+        XCTAssertEqual(overview.sources.count, 2)
+        XCTAssertEqual(overview.sources.map(\.totalCount).sorted(), [50_000, 50_000])
+        XCTAssertEqual(
+            overview.positiveLabeledAssetCount,
+            CatalogQueryTestSupport.scaleDecisionCount(assetCount: 100_000)
+        )
+        XCTAssertEqual(overview.positiveTags.map(\.totalCount), [10_000])
+    }
+
     func testInvalidPageLimitIsRejected() throws {
         let fixture = try CatalogQueryTestSupport.openQueryDatabase()
         for invalid in [0, 201] {

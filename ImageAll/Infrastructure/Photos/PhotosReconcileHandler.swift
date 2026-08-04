@@ -645,7 +645,13 @@ struct PhotosReconcileHandler: LeaseBoundJobHandler, Sendable {
                     clock.nowMs, row["id"] as String,
                 ]
             )
+            try upsertLocation(
+                metadata.location,
+                assetID: row["id"] as String,
+                db: db
+            )
         } else {
+            let assetID = idGenerator().uuidString.lowercased()
             try db.execute(
                 sql: """
                 INSERT INTO asset (
@@ -657,13 +663,43 @@ struct PhotosReconcileHandler: LeaseBoundJobHandler, Sendable {
                 ) VALUES (?, ?, 'photos', NULL, ?, 'current', ?, ?, ?, ?, ?, 1, ?, 'available', ?, ?, ?, ?, ?)
                 """,
                 arguments: [
-                    idGenerator().uuidString.lowercased(), sourceIDString, metadata.localIdentifier,
+                    assetID, sourceIDString, metadata.localIdentifier,
                     metadata.mediaType, metadata.width, metadata.height, metadata.createdAtMs,
                     metadata.modifiedAtMs, generation, clock.nowMs, clock.nowMs, metadata.fileName,
                     metadata.mediaKind.rawValue, metadata.durationMs,
                 ]
             )
+            try upsertLocation(metadata.location, assetID: assetID, db: db)
         }
+    }
+
+    private func upsertLocation(
+        _ candidate: AssetLocationCoordinate?,
+        assetID: String,
+        db: Database
+    ) throws {
+        let location = candidate?.isValid == true ? candidate : nil
+        try db.execute(
+            sql: """
+            INSERT INTO asset_location (
+                asset_id, latitude, longitude, altitude_m, source_kind, updated_at_ms
+            ) VALUES (?, ?, ?, NULL, ?, ?)
+            ON CONFLICT(asset_id) DO UPDATE SET
+                latitude = excluded.latitude,
+                longitude = excluded.longitude,
+                altitude_m = NULL,
+                source_kind = excluded.source_kind,
+                place_id = NULL,
+                updated_at_ms = excluded.updated_at_ms
+            """,
+            arguments: [
+                assetID,
+                location?.latitude,
+                location?.longitude,
+                location == nil ? "none" : "photosGPS",
+                clock.nowMs,
+            ]
+        )
     }
 
     private func failure(

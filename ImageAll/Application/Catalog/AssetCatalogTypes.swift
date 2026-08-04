@@ -5,6 +5,52 @@ enum MediaKind: String, Sendable, Equatable, Codable, CaseIterable {
     case video
 }
 
+enum WorldMapLocationBackfillPhase: Sendable, Equatable {
+    case ready
+    case queued
+    case running
+    case cancelling
+    case retryableFailed
+    case completed
+    case cancelled
+    case terminalFailed
+    case unavailable
+}
+
+struct WorldMapLocationBackfillSnapshot: Identifiable, Sendable, Equatable {
+    let sourceID: UUID
+    let sourceKind: SourceKind
+    let sourceDisplayName: String
+    let sourceState: SourceState
+    let phase: WorldMapLocationBackfillPhase
+    let totalPhotoCount: Int
+    let inspectedPhotoCount: Int
+    let locatedPhotoCount: Int
+    let activeJobID: UUID?
+    let scanProgress: JobProgress?
+
+    var id: UUID { sourceID }
+
+    var canStart: Bool {
+        guard sourceState == .active else { return false }
+        return switch phase {
+        case .ready, .retryableFailed, .cancelled, .terminalFailed:
+            true
+        case .queued, .running, .cancelling, .completed, .unavailable:
+            false
+        }
+    }
+
+    var canCancel: Bool {
+        activeJobID != nil && phase != .cancelling
+    }
+
+    var coverageFraction: Double {
+        guard totalPhotoCount > 0 else { return 1 }
+        return min(1, Double(inspectedPhotoCount) / Double(totalPhotoCount))
+    }
+}
+
 enum AssetPageSort: String, Sendable, Equatable, Codable {
     case newest
     case oldest
@@ -37,6 +83,7 @@ struct AssetPageFilter: Sendable, Equatable {
     var mediaTypes: [String] = []
     var tagPresence: TagPresenceFilter = .any
     var searchText: String?
+    var worldMapSelection: WorldMapCatalogSelectionQuery?
 
     init(
         sourceIDs: [UUID] = [],
@@ -47,7 +94,8 @@ struct AssetPageFilter: Sendable, Equatable {
         mediaKinds: [MediaKind] = [],
         mediaTypes: [String] = [],
         tagPresence: TagPresenceFilter = .any,
-        searchText: String? = nil
+        searchText: String? = nil,
+        worldMapSelection: WorldMapCatalogSelectionQuery? = nil
     ) {
         self.sourceIDs = sourceIDs
         self.tagDecisionFilters = tagDecisionFilters
@@ -58,6 +106,7 @@ struct AssetPageFilter: Sendable, Equatable {
         self.mediaTypes = mediaTypes
         self.tagPresence = tagPresence
         self.searchText = searchText
+        self.worldMapSelection = worldMapSelection
     }
 }
 
@@ -141,6 +190,102 @@ struct AssetPageResult: Sendable, Equatable {
     let nextCursor: AssetPageCursor?
 }
 
+struct GalleryOverviewMediaSummary: Sendable, Equatable, Identifiable {
+    var id: MediaKind { mediaKind }
+
+    let mediaKind: MediaKind
+    let totalCount: Int
+    let exactUniqueCount: Int
+    let exactRedundantCount: Int
+    let exactFingerprintCount: Int
+}
+
+struct GalleryOverviewSourceSummary: Sendable, Equatable, Identifiable {
+    var id: UUID { sourceID }
+    var totalCount: Int { imageCount + videoCount }
+
+    let sourceID: UUID
+    let displayName: String
+    let kind: SourceKind
+    let state: SourceState
+    let imageCount: Int
+    let videoCount: Int
+}
+
+struct GalleryOverviewTagSummary: Sendable, Equatable, Identifiable {
+    var id: UUID { tagID }
+    var totalCount: Int { imageCount + videoCount }
+
+    let tagID: UUID
+    let displayName: String
+    let imageCount: Int
+    let videoCount: Int
+}
+
+struct GalleryOverviewYearSummary: Sendable, Equatable, Identifiable {
+    var id: Int { year }
+    var totalCount: Int { imageCount + videoCount }
+
+    let year: Int
+    let imageCount: Int
+    let videoCount: Int
+}
+
+struct GalleryOverviewAvailabilitySummary: Sendable, Equatable, Identifiable {
+    var id: AssetAvailability { availability }
+    var totalCount: Int { imageCount + videoCount }
+
+    let availability: AssetAvailability
+    let imageCount: Int
+    let videoCount: Int
+}
+
+struct GalleryOverviewSnapshot: Sendable, Equatable {
+    let media: [GalleryOverviewMediaSummary]
+    let sources: [GalleryOverviewSourceSummary]
+    let positiveTags: [GalleryOverviewTagSummary]
+    let years: [GalleryOverviewYearSummary]
+    let availability: [GalleryOverviewAvailabilitySummary]
+    let undatedCount: Int
+    let positiveLabeledAssetCount: Int
+    let acceptedDecisionCount: Int
+
+    var totalCount: Int { media.reduce(0) { $0 + $1.totalCount } }
+    var exactUniqueCount: Int { media.reduce(0) { $0 + $1.exactUniqueCount } }
+    var exactRedundantCount: Int { media.reduce(0) { $0 + $1.exactRedundantCount } }
+    var exactFingerprintCount: Int { media.reduce(0) { $0 + $1.exactFingerprintCount } }
+
+    func summary(for mediaKind: MediaKind) -> GalleryOverviewMediaSummary {
+        media.first(where: { $0.mediaKind == mediaKind })
+            ?? GalleryOverviewMediaSummary(
+                mediaKind: mediaKind,
+                totalCount: 0,
+                exactUniqueCount: 0,
+                exactRedundantCount: 0,
+                exactFingerprintCount: 0
+            )
+    }
+
+    static let empty = GalleryOverviewSnapshot(
+        media: MediaKind.allCases.map {
+            GalleryOverviewMediaSummary(
+                mediaKind: $0,
+                totalCount: 0,
+                exactUniqueCount: 0,
+                exactRedundantCount: 0,
+                exactFingerprintCount: 0
+            )
+        },
+        sources: [],
+        positiveTags: [],
+        years: [],
+        availability: [],
+        undatedCount: 0,
+        positiveLabeledAssetCount: 0,
+        acceptedDecisionCount: 0
+    )
+}
+
 struct InspectorTagState: Sendable, Equatable {
     let tagID: UUID
     let displayName: String
@@ -213,4 +358,177 @@ struct AssetInspectorDetail: Sendable, Equatable {
         self.fingerprintModifiedAtNs = fingerprintModifiedAtNs
         self.tags = tags
     }
+}
+
+struct AssetLocationCoordinate: Sendable, Equatable {
+    let latitude: Double
+    let longitude: Double
+
+    var isValid: Bool {
+        latitude.isFinite
+            && longitude.isFinite
+            && (-90 ... 90).contains(latitude)
+            && (-180 ... 180).contains(longitude)
+    }
+}
+
+struct WorldMapCatalogBounds: Sendable, Equatable {
+    let west: Double
+    let south: Double
+    let east: Double
+    let north: Double
+}
+
+struct WorldMapCatalogQuery: Sendable, Equatable {
+    static let maximumClusterLimit = 2_000
+    static let global = WorldMapCatalogQuery(bounds: nil)
+
+    let bounds: WorldMapCatalogBounds?
+    let maximumClusters: Int
+
+    init(
+        bounds: WorldMapCatalogBounds?,
+        maximumClusters: Int = WorldMapCatalogQuery.maximumClusterLimit
+    ) {
+        self.bounds = bounds
+        self.maximumClusters = maximumClusters
+    }
+}
+
+struct WorldMapCatalogSelectionQuery: Sendable, Equatable {
+    static let defaultAssetLimit = 36
+    static let maximumAssetLimit = 120
+
+    let cellDegrees: Double
+    let longitudeBucket: Int
+    let latitudeBucket: Int
+    let bounds: WorldMapCatalogBounds?
+    let maximumAssets: Int
+
+    init(
+        cellDegrees: Double,
+        longitudeBucket: Int,
+        latitudeBucket: Int,
+        bounds: WorldMapCatalogBounds? = nil,
+        maximumAssets: Int = WorldMapCatalogSelectionQuery.defaultAssetLimit
+    ) {
+        self.cellDegrees = cellDegrees
+        self.longitudeBucket = longitudeBucket
+        self.latitudeBucket = latitudeBucket
+        self.bounds = bounds
+        self.maximumAssets = maximumAssets
+    }
+
+    func limited(to maximumAssets: Int) -> WorldMapCatalogSelectionQuery {
+        WorldMapCatalogSelectionQuery(
+            cellDegrees: cellDegrees,
+            longitudeBucket: longitudeBucket,
+            latitudeBucket: latitudeBucket,
+            bounds: bounds,
+            maximumAssets: maximumAssets
+        )
+    }
+}
+
+struct WorldMapGalleryScope: Sendable, Equatable {
+    let clusterID: String
+    let displayName: String
+    let photoCount: Int
+    let selectionQuery: WorldMapCatalogSelectionQuery
+}
+
+struct WorldMapCatalogCluster: Sendable, Equatable, Identifiable {
+    let id: String
+    let longitude: Double
+    let latitude: Double
+    let photoCount: Int
+    let gpsCount: Int
+    let tagCount: Int
+    let displayName: String
+    let selectionQuery: WorldMapCatalogSelectionQuery
+}
+
+struct WorldMapCatalogAsset: Sendable, Equatable, Identifiable {
+    var id: UUID { assetID }
+
+    let assetID: UUID
+    let fileName: String?
+}
+
+struct WorldMapCatalogSelection: Sendable, Equatable {
+    let assets: [WorldMapCatalogAsset]
+    let totalPhotoCount: Int
+
+    var isTruncated: Bool { assets.count < totalPhotoCount }
+
+    static let empty = WorldMapCatalogSelection(assets: [], totalPhotoCount: 0)
+}
+
+struct WorldMapCatalogSnapshot: Sendable, Equatable {
+    let clusters: [WorldMapCatalogCluster]
+    let eligiblePhotoCount: Int
+    let locatedPhotoCount: Int
+    let unlocatedPhotoCount: Int
+
+    static let empty = WorldMapCatalogSnapshot(
+        clusters: [],
+        eligiblePhotoCount: 0,
+        locatedPhotoCount: 0,
+        unlocatedPhotoCount: 0
+    )
+}
+
+enum WorldMapCatalogError: Error, Equatable, Sendable {
+    case invalidQuery
+    case persistenceFailure
+}
+
+enum WorldMapPlaceKind: String, Sendable, Equatable, Codable {
+    case poi
+    case city
+    case region
+    case country
+}
+
+struct WorldMapPlaceCandidate: Sendable, Equatable, Identifiable {
+    var id: String { placeID }
+
+    let placeID: String
+    let displayName: String
+    let subtitle: String?
+    let latitude: Double
+    let longitude: Double
+    let kind: WorldMapPlaceKind
+}
+
+enum WorldMapPlaceBindingStatus: String, Sendable, Equatable {
+    case unresolved
+    case resolved
+    case ambiguous
+    case ignored
+    case failed
+}
+
+struct WorldMapPlaceTagResolution: Sendable, Equatable, Identifiable {
+    var id: UUID { tagID }
+
+    let tagID: UUID
+    let tagName: String
+    let groupName: String
+    let acceptedPhotoCount: Int
+    let status: WorldMapPlaceBindingStatus
+    let confirmedPlaceID: String?
+    let candidates: [WorldMapPlaceCandidate]
+}
+
+enum WorldMapPlaceResolutionError: Error, Sendable, Equatable {
+    case tagUnavailable
+    case candidateUnavailable
+    case invalidCandidate
+    case persistenceFailure
+    case resolverFailed
+}
+
+protocol WorldMapPlaceResolving: Sendable {
+    func resolve(query: String) async throws -> [WorldMapPlaceCandidate]
 }

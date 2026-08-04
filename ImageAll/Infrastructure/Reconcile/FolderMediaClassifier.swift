@@ -17,6 +17,7 @@ struct FolderMediaMetadata: Equatable, Sendable {
     let width: Int?
     let height: Int?
     let mediaCreatedAtMs: Int64?
+    let location: AssetLocationCoordinate?
     let sizeBytes: Int64?
     let modifiedAtNs: Int64?
     let resourceID: Data?
@@ -29,6 +30,7 @@ struct FolderMediaMetadata: Equatable, Sendable {
         width: Int?,
         height: Int?,
         mediaCreatedAtMs: Int64?,
+        location: AssetLocationCoordinate? = nil,
         sizeBytes: Int64?,
         modifiedAtNs: Int64?,
         resourceID: Data?,
@@ -40,6 +42,7 @@ struct FolderMediaMetadata: Equatable, Sendable {
         self.width = width
         self.height = height
         self.mediaCreatedAtMs = mediaCreatedAtMs
+        self.location = location
         self.sizeBytes = sizeBytes
         self.modifiedAtNs = modifiedAtNs
         self.resourceID = resourceID
@@ -232,6 +235,7 @@ struct FolderMediaClassifier: Sendable {
                     width: nil,
                     height: nil,
                     mediaCreatedAtMs: mediaCreatedAtMs(source: source, index: frameIndex),
+                    location: location(source: source, index: frameIndex),
                     sizeBytes: fingerprint.sizeBytes,
                     modifiedAtNs: fingerprint.modifiedAtNs,
                     resourceID: fingerprint.resourceID,
@@ -297,6 +301,7 @@ struct FolderMediaClassifier: Sendable {
             width: nil,
             height: nil,
             mediaCreatedAtMs: mediaCreatedAtMs(source: source, index: index),
+            location: location(source: source, index: index),
             sizeBytes: fileSizeBytes(fileURL, relativePath: relativePath),
             modifiedAtNs: modifiedAtNs(fileURL, relativePath: relativePath),
             resourceID: resourceIdentifier(fileURL)
@@ -320,6 +325,7 @@ struct FolderMediaClassifier: Sendable {
             width: dimensions.width,
             height: dimensions.height,
             mediaCreatedAtMs: mediaCreatedAtMs(source: source, index: index),
+            location: location(source: source, index: index),
             sizeBytes: fileSizeBytes(fileURL, relativePath: relativePath),
             modifiedAtNs: modifiedAtNs(fileURL, relativePath: relativePath),
             resourceID: resourceIdentifier(fileURL)
@@ -360,6 +366,31 @@ struct FolderMediaClassifier: Sendable {
             return parseFixedOffset(dateString + offset.replacingOccurrences(of: ":", with: ""))
         }
         return nil
+    }
+
+    private func location(source: CGImageSource, index: Int) -> AssetLocationCoordinate? {
+        guard let properties = CGImageSourceCopyPropertiesAtIndex(source, index, nil)
+            as? [CFString: Any],
+            let gps = properties[kCGImagePropertyGPSDictionary] as? [CFString: Any],
+            let rawLatitude = numericValue(gps[kCGImagePropertyGPSLatitude]),
+            let rawLongitude = numericValue(gps[kCGImagePropertyGPSLongitude])
+        else {
+            return nil
+        }
+
+        let latitudeRef = (gps[kCGImagePropertyGPSLatitudeRef] as? String)?.uppercased()
+        let longitudeRef = (gps[kCGImagePropertyGPSLongitudeRef] as? String)?.uppercased()
+        let latitude = latitudeRef == "S" ? -abs(rawLatitude) : rawLatitude
+        let longitude = longitudeRef == "W" ? -abs(rawLongitude) : rawLongitude
+        let coordinate = AssetLocationCoordinate(latitude: latitude, longitude: longitude)
+        return coordinate.isValid ? coordinate : nil
+    }
+
+    private func numericValue(_ value: Any?) -> Double? {
+        if let value = value as? NSNumber {
+            return value.doubleValue
+        }
+        return value as? Double
     }
 
     private func parseUTCDateTime(_ value: String) -> Int64? {

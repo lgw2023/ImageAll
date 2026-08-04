@@ -152,7 +152,7 @@ Feature Print / embedding / prediction 的 provenance 必须记录 `videoPoster.
 
 ### 5.3 训练工程
 
-- 顶部照片 / 视频页签位于现有训练工程标题区下方、槽位条上方；
+- 顶部照片 / 视频分段控件位于训练工程单层命令栏最左侧，与新建任务、模型状态和运行反馈同层；
 - 每个媒体域独立显示 Feature KNN、个人质心、个人 AdamW 三个 published 槽；
 - 新建视频训练任务只允许选择视频资产 / 视频标签样本统计；
 - `training_run.media_kind` 是不可变事实，Run 详情显示“输入：视频代表缩略图（videoPoster.v1）”；

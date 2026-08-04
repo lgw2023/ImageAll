@@ -23,6 +23,7 @@ struct PhotosAssetMetadata: Equatable, Sendable {
     let modifiedAtMs: Int64?
     let mediaKind: MediaKind
     let durationMs: Int64?
+    let location: AssetLocationCoordinate?
 
     init(
         localIdentifier: String,
@@ -33,7 +34,8 @@ struct PhotosAssetMetadata: Equatable, Sendable {
         createdAtMs: Int64?,
         modifiedAtMs: Int64?,
         mediaKind: MediaKind = .image,
-        durationMs: Int64? = nil
+        durationMs: Int64? = nil,
+        location: AssetLocationCoordinate? = nil
     ) {
         self.localIdentifier = localIdentifier
         self.fileName = fileName
@@ -44,6 +46,7 @@ struct PhotosAssetMetadata: Equatable, Sendable {
         self.modifiedAtMs = modifiedAtMs
         self.mediaKind = mediaKind
         self.durationMs = durationMs
+        self.location = location
     }
 }
 

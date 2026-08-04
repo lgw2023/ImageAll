@@ -181,6 +181,8 @@ flowchart TB
 
 主要页面：
 
+- 图库总览（规模、保守精确去重、来源、时间、可用状态与人工正样本标签）；
+- 照片世界（本地 WebKit / WebGL 聚合地图、照片塔下钻、地点补全与主图库精确联动）；
 - 来源管理；
 - 图片网格与详情；
 - 标签管理；
@@ -339,6 +341,10 @@ Photos 的 `localIdentifier` 只在当前本地照片库上下文中使用。跨
 |---|---|---|
 | `source` | `id`, `kind`, `display_name`, `bookmark`, `sync_cursor`, `scan_generation`, `dirty_epoch`, `state` | 文件夹或 Photos 来源 |
 | `asset` | `id`, `source_id`, `locator`, `locator_state`, `media_type`, `width`, `height`, `created_at`, `modified_at`, `content_revision`, `last_seen_generation`, `availability` | 统一资产元数据；当前定位与来源可用性分离 |
+| `asset_location` | `asset_id`, `latitude`, `longitude`, `source_kind`, `place_id`, `updated_at_ms` | v031/v032 每张照片唯一 canonical location；GPS 优先，已确认地点标签仅补全无 GPS 资产 |
+| `place` | `id`, `canonical_name`, `latitude`, `longitude`, `kind` | v032 MapKit 候选与已确认地点的规范化缓存 |
+| `tag_place_binding` | `tag_id`, `place_id`, `status`, `resolver_version` | v032 标签解析状态；resolved 必须引用 place，ambiguous 不静默选择 |
+| `tag_place_candidate` | `tag_id`, `place_id`, `rank` | v032 同名地点候选缓存，供人工确认并避免重复网络请求 |
 | `file_fingerprint` | `asset_id`, `size`, `mtime`, `resource_id`, `sha256` | 文件变化和移动检测 |
 | `tag` | `id`, `name`, `normalized_name`, `state`, `created_at` | 本地标签行；v009 保持 v001 DDL 不变，无 `standard_tag_binding` 的行按个人标签处理 |
 | `catalog_scope` | `singleton`, `scope_id` | v007 为当前目录库生成并持久化一个不透明 UUID；personal bundle 握手只允许精确匹配该 scope |
@@ -784,6 +790,16 @@ retryableFailed ────→ cancelled
 FTS 只是可重建的查询加速结构，必须由 migration 回填和 Asset insert/delete/update trigger 保持同步。
 
 默认查询只返回网格需要的轻量字段和缩略图 cache key。详情页按需加载完整元数据与标签历史。
+
+照片世界只向 JavaScript 发送最多 2,000 个位置聚合，不发送 Asset ID、文件名、路径或照片字节。照片塔
+进入主图库时，原生 `AssetPageFilter` 携带地图生成的网格桶和视口边界，GRDB 在既有 keyset pagination
+查询内复用地图的可用图片与回收排除条件；跨 180° 经线采用两段 longitude 谓词。相机与选中塔只作为
+SwiftUI 工作区导航状态保存，返回地图时本地注入，不写入目录库。
+
+旧图库位置回填控制面只查询本地覆盖率与 reconcile job，不在打开地图、打开控制面或 migration 时自动
+扫描来源。用户必须按来源显式启动：文件夹复用现有只读 reconcile，Photos 使用 full repair 重新枚举旧资产。
+控制面同时显示 `asset_location` 覆盖率与 job 持久进度；retryable job 原地 resume，cancel 在批次边界生效，
+cancelled/terminalFailed 重试创建新 job。覆盖率与地图共享 current/available/image/非回收资产资格条件。
 
 ## 14. 权限、隐私与数据安全
 

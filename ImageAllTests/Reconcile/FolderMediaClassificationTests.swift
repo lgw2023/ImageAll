@@ -1,5 +1,7 @@
 import AVFoundation
 import Darwin
+import GRDB
+import ImageIO
 import UniformTypeIdentifiers
 import XCTest
 @testable import ImageAll
@@ -155,6 +157,29 @@ final class FolderMediaClassificationTests: XCTestCase {
         XCTAssertEqual(metadata.mediaType, UTType.jpeg.identifier)
     }
 
+    func testJPEGExtractsEmbeddedGPSWithoutMutatingFixture() throws {
+        let fixture = FolderReconcileTestSupport.TempFixtureRoot()
+        defer { fixture.cleanup() }
+        let root = try fixture.makeRoot(label: "jpeg-gps")
+        let file = root.appendingPathComponent("gps.jpg")
+        try Self.writeJPEGWithGPS(
+            to: file,
+            latitude: 31.2304,
+            longitude: 121.4737
+        )
+        let before = try Data(contentsOf: file)
+
+        guard case let .available(metadata) = FolderMediaClassifier()
+            .classify(fileURL: file, fileName: "gps.jpg")
+        else {
+            return XCTFail("JPEG with GPS must remain a supported image")
+        }
+
+        XCTAssertEqual(metadata.location?.latitude ?? 0, 31.2304, accuracy: 0.000_001)
+        XCTAssertEqual(metadata.location?.longitude ?? 0, 121.4737, accuracy: 0.000_001)
+        XCTAssertEqual(try Data(contentsOf: file), before)
+    }
+
     func testTIFFAvailableFromEncodedFixture() throws {
         guard let data = FolderReconcileTestSupport.minimalTIFFData() else {
             return XCTFail("host must encode minimal TIFF fixture")
@@ -262,6 +287,57 @@ final class FolderMediaClassificationTests: XCTestCase {
         XCTAssertEqual(before, after)
     }
 
+    func testFolderReconcilePersistsEmbeddedGPSForWorldMap() throws {
+        let fixture = FolderReconcileTestSupport.TempFixtureRoot()
+        defer { fixture.cleanup() }
+        let root = try fixture.makeRoot(label: "world-map-gps")
+        let file = root.appendingPathComponent("photo.jpg")
+        try Self.writeJPEGWithGPS(to: file, latitude: -33.8688, longitude: 151.2093)
+        let before = try fixture.snapshotDetailed(root: root)
+        let database = try CatalogDatabase.open(at: makeTempDatabaseURL())
+        let queue = FolderReconcileTestSupport.makeQueue(database: database)
+        let sourceID = UUID()
+        let bookmark = root.path.data(using: .utf8)!
+        try FolderReconcileTestSupport.seedActiveFolderSource(
+            database: database,
+            sourceID: sourceID,
+            bookmark: bookmark
+        )
+        _ = try FolderReconcileTestSupport.enqueueReconcileJob(
+            queue: queue,
+            sourceID: sourceID
+        )
+        let (handler, _) = FolderReconcileTestSupport.makeHandler(
+            database: database,
+            root: root,
+            bookmark: bookmark
+        )
+        let coordinator = FolderReconcileTestSupport.makeCoordinator(
+            queue: queue,
+            handler: handler
+        )
+
+        XCTAssertEqual(
+            try coordinator.claimAndExecuteOnce(
+                ClaimNextInput(
+                    owner: "world-map-gps",
+                    leaseDurationMs: FolderReconcileTestSupport.leaseDurationMs
+                )
+            )?.snapshot.state,
+            .completed
+        )
+        let row = try database.pool.read { db in
+            try Row.fetchOne(
+                db,
+                sql: "SELECT latitude, longitude, source_kind FROM asset_location"
+            )
+        }
+        XCTAssertEqual((row?["latitude"] as Double?) ?? 0, -33.8688, accuracy: 0.000_001)
+        XCTAssertEqual((row?["longitude"] as Double?) ?? 0, 151.2093, accuracy: 0.000_001)
+        XCTAssertEqual(row?["source_kind"] as String?, "embeddedGPS")
+        XCTAssertEqual(try fixture.snapshotDetailed(root: root), before)
+    }
+
     private static func writeSyntheticMOV(to url: URL) async throws {
         let writer = try AVAssetWriter(outputURL: url, fileType: .mov)
         let input = AVAssetWriterInput(
@@ -323,6 +399,39 @@ final class FolderMediaClassificationTests: XCTestCase {
         await writer.finishWriting()
         guard writer.status == .completed else {
             throw writer.error ?? NSError(domain: "FolderMediaClassificationTests", code: 5)
+        }
+    }
+
+    private static func writeJPEGWithGPS(
+        to url: URL,
+        latitude: Double,
+        longitude: Double
+    ) throws {
+        let sourceData = FolderReconcileTestSupport.minimalJPEGData()
+        guard let source = CGImageSourceCreateWithData(sourceData as CFData, nil),
+              let destination = CGImageDestinationCreateWithURL(
+                  url as CFURL,
+                  UTType.jpeg.identifier as CFString,
+                  1,
+                  nil
+              )
+        else {
+            throw NSError(domain: "FolderMediaClassificationTests", code: 10)
+        }
+        let gps: [CFString: Any] = [
+            kCGImagePropertyGPSLatitude: abs(latitude),
+            kCGImagePropertyGPSLatitudeRef: latitude < 0 ? "S" : "N",
+            kCGImagePropertyGPSLongitude: abs(longitude),
+            kCGImagePropertyGPSLongitudeRef: longitude < 0 ? "W" : "E",
+        ]
+        CGImageDestinationAddImageFromSource(
+            destination,
+            source,
+            0,
+            [kCGImagePropertyGPSDictionary: gps] as CFDictionary
+        )
+        guard CGImageDestinationFinalize(destination) else {
+            throw NSError(domain: "FolderMediaClassificationTests", code: 11)
         }
     }
 

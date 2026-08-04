@@ -64,6 +64,7 @@ struct FolderReconcileAssetObservation: Equatable, Sendable {
     let width: Int?
     let height: Int?
     let mediaCreatedAtMs: Int64?
+    let location: AssetLocationCoordinate?
     let availability: AssetAvailability
     let sizeBytes: Int64?
     let modifiedAtNs: Int64?
@@ -79,6 +80,7 @@ struct FolderReconcileAssetObservation: Equatable, Sendable {
         width: Int?,
         height: Int?,
         mediaCreatedAtMs: Int64?,
+        location: AssetLocationCoordinate? = nil,
         availability: AssetAvailability,
         sizeBytes: Int64?,
         modifiedAtNs: Int64?,
@@ -93,6 +95,7 @@ struct FolderReconcileAssetObservation: Equatable, Sendable {
         self.width = width
         self.height = height
         self.mediaCreatedAtMs = mediaCreatedAtMs
+        self.location = location
         self.availability = availability
         self.sizeBytes = sizeBytes
         self.modifiedAtNs = modifiedAtNs

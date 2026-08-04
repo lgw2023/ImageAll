@@ -80,6 +80,7 @@ enum CatalogSchemaExpectations {
 
     static let businessTables = [
         "asset",
+        "asset_location",
         "asset_similarity_fingerprint",
         "asset_tag_decision",
         "catalog_scope",
@@ -96,6 +97,7 @@ enum CatalogSchemaExpectations {
         "personal_suggestion_model",
         "personal_suggestion_tag",
         "photos_original_cache_entry",
+        "place",
         "prediction",
         "recycle_entry",
         "source",
@@ -112,6 +114,8 @@ enum CatalogSchemaExpectations {
         "tag_model",
         "tag_model_revision",
         "tag_model_sample",
+        "tag_place_binding",
+        "tag_place_candidate",
         "training_run",
     ]
 
@@ -126,6 +130,7 @@ enum CatalogSchemaExpectations {
         "asset_current_time_idx",
         "asset_generation_missing_idx",
         "asset_current_media_kind_idx",
+        "asset_location_coordinate_idx",
         "asset_similarity_fingerprint_hash_idx",
         "asset_similarity_fingerprint_exact_idx",
         "asset_source_availability_idx",
@@ -149,6 +154,7 @@ enum CatalogSchemaExpectations {
         "tag_group_sort_idx",
         "tag_model_sample_feature_idx",
         "tag_normalized_name_uq",
+        "tag_place_binding_status_idx",
         "training_run_method_created_idx",
         "training_run_media_kind_method_created_idx",
         "training_run_state_created_idx",
@@ -312,6 +318,38 @@ enum CatalogSchemaExpectations {
             .init(name: "file_name", type: "TEXT", notNull: false, defaultValue: nil, primaryKeyOrder: 0),
             .init(name: "media_kind", type: "TEXT", notNull: true, defaultValue: "'image'", primaryKeyOrder: 0),
             .init(name: "duration_ms", type: "INTEGER", notNull: false, defaultValue: nil, primaryKeyOrder: 0),
+        ],
+        "asset_location": [
+            .init(name: "asset_id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 1),
+            .init(name: "latitude", type: "REAL", notNull: false, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "longitude", type: "REAL", notNull: false, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "altitude_m", type: "REAL", notNull: false, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "source_kind", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "updated_at_ms", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "place_id", type: "TEXT", notNull: false, defaultValue: nil, primaryKeyOrder: 0),
+        ],
+        "place": [
+            .init(name: "id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 1),
+            .init(name: "canonical_name", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "subtitle", type: "TEXT", notNull: false, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "latitude", type: "REAL", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "longitude", type: "REAL", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "kind", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "created_at_ms", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "updated_at_ms", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+        ],
+        "tag_place_binding": [
+            .init(name: "tag_id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 1),
+            .init(name: "place_id", type: "TEXT", notNull: false, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "status", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "resolver_version", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "resolved_at_ms", type: "INTEGER", notNull: false, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "updated_at_ms", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+        ],
+        "tag_place_candidate": [
+            .init(name: "tag_id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 1),
+            .init(name: "place_id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 2),
+            .init(name: "rank", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
         ],
         "file_fingerprint": [
             .init(name: "asset_id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 1),
@@ -585,6 +623,19 @@ enum CatalogSchemaExpectations {
         "asset": [
             .init(from: "source_id", toTable: "source", to: "id", onDelete: "RESTRICT"),
         ],
+        "asset_location": [
+            .init(from: "asset_id", toTable: "asset", to: "id", onDelete: "CASCADE"),
+            .init(from: "place_id", toTable: "place", to: "id", onDelete: "RESTRICT"),
+        ],
+        "place": [],
+        "tag_place_binding": [
+            .init(from: "tag_id", toTable: "tag", to: "id", onDelete: "CASCADE"),
+            .init(from: "place_id", toTable: "place", to: "id", onDelete: "RESTRICT"),
+        ],
+        "tag_place_candidate": [
+            .init(from: "tag_id", toTable: "tag_place_binding", to: "tag_id", onDelete: "CASCADE"),
+            .init(from: "place_id", toTable: "place", to: "id", onDelete: "RESTRICT"),
+        ],
         "derived_image_cache_entry": [
             .init(from: "asset_id", toTable: "asset", to: "id", onDelete: "CASCADE"),
         ],
@@ -669,6 +720,8 @@ enum CatalogSchemaExpectations {
         "asset_current_time_idx": "asset",
         "asset_generation_missing_idx": "asset",
         "asset_current_media_kind_idx": "asset",
+        "asset_location_coordinate_idx": "asset_location",
+        "tag_place_binding_status_idx": "tag_place_binding",
         "asset_similarity_fingerprint_hash_idx": "asset_similarity_fingerprint",
         "asset_similarity_fingerprint_exact_idx": "asset_similarity_fingerprint",
         "asset_source_availability_idx": "asset",
@@ -877,6 +930,24 @@ enum CatalogSchemaExpectations {
                 .init(name: "locator_state", descending: false, collation: "BINARY"),
                 .init(name: "availability", descending: false, collation: "BINARY"),
                 .init(name: "id", descending: false, collation: "BINARY"),
+            ],
+            unique: false
+        ),
+        .init(
+            name: "asset_location_coordinate_idx",
+            keyColumns: [
+                .init(name: "latitude", descending: false, collation: "BINARY"),
+                .init(name: "longitude", descending: false, collation: "BINARY"),
+                .init(name: "asset_id", descending: false, collation: "BINARY"),
+            ],
+            unique: false,
+            partialPredicateSQL: "latitude IS NOT NULL AND longitude IS NOT NULL"
+        ),
+        .init(
+            name: "tag_place_binding_status_idx",
+            keyColumns: [
+                .init(name: "status", descending: false, collation: "BINARY"),
+                .init(name: "tag_id", descending: false, collation: "BINARY"),
             ],
             unique: false
         ),

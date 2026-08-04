@@ -1,6 +1,9 @@
+import AppKit
 import Foundation
+import GRDB
 import Photos
 import SwiftUI
+import WebKit
 import XCTest
 @testable import ImageAll
 
@@ -4143,6 +4146,116 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertFalse(model.isSinglePhotoPresented)
     }
 
+    func testImmediateWorldMapPresentationClearsGalleryRowsBeforeAsyncNavigate() async {
+        let sourceID = UUID()
+        let asset = Self.makeAsset(sourceID: sourceID, fileName: "mapped.jpg")
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: sourceID,
+                displayName: "Fixture",
+                state: .active
+            ),
+            reconciledItems: [asset],
+            initialItems: [asset],
+            startsConnected: true
+        )
+        let model = LibraryWorkspaceModel(service: service)
+
+        await model.start()
+        await model.selectAsset(asset.assetID)
+        XCTAssertFalse(model.items.isEmpty)
+        XCTAssertFalse(model.selectedAssetIDs.isEmpty)
+
+        model.applyImmediateBrowsingPresentation(for: .worldMap)
+
+        XCTAssertNil(model.reviewMode)
+        XCTAssertTrue(model.items.isEmpty)
+        XCTAssertTrue(model.selectedAssetIDs.isEmpty)
+        XCTAssertFalse(model.isSinglePhotoPresented)
+    }
+
+    func testWorldMapLocationBackfillStartsOnlyAfterExplicitSourceRequest() async throws {
+        let sourceID = UUID()
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: sourceID,
+                displayName: "Fixture",
+                state: .active
+            ),
+            reconciledItems: [],
+            startsConnected: true,
+            hasPendingCatalogReconcileJobs: false
+        )
+        let model = LibraryWorkspaceModel(service: service)
+
+        await model.start()
+        _ = try await model.fetchWorldMapLocationBackfillSnapshots()
+        XCTAssertTrue(service.worldMapLocationBackfillStartCalls.isEmpty)
+
+        try await model.startWorldMapLocationBackfill(sourceID: sourceID)
+        await waitForCatalogScanToFinish(model)
+
+        XCTAssertEqual(service.worldMapLocationBackfillStartCalls, [sourceID])
+        XCTAssertTrue(service.reconcileRunSourceIDCalls.contains(Set([sourceID])))
+    }
+
+    func testWorldMapGalleryNavigationUsesTheExactTowerScopeAndClearsOldFilters() async {
+        let sourceID = UUID()
+        let image = Self.makeAsset(sourceID: sourceID, fileName: "beijing.jpg")
+        let video = Self.makeAsset(
+            sourceID: sourceID,
+            fileName: "beijing.mov",
+            mediaType: "com.apple.quicktime-movie",
+            mediaKind: .video
+        )
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: sourceID,
+                displayName: "Fixture",
+                state: .active
+            ),
+            reconciledItems: [image, video],
+            initialItems: [image, video],
+            startsConnected: true
+        )
+        let model = LibraryWorkspaceModel(service: service)
+        let selectionQuery = WorldMapCatalogSelectionQuery(
+            cellDegrees: 0.25,
+            longitudeBucket: 1_185,
+            latitudeBucket: 519,
+            bounds: WorldMapCatalogBounds(
+                west: 116.2,
+                south: 39.7,
+                east: 116.7,
+                north: 40.1
+            )
+        )
+        let scope = WorldMapGalleryScope(
+            clusterID: "cell-250000-1185-519",
+            displayName: "北京",
+            photoCount: 23,
+            selectionQuery: selectionQuery
+        )
+
+        await model.start()
+        await model.setMediaKind(.video)
+        await model.submitSearchText("beijing.mov")
+
+        let destination = LibraryBrowsingDestination.worldMapGallery(scope)
+        model.applyImmediateBrowsingPresentation(for: destination)
+        XCTAssertEqual(model.browsingTitle, "北京 · 照片世界")
+        XCTAssertTrue(model.items.isEmpty)
+
+        let requestID = model.beginBrowsingNavigation()
+        await model.navigate(to: destination, requestID: requestID)
+
+        XCTAssertEqual(model.items.map(\.assetID), [image.assetID])
+        XCTAssertEqual(model.worldMapGalleryScope, scope)
+        XCTAssertEqual(service.lastFilter.worldMapSelection, selectionQuery)
+        XCTAssertEqual(service.lastFilter.mediaKinds, [.image])
+        XCTAssertEqual(service.lastFilter.searchText, "")
+    }
+
     func testImmediateBrowsingPresentationAppliesSourceFilterBeforeAsyncNavigate() async {
         let sourceID = UUID()
         let asset = Self.makeAsset(sourceID: sourceID, fileName: "gallery.jpg")
@@ -4303,6 +4416,215 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         model.selectLibrarySlimmingMember(a, additive: false)
         model.selectLibrarySlimmingMember(b, additive: true)
         XCTAssertEqual(model.selectedLibrarySlimmingMemberIDs, Set([a, b]))
+    }
+
+    func testLibrarySlimmingPreviewWheelZoomStaysWithinSupportedRange() {
+        var viewport = LibrarySlimmingPreviewViewportState()
+        let fittedImageSize = CGSize(width: 800, height: 450)
+        let viewportSize = CGSize(width: 800, height: 600)
+
+        viewport.zoom(
+            wheelDelta: 200,
+            isPrecise: true,
+            fittedImageSize: fittedImageSize,
+            viewportSize: viewportSize
+        )
+
+        XCTAssertEqual(viewport.scale, 8, accuracy: 0.0001)
+
+        viewport.zoom(
+            wheelDelta: -200,
+            isPrecise: true,
+            fittedImageSize: fittedImageSize,
+            viewportSize: viewportSize
+        )
+
+        XCTAssertEqual(viewport.scale, 1, accuracy: 0.0001)
+        XCTAssertEqual(viewport.offset, .zero)
+    }
+
+    func testLibrarySlimmingPreviewDragOnlyMovesOverflowAndStaysInsideViewport() {
+        var viewport = LibrarySlimmingPreviewViewportState()
+        let fittedImageSize = CGSize(width: 800, height: 450)
+        let viewportSize = CGSize(width: 800, height: 600)
+
+        viewport.drag(
+            by: CGSize(width: 100, height: 100),
+            fittedImageSize: fittedImageSize,
+            viewportSize: viewportSize
+        )
+
+        XCTAssertFalse(
+            viewport.canPan(
+                fittedImageSize: fittedImageSize,
+                viewportSize: viewportSize
+            )
+        )
+        XCTAssertEqual(viewport.offset, .zero)
+
+        viewport.zoom(
+            wheelDelta: 200,
+            isPrecise: true,
+            fittedImageSize: fittedImageSize,
+            viewportSize: viewportSize
+        )
+        viewport.drag(
+            by: CGSize(width: 5_000, height: -5_000),
+            fittedImageSize: fittedImageSize,
+            viewportSize: viewportSize
+        )
+
+        XCTAssertTrue(
+            viewport.canPan(
+                fittedImageSize: fittedImageSize,
+                viewportSize: viewportSize
+            )
+        )
+        XCTAssertEqual(viewport.offset.width, 2_800, accuracy: 0.0001)
+        XCTAssertEqual(viewport.offset.height, -1_500, accuracy: 0.0001)
+    }
+
+    func testLibrarySlimmingPreviewOpensTheLastFocusedSelectedMember() async {
+        let sourceID = UUID()
+        let first = Self.makeAsset(sourceID: sourceID, fileName: "first.jpg")
+        let second = Self.makeAsset(sourceID: sourceID, fileName: "second.jpg")
+        let cluster = SlimmingCluster(
+            id: UUID(),
+            kind: .nearDuplicateScene,
+            memberAssetIDs: [first.assetID, second.assetID],
+            representativeAssetID: first.assetID,
+            score: 0.95,
+            modelIdentity: .featurePrintOnly
+        )
+        let scan = StubLibrarySlimmingScanPort()
+        scan.seedClusters = [cluster]
+        let model = LibraryWorkspaceModel(
+            service: FakeLibraryWorkspaceService(
+                connectedSource: LibrarySourceSummary(
+                    id: sourceID,
+                    displayName: "Fixture",
+                    state: .active
+                ),
+                reconciledItems: [first, second],
+                initialItems: [first, second],
+                startsConnected: true,
+                hasPendingCatalogReconcileJobs: false
+            ),
+            librarySlimming: scan,
+            idlePrewarmInstallEventMonitor: false
+        )
+
+        await model.start()
+        await model.selectAssets([first.assetID, second.assetID])
+        await model.findLibrarySlimmingFromSelection()
+        await model.analyzeLibrarySlimming(mode: .seeds)
+        model.selectLibrarySlimmingCluster(cluster.id)
+        model.selectLibrarySlimmingMember(first.assetID, additive: false)
+        model.selectLibrarySlimmingMember(second.assetID, additive: true)
+
+        model.toggleLibrarySlimmingPreview()
+
+        XCTAssertEqual(model.librarySlimmingPreviewAssetID, second.assetID)
+        XCTAssertEqual(model.selectedLibrarySlimmingMemberIDs, [second.assetID])
+    }
+
+    func testLibrarySlimmingPreviewMovesWithinTheCurrentClusterAndStopsAtBoundaries() async {
+        let sourceID = UUID()
+        let members = (0 ..< 3).map {
+            Self.makeAsset(sourceID: sourceID, fileName: "photo-\($0).jpg")
+        }
+        let cluster = SlimmingCluster(
+            id: UUID(),
+            kind: .nearDuplicateScene,
+            memberAssetIDs: members.map(\.assetID),
+            representativeAssetID: members[0].assetID,
+            score: 0.95,
+            modelIdentity: .featurePrintOnly
+        )
+        let scan = StubLibrarySlimmingScanPort()
+        scan.seedClusters = [cluster]
+        let model = LibraryWorkspaceModel(
+            service: FakeLibraryWorkspaceService(
+                connectedSource: LibrarySourceSummary(
+                    id: sourceID,
+                    displayName: "Fixture",
+                    state: .active
+                ),
+                reconciledItems: members,
+                initialItems: members,
+                startsConnected: true,
+                hasPendingCatalogReconcileJobs: false
+            ),
+            librarySlimming: scan,
+            idlePrewarmInstallEventMonitor: false
+        )
+
+        await model.start()
+        await model.selectAssets(Set(members.map(\.assetID)))
+        await model.findLibrarySlimmingFromSelection()
+        await model.analyzeLibrarySlimming(mode: .seeds)
+        model.selectLibrarySlimmingCluster(cluster.id)
+        model.selectLibrarySlimmingMember(members[1].assetID, additive: false)
+        model.toggleLibrarySlimmingPreview()
+
+        model.moveLibrarySlimmingPreview(by: 1)
+        XCTAssertEqual(model.librarySlimmingPreviewAssetID, members[2].assetID)
+        XCTAssertEqual(model.selectedLibrarySlimmingMemberIDs, [members[2].assetID])
+        XCTAssertEqual(model.librarySlimmingPreviewNavigation?.position, 3)
+        XCTAssertEqual(model.librarySlimmingPreviewNavigation?.totalCount, 3)
+        XCTAssertEqual(model.librarySlimmingPreviewNavigation?.canMovePrevious, true)
+        XCTAssertEqual(model.librarySlimmingPreviewNavigation?.canMoveNext, false)
+
+        model.moveLibrarySlimmingPreview(by: 1)
+        XCTAssertEqual(model.librarySlimmingPreviewAssetID, members[2].assetID)
+
+        model.moveLibrarySlimmingPreview(by: -1)
+        XCTAssertEqual(model.librarySlimmingPreviewAssetID, members[1].assetID)
+    }
+
+    func testClosingLibrarySlimmingPreviewKeepsTheCurrentMemberSelected() async {
+        let harness = await makeLibrarySlimmingPreviewHarness()
+        let model = harness.model
+        model.selectLibrarySlimmingMember(harness.members[1].assetID, additive: false)
+        model.toggleLibrarySlimmingPreview()
+        model.moveLibrarySlimmingPreview(by: 1)
+
+        model.closeLibrarySlimmingPreview()
+
+        XCTAssertNil(model.librarySlimmingPreviewAssetID)
+        XCTAssertEqual(model.selectedLibrarySlimmingMemberIDs, [harness.members[2].assetID])
+    }
+
+    func testLeavingLibrarySlimmingClosesThePreview() async {
+        let harness = await makeLibrarySlimmingPreviewHarness()
+        let model = harness.model
+        model.setLibrarySlimmingWorkspaceActive(true)
+        model.selectLibrarySlimmingMember(harness.members[0].assetID, additive: false)
+        model.toggleLibrarySlimmingPreview()
+        XCTAssertNotNil(model.librarySlimmingPreviewAssetID)
+
+        model.setLibrarySlimmingWorkspaceActive(false)
+
+        XCTAssertNil(model.librarySlimmingPreviewAssetID)
+        XCTAssertEqual(model.selectedLibrarySlimmingMemberIDs, [harness.members[0].assetID])
+    }
+
+    func testPreparingLibrarySlimmingPreviewDeleteClosesAndTargetsOnlyTheVisibleMember() async {
+        let recycle = FakeLibrarySlimmingRecyclePort()
+        let harness = await makeLibrarySlimmingPreviewHarness(recycle: recycle)
+        let model = harness.model
+        model.selectLibrarySlimmingMember(harness.members[0].assetID, additive: false)
+        model.selectLibrarySlimmingMember(harness.members[1].assetID, additive: true)
+        model.toggleLibrarySlimmingPreview()
+        model.moveLibrarySlimmingPreview(by: 1)
+
+        let shouldConfirmDelete = model.prepareLibrarySlimmingPreviewDeletion()
+
+        XCTAssertTrue(shouldConfirmDelete)
+        XCTAssertNil(model.librarySlimmingPreviewAssetID)
+        XCTAssertEqual(model.selectedLibrarySlimmingMemberIDs, [harness.members[2].assetID])
+        XCTAssertTrue(recycle.fastDeleteAssetIDCalls.isEmpty)
+        XCTAssertTrue(recycle.moveAssetIDCalls.isEmpty)
     }
 
     func testLibrarySlimmingShiftClickSelectsContiguousMemberRange() async {
@@ -4902,7 +5224,7 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertTrue(model.librarySlimmingClusters.isEmpty)
         XCTAssertEqual(
             model.librarySlimmingStatusMessage,
-            "已永久删除 1 张并释放来源空间"
+            "已永久删除 1 张，来源空间已可回收"
         )
     }
 
@@ -8304,6 +8626,80 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         )
     }
 
+    func testReviewSuggestionGroupsReuseSidebarGroupAndTagOrder() {
+        let peopleGroup = TagGroupListItem(
+            id: TagGroupSeed.people.id,
+            displayName: TagGroupSeed.people.displayName,
+            sortOrder: TagGroupSeed.people.sortOrder,
+            isSystem: true
+        )
+        let placesGroup = TagGroupListItem(
+            id: TagGroupSeed.placesAndScenes.id,
+            displayName: TagGroupSeed.placesAndScenes.displayName,
+            sortOrder: TagGroupSeed.placesAndScenes.sortOrder,
+            isSystem: true
+        )
+        let family = TagListItem(
+            id: UUID(),
+            displayName: "家人",
+            state: .active,
+            groupID: peopleGroup.id
+        )
+        let friend = TagListItem(
+            id: UUID(),
+            displayName: "朋友",
+            state: .active,
+            groupID: peopleGroup.id
+        )
+        let park = TagListItem(
+            id: UUID(),
+            displayName: "公园",
+            state: .active,
+            groupID: placesGroup.id
+        )
+        let sidebarSections = [
+            LibraryTagGroupSection(group: peopleGroup, tags: [friend, family]),
+            LibraryTagGroupSection(group: placesGroup, tags: [park]),
+        ]
+
+        func overview(_ tag: TagListItem, pending: Int) -> SuggestionTagOverview {
+            SuggestionTagOverview(
+                id: tag.id,
+                displayName: tag.displayName,
+                acceptedSampleCount: 4,
+                rejectedSampleCount: 4,
+                pendingSuggestionCount: pending,
+                taskStatus: .completed,
+                checkedCount: 10,
+                totalCount: 10,
+                skippedCount: 0,
+                missingPositiveCount: 0,
+                missingNegativeCount: 0,
+                canGenerate: true,
+                canUpdate: true,
+                canGeneratePersonalModel: true,
+                canReview: pending > 0,
+                canPause: false,
+                canResume: false,
+                canCancel: false,
+                activeJobID: nil
+            )
+        }
+
+        let grouped = ReviewSuggestionGroupSection.build(
+            tagSections: sidebarSections,
+            overviews: [
+                overview(park, pending: 80),
+                overview(family, pending: 50),
+                overview(friend, pending: 1),
+            ]
+        )
+
+        XCTAssertEqual(grouped.map(\.id), [peopleGroup.id, placesGroup.id])
+        XCTAssertEqual(grouped[0].overviews.map(\.id), [friend.id, family.id])
+        XCTAssertEqual(grouped[1].overviews.map(\.id), [park.id])
+    }
+
     @MainActor
     func testTagGroupCollapsePreferencesPersistToggleState() {
         let suiteName = "ImageAllTests.TagGroupCollapse.\(UUID().uuidString)"
@@ -8860,6 +9256,40 @@ final class LibraryWorkspaceModelTests: XCTestCase {
 
         XCTAssertTrue(layout.isSidebarPresented)
         XCTAssertFalse(layout.isInspectorPresented)
+    }
+
+    func testEnteringLibrarySlimmingStartsWithInspectorHiddenButKeepsManualToggle() {
+        var layout = LibraryWorkspaceLayoutState()
+
+        layout.prepareForLibrarySlimming()
+
+        XCTAssertTrue(layout.isSidebarPresented)
+        XCTAssertFalse(layout.isInspectorPresented)
+
+        layout.toggleInspector()
+        XCTAssertTrue(layout.isInspectorPresented)
+    }
+
+    func testLibrarySlimmingNavigatorUsesACompactBoundedWidth() {
+        XCTAssertEqual(
+            LibrarySlimmingWorkspaceLayout.navigatorWidth(availableWidth: 0),
+            0
+        )
+        XCTAssertEqual(
+            LibrarySlimmingWorkspaceLayout.navigatorWidth(availableWidth: 400),
+            168,
+            accuracy: 0.001
+        )
+        XCTAssertEqual(
+            LibrarySlimmingWorkspaceLayout.navigatorWidth(availableWidth: 1_000),
+            220,
+            accuracy: 0.001
+        )
+        XCTAssertEqual(
+            LibrarySlimmingWorkspaceLayout.navigatorWidth(availableWidth: 1_600),
+            244,
+            accuracy: 0.001
+        )
     }
 
     func testWorkspacePanelsToggleIndependentlyAndManualInspectorRestorePersistsWhileNarrow() {
@@ -10147,6 +10577,21 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertGreaterThan(host.fittingSize.height, 0)
     }
 
+    func testTrainingWorkspaceLayoutKeepsRunNavigatorCompact() {
+        XCTAssertEqual(
+            TrainingWorkspaceLayout.navigatorWidth(availableWidth: 1_200),
+            264
+        )
+        XCTAssertEqual(
+            TrainingWorkspaceLayout.navigatorWidth(availableWidth: 800),
+            210
+        )
+        XCTAssertEqual(
+            TrainingWorkspaceLayout.navigatorWidth(availableWidth: 400),
+            168
+        )
+    }
+
     func testReviewQueueGridNavigationMovesByRowsAndColumns() async {
         let sourceID = UUID()
         let tag = TagListItem(id: UUID(), displayName: "Family", state: .active)
@@ -10948,6 +11393,52 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         )
     }
 
+    private func makeLibrarySlimmingPreviewHarness(
+        memberCount: Int = 3,
+        recycle: FakeLibrarySlimmingRecyclePort? = nil
+    ) async -> (
+        model: LibraryWorkspaceModel,
+        members: [AssetGridItemProjection],
+        cluster: SlimmingCluster
+    ) {
+        let sourceID = UUID()
+        let members = (0 ..< memberCount).map {
+            Self.makeAsset(sourceID: sourceID, fileName: "preview-\($0).jpg")
+        }
+        let cluster = SlimmingCluster(
+            id: UUID(),
+            kind: .nearDuplicateScene,
+            memberAssetIDs: members.map(\.assetID),
+            representativeAssetID: members[0].assetID,
+            score: 0.95,
+            modelIdentity: .featurePrintOnly
+        )
+        let scan = StubLibrarySlimmingScanPort()
+        scan.seedClusters = [cluster]
+        let model = LibraryWorkspaceModel(
+            service: FakeLibraryWorkspaceService(
+                connectedSource: LibrarySourceSummary(
+                    id: sourceID,
+                    displayName: "Fixture",
+                    state: .active
+                ),
+                reconciledItems: members,
+                initialItems: members,
+                startsConnected: true,
+                hasPendingCatalogReconcileJobs: false
+            ),
+            librarySlimming: scan,
+            librarySlimmingRecycle: recycle,
+            idlePrewarmInstallEventMonitor: false
+        )
+        await model.start()
+        await model.selectAssets(Set(members.map(\.assetID)))
+        await model.findLibrarySlimmingFromSelection()
+        await model.analyzeLibrarySlimming(mode: .seeds)
+        model.selectLibrarySlimmingCluster(cluster.id)
+        return (model, members, cluster)
+    }
+
     private static func makeAsset(
         sourceID: UUID,
         assetID: UUID = UUID(),
@@ -10977,6 +11468,1172 @@ final class LibraryWorkspaceModelTests: XCTestCase {
             acceptedTagCount: 0,
             rejectedTagCount: 0
         )
+    }
+}
+
+final class WorldMapSpikeTests: XCTestCase {
+    func testDemoClustersAreDeterministicUniqueAndGeographicallyBounded() throws {
+        let first = WorldMapDemoData.clusters(count: 1_000)
+        let second = WorldMapDemoData.clusters(count: 1_000)
+
+        XCTAssertEqual(first, second)
+        XCTAssertEqual(first.count, 1_000)
+        XCTAssertEqual(Set(first.map(\.id)).count, 1_000)
+        XCTAssertTrue(first.allSatisfy { (-90 ... 90).contains($0.latitude) })
+        XCTAssertTrue(first.allSatisfy { (-180 ... 180).contains($0.longitude) })
+        XCTAssertTrue(first.allSatisfy { $0.photoCount > 0 })
+        XCTAssertTrue(first.allSatisfy { $0.gpsCount + $0.tagCount == $0.photoCount })
+    }
+
+    func testBridgeDecodesReadyCameraAndClusterEvents() throws {
+        XCTAssertEqual(
+            try WorldMapBridgeDecoder.decode(
+                data: Data(#"{"type":"ready","webgl2Available":true}"#.utf8)
+            ),
+            .ready(webGL2Available: true)
+        )
+
+        XCTAssertEqual(
+            try WorldMapBridgeDecoder.decode(
+                data: Data(
+                    #"{"type":"cameraChanged","viewport":{"west":-12.5,"south":20,"east":45.25,"north":70,"centerLongitude":16.4,"centerLatitude":46.2,"zoom":4.5,"bearing":22,"pitch":58}}"#.utf8
+                )
+            ),
+            .cameraChanged(
+                WorldMapViewport(
+                    west: -12.5,
+                    south: 20,
+                    east: 45.25,
+                    north: 70,
+                    centerLongitude: 16.4,
+                    centerLatitude: 46.2,
+                    zoom: 4.5,
+                    bearing: 22,
+                    pitch: 58
+                )
+            )
+        )
+
+        XCTAssertEqual(
+            try WorldMapBridgeDecoder.decode(
+                data: Data(#"{"type":"clusterClicked","clusterID":"demo-0042"}"#.utf8)
+            ),
+            .clusterClicked(id: "demo-0042")
+        )
+    }
+
+    func testBridgeRejectsUnknownOrIncompleteEvents() {
+        XCTAssertThrowsError(
+            try WorldMapBridgeDecoder.decode(
+                data: Data(#"{"type":"clusterClicked"}"#.utf8)
+            )
+        )
+        XCTAssertThrowsError(
+            try WorldMapBridgeDecoder.decode(
+                data: Data(#"{"type":"surprise"}"#.utf8)
+            )
+        )
+    }
+}
+
+final class WorldMapCatalogS1Tests: XCTestCase {
+    func testLocationBackfillStatusIsReadOnlyAndReportsPerSourceCoverage() throws {
+        let database = try CatalogDatabase.open(at: makeTempDatabaseURL())
+        let sourceID = UUID()
+        let gpsAssetID = UUID()
+        let checkedWithoutGPSAssetID = UUID()
+        let uncheckedAssetID = UUID()
+        try database.pool.write { db in
+            try Self.seedSource(db, id: sourceID)
+            try Self.seedAsset(db, id: gpsAssetID, sourceID: sourceID, index: 0)
+            try Self.seedAsset(db, id: checkedWithoutGPSAssetID, sourceID: sourceID, index: 1)
+            try Self.seedAsset(db, id: uncheckedAssetID, sourceID: sourceID, index: 2)
+            try Self.seedLocation(
+                db,
+                assetID: gpsAssetID,
+                latitude: 30.2741,
+                longitude: 120.1551,
+                sourceKind: "embeddedGPS"
+            )
+            try Self.seedLocation(
+                db,
+                assetID: checkedWithoutGPSAssetID,
+                latitude: nil,
+                longitude: nil,
+                sourceKind: "none"
+            )
+        }
+
+        let snapshots = try GRDBWorldMapLocationBackfillRepository(database: database)
+            .fetchSnapshots()
+        let snapshot = try XCTUnwrap(snapshots.first)
+        let jobCount = try database.pool.read { db in
+            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM job") ?? -1
+        }
+
+        XCTAssertEqual(snapshots.count, 1)
+        XCTAssertEqual(snapshot.sourceID, sourceID)
+        XCTAssertEqual(snapshot.phase, .ready)
+        XCTAssertEqual(snapshot.totalPhotoCount, 3)
+        XCTAssertEqual(snapshot.inspectedPhotoCount, 2)
+        XCTAssertEqual(snapshot.locatedPhotoCount, 1)
+        XCTAssertTrue(snapshot.canStart)
+        XCTAssertFalse(snapshot.canCancel)
+        XCTAssertEqual(jobCount, 0, "reading backfill status must never enqueue a scan")
+    }
+
+    func testLocationBackfillRetryResumesTheExistingSourceJob() throws {
+        let database = try CatalogDatabase.open(at: makeTempDatabaseURL())
+        let sourceID = UUID()
+        let assetID = UUID()
+        let jobID = UUID()
+        try database.pool.write { db in
+            try Self.seedSource(db, id: sourceID)
+            try Self.seedAsset(db, id: assetID, sourceID: sourceID, index: 0)
+        }
+        let queue = JobTestSupport.makeQueue(database: database)
+        _ = try queue.enqueue(
+            FolderReconcileJobFactory.makeEnqueueCommand(
+                jobID: jobID,
+                sourceID: sourceID,
+                notBeforeMs: JobTestSupport.baseTimeMs
+            )
+        )
+        try database.pool.write { db in
+            try db.execute(
+                sql: "UPDATE job SET state = 'retryableFailed' WHERE id = ?",
+                arguments: [jobID.uuidString.lowercased()]
+            )
+        }
+        let control = WorldMapLocationBackfillControl(
+            repository: GRDBWorldMapLocationBackfillRepository(database: database),
+            queue: queue,
+            clock: FixedJobClock(nowMs: JobTestSupport.baseTimeMs + 50),
+            enqueueFolder: { _ in XCTFail("retry must not enqueue a second folder job") },
+            requestPhotosFullRepair: { _ in XCTFail("folder retry must not touch Photos") }
+        )
+
+        try control.start(sourceID: sourceID)
+
+        let resumed = try queue.fetchJob(id: jobID)
+        let jobCount = try database.pool.read { db in
+            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM job") ?? -1
+        }
+        XCTAssertEqual(resumed.state, .pending)
+        XCTAssertEqual(jobCount, 1)
+    }
+
+    func testLocationBackfillCancellationCanBeStartedAgainWithoutReusingTerminalJob() throws {
+        let database = try CatalogDatabase.open(at: makeTempDatabaseURL())
+        let sourceID = UUID()
+        let assetID = UUID()
+        let cancelledJobID = UUID()
+        let retryJobID = UUID()
+        try database.pool.write { db in
+            try Self.seedSource(db, id: sourceID)
+            try Self.seedAsset(db, id: assetID, sourceID: sourceID, index: 0)
+        }
+        let queue = JobTestSupport.makeQueue(database: database)
+        _ = try queue.enqueue(
+            FolderReconcileJobFactory.makeEnqueueCommand(
+                jobID: cancelledJobID,
+                sourceID: sourceID,
+                notBeforeMs: JobTestSupport.baseTimeMs
+            )
+        )
+        let repository = GRDBWorldMapLocationBackfillRepository(database: database)
+        let control = WorldMapLocationBackfillControl(
+            repository: repository,
+            queue: queue,
+            clock: FixedJobClock(nowMs: JobTestSupport.baseTimeMs + 50),
+            enqueueFolder: { requestedSourceID in
+                XCTAssertEqual(requestedSourceID, sourceID)
+                _ = try queue.enqueue(
+                    FolderReconcileJobFactory.makeEnqueueCommand(
+                        jobID: retryJobID,
+                        sourceID: requestedSourceID,
+                        notBeforeMs: JobTestSupport.baseTimeMs + 50
+                    )
+                )
+            },
+            requestPhotosFullRepair: { _ in XCTFail("folder retry must not touch Photos") }
+        )
+
+        try control.cancel(sourceID: sourceID)
+        let cancelled = try XCTUnwrap(repository.fetchSnapshots().first)
+        XCTAssertEqual(cancelled.phase, .cancelled)
+        XCTAssertTrue(cancelled.canStart)
+        XCTAssertFalse(cancelled.canCancel)
+
+        try control.start(sourceID: sourceID)
+        let retried = try XCTUnwrap(repository.fetchSnapshots().first)
+        let jobCount = try database.pool.read { db in
+            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM job") ?? -1
+        }
+        XCTAssertEqual(retried.phase, .queued)
+        XCTAssertEqual(retried.activeJobID, retryJobID)
+        XCTAssertEqual(jobCount, 2)
+    }
+
+    func testReadingPlaceTagQueueDoesNotCallTheResolver() async throws {
+        let database = try CatalogDatabase.open(at: makeTempDatabaseURL())
+        let sourceID = UUID()
+        let tagID = UUID()
+        let assetID = UUID()
+        try await database.pool.write { db in
+            try Self.seedSource(db, id: sourceID)
+            try Self.seedAsset(db, id: assetID, sourceID: sourceID, index: 0)
+            try Self.seedLocation(
+                db,
+                assetID: assetID,
+                latitude: nil,
+                longitude: nil,
+                sourceKind: "none"
+            )
+            try Self.seedAcceptedTag(
+                db,
+                tagID: tagID,
+                name: "西湖",
+                assetIDs: [assetID]
+            )
+        }
+        let resolver = CountingWorldMapPlaceResolver(candidates: [])
+        let service = WorldMapPlaceResolutionService(
+            database: database,
+            resolver: resolver,
+            clock: FixedJobClock(nowMs: 46)
+        )
+
+        let items = try service.listTagResolutions()
+        let resolverCallCount = await resolver.recordedCallCount()
+
+        XCTAssertEqual(items.map(\.tagID), [tagID])
+        XCTAssertEqual(items.first?.status, .unresolved)
+        XCTAssertEqual(resolverCallCount, 0)
+    }
+
+    func testTwoDifferentResolvedPlaceTagsLeaveTheSamePhotoUnlocated() async throws {
+        let database = try CatalogDatabase.open(at: makeTempDatabaseURL())
+        let sourceID = UUID()
+        let tokyoTagID = UUID()
+        let parisTagID = UUID()
+        let assetID = UUID()
+        try await database.pool.write { db in
+            try Self.seedSource(db, id: sourceID)
+            try Self.seedAsset(db, id: assetID, sourceID: sourceID, index: 0)
+            try Self.seedLocation(
+                db,
+                assetID: assetID,
+                latitude: nil,
+                longitude: nil,
+                sourceKind: "none"
+            )
+            try Self.seedAcceptedTag(
+                db,
+                tagID: tokyoTagID,
+                name: "东京",
+                assetIDs: [assetID]
+            )
+            try Self.seedAcceptedTag(
+                db,
+                tagID: parisTagID,
+                name: "巴黎",
+                assetIDs: [assetID]
+            )
+        }
+        let tokyoService = WorldMapPlaceResolutionService(
+            database: database,
+            resolver: StubWorldMapPlaceResolver(
+                candidates: [
+                    WorldMapPlaceCandidate(
+                        placeID: "mapkit-v1-tokyo",
+                        displayName: "东京",
+                        subtitle: "日本",
+                        latitude: 35.6762,
+                        longitude: 139.6503,
+                        kind: .city
+                    ),
+                ]
+            ),
+            clock: FixedJobClock(nowMs: 47)
+        )
+        let parisService = WorldMapPlaceResolutionService(
+            database: database,
+            resolver: StubWorldMapPlaceResolver(
+                candidates: [
+                    WorldMapPlaceCandidate(
+                        placeID: "mapkit-v1-paris",
+                        displayName: "巴黎",
+                        subtitle: "法国",
+                        latitude: 48.8566,
+                        longitude: 2.3522,
+                        kind: .city
+                    ),
+                ]
+            ),
+            clock: FixedJobClock(nowMs: 48)
+        )
+
+        _ = try await tokyoService.resolveTag(tagID: tokyoTagID)
+        _ = try await parisService.resolveTag(tagID: parisTagID)
+
+        let snapshot = try GRDBWorldMapCatalogRepository(database: database)
+            .fetchSnapshot(query: .global)
+        XCTAssertEqual(snapshot.locatedPhotoCount, 0)
+        XCTAssertEqual(snapshot.unlocatedPhotoCount, 1)
+    }
+
+    func testClearingResolvedPlaceTagRemovesItsDerivedLocation() async throws {
+        let database = try CatalogDatabase.open(at: makeTempDatabaseURL())
+        let sourceID = UUID()
+        let tagID = UUID()
+        let assetID = UUID()
+
+        try await database.pool.write { db in
+            try Self.seedSource(db, id: sourceID)
+            try Self.seedAsset(db, id: assetID, sourceID: sourceID, index: 0)
+            try Self.seedLocation(
+                db,
+                assetID: assetID,
+                latitude: nil,
+                longitude: nil,
+                sourceKind: "none"
+            )
+            try Self.seedAcceptedTag(
+                db,
+                tagID: tagID,
+                name: "杭州",
+                assetIDs: [assetID]
+            )
+        }
+        let service = WorldMapPlaceResolutionService(
+            database: database,
+            resolver: StubWorldMapPlaceResolver(
+                candidates: [
+                    WorldMapPlaceCandidate(
+                        placeID: "mapkit-v1-hangzhou",
+                        displayName: "杭州",
+                        subtitle: "浙江省，中国",
+                        latitude: 30.2741,
+                        longitude: 120.1551,
+                        kind: .city
+                    ),
+                ]
+            ),
+            clock: FixedJobClock(nowMs: 44)
+        )
+        _ = try await service.resolveTag(tagID: tagID)
+
+        _ = try GRDBTagCatalogRepository(database: database).batchClear(
+            tagID: tagID,
+            assetIDs: [assetID],
+            timestampMs: 45
+        )
+
+        let location = try await database.pool.read { db in
+            try Row.fetchOne(
+                db,
+                sql: "SELECT latitude, longitude, source_kind FROM asset_location WHERE asset_id = ?",
+                arguments: [assetID.uuidString.lowercased()]
+            )
+        }
+        XCTAssertNil(location?["latitude"] as Double?)
+        XCTAssertNil(location?["longitude"] as Double?)
+        XCTAssertEqual(location?["source_kind"] as String?, "none")
+    }
+
+    func testAmbiguousCandidatesStayUnlocatedUntilConfirmationAndUseCachedResults() async throws {
+        let database = try CatalogDatabase.open(at: makeTempDatabaseURL())
+        let sourceID = UUID()
+        let tagID = UUID()
+        let assetID = UUID()
+
+        try await database.pool.write { db in
+            try Self.seedSource(db, id: sourceID)
+            try Self.seedAsset(db, id: assetID, sourceID: sourceID, index: 0)
+            try Self.seedLocation(
+                db,
+                assetID: assetID,
+                latitude: nil,
+                longitude: nil,
+                sourceKind: "none"
+            )
+            try Self.seedAcceptedTag(
+                db,
+                tagID: tagID,
+                name: "朝阳",
+                assetIDs: [assetID]
+            )
+        }
+
+        let beijing = WorldMapPlaceCandidate(
+            placeID: "mapkit-v1-chaoyang-beijing",
+            displayName: "朝阳区",
+            subtitle: "北京市，中国",
+            latitude: 39.9219,
+            longitude: 116.4436,
+            kind: .region
+        )
+        let liaoning = WorldMapPlaceCandidate(
+            placeID: "mapkit-v1-chaoyang-liaoning",
+            displayName: "朝阳市",
+            subtitle: "辽宁省，中国",
+            latitude: 41.5737,
+            longitude: 120.4504,
+            kind: .city
+        )
+        let resolver = CountingWorldMapPlaceResolver(candidates: [beijing, liaoning])
+        let service = WorldMapPlaceResolutionService(
+            database: database,
+            resolver: resolver,
+            clock: FixedJobClock(nowMs: 43)
+        )
+
+        let ambiguous = try await service.resolveTag(tagID: tagID)
+        let beforeConfirmation = try GRDBWorldMapCatalogRepository(database: database)
+            .fetchSnapshot(query: .global)
+        let cached = try await service.resolveTag(tagID: tagID)
+        let resolverCallCount = await resolver.recordedCallCount()
+
+        XCTAssertEqual(ambiguous.status, .ambiguous)
+        XCTAssertEqual(ambiguous.candidates, [beijing, liaoning])
+        XCTAssertNil(ambiguous.confirmedPlaceID)
+        XCTAssertEqual(beforeConfirmation.locatedPhotoCount, 0)
+        XCTAssertEqual(cached, ambiguous)
+        XCTAssertEqual(resolverCallCount, 1)
+
+        let confirmed = try service.confirmCandidate(
+            tagID: tagID,
+            placeID: liaoning.placeID
+        )
+        let afterConfirmation = try GRDBWorldMapCatalogRepository(database: database)
+            .fetchSnapshot(query: .global)
+
+        XCTAssertEqual(confirmed.status, .resolved)
+        XCTAssertEqual(confirmed.confirmedPlaceID, liaoning.placeID)
+        XCTAssertEqual(afterConfirmation.locatedPhotoCount, 1)
+        XCTAssertEqual(afterConfirmation.clusters.reduce(0) { $0 + $1.tagCount }, 1)
+    }
+
+    func testUniquePlaceCandidateLocatesAcceptedPhotosWithoutOverwritingGPS() async throws {
+        let database = try CatalogDatabase.open(at: makeTempDatabaseURL())
+        let sourceID = UUID()
+        let tagID = UUID()
+        let unlocatedAssetID = UUID()
+        let gpsAssetID = UUID()
+
+        try await database.pool.write { db in
+            try Self.seedSource(db, id: sourceID)
+            try Self.seedAsset(db, id: unlocatedAssetID, sourceID: sourceID, index: 0)
+            try Self.seedAsset(db, id: gpsAssetID, sourceID: sourceID, index: 1)
+            try Self.seedLocation(
+                db,
+                assetID: unlocatedAssetID,
+                latitude: nil,
+                longitude: nil,
+                sourceKind: "none"
+            )
+            try Self.seedLocation(
+                db,
+                assetID: gpsAssetID,
+                latitude: 31.2304,
+                longitude: 121.4737,
+                sourceKind: "embeddedGPS"
+            )
+            try Self.seedAcceptedTag(
+                db,
+                tagID: tagID,
+                name: "北京",
+                assetIDs: [unlocatedAssetID, gpsAssetID]
+            )
+        }
+
+        let candidate = WorldMapPlaceCandidate(
+            placeID: "mapkit-v1-beijing",
+            displayName: "北京",
+            subtitle: "北京市，中国",
+            latitude: 39.9042,
+            longitude: 116.4074,
+            kind: .city
+        )
+        let service = WorldMapPlaceResolutionService(
+            database: database,
+            resolver: StubWorldMapPlaceResolver(candidates: [candidate]),
+            clock: FixedJobClock(nowMs: 42)
+        )
+
+        let resolution = try await service.resolveTag(tagID: tagID)
+        let snapshot = try GRDBWorldMapCatalogRepository(database: database)
+            .fetchSnapshot(query: .global)
+
+        XCTAssertEqual(resolution.status, .resolved)
+        XCTAssertEqual(resolution.confirmedPlaceID, candidate.placeID)
+        XCTAssertEqual(snapshot.locatedPhotoCount, 2)
+        XCTAssertEqual(snapshot.clusters.reduce(0) { $0 + $1.gpsCount }, 1)
+        XCTAssertEqual(snapshot.clusters.reduce(0) { $0 + $1.tagCount }, 1)
+        XCTAssertTrue(snapshot.clusters.contains { $0.displayName == "北京" })
+        try await database.pool.read { db in
+            let gpsRow = try Row.fetchOne(
+                db,
+                sql: "SELECT latitude, longitude, source_kind FROM asset_location WHERE asset_id = ?",
+                arguments: [gpsAssetID.uuidString.lowercased()]
+            )
+            XCTAssertEqual(gpsRow?["latitude"] as Double?, 31.2304)
+            XCTAssertEqual(gpsRow?["longitude"] as Double?, 121.4737)
+            XCTAssertEqual(gpsRow?["source_kind"] as String?, "embeddedGPS")
+        }
+    }
+
+    func testCatalogAggregatesGPSLocationsAndCountsCheckedUnlocatedPhotos() throws {
+        let database = try CatalogDatabase.open(at: makeTempDatabaseURL())
+        let sourceID = UUID()
+        let located = [UUID(), UUID(), UUID()]
+        let unlocated = UUID()
+
+        try database.pool.write { db in
+            try Self.seedSource(db, id: sourceID)
+            for (index, assetID) in (located + [unlocated]).enumerated() {
+                try Self.seedAsset(db, id: assetID, sourceID: sourceID, index: index)
+            }
+            try Self.seedLocation(
+                db,
+                assetID: located[0],
+                latitude: 39.9042,
+                longitude: 116.4074,
+                sourceKind: "embeddedGPS"
+            )
+            try Self.seedLocation(
+                db,
+                assetID: located[1],
+                latitude: 39.9050,
+                longitude: 116.4080,
+                sourceKind: "photosGPS"
+            )
+            try Self.seedLocation(
+                db,
+                assetID: located[2],
+                latitude: 48.8566,
+                longitude: 2.3522,
+                sourceKind: "embeddedGPS"
+            )
+            try Self.seedLocation(
+                db,
+                assetID: unlocated,
+                latitude: nil,
+                longitude: nil,
+                sourceKind: "none"
+            )
+        }
+
+        let snapshot = try GRDBWorldMapCatalogRepository(database: database).fetchSnapshot(
+            query: .global
+        )
+
+        XCTAssertEqual(snapshot.eligiblePhotoCount, 4)
+        XCTAssertEqual(snapshot.locatedPhotoCount, 3)
+        XCTAssertEqual(snapshot.unlocatedPhotoCount, 1)
+        XCTAssertEqual(snapshot.clusters.reduce(0) { $0 + $1.photoCount }, 3)
+        XCTAssertEqual(snapshot.clusters.reduce(0) { $0 + $1.gpsCount }, 3)
+        XCTAssertEqual(snapshot.clusters.reduce(0) { $0 + $1.tagCount }, 0)
+        XCTAssertLessThanOrEqual(snapshot.clusters.count, 2_000)
+    }
+
+    func testAssetLocationRejectsHalfCoordinatesAndOutOfRangeLatitude() throws {
+        let database = try CatalogDatabase.open(at: makeTempDatabaseURL())
+        let sourceID = UUID()
+        let assetID = UUID()
+        try database.pool.write { db in
+            try Self.seedSource(db, id: sourceID)
+            try Self.seedAsset(db, id: assetID, sourceID: sourceID, index: 0)
+        }
+
+        XCTAssertThrowsError(
+            try database.pool.write { db in
+                try Self.seedLocation(
+                    db,
+                    assetID: assetID,
+                    latitude: 31.2,
+                    longitude: nil,
+                    sourceKind: "embeddedGPS"
+                )
+            }
+        )
+        XCTAssertThrowsError(
+            try database.pool.write { db in
+                try Self.seedLocation(
+                    db,
+                    assetID: assetID,
+                    latitude: 39.9042,
+                    longitude: 116.4074,
+                    sourceKind: "placeTag"
+                )
+            }
+        )
+        XCTAssertThrowsError(
+            try database.pool.write { db in
+                try Self.seedLocation(
+                    db,
+                    assetID: assetID,
+                    latitude: 91,
+                    longitude: 121.5,
+                    sourceKind: "embeddedGPS"
+                )
+            }
+        )
+    }
+
+    func testClusterSelectionDrillsDownToOnlyThatPhotoTowerAndReportsTruncation() throws {
+        let database = try CatalogDatabase.open(at: makeTempDatabaseURL())
+        let sourceID = UUID()
+        let beijing = [UUID(), UUID(), UUID()]
+        let paris = UUID()
+
+        try database.pool.write { db in
+            try Self.seedSource(db, id: sourceID)
+            for (index, assetID) in (beijing + [paris]).enumerated() {
+                try Self.seedAsset(db, id: assetID, sourceID: sourceID, index: index)
+            }
+            for (index, assetID) in beijing.enumerated() {
+                try Self.seedLocation(
+                    db,
+                    assetID: assetID,
+                    latitude: 39.9042 + Double(index) * 0.0001,
+                    longitude: 116.4074 + Double(index) * 0.0001,
+                    sourceKind: "embeddedGPS"
+                )
+            }
+            try Self.seedLocation(
+                db,
+                assetID: paris,
+                latitude: 48.8566,
+                longitude: 2.3522,
+                sourceKind: "photosGPS"
+            )
+        }
+
+        let repository = GRDBWorldMapCatalogRepository(database: database)
+        let snapshot = try repository.fetchSnapshot(query: .global)
+        let beijingCluster = try XCTUnwrap(
+            snapshot.clusters.first(where: { $0.photoCount == beijing.count })
+        )
+
+        let fullSelection = try repository.fetchSelection(
+            query: beijingCluster.selectionQuery
+        )
+        XCTAssertEqual(fullSelection.totalPhotoCount, 3)
+        XCTAssertEqual(Set(fullSelection.assets.map(\.assetID)), Set(beijing))
+        XCTAssertFalse(fullSelection.isTruncated)
+
+        let limitedSelection = try repository.fetchSelection(
+            query: beijingCluster.selectionQuery.limited(to: 2)
+        )
+        XCTAssertEqual(limitedSelection.totalPhotoCount, 3)
+        XCTAssertEqual(limitedSelection.assets.count, 2)
+        XCTAssertTrue(limitedSelection.isTruncated)
+        XCTAssertTrue(Set(limitedSelection.assets.map(\.assetID)).isSubset(of: Set(beijing)))
+
+        XCTAssertThrowsError(
+            try repository.fetchSelection(
+                query: beijingCluster.selectionQuery.limited(
+                    to: WorldMapCatalogSelectionQuery.maximumAssetLimit + 1
+                )
+            )
+        ) { error in
+            XCTAssertEqual(error as? WorldMapCatalogError, .invalidQuery)
+        }
+    }
+
+    func testClusterSelectionRetainsViewportClippingInsideTheSameGridBucket() throws {
+        let database = try CatalogDatabase.open(at: makeTempDatabaseURL())
+        let sourceID = UUID()
+        let visibleAssetID = UUID()
+        let outsideViewportAssetID = UUID()
+
+        try database.pool.write { db in
+            try Self.seedSource(db, id: sourceID)
+            try Self.seedAsset(db, id: visibleAssetID, sourceID: sourceID, index: 0)
+            try Self.seedAsset(db, id: outsideViewportAssetID, sourceID: sourceID, index: 1)
+            try Self.seedLocation(
+                db,
+                assetID: visibleAssetID,
+                latitude: 39.9042,
+                longitude: 116.4082,
+                sourceKind: "embeddedGPS"
+            )
+            try Self.seedLocation(
+                db,
+                assetID: outsideViewportAssetID,
+                latitude: 39.9042,
+                longitude: 116.4088,
+                sourceKind: "embeddedGPS"
+            )
+        }
+
+        let repository = GRDBWorldMapCatalogRepository(database: database)
+        let snapshot = try repository.fetchSnapshot(
+            query: WorldMapCatalogQuery(
+                bounds: WorldMapCatalogBounds(
+                    west: 116.4081,
+                    south: 39.9041,
+                    east: 116.4085,
+                    north: 39.9045
+                )
+            )
+        )
+        XCTAssertEqual(snapshot.clusters.count, 1)
+        let cluster = try XCTUnwrap(snapshot.clusters.first)
+
+        let selection = try repository.fetchSelection(query: cluster.selectionQuery)
+
+        XCTAssertEqual(cluster.photoCount, 1)
+        XCTAssertEqual(selection.totalPhotoCount, 1)
+        XCTAssertEqual(selection.assets.map(\.assetID), [visibleAssetID])
+
+        let galleryPage = try GRDBAssetCatalogQueryRepository(database: database)
+            .fetchAssetPage(
+                AssetPageRequest(
+                    filter: AssetPageFilter(
+                        mediaKinds: [.image],
+                        worldMapSelection: cluster.selectionQuery
+                    ),
+                    sort: .newest,
+                    cursor: nil,
+                    limit: 50
+                )
+            )
+        XCTAssertEqual(galleryPage.items.map(\.assetID), [visibleAssetID])
+    }
+
+    func testWorldMapGalleryFilterHandlesAntimeridianAndMapEligibility() throws {
+        let database = try CatalogDatabase.open(at: makeTempDatabaseURL())
+        let sourceID = UUID()
+        let eastAssetID = UUID()
+        let westAssetID = UUID()
+        let middleAssetID = UUID()
+        let missingAssetID = UUID()
+        let videoAssetID = UUID()
+        let assetIDs = [
+            eastAssetID,
+            westAssetID,
+            middleAssetID,
+            missingAssetID,
+            videoAssetID,
+        ]
+
+        try database.pool.write { db in
+            try Self.seedSource(db, id: sourceID)
+            for (index, assetID) in assetIDs.enumerated() {
+                try Self.seedAsset(db, id: assetID, sourceID: sourceID, index: index)
+            }
+            try Self.seedLocation(
+                db,
+                assetID: eastAssetID,
+                latitude: 1,
+                longitude: 179,
+                sourceKind: "embeddedGPS"
+            )
+            try Self.seedLocation(
+                db,
+                assetID: westAssetID,
+                latitude: -1,
+                longitude: -179,
+                sourceKind: "photosGPS"
+            )
+            try Self.seedLocation(
+                db,
+                assetID: middleAssetID,
+                latitude: 0,
+                longitude: 0,
+                sourceKind: "embeddedGPS"
+            )
+            try Self.seedLocation(
+                db,
+                assetID: missingAssetID,
+                latitude: 2,
+                longitude: 178,
+                sourceKind: "embeddedGPS"
+            )
+            try Self.seedLocation(
+                db,
+                assetID: videoAssetID,
+                latitude: 2,
+                longitude: -178,
+                sourceKind: "embeddedGPS"
+            )
+            try db.execute(
+                sql: "UPDATE asset SET availability = 'missing' WHERE id = ?",
+                arguments: [missingAssetID.uuidString.lowercased()]
+            )
+            try db.execute(
+                sql: "UPDATE asset SET media_kind = 'video' WHERE id = ?",
+                arguments: [videoAssetID.uuidString.lowercased()]
+            )
+        }
+
+        let page = try GRDBAssetCatalogQueryRepository(database: database).fetchAssetPage(
+            AssetPageRequest(
+                filter: AssetPageFilter(
+                    worldMapSelection: WorldMapCatalogSelectionQuery(
+                        cellDegrees: 360,
+                        longitudeBucket: 0,
+                        latitudeBucket: 0,
+                        bounds: WorldMapCatalogBounds(
+                            west: 170,
+                            south: -10,
+                            east: -170,
+                            north: 10
+                        )
+                    )
+                ),
+                sort: .fileNameAscending,
+                cursor: nil,
+                limit: 50
+            )
+        )
+
+        XCTAssertEqual(Set(page.items.map(\.assetID)), Set([eastAssetID, westAssetID]))
+    }
+
+    private static func seedSource(_ db: Database, id: UUID) throws {
+        try db.execute(
+            sql: """
+            INSERT INTO source (
+                id, kind, display_name, bookmark, created_at_ms, updated_at_ms
+            ) VALUES (?, 'folder', 'World Map Fixture', ?, 1, 1)
+            """,
+            arguments: [id.uuidString.lowercased(), Data("fixture".utf8)]
+        )
+    }
+
+    private static func seedAsset(
+        _ db: Database,
+        id: UUID,
+        sourceID: UUID,
+        index: Int
+    ) throws {
+        try db.execute(
+            sql: """
+            INSERT INTO asset (
+                id, source_id, locator_kind, relative_path, locator_state,
+                media_type, width, height, content_revision, availability,
+                record_created_at_ms, record_updated_at_ms, file_name, media_kind
+            ) VALUES (?, ?, 'file', ?, 'current', 'public.jpeg', 10, 10, 1,
+                      'available', 1, 1, ?, 'image')
+            """,
+            arguments: [
+                id.uuidString.lowercased(),
+                sourceID.uuidString.lowercased(),
+                "photo-\(index).jpg",
+                "photo-\(index).jpg",
+            ]
+        )
+    }
+
+    private static func seedLocation(
+        _ db: Database,
+        assetID: UUID,
+        latitude: Double?,
+        longitude: Double?,
+        sourceKind: String
+    ) throws {
+        try db.execute(
+            sql: """
+            INSERT INTO asset_location (
+                asset_id, latitude, longitude, source_kind, updated_at_ms
+            ) VALUES (?, ?, ?, ?, 1)
+            """,
+            arguments: [
+                assetID.uuidString.lowercased(), latitude, longitude, sourceKind,
+            ]
+        )
+    }
+
+    private static func seedAcceptedTag(
+        _ db: Database,
+        tagID: UUID,
+        name: String,
+        assetIDs: [UUID]
+    ) throws {
+        try db.execute(
+            sql: """
+            INSERT INTO tag (
+                id, name, normalized_name, state, created_at_ms, updated_at_ms, group_id
+            ) VALUES (?, ?, ?, 'active', 1, 1, ?)
+            """,
+            arguments: [
+                tagID.uuidString.lowercased(),
+                name,
+                name,
+                TagGroupSeed.placesAndScenes.id.uuidString.lowercased(),
+            ]
+        )
+        for assetID in assetIDs {
+            try db.execute(
+                sql: """
+                INSERT INTO asset_tag_decision (asset_id, tag_id, decision, updated_at_ms)
+                VALUES (?, ?, 'accepted', 1)
+                """,
+                arguments: [assetID.uuidString.lowercased(), tagID.uuidString.lowercased()]
+            )
+        }
+    }
+}
+
+private struct StubWorldMapPlaceResolver: WorldMapPlaceResolving {
+    let candidates: [WorldMapPlaceCandidate]
+
+    func resolve(query _: String) async throws -> [WorldMapPlaceCandidate] {
+        candidates
+    }
+}
+
+private actor CountingWorldMapPlaceResolver: WorldMapPlaceResolving {
+    private let candidates: [WorldMapPlaceCandidate]
+    private var callCount = 0
+
+    init(candidates: [WorldMapPlaceCandidate]) {
+        self.candidates = candidates
+    }
+
+    func resolve(query _: String) async throws -> [WorldMapPlaceCandidate] {
+        callCount += 1
+        return candidates
+    }
+
+    func recordedCallCount() -> Int {
+        callCount
+    }
+}
+
+@MainActor
+final class WorldMapWebKitSmokeTests: XCTestCase {
+    func testBundledWorldMapUsesLowSaturationMacaronVisualContract() throws {
+        let resources = try worldMapResourcesURL()
+        let stylesheet = try String(
+            contentsOf: resources.appendingPathComponent("world-map.css"),
+            encoding: .utf8
+        )
+        let renderer = try String(
+            contentsOf: resources.appendingPathComponent("world-map.js"),
+            encoding: .utf8
+        )
+
+        XCTAssertTrue(stylesheet.contains("color-scheme: light"))
+        XCTAssertTrue(stylesheet.contains("--map-paper: #f4f1eb"))
+        XCTAssertFalse(stylesheet.contains("color-scheme: dark"))
+        XCTAssertFalse(stylesheet.contains("scanline"))
+        XCTAssertTrue(renderer.contains("[147, 191, 208"))
+        XCTAssertTrue(renderer.contains("[182, 168, 201"))
+        XCTAssertFalse(renderer.contains("[43, 218, 255"))
+        XCTAssertFalse(renderer.contains("wireframe: true"))
+    }
+
+    func testBundledWorldMapLoadsLocalRuntimeAndReportsReady() async throws {
+        let ready = expectation(description: "WorldMap WebKit bridge ready")
+        let handler = WorldMapWebKitMessageHandler(ready: ready)
+        let configuration = WKWebViewConfiguration()
+        configuration.websiteDataStore = .nonPersistent()
+        configuration.userContentController.add(handler, name: "worldMapBridge")
+        let webView = WKWebView(frame: .init(x: 0, y: 0, width: 1_200, height: 760), configuration: configuration)
+        let window = NSWindow(
+            contentRect: .init(x: 0, y: 0, width: 1_200, height: 760),
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = webView
+        window.orderBack(nil)
+        defer { window.close() }
+
+        let resources = try worldMapResourcesURL()
+        let index = resources.appendingPathComponent("index.html")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: index.path))
+        XCTAssertTrue(
+            FileManager.default.fileExists(
+                atPath: resources.appendingPathComponent("maplibre-gl.js").path
+            )
+        )
+        XCTAssertTrue(
+            FileManager.default.fileExists(
+                atPath: resources.appendingPathComponent("maplibre-gl-worker.js").path
+            )
+        )
+        XCTAssertTrue(
+            FileManager.default.fileExists(
+                atPath: resources.appendingPathComponent("maplibre-gl-worker-source.js").path
+            )
+        )
+        XCTAssertTrue(
+            FileManager.default.fileExists(
+                atPath: resources.appendingPathComponent("natural-earth-countries.js").path
+            )
+        )
+
+        webView.loadFileURL(index, allowingReadAccessTo: resources)
+        await fulfillment(of: [ready], timeout: 15)
+
+        XCTAssertTrue(
+            handler.eventTypes.contains("ready"),
+            "WebKit bridge events: \(handler.eventTypes), errors: \(handler.renderErrors)"
+        )
+        XCTAssertFalse(
+            handler.eventTypes.contains("renderError"),
+            "WebKit bridge events: \(handler.eventTypes), errors: \(handler.renderErrors)"
+        )
+        configuration.userContentController.removeScriptMessageHandler(forName: "worldMapBridge")
+        webView.stopLoading()
+    }
+
+    func testBundledWorldMapRestoresInjectedCameraBeforeReportingViewport() async throws {
+        let ready = expectation(description: "WorldMap WebKit bridge ready")
+        let cameraChanged = expectation(description: "WorldMap restored camera")
+        let handler = WorldMapWebKitMessageHandler(
+            ready: ready,
+            cameraChanged: cameraChanged
+        )
+        let configuration = WKWebViewConfiguration()
+        configuration.websiteDataStore = .nonPersistent()
+        configuration.userContentController.add(handler, name: "worldMapBridge")
+        configuration.userContentController.addUserScript(
+            WKUserScript(
+                source: """
+                globalThis.ImageAllWorldMapInitialCamera = {
+                    centerLongitude: 121.4737,
+                    centerLatitude: 31.2304,
+                    zoom: 5.25,
+                    bearing: 18,
+                    pitch: 52
+                };
+                """,
+                injectionTime: .atDocumentStart,
+                forMainFrameOnly: true
+            )
+        )
+        let webView = WKWebView(
+            frame: .init(x: 0, y: 0, width: 1_200, height: 760),
+            configuration: configuration
+        )
+        let window = NSWindow(
+            contentRect: .init(x: 0, y: 0, width: 1_200, height: 760),
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = webView
+        window.orderBack(nil)
+        defer { window.close() }
+
+        let resources = try worldMapResourcesURL()
+        webView.loadFileURL(
+            resources.appendingPathComponent("index.html"),
+            allowingReadAccessTo: resources
+        )
+        await fulfillment(of: [ready, cameraChanged], timeout: 15)
+
+        let viewport = try XCTUnwrap(handler.lastViewport)
+        XCTAssertEqual(viewport.centerLongitude, 121.4737, accuracy: 0.01)
+        XCTAssertEqual(viewport.centerLatitude, 31.2304, accuracy: 0.01)
+        XCTAssertEqual(viewport.zoom, 5.25, accuracy: 0.01)
+        XCTAssertEqual(viewport.bearing, 18, accuracy: 0.01)
+        XCTAssertEqual(viewport.pitch, 52, accuracy: 0.01)
+
+        let selectedID = try await evaluateJavaScriptString(
+            """
+            window.ImageAllWorldMap.updateClusters({
+                revision: 1,
+                clusters: [{
+                    id: "restore-me",
+                    longitude: 121.4737,
+                    latitude: 31.2304,
+                    photoCount: 12,
+                    gpsCount: 9,
+                    tagCount: 3,
+                    displayName: "上海"
+                }]
+            });
+            window.ImageAllWorldMap.restoreSelection("restore-me");
+            window.ImageAllWorldMap.snapshotState().selectedClusterID;
+            """,
+            in: webView
+        )
+        XCTAssertEqual(selectedID, "restore-me")
+        XCTAssertFalse(handler.eventTypes.contains("clusterClicked"))
+
+        configuration.userContentController.removeScriptMessageHandler(forName: "worldMapBridge")
+        webView.stopLoading()
+    }
+
+    private func worldMapResourcesURL() throws -> URL {
+        let testBundleURL = Bundle(for: Self.self).bundleURL
+        let appBundleURL = testBundleURL
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        return try XCTUnwrap(Bundle(url: appBundleURL)?.resourceURL)
+            .appendingPathComponent("WorldMap", isDirectory: true)
+    }
+
+    private func evaluateJavaScriptString(
+        _ source: String,
+        in webView: WKWebView
+    ) async throws -> String? {
+        try await withCheckedThrowingContinuation { continuation in
+            webView.evaluateJavaScript(source) { result, error in
+                if let error {
+                    continuation.resume(throwing: error)
+                } else {
+                    continuation.resume(returning: result as? String)
+                }
+            }
+        }
+    }
+}
+
+@MainActor
+private final class WorldMapWebKitMessageHandler: NSObject, WKScriptMessageHandler {
+    private let ready: XCTestExpectation
+    private let cameraChanged: XCTestExpectation?
+    private var hasFulfilledReady = false
+    private var hasFulfilledCameraChanged = false
+    private(set) var eventTypes: [String] = []
+    private(set) var renderErrors: [String] = []
+    private(set) var lastViewport: WorldMapViewport?
+
+    init(ready: XCTestExpectation, cameraChanged: XCTestExpectation? = nil) {
+        self.ready = ready
+        self.cameraChanged = cameraChanged
+    }
+
+    func userContentController(
+        _: WKUserContentController,
+        didReceive message: WKScriptMessage
+    ) {
+        guard message.name == "worldMapBridge",
+              let body = message.body as? [String: Any],
+              let type = body["type"] as? String
+        else {
+            return
+        }
+        eventTypes.append(type)
+        if type == "renderError", let errorMessage = body["message"] as? String {
+            renderErrors.append(errorMessage)
+        }
+        if type == "ready", !hasFulfilledReady {
+            hasFulfilledReady = true
+            ready.fulfill()
+        }
+        if type == "cameraChanged",
+           let viewportObject = body["viewport"],
+           JSONSerialization.isValidJSONObject(viewportObject),
+           let viewportData = try? JSONSerialization.data(withJSONObject: viewportObject),
+           let viewport = try? JSONDecoder().decode(WorldMapViewport.self, from: viewportData)
+        {
+            lastViewport = viewport
+            if !hasFulfilledCameraChanged {
+                hasFulfilledCameraChanged = true
+                cameraChanged?.fulfill()
+            }
+        }
     }
 }
 
@@ -11680,6 +13337,8 @@ final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecked Sendab
     private var storedLastCreateTagAssetIDs: Set<UUID> = []
     private var storedAssetPageFetchCallCount = 0
     private var storedEnqueueReconcileCalls: [[UUID]] = []
+    private var storedWorldMapLocationBackfillStartCalls: [UUID] = []
+    private var storedWorldMapLocationBackfillCancelCalls: [UUID] = []
     private var storedJobActivityItems: [JobActivityItem]
     private var storedJobActivityFetchCallCount = 0
     private var storedJobActivityActionCallCount = 0
@@ -11980,6 +13639,14 @@ final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecked Sendab
 
     var enqueueReconcileCalls: [[UUID]] {
         lock.withLock { storedEnqueueReconcileCalls }
+    }
+
+    var worldMapLocationBackfillStartCalls: [UUID] {
+        lock.withLock { storedWorldMapLocationBackfillStartCalls }
+    }
+
+    var worldMapLocationBackfillCancelCalls: [UUID] {
+        lock.withLock { storedWorldMapLocationBackfillCancelCalls }
     }
 
     var hasStartedBlockedAssetPageFetch: Bool {
@@ -12323,6 +13990,19 @@ final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecked Sendab
         lock.withLock {
             storedEnqueueReconcileCalls.append(sourceIDs)
             storedHasPendingCatalogReconcileJobs = true
+        }
+    }
+
+    func startWorldMapLocationBackfill(sourceID: UUID) throws {
+        lock.withLock {
+            storedWorldMapLocationBackfillStartCalls.append(sourceID)
+            storedHasPendingCatalogReconcileJobs = true
+        }
+    }
+
+    func cancelWorldMapLocationBackfill(sourceID: UUID) throws {
+        lock.withLock {
+            storedWorldMapLocationBackfillCancelCalls.append(sourceID)
         }
     }
 

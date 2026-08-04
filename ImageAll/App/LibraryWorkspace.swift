@@ -359,6 +359,9 @@ enum LibraryGridPageDirection: Equatable, Sendable {
 }
 
 enum LibraryBrowsingDestination: Equatable, Sendable {
+    case galleryOverview
+    case worldMap
+    case worldMapGallery(WorldMapGalleryScope)
     case all
     case untagged
     case reviewSuggestions
@@ -370,6 +373,15 @@ enum LibraryBrowsingDestination: Equatable, Sendable {
 enum LibrarySlimmingWorkspaceTab: String, Equatable, Sendable {
     case clusters
     case recycleBin
+}
+
+struct LibrarySlimmingPreviewNavigationPresentation: Equatable, Sendable {
+    let assetID: UUID
+    let position: Int
+    let totalCount: Int
+    let canMovePrevious: Bool
+    let canMoveNext: Bool
+    let sourceName: String?
 }
 
 enum LibraryGridLayout {
@@ -954,6 +966,10 @@ struct LibraryWorkspaceLayoutState: Equatable {
     mutating func setInspectorPresented(_ isPresented: Bool) {
         isInspectorPresented = isPresented
     }
+
+    mutating func prepareForLibrarySlimming() {
+        isInspectorPresented = false
+    }
 }
 
 enum LibraryWorkspaceCommand: Hashable {
@@ -1087,6 +1103,7 @@ final class LibraryWorkspaceModel: ObservableObject {
     @Published private(set) var selectedAvailabilities: [AssetAvailability] = []
     @Published private(set) var selectedMediaKind: MediaKind = .image
     @Published private(set) var selectedMediaTypes: [String] = []
+    @Published private(set) var worldMapGalleryScope: WorldMapGalleryScope?
     @Published private(set) var sort: AssetPageSort = .fileNameAscending
     @Published private(set) var gridDensity: LibraryGridDensity = .default
     @Published private(set) var thumbnailAspectMode: LibraryThumbnailAspectMode = .default
@@ -1157,6 +1174,7 @@ final class LibraryWorkspaceModel: ObservableObject {
     @Published private(set) var librarySlimmingClusters: [LibrarySlimmingClusterPresentation] = []
     @Published private(set) var librarySlimmingAnalysisJobs: [LibrarySlimmingAnalysisJobPresentation] = []
     @Published private(set) var selectedLibrarySlimmingClusterID: UUID?
+    @Published private(set) var librarySlimmingPreviewAssetID: UUID?
     @Published private(set) var librarySlimmingPendingCount = 0
     @Published private(set) var isAnalyzingLibrarySlimming = false
     @Published private(set) var librarySlimmingStatusMessage: String?
@@ -1573,6 +1591,23 @@ final class LibraryWorkspaceModel: ObservableObject {
         return librarySlimmingClusters.first(where: { $0.id == selectedLibrarySlimmingClusterID })
     }
 
+    var librarySlimmingPreviewNavigation:
+        LibrarySlimmingPreviewNavigationPresentation?
+    {
+        guard let assetID = librarySlimmingPreviewAssetID,
+              let cluster = selectedLibrarySlimmingCluster,
+              let index = cluster.memberAssetIDs.firstIndex(of: assetID)
+        else { return nil }
+        return LibrarySlimmingPreviewNavigationPresentation(
+            assetID: assetID,
+            position: index + 1,
+            totalCount: cluster.memberAssetIDs.count,
+            canMovePrevious: index > 0,
+            canMoveNext: index < cluster.memberAssetIDs.count - 1,
+            sourceName: librarySlimmingSourceName(for: assetID)
+        )
+    }
+
     func librarySlimmingSourceName(for assetID: UUID) -> String? {
         librarySlimmingMemberSourceNames[assetID]
     }
@@ -1594,10 +1629,66 @@ final class LibraryWorkspaceModel: ObservableObject {
     }
 
     func selectLibrarySlimmingCluster(_ clusterID: UUID?) {
+        librarySlimmingPreviewAssetID = nil
         selectedLibrarySlimmingClusterID = clusterID
         selectedLibrarySlimmingMemberIDs = []
         librarySlimmingSelectionAnchorID = nil
         refreshSelectedLibrarySlimmingMemberSources()
+    }
+
+    func toggleLibrarySlimmingPreview() {
+        if librarySlimmingPreviewAssetID != nil {
+            closeLibrarySlimmingPreview()
+            return
+        }
+        guard librarySlimmingWorkspaceTab == .clusters,
+              let cluster = selectedLibrarySlimmingCluster,
+              !selectedLibrarySlimmingMemberIDs.isEmpty
+        else { return }
+        let assetID = if let anchorID = librarySlimmingSelectionAnchorID,
+                         selectedLibrarySlimmingMemberIDs.contains(anchorID)
+        {
+            anchorID
+        } else {
+            cluster.memberAssetIDs.first {
+                selectedLibrarySlimmingMemberIDs.contains($0)
+            }
+        }
+        guard let assetID else { return }
+        selectedLibrarySlimmingMemberIDs = [assetID]
+        librarySlimmingSelectionAnchorID = assetID
+        librarySlimmingPreviewAssetID = assetID
+    }
+
+    func closeLibrarySlimmingPreview() {
+        librarySlimmingPreviewAssetID = nil
+    }
+
+    func moveLibrarySlimmingPreview(by offset: Int) {
+        guard offset != 0,
+              let assetID = librarySlimmingPreviewAssetID,
+              let cluster = selectedLibrarySlimmingCluster,
+              let currentIndex = cluster.memberAssetIDs.firstIndex(of: assetID)
+        else { return }
+        let targetIndex = min(
+            max(0, currentIndex + offset),
+            cluster.memberAssetIDs.count - 1
+        )
+        guard targetIndex != currentIndex else { return }
+        let targetID = cluster.memberAssetIDs[targetIndex]
+        selectedLibrarySlimmingMemberIDs = [targetID]
+        librarySlimmingSelectionAnchorID = targetID
+        librarySlimmingPreviewAssetID = targetID
+    }
+
+    func prepareLibrarySlimmingPreviewDeletion() -> Bool {
+        guard let assetID = librarySlimmingPreviewAssetID,
+              selectedLibrarySlimmingCluster?.memberAssetIDs.contains(assetID) == true
+        else { return false }
+        selectedLibrarySlimmingMemberIDs = [assetID]
+        librarySlimmingSelectionAnchorID = assetID
+        closeLibrarySlimmingPreview()
+        return canMoveSelectedLibrarySlimmingMembersToRecycle
     }
 
     func ensureLibrarySlimmingClusterSelection() {
@@ -1827,6 +1918,7 @@ final class LibraryWorkspaceModel: ObservableObject {
     var hasNarrowedLibrarySlimmingUniverse: Bool {
         tagPresence != .any
             || selectedSourceID != nil
+            || worldMapGalleryScope != nil
             || hasActiveTagFilters
             || !selectedAvailabilities.isEmpty
             || !selectedMediaTypes.isEmpty
@@ -4148,6 +4240,9 @@ final class LibraryWorkspaceModel: ObservableObject {
         if reviewMode != nil {
             return "待审核建议"
         }
+        if let worldMapGalleryScope {
+            return "\(worldMapGalleryScope.displayName) · 照片世界"
+        }
         if let selectedSourceID,
            let source = sources.first(where: { $0.id == selectedSourceID })
         {
@@ -4365,6 +4460,9 @@ final class LibraryWorkspaceModel: ObservableObject {
     func setLibrarySlimmingWorkspaceActive(_ isActive: Bool) {
         guard isLibrarySlimmingWorkspaceActive != isActive else { return }
         isLibrarySlimmingWorkspaceActive = isActive
+        if !isActive {
+            closeLibrarySlimmingPreview()
+        }
         guard !isActive, librarySlimmingCatalogRefreshPendingAfterExit else { return }
 
         let requestedSourceIDs = librarySlimmingCatalogRefreshSourceIDs
@@ -5464,8 +5562,14 @@ final class LibraryWorkspaceModel: ObservableObject {
         guard browsingNavigationRequestID == requestID else { return }
 
         switch destination {
+        case .galleryOverview, .worldMap:
+            cancelPendingLibrarySlimmingSeedAnalyze()
+            clearReviewModeState()
+            worldMapGalleryScope = nil
+            guard browsingNavigationRequestID == requestID else { return }
         case .reviewSuggestions:
             cancelPendingLibrarySlimmingSeedAnalyze()
+            worldMapGalleryScope = nil
             // Re-check before mutating: a newer sidebar selection may have
             // invalidated this request between the top guard and this case.
             guard browsingNavigationRequestID == requestID else { return }
@@ -5474,10 +5578,12 @@ final class LibraryWorkspaceModel: ObservableObject {
         case .trainingWorkspace:
             cancelPendingLibrarySlimmingSeedAnalyze()
             clearReviewModeState()
+            worldMapGalleryScope = nil
             guard browsingNavigationRequestID == requestID else { return }
             await refreshTrainingWorkspace(presentation: .automatic)
         case .librarySlimming:
             clearReviewModeState()
+            worldMapGalleryScope = nil
             guard browsingNavigationRequestID == requestID else { return }
             await refreshLibrarySlimmingAnalysisJobs()
             if librarySlimmingAnalysisJobID == nil, let latest = librarySlimmingAnalysisJobs.first {
@@ -5487,7 +5593,7 @@ final class LibraryWorkspaceModel: ObservableObject {
                 navigationRequestID: requestID
             )
 
-        case .all, .untagged, .source:
+        case .all, .untagged, .source, .worldMapGallery:
             cancelPendingLibrarySlimmingSeedAnalyze()
             clearReviewModeState()
             applyGalleryBrowsingFilters(for: destination)
@@ -8305,7 +8411,8 @@ final class LibraryWorkspaceModel: ObservableObject {
             mediaKinds: [selectedMediaKind],
             mediaTypes: selectedMediaTypes,
             tagPresence: tagPresence,
-            searchText: searchText
+            searchText: searchText,
+            worldMapSelection: worldMapGalleryScope?.selectionQuery
         )
     }
 
@@ -8748,14 +8855,25 @@ extension LibraryWorkspaceModel {
     func applyImmediateBrowsingPresentation(for destination: LibraryBrowsingDestination) {
         setLibrarySlimmingWorkspaceActive(destination == .librarySlimming)
         switch destination {
+        case .galleryOverview, .worldMap:
+            clearReviewModeState()
+            worldMapGalleryScope = nil
+            items = []
+            nextCursor = nil
+            selectedAssetIDs = []
+            isSinglePhotoPresented = false
+            inspectorDetail = nil
+            inspectorTags = []
         case .reviewSuggestions:
             selectedMediaKind = .image
+            worldMapGalleryScope = nil
             applyReviewOverviewPresentation()
         case .trainingWorkspace, .librarySlimming:
             selectedMediaKind = .image
+            worldMapGalleryScope = nil
             clearReviewModeState()
             isSinglePhotoPresented = false
-        case .all, .untagged, .source:
+        case .all, .untagged, .source, .worldMapGallery:
             clearReviewModeState()
             applyGalleryBrowsingFilters(for: destination)
             // Drop stale gallery rows so the previous filter cannot paint under
@@ -8784,20 +8902,116 @@ extension LibraryWorkspaceModel {
 
     private func applyGalleryBrowsingFilters(for destination: LibraryBrowsingDestination) {
         switch destination {
+        case .galleryOverview, .worldMap:
+            break
+        case let .worldMapGallery(scope):
+            searchDebounceTask?.cancel()
+            searchDebounceTask = nil
+            selectedMediaKind = .image
+            selectedSourceID = nil
+            selectedTagFilterDecisions = [:]
+            selectedTagFilterIDs = []
+            excludedTagFilterIDs = []
+            tagPresence = .any
+            selectedAvailabilities = []
+            selectedMediaTypes = []
+            searchText = ""
+            worldMapGalleryScope = scope
         case .all:
+            worldMapGalleryScope = nil
             selectedSourceID = nil
             tagPresence = .any
         case .untagged:
+            worldMapGalleryScope = nil
             selectedSourceID = nil
             tagPresence = .untagged
             selectedTagFilterDecisions = [:]
             selectedTagFilterIDs = []
             excludedTagFilterIDs = []
         case let .source(sourceID):
+            worldMapGalleryScope = nil
             selectedSourceID = sourceID
             tagPresence = .any
         case .reviewSuggestions, .trainingWorkspace, .librarySlimming:
+            worldMapGalleryScope = nil
             break
+        }
+    }
+
+    func fetchGalleryOverview() async throws -> GalleryOverviewSnapshot {
+        let service = service
+        return try await Self.offMain(priority: .utility) {
+            try service.fetchGalleryOverview()
+        }
+    }
+
+    func fetchWorldMapSnapshot(
+        query: WorldMapCatalogQuery
+    ) async throws -> WorldMapCatalogSnapshot {
+        let service = service
+        return try await Self.offMain(priority: .utility) {
+            try service.fetchWorldMapSnapshot(query: query)
+        }
+    }
+
+    func fetchWorldMapSelection(
+        query: WorldMapCatalogSelectionQuery
+    ) async throws -> WorldMapCatalogSelection {
+        let service = service
+        return try await Self.offMain(priority: .utility) {
+            try service.fetchWorldMapSelection(query: query)
+        }
+    }
+
+    func fetchWorldMapLocationBackfillSnapshots() async throws
+        -> [WorldMapLocationBackfillSnapshot]
+    {
+        let service = service
+        return try await Self.offMain(priority: .utility) {
+            try service.fetchWorldMapLocationBackfillSnapshots()
+        }
+    }
+
+    func startWorldMapLocationBackfill(sourceID: UUID) async throws {
+        let service = service
+        try await Self.offMain(priority: .utility) {
+            try service.startWorldMapLocationBackfill(sourceID: sourceID)
+        }
+        startCatalogReconcileRunnerIfNeeded(sourceIDs: [sourceID])
+    }
+
+    func cancelWorldMapLocationBackfill(sourceID: UUID) async throws {
+        let service = service
+        try await Self.offMain(priority: .utility) {
+            try service.cancelWorldMapLocationBackfill(sourceID: sourceID)
+        }
+    }
+
+    func fetchWorldMapPlaceTagResolutions() async throws -> [WorldMapPlaceTagResolution] {
+        let service = service
+        return try await Self.offMain(priority: .utility) {
+            try service.fetchWorldMapPlaceTagResolutions()
+        }
+    }
+
+    func resolveWorldMapPlaceTag(tagID: UUID) async throws -> WorldMapPlaceTagResolution {
+        try await service.resolveWorldMapPlaceTag(tagID: tagID)
+    }
+
+    func confirmWorldMapPlaceCandidate(
+        tagID: UUID,
+        placeID: String
+    ) async throws -> WorldMapPlaceTagResolution {
+        let service = service
+        return try await Self.offMain(priority: .utility) {
+            try service.confirmWorldMapPlaceCandidate(tagID: tagID, placeID: placeID)
+        }
+    }
+
+    func ignoreWorldMapPlaceTag(tagID: UUID) async throws -> WorldMapPlaceTagResolution {
+        let service = service
+        return try await Self.offMain(priority: .utility) {
+            try service.ignoreWorldMapPlaceTag(tagID: tagID)
         }
     }
 
@@ -9391,6 +9605,9 @@ extension LibraryWorkspaceModel {
 }
 
 private enum LibrarySidebarSelection: Hashable {
+    case galleryOverview
+    case worldMap
+    case worldMapGallery
     case all
     case untagged
     case reviewSuggestions
@@ -9804,6 +10021,8 @@ struct LibraryWorkspaceView: View {
 
     @ObservedObject var model: LibraryWorkspaceModel
     @State private var selection: LibrarySidebarSelection? = .all
+    @State private var worldMapNavigationState = WorldMapNavigationState.empty
+    @State private var worldMapGalleryScope: WorldMapGalleryScope?
     @State private var searchText = ""
     @State private var newTagName = ""
     @State private var sourcePendingDeletion: LibrarySourceSummary?
@@ -9855,8 +10074,7 @@ struct LibraryWorkspaceView: View {
             keyboardEnabledContent
         }
         .inspector(isPresented: inspectorVisibility) {
-            workspaceInspector
-                .inspectorColumnWidth(min: 240, ideal: 300, max: 380)
+            workspaceInspectorColumn
         }
         .frame(minWidth: 640, minHeight: 560)
         .background {
@@ -9878,22 +10096,17 @@ struct LibraryWorkspaceView: View {
         ) { pending in
             SuggestionEnqueueConfirmationSheet(model: model, pending: pending)
         }
-        .searchable(
-            text: $searchText,
-            placement: .toolbar,
-            prompt: "搜索文件名、路径、标签或来源"
-        )
-        .onSubmit(of: .search) {
-            Task { await model.submitSearchText(searchText) }
-        }
-        .onChange(of: searchText) { _, newValue in
-            model.scheduleSearchText(newValue)
-        }
         .toolbar {
             ToolbarItemGroup {
                 libraryToolbarLayoutItems
-                libraryToolbarPersonalizationItems
-                libraryToolbarBrowseAndActionItems
+                if selection != .galleryOverview, selection != .worldMap {
+                    if selection == .librarySlimming {
+                        librarySlimmingToolbarItems
+                    } else {
+                        libraryToolbarPersonalizationItems
+                        libraryToolbarBrowseAndActionItems
+                    }
+                }
             }
         }
         .toolbar(removing: .sidebarToggle)
@@ -9992,7 +10205,19 @@ struct LibraryWorkspaceView: View {
 
     @ViewBuilder
     private var workspaceInspector: some View {
-        if selection == .trainingWorkspace {
+        if selection == .galleryOverview {
+            ContentUnavailableView(
+                "图库总览",
+                systemImage: "chart.bar.xaxis",
+                description: Text("总览页已在主窗口展示聚合统计。")
+            )
+        } else if selection == .worldMap {
+            ContentUnavailableView(
+                "照片世界",
+                systemImage: "globe.asia.australia.fill",
+                description: Text("在主窗口拖拽、缩放和选择照片建筑。")
+            )
+        } else if selection == .trainingWorkspace {
             TrainingWorkspaceInspectorView(model: model)
         } else if selection == .librarySlimming {
             LibrarySlimmingInspectorView(model: model)
@@ -10002,10 +10227,38 @@ struct LibraryWorkspaceView: View {
     }
 
     @ViewBuilder
+    private var workspaceInspectorColumn: some View {
+        if selection == .librarySlimming {
+            workspaceInspector
+                .inspectorColumnWidth(min: 220, ideal: 260, max: 320)
+        } else {
+            workspaceInspector
+                .inspectorColumnWidth(min: 240, ideal: 300, max: 380)
+        }
+    }
+
+    @ViewBuilder
     private var keyboardEnabledContent: some View {
-        if selection == .trainingWorkspace {
+        if selection == .galleryOverview {
+            content
+                .navigationTitle("图库总览")
+        } else if selection == .worldMap {
+            content
+                .navigationTitle("照片世界")
+        } else if selection == .trainingWorkspace {
             content
                 .navigationTitle("训练工程")
+                .searchable(
+                    text: $searchText,
+                    placement: .toolbar,
+                    prompt: "搜索文件名、路径、标签或来源"
+                )
+                .onSubmit(of: .search) {
+                    Task { await model.submitSearchText(searchText) }
+                }
+                .onChange(of: searchText) { _, newValue in
+                    model.scheduleSearchText(newValue)
+                }
         } else if selection == .librarySlimming {
             content
                 .navigationTitle("图库瘦身")
@@ -10017,6 +10270,17 @@ struct LibraryWorkspaceView: View {
     private var libraryKeyboardEnabledContent: some View {
         content
             .navigationTitle(model.browsingTitle)
+            .searchable(
+                text: $searchText,
+                placement: .toolbar,
+                prompt: "搜索文件名、路径、标签或来源"
+            )
+            .onSubmit(of: .search) {
+                Task { await model.submitSearchText(searchText) }
+            }
+            .onChange(of: searchText) { _, newValue in
+                model.scheduleSearchText(newValue)
+            }
             .focusable()
             .focused($contentFocused)
             .focusEffectDisabled()
@@ -10451,6 +10715,12 @@ struct LibraryWorkspaceView: View {
         .onChange(of: selection) { _, newValue in
             model.noteUserInteractionForIdlePrewarm()
             let destination: LibraryBrowsingDestination = switch newValue {
+            case .galleryOverview:
+                .galleryOverview
+            case .worldMap:
+                .worldMap
+            case .worldMapGallery:
+                worldMapGalleryScope.map(LibraryBrowsingDestination.worldMapGallery) ?? .all
             case .all, .none:
                 .all
             case .untagged:
@@ -10463,6 +10733,13 @@ struct LibraryWorkspaceView: View {
                 .librarySlimming
             case let .source(sourceID):
                 .source(sourceID)
+            }
+            if destination == .galleryOverview || destination == .worldMap {
+                layoutState.setInspectorPresented(false)
+            } else if case .worldMapGallery = destination {
+                layoutState.setInspectorPresented(true)
+            } else if destination == .librarySlimming {
+                layoutState.prepareForLibrarySlimming()
             }
             model.applyImmediateBrowsingPresentation(for: destination)
             let requestID = model.beginBrowsingNavigation()
@@ -10712,6 +10989,10 @@ struct LibraryWorkspaceView: View {
         let orderedSources = model.orderedSources
         return List(selection: $selection) {
             Section("图库") {
+                Label("图库总览", systemImage: "chart.bar.xaxis")
+                    .tag(LibrarySidebarSelection.galleryOverview)
+                Label("照片世界", systemImage: "globe.asia.australia.fill")
+                    .tag(LibrarySidebarSelection.worldMap)
                 Label("全部照片", systemImage: "photo.on.rectangle.angled")
                     .tag(LibrarySidebarSelection.all)
                 Label("无标签", systemImage: "tag.slash")
@@ -11365,7 +11646,19 @@ struct LibraryWorkspaceView: View {
 
     @ViewBuilder
     private var content: some View {
-        if selection == .trainingWorkspace {
+        if selection == .galleryOverview {
+            GalleryOverviewView(model: model)
+        } else if selection == .worldMap {
+            WorldMapWorkspaceView(
+                model: model,
+                navigationState: $worldMapNavigationState,
+                onBrowseCluster: { scope in
+                    worldMapGalleryScope = scope
+                    searchText = ""
+                    selection = .worldMapGallery
+                }
+            )
+        } else if selection == .trainingWorkspace {
             TrainingWorkspaceView(
                 model: model,
                 onReturnToLibrary: {
@@ -11387,10 +11680,51 @@ struct LibraryWorkspaceView: View {
     @ViewBuilder
     private var libraryContent: some View {
         VStack(spacing: 0) {
-            mediaKindTabs
+            if let scope = model.worldMapGalleryScope {
+                worldMapGalleryBanner(scope)
+            } else {
+                mediaKindTabs
+            }
             Divider()
             libraryContentBody
         }
+    }
+
+    private func worldMapGalleryBanner(_ scope: WorldMapGalleryScope) -> some View {
+        HStack(spacing: 12) {
+            ZStack {
+                Circle()
+                    .fill(Color(red: 0.576, green: 0.749, blue: 0.816).opacity(0.22))
+                Image(systemName: "mappin.and.ellipse")
+                    .foregroundStyle(Color(red: 0.365, green: 0.530, blue: 0.580))
+            }
+            .frame(width: 34, height: 34)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(scope.displayName)
+                    .font(.callout.weight(.semibold))
+                Text("来自照片世界的精确地点范围 · \(scope.photoCount.formatted()) 张照片")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 16)
+            Button("返回地图") {
+                selection = .worldMap
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(Color(red: 0.590, green: 0.690, blue: 0.625))
+            .persistentHelp("回到原来的地图镜头和已选照片塔。")
+            Button("查看全部照片") {
+                worldMapGalleryScope = nil
+                selection = .all
+            }
+            .buttonStyle(.bordered)
+            .persistentHelp("清除地点范围，恢复完整照片图库。")
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(Color(red: 0.957, green: 0.945, blue: 0.922))
+        .accessibilityIdentifier("worldMapGalleryScopeBanner")
     }
 
     private var mediaKindTabs: some View {
@@ -11483,6 +11817,22 @@ struct LibraryWorkspaceView: View {
                         displayName: displayName,
                         contentFocused: $contentFocused
                     )
+                }
+            } else if model.items.isEmpty, let scope = model.worldMapGalleryScope {
+                ContentUnavailableView {
+                    Label("这座照片塔暂时没有可浏览照片", systemImage: "photo.on.rectangle.angled")
+                } description: {
+                    Text("“\(scope.displayName)”的索引可能刚刚变化；返回地图可重新选择照片塔。")
+                } actions: {
+                    Button("返回照片世界") {
+                        selection = .worldMap
+                    }
+                    .buttonStyle(.borderedProminent)
+                    Button("查看全部照片") {
+                        worldMapGalleryScope = nil
+                        selection = .all
+                    }
+                    .buttonStyle(.bordered)
                 }
             } else if model.items.isEmpty {
                 if model.hasAssetPropertyFilters {
@@ -12077,19 +12427,23 @@ struct LibraryWorkspaceView: View {
             detail: "显示或隐藏左侧边栏，包含来源、标签分组与导航。"
         )
 
-        Button {
-            layoutState.toggleInspector()
-        } label: {
-            LibraryToolbarLabel(
-                title: layoutState.isInspectorPresented ? "隐藏检查器" : "显示检查器",
-                systemImage: "sidebar.right",
-                displayMode: toolbarDisplayModeSettings.displayMode
+        if selection != .galleryOverview, selection != .worldMap {
+            Button {
+                layoutState.toggleInspector()
+            } label: {
+                LibraryToolbarLabel(
+                    title: layoutState.isInspectorPresented ? "隐藏检查器" : "显示检查器",
+                    systemImage: "sidebar.right",
+                    displayMode: toolbarDisplayModeSettings.displayMode
+                )
+            }
+            .libraryToolbarHelp(
+                layoutState.isInspectorPresented ? "隐藏检查器" : "显示检查器",
+                detail: selection == .librarySlimming
+                    ? "按需显示或隐藏图库瘦身的任务、来源与技术详情。"
+                    : "显示或隐藏右侧检查器，查看选中照片的详情、标签与操作。"
             )
         }
-        .libraryToolbarHelp(
-            layoutState.isInspectorPresented ? "隐藏检查器" : "显示检查器",
-            detail: "显示或隐藏右侧检查器，查看选中照片的详情、标签与操作。"
-        )
 
         if model.isCatalogScanning, selection != .librarySlimming {
             HStack(spacing: 6) {
@@ -12137,6 +12491,24 @@ struct LibraryWorkspaceView: View {
             .accessibilityIdentifier("sourceThumbnailPrewarmProgress")
             .accessibilityLabel(sourceThumbnailPrewarmTitle(progress))
         }
+    }
+
+    @ViewBuilder
+    private var librarySlimmingToolbarItems: some View {
+        LibraryGridDensityPicker(
+            selection: Binding(
+                get: { model.gridDensity },
+                set: { model.setGridDensity($0) }
+            ),
+            displayMode: toolbarDisplayModeSettings.displayMode
+        )
+        LibraryThumbnailAspectModeButton(
+            selection: Binding(
+                get: { model.thumbnailAspectMode },
+                set: { model.setThumbnailAspectMode($0) }
+            ),
+            displayMode: toolbarDisplayModeSettings.displayMode
+        )
     }
 
     @ViewBuilder

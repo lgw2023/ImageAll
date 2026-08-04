@@ -417,6 +417,11 @@ struct GRDBTagCatalogRepository: TagCatalogQueryPort, TagDecisionCommandPort, St
                     throw mapDomainError(error)
                 }
 
+                let locationAssetIDs = try WorldMapPlaceResolutionService.acceptedAssetIDs(
+                    db,
+                    tagID: tagID
+                )
+
                 do {
                     try db.execute(
                         sql: """
@@ -436,6 +441,15 @@ struct GRDBTagCatalogRepository: TagCatalogQueryPort, TagDecisionCommandPort, St
                 } catch {
                     throw CatalogQueryError.persistenceFailure
                 }
+                try db.execute(
+                    sql: "DELETE FROM tag_place_binding WHERE tag_id = ?",
+                    arguments: [CatalogQuerySQLHelpers.lowercaseUUID(tagID)]
+                )
+                try WorldMapPlaceResolutionService.refreshCanonicalLocations(
+                    db,
+                    assetIDs: locationAssetIDs,
+                    nowMs: timestampMs
+                )
                 return renamed
             }
         }
@@ -460,6 +474,19 @@ struct GRDBTagCatalogRepository: TagCatalogQueryPort, TagDecisionCommandPort, St
                 try db.execute(
                     sql: "UPDATE tag SET state = 'archived', updated_at_ms = ? WHERE id = ?",
                     arguments: [timestampMs, CatalogQuerySQLHelpers.lowercaseUUID(tagID)]
+                )
+                let locationAssetIDs = try WorldMapPlaceResolutionService.acceptedAssetIDs(
+                    db,
+                    tagID: tagID
+                )
+                try db.execute(
+                    sql: "DELETE FROM tag_place_binding WHERE tag_id = ?",
+                    arguments: [CatalogQuerySQLHelpers.lowercaseUUID(tagID)]
+                )
+                try WorldMapPlaceResolutionService.refreshCanonicalLocations(
+                    db,
+                    assetIDs: locationAssetIDs,
+                    nowMs: timestampMs
                 )
                 return archived
             }
@@ -654,6 +681,11 @@ struct GRDBTagCatalogRepository: TagCatalogQueryPort, TagDecisionCommandPort, St
                         arguments: arguments
                     )
                 }
+                try WorldMapPlaceResolutionService.refreshCanonicalLocations(
+                    db,
+                    assetIDs: uniqueAssetIDs,
+                    nowMs: timestampMs
+                )
                 return TagMutationResult(priorStates: priorStates)
             }
         }
@@ -771,6 +803,11 @@ struct GRDBTagCatalogRepository: TagCatalogQueryPort, TagDecisionCommandPort, St
                         }
                     }
                 }
+                try WorldMapPlaceResolutionService.refreshCanonicalLocations(
+                    db,
+                    assetIDs: uniqueAssetIDs,
+                    nowMs: timestampMs
+                )
             }
         }
     }
@@ -797,6 +834,11 @@ struct GRDBTagCatalogRepository: TagCatalogQueryPort, TagDecisionCommandPort, St
                     assetIDs: uniqueAssetIDs,
                     decision: decision,
                     timestampMs: timestampMs
+                )
+                try WorldMapPlaceResolutionService.refreshCanonicalLocations(
+                    db,
+                    assetIDs: uniqueAssetIDs,
+                    nowMs: timestampMs
                 )
                 return TagMutationResult(priorStates: priorStates)
             }

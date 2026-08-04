@@ -5,6 +5,68 @@ enum ReviewWorkspaceMode: Equatable {
     case tagQueue(tagID: UUID, displayName: String)
 }
 
+enum ReviewOverviewLayout {
+    static let sectionSpacing: CGFloat = 12
+    static let cardSpacing: CGFloat = 8
+    static let cardMinimumWidth: CGFloat = 300
+    static let cardMaximumWidth: CGFloat = 420
+}
+
+struct ReviewSuggestionGroupSection: Identifiable, Equatable, Sendable {
+    let group: TagGroupListItem
+    let overviews: [SuggestionTagOverview]
+
+    var id: UUID { group.id }
+
+    static func build(
+        tagSections: [LibraryTagGroupSection],
+        overviews: [SuggestionTagOverview]
+    ) -> [ReviewSuggestionGroupSection] {
+        var remaining: [UUID: SuggestionTagOverview] = [:]
+        for overview in overviews {
+            remaining[overview.id] = overview
+        }
+
+        var result = tagSections.compactMap { section -> ReviewSuggestionGroupSection? in
+            let ordered = section.tags.compactMap { remaining.removeValue(forKey: $0.id) }
+            guard !ordered.isEmpty else { return nil }
+            return ReviewSuggestionGroupSection(group: section.group, overviews: ordered)
+        }
+
+        let unmatched = remaining.values.sorted(by: alphabetical)
+        guard !unmatched.isEmpty else { return result }
+
+        if let otherIndex = result.firstIndex(where: { $0.group.id == TagGroupSeed.other.id }) {
+            let current = result[otherIndex]
+            result[otherIndex] = ReviewSuggestionGroupSection(
+                group: current.group,
+                overviews: current.overviews + unmatched
+            )
+        } else {
+            let fallback = tagSections.first(where: { $0.group.id == TagGroupSeed.other.id })?.group
+                ?? TagGroupListItem(
+                    id: TagGroupSeed.other.id,
+                    displayName: TagGroupSeed.other.displayName,
+                    sortOrder: TagGroupSeed.other.sortOrder,
+                    isSystem: true
+                )
+            result.append(ReviewSuggestionGroupSection(group: fallback, overviews: unmatched))
+        }
+        return result
+    }
+
+    private static func alphabetical(
+        _ lhs: SuggestionTagOverview,
+        _ rhs: SuggestionTagOverview
+    ) -> Bool {
+        let comparison = lhs.displayName.localizedStandardCompare(rhs.displayName)
+        if comparison == .orderedSame {
+            return lhs.id.uuidString.lowercased() < rhs.id.uuidString.lowercased()
+        }
+        return comparison == .orderedAscending
+    }
+}
+
 struct ReviewOverviewView: View {
     @ObservedObject var model: LibraryWorkspaceModel
     let onOpenQueue: (UUID, String) -> Void
@@ -12,6 +74,13 @@ struct ReviewOverviewView: View {
 
     private var showsLocalModelPanel: Bool {
         model.supportsPersonalLibrarySuggestions || model.supportsStandardLibrarySuggestions
+    }
+
+    private var groupedOverviews: [ReviewSuggestionGroupSection] {
+        ReviewSuggestionGroupSection.build(
+            tagSections: model.tagGroupSections,
+            overviews: model.suggestionOverviews
+        )
     }
 
     var body: some View {
@@ -38,26 +107,16 @@ struct ReviewOverviewView: View {
                             .frame(minWidth: 248, idealWidth: 288, maxWidth: 320)
                     }
                     ScrollView {
-                        LazyVGrid(
-                            columns: [
-                                GridItem(
-                                    .adaptive(minimum: 320, maximum: 460),
-                                    spacing: 12,
-                                    alignment: .top
-                                ),
-                            ],
-                            alignment: .leading,
-                            spacing: 12
-                        ) {
-                            ForEach(model.suggestionOverviews) { overview in
-                                ReviewTagOverviewCard(
+                        LazyVStack(alignment: .leading, spacing: ReviewOverviewLayout.sectionSpacing) {
+                            ForEach(groupedOverviews) { section in
+                                ReviewSuggestionGroupView(
                                     model: model,
-                                    overview: overview,
+                                    section: section,
                                     onOpenQueue: onOpenQueue
                                 )
                             }
                         }
-                        .padding(16)
+                        .padding(12)
                         .frame(maxWidth: .infinity, alignment: .leading)
                     }
                     .frame(minWidth: 360, maxWidth: .infinity, maxHeight: .infinity)
@@ -74,6 +133,80 @@ struct ReviewOverviewView: View {
         ) { pending in
             SuggestionEnqueueConfirmationSheet(model: model, pending: pending)
         }
+    }
+}
+
+private struct ReviewSuggestionGroupView: View {
+    @ObservedObject var model: LibraryWorkspaceModel
+    let section: ReviewSuggestionGroupSection
+    let onOpenQueue: (UUID, String) -> Void
+
+    private var isCollapsed: Bool {
+        model.isTagGroupCollapsed(section.id)
+    }
+
+    private var pendingCount: Int {
+        section.overviews.reduce(0) { $0 + $1.pendingSuggestionCount }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Button {
+                model.toggleTagGroupCollapsed(section.id)
+            } label: {
+                HStack(spacing: 7) {
+                    Image(systemName: isCollapsed ? "chevron.right" : "chevron.down")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 12)
+                    Text(section.group.displayName)
+                        .font(.headline)
+                    Text("\(section.overviews.count) 个标签")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer(minLength: 8)
+                    if pendingCount > 0 {
+                        Text("\(pendingCount) 条待审")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.tint)
+                    }
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .persistentHelp(
+                isCollapsed
+                    ? "展开“\(section.group.displayName)”分组。"
+                    : "折叠“\(section.group.displayName)”分组。"
+            )
+
+            if !isCollapsed {
+                LazyVGrid(
+                    columns: [
+                        GridItem(
+                            .adaptive(
+                                minimum: ReviewOverviewLayout.cardMinimumWidth,
+                                maximum: ReviewOverviewLayout.cardMaximumWidth
+                            ),
+                            spacing: ReviewOverviewLayout.cardSpacing,
+                            alignment: .top
+                        ),
+                    ],
+                    alignment: .leading,
+                    spacing: ReviewOverviewLayout.cardSpacing
+                ) {
+                    ForEach(section.overviews) { overview in
+                        ReviewTagOverviewCard(
+                            model: model,
+                            overview: overview,
+                            onOpenQueue: onOpenQueue
+                        )
+                    }
+                }
+            }
+        }
+        .padding(12)
+        .background(.quaternary.opacity(0.18), in: RoundedRectangle(cornerRadius: 12))
     }
 }
 
@@ -412,16 +545,17 @@ private struct ReviewTagOverviewCard: View {
     @ObservedObject var model: LibraryWorkspaceModel
     let overview: SuggestionTagOverview
     let onOpenQueue: (UUID, String) -> Void
+    @State private var showsGenerationControls = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 7) {
             HStack(alignment: .firstTextBaseline) {
                 Text(overview.displayName)
-                    .font(.headline)
-                    .lineLimit(2)
+                    .font(.title3.weight(.semibold))
+                    .lineLimit(1)
                 Spacer(minLength: 8)
                 if overview.pendingSuggestionCount > 0 {
-                    Text("\(overview.pendingSuggestionCount)")
+                    Text("\(overview.pendingSuggestionCount) 待审")
                         .font(.caption.weight(.semibold))
                         .padding(.horizontal, 8)
                         .padding(.vertical, 3)
@@ -429,9 +563,12 @@ private struct ReviewTagOverviewCard: View {
                 }
             }
 
-            HStack(spacing: 12) {
-                Text("已确认 \(overview.acceptedSampleCount)")
-                Text("已拒绝 \(overview.rejectedSampleCount)")
+            HStack(spacing: 8) {
+                Label(reviewTagStatusText(overview), systemImage: reviewTagStatusIcon(overview))
+                    .lineLimit(1)
+                Spacer(minLength: 4)
+                Text("确认 \(overview.acceptedSampleCount) · 拒绝 \(overview.rejectedSampleCount)")
+                    .monospacedDigit()
             }
             .font(.caption)
             .foregroundStyle(.secondary)
@@ -443,17 +580,6 @@ private struct ReviewTagOverviewCard: View {
                     onOpenQueue: { onOpenQueue(overview.id, overview.displayName) }
                 )
             }
-
-            Text(reviewTagStatusText(overview))
-                .font(.caption)
-                .foregroundStyle(.secondary)
-
-            TagSuggestionThresholdControls(
-                model: model,
-                tagID: overview.id,
-                displayName: overview.displayName,
-                rejectedSampleCount: overview.rejectedSampleCount
-            )
 
             if overview.missingPositiveCount > 0 || overview.missingNegativeCount > 0 {
                 Text("还需确认 \(overview.missingPositiveCount) 张、拒绝 \(overview.missingNegativeCount) 张")
@@ -467,30 +593,49 @@ private struct ReviewTagOverviewCard: View {
                     .foregroundStyle(.secondary)
             }
 
-            Divider()
-
             if overview.canReview {
                 Button {
                     onOpenQueue(overview.id, overview.displayName)
                 } label: {
-                    Label("审核建议", systemImage: "checklist")
+                    Label("审核 \(overview.pendingSuggestionCount) 条建议", systemImage: "checklist")
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.borderedProminent)
-                .controlSize(.regular)
+                .controlSize(.small)
                 .persistentHelp(
                     "打开“\(overview.displayName)”的待审核\(model.selectedMediaKind.displayName)队列，逐个确认、拒绝或稍后处理。"
                 )
             }
 
-            ReviewTagGenerateActions(model: model, overview: overview)
+            DisclosureGroup(isExpanded: $showsGenerationControls) {
+                VStack(alignment: .leading, spacing: 8) {
+                    TagSuggestionThresholdControls(
+                        model: model,
+                        tagID: overview.id,
+                        displayName: overview.displayName,
+                        rejectedSampleCount: overview.rejectedSampleCount
+                    )
+                    Divider()
+                    ReviewTagGenerateActions(model: model, overview: overview)
+                }
+                .padding(.top, 6)
+            } label: {
+                Label("门槛与生成", systemImage: "slider.horizontal.3")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+            }
         }
-        .padding(14)
+        .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(.background, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .strokeBorder(.quaternary, lineWidth: 1)
+                .strokeBorder(
+                    overview.pendingSuggestionCount > 0
+                        ? Color.accentColor.opacity(0.28)
+                        : Color.secondary.opacity(0.14),
+                    lineWidth: 1
+                )
         }
     }
 }
@@ -687,6 +832,20 @@ private func reviewTagStatusText(_ overview: SuggestionTagOverview) -> String {
     case .completed: overview.pendingSuggestionCount > 0 ? "有待审核建议" : "本轮已完成"
     case .terminalFailure: "任务失败"
     case .cancelled: "已取消"
+    }
+}
+
+private func reviewTagStatusIcon(_ overview: SuggestionTagOverview) -> String {
+    switch overview.taskStatus {
+    case .notReady: "exclamationmark.circle"
+    case .ready: "sparkles"
+    case .waiting: "clock"
+    case .running: "progress.indicator"
+    case .paused: "pause.circle"
+    case .retryableFailure: "arrow.clockwise.circle"
+    case .completed: overview.pendingSuggestionCount > 0 ? "tray.full" : "checkmark.circle"
+    case .terminalFailure: "xmark.octagon"
+    case .cancelled: "xmark.circle"
     }
 }
 

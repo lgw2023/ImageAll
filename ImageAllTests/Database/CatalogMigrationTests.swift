@@ -94,8 +94,10 @@ final class CatalogMigrationTests: XCTestCase {
             try Self.stripV022FingerprintColumns(db)
             try Self.dropV022Tables(db)
             try Self.dropV023Tables(db)
+            try Self.dropV032Tables(db)
+            try db.execute(sql: "DROP TABLE IF EXISTS asset_location")
             try db.execute(
-                sql: "DELETE FROM grdb_migrations WHERE identifier IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                sql: "DELETE FROM grdb_migrations WHERE identifier IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 arguments: [
                     CatalogMigrationID.v020HardenLibrarySlimmingRecycle,
                     CatalogMigrationID.v021AddPhotosRecycleIdentifier,
@@ -108,6 +110,8 @@ final class CatalogMigrationTests: XCTestCase {
                     CatalogMigrationID.v028PartitionSlimmingByMediaKind,
                     CatalogMigrationID.v029AddOriginalAspectThumbnailCache,
                     CatalogMigrationID.v030AddSimilarityDigestProvenance,
+                    CatalogMigrationID.v031AddAssetLocation,
+                    CatalogMigrationID.v032AddPlaceTagResolution,
                 ]
             )
         }
@@ -151,8 +155,11 @@ final class CatalogMigrationTests: XCTestCase {
                 sql: "UPDATE source SET mutation_bookmark = ? WHERE id = ?",
                 arguments: [writableBookmark, sourceID.uuidString.lowercased()]
             )
+            try Self.stripV030FingerprintProvenance(db)
+            try Self.dropV032Tables(db)
+            try db.execute(sql: "DROP TABLE IF EXISTS asset_location")
             try db.execute(
-                sql: "DELETE FROM grdb_migrations WHERE identifier IN (?, ?, ?, ?, ?, ?, ?)",
+                sql: "DELETE FROM grdb_migrations WHERE identifier IN (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 arguments: [
                     CatalogMigrationID.v024RepairSourceMutationAuthorization,
                     CatalogMigrationID.v025RetainPurgedAssetKnowledge,
@@ -161,6 +168,8 @@ final class CatalogMigrationTests: XCTestCase {
                     CatalogMigrationID.v028PartitionSlimmingByMediaKind,
                     CatalogMigrationID.v029AddOriginalAspectThumbnailCache,
                     CatalogMigrationID.v030AddSimilarityDigestProvenance,
+                    CatalogMigrationID.v031AddAssetLocation,
+                    CatalogMigrationID.v032AddPlaceTagResolution,
                 ]
             )
             XCTAssertFalse(try db.tableExists("source_mutation_authorization"))
@@ -224,8 +233,10 @@ final class CatalogMigrationTests: XCTestCase {
             try db.execute(sql: "DROP TABLE IF EXISTS source_mutation_authorization")
             try Self.dropV022Tables(db)
             try Self.dropV023Tables(db)
+            try Self.dropV032Tables(db)
+            try db.execute(sql: "DROP TABLE IF EXISTS asset_location")
             try db.execute(
-                sql: "DELETE FROM grdb_migrations WHERE identifier IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                sql: "DELETE FROM grdb_migrations WHERE identifier IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 arguments: [
                     CatalogMigrationID.v012RepairStandardTagBinding,
                     CatalogMigrationID.v013PhotosMissingAssetRepair,
@@ -246,6 +257,8 @@ final class CatalogMigrationTests: XCTestCase {
                     CatalogMigrationID.v028PartitionSlimmingByMediaKind,
                     CatalogMigrationID.v029AddOriginalAspectThumbnailCache,
                     CatalogMigrationID.v030AddSimilarityDigestProvenance,
+                    CatalogMigrationID.v031AddAssetLocation,
+                    CatalogMigrationID.v032AddPlaceTagResolution,
                 ]
             )
             try db.execute(sql: "PRAGMA foreign_keys = ON")
@@ -312,8 +325,10 @@ final class CatalogMigrationTests: XCTestCase {
             try db.execute(sql: "DROP TABLE IF EXISTS source_mutation_authorization")
             try Self.dropV022Tables(db)
             try Self.dropV023Tables(db)
+            try Self.dropV032Tables(db)
+            try db.execute(sql: "DROP TABLE IF EXISTS asset_location")
             try db.execute(
-                sql: "DELETE FROM grdb_migrations WHERE identifier IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                sql: "DELETE FROM grdb_migrations WHERE identifier IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 arguments: [
                     CatalogMigrationID.v013PhotosMissingAssetRepair,
                     CatalogMigrationID.v014AddTrainingRunsAndPersonalMultiSlot,
@@ -333,6 +348,8 @@ final class CatalogMigrationTests: XCTestCase {
                     CatalogMigrationID.v028PartitionSlimmingByMediaKind,
                     CatalogMigrationID.v029AddOriginalAspectThumbnailCache,
                     CatalogMigrationID.v030AddSimilarityDigestProvenance,
+                    CatalogMigrationID.v031AddAssetLocation,
+                    CatalogMigrationID.v032AddPlaceTagResolution,
                 ]
             )
             try db.execute(sql: "PRAGMA foreign_keys = ON")
@@ -366,8 +383,10 @@ final class CatalogMigrationTests: XCTestCase {
             try db.execute(sql: "DROP TABLE IF EXISTS source_mutation_authorization")
             try Self.dropV022Tables(db)
             try Self.dropV023Tables(db)
+            try Self.dropV032Tables(db)
+            try db.execute(sql: "DROP TABLE IF EXISTS asset_location")
             try db.execute(
-                sql: "DELETE FROM grdb_migrations WHERE identifier IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                sql: "DELETE FROM grdb_migrations WHERE identifier IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 arguments: [
                     CatalogMigrationID.v016AddTagGroups,
                     CatalogMigrationID.v017PerTagPersonalSuggestionModels,
@@ -384,6 +403,8 @@ final class CatalogMigrationTests: XCTestCase {
                     CatalogMigrationID.v028PartitionSlimmingByMediaKind,
                     CatalogMigrationID.v029AddOriginalAspectThumbnailCache,
                     CatalogMigrationID.v030AddSimilarityDigestProvenance,
+                    CatalogMigrationID.v031AddAssetLocation,
+                    CatalogMigrationID.v032AddPlaceTagResolution,
                 ]
             )
             try db.execute(
@@ -886,6 +907,12 @@ final class CatalogMigrationTests: XCTestCase {
         try db.execute(sql: "DROP TABLE IF EXISTS source_similarity_index")
     }
 
+    private static func dropV032Tables(_ db: Database) throws {
+        try db.execute(sql: "DROP TABLE IF EXISTS tag_place_candidate")
+        try db.execute(sql: "DROP TABLE IF EXISTS tag_place_binding")
+        try db.execute(sql: "DROP TABLE IF EXISTS place")
+    }
+
     /// Rebuild `asset_similarity_fingerprint` back to its pre-v022 (v018) shape so v022 can
     /// re-apply its `ALTER TABLE ... ADD COLUMN` statements cleanly in replay tests that don't
     /// otherwise drop/recreate this table via a replayed v018.
@@ -920,6 +947,62 @@ final class CatalogMigrationTests: XCTestCase {
         try db.execute(sql: "DROP TABLE asset_similarity_fingerprint")
         try db.execute(
             sql: "ALTER TABLE asset_similarity_fingerprint_pre_v022 RENAME TO asset_similarity_fingerprint"
+        )
+        try db.execute(
+            sql: """
+            CREATE INDEX asset_similarity_fingerprint_hash_idx
+            ON asset_similarity_fingerprint (algo_version, perceptual_hash, asset_id)
+            """
+        )
+    }
+
+    /// Rebuilds the fingerprint table to its v022-v029 shape so a replay test
+    /// that rolls migrations back before v024 can later re-apply v030.
+    private static func stripV030FingerprintProvenance(_ db: Database) throws {
+        try db.execute(sql: "DROP INDEX IF EXISTS asset_similarity_fingerprint_exact_idx")
+        try db.execute(sql: "DROP INDEX IF EXISTS asset_similarity_fingerprint_hash_idx")
+        try db.execute(
+            sql: """
+            CREATE TABLE asset_similarity_fingerprint_pre_v030 (
+                asset_id TEXT NOT NULL PRIMARY KEY REFERENCES asset(id) ON DELETE CASCADE,
+                content_revision INTEGER NOT NULL CHECK(content_revision >= 1),
+                algo_version TEXT NOT NULL CHECK(length(algo_version) > 0),
+                perceptual_hash BLOB NOT NULL CHECK(length(perceptual_hash) = 8),
+                created_at_ms INTEGER NOT NULL CHECK(created_at_ms >= 0),
+                updated_at_ms INTEGER NOT NULL CHECK(updated_at_ms >= 0),
+                content_sha256 BLOB CHECK(content_sha256 IS NULL OR length(content_sha256) = 32),
+                verification_signature BLOB
+                    CHECK(verification_signature IS NULL OR length(verification_signature) = 768),
+                pixel_width INTEGER CHECK(pixel_width IS NULL OR pixel_width > 0),
+                pixel_height INTEGER CHECK(pixel_height IS NULL OR pixel_height > 0),
+                CHECK(
+                    length(asset_id) = 36
+                    AND asset_id = lower(asset_id)
+                    AND asset_id GLOB '????????-????-????-????-????????????'
+                )
+            ) STRICT
+            """
+        )
+        try db.execute(
+            sql: """
+            INSERT INTO asset_similarity_fingerprint_pre_v030 (
+                asset_id, content_revision, algo_version, perceptual_hash,
+                created_at_ms, updated_at_ms, content_sha256,
+                verification_signature, pixel_width, pixel_height
+            )
+            SELECT
+                asset_id, content_revision, algo_version, perceptual_hash,
+                created_at_ms, updated_at_ms, content_sha256,
+                verification_signature, pixel_width, pixel_height
+            FROM asset_similarity_fingerprint
+            """
+        )
+        try db.execute(sql: "DROP TABLE asset_similarity_fingerprint")
+        try db.execute(
+            sql: """
+            ALTER TABLE asset_similarity_fingerprint_pre_v030
+            RENAME TO asset_similarity_fingerprint
+            """
         )
         try db.execute(
             sql: """

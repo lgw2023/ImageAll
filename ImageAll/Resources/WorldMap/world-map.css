@@ -1,0 +1,162 @@
+:root {
+  color-scheme: light;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Rounded", "PingFang SC", sans-serif;
+  --map-paper: #f4f1eb;
+  --map-surface: rgba(252, 249, 243, 0.9);
+  --map-ink: #3c4546;
+  --map-secondary-ink: #64706f;
+  --map-border: rgba(150, 169, 160, 0.48);
+  --map-blue: #93bfd0;
+  --map-sage: #97b09f;
+  --map-lavender: #b6a8c9;
+  --map-peach: #dbaf9d;
+  background: var(--map-paper);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#map {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  background:
+    radial-gradient(circle at 22% 18%, rgba(147, 191, 208, 0.16), transparent 32%),
+    radial-gradient(circle at 78% 72%, rgba(219, 175, 157, 0.14), transparent 34%),
+    linear-gradient(145deg, #f7f4ee 0%, #eef2ef 52%, #f5efe9 100%);
+}
+
+body::before {
+  position: fixed;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+  content: "";
+  opacity: 0.34;
+  background-image:
+    radial-gradient(circle, rgba(93, 113, 108, 0.16) 0 0.45px, transparent 0.75px),
+    radial-gradient(circle, rgba(255, 255, 255, 0.72) 0 0.55px, transparent 0.85px);
+  background-position: 0 0, 7px 9px;
+  background-size: 17px 17px, 23px 23px;
+}
+
+#map .maplibregl-canvas {
+  outline: none;
+}
+
+#paper-wash {
+  position: fixed;
+  inset: -22%;
+  z-index: 1;
+  pointer-events: none;
+  opacity: 0.38;
+  background:
+    radial-gradient(ellipse at 35% 34%, rgba(182, 168, 201, 0.24), transparent 34%),
+    radial-gradient(ellipse at 69% 58%, rgba(151, 176, 159, 0.22), transparent 36%),
+    radial-gradient(ellipse at 48% 78%, rgba(219, 175, 157, 0.18), transparent 30%);
+  filter: blur(72px);
+  animation: paper-breathe 22s ease-in-out infinite alternate;
+}
+
+#paper-texture {
+  position: fixed;
+  inset: 0;
+  z-index: 3;
+  pointer-events: none;
+  opacity: 0.18;
+  background: repeating-linear-gradient(
+    118deg,
+    transparent 0 7px,
+    rgba(255, 255, 255, 0.48) 8px,
+    transparent 9px 16px
+  );
+}
+
+#tooltip {
+  position: fixed;
+  z-index: 10;
+  display: none;
+  min-width: 158px;
+  padding: 11px 13px;
+  pointer-events: none;
+  color: var(--map-ink);
+  font-size: 12px;
+  line-height: 1.4;
+  background: var(--map-surface);
+  border: 1px solid rgba(147, 191, 208, 0.66);
+  border-radius: 13px;
+  box-shadow: 0 14px 36px rgba(74, 87, 84, 0.14);
+  backdrop-filter: blur(18px) saturate(108%);
+  transform: translate(12px, 12px);
+}
+
+#tooltip strong {
+  display: block;
+  margin-bottom: 3px;
+  color: #668a97;
+  font-size: 13px;
+  letter-spacing: 0.02em;
+}
+
+#tooltip span {
+  color: var(--map-secondary-ink);
+}
+
+#fallback-badge {
+  position: fixed;
+  right: 16px;
+  top: 92px;
+  z-index: 8;
+  padding: 7px 10px;
+  color: #687c70;
+  font: 600 9px ui-monospace, "SFMono-Regular", monospace;
+  letter-spacing: 0.09em;
+  background: rgba(241, 244, 238, 0.84);
+  border: 1px solid rgba(151, 176, 159, 0.46);
+  border-radius: 9px;
+}
+
+.maplibregl-ctrl-top-right {
+  top: 92px;
+  right: 12px;
+}
+
+.maplibregl-ctrl-group {
+  overflow: hidden;
+  background: rgba(252, 249, 243, 0.88) !important;
+  border: 1px solid var(--map-border);
+  border-radius: 12px !important;
+  box-shadow: 0 12px 30px rgba(74, 87, 84, 0.13) !important;
+  backdrop-filter: blur(16px);
+}
+
+.maplibregl-ctrl-group button + button {
+  border-top-color: rgba(150, 169, 160, 0.28) !important;
+}
+
+.maplibregl-ctrl button .maplibregl-ctrl-icon {
+  filter: sepia(18%) saturate(54%) hue-rotate(104deg) brightness(75%);
+  opacity: 0.78;
+}
+
+.maplibregl-ctrl-attrib {
+  color: rgba(70, 82, 80, 0.66) !important;
+  background: rgba(252, 249, 243, 0.76) !important;
+}
+
+.maplibregl-ctrl-attrib a {
+  color: #668a97 !important;
+}
+
+@keyframes paper-breathe {
+  from { transform: translate3d(-2%, -1%, 0) rotate(-1deg) scale(0.99); }
+  to { transform: translate3d(2%, 1.5%, 0) rotate(1.5deg) scale(1.03); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #paper-wash { animation: none; }
+}

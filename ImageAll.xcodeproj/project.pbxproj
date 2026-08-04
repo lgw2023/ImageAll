@@ -223,6 +223,9 @@
 		JJ0000010000000000000101 /* LibraryWorkspaceModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = JJ0001010000000000000101 /* LibraryWorkspaceModelTests.swift */; };
 		JJ0000010000000000000001 /* LibraryWorkspacePort.swift in Sources */ = {isa = PBXBuildFile; fileRef = JJ0001010000000000000001 /* LibraryWorkspacePort.swift */; };
 		JJ0000010000000000000002 /* LibraryWorkspace.swift in Sources */ = {isa = PBXBuildFile; fileRef = JJ0001010000000000000002 /* LibraryWorkspace.swift */; };
+		GO0000010000000000000001 /* GalleryOverviewUI.swift in Sources */ = {isa = PBXBuildFile; fileRef = GO0001010000000000000001 /* GalleryOverviewUI.swift */; };
+		WM0000010000000000000001 /* WorldMapWorkspaceUI.swift in Sources */ = {isa = PBXBuildFile; fileRef = WM0001010000000000000001 /* WorldMapWorkspaceUI.swift */; };
+		WM0000010000000000000002 /* WorldMap in Resources */ = {isa = PBXBuildFile; fileRef = WM0001010000000000000002 /* WorldMap */; };
 		PP0000010000000000000001 /* LibraryGridMarqueeSelection.swift in Sources */ = {isa = PBXBuildFile; fileRef = PP0001010000000000000001 /* LibraryGridMarqueeSelection.swift */; };
 		A40000010000000000000001 /* TrainingWorkspaceUI.swift in Sources */ = {isa = PBXBuildFile; fileRef = A40001010000000000000001 /* TrainingWorkspaceUI.swift */; };
 		JJ0000010000000000000003 /* ProductionLibraryWorkspaceService.swift in Sources */ = {isa = PBXBuildFile; fileRef = JJ0001010000000000000003 /* ProductionLibraryWorkspaceService.swift */; };
@@ -526,6 +529,9 @@
 		JJ0001010000000000000101 /* LibraryWorkspaceModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryWorkspaceModelTests.swift; sourceTree = "<group>"; };
 		JJ0001010000000000000001 /* LibraryWorkspacePort.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryWorkspacePort.swift; sourceTree = "<group>"; };
 		JJ0001010000000000000002 /* LibraryWorkspace.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryWorkspace.swift; sourceTree = "<group>"; };
+		GO0001010000000000000001 /* GalleryOverviewUI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GalleryOverviewUI.swift; sourceTree = "<group>"; };
+		WM0001010000000000000001 /* WorldMapWorkspaceUI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorldMapWorkspaceUI.swift; sourceTree = "<group>"; };
+		WM0001010000000000000002 /* WorldMap */ = {isa = PBXFileReference; lastKnownFileType = folder; path = Resources/WorldMap; sourceTree = "<group>"; };
 		PP0001010000000000000001 /* LibraryGridMarqueeSelection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryGridMarqueeSelection.swift; sourceTree = "<group>"; };
 		A40001010000000000000001 /* TrainingWorkspaceUI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrainingWorkspaceUI.swift; sourceTree = "<group>"; };
 		JJ0001010000000000000003 /* ProductionLibraryWorkspaceService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProductionLibraryWorkspaceService.swift; sourceTree = "<group>"; };
@@ -669,6 +675,7 @@
 			children = (
 				IC0001010000000000000001 /* Assets.xcassets */,
 				WC0001010000000000000002 /* WebCompanion */,
+				WM0001010000000000000002 /* WorldMap */,
 				CM0001010000000000000201 /* DINOv2Small */,
 				AA0006010000000000000005 /* App */,
 				AA0006010000000000000006 /* Application */,
@@ -787,6 +794,8 @@
 				TD0001010000000000000004 /* LibraryToolbarItem.swift */,
 				AA0001010000000000000002 /* RootView.swift */,
 				JJ0001010000000000000002 /* LibraryWorkspace.swift */,
+				GO0001010000000000000001 /* GalleryOverviewUI.swift */,
+				WM0001010000000000000001 /* WorldMapWorkspaceUI.swift */,
 				PP0001010000000000000001 /* LibraryGridMarqueeSelection.swift */,
 				NN0001010000000000000008 /* PersonalizationReviewUI.swift */,
 				A40001010000000000000001 /* TrainingWorkspaceUI.swift */,
@@ -1431,6 +1440,7 @@
 			files = (
 				IC0000010000000000000001 /* Assets.xcassets in Resources */,
 				WC0000010000000000000002 /* WebCompanion in Resources */,
+				WM0000010000000000000002 /* WorldMap in Resources */,
 				CM0000010000000000000201 /* DINOv2Small in Resources */,
 				RR0000010000000000000201 /* PrivacyInfo.xcprivacy in Resources */,
 			);
@@ -1551,6 +1561,8 @@
 				AA0000010000000000000001 /* ImageAllApp.swift in Sources */,
 				AA0000010000000000000002 /* RootView.swift in Sources */,
 				JJ0000010000000000000002 /* LibraryWorkspace.swift in Sources */,
+				GO0000010000000000000001 /* GalleryOverviewUI.swift in Sources */,
+				WM0000010000000000000001 /* WorldMapWorkspaceUI.swift in Sources */,
 				PP0000010000000000000001 /* LibraryGridMarqueeSelection.swift in Sources */,
 				A40000010000000000000001 /* TrainingWorkspaceUI.swift in Sources */,
 				AA0000010000000000000003 /* CompositionRoot.swift in Sources */,

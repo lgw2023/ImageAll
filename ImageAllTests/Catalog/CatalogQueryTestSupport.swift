@@ -52,6 +52,245 @@ enum CatalogQueryTestSupport {
         return (database, query, tags, repository, ids)
     }
 
+    static func openGalleryOverviewDatabase() throws -> (
+        database: CatalogDatabase,
+        query: GRDBAssetCatalogQueryRepository
+    ) {
+        let database = try CatalogDatabase.open(at: DatabaseTestSupport.makeTempDatabaseURL())
+        let folderSourceID = UUID(uuidString: "41000000-0000-4000-8000-000000000001")!
+        let photosSourceID = UUID(uuidString: "41000000-0000-4000-8000-000000000002")!
+        let imageA = UUID(uuidString: "42000000-0000-4000-8000-000000000001")!
+        let imageB = UUID(uuidString: "42000000-0000-4000-8000-000000000002")!
+        let imageC = UUID(uuidString: "42000000-0000-4000-8000-000000000003")!
+        let imageD = UUID(uuidString: "42000000-0000-4000-8000-000000000004")!
+        let videoA = UUID(uuidString: "42000000-0000-4000-8000-000000000005")!
+        let videoB = UUID(uuidString: "42000000-0000-4000-8000-000000000006")!
+        let recycled = UUID(uuidString: "42000000-0000-4000-8000-000000000007")!
+        let historical = UUID(uuidString: "42000000-0000-4000-8000-000000000008")!
+        let familyTagID = UUID(uuidString: "43000000-0000-4000-8000-000000000001")!
+        let travelTagID = UUID(uuidString: "43000000-0000-4000-8000-000000000002")!
+
+        try database.pool.write { db in
+            try db.execute(
+                sql: """
+                INSERT INTO source (
+                    id, kind, display_name, bookmark, state, created_at_ms, updated_at_ms
+                ) VALUES
+                    (?, 'folder', '相机归档', ?, 'active', 1, 1),
+                    (?, 'photos', 'Apple Photos', NULL, 'active', 1, 1)
+                """,
+                arguments: [
+                    folderSourceID.uuidString.lowercased(),
+                    DatabaseTestSupport.folderBookmark(),
+                    photosSourceID.uuidString.lowercased(),
+                ]
+            )
+
+            try insertGalleryAsset(
+                db,
+                id: imageA,
+                sourceID: folderSourceID,
+                sourceKind: .folder,
+                mediaKind: .image,
+                timestampMs: 1_704_067_200_000
+            )
+            try insertGalleryAsset(
+                db,
+                id: imageB,
+                sourceID: photosSourceID,
+                sourceKind: .photos,
+                mediaKind: .image,
+                timestampMs: 1_704_067_200_000
+            )
+            try insertGalleryAsset(
+                db,
+                id: imageC,
+                sourceID: folderSourceID,
+                sourceKind: .folder,
+                mediaKind: .image,
+                timestampMs: 1_672_531_200_000,
+                availability: .missing
+            )
+            try insertGalleryAsset(
+                db,
+                id: imageD,
+                sourceID: folderSourceID,
+                sourceKind: .folder,
+                mediaKind: .image,
+                timestampMs: nil
+            )
+            try insertGalleryAsset(
+                db,
+                id: videoA,
+                sourceID: folderSourceID,
+                sourceKind: .folder,
+                mediaKind: .video,
+                timestampMs: 1_704_067_200_000
+            )
+            try insertGalleryAsset(
+                db,
+                id: videoB,
+                sourceID: photosSourceID,
+                sourceKind: .photos,
+                mediaKind: .video,
+                timestampMs: 1_704_067_200_000
+            )
+            try insertGalleryAsset(
+                db,
+                id: recycled,
+                sourceID: folderSourceID,
+                sourceKind: .folder,
+                mediaKind: .image,
+                timestampMs: 1_704_067_200_000,
+                availability: .recycled
+            )
+            try insertGalleryAsset(
+                db,
+                id: historical,
+                sourceID: folderSourceID,
+                sourceKind: .folder,
+                mediaKind: .image,
+                timestampMs: 1_704_067_200_000,
+                locatorState: .historical
+            )
+
+            let duplicateDigest = Data(repeating: 0x11, count: 32)
+            try insertGalleryFingerprint(
+                db,
+                assetID: imageA,
+                mediaKind: .image,
+                digest: duplicateDigest,
+                origin: .verifiedOriginalBytes
+            )
+            try insertGalleryFingerprint(
+                db,
+                assetID: imageB,
+                mediaKind: .image,
+                digest: duplicateDigest,
+                origin: .verifiedOriginalBytes
+            )
+            try insertGalleryFingerprint(
+                db,
+                assetID: imageD,
+                mediaKind: .image,
+                digest: Data(repeating: 0x22, count: 32),
+                origin: .verifiedOriginalBytes
+            )
+            for assetID in [videoA, videoB] {
+                try insertGalleryFingerprint(
+                    db,
+                    assetID: assetID,
+                    mediaKind: .video,
+                    digest: Data(repeating: 0x33, count: 32),
+                    origin: .visualDerivative
+                )
+            }
+
+            try db.execute(
+                sql: """
+                INSERT INTO tag (id, name, normalized_name, state, created_at_ms, updated_at_ms)
+                VALUES
+                    (?, '家人', '家人', 'active', 1, 1),
+                    (?, '旅行', '旅行', 'active', 1, 1)
+                """,
+                arguments: [
+                    familyTagID.uuidString.lowercased(),
+                    travelTagID.uuidString.lowercased(),
+                ]
+            )
+            for assetID in [imageA, imageB, videoA] {
+                try db.execute(
+                    sql: """
+                    INSERT INTO asset_tag_decision (asset_id, tag_id, decision, updated_at_ms)
+                    VALUES (?, ?, 'accepted', 1)
+                    """,
+                    arguments: [
+                        assetID.uuidString.lowercased(),
+                        familyTagID.uuidString.lowercased(),
+                    ]
+                )
+            }
+            for assetID in [imageC, videoB] {
+                try db.execute(
+                    sql: """
+                    INSERT INTO asset_tag_decision (asset_id, tag_id, decision, updated_at_ms)
+                    VALUES (?, ?, 'accepted', 1)
+                    """,
+                    arguments: [
+                        assetID.uuidString.lowercased(),
+                        travelTagID.uuidString.lowercased(),
+                    ]
+                )
+            }
+        }
+        return (database, GRDBAssetCatalogQueryRepository(database: database))
+    }
+
+    private static func insertGalleryAsset(
+        _ db: Database,
+        id: UUID,
+        sourceID: UUID,
+        sourceKind: SourceKind,
+        mediaKind: MediaKind,
+        timestampMs: Int64?,
+        availability: AssetAvailability = .available,
+        locatorState: AssetLocatorState = .current
+    ) throws {
+        let isFolder = sourceKind == .folder
+        try db.execute(
+            sql: """
+            INSERT INTO asset (
+                id, source_id, locator_kind, relative_path, photos_local_identifier,
+                locator_state, file_name, media_kind, media_type, duration_ms,
+                width, height, media_created_at_ms, media_modified_at_ms,
+                content_revision, last_seen_generation, availability,
+                record_created_at_ms, record_updated_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1920, 1080, ?, NULL, 1, 1, ?, 1, 1)
+            """,
+            arguments: [
+                id.uuidString.lowercased(),
+                sourceID.uuidString.lowercased(),
+                isFolder ? AssetLocatorKind.file.rawValue : AssetLocatorKind.photos.rawValue,
+                isFolder ? "fixture/\(id.uuidString.lowercased())" : nil,
+                isFolder ? nil : "fixture-photos-\(id.uuidString.lowercased())",
+                locatorState.rawValue,
+                isFolder ? "\(id.uuidString.lowercased()).dat" : nil,
+                mediaKind.rawValue,
+                mediaKind == .image ? "public.jpeg" : "public.mpeg-4",
+                mediaKind == .video ? 10_000 : nil,
+                timestampMs,
+                availability.rawValue,
+            ]
+        )
+    }
+
+    private static func insertGalleryFingerprint(
+        _ db: Database,
+        assetID: UUID,
+        mediaKind: MediaKind,
+        digest: Data,
+        origin: AssetContentDigestOrigin
+    ) throws {
+        try db.execute(
+            sql: """
+            INSERT INTO asset_similarity_fingerprint (
+                asset_id, content_revision, algo_version, perceptual_hash,
+                created_at_ms, updated_at_ms, content_sha256,
+                verification_signature, pixel_width, pixel_height,
+                content_digest_origin
+            ) VALUES (?, 1, ?, ?, 1, 1, ?, ?, 1920, 1080, ?)
+            """,
+            arguments: [
+                assetID.uuidString.lowercased(),
+                IdenticalDuplicatePolicy.perceptualAlgoVersion(for: mediaKind),
+                Data(repeating: 0, count: 8),
+                digest,
+                Data(repeating: 0, count: 768),
+                origin.rawValue,
+            ]
+        )
+    }
+
     static func openScaleDatabase(
         at url: URL,
         assetCount: Int
