@@ -11,21 +11,21 @@ struct ImageAllApp: App {
     init() {
         let root = CompositionRoot()
         let modelActivationCoordinator = CompositionRoot.makeAppModelActivationCoordinator()
+        let modelSettings = CompositionRoot.makeAppModelSettingsModel(
+            coordinator: modelActivationCoordinator
+        )
+        let idlePrewarmSettings = IdleThumbnailPrewarmSettingsModel()
+        let toolbarDisplayModeSettings = ToolbarDisplayModeSettingsModel()
+        _modelSettingsModel = StateObject(wrappedValue: modelSettings)
+        _idlePrewarmSettingsModel = StateObject(wrappedValue: idlePrewarmSettings)
+        _toolbarDisplayModeSettingsModel = StateObject(wrappedValue: toolbarDisplayModeSettings)
         _startupModel = StateObject(
             wrappedValue: root.makeStartupModel(
-                modelActivationCoordinator: modelActivationCoordinator
+                modelActivationCoordinator: modelActivationCoordinator,
+                modelSettings: modelSettings,
+                idlePrewarmSettings: idlePrewarmSettings,
+                toolbarDisplayModeSettings: toolbarDisplayModeSettings
             )
-        )
-        _modelSettingsModel = StateObject(
-            wrappedValue: CompositionRoot.makeAppModelSettingsModel(
-                coordinator: modelActivationCoordinator
-            )
-        )
-        _idlePrewarmSettingsModel = StateObject(
-            wrappedValue: IdleThumbnailPrewarmSettingsModel()
-        )
-        _toolbarDisplayModeSettingsModel = StateObject(
-            wrappedValue: ToolbarDisplayModeSettingsModel()
         )
     }
 

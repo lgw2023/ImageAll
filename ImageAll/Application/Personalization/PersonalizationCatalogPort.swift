@@ -98,22 +98,36 @@ struct PersonalTrainingDecision: Codable, Equatable, Hashable, Sendable {
     let state: PersonalTrainingDecisionState
 }
 
+/// Identifies a user-submitted batch while each tag is still persisted as an
+/// independent training run. Keeping the manifest with every run lets the
+/// training workspace explain partial completion after an App restart without
+/// coupling model artifacts from different tags.
+struct PersonalTrainingBatchContext: Equatable, Sendable {
+    let operationID: UUID
+    let orderedTagIDs: [UUID]
+    let currentTagIndex: Int
+    let acceptedAtMs: Int64
+}
+
 struct PersonalTrainingSnapshot: Equatable, Sendable {
     let catalogScopeID: String
     let mediaKind: MediaKind
     let personalTagIDs: [UUID]
     let decisions: [PersonalTrainingDecision]
+    let batchContext: PersonalTrainingBatchContext?
 
     init(
         catalogScopeID: String,
         mediaKind: MediaKind = .image,
         personalTagIDs: [UUID],
-        decisions: [PersonalTrainingDecision]
+        decisions: [PersonalTrainingDecision],
+        batchContext: PersonalTrainingBatchContext? = nil
     ) {
         self.catalogScopeID = catalogScopeID
         self.mediaKind = mediaKind
         self.personalTagIDs = personalTagIDs
         self.decisions = decisions
+        self.batchContext = batchContext
     }
 }
 

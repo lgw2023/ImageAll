@@ -13,6 +13,11 @@ protocol AppPersonalModelRebuilding: Sendable {
     func rebuild(
         snapshotSource: any AppPersonalTrainingSnapshotSource
     ) async throws -> AppPersonalLinearHeadIdentity
+    func cancel() async
+}
+
+extension AppPersonalModelRebuilding {
+    func cancel() async {}
 }
 
 protocol AppPersonalTrainingSnapshotSource: Sendable {

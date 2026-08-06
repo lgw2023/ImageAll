@@ -2071,6 +2071,12 @@ final class FullLibrarySuggestionsJobTests: XCTestCase {
         XCTAssertEqual(summary["scopeKind"] as? String, "selectedSources")
         XCTAssertEqual(summary["requestedSourceCount"] as? Int, 1)
         XCTAssertEqual(summary["resolvedSourceCount"] as? Int, 1)
+        XCTAssertEqual(run.tagID, fixture.tagID)
+        let config = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(run.configJSON.utf8))
+                as? [String: Any]
+        )
+        XCTAssertEqual(config["sourceIDs"] as? [String], [photosSourceID.uuidString.lowercased()])
     }
 
     func testEnqueueFullLibrarySuggestionsCreatesAuditableFeatureKnnRun() throws {

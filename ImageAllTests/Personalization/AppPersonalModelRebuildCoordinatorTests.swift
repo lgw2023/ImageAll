@@ -5,6 +5,71 @@ import XCTest
 private struct InjectedPersonalPublishFailure: Error {}
 
 final class AppPersonalModelRebuildCoordinatorTests: XCTestCase {
+    func testStartupReconciliationFailsOnlyInterruptedPersonalRuns() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let database = try CatalogDatabase.open(at: root.appendingPathComponent("catalog.sqlite"))
+        let catalogScopeID = try database.catalogScopeID()
+        let repository = GRDBTrainingRunRepository(database: database)
+        let personalRunID = UUID()
+        let featureRunID = UUID()
+        for run in [
+            TrainingRunRecord(
+                id: personalRunID,
+                method: .personalCentroid,
+                state: .running,
+                createdAtMs: 10,
+                startedAtMs: 11,
+                finishedAtMs: nil,
+                catalogScopeID: catalogScopeID,
+                jobID: nil,
+                sampleSummaryJSON: #"{"batchTagIDs":[]}"#,
+                sampleManifestSHA256: nil,
+                configJSON: "{}",
+                metricsJSON: "{}",
+                artifactKind: nil,
+                artifactRef: nil,
+                artifactSHA256: nil,
+                resultSummaryJSON: "{}",
+                errorCode: nil
+            ),
+            TrainingRunRecord(
+                id: featureRunID,
+                method: .featureKnn,
+                state: .queued,
+                createdAtMs: 12,
+                startedAtMs: nil,
+                finishedAtMs: nil,
+                catalogScopeID: catalogScopeID,
+                jobID: nil,
+                sampleSummaryJSON: "{}",
+                sampleManifestSHA256: nil,
+                configJSON: "{}",
+                metricsJSON: "{}",
+                artifactKind: nil,
+                artifactRef: nil,
+                artifactSHA256: nil,
+                resultSummaryJSON: "{}",
+                errorCode: nil
+            ),
+        ] {
+            try repository.insert(run)
+        }
+
+        XCTAssertEqual(try repository.failInterruptedPersonalRuns(finishedAtMs: 20), 1)
+
+        let personal = try XCTUnwrap(repository.fetch(id: personalRunID))
+        XCTAssertEqual(personal.state, .failed)
+        XCTAssertEqual(personal.finishedAtMs, 20)
+        XCTAssertEqual(personal.errorCode, "hostRestartInterrupted")
+        XCTAssertTrue(personal.resultSummaryJSON.contains("interruptedByHostRestart"))
+        let feature = try XCTUnwrap(repository.fetch(id: featureRunID))
+        XCTAssertEqual(feature.state, .queued)
+        XCTAssertNil(feature.finishedAtMs)
+    }
+
     func testAppRuntimeWithoutReadyModelCreatesNoCacheOrHeadState() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)

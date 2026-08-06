@@ -20,6 +20,22 @@ enum RemoteHTTPRequestParseResult: Sendable {
     case rejected(status: Int, error: RemoteAPIError)
 }
 
+struct RemoteHTTPByteRange: Sendable, Equatable {
+    let lowerBound: Int64
+    let upperBound: Int64
+
+    var count: Int64 {
+        guard upperBound >= lowerBound else { return 0 }
+        return upperBound - lowerBound + 1
+    }
+}
+
+enum RemoteHTTPRangeSelection: Sendable, Equatable {
+    case full
+    case partial(RemoteHTTPByteRange)
+    case unsatisfiable
+}
+
 /// HTTP/1.1 (+ WebSocket upgrade) listener for the auxiliary iOS companion. Default off;
 /// serves TLS when a `SecIdentity` is available, cleartext otherwise (Debug emergency path
 /// per ADR-044). Pairing completion/refresh are intentionally reachable without a bearer
@@ -37,6 +53,8 @@ actor RemoteHTTPServer {
     private let pairingStore: RemotePairingStore
     private let accessAccountStore: RemoteAccessAccountStore
     private let eventBroker: RemoteEventBroker
+    private let mediaResources: any RemoteMediaResourceProviding
+    private let originalAssetOpener: (any LibraryOriginalAssetOpening)?
     private let webAssetStore: RemoteWebCompanionAssetStore
     private let secIdentity: SecIdentity?
     private let port: UInt16
@@ -57,6 +75,8 @@ actor RemoteHTTPServer {
         pairingStore: RemotePairingStore,
         accessAccountStore: RemoteAccessAccountStore,
         eventBroker: RemoteEventBroker,
+        mediaResources: any RemoteMediaResourceProviding = UnavailableRemoteMediaResourceProvider(),
+        originalAssetOpener: (any LibraryOriginalAssetOpening)? = nil,
         webAssetStore: RemoteWebCompanionAssetStore = RemoteWebCompanionAssetStore(),
         secIdentity: SecIdentity? = nil,
         port: UInt16 = RemoteHTTPServer.defaultPort,
@@ -68,6 +88,8 @@ actor RemoteHTTPServer {
         self.pairingStore = pairingStore
         self.accessAccountStore = accessAccountStore
         self.eventBroker = eventBroker
+        self.mediaResources = mediaResources
+        self.originalAssetOpener = originalAssetOpener
         self.webAssetStore = webAssetStore
         self.secIdentity = secIdentity
         self.port = port
@@ -400,7 +422,9 @@ actor RemoteHTTPServer {
                 contentType: asset.contentType,
                 body: asset.body,
                 timeoutTask: timeoutTask,
-                additionalHeaders: RemoteWebCompanionSession.browserSecurityHeaders
+                additionalHeaders: asset.allowsSameOriginFraming
+                    ? RemoteWebCompanionSession.embeddedWorldMapSecurityHeaders
+                    : RemoteWebCompanionSession.browserSecurityHeaders
             )
             return
         }
@@ -652,6 +676,16 @@ actor RemoteHTTPServer {
             case ("GET", RemoteHTTPPaths.capabilities):
                 let payload = await facade.capabilities()
                 await respondJSON(connection, status: 200, value: payload, timeoutTask: timeoutTask)
+            case ("GET", RemoteHTTPPaths.generalSettings):
+                let payload = try await facade.fetchGeneralSettings()
+                await respondJSON(connection, status: 200, value: payload, timeoutTask: timeoutTask)
+            case ("PUT", RemoteHTTPPaths.generalSettings):
+                let request = try jsonDecoder.decode(
+                    RemoteGeneralSettingsUpdateRequest.self,
+                    from: body
+                )
+                let payload = try await facade.updateGeneralSettings(request)
+                await respondJSON(connection, status: 200, value: payload, timeoutTask: timeoutTask)
             case ("GET", RemoteWebCompanionSession.statusPath):
                 await respondJSON(
                     connection,
@@ -667,11 +701,78 @@ actor RemoteHTTPServer {
             case ("GET", RemoteHTTPPaths.sources):
                 let payload = try await facade.fetchSources()
                 await respondJSON(connection, status: 200, value: payload, timeoutTask: timeoutTask)
+            case ("GET", RemoteHTTPPaths.sourceManagement):
+                let payload = try await facade.fetchSourceManagement()
+                await respondJSON(connection, status: 200, value: payload, timeoutTask: timeoutTask)
+            case ("POST", RemoteHTTPPaths.sourceManagementRequests):
+                let request = try jsonDecoder.decode(
+                    RemoteSourceManagementSubmitRequest.self,
+                    from: body
+                )
+                let payload = try await facade.submitSourceManagement(request)
+                await respondJSON(connection, status: 202, value: payload, timeoutTask: timeoutTask)
+            case ("GET", RemoteHTTPPaths.storageMaintenance):
+                let payload = try await facade.fetchStorageMaintenance()
+                await respondJSON(connection, status: 200, value: payload, timeoutTask: timeoutTask)
+            case ("POST", RemoteHTTPPaths.storageMaintenanceRequests):
+                let request = try jsonDecoder.decode(
+                    RemoteStorageMaintenanceSubmitRequest.self,
+                    from: body
+                )
+                let payload = try await facade.submitStorageMaintenance(request)
+                await respondJSON(connection, status: 202, value: payload, timeoutTask: timeoutTask)
             case ("GET", RemoteHTTPPaths.tags):
                 let payload = try await facade.fetchTags()
                 await respondJSON(connection, status: 200, value: payload, timeoutTask: timeoutTask)
+            case ("POST", RemoteHTTPPaths.tagsInstallPresets):
+                let request = try jsonDecoder.decode(
+                    RemoteInstallPresetTagsRequest.self,
+                    from: body
+                )
+                let payload = try await facade.installPresetTags(request)
+                await eventBroker.publish(.init(
+                    kind: .tagsChanged,
+                    emittedAtMs: Int64((Date().timeIntervalSince1970 * 1_000).rounded())
+                ))
+                await respondJSON(connection, status: 200, value: payload, timeoutTask: timeoutTask)
             case ("GET", RemoteHTTPPaths.tagGroups):
                 let payload = try await facade.fetchTagGroups()
+                await respondJSON(connection, status: 200, value: payload, timeoutTask: timeoutTask)
+            case ("GET", RemoteHTTPPaths.galleryOverview):
+                let payload = try await facade.fetchGalleryOverview()
+                await respondJSON(connection, status: 200, value: payload, timeoutTask: timeoutTask)
+            case ("GET", RemoteHTTPPaths.worldMapSnapshot):
+                let payload = try await facade.fetchWorldMapSnapshot(
+                    bounds: try Self.parseWorldMapBounds(query: query),
+                    maximumClusters: Int(query["maximumClusters"] ?? "") ?? 2_000
+                )
+                await respondJSON(connection, status: 200, value: payload, timeoutTask: timeoutTask)
+            case ("POST", RemoteHTTPPaths.worldMapSelection):
+                let request = try jsonDecoder.decode(
+                    RemoteWorldMapSelectionRequest.self,
+                    from: body
+                )
+                let payload = try await facade.fetchWorldMapSelection(request)
+                await respondJSON(connection, status: 200, value: payload, timeoutTask: timeoutTask)
+            case ("GET", RemoteHTTPPaths.worldMapLocationBackfill):
+                let payload = try await facade.fetchWorldMapLocationBackfillSnapshots()
+                await respondJSON(connection, status: 200, value: payload, timeoutTask: timeoutTask)
+            case ("POST", RemoteHTTPPaths.worldMapLocationBackfillRequests):
+                let request = try jsonDecoder.decode(
+                    RemoteWorldMapLocationBackfillCommandRequest.self,
+                    from: body
+                )
+                let payload = try await facade.submitWorldMapLocationBackfillCommand(request)
+                await respondJSON(connection, status: 202, value: payload, timeoutTask: timeoutTask)
+            case ("GET", RemoteHTTPPaths.worldMapPlaceTags):
+                let payload = try await facade.fetchWorldMapPlaceTagSnapshot()
+                await respondJSON(connection, status: 200, value: payload, timeoutTask: timeoutTask)
+            case ("POST", RemoteHTTPPaths.worldMapPlaceTagRequests):
+                let request = try jsonDecoder.decode(
+                    RemoteWorldMapPlaceTagCommandRequest.self,
+                    from: body
+                )
+                let payload = try await facade.submitWorldMapPlaceTagCommand(request)
                 await respondJSON(connection, status: 200, value: payload, timeoutTask: timeoutTask)
             case ("POST", RemoteHTTPPaths.tagGroups):
                 let request = try jsonDecoder.decode(RemoteCreateTagGroupRequest.self, from: body)
@@ -715,6 +816,166 @@ actor RemoteHTTPServer {
                 let request = try jsonDecoder.decode(RemoteBatchReviewDecisionRequest.self, from: body)
                 let payload = try await facade.applyReviewDecision(request)
                 await respondJSON(connection, status: 200, value: payload, timeoutTask: timeoutTask)
+            case ("POST", RemoteHTTPPaths.reviewDecisionsUndo):
+                let request = try jsonDecoder.decode(RemoteUndoReviewDecisionRequest.self, from: body)
+                let payload = try await facade.undoReviewDecision(request)
+                await respondJSON(connection, status: 200, value: payload, timeoutTask: timeoutTask)
+            case ("GET", RemoteHTTPPaths.trainingWorkspace):
+                let mediaKind = RemoteAssetMediaKind(rawValue: query["mediaKind"] ?? "") ?? .image
+                let method = query["method"].flatMap(RemoteTrainingRunMethod.init(rawValue:))
+                let payload = try await facade.fetchTrainingWorkspace(
+                    mediaKind: mediaKind,
+                    method: method
+                )
+                await respondJSON(connection, status: 200, value: payload, timeoutTask: timeoutTask)
+            case ("GET", RemoteHTTPPaths.trainingSetup):
+                let mediaKind = RemoteAssetMediaKind(rawValue: query["mediaKind"] ?? "") ?? .image
+                let payload = try await facade.fetchTrainingSetup(mediaKind: mediaKind)
+                await respondJSON(connection, status: 200, value: payload, timeoutTask: timeoutTask)
+            case ("GET", RemoteHTTPPaths.embeddingPreparation):
+                let mediaKind = RemoteAssetMediaKind(rawValue: query["mediaKind"] ?? "") ?? .image
+                let payload = try await facade.fetchEmbeddingPreparation(mediaKind: mediaKind)
+                await respondJSON(connection, status: 200, value: payload, timeoutTask: timeoutTask)
+            case ("POST", RemoteHTTPPaths.embeddingPreparationRequests):
+                let request = try jsonDecoder.decode(
+                    RemoteEmbeddingPreparationRequest.self,
+                    from: body
+                )
+                let payload = try await facade.submitEmbeddingPreparation(request)
+                await eventBroker.publish(.init(
+                    kind: .jobsChanged,
+                    emittedAtMs: Int64((Date().timeIntervalSince1970 * 1_000).rounded())
+                ))
+                await respondJSON(connection, status: 202, value: payload, timeoutTask: timeoutTask)
+            case ("GET", RemoteHTTPPaths.sampleSuggestions):
+                let mediaKind = RemoteAssetMediaKind(rawValue: query["mediaKind"] ?? "") ?? .image
+                let payload = try await facade.fetchSampleSuggestions(mediaKind: mediaKind)
+                await respondJSON(connection, status: 200, value: payload, timeoutTask: timeoutTask)
+            case ("POST", RemoteHTTPPaths.sampleSuggestionRequests):
+                let request = try jsonDecoder.decode(
+                    RemoteSampleSuggestionRequest.self,
+                    from: body
+                )
+                let payload = try await facade.submitSampleSuggestions(request)
+                await eventBroker.publish(.init(
+                    kind: .jobsChanged,
+                    emittedAtMs: Int64((Date().timeIntervalSince1970 * 1_000).rounded())
+                ))
+                await respondJSON(connection, status: 202, value: payload, timeoutTask: timeoutTask)
+            case ("GET", RemoteHTTPPaths.tagLibrarySuggestions):
+                let mediaKind = RemoteAssetMediaKind(rawValue: query["mediaKind"] ?? "") ?? .image
+                let payload = try await facade.fetchTagLibrarySuggestions(mediaKind: mediaKind)
+                await respondJSON(connection, status: 200, value: payload, timeoutTask: timeoutTask)
+            case ("POST", RemoteHTTPPaths.tagLibrarySuggestionRequests):
+                let request = try jsonDecoder.decode(
+                    RemoteTagLibrarySuggestionRequest.self,
+                    from: body
+                )
+                let payload = try await facade.submitTagLibrarySuggestions(request)
+                await eventBroker.publish(.init(
+                    kind: .jobsChanged,
+                    emittedAtMs: Int64((Date().timeIntervalSince1970 * 1_000).rounded())
+                ))
+                await respondJSON(connection, status: 202, value: payload, timeoutTask: timeoutTask)
+            case ("GET", RemoteHTTPPaths.librarySlimmingWorkspace):
+                let mediaKind = RemoteAssetMediaKind(rawValue: query["mediaKind"] ?? "") ?? .image
+                let payload = try await facade.fetchLibrarySlimmingWorkspace(
+                    mediaKind: mediaKind,
+                    jobID: query["jobID"].flatMap(UUID.init(uuidString:)),
+                    clusterID: query["clusterID"].flatMap(UUID.init(uuidString:)),
+                    clusterLimit: Int(query["clusterLimit"] ?? "") ?? 80,
+                    memberLimit: Int(query["memberLimit"] ?? "") ?? 200
+                )
+                await respondJSON(connection, status: 200, value: payload, timeoutTask: timeoutTask)
+            case ("GET", RemoteHTTPPaths.librarySlimmingSetup):
+                let mediaKind = RemoteAssetMediaKind(rawValue: query["mediaKind"] ?? "") ?? .image
+                let payload = try await facade.fetchLibrarySlimmingSetup(mediaKind: mediaKind)
+                await respondJSON(connection, status: 200, value: payload, timeoutTask: timeoutTask)
+            case ("POST", RemoteHTTPPaths.librarySlimmingLaunch):
+                let request = try jsonDecoder.decode(
+                    RemoteLibrarySlimmingLaunchRequest.self,
+                    from: body
+                )
+                let payload = try await facade.launchLibrarySlimming(request)
+                await eventBroker.publish(.init(
+                    kind: .jobsChanged,
+                    emittedAtMs: Int64((Date().timeIntervalSince1970 * 1_000).rounded())
+                ))
+                await respondJSON(connection, status: 202, value: payload, timeoutTask: timeoutTask)
+            case ("PUT", RemoteHTTPPaths.librarySlimmingThresholds):
+                let request = try jsonDecoder.decode(
+                    RemoteLibrarySlimmingThresholdUpdateRequest.self,
+                    from: body
+                )
+                let payload = try await facade.updateLibrarySlimmingThresholds(request)
+                await respondJSON(connection, status: 200, value: payload, timeoutTask: timeoutTask)
+            case ("GET", RemoteHTTPPaths.librarySlimmingRecycle):
+                let mediaKind = RemoteAssetMediaKind(rawValue: query["mediaKind"] ?? "") ?? .image
+                let payload = try await facade.fetchLibrarySlimmingRecycle(
+                    mediaKind: mediaKind,
+                    sourceID: query["sourceID"].flatMap(UUID.init(uuidString:)),
+                    searchText: query["search"],
+                    limit: Int(query["limit"] ?? "") ?? 60
+                )
+                await respondJSON(connection, status: 200, value: payload, timeoutTask: timeoutTask)
+            case ("POST", RemoteHTTPPaths.librarySlimmingRecycleRequests):
+                let request = try jsonDecoder.decode(
+                    RemoteLibrarySlimmingRecycleSubmitRequest.self,
+                    from: body
+                )
+                let payload = try await facade.submitLibrarySlimmingRecycle(request)
+                await eventBroker.publish(.init(
+                    kind: .assetsChanged,
+                    emittedAtMs: Int64((Date().timeIntervalSince1970 * 1_000).rounded())
+                ))
+                await respondJSON(connection, status: 202, value: payload, timeoutTask: timeoutTask)
+            case ("GET", RemoteHTTPPaths.librarySlimmingRemovals):
+                let mediaKind = RemoteAssetMediaKind(rawValue: query["mediaKind"] ?? "") ?? .image
+                let payload = try await facade.fetchLibrarySlimmingRemovals(mediaKind: mediaKind)
+                await respondJSON(connection, status: 200, value: payload, timeoutTask: timeoutTask)
+            case ("POST", RemoteHTTPPaths.librarySlimmingRemovals):
+                let request = try jsonDecoder.decode(
+                    RemoteLibrarySlimmingRemovalSubmitRequest.self,
+                    from: body
+                )
+                let payload = try await facade.submitLibrarySlimmingRemoval(request)
+                await eventBroker.publish(.init(
+                    kind: .assetsChanged,
+                    emittedAtMs: Int64((Date().timeIntervalSince1970 * 1_000).rounded())
+                ))
+                await respondJSON(connection, status: 202, value: payload, timeoutTask: timeoutTask)
+            case ("POST", RemoteHTTPPaths.librarySlimmingIdenticalCleanupPlans):
+                let request = try jsonDecoder.decode(
+                    RemoteLibrarySlimmingIdenticalCleanupPlanRequest.self,
+                    from: body
+                )
+                let payload = try await facade.prepareLibrarySlimmingIdenticalCleanup(request)
+                await respondJSON(connection, status: 200, value: payload, timeoutTask: timeoutTask)
+            case ("GET", RemoteHTTPPaths.librarySlimmingIdenticalCleanupRequests):
+                let mediaKind = RemoteAssetMediaKind(rawValue: query["mediaKind"] ?? "") ?? .image
+                let payload = try await facade.fetchLibrarySlimmingIdenticalCleanupRequests(
+                    mediaKind: mediaKind
+                )
+                await respondJSON(connection, status: 200, value: payload, timeoutTask: timeoutTask)
+            case ("POST", RemoteHTTPPaths.librarySlimmingIdenticalCleanupRequests):
+                let request = try jsonDecoder.decode(
+                    RemoteLibrarySlimmingIdenticalCleanupSubmitRequest.self,
+                    from: body
+                )
+                let payload = try await facade.submitLibrarySlimmingIdenticalCleanup(request)
+                await eventBroker.publish(.init(
+                    kind: .assetsChanged,
+                    emittedAtMs: Int64((Date().timeIntervalSince1970 * 1_000).rounded())
+                ))
+                await respondJSON(connection, status: 202, value: payload, timeoutTask: timeoutTask)
+            case ("POST", RemoteHTTPPaths.trainingLaunch):
+                let request = try jsonDecoder.decode(RemoteTrainingLaunchRequest.self, from: body)
+                let payload = try await facade.launchTraining(request)
+                await eventBroker.publish(.init(
+                    kind: .jobsChanged,
+                    emittedAtMs: Int64((Date().timeIntervalSince1970 * 1_000).rounded())
+                ))
+                await respondJSON(connection, status: 202, value: payload, timeoutTask: timeoutTask)
             case ("GET", RemoteHTTPPaths.jobs):
                 let payload = try await facade.fetchJobActivity()
                 await respondJSON(connection, status: 200, value: payload, timeoutTask: timeoutTask)
@@ -736,7 +997,16 @@ actor RemoteHTTPServer {
                 let payload = await pairingStore.listDevices()
                 await respondJSON(connection, status: 200, value: payload, timeoutTask: timeoutTask)
             default:
-                if method == "GET", let assetID = Self.thumbnailAssetID(from: path) {
+                if ["GET", "HEAD"].contains(method), let assetID = Self.mediaAssetID(from: path) {
+                    let resource = try await mediaResources.openMediaResource(assetID: assetID)
+                    await respondMedia(
+                        connection,
+                        method: method,
+                        resource: resource,
+                        rangeHeader: headers["range"],
+                        timeoutTask: timeoutTask
+                    )
+                } else if method == "GET", let assetID = Self.thumbnailAssetID(from: path) {
                     let width = Int(query["w"] ?? query["width"] ?? "320") ?? 320
                     let data = try await facade.loadThumbnail(assetID: assetID, targetPixelWidth: width)
                     let image = try Self.browserImageResponse(data)
@@ -745,12 +1015,151 @@ actor RemoteHTTPServer {
                     let data = try await facade.loadPreview(assetID: assetID)
                     let image = try Self.browserImageResponse(data)
                     await respond(connection, status: 200, contentType: image.contentType, body: image.body, timeoutTask: timeoutTask)
+                } else if method == "POST", let assetID = Self.cloudPreviewAssetID(from: path) {
+                    let data = try await facade.downloadCloudPreview(assetID: assetID)
+                    let image = try Self.browserImageResponse(data)
+                    await respond(
+                        connection,
+                        status: 200,
+                        contentType: image.contentType,
+                        body: image.body,
+                        timeoutTask: timeoutTask
+                    )
                 } else if method == "GET", let assetID = Self.assetDetailID(from: path) {
                     let payload = try await facade.fetchInspectorDetail(assetID: assetID)
                     await respondJSON(connection, status: 200, value: payload, timeoutTask: timeoutTask)
+                } else if method == "POST", let assetID = Self.assetOpenOriginalID(from: path) {
+                    guard let originalAssetOpener else {
+                        throw RemoteAPIError(
+                            code: .notFound,
+                            message: "original asset opener unavailable"
+                        )
+                    }
+                    do {
+                        try await originalAssetOpener.openOriginalAsset(assetID: assetID)
+                    } catch let openError as LibraryOriginalAssetOpenError {
+                        let message = switch openError {
+                        case .unavailable: "original asset unavailable"
+                        case .unsafeLocator: "original asset location is unsafe"
+                        case .previewUnavailable: "original asset viewer unavailable"
+                        }
+                        throw RemoteAPIError(code: .notFound, message: message)
+                    }
+                    await respond(
+                        connection,
+                        status: 204,
+                        contentType: "application/json",
+                        body: Data(),
+                        timeoutTask: timeoutTask
+                    )
+                } else if method == "POST", let operationID = Self.trainingActivityActionID(from: path) {
+                    let request = try jsonDecoder.decode(
+                        RemoteTrainingActivityActionRequest.self,
+                        from: body
+                    )
+                    let payload = try await facade.applyTrainingActivityAction(
+                        operationID: operationID,
+                        request: request
+                    )
+                    await eventBroker.publish(.init(
+                        kind: .jobsChanged,
+                        emittedAtMs: Int64((Date().timeIntervalSince1970 * 1_000).rounded())
+                    ))
+                    await respondJSON(
+                        connection,
+                        status: 200,
+                        value: payload,
+                        timeoutTask: timeoutTask
+                    )
+                } else if method == "POST",
+                          let operationID = Self.embeddingPreparationActionID(from: path)
+                {
+                    let request = try jsonDecoder.decode(
+                        RemoteEmbeddingPreparationActionRequest.self,
+                        from: body
+                    )
+                    let payload = try await facade.applyEmbeddingPreparationAction(
+                        operationID: operationID,
+                        request: request
+                    )
+                    await eventBroker.publish(.init(
+                        kind: .jobsChanged,
+                        emittedAtMs: Int64((Date().timeIntervalSince1970 * 1_000).rounded())
+                    ))
+                    await respondJSON(
+                        connection,
+                        status: 200,
+                        value: payload,
+                        timeoutTask: timeoutTask
+                    )
+                } else if method == "POST",
+                          let operationID = Self.sampleSuggestionActionID(from: path)
+                {
+                    let request = try jsonDecoder.decode(
+                        RemoteSampleSuggestionActionRequest.self,
+                        from: body
+                    )
+                    let payload = try await facade.applySampleSuggestionAction(
+                        operationID: operationID,
+                        request: request
+                    )
+                    await eventBroker.publish(.init(
+                        kind: .jobsChanged,
+                        emittedAtMs: Int64((Date().timeIntervalSince1970 * 1_000).rounded())
+                    ))
+                    await respondJSON(
+                        connection,
+                        status: 200,
+                        value: payload,
+                        timeoutTask: timeoutTask
+                    )
+                } else if method == "POST",
+                          let operationID = Self.tagLibrarySuggestionActionID(from: path)
+                {
+                    let request = try jsonDecoder.decode(
+                        RemoteTagLibrarySuggestionActionRequest.self,
+                        from: body
+                    )
+                    let payload = try await facade.applyTagLibrarySuggestionAction(
+                        operationID: operationID,
+                        request: request
+                    )
+                    await eventBroker.publish(.init(
+                        kind: .jobsChanged,
+                        emittedAtMs: Int64((Date().timeIntervalSince1970 * 1_000).rounded())
+                    ))
+                    await respondJSON(
+                        connection,
+                        status: 200,
+                        value: payload,
+                        timeoutTask: timeoutTask
+                    )
+                } else if method == "POST", let jobID = Self.librarySlimmingJobActionID(from: path) {
+                    let request = try jsonDecoder.decode(
+                        RemoteLibrarySlimmingJobActionRequest.self,
+                        from: body
+                    )
+                    let payload = try await facade.applyLibrarySlimmingJobAction(
+                        jobID: jobID,
+                        request: request
+                    )
+                    await eventBroker.publish(.init(
+                        kind: .jobsChanged,
+                        emittedAtMs: Int64((Date().timeIntervalSince1970 * 1_000).rounded())
+                    ))
+                    await respondJSON(
+                        connection,
+                        status: 200,
+                        value: payload,
+                        timeoutTask: timeoutTask
+                    )
                 } else if method == "POST", let jobID = Self.jobActionID(from: path) {
                     let request = try jsonDecoder.decode(RemoteJobActionRequest.self, from: body)
                     try await facade.applyJobActivityAction(jobID: jobID, request: request)
+                    await eventBroker.publish(.init(
+                        kind: .jobsChanged,
+                        emittedAtMs: Int64((Date().timeIntervalSince1970 * 1_000).rounded())
+                    ))
                     await respondJSON(connection, status: 200, value: RemoteJobActionAcceptedResponse(jobID: jobID), timeoutTask: timeoutTask)
                 } else if method == "POST", let (tagID, action) = Self.tagAction(from: path) {
                     switch action {
@@ -1014,13 +1423,16 @@ actor RemoteHTTPServer {
         let reason: String = {
             switch status {
             case 200: "OK"
+            case 202: "Accepted"
             case 204: "No Content"
+            case 206: "Partial Content"
             case 400: "Bad Request"
             case 401: "Unauthorized"
             case 403: "Forbidden"
             case 404: "Not Found"
             case 409: "Conflict"
             case 413: "Payload Too Large"
+            case 416: "Range Not Satisfiable"
             default: "Error"
             }
         }()
@@ -1048,6 +1460,109 @@ actor RemoteHTTPServer {
             )
         }
         connection.cancel()
+    }
+
+    private func respondMedia(
+        _ connection: NWConnection,
+        method: String,
+        resource: RemoteMediaResource,
+        rangeHeader: String?,
+        timeoutTask: Task<Void, Never>
+    ) async {
+        timeoutTask.cancel()
+        defer { resource.release() }
+
+        let selectedRange: RemoteHTTPByteRange
+        let status: Int
+        switch Self.parseByteRange(rangeHeader, contentLength: resource.contentLength) {
+        case .full:
+            selectedRange = RemoteHTTPByteRange(
+                lowerBound: 0,
+                upperBound: max(resource.contentLength - 1, -1)
+            )
+            status = 200
+        case let .partial(range):
+            selectedRange = range
+            status = 206
+        case .unsatisfiable:
+            await respond(
+                connection,
+                status: 416,
+                contentType: resource.contentType,
+                body: Data(),
+                additionalHeaders: [
+                    ("Accept-Ranges", "bytes"),
+                    ("Content-Range", "bytes */\(resource.contentLength)"),
+                ]
+            )
+            return
+        }
+
+        let responseLength = selectedRange.count
+        var header = "HTTP/1.1 \(status) \(status == 206 ? "Partial Content" : "OK")\r\n"
+        header += "Content-Type: \(resource.contentType)\r\n"
+        header += "Accept-Ranges: bytes\r\n"
+        header += "Cache-Control: no-store\r\n"
+        header += "Pragma: no-cache\r\n"
+        header += "X-Content-Type-Options: nosniff\r\n"
+        if status == 206 {
+            header += "Content-Range: bytes \(selectedRange.lowerBound)-\(selectedRange.upperBound)/\(resource.contentLength)\r\n"
+        }
+        header += "Content-Length: \(responseLength)\r\n"
+        header += "Connection: close\r\n\r\n"
+
+        guard await send(connection, content: Data(header.utf8), isFinal: method == "HEAD") else {
+            connection.cancel()
+            return
+        }
+        if method == "HEAD" {
+            connection.cancel()
+            return
+        }
+
+        var offset = selectedRange.lowerBound
+        var remaining = responseLength
+        while remaining > 0 {
+            let nextCount = Int(min(remaining, Int64(256 * 1_024)))
+            let chunk: Data
+            do {
+                chunk = try resource.read(offset: offset, count: nextCount)
+            } catch {
+                connection.cancel()
+                return
+            }
+            guard !chunk.isEmpty else {
+                connection.cancel()
+                return
+            }
+            remaining -= Int64(chunk.count)
+            offset += Int64(chunk.count)
+            guard await send(connection, content: chunk, isFinal: remaining == 0) else {
+                connection.cancel()
+                return
+            }
+        }
+        connection.cancel()
+    }
+
+    private func send(
+        _ connection: NWConnection,
+        content: Data,
+        isFinal: Bool
+    ) async -> Bool {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
+            connection.send(
+                content: content,
+                contentContext: isFinal ? .finalMessage : .defaultMessage,
+                // A content context must be completed before `.contentProcessed` fires.
+                // Completing `.defaultMessage` does not close TCP; only `.finalMessage`
+                // performs the graceful half-close after the final body chunk.
+                isComplete: true,
+                completion: .contentProcessed { error in
+                    continuation.resume(returning: error == nil)
+                }
+            )
+        }
     }
 
     private static func splitPathAndQuery(_ pathAndQuery: String) -> (String, [String: String]) {
@@ -1103,6 +1618,28 @@ actor RemoteHTTPServer {
                 .split(separator: ",")
                 .map(String.init),
             tagPresence: RemoteAssetTagPresence(rawValue: query["tagPresence"] ?? "") ?? .any
+        )
+    }
+
+    private static func parseWorldMapBounds(
+        query: [String: String]
+    ) throws -> RemoteWorldMapBounds? {
+        let keys = ["west", "south", "east", "north"]
+        let values = keys.compactMap { query[$0] }
+        guard !values.isEmpty else { return nil }
+        guard values.count == keys.count,
+              let west = Double(query["west"] ?? ""), west.isFinite,
+              let south = Double(query["south"] ?? ""), south.isFinite,
+              let east = Double(query["east"] ?? ""), east.isFinite,
+              let north = Double(query["north"] ?? ""), north.isFinite
+        else {
+            throw RemoteAPIError(code: .badRequest, message: "地图视口参数不完整")
+        }
+        return RemoteWorldMapBounds(
+            west: west,
+            south: south,
+            east: east,
+            north: north
         )
     }
 
@@ -1165,6 +1702,70 @@ actor RemoteHTTPServer {
         pathParameter(path, expectedSegments: ["v1", "assets", nil, "preview"])
     }
 
+    private static func cloudPreviewAssetID(from path: String) -> UUID? {
+        // /v1/assets/{uuid}/cloud-preview
+        pathParameter(path, expectedSegments: ["v1", "assets", nil, "cloud-preview"])
+    }
+
+    private static func mediaAssetID(from path: String) -> UUID? {
+        // /v1/assets/{uuid}/media
+        pathParameter(path, expectedSegments: ["v1", "assets", nil, "media"])
+    }
+
+    private static func assetOpenOriginalID(from path: String) -> UUID? {
+        // /v1/assets/{uuid}/open-original
+        pathParameter(path, expectedSegments: ["v1", "assets", nil, "open-original"])
+    }
+
+    static func parseByteRange(
+        _ header: String?,
+        contentLength: Int64
+    ) -> RemoteHTTPRangeSelection {
+        guard let header else { return .full }
+        guard contentLength > 0,
+              header.hasPrefix("bytes="),
+              !header.contains(",")
+        else {
+            return .unsatisfiable
+        }
+        let raw = header.dropFirst("bytes=".count)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let bounds = raw.split(separator: "-", maxSplits: 1, omittingEmptySubsequences: false)
+        guard bounds.count == 2 else { return .unsatisfiable }
+
+        if bounds[0].isEmpty {
+            guard let suffixLength = Int64(bounds[1]), suffixLength > 0 else {
+                return .unsatisfiable
+            }
+            let length = min(suffixLength, contentLength)
+            return .partial(
+                RemoteHTTPByteRange(
+                    lowerBound: contentLength - length,
+                    upperBound: contentLength - 1
+                )
+            )
+        }
+
+        guard let lowerBound = Int64(bounds[0]),
+              lowerBound >= 0,
+              lowerBound < contentLength
+        else {
+            return .unsatisfiable
+        }
+        let upperBound: Int64
+        if bounds[1].isEmpty {
+            upperBound = contentLength - 1
+        } else {
+            guard let requestedUpper = Int64(bounds[1]), requestedUpper >= lowerBound else {
+                return .unsatisfiable
+            }
+            upperBound = min(requestedUpper, contentLength - 1)
+        }
+        return .partial(
+            RemoteHTTPByteRange(lowerBound: lowerBound, upperBound: upperBound)
+        )
+    }
+
     private static func tagAction(from path: String) -> (UUID, String)? {
         let segments = path.split(separator: "/").map(String.init)
         guard segments.count == 4,
@@ -1197,6 +1798,46 @@ actor RemoteHTTPServer {
     private static func jobActionID(from path: String) -> UUID? {
         // /v1/jobs/{uuid}/actions
         pathParameter(path, expectedSegments: ["v1", "jobs", nil, "actions"])
+    }
+
+    private static func trainingActivityActionID(from path: String) -> UUID? {
+        // /v1/training/activities/{uuid}/actions
+        pathParameter(
+            path,
+            expectedSegments: ["v1", "training", "activities", nil, "actions"]
+        )
+    }
+
+    private static func embeddingPreparationActionID(from path: String) -> UUID? {
+        // /v1/embedding-preparation/requests/{uuid}/actions
+        pathParameter(
+            path,
+            expectedSegments: ["v1", "embedding-preparation", "requests", nil, "actions"]
+        )
+    }
+
+    private static func sampleSuggestionActionID(from path: String) -> UUID? {
+        // /v1/sample-suggestions/requests/{uuid}/actions
+        pathParameter(
+            path,
+            expectedSegments: ["v1", "sample-suggestions", "requests", nil, "actions"]
+        )
+    }
+
+    private static func tagLibrarySuggestionActionID(from path: String) -> UUID? {
+        // /v1/tag-library-suggestions/requests/{uuid}/actions
+        pathParameter(
+            path,
+            expectedSegments: ["v1", "tag-library-suggestions", "requests", nil, "actions"]
+        )
+    }
+
+    private static func librarySlimmingJobActionID(from path: String) -> UUID? {
+        // /v1/library-slimming/jobs/{uuid}/actions
+        pathParameter(
+            path,
+            expectedSegments: ["v1", "library-slimming", "jobs", nil, "actions"]
+        )
     }
 
     private static func pairingDeviceID(from path: String) -> UUID? {

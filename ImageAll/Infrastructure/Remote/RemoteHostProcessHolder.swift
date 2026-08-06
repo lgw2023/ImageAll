@@ -1,6 +1,229 @@
+import Darwin
 import Foundation
+import GRDB
 import ImageAllRemoteProtocol
+import UniformTypeIdentifiers
 import os
+
+final class RemoteMediaResource: @unchecked Sendable {
+    let contentType: String
+    let contentLength: Int64
+
+    private let descriptor: Int32
+    private let lock = NSLock()
+    private var releaseAction: (@Sendable () -> Void)?
+
+    init(
+        descriptor: Int32,
+        contentType: String,
+        contentLength: Int64,
+        release: @escaping @Sendable () -> Void
+    ) {
+        self.descriptor = descriptor
+        self.contentType = contentType
+        self.contentLength = contentLength
+        releaseAction = release
+    }
+
+    func read(offset: Int64, count: Int) throws -> Data {
+        guard offset >= 0, count >= 0 else {
+            throw RemoteAPIError(code: .badRequest, message: "invalid media byte range")
+        }
+        var bytes = [UInt8](repeating: 0, count: count)
+        let readCount = bytes.withUnsafeMutableBytes { buffer in
+            pread(descriptor, buffer.baseAddress, buffer.count, off_t(offset))
+        }
+        guard readCount >= 0 else {
+            throw RemoteAPIError(code: .internalError, message: "media read failed")
+        }
+        return Data(bytes.prefix(readCount))
+    }
+
+    func release() {
+        lock.lock()
+        let action = releaseAction
+        releaseAction = nil
+        lock.unlock()
+        action?()
+    }
+
+    deinit {
+        release()
+    }
+}
+
+protocol RemoteMediaResourceProviding: Sendable {
+    func openMediaResource(assetID: UUID) async throws -> RemoteMediaResource
+}
+
+struct UnavailableRemoteMediaResourceProvider: RemoteMediaResourceProviding {
+    func openMediaResource(assetID _: UUID) async throws -> RemoteMediaResource {
+        throw RemoteAPIError(code: .notFound, message: "media unavailable")
+    }
+}
+
+struct ProductionRemoteMediaResourceProvider: RemoteMediaResourceProviding {
+    private struct Locator: Sendable {
+        let sourceID: UUID
+        let sourceKind: SourceKind
+        let locatorKind: AssetLocatorKind
+        let mediaKind: MediaKind
+        let mediaType: String
+        let relativePath: String?
+        let photosLocalIdentifier: String?
+        let availability: AssetAvailability
+    }
+
+    let database: CatalogDatabase
+    let folderAuthorization: FolderAuthorizationCoordinator
+    let photosLibrary: PhotoKitPhotosLibraryAdapter
+
+    func openMediaResource(assetID: UUID) async throws -> RemoteMediaResource {
+        let locator = try fetchLocator(assetID: assetID)
+        guard locator.availability == .available, locator.mediaKind == .video else {
+            throw RemoteAPIError(code: .notFound, message: "video unavailable")
+        }
+
+        switch (locator.sourceKind, locator.locatorKind) {
+        case (.folder, .file):
+            guard let relativePath = locator.relativePath,
+                  case let .success(validatedPath) = RelativePathRules.validate(relativePath)
+            else {
+                throw RemoteAPIError(code: .notFound, message: "unsafe video locator")
+            }
+            let accessLease: FolderSourceAccessLease
+            do {
+                accessLease = try folderAuthorization.acquireFolderSourceAccess(
+                    sourceID: locator.sourceID
+                )
+            } catch {
+                throw RemoteAPIError(code: .notFound, message: "video source unavailable")
+            }
+            do {
+                let rootFD = try DerivedImageSecureIO.openDirectoryNoFollow(
+                    at: accessLease.rootURL
+                )
+                defer { Darwin.close(rootFD) }
+                let descriptor = try DerivedImageSecureIO.openRelativeReadOnlyNoFollow(
+                    directoryFD: rootFD,
+                    relativePath: validatedPath
+                )
+                do {
+                    let facts = try DerivedImageSecureIO.fstatRegularFile(fd: descriptor)
+                    guard facts.sizeBytes > 0 else {
+                        throw RemoteAPIError(code: .notFound, message: "video file is empty")
+                    }
+                    return RemoteMediaResource(
+                        descriptor: descriptor,
+                        contentType: Self.contentType(
+                            mediaType: locator.mediaType,
+                            url: URL(fileURLWithPath: validatedPath)
+                        ),
+                        contentLength: facts.sizeBytes
+                    ) {
+                        Darwin.close(descriptor)
+                        accessLease.release()
+                    }
+                } catch {
+                    Darwin.close(descriptor)
+                    throw error
+                }
+            } catch {
+                accessLease.release()
+                throw RemoteAPIError(code: .notFound, message: "video file unavailable")
+            }
+        case (.photos, .photos):
+            guard let identifier = locator.photosLocalIdentifier else {
+                throw RemoteAPIError(code: .notFound, message: "unsafe Photos video locator")
+            }
+            let url: URL
+            do {
+                url = try await photosLibrary.requestOriginalVideoURL(
+                    localIdentifier: identifier
+                )
+            } catch {
+                throw RemoteAPIError(code: .notFound, message: "Photos video unavailable")
+            }
+            do {
+                let descriptor = try DerivedImageSecureIO.openReadOnlyNoFollow(at: url)
+                do {
+                    let facts = try DerivedImageSecureIO.fstatRegularFile(fd: descriptor)
+                    guard facts.sizeBytes > 0 else {
+                        throw RemoteAPIError(code: .notFound, message: "Photos video is empty")
+                    }
+                    return RemoteMediaResource(
+                        descriptor: descriptor,
+                        contentType: Self.contentType(mediaType: locator.mediaType, url: url),
+                        contentLength: facts.sizeBytes
+                    ) {
+                        Darwin.close(descriptor)
+                    }
+                } catch {
+                    Darwin.close(descriptor)
+                    throw error
+                }
+            } catch {
+                throw RemoteAPIError(code: .notFound, message: "Photos video resource unavailable")
+            }
+        default:
+            throw RemoteAPIError(code: .notFound, message: "video unavailable")
+        }
+    }
+
+    private func fetchLocator(assetID: UUID) throws -> Locator {
+        try database.pool.read { db in
+            guard let row = try Row.fetchOne(
+                db,
+                sql: """
+                SELECT
+                    asset.source_id,
+                    source.kind AS source_kind,
+                    asset.locator_kind,
+                    asset.media_kind,
+                    asset.media_type,
+                    asset.relative_path,
+                    asset.photos_local_identifier,
+                    asset.availability
+                FROM asset
+                INNER JOIN source ON source.id = asset.source_id
+                WHERE asset.id = ? AND asset.locator_state = 'current'
+                """,
+                arguments: [assetID.uuidString.lowercased()]
+            ),
+                let sourceID = UUID(uuidString: row["source_id"]),
+                let sourceKind = SourceKind(rawValue: row["source_kind"]),
+                let locatorKind = AssetLocatorKind(rawValue: row["locator_kind"]),
+                let mediaKind = MediaKind(rawValue: row["media_kind"]),
+                let availability = AssetAvailability(rawValue: row["availability"])
+            else {
+                throw RemoteAPIError(code: .notFound, message: "video unavailable")
+            }
+            return Locator(
+                sourceID: sourceID,
+                sourceKind: sourceKind,
+                locatorKind: locatorKind,
+                mediaKind: mediaKind,
+                mediaType: row["media_type"],
+                relativePath: row["relative_path"],
+                photosLocalIdentifier: row["photos_local_identifier"],
+                availability: availability
+            )
+        }
+    }
+
+    private static func contentType(mediaType: String, url: URL?) -> String {
+        if let mime = UTType(mediaType)?.preferredMIMEType, mime.hasPrefix("video/") {
+            return mime
+        }
+        if let extensionName = url?.pathExtension,
+           let mime = UTType(filenameExtension: extensionName)?.preferredMIMEType,
+           mime.hasPrefix("video/")
+        {
+            return mime
+        }
+        return "application/octet-stream"
+    }
+}
 
 /// Process-scoped remote host lifecycle. Kept out of `LibraryWorkspaceModel` on purpose.
 ///
@@ -26,6 +249,15 @@ enum RemoteHostProcessHolder {
     private struct Attachment: Sendable {
         let catalog: any RemoteCatalogServing
         let review: any PersonalizationReviewPort
+        let trainingWorkspace: any TrainingWorkspacePort
+        let trainingCommands: any RemoteTrainingCommandPort
+        let librarySlimmingAnalysis: any LibrarySlimmingAnalysisJobPort
+        let librarySlimmingCommands: any RemoteLibrarySlimmingCommandPort
+        let sourceManagementCommands: any RemoteSourceManagementCommandPort
+        let storageMaintenanceCommands: any RemoteStorageMaintenanceCommandPort
+        let generalSettingsCommands: (any RemoteGeneralSettingsCommandPort)?
+        let mediaResources: any RemoteMediaResourceProviding
+        let originalAssetOpener: any LibraryOriginalAssetOpening
         let hostAppVersion: String
     }
 
@@ -127,11 +359,29 @@ enum RemoteHostProcessHolder {
     static func attach(
         catalog: any RemoteCatalogServing,
         review: any PersonalizationReviewPort,
+        trainingWorkspace: any TrainingWorkspacePort,
+        trainingCommands: any RemoteTrainingCommandPort,
+        librarySlimmingAnalysis: any LibrarySlimmingAnalysisJobPort,
+        librarySlimmingCommands: any RemoteLibrarySlimmingCommandPort,
+        sourceManagementCommands: any RemoteSourceManagementCommandPort,
+        storageMaintenanceCommands: any RemoteStorageMaintenanceCommandPort,
+        generalSettingsCommands: (any RemoteGeneralSettingsCommandPort)? = nil,
+        mediaResources: any RemoteMediaResourceProviding = UnavailableRemoteMediaResourceProvider(),
+        originalAssetOpener: any LibraryOriginalAssetOpening,
         hostAppVersion: String
     ) {
         let attachment = Attachment(
             catalog: catalog,
             review: review,
+            trainingWorkspace: trainingWorkspace,
+            trainingCommands: trainingCommands,
+            librarySlimmingAnalysis: librarySlimmingAnalysis,
+            librarySlimmingCommands: librarySlimmingCommands,
+            sourceManagementCommands: sourceManagementCommands,
+            storageMaintenanceCommands: storageMaintenanceCommands,
+            generalSettingsCommands: generalSettingsCommands,
+            mediaResources: mediaResources,
+            originalAssetOpener: originalAssetOpener,
             hostAppVersion: hostAppVersion,
         )
         Task {
@@ -299,6 +549,13 @@ enum RemoteHostProcessHolder {
         let facade = RemoteCatalogFacade(
             catalog: attachment.catalog,
             review: attachment.review,
+            trainingWorkspace: attachment.trainingWorkspace,
+            trainingCommands: attachment.trainingCommands,
+            librarySlimmingAnalysis: attachment.librarySlimmingAnalysis,
+            librarySlimmingCommands: attachment.librarySlimmingCommands,
+            sourceManagementCommands: attachment.sourceManagementCommands,
+            storageMaintenanceCommands: attachment.storageMaintenanceCommands,
+            generalSettingsCommands: attachment.generalSettingsCommands,
             idempotency: idempotency,
             hostAppVersion: attachment.hostAppVersion,
             listenPort: Int(port),
@@ -314,6 +571,8 @@ enum RemoteHostProcessHolder {
                 pairingStore: pairingStore,
                 accessAccountStore: accessAccountStore,
                 eventBroker: eventBroker,
+                mediaResources: attachment.mediaResources,
+                originalAssetOpener: attachment.originalAssetOpener,
                 secIdentity: identity.secIdentity,
                 port: port,
                 localWebPort: RemoteHTTPServer.defaultLocalWebPort,

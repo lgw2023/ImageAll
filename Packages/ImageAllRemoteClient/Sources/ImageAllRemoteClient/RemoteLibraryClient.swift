@@ -120,6 +120,15 @@ public struct RemoteLibraryClient: Sendable {
         try await getJSON(path: RemoteHTTPPaths.tags)
     }
 
+    public func installPresetTags(
+        _ request: RemoteInstallPresetTagsRequest
+    ) async throws -> RemoteInstallPresetTagsResponse {
+        try await postJSON(
+            path: RemoteHTTPPaths.tagsInstallPresets,
+            body: encoder.encode(request)
+        )
+    }
+
     public func fetchAssets(_ request: RemoteAssetPageRequest) async throws -> RemoteAssetPage {
         var items: [URLQueryItem] = [
             URLQueryItem(name: "sort", value: request.sort.rawValue),
@@ -157,6 +166,15 @@ public struct RemoteLibraryClient: Sendable {
         try await loadBinary(
             path: RemoteHTTPPaths.preview(assetID: assetID),
             queryItems: [URLQueryItem(name: "w", value: String(targetPixelWidth))]
+        )
+    }
+
+    /// Downloads the same bounded standard preview exposed by the Mac inspector.
+    /// Callers must only invoke this from an explicit user action.
+    public func downloadCloudPreview(assetID: UUID) async throws -> Data {
+        try await loadBinary(
+            path: RemoteHTTPPaths.cloudPreview(assetID: assetID),
+            method: "POST"
         )
     }
 
@@ -238,8 +256,12 @@ public struct RemoteLibraryClient: Sendable {
         ).postJSON(path: RemoteHTTPPaths.pairingRefresh, body: body)
     }
 
-    private func loadBinary(path: String, queryItems: [URLQueryItem]) async throws -> Data {
-        let request = try makeRequest(path: path, method: "GET", queryItems: queryItems)
+    private func loadBinary(
+        path: String,
+        method: String = "GET",
+        queryItems: [URLQueryItem] = []
+    ) async throws -> Data {
+        let request = try makeRequest(path: path, method: method, queryItems: queryItems)
         let (data, response) = try await transport.data(for: request)
         try Self.validate(response: response, data: data)
         return data

@@ -97,6 +97,46 @@ actor RemoteIdempotencyStore {
         return (response, false)
     }
 
+    /// Reads an already-recorded response without reserving a new operation. This is used
+    /// by asynchronous commands that can only be persisted after the command port accepts
+    /// the work. A mismatched payload remains a conflict.
+    func replay<Response: Codable>(
+        operationID: UUID,
+        key: MutationKey,
+        as _: Response.Type = Response.self
+    ) throws -> Response? {
+        let recordKey = RecordKey(operationID: operationID, kind: key.kind)
+        guard let existing = records[recordKey] else { return nil }
+        guard existing.key == key else {
+            throw IdempotencyError.conflict
+        }
+        return try JSONDecoder().decode(Response.self, from: existing.responseData)
+    }
+
+    /// Records the response after an asynchronous command has been accepted. Re-recording
+    /// the same key is harmless; using the operation ID with a different payload conflicts.
+    func record<Response: Codable>(
+        operationID: UUID,
+        key: MutationKey,
+        response: Response
+    ) throws {
+        let recordKey = RecordKey(operationID: operationID, kind: key.kind)
+        if let existing = records[recordKey] {
+            guard existing.key == key else {
+                throw IdempotencyError.conflict
+            }
+            return
+        }
+        let data = try JSONEncoder().encode(response)
+        records[recordKey] = StoredRecord(
+            operationID: operationID,
+            key: key,
+            responseData: data,
+            createdAtMs: Self.nowMs()
+        )
+        save()
+    }
+
     /// Test/inspection hook: number of recorded operations.
     func recordedOperationCount() -> Int { records.count }
 

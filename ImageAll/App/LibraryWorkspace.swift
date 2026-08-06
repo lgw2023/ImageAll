@@ -8945,6 +8945,12 @@ extension LibraryWorkspaceModel {
         }
     }
 
+    func cachedWorldMapSnapshot(
+        query: WorldMapCatalogQuery
+    ) -> WorldMapCatalogSnapshot? {
+        service.cachedWorldMapSnapshot(query: query)
+    }
+
     func fetchWorldMapSnapshot(
         query: WorldMapCatalogQuery
     ) async throws -> WorldMapCatalogSnapshot {
@@ -8996,6 +9002,13 @@ extension LibraryWorkspaceModel {
 
     func resolveWorldMapPlaceTag(tagID: UUID) async throws -> WorldMapPlaceTagResolution {
         try await service.resolveWorldMapPlaceTag(tagID: tagID)
+    }
+
+    func searchWorldMapPlaceTag(
+        tagID: UUID,
+        query: String
+    ) async throws -> WorldMapPlaceTagResolution {
+        try await service.searchWorldMapPlaceTag(tagID: tagID, query: query)
     }
 
     func confirmWorldMapPlaceCandidate(

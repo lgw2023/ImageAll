@@ -5,33 +5,63 @@ import ImageAllRemoteProtocol
 struct RemoteWebCompanionAsset: Equatable {
     let contentType: String
     let body: Data
+    let allowsSameOriginFraming: Bool
 }
 
 struct RemoteWebCompanionAssetStore {
-    private static let routeMap: [String: (name: String, contentType: String)] = [
-        "/": ("index.html", "text/html; charset=utf-8"),
-        "/index.html": ("index.html", "text/html; charset=utf-8"),
-        "/app.css": ("app.css", "text/css; charset=utf-8"),
-        "/app.js": ("app.js", "text/javascript; charset=utf-8"),
-        "/manifest.webmanifest": ("manifest.webmanifest", "application/manifest+json"),
+    private struct Descriptor {
+        let name: String
+        let contentType: String
+        let isWorldMap: Bool
+        let allowsSameOriginFraming: Bool
+    }
+
+    private static let routeMap: [String: Descriptor] = [
+        "/": Descriptor(name: "index.html", contentType: "text/html; charset=utf-8", isWorldMap: false, allowsSameOriginFraming: false),
+        "/index.html": Descriptor(name: "index.html", contentType: "text/html; charset=utf-8", isWorldMap: false, allowsSameOriginFraming: false),
+        "/app.css": Descriptor(name: "app.css", contentType: "text/css; charset=utf-8", isWorldMap: false, allowsSameOriginFraming: false),
+        "/app.js": Descriptor(name: "app.js", contentType: "text/javascript; charset=utf-8", isWorldMap: false, allowsSameOriginFraming: false),
+        "/service-worker.js": Descriptor(name: "service-worker.js", contentType: "text/javascript; charset=utf-8", isWorldMap: false, allowsSameOriginFraming: false),
+        "/manifest.webmanifest": Descriptor(name: "manifest.webmanifest", contentType: "application/manifest+json", isWorldMap: false, allowsSameOriginFraming: false),
+        "/world-map/index.html": Descriptor(name: "index.html", contentType: "text/html; charset=utf-8", isWorldMap: true, allowsSameOriginFraming: true),
+        "/world-map/maplibre-gl.css": Descriptor(name: "maplibre-gl.css", contentType: "text/css; charset=utf-8", isWorldMap: true, allowsSameOriginFraming: false),
+        "/world-map/world-map.css": Descriptor(name: "world-map.css", contentType: "text/css; charset=utf-8", isWorldMap: true, allowsSameOriginFraming: false),
+        "/world-map/maplibre-gl.js": Descriptor(name: "maplibre-gl.js", contentType: "text/javascript; charset=utf-8", isWorldMap: true, allowsSameOriginFraming: false),
+        "/world-map/maplibre-gl-worker-source.js": Descriptor(name: "maplibre-gl-worker-source.js", contentType: "text/javascript; charset=utf-8", isWorldMap: true, allowsSameOriginFraming: false),
+        "/world-map/deck.gl.min.js": Descriptor(name: "deck.gl.min.js", contentType: "text/javascript; charset=utf-8", isWorldMap: true, allowsSameOriginFraming: false),
+        "/world-map/natural-earth-countries.js": Descriptor(name: "natural-earth-countries.js", contentType: "text/javascript; charset=utf-8", isWorldMap: true, allowsSameOriginFraming: false),
+        "/world-map/world-map.js": Descriptor(name: "world-map.js", contentType: "text/javascript; charset=utf-8", isWorldMap: true, allowsSameOriginFraming: false),
     ]
 
     private let directoryURL: URL?
+    private let worldMapDirectoryURL: URL?
 
-    init(directoryURL: URL? = nil, bundle: Bundle = .main) {
+    init(
+        directoryURL: URL? = nil,
+        worldMapDirectoryURL: URL? = nil,
+        bundle: Bundle = .main
+    ) {
         self.directoryURL = directoryURL
             ?? bundle.resourceURL?.appendingPathComponent("WebCompanion", isDirectory: true)
+        self.worldMapDirectoryURL = worldMapDirectoryURL
+            ?? bundle.resourceURL?.appendingPathComponent("WorldMap", isDirectory: true)
     }
 
     func asset(for path: String) -> RemoteWebCompanionAsset? {
-        guard let descriptor = Self.routeMap[path], let directoryURL else {
+        guard let descriptor = Self.routeMap[path] else {
             return nil
         }
-        let url = directoryURL.appendingPathComponent(descriptor.name, isDirectory: false)
+        let baseURL = descriptor.isWorldMap ? worldMapDirectoryURL : directoryURL
+        guard let baseURL else { return nil }
+        let url = baseURL.appendingPathComponent(descriptor.name, isDirectory: false)
         guard let data = try? Data(contentsOf: url) else {
             return nil
         }
-        return RemoteWebCompanionAsset(contentType: descriptor.contentType, body: data)
+        return RemoteWebCompanionAsset(
+            contentType: descriptor.contentType,
+            body: data,
+            allowsSameOriginFraming: descriptor.allowsSameOriginFraming
+        )
     }
 
     static func isPublicAssetPath(_ path: String) -> Bool {
@@ -184,12 +214,23 @@ enum RemoteWebCompanionSession {
     static let browserSecurityHeaders: [(String, String)] = [
         (
             "Content-Security-Policy",
-            "default-src 'self'; base-uri 'none'; connect-src 'self' ws: wss:; font-src 'self'; form-action 'self'; frame-ancestors 'none'; img-src 'self' blob: data:; object-src 'none'; script-src 'self'; style-src 'self'"
+            "default-src 'self'; base-uri 'none'; connect-src 'self' ws: wss:; font-src 'self'; form-action 'self'; frame-ancestors 'none'; img-src 'self' blob: data:; media-src 'self' blob:; object-src 'none'; script-src 'self'; style-src 'self'; worker-src 'self'"
         ),
         ("Permissions-Policy", "camera=(), microphone=(), geolocation=()"),
         ("Referrer-Policy", "no-referrer"),
         ("X-Content-Type-Options", "nosniff"),
         ("X-Frame-Options", "DENY"),
+    ]
+
+    static let embeddedWorldMapSecurityHeaders: [(String, String)] = [
+        (
+            "Content-Security-Policy",
+            "default-src 'self'; base-uri 'none'; connect-src 'self'; font-src 'self' data:; form-action 'none'; frame-ancestors 'self'; img-src 'self' blob: data:; media-src 'none'; object-src 'none'; script-src 'self'; style-src 'self'; worker-src 'self' blob:; child-src 'self' blob:"
+        ),
+        ("Permissions-Policy", "camera=(), microphone=(), geolocation=()"),
+        ("Referrer-Policy", "no-referrer"),
+        ("X-Content-Type-Options", "nosniff"),
+        ("X-Frame-Options", "SAMEORIGIN"),
     ]
 
     private static func normalizedAuthority(_ authority: String, scheme: String?) -> String {

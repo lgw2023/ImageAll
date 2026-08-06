@@ -361,6 +361,7 @@ struct PersonalizationReviewService: PersonalizationReviewPort, Sendable {
             finishedAtMs: nil,
             catalogScopeID: catalogScopeID,
             jobID: jobID,
+            tagID: tagID,
             sampleSummaryJSON: try TrainingRunJSON.encode([
                 "mediaKind": mediaKind.rawValue,
                 "tagCount": 1,
@@ -385,6 +386,7 @@ struct PersonalizationReviewService: PersonalizationReviewPort, Sendable {
                 "minimumPositiveCount": 2,
                 "minimumNegativeCount": 2,
                 "neighborCountMaximum": 3,
+                "sourceIDs": resolvedSourceIDs.map { $0.uuidString.lowercased() },
             ]),
             metricsJSON: "{}",
             artifactKind: nil,

@@ -16,9 +16,16 @@ public enum RemoteCapability: String, Codable, Sendable, Hashable, CaseIterable 
     case tagSelection
     case reviewQueue
     case reviewDecisions
+    case librarySlimming
+    case sourceManagement
+    case generalSettings
     case jobs
     case pairing
     case events
+}
+
+public extension RemoteHTTPPaths {
+    static let generalSettings = "/v1/settings/general"
 }
 
 public struct RemoteCapabilities: Codable, Sendable, Equatable {

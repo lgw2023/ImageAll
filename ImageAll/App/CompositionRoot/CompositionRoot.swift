@@ -4,6 +4,9 @@ struct CompositionRoot {
     @MainActor
     func makeStartupModel(
         modelActivationCoordinator: AppModelActivationCoordinator? = nil,
+        modelSettings: AppModelSettingsModel? = nil,
+        idlePrewarmSettings: IdleThumbnailPrewarmSettingsModel? = nil,
+        toolbarDisplayModeSettings: ToolbarDisplayModeSettingsModel? = nil,
         dependencies: CatalogBootstrapDependencies = Self.makeProductionDependencies()
     ) -> CatalogStartupModel {
         CatalogStartupModel(
@@ -11,7 +14,10 @@ struct CompositionRoot {
             workspaceFactory: { token in
                 Self.makeWorkspaceModel(
                     runtime: token.runtime,
-                    modelActivationCoordinator: modelActivationCoordinator
+                    modelActivationCoordinator: modelActivationCoordinator,
+                    modelSettings: modelSettings,
+                    idlePrewarmSettings: idlePrewarmSettings,
+                    toolbarDisplayModeSettings: toolbarDisplayModeSettings
                 )
             }
         )
@@ -49,9 +55,17 @@ struct CompositionRoot {
     @MainActor
     private static func makeWorkspaceModel(
         runtime: CatalogRuntime,
-        modelActivationCoordinator: AppModelActivationCoordinator?
+        modelActivationCoordinator: AppModelActivationCoordinator?,
+        modelSettings: AppModelSettingsModel?,
+        idlePrewarmSettings: IdleThumbnailPrewarmSettingsModel?,
+        toolbarDisplayModeSettings: ToolbarDisplayModeSettingsModel?
     ) -> LibraryWorkspaceModel {
         let clock = SystemJobClock()
+        // A personal-head rebuild lives in this App process, unlike queued
+        // Feature KNN work. Any non-terminal personal row left by the previous
+        // process is therefore interrupted, not still running.
+        _ = try? GRDBTrainingRunRepository(database: runtime.database)
+            .failInterruptedPersonalRuns(finishedAtMs: clock.nowMs)
         let sourceRepository = GRDBFolderSourceAuthorizationRepository(database: runtime.database)
         let bookmark = FoundationSecurityScopedBookmarkAdapter()
         let rootValidator = FolderRootValidator()
@@ -358,13 +372,43 @@ struct CompositionRoot {
                 relationshipChecker: FoundationFolderRootRelationshipChecker()
             ),
             portableExporter: PortableCatalogExporter(database: runtime.database),
+            worldMapSnapshotCache: WorldMapSnapshotCache(
+                cachesDirectory: runtime.paths.cachesDirectory
+            ),
             appVersion: BundleAppVersionProvider().currentVersion(),
             clock: clock
         )
-        RemoteHostProcessHolder.attach(
+        let trainingWorkspace = GRDBTrainingWorkspaceRepository(
+            database: runtime.database
+        )
+        let trainingCommands = RemoteTrainingCommandService(
             catalog: service,
             review: personalizationReview,
-            hostAppVersion: BundleAppVersionProvider().currentVersion()
+            centroidRebuilder: appPersonalModelRebuilder,
+            adamWRebuilder: appPersonalAdamWModelRebuilder,
+            embeddingCache: selectedAssetEmbeddingCache,
+            sampleSuggester: appPersonalSampleSuggester,
+            centroidTagSuggester: appPersonalTagLibrarySuggester,
+            adamWTagSuggester: appPersonalAdamWTagLibrarySuggester,
+            sampleSuggestionLimit: {
+                pendingSuggestionCountPreferences.maxPendingSuggestionsPerTag
+            },
+            tagSuggestionMinimumScore: { tagID, method in
+                let thresholdMethod: SuggestionScoreThresholdMethod = switch method {
+                case .personalCentroid: .personalCentroid
+                case .personalAdamW: .personalAdamW
+                }
+                return try suggestionThresholds.effectiveMinScore(
+                    tagID: tagID,
+                    method: thresholdMethod
+                )
+            },
+            trainingActivityStore: RemoteTrainingActivityStore(
+                storageURL: runtime.paths.applicationSupportDirectory
+                    .appendingPathComponent("RemoteHost", isDirectory: true)
+                    .appendingPathComponent("training-activities.json")
+            ),
+            clock: clock
         )
         let fingerprintCompletion = FingerprintCompletionService(
             database: runtime.database,
@@ -427,12 +471,29 @@ struct CompositionRoot {
             scanner: librarySlimming,
             clock: clock
         )
-        return LibraryWorkspaceModel(
+        let librarySlimmingCommands = RemoteLibrarySlimmingCommandService(
+            catalog: service,
+            analysis: librarySlimmingAnalysis,
+            thresholds: slimmingThresholdStore,
+            recycle: librarySlimmingRecycle,
+            mutationAuthorization: librarySlimmingMutationAuthorization,
+            photosMutation: photosMutation,
+            clock: clock
+        )
+        let sourceManagementCommands = RemoteSourceManagementCommandService(
+            workspace: service,
+            mutationAuthorization: librarySlimmingMutationAuthorization,
+            photosMutation: photosMutation,
+            clock: clock
+        )
+        let storageMaintenanceCommands = RemoteStorageMaintenanceCommandService(
+            workspace: service,
+            clock: clock
+        )
+        let workspaceModel = LibraryWorkspaceModel(
             service: service,
             review: personalizationReview,
-            trainingWorkspace: GRDBTrainingWorkspaceRepository(
-                database: runtime.database
-            ),
+            trainingWorkspace: trainingWorkspace,
             librarySlimming: librarySlimming,
             librarySlimmingAnalysis: librarySlimmingAnalysis,
             librarySlimmingSourceIndex: sourceSimilarityIndex,
@@ -462,6 +523,41 @@ struct CompositionRoot {
             ),
             clock: clock
         )
+        let generalSettingsCommands: (any RemoteGeneralSettingsCommandPort)? = {
+            guard let modelSettings,
+                  let idlePrewarmSettings,
+                  let toolbarDisplayModeSettings
+            else { return nil }
+            return RemoteGeneralSettingsCommandService(
+                modelSettings: modelSettings,
+                idlePrewarmSettings: idlePrewarmSettings,
+                toolbarDisplayModeSettings: toolbarDisplayModeSettings,
+                workspace: workspaceModel
+            )
+        }()
+        RemoteHostProcessHolder.attach(
+            catalog: service,
+            review: personalizationReview,
+            trainingWorkspace: trainingWorkspace,
+            trainingCommands: trainingCommands,
+            librarySlimmingAnalysis: librarySlimmingAnalysis,
+            librarySlimmingCommands: librarySlimmingCommands,
+            sourceManagementCommands: sourceManagementCommands,
+            storageMaintenanceCommands: storageMaintenanceCommands,
+            generalSettingsCommands: generalSettingsCommands,
+            mediaResources: ProductionRemoteMediaResourceProvider(
+                database: runtime.database,
+                folderAuthorization: authorization,
+                photosLibrary: photosAccess
+            ),
+            originalAssetOpener: AppKitLibraryOriginalAssetOpener(
+                database: runtime.database,
+                folderAuthorization: authorization,
+                photosLibrary: photosAccess
+            ),
+            hostAppVersion: BundleAppVersionProvider().currentVersion()
+        )
+        return workspaceModel
     }
 
     static func makeAppCoreMLEmbeddingService(

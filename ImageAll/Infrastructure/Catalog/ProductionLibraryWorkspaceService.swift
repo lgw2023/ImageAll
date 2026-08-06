@@ -1,5 +1,6 @@
 import AppKit
 import CryptoKit
+import Darwin
 import Foundation
 import GRDB
 import MapKit
@@ -16,6 +17,190 @@ protocol AppOwnedAssetCachePurging: Sendable {
 }
 
 extension AppOwnedAssetPixelCachePurger: AppOwnedAssetCachePurging {}
+
+final class WorldMapSnapshotCache: @unchecked Sendable {
+    private struct Payload: Codable {
+        let schemaVersion: Int
+        let query: WorldMapCatalogQuery
+        let snapshot: WorldMapCatalogSnapshot
+    }
+
+    private static let schemaVersion = 1
+    private static let maximumMemoryEntryCount = 12
+    private static let maximumPersistentByteCount = 4 * 1_024 * 1_024
+
+    private let lock = NSLock()
+    private let fileURL: URL
+    private var snapshots: [WorldMapCatalogQuery: WorldMapCatalogSnapshot]
+    private var recency: [WorldMapCatalogQuery]
+
+    init(cachesDirectory: URL) {
+        fileURL = cachesDirectory
+            .appendingPathComponent("WorldMap", isDirectory: true)
+            .appendingPathComponent("v1", isDirectory: true)
+            .appendingPathComponent("global-snapshot.json", isDirectory: false)
+        if let snapshot = Self.loadGlobalSnapshot(from: fileURL) {
+            snapshots = [.global: snapshot]
+            recency = [.global]
+        } else {
+            snapshots = [:]
+            recency = []
+        }
+    }
+
+    func snapshot(for query: WorldMapCatalogQuery) -> WorldMapCatalogSnapshot? {
+        lock.withLock {
+            guard let snapshot = snapshots[query] else { return nil }
+            touch(query)
+            return snapshot
+        }
+    }
+
+    func store(_ snapshot: WorldMapCatalogSnapshot, for query: WorldMapCatalogQuery) {
+        guard Self.isValid(snapshot) else { return }
+        lock.withLock {
+            snapshots[query] = snapshot
+            touch(query)
+            trimMemoryEntriesIfNeeded()
+        }
+        guard query == .global else { return }
+        Self.persist(snapshot, to: fileURL)
+    }
+
+    private func touch(_ query: WorldMapCatalogQuery) {
+        recency.removeAll { $0 == query }
+        recency.append(query)
+    }
+
+    private func trimMemoryEntriesIfNeeded() {
+        while recency.count > Self.maximumMemoryEntryCount {
+            let removalIndex = recency.firstIndex { $0 != .global } ?? 0
+            let evicted = recency.remove(at: removalIndex)
+            snapshots.removeValue(forKey: evicted)
+        }
+    }
+
+    private static func loadGlobalSnapshot(from fileURL: URL) -> WorldMapCatalogSnapshot? {
+        let directories = trustedDirectoryURLs(for: fileURL)
+        guard directories.allSatisfy({ !DerivedImageSecureIO.isSymlink(at: $0) }) else {
+            return nil
+        }
+        do {
+            let fd = try DerivedImageSecureIO.openReadOnlyNoFollow(at: fileURL)
+            defer { Darwin.close(fd) }
+            let facts = try DerivedImageSecureIO.fstatRegularFile(fd: fd)
+            guard facts.sizeBytes > 0,
+                  facts.sizeBytes <= Int64(maximumPersistentByteCount)
+            else {
+                return nil
+            }
+            let data = try DerivedImageSecureIO.readAllBytes(from: fd)
+            guard Int64(data.count) == facts.sizeBytes,
+                  let payload = try? JSONDecoder().decode(Payload.self, from: data),
+                  payload.schemaVersion == schemaVersion,
+                  payload.query == .global,
+                  isValid(payload.snapshot)
+            else {
+                return nil
+            }
+            return payload.snapshot
+        } catch {
+            return nil
+        }
+    }
+
+    private static func persist(_ snapshot: WorldMapCatalogSnapshot, to fileURL: URL) {
+        let payload = Payload(
+            schemaVersion: schemaVersion,
+            query: .global,
+            snapshot: snapshot
+        )
+        guard let data = try? JSONEncoder().encode(payload),
+              data.count <= maximumPersistentByteCount
+        else {
+            return
+        }
+        do {
+            for directoryURL in trustedDirectoryURLs(for: fileURL) {
+                try DerivedImageSecureIO.ensureDirectory(at: directoryURL)
+                guard !DerivedImageSecureIO.isSymlink(at: directoryURL) else {
+                    throw DerivedImageSecureIOError.unsafePath
+                }
+            }
+            if FileManager.default.fileExists(atPath: fileURL.path),
+               !DerivedImageSecureIO.isRegularFile(at: fileURL)
+            {
+                throw DerivedImageSecureIOError.unsafePath
+            }
+            try data.write(to: fileURL, options: .atomic)
+            guard DerivedImageSecureIO.isRegularFile(at: fileURL) else {
+                throw DerivedImageSecureIOError.unsafePath
+            }
+        } catch {
+            // The catalog remains authoritative. Cache write failures only remove
+            // the instant-start optimization and must not break the live map.
+        }
+    }
+
+    private static func trustedDirectoryURLs(for fileURL: URL) -> [URL] {
+        let versionDirectory = fileURL.deletingLastPathComponent()
+        let worldMapDirectory = versionDirectory.deletingLastPathComponent()
+        let cachesDirectory = worldMapDirectory.deletingLastPathComponent()
+        return [cachesDirectory, worldMapDirectory, versionDirectory]
+    }
+
+    private static func isValid(_ snapshot: WorldMapCatalogSnapshot) -> Bool {
+        guard snapshot.clusters.count <= WorldMapCatalogQuery.maximumClusterLimit,
+              snapshot.eligiblePhotoCount >= 0,
+              snapshot.locatedPhotoCount >= 0,
+              snapshot.unlocatedPhotoCount >= 0,
+              snapshot.locatedPhotoCount <= snapshot.eligiblePhotoCount,
+              snapshot.unlocatedPhotoCount
+                == snapshot.eligiblePhotoCount - snapshot.locatedPhotoCount
+        else {
+            return false
+        }
+        return snapshot.clusters.allSatisfy { cluster in
+            !cluster.id.isEmpty
+                && cluster.id.utf8.count <= 160
+                && !cluster.displayName.isEmpty
+                && cluster.displayName.utf8.count <= 512
+                && cluster.latitude.isFinite
+                && cluster.longitude.isFinite
+                && (-90 ... 90).contains(cluster.latitude)
+                && (-180 ... 180).contains(cluster.longitude)
+                && cluster.photoCount > 0
+                && cluster.gpsCount >= 0
+                && cluster.tagCount >= 0
+                && cluster.gpsCount + cluster.tagCount == cluster.photoCount
+                && isValid(cluster.selectionQuery)
+        }
+    }
+
+    private static func isValid(_ query: WorldMapCatalogSelectionQuery) -> Bool {
+        guard query.cellDegrees.isFinite,
+              (0.002 ... 360).contains(query.cellDegrees),
+              query.longitudeBucket >= 0,
+              Double(query.longitudeBucket) * query.cellDegrees <= 360.000_001,
+              query.latitudeBucket >= 0,
+              Double(query.latitudeBucket) * query.cellDegrees <= 180.000_001,
+              (1 ... WorldMapCatalogSelectionQuery.maximumAssetLimit)
+                .contains(query.maximumAssets)
+        else {
+            return false
+        }
+        guard let bounds = query.bounds else { return true }
+        return bounds.west.isFinite
+            && bounds.south.isFinite
+            && bounds.east.isFinite
+            && bounds.north.isFinite
+            && (-180 ... 180).contains(bounds.west)
+            && (-180 ... 180).contains(bounds.east)
+            && (-90 ... 90).contains(bounds.south)
+            && (-90 ... 90).contains(bounds.north)
+            && bounds.south <= bounds.north
+    }
+}
 
 struct GRDBWorldMapCatalogRepository: Sendable {
     let database: CatalogDatabase
@@ -247,11 +432,13 @@ struct GRDBWorldMapCatalogRepository: Sendable {
     asset.locator_state = 'current'
     AND asset.availability = 'available'
     AND asset.media_kind = 'image'
-    AND NOT EXISTS (
-        SELECT 1
+    AND asset.id NOT IN (
+        SELECT recycle.asset_id
         FROM recycle_entry AS recycle
-        WHERE recycle.asset_id = asset.id
-          AND recycle.state IN ('pending', 'recycled', 'restoring', 'purging', 'purged')
+        WHERE recycle.asset_id IS NOT NULL
+          AND recycle.state IN (
+              'pending', 'recycled', 'restoring', 'purging', 'purged'
+          )
     )
     """
 }
@@ -440,7 +627,7 @@ struct WorldMapLocationBackfillControl {
 }
 
 struct WorldMapPlaceResolutionService: Sendable {
-    static let resolverVersion = 1
+    static let resolverVersion = 4
     static let maximumCandidateCount = 8
 
     let database: CatalogDatabase
@@ -455,7 +642,30 @@ struct WorldMapPlaceResolutionService: Sendable {
         {
             return cached
         }
-        let tagName = try await database.pool.read { db -> String in
+        let tagName = try await eligibleTagName(tagID: tagID)
+        return try await resolveTag(tagID: tagID, normalizedQuery: tagName)
+    }
+
+    func resolveTag(
+        tagID: UUID,
+        query: String
+    ) async throws -> WorldMapPlaceTagResolution {
+        _ = try await eligibleTagName(tagID: tagID)
+        let normalizedQuery = query
+            .split(whereSeparator: { $0.isWhitespace })
+            .joined(separator: " ")
+        guard !normalizedQuery.isEmpty,
+              normalizedQuery.count <= WorldMapPlaceSearchPolicy.maximumQueryLength
+        else {
+            throw WorldMapPlaceResolutionError.invalidQuery
+        }
+        // A user-authored query is always a fresh search. This is the escape hatch
+        // from an irrelevant cached result produced by the shorter tag name.
+        return try await resolveTag(tagID: tagID, normalizedQuery: normalizedQuery)
+    }
+
+    private func eligibleTagName(tagID: UUID) async throws -> String {
+        try await database.pool.read { db -> String in
             guard let name = try String.fetchOne(
                 db,
                 sql: """
@@ -474,10 +684,15 @@ struct WorldMapPlaceResolutionService: Sendable {
             }
             return name
         }
+    }
 
+    private func resolveTag(
+        tagID: UUID,
+        normalizedQuery: String
+    ) async throws -> WorldMapPlaceTagResolution {
         let candidates: [WorldMapPlaceCandidate]
         do {
-            candidates = try await resolver.resolve(query: tagName)
+            candidates = try await resolver.resolve(query: normalizedQuery)
         } catch {
             throw WorldMapPlaceResolutionError.resolverFailed
         }
@@ -531,13 +746,14 @@ struct WorldMapPlaceResolutionService: Sendable {
                     arguments: [tagID.uuidString.lowercased(), candidate.placeID, rank]
                 )
             }
-            if confirmed != nil {
-                try Self.refreshCanonicalLocations(
-                    db,
-                    assetIDs: Self.acceptedAssetIDs(db, tagID: tagID),
-                    nowMs: clock.nowMs
-                )
-            }
+            // Re-search can replace a previously resolved place with a new place,
+            // an ambiguous set, or no result. Recalculate in every case so stale
+            // placeTag coordinates never survive an explicit user correction.
+            try Self.refreshCanonicalLocations(
+                db,
+                assetIDs: Self.acceptedAssetIDs(db, tagID: tagID),
+                nowMs: clock.nowMs
+            )
         }
         guard let resolved = try fetchResolution(tagID: tagID) else {
             throw WorldMapPlaceResolutionError.persistenceFailure
@@ -875,16 +1091,581 @@ struct WorldMapPlaceResolutionService: Sendable {
     }
 }
 
+struct WorldMapPlaceSearchRegion: Sendable, Equatable {
+    let centerLatitude: Double
+    let centerLongitude: Double
+    let latitudeDelta: Double
+    let longitudeDelta: Double
+
+    static let global = WorldMapPlaceSearchRegion(
+        centerLatitude: 0,
+        centerLongitude: 0,
+        latitudeDelta: 180,
+        longitudeDelta: 360
+    )
+
+    private init(
+        centerLatitude: Double,
+        centerLongitude: Double,
+        latitudeDelta: Double,
+        longitudeDelta: Double
+    ) {
+        self.centerLatitude = centerLatitude
+        self.centerLongitude = centerLongitude
+        self.latitudeDelta = latitudeDelta
+        self.longitudeDelta = longitudeDelta
+    }
+
+    init(anchor: WorldMapPlaceCandidate) {
+        centerLatitude = anchor.latitude
+        centerLongitude = anchor.longitude
+        (latitudeDelta, longitudeDelta) = switch anchor.kind {
+        case .poi: (2, 2)
+        case .city: (8, 8)
+        case .region: (30, 60)
+        case .country: (80, 160)
+        }
+    }
+
+    var mapKitRegion: MKCoordinateRegion {
+        MKCoordinateRegion(
+            center: CLLocationCoordinate2D(
+                latitude: centerLatitude,
+                longitude: centerLongitude
+            ),
+            span: MKCoordinateSpan(
+                latitudeDelta: latitudeDelta,
+                longitudeDelta: longitudeDelta
+            )
+        )
+    }
+}
+
+protocol WorldMapApplePlaceSearching: Sendable {
+    func geocode(query: String) async throws -> [WorldMapPlaceCandidate]
+    func search(
+        query: String,
+        region: WorldMapPlaceSearchRegion?
+    ) async throws -> [WorldMapPlaceCandidate]
+}
+
+private struct WorldMapCountryQueryHint: Sendable {
+    private struct CatalogEntry: Sendable {
+        let regionCode: String
+        let canonicalEnglishName: String
+        let aliases: [String]
+    }
+
+    let regionCode: String
+    let canonicalEnglishName: String
+    let aliases: [String]
+    let isCountryOnlyQuery: Bool
+
+    static func detect(in query: String) -> Self? {
+        let normalizedQuery = normalized(query)
+        guard !normalizedQuery.isEmpty else { return nil }
+
+        let matches = catalog.compactMap { entry -> (CatalogEntry, [String], Int)? in
+            var matchedAliases = entry.aliases.filter {
+                containsAlias($0, in: normalizedQuery)
+            }
+            let normalizedRegionCode = entry.regionCode.lowercased()
+            if normalizedQuery == normalizedRegionCode {
+                matchedAliases.append(normalizedRegionCode)
+            }
+            guard !matchedAliases.isEmpty else { return nil }
+            let lastPosition = matchedAliases.compactMap {
+                normalizedQuery.range(of: $0, options: .backwards)?.lowerBound
+            }.map { normalizedQuery.distance(from: normalizedQuery.startIndex, to: $0) }
+                .max() ?? 0
+            return (entry, matchedAliases, lastPosition)
+        }
+        guard let best = matches.max(by: { lhs, rhs in
+            if lhs.1.count != rhs.1.count { return lhs.1.count < rhs.1.count }
+            if lhs.2 != rhs.2 { return lhs.2 < rhs.2 }
+            let lhsLength = lhs.1.map(\.count).max() ?? 0
+            let rhsLength = rhs.1.map(\.count).max() ?? 0
+            return lhsLength < rhsLength
+        }) else {
+            return nil
+        }
+
+        var residual = normalizedQuery
+        for alias in best.1.sorted(by: { $0.count > $1.count })
+        where containsAlias(alias, in: residual) {
+            residual = residual.replacingOccurrences(of: alias, with: " ")
+        }
+        let isCountryOnly = residual.unicodeScalars.allSatisfy {
+            !CharacterSet.alphanumerics.contains($0)
+        }
+        return Self(
+            regionCode: best.0.regionCode,
+            canonicalEnglishName: best.0.canonicalEnglishName,
+            aliases: best.0.aliases + [best.0.regionCode.lowercased()],
+            isCountryOnlyQuery: isCountryOnly
+        )
+    }
+
+    func matches(_ candidate: WorldMapPlaceCandidate) -> Bool {
+        if candidate.countryCode?.caseInsensitiveCompare(regionCode) == .orderedSame {
+            return true
+        }
+        guard candidate.kind == .country else { return false }
+        let candidateName = Self.normalized(candidate.displayName)
+        return aliases.contains(candidateName)
+    }
+
+    private static let catalog: [CatalogEntry] = {
+        let locales = [
+            Locale.current,
+            Locale(identifier: "zh_Hans"),
+            Locale(identifier: "en_US"),
+        ]
+        let supplementalAliases: [String: [String]] = [
+            "AE": ["UAE"],
+            "GB": ["UK", "U.K.", "Britain", "Great Britain"],
+            "US": ["USA", "U.S.A.", "United States of America"],
+        ]
+        return Locale.Region.isoRegions.compactMap { region in
+            let code = region.identifier.uppercased()
+            guard code.count == 2,
+                  let englishName = Locale(identifier: "en_US")
+                    .localizedString(forRegionCode: code)
+            else {
+                return nil
+            }
+            let localizedNames = locales.compactMap {
+                $0.localizedString(forRegionCode: code)
+            }
+            let rawAliases = localizedNames + supplementalAliases[code, default: []]
+            var seen = Set<String>()
+            let aliases = rawAliases.compactMap { value -> String? in
+                let alias = normalized(value)
+                guard !alias.isEmpty, seen.insert(alias).inserted else { return nil }
+                return alias
+            }
+            return CatalogEntry(
+                regionCode: code,
+                canonicalEnglishName: englishName,
+                aliases: aliases
+            )
+        }
+    }()
+
+    private static func normalized(_ value: String) -> String {
+        value.folding(
+            options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive],
+            locale: Locale(identifier: "en_US_POSIX")
+        ).lowercased()
+    }
+
+    private static func containsAlias(_ alias: String, in query: String) -> Bool {
+        var searchRange = query.startIndex ..< query.endIndex
+        while let range = query.range(of: alias, range: searchRange) {
+            let beforeIsAlphanumeric = range.lowerBound > query.startIndex
+                && isAlphanumeric(query[query.index(before: range.lowerBound)])
+            let afterIsAlphanumeric = range.upperBound < query.endIndex
+                && isAlphanumeric(query[range.upperBound])
+            let aliasIsASCII = alias.unicodeScalars.allSatisfy(\.isASCII)
+            if !aliasIsASCII || (!beforeIsAlphanumeric && !afterIsAlphanumeric) {
+                return true
+            }
+            searchRange = range.upperBound ..< query.endIndex
+        }
+        return false
+    }
+
+    private static func isAlphanumeric(_ character: Character) -> Bool {
+        character.isLetter || character.isNumber
+    }
+}
+
 struct MapKitWorldMapPlaceResolver: WorldMapPlaceResolving {
+    private enum SearchError: Error {
+        case unavailable
+    }
+
+    let searcher: any WorldMapApplePlaceSearching
+
+    init(searcher: any WorldMapApplePlaceSearching = AppleWorldMapPlaceSearcher()) {
+        self.searcher = searcher
+    }
+
     func resolve(query: String) async throws -> [WorldMapPlaceCandidate] {
+        let countryHint = WorldMapCountryQueryHint.detect(in: query)
+        let geocoded: [WorldMapPlaceCandidate]
+        var geocodingSucceeded: Bool
+        do {
+            geocoded = try await searcher.geocode(query: query)
+            geocodingSucceeded = true
+        } catch {
+            geocoded = []
+            geocodingSucceeded = false
+        }
+
+        let countryGeocoded: [WorldMapPlaceCandidate]
+        if let countryHint,
+           countryHint.canonicalEnglishName.compare(
+               query,
+               options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive]
+           ) != .orderedSame
+        {
+            do {
+                countryGeocoded = try await searcher.geocode(
+                    query: countryHint.canonicalEnglishName
+                )
+                geocodingSucceeded = true
+            } catch {
+                countryGeocoded = []
+            }
+        } else {
+            countryGeocoded = geocoded
+        }
+
+        let matchingGeocoded = countryHint.map { hint in
+            geocoded.filter(hint.matches)
+        } ?? geocoded
+        let matchingCountries = countryHint.map { hint in
+            countryGeocoded.filter(hint.matches)
+        } ?? countryGeocoded
+        let anchor: WorldMapPlaceCandidate? = if countryHint?.isCountryOnlyQuery == true {
+            matchingCountries.first(where: { $0.kind == .country })
+                ?? matchingCountries.first
+                ?? matchingGeocoded.first
+        } else {
+            matchingGeocoded.first
+                ?? matchingCountries.first(where: { $0.kind == .country })
+                ?? matchingCountries.first
+        }
+        // A 180 x 360 "required" MKCoordinateRegion is not a useful global
+        // fallback: Apple can reject it with GEOError -8. Omitting the region
+        // gives MKLocalSearch its actual worldwide/default behavior.
+        let region = anchor.map(WorldMapPlaceSearchRegion.init(anchor:))
+        let searched: [WorldMapPlaceCandidate]
+        let searchFailed: Bool
+        do {
+            searched = try await searcher.search(query: query, region: region)
+            searchFailed = false
+        } catch {
+            searched = []
+            searchFailed = true
+        }
+
+        guard geocodingSucceeded || !searchFailed else {
+            throw SearchError.unavailable
+        }
+
+        var combined = searched + geocoded + countryGeocoded
+        if let countryHint {
+            let countryScoped = combined.filter(countryHint.matches)
+            // Never surface a foreign restaurant merely because every genuine
+            // result for the requested country was unavailable. An empty result
+            // lets the explicit user-search path invoke its international fallback.
+            combined = countryScoped
+            if countryHint.isCountryOnlyQuery {
+                let countryCandidates = combined.filter { $0.kind == .country }
+                if !countryCandidates.isEmpty {
+                    combined = countryCandidates
+                }
+            }
+        }
+        var seen = Set<String>()
+        return combined.compactMap { candidate in
+            guard seen.insert(candidate.placeID).inserted else { return nil }
+            return candidate
+        }.prefix(WorldMapPlaceResolutionService.maximumCandidateCount).map(\.self)
+    }
+}
+
+struct CascadingWorldMapPlaceResolver: WorldMapPlaceResolving {
+    let primary: any WorldMapPlaceResolving
+    let fallback: any WorldMapPlaceResolving
+
+    func resolve(query: String) async throws -> [WorldMapPlaceCandidate] {
+        do {
+            let candidates = try await primary.resolve(query: query)
+            if !candidates.isEmpty {
+                return candidates
+            }
+        } catch {
+            // User-triggered searches still get one bounded international
+            // fallback when Apple's regional catalog is unavailable.
+        }
+        return try await fallback.resolve(query: query)
+    }
+}
+
+protocol NominatimWorldMapDataLoading: Sendable {
+    func data(for request: URLRequest, cacheKey: String) async throws -> Data
+}
+
+actor NominatimWorldMapHTTPClient: NominatimWorldMapDataLoading {
+    static let shared = NominatimWorldMapHTTPClient()
+
+    private enum ClientError: Error {
+        case invalidResponse
+    }
+
+    private static let minimumRequestInterval = Duration.seconds(1)
+    private static let maximumMemoryEntryCount = 128
+
+    private let clock = ContinuousClock()
+    private var lastRequestAt: ContinuousClock.Instant?
+    private var requestIsInFlight = false
+    private var cachedData: [String: Data] = [:]
+    private var cacheRecency: [String] = []
+
+    func data(for request: URLRequest, cacheKey: String) async throws -> Data {
+        if let cached = cachedData[cacheKey] {
+            touch(cacheKey)
+            return cached
+        }
+
+        while requestIsInFlight {
+            try await clock.sleep(for: .milliseconds(50))
+        }
+        if let cached = cachedData[cacheKey] {
+            touch(cacheKey)
+            return cached
+        }
+        requestIsInFlight = true
+        defer { requestIsInFlight = false }
+
+        if let lastRequestAt {
+            let nextAllowedRequest = lastRequestAt.advanced(by: Self.minimumRequestInterval)
+            if clock.now < nextAllowedRequest {
+                try await clock.sleep(until: nextAllowedRequest)
+            }
+        }
+        lastRequestAt = clock.now
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse,
+              (200 ..< 300).contains(httpResponse.statusCode)
+        else {
+            throw ClientError.invalidResponse
+        }
+        cachedData[cacheKey] = data
+        touch(cacheKey)
+        while cacheRecency.count > Self.maximumMemoryEntryCount {
+            let evicted = cacheRecency.removeFirst()
+            cachedData.removeValue(forKey: evicted)
+        }
+        return data
+    }
+
+    private func touch(_ cacheKey: String) {
+        cacheRecency.removeAll(where: { $0 == cacheKey })
+        cacheRecency.append(cacheKey)
+    }
+}
+
+struct NominatimWorldMapPlaceResolver: WorldMapPlaceResolving {
+    private struct Response: Decodable {
+        struct Address: Decodable {
+            let city: String?
+            let town: String?
+            let village: String?
+            let municipality: String?
+            let county: String?
+            let state: String?
+            let country: String?
+            let countryCode: String?
+
+            enum CodingKeys: String, CodingKey {
+                case city, town, village, municipality, county, state, country
+                case countryCode = "country_code"
+            }
+        }
+
+        let placeID: Int64?
+        let osmType: String?
+        let osmID: Int64?
+        let latitude: String
+        let longitude: String
+        let name: String?
+        let displayName: String
+        let type: String?
+        let addressType: String?
+        let address: Address?
+
+        enum CodingKeys: String, CodingKey {
+            case placeID = "place_id"
+            case osmType = "osm_type"
+            case osmID = "osm_id"
+            case latitude = "lat"
+            case longitude = "lon"
+            case name, type, address
+            case displayName = "display_name"
+            case addressType = "addresstype"
+        }
+    }
+
+    private enum ResolverError: Error {
+        case invalidRequest
+    }
+
+    let client: any NominatimWorldMapDataLoading
+
+    init(client: any NominatimWorldMapDataLoading = NominatimWorldMapHTTPClient.shared) {
+        self.client = client
+    }
+
+    func resolve(query: String) async throws -> [WorldMapPlaceCandidate] {
+        let countryHint = WorldMapCountryQueryHint.detect(in: query)
+        let remoteQuery = if countryHint?.isCountryOnlyQuery == true {
+            countryHint?.canonicalEnglishName ?? query
+        } else {
+            query
+        }
+        let languages = Locale.preferredLanguages.prefix(3).joined(separator: ",")
+        var components = URLComponents(string: "https://nominatim.openstreetmap.org/search")
+        components?.queryItems = [
+            URLQueryItem(name: "q", value: remoteQuery),
+            URLQueryItem(name: "format", value: "jsonv2"),
+            URLQueryItem(name: "addressdetails", value: "1"),
+            URLQueryItem(name: "namedetails", value: "1"),
+            URLQueryItem(name: "limit", value: String(WorldMapPlaceResolutionService.maximumCandidateCount)),
+            URLQueryItem(name: "accept-language", value: languages),
+        ]
+        guard let url = components?.url else {
+            throw ResolverError.invalidRequest
+        }
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 15
+        request.cachePolicy = .returnCacheDataElseLoad
+        request.setValue(
+            "ImageAll/1.0 (https://github.com/lgw2023/ImageAll)",
+            forHTTPHeaderField: "User-Agent"
+        )
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        let cacheKey = "\(remoteQuery)|\(languages)"
+        let data = try await client.data(for: request, cacheKey: cacheKey)
+        let responses = try JSONDecoder().decode([Response].self, from: data)
+        var candidates = responses.compactMap(Self.candidate)
+        if let countryHint {
+            candidates = candidates.filter(countryHint.matches)
+            if countryHint.isCountryOnlyQuery {
+                let countries = candidates.filter { $0.kind == .country }
+                if !countries.isEmpty {
+                    candidates = countries
+                }
+            }
+        }
+        var seen = Set<String>()
+        return candidates.compactMap { candidate in
+            guard seen.insert(candidate.placeID).inserted else { return nil }
+            return candidate
+        }.prefix(WorldMapPlaceResolutionService.maximumCandidateCount).map(\.self)
+    }
+
+    private static func candidate(_ response: Response) -> WorldMapPlaceCandidate? {
+        guard let latitude = Double(response.latitude),
+              let longitude = Double(response.longitude),
+              (-90 ... 90).contains(latitude),
+              (-180 ... 180).contains(longitude)
+        else {
+            return nil
+        }
+        let kind: WorldMapPlaceKind = switch response.addressType ?? response.type {
+        case "country": .country
+        case "city", "town", "village", "municipality": .city
+        case "state", "region", "province", "county": .region
+        default: .poi
+        }
+        let countryCode = response.address?.countryCode?.uppercased()
+        let localizedCountryName = countryCode.flatMap {
+            Locale.current.localizedString(forRegionCode: $0)
+        }
+        let fallbackName = response.displayName
+            .split(separator: ",", maxSplits: 1)
+            .first
+            .map(String.init)
+        let displayName = if kind == .country {
+            localizedCountryName ?? response.name ?? fallbackName
+        } else {
+            response.name ?? fallbackName
+        }
+        guard let displayName,
+              !displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else {
+            return nil
+        }
+        let subtitleValues = [
+            response.address?.city,
+            response.address?.town,
+            response.address?.municipality,
+            response.address?.state,
+            localizedCountryName ?? response.address?.country,
+        ].compactMap { value -> String? in
+            guard let value,
+                  value.compare(displayName, options: [.caseInsensitive, .diacriticInsensitive])
+                    != .orderedSame
+            else {
+                return nil
+            }
+            return value
+        }
+        let subtitle = Array(NSOrderedSet(array: subtitleValues))
+            .compactMap { $0 as? String }
+            .joined(separator: "，")
+        let placeID: String
+        if let osmType = response.osmType, let osmID = response.osmID {
+            placeID = "nominatim-v1-\(osmType)-\(osmID)"
+        } else if let rawPlaceID = response.placeID {
+            placeID = "nominatim-v1-place-\(rawPlaceID)"
+        } else {
+            placeID = "nominatim-v1-\(latitude)-\(longitude)"
+        }
+        return WorldMapPlaceCandidate(
+            placeID: placeID,
+            displayName: displayName,
+            subtitle: subtitle.isEmpty ? nil : subtitle,
+            latitude: latitude,
+            longitude: longitude,
+            kind: kind,
+            countryCode: countryCode
+        )
+    }
+}
+
+struct AppleWorldMapPlaceSearcher: WorldMapApplePlaceSearching {
+    func geocode(query: String) async throws -> [WorldMapPlaceCandidate] {
+        if #available(macOS 26.0, *) {
+            guard let request = MKGeocodingRequest(addressString: query) else {
+                return []
+            }
+            request.preferredLocale = .current
+            return try await Self.candidates(from: request.mapItems)
+        }
+
+        let placemarks = try await CLGeocoder().geocodeAddressString(
+            query,
+            in: nil,
+            preferredLocale: .current
+        )
+        return placemarks.compactMap(Self.candidate(from:))
+    }
+
+    func search(
+        query: String,
+        region: WorldMapPlaceSearchRegion?
+    ) async throws -> [WorldMapPlaceCandidate] {
         let request = MKLocalSearch.Request()
         request.naturalLanguageQuery = query
-        request.resultTypes = [.address, .pointOfInterest]
+        request.resultTypes = [.address, .pointOfInterest, .physicalFeature]
+        if let region {
+            request.region = region.mapKitRegion
+            request.regionPriority = .required
+        }
         let response = try await MKLocalSearch(request: request).start()
+        return Self.candidates(from: response.mapItems)
+    }
 
+    private static func candidates(from mapItems: [MKMapItem]) -> [WorldMapPlaceCandidate] {
         var seen = Set<String>()
         var candidates: [WorldMapPlaceCandidate] = []
-        for item in response.mapItems {
+        for item in mapItems {
             let coordinate = item.placemark.coordinate
             guard CLLocationCoordinate2DIsValid(coordinate) else { continue }
             let placemark = item.placemark
@@ -898,7 +1679,12 @@ struct MapKitWorldMapPlaceResolver: WorldMapPlaceResolving {
                 continue
             }
             let kind: WorldMapPlaceKind
-            if item.pointOfInterestCategory != nil {
+            if item.pointOfInterestCategory != nil || Self.isNamedFeature(
+                displayName,
+                locality: placemark.locality,
+                administrativeArea: placemark.administrativeArea,
+                country: placemark.country
+            ) {
                 kind = .poi
             } else if placemark.locality != nil {
                 kind = .city
@@ -935,7 +1721,8 @@ struct MapKitWorldMapPlaceResolver: WorldMapPlaceResolving {
                     subtitle: subtitle,
                     latitude: coordinate.latitude,
                     longitude: coordinate.longitude,
-                    kind: kind
+                    kind: kind,
+                    countryCode: placemark.isoCountryCode
                 )
             )
             if candidates.count == WorldMapPlaceResolutionService.maximumCandidateCount {
@@ -943,6 +1730,93 @@ struct MapKitWorldMapPlaceResolver: WorldMapPlaceResolving {
             }
         }
         return candidates
+    }
+
+    private static func candidate(from placemark: CLPlacemark) -> WorldMapPlaceCandidate? {
+        guard let coordinate = placemark.location?.coordinate,
+              CLLocationCoordinate2DIsValid(coordinate)
+        else {
+            return nil
+        }
+        let displayName = placemark.areasOfInterest?.first
+            ?? placemark.name
+            ?? placemark.locality
+            ?? placemark.administrativeArea
+            ?? placemark.country
+        guard let displayName,
+              !displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else {
+            return nil
+        }
+        let kind: WorldMapPlaceKind
+        if placemark.areasOfInterest?.isEmpty == false || Self.isNamedFeature(
+            displayName,
+            locality: placemark.locality,
+            administrativeArea: placemark.administrativeArea,
+            country: placemark.country
+        ) {
+            kind = .poi
+        } else if placemark.locality != nil {
+            kind = .city
+        } else if placemark.administrativeArea != nil {
+            kind = .region
+        } else {
+            kind = .country
+        }
+        let subtitle = Self.subtitle(
+            displayName: displayName,
+            locality: placemark.locality,
+            administrativeArea: placemark.administrativeArea,
+            country: placemark.country
+        )
+        return WorldMapPlaceCandidate(
+            placeID: stablePlaceID(
+                displayName: displayName,
+                subtitle: subtitle,
+                latitude: coordinate.latitude,
+                longitude: coordinate.longitude,
+                kind: kind
+            ),
+            displayName: displayName,
+            subtitle: subtitle,
+            latitude: coordinate.latitude,
+            longitude: coordinate.longitude,
+            kind: kind,
+            countryCode: placemark.isoCountryCode
+        )
+    }
+
+    private static func isNamedFeature(
+        _ displayName: String,
+        locality: String?,
+        administrativeArea: String?,
+        country: String?
+    ) -> Bool {
+        ![locality, administrativeArea, country]
+            .compactMap { $0 }
+            .contains {
+                $0.compare(
+                    displayName,
+                    options: [.caseInsensitive, .diacriticInsensitive]
+                ) == .orderedSame
+            }
+    }
+
+    private static func subtitle(
+        displayName: String,
+        locality: String?,
+        administrativeArea: String?,
+        country: String?
+    ) -> String? {
+        let parts = [locality, administrativeArea, country].compactMap { value -> String? in
+            guard let value, value != displayName else { return nil }
+            return value
+        }
+        return parts.isEmpty
+            ? nil
+            : Array(NSOrderedSet(array: parts))
+                .compactMap { $0 as? String }
+                .joined(separator: "，")
     }
 
     private static func stablePlaceID(
@@ -1218,7 +2092,12 @@ struct LibrarySourceDeletionService: Sendable {
     }
 }
 
-struct ProductionLibraryWorkspaceService: LibraryWorkspacePort, RemoteCatalogServing, Sendable {
+struct ProductionLibraryWorkspaceService:
+    LibraryWorkspacePort,
+    RemoteCatalogServing,
+    RemoteSourceManagementWorkspacePort,
+    Sendable
+{
     let sourceRepository: GRDBFolderSourceAuthorizationRepository
     let folderSourceMonitor: FolderSourceMonitoringCoordinator
     let photosSourceMonitor: PhotosLibraryChangeObserverCoordinator
@@ -1238,6 +2117,7 @@ struct ProductionLibraryWorkspaceService: LibraryWorkspacePort, RemoteCatalogSer
     let portableExportDestinationPicker: any PortableExportDestinationPicking
     let portableExportSourceIsolation: PortableExportSourceIsolationValidator
     let portableExporter: PortableCatalogExporter
+    let worldMapSnapshotCache: WorldMapSnapshotCache
     let appVersion: String
     let clock: any JobClock
 
@@ -1342,11 +2222,19 @@ struct ProductionLibraryWorkspaceService: LibraryWorkspacePort, RemoteCatalogSer
         try query.fetchGalleryOverview()
     }
 
+    func cachedWorldMapSnapshot(
+        query request: WorldMapCatalogQuery
+    ) -> WorldMapCatalogSnapshot? {
+        worldMapSnapshotCache.snapshot(for: request)
+    }
+
     func fetchWorldMapSnapshot(
         query request: WorldMapCatalogQuery
     ) throws -> WorldMapCatalogSnapshot {
-        try GRDBWorldMapCatalogRepository(database: query.database)
+        let snapshot = try GRDBWorldMapCatalogRepository(database: query.database)
             .fetchSnapshot(query: request)
+        worldMapSnapshotCache.store(snapshot, for: request)
+        return snapshot
     }
 
     func fetchWorldMapSelection(
@@ -1369,6 +2257,17 @@ struct ProductionLibraryWorkspaceService: LibraryWorkspacePort, RemoteCatalogSer
 
     func cancelWorldMapLocationBackfill(sourceID: UUID) throws {
         try worldMapLocationBackfillControl.cancel(sourceID: sourceID)
+    }
+
+    func runPendingWorldMapLocationBackfill(
+        sourceID: UUID,
+        sourceKind: SourceKind
+    ) throws {
+        if sourceKind == .photos {
+            try runPendingPhotosReconcileJobs(sourceIDs: [sourceID])
+        } else {
+            try runPendingReconcileJobs(sourceIDs: [sourceID])
+        }
     }
 
     private var worldMapLocationBackfillControl: WorldMapLocationBackfillControl {
@@ -1397,6 +2296,13 @@ struct ProductionLibraryWorkspaceService: LibraryWorkspacePort, RemoteCatalogSer
         try await worldMapPlaceResolutionService.resolveTag(tagID: tagID)
     }
 
+    func searchWorldMapPlaceTag(
+        tagID: UUID,
+        query: String
+    ) async throws -> WorldMapPlaceTagResolution {
+        try await worldMapManualPlaceResolutionService.resolveTag(tagID: tagID, query: query)
+    }
+
     func confirmWorldMapPlaceCandidate(
         tagID: UUID,
         placeID: String
@@ -1412,6 +2318,17 @@ struct ProductionLibraryWorkspaceService: LibraryWorkspacePort, RemoteCatalogSer
         WorldMapPlaceResolutionService(
             database: query.database,
             resolver: MapKitWorldMapPlaceResolver(),
+            clock: clock
+        )
+    }
+
+    private var worldMapManualPlaceResolutionService: WorldMapPlaceResolutionService {
+        WorldMapPlaceResolutionService(
+            database: query.database,
+            resolver: CascadingWorldMapPlaceResolver(
+                primary: MapKitWorldMapPlaceResolver(),
+                fallback: NominatimWorldMapPlaceResolver()
+            ),
             clock: clock
         )
     }
@@ -1722,6 +2639,10 @@ struct ProductionLibraryWorkspaceService: LibraryWorkspacePort, RemoteCatalogSer
 
     func listTags() throws -> [TagListItem] {
         try tags.listTags(includeArchived: false)
+    }
+
+    func listTagsIncludingArchived() throws -> [TagListItem] {
+        try tags.listTags(includeArchived: true)
     }
 
     func listTagGroups() throws -> [TagGroupListItem] {

@@ -220,6 +220,50 @@ struct GRDBTrainingRunRepository: Sendable {
             .compactMap(Self.map)
     }
 
+    /// Personal-head training executes inside the App process and cannot keep
+    /// running after that process exits. Reconcile only those non-terminal
+    /// rows at the next workspace startup so both Mac and Web stop presenting
+    /// a phantom running state. Queue-backed Feature KNN runs are deliberately
+    /// excluded because their jobs have their own lease/retry recovery.
+    @discardableResult
+    func failInterruptedPersonalRuns(finishedAtMs: Int64) throws -> Int {
+        guard finishedAtMs >= 0 else {
+            throw PersonalizationReviewError.persistenceFailure
+        }
+        return try database.pool.write { db in
+            let rows = try Row.fetchAll(
+                db,
+                sql: """
+                SELECT id, result_summary_json
+                FROM training_run
+                WHERE method IN ('personalCentroid', 'personalAdamW')
+                    AND state IN ('queued', 'running')
+                ORDER BY created_at_ms ASC, id ASC
+                """
+            )
+            for row in rows {
+                guard let rawID: String = row["id"],
+                      let id = UUID(uuidString: rawID),
+                      let rawSummary: String = row["result_summary_json"]
+                else {
+                    throw PersonalizationReviewError.persistenceFailure
+                }
+                var summary = try TrainingRunJSON.decodeObject(rawSummary)
+                summary["published"] = false
+                summary["interruptedByHostRestart"] = true
+                try update(
+                    id: id,
+                    state: .failed,
+                    finishedAtMs: finishedAtMs,
+                    resultSummaryJSON: try TrainingRunJSON.encode(summary),
+                    errorCode: "hostRestartInterrupted",
+                    on: db
+                )
+            }
+            return rows.count
+        }
+    }
+
     fileprivate static func map(_ row: Row) -> TrainingRunRecord? {
         guard let id = UUID(uuidString: row["id"]),
               let method = TrainingRunMethod(rawValue: row["method"]),

@@ -374,6 +374,7 @@ protocol LibraryWorkspacePort: Sendable {
     func applyJobActivityAction(_ action: JobActivityAction, jobID: UUID) throws
     func fetchSources() throws -> [LibrarySourceSummary]
     func fetchGalleryOverview() throws -> GalleryOverviewSnapshot
+    func cachedWorldMapSnapshot(query: WorldMapCatalogQuery) -> WorldMapCatalogSnapshot?
     func fetchWorldMapSnapshot(query: WorldMapCatalogQuery) throws -> WorldMapCatalogSnapshot
     func fetchWorldMapSelection(
         query: WorldMapCatalogSelectionQuery
@@ -384,6 +385,10 @@ protocol LibraryWorkspacePort: Sendable {
     func cancelWorldMapLocationBackfill(sourceID: UUID) throws
     func fetchWorldMapPlaceTagResolutions() throws -> [WorldMapPlaceTagResolution]
     func resolveWorldMapPlaceTag(tagID: UUID) async throws -> WorldMapPlaceTagResolution
+    func searchWorldMapPlaceTag(
+        tagID: UUID,
+        query: String
+    ) async throws -> WorldMapPlaceTagResolution
     func confirmWorldMapPlaceCandidate(
         tagID: UUID,
         placeID: String
@@ -459,6 +464,10 @@ extension LibraryWorkspacePort {
         .empty
     }
 
+    func cachedWorldMapSnapshot(query _: WorldMapCatalogQuery) -> WorldMapCatalogSnapshot? {
+        nil
+    }
+
     func fetchWorldMapSnapshot(query _: WorldMapCatalogQuery) throws -> WorldMapCatalogSnapshot {
         .empty
     }
@@ -484,6 +493,13 @@ extension LibraryWorkspacePort {
     }
 
     func resolveWorldMapPlaceTag(tagID _: UUID) async throws -> WorldMapPlaceTagResolution {
+        throw WorldMapPlaceResolutionError.tagUnavailable
+    }
+
+    func searchWorldMapPlaceTag(
+        tagID _: UUID,
+        query _: String
+    ) async throws -> WorldMapPlaceTagResolution {
         throw WorldMapPlaceResolutionError.tagUnavailable
     }
 

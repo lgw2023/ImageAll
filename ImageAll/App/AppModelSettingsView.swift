@@ -1,5 +1,9 @@
 import SwiftUI
 
+enum AppModelSettingsMutationError: Error, Equatable, Sendable {
+    case suggestionThresholdsUnavailable
+}
+
 @MainActor
 final class AppModelSettingsModel: ObservableObject {
     @Published private(set) var isEnabled: Bool
@@ -57,34 +61,47 @@ final class AppModelSettingsModel: ObservableObject {
     }
 
     func setSuggestionDefault(method: SuggestionScoreThresholdMethod, minScore: Double) {
-        guard let suggestionThresholds, minScore.isFinite else { return }
-        let nowMs = Int64(Date().timeIntervalSince1970 * 1000)
-        do {
-            try suggestionThresholds.setDefault(method: method, minScore: minScore, updatedAtMs: nowMs)
-            refreshSuggestionThresholds()
-        } catch {}
+        try? setSuggestionDefaultAndRefresh(method: method, minScore: minScore)
     }
 
     func clearSuggestionOverride(tagID: UUID, method: SuggestionScoreThresholdMethod) {
-        guard let suggestionThresholds else { return }
-        do {
-            try suggestionThresholds.clearOverride(tagID: tagID, method: method)
-            refreshSuggestionThresholds()
-        } catch {}
+        try? clearSuggestionOverrideAndRefresh(tagID: tagID, method: method)
     }
 
     func setEnabled(_ isEnabled: Bool) {
+        let currentOperationID = beginEnablement(isEnabled)
+        Task { [weak self] in
+            guard let self else { return }
+            _ = await self.finishEnablement(
+                isEnabled,
+                operationID: currentOperationID
+            )
+        }
+    }
+
+    @discardableResult
+    func setEnabledAndWait(_ isEnabled: Bool) async -> AppModelActivationState {
+        let currentOperationID = beginEnablement(isEnabled)
+        return await finishEnablement(isEnabled, operationID: currentOperationID)
+    }
+
+    private func beginEnablement(_ isEnabled: Bool) -> Int {
         didStart = true
         operationID += 1
         let currentOperationID = operationID
         self.isEnabled = isEnabled
         state = isEnabled ? .validating : .disabled
-        Task { [weak self] in
-            guard let self else { return }
-            let finalState = await self.coordinator.setEnabled(isEnabled)
-            guard self.operationID == currentOperationID else { return }
-            self.state = finalState
-        }
+        return currentOperationID
+    }
+
+    private func finishEnablement(
+        _ isEnabled: Bool,
+        operationID currentOperationID: Int
+    ) async -> AppModelActivationState {
+        let finalState = await coordinator.setEnabled(isEnabled)
+        guard operationID == currentOperationID else { return state }
+        state = finalState
+        return finalState
     }
 
     func setSuggestionOverride(
@@ -92,17 +109,50 @@ final class AppModelSettingsModel: ObservableObject {
         method: SuggestionScoreThresholdMethod,
         minScore: Double
     ) {
-        guard let suggestionThresholds, minScore.isFinite else { return }
+        try? setSuggestionOverrideAndRefresh(tagID: tagID, method: method, minScore: minScore)
+    }
+
+    func setSuggestionDefaultAndRefresh(
+        method: SuggestionScoreThresholdMethod,
+        minScore: Double
+    ) throws {
+        guard let suggestionThresholds else {
+            throw AppModelSettingsMutationError.suggestionThresholdsUnavailable
+        }
+        guard minScore.isFinite else { throw SuggestionThresholdError.invalidScore }
         let nowMs = Int64(Date().timeIntervalSince1970 * 1000)
-        do {
-            try suggestionThresholds.setOverride(
-                tagID: tagID,
-                method: method,
-                minScore: minScore,
-                updatedAtMs: nowMs
-            )
-            refreshSuggestionThresholds()
-        } catch {}
+        try suggestionThresholds.setDefault(method: method, minScore: minScore, updatedAtMs: nowMs)
+        refreshSuggestionThresholds()
+    }
+
+    func setSuggestionOverrideAndRefresh(
+        tagID: UUID,
+        method: SuggestionScoreThresholdMethod,
+        minScore: Double
+    ) throws {
+        guard let suggestionThresholds else {
+            throw AppModelSettingsMutationError.suggestionThresholdsUnavailable
+        }
+        guard minScore.isFinite else { throw SuggestionThresholdError.invalidScore }
+        let nowMs = Int64(Date().timeIntervalSince1970 * 1000)
+        try suggestionThresholds.setOverride(
+            tagID: tagID,
+            method: method,
+            minScore: minScore,
+            updatedAtMs: nowMs
+        )
+        refreshSuggestionThresholds()
+    }
+
+    func clearSuggestionOverrideAndRefresh(
+        tagID: UUID,
+        method: SuggestionScoreThresholdMethod
+    ) throws {
+        guard let suggestionThresholds else {
+            throw AppModelSettingsMutationError.suggestionThresholdsUnavailable
+        }
+        try suggestionThresholds.clearOverride(tagID: tagID, method: method)
+        refreshSuggestionThresholds()
     }
 
     func suggestionReference(

@@ -46,7 +46,14 @@ public struct RemoteSuggestionTagOverview: Codable, Sendable, Equatable, Identif
     public let skippedCount: Int
     public let missingPositiveCount: Int
     public let missingNegativeCount: Int
+    public let canGenerate: Bool
+    public let canUpdate: Bool
+    public let canGeneratePersonalModel: Bool
     public let canReview: Bool
+    public let canPause: Bool
+    public let canResume: Bool
+    public let canCancel: Bool
+    public let activeJobID: UUID?
 
     public init(
         id: UUID,
@@ -61,7 +68,14 @@ public struct RemoteSuggestionTagOverview: Codable, Sendable, Equatable, Identif
         skippedCount: Int,
         missingPositiveCount: Int,
         missingNegativeCount: Int,
-        canReview: Bool
+        canGenerate: Bool = false,
+        canUpdate: Bool = false,
+        canGeneratePersonalModel: Bool = false,
+        canReview: Bool,
+        canPause: Bool = false,
+        canResume: Bool = false,
+        canCancel: Bool = false,
+        activeJobID: UUID? = nil
     ) {
         self.id = id
         self.displayName = displayName
@@ -75,7 +89,67 @@ public struct RemoteSuggestionTagOverview: Codable, Sendable, Equatable, Identif
         self.skippedCount = skippedCount
         self.missingPositiveCount = missingPositiveCount
         self.missingNegativeCount = missingNegativeCount
+        self.canGenerate = canGenerate
+        self.canUpdate = canUpdate
+        self.canGeneratePersonalModel = canGeneratePersonalModel
         self.canReview = canReview
+        self.canPause = canPause
+        self.canResume = canResume
+        self.canCancel = canCancel
+        self.activeJobID = activeJobID
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case displayName
+        case acceptedSampleCount
+        case rejectedSampleCount
+        case pendingSuggestionCount
+        case pendingSuggestionCounts
+        case taskStatus
+        case checkedCount
+        case totalCount
+        case skippedCount
+        case missingPositiveCount
+        case missingNegativeCount
+        case canGenerate
+        case canUpdate
+        case canGeneratePersonalModel
+        case canReview
+        case canPause
+        case canResume
+        case canCancel
+        case activeJobID
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        displayName = try container.decode(String.self, forKey: .displayName)
+        acceptedSampleCount = try container.decode(Int.self, forKey: .acceptedSampleCount)
+        rejectedSampleCount = try container.decode(Int.self, forKey: .rejectedSampleCount)
+        pendingSuggestionCount = try container.decode(Int.self, forKey: .pendingSuggestionCount)
+        pendingSuggestionCounts = try container.decode(
+            RemoteSuggestionOriginCounts.self,
+            forKey: .pendingSuggestionCounts
+        )
+        taskStatus = try container.decode(RemoteSuggestionTaskStatus.self, forKey: .taskStatus)
+        checkedCount = try container.decode(Int.self, forKey: .checkedCount)
+        totalCount = try container.decodeIfPresent(Int.self, forKey: .totalCount)
+        skippedCount = try container.decode(Int.self, forKey: .skippedCount)
+        missingPositiveCount = try container.decode(Int.self, forKey: .missingPositiveCount)
+        missingNegativeCount = try container.decode(Int.self, forKey: .missingNegativeCount)
+        canGenerate = try container.decodeIfPresent(Bool.self, forKey: .canGenerate) ?? false
+        canUpdate = try container.decodeIfPresent(Bool.self, forKey: .canUpdate) ?? false
+        canGeneratePersonalModel = try container.decodeIfPresent(
+            Bool.self,
+            forKey: .canGeneratePersonalModel
+        ) ?? false
+        canReview = try container.decode(Bool.self, forKey: .canReview)
+        canPause = try container.decodeIfPresent(Bool.self, forKey: .canPause) ?? false
+        canResume = try container.decodeIfPresent(Bool.self, forKey: .canResume) ?? false
+        canCancel = try container.decodeIfPresent(Bool.self, forKey: .canCancel) ?? false
+        activeJobID = try container.decodeIfPresent(UUID.self, forKey: .activeJobID)
     }
 }
 
@@ -208,5 +282,27 @@ public struct RemoteBatchReviewDecisionResponse: Codable, Sendable, Equatable {
         self.appliedAssetCount = appliedAssetCount
         self.replayed = replayed
         self.undoID = undoID
+    }
+}
+
+public struct RemoteUndoReviewDecisionRequest: Codable, Sendable, Equatable {
+    public let operationID: UUID
+    public let undoID: UUID
+
+    public init(operationID: UUID, undoID: UUID) {
+        self.operationID = operationID
+        self.undoID = undoID
+    }
+}
+
+public struct RemoteUndoReviewDecisionResponse: Codable, Sendable, Equatable {
+    public let operationID: UUID
+    public let restoredAssetCount: Int
+    public let replayed: Bool
+
+    public init(operationID: UUID, restoredAssetCount: Int, replayed: Bool) {
+        self.operationID = operationID
+        self.restoredAssetCount = restoredAssetCount
+        self.replayed = replayed
     }
 }

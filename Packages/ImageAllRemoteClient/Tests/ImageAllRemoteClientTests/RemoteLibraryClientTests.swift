@@ -132,6 +132,47 @@ final class RemoteLibraryClientTests: XCTestCase {
         XCTAssertFalse(response.replayed)
     }
 
+    func testPostsPresetTagInstallation() async throws {
+        let operationID = UUID()
+        let tag = RemoteTagSummary(
+            id: UUID(),
+            displayName: "风景",
+            state: .active,
+            groupID: UUID()
+        )
+        let transport = MockTransport { request in
+            XCTAssertEqual(request.httpMethod, "POST")
+            XCTAssertEqual(request.url?.path, "/v1/tags/install-presets")
+            let decoded = try JSONDecoder().decode(
+                RemoteInstallPresetTagsRequest.self,
+                from: try XCTUnwrap(request.httpBody)
+            )
+            XCTAssertEqual(decoded.operationID, operationID)
+            return try Self.jsonResponse(
+                RemoteInstallPresetTagsResponse(
+                    operationID: operationID,
+                    createdTags: [tag],
+                    replayed: false
+                ),
+                for: request
+            )
+        }
+        let client = RemoteLibraryClient(
+            endpoint: try RemoteHostEndpoint(
+                host: "127.0.0.1",
+                port: 8787,
+                accessToken: "secret"
+            ),
+            transport: transport
+        )
+
+        let response = try await client.installPresetTags(
+            RemoteInstallPresetTagsRequest(operationID: operationID)
+        )
+        XCTAssertEqual(response.createdTags, [tag])
+        XCTAssertFalse(response.replayed)
+    }
+
     func testLoadsAssetDetailAndPreviewAtRequestedWidth() async throws {
         let assetID = UUID(uuidString: "33333333-3333-3333-3333-333333333333")!
         let transport = MockTransport { request in
@@ -178,6 +219,38 @@ final class RemoteLibraryClientTests: XCTestCase {
 
         XCTAssertEqual(detail.assetID, assetID)
         XCTAssertEqual(preview, Data([0xFF, 0xD8, 0xFF]))
+    }
+
+    func testDownloadsCloudPreviewOnlyThroughExplicitPost() async throws {
+        let assetID = UUID(uuidString: "33333333-3333-3333-3333-333333333333")!
+        let transport = MockTransport { request in
+            XCTAssertEqual(request.httpMethod, "POST")
+            XCTAssertEqual(
+                request.url?.path,
+                "/v1/assets/\(assetID.uuidString)/cloud-preview"
+            )
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer secret")
+            return (
+                Data([0x89, 0x50, 0x4E, 0x47]),
+                HTTPURLResponse(
+                    url: request.url!,
+                    statusCode: 200,
+                    httpVersion: "HTTP/1.1",
+                    headerFields: ["Content-Type": "image/png"]
+                )!
+            )
+        }
+        let client = RemoteLibraryClient(
+            endpoint: try RemoteHostEndpoint(
+                host: "127.0.0.1",
+                port: 8787,
+                accessToken: "secret"
+            ),
+            transport: transport
+        )
+
+        let preview = try await client.downloadCloudPreview(assetID: assetID)
+        XCTAssertEqual(preview, Data([0x89, 0x50, 0x4E, 0x47]))
     }
 
     func testBuildsReviewQueueQueryAndPostsDecision() async throws {

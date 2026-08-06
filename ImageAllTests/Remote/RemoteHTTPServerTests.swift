@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import ImageIO
 import ImageAllRemoteProtocol
@@ -65,6 +66,417 @@ final class RemoteHTTPServerTests: XCTestCase {
         )
     }
 
+    func testLibrarySlimmingWorkspaceRouteReturnsReadOnlyProjection() async throws {
+        let port = UInt16.random(in: 19_000...29_000)
+        let analysis = RemoteHTTPServerSlimmingAnalysisStub()
+        let (server, _) = makeServer(
+            port: port,
+            librarySlimmingAnalysis: analysis
+        )
+        try await server.start()
+        try await Task.sleep(nanoseconds: 150_000_000)
+        defer { Task { await server.stop() } }
+
+        var request = URLRequest(
+            url: URL(
+                string: "http://127.0.0.1:\(port)\(RemoteHTTPPaths.librarySlimmingWorkspace)?mediaKind=video"
+            )!
+        )
+        request.setValue(
+            "Bearer \(Self.legacyDebugToken)",
+            forHTTPHeaderField: "Authorization"
+        )
+        let (data, response) = try await URLSession.shared.data(for: request)
+        XCTAssertEqual(try XCTUnwrap(response as? HTTPURLResponse).statusCode, 200)
+        let snapshot = try JSONDecoder().decode(
+            RemoteLibrarySlimmingWorkspaceSnapshot.self,
+            from: data
+        )
+        XCTAssertEqual(snapshot.mediaKind, .video)
+        XCTAssertTrue(snapshot.jobs.isEmpty)
+        XCTAssertEqual(analysis.lastMediaKind, .video)
+    }
+
+    func testLibrarySlimmingCommandRoutesExposeSetupAndIdempotentMutations() async throws {
+        let port = UInt16.random(in: 19_000...29_000)
+        let sourceID = UUID()
+        let jobID = UUID()
+        let commands = RemoteHTTPSlimmingCommandStub(sourceID: sourceID, jobID: jobID)
+        let (server, _) = makeServer(port: port, librarySlimmingCommands: commands)
+        try await server.start()
+        try await Task.sleep(nanoseconds: 150_000_000)
+        defer { Task { await server.stop() } }
+
+        func authorizedRequest(path: String, method: String = "GET") -> URLRequest {
+            var request = URLRequest(url: URL(string: "http://127.0.0.1:\(port)\(path)")!)
+            request.httpMethod = method
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.setValue(
+                "Bearer \(Self.legacyDebugToken)",
+                forHTTPHeaderField: "Authorization"
+            )
+            return request
+        }
+
+        let (setupData, setupResponse) = try await URLSession.shared.data(
+            for: authorizedRequest(path: "\(RemoteHTTPPaths.librarySlimmingSetup)?mediaKind=image")
+        )
+        XCTAssertEqual(try XCTUnwrap(setupResponse as? HTTPURLResponse).statusCode, 200)
+        let setup = try JSONDecoder().decode(RemoteLibrarySlimmingSetupSnapshot.self, from: setupData)
+        XCTAssertEqual(setup.sources.map(\.id), [sourceID])
+
+        let operationID = UUID()
+        var launch = authorizedRequest(path: RemoteHTTPPaths.librarySlimmingLaunch, method: "POST")
+        launch.httpBody = try JSONEncoder().encode(RemoteLibrarySlimmingLaunchRequest(
+            operationID: operationID,
+            mediaKind: .image,
+            mode: .catalog,
+            sourceIDs: nil
+        ))
+        let (firstData, firstResponse) = try await URLSession.shared.data(for: launch)
+        let (secondData, secondResponse) = try await URLSession.shared.data(for: launch)
+        XCTAssertEqual(try XCTUnwrap(firstResponse as? HTTPURLResponse).statusCode, 202)
+        XCTAssertEqual(try XCTUnwrap(secondResponse as? HTTPURLResponse).statusCode, 202)
+        XCTAssertFalse(try JSONDecoder().decode(
+            RemoteLibrarySlimmingLaunchResponse.self,
+            from: firstData
+        ).replayed)
+        XCTAssertTrue(try JSONDecoder().decode(
+            RemoteLibrarySlimmingLaunchResponse.self,
+            from: secondData
+        ).replayed)
+        XCTAssertEqual(commands.launchCount, 1)
+
+        var threshold = authorizedRequest(
+            path: RemoteHTTPPaths.librarySlimmingThresholds,
+            method: "PUT"
+        )
+        threshold.httpBody = try JSONEncoder().encode(
+            RemoteLibrarySlimmingThresholdUpdateRequest(
+                operationID: UUID(),
+                thresholds: setup.thresholds
+            )
+        )
+        let (thresholdData, thresholdResponse) = try await URLSession.shared.data(for: threshold)
+        XCTAssertEqual(try XCTUnwrap(thresholdResponse as? HTTPURLResponse).statusCode, 200)
+        XCTAssertEqual(
+            try JSONDecoder().decode(
+                RemoteLibrarySlimmingThresholdUpdateResponse.self,
+                from: thresholdData
+            ).thresholds,
+            setup.thresholds
+        )
+
+        var action = authorizedRequest(
+            path: RemoteHTTPPaths.librarySlimmingJobAction(jobID: jobID),
+            method: "POST"
+        )
+        action.httpBody = try JSONEncoder().encode(RemoteLibrarySlimmingJobActionRequest(
+            operationID: UUID(),
+            action: .deleteRecord
+        ))
+        let (actionData, actionResponse) = try await URLSession.shared.data(for: action)
+        XCTAssertEqual(try XCTUnwrap(actionResponse as? HTTPURLResponse).statusCode, 200)
+        XCTAssertTrue(try JSONDecoder().decode(
+            RemoteLibrarySlimmingJobActionResponse.self,
+            from: actionData
+        ).deleted)
+        XCTAssertEqual(commands.lastAction, .deleteRecord)
+    }
+
+    func testLibrarySlimmingRecycleRoutesReturnSafeProjectionAndMacApprovalReceipt() async throws {
+        let port = UInt16.random(in: 19_000...29_000)
+        let commands = RemoteHTTPSlimmingCommandStub(sourceID: UUID(), jobID: UUID())
+        let (server, _) = makeServer(port: port, librarySlimmingCommands: commands)
+        try await server.start()
+        try await Task.sleep(nanoseconds: 150_000_000)
+        defer { Task { await server.stop() } }
+
+        func authorizedRequest(path: String, method: String = "GET") -> URLRequest {
+            var request = URLRequest(url: URL(string: "http://127.0.0.1:\(port)\(path)")!)
+            request.httpMethod = method
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.setValue(
+                "Bearer \(Self.legacyDebugToken)",
+                forHTTPHeaderField: "Authorization"
+            )
+            return request
+        }
+
+        let (snapshotData, snapshotResponse) = try await URLSession.shared.data(
+            for: authorizedRequest(
+                path: "\(RemoteHTTPPaths.librarySlimmingRecycle)?mediaKind=image&limit=60"
+            )
+        )
+        XCTAssertEqual(try XCTUnwrap(snapshotResponse as? HTTPURLResponse).statusCode, 200)
+        let snapshot = try JSONDecoder().decode(
+            RemoteLibrarySlimmingRecycleSnapshot.self,
+            from: snapshotData
+        )
+        XCTAssertEqual(snapshot.entries.first?.id, commands.recycleEntryID)
+        XCTAssertEqual(snapshot.entries.first?.availableActions, [.restore, .purge])
+        let json = try XCTUnwrap(String(data: snapshotData, encoding: .utf8))
+        XCTAssertFalse(json.contains("private/original"))
+        XCTAssertFalse(json.contains("private/quarantine"))
+
+        let operationID = UUID()
+        var submit = authorizedRequest(
+            path: RemoteHTTPPaths.librarySlimmingRecycleRequests,
+            method: "POST"
+        )
+        submit.httpBody = try JSONEncoder().encode(
+            RemoteLibrarySlimmingRecycleSubmitRequest(
+                operationID: operationID,
+                entryID: commands.recycleEntryID,
+                action: .restore
+            )
+        )
+        let (requestData, requestResponse) = try await URLSession.shared.data(for: submit)
+        XCTAssertEqual(try XCTUnwrap(requestResponse as? HTTPURLResponse).statusCode, 202)
+        let receipt = try JSONDecoder().decode(
+            RemoteLibrarySlimmingRecycleRequestSnapshot.self,
+            from: requestData
+        )
+        XCTAssertEqual(receipt.phase, .awaitingMac)
+        XCTAssertEqual(commands.lastRecycleCommand?.operationID, operationID)
+        XCTAssertEqual(commands.lastRecycleCommand?.action, .restore)
+    }
+
+    func testLibrarySlimmingBatchRemovalRoutesFreezeSelectionAndReturnProgress() async throws {
+        let port = UInt16.random(in: 19_000...29_000)
+        let jobID = UUID()
+        let commands = RemoteHTTPSlimmingCommandStub(sourceID: UUID(), jobID: jobID)
+        let (server, _) = makeServer(port: port, librarySlimmingCommands: commands)
+        try await server.start()
+        try await Task.sleep(nanoseconds: 150_000_000)
+        defer { Task { await server.stop() } }
+
+        func authorizedRequest(path: String, method: String = "GET") -> URLRequest {
+            var request = URLRequest(url: URL(string: "http://127.0.0.1:\(port)\(path)")!)
+            request.httpMethod = method
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.setValue(
+                "Bearer \(Self.legacyDebugToken)",
+                forHTTPHeaderField: "Authorization"
+            )
+            return request
+        }
+
+        let (snapshotData, snapshotResponse) = try await URLSession.shared.data(
+            for: authorizedRequest(
+                path: "\(RemoteHTTPPaths.librarySlimmingRemovals)?mediaKind=image"
+            )
+        )
+        XCTAssertEqual(try XCTUnwrap(snapshotResponse as? HTTPURLResponse).statusCode, 200)
+        let snapshot = try JSONDecoder().decode(
+            RemoteLibrarySlimmingRemovalSnapshot.self,
+            from: snapshotData
+        )
+        XCTAssertEqual(snapshot.requests.first?.progress?.completedAssetCount, 1)
+
+        let operationID = UUID()
+        let clusterID = UUID()
+        let assetIDs = [UUID(), UUID()]
+        var submit = authorizedRequest(
+            path: RemoteHTTPPaths.librarySlimmingRemovals,
+            method: "POST"
+        )
+        submit.httpBody = try JSONEncoder().encode(
+            RemoteLibrarySlimmingRemovalSubmitRequest(
+                operationID: operationID,
+                jobID: jobID,
+                clusterID: clusterID,
+                mediaKind: .image,
+                assetIDs: assetIDs,
+                mode: .recoverableRecycle
+            )
+        )
+        let (receiptData, receiptResponse) = try await URLSession.shared.data(for: submit)
+        XCTAssertEqual(try XCTUnwrap(receiptResponse as? HTTPURLResponse).statusCode, 202)
+        let receipt = try JSONDecoder().decode(
+            RemoteLibrarySlimmingRemovalRequestSnapshot.self,
+            from: receiptData
+        )
+        XCTAssertEqual(receipt.assetIDs, assetIDs)
+        XCTAssertEqual(commands.lastRemovalCommand?.operationID, operationID)
+        XCTAssertEqual(commands.lastRemovalCommand?.clusterID, clusterID)
+    }
+
+    func testLibrarySlimmingIdenticalCleanupRoutesPrepareServerPlanAndSubmitPlanID() async throws {
+        let port = UInt16.random(in: 19_000...29_000)
+        let jobID = UUID()
+        let commands = RemoteHTTPSlimmingCommandStub(sourceID: UUID(), jobID: jobID)
+        let (server, _) = makeServer(port: port, librarySlimmingCommands: commands)
+        try await server.start()
+        try await Task.sleep(nanoseconds: 150_000_000)
+        defer { Task { await server.stop() } }
+
+        func authorizedRequest(path: String, method: String = "GET") -> URLRequest {
+            var request = URLRequest(url: URL(string: "http://127.0.0.1:\(port)\(path)")!)
+            request.httpMethod = method
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.setValue(
+                "Bearer \(Self.legacyDebugToken)",
+                forHTTPHeaderField: "Authorization"
+            )
+            return request
+        }
+
+        var prepare = authorizedRequest(
+            path: RemoteHTTPPaths.librarySlimmingIdenticalCleanupPlans,
+            method: "POST"
+        )
+        prepare.httpBody = try JSONEncoder().encode(
+            RemoteLibrarySlimmingIdenticalCleanupPlanRequest(jobID: jobID, mediaKind: .image)
+        )
+        let (planData, planResponse) = try await URLSession.shared.data(for: prepare)
+        XCTAssertEqual(try XCTUnwrap(planResponse as? HTTPURLResponse).statusCode, 200)
+        let plan = try JSONDecoder().decode(
+            RemoteLibrarySlimmingIdenticalCleanupPlanSnapshot.self,
+            from: planData
+        )
+        XCTAssertEqual(plan.groupCount, 2)
+        XCTAssertEqual(plan.removalAssetCount, 3)
+
+        let operationID = UUID()
+        var submit = authorizedRequest(
+            path: RemoteHTTPPaths.librarySlimmingIdenticalCleanupRequests,
+            method: "POST"
+        )
+        submit.httpBody = try JSONEncoder().encode(
+            RemoteLibrarySlimmingIdenticalCleanupSubmitRequest(
+                operationID: operationID,
+                planID: plan.id,
+                mode: .recoverableRecycle
+            )
+        )
+        let (requestData, requestResponse) = try await URLSession.shared.data(for: submit)
+        XCTAssertEqual(try XCTUnwrap(requestResponse as? HTTPURLResponse).statusCode, 202)
+        let receipt = try JSONDecoder().decode(
+            RemoteLibrarySlimmingIdenticalCleanupRequestSnapshot.self,
+            from: requestData
+        )
+        XCTAssertEqual(receipt.planID, plan.id)
+        XCTAssertEqual(commands.lastIdenticalCleanupCommand?.operationID, operationID)
+
+        let (statusData, statusResponse) = try await URLSession.shared.data(
+            for: authorizedRequest(
+                path: "\(RemoteHTTPPaths.librarySlimmingIdenticalCleanupRequests)?mediaKind=image"
+            )
+        )
+        XCTAssertEqual(try XCTUnwrap(statusResponse as? HTTPURLResponse).statusCode, 200)
+        let status = try JSONDecoder().decode(
+            RemoteLibrarySlimmingIdenticalCleanupSnapshot.self,
+            from: statusData
+        )
+        XCTAssertEqual(status.requests.first?.verification?.verifiedGroupCount, 2)
+        XCTAssertEqual(status.requests.first?.verification?.targetRetainedAssetCount, 2)
+        XCTAssertEqual(status.requests.first?.verification?.observedAssetCount, 5)
+        XCTAssertEqual(status.requests.first?.verification?.currentAvailableAssetCount, 2)
+    }
+
+    func testSourceManagementRoutesReturnAsyncMacApprovalReceipt() async throws {
+        let port = UInt16.random(in: 19_000...29_000)
+        let sourceID = UUID()
+        let operationID = UUID()
+        let commands = RemoteHTTPSourceManagementCommandStub(
+            sourceID: sourceID,
+            operationID: operationID
+        )
+        let (server, _) = makeServer(port: port, sourceManagementCommands: commands)
+        try await server.start()
+        try await Task.sleep(nanoseconds: 150_000_000)
+        defer { Task { await server.stop() } }
+
+        func authorizedRequest(path: String, method: String = "GET") -> URLRequest {
+            var request = URLRequest(url: URL(string: "http://127.0.0.1:\(port)\(path)")!)
+            request.httpMethod = method
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.setValue(
+                "Bearer \(Self.legacyDebugToken)",
+                forHTTPHeaderField: "Authorization"
+            )
+            return request
+        }
+
+        let (setupData, setupResponse) = try await URLSession.shared.data(
+            for: authorizedRequest(path: RemoteHTTPPaths.sourceManagement)
+        )
+        XCTAssertEqual(try XCTUnwrap(setupResponse as? HTTPURLResponse).statusCode, 200)
+        let setup = try JSONDecoder().decode(RemoteSourceManagementSnapshot.self, from: setupData)
+        XCTAssertEqual(setup.sources.map(\.id), [sourceID])
+        XCTAssertTrue(setup.canConnectPhotos)
+
+        var submit = authorizedRequest(
+            path: RemoteHTTPPaths.sourceManagementRequests,
+            method: "POST"
+        )
+        submit.httpBody = try JSONEncoder().encode(RemoteSourceManagementSubmitRequest(
+            operationID: operationID,
+            action: .reauthorize,
+            sourceID: sourceID
+        ))
+        let (receiptData, receiptResponse) = try await URLSession.shared.data(for: submit)
+        XCTAssertEqual(try XCTUnwrap(receiptResponse as? HTTPURLResponse).statusCode, 202)
+        let receipt = try JSONDecoder().decode(
+            RemoteSourceManagementRequestSnapshot.self,
+            from: receiptData
+        )
+        XCTAssertEqual(receipt.phase, .awaitingMac)
+        XCTAssertEqual(commands.lastCommand?.operationID, operationID)
+        XCTAssertEqual(commands.lastCommand?.action, .reauthorize)
+    }
+
+    func testStorageMaintenanceRoutesReturnRedactedSnapshotAndApprovalReceipt() async throws {
+        let port = UInt16.random(in: 19_000...29_000)
+        let operationID = UUID()
+        let commands = RemoteHTTPStorageMaintenanceCommandStub(operationID: operationID)
+        let (server, _) = makeServer(port: port, storageMaintenanceCommands: commands)
+        try await server.start()
+        try await Task.sleep(nanoseconds: 150_000_000)
+        defer { Task { await server.stop() } }
+
+        func authorizedRequest(path: String, method: String = "GET") -> URLRequest {
+            var request = URLRequest(url: URL(string: "http://127.0.0.1:\(port)\(path)")!)
+            request.httpMethod = method
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.setValue(
+                "Bearer \(Self.legacyDebugToken)",
+                forHTTPHeaderField: "Authorization"
+            )
+            return request
+        }
+
+        let (snapshotData, snapshotResponse) = try await URLSession.shared.data(
+            for: authorizedRequest(path: RemoteHTTPPaths.storageMaintenance)
+        )
+        XCTAssertEqual(try XCTUnwrap(snapshotResponse as? HTTPURLResponse).statusCode, 200)
+        let snapshot = try JSONDecoder().decode(
+            RemoteStorageMaintenanceSnapshot.self,
+            from: snapshotData
+        )
+        XCTAssertEqual(snapshot.previewCache.registeredBytes, 1_500_000)
+        XCTAssertEqual(snapshot.appStorage.pendingExternalRootName, "ImageAll-External")
+        XCTAssertFalse(String(decoding: snapshotData, as: UTF8.self).contains("/Volumes/"))
+
+        var submit = authorizedRequest(
+            path: RemoteHTTPPaths.storageMaintenanceRequests,
+            method: "POST"
+        )
+        submit.httpBody = try JSONEncoder().encode(RemoteStorageMaintenanceSubmitRequest(
+            operationID: operationID,
+            action: .clearPreviewCache
+        ))
+        let (receiptData, receiptResponse) = try await URLSession.shared.data(for: submit)
+        XCTAssertEqual(try XCTUnwrap(receiptResponse as? HTTPURLResponse).statusCode, 202)
+        let receipt = try JSONDecoder().decode(
+            RemoteStorageMaintenanceRequestSnapshot.self,
+            from: receiptData
+        )
+        XCTAssertEqual(receipt.phase, .awaitingMac)
+        XCTAssertEqual(commands.lastCommand?.action, .clearPreviewCache)
+    }
+
     private func makeIdempotencyStore() -> RemoteIdempotencyStore {
         RemoteIdempotencyStore(storageURL: tempStorageURL(name: "idempotency.json"))
     }
@@ -106,13 +518,27 @@ final class RemoteHTTPServerTests: XCTestCase {
         catalog: any RemoteCatalogServing = RemoteHTTPServerTestCatalog(),
         pairingStore: RemotePairingStore? = nil,
         accessAccountStore: RemoteAccessAccountStore? = nil,
+        trainingWorkspace: (any TrainingWorkspacePort)? = nil,
+        trainingCommands: (any RemoteTrainingCommandPort)? = nil,
+        librarySlimmingAnalysis: (any LibrarySlimmingAnalysisJobPort)? = nil,
+        librarySlimmingCommands: (any RemoteLibrarySlimmingCommandPort)? = nil,
+        sourceManagementCommands: (any RemoteSourceManagementCommandPort)? = nil,
+        storageMaintenanceCommands: (any RemoteStorageMaintenanceCommandPort)? = nil,
         hostAppVersion: String = "1.0.0",
-        webAssetStore: RemoteWebCompanionAssetStore = RemoteWebCompanionAssetStore()
+        webAssetStore: RemoteWebCompanionAssetStore = RemoteWebCompanionAssetStore(),
+        mediaResources: any RemoteMediaResourceProviding = UnavailableRemoteMediaResourceProvider(),
+        originalAssetOpener: (any LibraryOriginalAssetOpening)? = nil
     ) -> (RemoteHTTPServer, RemotePairingStore) {
         let store = pairingStore ?? makePairingStore(listenPort: Int(port))
         let facade = RemoteCatalogFacade(
             catalog: catalog,
             review: EmptyPersonalizationReviewPort(),
+            trainingWorkspace: trainingWorkspace,
+            trainingCommands: trainingCommands,
+            librarySlimmingAnalysis: librarySlimmingAnalysis,
+            librarySlimmingCommands: librarySlimmingCommands,
+            sourceManagementCommands: sourceManagementCommands,
+            storageMaintenanceCommands: storageMaintenanceCommands,
             idempotency: makeIdempotencyStore(),
             hostAppVersion: hostAppVersion,
             listenPort: Int(port)
@@ -122,6 +548,8 @@ final class RemoteHTTPServerTests: XCTestCase {
             pairingStore: store,
             accessAccountStore: accessAccountStore ?? makeAccessAccountStore(),
             eventBroker: RemoteEventBroker(),
+            mediaResources: mediaResources,
+            originalAssetOpener: originalAssetOpener,
             webAssetStore: webAssetStore,
             secIdentity: nil,
             port: port
@@ -328,6 +756,688 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertEqual(capabilities.protocolVersion, RemoteProtocolVersion.current)
     }
 
+    func testWorldMapRoutesRequireAuthenticationAndReturnCatalogProjection() async throws {
+        let port = UInt16.random(in: 19_000...29_000)
+        let sourceID = UUID()
+        let placeTagID = UUID()
+        let placeCandidate = WorldMapPlaceCandidate(
+            placeID: "shanghai-cn",
+            displayName: "上海市",
+            subtitle: "中国上海市",
+            latitude: 31.23,
+            longitude: 121.47,
+            kind: .city,
+            countryCode: "CN"
+        )
+        let unresolvedPlace = WorldMapPlaceTagResolution(
+            tagID: placeTagID,
+            tagName: "上海",
+            groupName: "地点与场景",
+            acceptedPhotoCount: 8,
+            status: .unresolved,
+            confirmedPlaceID: nil,
+            candidates: []
+        )
+        let resolvedPlace = WorldMapPlaceTagResolution(
+            tagID: placeTagID,
+            tagName: "上海",
+            groupName: "地点与场景",
+            acceptedPhotoCount: 8,
+            status: .resolved,
+            confirmedPlaceID: placeCandidate.placeID,
+            candidates: [placeCandidate]
+        )
+        let catalog = RemoteHTTPServerTestCatalog(
+            worldMapLocationBackfills: [
+                WorldMapLocationBackfillSnapshot(
+                    sourceID: sourceID,
+                    sourceKind: .folder,
+                    sourceDisplayName: "Synthetic Folder",
+                    sourceState: .active,
+                    phase: .ready,
+                    totalPhotoCount: 20,
+                    inspectedPhotoCount: 5,
+                    locatedPhotoCount: 3,
+                    activeJobID: nil,
+                    scanProgress: nil
+                ),
+            ],
+            worldMapPlaceResolutions: [unresolvedPlace],
+            worldMapPlaceSearchResult: resolvedPlace,
+            worldMapPlaceConfirmResult: resolvedPlace
+        )
+        let (server, _) = makeServer(port: port, catalog: catalog)
+        try await server.start()
+        try await Task.sleep(nanoseconds: 150_000_000)
+        defer { Task { await server.stop() } }
+
+        let (_, unauthorizedOverviewResponse) = try await URLSession.shared.data(
+            from: URL(string: "http://127.0.0.1:\(port)\(RemoteHTTPPaths.galleryOverview)")!
+        )
+        XCTAssertEqual(
+            try XCTUnwrap(unauthorizedOverviewResponse as? HTTPURLResponse).statusCode,
+            401
+        )
+        let (_, unauthorizedPlaceResponse) = try await URLSession.shared.data(
+            from: URL(string: "http://127.0.0.1:\(port)\(RemoteHTTPPaths.worldMapPlaceTags)")!
+        )
+        XCTAssertEqual(
+            try XCTUnwrap(unauthorizedPlaceResponse as? HTTPURLResponse).statusCode,
+            401
+        )
+
+        func authorizedRequest(path: String, method: String = "GET") -> URLRequest {
+            var request = URLRequest(url: URL(string: "http://127.0.0.1:\(port)\(path)")!)
+            request.httpMethod = method
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.setValue(
+                "Bearer \(Self.legacyDebugToken)",
+                forHTTPHeaderField: "Authorization"
+            )
+            return request
+        }
+
+        let (snapshotData, snapshotResponse) = try await URLSession.shared.data(
+            for: authorizedRequest(
+                path: "\(RemoteHTTPPaths.worldMapSnapshot)?west=118&south=30&east=123&north=33"
+            )
+        )
+        XCTAssertEqual(try XCTUnwrap(snapshotResponse as? HTTPURLResponse).statusCode, 200)
+        let snapshot = try JSONDecoder().decode(RemoteWorldMapSnapshot.self, from: snapshotData)
+        XCTAssertTrue(snapshot.clusters.isEmpty)
+
+        let (overviewData, overviewResponse) = try await URLSession.shared.data(
+            for: authorizedRequest(path: RemoteHTTPPaths.galleryOverview)
+        )
+        XCTAssertEqual(try XCTUnwrap(overviewResponse as? HTTPURLResponse).statusCode, 200)
+        let overview = try JSONDecoder().decode(RemoteGalleryOverviewSnapshot.self, from: overviewData)
+        XCTAssertTrue(overview.sources.isEmpty)
+
+        var selectionRequest = authorizedRequest(
+            path: RemoteHTTPPaths.worldMapSelection,
+            method: "POST"
+        )
+        selectionRequest.httpBody = try JSONEncoder().encode(RemoteWorldMapSelectionRequest(
+            query: RemoteWorldMapSelectionQuery(
+                cellDegrees: 7.5,
+                longitudeBucket: 24,
+                latitudeBucket: 12,
+                maximumAssets: 36
+            )
+        ))
+        let (selectionData, selectionResponse) = try await URLSession.shared.data(
+            for: selectionRequest
+        )
+        XCTAssertEqual(try XCTUnwrap(selectionResponse as? HTTPURLResponse).statusCode, 200)
+        let selection = try JSONDecoder().decode(RemoteWorldMapSelection.self, from: selectionData)
+        XCTAssertTrue(selection.assets.isEmpty)
+
+        let (backfillData, backfillResponse) = try await URLSession.shared.data(
+            for: authorizedRequest(path: RemoteHTTPPaths.worldMapLocationBackfill)
+        )
+        XCTAssertEqual(try XCTUnwrap(backfillResponse as? HTTPURLResponse).statusCode, 200)
+        let backfills = try JSONDecoder().decode(
+            [RemoteWorldMapLocationBackfillSnapshot].self,
+            from: backfillData
+        )
+        XCTAssertEqual(backfills.first?.sourceDisplayName, "Synthetic Folder")
+
+        var backfillCommand = authorizedRequest(
+            path: RemoteHTTPPaths.worldMapLocationBackfillRequests,
+            method: "POST"
+        )
+        backfillCommand.httpBody = try JSONEncoder().encode(
+            RemoteWorldMapLocationBackfillCommandRequest(
+                operationID: UUID(),
+                sourceID: sourceID,
+                action: .start
+            )
+        )
+        let (commandData, commandResponse) = try await URLSession.shared.data(for: backfillCommand)
+        XCTAssertEqual(try XCTUnwrap(commandResponse as? HTTPURLResponse).statusCode, 202)
+        let command = try JSONDecoder().decode(
+            RemoteWorldMapLocationBackfillCommandResponse.self,
+            from: commandData
+        )
+        XCTAssertEqual(command.snapshot.sourceID, sourceID)
+        XCTAssertEqual(catalog.worldMapLocationBackfillStartCount, 1)
+
+        let (placeData, placeResponse) = try await URLSession.shared.data(
+            for: authorizedRequest(path: RemoteHTTPPaths.worldMapPlaceTags)
+        )
+        XCTAssertEqual(try XCTUnwrap(placeResponse as? HTTPURLResponse).statusCode, 200)
+        let placeSnapshot = try JSONDecoder().decode(
+            RemoteWorldMapPlaceTagSnapshot.self,
+            from: placeData
+        )
+        XCTAssertEqual(placeSnapshot.items.first?.tagName, "上海")
+        XCTAssertEqual(placeSnapshot.maximumQueryLength, 160)
+
+        var placeSearch = authorizedRequest(
+            path: RemoteHTTPPaths.worldMapPlaceTagRequests,
+            method: "POST"
+        )
+        placeSearch.httpBody = try JSONEncoder().encode(
+            RemoteWorldMapPlaceTagCommandRequest(
+                operationID: UUID(),
+                tagID: placeTagID,
+                action: .search,
+                query: "上海 中国"
+            )
+        )
+        let (placeSearchData, placeSearchResponse) = try await URLSession.shared.data(
+            for: placeSearch
+        )
+        XCTAssertEqual(try XCTUnwrap(placeSearchResponse as? HTTPURLResponse).statusCode, 200)
+        let placeSearchResult = try JSONDecoder().decode(
+            RemoteWorldMapPlaceTagCommandResponse.self,
+            from: placeSearchData
+        )
+        XCTAssertEqual(placeSearchResult.resolution.confirmedPlaceID, placeCandidate.placeID)
+        XCTAssertEqual(catalog.worldMapPlaceSearchCount, 1)
+    }
+
+    func testTrainingWorkspaceRouteReturnsFilteredHostSnapshot() async throws {
+        let port = UInt16.random(in: 19_000...29_000)
+        let runID = UUID()
+        let training = RemoteHTTPTrainingWorkspaceStub(
+            snapshot: TrainingWorkspaceSnapshot(
+                runs: [
+                    TrainingRunRecord(
+                        id: runID,
+                        mediaKind: .video,
+                        method: .personalCentroid,
+                        state: .running,
+                        createdAtMs: 1_700_000_000_000,
+                        startedAtMs: 1_700_000_001_000,
+                        finishedAtMs: nil,
+                        catalogScopeID: "allSources",
+                        jobID: UUID(),
+                        sampleSummaryJSON: "{}",
+                        sampleManifestSHA256: nil,
+                        configJSON: "{}",
+                        metricsJSON: "{}",
+                        artifactKind: nil,
+                        artifactRef: nil,
+                        artifactSHA256: nil,
+                        resultSummaryJSON: "{}",
+                        errorCode: nil
+                    ),
+                ],
+                slots: []
+            )
+        )
+        let (server, _) = makeServer(
+            port: port,
+            trainingWorkspace: training
+        )
+        try await server.start()
+        try await Task.sleep(nanoseconds: 150_000_000)
+        defer { Task { await server.stop() } }
+
+        var request = URLRequest(
+            url: URL(
+                string: "http://127.0.0.1:\(port)/v1/training/workspace?mediaKind=video&method=personalCentroid"
+            )!
+        )
+        request.setValue(
+            "Bearer \(Self.legacyDebugToken)",
+            forHTTPHeaderField: "Authorization"
+        )
+        let (data, response) = try await URLSession.shared.data(for: request)
+
+        XCTAssertEqual(try XCTUnwrap(response as? HTTPURLResponse).statusCode, 200)
+        let payload = try JSONDecoder().decode(
+            RemoteTrainingWorkspaceSnapshot.self,
+            from: data
+        )
+        XCTAssertEqual(payload.mediaKind, .video)
+        XCTAssertEqual(payload.methodFilter, .personalCentroid)
+        XCTAssertEqual(payload.runs.first?.id, runID)
+        XCTAssertEqual(training.lastMediaKind, .video)
+        XCTAssertEqual(training.lastMethod, .personalCentroid)
+    }
+
+    func testTrainingSetupAndLaunchRoutesReuseHostCommandAndReplayOnce() async throws {
+        let port = UInt16.random(in: 19_000...29_000)
+        let tagID = UUID()
+        let sourceID = UUID()
+        let jobID = UUID()
+        let commands = RemoteHTTPTrainingCommandStub(
+            setupSnapshot: TrainingCommandSetupSnapshot(
+                mediaKind: .image,
+                tags: [
+                    TrainingCommandTagOption(
+                        id: tagID,
+                        displayName: "猫",
+                        acceptedSampleCount: 18,
+                        rejectedSampleCount: 4,
+                        featureMode: .generate,
+                        personalEligible: true
+                    ),
+                ],
+                sources: [
+                    TrainingCommandSourceOption(id: sourceID, displayName: "Apple Photos"),
+                ],
+                supportsPersonalCentroid: true,
+                supportsPersonalAdamW: true
+            ),
+            receipt: TrainingLaunchReceipt(
+                operationID: UUID(),
+                method: .featureKnn,
+                acceptedAtMs: 1_700_000_000_000,
+                scheduledTagCount: 1,
+                jobID: jobID
+            )
+        )
+        let (server, _) = makeServer(port: port, trainingCommands: commands)
+        try await server.start()
+        try await Task.sleep(nanoseconds: 150_000_000)
+        defer { Task { await server.stop() } }
+
+        var setupRequest = URLRequest(
+            url: URL(
+                string: "http://127.0.0.1:\(port)/v1/training/setup?mediaKind=image"
+            )!
+        )
+        setupRequest.setValue(
+            "Bearer \(Self.legacyDebugToken)",
+            forHTTPHeaderField: "Authorization"
+        )
+        let (setupData, setupResponse) = try await URLSession.shared.data(for: setupRequest)
+
+        XCTAssertEqual(try XCTUnwrap(setupResponse as? HTTPURLResponse).statusCode, 200)
+        let setup = try JSONDecoder().decode(RemoteTrainingSetupSnapshot.self, from: setupData)
+        XCTAssertEqual(setup.tags.first?.displayName, "猫")
+        XCTAssertEqual(setup.sources.first?.id, sourceID)
+
+        let operationID = UUID()
+        var launchRequest = URLRequest(
+            url: URL(string: "http://127.0.0.1:\(port)/v1/training/launch")!
+        )
+        launchRequest.httpMethod = "POST"
+        launchRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        launchRequest.setValue(
+            "Bearer \(Self.legacyDebugToken)",
+            forHTTPHeaderField: "Authorization"
+        )
+        launchRequest.httpBody = try JSONEncoder().encode(
+            RemoteTrainingLaunchRequest(
+                operationID: operationID,
+                mediaKind: .image,
+                method: .featureKnn,
+                tagIDs: [tagID],
+                sourceIDs: [sourceID]
+            )
+        )
+
+        let (firstData, firstResponse) = try await URLSession.shared.data(for: launchRequest)
+        let (secondData, secondResponse) = try await URLSession.shared.data(for: launchRequest)
+
+        XCTAssertEqual(try XCTUnwrap(firstResponse as? HTTPURLResponse).statusCode, 202)
+        XCTAssertEqual(try XCTUnwrap(secondResponse as? HTTPURLResponse).statusCode, 202)
+        let first = try JSONDecoder().decode(RemoteTrainingLaunchResponse.self, from: firstData)
+        let second = try JSONDecoder().decode(RemoteTrainingLaunchResponse.self, from: secondData)
+        XCTAssertEqual(first.operationID, operationID)
+        XCTAssertEqual(first.jobID, jobID)
+        XCTAssertFalse(first.replayed)
+        XCTAssertTrue(second.replayed)
+        XCTAssertEqual(commands.launchCallCount, 1)
+        XCTAssertEqual(commands.lastCommand?.tagIDs, Set([tagID]))
+        XCTAssertEqual(commands.lastCommand?.sourceIDs, Set([sourceID]))
+
+        var cancelRequest = URLRequest(
+            url: URL(
+                string: "http://127.0.0.1:\(port)/v1/training/activities/\(operationID.uuidString)/actions"
+            )!
+        )
+        cancelRequest.httpMethod = "POST"
+        cancelRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        cancelRequest.setValue(
+            "Bearer \(Self.legacyDebugToken)",
+            forHTTPHeaderField: "Authorization"
+        )
+        cancelRequest.httpBody = try JSONEncoder().encode(
+            RemoteTrainingActivityActionRequest(action: .cancel)
+        )
+
+        let (cancelData, cancelResponse) = try await URLSession.shared.data(for: cancelRequest)
+        XCTAssertEqual(try XCTUnwrap(cancelResponse as? HTTPURLResponse).statusCode, 200)
+        let cancelled = try JSONDecoder().decode(
+            RemoteTrainingActivityActionResponse.self,
+            from: cancelData
+        )
+        XCTAssertEqual(cancelled.activity.operationID, operationID)
+        XCTAssertEqual(cancelled.activity.phase, .cancelled)
+        XCTAssertEqual(commands.cancelCallCount, 1)
+    }
+
+    func testEmbeddingPreparationRoutesExposeProgressSubmitAndCancel() async throws {
+        let port = UInt16.random(in: 19_000...29_000)
+        let operationID = UUID()
+        let assetIDs = [UUID(), UUID()]
+        let activity = EmbeddingPreparationActivitySnapshot(
+            operationID: operationID,
+            mediaKind: .image,
+            phase: .running,
+            completedUnitCount: 1,
+            totalUnitCount: 2,
+            preparedCount: 1,
+            cachedCount: 0,
+            cloudOnlyCount: 0,
+            failedCount: 0,
+            errorCode: nil
+        )
+        let commands = RemoteHTTPTrainingCommandStub(
+            setupSnapshot: TrainingCommandSetupSnapshot(
+                mediaKind: .image,
+                tags: [],
+                sources: [],
+                supportsPersonalCentroid: true,
+                supportsPersonalAdamW: false
+            ),
+            receipt: TrainingLaunchReceipt(
+                operationID: UUID(),
+                method: .personalCentroid,
+                acceptedAtMs: 0,
+                scheduledTagCount: 0,
+                jobID: nil
+            ),
+            embeddingActivity: activity
+        )
+        let (server, _) = makeServer(port: port, trainingCommands: commands)
+        try await server.start()
+        try await Task.sleep(nanoseconds: 150_000_000)
+        defer { Task { await server.stop() } }
+
+        var snapshotRequest = URLRequest(
+            url: URL(string: "http://127.0.0.1:\(port)/v1/embedding-preparation?mediaKind=image")!
+        )
+        snapshotRequest.setValue(
+            "Bearer \(Self.legacyDebugToken)",
+            forHTTPHeaderField: "Authorization"
+        )
+        let (snapshotData, snapshotResponse) = try await URLSession.shared.data(
+            for: snapshotRequest
+        )
+        XCTAssertEqual(try XCTUnwrap(snapshotResponse as? HTTPURLResponse).statusCode, 200)
+        let snapshot = try JSONDecoder().decode(
+            RemoteEmbeddingPreparationSnapshot.self,
+            from: snapshotData
+        )
+        XCTAssertTrue(snapshot.isAvailable)
+        XCTAssertEqual(snapshot.activities.first?.preparedCount, 1)
+
+        var submitRequest = URLRequest(
+            url: URL(string: "http://127.0.0.1:\(port)/v1/embedding-preparation/requests")!
+        )
+        submitRequest.httpMethod = "POST"
+        submitRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        submitRequest.setValue(
+            "Bearer \(Self.legacyDebugToken)",
+            forHTTPHeaderField: "Authorization"
+        )
+        submitRequest.httpBody = try JSONEncoder().encode(
+            RemoteEmbeddingPreparationRequest(
+                operationID: operationID,
+                mediaKind: .image,
+                assetIDs: assetIDs
+            )
+        )
+        let (submitData, submitResponse) = try await URLSession.shared.data(for: submitRequest)
+        XCTAssertEqual(try XCTUnwrap(submitResponse as? HTTPURLResponse).statusCode, 202)
+        let submitted = try JSONDecoder().decode(
+            RemoteEmbeddingPreparationResponse.self,
+            from: submitData
+        )
+        XCTAssertEqual(submitted.activity.operationID, operationID)
+        XCTAssertEqual(commands.embeddingPrepareCallCount, 1)
+
+        var cancelRequest = URLRequest(
+            url: URL(
+                string: "http://127.0.0.1:\(port)/v1/embedding-preparation/requests/\(operationID.uuidString)/actions"
+            )!
+        )
+        cancelRequest.httpMethod = "POST"
+        cancelRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        cancelRequest.setValue(
+            "Bearer \(Self.legacyDebugToken)",
+            forHTTPHeaderField: "Authorization"
+        )
+        cancelRequest.httpBody = try JSONEncoder().encode(
+            RemoteEmbeddingPreparationActionRequest(action: .cancel)
+        )
+        let (cancelData, cancelResponse) = try await URLSession.shared.data(for: cancelRequest)
+        XCTAssertEqual(try XCTUnwrap(cancelResponse as? HTTPURLResponse).statusCode, 200)
+        let cancelled = try JSONDecoder().decode(
+            RemoteEmbeddingPreparationActionResponse.self,
+            from: cancelData
+        )
+        XCTAssertEqual(cancelled.activity.phase, .cancelled)
+        XCTAssertEqual(commands.embeddingCancelCallCount, 1)
+    }
+
+    func testSampleSuggestionRoutesExposeProgressSubmitAndCancel() async throws {
+        let port = UInt16.random(in: 19_000...29_000)
+        let operationID = UUID()
+        let assetIDs = [UUID(), UUID()]
+        let activity = SampleSuggestionActivitySnapshot(
+            operationID: operationID,
+            mediaKind: .image,
+            phase: .running,
+            completedUnitCount: 0,
+            totalUnitCount: 2,
+            suggestedCount: 0,
+            skippedCount: 0,
+            errorCode: nil
+        )
+        let commands = RemoteHTTPTrainingCommandStub(
+            setupSnapshot: TrainingCommandSetupSnapshot(
+                mediaKind: .image,
+                tags: [],
+                sources: [],
+                supportsPersonalCentroid: true,
+                supportsPersonalAdamW: false
+            ),
+            receipt: TrainingLaunchReceipt(
+                operationID: UUID(),
+                method: .personalCentroid,
+                acceptedAtMs: 0,
+                scheduledTagCount: 0,
+                jobID: nil
+            ),
+            sampleActivity: activity
+        )
+        let (server, _) = makeServer(port: port, trainingCommands: commands)
+        try await server.start()
+        try await Task.sleep(nanoseconds: 150_000_000)
+        defer { Task { await server.stop() } }
+
+        var snapshotRequest = URLRequest(
+            url: URL(string: "http://127.0.0.1:\(port)/v1/sample-suggestions?mediaKind=image")!
+        )
+        snapshotRequest.setValue(
+            "Bearer \(Self.legacyDebugToken)",
+            forHTTPHeaderField: "Authorization"
+        )
+        let (snapshotData, snapshotResponse) = try await URLSession.shared.data(
+            for: snapshotRequest
+        )
+        XCTAssertEqual(try XCTUnwrap(snapshotResponse as? HTTPURLResponse).statusCode, 200)
+        let snapshot = try JSONDecoder().decode(
+            RemoteSampleSuggestionSnapshot.self,
+            from: snapshotData
+        )
+        XCTAssertTrue(snapshot.isAvailable)
+        XCTAssertEqual(snapshot.maximumSampleCount, 500)
+        XCTAssertEqual(snapshot.activities.first?.availableActions, [.cancel])
+
+        var submitRequest = URLRequest(
+            url: URL(string: "http://127.0.0.1:\(port)/v1/sample-suggestions/requests")!
+        )
+        submitRequest.httpMethod = "POST"
+        submitRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        submitRequest.setValue(
+            "Bearer \(Self.legacyDebugToken)",
+            forHTTPHeaderField: "Authorization"
+        )
+        submitRequest.httpBody = try JSONEncoder().encode(
+            RemoteSampleSuggestionRequest(
+                operationID: operationID,
+                mediaKind: .image,
+                assetIDs: assetIDs
+            )
+        )
+        let (submitData, submitResponse) = try await URLSession.shared.data(for: submitRequest)
+        XCTAssertEqual(try XCTUnwrap(submitResponse as? HTTPURLResponse).statusCode, 202)
+        let submitted = try JSONDecoder().decode(
+            RemoteSampleSuggestionResponse.self,
+            from: submitData
+        )
+        XCTAssertEqual(submitted.activity.operationID, operationID)
+        XCTAssertEqual(commands.sampleSuggestionSubmitCallCount, 1)
+
+        var cancelRequest = URLRequest(
+            url: URL(
+                string: "http://127.0.0.1:\(port)/v1/sample-suggestions/requests/\(operationID.uuidString)/actions"
+            )!
+        )
+        cancelRequest.httpMethod = "POST"
+        cancelRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        cancelRequest.setValue(
+            "Bearer \(Self.legacyDebugToken)",
+            forHTTPHeaderField: "Authorization"
+        )
+        cancelRequest.httpBody = try JSONEncoder().encode(
+            RemoteSampleSuggestionActionRequest(action: .cancel)
+        )
+        let (cancelData, cancelResponse) = try await URLSession.shared.data(for: cancelRequest)
+        XCTAssertEqual(try XCTUnwrap(cancelResponse as? HTTPURLResponse).statusCode, 200)
+        let cancelled = try JSONDecoder().decode(
+            RemoteSampleSuggestionActionResponse.self,
+            from: cancelData
+        )
+        XCTAssertEqual(cancelled.activity.phase, .cancelled)
+        XCTAssertEqual(commands.sampleSuggestionCancelCallCount, 1)
+    }
+
+    func testTagLibrarySuggestionRoutesExposeThresholdProgressSubmitAndCancel() async throws {
+        let port = UInt16.random(in: 19_000...29_000)
+        let operationID = UUID()
+        let tagID = UUID()
+        let sourceID = UUID()
+        let activity = TagLibrarySuggestionActivitySnapshot(
+            operationID: operationID,
+            mediaKind: .image,
+            method: .personalCentroid,
+            tagID: tagID,
+            phase: .scoring,
+            completedUnitCount: 5,
+            totalUnitCount: 20,
+            aboveThresholdCount: 3,
+            insertedCount: 0,
+            skippedCount: 1,
+            errorCode: nil
+        )
+        let commands = RemoteHTTPTrainingCommandStub(
+            setupSnapshot: TrainingCommandSetupSnapshot(
+                mediaKind: .image,
+                tags: [],
+                sources: [],
+                supportsPersonalCentroid: true,
+                supportsPersonalAdamW: false
+            ),
+            receipt: TrainingLaunchReceipt(
+                operationID: UUID(),
+                method: .personalCentroid,
+                acceptedAtMs: 0,
+                scheduledTagCount: 0,
+                jobID: nil
+            ),
+            tagSuggestionActivity: activity,
+            tagSuggestionOption: TagLibrarySuggestionTagOption(
+                tagID: tagID,
+                personalEligible: true,
+                personalCentroidMinScore: 0.42,
+                personalAdamWMinScore: 0.61
+            )
+        )
+        let (server, _) = makeServer(port: port, trainingCommands: commands)
+        try await server.start()
+        try await Task.sleep(nanoseconds: 150_000_000)
+        defer { Task { await server.stop() } }
+
+        var snapshotRequest = URLRequest(
+            url: URL(string: "http://127.0.0.1:\(port)/v1/tag-library-suggestions?mediaKind=image")!
+        )
+        snapshotRequest.setValue(
+            "Bearer \(Self.legacyDebugToken)",
+            forHTTPHeaderField: "Authorization"
+        )
+        let (snapshotData, snapshotResponse) = try await URLSession.shared.data(
+            for: snapshotRequest
+        )
+        XCTAssertEqual(try XCTUnwrap(snapshotResponse as? HTTPURLResponse).statusCode, 200)
+        let snapshot = try JSONDecoder().decode(
+            RemoteTagLibrarySuggestionSnapshot.self,
+            from: snapshotData
+        )
+        XCTAssertTrue(snapshot.personalCentroidAvailable)
+        XCTAssertFalse(snapshot.personalAdamWAvailable)
+        XCTAssertEqual(snapshot.tags.first?.personalCentroidMinScore, 0.42)
+        XCTAssertEqual(snapshot.activities.first?.availableActions, [.cancel])
+
+        var submitRequest = URLRequest(
+            url: URL(string: "http://127.0.0.1:\(port)/v1/tag-library-suggestions/requests")!
+        )
+        submitRequest.httpMethod = "POST"
+        submitRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        submitRequest.setValue(
+            "Bearer \(Self.legacyDebugToken)",
+            forHTTPHeaderField: "Authorization"
+        )
+        submitRequest.httpBody = try JSONEncoder().encode(
+            RemoteTagLibrarySuggestionRequest(
+                operationID: operationID,
+                mediaKind: .image,
+                method: .personalCentroid,
+                tagID: tagID,
+                sourceIDs: [sourceID]
+            )
+        )
+        let (submitData, submitResponse) = try await URLSession.shared.data(for: submitRequest)
+        XCTAssertEqual(try XCTUnwrap(submitResponse as? HTTPURLResponse).statusCode, 202)
+        let submitted = try JSONDecoder().decode(
+            RemoteTagLibrarySuggestionResponse.self,
+            from: submitData
+        )
+        XCTAssertEqual(submitted.activity.operationID, operationID)
+        XCTAssertEqual(commands.tagSuggestionSubmitCallCount, 1)
+
+        var cancelRequest = URLRequest(
+            url: URL(
+                string: "http://127.0.0.1:\(port)/v1/tag-library-suggestions/requests/\(operationID.uuidString)/actions"
+            )!
+        )
+        cancelRequest.httpMethod = "POST"
+        cancelRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        cancelRequest.setValue(
+            "Bearer \(Self.legacyDebugToken)",
+            forHTTPHeaderField: "Authorization"
+        )
+        cancelRequest.httpBody = try JSONEncoder().encode(
+            RemoteTagLibrarySuggestionActionRequest(action: .cancel)
+        )
+        let (cancelData, cancelResponse) = try await URLSession.shared.data(for: cancelRequest)
+        XCTAssertEqual(try XCTUnwrap(cancelResponse as? HTTPURLResponse).statusCode, 200)
+        let cancelled = try JSONDecoder().decode(
+            RemoteTagLibrarySuggestionActionResponse.self,
+            from: cancelData
+        )
+        XCTAssertEqual(cancelled.activity.phase, .cancelled)
+        XCTAssertEqual(commands.tagSuggestionCancelCallCount, 1)
+    }
+
     func testCreateTagAndApplyRouteUsesAtomicCatalogMutationOnceAcrossReplay() async throws {
         let port = UInt16.random(in: 19_000...29_000)
         let tagID = UUID()
@@ -389,6 +1499,54 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertTrue(second.replayed)
         XCTAssertNotNil(first.undoID)
         XCTAssertEqual(catalog.createTagCallCount, 1)
+    }
+
+    func testInstallPresetTagsRouteUsesCatalogOnceAcrossReplay() async throws {
+        let port = UInt16.random(in: 19_000...29_000)
+        let createdTag = TagListItem(
+            id: UUID(),
+            displayName: "风景",
+            state: .active,
+            groupID: TagGroupSeed.placesAndScenes.id
+        )
+        let catalog = RemoteHTTPServerTestCatalog(
+            presetInstallResult: TagPresetInstallResult(createdTags: [createdTag])
+        )
+        let (server, _) = makeServer(port: port, catalog: catalog)
+        try await server.start()
+        try await Task.sleep(nanoseconds: 150_000_000)
+        defer { Task { await server.stop() } }
+
+        var request = URLRequest(
+            url: URL(string: "http://127.0.0.1:\(port)/v1/tags/install-presets")!
+        )
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue(
+            "Bearer \(Self.legacyDebugToken)",
+            forHTTPHeaderField: "Authorization"
+        )
+        request.httpBody = try JSONEncoder().encode(
+            RemoteInstallPresetTagsRequest(operationID: UUID())
+        )
+
+        let (firstData, firstResponse) = try await URLSession.shared.data(for: request)
+        let (secondData, secondResponse) = try await URLSession.shared.data(for: request)
+
+        XCTAssertEqual(try XCTUnwrap(firstResponse as? HTTPURLResponse).statusCode, 200)
+        XCTAssertEqual(try XCTUnwrap(secondResponse as? HTTPURLResponse).statusCode, 200)
+        let first = try JSONDecoder().decode(
+            RemoteInstallPresetTagsResponse.self,
+            from: firstData
+        )
+        let second = try JSONDecoder().decode(
+            RemoteInstallPresetTagsResponse.self,
+            from: secondData
+        )
+        XCTAssertEqual(first.createdTags.map(\.displayName), ["风景"])
+        XCTAssertFalse(first.replayed)
+        XCTAssertTrue(second.replayed)
+        XCTAssertEqual(catalog.presetInstallCallCount, 1)
     }
 
     func testBonjourServiceIsAdvertisedOnStart() async throws {
@@ -601,16 +1759,45 @@ final class RemoteHTTPServerTests: XCTestCase {
         try Data("<h1>ImageAll</h1>".utf8)
             .write(to: directory.appendingPathComponent("index.html"))
 
-        let store = RemoteWebCompanionAssetStore(directoryURL: directory)
+        let worldMapDirectory = directory.appendingPathComponent("WorldMap", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: worldMapDirectory,
+            withIntermediateDirectories: true
+        )
+        try Data("<main>Photo Atlas</main>".utf8)
+            .write(to: worldMapDirectory.appendingPathComponent("index.html"))
+
+        let store = RemoteWebCompanionAssetStore(
+            directoryURL: directory,
+            worldMapDirectoryURL: worldMapDirectory
+        )
         let root = try XCTUnwrap(store.asset(for: "/"))
         XCTAssertEqual(root.contentType, "text/html; charset=utf-8")
         XCTAssertEqual(String(decoding: root.body, as: UTF8.self), "<h1>ImageAll</h1>")
+        XCTAssertFalse(root.allowsSameOriginFraming)
+        let worldMap = try XCTUnwrap(store.asset(for: "/world-map/index.html"))
+        XCTAssertEqual(String(decoding: worldMap.body, as: UTF8.self), "<main>Photo Atlas</main>")
+        XCTAssertTrue(worldMap.allowsSameOriginFraming)
         XCTAssertNil(store.asset(for: "/../pairing.json"))
+        XCTAssertNil(store.asset(for: "/world-map/../index.html"))
         XCTAssertNil(store.asset(for: "/v1/capabilities"))
     }
 
     func testBundledWebCompanionExposesDailyWorkflowSurfaces() throws {
-        let store = RemoteWebCompanionAssetStore()
+        // Read the checked-in source assets so this contract also works under the
+        // protected-data-safe bare xctest runner, where Bundle.main is xctest itself.
+        let sourceDirectory = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("ImageAll/Resources/WebCompanion", isDirectory: true)
+        let worldMapDirectory = sourceDirectory
+            .deletingLastPathComponent()
+            .appendingPathComponent("WorldMap", isDirectory: true)
+        let store = RemoteWebCompanionAssetStore(
+            directoryURL: sourceDirectory,
+            worldMapDirectoryURL: worldMapDirectory
+        )
         let html = String(
             decoding: try XCTUnwrap(store.asset(for: "/")?.body),
             as: UTF8.self
@@ -619,13 +1806,21 @@ final class RemoteHTTPServerTests: XCTestCase {
             decoding: try XCTUnwrap(store.asset(for: "/app.js")?.body),
             as: UTF8.self
         )
+        let mediaWorker = String(
+            decoding: try XCTUnwrap(store.asset(for: "/service-worker.js")?.body),
+            as: UTF8.self
+        )
 
         for controlID in [
             "filterPopover",
             "batchBar",
             "reviewWorkspace",
+            "reviewQueuePane",
+            "reviewMarqueeSelection",
+            "reviewSelectionSummary",
             "jobsPopover",
             "lightbox",
+            "lightboxBackButton",
             "accountLoginForm",
             "accountUsername",
             "accountPassword",
@@ -633,25 +1828,165 @@ final class RemoteHTTPServerTests: XCTestCase {
             "newTagForm",
             "newTagName",
             "batchNewTagButton",
+            "prepareSelectedFeaturesButton",
+            "generateSelectedSuggestionsButton",
+            "findSimilarSelectionButton",
+            "embeddingPreparationStatus",
+            "cancelEmbeddingPreparationButton",
+            "selectionInspectorPrepareFeaturesButton",
+            "selectionInspectorGenerateSuggestionsButton",
+            "selectionInspectorFindSimilarButton",
+            "selectionInspectorToolStatus",
+            "selectionInspectorCancelPreparationButton",
             "inspectorNewTagButton",
             "mediaKindTabs",
             "gridDensitySlider",
+            "thumbnailAspectButton",
+            "activeFilterBar",
+            "activeFilterSummary",
+            "activeFilterRelation",
+            "clearActiveFiltersButton",
             "tagNavigation",
+            "sidebarInstallPresetTagsButton",
+            "emptyStateActions",
+            "emptyConnectFolderButton",
+            "emptyConnectPhotosButton",
+            "emptyInstallPresetTagsButton",
             "commandPalette",
             "shortcutDialog",
             "inspectorPreviousButton",
             "inspectorNextButton",
             "previewPlaceholderImage",
+            "previewVideo",
+            "cloudPreviewRecovery",
+            "cloudPreviewButton",
+            "openOriginalButton",
+            "openOriginalButtonLabel",
+            "openOriginalHint",
             "inspectorTagSearch",
             "assetContextMenu",
             "sidebarVisibilityButton",
             "inspectorVisibilityButton",
             "tagManagerDialog",
             "tagManagerButton",
+            "installPresetTagsButton",
             "reviewOverview",
             "reviewOverviewGrid",
             "reviewBackButton",
+            "generateLibrarySuggestionsButton",
+            "cancelSampleSuggestionsButton",
+            "sampleSuggestionReviewStatus",
+            "tagSuggestionDialog",
+            "tagSuggestionForm",
+            "tagSuggestionSourceOptions",
+            "tagSuggestionThresholdSummary",
+            "launchTagSuggestionButton",
             "undoToastButton",
+            "trainingWorkspace",
+            "newTrainingButton",
+            "trainingActivityStrip",
+            "trainingMediaKindTabs",
+            "trainingMethodFilter",
+            "trainingSlotStrip",
+            "trainingRunList",
+            "trainingDetail",
+            "trainingDetailActions",
+            "trainingSetupDialog",
+            "trainingSetupMethods",
+            "trainingTagOptions",
+            "trainingScopeOptions",
+            "launchTrainingButton",
+            "slimmingButton",
+            "slimmingNavigationButton",
+            "slimmingWorkspace",
+            "slimmingWorkspaceTabs",
+            "slimmingMediaKindTabs",
+            "slimmingJobList",
+            "previousSlimmingJobButton",
+            "slimmingJobPosition",
+            "nextSlimmingJobButton",
+            "slimmingJobStatus",
+            "slimmingInspector",
+            "slimmingInspectorSummary",
+            "slimmingInspectorContent",
+            "slimmingClusterList",
+            "slimmingMemberGrid",
+            "slimmingSelectionSummary",
+            "slimmingSelectionBar",
+            "slimmingMoveToRecycleButton",
+            "slimmingReleaseSpaceButton",
+            "slimmingRemovalStatus",
+            "slimmingIdenticalCleanupButton",
+            "slimmingIdenticalCleanupDialog",
+            "slimmingIdenticalCleanupMetrics",
+            "recoverableSlimmingIdenticalCleanupButton",
+            "fastSlimmingIdenticalCleanupButton",
+            "slimmingVerificationDialog",
+            "slimmingVerificationMetrics",
+            "slimmingVerificationResult",
+            "closeSlimmingVerificationButton",
+            "newSlimmingAnalysisButton",
+            "slimmingJobActions",
+            "slimmingSetupDialog",
+            "slimmingModeOptions",
+            "slimmingSourceOptions",
+            "slimmingRecallMode",
+            "slimmingL2Mode",
+            "slimmingDINOMode",
+            "slimmingBucketingMode",
+            "resetSlimmingThresholdsButton",
+            "launchSlimmingButton",
+            "slimmingRecycleBody",
+            "slimmingRecycleSearchInput",
+            "slimmingRecycleSourceSelect",
+            "slimmingRecycleRequestStatus",
+            "slimmingRecycleList",
+            "slimmingRecycleLoadMoreButton",
+            "sourceManagerButton",
+            "sourceManagerDialog",
+            "sourceConnectFolderButton",
+            "sourceConnectPhotosButton",
+            "sourceManagerPending",
+            "sourceManagerList",
+            "emptySourceRecoveryButton",
+            "emptyOpenSourceManagerButton",
+            "storageButton",
+            "storageDialog",
+            "storagePending",
+            "previewCacheSize",
+            "photosOriginalsSize",
+            "appStorageKind",
+            "clearPreviewCacheButton",
+            "clearPhotosOriginalsButton",
+            "chooseExternalStorageButton",
+            "exportPortableDataButton",
+            "storageHistory",
+            "storageRefreshButton",
+            "worldMapButton",
+            "worldMapNavigationButton",
+            "worldMapWorkspace",
+            "worldMapFrame",
+            "worldMapClusterMetric",
+            "worldMapDetail",
+            "worldMapPhotoStrip",
+            "openWorldMapLocationBackfillButton",
+            "worldMapLocationBackfillDialog",
+            "worldMapLocationBackfillSources",
+            "openWorldMapPlaceTagsButton",
+            "worldMapPlaceTagDialog",
+            "worldMapPlaceTagBody",
+            "worldMapPlaceTagItems",
+            "galleryOverviewNavigationButton",
+            "galleryOverviewWorkspace",
+            "galleryOverviewMediaLedger",
+            "galleryOverviewSources",
+            "galleryOverviewTags",
+            "galleryOverviewTimeline",
+            "lightboxVideo",
+            "lightboxReviewActions",
+            "undoTagButton",
+            "undoReviewButton",
+            "reviewUndoButton",
         ] {
             XCTAssertTrue(html.contains("id=\"\(controlID)\""))
         }
@@ -664,14 +1999,74 @@ final class RemoteHTTPServerTests: XCTestCase {
             "/v1/review/queue",
             "/v1/review/overview",
             "/v1/review/decisions/batch",
+            "/v1/review/decisions/undo",
+            "/v1/training/workspace",
+            "/v1/training/setup",
+            "/v1/training/launch",
+            "/v1/training/activities/${operationID}/actions",
+            "/v1/embedding-preparation",
+            "/v1/embedding-preparation/requests",
+            "/v1/embedding-preparation/requests/${activity.operationID}/actions",
+            "/v1/sample-suggestions",
+            "/v1/sample-suggestions/requests",
+            "/v1/sample-suggestions/requests/${activity.operationID}/actions",
+            "/v1/tag-library-suggestions",
+            "/v1/tag-library-suggestions/requests",
+            "/v1/tag-library-suggestions/requests/${operationID}/actions",
+            "/v1/library-slimming/workspace",
+            "/v1/library-slimming/setup",
+            "/v1/library-slimming/launch",
+            "/v1/library-slimming/thresholds",
+            "/v1/library-slimming/jobs/${jobID}/actions",
+            "/v1/library-slimming/recycle",
+            "/v1/library-slimming/recycle/requests",
+            "/v1/library-slimming/removals",
+            "/v1/library-slimming/identical-cleanup/plans",
+            "/v1/library-slimming/identical-cleanup/requests",
+            "/v1/source-management",
+            "/v1/source-management/requests",
+            "/v1/storage-maintenance",
+            "/v1/storage-maintenance/requests",
+            "/v1/world-map/snapshot",
+            "/v1/world-map/selection",
+            "/v1/world-map/location-backfill",
+            "/v1/world-map/location-backfill/requests",
+            "/v1/world-map/place-tags",
+            "/v1/world-map/place-tags/requests",
+            "/v1/gallery-overview",
             "/v1/jobs/",
             "/web/account/login",
             "/v1/tags/create-and-apply",
+            "/v1/assets/${assetID}/media",
+            "/v1/assets/${detail.assetID}/open-original",
         ] {
             XCTAssertTrue(script.contains(endpoint))
         }
         XCTAssertFalse(script.contains("/v1/review-queue"))
         XCTAssertFalse(script.contains("/v1/review-decisions/batch"))
+        XCTAssertTrue(script.contains("function handleWorldMapMessage"))
+        XCTAssertTrue(script.contains("function renderWorldMapLocationBackfill"))
+        XCTAssertTrue(script.contains("function submitWorldMapLocationBackfill"))
+        XCTAssertTrue(script.contains("function renderWorldMapPlaceTags"))
+        XCTAssertTrue(script.contains("function submitWorldMapPlaceTagSearch"))
+        XCTAssertTrue(script.contains("function confirmWorldMapPlaceTag"))
+        XCTAssertTrue(script.contains("function renderGalleryOverview"))
+        XCTAssertTrue(script.contains("function drillDownFromGalleryOverview"))
+        XCTAssertTrue(script.contains("function renderActiveFilterBar"))
+        XCTAssertTrue(script.contains("function activeFilterSummaryText"))
+        XCTAssertTrue(script.contains("function renderLightboxMedia"))
+        XCTAssertTrue(script.contains("function loadMoreLightboxItems"))
+        XCTAssertTrue(script.contains("function syncLibraryLightboxSelection"))
+        XCTAssertTrue(script.contains("lightboxPendingDirection"))
+        XCTAssertTrue(script.contains("function applyLightboxReviewDecision"))
+        XCTAssertTrue(script.contains("function selectAllReviewItems"))
+        XCTAssertTrue(script.contains("function startReviewMarqueeSelection"))
+        XCTAssertTrue(script.contains("state.review.selectedAssetIDs"))
+        XCTAssertFalse(script.contains("confirmBatchTagDecision"))
+        XCTAssertTrue(script.contains("tagAction:accept:${tag.id}"))
+        XCTAssertTrue(script.contains("sourceAction:${action}:${selectedSource.id}"))
+        XCTAssertTrue(script.contains("openLightbox(\"worldMap\""))
+        XCTAssertNotNil(store.asset(for: "/world-map/index.html"))
         XCTAssertTrue(script.contains("setProtectedImageSource"))
         XCTAssertTrue(script.contains("Basic ${btoa(binary)}"))
         XCTAssertTrue(script.contains("assetPageFingerprint"))
@@ -683,8 +2078,33 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertTrue(script.contains("button.dataset.imageKey === imageKey"))
         XCTAssertTrue(script.contains("syncAssetCardPosition(button, index)"))
         XCTAssertFalse(script.contains("elements.assetGrid.append(button);"))
-        XCTAssertTrue(script.contains("confirmBatchTagDecision(action, tagName, assetCount)"))
-        XCTAssertTrue(script.contains("确认要为 ${mediaItemCountText(assetCount)}${actionText}标签"))
+        XCTAssertTrue(script.contains("async function applyBatchTagDecision"))
+        XCTAssertTrue(script.contains("submitSourceManagementAction"))
+        XCTAssertTrue(script.contains("scheduleSourceManagementPoll"))
+        XCTAssertTrue(script.contains("prewarmThumbnails"))
+        XCTAssertTrue(script.contains("prewarmOriginalAspect"))
+        XCTAssertTrue(script.contains("cancelPrewarm"))
+        XCTAssertTrue(script.contains("requestPhotosWriteAuthorization"))
+        XCTAssertTrue(script.contains("refreshFolderMutationAuthorization"))
+        XCTAssertTrue(script.contains("sourcePrewarmStatusButton"))
+        XCTAssertTrue(script.contains("renderStorageMaintenance"))
+        XCTAssertTrue(script.contains("submitStorageMaintenanceAction"))
+        XCTAssertTrue(script.contains("scheduleStorageMaintenancePoll"))
+        XCTAssertTrue(script.contains("submitSlimmingRecycleAction"))
+        XCTAssertTrue(script.contains("scheduleSlimmingRecyclePoll"))
+        XCTAssertTrue(script.contains("navigateSlimmingJob"))
+        XCTAssertTrue(script.contains("renderSlimmingJobStatus"))
+        XCTAssertTrue(script.contains("renderSlimmingInspector"))
+        XCTAssertTrue(script.contains("openSlimmingJobFromActivity"))
+        XCTAssertTrue(script.contains("openAssociatedActivity"))
+        XCTAssertTrue(script.contains("openTrainingWorkspaceForReviewTag"))
+        XCTAssertTrue(script.contains("openReviewFromTrainingRun"))
+        XCTAssertTrue(script.contains("reviewFeatureTagId"))
+        XCTAssertTrue(script.contains("trainingReviewRunId"))
+        XCTAssertTrue(script.contains("jobFailureGuidance"))
+        XCTAssertTrue(script.contains("openSlimmingVerificationReport"))
+        XCTAssertTrue(script.contains("targetRetainedAssetCount"))
+        XCTAssertFalse(script.contains("确认要为 ${mediaItemCountText(assetCount)}${actionText}标签"))
         XCTAssertTrue(script.contains("event.metaKey || event.ctrlKey"))
         XCTAssertTrue(script.contains("event.shiftKey"))
         XCTAssertTrue(script.contains("selectAssetRange"))
@@ -698,12 +2118,45 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertTrue(script.contains("persistWorkspacePreferences"))
         XCTAssertTrue(script.contains("new IntersectionObserver"))
         XCTAssertTrue(script.contains("expandedRefreshKinds"))
+        XCTAssertTrue(script.contains("loadTrainingWorkspace"))
+        XCTAssertTrue(script.contains("renderTrainingDetail"))
+        XCTAssertTrue(script.contains("openTrainingSetupDialog"))
+        XCTAssertTrue(script.contains("openTrainingSetupForRun"))
+        XCTAssertTrue(script.contains("openAssociatedJob"))
+        XCTAssertTrue(script.contains("renderTrainingDetailActions"))
+        XCTAssertTrue(script.contains("submitTrainingSetup"))
+        XCTAssertTrue(script.contains("renderSlimmingWorkspace"))
+        XCTAssertTrue(script.contains("selectSlimmingMember"))
+        XCTAssertTrue(script.contains("openSlimmingSetupDialog"))
+        XCTAssertTrue(script.contains("submitSlimmingSetup"))
+        XCTAssertTrue(script.contains("saveSlimmingThresholds"))
+        XCTAssertTrue(script.contains("applySlimmingJobAction"))
+        XCTAssertTrue(script.contains("allSourcesSelected ? null : selectedSourceIDs"))
+        XCTAssertTrue(script.contains("state.slimming.selectedMemberIDs = new Set"))
+        XCTAssertTrue(script.contains("trainingLaunchUnavailable"))
         XCTAssertTrue(script.contains("assetLoadPromise"))
         XCTAssertTrue(script.contains("assetQuerySignature"))
         XCTAssertTrue(script.contains("renderReviewOverview"))
         XCTAssertTrue(script.contains("renderTagManager"))
-        XCTAssertTrue(script.contains("undoLatestTagDecision"))
-        XCTAssertTrue(script.contains("state.latestUndoOperationID"))
+        XCTAssertTrue(script.contains("installPresetTags"))
+        XCTAssertTrue(script.contains("/v1/tags/install-presets"))
+        XCTAssertTrue(script.contains("开始建立你的照片资料库"))
+        XCTAssertTrue(script.contains("setupSidebarReordering"))
+        XCTAssertTrue(script.contains("sourceOrderIDs"))
+        XCTAssertTrue(script.contains("tagOrderIDsByGroup"))
+        XCTAssertTrue(script.contains("collapsedSidebarTagGroupIDs"))
+        XCTAssertTrue(script.contains("data-sidebar-tag-group-toggle"))
+        XCTAssertTrue(script.contains("data-tag-reorder-surface"))
+        XCTAssertTrue(script.contains("configureInspectorTagReordering"))
+        XCTAssertTrue(script.contains("moveSidebarTagToAdjacentGroup"))
+        XCTAssertTrue(script.contains("toggleSidebarTagFilter"))
+        XCTAssertTrue(script.contains("showTagContextMenu"))
+        XCTAssertTrue(script.contains("showTagGroupContextMenu"))
+        XCTAssertTrue(script.contains("data-tag-context-action"))
+        XCTAssertTrue(script.contains("openTagManagerForTag"))
+        XCTAssertTrue(script.contains("undoLatestDecision"))
+        XCTAssertTrue(script.contains("state.undo.tag"))
+        XCTAssertTrue(script.contains("state.undo.review"))
         XCTAssertFalse(script.contains("operationID: crypto.randomUUID(), undoID"))
         XCTAssertTrue(script.contains("protectedImageRequests"))
         XCTAssertTrue(script.contains("protectedImageAbortControllers"))
@@ -715,6 +2168,35 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertTrue(script.contains("assetThumbnailPlaceholder"))
         XCTAssertTrue(script.contains("showPreviewPlaceholder"))
         XCTAssertTrue(script.contains("hidePreviewPlaceholder"))
+        XCTAssertTrue(script.contains("cloud preview required"))
+        XCTAssertTrue(script.contains("downloadSelectedCloudPreview"))
+        XCTAssertTrue(script.contains("/cloud-preview"))
+        XCTAssertTrue(script.contains("forceFetch: true"))
+        XCTAssertTrue(script.contains("showInspectorVideo"))
+        XCTAssertTrue(script.contains("function beginAssetHoverVideo"))
+        XCTAssertTrue(script.contains("async function mountAssetHoverVideo"))
+        XCTAssertTrue(script.contains("function stopAssetHoverVideo"))
+        XCTAssertTrue(script.contains("video.muted = true"))
+        XCTAssertTrue(script.contains("video.loop = true"))
+        XCTAssertTrue(script.contains("asset-video-badge"))
+        XCTAssertTrue(script.contains("prefers-reduced-motion: reduce"))
+        XCTAssertTrue(script.contains("updateMediaWorkerAuthorization"))
+        XCTAssertTrue(mediaWorker.contains("headers.set(\"Authorization\", authorization)"))
+        XCTAssertTrue(mediaWorker.contains("event.request.headers"))
+        XCTAssertTrue(mediaWorker.contains("requestAuthorizationFromClient(event.clientId)"))
+        XCTAssertTrue(mediaWorker.contains("self.clients.matchAll"))
+        XCTAssertTrue(mediaWorker.contains("includeUncontrolled: false"))
+        XCTAssertTrue(mediaWorker.contains("new Request(event.request.url"))
+        XCTAssertTrue(mediaWorker.contains("mode: \"same-origin\""))
+        XCTAssertTrue(script.contains("imageall-media-authorization-request"))
+        XCTAssertTrue(script.contains("updateViaCache: \"none\""))
+        XCTAssertTrue(script.contains("navigator.serviceWorker.controller?.scriptURL !== expectedURL"))
+        XCTAssertTrue(script.contains("elements.previewVideo.dataset.contentRevision === contentRevision"))
+        XCTAssertTrue(script.contains("formatDuration(detail.durationMs)"))
+        XCTAssertTrue(script.contains("formatFileSize(detail.fingerprintSizeBytes)"))
+        XCTAssertTrue(script.contains("openSelectedOriginalOnMac"))
+        XCTAssertFalse(mediaWorker.contains("localStorage"))
+        XCTAssertTrue(script.contains("state.layout.aspectMode"))
         XCTAssertTrue(script.contains("已显示缩略图，大图暂不可用"))
         XCTAssertTrue(script.contains("new AbortController()"))
         XCTAssertTrue(script.contains("imageall-protected-load"))
@@ -799,11 +2281,21 @@ final class RemoteHTTPServerTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: directory) }
         try Data("<main>ImageAll Web</main>".utf8)
             .write(to: directory.appendingPathComponent("index.html"))
+        let worldMapDirectory = directory.appendingPathComponent("WorldMap", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: worldMapDirectory,
+            withIntermediateDirectories: true
+        )
+        try Data("<main>Photo Atlas</main>".utf8)
+            .write(to: worldMapDirectory.appendingPathComponent("index.html"))
 
         let port = UInt16.random(in: 19_000...29_000)
         let (server, _) = makeServer(
             port: port,
-            webAssetStore: RemoteWebCompanionAssetStore(directoryURL: directory)
+            webAssetStore: RemoteWebCompanionAssetStore(
+                directoryURL: directory,
+                worldMapDirectoryURL: worldMapDirectory
+            )
         )
         try await server.start()
         try await Task.sleep(nanoseconds: 150_000_000)
@@ -821,6 +2313,148 @@ final class RemoteHTTPServerTests: XCTestCase {
             try XCTUnwrap(http.value(forHTTPHeaderField: "Content-Security-Policy"))
                 .contains("frame-ancestors 'none'")
         )
+        XCTAssertTrue(
+            try XCTUnwrap(http.value(forHTTPHeaderField: "Content-Security-Policy"))
+                .contains("worker-src 'self'")
+        )
+
+        let (_, mapResponse) = try await URLSession.shared.data(
+            from: URL(string: "http://127.0.0.1:\(port)/world-map/index.html")!
+        )
+        let mapHTTP = try XCTUnwrap(mapResponse as? HTTPURLResponse)
+        XCTAssertEqual(mapHTTP.statusCode, 200)
+        XCTAssertEqual(mapHTTP.value(forHTTPHeaderField: "X-Frame-Options"), "SAMEORIGIN")
+        XCTAssertTrue(
+            try XCTUnwrap(mapHTTP.value(forHTTPHeaderField: "Content-Security-Policy"))
+                .contains("frame-ancestors 'self'")
+        )
+    }
+
+    func testByteRangeParserSupportsBrowserRangeForms() {
+        XCTAssertEqual(
+            RemoteHTTPServer.parseByteRange(nil, contentLength: 10),
+            .full
+        )
+        XCTAssertEqual(
+            RemoteHTTPServer.parseByteRange("bytes=2-5", contentLength: 10),
+            .partial(RemoteHTTPByteRange(lowerBound: 2, upperBound: 5))
+        )
+        XCTAssertEqual(
+            RemoteHTTPServer.parseByteRange("bytes=7-", contentLength: 10),
+            .partial(RemoteHTTPByteRange(lowerBound: 7, upperBound: 9))
+        )
+        XCTAssertEqual(
+            RemoteHTTPServer.parseByteRange("bytes=-3", contentLength: 10),
+            .partial(RemoteHTTPByteRange(lowerBound: 7, upperBound: 9))
+        )
+        XCTAssertEqual(
+            RemoteHTTPServer.parseByteRange("bytes=20-30", contentLength: 10),
+            .unsatisfiable
+        )
+        XCTAssertEqual(
+            RemoteHTTPServer.parseByteRange("bytes=0-1,4-5", contentLength: 10),
+            .unsatisfiable
+        )
+    }
+
+    func testMediaRouteStreamsRealMIMEAndSingleByteRange() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("RemoteHTTPServerTests-Media-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let fixtureURL = directory.appendingPathComponent("fixture.mp4")
+        try Data("0123456789".utf8).write(to: fixtureURL)
+
+        let assetID = UUID()
+        let port = UInt16.random(in: 19_000...29_000)
+        let (server, _) = makeServer(
+            port: port,
+            mediaResources: RemoteHTTPServerTestMediaProvider(url: fixtureURL)
+        )
+        try await server.start()
+        try await Task.sleep(nanoseconds: 150_000_000)
+        defer { Task { await server.stop() } }
+
+        let endpointURL = try XCTUnwrap(
+            URL(string: "http://127.0.0.1:\(port)/v1/assets/\(assetID.uuidString)/media")
+        )
+        func request(
+            method: String = "GET",
+            range: String? = nil
+        ) async throws -> (Data, HTTPURLResponse) {
+            var request = URLRequest(url: endpointURL)
+            request.httpMethod = method
+            request.setValue(
+                "Bearer \(Self.legacyDebugToken)",
+                forHTTPHeaderField: "Authorization"
+            )
+            if let range {
+                request.setValue(range, forHTTPHeaderField: "Range")
+            }
+            let (data, response) = try await URLSession.shared.data(for: request)
+            return (data, try XCTUnwrap(response as? HTTPURLResponse))
+        }
+
+        let (data, http) = try await request(range: "bytes=2-5")
+        XCTAssertEqual(http.statusCode, 206)
+        XCTAssertEqual(data, Data("2345".utf8))
+        XCTAssertEqual(http.value(forHTTPHeaderField: "Content-Type"), "video/mp4")
+        XCTAssertEqual(http.value(forHTTPHeaderField: "Accept-Ranges"), "bytes")
+        XCTAssertEqual(http.value(forHTTPHeaderField: "Content-Range"), "bytes 2-5/10")
+        XCTAssertEqual(http.value(forHTTPHeaderField: "Content-Length"), "4")
+
+        let (headData, head) = try await request(method: "HEAD", range: "bytes=7-")
+        XCTAssertEqual(head.statusCode, 206)
+        XCTAssertTrue(headData.isEmpty)
+        XCTAssertEqual(head.value(forHTTPHeaderField: "Content-Range"), "bytes 7-9/10")
+        XCTAssertEqual(head.value(forHTTPHeaderField: "Content-Length"), "3")
+
+        let (rejectedData, rejected) = try await request(range: "bytes=20-30")
+        XCTAssertEqual(rejected.statusCode, 416)
+        XCTAssertTrue(rejectedData.isEmpty)
+        XCTAssertEqual(rejected.value(forHTTPHeaderField: "Content-Range"), "bytes */10")
+
+        let (fullData, full) = try await request()
+        XCTAssertEqual(full.statusCode, 200)
+        XCTAssertEqual(fullData, Data("0123456789".utf8))
+        XCTAssertEqual(full.value(forHTTPHeaderField: "Content-Type"), "video/mp4")
+        XCTAssertEqual(full.value(forHTTPHeaderField: "Accept-Ranges"), "bytes")
+    }
+
+    func testOpenOriginalRouteDelegatesToMacOpener() async throws {
+        let port = UInt16.random(in: 19_000...29_000)
+        let assetID = UUID()
+        let opener = await MainActor.run { RemoteOriginalAssetOpenerSpy() }
+        let (server, _) = makeServer(
+            port: port,
+            originalAssetOpener: opener
+        )
+        try await server.start()
+        try await Task.sleep(nanoseconds: 150_000_000)
+        defer { Task { await server.stop() } }
+
+        var request = URLRequest(
+            url: URL(
+                string: "http://127.0.0.1:\(port)/v1/assets/\(assetID.uuidString)/open-original"
+            )!
+        )
+        request.httpMethod = "POST"
+        request.setValue(
+            "Bearer \(Self.legacyDebugToken)",
+            forHTTPHeaderField: "Authorization"
+        )
+        request.setValue(
+            "http://127.0.0.1:\(port)",
+            forHTTPHeaderField: "Origin"
+        )
+        request.setValue("127.0.0.1:\(port)", forHTTPHeaderField: "Host")
+        request.setValue("same-origin", forHTTPHeaderField: "Sec-Fetch-Site")
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        XCTAssertEqual(try XCTUnwrap(response as? HTTPURLResponse).statusCode, 204)
+        XCTAssertTrue(data.isEmpty)
+        let openedAssetIDs = await MainActor.run { opener.openedAssetIDs }
+        XCTAssertEqual(openedAssetIDs, [assetID])
     }
 
     func testLoopbackWebPortServesTheSameCompanionWithoutChangingPrimaryPort() async throws {
@@ -1089,10 +2723,329 @@ final class RemoteHTTPServerTests: XCTestCase {
         )
     }
 
+    func testCloudOnlyPreviewRequiresExplicitPostAndReturnsBrowserImage() async throws {
+        let assetID = UUID()
+        let sourceTIFF = try XCTUnwrap(FolderReconcileTestSupport.minimalTIFFData())
+        let catalog = RemoteHTTPServerTestCatalog(
+            previewError: .cloudOnly,
+            cloudPreviewData: sourceTIFF
+        )
+        let port = UInt16.random(in: 19_000...29_000)
+        let (server, _) = makeServer(port: port, catalog: catalog)
+        try await server.start()
+        try await Task.sleep(nanoseconds: 150_000_000)
+        defer { Task { await server.stop() } }
+
+        let previewURL = URL(
+            string: "http://127.0.0.1:\(port)/v1/assets/\(assetID.uuidString)/preview"
+        )!
+        var ordinaryRequest = URLRequest(url: previewURL)
+        ordinaryRequest.setValue(
+            "Bearer \(Self.legacyDebugToken)",
+            forHTTPHeaderField: "Authorization"
+        )
+        let (ordinaryData, ordinaryResponse) = try await URLSession.shared.data(
+            for: ordinaryRequest
+        )
+        XCTAssertEqual(
+            try XCTUnwrap(ordinaryResponse as? HTTPURLResponse).statusCode,
+            409
+        )
+        XCTAssertEqual(
+            try JSONDecoder().decode(RemoteAPIError.self, from: ordinaryData),
+            RemoteAPIError(code: .conflict, message: "cloud preview required")
+        )
+
+        var cloudRequest = URLRequest(
+            url: URL(
+                string: "http://127.0.0.1:\(port)/v1/assets/\(assetID.uuidString)/cloud-preview"
+            )!
+        )
+        cloudRequest.httpMethod = "POST"
+        cloudRequest.setValue(
+            "Bearer \(Self.legacyDebugToken)",
+            forHTTPHeaderField: "Authorization"
+        )
+        let (cloudData, cloudResponse) = try await URLSession.shared.data(for: cloudRequest)
+        let cloudHTTP = try XCTUnwrap(cloudResponse as? HTTPURLResponse)
+        XCTAssertEqual(cloudHTTP.statusCode, 200)
+        XCTAssertEqual(catalog.cloudPreviewCallCount, 1)
+        let source = try XCTUnwrap(CGImageSourceCreateWithData(cloudData as CFData, nil))
+        let outputType = try XCTUnwrap(CGImageSourceGetType(source) as String?)
+        XCTAssertTrue([UTType.jpeg.identifier, UTType.png.identifier].contains(outputType))
+    }
+
     func testWebSocketAcceptValueMatchesRFC6455Example() {
         // RFC 6455 §1.3 canonical example.
         let accept = RemoteHTTPServer.webSocketAcceptValue(secWebSocketKey: "dGhlIHNhbXBsZSBub25jZQ==")
         XCTAssertEqual(accept, "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=")
+    }
+}
+
+private final class RemoteHTTPTrainingWorkspaceStub: TrainingWorkspacePort, @unchecked Sendable {
+    private let lock = NSLock()
+    private let storedSnapshot: TrainingWorkspaceSnapshot
+    private var storedLastMediaKind: MediaKind?
+    private var storedLastMethod: TrainingRunMethod?
+
+    var lastMediaKind: MediaKind? { lock.withLock { storedLastMediaKind } }
+    var lastMethod: TrainingRunMethod? { lock.withLock { storedLastMethod } }
+
+    init(snapshot: TrainingWorkspaceSnapshot) {
+        storedSnapshot = snapshot
+    }
+
+    func snapshot(
+        mediaKind: MediaKind,
+        method: TrainingRunMethod?,
+        limit: Int
+    ) throws -> TrainingWorkspaceSnapshot {
+        _ = limit
+        lock.withLock {
+            storedLastMediaKind = mediaKind
+            storedLastMethod = method
+        }
+        return storedSnapshot
+    }
+}
+
+private final class RemoteHTTPTrainingCommandStub: RemoteTrainingCommandPort, @unchecked Sendable {
+    private let lock = NSLock()
+    private let setupSnapshot: TrainingCommandSetupSnapshot
+    private let receipt: TrainingLaunchReceipt
+    private let embeddingActivity: EmbeddingPreparationActivitySnapshot?
+    private let sampleActivity: SampleSuggestionActivitySnapshot?
+    private let tagSuggestionActivity: TagLibrarySuggestionActivitySnapshot?
+    private let tagSuggestionOption: TagLibrarySuggestionTagOption?
+    private var storedLaunchCallCount = 0
+    private var storedCancelCallCount = 0
+    private var storedLastCommand: TrainingLaunchCommand?
+    private var storedEmbeddingPrepareCallCount = 0
+    private var storedEmbeddingCancelCallCount = 0
+    private var storedSampleSuggestionSubmitCallCount = 0
+    private var storedSampleSuggestionCancelCallCount = 0
+    private var storedTagSuggestionSubmitCallCount = 0
+    private var storedTagSuggestionCancelCallCount = 0
+
+    var launchCallCount: Int { lock.withLock { storedLaunchCallCount } }
+    var cancelCallCount: Int { lock.withLock { storedCancelCallCount } }
+    var lastCommand: TrainingLaunchCommand? { lock.withLock { storedLastCommand } }
+    var embeddingPrepareCallCount: Int { lock.withLock { storedEmbeddingPrepareCallCount } }
+    var embeddingCancelCallCount: Int { lock.withLock { storedEmbeddingCancelCallCount } }
+    var sampleSuggestionSubmitCallCount: Int {
+        lock.withLock { storedSampleSuggestionSubmitCallCount }
+    }
+    var sampleSuggestionCancelCallCount: Int {
+        lock.withLock { storedSampleSuggestionCancelCallCount }
+    }
+    var tagSuggestionSubmitCallCount: Int {
+        lock.withLock { storedTagSuggestionSubmitCallCount }
+    }
+    var tagSuggestionCancelCallCount: Int {
+        lock.withLock { storedTagSuggestionCancelCallCount }
+    }
+
+    init(
+        setupSnapshot: TrainingCommandSetupSnapshot,
+        receipt: TrainingLaunchReceipt,
+        embeddingActivity: EmbeddingPreparationActivitySnapshot? = nil,
+        sampleActivity: SampleSuggestionActivitySnapshot? = nil,
+        tagSuggestionActivity: TagLibrarySuggestionActivitySnapshot? = nil,
+        tagSuggestionOption: TagLibrarySuggestionTagOption? = nil
+    ) {
+        self.setupSnapshot = setupSnapshot
+        self.receipt = receipt
+        self.embeddingActivity = embeddingActivity
+        self.sampleActivity = sampleActivity
+        self.tagSuggestionActivity = tagSuggestionActivity
+        self.tagSuggestionOption = tagSuggestionOption
+    }
+
+    func setup(mediaKind: MediaKind) async throws -> TrainingCommandSetupSnapshot {
+        XCTAssertEqual(mediaKind, setupSnapshot.mediaKind)
+        return setupSnapshot
+    }
+
+    func launch(_ command: TrainingLaunchCommand) async throws -> TrainingLaunchReceipt {
+        lock.withLock {
+            storedLaunchCallCount += 1
+            storedLastCommand = command
+        }
+        return TrainingLaunchReceipt(
+            operationID: command.operationID,
+            method: receipt.method,
+            acceptedAtMs: receipt.acceptedAtMs,
+            scheduledTagCount: receipt.scheduledTagCount,
+            jobID: receipt.jobID
+        )
+    }
+
+    func activities(mediaKind: MediaKind) async -> [TrainingCommandActivitySnapshot] {
+        _ = mediaKind
+        return []
+    }
+
+    func cancelActivity(operationID: UUID) async throws -> TrainingCommandActivitySnapshot {
+        lock.withLock { storedCancelCallCount += 1 }
+        return TrainingCommandActivitySnapshot(
+            operationID: operationID,
+            mediaKind: .image,
+            method: .personalCentroid,
+            phase: .cancelled,
+            completedUnitCount: 0,
+            totalUnitCount: 1,
+            sampleCount: nil,
+            errorCode: nil
+        )
+    }
+
+    func embeddingPreparationAvailable() async -> Bool {
+        embeddingActivity != nil
+    }
+
+    func prepareEmbeddings(
+        _ command: EmbeddingPreparationCommand
+    ) async throws -> EmbeddingPreparationReceipt {
+        guard let embeddingActivity else { throw TrainingCommandError.unavailable }
+        lock.withLock { storedEmbeddingPrepareCallCount += 1 }
+        XCTAssertEqual(command.operationID, embeddingActivity.operationID)
+        return EmbeddingPreparationReceipt(activity: embeddingActivity, replayed: false)
+    }
+
+    func embeddingPreparationActivities(
+        mediaKind: MediaKind
+    ) async -> [EmbeddingPreparationActivitySnapshot] {
+        guard let embeddingActivity, embeddingActivity.mediaKind == mediaKind else { return [] }
+        return [embeddingActivity]
+    }
+
+    func cancelEmbeddingPreparation(
+        operationID: UUID
+    ) async throws -> EmbeddingPreparationActivitySnapshot {
+        guard let embeddingActivity, embeddingActivity.operationID == operationID else {
+            throw TrainingCommandError.activityNotFound
+        }
+        lock.withLock { storedEmbeddingCancelCallCount += 1 }
+        return EmbeddingPreparationActivitySnapshot(
+            operationID: operationID,
+            mediaKind: embeddingActivity.mediaKind,
+            phase: .cancelled,
+            completedUnitCount: embeddingActivity.completedUnitCount,
+            totalUnitCount: embeddingActivity.totalUnitCount,
+            preparedCount: embeddingActivity.preparedCount,
+            cachedCount: embeddingActivity.cachedCount,
+            cloudOnlyCount: embeddingActivity.cloudOnlyCount,
+            failedCount: embeddingActivity.failedCount,
+            errorCode: nil
+        )
+    }
+
+    func sampleSuggestionsAvailable(mediaKind: MediaKind) async -> Bool {
+        sampleActivity?.mediaKind == mediaKind
+    }
+
+    func generateSampleSuggestions(
+        _ command: SampleSuggestionCommand
+    ) async throws -> SampleSuggestionReceipt {
+        guard let sampleActivity else { throw TrainingCommandError.unavailable }
+        lock.withLock { storedSampleSuggestionSubmitCallCount += 1 }
+        XCTAssertEqual(command.operationID, sampleActivity.operationID)
+        return SampleSuggestionReceipt(activity: sampleActivity, replayed: false)
+    }
+
+    func sampleSuggestionActivities(
+        mediaKind: MediaKind
+    ) async -> [SampleSuggestionActivitySnapshot] {
+        guard let sampleActivity, sampleActivity.mediaKind == mediaKind else { return [] }
+        return [sampleActivity]
+    }
+
+    func cancelSampleSuggestions(
+        operationID: UUID
+    ) async throws -> SampleSuggestionActivitySnapshot {
+        guard let sampleActivity, sampleActivity.operationID == operationID else {
+            throw TrainingCommandError.activityNotFound
+        }
+        lock.withLock { storedSampleSuggestionCancelCallCount += 1 }
+        return SampleSuggestionActivitySnapshot(
+            operationID: operationID,
+            mediaKind: sampleActivity.mediaKind,
+            phase: .cancelled,
+            completedUnitCount: sampleActivity.completedUnitCount,
+            totalUnitCount: sampleActivity.totalUnitCount,
+            suggestedCount: sampleActivity.suggestedCount,
+            skippedCount: sampleActivity.skippedCount,
+            errorCode: nil
+        )
+    }
+
+    func tagLibrarySuggestionsAvailable(
+        mediaKind: MediaKind,
+        method: TagLibrarySuggestionMethod
+    ) async -> Bool {
+        guard let tagSuggestionActivity else { return false }
+        return tagSuggestionActivity.mediaKind == mediaKind
+            && tagSuggestionActivity.method == method
+    }
+
+    func tagLibrarySuggestionTagOptions(
+        mediaKind: MediaKind
+    ) async throws -> [TagLibrarySuggestionTagOption] {
+        guard mediaKind == tagSuggestionActivity?.mediaKind,
+              let tagSuggestionOption
+        else { return [] }
+        return [tagSuggestionOption]
+    }
+
+    func generateTagLibrarySuggestions(
+        _ command: TagLibrarySuggestionCommand
+    ) async throws -> TagLibrarySuggestionReceipt {
+        guard let tagSuggestionActivity else { throw TrainingCommandError.unavailable }
+        lock.withLock { storedTagSuggestionSubmitCallCount += 1 }
+        XCTAssertEqual(command.operationID, tagSuggestionActivity.operationID)
+        XCTAssertEqual(command.tagID, tagSuggestionActivity.tagID)
+        XCTAssertFalse(command.sourceIDs.isEmpty)
+        return TagLibrarySuggestionReceipt(activity: tagSuggestionActivity, replayed: false)
+    }
+
+    func tagLibrarySuggestionActivities(
+        mediaKind: MediaKind
+    ) async -> [TagLibrarySuggestionActivitySnapshot] {
+        guard let tagSuggestionActivity, tagSuggestionActivity.mediaKind == mediaKind else {
+            return []
+        }
+        return [tagSuggestionActivity]
+    }
+
+    func cancelTagLibrarySuggestions(
+        operationID: UUID
+    ) async throws -> TagLibrarySuggestionActivitySnapshot {
+        guard let tagSuggestionActivity,
+              tagSuggestionActivity.operationID == operationID
+        else { throw TrainingCommandError.activityNotFound }
+        lock.withLock { storedTagSuggestionCancelCallCount += 1 }
+        return TagLibrarySuggestionActivitySnapshot(
+            operationID: operationID,
+            mediaKind: tagSuggestionActivity.mediaKind,
+            method: tagSuggestionActivity.method,
+            tagID: tagSuggestionActivity.tagID,
+            phase: .cancelled,
+            completedUnitCount: tagSuggestionActivity.completedUnitCount,
+            totalUnitCount: tagSuggestionActivity.totalUnitCount,
+            aboveThresholdCount: tagSuggestionActivity.aboveThresholdCount,
+            insertedCount: tagSuggestionActivity.insertedCount,
+            skippedCount: tagSuggestionActivity.skippedCount,
+            errorCode: nil
+        )
+    }
+}
+
+@MainActor
+private final class RemoteOriginalAssetOpenerSpy: LibraryOriginalAssetOpening {
+    private(set) var openedAssetIDs: [UUID] = []
+
+    func openOriginalAsset(assetID: UUID) async throws {
+        openedAssetIDs.append(assetID)
     }
 }
 
@@ -1101,15 +3054,46 @@ private final class RemoteHTTPServerTestCatalog: RemoteCatalogServing, @unchecke
     private var storedLastRequestedFilter: AssetPageFilter?
     private var storedLastRequestedSort: AssetPageSort?
     private let previewData: Data
+    private let previewError: PhotosLibraryError?
+    private let cloudPreviewData: Data
     private let createTagResult: TagCreateAndApplyResult?
+    private let presetInstallResult: TagPresetInstallResult?
+    private let worldMapLocationBackfills: [WorldMapLocationBackfillSnapshot]
+    private let worldMapPlaceResolutions: [WorldMapPlaceTagResolution]
+    private let worldMapPlaceSearchResult: WorldMapPlaceTagResolution?
+    private let worldMapPlaceConfirmResult: WorldMapPlaceTagResolution?
     private var storedCreateTagCallCount = 0
+    private var storedCloudPreviewCallCount = 0
+    private var storedPresetInstallCallCount = 0
+    private var storedWorldMapLocationBackfillStartCount = 0
+    private var storedWorldMapPlaceSearchCount = 0
 
     init(
         previewData: Data = Data(),
-        createTagResult: TagCreateAndApplyResult? = nil
+        previewError: PhotosLibraryError? = nil,
+        cloudPreviewData: Data = Data(),
+        createTagResult: TagCreateAndApplyResult? = nil,
+        presetInstallResult: TagPresetInstallResult? = nil,
+        worldMapLocationBackfills: [WorldMapLocationBackfillSnapshot] = [],
+        worldMapPlaceResolutions: [WorldMapPlaceTagResolution] = [],
+        worldMapPlaceSearchResult: WorldMapPlaceTagResolution? = nil,
+        worldMapPlaceConfirmResult: WorldMapPlaceTagResolution? = nil
     ) {
         self.previewData = previewData
+        self.previewError = previewError
+        self.cloudPreviewData = cloudPreviewData
         self.createTagResult = createTagResult
+        self.presetInstallResult = presetInstallResult
+        self.worldMapLocationBackfills = worldMapLocationBackfills
+        self.worldMapPlaceResolutions = worldMapPlaceResolutions
+        self.worldMapPlaceSearchResult = worldMapPlaceSearchResult
+        self.worldMapPlaceConfirmResult = worldMapPlaceConfirmResult
+    }
+
+    var cloudPreviewCallCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return storedCloudPreviewCallCount
     }
 
     var lastRequestedFilter: AssetPageFilter? {
@@ -1130,9 +3114,30 @@ private final class RemoteHTTPServerTestCatalog: RemoteCatalogServing, @unchecke
         return storedCreateTagCallCount
     }
 
+    var presetInstallCallCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return storedPresetInstallCallCount
+    }
+
+    var worldMapLocationBackfillStartCount: Int {
+        lock.withLock { storedWorldMapLocationBackfillStartCount }
+    }
+
+    var worldMapPlaceSearchCount: Int {
+        lock.withLock { storedWorldMapPlaceSearchCount }
+    }
+
     func fetchSources() throws -> [LibrarySourceSummary] { [] }
 
     func listTags() throws -> [TagListItem] { [] }
+
+    func installPresetTags() throws -> TagPresetInstallResult {
+        lock.lock()
+        storedPresetInstallCallCount += 1
+        lock.unlock()
+        return presetInstallResult ?? TagPresetInstallResult(createdTags: [])
+    }
 
     func fetchAssetPage(
         filter: AssetPageFilter,
@@ -1154,7 +3159,20 @@ private final class RemoteHTTPServerTestCatalog: RemoteCatalogServing, @unchecke
     }
 
     func loadPreview(assetID: UUID) async throws -> Data {
-        previewData
+        if let previewError { throw previewError }
+        return previewData
+    }
+
+    func downloadCloudPreview(
+        assetID: UUID,
+        onProgress: @escaping @Sendable (Double) -> Void
+    ) async throws -> Data {
+        _ = assetID
+        lock.withLock {
+            storedCloudPreviewCallCount += 1
+        }
+        onProgress(1)
+        return cloudPreviewData
     }
 
     func fetchInspectorDetail(assetID: UUID) throws -> AssetInspectorDetail {
@@ -1178,6 +3196,46 @@ private final class RemoteHTTPServerTestCatalog: RemoteCatalogServing, @unchecke
             fingerprintModifiedAtNs: nil,
             tags: []
         )
+    }
+
+    func fetchWorldMapLocationBackfillSnapshots() throws
+        -> [WorldMapLocationBackfillSnapshot]
+    {
+        worldMapLocationBackfills
+    }
+
+    func startWorldMapLocationBackfill(sourceID: UUID) throws {
+        _ = sourceID
+        lock.withLock { storedWorldMapLocationBackfillStartCount += 1 }
+    }
+
+    func cancelWorldMapLocationBackfill(sourceID: UUID) throws {
+        _ = sourceID
+    }
+
+    func fetchWorldMapPlaceTagResolutions() throws -> [WorldMapPlaceTagResolution] {
+        worldMapPlaceResolutions
+    }
+
+    func searchWorldMapPlaceTag(
+        tagID: UUID,
+        query: String
+    ) async throws -> WorldMapPlaceTagResolution {
+        _ = tagID
+        _ = query
+        lock.withLock { storedWorldMapPlaceSearchCount += 1 }
+        guard let worldMapPlaceSearchResult else { throw CatalogQueryError.notFound }
+        return worldMapPlaceSearchResult
+    }
+
+    func confirmWorldMapPlaceCandidate(
+        tagID: UUID,
+        placeID: String
+    ) throws -> WorldMapPlaceTagResolution {
+        _ = tagID
+        _ = placeID
+        guard let worldMapPlaceConfirmResult else { throw CatalogQueryError.notFound }
+        return worldMapPlaceConfirmResult
     }
 
     func selectionAggregate(tagIDs: [UUID], assetIDs: [UUID]) throws -> [TagSelectionAggregate] { [] }
@@ -1210,4 +3268,427 @@ private final class RemoteHTTPServerTestCatalog: RemoteCatalogServing, @unchecke
     func fetchJobActivity() throws -> [JobActivityItem] { [] }
 
     func applyJobActivityAction(_ action: JobActivityAction, jobID: UUID) throws {}
+}
+
+private final class RemoteHTTPServerSlimmingAnalysisStub:
+    LibrarySlimmingAnalysisJobPort,
+    @unchecked Sendable
+{
+    private let lock = NSLock()
+    private var storedLastMediaKind: MediaKind?
+
+    var lastMediaKind: MediaKind? { lock.withLock { storedLastMediaKind } }
+
+    func enqueue(
+        mode _: LibrarySlimmingAnalyzeMode,
+        assetIDs _: [UUID],
+        seedAssetIDs _: [UUID]
+    ) throws -> LibrarySlimmingAnalysisJobSnapshot {
+        throw CatalogQueryError.notFound
+    }
+
+    func runPending() throws {}
+    func pause(jobID _: UUID) throws -> LibrarySlimmingAnalysisJobSnapshot {
+        throw CatalogQueryError.notFound
+    }
+    func resume(jobID _: UUID) throws -> LibrarySlimmingAnalysisJobSnapshot {
+        throw CatalogQueryError.notFound
+    }
+    func snapshot(jobID _: UUID) throws -> LibrarySlimmingAnalysisJobSnapshot {
+        throw CatalogQueryError.notFound
+    }
+    func latestActiveOrCompleted() throws -> LibrarySlimmingAnalysisJobSnapshot? { nil }
+    func listJobs() throws -> [LibrarySlimmingAnalysisJobSummary] { [] }
+    func listJobs(mediaKind: MediaKind) throws -> [LibrarySlimmingAnalysisJobSummary] {
+        lock.withLock { storedLastMediaKind = mediaKind }
+        return []
+    }
+    func delete(jobID _: UUID) throws {}
+}
+
+private final class RemoteHTTPSlimmingCommandStub:
+    RemoteLibrarySlimmingCommandPort,
+    @unchecked Sendable
+{
+    private let lock = NSLock()
+    private let sourceID: UUID
+    private let jobID: UUID
+    let recycleEntryID = UUID()
+    let recycleAssetID = UUID()
+    private var storedLaunchCount = 0
+    private var storedLastAction: LibrarySlimmingJobCommandAction?
+    private var storedLastRecycleCommand: LibrarySlimmingRecycleCommandRequest?
+    private var storedLastRemovalCommand: LibrarySlimmingRemovalCommand?
+    private var storedLastIdenticalCleanupCommand: LibrarySlimmingIdenticalCleanupCommand?
+    private let identicalCleanupPlanID = UUID()
+
+    var launchCount: Int { lock.withLock { storedLaunchCount } }
+    var lastAction: LibrarySlimmingJobCommandAction? { lock.withLock { storedLastAction } }
+    var lastRecycleCommand: LibrarySlimmingRecycleCommandRequest? {
+        lock.withLock { storedLastRecycleCommand }
+    }
+    var lastRemovalCommand: LibrarySlimmingRemovalCommand? {
+        lock.withLock { storedLastRemovalCommand }
+    }
+    var lastIdenticalCleanupCommand: LibrarySlimmingIdenticalCleanupCommand? {
+        lock.withLock { storedLastIdenticalCleanupCommand }
+    }
+
+    init(sourceID: UUID, jobID: UUID) {
+        self.sourceID = sourceID
+        self.jobID = jobID
+    }
+
+    private var thresholds: NearDuplicateSceneThresholds {
+        NearDuplicateSceneThresholds(
+            featurePrintRecallTopK: 32,
+            featurePrintMaxL2Distance: 0.4,
+            dinoCosineMinSimilarity: 0.85,
+            sceneBucketActivationAssetCount: 700,
+            featurePrintRecallMode: .topK,
+            featurePrintL2Mode: .radius,
+            dinoCosineMode: .minimum,
+            sceneBucketingMode: .automatic
+        )
+    }
+
+    func setup(mediaKind: MediaKind) async throws -> LibrarySlimmingCommandSetupSnapshot {
+        LibrarySlimmingCommandSetupSnapshot(
+            mediaKind: mediaKind,
+            sources: [
+                LibrarySourceSummary(
+                    id: sourceID,
+                    kind: .photos,
+                    displayName: "Apple Photos",
+                    state: .active
+                ),
+            ],
+            thresholds: thresholds,
+            factoryThresholds: .factory
+        )
+    }
+
+    func launch(_ command: LibrarySlimmingLaunchCommand) async throws
+        -> LibrarySlimmingLaunchReceipt
+    {
+        lock.withLock { storedLaunchCount += 1 }
+        return LibrarySlimmingLaunchReceipt(
+            operationID: command.operationID,
+            jobID: jobID,
+            acceptedAtMs: 123,
+            memberCount: 12
+        )
+    }
+
+    func apply(
+        jobID: UUID,
+        action: LibrarySlimmingJobCommandAction
+    ) async throws -> LibrarySlimmingJobCommandResult {
+        XCTAssertEqual(jobID, self.jobID)
+        lock.withLock { storedLastAction = action }
+        return LibrarySlimmingJobCommandResult(snapshot: nil, deleted: action == .deleteRecord)
+    }
+
+    func updateThresholds(_ thresholds: NearDuplicateSceneThresholds) async throws
+        -> NearDuplicateSceneThresholds
+    {
+        thresholds
+    }
+
+    func recycleSnapshot(
+        mediaKind: MediaKind,
+        sourceID _: UUID?,
+        searchText _: String?,
+        limit _: Int
+    ) async throws -> LibrarySlimmingRecycleCommandSnapshot {
+        LibrarySlimmingRecycleCommandSnapshot(
+            entries: [
+                RecycleEntryRecord(
+                    id: recycleEntryID,
+                    assetID: recycleAssetID,
+                    sourceID: sourceID,
+                    sourceKind: .file,
+                    mediaKind: mediaKind,
+                    trashedAtMs: 100,
+                    purgeAfterMs: 200,
+                    state: .recycled,
+                    quarantineRelativePath: "private/quarantine",
+                    originalRelativePath: "private/original",
+                    photosLocalIdentifier: nil,
+                    errorCode: nil,
+                    fileName: "IMG_0001.HEIC"
+                ),
+            ],
+            totalCount: 1,
+            sourceNames: [sourceID: "Archive"],
+            requests: []
+        )
+    }
+
+    func submitRecycle(
+        _ command: LibrarySlimmingRecycleCommandRequest
+    ) async throws -> LibrarySlimmingRecycleCommandRequestSnapshot {
+        lock.withLock { storedLastRecycleCommand = command }
+        return LibrarySlimmingRecycleCommandRequestSnapshot(
+            id: UUID(),
+            operationID: command.operationID,
+            entryID: command.entryID,
+            action: command.action,
+            fileName: "IMG_0001.HEIC",
+            phase: .awaitingMac,
+            message: "请回到 Mac 完成原生确认",
+            updatedAtMs: 123
+        )
+    }
+
+    func removalSnapshot(
+        mediaKind: MediaKind
+    ) async throws -> LibrarySlimmingRemovalCommandSnapshot {
+        let assetID = UUID()
+        return LibrarySlimmingRemovalCommandSnapshot(requests: [
+            LibrarySlimmingRemovalCommandRequestSnapshot(
+                id: UUID(),
+                operationID: UUID(),
+                jobID: jobID,
+                clusterID: UUID(),
+                mediaKind: mediaKind,
+                assetIDs: [assetID],
+                mode: .recoverableRecycle,
+                phase: .running,
+                progress: LibrarySlimmingRemovalCommandProgress(
+                    phase: .copying,
+                    completedAssetCount: 1,
+                    totalAssetCount: 2,
+                    copiedBytes: 32,
+                    totalFileBytes: 64
+                ),
+                audit: nil,
+                message: "正在复制到可恢复隔离区…",
+                updatedAtMs: 456
+            ),
+        ])
+    }
+
+    func submitRemoval(
+        _ command: LibrarySlimmingRemovalCommand
+    ) async throws -> LibrarySlimmingRemovalCommandRequestSnapshot {
+        lock.withLock { storedLastRemovalCommand = command }
+        return LibrarySlimmingRemovalCommandRequestSnapshot(
+            id: UUID(),
+            operationID: command.operationID,
+            jobID: command.jobID,
+            clusterID: command.clusterID,
+            mediaKind: command.mediaKind,
+            assetIDs: command.assetIDs,
+            mode: command.mode,
+            phase: .awaitingMac,
+            progress: nil,
+            audit: nil,
+            message: "请回到 Mac 核对并确认这次批量操作",
+            updatedAtMs: 456
+        )
+    }
+
+    func prepareIdenticalCleanup(
+        jobID: UUID,
+        mediaKind: MediaKind
+    ) async throws -> LibrarySlimmingIdenticalCleanupPlanSnapshot {
+        XCTAssertEqual(jobID, self.jobID)
+        return LibrarySlimmingIdenticalCleanupPlanSnapshot(
+            id: identicalCleanupPlanID,
+            jobID: jobID,
+            mediaKind: mediaKind,
+            groupCount: 2,
+            verifiedAssetCount: 5,
+            retainedAssetCount: 2,
+            removalAssetCount: 3,
+            skippedGroupCount: 1,
+            photosAssetCount: 1,
+            fileAssetCount: 2,
+            groupSizeHistogram: [2: 1, 3: 1],
+            preparedAtMs: 456
+        )
+    }
+
+    func identicalCleanupSnapshot(
+        mediaKind: MediaKind
+    ) async throws -> LibrarySlimmingIdenticalCleanupSnapshot {
+        LibrarySlimmingIdenticalCleanupSnapshot(requests: [
+            LibrarySlimmingIdenticalCleanupRequestSnapshot(
+                id: UUID(),
+                operationID: UUID(),
+                planID: identicalCleanupPlanID,
+                jobID: jobID,
+                mediaKind: mediaKind,
+                mode: .recoverableRecycle,
+                phase: .completed,
+                progress: nil,
+                audit: nil,
+                verification: LibrarySlimmingIdenticalCleanupVerificationSnapshot(
+                    verifiedGroupCount: 2,
+                    targetGroupCount: 2,
+                    targetRetainedAssetCount: 2,
+                    observedAssetCount: 5,
+                    currentAvailableAssetCount: 2,
+                    retainedNonredundantAssetCount: 2,
+                    recycledRedundantAssetCount: 3,
+                    remainingRedundantAssetCount: 0,
+                    unresolvedAssetCount: 0,
+                    unresolvedGroupCount: 0,
+                    isComplete: true
+                ),
+                message: "已完成去重 2/2 组",
+                updatedAtMs: 789
+            ),
+        ])
+    }
+
+    func submitIdenticalCleanup(
+        _ command: LibrarySlimmingIdenticalCleanupCommand
+    ) async throws -> LibrarySlimmingIdenticalCleanupRequestSnapshot {
+        lock.withLock { storedLastIdenticalCleanupCommand = command }
+        return LibrarySlimmingIdenticalCleanupRequestSnapshot(
+            id: UUID(),
+            operationID: command.operationID,
+            planID: command.planID,
+            jobID: jobID,
+            mediaKind: .image,
+            mode: command.mode,
+            phase: .awaitingMac,
+            progress: nil,
+            audit: nil,
+            verification: nil,
+            message: "请回到 Mac 核对并确认一键清理方案",
+            updatedAtMs: 456
+        )
+    }
+}
+
+private final class RemoteHTTPSourceManagementCommandStub:
+    RemoteSourceManagementCommandPort,
+    @unchecked Sendable
+{
+    private let lock = NSLock()
+    private let sourceID: UUID
+    private let operationID: UUID
+    private var storedLastCommand: SourceManagementCommandRequest?
+
+    var lastCommand: SourceManagementCommandRequest? {
+        lock.withLock { storedLastCommand }
+    }
+
+    init(sourceID: UUID, operationID: UUID) {
+        self.sourceID = sourceID
+        self.operationID = operationID
+    }
+
+    private var receipt: SourceManagementCommandRequestSnapshot {
+        SourceManagementCommandRequestSnapshot(
+            id: UUID(uuidString: "bbbbbbbb-1111-2222-3333-bbbbbbbbbbbb")!,
+            operationID: operationID,
+            action: .reauthorize,
+            sourceID: sourceID,
+            sourceDisplayName: "Archive",
+            phase: .awaitingMac,
+            message: "请回到 Mac 完成系统选择器",
+            updatedAtMs: 123
+        )
+    }
+
+    func snapshot() async throws -> SourceManagementCommandSnapshot {
+        SourceManagementCommandSnapshot(
+            sources: [
+                LibrarySourceSummary(
+                    id: sourceID,
+                    kind: .folder,
+                    displayName: "Archive",
+                    state: .authorizationRequired
+                ),
+            ],
+            requests: [receipt]
+        )
+    }
+
+    func submit(
+        _ command: SourceManagementCommandRequest
+    ) async throws -> SourceManagementCommandRequestSnapshot {
+        lock.withLock { storedLastCommand = command }
+        return receipt
+    }
+}
+
+private final class RemoteHTTPStorageMaintenanceCommandStub:
+    RemoteStorageMaintenanceCommandPort,
+    @unchecked Sendable
+{
+    private let lock = NSLock()
+    private let operationID: UUID
+    private var storedLastCommand: StorageMaintenanceCommandRequest?
+
+    var lastCommand: StorageMaintenanceCommandRequest? {
+        lock.withLock { storedLastCommand }
+    }
+
+    init(operationID: UUID) {
+        self.operationID = operationID
+    }
+
+    private var receipt: StorageMaintenanceCommandRequestSnapshot {
+        StorageMaintenanceCommandRequestSnapshot(
+            id: UUID(uuidString: "cccccccc-1111-2222-3333-cccccccccccc")!,
+            operationID: operationID,
+            action: .clearPreviewCache,
+            phase: .awaitingMac,
+            message: "请回到 Mac 确认清理操作",
+            updatedAtMs: 123,
+            result: nil
+        )
+    }
+
+    func snapshot() async throws -> StorageMaintenanceCommandSnapshot {
+        StorageMaintenanceCommandSnapshot(
+            previewCache: StorageMaintenanceUsageSummary(
+                entryCount: 12,
+                registeredBytes: 1_500_000
+            ),
+            photosOriginals: StorageMaintenanceUsageSummary(
+                entryCount: 3,
+                registeredBytes: 9_000_000
+            ),
+            appStorage: StorageMaintenanceAppStorageSummary(
+                kind: .internalStorage,
+                requiresRestart: true,
+                pendingExternalRootName: "ImageAll-External"
+            ),
+            requests: [receipt]
+        )
+    }
+
+    func submit(
+        _ command: StorageMaintenanceCommandRequest
+    ) async throws -> StorageMaintenanceCommandRequestSnapshot {
+        lock.withLock { storedLastCommand = command }
+        return receipt
+    }
+}
+
+private struct RemoteHTTPServerTestMediaProvider: RemoteMediaResourceProviding {
+    let url: URL
+
+    func openMediaResource(assetID _: UUID) async throws -> RemoteMediaResource {
+        let descriptor = try DerivedImageSecureIO.openReadOnlyNoFollow(at: url)
+        do {
+            let facts = try DerivedImageSecureIO.fstatRegularFile(fd: descriptor)
+            return RemoteMediaResource(
+                descriptor: descriptor,
+                contentType: "video/mp4",
+                contentLength: facts.sizeBytes
+            ) {
+                Darwin.close(descriptor)
+            }
+        } catch {
+            Darwin.close(descriptor)
+            throw error
+        }
+    }
 }

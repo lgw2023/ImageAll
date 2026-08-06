@@ -10,8 +10,8 @@
   <meta name="apple-mobile-web-app-title" content="ImageAll">
   <title>ImageAll 网页版</title>
   <link rel="manifest" href="/manifest.webmanifest">
-  <link rel="stylesheet" href="/app.css">
-  <script src="/app.js" defer></script>
+    <link rel="stylesheet" href="/app.css?v=20260806-48">
+    <script src="/app.js?v=20260806-48" defer></script>
 </head>
 <body>
   <div id="bootView" class="centered-state">
@@ -106,7 +106,7 @@
     </section>
   </main>
 
-  <main id="appView" class="app-shell hidden">
+  <main id="appView" class="app-shell hidden" data-toolbar-display-mode="iconOnly">
     <header class="titlebar">
       <div class="titlebar-leading">
         <button id="sidebarToggle" class="icon-button mobile-only" type="button" aria-label="显示来源">
@@ -132,15 +132,44 @@
         <button id="shortcutButton" class="icon-button" type="button" aria-label="查看快捷键" title="快捷键">
           ?
         </button>
+        <div class="titlebar-undo-group" role="group" aria-label="撤销最近操作">
+          <button id="undoTagButton" class="icon-button" type="button"
+            aria-label="撤销标签操作" title="撤销最近一次标签操作" disabled>↶</button>
+          <button id="undoReviewButton" class="icon-button hidden" type="button"
+            aria-label="撤销审核操作" title="撤销最近一次审核操作">↶✓</button>
+        </div>
+        <button id="worldMapButton" class="button button-compact" type="button" title="打开世界地图">
+          <span aria-hidden="true">◎</span>
+          <span>地图</span>
+        </button>
+        <button id="trainingButton" class="button button-compact" type="button" title="打开训练工程">
+          <span aria-hidden="true">⌁</span>
+          <span>训练</span>
+        </button>
+        <button id="slimmingButton" class="button button-compact" type="button" title="打开图库瘦身">
+          <span aria-hidden="true">◫</span>
+          <span>瘦身</span>
+        </button>
         <button id="reviewButton" class="button button-compact" type="button" title="打开建议审核">
           <span aria-hidden="true">✓⃝</span>
           <span>审核</span>
+        </button>
+        <button id="storageButton" class="button button-compact" type="button" title="应用存储与预览缓存">
+          <span aria-hidden="true">▣</span>
+          <span>存储</span>
+        </button>
+        <button id="sourcePrewarmStatusButton" class="button button-compact source-prewarm-status hidden"
+          type="button" title="查看来源缩略图预热">
+          <span aria-hidden="true">▦</span>
+          <span id="sourcePrewarmStatusLabel">缓存</span>
         </button>
         <button id="jobsButton" class="button button-compact badge-button" type="button" title="查看后台任务">
           <span aria-hidden="true">◷</span>
           <span>任务</span>
           <span id="jobsBadge" class="count-badge hidden"></span>
         </button>
+        <button id="settingsButton" class="icon-button" type="button"
+          aria-label="打开通用设置" title="设置（⌘,）">⚙</button>
         <span id="connectionStatus" class="connection-status" data-state="connecting">
           <span class="status-dot" aria-hidden="true"></span>
           <span class="connection-label">正在连接</span>
@@ -168,6 +197,11 @@
         <div class="sidebar-section">
           <h2>图库</h2>
           <nav id="libraryNavigation" class="sidebar-list">
+            <button id="galleryOverviewNavigationButton" class="sidebar-row" type="button">
+              <span class="sidebar-icon" aria-hidden="true">▥</span>
+              <span>图库总览</span>
+              <span id="galleryOverviewNavigationCount" class="sidebar-count"></span>
+            </button>
             <button class="sidebar-row selected" type="button" data-source-id="">
               <span class="sidebar-icon" aria-hidden="true">▦</span>
               <span id="allMediaLabel">全部照片</span>
@@ -178,15 +212,34 @@
               <span>无标签</span>
               <span class="sidebar-count"></span>
             </button>
+            <button id="worldMapNavigationButton" class="sidebar-row" type="button">
+              <span class="sidebar-icon" aria-hidden="true">◎</span>
+              <span>世界地图</span>
+              <span id="worldMapNavigationCount" class="sidebar-count"></span>
+            </button>
             <button id="reviewNavigationButton" class="sidebar-row" type="button">
               <span class="sidebar-icon" aria-hidden="true">✦</span>
               <span>待审核建议</span>
               <span id="reviewNavigationCount" class="sidebar-count"></span>
             </button>
+            <button id="trainingNavigationButton" class="sidebar-row" type="button">
+              <span class="sidebar-icon" aria-hidden="true">⌁</span>
+              <span>训练工程</span>
+              <span id="trainingNavigationCount" class="sidebar-count"></span>
+            </button>
+            <button id="slimmingNavigationButton" class="sidebar-row" type="button">
+              <span class="sidebar-icon" aria-hidden="true">◫</span>
+              <span>图库瘦身</span>
+              <span id="slimmingNavigationCount" class="sidebar-count"></span>
+            </button>
           </nav>
         </div>
         <div class="sidebar-section source-section">
-          <h2>来源</h2>
+          <div class="sidebar-section-heading">
+            <h2>来源</h2>
+            <button id="sourceManagerButton" class="sidebar-add-button write-action" type="button"
+              aria-label="管理来源" title="连接、授权或管理来源">•••</button>
+          </div>
           <nav id="sourceList" class="sidebar-list"></nav>
           <p id="sourceEmpty" class="sidebar-empty hidden">尚无可用来源</p>
         </div>
@@ -205,7 +258,11 @@
             <input id="tagNavigationSearch" type="search" placeholder="搜索标签" autocomplete="off">
           </label>
           <nav id="tagNavigation" class="tag-navigation" aria-label="标签快捷筛选"></nav>
-          <p id="tagNavigationEmpty" class="sidebar-empty hidden">没有匹配的标签</p>
+          <div id="tagNavigationEmpty" class="sidebar-empty sidebar-empty-actions hidden">
+            <span id="tagNavigationEmptyText">没有匹配的标签</span>
+            <button id="sidebarInstallPresetTagsButton" class="button button-plain write-action hidden"
+              type="button">添加常用标签</button>
+          </div>
         </div>
         <div class="sidebar-footer">
           <span id="hostVersion">Mac Host</span>
@@ -240,6 +297,13 @@
           <button id="selectionModeButton" class="button toolbar-button" type="button" aria-pressed="false">
             选择
           </button>
+          <button id="personalModelButton" class="button toolbar-button" type="button"
+            aria-expanded="false" aria-controls="personalModelPopover" title="重建或训练个人模型">
+            <span aria-hidden="true">◎</span>
+            <span>个人模型</span>
+          </button>
+          <button id="thumbnailAspectButton" class="button toolbar-button" type="button"
+            aria-pressed="false" title="完整显示照片宽高比">适应</button>
           <label class="grid-density-control" title="调整缩略图大小">
             <span aria-hidden="true">▦</span>
             <input id="gridDensitySlider" type="range" min="0" max="8" step="1" value="4"
@@ -248,6 +312,31 @@
           </label>
           <span id="assetSummary" class="toolbar-summary secondary"></span>
         </div>
+
+        <section id="personalModelPopover" class="popover personal-model-popover hidden"
+          aria-label="个人模型" role="menu">
+          <div class="personal-model-popover-heading">
+            <strong>个人模型</strong>
+            <span id="personalModelScopeSummary">请先选择已确认标签</span>
+          </div>
+          <button id="rebuildPersonalModelButton" class="personal-model-action" type="button"
+            role="menuitem">
+            <span class="personal-model-action-icon" aria-hidden="true">◎</span>
+            <span>
+              <strong>重建个人模型</strong>
+              <small>轻量质心模型，适合频繁更新</small>
+            </span>
+          </button>
+          <button id="rebuildPersonalAdamWButton" class="personal-model-action" type="button"
+            role="menuitem">
+            <span class="personal-model-action-icon" aria-hidden="true">✦</span>
+            <span>
+              <strong>训练超级个人模型</strong>
+              <small>AdamW 多轮优化，适合样本更完整的标签</small>
+            </span>
+          </button>
+          <p>仅使用“已确认”标签样本；启动前仍可在设置页确认标签与照片范围。</p>
+        </section>
 
         <section id="filterPopover" class="popover filter-popover hidden" aria-label="高级筛选">
           <div class="popover-heading">
@@ -324,9 +413,32 @@
           </div>
         </section>
 
+        <div id="activeFilterBar" class="active-filter-bar hidden" role="region" aria-label="当前筛选">
+          <span class="active-filter-icon" aria-hidden="true">≡</span>
+          <span id="activeFilterSummary" class="active-filter-summary"></span>
+          <div id="activeFilterRelation" class="toolbar-segmented hidden" role="group"
+            aria-label="多个标签筛选关系">
+            <button type="button" data-active-filter-match="any" aria-pressed="false">或</button>
+            <button type="button" data-active-filter-match="all" aria-pressed="true">且</button>
+          </div>
+          <button id="clearActiveFiltersButton" class="button button-plain" type="button">清除筛选</button>
+        </div>
+
         <div id="batchBar" class="batch-bar hidden" role="region" aria-label="批量标签操作">
           <strong id="selectionSummary">已选择 0 项</strong>
           <button id="selectAllLoadedButton" class="button button-plain" type="button">全选已载入</button>
+          <div class="selection-tool-actions" role="group" aria-label="所选项目工具">
+            <button id="prepareSelectedFeaturesButton" class="button" type="button"
+              title="在 Mac 上准备所选项目的个人模型特征">准备特征</button>
+            <button id="generateSelectedSuggestionsButton" class="button" type="button"
+              title="对所选项目生成个人模型建议并加入审核队列">生成建议</button>
+            <button id="findSimilarSelectionButton" class="button" type="button"
+              title="以所选项目为种子在图库瘦身中查找相似项">查找相似</button>
+          </div>
+          <span id="embeddingPreparationStatus" class="selection-tool-status hidden" role="status"></span>
+          <button id="cancelEmbeddingPreparationButton" class="button button-plain hidden" type="button">
+            停止准备
+          </button>
           <span class="batch-spacer"></span>
           <label>
             <span class="visually-hidden">批量标签</span>
@@ -348,6 +460,18 @@
             <div class="empty-symbol" aria-hidden="true">▧</div>
             <h2 id="emptyStateTitle">没有找到照片</h2>
             <p id="emptyStateCopy">尝试选择其他来源或清除搜索条件。</p>
+            <div id="emptyStateActions" class="empty-state-actions hidden">
+              <button id="emptyConnectFolderButton" class="button button-primary write-action"
+                type="button">连接照片文件夹…</button>
+              <button id="emptyConnectPhotosButton" class="button write-action"
+                type="button">连接 Apple Photos…</button>
+              <button id="emptyInstallPresetTagsButton" class="button write-action"
+                type="button">添加常用标签</button>
+              <button id="emptySourceRecoveryButton" class="button button-primary write-action hidden"
+                type="button"></button>
+              <button id="emptyOpenSourceManagerButton" class="button hidden"
+                type="button">打开来源管理…</button>
+            </div>
           </div>
           <div id="assetGrid" class="asset-grid" aria-live="polite"></div>
           <div id="loadMoreSentinel" class="load-more-wrap">
@@ -374,16 +498,32 @@
               ＋ 新增
             </button>
           </header>
+          <div class="selection-inspector-tools" role="group" aria-label="所选项目工具">
+            <button id="selectionInspectorPrepareFeaturesButton" class="button" type="button">
+              准备特征
+            </button>
+            <button id="selectionInspectorGenerateSuggestionsButton" class="button" type="button">
+              生成建议
+            </button>
+            <button id="selectionInspectorFindSimilarButton" class="button" type="button">
+              查找相似
+            </button>
+            <span id="selectionInspectorToolStatus" class="secondary hidden" role="status"></span>
+            <button id="selectionInspectorCancelPreparationButton"
+              class="button button-plain hidden" type="button">停止</button>
+          </div>
           <label class="inspector-tag-search">
             <span aria-hidden="true">⌕</span>
             <input id="selectionTagSearch" type="search" placeholder="搜索标签" autocomplete="off">
           </label>
+          <p class="inspector-tag-help">点击标签全部确认，右键清除；右侧可选择确认、拒绝或未决定。</p>
           <div id="selectionInspectorTags" class="selection-tag-list"></div>
         </div>
         <div id="inspectorContent" class="inspector-content hidden">
           <div class="preview-wrap">
             <img id="previewPlaceholderImage" class="hidden" alt="" aria-hidden="true">
             <img id="previewImage" alt="">
+            <video id="previewVideo" class="hidden" controls playsinline preload="metadata"></video>
             <div id="inspectorNavigation" class="inspector-navigation" aria-label="照片导航">
               <button id="inspectorPreviousButton" type="button" aria-label="上一张照片">‹</button>
               <span id="inspectorPosition" aria-live="polite"></span>
@@ -395,11 +535,35 @@
             <div id="previewLoading" class="preview-loading">
               <div class="spinner" aria-hidden="true"></div>
             </div>
+            <div id="cloudPreviewRecovery" class="cloud-preview-recovery hidden" role="status">
+              <span id="cloudPreviewIcon" class="cloud-preview-icon" aria-hidden="true">☁︎</span>
+              <strong id="cloudPreviewTitle">此照片仅存储在 iCloud</strong>
+              <p id="cloudPreviewMessage">仅在你明确操作后，才会从 iCloud 获取这张照片的标准预览。</p>
+              <button id="cloudPreviewButton" class="button button-primary" type="button">
+                从 iCloud 获取预览
+              </button>
+            </div>
           </div>
           <div class="inspector-scroll">
+            <section id="inspectorSuggestionsSection" class="inspector-section inspector-suggestions hidden"
+              aria-labelledby="inspectorSuggestionsTitle">
+              <div class="section-heading">
+                <h3 id="inspectorSuggestionsTitle" tabindex="-1">AI 建议</h3>
+                <span id="inspectorSuggestionCount" class="secondary"></span>
+              </div>
+              <div id="inspectorSuggestions" class="inspector-suggestion-list"></div>
+              <button id="expandInspectorSuggestionsButton" class="button button-plain" type="button"></button>
+            </section>
             <section class="inspector-section">
               <h2 id="assetFileName">未命名照片</h2>
               <dl id="assetMetadata" class="metadata-list"></dl>
+              <div class="inspector-source-actions">
+                <button id="openOriginalButton" class="button button-primary source-action" type="button">
+                  <span id="openOriginalButtonIcon" aria-hidden="true">↗</span>
+                  <span id="openOriginalButtonLabel">在 Mac 上打开原图</span>
+                </button>
+                <p id="openOriginalHint" class="secondary">以只读方式在运行 ImageAll 的这台 Mac 上打开</p>
+              </div>
             </section>
             <section class="inspector-section tag-section">
               <div class="section-heading">
@@ -415,6 +579,7 @@
                 <span aria-hidden="true">⌕</span>
                 <input id="inspectorTagSearch" type="search" placeholder="搜索标签" autocomplete="off">
               </label>
+              <p class="inspector-tag-help">点击标签确认，右键清除；按 X 拒绝，Delete 清除。</p>
               <div id="inspectorTags" class="tag-list"></div>
               <p id="tagEmpty" class="secondary hidden">尚无活动标签</p>
             </section>
@@ -432,22 +597,240 @@
       </div>
       <button id="closeJobsButton" class="icon-button" type="button" aria-label="关闭任务">×</button>
     </div>
-    <div id="jobsList" class="jobs-list"></div>
+    <div id="jobsList" class="jobs-list" role="list" aria-label="后台任务列表"></div>
     <p id="jobsEmpty" class="popover-empty hidden">当前没有后台任务</p>
   </section>
 
+  <section id="galleryOverviewWorkspace" class="gallery-overview-workspace hidden" role="dialog"
+    aria-modal="true" aria-labelledby="galleryOverviewTitle">
+    <header class="gallery-overview-titlebar">
+      <div class="gallery-overview-title-copy">
+        <button id="closeGalleryOverviewButton" class="icon-button" type="button" aria-label="关闭图库总览">×</button>
+        <div>
+          <strong>图库总览</strong>
+          <span id="galleryOverviewSummary" class="secondary">正在汇总图库</span>
+        </div>
+      </div>
+      <button id="refreshGalleryOverviewButton" class="button button-compact" type="button">
+        <span aria-hidden="true">↻</span><span>刷新统计</span>
+      </button>
+    </header>
+    <div id="galleryOverviewScroll" class="gallery-overview-scroll">
+      <div class="gallery-overview-content">
+        <section class="gallery-overview-hero">
+          <div>
+            <p class="gallery-overview-eyebrow">LIBRARY ATLAS</p>
+            <h1 id="galleryOverviewTitle">图库总览</h1>
+            <p>从规模、精确冗余、来源、时间与正样本标签，看清你的整座图库。</p>
+          </div>
+          <p id="galleryOverviewRefreshedAt" class="gallery-overview-refreshed"></p>
+        </section>
+
+        <section id="galleryOverviewStatus" class="gallery-overview-status" role="status">
+          <div class="spinner" aria-hidden="true"></div>
+          <strong>正在汇总图库…</strong>
+          <span>只读取 ImageAll 目录库，不访问原照片。</span>
+          <button id="retryGalleryOverviewButton" class="button hidden" type="button">重试</button>
+        </section>
+
+        <div id="galleryOverviewBody" class="gallery-overview-body hidden">
+          <section class="gallery-overview-metrics" aria-label="图库关键统计">
+            <article><span>当前目录</span><strong id="galleryOverviewTotalMetric">0</strong><small>照片与视频总数</small></article>
+            <article class="green"><span>保守去重后</span><strong id="galleryOverviewUniqueMetric">0</strong><small>只扣除绝对相同副本</small></article>
+            <article class="orange"><span>确认冗余</span><strong id="galleryOverviewRedundantMetric">0</strong><small>视觉相似不计入</small></article>
+            <article class="teal"><span>已有正样本</span><strong id="galleryOverviewPositiveMetric">0</strong><small id="galleryOverviewAcceptedMetric">0 条人工接受标签</small></article>
+          </section>
+
+          <section class="gallery-overview-panel">
+            <header><div><h2>媒体账本</h2><p>原始总量与绝对相同去重后的保守数量</p></div><span aria-hidden="true">▤</span></header>
+            <div id="galleryOverviewMediaLedger" class="gallery-overview-media-ledger"></div>
+          </section>
+
+          <div class="gallery-overview-split">
+            <section class="gallery-overview-panel">
+              <header><div><h2>来源构成</h2><p id="galleryOverviewSourceSubtitle">每个来源中的照片与视频</p></div><span aria-hidden="true">⌁</span></header>
+              <div id="galleryOverviewSources" class="gallery-overview-bars"></div>
+              <div class="gallery-overview-legend"><span><i class="photo"></i>照片</span><span><i class="video"></i>视频</span></div>
+            </section>
+            <section class="gallery-overview-panel gallery-overview-availability-panel">
+              <header><div><h2>可用状态</h2><p>当前目录能否读取</p></div><span aria-hidden="true">◔</span></header>
+              <div id="galleryOverviewAvailability" class="gallery-overview-availability"></div>
+            </section>
+          </div>
+
+          <section class="gallery-overview-panel">
+            <header><div><h2>正样本标签</h2><p>人工接受次数最多的活跃标签；同一媒体可属于多个标签</p></div><span aria-hidden="true">#</span></header>
+            <div id="galleryOverviewTags" class="gallery-overview-bars gallery-overview-tag-bars"></div>
+            <div class="gallery-overview-legend"><span><i class="photo"></i>照片</span><span><i class="video"></i>视频</span></div>
+          </section>
+
+          <section class="gallery-overview-panel">
+            <header><div><h2>时间分布</h2><p id="galleryOverviewTimelineSubtitle">按拍摄时间优先、修改时间补充</p></div><span aria-hidden="true">▣</span></header>
+            <div id="galleryOverviewTimeline" class="gallery-overview-timeline"></div>
+            <p id="galleryOverviewUndated" class="gallery-overview-undated"></p>
+          </section>
+
+          <section class="gallery-overview-method">
+            <strong>✓ 统计口径</strong>
+            <p>总量统计当前目录中未进入回收生命周期的媒体。去重只使用已验证原始字节摘要，每组绝对相同内容保留 1 个；未完成摘要、视觉相似和视频代表帧相同均按独立媒体保守计数。</p>
+            <p id="galleryOverviewCoverage"></p>
+          </section>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="worldMapWorkspace" class="world-map-workspace hidden" role="dialog" aria-modal="true"
+    aria-label="世界地图工作区">
+    <header class="world-map-titlebar">
+      <div class="world-map-title-copy">
+        <button id="closeWorldMapButton" class="icon-button" type="button" aria-label="关闭世界地图">×</button>
+        <div>
+          <strong>世界地图</strong>
+          <span id="worldMapSummary" class="secondary">按地点探索照片</span>
+        </div>
+      </div>
+      <div class="world-map-title-actions">
+        <span class="world-map-readonly-note">地点确认由这台 Mac 安全写入</span>
+        <button id="openWorldMapPlaceTagsButton" class="button button-compact world-map-place-open" type="button">
+          <span aria-hidden="true">⌖</span>
+          <span>补全地点</span>
+        </button>
+        <button id="openWorldMapLocationBackfillButton" class="button button-compact" type="button">
+          <span aria-hidden="true">⌖</span>
+          <span>更新照片位置</span>
+        </button>
+        <button id="refreshWorldMapButton" class="icon-button" type="button" title="刷新地图" aria-label="刷新地图">↻</button>
+      </div>
+    </header>
+    <div class="world-map-stage">
+      <iframe id="worldMapFrame" class="world-map-frame" src="/world-map/index.html"
+        title="ImageAll 世界地图" loading="eager"></iframe>
+      <section class="world-map-hero" aria-label="地图概览">
+        <div class="world-map-eyebrow">
+          <span class="world-map-live-dot" aria-hidden="true"></span>
+          <span>PHOTO ATLAS</span>
+          <span>LIVE CATALOG</span>
+        </div>
+        <h2>你的照片，长成一座世界。</h2>
+        <p>拖拽探索 · 滚轮缩放 · ⌃拖拽旋转与俯仰 · 点击照片塔</p>
+        <dl class="world-map-metrics">
+          <div><dt id="worldMapClusterMetric">—</dt><dd>当前照片塔</dd></div>
+          <div><dt id="worldMapLocatedMetric">—</dt><dd>已定位照片</dd></div>
+          <div><dt id="worldMapUnlocatedMetric">—</dt><dd>未定位照片</dd></div>
+          <div><dt id="worldMapRendererMetric">连接中</dt><dd>地图引擎</dd></div>
+        </dl>
+      </section>
+      <div id="worldMapStatus" class="world-map-status" role="status">
+        <span class="world-map-status-spinner" aria-hidden="true"></span>
+        <strong>正在整理照片地图</strong>
+        <span>照片仍保留在这台 Mac</span>
+      </div>
+      <section id="worldMapDetail" class="world-map-detail hidden" aria-label="地点详情">
+        <header>
+          <div>
+            <span class="world-map-detail-kicker">SELECTED PLACE</span>
+            <h3 id="worldMapDetailName">地点</h3>
+            <p id="worldMapDetailComposition"></p>
+          </div>
+          <button id="closeWorldMapDetailButton" class="icon-button" type="button" aria-label="关闭地点详情">×</button>
+        </header>
+        <div id="worldMapPhotoStrip" class="world-map-photo-strip" aria-label="地点照片"></div>
+        <footer>
+          <strong id="worldMapDetailCount">0 张照片</strong>
+          <span id="worldMapSelectionSummary" class="secondary"></span>
+        </footer>
+      </section>
+      <div class="world-map-legend" aria-label="地图图例">
+        <span><i class="legend-gps"></i>GPS</span>
+        <span><i class="legend-tag"></i>地点标签</span>
+        <span>塔高代表照片数量</span>
+      </div>
+    </div>
+  </section>
+
+  <dialog id="worldMapLocationBackfillDialog" class="world-map-location-dialog"
+    aria-labelledby="worldMapLocationBackfillTitle">
+    <header class="world-map-location-header">
+      <div class="world-map-location-heading">
+        <span class="world-map-location-mark" aria-hidden="true">⌖</span>
+        <div>
+          <h2 id="worldMapLocationBackfillTitle">把旧照片的位置带回地图</h2>
+          <p>选择一个来源开始；不会因为打开地图或此面板自动扫描。</p>
+        </div>
+      </div>
+      <button id="closeWorldMapLocationBackfillButton" class="button button-primary" type="button">完成</button>
+    </header>
+    <div class="world-map-location-body">
+      <aside class="world-map-location-safety">
+        <span aria-hidden="true">☝</span>
+        <p>开始后只读取所选来源的图片元数据：文件夹检查内嵌 GPS，Apple Photos 通过正常授权读取位置。不会移动、重命名、覆盖或写回原照片。</p>
+      </aside>
+      <div id="worldMapLocationBackfillError" class="world-map-location-error hidden" role="alert"></div>
+      <div id="worldMapLocationBackfillLoading" class="world-map-location-loading" role="status">
+        <span class="spinner" aria-hidden="true"></span>
+        <span>正在读取本地位置目录…</span>
+      </div>
+      <div id="worldMapLocationBackfillEmpty" class="world-map-location-empty hidden">
+        <strong>还没有照片来源</strong>
+        <span>连接文件夹或 Apple Photos 后，可在这里显式更新旧照片的位置。</span>
+      </div>
+      <div id="worldMapLocationBackfillSources" class="world-map-location-sources"></div>
+    </div>
+  </dialog>
+
+  <dialog id="worldMapPlaceTagDialog" class="world-map-place-dialog"
+    aria-labelledby="worldMapPlaceTagTitle">
+    <header class="world-map-place-header">
+      <div class="world-map-place-heading">
+        <span class="world-map-place-mark" aria-hidden="true">⌖</span>
+        <div>
+          <h2 id="worldMapPlaceTagTitle">把地点标签放回地图</h2>
+          <p>只列出至少关联一张已确认照片的标签；“地点与场景”分组排在最前。</p>
+        </div>
+      </div>
+      <button id="closeWorldMapPlaceTagButton" class="button button-primary" type="button">完成</button>
+    </header>
+    <div id="worldMapPlaceTagBody" class="world-map-place-body">
+      <aside class="world-map-place-privacy">
+        <span aria-hidden="true">☝</span>
+        <p>打开面板只读取本地缓存。点击搜索时只把输入的地点描述发送给 Apple 地图；若没有有效国际结果，再使用 OpenStreetMap。照片、路径和资产标识不会发送。</p>
+      </aside>
+      <div id="worldMapPlaceTagError" class="world-map-place-error hidden" role="alert"></div>
+      <div id="worldMapPlaceTagLoading" class="world-map-place-loading" role="status">
+        <span class="spinner" aria-hidden="true"></span>
+        <span>正在读取地点标签缓存…</span>
+      </div>
+      <div id="worldMapPlaceTagEmpty" class="world-map-place-empty hidden">
+        <strong>还没有可解析的标签</strong>
+        <span>先给照片确认城市、景区或国家标签，再回到这里补全地图位置。</span>
+      </div>
+      <div id="worldMapPlaceTagItems" class="world-map-place-items"></div>
+    </div>
+  </dialog>
+
   <section id="reviewWorkspace" class="review-workspace hidden" role="dialog" aria-modal="true"
-    aria-label="建议审核工作区">
+    aria-label="待审核建议工作区">
     <header class="review-titlebar">
       <div class="review-title-copy">
         <button id="closeReviewButton" class="icon-button" type="button" aria-label="关闭审核">×</button>
         <button id="reviewBackButton" class="icon-button hidden" type="button" aria-label="返回审核总览">‹</button>
+        <button id="reviewUndoButton" class="button button-plain review-undo-button hidden"
+          type="button" title="撤销最近一次审核操作">
+          <span aria-hidden="true">↶</span><span>撤销审核</span>
+        </button>
         <div>
-          <strong>建议审核</strong>
+          <strong>待审核建议</strong>
           <span id="reviewSummary" class="secondary">选择标签开始审核</span>
         </div>
       </div>
       <div class="review-controls">
+        <span id="sampleSuggestionReviewStatus" class="secondary hidden" role="status"></span>
+        <button id="cancelSampleSuggestionsButton" class="button button-plain hidden" type="button">
+          停止抽检
+        </button>
+        <button id="generateLibrarySuggestionsButton" class="button button-primary" type="button"
+          title="像 Mac 端一样从图库抽取照片并生成个人建议">抽取样本并生成建议</button>
         <label id="reviewTagControl" class="hidden">
           <span class="visually-hidden">审核标签</span>
           <select id="reviewTagSelect"></select>
@@ -468,13 +851,14 @@
       <div id="reviewOverviewGrid" class="review-overview-grid"></div>
     </section>
     <div id="reviewQueueLayout" class="review-body hidden">
-      <aside class="review-queue-pane">
+      <aside id="reviewQueuePane" class="review-queue-pane">
+        <div id="reviewMarqueeSelection" class="marquee-selection hidden" aria-hidden="true"></div>
         <div id="reviewEmpty" class="review-empty">
           <span aria-hidden="true">✓</span>
           <strong>没有待审核建议</strong>
           <p>选择其他标签，或等待 Mac 生成新建议。</p>
         </div>
-        <div id="reviewGrid" class="review-grid"></div>
+        <div id="reviewGrid" class="review-grid" role="grid" aria-multiselectable="true"></div>
         <button id="loadMoreReviewButton" class="button review-load-more hidden" type="button">载入更多</button>
       </aside>
       <main class="review-detail-pane">
@@ -491,6 +875,7 @@
             <div>
               <h2 id="reviewFileName">未命名照片</h2>
               <p id="reviewOrigin" class="secondary"></p>
+              <p id="reviewSelectionSummary" class="review-selection-summary secondary"></p>
             </div>
             <div class="review-navigation">
               <button id="previousReviewButton" class="icon-button" type="button" aria-label="上一项">‹</button>
@@ -514,14 +899,730 @@
     </div>
   </section>
 
+  <dialog id="tagSuggestionDialog" class="tag-suggestion-dialog"
+    aria-labelledby="tagSuggestionDialogTitle">
+    <form id="tagSuggestionForm" method="dialog">
+      <header class="tag-suggestion-heading">
+        <div class="tag-suggestion-mark" aria-hidden="true">✦</div>
+        <div>
+          <h2 id="tagSuggestionDialogTitle">生成标签建议</h2>
+          <p id="tagSuggestionDialogSubtitle">使用这台 Mac 上已训练的个人模型扫描所选来源。</p>
+        </div>
+        <button id="closeTagSuggestionDialogButton" class="icon-button" type="button"
+          aria-label="关闭生成建议设置">×</button>
+      </header>
+      <section class="tag-suggestion-summary" aria-label="生成规则">
+        <div><span>模型</span><strong id="tagSuggestionMethodSummary">个人模型</strong></div>
+        <div><span>保留数量</span><strong id="tagSuggestionLimitSummary">Top 500</strong></div>
+        <div><span>最低分数</span><strong id="tagSuggestionThresholdSummary">由 Mac 设置</strong></div>
+      </section>
+      <section class="tag-suggestion-sources">
+        <header>
+          <div>
+            <strong>扫描来源</strong>
+            <p>只检查尚未对这个标签做出人工决定的照片。</p>
+          </div>
+          <div>
+            <button id="selectAllTagSuggestionSourcesButton" class="button button-plain"
+              type="button">全选</button>
+            <button id="clearTagSuggestionSourcesButton" class="button button-plain"
+              type="button">清除</button>
+          </div>
+        </header>
+        <div id="tagSuggestionSourceOptions" class="tag-suggestion-source-options"></div>
+      </section>
+      <aside class="tag-suggestion-boundary">
+        <span aria-hidden="true">✓</span>
+        <p>照片仍保留在这台 Mac；网页只接收任务进度和待审核结果，不接收模型、向量或文件路径。</p>
+      </aside>
+      <p id="tagSuggestionError" class="form-error" role="alert"></p>
+      <footer class="tag-suggestion-actions">
+        <span id="tagSuggestionSelectionSummary" class="secondary">已选择 0 个来源</span>
+        <button id="cancelTagSuggestionDialogButton" class="button button-plain" type="button">取消</button>
+        <button id="launchTagSuggestionButton" class="button button-primary write-action"
+          type="submit">开始扫描</button>
+      </footer>
+    </form>
+  </dialog>
+
+  <section id="trainingWorkspace" class="training-workspace hidden" role="dialog" aria-modal="true"
+    aria-label="训练工程工作台">
+    <header class="training-titlebar">
+      <div class="training-title-copy">
+        <button id="closeTrainingButton" class="icon-button" type="button" aria-label="关闭训练工程">×</button>
+        <div>
+          <strong>训练工程</strong>
+          <span id="trainingSummary" class="secondary">读取这台 Mac 的训练记录</span>
+        </div>
+      </div>
+      <div class="training-controls">
+        <button id="newTrainingButton" class="button button-primary" type="button">＋ 新建任务</button>
+        <div id="trainingMediaKindTabs" class="toolbar-segmented" role="group" aria-label="训练媒体类型">
+          <button type="button" data-training-media-kind="image" aria-pressed="true">照片</button>
+          <button type="button" data-training-media-kind="video" aria-pressed="false">视频</button>
+        </div>
+        <label>
+          <span class="visually-hidden">训练方法</span>
+          <select id="trainingMethodFilter">
+            <option value="">全部记录</option>
+            <option id="trainingFeatureMethodOption" value="featureKnn">相似照片</option>
+            <option value="personalCentroid">快速个人模型</option>
+            <option value="personalAdamW">增强个人模型</option>
+          </select>
+        </label>
+        <button id="toggleTrainingNavigatorButton" class="icon-button" type="button"
+          title="隐藏训练记录" aria-label="隐藏训练记录" aria-pressed="true">◫</button>
+        <button id="refreshTrainingButton" class="icon-button" type="button" title="刷新训练工程"
+          aria-label="刷新训练工程">↻</button>
+      </div>
+    </header>
+    <div id="trainingActivityStrip" class="training-activity-strip hidden" role="status"
+      aria-live="polite"></div>
+    <div id="trainingSlotStrip" class="training-slot-strip" aria-label="模型槽位状态"></div>
+    <section id="trainingBatchHistory" class="training-batch-history hidden"
+      aria-label="个人模型批次历史">
+      <header>
+        <strong>批次历史</strong>
+        <span id="trainingBatchCount" class="secondary">0</span>
+      </header>
+      <div id="trainingBatchList" class="training-batch-list"></div>
+    </section>
+    <div class="training-body">
+      <aside class="training-run-pane">
+        <div class="training-run-heading">
+          <div>
+            <strong>训练记录</strong>
+            <span id="trainingRunCount" class="secondary">0</span>
+          </div>
+          <label class="training-record-scope-control">
+            <span class="visually-hidden">训练记录类型</span>
+            <select id="trainingRecordScopeFilter" aria-label="筛选批次或单项训练记录">
+              <option value="all">全部</option>
+              <option value="batch">批次</option>
+              <option value="single">单项</option>
+            </select>
+          </label>
+        </div>
+        <div id="trainingRunList" class="training-run-list" role="listbox" aria-label="训练记录列表"></div>
+        <div id="trainingEmpty" class="training-empty hidden">
+          <span aria-hidden="true">⌁</span>
+          <strong>暂无训练记录</strong>
+          <p>从“新建任务”开始；失败和取消的记录也会保留。</p>
+        </div>
+      </aside>
+      <main class="training-detail-pane">
+        <div id="trainingDetailPlaceholder" class="training-detail-placeholder">
+          <span aria-hidden="true">▤</span>
+          <strong>选择一条训练记录</strong>
+          <p>这里会展示数据、配置、过程、产物和结果。</p>
+        </div>
+        <article id="trainingDetail" class="training-detail hidden">
+          <header class="training-detail-heading">
+            <div class="training-method-mark" aria-hidden="true">⌁</div>
+            <div>
+              <h2 id="trainingDetailTitle">训练记录</h2>
+              <p id="trainingDetailSubtitle" class="secondary"></p>
+              <div id="trainingDetailContext" class="training-detail-context"></div>
+            </div>
+            <div class="training-detail-heading-actions">
+              <span id="trainingDetailState" class="training-state-pill"></span>
+              <div id="trainingDetailActions" class="training-detail-actions"></div>
+            </div>
+          </header>
+          <dl id="trainingFactLedger" class="training-fact-ledger"></dl>
+          <section id="trainingErrorSection" class="training-error-section hidden">
+            <strong id="trainingErrorTitle">训练失败</strong>
+            <p id="trainingErrorMessage"></p>
+            <span id="trainingErrorAction"></span>
+            <code id="trainingErrorCode"></code>
+          </section>
+          <section class="training-detail-card">
+            <h3>训练过程</h3>
+            <p id="trainingMetricsSummary" class="training-card-summary"></p>
+            <details>
+              <summary>查看原始训练指标</summary>
+              <pre id="trainingMetricsJSON"></pre>
+            </details>
+          </section>
+          <section class="training-detail-card">
+            <h3>训练产物</h3>
+            <dl id="trainingArtifactLedger" class="training-compact-ledger"></dl>
+          </section>
+          <details class="training-technical-details">
+            <summary>数据、配置与结果 · 技术详情</summary>
+            <div id="trainingTechnicalBlocks"></div>
+          </details>
+        </article>
+      </main>
+    </div>
+  </section>
+
+  <section id="slimmingWorkspace" class="slimming-workspace hidden" role="dialog" aria-modal="true"
+    aria-label="图库瘦身工作台">
+    <header class="slimming-titlebar">
+      <div class="slimming-title-copy">
+        <button id="closeSlimmingButton" class="icon-button" type="button" aria-label="关闭图库瘦身">×</button>
+        <div>
+          <strong>图库瘦身</strong>
+          <span id="slimmingSummary" class="secondary">读取这台 Mac 的分析结果</span>
+        </div>
+      </div>
+      <div class="slimming-controls">
+        <div id="slimmingWorkspaceTabs" class="toolbar-segmented" role="group" aria-label="图库瘦身页面">
+          <button type="button" data-slimming-view="analysis" aria-pressed="true">分析</button>
+          <button type="button" data-slimming-view="recycle">回收站</button>
+        </div>
+        <div id="slimmingMediaKindTabs" class="toolbar-segmented" role="group" aria-label="瘦身媒体类型">
+          <button type="button" data-slimming-media-kind="image" aria-pressed="true">照片</button>
+          <button type="button" data-slimming-media-kind="video" aria-pressed="false">视频</button>
+        </div>
+        <button id="newSlimmingAnalysisButton" class="button button-primary write-action" type="button">
+          新分析…
+        </button>
+        <button id="slimmingIdenticalCleanupButton"
+          class="button button-danger write-action hidden" type="button">
+          一键清理完全相同…
+        </button>
+        <button id="refreshSlimmingButton" class="icon-button" type="button" title="刷新分析结果"
+          aria-label="刷新分析结果">↻</button>
+      </div>
+    </header>
+    <div class="slimming-notice" role="note">
+      <span aria-hidden="true">ⓘ</span>
+      <span id="slimmingNoticeText">分析与任务控制由这台 Mac 执行；网页只接收结果。</span>
+    </div>
+    <div id="slimmingAnalysisBody" class="slimming-body">
+      <aside class="slimming-job-pane">
+        <div class="slimming-pane-heading">
+          <strong>分析记录</strong>
+          <span class="slimming-job-heading-tools">
+            <span id="slimmingJobCount" class="secondary">0 条</span>
+            <span class="slimming-job-navigation" role="group" aria-label="切换分析记录">
+              <button id="previousSlimmingJobButton" type="button" aria-label="上一条分析记录"
+                title="上一条分析记录">‹</button>
+              <span id="slimmingJobPosition" class="secondary" aria-live="polite">0 / 0</span>
+              <button id="nextSlimmingJobButton" type="button" aria-label="下一条分析记录"
+                title="下一条分析记录">›</button>
+            </span>
+            <span id="slimmingJobActions" class="slimming-job-actions"></span>
+          </span>
+        </div>
+        <div id="slimmingJobList" class="slimming-job-list" role="listbox" aria-label="图库瘦身分析记录"></div>
+        <div id="slimmingEmpty" class="slimming-empty hidden">
+          <span aria-hidden="true">◫</span>
+          <strong>暂无分析记录</strong>
+          <p>请先在 Mac 端运行一次图库瘦身分析。</p>
+        </div>
+      </aside>
+      <aside class="slimming-cluster-pane">
+        <div class="slimming-pane-heading">
+          <strong>候选分组</strong>
+          <span id="slimmingClusterCount" class="secondary">0 组</span>
+        </div>
+        <div id="slimmingClusterList" class="slimming-cluster-list" role="listbox"
+          aria-label="相似照片候选分组"></div>
+        <button id="slimmingLoadMoreClustersButton" class="button slimming-load-more hidden" type="button">
+          显示更多分组
+        </button>
+        <div id="slimmingClusterEmpty" class="slimming-empty hidden">
+          <span aria-hidden="true">✓</span>
+          <strong>没有候选分组</strong>
+          <p>此记录未发现重复或相似项目。</p>
+        </div>
+      </aside>
+      <main class="slimming-member-pane">
+        <header class="slimming-member-heading">
+          <div>
+            <h2 id="slimmingMemberTitle">选择一个候选分组</h2>
+            <p id="slimmingMemberSummary" class="secondary">分组中的照片会在这里显示</p>
+          </div>
+          <span id="slimmingSelectionSummary" class="secondary"></span>
+        </header>
+        <div id="slimmingJobStatus" class="slimming-job-status hidden" role="status"></div>
+        <details id="slimmingInspector" class="slimming-inspector" open>
+          <summary>
+            <span>检查器</span>
+            <span id="slimmingInspectorSummary" class="secondary">分析概览</span>
+          </summary>
+          <dl id="slimmingInspectorContent" class="slimming-inspector-content"></dl>
+        </details>
+        <div id="slimmingSelectionBar" class="slimming-selection-bar hidden" role="toolbar"
+          aria-label="所选候选项目操作">
+          <span id="slimmingSelectionBarSummary">已选择 0 项</span>
+          <span class="slimming-selection-spacer"></span>
+          <button id="slimmingMoveToRecycleButton" class="button button-compact" type="button">
+            移入可恢复回收站
+          </button>
+          <button id="slimmingReleaseSpaceButton" class="button button-compact destructive" type="button">
+            立即释放空间…
+          </button>
+        </div>
+        <div id="slimmingRemovalStatus" class="slimming-removal-status hidden" role="status"></div>
+        <div id="slimmingMemberGrid" class="slimming-member-grid" aria-live="polite"></div>
+        <button id="slimmingLoadMoreMembersButton" class="button slimming-load-more hidden" type="button">
+          显示更多成员
+        </button>
+        <div id="slimmingMemberEmpty" class="slimming-detail-placeholder">
+          <span aria-hidden="true">▧</span>
+          <strong>选择一个候选分组</strong>
+          <p>可使用普通点击、⌘ 点击、Shift 点击和 ⌘A 选择成员；双击或按空格预览。</p>
+        </div>
+      </main>
+    </div>
+    <section id="slimmingRecycleBody" class="slimming-recycle-body hidden" aria-label="图库瘦身回收站">
+      <header class="slimming-recycle-toolbar">
+        <label class="slimming-recycle-search">
+          <span aria-hidden="true">⌕</span>
+          <input id="slimmingRecycleSearchInput" type="search" placeholder="按文件名搜索" autocomplete="off">
+        </label>
+        <label class="slimming-recycle-source-filter">
+          <span class="visually-hidden">来源</span>
+          <select id="slimmingRecycleSourceSelect" aria-label="筛选回收站来源">
+            <option value="">全部来源</option>
+          </select>
+        </label>
+        <span id="slimmingRecycleCount" class="secondary">0 项</span>
+      </header>
+      <div id="slimmingRecycleRequestStatus" class="slimming-recycle-request hidden" role="status"></div>
+      <div id="slimmingRecycleList" class="slimming-recycle-list" aria-live="polite"></div>
+      <button id="slimmingRecycleLoadMoreButton" class="button slimming-load-more hidden" type="button">
+        显示更多回收站项目
+      </button>
+      <div id="slimmingRecycleEmpty" class="slimming-empty hidden">
+        <span aria-hidden="true">♲</span>
+        <strong>回收站为空</strong>
+        <p>文件夹媒体在 ImageAll 中保留 30 天；Photos 项遵循系统“照片”App 的恢复规则。</p>
+      </div>
+    </section>
+  </section>
+
+  <dialog id="slimmingIdenticalCleanupDialog" class="identical-cleanup-dialog"
+    aria-labelledby="slimmingIdenticalCleanupTitle">
+    <section>
+      <header class="identical-cleanup-heading">
+        <div class="identical-cleanup-icon" aria-hidden="true">⌫</div>
+        <div>
+          <h2 id="slimmingIdenticalCleanupTitle">一键清理完全相同媒体</h2>
+          <p>这是由这台 Mac 根据当前资产、来源身份与原始内容哈希生成的实际清理预览。</p>
+        </div>
+      </header>
+      <div id="slimmingIdenticalCleanupLoading" class="slimming-setup-loading">
+        <span class="spinner" aria-hidden="true"></span>
+        <span>正在逐组核验并生成冻结方案…</span>
+      </div>
+      <div id="slimmingIdenticalCleanupContent" class="hidden">
+        <div id="slimmingIdenticalCleanupMetrics" class="identical-cleanup-metrics"></div>
+        <div class="identical-cleanup-detail-grid">
+          <section>
+            <h3>删除优先级</h3>
+            <ol>
+              <li>优先清理 Apple Photos 中的重复项</li>
+              <li>再按来源名称与稳定顺序选择</li>
+              <li>每个已核验分组严格保留一项</li>
+            </ol>
+          </section>
+          <section>
+            <h3>待清理来源</h3>
+            <dl id="slimmingIdenticalCleanupSources"></dl>
+          </section>
+        </div>
+        <div id="slimmingIdenticalCleanupNotice" class="identical-cleanup-notice"></div>
+      </div>
+      <p id="slimmingIdenticalCleanupError" class="form-error" role="alert"></p>
+      <footer class="identical-cleanup-actions">
+        <button id="cancelSlimmingIdenticalCleanupButton" class="button" type="button">取消</button>
+        <button id="recoverableSlimmingIdenticalCleanupButton" class="button write-action"
+          type="button">可恢复回收</button>
+        <button id="fastSlimmingIdenticalCleanupButton"
+          class="button button-danger write-action" type="button">快速清理</button>
+      </footer>
+    </section>
+  </dialog>
+
+  <dialog id="slimmingVerificationDialog" class="slimming-verification-dialog"
+    aria-labelledby="slimmingVerificationTitle">
+    <section>
+      <header class="slimming-verification-heading">
+        <div id="slimmingVerificationIcon" class="slimming-verification-icon" aria-hidden="true">✓</div>
+        <div>
+          <h2 id="slimmingVerificationTitle">删除后核验结果</h2>
+          <p id="slimmingVerificationSubtitle">已重新读取本次处理资产的实时状态。</p>
+        </div>
+      </header>
+      <div class="slimming-verification-score">
+        <strong id="slimmingVerificationScore">0 / 0</strong>
+        <span>组完全相同媒体已完成去重</span>
+        <p id="slimmingVerificationGoal"></p>
+      </div>
+      <div id="slimmingVerificationMetrics" class="identical-cleanup-metrics"></div>
+      <div id="slimmingVerificationResult" class="slimming-verification-result"></div>
+      <p class="slimming-verification-footnote">
+        “完成去重”“确认已清理”和“当前实际可用”均来自删除后的再次读取；目标值来自本次冻结方案。
+      </p>
+      <footer class="identical-cleanup-actions">
+        <span>这是删除动作结束后的独立核验结果。</span>
+        <button id="closeSlimmingVerificationButton" class="button button-primary" type="button">完成</button>
+      </footer>
+    </section>
+  </dialog>
+
+  <dialog id="generalSettingsDialog" class="general-settings-dialog"
+    aria-labelledby="generalSettingsTitle">
+    <section class="general-settings-shell">
+      <header class="general-settings-header">
+        <div>
+          <span class="workspace-eyebrow">IMAGEALL SETTINGS</span>
+          <h2 id="generalSettingsTitle">通用设置</h2>
+          <p>与 Mac 端共用同一份偏好，修改后立即作用于当前 App。</p>
+        </div>
+        <button id="generalSettingsCloseButton" class="icon-button" type="button"
+          aria-label="关闭通用设置">×</button>
+      </header>
+      <div id="generalSettingsLoading" class="storage-loading" role="status">
+        <span class="spinner" aria-hidden="true"></span>
+        <span>正在读取 Mac 设置…</span>
+      </div>
+      <div id="generalSettingsContent" class="general-settings-content hidden">
+        <section class="general-settings-section" aria-labelledby="generalSettingsInterfaceTitle">
+          <div class="general-settings-section-copy">
+            <h3 id="generalSettingsInterfaceTitle">界面</h3>
+            <p>选择 Mac 和网页顶部工具栏只显示图标，或同时显示图标与功能名称。</p>
+          </div>
+          <div id="toolbarDisplayModeControl" class="settings-segmented" role="radiogroup"
+            aria-label="工具栏显示">
+            <button type="button" role="radio" data-toolbar-display-mode="iconOnly"
+              aria-checked="false">仅图标</button>
+            <button type="button" role="radio" data-toolbar-display-mode="iconAndTitle"
+              aria-checked="false">图标与名称</button>
+          </div>
+        </section>
+        <section class="general-settings-section" aria-labelledby="generalSettingsModelTitle">
+          <div class="general-settings-section-copy">
+            <h3 id="generalSettingsModelTitle">本地模型</h3>
+            <p id="generalSettingsModelDetail">模型状态来自这台 Mac。</p>
+            <dl class="general-settings-ledger">
+              <div><dt>状态</dt><dd id="generalSettingsModelState">—</dd></div>
+              <div><dt>模型</dt><dd id="generalSettingsModelName">—</dd></div>
+              <div><dt>运行方式</dt><dd id="generalSettingsModelRuntime">—</dd></div>
+            </dl>
+          </div>
+          <button id="generalSettingsModelToggle" class="settings-switch write-action"
+            type="button" role="switch" aria-checked="false">
+            <span class="settings-switch-track" aria-hidden="true"><span></span></span>
+            <span>启用 DINOv2 Small</span>
+          </button>
+        </section>
+        <section class="general-settings-section" aria-labelledby="generalSettingsPerformanceTitle">
+          <div class="general-settings-section-copy">
+            <h3 id="generalSettingsPerformanceTitle">性能</h3>
+            <p id="generalSettingsPrewarmDetail">连续 3 分钟无操作后后台预热，任意操作立即让路给浏览。</p>
+          </div>
+          <button id="generalSettingsPrewarmToggle" class="settings-switch write-action"
+            type="button" role="switch" aria-checked="false">
+            <span class="settings-switch-track" aria-hidden="true"><span></span></span>
+            <span>空闲时后台预热缓存</span>
+          </button>
+        </section>
+        <section id="generalSuggestionSection" class="general-settings-section general-settings-threshold-section hidden"
+          aria-labelledby="generalSuggestionTitle">
+          <div class="general-settings-section-copy">
+            <h3 id="generalSuggestionTitle">建议阈值</h3>
+            <p>三种建议轨道的分数含义不同。默认 0 表示只要正分即可进入待审核队列。</p>
+            <div id="generalSuggestionDefaults" class="suggestion-defaults" aria-label="建议默认阈值">
+              <label class="suggestion-default-row">
+                <span>特征向量</span>
+                <input type="number" inputmode="decimal" step="0.05"
+                  data-suggestion-default="featureKnn" aria-label="特征向量默认门槛">
+              </label>
+              <label class="suggestion-default-row">
+                <span>个人模型</span>
+                <input type="number" inputmode="decimal" step="0.05"
+                  data-suggestion-default="personalCentroid" aria-label="个人模型默认门槛">
+              </label>
+              <label class="suggestion-default-row">
+                <span>超级个人模型</span>
+                <input type="number" inputmode="decimal" step="0.05"
+                  data-suggestion-default="personalAdamW" aria-label="超级个人模型默认门槛">
+              </label>
+            </div>
+          </div>
+          <button id="suggestionOverridesButton" class="button" type="button">
+            按标签覆盖… <span id="suggestionOverrideCount" class="settings-count">0</span>
+          </button>
+        </section>
+        <aside class="source-manager-boundary">
+          <strong>网页访问安全仍只在 Mac 管理</strong>
+          <span>公网地址、配对设备、白名单和 Host 开关不会暴露给网页，网页不能修改自己的访问权限。</span>
+        </aside>
+      </div>
+      <p id="generalSettingsError" class="form-error hidden" role="alert"></p>
+    </section>
+  </dialog>
+
+  <dialog id="suggestionThresholdDialog" class="suggestion-threshold-dialog"
+    aria-labelledby="suggestionThresholdTitle">
+    <section class="suggestion-threshold-shell">
+      <header class="general-settings-header">
+        <div>
+          <span class="workspace-eyebrow">SUGGESTION THRESHOLDS</span>
+          <h2 id="suggestionThresholdTitle">按标签覆盖</h2>
+          <p>每个标签、每种方法独立设置；清除后继承对应的全局默认值。</p>
+        </div>
+        <button id="suggestionThresholdCloseButton" class="icon-button" type="button"
+          aria-label="关闭按标签覆盖">×</button>
+      </header>
+      <label class="suggestion-threshold-search">
+        <span aria-hidden="true">⌕</span>
+        <input id="suggestionThresholdSearch" type="search" placeholder="搜索标签"
+          autocomplete="off" aria-label="搜索标签">
+      </label>
+      <p id="suggestionThresholdSummary" class="suggestion-threshold-summary"></p>
+      <div id="suggestionThresholdList" class="suggestion-threshold-list"></div>
+      <div id="suggestionThresholdEmpty" class="storage-empty hidden">没有匹配的活动标签。</div>
+      <p id="suggestionThresholdError" class="form-error hidden" role="alert"></p>
+    </section>
+  </dialog>
+
+  <dialog id="sourceManagerDialog" class="source-manager-dialog" aria-labelledby="sourceManagerTitle">
+    <form method="dialog" class="source-manager-shell">
+      <header class="source-manager-header">
+        <div>
+          <span class="workspace-eyebrow">MAC HOST</span>
+          <h2 id="sourceManagerTitle">来源管理</h2>
+          <p>网页只发起请求；目录选择、Photos 权限和删除确认始终在 Mac 上完成。</p>
+        </div>
+        <button id="sourceManagerCloseButton" class="icon-button" type="button" aria-label="关闭来源管理">×</button>
+      </header>
+      <div class="source-manager-add-actions">
+        <button id="sourceConnectFolderButton" class="button button-primary write-action" type="button">＋ 连接文件夹…</button>
+        <button id="sourceConnectPhotosButton" class="button write-action" type="button">连接 Apple Photos…</button>
+      </div>
+      <div id="sourceManagerPending" class="source-manager-pending hidden" role="status"></div>
+      <section class="source-manager-section" aria-labelledby="sourceManagerListTitle">
+        <div class="source-manager-section-heading">
+          <h3 id="sourceManagerListTitle">已连接来源</h3>
+          <button id="sourceManagerRefreshButton" class="button button-small" type="button">刷新状态</button>
+        </div>
+        <div id="sourceManagerList" class="source-manager-list"></div>
+        <p id="sourceManagerEmpty" class="empty-copy hidden">尚未连接来源。</p>
+      </section>
+      <aside class="source-manager-boundary">
+        <strong>Host 与账号设置保留在 Mac</strong>
+        <span>公网地址、配对设备、网页白名单和 Host 开关涉及本机安全边界，请在 ImageAll 的“网页访问”设置中管理。</span>
+      </aside>
+    </form>
+  </dialog>
+
+  <dialog id="storageDialog" class="storage-dialog" aria-labelledby="storageDialogTitle">
+    <section class="storage-shell">
+      <header class="storage-header">
+        <div>
+          <span class="workspace-eyebrow">MAC HOST</span>
+          <h2 id="storageDialogTitle">应用存储与预览缓存</h2>
+          <p>状态来自这台 Mac。网页只发起操作，目录选择与清理确认仍在 Mac 上完成。</p>
+        </div>
+        <button id="storageCloseButton" class="icon-button" type="button" aria-label="关闭存储面板">×</button>
+      </header>
+      <div id="storagePending" class="source-manager-pending hidden" role="status"></div>
+      <div id="storageLoading" class="storage-loading" role="status">
+        <span class="spinner" aria-hidden="true"></span>
+        <span>正在读取 Mac 存储状态…</span>
+      </div>
+      <div id="storageContent" class="storage-content hidden">
+        <section class="storage-usage-grid" aria-label="应用缓存用量">
+          <article class="storage-usage-card">
+            <div class="storage-usage-icon" aria-hidden="true">▦</div>
+            <div>
+              <h3>预览缓存</h3>
+              <strong id="previewCacheSize">—</strong>
+              <p id="previewCacheEntries">— 条可重建记录</p>
+            </div>
+            <button id="clearPreviewCacheButton" class="button button-danger write-action" type="button">清理…</button>
+          </article>
+          <article class="storage-usage-card">
+            <div class="storage-usage-icon" aria-hidden="true">◉</div>
+            <div>
+              <h3>长期保留的 Photos 原图</h3>
+              <strong id="photosOriginalsSize">—</strong>
+              <p id="photosOriginalsEntries">— 条 ImageAll 副本</p>
+            </div>
+            <button id="clearPhotosOriginalsButton" class="button button-danger write-action" type="button">清理…</button>
+          </article>
+        </section>
+        <section class="storage-location-card">
+          <div class="storage-location-copy">
+            <span class="storage-location-mark" aria-hidden="true">▣</span>
+            <div>
+              <h3>应用资料位置</h3>
+              <strong id="appStorageKind">—</strong>
+              <p id="appStorageDetail">Mac 本机管理目录与访问权限</p>
+            </div>
+          </div>
+          <button id="chooseExternalStorageButton" class="button write-action" type="button">选择外置存储位置…</button>
+        </section>
+        <section class="storage-export-card">
+          <div>
+            <h3>导出用户数据</h3>
+            <p>导出标签、相对路径和 Photos 标识符；不包含原始照片，导出包不加密。</p>
+          </div>
+          <button id="exportPortableDataButton" class="button button-primary write-action" type="button">导出到 Mac…</button>
+        </section>
+        <section id="storageHistorySection" class="storage-history hidden">
+          <div class="storage-section-heading">
+            <h3>最近操作</h3>
+          </div>
+          <div id="storageHistory" class="storage-history-list"></div>
+        </section>
+      </div>
+      <p id="storageError" class="form-error hidden"></p>
+      <footer class="storage-boundary">
+        <span>为保护本机隐私，网页不会显示应用资料的绝对路径。</span>
+        <button id="storageRefreshButton" class="button button-small" type="button">刷新状态</button>
+      </footer>
+    </section>
+  </dialog>
+
+  <dialog id="slimmingSetupDialog" class="training-setup-dialog slimming-setup-dialog"
+    aria-labelledby="slimmingSetupTitle">
+    <form id="slimmingSetupForm" method="dialog">
+      <header class="training-setup-heading">
+        <div>
+          <h2 id="slimmingSetupTitle">新建图库瘦身分析</h2>
+          <p>范围和相似阈值与 Mac 端共用；分析在这台 Mac 上运行。</p>
+        </div>
+        <button id="closeSlimmingSetupButton" class="icon-button" type="button" aria-label="取消新建分析">×</button>
+      </header>
+      <div class="slimming-setup-body">
+        <div id="slimmingSetupLoading" class="training-setup-loading">
+          <span class="spinner" aria-hidden="true"></span>
+          <span>正在读取来源和相似阈值…</span>
+        </div>
+        <div id="slimmingSetupConfiguration" class="slimming-setup-configuration hidden">
+          <section>
+            <div class="slimming-setup-section-heading">
+              <div>
+                <strong>分析范围</strong>
+                <p>与 Mac 端“全部来源 / 当前筛选 / 按种子查找”一致。</p>
+              </div>
+            </div>
+            <div id="slimmingModeOptions" class="slimming-mode-options" role="radiogroup" aria-label="分析范围"></div>
+          </section>
+          <section id="slimmingSourceSection">
+            <div class="slimming-setup-section-heading">
+              <div>
+                <strong>来源</strong>
+                <p id="slimmingSourceHint">默认包含全部可用来源。</p>
+              </div>
+              <button id="toggleAllSlimmingSourcesButton" class="button button-compact" type="button">清除</button>
+            </div>
+            <div id="slimmingSourceOptions" class="training-scope-options"></div>
+          </section>
+          <details class="slimming-thresholds" open>
+            <summary>相似阈值</summary>
+            <div class="slimming-threshold-toolbar">
+              <p>这些设置会同步保存到 Mac，并用于后续分析。</p>
+              <button id="resetSlimmingThresholdsButton" class="button button-compact" type="button">恢复默认</button>
+            </div>
+            <div class="slimming-threshold-grid">
+              <label><span>Feature Print 候选</span><select id="slimmingRecallMode"><option value="topK">Top-K</option><option value="allCandidates">全部候选</option></select><input id="slimmingRecallTopK" type="number" min="1" max="128" step="1"></label>
+              <label><span>Feature Print L2</span><select id="slimmingL2Mode"><option value="radius">半径</option><option value="unlimited">不限</option></select><input id="slimmingL2Distance" type="number" min="0" max="200" step="1"></label>
+              <label><span>DINO 余弦相似度</span><select id="slimmingDINOMode"><option value="minimum">最低值</option><option value="unlimited">不限</option></select><input id="slimmingDINOSimilarity" type="number" min="0" max="1" step="0.01"></label>
+              <label><span>拍摄日分桶</span><select id="slimmingBucketingMode"><option value="automatic">自动</option><option value="always">始终</option><option value="never">从不</option></select><input id="slimmingBucketActivationCount" type="number" min="2" max="10000" step="1"></label>
+            </div>
+            <p id="slimmingExtremeWarning" class="slimming-extreme-warning hidden">⚠ 极限设置可能显著增加分析时间和相似结果数量。</p>
+          </details>
+          <section class="training-launch-summary">
+            <strong>启动前确认</strong>
+            <dl id="slimmingLaunchSummary"></dl>
+          </section>
+        </div>
+      </div>
+      <p id="slimmingSetupError" class="form-error" role="alert"></p>
+      <footer class="training-setup-actions">
+        <button id="cancelSlimmingSetupButton" class="button button-plain" type="button">取消</button>
+        <button id="saveSlimmingThresholdsButton" class="button write-action" type="button">仅保存设置</button>
+        <button id="launchSlimmingButton" class="button button-primary write-action" type="submit">开始分析</button>
+      </footer>
+    </form>
+  </dialog>
+
+  <dialog id="trainingSetupDialog" class="training-setup-dialog" aria-labelledby="trainingSetupTitle">
+    <form id="trainingSetupForm" method="dialog">
+      <header class="training-setup-heading">
+        <div>
+          <h2 id="trainingSetupTitle">新建训练任务</h2>
+          <p>选择想完成的事情；算法名称只作为技术说明。</p>
+        </div>
+        <button id="closeTrainingSetupButton" class="icon-button" type="button"
+          aria-label="取消新建训练任务">×</button>
+      </header>
+      <div class="training-setup-body">
+        <aside>
+          <strong>任务类型</strong>
+          <div id="trainingSetupMethods" class="training-method-options" role="radiogroup"
+            aria-label="训练任务类型"></div>
+        </aside>
+        <main>
+          <div id="trainingSetupLoading" class="training-setup-loading">
+            <span class="spinner" aria-hidden="true"></span>
+            <span>正在读取标签、来源和训练能力…</span>
+          </div>
+          <div id="trainingSetupConfiguration" class="training-setup-configuration hidden">
+            <section>
+              <div class="training-setup-section-heading">
+                <div>
+                  <strong id="trainingSetupConfigTitle">选择标签和照片范围</strong>
+                  <p id="trainingSetupConfigHint"></p>
+                </div>
+                <input id="trainingTagSearch" type="search" placeholder="搜索标签" aria-label="搜索训练标签">
+              </div>
+              <div id="trainingTagOptions" class="training-tag-options"></div>
+            </section>
+            <section>
+              <strong id="trainingScopeTitle">使用哪些照片？</strong>
+              <p id="trainingScopeHint" class="secondary"></p>
+              <div id="trainingScopeOptions" class="training-scope-options"></div>
+            </section>
+            <section class="training-launch-summary">
+              <strong>启动前确认</strong>
+              <dl id="trainingLaunchSummary"></dl>
+            </section>
+          </div>
+          <p id="trainingSetupNotice" class="training-setup-notice hidden" role="note"></p>
+        </main>
+      </div>
+      <p id="trainingSetupError" class="form-error" role="alert"></p>
+      <footer class="training-setup-actions">
+        <button id="cancelTrainingSetupButton" class="button button-plain" type="button">取消</button>
+        <button id="launchTrainingButton" class="button button-primary write-action" type="submit">开始训练</button>
+      </footer>
+    </form>
+  </dialog>
+
   <div id="lightbox" class="lightbox hidden" role="dialog" aria-modal="true" aria-label="照片全屏预览">
     <header class="lightbox-toolbar">
+      <button id="lightboxBackButton" class="lightbox-back" type="button">
+        <span aria-hidden="true">‹</span><span id="lightboxBackLabel">返回网格</span>
+      </button>
       <span id="lightboxTitle">照片预览</span>
       <button id="closeLightboxButton" class="icon-button" type="button" aria-label="关闭全屏预览">×</button>
     </header>
     <button id="lightboxPreviousButton" class="lightbox-nav previous" type="button" aria-label="上一张">‹</button>
     <img id="lightboxImage" alt="">
+    <video id="lightboxVideo" class="hidden" controls playsinline preload="metadata"></video>
     <button id="lightboxNextButton" class="lightbox-nav next" type="button" aria-label="下一张">›</button>
+    <div id="lightboxReviewActions" class="lightbox-review-actions hidden" role="group"
+      aria-label="审核决定">
+      <button class="review-action lightbox-review-action write-action accept" data-action="accept" type="button">
+        <kbd>P</kbd><span>属于</span>
+      </button>
+      <button class="review-action lightbox-review-action write-action reject" data-action="reject" type="button">
+        <kbd>X</kbd><span>不属于</span>
+      </button>
+      <button class="review-action lightbox-review-action clear" data-action="defer" type="button">
+        <kbd>U</kbd><span>稍后</span>
+      </button>
+    </div>
     <span id="lightboxPosition" class="lightbox-position"></span>
   </div>
 
@@ -557,7 +1658,11 @@
         <button id="closeTagManagerButton" class="icon-button" type="button" aria-label="关闭标签管理">×</button>
       </header>
       <section class="tag-manager-section">
-        <h3>标签</h3>
+        <div class="tag-manager-section-heading">
+          <h3>标签</h3>
+          <button id="installPresetTagsButton" class="button button-plain write-action"
+            type="button">添加常用标签</button>
+        </div>
         <label class="sheet-dialog-field">
           <span>选择标签</span>
           <select id="tagManagerTagSelect"></select>
@@ -631,12 +1736,18 @@
       </header>
       <dl>
         <div><dt>打开命令面板</dt><dd><kbd>⌘K</kbd></dd></div>
+        <div><dt>打开通用设置</dt><dd><kbd>⌘,</kbd></dd></div>
         <div><dt>全选当前项目</dt><dd><kbd>⌘A</kbd></dd></div>
         <div><dt>切换单图查看</dt><dd><kbd>Space</kbd></dd></div>
         <div><dt>返回媒体网格</dt><dd><kbd>Esc</kbd></dd></div>
         <div><dt>移动项目选择</dt><dd><kbd>← ↑ ↓ →</kbd></dd></div>
         <div><dt>按当前页幅翻页</dt><dd><kbd>Page Up / Down</kbd></dd></div>
         <div><dt>审核：属于 / 不属于 / 稍后</dt><dd><kbd>P / X / U</kbd></dd></div>
+        <div><dt>训练：新建 / 刷新 / 记录栏</dt><dd><kbd>N / R / L</kbd></dd></div>
+        <div><dt>训练：全部 / 批次 / 单项</dt><dd><kbd>B</kbd></dd></div>
+        <div><dt>训练：打开审核 / 重新配置</dt><dd><kbd>V / E</kbd></dd></div>
+        <div><dt>训练：模型槽 / 关联任务</dt><dd><kbd>M / J</kbd></dd></div>
+        <div><dt>任务：移动 / 打开 / 返回</dt><dd><kbd>↑ ↓ / Enter / Esc</kbd></dd></div>
       </dl>
     </section>
   </dialog>
@@ -645,6 +1756,16 @@
     <button type="button" role="menuitem" data-context-action="preview">单图查看 <kbd>Space</kbd></button>
     <button type="button" role="menuitem" data-context-action="toggleSelection">加入或移出选择</button>
     <button type="button" role="menuitem" data-context-action="filterSource">只看此来源</button>
+  </div>
+
+  <div id="sourceContextMenu" class="context-menu hidden" role="menu" aria-label="来源操作">
+    <div id="sourceContextMenuTitle" class="context-menu-title"></div>
+    <div id="sourceContextMenuActions" class="context-menu-actions"></div>
+  </div>
+
+  <div id="tagContextMenu" class="context-menu hidden" role="menu" aria-label="标签操作">
+    <div id="tagContextMenuTitle" class="context-menu-title"></div>
+    <div id="tagContextMenuActions" class="context-menu-actions"></div>
   </div>
 
   <div id="toast" class="toast hidden" role="status">

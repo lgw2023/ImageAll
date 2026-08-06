@@ -9,6 +9,18 @@
 /* Begin PBXBuildFile section */
 
 		RH0000010000000000000001 /* RemoteCatalogServing.swift in Sources */ = {isa = PBXBuildFile; fileRef = RH0001010000000000000001 /* RemoteCatalogServing.swift */; };
+		TRC000010000000000000001 /* RemoteTrainingCommandPort.swift in Sources */ = {isa = PBXBuildFile; fileRef = TRC000020000000000000001 /* RemoteTrainingCommandPort.swift */; };
+		TRC000010000000000000002 /* RemoteTrainingCommandService.swift in Sources */ = {isa = PBXBuildFile; fileRef = TRC000020000000000000002 /* RemoteTrainingCommandService.swift */; };
+		LSC000010000000000000001 /* RemoteLibrarySlimmingCommandPort.swift in Sources */ = {isa = PBXBuildFile; fileRef = LSC000020000000000000001 /* RemoteLibrarySlimmingCommandPort.swift */; };
+		LSC000010000000000000002 /* RemoteLibrarySlimmingCommandService.swift in Sources */ = {isa = PBXBuildFile; fileRef = LSC000020000000000000002 /* RemoteLibrarySlimmingCommandService.swift */; };
+		SMC000010000000000000001 /* RemoteSourceManagementCommandPort.swift in Sources */ = {isa = PBXBuildFile; fileRef = SMC000020000000000000001 /* RemoteSourceManagementCommandPort.swift */; };
+		SMC000010000000000000002 /* RemoteSourceManagementCommandService.swift in Sources */ = {isa = PBXBuildFile; fileRef = SMC000020000000000000002 /* RemoteSourceManagementCommandService.swift */; };
+		STG000010000000000000001 /* RemoteStorageMaintenanceCommandPort.swift in Sources */ = {isa = PBXBuildFile; fileRef = STG000020000000000000001 /* RemoteStorageMaintenanceCommandPort.swift */; };
+		STG000010000000000000002 /* RemoteStorageMaintenanceCommandService.swift in Sources */ = {isa = PBXBuildFile; fileRef = STG000020000000000000002 /* RemoteStorageMaintenanceCommandService.swift */; };
+		GST000010000000000000001 /* RemoteGeneralSettingsCommandPort.swift in Sources */ = {isa = PBXBuildFile; fileRef = GST000020000000000000001 /* RemoteGeneralSettingsCommandPort.swift */; };
+		GST000010000000000000002 /* RemoteGeneralSettingsCommandService.swift in Sources */ = {isa = PBXBuildFile; fileRef = GST000020000000000000002 /* RemoteGeneralSettingsCommandService.swift */; };
+		STG000010000000000000101 /* RemoteStorageMaintenanceCommandServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = STG000020000000000000101 /* RemoteStorageMaintenanceCommandServiceTests.swift */; };
+		SRP000010000000000000101 /* RemoteSourceManagementCommandServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = SRP000020000000000000101 /* RemoteSourceManagementCommandServiceTests.swift */; };
 		RH0000010000000000000002 /* RemoteCatalogFacade.swift in Sources */ = {isa = PBXBuildFile; fileRef = RH0001010000000000000002 /* RemoteCatalogFacade.swift */; };
 		RH0000010000000000000003 /* RemoteHTTPServer.swift in Sources */ = {isa = PBXBuildFile; fileRef = RH0001010000000000000003 /* RemoteHTTPServer.swift */; };
 		WC0000010000000000000001 /* RemoteWebCompanion.swift in Sources */ = {isa = PBXBuildFile; fileRef = WC0001010000000000000001 /* RemoteWebCompanion.swift */; };
@@ -542,6 +554,18 @@
 		LL0001010000000000000101 /* FeaturePrintCacheTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FeaturePrintCacheTests.swift; sourceTree = "<group>"; };
 		LL0001010000000000000001 /* FeaturePrintCacheService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FeaturePrintCacheService.swift; sourceTree = "<group>"; };
 		RH0001010000000000000001 /* RemoteCatalogServing.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteCatalogServing.swift; sourceTree = "<group>"; };
+		TRC000020000000000000001 /* RemoteTrainingCommandPort.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteTrainingCommandPort.swift; sourceTree = "<group>"; };
+		TRC000020000000000000002 /* RemoteTrainingCommandService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteTrainingCommandService.swift; sourceTree = "<group>"; };
+		LSC000020000000000000001 /* RemoteLibrarySlimmingCommandPort.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteLibrarySlimmingCommandPort.swift; sourceTree = "<group>"; };
+		LSC000020000000000000002 /* RemoteLibrarySlimmingCommandService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteLibrarySlimmingCommandService.swift; sourceTree = "<group>"; };
+		SMC000020000000000000001 /* RemoteSourceManagementCommandPort.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteSourceManagementCommandPort.swift; sourceTree = "<group>"; };
+		SMC000020000000000000002 /* RemoteSourceManagementCommandService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteSourceManagementCommandService.swift; sourceTree = "<group>"; };
+		STG000020000000000000001 /* RemoteStorageMaintenanceCommandPort.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteStorageMaintenanceCommandPort.swift; sourceTree = "<group>"; };
+		STG000020000000000000002 /* RemoteStorageMaintenanceCommandService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteStorageMaintenanceCommandService.swift; sourceTree = "<group>"; };
+		GST000020000000000000001 /* RemoteGeneralSettingsCommandPort.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteGeneralSettingsCommandPort.swift; sourceTree = "<group>"; };
+		GST000020000000000000002 /* RemoteGeneralSettingsCommandService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteGeneralSettingsCommandService.swift; sourceTree = "<group>"; };
+		STG000020000000000000101 /* RemoteStorageMaintenanceCommandServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteStorageMaintenanceCommandServiceTests.swift; sourceTree = "<group>"; };
+		SRP000020000000000000101 /* RemoteSourceManagementCommandServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteSourceManagementCommandServiceTests.swift; sourceTree = "<group>"; };
 		RH0001010000000000000002 /* RemoteCatalogFacade.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteCatalogFacade.swift; sourceTree = "<group>"; };
 		RH0001010000000000000003 /* RemoteHTTPServer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteHTTPServer.swift; sourceTree = "<group>"; };
 		WC0001010000000000000001 /* RemoteWebCompanion.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteWebCompanion.swift; sourceTree = "<group>"; };
@@ -1313,6 +1337,11 @@
 			isa = PBXGroup;
 			children = (
 				RH0001010000000000000001 /* RemoteCatalogServing.swift */,
+				TRC000020000000000000001 /* RemoteTrainingCommandPort.swift */,
+				LSC000020000000000000001 /* RemoteLibrarySlimmingCommandPort.swift */,
+				SMC000020000000000000001 /* RemoteSourceManagementCommandPort.swift */,
+				STG000020000000000000001 /* RemoteStorageMaintenanceCommandPort.swift */,
+				GST000020000000000000001 /* RemoteGeneralSettingsCommandPort.swift */,
 				RH0001010000000000000002 /* RemoteCatalogFacade.swift */,
 			);
 			path = Remote;
@@ -1321,6 +1350,11 @@
 		RH0006010000000000000002 /* Remote */ = {
 			isa = PBXGroup;
 			children = (
+				TRC000020000000000000002 /* RemoteTrainingCommandService.swift */,
+				LSC000020000000000000002 /* RemoteLibrarySlimmingCommandService.swift */,
+				SMC000020000000000000002 /* RemoteSourceManagementCommandService.swift */,
+				STG000020000000000000002 /* RemoteStorageMaintenanceCommandService.swift */,
+				GST000020000000000000002 /* RemoteGeneralSettingsCommandService.swift */,
 				RH0001010000000000000003 /* RemoteHTTPServer.swift */,
 				WC0001010000000000000001 /* RemoteWebCompanion.swift */,
 				RH0001010000000000000004 /* RemoteHostProcessHolder.swift */,
@@ -1337,6 +1371,8 @@
 			children = (
 				RH0001010000000000000101 /* RemoteCatalogFacadeTests.swift */,
 				RH0001010000000000000102 /* RemoteHTTPServerTests.swift */,
+				STG000020000000000000101 /* RemoteStorageMaintenanceCommandServiceTests.swift */,
+				SRP000020000000000000101 /* RemoteSourceManagementCommandServiceTests.swift */,
 				RH0001010000000000000103 /* RemotePairingStoreTests.swift */,
 				RH0001010000000000000104 /* RemoteIdempotencyStoreTests.swift */,
 				RH0001010000000000000105 /* RemoteHostIdentityTests.swift */,
@@ -1528,6 +1564,16 @@
 				MM0000010000000000000001 /* PersonalizedSuggestionService.swift in Sources */,
 				LL0000010000000000000001 /* FeaturePrintCacheService.swift in Sources */,
 				RH0000010000000000000001 /* RemoteCatalogServing.swift in Sources */,
+				TRC000010000000000000001 /* RemoteTrainingCommandPort.swift in Sources */,
+				TRC000010000000000000002 /* RemoteTrainingCommandService.swift in Sources */,
+				LSC000010000000000000001 /* RemoteLibrarySlimmingCommandPort.swift in Sources */,
+				LSC000010000000000000002 /* RemoteLibrarySlimmingCommandService.swift in Sources */,
+				SMC000010000000000000001 /* RemoteSourceManagementCommandPort.swift in Sources */,
+				SMC000010000000000000002 /* RemoteSourceManagementCommandService.swift in Sources */,
+				STG000010000000000000001 /* RemoteStorageMaintenanceCommandPort.swift in Sources */,
+				STG000010000000000000002 /* RemoteStorageMaintenanceCommandService.swift in Sources */,
+				GST000010000000000000001 /* RemoteGeneralSettingsCommandPort.swift in Sources */,
+				GST000010000000000000002 /* RemoteGeneralSettingsCommandService.swift in Sources */,
 				RH0000010000000000000002 /* RemoteCatalogFacade.swift in Sources */,
 				RH0000010000000000000003 /* RemoteHTTPServer.swift in Sources */,
 				WC0000010000000000000001 /* RemoteWebCompanion.swift in Sources */,
@@ -1700,6 +1746,8 @@
 				LL0000010000000000000101 /* FeaturePrintCacheTests.swift in Sources */,
 				RH0000010000000000000101 /* RemoteCatalogFacadeTests.swift in Sources */,
 				RH0000010000000000000102 /* RemoteHTTPServerTests.swift in Sources */,
+				STG000010000000000000101 /* RemoteStorageMaintenanceCommandServiceTests.swift in Sources */,
+				SRP000010000000000000101 /* RemoteSourceManagementCommandServiceTests.swift in Sources */,
 				RH0000010000000000000103 /* RemotePairingStoreTests.swift in Sources */,
 				RH0000010000000000000104 /* RemoteIdempotencyStoreTests.swift in Sources */,
 				RH0000010000000000000105 /* RemoteHostIdentityTests.swift in Sources */,

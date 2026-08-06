@@ -16,7 +16,11 @@ public struct RemoteAssetDetail: Codable, Sendable, Equatable, Identifiable {
     public let mediaModifiedAtMs: Int64?
     public let width: Int?
     public let height: Int?
+    public let durationMs: Int64?
+    public let fingerprintSizeBytes: Int64?
     public let tags: [RemoteInspectorTagState]
+    /// `nil` when decoded from an older Host that did not project inspector suggestions.
+    public let pendingSuggestions: [RemoteAssetPendingSuggestion]?
 
     public init(
         assetID: UUID,
@@ -33,7 +37,10 @@ public struct RemoteAssetDetail: Codable, Sendable, Equatable, Identifiable {
         mediaModifiedAtMs: Int64?,
         width: Int?,
         height: Int?,
-        tags: [RemoteInspectorTagState]
+        durationMs: Int64? = nil,
+        fingerprintSizeBytes: Int64? = nil,
+        tags: [RemoteInspectorTagState],
+        pendingSuggestions: [RemoteAssetPendingSuggestion]? = nil
     ) {
         self.assetID = assetID
         self.sourceID = sourceID
@@ -49,7 +56,27 @@ public struct RemoteAssetDetail: Codable, Sendable, Equatable, Identifiable {
         self.mediaModifiedAtMs = mediaModifiedAtMs
         self.width = width
         self.height = height
+        self.durationMs = durationMs
+        self.fingerprintSizeBytes = fingerprintSizeBytes
         self.tags = tags
+        self.pendingSuggestions = pendingSuggestions
+    }
+}
+
+public struct RemoteAssetPendingSuggestion: Codable, Sendable, Equatable, Identifiable {
+    public var id: String { "\(tagID.uuidString.lowercased())|\(suggestionOrigin.rawValue)" }
+    public let tagID: UUID
+    public let displayName: String
+    public let suggestionOrigin: RemoteReviewSuggestionOrigin
+
+    public init(
+        tagID: UUID,
+        displayName: String,
+        suggestionOrigin: RemoteReviewSuggestionOrigin
+    ) {
+        self.tagID = tagID
+        self.displayName = displayName
+        self.suggestionOrigin = suggestionOrigin
     }
 }
 

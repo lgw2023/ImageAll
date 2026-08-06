@@ -20,7 +20,7 @@ enum PersonalSuggestionMethod: String, Equatable, Sendable, CaseIterable {
     }
 }
 
-enum TrainingRunMethod: String, Equatable, Sendable, CaseIterable {
+enum TrainingRunMethod: String, Codable, Equatable, Sendable, CaseIterable {
     case featureKnn
     case personalCentroid
     case personalAdamW

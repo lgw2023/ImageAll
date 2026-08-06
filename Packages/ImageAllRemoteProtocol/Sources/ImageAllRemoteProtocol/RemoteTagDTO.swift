@@ -66,6 +66,30 @@ public struct RemoteTagGroupSummary: Codable, Sendable, Equatable, Identifiable 
     }
 }
 
+public struct RemoteInstallPresetTagsRequest: Codable, Sendable, Equatable {
+    public let operationID: UUID
+
+    public init(operationID: UUID) {
+        self.operationID = operationID
+    }
+}
+
+public struct RemoteInstallPresetTagsResponse: Codable, Sendable, Equatable {
+    public let operationID: UUID
+    public let createdTags: [RemoteTagSummary]
+    public let replayed: Bool
+
+    public init(
+        operationID: UUID,
+        createdTags: [RemoteTagSummary],
+        replayed: Bool
+    ) {
+        self.operationID = operationID
+        self.createdTags = createdTags
+        self.replayed = replayed
+    }
+}
+
 public enum RemoteTagDecisionAction: String, Codable, Sendable, Equatable {
     case accept
     case reject

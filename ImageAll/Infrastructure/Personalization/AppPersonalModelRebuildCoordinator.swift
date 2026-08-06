@@ -257,7 +257,7 @@ actor AppPersonalModelRebuildRuntime: AppPersonalModelRebuilding {
                 contentRevision: $0.contentRevision
             )
         })
-        return try AppPersonalTrainingRunJSON.object([
+        var summary: [String: Any] = [
             "scope": "resolvedSnapshot",
             "scopeKind": "resolvedSnapshot",
             "mediaKind": snapshot.mediaKind.rawValue,
@@ -266,7 +266,17 @@ actor AppPersonalModelRebuildRuntime: AppPersonalModelRebuilding {
             "tagCount": snapshot.personalTagIDs.count,
             "sampleCount": samples.count,
             "perTag": tags,
-        ])
+        ]
+        if let batch = snapshot.batchContext {
+            summary["batchID"] = batch.operationID.uuidString.lowercased()
+            summary["batchTagIDs"] = batch.orderedTagIDs.map {
+                $0.uuidString.lowercased()
+            }
+            summary["batchTagIndex"] = batch.currentTagIndex
+            summary["batchTagCount"] = batch.orderedTagIDs.count
+            summary["batchAcceptedAtMs"] = batch.acceptedAtMs
+        }
+        return try AppPersonalTrainingRunJSON.object(summary)
     }
 
     private static func configJSON(
@@ -308,12 +318,17 @@ actor AppPersonalModelRebuildRuntime: AppPersonalModelRebuilding {
                 contentRevision: $0.contentRevision
             )
         })
-        return try AppPersonalTrainingRunJSON.object([
+        var summary: [String: Any] = [
             "published": true,
             "mediaKind": snapshot.mediaKind.rawValue,
             "tagCount": snapshot.personalTagIDs.count,
             "sampleCount": samples.count,
-        ])
+        ]
+        if let batch = snapshot.batchContext {
+            summary["batchID"] = batch.operationID.uuidString.lowercased()
+            summary["batchTagIndex"] = batch.currentTagIndex
+        }
+        return try AppPersonalTrainingRunJSON.object(summary)
     }
 
     private static func isCancellation(_ error: Error) -> Bool {

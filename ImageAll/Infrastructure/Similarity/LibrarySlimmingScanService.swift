@@ -727,6 +727,7 @@ struct LibrarySlimmingAnalysisJobSummary: Sendable, Equatable, Identifiable {
     let createdAtMs: Int64
     let updatedAtMs: Int64
     let sourceNames: [String]
+    let lastErrorCode: JobSafeErrorCode?
 
     init(
         jobID: UUID,
@@ -743,7 +744,8 @@ struct LibrarySlimmingAnalysisJobSummary: Sendable, Equatable, Identifiable {
         hasResult: Bool,
         createdAtMs: Int64,
         updatedAtMs: Int64,
-        sourceNames: [String] = []
+        sourceNames: [String] = [],
+        lastErrorCode: JobSafeErrorCode? = nil
     ) {
         self.jobID = jobID
         self.mode = mode
@@ -760,6 +762,7 @@ struct LibrarySlimmingAnalysisJobSummary: Sendable, Equatable, Identifiable {
         self.createdAtMs = createdAtMs
         self.updatedAtMs = updatedAtMs
         self.sourceNames = sourceNames
+        self.lastErrorCode = lastErrorCode
     }
 }
 
@@ -1150,6 +1153,7 @@ struct LibrarySlimmingAnalysisService: LibrarySlimmingAnalysisJobPort {
                     job.progress_total AS progress_total,
                     job.attempts AS attempts,
                     job.max_attempts AS max_attempts,
+                    job.last_error_code AS last_error_code,
                     job.created_at_ms AS created_at_ms,
                     job.updated_at_ms AS updated_at_ms,
                     (
@@ -1212,7 +1216,10 @@ struct LibrarySlimmingAnalysisService: LibrarySlimmingAnalysisJobPort {
                     hasResult: resultData != nil,
                     createdAtMs: row["created_at_ms"],
                     updatedAtMs: row["updated_at_ms"],
-                    sourceNames: sourceNamesByJobID[rawID, default: []]
+                    sourceNames: sourceNamesByJobID[rawID, default: []],
+                    lastErrorCode: try (row["last_error_code"] as String?).map {
+                        try JobSafeErrorCode(persisted: $0)
+                    }
                 )
             }
         }

@@ -213,7 +213,9 @@ struct WorldMapWorkspaceView: View {
 
     private enum CatalogState: Equatable {
         case loading
+        case refreshingCached
         case loaded
+        case cachedFallback(String)
         case failed(String)
     }
 
@@ -230,6 +232,7 @@ struct WorldMapWorkspaceView: View {
     @State private var rendererState: RendererState = .starting
     @State private var catalogState: CatalogState = .loading
     @State private var catalogSnapshot = WorldMapCatalogSnapshot.empty
+    @State private var hasCatalogSnapshot = false
     @State private var clusters: [WorldMapCluster] = []
     @State private var catalogClustersByID: [String: WorldMapCatalogCluster] = [:]
     @State private var selectedClusterID: String?
@@ -249,6 +252,20 @@ struct WorldMapWorkspaceView: View {
         self.model = model
         _navigationState = navigationState
         self.onBrowseCluster = onBrowseCluster
+        let initialQuery = navigationState.wrappedValue.viewport?.catalogQuery ?? .global
+        let cachedSnapshot = model.cachedWorldMapSnapshot(query: initialQuery)
+        let cachedClusters = cachedSnapshot?.clusters.map(Self.renderCluster) ?? []
+        _catalogState = State(
+            initialValue: cachedSnapshot == nil ? .loading : .refreshingCached
+        )
+        _catalogSnapshot = State(initialValue: cachedSnapshot ?? .empty)
+        _hasCatalogSnapshot = State(initialValue: cachedSnapshot != nil)
+        _clusters = State(initialValue: cachedClusters)
+        _catalogClustersByID = State(
+            initialValue: Dictionary(
+                uniqueKeysWithValues: (cachedSnapshot?.clusters ?? []).map { ($0.id, $0) }
+            )
+        )
         _selectedClusterID = State(initialValue: navigationState.wrappedValue.selectedClusterID)
         _viewport = State(initialValue: navigationState.wrappedValue.viewport)
     }
@@ -639,10 +656,14 @@ struct WorldMapWorkspaceView: View {
         switch catalogState {
         case .loading:
             "正在聚合目录库位置…"
+        case .refreshingCached:
+            "已显示上次地图，正在后台同步最新位置…"
         case .loaded where clusters.isEmpty:
             "当前视口暂无已定位照片；重新扫描来源可回填 GPS"
         case .loaded:
             "选择一座照片建筑查看构成"
+        case let .cachedFallback(message):
+            "已显示上次地图；\(message)"
         case let .failed(message):
             "位置数据载入失败：\(message)"
         }
@@ -686,25 +707,17 @@ struct WorldMapWorkspaceView: View {
     private func loadCatalog(query: WorldMapCatalogQuery) async {
         let requestID = UUID()
         catalogRequestID = requestID
-        catalogState = .loading
+        let canKeepShowingSnapshot = hasCatalogSnapshot
+        catalogState = canKeepShowingSnapshot ? .refreshingCached : .loading
         do {
             let snapshot = try await model.fetchWorldMapSnapshot(query: query)
             guard catalogRequestID == requestID else { return }
             catalogSnapshot = snapshot
+            hasCatalogSnapshot = true
             catalogClustersByID = Dictionary(
                 uniqueKeysWithValues: snapshot.clusters.map { ($0.id, $0) }
             )
-            clusters = snapshot.clusters.map {
-                WorldMapCluster(
-                    id: $0.id,
-                    longitude: $0.longitude,
-                    latitude: $0.latitude,
-                    photoCount: $0.photoCount,
-                    gpsCount: $0.gpsCount,
-                    tagCount: $0.tagCount,
-                    displayName: $0.displayName
-                )
-            }
+            clusters = snapshot.clusters.map(Self.renderCluster)
             if let selectedClusterID,
                !clusters.contains(where: { $0.id == selectedClusterID })
             {
@@ -722,8 +735,22 @@ struct WorldMapWorkspaceView: View {
             }
         } catch {
             guard catalogRequestID == requestID else { return }
-            catalogState = .failed("目录库查询不可用")
+            catalogState = canKeepShowingSnapshot
+                ? .cachedFallback("最新位置同步暂不可用")
+                : .failed("目录库查询不可用")
         }
+    }
+
+    private static func renderCluster(_ cluster: WorldMapCatalogCluster) -> WorldMapCluster {
+        WorldMapCluster(
+            id: cluster.id,
+            longitude: cluster.longitude,
+            latitude: cluster.latitude,
+            photoCount: cluster.photoCount,
+            gpsCount: cluster.gpsCount,
+            tagCount: cluster.tagCount,
+            displayName: cluster.displayName
+        )
     }
 
     private func loadSelection(clusterID: String) async {
@@ -1127,6 +1154,8 @@ private struct WorldMapPlaceResolutionSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var items: [WorldMapPlaceTagResolution] = []
     @State private var busyTagIDs = Set<UUID>()
+    @State private var searchQueries: [UUID: String] = [:]
+    @State private var submittedSearchQueries: [UUID: String] = [:]
     @State private var isLoading = true
     @State private var errorMessage: String?
 
@@ -1211,7 +1240,7 @@ private struct WorldMapPlaceResolutionSheet: View {
         HStack(alignment: .top, spacing: 10) {
             Image(systemName: "hand.tap.fill")
                 .foregroundStyle(Palette.mistBlue)
-            Text("打开此面板只读取本地缓存。只有点击某个标签的“识别地点”后，才会用该标签文字向 Apple 地图发起一次搜索；照片、路径和资产标识不会发送。")
+            Text("打开此面板只读取本地缓存。地点搜索覆盖全球，支持中文或英文；点击“搜索”或“重新搜索”时，只把输入框里的地点描述先发送给 Apple 地图；若 Apple 没有返回目标国家的有效结果，再发送给 OpenStreetMap 地点搜索。照片、路径和资产标识不会发送。")
                 .font(.caption)
                 .foregroundStyle(Palette.secondaryInk)
                 .fixedSize(horizontal: false, vertical: true)
@@ -1244,28 +1273,20 @@ private struct WorldMapPlaceResolutionSheet: View {
                 statusBadge(item.status)
             }
 
+            searchEditor(item)
+            searchResultProvenance(item)
+
             switch item.status {
-            case .unresolved, .failed:
-                HStack(spacing: 12) {
-                    Text(item.status == .failed ? "上次没有找到匹配地点，可再次尝试。" : "尚未请求地点搜索。")
-                        .font(.caption)
-                        .foregroundStyle(Palette.secondaryInk)
-                    Spacer()
-                    Button {
-                        resolve(item)
-                    } label: {
-                        if busyTagIDs.contains(item.tagID) {
-                            ProgressView().controlSize(.small)
-                        } else {
-                            Label("识别地点", systemImage: "sparkle.magnifyingglass")
-                        }
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .tint(Palette.mistBlue)
-                    .disabled(busyTagIDs.contains(item.tagID))
-                }
+            case .unresolved:
+                Text("标签名已经作为初始线索填入；也可以先补充城市、省份、国家或景区名称再搜索。")
+                    .font(.caption)
+                    .foregroundStyle(Palette.secondaryInk)
+            case .failed:
+                Label("这组描述没有找到合适地点。补充更具体的信息后可以立即重新搜索。", systemImage: "questionmark.circle")
+                    .font(.caption)
+                    .foregroundStyle(Palette.rose)
             case .ambiguous:
-                Text("找到多个同名地点，请确认照片实际对应哪一个：")
+                Text("找到多个可能地点；如果都不对，修改上方描述后重新搜索：")
                     .font(.caption)
                     .foregroundStyle(Palette.secondaryInk)
                 ForEach(item.candidates) { candidate in
@@ -1280,13 +1301,16 @@ private struct WorldMapPlaceResolutionSheet: View {
             case .resolved:
                 if let candidate = item.candidates.first(where: { $0.placeID == item.confirmedPlaceID }) {
                     candidateRow(candidate, isBusy: false)
+                    Text("地点不对？补充更多信息后点击上方“重新搜索”，新结果会替换当前地点。")
+                        .font(.caption2)
+                        .foregroundStyle(Palette.secondaryInk)
                 } else {
                     Label("地点已经确认并写入地图目录。", systemImage: "checkmark.seal.fill")
                         .font(.caption)
                         .foregroundStyle(Palette.sage)
                 }
             case .ignored:
-                Text("这个标签已标记为非地点，不会参与地图定位。")
+                Text("这个标签已标记为非地点。仍可在上方输入地点信息重新启用定位。")
                     .font(.caption)
                     .foregroundStyle(Palette.secondaryInk)
             }
@@ -1298,6 +1322,70 @@ private struct WorldMapPlaceResolutionSheet: View {
                 .strokeBorder(Palette.border.opacity(0.44))
         }
         .shadow(color: Palette.ink.opacity(0.045), radius: 12, y: 4)
+    }
+
+    private func searchEditor(_ item: WorldMapPlaceTagResolution) -> some View {
+        VStack(alignment: .leading, spacing: 9) {
+            HStack(spacing: 7) {
+                Image(systemName: "text.magnifyingglass")
+                    .foregroundStyle(Palette.mistBlue)
+                Text("地点描述")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(Palette.ink)
+                Text("全球搜索 · 可补充城市 · 州/省 · 国家 · 景区")
+                    .font(.caption2)
+                    .foregroundStyle(Palette.secondaryInk)
+            }
+
+            HStack(spacing: 10) {
+                TextField(
+                    "例如：大皇宫 曼谷 泰国 / Central Park New York USA",
+                    text: searchQueryBinding(for: item)
+                )
+                .textFieldStyle(.plain)
+                .font(.subheadline)
+                .foregroundStyle(Palette.ink)
+                .onSubmit {
+                    search(item)
+                }
+
+                Button {
+                    search(item)
+                } label: {
+                    if busyTagIDs.contains(item.tagID) {
+                        ProgressView()
+                            .controlSize(.small)
+                            .frame(minWidth: 72)
+                    } else {
+                        Label(
+                            item.status == .unresolved ? "搜索" : "重新搜索",
+                            systemImage: "sparkle.magnifyingglass"
+                        )
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(Palette.mistBlue)
+                .disabled(!canSearch(item) || busyTagIDs.contains(item.tagID))
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .background(Palette.surface.opacity(0.86), in: RoundedRectangle(cornerRadius: 12))
+            .overlay {
+                RoundedRectangle(cornerRadius: 12)
+                    .strokeBorder(Palette.mistBlue.opacity(0.36))
+            }
+
+            Text(searchQueryHint(item))
+                .font(.caption2)
+                .foregroundStyle(canSearch(item) ? Palette.secondaryInk : Palette.rose)
+        }
+        .padding(13)
+        .background(Palette.mistBlue.opacity(0.075), in: RoundedRectangle(cornerRadius: 15))
+        .overlay {
+            RoundedRectangle(cornerRadius: 15)
+                .strokeBorder(Palette.mistBlue.opacity(0.18))
+        }
+        .accessibilityIdentifier("worldMapPlaceSearchEditor")
     }
 
     private func candidateRow(
@@ -1364,20 +1452,89 @@ private struct WorldMapPlaceResolutionSheet: View {
         }
     }
 
-    private func resolve(_ item: WorldMapPlaceTagResolution) {
+    private func search(_ item: WorldMapPlaceTagResolution) {
+        guard canSearch(item) else { return }
+        let query = normalizedSearchQuery(item)
         guard busyTagIDs.insert(item.tagID).inserted else { return }
         errorMessage = nil
         Task {
             defer { busyTagIDs.remove(item.tagID) }
             do {
-                let updated = try await model.resolveWorldMapPlaceTag(tagID: item.tagID)
+                let updated = try await model.searchWorldMapPlaceTag(
+                    tagID: item.tagID,
+                    query: query
+                )
+                submittedSearchQueries[item.tagID] = query
                 replace(updated)
-                if updated.status == .resolved {
-                    onLocationChanged()
-                }
+                onLocationChanged()
             } catch {
-                errorMessage = "“\(item.tagName)”的地点搜索失败，请稍后重试。"
+                errorMessage = "“\(query)”的地点搜索失败，请检查描述后重试。"
             }
+        }
+    }
+
+    private func searchQueryBinding(for item: WorldMapPlaceTagResolution) -> Binding<String> {
+        Binding(
+            get: { searchQueries[item.tagID] ?? item.tagName },
+            set: { searchQueries[item.tagID] = $0 }
+        )
+    }
+
+    private func normalizedSearchQuery(_ item: WorldMapPlaceTagResolution) -> String {
+        (searchQueries[item.tagID] ?? item.tagName)
+            .split(whereSeparator: { $0.isWhitespace })
+            .joined(separator: " ")
+    }
+
+    private func canSearch(_ item: WorldMapPlaceTagResolution) -> Bool {
+        let query = normalizedSearchQuery(item)
+        return !query.isEmpty && query.count <= WorldMapPlaceSearchPolicy.maximumQueryLength
+    }
+
+    private func searchQueryHint(_ item: WorldMapPlaceTagResolution) -> String {
+        let query = normalizedSearchQuery(item)
+        if query.isEmpty {
+            return "请输入至少一个地点线索。"
+        }
+        if query.count > WorldMapPlaceSearchPolicy.maximumQueryLength {
+            return "地点描述请控制在 \(WorldMapPlaceSearchPolicy.maximumQueryLength) 个字符以内。"
+        }
+        return "将在全球范围搜索；Apple 无有效国际结果时会使用 OpenStreetMap；本次只会发送：\(query)"
+    }
+
+    @ViewBuilder
+    private func searchResultProvenance(_ item: WorldMapPlaceTagResolution) -> some View {
+        let currentQuery = normalizedSearchQuery(item)
+        if busyTagIDs.contains(item.tagID) {
+            Label(
+                "正在用“\(currentQuery)”搜索；下方旧结果会在完成后替换。",
+                systemImage: "arrow.triangle.2.circlepath"
+            )
+            .font(.caption2)
+            .foregroundStyle(Palette.mistBlue)
+        } else if let submittedQuery = submittedSearchQueries[item.tagID] {
+            if submittedQuery == currentQuery {
+                Label(
+                    "下方结果已用“\(submittedQuery)”刷新。",
+                    systemImage: "checkmark.circle.fill"
+                )
+                .font(.caption2)
+                .foregroundStyle(Palette.sage)
+            } else {
+                Label(
+                    "输入已改为“\(currentQuery)”；下方仍是“\(submittedQuery)”的结果，请点击重新搜索。",
+                    systemImage: "exclamationmark.arrow.triangle.2.circlepath"
+                )
+                .font(.caption2)
+                .foregroundStyle(Palette.peach)
+            }
+        } else if !item.candidates.isEmpty {
+            Label(
+                "下方是本地缓存结果；修改描述后需点击重新搜索才会替换。",
+                systemImage: "externaldrive.fill"
+            )
+            .font(.caption2)
+            .foregroundStyle(Palette.secondaryInk)
         }
     }
 

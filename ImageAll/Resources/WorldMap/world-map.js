@@ -30,7 +30,16 @@ const initialCamera = {
 };
 
 function post(message) {
-  bridge?.postMessage(message);
+  if (bridge) {
+    bridge.postMessage(message);
+    return;
+  }
+  if (globalThis.parent && globalThis.parent !== globalThis) {
+    globalThis.parent.postMessage(
+      { type: "imageall-world-map-event", payload: message },
+      globalThis.location.origin
+    );
+  }
 }
 
 globalThis.addEventListener("error", (event) => {
@@ -356,5 +365,8 @@ globalThis.ImageAllWorldMap = Object.freeze({
   },
   snapshotState() {
     return { selectedClusterID };
+  },
+  rendererStatus() {
+    return { ready: rendererReady, webgl2Available: webGL2Available() };
   }
 });

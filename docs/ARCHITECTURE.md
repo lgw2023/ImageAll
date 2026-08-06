@@ -796,6 +796,25 @@ FTS 只是可重建的查询加速结构，必须由 migration 回填和 Asset i
 查询内复用地图的可用图片与回收排除条件；跨 180° 经线采用两段 longitude 谓词。相机与选中塔只作为
 SwiftUI 工作区导航状态保存，返回地图时本地注入，不写入目录库。
 
+地图聚合另有一层可重建的 stale-while-revalidate 缓存：成功的全局快照原子保存在 App Caches 的
+`WorldMap/v1/global-snapshot.json`，最近视口快照保存在有界内存中。地图工作区构造时先把匹配缓存送入
+WebView，再后台查询 GRDB 并原位替换；查询失败保留旧快照。缓存只持有聚合坐标、数量、地点显示名和原生
+网格查询，不含 Asset ID、文件名、路径、PhotoKit identifier 或照片字节；schema、大小或内容校验失败即
+忽略，`asset` / `asset_location` 始终是唯一事实源。
+
+地点标签补全把标签名当作可编辑的初始线索，不是不可变的 resolver 输入。打开面板只读本地候选；用户
+点击搜索时，应用服务先只把输入框中的地点描述交给 MapKit。resolver 用 forward geocoding 取得国家、州省、
+城市或景点锚点，有锚点时才把它作为 required region 执行本地 POI / 地址 / 自然地貌搜索；没有锚点时省略
+region，避免 180 × 360 required region 的 GEOError。查询中出现可识别国家名、ISO 代码或常见国家缩写时，
+候选必须匹配目标 ISO country code，不能在目标国家无结果时回退到中国同名商户；纯国家查询优先国家本身。
+
+仅对用户显式搜索，Apple 失败或过滤为空后才把同一地点描述发送给 OpenStreetMap Nominatim；自动批量
+补全不使用该公共服务。Nominatim 请求带项目 User-Agent、进程内缓存且共享一秒最小间隔，返回值再次按目标
+国家过滤。界面明确披露 Apple / OpenStreetMap 网络边界，照片、路径和资产标识不离开本机。用户显式重新
+搜索始终绕过旧候选缓存，界面标明候选对应的是缓存、正在搜索的词还是刚完成的词，并在一个数据库写事务
+中替换 binding/candidate 后重算相关照片的 canonical location：唯一候选可形成新 `placeTag`，多候选或
+无结果会撤销旧 `placeTag`，但任何路径都不能覆盖 embedded/Photos GPS。
+
 旧图库位置回填控制面只查询本地覆盖率与 reconcile job，不在打开地图、打开控制面或 migration 时自动
 扫描来源。用户必须按来源显式启动：文件夹复用现有只读 reconcile，Photos 使用 full repair 重新枚举旧资产。
 控制面同时显示 `asset_location` 覆盖率与 job 持久进度；retryable job 原地 resume，cancel 在批次边界生效，

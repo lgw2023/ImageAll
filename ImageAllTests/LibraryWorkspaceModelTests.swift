@@ -11537,6 +11537,66 @@ final class WorldMapSpikeTests: XCTestCase {
 }
 
 final class WorldMapCatalogS1Tests: XCTestCase {
+    func testWorldMapSnapshotCacheRestoresProcessedGlobalSnapshotAcrossInstances() throws {
+        let cachesDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("imageall-world-map-cache-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: cachesDirectory) }
+        let snapshot = Self.cacheFixtureSnapshot()
+
+        let firstSession = WorldMapSnapshotCache(cachesDirectory: cachesDirectory)
+        XCTAssertNil(firstSession.snapshot(for: .global))
+        firstSession.store(snapshot, for: .global)
+
+        let nextSession = WorldMapSnapshotCache(cachesDirectory: cachesDirectory)
+        XCTAssertEqual(nextSession.snapshot(for: .global), snapshot)
+    }
+
+    func testWorldMapSnapshotCacheIgnoresCorruptPersistentPayload() throws {
+        let cachesDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("imageall-world-map-cache-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: cachesDirectory) }
+        let cacheDirectory = cachesDirectory
+            .appendingPathComponent("WorldMap", isDirectory: true)
+            .appendingPathComponent("v1", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: cacheDirectory,
+            withIntermediateDirectories: true
+        )
+        try Data("not a world map snapshot".utf8).write(
+            to: cacheDirectory.appendingPathComponent("global-snapshot.json")
+        )
+
+        let cache = WorldMapSnapshotCache(cachesDirectory: cachesDirectory)
+
+        XCTAssertNil(cache.snapshot(for: .global))
+    }
+
+    func testWorldMapSnapshotCacheNeverFollowsSnapshotSymlink() throws {
+        let cachesDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("imageall-world-map-cache-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: cachesDirectory) }
+        let cacheDirectory = cachesDirectory
+            .appendingPathComponent("WorldMap", isDirectory: true)
+            .appendingPathComponent("v1", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: cacheDirectory,
+            withIntermediateDirectories: true
+        )
+        let sentinel = Data("must remain untouched".utf8)
+        let targetURL = cachesDirectory.appendingPathComponent("sentinel.json")
+        try sentinel.write(to: targetURL)
+        try FileManager.default.createSymbolicLink(
+            at: cacheDirectory.appendingPathComponent("global-snapshot.json"),
+            withDestinationURL: targetURL
+        )
+
+        let cache = WorldMapSnapshotCache(cachesDirectory: cachesDirectory)
+        XCTAssertNil(cache.snapshot(for: .global))
+        cache.store(Self.cacheFixtureSnapshot(), for: .global)
+
+        XCTAssertEqual(try Data(contentsOf: targetURL), sentinel)
+    }
+
     func testLocationBackfillStatusIsReadOnlyAndReportsPerSourceCoverage() throws {
         let database = try CatalogDatabase.open(at: makeTempDatabaseURL())
         let sourceID = UUID()
@@ -11915,6 +11975,379 @@ final class WorldMapCatalogS1Tests: XCTestCase {
         XCTAssertEqual(afterConfirmation.clusters.reduce(0) { $0 + $1.tagCount }, 1)
     }
 
+    func testManualPlaceQueryReplacesTagLookupAndRefreshesDerivedLocation() async throws {
+        let database = try CatalogDatabase.open(at: makeTempDatabaseURL())
+        let sourceID = UUID()
+        let tagID = UUID()
+        let assetID = UUID()
+        try await database.pool.write { db in
+            try Self.seedSource(db, id: sourceID)
+            try Self.seedAsset(db, id: assetID, sourceID: sourceID, index: 0)
+            try Self.seedLocation(
+                db,
+                assetID: assetID,
+                latitude: nil,
+                longitude: nil,
+                sourceKind: "none"
+            )
+            try Self.seedAcceptedTag(
+                db,
+                tagID: tagID,
+                name: "七星街",
+                assetIDs: [assetID]
+            )
+        }
+
+        let defaultCandidate = WorldMapPlaceCandidate(
+            placeID: "mapkit-v1-qixingjie-kunming",
+            displayName: "七星街",
+            subtitle: "昆明市，云南省，中国",
+            latitude: 25.0389,
+            longitude: 102.7183,
+            kind: .poi
+        )
+        let refinedCandidate = WorldMapPlaceCandidate(
+            placeID: "mapkit-v1-qixingjie-lijiang",
+            displayName: "七星街",
+            subtitle: "丽江市，云南省，中国",
+            latitude: 26.8721,
+            longitude: 100.2384,
+            kind: .poi
+        )
+        let resolver = QueryAwareWorldMapPlaceResolver(results: [
+            "七星街": [defaultCandidate],
+            "七星街 丽江 云南 中国": [refinedCandidate],
+        ])
+        let service = WorldMapPlaceResolutionService(
+            database: database,
+            resolver: resolver,
+            clock: FixedJobClock(nowMs: 49)
+        )
+
+        let defaultResolution = try await service.resolveTag(tagID: tagID)
+        let refinedResolution = try await service.resolveTag(
+            tagID: tagID,
+            query: "七星街 丽江 云南 中国"
+        )
+        let queries = await resolver.recordedQueries()
+        let location = try await database.pool.read { db in
+            try Row.fetchOne(
+                db,
+                sql: "SELECT latitude, longitude, source_kind, place_id FROM asset_location WHERE asset_id = ?",
+                arguments: [assetID.uuidString.lowercased()]
+            )
+        }
+
+        XCTAssertEqual(defaultResolution.confirmedPlaceID, defaultCandidate.placeID)
+        XCTAssertEqual(refinedResolution.status, .resolved)
+        XCTAssertEqual(refinedResolution.confirmedPlaceID, refinedCandidate.placeID)
+        XCTAssertEqual(queries, ["七星街", "七星街 丽江 云南 中国"])
+        XCTAssertEqual(location?["latitude"] as Double?, refinedCandidate.latitude)
+        XCTAssertEqual(location?["longitude"] as Double?, refinedCandidate.longitude)
+        XCTAssertEqual(location?["source_kind"] as String?, "placeTag")
+        XCTAssertEqual(location?["place_id"] as String?, refinedCandidate.placeID)
+    }
+
+    func testMapKitResolverAnchorsInternationalSearchesOutsideChina() async throws {
+        let bangkok = WorldMapPlaceCandidate(
+            placeID: "mapkit-v1-bangkok",
+            displayName: "Bangkok",
+            subtitle: "Thailand",
+            latitude: 13.7563,
+            longitude: 100.5018,
+            kind: .city,
+            countryCode: "TH"
+        )
+        let grandPalace = WorldMapPlaceCandidate(
+            placeID: "mapkit-v1-grand-palace",
+            displayName: "The Grand Palace",
+            subtitle: "Bangkok, Thailand",
+            latitude: 13.7500,
+            longitude: 100.4913,
+            kind: .poi,
+            countryCode: "TH"
+        )
+        let newYork = WorldMapPlaceCandidate(
+            placeID: "mapkit-v1-new-york",
+            displayName: "New York",
+            subtitle: "NY, United States",
+            latitude: 40.7128,
+            longitude: -74.0060,
+            kind: .city,
+            countryCode: "US"
+        )
+        let centralPark = WorldMapPlaceCandidate(
+            placeID: "mapkit-v1-central-park",
+            displayName: "Central Park",
+            subtitle: "New York, NY, United States",
+            latitude: 40.7812,
+            longitude: -73.9665,
+            kind: .poi,
+            countryCode: "US"
+        )
+        let yellowstone = WorldMapPlaceCandidate(
+            placeID: "mapkit-v1-yellowstone",
+            displayName: "Yellowstone National Park",
+            subtitle: "United States",
+            latitude: 44.4280,
+            longitude: -110.5885,
+            kind: .poi,
+            countryCode: "US"
+        )
+        let thailandQuery = "大皇宫 曼谷 泰国"
+        let unitedStatesQuery = "Central Park New York United States"
+        let globalFallbackQuery = "Yellowstone National Park United States"
+        let searcher = QueryAwareWorldMapApplePlaceSearcher(
+            geocoded: [
+                thailandQuery: [bangkok],
+                unitedStatesQuery: [newYork],
+            ],
+            searched: [
+                thailandQuery: [grandPalace],
+                unitedStatesQuery: [centralPark],
+                globalFallbackQuery: [yellowstone],
+            ]
+        )
+        let resolver = MapKitWorldMapPlaceResolver(searcher: searcher)
+
+        let thailandResults = try await resolver.resolve(query: thailandQuery)
+        let unitedStatesResults = try await resolver.resolve(query: unitedStatesQuery)
+        let globalFallbackResults = try await resolver.resolve(query: globalFallbackQuery)
+        let calls = await searcher.recordedSearchCalls()
+
+        XCTAssertEqual(thailandResults, [grandPalace, bangkok])
+        XCTAssertEqual(unitedStatesResults, [centralPark, newYork])
+        XCTAssertEqual(globalFallbackResults, [yellowstone])
+        XCTAssertEqual(
+            calls.map(\.query),
+            [thailandQuery, unitedStatesQuery, globalFallbackQuery]
+        )
+        XCTAssertEqual(calls[0].region?.centerLatitude, bangkok.latitude)
+        XCTAssertEqual(calls[0].region?.centerLongitude, bangkok.longitude)
+        XCTAssertEqual(calls[1].region?.centerLatitude, newYork.latitude)
+        XCTAssertEqual(calls[1].region?.centerLongitude, newYork.longitude)
+        XCTAssertNil(calls[2].region)
+    }
+
+    func testMapKitResolverDoesNotLockThailandCountryQueryToBeijingBusinesses() async throws {
+        let beijingRestaurant = WorldMapPlaceCandidate(
+            placeID: "mapkit-v1-beijing-thai-restaurant",
+            displayName: "泰国菜馆",
+            subtitle: "北京市，中国",
+            latitude: 39.9042,
+            longitude: 116.4074,
+            kind: .poi,
+            countryCode: "CN"
+        )
+        let beijingOffice = WorldMapPlaceCandidate(
+            placeID: "mapkit-v1-beijing-thailand-office",
+            displayName: "泰国国家旅游局北京办事处",
+            subtitle: "北京市，中国",
+            latitude: 39.9142,
+            longitude: 116.4174,
+            kind: .poi,
+            countryCode: "CN"
+        )
+        let thailand = WorldMapPlaceCandidate(
+            placeID: "mapkit-v1-thailand",
+            displayName: "Thailand",
+            subtitle: nil,
+            latitude: 15.8700,
+            longitude: 100.9925,
+            kind: .country,
+            countryCode: "TH"
+        )
+        let bangkokThaiRestaurant = WorldMapPlaceCandidate(
+            placeID: "mapkit-v1-bangkok-thai-restaurant",
+            displayName: "Thai Restaurant",
+            subtitle: "Bangkok, Thailand",
+            latitude: 13.7563,
+            longitude: 100.5018,
+            kind: .poi,
+            countryCode: "TH"
+        )
+        let query = "泰国 THAILAND"
+        let searcher = QueryAwareWorldMapApplePlaceSearcher(
+            geocoded: [
+                query: [beijingRestaurant],
+                "Thailand": [thailand],
+            ],
+            searched: [
+                query: [
+                    beijingRestaurant,
+                    beijingOffice,
+                    bangkokThaiRestaurant,
+                    thailand,
+                ],
+            ]
+        )
+        let resolver = MapKitWorldMapPlaceResolver(searcher: searcher)
+
+        let results = try await resolver.resolve(query: query)
+        let calls = await searcher.recordedSearchCalls()
+
+        XCTAssertEqual(results, [thailand])
+        XCTAssertEqual(calls.count, 1)
+        XCTAssertEqual(calls[0].region?.centerLatitude, thailand.latitude)
+        XCTAssertEqual(calls[0].region?.centerLongitude, thailand.longitude)
+    }
+
+    func testMapKitResolverDropsForeignCountryResultsWhenCountryLookupIsUnavailable() async throws {
+        let beijingThailandGarden = WorldMapPlaceCandidate(
+            placeID: "mapkit-v1-beijing-thailand-garden",
+            displayName: "泰国园",
+            subtitle: "北京市，中国",
+            latitude: 40.446191,
+            longitude: 115.958939,
+            kind: .poi,
+            countryCode: "CN"
+        )
+        let query = "泰国 THAILAND"
+        let searcher = QueryAwareWorldMapApplePlaceSearcher(
+            geocoded: [:],
+            searched: [query: [beijingThailandGarden]]
+        )
+        let resolver = MapKitWorldMapPlaceResolver(searcher: searcher)
+
+        let results = try await resolver.resolve(query: query)
+        let calls = await searcher.recordedSearchCalls()
+
+        XCTAssertEqual(results, [])
+        XCTAssertNil(calls.first?.region)
+    }
+
+    func testCascadingResolverUsesInternationalFallbackAfterForeignAppleResultsAreDropped() async throws {
+        let thailand = WorldMapPlaceCandidate(
+            placeID: "nominatim-v1-relation-2067731",
+            displayName: "泰国",
+            subtitle: nil,
+            latitude: 14.8971921,
+            longitude: 100.8327300,
+            kind: .country,
+            countryCode: "TH"
+        )
+        let resolver = CascadingWorldMapPlaceResolver(
+            primary: StubWorldMapPlaceResolver(candidates: []),
+            fallback: StubWorldMapPlaceResolver(candidates: [thailand])
+        )
+
+        let results = try await resolver.resolve(query: "泰国 THAILAND")
+
+        XCTAssertEqual(results, [thailand])
+    }
+
+    func testNominatimResolverCanonicalizesAndDecodesThailandCountryQuery() async throws {
+        let payload = Data(
+            #"[{"place_id":123,"osm_type":"relation","osm_id":2067731,"lat":"14.8971921","lon":"100.8327300","name":"ประเทศไทย","display_name":"ประเทศไทย","type":"administrative","addresstype":"country","address":{"country":"ประเทศไทย","country_code":"th"}}]"#.utf8
+        )
+        let client = StubNominatimWorldMapDataLoader(data: payload)
+        let resolver = NominatimWorldMapPlaceResolver(client: client)
+
+        let results = try await resolver.resolve(query: "泰国 THAILAND")
+        let requestedURL = await client.requestedURL()
+
+        XCTAssertEqual(results.count, 1)
+        XCTAssertEqual(results[0].countryCode, "TH")
+        XCTAssertEqual(results[0].kind, .country)
+        XCTAssertEqual(results[0].latitude, 14.8971921)
+        XCTAssertEqual(results[0].longitude, 100.8327300)
+        XCTAssertTrue(requestedURL?.absoluteString.contains("q=Thailand") == true)
+    }
+
+    func testMapKitResolverDoesNotTreatEnglishPrepositionAsCountryCode() async throws {
+        let centralPark = WorldMapPlaceCandidate(
+            placeID: "mapkit-v1-central-park-natural-language",
+            displayName: "Central Park",
+            subtitle: "New York, NY, United States",
+            latitude: 40.7812,
+            longitude: -73.9665,
+            kind: .poi,
+            countryCode: "US"
+        )
+        let india = WorldMapPlaceCandidate(
+            placeID: "mapkit-v1-india",
+            displayName: "India",
+            subtitle: nil,
+            latitude: 20.5937,
+            longitude: 78.9629,
+            kind: .country,
+            countryCode: "IN"
+        )
+        let query = "Central Park in New York"
+        let searcher = QueryAwareWorldMapApplePlaceSearcher(
+            geocoded: [
+                query: [centralPark],
+                "India": [india],
+            ],
+            searched: [query: [centralPark]]
+        )
+        let resolver = MapKitWorldMapPlaceResolver(searcher: searcher)
+
+        let results = try await resolver.resolve(query: query)
+        let calls = await searcher.recordedSearchCalls()
+
+        XCTAssertEqual(results, [centralPark])
+        XCTAssertEqual(calls[0].region?.centerLatitude, centralPark.latitude)
+        XCTAssertEqual(calls[0].region?.centerLongitude, centralPark.longitude)
+    }
+
+    func testLiveMapKitThailandQueriesStayInThailand() async throws {
+        guard ProcessInfo.processInfo.environment["IMAGEALL_RUN_LIVE_MAPKIT_TESTS"] == "1" else {
+            throw XCTSkip("Set IMAGEALL_RUN_LIVE_MAPKIT_TESTS=1 to call Apple's live MapKit service")
+        }
+
+        let searcher = AppleWorldMapPlaceSearcher()
+        let appleResolver = MapKitWorldMapPlaceResolver(searcher: searcher)
+        let resolver = CascadingWorldMapPlaceResolver(
+            primary: appleResolver,
+            fallback: NominatimWorldMapPlaceResolver()
+        )
+        let queries = ["泰国", "泰国 THAILAND", "曼谷 泰国"]
+
+        for query in queries {
+            let geocoded: [WorldMapPlaceCandidate]
+            do {
+                geocoded = try await searcher.geocode(query: query)
+            } catch {
+                geocoded = []
+                print("LIVE MAPKIT QUERY: \(query)")
+                print("  GEOCODE ERROR: \(String(reflecting: error))")
+            }
+
+            let globallySearched: [WorldMapPlaceCandidate]
+            do {
+                globallySearched = try await searcher.search(query: query, region: nil)
+            } catch {
+                globallySearched = []
+                print("  GLOBAL SEARCH ERROR: \(String(reflecting: error))")
+            }
+
+            let appleResolved = (try? await appleResolver.resolve(query: query)) ?? []
+            let resolved = try await resolver.resolve(query: query)
+
+            print("LIVE MAPKIT QUERY: \(query)")
+            print("  GEOCODE: \(Self.describe(geocoded))")
+            print("  GLOBAL SEARCH: \(Self.describe(globallySearched))")
+            print("  APPLE RESOLVER: \(Self.describe(appleResolved))")
+            print("  FINAL RESOLVER: \(Self.describe(resolved))")
+
+            XCTAssertFalse(resolved.isEmpty, "\(query) should return at least one place")
+            XCTAssertTrue(
+                resolved.allSatisfy { $0.countryCode == "TH" },
+                "\(query) escaped Thailand: \(Self.describe(resolved))"
+            )
+        }
+    }
+
+    private static func describe(_ candidates: [WorldMapPlaceCandidate]) -> String {
+        candidates.map { candidate in
+            let subtitle = candidate.subtitle.map { " | \($0)" } ?? ""
+            return "\(candidate.displayName)\(subtitle) | \(candidate.kind.rawValue) | "
+                + "\(candidate.countryCode ?? "--") | "
+                + String(format: "%.5f,%.5f", candidate.latitude, candidate.longitude)
+        }.joined(separator: " || ")
+    }
+
     func testUniquePlaceCandidateLocatesAcceptedPhotosWithoutOverwritingGPS() async throws {
         let database = try CatalogDatabase.open(at: makeTempDatabaseURL())
         let sourceID = UUID()
@@ -12036,6 +12469,61 @@ final class WorldMapCatalogS1Tests: XCTestCase {
         XCTAssertEqual(snapshot.clusters.reduce(0) { $0 + $1.gpsCount }, 3)
         XCTAssertEqual(snapshot.clusters.reduce(0) { $0 + $1.tagCount }, 0)
         XCTAssertLessThanOrEqual(snapshot.clusters.count, 2_000)
+    }
+
+    func testCatalogExcludesActiveRecycleEntriesWithoutNullPoisoning() throws {
+        let database = try CatalogDatabase.open(at: makeTempDatabaseURL())
+        let sourceID = UUID()
+        let visibleAssetID = UUID()
+        let recycledAssetID = UUID()
+
+        try database.pool.write { db in
+            try Self.seedSource(db, id: sourceID)
+            try Self.seedAsset(db, id: visibleAssetID, sourceID: sourceID, index: 0)
+            try Self.seedAsset(db, id: recycledAssetID, sourceID: sourceID, index: 1)
+            try Self.seedLocation(
+                db,
+                assetID: visibleAssetID,
+                latitude: 31.2304,
+                longitude: 121.4737,
+                sourceKind: "embeddedGPS"
+            )
+            try Self.seedLocation(
+                db,
+                assetID: recycledAssetID,
+                latitude: 39.9042,
+                longitude: 116.4074,
+                sourceKind: "photosGPS"
+            )
+            try db.execute(
+                sql: """
+                INSERT INTO recycle_entry (
+                    id, asset_id, source_kind, trashed_at_ms, purge_after_ms,
+                    state, created_at_ms, updated_at_ms
+                ) VALUES (?, ?, 'file', 1, 2, 'recycled', 1, 1)
+                """,
+                arguments: [
+                    UUID().uuidString.lowercased(),
+                    recycledAssetID.uuidString.lowercased(),
+                ]
+            )
+            try db.execute(
+                sql: """
+                INSERT INTO recycle_entry (
+                    id, asset_id, source_kind, trashed_at_ms, purge_after_ms,
+                    state, created_at_ms, updated_at_ms
+                ) VALUES (?, NULL, 'file', 1, 2, 'purged', 1, 1)
+                """,
+                arguments: [UUID().uuidString.lowercased()]
+            )
+        }
+
+        let snapshot = try GRDBWorldMapCatalogRepository(database: database)
+            .fetchSnapshot(query: .global)
+
+        XCTAssertEqual(snapshot.eligiblePhotoCount, 1)
+        XCTAssertEqual(snapshot.locatedPhotoCount, 1)
+        XCTAssertEqual(snapshot.clusters.reduce(0) { $0 + $1.photoCount }, 1)
     }
 
     func testAssetLocationRejectsHalfCoordinatesAndOutOfRangeLatitude() throws {
@@ -12305,6 +12793,30 @@ final class WorldMapCatalogS1Tests: XCTestCase {
         )
     }
 
+    private static func cacheFixtureSnapshot() -> WorldMapCatalogSnapshot {
+        WorldMapCatalogSnapshot(
+            clusters: [
+                WorldMapCatalogCluster(
+                    id: "cell-10000000-30-12",
+                    longitude: 120.1551,
+                    latitude: 30.2741,
+                    photoCount: 18,
+                    gpsCount: 12,
+                    tagCount: 6,
+                    displayName: "杭州",
+                    selectionQuery: WorldMapCatalogSelectionQuery(
+                        cellDegrees: 10,
+                        longitudeBucket: 30,
+                        latitudeBucket: 12
+                    )
+                ),
+            ],
+            eligiblePhotoCount: 24,
+            locatedPhotoCount: 18,
+            unlocatedPhotoCount: 6
+        )
+    }
+
     private static func seedAsset(
         _ db: Database,
         id: UUID,
@@ -12387,6 +12899,24 @@ private struct StubWorldMapPlaceResolver: WorldMapPlaceResolving {
     }
 }
 
+private actor StubNominatimWorldMapDataLoader: NominatimWorldMapDataLoading {
+    private let data: Data
+    private var url: URL?
+
+    init(data: Data) {
+        self.data = data
+    }
+
+    func data(for request: URLRequest, cacheKey _: String) async throws -> Data {
+        url = request.url
+        return data
+    }
+
+    func requestedURL() -> URL? {
+        url
+    }
+}
+
 private actor CountingWorldMapPlaceResolver: WorldMapPlaceResolving {
     private let candidates: [WorldMapPlaceCandidate]
     private var callCount = 0
@@ -12402,6 +12932,59 @@ private actor CountingWorldMapPlaceResolver: WorldMapPlaceResolving {
 
     func recordedCallCount() -> Int {
         callCount
+    }
+}
+
+private actor QueryAwareWorldMapPlaceResolver: WorldMapPlaceResolving {
+    private let results: [String: [WorldMapPlaceCandidate]]
+    private var queries: [String] = []
+
+    init(results: [String: [WorldMapPlaceCandidate]]) {
+        self.results = results
+    }
+
+    func resolve(query: String) async throws -> [WorldMapPlaceCandidate] {
+        queries.append(query)
+        return results[query] ?? []
+    }
+
+    func recordedQueries() -> [String] {
+        queries
+    }
+}
+
+private actor QueryAwareWorldMapApplePlaceSearcher: WorldMapApplePlaceSearching {
+    struct SearchCall: Sendable, Equatable {
+        let query: String
+        let region: WorldMapPlaceSearchRegion?
+    }
+
+    private let geocoded: [String: [WorldMapPlaceCandidate]]
+    private let searched: [String: [WorldMapPlaceCandidate]]
+    private var searchCalls: [SearchCall] = []
+
+    init(
+        geocoded: [String: [WorldMapPlaceCandidate]],
+        searched: [String: [WorldMapPlaceCandidate]]
+    ) {
+        self.geocoded = geocoded
+        self.searched = searched
+    }
+
+    func geocode(query: String) async throws -> [WorldMapPlaceCandidate] {
+        geocoded[query] ?? []
+    }
+
+    func search(
+        query: String,
+        region: WorldMapPlaceSearchRegion?
+    ) async throws -> [WorldMapPlaceCandidate] {
+        searchCalls.append(SearchCall(query: query, region: region))
+        return searched[query] ?? []
+    }
+
+    func recordedSearchCalls() -> [SearchCall] {
+        searchCalls
     }
 }
 

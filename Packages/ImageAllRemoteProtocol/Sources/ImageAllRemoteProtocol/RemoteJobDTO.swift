@@ -27,6 +27,32 @@ public enum RemoteJobAction: String, Codable, Sendable, Equatable {
     case cancel
 }
 
+public enum RemoteJobControlRequest: String, Codable, Sendable, Equatable {
+    case none
+    case pause
+    case cancel
+}
+
+public enum RemoteJobWorkspace: String, Codable, Sendable, Equatable {
+    case librarySlimming
+}
+
+public struct RemoteJobNavigationTarget: Codable, Sendable, Equatable {
+    public let workspace: RemoteJobWorkspace
+    public let recordID: UUID
+    public let mediaKind: RemoteAssetMediaKind?
+
+    public init(
+        workspace: RemoteJobWorkspace,
+        recordID: UUID,
+        mediaKind: RemoteAssetMediaKind? = nil
+    ) {
+        self.workspace = workspace
+        self.recordID = recordID
+        self.mediaKind = mediaKind
+    }
+}
+
 public struct RemoteJobProgress: Codable, Sendable, Equatable {
     public let completedUnitCount: Int64
     public let totalUnitCount: Int64?
@@ -43,19 +69,34 @@ public struct RemoteJobSummary: Codable, Sendable, Equatable, Identifiable {
     public let state: RemoteJobState
     public let progress: RemoteJobProgress
     public let availableActions: [RemoteJobAction]
+    public let controlRequest: RemoteJobControlRequest?
+    public let attempts: Int?
+    public let maxAttempts: Int?
+    public let lastErrorCode: String?
+    public let navigationTarget: RemoteJobNavigationTarget?
 
     public init(
         id: UUID,
         kind: RemoteJobKind,
         state: RemoteJobState,
         progress: RemoteJobProgress,
-        availableActions: [RemoteJobAction]
+        availableActions: [RemoteJobAction],
+        controlRequest: RemoteJobControlRequest? = nil,
+        attempts: Int? = nil,
+        maxAttempts: Int? = nil,
+        lastErrorCode: String? = nil,
+        navigationTarget: RemoteJobNavigationTarget? = nil
     ) {
         self.id = id
         self.kind = kind
         self.state = state
         self.progress = progress
         self.availableActions = availableActions
+        self.controlRequest = controlRequest
+        self.attempts = attempts
+        self.maxAttempts = maxAttempts
+        self.lastErrorCode = lastErrorCode
+        self.navigationTarget = navigationTarget
     }
 }
 

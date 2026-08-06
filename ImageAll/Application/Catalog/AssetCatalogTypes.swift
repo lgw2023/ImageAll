@@ -372,14 +372,14 @@ struct AssetLocationCoordinate: Sendable, Equatable {
     }
 }
 
-struct WorldMapCatalogBounds: Sendable, Equatable {
+struct WorldMapCatalogBounds: Sendable, Equatable, Hashable, Codable {
     let west: Double
     let south: Double
     let east: Double
     let north: Double
 }
 
-struct WorldMapCatalogQuery: Sendable, Equatable {
+struct WorldMapCatalogQuery: Sendable, Equatable, Hashable, Codable {
     static let maximumClusterLimit = 2_000
     static let global = WorldMapCatalogQuery(bounds: nil)
 
@@ -395,7 +395,7 @@ struct WorldMapCatalogQuery: Sendable, Equatable {
     }
 }
 
-struct WorldMapCatalogSelectionQuery: Sendable, Equatable {
+struct WorldMapCatalogSelectionQuery: Sendable, Equatable, Codable {
     static let defaultAssetLimit = 36
     static let maximumAssetLimit = 120
 
@@ -437,7 +437,7 @@ struct WorldMapGalleryScope: Sendable, Equatable {
     let selectionQuery: WorldMapCatalogSelectionQuery
 }
 
-struct WorldMapCatalogCluster: Sendable, Equatable, Identifiable {
+struct WorldMapCatalogCluster: Sendable, Equatable, Identifiable, Codable {
     let id: String
     let longitude: Double
     let latitude: Double
@@ -464,7 +464,7 @@ struct WorldMapCatalogSelection: Sendable, Equatable {
     static let empty = WorldMapCatalogSelection(assets: [], totalPhotoCount: 0)
 }
 
-struct WorldMapCatalogSnapshot: Sendable, Equatable {
+struct WorldMapCatalogSnapshot: Sendable, Equatable, Codable {
     let clusters: [WorldMapCatalogCluster]
     let eligiblePhotoCount: Int
     let locatedPhotoCount: Int
@@ -499,6 +499,27 @@ struct WorldMapPlaceCandidate: Sendable, Equatable, Identifiable {
     let latitude: Double
     let longitude: Double
     let kind: WorldMapPlaceKind
+    // Resolver-only evidence used to scope international search results. The
+    // persisted place identity remains provider-neutral and coordinate-based.
+    let countryCode: String?
+
+    init(
+        placeID: String,
+        displayName: String,
+        subtitle: String?,
+        latitude: Double,
+        longitude: Double,
+        kind: WorldMapPlaceKind,
+        countryCode: String? = nil
+    ) {
+        self.placeID = placeID
+        self.displayName = displayName
+        self.subtitle = subtitle
+        self.latitude = latitude
+        self.longitude = longitude
+        self.kind = kind
+        self.countryCode = countryCode?.uppercased()
+    }
 }
 
 enum WorldMapPlaceBindingStatus: String, Sendable, Equatable {
@@ -523,10 +544,15 @@ struct WorldMapPlaceTagResolution: Sendable, Equatable, Identifiable {
 
 enum WorldMapPlaceResolutionError: Error, Sendable, Equatable {
     case tagUnavailable
+    case invalidQuery
     case candidateUnavailable
     case invalidCandidate
     case persistenceFailure
     case resolverFailed
+}
+
+enum WorldMapPlaceSearchPolicy {
+    static let maximumQueryLength = 160
 }
 
 protocol WorldMapPlaceResolving: Sendable {
