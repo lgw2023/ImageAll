@@ -10853,6 +10853,55 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertEqual(model.singlePhotoNavigation?.fileName, "item-3.jpg")
     }
 
+    func testGridReviewDecisionKeepsLoadedQueueStableWithoutReloadingPageOne() async {
+        let sourceID = UUID()
+        let tag = TagListItem(id: UUID(), displayName: "Snow Leopard", state: .active)
+        let assets = (0 ..< 8).map {
+            Self.makeAsset(sourceID: sourceID, fileName: "item-\($0).jpg")
+        }
+        let queueItems = assets.map {
+            ReviewQueueItemProjection(
+                assetID: $0.assetID,
+                fileName: $0.fileName,
+                availability: $0.availability,
+                acceptedTagCount: 0,
+                rejectedTagCount: 0
+            )
+        }
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: sourceID,
+                displayName: "Fixture",
+                state: .active
+            ),
+            reconciledItems: assets,
+            tags: [tag]
+        )
+        let review = FakePersonalizationReviewPort(queueItems: queueItems)
+        review.decidedAssetIDsProvider = { [weak service] tagID in
+            service?.decidedAssetIDs(tagID: tagID) ?? []
+        }
+        let model = LibraryWorkspaceModel(service: service, review: review)
+
+        await model.enterReviewQueue(tagID: tag.id, displayName: tag.displayName)
+        await model.selectReviewItem(queueItems[4].id)
+        XCTAssertEqual(review.queueFetchCallCount, 1)
+
+        await model.applyReviewDecision(action: .accept)
+
+        XCTAssertEqual(review.queueFetchCallCount, 1)
+        XCTAssertEqual(
+            model.reviewQueueItems.map(\.id),
+            queueItems.filter { $0.id != queueItems[4].id }.map(\.id)
+        )
+        XCTAssertEqual(
+            Array(model.reviewQueueItems.prefix(4)).map(\.id),
+            Array(queueItems.prefix(4)).map(\.id)
+        )
+        XCTAssertEqual(model.selectedReviewItemID, queueItems[5].id)
+        XCTAssertFalse(model.isSinglePhotoPresented)
+    }
+
     func testReviewDecisionOnLastQueueItemReturnsFromSinglePhoto() async {
         let sourceID = UUID()
         let tag = TagListItem(id: UUID(), displayName: "Family", state: .active)
@@ -15769,6 +15818,7 @@ private final class FakePersonalizationReviewPort: PersonalizationReviewPort, @u
     private var storedStandardSuggestionReplacements: [FakeStandardSuggestionReplacement] = []
     private var storedPersonalSuggestionInvalidationCallCount = 0
     private var storedPersonalModelRebuildEnqueueCallCount = 0
+    private var storedQueueFetchCallCount = 0
     private let queuePageSize: Int?
     private let trainingSnapshot: PersonalTrainingSnapshot?
     private let standardSuggestionReplacementFails: Bool
@@ -15846,6 +15896,10 @@ private final class FakePersonalizationReviewPort: PersonalizationReviewPort, @u
         lock.withLock { storedPersonalModelRebuildEnqueueCallCount }
     }
 
+    var queueFetchCallCount: Int {
+        lock.withLock { storedQueueFetchCallCount }
+    }
+
     private(set) var lastEnqueuedSourceIDs: [UUID]?
     private(set) var lastPendingCountSourceIDs: [UUID]?
     private(set) var lastOverviewSourceIDs: [UUID]?
@@ -15872,6 +15926,7 @@ private final class FakePersonalizationReviewPort: PersonalizationReviewPort, @u
         limit: Int
     ) throws -> ReviewQueuePage {
         lock.withLock {
+            storedQueueFetchCallCount += 1
             lastQueueSourceIDs = sourceIDs
             let excluded = decidedAssetIDsProvider?(tagID) ?? []
             let visible = storedQueueItems.filter { !excluded.contains($0.assetID) }

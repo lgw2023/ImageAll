@@ -8901,7 +8901,7 @@ extension LibraryWorkspaceModel {
         await applyJobActivityAction(action, to: activity.id)
     }
 
-    func refreshReviewState() async {
+    func refreshReviewState(reloadActiveQueue: Bool = true) async {
         let reviewPort = review
         let sourceFilter = resolvedReviewSourceFilter
         let mediaKind = selectedMediaKind
@@ -8950,7 +8950,9 @@ extension LibraryWorkspaceModel {
                     jobActivityItems = activity
                 }
             }
-            if case let .tagQueue(tagID, _) = reviewMode {
+            if reloadActiveQueue,
+               case let .tagQueue(tagID, _) = reviewMode
+            {
                 await loadReviewQueueFirstPage(tagID: tagID)
             }
             if let assetID = primarySelectedAssetID, reviewMode == nil {
@@ -9290,9 +9292,15 @@ extension LibraryWorkspaceModel {
                 )
             }
             guard reviewPageRequestID == requestID else { return }
-            reviewQueueItems = page.items.filter {
+            let refreshedItems = page.items.filter {
                 !hiddenRecycledAssetIDs.contains($0.assetID)
             }
+            if refreshedItems == reviewQueueItems,
+               page.nextCursor == reviewNextCursor
+            {
+                return
+            }
+            reviewQueueItems = refreshedItems
             if let selectedReviewItemID,
                !reviewQueueItems.contains(where: { $0.id == selectedReviewItemID })
             {
@@ -9565,12 +9573,11 @@ extension LibraryWorkspaceModel {
         let reviewPort = review
         let worker = PersonalizationSuggestionRunner.startLoop(review: reviewPort) { [weak self] in
             guard let self else { return }
-            await self.refreshReviewState()
+            // Keep an open review session stable while background model jobs report progress.
+            // Fresh suggestions are loaded when the queue is entered or its source filter changes.
+            await self.refreshReviewState(reloadActiveQueue: false)
             await self.refreshTrainingWorkspace(presentation: .automatic)
             await self.refreshFeatureSuggestionCompletionNotices()
-            if case let .tagQueue(tagID, _) = self.reviewMode {
-                await self.loadReviewQueueFirstPage(tagID: tagID)
-            }
         }
         personalizationRunnerTask = Task { [weak self] in
             await worker.value
@@ -9696,7 +9703,10 @@ extension LibraryWorkspaceModel {
                 isSinglePhotoPresented = false
             }
             await enqueueAutomaticPersonalModelRebuildIfReady()
-            await refreshReviewState()
+            // The local removal is the authoritative visible transition for this session.
+            // Reloading page one here remounts/truncates a deeply paged LazyVGrid and jumps
+            // the user's viewport toward the top.
+            await refreshReviewState(reloadActiveQueue: false)
             await refreshInspector()
         } catch {
             notice = .tagMutationFailed
