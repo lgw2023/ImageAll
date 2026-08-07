@@ -664,6 +664,120 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         )
     }
 
+    func testRefreshAllSourcesQueuesFoldersAndSyncsPhotosRegardlessOfCurrentSelection() async {
+        let folderSourceID = UUID()
+        let photosSourceID = UUID()
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: folderSourceID,
+                kind: .folder,
+                displayName: "Folder",
+                state: .active
+            ),
+            reconciledItems: [],
+            startsConnected: true,
+            additionalSources: [
+                LibrarySourceSummary(
+                    id: photosSourceID,
+                    kind: .photos,
+                    displayName: "Apple Photos",
+                    state: .active
+                ),
+            ],
+            sourceIsReconcileClean: true,
+            hasPendingCatalogReconcileJobs: false
+        )
+        let model = LibraryWorkspaceModel(
+            service: service,
+            idlePrewarmInstallEventMonitor: false
+        )
+        await model.start()
+        await model.selectSource(folderSourceID)
+
+        await model.refreshAllSources()
+
+        XCTAssertEqual(service.enqueueReconcileCalls, [[folderSourceID]])
+        XCTAssertEqual(service.photosSyncCallCount, 1)
+        XCTAssertEqual(model.notice, .allSourcesRefreshQueued(sourceCount: 2))
+    }
+
+    func testBatchAccessAuthorizationProcessesEveryEligibleFolderSource() async {
+        let firstSourceID = UUID()
+        let secondSourceID = UUID()
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: firstSourceID,
+                kind: .folder,
+                displayName: "Unavailable",
+                state: .unavailable
+            ),
+            reconciledItems: [],
+            startsConnected: true,
+            additionalSources: [
+                LibrarySourceSummary(
+                    id: secondSourceID,
+                    kind: .folder,
+                    displayName: "Needs Access",
+                    state: .unavailable
+                ),
+            ],
+            hasPendingCatalogReconcileJobs: false
+        )
+        let model = LibraryWorkspaceModel(
+            service: service,
+            idlePrewarmInstallEventMonitor: false
+        )
+        await model.start()
+
+        await model.reauthorizeAllSourcesRequiringAccess()
+
+        XCTAssertEqual(service.reauthorizeCallCount, 2)
+        XCTAssertEqual(model.sources.map(\.state), [.active, .active])
+        XCTAssertEqual(
+            model.notice,
+            .sourceAccessAuthorizationBatchCompleted(sourceCount: 2)
+        )
+    }
+
+    func testBatchMutationAuthorizationProcessesEveryActiveFolderSource() async {
+        let firstSourceID = UUID()
+        let secondSourceID = UUID()
+        let mutationAuthorization = FakeFolderMutationAuthorizationPort()
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: firstSourceID,
+                kind: .folder,
+                displayName: "First",
+                state: .active
+            ),
+            reconciledItems: [],
+            startsConnected: true,
+            additionalSources: [
+                LibrarySourceSummary(
+                    id: secondSourceID,
+                    kind: .folder,
+                    displayName: "Second",
+                    state: .active
+                ),
+            ],
+            hasPendingCatalogReconcileJobs: false
+        )
+        let model = LibraryWorkspaceModel(
+            service: service,
+            librarySlimmingMutationAuthorization: mutationAuthorization,
+            idlePrewarmInstallEventMonitor: false
+        )
+        await model.start()
+
+        await model.refreshAllFolderMutationAuthorizations()
+
+        XCTAssertEqual(mutationAuthorization.authorizedSourceIDs, [firstSourceID, secondSourceID])
+        XCTAssertEqual(
+            model.notice,
+            .sourceMutationAuthorizationBatchCompleted(sourceCount: 2)
+        )
+    }
+
     func testLibrarySlimmingRecycleCoalescesRefreshUntilWorkspaceExit() async {
         let sourceID = UUID()
         let assetA = Self.makeAsset(sourceID: sourceID, fileName: "keep.jpg")
@@ -13898,6 +14012,8 @@ final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecked Sendab
     private var storedCloudPreviewDownloadCallCount = 0
     private var storedCloudPreviewCancellationCount = 0
     private var storedThumbnailLoadCallCount = 0
+    private var storedSquareCacheInventoryCallCount = 0
+    private var storedSquareThumbnailAssetIDs: Set<UUID> = []
     private var storedActiveThumbnailLoads = 0
     private var storedPeakConcurrentThumbnailLoads = 0
     private let thumbnailLoadDelayNanoseconds: UInt64
@@ -14166,6 +14282,10 @@ final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecked Sendab
 
     var thumbnailLoadCallCount: Int {
         lock.withLock { storedThumbnailLoadCallCount }
+    }
+
+    var squareCacheInventoryCallCount: Int {
+        lock.withLock { storedSquareCacheInventoryCallCount }
     }
 
     var peakConcurrentThumbnailLoads: Int {
@@ -14752,6 +14872,7 @@ final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecked Sendab
         if shouldFail {
             throw thumbnailFailureError
         }
+        lock.withLock { storedSquareThumbnailAssetIDs.insert(assetID) }
         return thumbnailData
     }
 
@@ -14765,6 +14886,13 @@ final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecked Sendab
 
     func loadOriginalAspectThumbnailIfCached(assetID: UUID) async throws -> Data? {
         lock.withLock { storedOriginalAspectThumbnailData[assetID] }
+    }
+
+    func cachedSquareThumbnailAssetIDs(sourceID _: UUID) async throws -> Set<UUID> {
+        lock.withLock {
+            storedSquareCacheInventoryCallCount += 1
+            return storedSquareThumbnailAssetIDs
+        }
     }
 
     func cachedOriginalAspectThumbnailAssetIDs(sourceID _: UUID) async throws -> Set<UUID> {

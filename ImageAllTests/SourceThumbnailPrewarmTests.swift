@@ -3,6 +3,172 @@ import XCTest
 
 @MainActor
 final class SourceThumbnailPrewarmTests: XCTestCase {
+    func testAllSourceSquarePrewarmProcessesEveryEligibleSource() async {
+        let firstSourceID = UUID()
+        let secondSourceID = UUID()
+        let assets = [
+            makeAsset(sourceID: firstSourceID, fileName: "first.jpg"),
+            makeAsset(sourceID: secondSourceID, fileName: "second.jpg"),
+        ]
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: firstSourceID,
+                kind: .folder,
+                displayName: "First",
+                state: .active
+            ),
+            reconciledItems: assets,
+            initialItems: assets,
+            startsConnected: true,
+            additionalSources: [
+                LibrarySourceSummary(
+                    id: secondSourceID,
+                    kind: .folder,
+                    displayName: "Second",
+                    state: .active
+                ),
+            ],
+            thumbnailData: Data("square".utf8),
+            hasPendingCatalogReconcileJobs: false
+        )
+        let model = LibraryWorkspaceModel(
+            service: service,
+            idlePrewarmInstallEventMonitor: false
+        )
+        await model.start()
+
+        model.prewarmAllSourceThumbnails()
+        await waitForPrewarmToFinish(model)
+
+        XCTAssertEqual(service.thumbnailLoadCallCount, assets.count)
+        XCTAssertEqual(
+            model.notice,
+            .allSourceThumbnailPrewarmCompleted(
+                sourceCount: 2,
+                warmed: 2,
+                reused: 0,
+                ineligible: 0,
+                failed: 0,
+                total: 2,
+                failedSourceCount: 0
+            )
+        )
+    }
+
+    func testAllSourceOriginalAspectPrewarmSkipsDisabledSourcesAndProcessesEveryEligibleSource() async {
+        let firstSourceID = UUID()
+        let secondSourceID = UUID()
+        let disabledSourceID = UUID()
+        let assets = [
+            makeAsset(sourceID: firstSourceID, fileName: "first.jpg"),
+            makeAsset(sourceID: secondSourceID, fileName: "second.mov", mediaKind: .video),
+            makeAsset(sourceID: disabledSourceID, fileName: "disabled.jpg"),
+        ]
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: firstSourceID,
+                kind: .folder,
+                displayName: "First",
+                state: .active
+            ),
+            reconciledItems: assets,
+            initialItems: assets,
+            startsConnected: true,
+            additionalSources: [
+                LibrarySourceSummary(
+                    id: secondSourceID,
+                    kind: .folder,
+                    displayName: "Second",
+                    state: .unavailable
+                ),
+                LibrarySourceSummary(
+                    id: disabledSourceID,
+                    kind: .folder,
+                    displayName: "Disabled",
+                    state: .disabled
+                ),
+            ],
+            originalAspectPrewarmData: Data("original".utf8),
+            hasPendingCatalogReconcileJobs: false
+        )
+        let model = LibraryWorkspaceModel(
+            service: service,
+            idlePrewarmInstallEventMonitor: false
+        )
+        await model.start()
+
+        model.prewarmAllSourceOriginalAspectThumbnails()
+        await waitForPrewarmToFinish(model)
+
+        XCTAssertEqual(service.originalAspectPrewarmCallCount, 2)
+        XCTAssertEqual(
+            model.notice,
+            .allSourceOriginalAspectThumbnailPrewarmCompleted(
+                sourceCount: 2,
+                warmed: 2,
+                reused: 0,
+                ineligible: 0,
+                failed: 0,
+                total: 2,
+                failedSourceCount: 0
+            )
+        )
+    }
+
+    func testCancelAllSourcePrewarmStopsRemainingSourcesAndReportsBatchProgress() async {
+        let firstSourceID = UUID()
+        let secondSourceID = UUID()
+        let assets = (0 ..< 6).map {
+            makeAsset(sourceID: firstSourceID, fileName: "first-\($0).jpg")
+        } + [makeAsset(sourceID: secondSourceID, fileName: "second.jpg")]
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: firstSourceID,
+                kind: .folder,
+                displayName: "First",
+                state: .active
+            ),
+            reconciledItems: assets,
+            initialItems: assets,
+            startsConnected: true,
+            additionalSources: [
+                LibrarySourceSummary(
+                    id: secondSourceID,
+                    kind: .folder,
+                    displayName: "Second",
+                    state: .active
+                ),
+            ],
+            thumbnailData: Data("square".utf8),
+            thumbnailLoadDelayNanoseconds: 40_000_000,
+            hasPendingCatalogReconcileJobs: false
+        )
+        let model = LibraryWorkspaceModel(
+            service: service,
+            idlePrewarmInstallEventMonitor: false
+        )
+        await model.start()
+
+        model.prewarmAllSourceThumbnails()
+        let startDeadline = Date().addingTimeInterval(2)
+        while service.thumbnailLoadCallCount == 0, Date() < startDeadline {
+            await Task.yield()
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
+        model.cancelSourceThumbnailPrewarm()
+        try? await Task.sleep(nanoseconds: 150_000_000)
+
+        XCTAssertFalse(model.isPrewarmingSourceThumbnails)
+        XCTAssertLessThan(service.thumbnailLoadCallCount, assets.count)
+        XCTAssertEqual(
+            model.notice,
+            .allSourceThumbnailPrewarmCancelled(
+                completedSourceCount: 0,
+                totalSourceCount: 2
+            )
+        )
+    }
+
     func testSourcePrewarmPagesThroughAllAssetsAndLoadsThumbnails() async {
         let sourceID = UUID()
         let assets = (0 ..< 5).map { makeAsset(sourceID: sourceID, fileName: "prewarm-\($0).jpg") }
@@ -45,6 +211,8 @@ final class SourceThumbnailPrewarmTests: XCTestCase {
             .sourceThumbnailPrewarmCompleted(
                 sourceDisplayName: "Fixture Source",
                 warmed: assets.count,
+                reused: 0,
+                ineligible: 0,
                 failed: 0,
                 total: assets.count
             )
@@ -146,6 +314,8 @@ final class SourceThumbnailPrewarmTests: XCTestCase {
             .sourceOriginalAspectThumbnailPrewarmCompleted(
                 sourceDisplayName: "Mixed Media",
                 warmed: 2,
+                reused: 0,
+                ineligible: 0,
                 failed: 0,
                 total: 2
             )
@@ -209,13 +379,172 @@ final class SourceThumbnailPrewarmTests: XCTestCase {
             .sourceOriginalAspectThumbnailPrewarmCompleted(
                 sourceDisplayName: "Cached Mixed Media",
                 warmed: 0,
+                reused: assets.count,
+                ineligible: 0,
                 failed: 0,
                 total: assets.count
             )
         )
         XCTAssertTrue(
-            LibraryWorkspaceView.noticeText(model.notice!).contains("已全部跳过")
+            LibraryWorkspaceView.noticeText(model.notice!).contains("已全部复用")
         )
+    }
+
+    func testSecondSquarePrewarmSkipsAlreadyCachedAssets() async {
+        let sourceID = UUID()
+        let assets = [
+            makeAsset(sourceID: sourceID, fileName: "cached-first.jpg"),
+            makeAsset(sourceID: sourceID, fileName: "cached-second.jpg"),
+        ]
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: sourceID,
+                kind: .folder,
+                displayName: "Cached Squares",
+                state: .active
+            ),
+            reconciledItems: assets,
+            initialItems: assets,
+            startsConnected: true,
+            thumbnailData: Data("square".utf8),
+            hasPendingCatalogReconcileJobs: false
+        )
+        let model = LibraryWorkspaceModel(
+            service: service,
+            idlePrewarmInstallEventMonitor: false
+        )
+        await model.start()
+
+        model.prewarmSourceThumbnails(sourceID: sourceID)
+        await waitForPrewarmToFinish(model)
+        XCTAssertEqual(service.thumbnailLoadCallCount, assets.count)
+
+        model.prewarmSourceThumbnails(sourceID: sourceID)
+        await waitForPrewarmToFinish(model)
+
+        XCTAssertEqual(service.thumbnailLoadCallCount, assets.count)
+        XCTAssertEqual(service.squareCacheInventoryCallCount, 2)
+        XCTAssertEqual(
+            model.notice,
+            .sourceThumbnailPrewarmCompleted(
+                sourceDisplayName: "Cached Squares",
+                warmed: 0,
+                reused: assets.count,
+                ineligible: 0,
+                failed: 0,
+                total: assets.count
+            )
+        )
+        XCTAssertTrue(LibraryWorkspaceView.noticeText(model.notice!).contains("已全部复用"))
+    }
+
+    func testPrewarmDoesNotRetryKnownIneligibleAssets() async {
+        let sourceID = UUID()
+        let eligible = makeAsset(sourceID: sourceID, fileName: "available.jpg")
+        let assets = [
+            eligible,
+            makeAsset(
+                sourceID: sourceID,
+                fileName: "missing.jpg",
+                availability: .missing
+            ),
+            makeAsset(
+                sourceID: sourceID,
+                fileName: "unsupported.ai",
+                mediaType: "com.adobe.illustrator.ai-image",
+                availability: .unsupported
+            ),
+            makeAsset(
+                sourceID: sourceID,
+                fileName: "offline.mov",
+                mediaKind: .video,
+                sourceState: .unavailable
+            ),
+        ]
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: sourceID,
+                kind: .folder,
+                displayName: "Mixed Availability",
+                state: .active
+            ),
+            reconciledItems: assets,
+            initialItems: assets,
+            startsConnected: true,
+            thumbnailData: Data("square".utf8),
+            hasPendingCatalogReconcileJobs: false
+        )
+        let model = LibraryWorkspaceModel(
+            service: service,
+            idlePrewarmInstallEventMonitor: false
+        )
+        await model.start()
+
+        model.prewarmSourceThumbnails(sourceID: sourceID)
+        await waitForPrewarmToFinish(model)
+        model.prewarmSourceThumbnails(sourceID: sourceID)
+        await waitForPrewarmToFinish(model)
+
+        XCTAssertEqual(service.thumbnailLoadCallCount, 1)
+        XCTAssertEqual(
+            model.notice,
+            .sourceThumbnailPrewarmCompleted(
+                sourceDisplayName: "Mixed Availability",
+                warmed: 0,
+                reused: 1,
+                ineligible: 3,
+                failed: 0,
+                total: 4
+            )
+        )
+        let noticeText = LibraryWorkspaceView.noticeText(model.notice!)
+        XCTAssertTrue(noticeText.contains("复用已有缓存 1 个"))
+        XCTAssertTrue(noticeText.contains("不可处理跳过 3 个"))
+    }
+
+    func testPrewarmProgressSeparatesQueueFromReuseAndIneligibleItems() async {
+        let sourceID = UUID()
+        let cached = makeAsset(sourceID: sourceID, fileName: "cached.jpg")
+        let pending = makeAsset(sourceID: sourceID, fileName: "pending.jpg")
+        let missing = makeAsset(
+            sourceID: sourceID,
+            fileName: "missing.jpg",
+            availability: .missing
+        )
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: sourceID,
+                kind: .folder,
+                displayName: "Clear Progress",
+                state: .active
+            ),
+            reconciledItems: [cached, pending, missing],
+            initialItems: [cached],
+            startsConnected: true,
+            thumbnailData: Data("square".utf8),
+            thumbnailLoadDelayNanoseconds: 100_000_000,
+            hasPendingCatalogReconcileJobs: false
+        )
+        let model = LibraryWorkspaceModel(
+            service: service,
+            idlePrewarmInstallEventMonitor: false
+        )
+        await model.start()
+        model.prewarmSourceThumbnails(sourceID: sourceID)
+        await waitForPrewarmToFinish(model)
+        service.replaceItems([cached, pending, missing])
+
+        model.prewarmSourceThumbnails(sourceID: sourceID)
+        let deadline = Date().addingTimeInterval(2)
+        while model.sourceThumbnailPrewarmProgress?.total != 1, Date() < deadline {
+            await Task.yield()
+            try? await Task.sleep(nanoseconds: 5_000_000)
+        }
+
+        XCTAssertEqual(model.sourceThumbnailPrewarmProgress?.total, 1)
+        XCTAssertEqual(model.sourceThumbnailPrewarmProgress?.reused, 1)
+        XCTAssertEqual(model.sourceThumbnailPrewarmProgress?.ineligible, 1)
+        await waitForPrewarmToFinish(model)
     }
 
     func testSecondPrewarmIgnoredWhileFirstRunning() async {
@@ -276,6 +605,8 @@ final class SourceThumbnailPrewarmTests: XCTestCase {
             .sourceThumbnailPrewarmCompleted(
                 sourceDisplayName: "Primary",
                 warmed: assets.count,
+                reused: 0,
+                ineligible: 0,
                 failed: 0,
                 total: assets.count
             )
@@ -285,23 +616,27 @@ final class SourceThumbnailPrewarmTests: XCTestCase {
     private func makeAsset(
         sourceID: UUID,
         fileName: String,
-        mediaKind: MediaKind = .image
+        mediaKind: MediaKind = .image,
+        mediaType: String? = nil,
+        availability: AssetAvailability = .available,
+        sourceState: SourceState = .active
     ) -> AssetGridItemProjection {
         AssetGridItemProjection(
             assetID: UUID(),
             sourceID: sourceID,
             sourceDisplayName: "Fixture",
-            sourceState: .active,
+            sourceState: sourceState,
             relativePath: fileName,
             fileName: fileName,
             mediaKind: mediaKind,
-            mediaType: mediaKind == .video ? "com.apple.quicktime-movie" : "public.jpeg",
+            mediaType: mediaType
+                ?? (mediaKind == .video ? "com.apple.quicktime-movie" : "public.jpeg"),
             durationMs: mediaKind == .video ? 1_000 : nil,
             mediaCreatedAtMs: 1,
             mediaModifiedAtMs: 1,
             width: 100,
             height: 100,
-            availability: .available,
+            availability: availability,
             contentRevision: 1,
             acceptedTagCount: 0,
             rejectedTagCount: 0

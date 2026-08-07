@@ -2593,7 +2593,18 @@ struct ProductionLibraryWorkspaceService:
         try await assetImages.loadOriginalAspectThumbnailIfCached(assetID: assetID)
     }
 
+    func cachedSquareThumbnailAssetIDs(sourceID: UUID) async throws -> Set<UUID> {
+        try await cachedThumbnailAssetIDs(sourceID: sourceID, variant: .gridRegular)
+    }
+
     func cachedOriginalAspectThumbnailAssetIDs(sourceID: UUID) async throws -> Set<UUID> {
+        try await cachedThumbnailAssetIDs(sourceID: sourceID, variant: .gridOriginal)
+    }
+
+    private func cachedThumbnailAssetIDs(
+        sourceID: UUID,
+        variant: DerivedImageVariant
+    ) async throws -> Set<UUID> {
         let database = queue.database
         return try await Task.detached(priority: .utility) {
             try database.pool.read { db in
@@ -2614,7 +2625,7 @@ struct ProductionLibraryWorkspaceService:
                     arguments: [
                         sourceID.uuidString.lowercased(),
                         DerivedImageRepresentationVersion.production,
-                        DerivedImageVariant.gridOriginal.rawValue,
+                        variant.rawValue,
                     ]
                 )
                 return Set(rows.compactMap(UUID.init(uuidString:)))

@@ -83,6 +83,11 @@ struct SourceThumbnailPrewarmProgress: Equatable, Sendable {
     let total: Int
     let warmed: Int
     let failed: Int
+    let reused: Int
+    let ineligible: Int
+    /// Zero-based number of sources completed before `sourceID` in a batch.
+    let completedSourceCount: Int
+    let totalSourceCount: Int
 
     init(
         sourceID: UUID,
@@ -91,7 +96,11 @@ struct SourceThumbnailPrewarmProgress: Equatable, Sendable {
         completed: Int,
         total: Int,
         warmed: Int,
-        failed: Int
+        failed: Int,
+        reused: Int = 0,
+        ineligible: Int = 0,
+        completedSourceCount: Int = 0,
+        totalSourceCount: Int = 1
     ) {
         self.sourceID = sourceID
         self.sourceDisplayName = sourceDisplayName
@@ -100,11 +109,19 @@ struct SourceThumbnailPrewarmProgress: Equatable, Sendable {
         self.total = total
         self.warmed = warmed
         self.failed = failed
+        self.reused = reused
+        self.ineligible = ineligible
+        self.completedSourceCount = completedSourceCount
+        self.totalSourceCount = max(1, totalSourceCount)
     }
 
     var fractionCompleted: Double {
         guard total > 0 else { return 0 }
         return min(1, Double(completed) / Double(total))
+    }
+
+    var isBatch: Bool {
+        totalSourceCount > 1
     }
 }
 
@@ -151,6 +168,8 @@ enum LibraryWorkspaceNotice: Equatable, Sendable {
     case sourceThumbnailPrewarmCompleted(
         sourceDisplayName: String,
         warmed: Int,
+        reused: Int,
+        ineligible: Int,
         failed: Int,
         total: Int
     )
@@ -163,6 +182,8 @@ enum LibraryWorkspaceNotice: Equatable, Sendable {
     case sourceOriginalAspectThumbnailPrewarmCompleted(
         sourceDisplayName: String,
         warmed: Int,
+        reused: Int,
+        ineligible: Int,
         failed: Int,
         total: Int
     )
@@ -172,6 +193,33 @@ enum LibraryWorkspaceNotice: Equatable, Sendable {
         total: Int
     )
     case sourceOriginalAspectThumbnailPrewarmFailed
+    case allSourceThumbnailPrewarmCompleted(
+        sourceCount: Int,
+        warmed: Int,
+        reused: Int,
+        ineligible: Int,
+        failed: Int,
+        total: Int,
+        failedSourceCount: Int
+    )
+    case allSourceOriginalAspectThumbnailPrewarmCompleted(
+        sourceCount: Int,
+        warmed: Int,
+        reused: Int,
+        ineligible: Int,
+        failed: Int,
+        total: Int,
+        failedSourceCount: Int
+    )
+    case allSourceThumbnailPrewarmCancelled(
+        completedSourceCount: Int,
+        totalSourceCount: Int
+    )
+    case allSourcesRefreshQueued(sourceCount: Int)
+    case sourceAccessAuthorizationBatchCompleted(sourceCount: Int)
+    case sourceAccessAuthorizationBatchCancelled(completed: Int, total: Int)
+    case sourceMutationAuthorizationBatchCompleted(sourceCount: Int)
+    case sourceMutationAuthorizationBatchCancelled(completed: Int, total: Int)
     case appStorageLocationRequiresRestart
     case appStorageLocationActionFailed
     case jobActivityActionFailed
@@ -423,6 +471,7 @@ protocol LibraryWorkspacePort: Sendable {
     ) throws -> AssetPageResult
     func loadThumbnail(assetID: UUID) async throws -> Data
     func loadOriginalAspectThumbnailIfCached(assetID: UUID) async throws -> Data?
+    func cachedSquareThumbnailAssetIDs(sourceID: UUID) async throws -> Set<UUID>
     func cachedOriginalAspectThumbnailAssetIDs(sourceID: UUID) async throws -> Set<UUID>
     func prewarmOriginalAspectThumbnail(assetID: UUID) async throws -> Data
     func loadPreview(assetID: UUID) async throws -> Data
@@ -516,6 +565,10 @@ extension LibraryWorkspacePort {
 
     func loadOriginalAspectThumbnailIfCached(assetID _: UUID) async throws -> Data? {
         nil
+    }
+
+    func cachedSquareThumbnailAssetIDs(sourceID _: UUID) async throws -> Set<UUID> {
+        []
     }
 
     func cachedOriginalAspectThumbnailAssetIDs(sourceID _: UUID) async throws -> Set<UUID> {

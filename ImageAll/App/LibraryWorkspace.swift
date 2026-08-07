@@ -1151,6 +1151,7 @@ final class LibraryWorkspaceModel: ObservableObject {
     @Published private(set) var suggestionThresholdEpoch = 0
     @Published private(set) var sourceThumbnailPrewarmProgress: SourceThumbnailPrewarmProgress?
     @Published private(set) var originalAspectThumbnailCacheGeneration = 0
+    @Published private(set) var isBatchAuthorizingSources = false
     @Published private(set) var jobActivityItems: [JobActivityItem] = []
     @Published private(set) var jobActivityActionInFlightIDs: Set<UUID> = []
     @Published private(set) var sourceOrderRevision = 0
@@ -1279,8 +1280,9 @@ final class LibraryWorkspaceModel: ObservableObject {
     private var idlePrewarmEmbeddingUnavailable = false
     private var sourceThumbnailPrewarmTask: Task<Void, Never>?
     private var sourceThumbnailPrewarmGeneration = 0
+    private var sourceThumbnailPrewarmTargetSourceIDs: [UUID] = []
     private var suspendedSourceThumbnailPrewarm:
-        (sourceID: UUID, kind: SourceThumbnailPrewarmKind)?
+        (sourceIDs: [UUID], kind: SourceThumbnailPrewarmKind)?
     private var browsingNavigationRequestID: UUID?
     private var selectionAnchorID: UUID?
     private var librarySlimmingSelectionAnchorID: UUID?
@@ -4089,6 +4091,7 @@ final class LibraryWorkspaceModel: ObservableObject {
         phase == .loading
             || phase == .scanning
             || isCatalogScanning
+            || isBatchAuthorizingSources
             || isRunningLibrarySlimmingIdenticalCleanup
     }
 
@@ -4723,11 +4726,27 @@ final class LibraryWorkspaceModel: ObservableObject {
     }
 
     func prewarmSourceThumbnails(sourceID: UUID) {
-        startSourceThumbnailPrewarm(sourceID: sourceID, kind: .square)
+        startSourceThumbnailPrewarm(sourceIDs: [sourceID], kind: .square)
     }
 
     func prewarmSourceOriginalAspectThumbnails(sourceID: UUID) {
-        startSourceThumbnailPrewarm(sourceID: sourceID, kind: .originalAspect)
+        startSourceThumbnailPrewarm(sourceIDs: [sourceID], kind: .originalAspect)
+    }
+
+    func prewarmAllSourceThumbnails() {
+        startSourceThumbnailPrewarm(
+            sourceIDs: orderedSources.map(\.id),
+            kind: .square,
+            isAllSourcesRequest: true
+        )
+    }
+
+    func prewarmAllSourceOriginalAspectThumbnails() {
+        startSourceThumbnailPrewarm(
+            sourceIDs: orderedSources.map(\.id),
+            kind: .originalAspect,
+            isAllSourcesRequest: true
+        )
     }
 
     /// Explicit source prewarming can issue sustained reads against the same
@@ -4741,8 +4760,13 @@ final class LibraryWorkspaceModel: ObservableObject {
         if suspendedSourceThumbnailPrewarm == nil,
            let progress = sourceThumbnailPrewarmProgress
         {
-            suspendedSourceThumbnailPrewarm = (progress.sourceID, progress.kind)
-            if progress.kind == .originalAspect, progress.warmed > 0 {
+            let remainingSourceIDs = sourceThumbnailPrewarmTargetSourceIDs.isEmpty
+                ? [progress.sourceID]
+                : sourceThumbnailPrewarmTargetSourceIDs
+            suspendedSourceThumbnailPrewarm = (remainingSourceIDs, progress.kind)
+            if progress.kind == .originalAspect,
+               progress.warmed > 0 || progress.completedSourceCount > 0
+            {
                 originalAspectThumbnailCacheGeneration &+= 1
             }
         }
@@ -4751,6 +4775,7 @@ final class LibraryWorkspaceModel: ObservableObject {
             runningTask?.cancel()
             sourceThumbnailPrewarmTask = nil
             sourceThumbnailPrewarmProgress = nil
+            sourceThumbnailPrewarmTargetSourceIDs = []
         }
         await runningTask?.value
     }
@@ -4759,19 +4784,47 @@ final class LibraryWorkspaceModel: ObservableObject {
         guard let suspended = suspendedSourceThumbnailPrewarm else { return }
         suspendedSourceThumbnailPrewarm = nil
         startSourceThumbnailPrewarm(
-            sourceID: suspended.sourceID,
-            kind: suspended.kind
+            sourceIDs: suspended.sourceIDs,
+            kind: suspended.kind,
+            isAllSourcesRequest: suspended.sourceIDs.count > 1
         )
     }
 
     private func startSourceThumbnailPrewarm(
-        sourceID: UUID,
-        kind: SourceThumbnailPrewarmKind
+        sourceIDs requestedSourceIDs: [UUID],
+        kind: SourceThumbnailPrewarmKind,
+        isAllSourcesRequest: Bool = false
     ) {
         guard !isPrewarmingSourceThumbnails else { return }
-        guard canStartSourceThumbnailPrewarm(sourceID: sourceID, kind: kind) else { return }
+        let requested = Set(requestedSourceIDs)
+        let eligibleSources = orderedSources.filter {
+            requested.contains($0.id)
+                && ($0.state == .active || $0.state == .unavailable)
+        }
+        guard let firstSource = eligibleSources.first else { return }
+
+        noteUserInteractionForIdlePrewarm()
+        notice = nil
+        sourceThumbnailPrewarmGeneration += 1
+        sourceThumbnailPrewarmTargetSourceIDs = eligibleSources.map(\.id)
+        sourceThumbnailPrewarmProgress = SourceThumbnailPrewarmProgress(
+            sourceID: firstSource.id,
+            sourceDisplayName: firstSource.displayName,
+            kind: kind,
+            completed: 0,
+            total: 0,
+            warmed: 0,
+            failed: 0,
+            completedSourceCount: 0,
+            totalSourceCount: eligibleSources.count
+        )
+        let sourceIDs = eligibleSources.map(\.id)
         sourceThumbnailPrewarmTask = Task(priority: .utility) { [weak self] in
-            await self?.runSourceThumbnailPrewarm(sourceID: sourceID)
+            await self?.runSourceThumbnailPrewarm(
+                sourceIDs: sourceIDs,
+                kind: kind,
+                isAllSourcesRequest: isAllSourcesRequest
+            )
         }
     }
 
@@ -4781,69 +4834,177 @@ final class LibraryWorkspaceModel: ObservableObject {
         sourceThumbnailPrewarmTask?.cancel()
         sourceThumbnailPrewarmTask = nil
         sourceThumbnailPrewarmProgress = nil
-        if progress.kind == .originalAspect, progress.warmed > 0 {
+        sourceThumbnailPrewarmTargetSourceIDs = []
+        if progress.kind == .originalAspect,
+           progress.warmed > 0 || progress.completedSourceCount > 0
+        {
             originalAspectThumbnailCacheGeneration &+= 1
         }
-        notice = switch progress.kind {
-        case .square:
-            .sourceThumbnailPrewarmCancelled(
-                sourceDisplayName: progress.sourceDisplayName,
-                completed: progress.completed,
-                total: progress.total
+        if progress.isBatch {
+            notice = .allSourceThumbnailPrewarmCancelled(
+                completedSourceCount: progress.completedSourceCount,
+                totalSourceCount: progress.totalSourceCount
             )
-        case .originalAspect:
-            .sourceOriginalAspectThumbnailPrewarmCancelled(
-                sourceDisplayName: progress.sourceDisplayName,
-                completed: progress.completed,
-                total: progress.total
-            )
+        } else {
+            notice = switch progress.kind {
+            case .square:
+                .sourceThumbnailPrewarmCancelled(
+                    sourceDisplayName: progress.sourceDisplayName,
+                    completed: progress.completed,
+                    total: progress.total
+                )
+            case .originalAspect:
+                .sourceOriginalAspectThumbnailPrewarmCancelled(
+                    sourceDisplayName: progress.sourceDisplayName,
+                    completed: progress.completed,
+                    total: progress.total
+                )
+            }
         }
     }
 
-    private func canStartSourceThumbnailPrewarm(
-        sourceID: UUID,
-        kind: SourceThumbnailPrewarmKind
-    ) -> Bool {
-        guard let source = sources.first(where: { $0.id == sourceID }) else { return false }
-        guard source.state == .active || source.state == .unavailable else { return false }
-
-        noteUserInteractionForIdlePrewarm()
-        notice = nil
-        sourceThumbnailPrewarmGeneration += 1
-        sourceThumbnailPrewarmProgress = SourceThumbnailPrewarmProgress(
-            sourceID: sourceID,
-            sourceDisplayName: source.displayName,
-            kind: kind,
-            completed: 0,
-            total: 0,
-            warmed: 0,
-            failed: 0
-        )
-        return true
+    private struct SourceThumbnailPrewarmResult {
+        let warmed: Int
+        let reused: Int
+        let ineligible: Int
+        let failed: Int
+        let total: Int
     }
 
-    private func runSourceThumbnailPrewarm(sourceID: UUID) async {
+    private func runSourceThumbnailPrewarm(
+        sourceIDs: [UUID],
+        kind: SourceThumbnailPrewarmKind,
+        isAllSourcesRequest: Bool
+    ) async {
         let generation = sourceThumbnailPrewarmGeneration
-        let sourceDisplayName = sourceThumbnailPrewarmProgress?.sourceDisplayName
-            ?? sources.first(where: { $0.id == sourceID })?.displayName
-            ?? "来源"
-        let kind = sourceThumbnailPrewarmProgress?.kind ?? .square
         let service = service
         defer {
             if sourceThumbnailPrewarmGeneration == generation {
                 sourceThumbnailPrewarmTask = nil
                 sourceThumbnailPrewarmProgress = nil
+                sourceThumbnailPrewarmTargetSourceIDs = []
             }
         }
 
-        var assetIDs: [UUID] = []
+        var totalWarmed = 0
+        var totalReused = 0
+        var totalIneligible = 0
+        var totalFailed = 0
+        var totalAssets = 0
+        var failedSourceCount = 0
+
+        for (sourceIndex, sourceID) in sourceIDs.enumerated() {
+            guard sourceThumbnailPrewarmGeneration == generation, !Task.isCancelled else { return }
+            sourceThumbnailPrewarmTargetSourceIDs = Array(sourceIDs[sourceIndex...])
+            let sourceDisplayName = sources.first(where: { $0.id == sourceID })?.displayName
+                ?? "来源"
+            sourceThumbnailPrewarmProgress = SourceThumbnailPrewarmProgress(
+                sourceID: sourceID,
+                sourceDisplayName: sourceDisplayName,
+                kind: kind,
+                completed: 0,
+                total: 0,
+                warmed: 0,
+                failed: 0,
+                completedSourceCount: sourceIndex,
+                totalSourceCount: sourceIDs.count
+            )
+            guard let result = await runSourceThumbnailPrewarm(
+                sourceID: sourceID,
+                sourceDisplayName: sourceDisplayName,
+                kind: kind,
+                sourceIndex: sourceIndex,
+                totalSourceCount: sourceIDs.count,
+                generation: generation,
+                service: service
+            ) else {
+                guard sourceThumbnailPrewarmGeneration == generation, !Task.isCancelled else { return }
+                failedSourceCount += 1
+                continue
+            }
+            totalWarmed += result.warmed
+            totalReused += result.reused
+            totalIneligible += result.ineligible
+            totalFailed += result.failed
+            totalAssets += result.total
+        }
+
+        guard sourceThumbnailPrewarmGeneration == generation else { return }
+        if kind == .originalAspect, totalWarmed > 0 {
+            originalAspectThumbnailCacheGeneration &+= 1
+        }
+
+        if isAllSourcesRequest || sourceIDs.count > 1 {
+            notice = switch kind {
+            case .square:
+                .allSourceThumbnailPrewarmCompleted(
+                    sourceCount: sourceIDs.count,
+                    warmed: totalWarmed,
+                    reused: totalReused,
+                    ineligible: totalIneligible,
+                    failed: totalFailed,
+                    total: totalAssets,
+                    failedSourceCount: failedSourceCount
+                )
+            case .originalAspect:
+                .allSourceOriginalAspectThumbnailPrewarmCompleted(
+                    sourceCount: sourceIDs.count,
+                    warmed: totalWarmed,
+                    reused: totalReused,
+                    ineligible: totalIneligible,
+                    failed: totalFailed,
+                    total: totalAssets,
+                    failedSourceCount: failedSourceCount
+                )
+            }
+        } else if failedSourceCount > 0 {
+            notice = kind == .square
+                ? .sourceThumbnailPrewarmFailed
+                : .sourceOriginalAspectThumbnailPrewarmFailed
+        } else {
+            let sourceDisplayName = sources.first(where: { $0.id == sourceIDs[0] })?.displayName
+                ?? "来源"
+            notice = switch kind {
+            case .square:
+                .sourceThumbnailPrewarmCompleted(
+                    sourceDisplayName: sourceDisplayName,
+                    warmed: totalWarmed,
+                    reused: totalReused,
+                    ineligible: totalIneligible,
+                    failed: totalFailed,
+                    total: totalAssets
+                )
+            case .originalAspect:
+                .sourceOriginalAspectThumbnailPrewarmCompleted(
+                    sourceDisplayName: sourceDisplayName,
+                    warmed: totalWarmed,
+                    reused: totalReused,
+                    ineligible: totalIneligible,
+                    failed: totalFailed,
+                    total: totalAssets
+                )
+            }
+        }
+    }
+
+    private func runSourceThumbnailPrewarm(
+        sourceID: UUID,
+        sourceDisplayName: String,
+        kind: SourceThumbnailPrewarmKind,
+        sourceIndex: Int,
+        totalSourceCount: Int,
+        generation: Int,
+        service: any LibraryWorkspacePort
+    ) async -> SourceThumbnailPrewarmResult? {
+
+        var assets: [AssetGridItemProjection] = []
         do {
             var cursor: AssetPageCursor?
             // Match the workspace "no search" filter shape (empty string, not nil).
             let filter = AssetPageFilter(sourceIDs: [sourceID], searchText: "")
             var pageCount = 0
             repeat {
-                guard sourceThumbnailPrewarmGeneration == generation, !Task.isCancelled else { return }
+                guard sourceThumbnailPrewarmGeneration == generation, !Task.isCancelled else { return nil }
                 pageCount += 1
                 // Safety cap: production pages are 100 items; this bounds pathological cursors.
                 guard pageCount <= 100_000 else { break }
@@ -4856,7 +5017,7 @@ final class LibraryWorkspaceModel: ObservableObject {
                 if page.items.isEmpty {
                     break
                 }
-                assetIDs.append(contentsOf: page.items.map(\.assetID))
+                assets.append(contentsOf: page.items)
                 let next = page.nextCursor
                 if next == cursor {
                     break
@@ -4864,44 +5025,56 @@ final class LibraryWorkspaceModel: ObservableObject {
                 cursor = next
             } while cursor != nil
         } catch {
-            guard sourceThumbnailPrewarmGeneration == generation else { return }
-            notice = kind == .square
-                ? .sourceThumbnailPrewarmFailed
-                : .sourceOriginalAspectThumbnailPrewarmFailed
-            return
+            return nil
         }
 
-        guard sourceThumbnailPrewarmGeneration == generation else { return }
-        var assetIDsToWarm = assetIDs
-        if kind == .originalAspect {
+        guard sourceThumbnailPrewarmGeneration == generation else { return nil }
+        var cachedAssetIDs: Set<UUID> = []
+        switch kind {
+        case .square:
             do {
-                let cachedAssetIDs = try await service.cachedOriginalAspectThumbnailAssetIDs(
+                cachedAssetIDs = try await service.cachedSquareThumbnailAssetIDs(
                     sourceID: sourceID
                 )
-                assetIDsToWarm = assetIDs.filter { !cachedAssetIDs.contains($0) }
             } catch {
-                var uncachedAssetIDs: [UUID] = []
-                uncachedAssetIDs.reserveCapacity(assetIDs.count)
-                for assetID in assetIDs {
+                // Inventory failure falls back to the previous safe behavior for
+                // eligible assets. Cache hits still avoid regeneration inside the loader.
+            }
+        case .originalAspect:
+            do {
+                cachedAssetIDs = try await service.cachedOriginalAspectThumbnailAssetIDs(
+                    sourceID: sourceID
+                )
+            } catch {
+                for asset in assets {
                     guard sourceThumbnailPrewarmGeneration == generation, !Task.isCancelled else {
-                        return
+                        return nil
                     }
                     do {
-                        if try await service.loadOriginalAspectThumbnailIfCached(assetID: assetID) == nil {
-                            uncachedAssetIDs.append(assetID)
+                        if try await service.loadOriginalAspectThumbnailIfCached(
+                            assetID: asset.assetID
+                        ) != nil {
+                            cachedAssetIDs.insert(asset.assetID)
                         }
                     } catch is CancellationError {
-                        return
+                        return nil
                     } catch {
                         // A failed cache probe must not prevent repair through explicit prewarm.
-                        uncachedAssetIDs.append(assetID)
                     }
                 }
-                assetIDsToWarm = uncachedAssetIDs
             }
         }
 
-        guard sourceThumbnailPrewarmGeneration == generation else { return }
+        let listedAssetIDs = Set(assets.map(\.assetID))
+        cachedAssetIDs.formIntersection(listedAssetIDs)
+        let assetsToWarm = assets.filter {
+            !cachedAssetIDs.contains($0.assetID) && Self.canGenerateThumbnail(for: $0)
+        }
+        let reused = cachedAssetIDs.count
+        let ineligible = max(0, assets.count - reused - assetsToWarm.count)
+        let assetIDsToWarm = assetsToWarm.map(\.assetID)
+
+        guard sourceThumbnailPrewarmGeneration == generation else { return nil }
         sourceThumbnailPrewarmProgress = SourceThumbnailPrewarmProgress(
             sourceID: sourceID,
             sourceDisplayName: sourceDisplayName,
@@ -4909,13 +5082,17 @@ final class LibraryWorkspaceModel: ObservableObject {
             completed: 0,
             total: assetIDsToWarm.count,
             warmed: 0,
-            failed: 0
+            failed: 0,
+            reused: reused,
+            ineligible: ineligible,
+            completedSourceCount: sourceIndex,
+            totalSourceCount: totalSourceCount
         )
 
         var warmed = 0
         var failed = 0
         for (index, assetID) in assetIDsToWarm.enumerated() {
-            guard sourceThumbnailPrewarmGeneration == generation, !Task.isCancelled else { return }
+            guard sourceThumbnailPrewarmGeneration == generation, !Task.isCancelled else { return nil }
             do {
                 try Task.checkCancellation()
                 let data = switch kind {
@@ -4924,18 +5101,18 @@ final class LibraryWorkspaceModel: ObservableObject {
                 case .originalAspect:
                     try await service.prewarmOriginalAspectThumbnail(assetID: assetID)
                 }
-                guard sourceThumbnailPrewarmGeneration == generation else { return }
+                guard sourceThumbnailPrewarmGeneration == generation else { return nil }
                 if kind == .square {
                     rememberThumbnailData(data, for: assetID)
                 }
                 warmed += 1
             } catch is CancellationError {
-                return
+                return nil
             } catch {
-                guard sourceThumbnailPrewarmGeneration == generation else { return }
+                guard sourceThumbnailPrewarmGeneration == generation else { return nil }
                 failed += 1
             }
-            guard sourceThumbnailPrewarmGeneration == generation else { return }
+            guard sourceThumbnailPrewarmGeneration == generation else { return nil }
             sourceThumbnailPrewarmProgress = SourceThumbnailPrewarmProgress(
                 sourceID: sourceID,
                 sourceDisplayName: sourceDisplayName,
@@ -4943,29 +5120,34 @@ final class LibraryWorkspaceModel: ObservableObject {
                 completed: index + 1,
                 total: assetIDsToWarm.count,
                 warmed: warmed,
-                failed: failed
+                failed: failed,
+                reused: reused,
+                ineligible: ineligible,
+                completedSourceCount: sourceIndex,
+                totalSourceCount: totalSourceCount
             )
         }
 
-        guard sourceThumbnailPrewarmGeneration == generation else { return }
-        if kind == .originalAspect, warmed > 0 {
-            originalAspectThumbnailCacheGeneration &+= 1
+        guard sourceThumbnailPrewarmGeneration == generation else { return nil }
+        return SourceThumbnailPrewarmResult(
+            warmed: warmed,
+            reused: reused,
+            ineligible: ineligible,
+            failed: failed,
+            total: assets.count
+        )
+    }
+
+    private static func canGenerateThumbnail(for asset: AssetGridItemProjection) -> Bool {
+        guard asset.sourceState == .active, asset.availability == .available else {
+            return false
         }
-        notice = switch kind {
-        case .square:
-            .sourceThumbnailPrewarmCompleted(
-                sourceDisplayName: sourceDisplayName,
-                warmed: warmed,
-                failed: failed,
-                total: assetIDs.count
-            )
-        case .originalAspect:
-            .sourceOriginalAspectThumbnailPrewarmCompleted(
-                sourceDisplayName: sourceDisplayName,
-                warmed: warmed,
-                failed: failed,
-                total: assetIDs.count
-            )
+        return switch asset.mediaKind {
+        case .image:
+            ApprovedSourceMediaTypes.contains(asset.mediaType)
+        case .video:
+            ApprovedSourceMediaTypes.isVideoMediaType(asset.mediaType)
+                && (asset.durationMs ?? 0) > 0
         }
     }
 
@@ -5272,6 +5454,112 @@ final class LibraryWorkspaceModel: ObservableObject {
         }
     }
 
+    var sourceAccessAuthorizationTargetCount: Int {
+        sources.filter { source in
+            switch source.kind {
+            case .folder:
+                source.state == .unavailable || source.state == .authorizationRequired
+            case .photos:
+                source.state == .authorizationRequired || source.state == .disabled
+            }
+        }.count
+    }
+
+    var sourceMutationAuthorizationTargetCount: Int {
+        guard librarySlimmingMutationAuthorization != nil else { return 0 }
+        return sources.filter { $0.kind == .folder && $0.state == .active }.count
+    }
+
+    var canRequestPhotosLibraryWriteAuthorization: Bool {
+        photosLibraryMutation != nil
+            && sources.contains { $0.kind == .photos && $0.state == .active }
+    }
+
+    func reauthorizeAllSourcesRequiringAccess() async {
+        guard !isBusy else { return }
+        let targets = orderedSources.filter { source in
+            switch source.kind {
+            case .folder:
+                source.state == .unavailable || source.state == .authorizationRequired
+            case .photos:
+                source.state == .authorizationRequired || source.state == .disabled
+            }
+        }
+        guard !targets.isEmpty else { return }
+
+        isBatchAuthorizingSources = true
+        notice = nil
+        defer { isBatchAuthorizingSources = false }
+        var completed = 0
+        do {
+            for source in targets {
+                switch source.kind {
+                case .folder:
+                    switch try await service.reauthorizeFolder(sourceID: source.id) {
+                    case .cancelled:
+                        let service = service
+                        sources = try await Self.offMain { try service.fetchSources() }
+                        await loadFirstPage()
+                        startCatalogReconcileRunnerIfNeeded()
+                        notice = .sourceAccessAuthorizationBatchCancelled(
+                            completed: completed,
+                            total: targets.count
+                        )
+                        return
+                    case .reauthorized:
+                        break
+                    }
+                case .photos:
+                    try await service.reactivatePhotosLibrary(sourceID: source.id)
+                }
+                completed += 1
+            }
+            let service = service
+            sources = try await Self.offMain { try service.fetchSources() }
+            await loadFirstPage()
+            startCatalogReconcileRunnerIfNeeded()
+            notice = .sourceAccessAuthorizationBatchCompleted(sourceCount: completed)
+        } catch {
+            let service = service
+            if let refreshed = try? await Self.offMain({ try service.fetchSources() }) {
+                sources = refreshed
+                await loadFirstPage()
+            }
+            notice = .sourceActionFailed
+        }
+    }
+
+    func refreshAllFolderMutationAuthorizations() async {
+        guard !isBusy, let mutationAuthorization = librarySlimmingMutationAuthorization else {
+            return
+        }
+        let targets = orderedSources.filter { $0.kind == .folder && $0.state == .active }
+        guard !targets.isEmpty else { return }
+
+        isBatchAuthorizingSources = true
+        notice = nil
+        defer { isBatchAuthorizingSources = false }
+        var completed = 0
+        do {
+            for source in targets {
+                switch try await mutationAuthorization.authorizeMutation(sourceID: source.id) {
+                case .authorized:
+                    completed += 1
+                case .cancelled:
+                    notice = .sourceMutationAuthorizationBatchCancelled(
+                        completed: completed,
+                        total: targets.count
+                    )
+                    return
+                }
+            }
+            librarySlimmingStatusMessage = "已更新全部 \(completed) 个文件夹来源的回收权限。"
+            notice = .sourceMutationAuthorizationBatchCompleted(sourceCount: completed)
+        } catch {
+            notice = .sourceActionFailed
+        }
+    }
+
     func requestPhotosLibraryWriteAuthorization(for sourceID: UUID) async {
         guard !isBusy,
               sources.contains(where: {
@@ -5360,14 +5648,18 @@ final class LibraryWorkspaceModel: ObservableObject {
     }
 
     private func stopSourceThumbnailPrewarmForDeletion(sourceID: UUID) {
-        if sourceThumbnailPrewarmProgress?.sourceID == sourceID {
+        if sourceThumbnailPrewarmTargetSourceIDs.contains(sourceID) {
             sourceThumbnailPrewarmGeneration &+= 1
             sourceThumbnailPrewarmTask?.cancel()
             sourceThumbnailPrewarmTask = nil
             sourceThumbnailPrewarmProgress = nil
+            sourceThumbnailPrewarmTargetSourceIDs = []
         }
-        if suspendedSourceThumbnailPrewarm?.sourceID == sourceID {
-            suspendedSourceThumbnailPrewarm = nil
+        if let suspended = suspendedSourceThumbnailPrewarm {
+            let remaining = suspended.sourceIDs.filter { $0 != sourceID }
+            suspendedSourceThumbnailPrewarm = remaining.isEmpty
+                ? nil
+                : (remaining, suspended.kind)
         }
         idleThumbnailPrewarmController?.noteUserInteraction()
     }
@@ -5402,6 +5694,31 @@ final class LibraryWorkspaceModel: ObservableObject {
             return
         }
         startCatalogReconcileRunnerIfNeeded()
+    }
+
+    func refreshAllSources() async {
+        guard !isBusy else { return }
+        let activeSources = orderedSources.filter { $0.state == .active }
+        guard !activeSources.isEmpty else { return }
+
+        notice = nil
+        let folderSourceIDs = activeSources.filter { $0.kind == .folder }.map(\.id)
+        let photosSourceIDs = activeSources.filter { $0.kind == .photos }.map(\.id)
+        do {
+            if !folderSourceIDs.isEmpty {
+                let service = service
+                try await Self.offMain {
+                    try service.enqueueReconcile(sourceIDs: folderSourceIDs)
+                }
+            }
+            for sourceID in photosSourceIDs {
+                try await service.syncPhotosLibrary(sourceID: sourceID)
+            }
+            startCatalogReconcileRunnerIfNeeded()
+            notice = .allSourcesRefreshQueued(sourceCount: activeSources.count)
+        } catch {
+            notice = .sourceActionFailed
+        }
     }
 
     func syncPhotosLibrary(sourceID: UUID) async {
@@ -10914,7 +11231,7 @@ struct LibraryWorkspaceView: View {
                 Label("图库瘦身", systemImage: "square.stack.3d.up")
                     .tag(LibrarySidebarSelection.librarySlimming)
             }
-            Section("来源") {
+            Section {
                 ForEach(orderedSources) { source in
                     sourceRow(source)
                         .frame(
@@ -10969,6 +11286,24 @@ struct LibraryWorkspaceView: View {
                     .buttonStyle(.plain)
                     .disabled(model.isBusy)
                     .persistentHelp("请求照片访问权限，并连接当前系统 Apple Photos 图库。")
+                }
+            } header: {
+                HStack(spacing: 6) {
+                    Text("来源")
+                    Spacer(minLength: 0)
+                    Menu {
+                        allSourceActionItems
+                    } label: {
+                        Image(systemName: "ellipsis.circle")
+                    }
+                    .menuStyle(.borderlessButton)
+                    .fixedSize()
+                    .accessibilityLabel("所有来源操作")
+                    .persistentHelp("统一更新、缓存或处理全部来源的权限。")
+                }
+                .contentShape(Rectangle())
+                .contextMenu {
+                    allSourceActionItems
                 }
             }
             Section("标签") {
@@ -11121,6 +11456,93 @@ struct LibraryWorkspaceView: View {
         }
         .listStyle(.sidebar)
         .navigationTitle("ImageAll")
+    }
+
+    @ViewBuilder
+    private var allSourceActionItems: some View {
+        Button("在图库中查看全部") {
+            selection = .all
+        }
+        .persistentHelp("切换到全部照片；不会改变任何来源。")
+
+        Button("立即更新所有来源") {
+            Task { await model.refreshAllSources() }
+        }
+        .disabled(
+            model.isBusy
+                || model.isPrewarmingSourceThumbnails
+                || !model.sources.contains(where: { $0.state == .active })
+        )
+        .persistentHelp("一次为全部活跃文件夹排队重扫，并同步全部活跃 Apple Photos 来源。")
+
+        Divider()
+
+        Button("缓存所有来源的缩略图") {
+            model.prewarmAllSourceThumbnails()
+        }
+        .disabled(
+            model.isBusy
+                || model.isPrewarmingSourceThumbnails
+                || !model.sources.contains(where: {
+                    $0.state == .active || $0.state == .unavailable
+                })
+        )
+        .persistentHelp("依次检查全部来源的网格缩略图；复用已有缓存，只生成当前可处理的缺失项。")
+
+        Button("缓存所有来源的原比例缩略图") {
+            model.prewarmAllSourceOriginalAspectThumbnails()
+        }
+        .disabled(
+            model.isBusy
+                || model.isPrewarmingSourceThumbnails
+                || !model.sources.contains(where: {
+                    $0.state == .active || $0.state == .unavailable
+                })
+        )
+        .persistentHelp("依次检查全部来源的原比例网格缓存；复用已有缓存，只生成当前可处理的缺失项。")
+
+        Divider()
+
+        Menu("批量处理权限") {
+            Button("依次重新授权需要访问权限的来源（\(model.sourceAccessAuthorizationTargetCount)）…") {
+                Task { await model.reauthorizeAllSourcesRequiringAccess() }
+            }
+            .disabled(
+                model.isBusy
+                    || model.isPrewarmingSourceThumbnails
+                    || model.sourceAccessAuthorizationTargetCount == 0
+            )
+            .persistentHelp("按来源依次显示系统授权窗口；取消任意一次会停止后续来源。")
+
+            Button("依次更新全部文件夹回收权限（\(model.sourceMutationAuthorizationTargetCount)）…") {
+                Task { await model.refreshAllFolderMutationAuthorizations() }
+            }
+            .disabled(
+                model.isBusy
+                    || model.isPrewarmingSourceThumbnails
+                    || model.sourceMutationAuthorizationTargetCount == 0
+            )
+            .persistentHelp("按文件夹依次确认写入授权；只用于明确的回收或恢复，不会立即修改照片。")
+
+            if model.canRequestPhotosLibraryWriteAuthorization,
+               let photosSource = model.sources.first(where: {
+                   $0.kind == .photos && $0.state == .active
+               })
+            {
+                Button("请求 Apple Photos 写入权限…") {
+                    Task {
+                        await model.requestPhotosLibraryWriteAuthorization(for: photosSource.id)
+                    }
+                }
+                .disabled(model.isBusy || model.isPrewarmingSourceThumbnails)
+                .persistentHelp("Apple Photos 权限由系统图库统一管理，只需请求一次。")
+            }
+        }
+
+        Divider()
+
+        Text("删除来源仍需逐个确认")
+            .foregroundStyle(.secondary)
     }
 
     private func sourceReorderGesture(for sourceID: UUID) -> some Gesture {
@@ -11474,7 +11896,7 @@ struct LibraryWorkspaceView: View {
                     || source.state == .disabled
                     || source.state == .authorizationRequired
             )
-            .persistentHelp("在后台预先生成这个来源的网格缩略图，让后续浏览更快。")
+            .persistentHelp("检查并补齐这个来源的网格缩略图；已有缓存直接复用，不可处理项目会跳过。")
 
             Button("专门用于原比例的缓存") {
                 model.prewarmSourceOriginalAspectThumbnails(sourceID: source.id)
@@ -11485,7 +11907,7 @@ struct LibraryWorkspaceView: View {
                     || source.state == .authorizationRequired
             )
             .persistentHelp(
-                "手动为这个来源的照片和视频生成原比例网格缓存；未缓存的项目切换比例后仍显示正方形。"
+                "检查并补齐这个来源的原比例网格缓存；已有缓存直接复用，不可处理项目会跳过。"
             )
 
             if source.kind == .photos && source.state == .active {
@@ -12889,10 +13311,30 @@ struct LibraryWorkspaceView: View {
 
     private func sourceThumbnailPrewarmTitle(_ progress: SourceThumbnailPrewarmProgress) -> String {
         let prefix = progress.kind == .square ? "预热" : "原比例缓存"
+        let sourcePosition = progress.isBatch
+            ? "（来源 \(progress.completedSourceCount + 1)/\(progress.totalSourceCount)）"
+            : ""
         if progress.total > 0 {
-            return "\(prefix) \(progress.sourceDisplayName) \(progress.completed.formatted()) / \(progress.total.formatted())"
+            var details = "\(prefix) \(progress.sourceDisplayName) \(progress.completed.formatted()) / \(progress.total.formatted())"
+            if progress.reused > 0 {
+                details += " · 复用 \(progress.reused.formatted())"
+            }
+            if progress.ineligible > 0 {
+                details += " · 不可处理跳过 \(progress.ineligible.formatted())"
+            }
+            return details + sourcePosition
         }
-        return "正在列出 \(progress.sourceDisplayName) 的\(prefix)…"
+        if progress.reused > 0 || progress.ineligible > 0 {
+            var details = "\(prefix) \(progress.sourceDisplayName) 无需生成"
+            if progress.reused > 0 {
+                details += " · 复用 \(progress.reused.formatted())"
+            }
+            if progress.ineligible > 0 {
+                details += " · 不可处理跳过 \(progress.ineligible.formatted())"
+            }
+            return details + sourcePosition
+        }
+        return "正在列出 \(progress.sourceDisplayName) 的\(prefix)…\(sourcePosition)"
     }
 
     private func availabilityFilterButton(
@@ -13006,6 +13448,11 @@ struct LibraryWorkspaceView: View {
              .sourceThumbnailPrewarmCancelled,
              .sourceOriginalAspectThumbnailPrewarmCompleted,
              .sourceOriginalAspectThumbnailPrewarmCancelled,
+             .allSourceThumbnailPrewarmCompleted,
+             .allSourceOriginalAspectThumbnailPrewarmCompleted,
+             .allSourcesRefreshQueued,
+             .sourceAccessAuthorizationBatchCompleted,
+             .sourceMutationAuthorizationBatchCompleted,
              .appStorageLocationRequiresRestart,
              .personalModelRebuildCompleted, .personalAdamWRebuildCompleted,
              .selectedAssetEmbeddingCached,
@@ -13080,12 +13527,23 @@ struct LibraryWorkspaceView: View {
                 : "已清理 \(removedEntries) 个长期原图副本。"
         case .photosOriginalStorageActionFailed:
             "长期原图清理未完成。Apple Photos、人工标签和已计算的相同检测结果没有被修改。"
-        case let .sourceThumbnailPrewarmCompleted(sourceDisplayName, warmed, failed, total):
-            if failed == 0 {
-                "已为“\(sourceDisplayName)”预热 \(warmed)/\(total) 张缩略图到磁盘缓存。"
-            } else {
-                "已为“\(sourceDisplayName)”预热 \(warmed)/\(total) 张缩略图（失败 \(failed) 张）；已写入磁盘的条目可跨启动复用。"
-            }
+        case let .sourceThumbnailPrewarmCompleted(
+            sourceDisplayName,
+            warmed,
+            reused,
+            ineligible,
+            failed,
+            total
+        ):
+            sourcePrewarmNoticeText(
+                cacheName: "缩略图",
+                sourceDisplayName: sourceDisplayName,
+                warmed: warmed,
+                reused: reused,
+                ineligible: ineligible,
+                failed: failed,
+                total: total
+            )
         case let .sourceThumbnailPrewarmCancelled(sourceDisplayName, completed, total):
             "已取消“\(sourceDisplayName)”缩略图预热（\(completed)/\(total)）。已写入磁盘的条目仍会保留。"
         case .sourceThumbnailPrewarmFailed:
@@ -13093,12 +13551,16 @@ struct LibraryWorkspaceView: View {
         case let .sourceOriginalAspectThumbnailPrewarmCompleted(
             sourceDisplayName,
             warmed,
+            reused,
+            ineligible,
             failed,
             total
         ):
             originalAspectPrewarmNoticeText(
                 sourceDisplayName: sourceDisplayName,
                 warmed: warmed,
+                reused: reused,
+                ineligible: ineligible,
                 failed: failed,
                 total: total
             )
@@ -13110,6 +13572,56 @@ struct LibraryWorkspaceView: View {
             "已取消“\(sourceDisplayName)”原比例缓存（\(completed)/\(total)）。已经生成的缓存仍会保留。"
         case .sourceOriginalAspectThumbnailPrewarmFailed:
             "原比例缓存未能开始。图库继续使用正方形缩略图，请稍后重试。"
+        case let .allSourceThumbnailPrewarmCompleted(
+            sourceCount,
+            warmed,
+            reused,
+            ineligible,
+            failed,
+            total,
+            failedSourceCount
+        ):
+            allSourcePrewarmNoticeText(
+                cacheName: "缩略图",
+                sourceCount: sourceCount,
+                warmed: warmed,
+                reused: reused,
+                ineligible: ineligible,
+                failed: failed,
+                total: total,
+                failedSourceCount: failedSourceCount
+            )
+        case let .allSourceOriginalAspectThumbnailPrewarmCompleted(
+            sourceCount,
+            warmed,
+            reused,
+            ineligible,
+            failed,
+            total,
+            failedSourceCount
+        ):
+            allSourcePrewarmNoticeText(
+                cacheName: "原比例缩略图",
+                sourceCount: sourceCount,
+                warmed: warmed,
+                reused: reused,
+                ineligible: ineligible,
+                failed: failed,
+                total: total,
+                failedSourceCount: failedSourceCount
+            )
+        case let .allSourceThumbnailPrewarmCancelled(completedSourceCount, totalSourceCount):
+            "已取消全部来源缓存任务；已完成 \(completedSourceCount)/\(totalSourceCount) 个来源，已生成的缓存仍会保留。"
+        case let .allSourcesRefreshQueued(sourceCount):
+            "已为全部 \(sourceCount) 个活跃来源排队更新。扫描期间仍可浏览已有索引。"
+        case let .sourceAccessAuthorizationBatchCompleted(sourceCount):
+            "已依次完成 \(sourceCount) 个来源的访问授权。"
+        case let .sourceAccessAuthorizationBatchCancelled(completed, total):
+            "已停止批量访问授权；完成 \(completed)/\(total) 个来源，之前完成的授权仍然有效。"
+        case let .sourceMutationAuthorizationBatchCompleted(sourceCount):
+            "已依次更新 \(sourceCount) 个文件夹来源的回收权限；没有立即修改任何照片。"
+        case let .sourceMutationAuthorizationBatchCancelled(completed, total):
+            "已停止批量回收权限更新；完成 \(completed)/\(total) 个来源，没有立即修改任何照片。"
         case .appStorageLocationRequiresRestart:
             "外置应用存储位置已保存；重新启动 ImageAll 后会迁移现有资料与全部缓存。"
         case .appStorageLocationActionFailed:
@@ -13236,20 +13748,59 @@ struct LibraryWorkspaceView: View {
     private static func originalAspectPrewarmNoticeText(
         sourceDisplayName: String,
         warmed: Int,
+        reused: Int,
+        ineligible: Int,
         failed: Int,
         total: Int
     ) -> String {
-        let skipped = max(0, total - warmed - failed)
-        if total > 0, skipped == total {
-            return "“\(sourceDisplayName)”已有 \(total) 个照片和视频原比例缓存，已全部跳过，无需重新生成。"
+        sourcePrewarmNoticeText(
+            cacheName: "原比例缩略图",
+            sourceDisplayName: sourceDisplayName,
+            warmed: warmed,
+            reused: reused,
+            ineligible: ineligible,
+            failed: failed,
+            total: total
+        )
+    }
+
+    private static func sourcePrewarmNoticeText(
+        cacheName: String,
+        sourceDisplayName: String,
+        warmed: Int,
+        reused: Int,
+        ineligible: Int,
+        failed: Int,
+        total: Int
+    ) -> String {
+        if total > 0, reused == total {
+            return "“\(sourceDisplayName)”已有 \(total) 个\(cacheName)，已全部复用，无需重新生成。"
         }
-        if failed == 0, skipped > 0 {
-            return "已为“\(sourceDisplayName)”新生成 \(warmed) 个原比例缓存，跳过已有缓存 \(skipped) 个，共 \(total) 个。"
-        }
-        if failed == 0 {
-            return "已为“\(sourceDisplayName)”生成 \(warmed)/\(total) 个照片和视频原比例缓存。"
-        }
-        return "已为“\(sourceDisplayName)”新生成 \(warmed) 个原比例缓存，跳过 \(skipped) 个，失败 \(failed) 个，共 \(total) 个；未缓存项目仍显示正方形。"
+        var details: [String] = []
+        if warmed > 0 { details.append("新生成 \(warmed) 个") }
+        if reused > 0 { details.append("复用已有缓存 \(reused) 个") }
+        if ineligible > 0 { details.append("不可处理跳过 \(ineligible) 个") }
+        if failed > 0 { details.append("失败 \(failed) 个") }
+        if details.isEmpty { details.append("无需生成") }
+        return "“\(sourceDisplayName)”\(cacheName)处理完成：\(details.joined(separator: "，"))，共列出 \(total) 个项目。"
+    }
+
+    private static func allSourcePrewarmNoticeText(
+        cacheName: String,
+        sourceCount: Int,
+        warmed: Int,
+        reused: Int,
+        ineligible: Int,
+        failed: Int,
+        total: Int,
+        failedSourceCount: Int
+    ) -> String {
+        var details = "新生成 \(warmed) 个"
+        if reused > 0 { details += "，复用已有缓存 \(reused) 个" }
+        if ineligible > 0 { details += "，不可处理跳过 \(ineligible) 个" }
+        if failed > 0 { details += "，失败 \(failed) 个" }
+        if failedSourceCount > 0 { details += "，另有 \(failedSourceCount) 个来源未能列出" }
+        return "全部来源的\(cacheName)处理完成：\(sourceCount) 个来源，\(details)，已列出 \(total) 个项目。"
     }
 
     private static func selectedAssetEmbeddingBatchNoticeText(
