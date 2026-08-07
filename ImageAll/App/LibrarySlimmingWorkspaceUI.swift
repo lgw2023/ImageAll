@@ -286,6 +286,21 @@ enum LibrarySlimmingRecyclePagination {
     }
 }
 
+private struct LibrarySlimmingClusterListRefreshModifier: ViewModifier {
+    @ObservedObject var model: LibraryWorkspaceModel
+    @Binding var clusterLimit: Int
+
+    func body(content: Content) -> some View {
+        content
+            .onChange(of: model.librarySlimmingClusters.map(\.id)) { _, _ in
+                model.ensureLibrarySlimmingClusterSelection()
+            }
+            .onChange(of: model.librarySlimmingAnalysisJobID) { _, _ in
+                clusterLimit = LibrarySlimmingClusterPagination.initialLimit
+            }
+    }
+}
+
 struct LibrarySlimmingWorkspaceView: View {
     @ObservedObject var model: LibraryWorkspaceModel
     let onReturnToLibrary: () -> Void
@@ -357,10 +372,12 @@ struct LibrarySlimmingWorkspaceView: View {
             keyboardFocused = true
             model.ensureLibrarySlimmingClusterSelection()
         }
-        .onChange(of: model.librarySlimmingClusters.map(\.id)) { _, _ in
-            librarySlimmingClusterLimit = LibrarySlimmingClusterPagination.initialLimit
-            model.ensureLibrarySlimmingClusterSelection()
-        }
+        .modifier(
+            LibrarySlimmingClusterListRefreshModifier(
+                model: model,
+                clusterLimit: $librarySlimmingClusterLimit
+            )
+        )
         .onChange(of: model.selectedLibrarySlimmingClusterID) { _, _ in
             model.ensureLibrarySlimmingClusterSelection()
         }

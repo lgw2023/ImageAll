@@ -1,7 +1,7 @@
 # ImageAll 图库瘦身规格
 
-> 状态：Implemented（所有者批准 LS-P1…P25，2026-08-04）
-> 日期：2026-08-04
+> 状态：Implemented（所有者批准 LS-P1…P26；2026-08-07 结果分组视口稳定性修订）
+> 日期：2026-08-07
 > 基线：撰写时 `main@adc81917ca29ca022f38f797b2c957934bee3db4`；实施开工前以文档提交后的精确 HEAD 为准  
 > 权威决策：[`ADR-044-LIBRARY-SLIMMING-AND-RECYCLE.md`](ADR-044-LIBRARY-SLIMMING-AND-RECYCLE.md)
 > 角色边界：本文定义范围、契约、验收门与切片顺序；可执行实现须另发 Cursor 交接单（临时授权期内可由 Codex 直接实施）
@@ -294,6 +294,8 @@ Quarantine 根位于 App 容器内（Application Support），按 source/asset �
   的恢复步骤，禁止折叠为通用失败或写入授权失败。
 - 回收确认只能提交一次 mutation。结果分组和回收站列表首屏分别最多构造 100 项，并提供每次继续
   加载 100 项的「再显示」入口；搜索仍作用于完整回收记录，而不是只搜索当前可见窗口。
+- 处置后若当前普通簇少于两张并从结果分组消失，已加载分组上限与当前列表视口不得重置；原位置由
+  后续分组按既有顺序上补，并选中原位置的下一组。仅当不存在后续组时回退到上一组，禁止跳回首组。
 - Workspace 首次加载不能等待 PhotoKit 变化观察者的同步注册；该注册在独立 utility 任务执行，Photos
   XPC 阻塞时主界面与首屏 catalog 仍必须可用。Production 启动文件夹监听只恢复事件观察，不为全部
   active 来源自动创建全量 reconcile；既有持久任务、后续真实事件和用户显式刷新仍按原契约处理。

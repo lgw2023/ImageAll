@@ -2785,7 +2785,11 @@ final class LibraryWorkspaceModel: ObservableObject {
         if let selected = selectedLibrarySlimmingClusterID,
            !librarySlimmingClusters.contains(where: { $0.id == selected })
         {
-            selectedLibrarySlimmingClusterID = librarySlimmingClusters.first?.id
+            selectedLibrarySlimmingClusterID = Self.nearestRemainingLibrarySlimmingClusterID(
+                afterRemoving: selected,
+                from: snapshot.clusters,
+                remainingClusters: librarySlimmingClusters
+            )
             selectedLibrarySlimmingMemberIDs = []
             librarySlimmingSelectionAnchorID = nil
         }
@@ -2843,11 +2847,42 @@ final class LibraryWorkspaceModel: ObservableObject {
                 librarySlimmingSelectionAnchorID = nil
             }
         } else {
-            selectedLibrarySlimmingClusterID = librarySlimmingClusters.first?.id
+            selectedLibrarySlimmingClusterID = Self.nearestRemainingLibrarySlimmingClusterID(
+                afterRemoving: snapshot.selectedClusterID,
+                from: snapshot.clusters,
+                remainingClusters: librarySlimmingClusters
+            )
             selectedLibrarySlimmingMemberIDs = []
             librarySlimmingSelectionAnchorID = nil
         }
         refreshSelectedLibrarySlimmingMemberSources()
+    }
+
+    private static func nearestRemainingLibrarySlimmingClusterID(
+        afterRemoving selectedClusterID: UUID?,
+        from previousClusters: [LibrarySlimmingClusterPresentation],
+        remainingClusters: [LibrarySlimmingClusterPresentation]
+    ) -> UUID? {
+        guard !remainingClusters.isEmpty else { return nil }
+        guard let selectedClusterID else { return remainingClusters.first?.id }
+        if remainingClusters.contains(where: { $0.id == selectedClusterID }) {
+            return selectedClusterID
+        }
+        guard let selectedIndex = previousClusters.firstIndex(where: {
+            $0.id == selectedClusterID
+        }) else {
+            return remainingClusters.first?.id
+        }
+
+        let remainingIDs = Set(remainingClusters.map(\.id))
+        if let next = previousClusters.dropFirst(selectedIndex + 1).first(where: {
+            remainingIDs.contains($0.id)
+        }) {
+            return next.id
+        }
+        return previousClusters.prefix(selectedIndex).reversed().first(where: {
+            remainingIDs.contains($0.id)
+        })?.id
     }
 
     private func librarySlimmingRecycleProgressMessage(

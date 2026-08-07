@@ -6120,6 +6120,81 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertEqual(model.localModelSuggestionState, .hidden)
     }
 
+    func testRemovingSelectedMiddleClusterAdvancesToNextClusterWithoutReordering() async {
+        let sourceID = UUID()
+        let assets = (0 ..< 6).map {
+            Self.makeAsset(sourceID: sourceID, fileName: "photo-\($0).jpg")
+        }
+        let clusters = stride(from: 0, to: assets.count, by: 2).map { index in
+            SlimmingCluster(
+                id: UUID(),
+                kind: .nearDuplicateScene,
+                memberAssetIDs: [assets[index].assetID, assets[index + 1].assetID],
+                representativeAssetID: assets[index].assetID,
+                score: 0.99,
+                modelIdentity: .featurePrintOnly
+            )
+        }
+        let recycledAsset = assets[3]
+        let entry = RecycleEntryRecord(
+            id: UUID(),
+            assetID: recycledAsset.assetID,
+            sourceID: sourceID,
+            sourceKind: .file,
+            trashedAtMs: 1,
+            purgeAfterMs: 2,
+            state: .recycled,
+            quarantineRelativePath: "objects/\(recycledAsset.fileName)",
+            originalRelativePath: recycledAsset.fileName,
+            photosLocalIdentifier: nil,
+            errorCode: nil,
+            fileName: recycledAsset.fileName
+        )
+        let scan = StubLibrarySlimmingScanPort()
+        scan.seedClusters = clusters
+        let recycle = FakeLibrarySlimmingRecyclePort(
+            moveOutcomes: [
+                LibrarySlimmingRecycleMoveOutcome(
+                    recycledEntryIDs: [entry.id],
+                    skippedPhotosAssetIDs: [],
+                    failedAssetIDs: [],
+                    authorizationRequiredSourceIDs: [],
+                    authorizationRequiredAssetIDs: [],
+                    authorizationDeniedPhotosAssetIDs: []
+                ),
+            ],
+            entriesAfterMoves: [[entry]]
+        )
+        let model = LibraryWorkspaceModel(
+            service: FakeLibraryWorkspaceService(
+                connectedSource: LibrarySourceSummary(
+                    id: sourceID,
+                    displayName: "Fixture",
+                    state: .active
+                ),
+                reconciledItems: assets,
+                initialItems: assets,
+                startsConnected: true,
+                hasPendingCatalogReconcileJobs: false
+            ),
+            librarySlimming: scan,
+            librarySlimmingRecycle: recycle,
+            idlePrewarmInstallEventMonitor: false
+        )
+
+        await model.start()
+        await model.selectAssets([assets[0].assetID])
+        await model.findLibrarySlimmingFromSelection()
+        await model.analyzeLibrarySlimming(mode: .seeds)
+        model.selectLibrarySlimmingCluster(clusters[1].id)
+        model.selectLibrarySlimmingMember(recycledAsset.assetID, additive: false)
+
+        await model.moveSelectedLibrarySlimmingMembersToRecycle()
+
+        XCTAssertEqual(model.librarySlimmingClusters.map(\.id), [clusters[0].id, clusters[2].id])
+        XCTAssertEqual(model.selectedLibrarySlimmingClusterID, clusters[2].id)
+    }
+
     func testLibrarySlimmingRecycleSearchFiltersByFilenameWithoutMutatingEntries() async {
         let sourceID = UUID()
         let summerEntry = RecycleEntryRecord(
