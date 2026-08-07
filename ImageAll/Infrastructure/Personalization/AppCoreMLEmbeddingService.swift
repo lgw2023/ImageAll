@@ -92,10 +92,22 @@ final class AppCoreMLEmbeddingService: @unchecked Sendable {
     }
 
     func embedding(for image: CGImage) throws -> AppCoreMLEmbedding {
+        try embedding(forPreparedModelInput: Self.preparedModelInputImage(for: image))
+    }
+
+    /// Returns the exact 224 x 224 RGB image consumed by the current encoder
+    /// preprocessing contract. Persisting this losslessly is therefore safe for
+    /// existing personal heads: it changes where preprocessing is cached, not
+    /// the model's input semantics.
+    func preparedModelInputImage(for image: CGImage) throws -> CGImage {
+        try Self.preparedModelInputImage(for: image)
+    }
+
+    func embedding(forPreparedModelInput image: CGImage) throws -> AppCoreMLEmbedding {
         guard let model, let identity else {
             throw AppCoreMLEmbeddingError.unavailable
         }
-        let input = try Self.pixelValues(for: image)
+        let input = try Self.pixelValues(forPreparedModelInput: image)
         let provider = try MLDictionaryFeatureProvider(
             dictionary: ["pixel_values": MLFeatureValue(multiArray: input)]
         )
@@ -163,40 +175,65 @@ final class AppCoreMLEmbeddingService: @unchecked Sendable {
         return (model, identity)
     }
 
-    private static func pixelValues(for image: CGImage) throws -> MLMultiArray {
+    private static func preparedModelInputImage(for image: CGImage) throws -> CGImage {
         let side = 224
         let resizedShortEdge = 256.0
         let scale = resizedShortEdge / Double(min(image.width, image.height))
         let drawWidth = Double(image.width) * scale
         let drawHeight = Double(image.height) * scale
+        guard let context = CGContext(
+            data: nil,
+            width: side,
+            height: side,
+            bitsPerComponent: 8,
+            bytesPerRow: 0,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGBitmapInfo.byteOrder32Big.rawValue
+                | CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else {
+            throw AppCoreMLEmbeddingError.inferenceFailed
+        }
+        context.interpolationQuality = .high
+        context.draw(
+            image,
+            in: CGRect(
+                x: (Double(side) - drawWidth) / 2,
+                y: (Double(side) - drawHeight) / 2,
+                width: drawWidth,
+                height: drawHeight
+            )
+        )
+        guard let prepared = context.makeImage() else {
+            throw AppCoreMLEmbeddingError.inferenceFailed
+        }
+        return prepared
+    }
+
+    private static func pixelValues(forPreparedModelInput image: CGImage) throws -> MLMultiArray {
+        let side = 224
+        guard image.width == side, image.height == side else {
+            throw AppCoreMLEmbeddingError.inferenceFailed
+        }
         var pixels = [UInt8](repeating: 0, count: side * side * 4)
-        let rendered = pixels.withUnsafeMutableBytes { bytes -> Bool in
-            guard let baseAddress = bytes.baseAddress else { return false }
-            guard let context = CGContext(
-                data: baseAddress,
-                width: side,
-                height: side,
-                bitsPerComponent: 8,
-                bytesPerRow: side * 4,
-                space: CGColorSpaceCreateDeviceRGB(),
-                bitmapInfo: CGBitmapInfo.byteOrder32Big.rawValue
-                    | CGImageAlphaInfo.premultipliedLast.rawValue
-            ) else {
+        let copied = pixels.withUnsafeMutableBytes { bytes -> Bool in
+            guard let baseAddress = bytes.baseAddress,
+                  let context = CGContext(
+                      data: baseAddress,
+                      width: side,
+                      height: side,
+                      bitsPerComponent: 8,
+                      bytesPerRow: side * 4,
+                      space: CGColorSpaceCreateDeviceRGB(),
+                      bitmapInfo: CGBitmapInfo.byteOrder32Big.rawValue
+                          | CGImageAlphaInfo.premultipliedLast.rawValue
+                  )
+            else {
                 return false
             }
-            context.interpolationQuality = .high
-            context.draw(
-                image,
-                in: CGRect(
-                    x: (Double(side) - drawWidth) / 2,
-                    y: (Double(side) - drawHeight) / 2,
-                    width: drawWidth,
-                    height: drawHeight
-                )
-            )
+            context.draw(image, in: CGRect(x: 0, y: 0, width: side, height: side))
             return true
         }
-        guard rendered else {
+        guard copied else {
             throw AppCoreMLEmbeddingError.inferenceFailed
         }
 

@@ -24,4 +24,52 @@ protocol AppSelectedAssetEmbeddingCaching: Sendable {
         contentRevision: Int,
         imageData: @escaping @Sendable () async throws -> Data
     ) async throws -> AppCoreMLCachedEmbedding
+
+    func cacheSelectedAssets(
+        _ requests: [AppSelectedAssetEmbeddingRequest],
+        maximumConcurrentImageLoads: Int
+    ) async throws -> [AppCoreMLCachedEmbedding?]
+}
+
+struct AppSelectedAssetEmbeddingRequest: Sendable {
+    let assetID: UUID
+    let contentRevision: Int
+    let imageData: @Sendable () async throws -> Data
+
+    init(
+        assetID: UUID,
+        contentRevision: Int,
+        imageData: @escaping @Sendable () async throws -> Data
+    ) {
+        self.assetID = assetID
+        self.contentRevision = contentRevision
+        self.imageData = imageData
+    }
+}
+
+extension AppSelectedAssetEmbeddingCaching {
+    func cacheSelectedAssets(
+        _ requests: [AppSelectedAssetEmbeddingRequest],
+        maximumConcurrentImageLoads _: Int = 2
+    ) async throws -> [AppCoreMLCachedEmbedding?] {
+        var results: [AppCoreMLCachedEmbedding?] = []
+        results.reserveCapacity(requests.count)
+        for request in requests {
+            try Task.checkCancellation()
+            do {
+                results.append(
+                    try await cacheSelectedAsset(
+                        assetID: request.assetID,
+                        contentRevision: request.contentRevision,
+                        imageData: request.imageData
+                    )
+                )
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                results.append(nil)
+            }
+        }
+        return results
+    }
 }

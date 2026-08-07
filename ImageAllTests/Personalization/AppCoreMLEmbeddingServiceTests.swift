@@ -146,6 +146,23 @@ final class AppCoreMLEmbeddingServiceTests: XCTestCase {
         XCTAssertTrue(embedding.values.allSatisfy { $0.isFinite })
     }
 
+    func testPreparedModelInputPathIsExactlyCompatibleWithLegacyEmbeddingPath() throws {
+        let service = AppCoreMLEmbeddingService(
+            isEnabled: true,
+            artifactDirectory: projectArtifactDirectory()
+        )
+        let image = try generatedImage()
+
+        let legacy = try service.embedding(for: image)
+        let prepared = try service.preparedModelInputImage(for: image)
+        let cachedInputPath = try service.embedding(forPreparedModelInput: prepared)
+
+        XCTAssertEqual(prepared.width, 224)
+        XCTAssertEqual(prepared.height, 224)
+        XCTAssertEqual(cachedInputPath.identity, legacy.identity)
+        XCTAssertEqual(cachedInputPath.values, legacy.values)
+    }
+
     private func projectArtifactDirectory() -> URL {
         URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()

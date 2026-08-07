@@ -21,6 +21,9 @@ enum DerivedImageOrigin: String, Equatable, Sendable {
 enum DerivedImagePersistence: Hashable, Sendable {
     case required
     case memoryFallbackAllowed
+    /// Generate with the same renderer as a durable derived image, but never
+    /// publish the intermediate artifact into the shared derived-image cache.
+    case memoryOnly
 }
 
 struct DerivedImageRequest: Equatable, Sendable {

@@ -3224,7 +3224,7 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertTrue(model.usesAppPersonalSampleSuggestionsPath)
     }
 
-    func testAppPersonalTagLibrarySuggestionsWritesTopHitsWithPersonalOriginPath() async {
+    func testAppPersonalTagLibrarySuggestionsEnqueuesPersistentTopNJob() async {
         let sourceID = UUID()
         let tagID = UUID(uuidString: "dddddddd-dddd-4ddd-8ddd-dddddddddddd")!
         let candidates = (0..<5).map { index in
@@ -3331,18 +3331,12 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertTrue(confirmed)
         let requested = await suggester.requestedTagIDs()
         XCTAssertEqual(requested, [tagID])
-        XCTAssertEqual(review.activatedPersonalCapability, capability)
-        XCTAssertEqual(review.personalTagLibraryReplacements.count, 1)
-        XCTAssertEqual(review.personalTagLibraryReplacements[0].hits, hits)
+        XCTAssertEqual(review.enqueuedPersonalCapability, capability)
+        XCTAssertTrue(review.personalTagLibraryReplacements.isEmpty)
+        XCTAssertNil(model.notice)
         XCTAssertEqual(
-            model.notice,
-            .personalTagLibrarySuggestionsCompleted(
-                tagName: "板栗",
-                candidates: candidates.count,
-                aboveThreshold: 3,
-                inserted: hits.count,
-                skipped: 1
-            )
+            model.personalLibrarySuggestionState,
+            .waiting(checked: 0, suggested: 0, skipped: 0)
         )
 
         let adamWReview = FakePersonalizationReviewPort(
@@ -3374,16 +3368,9 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         let adamWConfirmed = await adamWModel.confirmPendingSuggestionEnqueue()
 
         XCTAssertTrue(adamWConfirmed)
-        XCTAssertEqual(
-            adamWModel.notice,
-            .personalAdamWTagLibrarySuggestionsCompleted(
-                tagName: "板栗",
-                candidates: candidates.count,
-                aboveThreshold: 3,
-                inserted: hits.count,
-                skipped: 1
-            )
-        )
+        XCTAssertEqual(adamWReview.enqueuedPersonalCapability, capability)
+        XCTAssertTrue(adamWReview.personalTagLibraryReplacements.isEmpty)
+        XCTAssertNil(adamWModel.notice)
     }
 
     func testAppPersonalSampleSuggestionsPrefersCurrentSelectionUpToOneHundred() async {
@@ -11014,7 +11001,7 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertEqual(model.reviewMode, .tagQueue(tagID: tag.id, displayName: tag.displayName))
     }
 
-    func testPersonalModelSuggestionEnqueueOpensReviewQueueFromOverview() async {
+    func testPersonalModelSuggestionEnqueueStaysInOverviewWhilePersistentJobRuns() async {
         let sourceID = UUID()
         let tagID = UUID(uuidString: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee")!
         let candidates = (0..<3).map { index in
@@ -11117,7 +11104,12 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         let confirmed = await model.confirmPendingSuggestionEnqueue()
 
         XCTAssertTrue(confirmed)
-        XCTAssertEqual(model.reviewMode, .tagQueue(tagID: tagID, displayName: "Family"))
+        XCTAssertEqual(model.reviewMode, .overview)
+        if case .waiting = model.personalLibrarySuggestionState {
+            // Expected: the review queue is opened only after durable results exist.
+        } else {
+            XCTFail("Expected a waiting persistent personal-library job")
+        }
     }
 
     func testConfirmSuggestionEnqueueUsesCapturedConfirmationAfterDialogDismissal() async throws {
@@ -15429,6 +15421,14 @@ private actor FakeAppPersonalTagLibrarySuggester: AppPersonalTagLibrarySuggestin
 
     init(batch: AppPersonalTagLibrarySuggestionBatch) {
         self.batch = batch
+    }
+
+    func capability(
+        mediaKind _: MediaKind,
+        tagID: UUID
+    ) async throws -> PersonalModelSuggestionCapability {
+        storedTagIDs.append(tagID)
+        return batch.capability
     }
 
     func suggest(

@@ -1265,6 +1265,26 @@ struct GRDBPersonalizationReviewRepository: Sendable {
         maximumPendingCount: Int,
         createdAtMs: Int64
     ) throws -> Int {
+        try database.pool.write { db in
+            try replacePersonalTagLibrarySuggestions(
+                tagID: tagID,
+                hits: hits,
+                expectedCapability: expectedCapability,
+                maximumPendingCount: maximumPendingCount,
+                createdAtMs: createdAtMs,
+                on: db
+            )
+        }
+    }
+
+    func replacePersonalTagLibrarySuggestions(
+        tagID: UUID,
+        hits: [AppPersonalTagLibrarySuggestionHit],
+        expectedCapability: PersonalModelSuggestionCapability,
+        maximumPendingCount: Int,
+        createdAtMs: Int64,
+        on db: Database
+    ) throws -> Int {
         guard createdAtMs >= 0,
               maximumPendingCount > 0,
               expectedCapability.tagIDs.contains(tagID),
@@ -1282,16 +1302,15 @@ struct GRDBPersonalizationReviewRepository: Sendable {
             }
             return $0.score > $1.score
         }
-        return try database.pool.write { db in
-            guard try personalCapabilityMatches(expectedCapability, in: db) else {
+        guard try personalCapabilityMatches(expectedCapability, in: db) else {
                 throw PersonalizationReviewError.persistenceFailure
-            }
-            guard let method = PersonalSuggestionMethod(
-                bundleID: expectedCapability.target.bundleID
-            )?.rawValue else {
-                throw PersonalizationReviewError.persistenceFailure
-            }
-            guard try Bool.fetchOne(
+        }
+        guard let method = PersonalSuggestionMethod(
+            bundleID: expectedCapability.target.bundleID
+        )?.rawValue else {
+            throw PersonalizationReviewError.persistenceFailure
+        }
+        guard try Bool.fetchOne(
                 db,
                 sql: """
                 SELECT EXISTS(
@@ -1309,11 +1328,11 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                     method,
                     uuid(tagID),
                 ]
-            ) == true else {
-                throw PersonalizationReviewError.persistenceFailure
-            }
+        ) == true else {
+            throw PersonalizationReviewError.persistenceFailure
+        }
 
-            try db.execute(
+        try db.execute(
                 sql: """
                 DELETE FROM personal_prediction
                 WHERE media_kind = ? AND tag_id = ? AND method = ?
@@ -1327,10 +1346,10 @@ struct GRDBPersonalizationReviewRepository: Sendable {
 
             // Ranked hits may still include decided assets from callers that did not
             // pre-filter; never let them consume Top-N slots.
-            var inserted = 0
-            for hit in rankedHits {
-                if inserted >= maximumPendingCount { break }
-                let alreadyDecided = try Bool.fetchOne(
+        var inserted = 0
+        for hit in rankedHits {
+            if inserted >= maximumPendingCount { break }
+            let alreadyDecided = try Bool.fetchOne(
                     db,
                     sql: """
                     SELECT EXISTS(
@@ -1339,9 +1358,9 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                     )
                     """,
                     arguments: [uuid(hit.candidate.assetID), uuid(tagID)]
-                ) ?? false
-                if alreadyDecided { continue }
-                let assetOK = try Bool.fetchOne(
+            ) ?? false
+            if alreadyDecided { continue }
+            let assetOK = try Bool.fetchOne(
                     db,
                     sql: """
                     SELECT EXISTS(
@@ -1364,9 +1383,9 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                         expectedCapability.target.mediaKind.rawValue,
                         hit.candidate.contentRevision,
                     ]
-                ) ?? false
-                guard assetOK else { continue }
-                try db.execute(
+            ) ?? false
+            guard assetOK else { continue }
+            try db.execute(
                     sql: """
                     INSERT INTO personal_prediction (
                         media_kind, method, asset_id, tag_id,
@@ -1394,11 +1413,10 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                         uuid(tagID),
                         uuid(hit.candidate.assetID),
                     ]
-                )
-                inserted += db.changesCount
-            }
-            return inserted
+            )
+            inserted += db.changesCount
         }
+        return inserted
     }
 
     func replaceStandardSuggestions(

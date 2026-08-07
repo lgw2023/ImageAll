@@ -568,6 +568,20 @@ final class DerivedImageCacheService: DerivedImageCachePort, DownloadedPreviewCa
         guard let incomingBytes = UInt64(exactly: artifact.byteSize) else {
             throw DerivedImageError.derivedInsufficientSpace
         }
+        if request.persistence == .memoryOnly {
+            return DerivedImagePayload(
+                entryID: UUID(),
+                assetID: context.assetID,
+                contentRevision: context.contentRevision,
+                representationVersion: DerivedImageRepresentationVersion.production,
+                variant: request.variant,
+                storageFormat: artifact.storageFormat,
+                pixelWidth: artifact.pixelWidth,
+                pixelHeight: artifact.pixelHeight,
+                encodedBytes: artifact.bytes,
+                origin: .memoryOnly
+            )
+        }
         if incomingBytes > DerivedImageQuotaPolicy.publishedQuotaBytes {
             throw DerivedImageError.derivedInsufficientSpace
         }
@@ -950,6 +964,20 @@ final class DerivedImageCacheService: DerivedImageCachePort, DownloadedPreviewCa
         }
         guard let incomingBytes = UInt64(exactly: artifact.byteSize) else {
             throw DerivedImageError.derivedInsufficientSpace
+        }
+        if request.persistence == .memoryOnly {
+            return DerivedImagePayload(
+                entryID: UUID(),
+                assetID: context.assetID,
+                contentRevision: context.contentRevision,
+                representationVersion: DerivedImageRepresentationVersion.production,
+                variant: request.variant,
+                storageFormat: artifact.storageFormat,
+                pixelWidth: artifact.pixelWidth,
+                pixelHeight: artifact.pixelHeight,
+                encodedBytes: artifact.bytes,
+                origin: .memoryOnly
+            )
         }
         if incomingBytes > DerivedImageQuotaPolicy.publishedQuotaBytes {
             throw DerivedImageError.derivedInsufficientSpace

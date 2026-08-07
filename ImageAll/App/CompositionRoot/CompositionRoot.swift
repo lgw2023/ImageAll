@@ -219,67 +219,6 @@ struct CompositionRoot {
             photoThumbnails: derivedImages,
             limits: .default
         )
-        let localModelSuggestions: LocalModelSuggestionRuntime?
-        localModelSuggestions = makeLocalModelSuggestionRuntime()
-        var jobHandlers: [any JobHandler] = [
-            handler,
-            photosHandler,
-            personalizationHandler,
-            LibrarySlimmingPurgeExpiredHandler(
-                recycle: librarySlimmingRecycle,
-                clock: clock
-            ),
-        ]
-        if let localModelSuggestions {
-            jobHandlers.append(
-                PersonalModelRebuildJobHandler(
-                    dependencies: PersonalModelRebuildJobHandlerDependencies(
-                        database: runtime.database,
-                        client: localModelSuggestions.client,
-                        catalogScopeID: localModelSuggestions.catalogScopeID,
-                        clock: clock
-                    )
-                )
-            )
-            jobHandlers.append(
-                PersonalLibrarySuggestionsHandler(
-                    dependencies: PersonalLibrarySuggestionsHandlerDependencies(
-                        database: runtime.database,
-                        queue: runtime.jobQueue,
-                        images: assetImages,
-                        client: localModelSuggestions.client,
-                        catalogScopeID: localModelSuggestions.catalogScopeID,
-                        clock: clock
-                    )
-                )
-            )
-            jobHandlers.append(
-                StandardLibrarySuggestionsHandler(
-                    dependencies: StandardLibrarySuggestionsHandlerDependencies(
-                        database: runtime.database,
-                        queue: runtime.jobQueue,
-                        images: assetImages,
-                        client: localModelSuggestions.client,
-                        clock: clock
-                    )
-                )
-            )
-        }
-        let executionCoordinator = JobExecutionCoordinator(
-            queue: runtime.jobQueue,
-            registry: MultiJobHandlerRegistry(handlers: jobHandlers),
-            leaseContextProvider: GRDBJobLeaseContextProvider(queue: runtime.jobQueue)
-        )
-        let personalizationReview = PersonalizationReviewService(
-            database: runtime.database,
-            queue: runtime.jobQueue,
-            executionCoordinator: executionCoordinator,
-            tags: GRDBTagCatalogRepository(database: runtime.database),
-            clock: clock,
-            personalLibrarySuggestionsEnabled: localModelSuggestions != nil,
-            standardLibrarySuggestionsEnabled: localModelSuggestions != nil,
-            personalModelRebuildEnabled: localModelSuggestions != nil
-        )
         let catalogScopeID = try? runtime.database.catalogScopeID()
         let appPersonalModelRebuilder: AppPersonalModelRebuildRuntime?
         let appPersonalAdamWModelRebuilder: AppPersonalModelRebuildRuntime?
@@ -345,6 +284,82 @@ struct CompositionRoot {
         } else {
             selectedAssetEmbeddingCache = nil
         }
+        let localModelSuggestions: LocalModelSuggestionRuntime?
+        localModelSuggestions = makeLocalModelSuggestionRuntime()
+        var jobHandlers: [any JobHandler] = [
+            handler,
+            photosHandler,
+            personalizationHandler,
+            LibrarySlimmingPurgeExpiredHandler(
+                recycle: librarySlimmingRecycle,
+                clock: clock
+            ),
+        ]
+        if let localModelSuggestions {
+            jobHandlers.append(
+                PersonalModelRebuildJobHandler(
+                    dependencies: PersonalModelRebuildJobHandlerDependencies(
+                        database: runtime.database,
+                        client: localModelSuggestions.client,
+                        catalogScopeID: localModelSuggestions.catalogScopeID,
+                        clock: clock
+                    )
+                )
+            )
+            jobHandlers.append(
+                StandardLibrarySuggestionsHandler(
+                    dependencies: StandardLibrarySuggestionsHandlerDependencies(
+                        database: runtime.database,
+                        queue: runtime.jobQueue,
+                        images: assetImages,
+                        client: localModelSuggestions.client,
+                        clock: clock
+                    )
+                )
+            )
+        }
+        var appSuggestersByBundleID: [String: any AppPersonalTagLibrarySuggesting] = [:]
+        if let appPersonalTagLibrarySuggester {
+            appSuggestersByBundleID[PersonalSuggestionMethod.linearHeadBundleID] =
+                appPersonalTagLibrarySuggester
+        }
+        if let appPersonalAdamWTagLibrarySuggester {
+            appSuggestersByBundleID[PersonalSuggestionMethod.adamWHeadBundleID] =
+                appPersonalAdamWTagLibrarySuggester
+        }
+        let personalLibrarySuggestionsEnabled = localModelSuggestions != nil
+            || (!appSuggestersByBundleID.isEmpty && selectedAssetEmbeddingCache != nil)
+        if personalLibrarySuggestionsEnabled, let catalogScopeID {
+            jobHandlers.append(
+                PersonalLibrarySuggestionsHandler(
+                    dependencies: PersonalLibrarySuggestionsHandlerDependencies(
+                        database: runtime.database,
+                        queue: runtime.jobQueue,
+                        images: assetImages,
+                        client: localModelSuggestions?.client,
+                        catalogScopeID: catalogScopeID,
+                        clock: clock,
+                        appSuggestersByBundleID: appSuggestersByBundleID,
+                        embeddingCache: selectedAssetEmbeddingCache
+                    )
+                )
+            )
+        }
+        let executionCoordinator = JobExecutionCoordinator(
+            queue: runtime.jobQueue,
+            registry: MultiJobHandlerRegistry(handlers: jobHandlers),
+            leaseContextProvider: GRDBJobLeaseContextProvider(queue: runtime.jobQueue)
+        )
+        let personalizationReview = PersonalizationReviewService(
+            database: runtime.database,
+            queue: runtime.jobQueue,
+            executionCoordinator: executionCoordinator,
+            tags: GRDBTagCatalogRepository(database: runtime.database),
+            clock: clock,
+            personalLibrarySuggestionsEnabled: personalLibrarySuggestionsEnabled,
+            standardLibrarySuggestionsEnabled: localModelSuggestions != nil,
+            personalModelRebuildEnabled: localModelSuggestions != nil
+        )
         let service = ProductionLibraryWorkspaceService(
             sourceRepository: sourceRepository,
             folderSourceMonitor: folderSourceMonitor,

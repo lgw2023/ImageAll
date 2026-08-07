@@ -22,6 +22,17 @@ actor AppPersonalTagLibrarySuggestionRuntime: AppPersonalTagLibrarySuggesting {
         self.database = database
     }
 
+    func capability(
+        mediaKind: MediaKind,
+        tagID: UUID
+    ) async throws -> PersonalModelSuggestionCapability {
+        let (_, capability) = try await preparedStore(
+            mediaKind: mediaKind,
+            tagID: tagID
+        )
+        return capability
+    }
+
     func suggest(
         tagID: UUID,
         candidates: [PersonalSuggestionCandidate],
@@ -59,12 +70,117 @@ actor AppPersonalTagLibrarySuggestionRuntime: AppPersonalTagLibrarySuggesting {
         guard maximumPendingCount > 0, minimumScore.isFinite else {
             throw AppPersonalTagLibrarySuggestionError.identityMismatch
         }
+        let (store, capability) = try await preparedStore(
+            mediaKind: mediaKind,
+            tagID: tagID
+        )
+
+        var hits: [AppPersonalTagLibrarySuggestionHit] = []
+        var skippedCount = 0
+        let total = candidates.count
+        var progressGate = AppPersonalSuggestionProgressGate()
+        for (index, candidate) in candidates.enumerated() {
+            try Task.checkCancellation()
+            guard candidate.contentRevision > 0 else {
+                skippedCount += 1
+                progressGate.emit(
+                    checked: index + 1,
+                    suggested: hits.count,
+                    skipped: skippedCount,
+                    total: total,
+                    progress: progress
+                )
+                continue
+            }
+            let values: AppCoreMLEmbedding
+            do {
+                values = try await embedding(candidate)
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                skippedCount += 1
+                progressGate.emit(
+                    checked: index + 1,
+                    suggested: hits.count,
+                    skipped: skippedCount,
+                    total: total,
+                    progress: progress
+                )
+                continue
+            }
+            let score: Float
+            do {
+                // Positive-score / configured threshold: do not pad Top-N with
+                // low-confidence scores just to fill the quota.
+                guard let scored = try await store.score(tagID: tagID, embedding: values),
+                      Double(scored).isFinite,
+                      Double(scored) > minimumScore
+                else {
+                    progressGate.emit(
+                        checked: index + 1,
+                        suggested: hits.count,
+                        skipped: skippedCount,
+                        total: total,
+                        progress: progress
+                    )
+                    continue
+                }
+                score = scored
+            } catch {
+                skippedCount += 1
+                progressGate.emit(
+                    checked: index + 1,
+                    suggested: hits.count,
+                    skipped: skippedCount,
+                    total: total,
+                    progress: progress
+                )
+                continue
+            }
+            hits.append(
+                AppPersonalTagLibrarySuggestionHit(
+                    candidate: candidate,
+                    score: Double(score)
+                )
+            )
+            progressGate.emit(
+                checked: index + 1,
+                suggested: hits.count,
+                skipped: skippedCount,
+                total: total,
+                progress: progress
+            )
+        }
+
+        let ranked = hits.sorted {
+            if $0.score == $1.score {
+                return $0.candidate.assetID.uuidString.lowercased()
+                    < $1.candidate.assetID.uuidString.lowercased()
+            }
+            return $0.score > $1.score
+        }
+        let retained = Array(ranked.prefix(maximumPendingCount))
+        _ = total
+
+        return AppPersonalTagLibrarySuggestionBatch(
+            tagID: tagID,
+            capability: capability,
+            hits: retained,
+            checkedCount: candidates.count,
+            aboveThresholdCount: hits.count,
+            skippedCount: skippedCount
+        )
+    }
+
+    private func preparedStore(
+        mediaKind: MediaKind,
+        tagID: UUID
+    ) async throws -> (AppPersonalLinearHeadStore, PersonalModelSuggestionCapability) {
         guard let service = await activationCoordinator.readyService(),
               case let .ready(encoderIdentity) = service.availability
         else {
             throw AppPersonalTagLibrarySuggestionError.modelUnavailable
         }
-
         let store = AppPersonalLinearHeadStore(
             applicationSupportDirectory: applicationSupportDirectory,
             expectedCatalogScopeID: expectedCatalogScopeID,
@@ -87,9 +203,6 @@ actor AppPersonalTagLibrarySuggestionRuntime: AppPersonalTagLibrarySuggesting {
                    tagID: tagID
                )
             {
-                // Legacy pointers load all active tag models; match the requested
-                // tag via identities(), not the store's primary ready identity
-                // (which is only the lexicographically first loaded tag).
                 storeCapability = await store.start()
             } else if let artifactSHA256 {
                 storeCapability = await store.start(
@@ -110,75 +223,35 @@ actor AppPersonalTagLibrarySuggestionRuntime: AppPersonalTagLibrarySuggesting {
         }) else {
             throw AppPersonalTagLibrarySuggestionError.tagNotInPersonalModel
         }
-        let capability = AppPersonalSuggestionCapabilityMapper.capability(
-            from: matchedIdentity,
-            mediaKind: mediaKind,
-            family: family
-        )
-
-        var hits: [AppPersonalTagLibrarySuggestionHit] = []
-        var skippedCount = 0
-        let total = candidates.count
-        for (index, candidate) in candidates.enumerated() {
-            try Task.checkCancellation()
-            guard candidate.contentRevision > 0 else {
-                skippedCount += 1
-                progress?(index + 1, hits.count, skippedCount)
-                continue
-            }
-            let values: AppCoreMLEmbedding
-            do {
-                values = try await embedding(candidate)
-            } catch is CancellationError {
-                throw CancellationError()
-            } catch {
-                skippedCount += 1
-                progress?(index + 1, hits.count, skippedCount)
-                continue
-            }
-            let score: Float
-            do {
-                // Positive-score / configured threshold: do not pad Top-N with
-                // low-confidence scores just to fill the quota.
-                guard let scored = try await store.score(tagID: tagID, embedding: values),
-                      Double(scored).isFinite,
-                      Double(scored) > minimumScore
-                else {
-                    progress?(index + 1, hits.count, skippedCount)
-                    continue
-                }
-                score = scored
-            } catch {
-                skippedCount += 1
-                progress?(index + 1, hits.count, skippedCount)
-                continue
-            }
-            hits.append(
-                AppPersonalTagLibrarySuggestionHit(
-                    candidate: candidate,
-                    score: Double(score)
-                )
+        return (
+            store,
+            AppPersonalSuggestionCapabilityMapper.capability(
+                from: matchedIdentity,
+                mediaKind: mediaKind,
+                family: family
             )
-            progress?(index + 1, hits.count, skippedCount)
-        }
-
-        let ranked = hits.sorted {
-            if $0.score == $1.score {
-                return $0.candidate.assetID.uuidString.lowercased()
-                    < $1.candidate.assetID.uuidString.lowercased()
-            }
-            return $0.score > $1.score
-        }
-        let retained = Array(ranked.prefix(maximumPendingCount))
-        _ = total
-
-        return AppPersonalTagLibrarySuggestionBatch(
-            tagID: tagID,
-            capability: capability,
-            hits: retained,
-            checkedCount: candidates.count,
-            aboveThresholdCount: hits.count,
-            skippedCount: skippedCount
         )
+    }
+}
+
+struct AppPersonalSuggestionProgressGate {
+    private var lastEmissionNanoseconds: UInt64 = 0
+
+    mutating func emit(
+        checked: Int,
+        suggested: Int,
+        skipped: Int,
+        total: Int,
+        progress: (@Sendable (Int, Int, Int) -> Void)?
+    ) {
+        guard let progress else { return }
+        let now = DispatchTime.now().uptimeNanoseconds
+        let enoughTimePassed = lastEmissionNanoseconds == 0
+            || now &- lastEmissionNanoseconds >= 200_000_000
+        guard checked == total || checked.isMultiple(of: 32) || enoughTimePassed else {
+            return
+        }
+        lastEmissionNanoseconds = now
+        progress(checked, suggested, skipped)
     }
 }

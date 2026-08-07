@@ -6422,7 +6422,7 @@ final class LibraryWorkspaceModel: ObservableObject {
             personalLibrarySuggestionState = .personalUnavailable
             return
         }
-        guard let cache = selectedAssetEmbeddingCache else {
+        guard selectedAssetEmbeddingCache != nil else {
             notice = .personalTagLibrarySuggestionsModelUnavailable
             personalLibrarySuggestionState = .serviceUnavailable
             return
@@ -6466,100 +6466,30 @@ final class LibraryWorkspaceModel: ObservableObject {
         }
 
         do {
-            let candidates = try await resolveAllPersonalSuggestionCandidates(
-                tagID: tagID,
-                sourceIDs: sourceIDs ?? resolvedReviewSourceFilter
+            let capability = try await suggester.capability(
+                mediaKind: selectedMediaKind,
+                tagID: tagID
             )
-            guard !candidates.isEmpty else {
-                notice = method == .personalAdamW
-                    ? .personalAdamWTagLibrarySuggestionsNotReady
-                    : .personalTagLibrarySuggestionsNotReady
-                personalLibrarySuggestionState = .personalUnavailable
-                return
-            }
-
-            let total = candidates.count
-            personalLibrarySuggestionState = .running(
-                checked: 0,
-                suggested: 0,
-                skipped: 0
-            )
-            appPersonalTagLibrarySuggestionProgress = (0, 0, 0, total)
-
-            let service = service
             let minimumScore = effectiveSuggestionMinScore(
                 tagID: tagID,
                 method: thresholdMethod
             )
             let maximumPendingCount = maxPendingSuggestionsPerTag
-            let batch = try await suggester.suggest(
-                mediaKind: selectedMediaKind,
-                tagID: tagID,
-                candidates: candidates,
-                maximumPendingCount: maximumPendingCount,
-                minimumScore: minimumScore,
-                embedding: { candidate in
-                    let result = try await cache.cacheSelectedAsset(
-                        assetID: candidate.assetID,
-                        contentRevision: candidate.contentRevision,
-                        imageData: {
-                            try await service.loadPreview(assetID: candidate.assetID)
-                        }
-                    )
-                    return AppCoreMLEmbedding(identity: result.identity, values: result.values)
-                },
-                progress: { [weak self] checked, suggested, skipped in
-                    Task { @MainActor in
-                        guard let self else { return }
-                        self.appPersonalTagLibrarySuggestionProgress = (
-                            checked,
-                            suggested,
-                            skipped,
-                            total
-                        )
-                        self.personalLibrarySuggestionState = .running(
-                            checked: checked,
-                            suggested: suggested,
-                            skipped: skipped
-                        )
-                    }
-                }
-            )
-
             let reviewPort = review
-            let inserted = try await Self.offMain {
-                try reviewPort.activatePersonalSuggestionBundle(batch.capability)
-                return try reviewPort.replacePersonalTagLibrarySuggestions(
-                    tagID: batch.tagID,
-                    hits: batch.hits,
-                    expectedCapability: batch.capability,
+            let resolvedSourceIDs = sourceIDs ?? resolvedReviewSourceFilter
+            _ = try await Self.offMain {
+                try reviewPort.enqueuePersonalLibrarySuggestions(
+                    capability: capability,
+                    sourceIDs: resolvedSourceIDs,
+                    minimumScore: minimumScore,
                     maximumPendingCount: maximumPendingCount
                 )
             }
-
             await refreshReviewState()
-            personalLibrarySuggestionState = .completed(
-                checked: batch.checkedCount,
-                suggested: inserted,
-                skipped: batch.skippedCount
-            )
-            if method == .personalAdamW {
-                notice = .personalAdamWTagLibrarySuggestionsCompleted(
-                    tagName: displayName,
-                    candidates: batch.checkedCount,
-                    aboveThreshold: batch.aboveThresholdCount,
-                    inserted: inserted,
-                    skipped: batch.skippedCount
-                )
-            } else {
-                notice = .personalTagLibrarySuggestionsCompleted(
-                    tagName: displayName,
-                    candidates: batch.checkedCount,
-                    aboveThreshold: batch.aboveThresholdCount,
-                    inserted: inserted,
-                    skipped: batch.skippedCount
-                )
-            }
+            startPersonalizationRunnerIfNeeded()
+        } catch PersonalizationReviewError.activeJobConflict {
+            await refreshReviewState()
+            startPersonalizationRunnerIfNeeded()
         } catch AppPersonalTagLibrarySuggestionError.personalUnavailable {
             notice = method == .personalAdamW
                 ? .personalAdamWTagLibrarySuggestionsNotReady
@@ -6582,35 +6512,6 @@ final class LibraryWorkspaceModel: ObservableObject {
                 : .personalTagLibrarySuggestionsFailed
             personalLibrarySuggestionState = .failed
         }
-    }
-
-
-    private func resolveAllPersonalSuggestionCandidates(
-        tagID: UUID,
-        sourceIDs: [UUID]? = nil
-    ) async throws -> [PersonalSuggestionCandidate] {
-        let reviewPort = review
-        let mediaKind = selectedMediaKind
-        let pageSize = AppPersonalTagLibrarySuggestionLimits.candidatePageSize
-        var candidates: [PersonalSuggestionCandidate] = []
-        var afterAssetID: UUID?
-        while true {
-            let pageAfter = afterAssetID
-            let page = try await Self.offMain {
-                try reviewPort.personalSuggestionCandidates(
-                    mediaKind: mediaKind,
-                    afterAssetID: pageAfter,
-                    limit: pageSize,
-                    sourceIDs: sourceIDs,
-                    excludingDecisionsForTagID: tagID
-                )
-            }
-            if page.isEmpty { break }
-            candidates.append(contentsOf: page)
-            afterAssetID = page.last?.assetID
-            if page.count < pageSize { break }
-        }
-        return candidates
     }
 
     private func resolveAppPersonalSampleCandidates() async throws -> [PersonalSuggestionCandidate] {
@@ -9320,13 +9221,7 @@ extension LibraryWorkspaceModel {
                 sourceIDs: selectedSourceIDs,
                 method: .personalModel
             )
-            if case let .personalTagLibrarySuggestionsCompleted(_, _, _, inserted, _) = notice {
-                if inserted > 0, reviewMode == .overview {
-                    await enterReviewQueue(
-                        tagID: pending.tagID,
-                        displayName: pending.displayName
-                    )
-                }
+            if case .waiting = personalLibrarySuggestionState {
                 return true
             }
             return false
@@ -9337,13 +9232,7 @@ extension LibraryWorkspaceModel {
                 sourceIDs: selectedSourceIDs,
                 method: .personalAdamW
             )
-            if case let .personalAdamWTagLibrarySuggestionsCompleted(_, _, _, inserted, _) = notice {
-                if inserted > 0, reviewMode == .overview {
-                    await enterReviewQueue(
-                        tagID: pending.tagID,
-                        displayName: pending.displayName
-                    )
-                }
+            if case .waiting = personalLibrarySuggestionState {
                 return true
             }
             return false

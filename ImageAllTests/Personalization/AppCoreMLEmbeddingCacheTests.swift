@@ -101,6 +101,123 @@ final class AppCoreMLEmbeddingCacheTests: XCTestCase {
         XCTAssertEqual(cacheFiles(under: root).count, 1)
     }
 
+    func testSelectedAssetRuntimeReusesLosslessModelInputAfterEmbeddingEviction() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let defaults = UserDefaults(
+            suiteName: "AppCoreMLEmbeddingCacheTests.\(UUID().uuidString)"
+        )!
+        let artifactDirectory = projectArtifactDirectory()
+        let coordinator = AppModelActivationCoordinator(
+            preferenceStore: UserDefaultsModelEnablementPreferenceStore(defaults: defaults),
+            serviceFactory: {
+                AppCoreMLEmbeddingService(
+                    isEnabled: true,
+                    artifactDirectory: artifactDirectory
+                )
+            }
+        )
+        guard case .ready = await coordinator.setEnabled(true) else {
+            return XCTFail("expected fixed Core ML artifact to activate")
+        }
+        let runtime = AppSelectedAssetEmbeddingCacheRuntime(
+            catalogScopeID: UUID(),
+            activationCoordinator: coordinator,
+            cachesDirectory: root
+        )
+        let assetID = UUID()
+        let imageData = try generatedPNGData()
+        _ = try await runtime.cacheSelectedAsset(
+            assetID: assetID,
+            contentRevision: 3,
+            imageData: { imageData }
+        )
+        XCTAssertEqual(modelInputCacheFiles(under: root).count, 1)
+        for file in cacheFiles(under: root) {
+            try FileManager.default.removeItem(at: file)
+        }
+        let loadCounter = LockedCounter()
+
+        let regenerated = try await runtime.cacheSelectedAsset(
+            assetID: assetID,
+            contentRevision: 3,
+            imageData: {
+                loadCounter.increment()
+                return imageData
+            }
+        )
+
+        XCTAssertEqual(regenerated.origin, .generated)
+        XCTAssertEqual(loadCounter.value, 0)
+        XCTAssertEqual(cacheFiles(under: root).count, 1)
+        XCTAssertEqual(modelInputCacheFiles(under: root).count, 1)
+    }
+
+    func testBatchRuntimeKeepsTwoImageLoadsInFlight() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let defaults = UserDefaults(
+            suiteName: "AppCoreMLEmbeddingCacheTests.\(UUID().uuidString)"
+        )!
+        let artifactDirectory = projectArtifactDirectory()
+        let coordinator = AppModelActivationCoordinator(
+            preferenceStore: UserDefaultsModelEnablementPreferenceStore(defaults: defaults),
+            serviceFactory: {
+                AppCoreMLEmbeddingService(
+                    isEnabled: true,
+                    artifactDirectory: artifactDirectory
+                )
+            }
+        )
+        guard case .ready = await coordinator.setEnabled(true) else {
+            return XCTFail("expected fixed Core ML artifact to activate")
+        }
+        let runtime = AppSelectedAssetEmbeddingCacheRuntime(
+            catalogScopeID: UUID(),
+            activationCoordinator: coordinator,
+            cachesDirectory: root
+        )
+        let imageData = try generatedPNGData()
+        let probe = ConcurrentImageLoadProbe()
+        let requests = (1...4).map { revision in
+            AppSelectedAssetEmbeddingRequest(
+                assetID: UUID(),
+                contentRevision: revision,
+                imageData: { await probe.load(imageData) }
+            )
+        }
+
+        let results = try await runtime.cacheSelectedAssets(
+            requests,
+            maximumConcurrentImageLoads: 2
+        )
+        let loadCount = await probe.loadCount
+        let maximumActiveLoads = await probe.maximumActiveLoads
+
+        XCTAssertEqual(results.compactMap { $0 }.count, requests.count)
+        XCTAssertEqual(loadCount, requests.count)
+        XCTAssertEqual(maximumActiveLoads, 2)
+    }
+
+    func testProgressGateCoalescesFastPerAssetUpdatesAndAlwaysEmitsFinal() {
+        let events = LockedIntArray()
+        var gate = AppPersonalSuggestionProgressGate()
+
+        for checked in 1...100 {
+            gate.emit(
+                checked: checked,
+                suggested: checked,
+                skipped: 0,
+                total: 100,
+                progress: { checked, _, _ in events.append(checked) }
+            )
+        }
+
+        XCTAssertEqual(events.values, [1, 32, 64, 96, 100])
+    }
+
     func testSelectedAssetRuntimeDoesNotReportSuccessWhenCacheCannotPersist() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString)
@@ -441,6 +558,92 @@ final class AppCoreMLEmbeddingCacheTests: XCTestCase {
         )
     }
 
+    func testZeroCapacityReportsGeneratedEmbeddingAsNotPersisted() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let cache = AppCoreMLEmbeddingCache(
+            cachesDirectory: root,
+            service: AppCoreMLEmbeddingService(
+                isEnabled: true,
+                artifactDirectory: projectArtifactDirectory()
+            ),
+            maximumCacheBytes: 0
+        )
+
+        let result = try cache.embedding(
+            for: generatedImage(),
+            key: AppCoreMLEmbeddingCacheKey(
+                catalogScopeID: UUID(),
+                assetID: UUID(),
+                contentRevision: 1
+            )
+        )
+
+        XCTAssertEqual(result.origin, .generated)
+        XCTAssertFalse(result.isPersisted)
+        XCTAssertTrue(cacheFiles(under: root).isEmpty)
+    }
+
+    func testModelInputCapacityEvictsOldestWithoutDeletingNewPublication() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let service = AppCoreMLEmbeddingService(
+            isEnabled: true,
+            artifactDirectory: projectArtifactDirectory()
+        )
+        guard case let .ready(identity) = service.availability else {
+            return XCTFail("expected fixed Core ML artifact to be ready")
+        }
+        let prepared = try service.preparedModelInputImage(for: generatedImage())
+        let catalogID = UUID()
+        let firstKey = AppCoreMLEmbeddingCacheKey(
+            catalogScopeID: catalogID,
+            assetID: UUID(),
+            contentRevision: 1
+        )
+        let secondKey = AppCoreMLEmbeddingCacheKey(
+            catalogScopeID: catalogID,
+            assetID: UUID(),
+            contentRevision: 1
+        )
+        try AppCoreMLModelInputCache(cachesDirectory: root).publish(
+            prepared,
+            for: firstKey,
+            preprocessingRevision: identity.preprocessingRevision
+        )
+        let firstFile = try XCTUnwrap(modelInputCacheFiles(under: root).only)
+        let budget = Int64(try XCTUnwrap(
+            firstFile.resourceValues(forKeys: [.fileSizeKey]).fileSize
+        ))
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date(timeIntervalSince1970: 1)],
+            ofItemAtPath: firstFile.path
+        )
+        let bounded = AppCoreMLModelInputCache(
+            cachesDirectory: root,
+            maximumCacheBytes: budget
+        )
+
+        try bounded.publish(
+            prepared,
+            for: secondKey,
+            preprocessingRevision: identity.preprocessingRevision
+        )
+
+        XCTAssertEqual(modelInputCacheFiles(under: root).count, 1)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: firstFile.path))
+        XCTAssertNil(bounded.cachedImage(
+            for: firstKey,
+            preprocessingRevision: identity.preprocessingRevision
+        ))
+        XCTAssertNotNil(bounded.cachedImage(
+            for: secondKey,
+            preprocessingRevision: identity.preprocessingRevision
+        ))
+    }
+
     func testVectorChecksumMismatchRegeneratesAndRepairsTheEntry() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -707,6 +910,24 @@ final class AppCoreMLEmbeddingCacheTests: XCTestCase {
         }
     }
 
+    private func modelInputCacheFiles(under root: URL) -> [URL] {
+        guard let enumerator = FileManager.default.enumerator(
+            at: root,
+            includingPropertiesForKeys: [.isRegularFileKey]
+        ) else {
+            return []
+        }
+        return enumerator.compactMap { item in
+            guard let url = item as? URL,
+                  url.pathExtension == "model-input",
+                  (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true
+            else {
+                return nil
+            }
+            return url
+        }
+    }
+
     private enum TestImageError: Error {
         case creationFailed
     }
@@ -745,5 +966,57 @@ private final class ConcurrentResults: @unchecked Sendable {
 
     func append(_ error: Error) {
         lock.withLock { storedErrors.append(error) }
+    }
+}
+
+private actor ConcurrentImageLoadProbe {
+    private var activeLoads = 0
+    private var storedMaximumActiveLoads = 0
+    private var storedLoadCount = 0
+    private var releasedInitialPair = false
+    private var initialWaiters: [CheckedContinuation<Void, Never>] = []
+
+    var maximumActiveLoads: Int { storedMaximumActiveLoads }
+    var loadCount: Int { storedLoadCount }
+
+    func load(_ data: Data) async -> Data {
+        activeLoads += 1
+        storedLoadCount += 1
+        storedMaximumActiveLoads = max(storedMaximumActiveLoads, activeLoads)
+        if !releasedInitialPair {
+            if activeLoads < 2 {
+                await withCheckedContinuation { initialWaiters.append($0) }
+            } else {
+                releasedInitialPair = true
+                let waiters = initialWaiters
+                initialWaiters.removeAll()
+                waiters.forEach { $0.resume() }
+            }
+        }
+        try? await Task.sleep(nanoseconds: 20_000_000)
+        activeLoads -= 1
+        return data
+    }
+}
+
+private final class LockedCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storedValue = 0
+
+    var value: Int { lock.withLock { storedValue } }
+
+    func increment() {
+        lock.withLock { storedValue += 1 }
+    }
+}
+
+private final class LockedIntArray: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storedValues: [Int] = []
+
+    var values: [Int] { lock.withLock { storedValues } }
+
+    func append(_ value: Int) {
+        lock.withLock { storedValues.append(value) }
     }
 }

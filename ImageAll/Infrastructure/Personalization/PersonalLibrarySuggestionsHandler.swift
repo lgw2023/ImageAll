@@ -6,7 +6,7 @@ protocol PersonalLibrarySuggestionImageLoading: Sendable {
 
 extension LibraryAssetImageLoader: PersonalLibrarySuggestionImageLoading {
     func loadPersonalSuggestionPreview(assetID: UUID) async throws -> Data {
-        try await load(assetID: assetID, variant: .preview)
+        try await loadModelSuggestionPreview(assetID: assetID)
     }
 }
 
@@ -14,9 +14,11 @@ struct PersonalLibrarySuggestionsHandlerDependencies: Sendable {
     let database: CatalogDatabase
     let queue: GRDBJobQueue
     let images: any PersonalLibrarySuggestionImageLoading
-    let client: any LocalModelSuggestionClient
+    let client: (any LocalModelSuggestionClient)?
     let catalogScopeID: String
     let clock: any JobClock
+    var appSuggestersByBundleID: [String: any AppPersonalTagLibrarySuggesting] = [:]
+    var embeddingCache: (any AppSelectedAssetEmbeddingCaching)? = nil
     var publishFailureInjector: (@Sendable () throws -> Void)?
 }
 
@@ -139,6 +141,17 @@ private extension PersonalLibrarySuggestionsHandler {
                 .personalizationCheckpointInvalid,
                 checkpoint: try? PersonalLibrarySuggestionsCodec.jobCheckpoint(from: initialCheckpoint),
                 progress: JobProgress(completed: 0, total: total)
+            )
+        }
+
+        if payload.usesAppRuntime {
+            return try await executeAppRuntimeValidated(
+                lease: lease,
+                payload: payload,
+                initialCheckpoint: initialCheckpoint,
+                total: total,
+                leaseDurationMs: leaseDurationMs,
+                review: review
             )
         }
 
@@ -269,6 +282,230 @@ private extension PersonalLibrarySuggestionsHandler {
         }
     }
 
+    func executeAppRuntimeValidated(
+        lease: JobLeaseToken,
+        payload: PersonalLibrarySuggestionsPayload,
+        initialCheckpoint: PersonalLibrarySuggestionsCheckpoint,
+        total: Int,
+        leaseDurationMs: Int64,
+        review: GRDBPersonalizationReviewRepository
+    ) async throws -> JobHandlerExecutionResult {
+        guard let minimumScore = payload.minimumScore,
+              let maximumPendingCount = payload.maximumPendingCount,
+              let tagID = payload.capability.tagIDs.first,
+              let suggester = dependencies.appSuggestersByBundleID[
+                  payload.capability.target.bundleID
+              ],
+              let embeddingCache = dependencies.embeddingCache
+        else {
+            return retryableFailure(
+                .personalLibraryServiceUnavailable,
+                checkpoint: try? PersonalLibrarySuggestionsCodec.jobCheckpoint(
+                    from: initialCheckpoint
+                ),
+                progress: JobProgress(completed: initialCheckpoint.checkedCount, total: total)
+            )
+        }
+
+        var state = initialCheckpoint
+        do {
+            guard try review.personalSuggestionCapabilityMatches(payload.capability),
+                  try await suggester.capability(
+                      mediaKind: payload.capability.target.mediaKind,
+                      tagID: tagID
+                  ) == payload.capability
+            else {
+                throw ModelFailure.mismatch
+            }
+
+            while true {
+                try Task.checkCancellation()
+                let assetIDs = try review.frozenAssetBatch(
+                    mediaKind: payload.capability.target.mediaKind,
+                    sourceIDs: payload.sourceIDs,
+                    catalogCutoffMs: payload.catalogCutoffMs,
+                    afterAssetID: state.lastAssetID,
+                    limit: AppPersonalTagLibrarySuggestionLimits.persistentBatchSize,
+                    excludingDecisionsForTagID: tagID
+                )
+                guard !assetIDs.isEmpty else {
+                    return try publishAppRuntimeAndSettle(
+                        lease: lease,
+                        payload: payload,
+                        state: state,
+                        total: total,
+                        maximumPendingCount: maximumPendingCount,
+                        leaseDurationMs: leaseDurationMs,
+                        review: review
+                    )
+                }
+
+                var candidates: [PersonalSuggestionCandidate] = []
+                candidates.reserveCapacity(assetIDs.count)
+                var ineligibleCount = 0
+                for assetID in assetIDs {
+                    guard let context = try review.frozenAssetProcessingContext(
+                        mediaKind: payload.capability.target.mediaKind,
+                        tagID: tagID,
+                        assetID: assetID
+                    ),
+                    !context.hasDecision,
+                    context.recordUpdatedAtMs <= payload.catalogCutoffMs,
+                    context.locatorState == AssetLocatorState.current.rawValue,
+                    context.sourceState == SourceState.active.rawValue,
+                    context.availability == AssetAvailability.available.rawValue,
+                    context.contentRevision > 0
+                    else {
+                        ineligibleCount += 1
+                        continue
+                    }
+                    candidates.append(
+                        PersonalSuggestionCandidate(
+                            assetID: assetID,
+                            contentRevision: context.contentRevision
+                        )
+                    )
+                }
+
+                let suggestionBatch: AppPersonalTagLibrarySuggestionBatch
+                if candidates.isEmpty {
+                    suggestionBatch = AppPersonalTagLibrarySuggestionBatch(
+                        tagID: tagID,
+                        capability: payload.capability,
+                        hits: [],
+                        checkedCount: 0,
+                        aboveThresholdCount: 0,
+                        skippedCount: 0
+                    )
+                } else {
+                    let images = dependencies.images
+                    let requests = candidates.map { candidate in
+                        AppSelectedAssetEmbeddingRequest(
+                            assetID: candidate.assetID,
+                            contentRevision: candidate.contentRevision,
+                            imageData: {
+                                try await images.loadPersonalSuggestionPreview(
+                                    assetID: candidate.assetID
+                                )
+                            }
+                        )
+                    }
+                    let cached = try await embeddingCache.cacheSelectedAssets(
+                        requests,
+                        maximumConcurrentImageLoads:
+                            AppPersonalTagLibrarySuggestionLimits.maximumConcurrentImageLoads
+                    )
+                    let embeddings = cached.map { value in
+                        value.map {
+                            AppCoreMLEmbedding(identity: $0.identity, values: $0.values)
+                        }
+                    }
+                    let frozenCandidates = candidates
+                    let frozenEmbeddings = embeddings
+                    suggestionBatch = try await suggester.suggest(
+                        mediaKind: payload.capability.target.mediaKind,
+                        tagID: tagID,
+                        candidates: candidates,
+                        maximumPendingCount: maximumPendingCount,
+                        minimumScore: minimumScore,
+                        embeddingBatch: { requested in
+                            guard requested == frozenCandidates else {
+                                throw AppPersonalTagLibrarySuggestionError.identityMismatch
+                            }
+                            return frozenEmbeddings
+                        },
+                        progress: nil
+                    )
+                    guard suggestionBatch.capability == payload.capability else {
+                        throw ModelFailure.mismatch
+                    }
+                }
+
+                let next = appCheckpoint(
+                    from: state,
+                    lastAssetID: assetIDs.last,
+                    capability: payload.capability,
+                    checkedDelta: assetIDs.count,
+                    aboveThresholdDelta: suggestionBatch.aboveThresholdCount,
+                    skippedDelta: ineligibleCount + suggestionBatch.skippedCount,
+                    newHits: suggestionBatch.hits,
+                    maximumPendingCount: maximumPendingCount
+                )
+                let createdAtMs = dependencies.clock.nowMs
+                let shouldComplete = next.checkedCount >= total
+                let snapshot = try dependencies.queue.commitLeaseProtectedBatch(
+                    lease: lease
+                ) { db in
+                    var committed = next
+                    if shouldComplete {
+                        let inserted = try review.replacePersonalTagLibrarySuggestions(
+                            tagID: tagID,
+                            hits: next.topHits.map(\.suggestionHit),
+                            expectedCapability: payload.capability,
+                            maximumPendingCount: maximumPendingCount,
+                            createdAtMs: createdAtMs,
+                            on: db
+                        )
+                        committed = PersonalLibrarySuggestionsCheckpoint(
+                            lastAssetID: next.lastAssetID,
+                            capability: next.capability,
+                            checkedCount: next.checkedCount,
+                            suggestedCount: inserted,
+                            skippedCount: next.skippedCount,
+                            aboveThresholdCount: next.aboveThresholdCount,
+                            topHits: next.topHits
+                        )
+                    }
+                    try dependencies.publishFailureInjector?()
+                    return SafeBatchCommitInput(
+                        lease: lease,
+                        outcome: shouldComplete ? .completed : .continue,
+                        checkpoint: try PersonalLibrarySuggestionsCodec.jobCheckpoint(
+                            from: committed
+                        ),
+                        progress: JobProgress(completed: committed.checkedCount, total: total),
+                        leaseDurationMs: leaseDurationMs
+                    )
+                }
+                state = try PersonalLibrarySuggestionsCodec.checkpoint(
+                    from: snapshot.checkpoint
+                )
+                if snapshot.state != .running {
+                    return settledResult(snapshot: snapshot)
+                }
+            }
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch AppPersonalTagLibrarySuggestionError.personalUnavailable,
+                AppPersonalTagLibrarySuggestionError.tagNotInPersonalModel,
+                ModelFailure.mismatch
+        {
+            return try invalidateAndSettle(
+                lease: lease,
+                code: .personalLibraryBundleMismatch,
+                state: state,
+                total: total,
+                leaseDurationMs: leaseDurationMs,
+                mediaKind: payload.capability.target.mediaKind,
+                review: review
+            )
+        } catch AppPersonalTagLibrarySuggestionError.modelUnavailable,
+                AppSelectedAssetEmbeddingCacheError.modelUnavailable
+        {
+            return retryableFailure(
+                .personalLibraryServiceUnavailable,
+                checkpoint: try? PersonalLibrarySuggestionsCodec.jobCheckpoint(from: state),
+                progress: JobProgress(completed: state.checkedCount, total: total)
+            )
+        } catch {
+            return retryableFailure(
+                .personalLibraryInferenceFailure,
+                checkpoint: try? PersonalLibrarySuggestionsCodec.jobCheckpoint(from: state),
+                progress: JobProgress(completed: state.checkedCount, total: total)
+            )
+        }
+    }
+
     func process(
         assetID: UUID,
         payload: PersonalLibrarySuggestionsPayload,
@@ -301,7 +538,10 @@ private extension PersonalLibrarySuggestionsHandler {
         try await confirmCapability(payload.capability)
         let suggestions: [LocalModelSuggestion]
         do {
-            suggestions = try await dependencies.client.suggestions(
+            guard let client = dependencies.client else {
+                throw ModelFailure.serviceUnavailable
+            }
+            suggestions = try await client.suggestions(
                 imageData: imageData,
                 requestID: UUID().uuidString.lowercased(),
                 target: .personal(payload.capability.target)
@@ -321,7 +561,10 @@ private extension PersonalLibrarySuggestionsHandler {
 
     func confirmCapability(_ expected: PersonalModelSuggestionCapability) async throws {
         do {
-            guard case let .available(actual) = try await dependencies.client.personalCapability()
+            guard let client = dependencies.client else {
+                throw ModelFailure.serviceUnavailable
+            }
+            guard case let .available(actual) = try await client.personalCapability()
             else {
                 throw ModelFailure.unavailable
             }
@@ -407,8 +650,94 @@ private extension PersonalLibrarySuggestionsHandler {
             capability: capability,
             checkedCount: state.checkedCount + checkedDelta,
             suggestedCount: state.suggestedCount + suggestedDelta,
-            skippedCount: state.skippedCount + skippedDelta
+            skippedCount: state.skippedCount + skippedDelta,
+            aboveThresholdCount: state.aboveThresholdCount,
+            topHits: state.topHits
         )
+    }
+
+    func appCheckpoint(
+        from state: PersonalLibrarySuggestionsCheckpoint,
+        lastAssetID: UUID?,
+        capability: PersonalModelSuggestionCapability,
+        checkedDelta: Int,
+        aboveThresholdDelta: Int,
+        skippedDelta: Int,
+        newHits: [AppPersonalTagLibrarySuggestionHit],
+        maximumPendingCount: Int
+    ) -> PersonalLibrarySuggestionsCheckpoint {
+        let merged = (state.topHits.map(\.suggestionHit) + newHits).sorted {
+            if $0.score == $1.score {
+                return $0.candidate.assetID.uuidString.lowercased()
+                    < $1.candidate.assetID.uuidString.lowercased()
+            }
+            return $0.score > $1.score
+        }
+        let topHits = merged.prefix(maximumPendingCount).map {
+            PersonalLibrarySuggestionsCheckpointHit(
+                assetID: $0.candidate.assetID,
+                contentRevision: $0.candidate.contentRevision,
+                score: $0.score
+            )
+        }
+        let aboveThresholdCount = state.aboveThresholdCount + aboveThresholdDelta
+        return PersonalLibrarySuggestionsCheckpoint(
+            lastAssetID: lastAssetID,
+            capability: capability,
+            checkedCount: state.checkedCount + checkedDelta,
+            suggestedCount: aboveThresholdCount,
+            skippedCount: state.skippedCount + skippedDelta,
+            aboveThresholdCount: aboveThresholdCount,
+            topHits: topHits
+        )
+    }
+
+    func publishAppRuntimeAndSettle(
+        lease: JobLeaseToken,
+        payload: PersonalLibrarySuggestionsPayload,
+        state: PersonalLibrarySuggestionsCheckpoint,
+        total: Int,
+        maximumPendingCount: Int,
+        leaseDurationMs: Int64,
+        review: GRDBPersonalizationReviewRepository
+    ) throws -> JobHandlerExecutionResult {
+        guard let tagID = payload.capability.tagIDs.first else {
+            return terminalFailure(
+                .personalizationPayloadInvalid,
+                checkpoint: try? PersonalLibrarySuggestionsCodec.jobCheckpoint(from: state),
+                progress: JobProgress(completed: state.checkedCount, total: total)
+            )
+        }
+        let unaccounted = max(0, total - state.checkedCount)
+        let createdAtMs = dependencies.clock.nowMs
+        let snapshot = try dependencies.queue.commitLeaseProtectedBatch(lease: lease) { db in
+            let inserted = try review.replacePersonalTagLibrarySuggestions(
+                tagID: tagID,
+                hits: state.topHits.map(\.suggestionHit),
+                expectedCapability: payload.capability,
+                maximumPendingCount: maximumPendingCount,
+                createdAtMs: createdAtMs,
+                on: db
+            )
+            let finalized = PersonalLibrarySuggestionsCheckpoint(
+                lastAssetID: state.lastAssetID,
+                capability: payload.capability,
+                checkedCount: total,
+                suggestedCount: inserted,
+                skippedCount: state.skippedCount + unaccounted,
+                aboveThresholdCount: state.aboveThresholdCount,
+                topHits: state.topHits
+            )
+            try dependencies.publishFailureInjector?()
+            return SafeBatchCommitInput(
+                lease: lease,
+                outcome: .completed,
+                checkpoint: try PersonalLibrarySuggestionsCodec.jobCheckpoint(from: finalized),
+                progress: JobProgress(completed: total, total: total),
+                leaseDurationMs: leaseDurationMs
+            )
+        }
+        return settledResult(snapshot: snapshot)
     }
 
     func settle(

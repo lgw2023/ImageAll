@@ -327,6 +327,52 @@ final class FullLibrarySuggestionsJobTests: XCTestCase {
         XCTAssertEqual(try service.personalLibrarySuggestionJob()?.id, jobID)
     }
 
+    func testAppRuntimePersonalJobDoesNotCoalesceDifferentFrozenThreshold() throws {
+        let fixture = try makeLargeLibraryFixture(assetCount: 8)
+        let handler = makeHandler(
+            database: fixture.database,
+            loader: fixture.loader,
+            queue: fixture.queue
+        )
+        let service = PersonalizationReviewService(
+            database: fixture.database,
+            queue: fixture.queue,
+            executionCoordinator: makeCoordinator(
+                database: fixture.database,
+                handler: handler,
+                queue: fixture.queue
+            ),
+            tags: fixture.tags,
+            clock: FixedJobClock(nowMs: fixture.cutoffMs)
+        )
+        let capability = try makePersonalCapability(
+            database: fixture.database,
+            tagIDs: [fixture.tagID],
+            bundleRevision: "app-threshold-r1"
+        )
+        let firstID = try service.enqueuePersonalLibrarySuggestions(
+            capability: capability,
+            sourceIDs: [fixture.sourceID],
+            minimumScore: 0.25,
+            maximumPendingCount: 10
+        )
+
+        XCTAssertThrowsError(
+            try service.enqueuePersonalLibrarySuggestions(
+                capability: capability,
+                sourceIDs: [fixture.sourceID],
+                minimumScore: 0.5,
+                maximumPendingCount: 10
+            )
+        ) { error in
+            XCTAssertEqual(error as? PersonalizationReviewError, .activeJobConflict)
+        }
+        let persisted = try fixture.queue.fetchJob(id: firstID)
+        let payload = try PersonalLibrarySuggestionsCodec.decodePayload(persisted.payload)
+        XCTAssertEqual(payload.minimumScore, 0.25)
+        XCTAssertEqual(payload.maximumPendingCount, 10)
+    }
+
     func testPersonalLibraryProjectionPrefersActiveJobOverSameTimestampHistory() throws {
         let fixture = try makeLargeLibraryFixture(assetCount: 8)
         let handler = makeHandler(
@@ -420,6 +466,147 @@ final class FullLibrarySuggestionsJobTests: XCTestCase {
         let completed = try queue.fetchJob(id: jobID)
         XCTAssertEqual(completed.state, .completed)
         XCTAssertGreaterThan(try service.totalPendingSuggestionCount(), 0)
+    }
+
+    func testAppRuntimePersonalJobUsesBatchedPrefetchAndPublishesGlobalTopN() async throws {
+        // Four of the 134 synthetic assets are explicit training decisions, so
+        // the frozen prediction scope is exactly 130 = 64 + 64 + 2.
+        let fixture = try makeLargeLibraryFixture(assetCount: 134)
+        let queue = JobTestSupport.makeQueue(
+            database: fixture.database,
+            nowMs: fixture.cutoffMs,
+            retryDelayMs: 0
+        )
+        let capability = try makePersonalCapability(
+            database: fixture.database,
+            tagIDs: [fixture.tagID],
+            bundleRevision: "app-runtime-bundle-r1"
+        )
+        let embeddingCache = RecordingBatchAppEmbeddingCache()
+        let suggester = RecordingBatchAppPersonalSuggester(capability: capability)
+        let handler = PersonalLibrarySuggestionsHandler(
+            dependencies: PersonalLibrarySuggestionsHandlerDependencies(
+                database: fixture.database,
+                queue: queue,
+                images: StubPersonalLibrarySuggestionImages(),
+                client: nil,
+                catalogScopeID: try fixture.database.catalogScopeID(),
+                clock: FixedJobClock(nowMs: fixture.cutoffMs),
+                appSuggestersByBundleID: [capability.target.bundleID: suggester],
+                embeddingCache: embeddingCache
+            )
+        )
+        let coordinator = JobExecutionCoordinator(
+            queue: queue,
+            registry: MultiJobHandlerRegistry(handlers: [handler]),
+            leaseContextProvider: GRDBJobLeaseContextProvider(queue: queue)
+        )
+        let service = PersonalizationReviewService(
+            database: fixture.database,
+            queue: queue,
+            executionCoordinator: coordinator,
+            tags: fixture.tags,
+            clock: FixedJobClock(nowMs: fixture.cutoffMs)
+        )
+        let jobID = try service.enqueuePersonalLibrarySuggestions(
+            capability: capability,
+            sourceIDs: [fixture.sourceID],
+            minimumScore: 0,
+            maximumPendingCount: 5
+        )
+
+        let didRun = try await service.runPendingSuggestionJobsAsync(maxSteps: 1)
+        XCTAssertTrue(didRun)
+
+        let completed = try queue.fetchJob(id: jobID)
+        let checkpoint = try PersonalLibrarySuggestionsCodec.checkpoint(
+            from: completed.checkpoint
+        )
+        let embeddingBatchSizes = await embeddingCache.batchSizes
+        let embeddingConcurrency = await embeddingCache.requestedConcurrency
+        let suggestionBatchSizes = await suggester.batchSizes
+        XCTAssertEqual(completed.state, .completed)
+        XCTAssertEqual(completed.progress.total, 130)
+        XCTAssertEqual(checkpoint.checkedCount, 130)
+        XCTAssertEqual(checkpoint.aboveThresholdCount, 130)
+        XCTAssertEqual(checkpoint.skippedCount, 0)
+        XCTAssertEqual(checkpoint.suggestedCount, 5)
+        XCTAssertEqual(checkpoint.topHits.count, 5)
+        XCTAssertEqual(embeddingBatchSizes, [64, 64, 2])
+        XCTAssertEqual(embeddingConcurrency, [2, 2, 2])
+        XCTAssertEqual(suggestionBatchSizes, [64, 64, 2])
+        XCTAssertEqual(try service.totalPendingSuggestionCount(), 5)
+    }
+
+    func testAppRuntimePersonalJobResumesFromCommittedBatchAfterRetryableFailure() async throws {
+        let fixture = try makeLargeLibraryFixture(assetCount: 70)
+        let queue = JobTestSupport.makeQueue(
+            database: fixture.database,
+            nowMs: fixture.cutoffMs,
+            retryDelayMs: 0
+        )
+        let capability = try makePersonalCapability(
+            database: fixture.database,
+            tagIDs: [fixture.tagID],
+            bundleRevision: "app-runtime-resume-r1"
+        )
+        let embeddingCache = RecordingBatchAppEmbeddingCache()
+        let suggester = RecordingBatchAppPersonalSuggester(capability: capability)
+        let failure = FailOnInvocation(target: 2)
+        let handler = PersonalLibrarySuggestionsHandler(
+            dependencies: PersonalLibrarySuggestionsHandlerDependencies(
+                database: fixture.database,
+                queue: queue,
+                images: StubPersonalLibrarySuggestionImages(),
+                client: nil,
+                catalogScopeID: try fixture.database.catalogScopeID(),
+                clock: FixedJobClock(nowMs: fixture.cutoffMs),
+                appSuggestersByBundleID: [capability.target.bundleID: suggester],
+                embeddingCache: embeddingCache,
+                publishFailureInjector: { try failure.checkpoint() }
+            )
+        )
+        let coordinator = JobExecutionCoordinator(
+            queue: queue,
+            registry: MultiJobHandlerRegistry(handlers: [handler]),
+            leaseContextProvider: GRDBJobLeaseContextProvider(queue: queue)
+        )
+        let service = PersonalizationReviewService(
+            database: fixture.database,
+            queue: queue,
+            executionCoordinator: coordinator,
+            tags: fixture.tags,
+            clock: FixedJobClock(nowMs: fixture.cutoffMs)
+        )
+        let jobID = try service.enqueuePersonalLibrarySuggestions(
+            capability: capability,
+            sourceIDs: [fixture.sourceID],
+            minimumScore: 0,
+            maximumPendingCount: 5
+        )
+
+        let firstDidRun = try await service.runPendingSuggestionJobsAsync(maxSteps: 1)
+        XCTAssertTrue(firstDidRun)
+        let retryable = try queue.fetchJob(id: jobID)
+        let retryCheckpoint = try PersonalLibrarySuggestionsCodec.checkpoint(
+            from: retryable.checkpoint
+        )
+        XCTAssertEqual(retryable.state, .retryableFailed)
+        XCTAssertEqual(retryCheckpoint.checkedCount, 64)
+        XCTAssertEqual(retryCheckpoint.topHits.count, 5)
+
+        let secondDidRun = try await service.runPendingSuggestionJobsAsync(maxSteps: 1)
+        XCTAssertTrue(secondDidRun)
+        let completed = try queue.fetchJob(id: jobID)
+        let completedCheckpoint = try PersonalLibrarySuggestionsCodec.checkpoint(
+            from: completed.checkpoint
+        )
+        let batchSizes = await embeddingCache.batchSizes
+        XCTAssertEqual(completed.state, .completed)
+        XCTAssertEqual(completedCheckpoint.checkedCount, 66)
+        XCTAssertEqual(completedCheckpoint.suggestedCount, 5)
+        XCTAssertEqual(batchSizes, [64, 2, 2])
+        XCTAssertEqual(try service.totalPendingSuggestionCount(), 5)
     }
 
     func testReviewServiceAsyncRunnerPublishesDurableStandardLibrarySuggestions() async throws {
@@ -3770,6 +3957,154 @@ private struct LargeLibraryFixture {
 private actor StubPersonalLibrarySuggestionImages: PersonalLibrarySuggestionImageLoading {
     func loadPersonalSuggestionPreview(assetID _: UUID) async throws -> Data {
         Data("preview".utf8)
+    }
+}
+
+private actor RecordingBatchAppEmbeddingCache: AppSelectedAssetEmbeddingCaching {
+    private(set) var batchSizes: [Int] = []
+    private(set) var requestedConcurrency: [Int] = []
+    private let identity = makeBatchAppEncoderIdentity()
+
+    func cacheSelectedAsset(
+        assetID _: UUID,
+        contentRevision _: Int,
+        imageData _: @escaping @Sendable () async throws -> Data
+    ) async throws -> AppCoreMLCachedEmbedding {
+        cachedEmbedding()
+    }
+
+    func cacheSelectedAssets(
+        _ requests: [AppSelectedAssetEmbeddingRequest],
+        maximumConcurrentImageLoads: Int
+    ) async throws -> [AppCoreMLCachedEmbedding?] {
+        batchSizes.append(requests.count)
+        requestedConcurrency.append(maximumConcurrentImageLoads)
+        return requests.map { _ in cachedEmbedding() }
+    }
+
+    private func cachedEmbedding() -> AppCoreMLCachedEmbedding {
+        AppCoreMLCachedEmbedding(
+            identity: identity,
+            values: [Float](repeating: 0.25, count: identity.elementCount),
+            vectorSHA256: String(repeating: "e", count: 64),
+            origin: .cacheHit
+        )
+    }
+}
+
+private actor RecordingBatchAppPersonalSuggester: AppPersonalTagLibrarySuggesting {
+    let storedCapability: PersonalModelSuggestionCapability
+    private(set) var batchSizes: [Int] = []
+
+    init(capability: PersonalModelSuggestionCapability) {
+        storedCapability = capability
+    }
+
+    func capability(
+        mediaKind: MediaKind,
+        tagID: UUID
+    ) async throws -> PersonalModelSuggestionCapability {
+        guard mediaKind == storedCapability.target.mediaKind,
+              storedCapability.tagIDs == [tagID]
+        else {
+            throw AppPersonalTagLibrarySuggestionError.identityMismatch
+        }
+        return storedCapability
+    }
+
+    func suggest(
+        tagID: UUID,
+        candidates: [PersonalSuggestionCandidate],
+        maximumPendingCount: Int,
+        minimumScore _: Double,
+        embedding: @escaping @Sendable (PersonalSuggestionCandidate) async throws -> AppCoreMLEmbedding,
+        progress _: (@Sendable (Int, Int, Int) -> Void)?
+    ) async throws -> AppPersonalTagLibrarySuggestionBatch {
+        for candidate in candidates {
+            _ = try await embedding(candidate)
+        }
+        return batch(tagID: tagID, candidates: candidates, maximumPendingCount: maximumPendingCount)
+    }
+
+    func suggest(
+        mediaKind: MediaKind,
+        tagID: UUID,
+        candidates: [PersonalSuggestionCandidate],
+        maximumPendingCount: Int,
+        minimumScore _: Double,
+        embeddingBatch: @escaping @Sendable ([PersonalSuggestionCandidate]) async throws -> [AppCoreMLEmbedding?],
+        progress _: (@Sendable (Int, Int, Int) -> Void)?
+    ) async throws -> AppPersonalTagLibrarySuggestionBatch {
+        guard mediaKind == storedCapability.target.mediaKind else {
+            throw AppPersonalTagLibrarySuggestionError.identityMismatch
+        }
+        let embeddings = try await embeddingBatch(candidates)
+        guard embeddings.count == candidates.count, embeddings.allSatisfy({ $0 != nil }) else {
+            throw AppPersonalTagLibrarySuggestionError.identityMismatch
+        }
+        batchSizes.append(candidates.count)
+        return batch(tagID: tagID, candidates: candidates, maximumPendingCount: maximumPendingCount)
+    }
+
+    private func batch(
+        tagID: UUID,
+        candidates: [PersonalSuggestionCandidate],
+        maximumPendingCount: Int
+    ) -> AppPersonalTagLibrarySuggestionBatch {
+        let hits = candidates.map { candidate in
+            let suffix = candidate.assetID.uuidString.split(separator: "-").last ?? "0"
+            let score = Double(UInt64(suffix, radix: 16) ?? 0)
+            return AppPersonalTagLibrarySuggestionHit(candidate: candidate, score: score)
+        }.sorted { $0.score > $1.score }
+        return AppPersonalTagLibrarySuggestionBatch(
+            tagID: tagID,
+            capability: storedCapability,
+            hits: Array(hits.prefix(maximumPendingCount)),
+            checkedCount: candidates.count,
+            aboveThresholdCount: candidates.count,
+            skippedCount: 0
+        )
+    }
+}
+
+private func makeBatchAppEncoderIdentity() -> AppCoreMLModelIdentity {
+    AppCoreMLModelIdentity(
+        provider: "dinov2",
+        modelID: "facebook/dinov2-small",
+        modelRevision: "model-r1",
+        preprocessingRevision: "pre-r1",
+        embeddingSemantics: "dinov2-cls-token",
+        postprocessingRevision: "raw-float32-v1",
+        elementType: "float32",
+        elementCount: 384,
+        sourceModelSHA256: String(repeating: "1", count: 64),
+        artifactSHA256: String(repeating: "2", count: 64),
+        manifestSHA256: String(repeating: "3", count: 64),
+        licenseID: "Apache-2.0",
+        licenseSHA256: String(repeating: "4", count: 64)
+    )
+}
+
+private final class FailOnInvocation: @unchecked Sendable {
+    private let lock = NSLock()
+    private let target: Int
+    private var count = 0
+
+    init(target: Int) {
+        self.target = target
+    }
+
+    func checkpoint() throws {
+        try lock.withLock {
+            count += 1
+            if count == target {
+                throw TestFailure.injected
+            }
+        }
+    }
+
+    private enum TestFailure: Error {
+        case injected
     }
 }
 

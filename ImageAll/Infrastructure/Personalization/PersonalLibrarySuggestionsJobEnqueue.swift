@@ -7,6 +7,8 @@ enum PersonalLibrarySuggestionsJobEnqueue {
         sourceIDs: [UUID],
         catalogCutoffMs: Int64,
         capability: PersonalModelSuggestionCapability,
+        minimumScore: Double? = nil,
+        maximumPendingCount: Int? = nil,
         notBeforeMs: Int64
     ) throws -> EnqueueJobCommand {
         let frozenCapability = PersonalModelSuggestionCapability(
@@ -17,7 +19,9 @@ enum PersonalLibrarySuggestionsJobEnqueue {
             contractVersion: PersonalLibrarySuggestionsJobFactory.contractVersion,
             sourceIDs: sourceIDs.sorted { $0.uuidString < $1.uuidString },
             catalogCutoffMs: catalogCutoffMs,
-            capability: frozenCapability
+            capability: frozenCapability,
+            minimumScore: minimumScore,
+            maximumPendingCount: maximumPendingCount
         )
         return EnqueueJobCommand(
             id: jobID,
@@ -26,8 +30,8 @@ enum PersonalLibrarySuggestionsJobEnqueue {
             payload: try PersonalLibrarySuggestionsCodec.encodePayload(payload),
             sourceID: nil,
             coalescingKey: PersonalLibrarySuggestionsJobFactory.coalescingKey(
-                catalogScopeID: capability.target.catalogScopeID,
-                mediaKind: capability.target.mediaKind
+                capability: frozenCapability,
+                usesAppRuntime: minimumScore != nil
             ),
             priority: PersonalLibrarySuggestionsJobFactory.priority,
             maxAttempts: PersonalLibrarySuggestionsJobFactory.maxAttempts,

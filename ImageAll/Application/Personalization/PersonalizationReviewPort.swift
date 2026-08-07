@@ -312,6 +312,12 @@ protocol PersonalizationReviewPort: Sendable {
         capability: PersonalModelSuggestionCapability,
         sourceIDs: [UUID]?
     ) throws -> UUID
+    func enqueuePersonalLibrarySuggestions(
+        capability: PersonalModelSuggestionCapability,
+        sourceIDs: [UUID]?,
+        minimumScore: Double,
+        maximumPendingCount: Int
+    ) throws -> UUID
     func personalLibrarySuggestionJob() throws -> PersonalLibrarySuggestionJobProjection?
     func personalLibrarySuggestionJob(
         mediaKind: MediaKind
@@ -372,6 +378,18 @@ protocol PersonalizationReviewPort: Sendable {
 }
 
 extension PersonalizationReviewPort {
+    func enqueuePersonalLibrarySuggestions(
+        capability: PersonalModelSuggestionCapability,
+        sourceIDs: [UUID]?,
+        minimumScore _: Double,
+        maximumPendingCount _: Int
+    ) throws -> UUID {
+        try enqueuePersonalLibrarySuggestions(
+            capability: capability,
+            sourceIDs: sourceIDs
+        )
+    }
+
     func personalLibrarySuggestionJob(
         mediaKind: MediaKind
     ) throws -> PersonalLibrarySuggestionJobProjection? {

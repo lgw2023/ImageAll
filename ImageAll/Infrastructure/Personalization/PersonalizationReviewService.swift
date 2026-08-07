@@ -429,8 +429,39 @@ struct PersonalizationReviewService: PersonalizationReviewPort, Sendable {
         capability: PersonalModelSuggestionCapability,
         sourceIDs: [UUID]?
     ) throws -> UUID {
+        try enqueuePersonalLibrarySuggestions(
+            capability: capability,
+            sourceIDs: sourceIDs,
+            minimumScore: nil,
+            maximumPendingCount: nil
+        )
+    }
+
+    func enqueuePersonalLibrarySuggestions(
+        capability: PersonalModelSuggestionCapability,
+        sourceIDs: [UUID]?,
+        minimumScore: Double,
+        maximumPendingCount: Int
+    ) throws -> UUID {
+        try enqueuePersonalLibrarySuggestions(
+            capability: capability,
+            sourceIDs: sourceIDs,
+            minimumScore: Optional(minimumScore),
+            maximumPendingCount: Optional(maximumPendingCount)
+        )
+    }
+
+    private func enqueuePersonalLibrarySuggestions(
+        capability: PersonalModelSuggestionCapability,
+        sourceIDs: [UUID]?,
+        minimumScore: Double?,
+        maximumPendingCount: Int?
+    ) throws -> UUID {
         guard personalLibrarySuggestionsEnabled,
-              capability.target.catalogScopeID == (try database.catalogScopeID())
+              capability.target.catalogScopeID == (try database.catalogScopeID()),
+              (minimumScore == nil) == (maximumPendingCount == nil),
+              minimumScore.map(\.isFinite) ?? true,
+              maximumPendingCount.map({ $0 > 0 }) ?? true
         else {
             throw PersonalizationReviewError.persistenceFailure
         }
@@ -438,6 +469,7 @@ struct PersonalizationReviewService: PersonalizationReviewPort, Sendable {
         let nowMs = clock.nowMs
         do {
             return try database.pool.write { db in
+                let resolvedSourceIDs = try resolvePersonalizationSourceIDs(sourceIDs, in: db)
                 if let row = try Row.fetchOne(
                     db,
                     sql: """
@@ -449,8 +481,8 @@ struct PersonalizationReviewService: PersonalizationReviewPort, Sendable {
                     """,
                     arguments: [
                         PersonalLibrarySuggestionsJobFactory.coalescingKey(
-                            catalogScopeID: capability.target.catalogScopeID,
-                            mediaKind: capability.target.mediaKind
+                            capability: capability,
+                            usesAppRuntime: minimumScore != nil
                         ),
                     ]
                 ) {
@@ -459,19 +491,23 @@ struct PersonalizationReviewService: PersonalizationReviewPort, Sendable {
                         existing.payload
                     )
                     guard existingPayload.capability == capability,
+                          existingPayload.sourceIDs == resolvedSourceIDs,
+                          existingPayload.minimumScore == minimumScore,
+                          existingPayload.maximumPendingCount == maximumPendingCount,
                           try review.personalCapabilityMatches(capability, in: db)
                     else {
                         throw PersonalizationReviewError.activeJobConflict
                     }
                     return existing.id
                 }
-                let resolvedSourceIDs = try resolvePersonalizationSourceIDs(sourceIDs, in: db)
                 let command = try PersonalLibrarySuggestionsJobEnqueue.makeEnqueueCommand(
                     jobID: jobID,
                     mediaKind: capability.target.mediaKind,
                     sourceIDs: resolvedSourceIDs,
                     catalogCutoffMs: nowMs,
                     capability: capability,
+                    minimumScore: minimumScore,
+                    maximumPendingCount: maximumPendingCount,
                     notBeforeMs: nowMs
                 )
                 try review.activatePersonalSuggestionBundle(

@@ -205,6 +205,19 @@ enum PersonalLibrarySuggestionsJobFactory {
         let base = "personalization:personal-library:\(catalogScopeID)"
         return mediaKind == .image ? base : "\(base):\(mediaKind.rawValue)"
     }
+
+    static func coalescingKey(
+        capability: PersonalModelSuggestionCapability,
+        usesAppRuntime: Bool
+    ) -> String {
+        guard usesAppRuntime, let tagID = capability.tagIDs.first else {
+            return coalescingKey(
+                catalogScopeID: capability.target.catalogScopeID,
+                mediaKind: capability.target.mediaKind
+            )
+        }
+        return "personalization:app-personal-library:\(capability.target.catalogScopeID):\(capability.target.mediaKind.rawValue):\(capability.target.bundleID):\(tagID.uuidString.lowercased())"
+    }
 }
 
 struct PersonalLibrarySuggestionsPayload: Codable, Equatable, Sendable {
@@ -212,6 +225,63 @@ struct PersonalLibrarySuggestionsPayload: Codable, Equatable, Sendable {
     let sourceIDs: [UUID]
     let catalogCutoffMs: Int64
     let capability: PersonalModelSuggestionCapability
+    let minimumScore: Double?
+    let maximumPendingCount: Int?
+
+    init(
+        contractVersion: Int,
+        sourceIDs: [UUID],
+        catalogCutoffMs: Int64,
+        capability: PersonalModelSuggestionCapability,
+        minimumScore: Double? = nil,
+        maximumPendingCount: Int? = nil
+    ) {
+        self.contractVersion = contractVersion
+        self.sourceIDs = sourceIDs
+        self.catalogCutoffMs = catalogCutoffMs
+        self.capability = capability
+        self.minimumScore = minimumScore
+        self.maximumPendingCount = maximumPendingCount
+    }
+
+    var usesAppRuntime: Bool {
+        minimumScore != nil && maximumPendingCount != nil
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case contractVersion
+        case sourceIDs
+        case catalogCutoffMs
+        case capability
+        case minimumScore
+        case maximumPendingCount
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        contractVersion = try values.decode(Int.self, forKey: .contractVersion)
+        sourceIDs = try values.decode([UUID].self, forKey: .sourceIDs)
+        catalogCutoffMs = try values.decode(Int64.self, forKey: .catalogCutoffMs)
+        capability = try values.decode(PersonalModelSuggestionCapability.self, forKey: .capability)
+        minimumScore = try values.decodeIfPresent(Double.self, forKey: .minimumScore)
+        maximumPendingCount = try values.decodeIfPresent(Int.self, forKey: .maximumPendingCount)
+    }
+}
+
+struct PersonalLibrarySuggestionsCheckpointHit: Codable, Equatable, Sendable {
+    let assetID: UUID
+    let contentRevision: Int
+    let score: Double
+
+    var suggestionHit: AppPersonalTagLibrarySuggestionHit {
+        AppPersonalTagLibrarySuggestionHit(
+            candidate: PersonalSuggestionCandidate(
+                assetID: assetID,
+                contentRevision: contentRevision
+            ),
+            score: score
+        )
+    }
 }
 
 struct PersonalLibrarySuggestionsCheckpoint: Codable, Equatable, Sendable {
@@ -220,14 +290,66 @@ struct PersonalLibrarySuggestionsCheckpoint: Codable, Equatable, Sendable {
     let checkedCount: Int
     let suggestedCount: Int
     let skippedCount: Int
+    let aboveThresholdCount: Int
+    let topHits: [PersonalLibrarySuggestionsCheckpointHit]
+
+    init(
+        lastAssetID: UUID?,
+        capability: PersonalModelSuggestionCapability?,
+        checkedCount: Int,
+        suggestedCount: Int,
+        skippedCount: Int,
+        aboveThresholdCount: Int = 0,
+        topHits: [PersonalLibrarySuggestionsCheckpointHit] = []
+    ) {
+        self.lastAssetID = lastAssetID
+        self.capability = capability
+        self.checkedCount = checkedCount
+        self.suggestedCount = suggestedCount
+        self.skippedCount = skippedCount
+        self.aboveThresholdCount = aboveThresholdCount
+        self.topHits = topHits
+    }
 
     static let empty = PersonalLibrarySuggestionsCheckpoint(
         lastAssetID: nil,
         capability: nil,
         checkedCount: 0,
         suggestedCount: 0,
-        skippedCount: 0
+        skippedCount: 0,
+        aboveThresholdCount: 0,
+        topHits: []
     )
+
+    private enum CodingKeys: String, CodingKey {
+        case lastAssetID
+        case capability
+        case checkedCount
+        case suggestedCount
+        case skippedCount
+        case aboveThresholdCount
+        case topHits
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        lastAssetID = try values.decodeIfPresent(UUID.self, forKey: .lastAssetID)
+        capability = try values.decodeIfPresent(
+            PersonalModelSuggestionCapability.self,
+            forKey: .capability
+        )
+        checkedCount = try values.decode(Int.self, forKey: .checkedCount)
+        suggestedCount = try values.decode(Int.self, forKey: .suggestedCount)
+        skippedCount = try values.decode(Int.self, forKey: .skippedCount)
+        aboveThresholdCount = try values.decodeIfPresent(
+            Int.self,
+            forKey: .aboveThresholdCount
+        ) ?? suggestedCount
+        topHits = try values.decodeIfPresent(
+            [PersonalLibrarySuggestionsCheckpointHit].self,
+            forKey: .topHits
+        ) ?? []
+    }
 }
 
 enum PersonalLibrarySuggestionsCodec {
@@ -241,7 +363,10 @@ enum PersonalLibrarySuggestionsCodec {
               !payload.sourceIDs.isEmpty,
               Set(payload.sourceIDs).count == payload.sourceIDs.count,
               payload.catalogCutoffMs >= 0,
-              validateCapability(payload.capability)
+              validateCapability(payload.capability),
+              (payload.minimumScore == nil) == (payload.maximumPendingCount == nil),
+              payload.minimumScore.map(\.isFinite) ?? true,
+              payload.maximumPendingCount.map { $0 > 0 } ?? true
         else {
             throw PersonalLibrarySuggestionsCodecError.invalidPayload
         }
@@ -258,6 +383,12 @@ enum PersonalLibrarySuggestionsCodec {
               checkpoint.suggestedCount >= 0,
               checkpoint.skippedCount >= 0,
               checkpoint.skippedCount <= checkpoint.checkedCount,
+              checkpoint.aboveThresholdCount >= 0,
+              checkpoint.topHits.count <= checkpoint.aboveThresholdCount,
+              Set(checkpoint.topHits.map(\.assetID)).count == checkpoint.topHits.count,
+              checkpoint.topHits.allSatisfy({
+                  $0.contentRevision > 0 && $0.score.isFinite
+              }),
               checkpoint.capability.map(validateCapability) ?? true
         else {
             throw PersonalLibrarySuggestionsCodecError.invalidCheckpoint

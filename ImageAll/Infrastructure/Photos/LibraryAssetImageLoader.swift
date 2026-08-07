@@ -61,11 +61,42 @@ struct LibraryAssetImageLoader: Sendable {
     }
 
     func load(assetID: UUID, variant: PhotosImageVariant) async throws -> Data {
+        try await load(
+            assetID: assetID,
+            variant: variant,
+            filePersistence: nil
+        )
+    }
+
+    /// The app-model pipeline persists its exact 224-pixel input separately.
+    /// File-backed sources therefore keep the legacy preview rendering contract
+    /// without also publishing a much larger 2048-pixel intermediate preview.
+    func loadModelSuggestionPreview(assetID: UUID) async throws -> Data {
+        try await load(
+            assetID: assetID,
+            variant: .preview,
+            filePersistence: .memoryOnly
+        )
+    }
+
+    private func load(
+        assetID: UUID,
+        variant: PhotosImageVariant,
+        filePersistence: DerivedImagePersistence?
+    ) async throws -> Data {
         // Acquire on the caller's task so SwiftUI/task cancellation removes waiters.
         // Coalesce afterwards so remounted cells can still share one decode/fetch.
         try await loadCoordinator.run(lane: .lane(for: variant)) { [self] in
-            try await inFlight.run(assetID: assetID, variant: variant) { [self] in
-                try await loadWithoutConcurrencyLimit(assetID: assetID, variant: variant)
+            try await inFlight.run(
+                assetID: assetID,
+                variant: variant,
+                filePersistence: filePersistence
+            ) { [self] in
+                try await loadWithoutConcurrencyLimit(
+                    assetID: assetID,
+                    variant: variant,
+                    filePersistence: filePersistence
+                )
             }
         }
     }
@@ -117,7 +148,8 @@ struct LibraryAssetImageLoader: Sendable {
 
     private func loadWithoutConcurrencyLimit(
         assetID: UUID,
-        variant: PhotosImageVariant
+        variant: PhotosImageVariant,
+        filePersistence: DerivedImagePersistence?
     ) async throws -> Data {
         let locator = try await locator(assetID: assetID)
 
@@ -195,9 +227,9 @@ struct LibraryAssetImageLoader: Sendable {
             DerivedImageRequest(
                 assetID: assetID,
                 variant: derivedVariant,
-                persistence: variant == .originalAspectThumbnail
+                persistence: filePersistence ?? (variant == .originalAspectThumbnail
                     ? .required
-                    : .memoryFallbackAllowed
+                    : .memoryFallbackAllowed)
             )
         ).encodedBytes
     }
@@ -340,6 +372,7 @@ actor LibraryAssetImageInFlightCoordinator {
     private struct Key: Hashable, Sendable {
         let assetID: UUID
         let variant: PhotosImageVariant
+        let filePersistence: DerivedImagePersistence?
     }
 
     private var tasks: [Key: Task<Data, Error>] = [:]
@@ -347,9 +380,14 @@ actor LibraryAssetImageInFlightCoordinator {
     func run(
         assetID: UUID,
         variant: PhotosImageVariant,
+        filePersistence: DerivedImagePersistence?,
         operation: @Sendable @escaping () async throws -> Data
     ) async throws -> Data {
-        let key = Key(assetID: assetID, variant: variant)
+        let key = Key(
+            assetID: assetID,
+            variant: variant,
+            filePersistence: filePersistence
+        )
         if let existing = tasks[key] {
             return try await existing.value
         }

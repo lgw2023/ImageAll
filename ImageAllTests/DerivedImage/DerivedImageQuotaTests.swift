@@ -174,6 +174,28 @@ final class DerivedImageQuotaTests: XCTestCase {
         DerivedImageTestSupport.assertBookmarkPortScopeBalanced(bookmarkPort)
     }
 
+    func testMemoryOnlyRequestNeverPublishesLargeIntermediatePreview() async throws {
+        let env = try DerivedImageTestSupport.TempEnvironment(label: "model-input-memory-only")
+        defer { env.cleanup() }
+        _ = try env.seedAvailableAsset()
+        let (service, bookmarkPort) = env.makeService(
+            volumeReader: DerivedImageTestSupport.FailingVolumeReader()
+        )
+
+        let payload = try await service.loadOrGenerate(
+            DerivedImageRequest(
+                assetID: env.assetID,
+                variant: .preview,
+                persistence: .memoryOnly
+            )
+        )
+
+        XCTAssertEqual(payload.origin, .memoryOnly)
+        XCTAssertFalse(payload.encodedBytes.isEmpty)
+        try await DerivedImageTestSupport.assertZeroCacheArtifacts(env: env)
+        DerivedImageTestSupport.assertBookmarkPortScopeBalanced(bookmarkPort)
+    }
+
     // MARK: - 4. Low-space eviction requery
 
     func testEvictionRequeriesVolumeAfterObjectDeleteAndThenAdmits() async throws {
