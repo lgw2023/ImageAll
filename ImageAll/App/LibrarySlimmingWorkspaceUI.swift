@@ -286,6 +286,52 @@ enum LibrarySlimmingRecyclePagination {
     }
 }
 
+enum LibrarySlimmingRecycleScope: String, CaseIterable, Identifiable {
+    case all
+    case photos
+    case files
+    case attention
+
+    var id: Self { self }
+
+    var title: String {
+        switch self {
+        case .all: "全部"
+        case .photos: "Photos"
+        case .files: "文件夹"
+        case .attention: "待处理"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .all: "square.grid.2x2"
+        case .photos: "photo.on.rectangle.angled"
+        case .files: "folder"
+        case .attention: "exclamationmark.triangle"
+        }
+    }
+
+    func matches(_ entry: RecycleEntryRecord) -> Bool {
+        switch self {
+        case .all: true
+        case .photos: entry.sourceKind == .photos
+        case .files: entry.sourceKind == .file
+        case .attention: entry.state != .recycled
+        }
+    }
+
+    func filtered(_ entries: [RecycleEntryRecord]) -> [RecycleEntryRecord] {
+        guard self != .all else { return entries }
+        return entries.filter(matches)
+    }
+
+    func count(in entries: [RecycleEntryRecord]) -> Int {
+        guard self != .all else { return entries.count }
+        return entries.lazy.filter(matches).count
+    }
+}
+
 private struct LibrarySlimmingClusterListRefreshModifier: ViewModifier {
     @ObservedObject var model: LibraryWorkspaceModel
     @Binding var clusterLimit: Int
@@ -316,6 +362,7 @@ struct LibrarySlimmingWorkspaceView: View {
         LibrarySlimmingClusterPagination.initialLimit
     @State private var librarySlimmingRecycleLimit =
         LibrarySlimmingRecyclePagination.initialLimit
+    @State private var librarySlimmingRecycleScope = LibrarySlimmingRecycleScope.all
     @State private var showsAnalysisNavigator = true
 
     var body: some View {
@@ -388,6 +435,9 @@ struct LibrarySlimmingWorkspaceView: View {
             librarySlimmingRecycleLimit = LibrarySlimmingRecyclePagination.initialLimit
         }
         .onChange(of: model.librarySlimmingRecycleSourceFilterID) { _, _ in
+            librarySlimmingRecycleLimit = LibrarySlimmingRecyclePagination.initialLimit
+        }
+        .onChange(of: librarySlimmingRecycleScope) { _, _ in
             librarySlimmingRecycleLimit = LibrarySlimmingRecyclePagination.initialLimit
         }
         .onChange(of: model.librarySlimmingPreviewAssetID) { _, _ in
@@ -665,7 +715,19 @@ struct LibrarySlimmingWorkspaceView: View {
                 }
 
                 Spacer(minLength: 12)
-                inlineActivityStatus
+                if model.librarySlimmingWorkspaceTab == .recycleBin {
+                    Label(
+                        "\(model.librarySlimmingRecycleEntries.count.formatted()) 项",
+                        systemImage: "tray.full"
+                    )
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.secondary)
+                    .accessibilityLabel(
+                        "回收站共有 \(model.librarySlimmingRecycleEntries.count) 项"
+                    )
+                } else {
+                    inlineActivityStatus
+                }
 
                 Button("返回图库", systemImage: "photo.on.rectangle") {
                     onReturnToLibrary()
@@ -676,6 +738,7 @@ struct LibrarySlimmingWorkspaceView: View {
             .padding(.horizontal, 12)
             .padding(.vertical, 7)
         }
+        .background(Color(nsColor: .windowBackgroundColor))
     }
 
     private var catalogSourceMenu: some View {
@@ -1220,32 +1283,155 @@ struct LibrarySlimmingWorkspaceView: View {
 
     private var recycleBinList: some View {
         VStack(spacing: 0) {
+            recycleBinHeader
+            Divider()
+            recycleBinSearchResults
+        }
+        .background(Color(nsColor: .windowBackgroundColor))
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    private var recycleBinHeader: some View {
+        let filteredEntries = model.filteredLibrarySlimmingRecycleEntries
+
+        return VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .center, spacing: 12) {
+                Image(systemName: "trash.circle.fill")
+                    .font(.system(size: 30, weight: .semibold))
+                    .symbolRenderingMode(.hierarchical)
+                    .foregroundStyle(.orange)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("回收站")
+                        .font(.title2.weight(.semibold))
+                    Text(recycleBinSummaryCaption)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer(minLength: 16)
+
+                if model.isMutatingLibrarySlimmingRecycle {
+                    HStack(spacing: 7) {
+                        ProgressView()
+                            .controlSize(.small)
+                        Text("正在处理…")
+                            .font(.callout.weight(.medium))
+                    }
+                    .foregroundStyle(.secondary)
+                    .accessibilityElement(children: .combine)
+                }
+            }
+
             if let sourceTitle = model.librarySlimmingRecycleSourceFilterTitle {
                 HStack(spacing: 8) {
                     Label(
-                        "仅显示阻止“\(sourceTitle)”删除的项目",
+                        "正在查看阻止“\(sourceTitle)”删除的项目",
                         systemImage: "line.3.horizontal.decrease.circle.fill"
                     )
                     .font(.callout.weight(.medium))
                     Spacer()
-                    Button("显示全部") {
+                    Button("显示全部来源") {
                         model.clearLibrarySlimmingRecycleSourceFilter()
                     }
+                    .buttonStyle(.borderless)
                     .persistentHelp("清除来源范围，显示所有来源的回收站项目。")
                 }
-                .padding(.horizontal, 16)
+                .padding(.horizontal, 12)
                 .padding(.vertical, 9)
-                .background(Color.orange.opacity(0.12))
-                Divider()
+                .background(Color.orange.opacity(0.1), in: RoundedRectangle(cornerRadius: 9))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 9)
+                        .strokeBorder(Color.orange.opacity(0.22))
+                }
             }
-            recycleBinSearchBar
-            Divider()
-            recycleBinSearchResults
+
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 12) {
+                    recycleBinScopeControls(entries: filteredEntries)
+                    Spacer(minLength: 16)
+                    recycleBinSearchBar(resultCount: filteredEntries.count)
+                        .frame(width: 310)
+                }
+
+                VStack(alignment: .leading, spacing: 10) {
+                    recycleBinScopeControls(entries: filteredEntries)
+                    recycleBinSearchBar(resultCount: filteredEntries.count)
+                        .frame(maxWidth: .infinity)
+                }
+            }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .padding(.horizontal, 18)
+        .padding(.top, 16)
+        .padding(.bottom, 14)
+        .background {
+            LinearGradient(
+                colors: [Color.orange.opacity(0.075), Color.clear],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+        }
     }
 
-    private var recycleBinSearchBar: some View {
+    private var recycleBinSummaryCaption: String {
+        let count = model.librarySlimmingRecycleEntries.count.formatted()
+        let unit = model.selectedMediaKind == .video ? "个视频" : "张照片"
+        return "集中查看 \(count) \(unit)的恢复期限、来源和处理状态"
+    }
+
+    private func recycleBinScopeControls(entries: [RecycleEntryRecord]) -> some View {
+        HStack(spacing: 7) {
+            ForEach(LibrarySlimmingRecycleScope.allCases) { scope in
+                recycleBinScopeButton(scope, entries: entries)
+            }
+        }
+    }
+
+    private func recycleBinScopeButton(
+        _ scope: LibrarySlimmingRecycleScope,
+        entries: [RecycleEntryRecord]
+    ) -> some View {
+        let isSelected = librarySlimmingRecycleScope == scope
+        let isAttention = scope == .attention
+        let tint = isAttention ? Color.orange : Color.accentColor
+        let count = scope.count(in: entries)
+
+        return Button {
+            withAnimation(.easeInOut(duration: 0.16)) {
+                librarySlimmingRecycleScope = scope
+            }
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: scope.systemImage)
+                Text(scope.title)
+                Text(count.formatted())
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(isSelected ? tint : Color.secondary)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(tint.opacity(isSelected ? 0.16 : 0.07), in: Capsule())
+            }
+            .font(.callout.weight(isSelected ? .semibold : .regular))
+            .foregroundStyle(isSelected ? tint : Color.primary)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+            .background(
+                isSelected ? tint.opacity(0.1) : Color(nsColor: .controlBackgroundColor),
+                in: RoundedRectangle(cornerRadius: 9)
+            )
+            .overlay {
+                RoundedRectangle(cornerRadius: 9)
+                    .strokeBorder(isSelected ? tint.opacity(0.45) : Color.secondary.opacity(0.16))
+            }
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("\(scope.title)，\(count) 项")
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
+        .accessibilityIdentifier("librarySlimmingRecycleScope.\(scope.rawValue)")
+        .persistentHelp("只显示\(scope.title)范围内的回收站项目。")
+    }
+
+    private func recycleBinSearchBar(resultCount: Int) -> some View {
         HStack(spacing: 8) {
             Image(systemName: "magnifyingglass")
                 .foregroundStyle(.secondary)
@@ -1260,28 +1446,34 @@ struct LibrarySlimmingWorkspaceView: View {
             .accessibilityIdentifier("librarySlimmingRecycleFilenameSearch")
             .persistentHelp("输入文件名的一部分，即时筛选当前回收站条目。")
             if !model.trimmedLibrarySlimmingRecycleSearchText.isEmpty {
-                Text(
-                    "\(model.filteredLibrarySlimmingRecycleEntries.count) / "
-                        + "\(model.librarySlimmingRecycleEntries.count)"
-                )
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                Text(resultCount.formatted())
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.secondary)
                 Button {
                     model.updateLibrarySlimmingRecycleSearchText("")
                 } label: {
                     Image(systemName: "xmark.circle.fill")
                 }
                 .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
                 .accessibilityLabel("清除回收站文件名搜索")
                 .persistentHelp("清除文件名搜索并显示全部回收站条目。")
             }
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 10)
+        .padding(.horizontal, 11)
+        .padding(.vertical, 8)
+        .background(Color(nsColor: .textBackgroundColor).opacity(0.8), in: RoundedRectangle(cornerRadius: 9))
+        .overlay {
+            RoundedRectangle(cornerRadius: 9)
+                .strokeBorder(Color.secondary.opacity(0.2))
+        }
     }
 
     @ViewBuilder
     private var recycleBinSearchResults: some View {
+        let filteredEntries = model.filteredLibrarySlimmingRecycleEntries
+        let visibleEntries = librarySlimmingRecycleScope.filtered(filteredEntries)
+
         Group {
             if model.librarySlimmingRecycleEntries.isEmpty {
                 ContentUnavailableView {
@@ -1292,7 +1484,7 @@ struct LibrarySlimmingWorkspaceView: View {
                     )
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if model.filteredLibrarySlimmingRecycleEntries.isEmpty {
+            } else if filteredEntries.isEmpty {
                 ContentUnavailableView {
                     Label("没有匹配的媒体", systemImage: "magnifyingglass")
                 } description: {
@@ -1320,170 +1512,265 @@ struct LibrarySlimmingWorkspaceView: View {
                     }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if visibleEntries.isEmpty {
+                ContentUnavailableView {
+                    Label("这个范围内没有媒体", systemImage: librarySlimmingRecycleScope.systemImage)
+                } description: {
+                    Text("其他来源或处理状态中仍有回收站项目。")
+                } actions: {
+                    Button("查看全部") {
+                        librarySlimmingRecycleScope = .all
+                    }
+                    .persistentHelp("显示当前搜索和来源范围内的全部回收站项目。")
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 ScrollView {
-                    LazyVStack(spacing: 0) {
+                    LazyVGrid(
+                        columns: [
+                            GridItem(
+                                .adaptive(minimum: 380, maximum: 640),
+                                spacing: 12,
+                                alignment: .top
+                            )
+                        ],
+                        alignment: .center,
+                        spacing: 12
+                    ) {
                         ForEach(
-                            model.filteredLibrarySlimmingRecycleEntries.prefix(
+                            visibleEntries.prefix(
                                 LibrarySlimmingRecyclePagination.visibleCount(
-                                    totalCount: model.filteredLibrarySlimmingRecycleEntries.count,
+                                    totalCount: visibleEntries.count,
                                     limit: librarySlimmingRecycleLimit
                                 )
                             )
                         ) { entry in
-                            HStack(alignment: .top, spacing: 12) {
-                                SlimmingThumbnailCell(
-                                    model: model, assetID: entry.assetID, isSelected: false
-                                )
-                                .frame(width: 72, height: 72)
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text(
-                                        entry.fileName
-                                            ?? entry.originalRelativePath
-                                            ?? entry.photosLocalIdentifier
-                                            ?? "未命名"
-                                    )
-                                    .font(.body.weight(.medium))
-                                    .lineLimit(2)
-                                    Text(entry.sourceKind == .file ? "文件夹" : "Photos")
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                    if entry.state != .recycled {
-                                        Label(
-                                            recycleEntryStateText(entry),
-                                            systemImage: recycleEntryStateIcon(entry)
-                                        )
-                                        .font(.caption)
-                                        .foregroundStyle(
-                                            entry.isDiscardablePreflightFailure
-                                                ? Color.orange
-                                                : Color.red
-                                        )
-                                        .fixedSize(horizontal: false, vertical: true)
-                                    } else if entry.sourceKind == .photos {
-                                        Text(
-                                            RecycleCountdownFormatter.recordCleanupText(
-                                                cleanupAfterMs: entry.purgeAfterMs,
-                                                nowMs: Int64(Date().timeIntervalSince1970 * 1000)
-                                            )
-                                        )
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                        Text("实际保留期限与永久删除由「照片」App 管理")
-                                            .font(.caption2)
-                                            .foregroundStyle(.secondary)
-                                    } else {
-                                        Text(
-                                            RecycleCountdownFormatter.text(
-                                                purgeAfterMs: entry.purgeAfterMs,
-                                                nowMs: Int64(Date().timeIntervalSince1970 * 1000)
-                                            )
-                                        )
-                                        .font(.caption)
-                                        .foregroundStyle(.orange)
-                                    }
-                                }
-                                Spacer()
-                                VStack(spacing: 8) {
-                                    switch entry.resolution {
-                                    case .restoreOrPurge:
-                                        Button(entry.sourceKind == .photos ? "恢复说明" : "恢复") {
-                                            Task {
-                                                await model.restoreLibrarySlimmingRecycleEntry(
-                                                    entry.id)
-                                            }
-                                        }
-                                        .disabled(model.isMutatingLibrarySlimmingRecycle)
-                                        .persistentHelp(
-                                            entry.sourceKind == .photos
-                                                ? "查看如何从 Apple Photos“最近删除”中恢复这个媒体。"
-                                                : "把这个文件夹媒体从 ImageAll 回收站恢复到原位置。"
-                                        )
-                                        if entry.sourceKind == .file {
-                                            Button("立即删除", role: .destructive) {
-                                                confirmPurgeEntryID = entry.id
-                                            }
-                                            .disabled(model.isMutatingLibrarySlimmingRecycle)
-                                            .persistentHelp("打开永久删除确认；确认后这个原始媒体将不可恢复。")
-                                        }
-                                    case .discardPreflightFailure:
-                                        Button("撤销失败记录") {
-                                            Task {
-                                                await model.discardLibrarySlimmingPreflightFailure(
-                                                    entry.id
-                                                )
-                                            }
-                                        }
-                                        .disabled(model.isMutatingLibrarySlimmingRecycle)
-                                        .persistentHelp(
-                                            "仅撤销在文件操作开始前失败的回收意图；不会读写、移动或删除原文件。"
-                                        )
-                                    case .retryInterruptedOperation:
-                                        Button("重新检查状态") {
-                                            Task {
-                                                await model
-                                                    .retryInterruptedLibrarySlimmingRecycleEntry(
-                                                        entry.id
-                                                    )
-                                            }
-                                        }
-                                        .disabled(model.isMutatingLibrarySlimmingRecycle)
-                                        .persistentHelp("重新检查原位置与隔离区，并按确定结果继续恢复状态。")
-                                    case .inspect:
-                                        Button("重新检查状态") {
-                                            Task {
-                                                await model
-                                                    .retryInterruptedLibrarySlimmingRecycleEntry(
-                                                        entry.id
-                                                    )
-                                            }
-                                        }
-                                        .disabled(model.isMutatingLibrarySlimmingRecycle)
-                                        .persistentHelp(
-                                            "仅检查原位置与隔离区；只有位置结果唯一时才更新记录，不会删除任何一侧文件。"
-                                        )
-                                        Button("查看处理说明") {
-                                            model.explainUnresolvedLibrarySlimmingRecycleEntry(
-                                                entry.id)
-                                        }
-                                        .persistentHelp("说明为什么此项目仍需保留并阻止来源删除。")
-                                    }
-                                }
-                                .buttonStyle(.borderless)
-                                .accessibilityElement(children: .contain)
-                            }
-                            .padding(.vertical, 4)
-                            .padding(.horizontal, 12)
-                            .accessibilityElement(children: .contain)
-                            Divider()
+                            recycleEntryCard(entry)
                         }
                         if librarySlimmingRecycleLimit
-                            < model.filteredLibrarySlimmingRecycleEntries.count
+                            < visibleEntries.count
                         {
                             let remaining =
-                                model.filteredLibrarySlimmingRecycleEntries.count
+                                visibleEntries.count
                                 - librarySlimmingRecycleLimit
                             Button {
                                 librarySlimmingRecycleLimit =
                                     LibrarySlimmingRecyclePagination.nextLimit(
                                         currentLimit: librarySlimmingRecycleLimit,
-                                        totalCount:
-                                            model.filteredLibrarySlimmingRecycleEntries.count
+                                        totalCount: visibleEntries.count
                                     )
                             } label: {
-                                Text(
-                                    "再显示 \(min(LibrarySlimmingRecyclePagination.pageSize, remaining)) 项（剩余 \(remaining) 项）"
+                                Label(
+                                    "再显示 \(min(LibrarySlimmingRecyclePagination.pageSize, remaining)) 项",
+                                    systemImage: "chevron.down.circle"
                                 )
                                 .frame(maxWidth: .infinity, alignment: .center)
+                                .padding(.vertical, 5)
                             }
-                            .buttonStyle(.plain)
-                            .foregroundStyle(.tint)
-                            .padding(.vertical, 12)
+                            .buttonStyle(.bordered)
                             .accessibilityLabel("加载更多回收站条目，剩余 \(remaining) 项")
                         }
                     }
+                    .padding(16)
                 }
             }
+        }
+    }
+
+    private func recycleEntryCard(_ entry: RecycleEntryRecord) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .top, spacing: 13) {
+                SlimmingThumbnailCell(
+                    model: model,
+                    assetID: entry.assetID,
+                    isSelected: false
+                )
+                .frame(width: 96, height: 84)
+
+                VStack(alignment: .leading, spacing: 7) {
+                    Text(recycleEntryDisplayName(entry))
+                        .font(.headline)
+                        .lineLimit(2)
+                        .truncationMode(.middle)
+                        .help(recycleEntryDisplayName(entry))
+
+                    HStack(spacing: 7) {
+                        Label(
+                            entry.sourceKind == .photos ? "Apple Photos" : "文件夹来源",
+                            systemImage: entry.sourceKind == .photos
+                                ? "photo.on.rectangle.angled"
+                                : "folder"
+                        )
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(entry.sourceKind == .photos ? Color.blue : Color.secondary)
+
+                        Text(recycleEntryMovedCaption(entry))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    recycleEntryLifecycle(entry)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .padding(12)
+
+            Divider()
+                .padding(.horizontal, 12)
+
+            HStack(spacing: 8) {
+                recycleEntryPolicyCaption(entry)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                recycleEntryActions(entry)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+        }
+        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 12))
+        .overlay {
+            RoundedRectangle(cornerRadius: 12)
+                .strokeBorder(Color.secondary.opacity(0.16))
+        }
+        .shadow(color: .black.opacity(0.035), radius: 5, y: 2)
+        .accessibilityElement(children: .contain)
+    }
+
+    private func recycleEntryDisplayName(_ entry: RecycleEntryRecord) -> String {
+        entry.fileName
+            ?? entry.originalRelativePath
+            ?? entry.photosLocalIdentifier
+            ?? "未命名"
+    }
+
+    private func recycleEntryMovedCaption(_ entry: RecycleEntryRecord) -> String {
+        let date = Date(timeIntervalSince1970: TimeInterval(entry.trashedAtMs) / 1_000)
+        return "\(date.formatted(date: .abbreviated, time: .omitted)) 移入"
+    }
+
+    @ViewBuilder
+    private func recycleEntryLifecycle(_ entry: RecycleEntryRecord) -> some View {
+        if entry.state != .recycled {
+            Label(
+                recycleEntryStateText(entry),
+                systemImage: recycleEntryStateIcon(entry)
+            )
+            .font(.caption.weight(.medium))
+            .foregroundStyle(entry.isDiscardablePreflightFailure ? Color.orange : Color.red)
+            .lineLimit(2)
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 5)
+            .background(
+                (entry.isDiscardablePreflightFailure ? Color.orange : Color.red).opacity(0.09),
+                in: RoundedRectangle(cornerRadius: 7)
+            )
+        } else if entry.sourceKind == .photos {
+            Label(
+                RecycleCountdownFormatter.recordCleanupText(
+                    cleanupAfterMs: entry.purgeAfterMs,
+                    nowMs: Int64(Date().timeIntervalSince1970 * 1_000)
+                ),
+                systemImage: "clock"
+            )
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        } else {
+            Label(
+                RecycleCountdownFormatter.text(
+                    purgeAfterMs: entry.purgeAfterMs,
+                    nowMs: Int64(Date().timeIntervalSince1970 * 1_000)
+                ),
+                systemImage: "hourglass"
+            )
+            .font(.caption.weight(.medium))
+            .foregroundStyle(.orange)
+        }
+    }
+
+    private func recycleEntryPolicyCaption(_ entry: RecycleEntryRecord) -> some View {
+        Label(
+            entry.sourceKind == .photos
+                ? "恢复与永久删除由「照片」App 管理"
+                : "可恢复到原位置",
+            systemImage: entry.sourceKind == .photos ? "info.circle" : "arrow.uturn.backward.circle"
+        )
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .lineLimit(2)
+        .fixedSize(horizontal: false, vertical: true)
+    }
+
+    @ViewBuilder
+    private func recycleEntryActions(_ entry: RecycleEntryRecord) -> some View {
+        switch entry.resolution {
+        case .restoreOrPurge:
+            Button {
+                Task {
+                    await model.restoreLibrarySlimmingRecycleEntry(entry.id)
+                }
+            } label: {
+                Label(
+                    entry.sourceKind == .photos ? "恢复说明" : "恢复",
+                    systemImage: entry.sourceKind == .photos
+                        ? "questionmark.circle"
+                        : "arrow.uturn.backward"
+                )
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.small)
+            .disabled(model.isMutatingLibrarySlimmingRecycle)
+            .persistentHelp(
+                entry.sourceKind == .photos
+                    ? "查看如何从 Apple Photos“最近删除”中恢复这个媒体。"
+                    : "把这个文件夹媒体从 ImageAll 回收站恢复到原位置。"
+            )
+
+            if entry.sourceKind == .file {
+                Button("立即删除", systemImage: "trash", role: .destructive) {
+                    confirmPurgeEntryID = entry.id
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(model.isMutatingLibrarySlimmingRecycle)
+                .persistentHelp("打开永久删除确认；确认后这个原始媒体将不可恢复。")
+            }
+        case .discardPreflightFailure:
+            Button("撤销失败记录", systemImage: "xmark.circle") {
+                Task {
+                    await model.discardLibrarySlimmingPreflightFailure(entry.id)
+                }
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .disabled(model.isMutatingLibrarySlimmingRecycle)
+            .persistentHelp("仅撤销在文件操作开始前失败的回收意图；不会读写、移动或删除原文件。")
+        case .retryInterruptedOperation:
+            Button("重新检查", systemImage: "arrow.clockwise") {
+                Task {
+                    await model.retryInterruptedLibrarySlimmingRecycleEntry(entry.id)
+                }
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.small)
+            .disabled(model.isMutatingLibrarySlimmingRecycle)
+            .persistentHelp("重新检查原位置与隔离区，并按确定结果继续恢复状态。")
+        case .inspect:
+            Button("重新检查", systemImage: "arrow.clockwise") {
+                Task {
+                    await model.retryInterruptedLibrarySlimmingRecycleEntry(entry.id)
+                }
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.small)
+            .disabled(model.isMutatingLibrarySlimmingRecycle)
+            .persistentHelp("仅检查原位置与隔离区；只有位置结果唯一时才更新记录。")
+
+            Button("说明", systemImage: "info.circle") {
+                model.explainUnresolvedLibrarySlimmingRecycleEntry(entry.id)
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .persistentHelp("说明为什么此项目仍需保留并阻止来源删除。")
         }
     }
 

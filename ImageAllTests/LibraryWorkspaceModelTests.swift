@@ -5439,6 +5439,163 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         )
     }
 
+    func testLibrarySlimmingRecycleScopesCountAndFilterVisibleCategories() {
+        let sourceID = UUID()
+        let photosEntry = RecycleEntryRecord(
+            id: UUID(),
+            assetID: UUID(),
+            sourceID: sourceID,
+            sourceKind: .photos,
+            trashedAtMs: 1,
+            purgeAfterMs: 2,
+            state: .recycled,
+            quarantineRelativePath: nil,
+            originalRelativePath: nil,
+            photosLocalIdentifier: "photos-1",
+            errorCode: nil,
+            fileName: "photo.heic"
+        )
+        let fileEntry = RecycleEntryRecord(
+            id: UUID(),
+            assetID: UUID(),
+            sourceID: sourceID,
+            sourceKind: .file,
+            trashedAtMs: 1,
+            purgeAfterMs: 2,
+            state: .recycled,
+            quarantineRelativePath: "objects/file.jpg",
+            originalRelativePath: "file.jpg",
+            photosLocalIdentifier: nil,
+            errorCode: nil,
+            fileName: "file.jpg"
+        )
+        let attentionEntry = RecycleEntryRecord(
+            id: UUID(),
+            assetID: UUID(),
+            sourceID: sourceID,
+            sourceKind: .file,
+            trashedAtMs: 1,
+            purgeAfterMs: 2,
+            state: .pending,
+            quarantineRelativePath: "objects/pending.jpg",
+            originalRelativePath: "pending.jpg",
+            photosLocalIdentifier: nil,
+            errorCode: nil,
+            fileName: "pending.jpg"
+        )
+        let entries = [photosEntry, fileEntry, attentionEntry]
+
+        XCTAssertEqual(LibrarySlimmingRecycleScope.all.count(in: entries), 3)
+        XCTAssertEqual(LibrarySlimmingRecycleScope.photos.filtered(entries), [photosEntry])
+        XCTAssertEqual(
+            LibrarySlimmingRecycleScope.files.filtered(entries),
+            [fileEntry, attentionEntry]
+        )
+        XCTAssertEqual(
+            LibrarySlimmingRecycleScope.attention.filtered(entries),
+            [attentionEntry]
+        )
+    }
+
+    func testLibrarySlimmingRecycleWorkspaceRendersFixtureCards() async throws {
+        let sourceID = UUID()
+        let nowMs = Int64(Date().timeIntervalSince1970 * 1_000)
+        func makeEntry(
+            sourceKind: RecycleSourceKind,
+            state: RecycleEntryState,
+            fileName: String,
+            offset: Int64,
+            errorCode: String? = nil
+        ) -> RecycleEntryRecord {
+            RecycleEntryRecord(
+                id: UUID(),
+                assetID: UUID(),
+                sourceID: sourceID,
+                sourceKind: sourceKind,
+                trashedAtMs: nowMs - offset * LibrarySlimmingRecyclePolicy.dayMs,
+                purgeAfterMs: nowMs + (30 - offset) * LibrarySlimmingRecyclePolicy.dayMs,
+                state: state,
+                quarantineRelativePath: sourceKind == .file ? "objects/\(fileName)" : nil,
+                originalRelativePath: sourceKind == .file ? "fixture/\(fileName)" : nil,
+                photosLocalIdentifier: sourceKind == .photos ? "photos-\(fileName)" : nil,
+                errorCode: errorCode,
+                fileName: fileName
+            )
+        }
+
+        let entries = [
+            makeEntry(
+                sourceKind: .photos,
+                state: .recycled,
+                fileName: "IMG_2026.HEIC",
+                offset: 1
+            ),
+            makeEntry(
+                sourceKind: .file,
+                state: .recycled,
+                fileName: "Family-Trip.JPG",
+                offset: 3
+            ),
+            makeEntry(
+                sourceKind: .file,
+                state: .pending,
+                fileName: "Interrupted-Move.PNG",
+                offset: 4
+            ),
+            makeEntry(
+                sourceKind: .file,
+                state: .failed,
+                fileName: "Needs-Authorization.JPG",
+                offset: 5,
+                errorCode: RecycleFailureCode.mutationAuthorizationRequired
+            ),
+        ]
+        let model = LibraryWorkspaceModel(
+            service: FakeLibraryWorkspaceService(
+                connectedSource: LibrarySourceSummary(
+                    id: sourceID,
+                    displayName: "合成测试来源",
+                    state: .active
+                ),
+                reconciledItems: []
+            ),
+            librarySlimmingRecycle: FakeLibrarySlimmingRecyclePort(entries: entries),
+            idlePrewarmInstallEventMonitor: false
+        )
+        await model.refreshLibrarySlimmingRecycleEntries()
+        model.selectLibrarySlimmingWorkspaceTab(.recycleBin)
+
+        let size = NSSize(width: 1_280, height: 800)
+        let host = NSHostingView(
+            rootView: LibrarySlimmingWorkspaceView(
+                model: model,
+                onReturnToLibrary: {}
+            )
+            .frame(width: size.width, height: size.height)
+        )
+        host.frame = NSRect(origin: .zero, size: size)
+        host.layoutSubtreeIfNeeded()
+        try await Task.sleep(for: .milliseconds(200))
+        host.layoutSubtreeIfNeeded()
+
+        XCTAssertGreaterThan(host.fittingSize.width, 0)
+        XCTAssertGreaterThan(host.fittingSize.height, 0)
+        let representation = try XCTUnwrap(
+            host.bitmapImageRepForCachingDisplay(in: host.bounds)
+        )
+        host.cacheDisplay(in: host.bounds, to: representation)
+        let pngData = try XCTUnwrap(
+            representation.representation(using: .png, properties: [:])
+        )
+        let attachment = XCTAttachment(
+            data: pngData,
+            uniformTypeIdentifier: "public.png"
+        )
+        attachment.name = "Library slimming recycle workspace fixture"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+
     func testAnalyzeLibrarySlimmingCurrentFilterUsesResolvedAssetIDs() async {
         let sourceID = UUID()
         let assetA = Self.makeAsset(sourceID: sourceID, fileName: "beach-a.jpg")
