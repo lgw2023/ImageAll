@@ -1110,7 +1110,8 @@ actor RemoteLibrarySlimmingCommandService: RemoteLibrarySlimmingCommandPort {
         case .discardPreflightFailure:
             entry.sourceKind == .file && entry.resolution == .discardPreflightFailure
         case .retryInterruptedOperation:
-            entry.resolution == .retryInterruptedOperation || entry.resolution == .inspect
+            entry.resolution == .retryInterruptedOperation
+                || entry.resolution == .reinspectFileLocations
         }
         guard valid else { throw LibrarySlimmingCommandError.invalidAction }
     }

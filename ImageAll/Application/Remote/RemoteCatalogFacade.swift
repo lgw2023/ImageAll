@@ -2605,14 +2605,25 @@ actor RemoteCatalogFacade {
             case .restoreOrPurge: .restoreOrPurge
             case .discardPreflightFailure: .discardPreflightFailure
             case .retryInterruptedOperation: .retryInterruptedOperation
-            case .inspect: .inspect
+            case .reinspectFileLocations,
+                 .updateFolderAuthorization,
+                 .refreshSourceBeforeRetry,
+                 .requestPhotosAuthorization,
+                 .retryFromAnalysis:
+                .inspect
             }
         }
-        let actions: [RemoteLibrarySlimmingRecycleAction] = switch resolution {
-        case .restoreOrPurge: [.restore, .purge]
+        let actions: [RemoteLibrarySlimmingRecycleAction] = switch entry.resolution {
+        case .restoreOrPurge:
+            entry.sourceKind == .photos ? [] : [.restore, .purge]
         case .discardPreflightFailure: [.discardPreflightFailure]
-        case .retryInterruptedOperation, .inspect: [.retryInterruptedOperation]
-        case .photosManagedBySystem: []
+        case .retryInterruptedOperation, .reinspectFileLocations:
+            [.retryInterruptedOperation]
+        case .updateFolderAuthorization,
+             .refreshSourceBeforeRetry,
+             .requestPhotosAuthorization,
+             .retryFromAnalysis:
+            []
         }
         return RemoteLibrarySlimmingRecycleEntry(
             id: entry.id,

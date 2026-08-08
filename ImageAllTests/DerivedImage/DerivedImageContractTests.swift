@@ -4,6 +4,198 @@ import XCTest
 @testable import ImageAll
 
 final class DerivedImageContractTests: XCTestCase {
+    func testRecycleThumbnailBackfillUsesOnlyQuarantineAndPublishesSquareCache() async throws {
+        let env = try DerivedImageTestSupport.TempEnvironment(label: "recycle-thumbnail-backfill")
+        defer { env.cleanup() }
+        let sourceURL = try env.seedAvailableAsset()
+        let quarantineRoot = env.root.appendingPathComponent("Quarantine", isDirectory: true)
+        let quarantineRelativePath = QuarantinePathLayout.relativePath(
+            sourceID: env.sourceID,
+            assetID: env.assetID,
+            fileName: "sample.jpg"
+        )
+        let quarantineURL = quarantineRoot.appendingPathComponent(quarantineRelativePath)
+        try FileManager.default.createDirectory(
+            at: quarantineURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.moveItem(at: sourceURL, to: quarantineURL)
+        let quarantineBytesBefore = try Data(contentsOf: quarantineURL)
+        let entryID = UUID()
+        try await env.database.pool.write { db in
+            try db.execute(
+                sql: "UPDATE asset SET availability = 'recycled' WHERE id = ?",
+                arguments: [env.assetID.uuidString.lowercased()]
+            )
+            try db.execute(
+                sql: """
+                INSERT INTO recycle_entry (
+                    id, asset_id, source_kind, trashed_at_ms, purge_after_ms, state,
+                    quarantine_relative_path, original_relative_path, photos_local_identifier,
+                    error_code, created_at_ms, updated_at_ms
+                ) VALUES (?, ?, 'file', ?, ?, 'recycled', ?, 'photos/sample.jpg', NULL, NULL, ?, ?)
+                """,
+                arguments: [
+                    entryID.uuidString.lowercased(),
+                    env.assetID.uuidString.lowercased(),
+                    FolderReconcileTestSupport.baseTimeMs,
+                    FolderReconcileTestSupport.baseTimeMs + LibrarySlimmingRecyclePolicy.dayMs,
+                    quarantineRelativePath,
+                    FolderReconcileTestSupport.baseTimeMs,
+                    FolderReconcileTestSupport.baseTimeMs,
+                ]
+            )
+        }
+        let (service, bookmarkPort) = env.makeService(
+            volumeReader: DerivedImageTestSupport.generousVolume
+        )
+
+        let generated = try await service.loadOrGenerateRecycledFileThumbnail(
+            assetID: env.assetID,
+            quarantineRootURL: quarantineRoot
+        )
+        let cached = try await service.loadCached(
+            DerivedImageRequest(assetID: env.assetID, variant: .gridRegular)
+        )
+
+        XCTAssertFalse(generated.isEmpty)
+        XCTAssertEqual(cached?.encodedBytes, generated)
+        XCTAssertEqual(cached?.origin, .cacheHit)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: sourceURL.path))
+        XCTAssertEqual(try Data(contentsOf: quarantineURL), quarantineBytesBefore)
+        XCTAssertEqual(bookmarkPort.scopeStartCount, 0, "backfill must not reopen the source folder")
+    }
+
+    func testRecycleThumbnailBackfillRejectsTerminalLifecycle() async throws {
+        let env = try DerivedImageTestSupport.TempEnvironment(label: "recycle-thumbnail-terminal")
+        defer { env.cleanup() }
+        _ = try env.seedAvailableAsset()
+        let entryID = UUID()
+        try await env.database.pool.write { db in
+            try db.execute(
+                sql: """
+                INSERT INTO recycle_entry (
+                    id, asset_id, source_kind, trashed_at_ms, purge_after_ms, state,
+                    quarantine_relative_path, original_relative_path, photos_local_identifier,
+                    error_code, created_at_ms, updated_at_ms
+                ) VALUES (?, ?, 'file', ?, ?, 'restored', 'fixture/item.jpg', 'photos/sample.jpg', NULL, NULL, ?, ?)
+                """,
+                arguments: [
+                    entryID.uuidString.lowercased(),
+                    env.assetID.uuidString.lowercased(),
+                    FolderReconcileTestSupport.baseTimeMs,
+                    FolderReconcileTestSupport.baseTimeMs + LibrarySlimmingRecyclePolicy.dayMs,
+                    FolderReconcileTestSupport.baseTimeMs,
+                    FolderReconcileTestSupport.baseTimeMs,
+                ]
+            )
+        }
+        let (service, _) = env.makeService(
+            volumeReader: DerivedImageTestSupport.generousVolume
+        )
+
+        do {
+            _ = try await service.loadOrGenerateRecycledFileThumbnail(
+                assetID: env.assetID,
+                quarantineRootURL: env.root.appendingPathComponent("Quarantine")
+            )
+            XCTFail("terminal recycle lifecycle must not generate a thumbnail")
+        } catch DerivedImageError.derivedAssetIneligible {
+            // Expected: only the latest active recycled lifecycle may publish.
+        } catch {
+            XCTFail("unexpected error: \(error)")
+        }
+    }
+
+    func testRecycleThumbnailBackfillRejectsRestoreBeforeFinalPublish() async throws {
+        let env = try DerivedImageTestSupport.TempEnvironment(label: "recycle-thumbnail-race")
+        defer { env.cleanup() }
+        let sourceURL = try env.seedAvailableAsset()
+        let quarantineRoot = env.root.appendingPathComponent("Quarantine", isDirectory: true)
+        let quarantineRelativePath = QuarantinePathLayout.relativePath(
+            sourceID: env.sourceID,
+            assetID: env.assetID,
+            fileName: "sample.jpg"
+        )
+        let quarantineURL = quarantineRoot.appendingPathComponent(quarantineRelativePath)
+        try FileManager.default.createDirectory(
+            at: quarantineURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.moveItem(at: sourceURL, to: quarantineURL)
+        let quarantineBytesBefore = try Data(contentsOf: quarantineURL)
+        let entryID = UUID()
+        try await env.database.pool.write { db in
+            try db.execute(
+                sql: "UPDATE asset SET availability = 'recycled' WHERE id = ?",
+                arguments: [env.assetID.uuidString.lowercased()]
+            )
+            try db.execute(
+                sql: """
+                INSERT INTO recycle_entry (
+                    id, asset_id, source_kind, trashed_at_ms, purge_after_ms, state,
+                    quarantine_relative_path, original_relative_path, photos_local_identifier,
+                    error_code, created_at_ms, updated_at_ms
+                ) VALUES (?, ?, 'file', ?, ?, 'recycled', ?, 'photos/sample.jpg', NULL, NULL, ?, ?)
+                """,
+                arguments: [
+                    entryID.uuidString.lowercased(),
+                    env.assetID.uuidString.lowercased(),
+                    FolderReconcileTestSupport.baseTimeMs,
+                    FolderReconcileTestSupport.baseTimeMs + LibrarySlimmingRecyclePolicy.dayMs,
+                    quarantineRelativePath,
+                    FolderReconcileTestSupport.baseTimeMs,
+                    FolderReconcileTestSupport.baseTimeMs,
+                ]
+            )
+        }
+        let checkpoint = DerivedImageTestSupport.FinalPublishCheckpoint()
+        let (service, bookmarkPort) = env.makeService(
+            finalPublishCheckpoint: checkpoint,
+            volumeReader: DerivedImageTestSupport.generousVolume
+        )
+        let loadTask = Task {
+            try await service.loadOrGenerateRecycledFileThumbnail(
+                assetID: env.assetID,
+                quarantineRootURL: quarantineRoot
+            )
+        }
+        defer { checkpoint.releaseFinalPublish() }
+
+        let snapshot = try checkpoint.waitUntilFinalObjectPublished(timeout: 10)
+        DerivedImageTestSupport.assertCheckpointReachedWithPublishedObject(
+            env: env,
+            snapshot: snapshot
+        )
+        try await env.database.pool.write { db in
+            try db.execute(
+                sql: "UPDATE recycle_entry SET state = 'restored' WHERE id = ?",
+                arguments: [entryID.uuidString.lowercased()]
+            )
+        }
+        checkpoint.releaseFinalPublish()
+
+        do {
+            _ = try await loadTask.value
+            XCTFail("a restored lifecycle must reject the pending cache publish")
+        } catch DerivedImageError.derivedSourceChanged {
+            // Expected: final publication revalidates the latest lifecycle.
+        } catch {
+            XCTFail("unexpected error: \(error)")
+        }
+        let counts = try await env.cacheArtifactCounts()
+        XCTAssertEqual(counts.entries, 0)
+        XCTAssertEqual(counts.stagingFiles, 0)
+        XCTAssertFalse(
+            env.finalObjectExists(
+                entryID: snapshot.entryID,
+                format: snapshot.storageFormat
+            )
+        )
+        XCTAssertEqual(try Data(contentsOf: quarantineURL), quarantineBytesBefore)
+        XCTAssertEqual(bookmarkPort.scopeStartCount, 0)
+    }
+
     func testRegisteredCacheUsageAggregatesAllPreviewVariants() async throws {
         let env = try DerivedImageTestSupport.TempEnvironment(label: "cache-usage")
         defer { env.cleanup() }

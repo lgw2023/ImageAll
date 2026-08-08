@@ -45,6 +45,14 @@ struct GRDBDerivedImageCacheRepository: Sendable {
         }
     }
 
+    func fetchRecycledFileThumbnailGenerationContext(
+        assetID: UUID
+    ) throws -> RecycledFileThumbnailGenerationContext? {
+        try database.pool.read { db in
+            try fetchRecycledFileThumbnailGenerationContext(db: db, assetID: assetID)
+        }
+    }
+
     func fetchEntry(
         assetID: UUID,
         contentRevision: Int,
@@ -282,6 +290,18 @@ struct GRDBDerivedImageCacheRepository: Sendable {
         )
     }
 
+    func publishEntryReplacingKey(
+        entry: DerivedImageCacheEntryRow,
+        expected: RecycledFileThumbnailGenerationContext,
+        replacementCandidateID: UUID? = nil
+    ) throws -> PublishEntryOutcome {
+        try publishEntryReplacingKey(
+            entry: entry,
+            expected: .recycledFile(expected),
+            replacementCandidateID: replacementCandidateID
+        )
+    }
+
     private func publishEntryReplacingKey(
         entry: DerivedImageCacheEntryRow,
         expected: PublishExpectedAssetState,
@@ -358,6 +378,14 @@ struct GRDBDerivedImageCacheRepository: Sendable {
                 return false
             }
             return current == context && current.isEligibleForDownloadedPreview
+        case let .recycledFile(context):
+            guard let current = try fetchRecycledFileThumbnailGenerationContext(
+                db: db,
+                assetID: context.assetID
+            ) else {
+                return false
+            }
+            return current == context && current.isEligibleForGeneration
         }
     }
 
@@ -444,6 +472,66 @@ struct GRDBDerivedImageCacheRepository: Sendable {
         )
     }
 
+    private func fetchRecycledFileThumbnailGenerationContext(
+        db: Database,
+        assetID: UUID
+    ) throws -> RecycledFileThumbnailGenerationContext? {
+        guard let row = try Row.fetchOne(
+            db,
+            sql: """
+            SELECT
+                r.id AS recycle_entry_id,
+                r.asset_id,
+                r.source_kind,
+                r.state,
+                r.quarantine_relative_path,
+                a.content_revision,
+                a.media_kind,
+                a.media_type,
+                a.duration_ms,
+                f.size_bytes,
+                f.modified_at_ns
+            FROM recycle_entry r
+            JOIN asset a ON a.id = r.asset_id
+            LEFT JOIN file_fingerprint f ON f.asset_id = a.id
+            WHERE r.asset_id = ?
+            ORDER BY r.created_at_ms DESC, r.rowid DESC
+            LIMIT 1
+            """,
+            arguments: [assetID.uuidString.lowercased()]
+        ) else {
+            return nil
+        }
+        guard let entryIDString: String = row["recycle_entry_id"],
+              let entryID = UUID(uuidString: entryIDString),
+              let assetIDString: String = row["asset_id"],
+              let mappedAssetID = UUID(uuidString: assetIDString),
+              let quarantineRelativePath: String = row["quarantine_relative_path"],
+              let sizeBytes: Int64 = row["size_bytes"],
+              let modifiedAtNs: Int64 = row["modified_at_ns"]
+        else {
+            return nil
+        }
+        let sourceKind: String = row["source_kind"]
+        let state: String = row["state"]
+        guard sourceKind == RecycleSourceKind.file.rawValue,
+              state == RecycleEntryState.recycled.rawValue
+        else {
+            return nil
+        }
+        return RecycledFileThumbnailGenerationContext(
+            recycleEntryID: entryID,
+            assetID: mappedAssetID,
+            contentRevision: row["content_revision"],
+            quarantineRelativePath: quarantineRelativePath,
+            mediaKind: MediaKind(rawValue: row["media_kind"]) ?? .image,
+            mediaType: row["media_type"],
+            durationMs: row["duration_ms"],
+            fingerprintSizeBytes: sizeBytes,
+            fingerprintModifiedAtNs: modifiedAtNs
+        )
+    }
+
     private func fetchCacheLookupContext(db: Database, assetID: UUID) throws -> DerivedImageCacheLookupContext? {
         guard let row = try Row.fetchOne(
             db,
@@ -496,6 +584,7 @@ struct GRDBDerivedImageCacheRepository: Sendable {
 private enum PublishExpectedAssetState: Sendable {
     case generation(DerivedImageAssetGenerationContext)
     case lookup(DerivedImageCacheLookupContext)
+    case recycledFile(RecycledFileThumbnailGenerationContext)
 }
 
 enum PublishEntryOutcome: Equatable {
@@ -550,6 +639,27 @@ extension DerivedImageCacheLookupContext {
             && availability == AssetAvailability.available.rawValue
             && sourceKind == SourceKind.photos.rawValue
             && sourceState == SourceState.active.rawValue
+    }
+}
+
+extension RecycledFileThumbnailGenerationContext {
+    var isEligibleForGeneration: Bool {
+        let supportedMedia = switch mediaKind {
+        case .image:
+            DerivedImageRenderer.isSupportedSourceMediaType(mediaType)
+        case .video:
+            ApprovedSourceMediaTypes.isVideoMediaType(mediaType)
+                && (durationMs ?? 0) > 0
+        }
+        return supportedMedia
+            && RelativePathRules.validate(quarantineRelativePath).isSuccess
+            && fingerprintSizeBytes > 0
+            && fingerprintModifiedAtNs >= 0
+    }
+
+    func matchesHandleFacts(_ opened: DerivedImageOpenedFingerprint) -> Bool {
+        opened.sizeBytes == fingerprintSizeBytes
+            && opened.modifiedAtNs == fingerprintModifiedAtNs
     }
 }
 

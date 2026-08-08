@@ -316,6 +316,29 @@ struct GRDBAssetCatalogQueryRepository: AssetCatalogQueryPort, Sendable {
                     )
                 }
 
+                let favoriteRows = try Row.fetchAll(
+                    db,
+                    sql: """
+                    \(Self.galleryOverviewAssetCTE)
+                    SELECT overview_asset.media_kind, COUNT(*) AS favorite_count
+                    FROM overview_asset
+                    JOIN asset_favorite_state AS favorite
+                      ON favorite.asset_id = overview_asset.id
+                     AND favorite.desired_value = 1
+                    GROUP BY overview_asset.media_kind
+                    ORDER BY overview_asset.media_kind
+                    """
+                )
+                let favorites = favoriteRows.compactMap { row -> GalleryOverviewFavoriteSummary? in
+                    guard let raw: String = row["media_kind"],
+                          let mediaKind = MediaKind(rawValue: raw)
+                    else { return nil }
+                    return GalleryOverviewFavoriteSummary(
+                        mediaKind: mediaKind,
+                        count: row["favorite_count"]
+                    )
+                }
+
                 return GalleryOverviewSnapshot(
                     media: media,
                     sources: sources,
@@ -324,7 +347,8 @@ struct GRDBAssetCatalogQueryRepository: AssetCatalogQueryPort, Sendable {
                     availability: availability,
                     undatedCount: undatedCount,
                     positiveLabeledAssetCount: positiveCounts?["asset_count"] ?? 0,
-                    acceptedDecisionCount: positiveCounts?["decision_count"] ?? 0
+                    acceptedDecisionCount: positiveCounts?["decision_count"] ?? 0,
+                    favorites: favorites
                 )
             }
         }
@@ -718,6 +742,19 @@ struct GRDBAssetCatalogQueryRepository: AssetCatalogQueryPort, Sendable {
                 NOT EXISTS (
                     SELECT 1 FROM asset_tag_decision d
                     WHERE d.asset_id = asset.id AND d.decision = 'accepted'
+                )
+                """
+            )
+        }
+
+        if filter.favorite == .favorited {
+            clauses.append(
+                """
+                EXISTS (
+                    SELECT 1
+                    FROM asset_favorite_state AS favorite
+                    WHERE favorite.asset_id = asset.id
+                      AND favorite.desired_value = 1
                 )
                 """
             )

@@ -766,6 +766,11 @@ struct LibrarySlimmingAnalysisJobSummary: Sendable, Equatable, Identifiable {
     }
 }
 
+enum LibrarySlimmingClusterReviewDisposition: String, Codable, Sendable, Equatable {
+    case confirmed
+    case ignored
+}
+
 protocol LibrarySlimmingAnalysisJobPort: Sendable {
     func enqueue(
         mode: LibrarySlimmingAnalyzeMode,
@@ -785,6 +790,14 @@ protocol LibrarySlimmingAnalysisJobPort: Sendable {
     func latestActiveOrCompleted() throws -> LibrarySlimmingAnalysisJobSnapshot?
     func listJobs() throws -> [LibrarySlimmingAnalysisJobSummary]
     func listJobs(mediaKind: MediaKind) throws -> [LibrarySlimmingAnalysisJobSummary]
+    func clusterReviewDispositions(
+        jobID: UUID
+    ) throws -> [UUID: LibrarySlimmingClusterReviewDisposition]
+    func setClusterReviewDisposition(
+        jobID: UUID,
+        clusterID: UUID,
+        disposition: LibrarySlimmingClusterReviewDisposition?
+    ) throws
     func delete(jobID: UUID) throws
 }
 
@@ -801,6 +814,18 @@ extension LibrarySlimmingAnalysisJobPort {
     func listJobs(mediaKind: MediaKind) throws -> [LibrarySlimmingAnalysisJobSummary] {
         try listJobs().filter { $0.mediaKind == mediaKind }
     }
+
+    func clusterReviewDispositions(
+        jobID _: UUID
+    ) throws -> [UUID: LibrarySlimmingClusterReviewDisposition] {
+        [:]
+    }
+
+    func setClusterReviewDisposition(
+        jobID _: UUID,
+        clusterID _: UUID,
+        disposition _: LibrarySlimmingClusterReviewDisposition?
+    ) throws {}
 }
 
 enum LibrarySlimmingAnalysisJobFactory {
@@ -1227,6 +1252,85 @@ struct LibrarySlimmingAnalysisService: LibrarySlimmingAnalysisJobPort {
 
     func listJobs(mediaKind: MediaKind) throws -> [LibrarySlimmingAnalysisJobSummary] {
         try listJobs().filter { $0.mediaKind == mediaKind }
+    }
+
+    func clusterReviewDispositions(
+        jobID: UUID
+    ) throws -> [UUID: LibrarySlimmingClusterReviewDisposition] {
+        try database.pool.read { db in
+            let rows = try Row.fetchAll(
+                db,
+                sql: """
+                SELECT cluster_id, disposition
+                FROM library_slimming_cluster_review
+                WHERE job_id = ?
+                ORDER BY updated_at_ms DESC, cluster_id ASC
+                """,
+                arguments: [jobID.uuidString.lowercased()]
+            )
+            var dispositions: [UUID: LibrarySlimmingClusterReviewDisposition] = [:]
+            for row in rows {
+                let rawClusterID: String = row["cluster_id"]
+                let rawDisposition: String = row["disposition"]
+                guard let clusterID = UUID(uuidString: rawClusterID),
+                      let disposition = LibrarySlimmingClusterReviewDisposition(
+                          rawValue: rawDisposition
+                      )
+                else {
+                    throw JobQueueError.unknownPersistedRawValue(
+                        field: "library_slimming_cluster_review",
+                        value: "\(rawClusterID):\(rawDisposition)"
+                    )
+                }
+                dispositions[clusterID] = disposition
+            }
+            return dispositions
+        }
+    }
+
+    func setClusterReviewDisposition(
+        jobID: UUID,
+        clusterID: UUID,
+        disposition: LibrarySlimmingClusterReviewDisposition?
+    ) throws {
+        try database.pool.write { db in
+            let normalizedJobID = jobID.uuidString.lowercased()
+            let exists = try Int.fetchOne(
+                db,
+                sql: "SELECT EXISTS(SELECT 1 FROM job WHERE id = ? AND kind = ?)",
+                arguments: [normalizedJobID, LibrarySlimmingAnalysisJobFactory.kind]
+            ) == 1
+            guard exists else {
+                throw JobQueueError.jobNotFound(jobID)
+            }
+            let normalizedClusterID = clusterID.uuidString.lowercased()
+            if let disposition {
+                try db.execute(
+                    sql: """
+                    INSERT INTO library_slimming_cluster_review (
+                        job_id, cluster_id, disposition, updated_at_ms
+                    ) VALUES (?, ?, ?, ?)
+                    ON CONFLICT(job_id, cluster_id) DO UPDATE SET
+                        disposition = excluded.disposition,
+                        updated_at_ms = excluded.updated_at_ms
+                    """,
+                    arguments: [
+                        normalizedJobID,
+                        normalizedClusterID,
+                        disposition.rawValue,
+                        clock.nowMs,
+                    ]
+                )
+            } else {
+                try db.execute(
+                    sql: """
+                    DELETE FROM library_slimming_cluster_review
+                    WHERE job_id = ? AND cluster_id = ?
+                    """,
+                    arguments: [normalizedJobID, normalizedClusterID]
+                )
+            }
+        }
     }
 
     private func reconcileActiveRetryBudgets(jobID: UUID? = nil) throws {

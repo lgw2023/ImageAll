@@ -532,6 +532,23 @@ private struct PortableExportFileSpec {
             fields: strings("asset_id", "tag_id", "decision") + integers("updated_at_ms")
         ),
         PortableExportFileSpec(
+            filename: "favorites.jsonl",
+            sql: """
+                SELECT asset_id, desired_value, photos_observed_value,
+                       sync_status, intent_revision, requested_at_ms,
+                       photos_observed_modified_at_ms, last_error_code, updated_at_ms
+                FROM asset_favorite_state ORDER BY asset_id
+                """,
+            fields: strings("asset_id")
+                + integers("desired_value")
+                + [Field(name: "photos_observed_value", kind: .optionalInteger)]
+                + strings("sync_status")
+                + integers("intent_revision", "requested_at_ms")
+                + [Field(name: "photos_observed_modified_at_ms", kind: .optionalInteger)]
+                + [Field(name: "last_error_code", kind: .optionalString)]
+                + integers("updated_at_ms")
+        ),
+        PortableExportFileSpec(
             filename: "tag_models.jsonl",
             sql: """
                 SELECT tag_id, current_revision, updated_at_ms

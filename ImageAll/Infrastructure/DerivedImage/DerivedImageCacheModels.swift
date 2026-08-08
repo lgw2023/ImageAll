@@ -93,6 +93,21 @@ struct DerivedImageAssetGenerationContext: Equatable, Sendable {
     let fingerprintResourceID: Data?
 }
 
+/// Stable facts required to derive a presentation thumbnail from a file that
+/// ImageAll has already moved into its own quarantine. Unlike ordinary source
+/// generation, this never needs a source bookmark or reads the original folder.
+struct RecycledFileThumbnailGenerationContext: Equatable, Sendable {
+    let recycleEntryID: UUID
+    let assetID: UUID
+    let contentRevision: Int
+    let quarantineRelativePath: String
+    let mediaKind: MediaKind
+    let mediaType: String
+    let durationMs: Int64?
+    let fingerprintSizeBytes: Int64
+    let fingerprintModifiedAtNs: Int64
+}
+
 struct DerivedImageOpenedFingerprint: Equatable, Sendable {
     let sizeBytes: Int64
     let modifiedAtNs: Int64

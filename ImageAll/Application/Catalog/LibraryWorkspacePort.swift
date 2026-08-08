@@ -469,11 +469,20 @@ protocol LibraryWorkspacePort: Sendable {
         sort: AssetPageSort,
         cursor: AssetPageCursor?
     ) throws -> AssetPageResult
+    func fetchFavoriteStates(assetIDs: [UUID]) throws -> [UUID: MediaFavoriteState]
+    func setFavorite(assetIDs: [UUID], isFavorite: Bool) throws -> FavoriteMutationSummary
+    func retryPendingFavoriteSync(sourceIDs: Set<UUID>?) throws -> FavoriteMutationSummary
     func loadThumbnail(assetID: UUID) async throws -> Data
+    /// Reads only an existing square thumbnail. It must not decode the source,
+    /// request PhotoKit pixels, download from iCloud, or create a new cache entry.
+    func loadThumbnailIfCached(assetID: UUID) async throws -> Data?
     func loadOriginalAspectThumbnailIfCached(assetID: UUID) async throws -> Data?
     func cachedSquareThumbnailAssetIDs(sourceID: UUID) async throws -> Set<UUID>
     func cachedOriginalAspectThumbnailAssetIDs(sourceID: UUID) async throws -> Set<UUID>
     func prewarmOriginalAspectThumbnail(assetID: UUID) async throws -> Data
+    /// Generates a square thumbnail only from an ImageAll-owned file recycle
+    /// object. It must never fall back to the original folder or PhotoKit.
+    func prewarmRecycledFileThumbnail(assetID: UUID) async throws -> Data
     func loadPreview(assetID: UUID) async throws -> Data
     func downloadCloudPreview(
         assetID: UUID,
@@ -511,6 +520,18 @@ extension LibraryWorkspacePort {
 
     func fetchGalleryOverview() throws -> GalleryOverviewSnapshot {
         .empty
+    }
+
+    func fetchFavoriteStates(assetIDs: [UUID]) throws -> [UUID: MediaFavoriteState] {
+        Dictionary(uniqueKeysWithValues: Set(assetIDs).map { ($0, .none(assetID: $0)) })
+    }
+
+    func setFavorite(assetIDs _: [UUID], isFavorite _: Bool) throws -> FavoriteMutationSummary {
+        .zero
+    }
+
+    func retryPendingFavoriteSync(sourceIDs _: Set<UUID>?) throws -> FavoriteMutationSummary {
+        .zero
     }
 
     func cachedWorldMapSnapshot(query _: WorldMapCatalogQuery) -> WorldMapCatalogSnapshot? {
@@ -567,6 +588,10 @@ extension LibraryWorkspacePort {
         nil
     }
 
+    func loadThumbnailIfCached(assetID _: UUID) async throws -> Data? {
+        nil
+    }
+
     func cachedSquareThumbnailAssetIDs(sourceID _: UUID) async throws -> Set<UUID> {
         []
     }
@@ -576,6 +601,10 @@ extension LibraryWorkspacePort {
     }
 
     func prewarmOriginalAspectThumbnail(assetID _: UUID) async throws -> Data {
+        throw DerivedImageError.derivedAssetIneligible
+    }
+
+    func prewarmRecycledFileThumbnail(assetID _: UUID) async throws -> Data {
         throw DerivedImageError.derivedAssetIneligible
     }
 

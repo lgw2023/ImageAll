@@ -42,10 +42,11 @@ PhotoKit 访问；`.photoslibrary` package 永远不是文件系统输入。
 
 ### 2.2 授权时机与说明
 
-- 只有用户点击“连接 Apple Photos…”后才展示 ImageAll 只读说明并请求系统权限；启动时不得主动弹窗；
-- 说明明确：ImageAll 会读取照片及元数据，在自身容器保存索引、标签和派生缓存，不修改 Photos；
+- 只有用户点击“连接 Apple Photos…”后才展示 ImageAll 的照片访问说明并请求系统权限；启动时不得主动弹窗；
+- 说明明确：ImageAll 会读取照片及元数据，在自身容器保存索引、标签、红心和派生缓存；只有用户在
+  ImageAll 修改 Apple Photos 红心时同步写回公开收藏属性，及 ADR-044 用户确认的系统软删除例外；
 - 使用 `PHPhotoLibrary.requestAuthorization(for: .readWrite)`，因为持续 PhotoKit 读取使用该 access level；
-  这不改变产品的源端零写入规则；
+  允许的窄写入范围由 ADR-044 与 ADR-055 固定；
 - `.authorized` 进入同步；`.denied` / `.restricted` 安全失败，不创建伪 active 来源；
 - macOS 首版不建立 limited-library 产品语义；若未来 SDK/系统行为需要支持，再单独扩展。
 

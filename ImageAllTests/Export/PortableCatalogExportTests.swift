@@ -170,6 +170,7 @@ final class PortableCatalogExportTests: XCTestCase {
         let expectedCounts = [
             "assets.jsonl": 2,
             "decisions.jsonl": 2,
+            "favorites.jsonl": 0,
             "file_fingerprints.jsonl": 1,
             "model_revisions.jsonl": 1,
             "model_samples.jsonl": 2,
@@ -185,7 +186,11 @@ final class PortableCatalogExportTests: XCTestCase {
             let data = try Data(contentsOf: fileURL)
             XCTAssertEqual(file.byteCount, Int64(data.count), file.filename)
             XCTAssertEqual(file.sha256, PortableExportHashing.sha256Hex(data), file.filename)
-            XCTAssertTrue(data.last == 0x0a, file.filename)
+            if file.recordCount > 0 {
+                XCTAssertTrue(data.last == 0x0a, file.filename)
+            } else {
+                XCTAssertTrue(data.isEmpty, file.filename)
+            }
         }
 
         let sources = try jsonLines(at: result.bundleURL.appendingPathComponent("sources.jsonl"))

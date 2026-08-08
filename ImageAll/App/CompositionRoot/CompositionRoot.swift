@@ -366,6 +366,7 @@ struct CompositionRoot {
             photosSourceMonitor: photosObserver,
             authorization: authorization,
             photosConnection: photosConnection,
+            photosMutation: photosMutation,
             queue: runtime.jobQueue,
             executionCoordinator: executionCoordinator,
             query: GRDBAssetCatalogQueryRepository(database: runtime.database),
@@ -373,6 +374,7 @@ struct CompositionRoot {
             assetImages: assetImages,
             personalizationReview: personalizationReview,
             derivedImageCache: derivedImages,
+            quarantineRootURL: quarantineRootURL,
             photosOriginalCache: photosOriginalCache,
             sourceDeletion: LibrarySourceDeletionService(
                 database: runtime.database,

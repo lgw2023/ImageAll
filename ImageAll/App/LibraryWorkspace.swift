@@ -363,6 +363,7 @@ enum LibraryBrowsingDestination: Equatable, Sendable {
     case worldMap
     case worldMapGallery(WorldMapGalleryScope)
     case all
+    case favorites
     case untagged
     case reviewSuggestions
     case trainingWorkspace
@@ -1173,8 +1174,16 @@ final class LibraryWorkspaceModel: ObservableObject {
     @Published private(set) var isRefreshingTrainingWorkspace = false
     @Published private(set) var trainingWorkspaceActivity: TrainingWorkspaceActivity?
     @Published private(set) var librarySlimmingClusters: [LibrarySlimmingClusterPresentation] = []
+    @Published private(set) var favoriteStates: [UUID: MediaFavoriteState] = [:]
+    @Published private(set) var favoriteStatusMessage: String?
+    @Published private(set) var favoriteNavigationNonce = UUID()
     @Published private(set) var librarySlimmingAnalysisJobs: [LibrarySlimmingAnalysisJobPresentation] = []
     @Published private(set) var selectedLibrarySlimmingClusterID: UUID?
+    @Published private(set) var librarySlimmingClusterQueueScope:
+        LibrarySlimmingClusterQueueScope = .pending
+    @Published private(set) var librarySlimmingClusterReviewDispositions:
+        [UUID: LibrarySlimmingClusterReviewDisposition] = [:]
+    @Published private(set) var librarySlimmingClusterReviewPendingIDs: Set<UUID> = []
     @Published private(set) var librarySlimmingPreviewAssetID: UUID?
     @Published private(set) var librarySlimmingPendingCount = 0
     @Published private(set) var isAnalyzingLibrarySlimming = false
@@ -1277,6 +1286,7 @@ final class LibraryWorkspaceModel: ObservableObject {
     private let idlePrewarmInstallEventMonitor: Bool
     private var idleThumbnailPrewarmController: IdleThumbnailPrewarmController?
     private var idlePrewarmSkippedAssetIDs: Set<UUID> = []
+    private var idleRecycleThumbnailBackfillSkippedAssetIDs: Set<UUID> = []
     private var idlePrewarmEmbeddingUnavailable = false
     private var sourceThumbnailPrewarmTask: Task<Void, Never>?
     private var sourceThumbnailPrewarmGeneration = 0
@@ -1291,6 +1301,7 @@ final class LibraryWorkspaceModel: ObservableObject {
         let selectedClusterID: UUID?
         let selectedMemberIDs: Set<UUID>
         let selectionAnchorID: UUID?
+        let previewAssetID: UUID?
         let attemptedAssetIDs: Set<UUID>
     }
     private struct FeatureSuggestionCompletionContext: Equatable {
@@ -1302,6 +1313,7 @@ final class LibraryWorkspaceModel: ObservableObject {
     private var isTrainingWorkspaceRefreshInFlight = false
     private var selectedTagFilterDecisions: [UUID: PersistableTagDecision] = [:]
     private var selectedSourceID: UUID?
+    private var isBrowsingFavorites = false
     private var nextCursor: AssetPageCursor?
     private var started = false
     private var catalogSourceMonitoringTask: Task<Void, Never>?
@@ -1593,6 +1605,100 @@ final class LibraryWorkspaceModel: ObservableObject {
         return librarySlimmingClusters.first(where: { $0.id == selectedLibrarySlimmingClusterID })
     }
 
+    var visibleLibrarySlimmingClusters: [LibrarySlimmingClusterPresentation] {
+        librarySlimmingClusters.filter {
+            librarySlimmingClusterQueueScope.matches(
+                librarySlimmingClusterReviewDispositions[$0.id]
+            )
+        }
+    }
+
+    func librarySlimmingClusterCount(in scope: LibrarySlimmingClusterQueueScope) -> Int {
+        librarySlimmingClusters.lazy.filter {
+            scope.matches(self.librarySlimmingClusterReviewDispositions[$0.id])
+        }.count
+    }
+
+    func librarySlimmingClusterReviewDisposition(
+        for clusterID: UUID
+    ) -> LibrarySlimmingClusterReviewDisposition? {
+        librarySlimmingClusterReviewDispositions[clusterID]
+    }
+
+    func selectLibrarySlimmingClusterQueueScope(_ scope: LibrarySlimmingClusterQueueScope) {
+        guard librarySlimmingClusterQueueScope != scope else {
+            ensureLibrarySlimmingClusterSelection()
+            return
+        }
+        librarySlimmingClusterQueueScope = scope
+        ensureLibrarySlimmingClusterSelection()
+    }
+
+    func setLibrarySlimmingClusterReviewDisposition(
+        clusterID: UUID,
+        disposition: LibrarySlimmingClusterReviewDisposition?
+    ) async {
+        guard let analysis = librarySlimmingAnalysis,
+              let jobID = librarySlimmingAnalysisJobID,
+              librarySlimmingClusters.contains(where: { $0.id == clusterID }),
+              !librarySlimmingClusterReviewPendingIDs.contains(clusterID),
+              librarySlimmingClusterReviewDispositions[clusterID] != disposition
+        else { return }
+
+        let previousClusters = librarySlimmingClusters
+        let previousDisposition = librarySlimmingClusterReviewDispositions[clusterID]
+        let previousVisibleClusters = visibleLibrarySlimmingClusters
+        let previousSelection = selectedLibrarySlimmingClusterID
+        let currentCluster = librarySlimmingClusters.first { $0.id == clusterID }
+        let removesResolvedHistoricalRecord = disposition == nil
+            && currentCluster?.isHistoricalProcessedRecord == true
+            && (currentCluster?.memberAssetIDs.count ?? 2) < 2
+        if removesResolvedHistoricalRecord {
+            librarySlimmingClusters.removeAll { $0.id == clusterID }
+        }
+        if let disposition {
+            librarySlimmingClusterReviewDispositions[clusterID] = disposition
+        } else {
+            librarySlimmingClusterReviewDispositions.removeValue(forKey: clusterID)
+        }
+        librarySlimmingClusterReviewPendingIDs.insert(clusterID)
+        ensureLibrarySlimmingClusterSelection(
+            afterRemoving: clusterID,
+            from: previousVisibleClusters
+        )
+        defer { librarySlimmingClusterReviewPendingIDs.remove(clusterID) }
+
+        do {
+            try await Self.offMain {
+                try analysis.setClusterReviewDisposition(
+                    jobID: jobID,
+                    clusterID: clusterID,
+                    disposition: disposition
+                )
+            }
+            switch disposition {
+            case .confirmed:
+                librarySlimmingStatusMessage = "已收进确认队列，可随时打开重新处理。"
+            case .ignored:
+                librarySlimmingStatusMessage = "已收进忽略队列，可随时打开重新处理。"
+            case nil:
+                librarySlimmingStatusMessage = removesResolvedHistoricalRecord
+                    ? "历史记录已移出审阅队列；当前不足两项，无需返回待处理。"
+                    : "已移回待处理队列。"
+            }
+        } catch {
+            librarySlimmingClusters = previousClusters
+            if let previousDisposition {
+                librarySlimmingClusterReviewDispositions[clusterID] = previousDisposition
+            } else {
+                librarySlimmingClusterReviewDispositions.removeValue(forKey: clusterID)
+            }
+            selectedLibrarySlimmingClusterID = previousSelection
+            ensureLibrarySlimmingClusterSelection()
+            librarySlimmingStatusMessage = "无法保存分组状态：\(error.localizedDescription)"
+        }
+    }
+
     var librarySlimmingPreviewNavigation:
         LibrarySlimmingPreviewNavigationPresentation?
     {
@@ -1689,15 +1795,35 @@ final class LibraryWorkspaceModel: ObservableObject {
         else { return false }
         selectedLibrarySlimmingMemberIDs = [assetID]
         librarySlimmingSelectionAnchorID = assetID
-        closeLibrarySlimmingPreview()
         return canMoveSelectedLibrarySlimmingMembersToRecycle
     }
 
     func ensureLibrarySlimmingClusterSelection() {
-        guard !librarySlimmingClusters.isEmpty,
-              selectedLibrarySlimmingCluster == nil
-        else { return }
-        selectLibrarySlimmingCluster(librarySlimmingClusters.first?.id)
+        ensureLibrarySlimmingClusterSelection(afterRemoving: nil, from: [])
+    }
+
+    private func ensureLibrarySlimmingClusterSelection(
+        afterRemoving removedClusterID: UUID?,
+        from previousVisibleClusters: [LibrarySlimmingClusterPresentation]
+    ) {
+        let visibleClusters = visibleLibrarySlimmingClusters
+        guard !visibleClusters.isEmpty else {
+            if selectedLibrarySlimmingClusterID != nil {
+                selectLibrarySlimmingCluster(nil)
+            }
+            return
+        }
+        if let selectedLibrarySlimmingClusterID,
+           visibleClusters.contains(where: { $0.id == selectedLibrarySlimmingClusterID })
+        {
+            return
+        }
+        let nextID = Self.nearestRemainingLibrarySlimmingClusterID(
+            afterRemoving: removedClusterID,
+            from: previousVisibleClusters,
+            remainingClusters: visibleClusters
+        )
+        selectLibrarySlimmingCluster(nextID ?? visibleClusters.first?.id)
     }
 
     func selectLibrarySlimmingAnalysisJob(_ jobID: UUID?) {
@@ -1706,6 +1832,9 @@ final class LibraryWorkspaceModel: ObservableObject {
             librarySlimmingAnalysisJobState = nil
             librarySlimmingAnalysisControlRequest = .none
             librarySlimmingClusters = []
+            librarySlimmingClusterQueueScope = .pending
+            librarySlimmingClusterReviewDispositions = [:]
+            librarySlimmingClusterReviewPendingIDs = []
             librarySlimmingMemberSourceNames = [:]
             librarySlimmingPendingCount = 0
             hasCompletedLibrarySlimmingScan = false
@@ -1851,10 +1980,19 @@ final class LibraryWorkspaceModel: ObservableObject {
     ) async {
         guard let analysis = librarySlimmingAnalysis else { return }
         do {
-            let snapshot = try await Self.offMain {
-                try analysis.snapshot(jobID: jobID)
+            let loaded = try await Self.offMain {
+                (
+                    try analysis.snapshot(jobID: jobID),
+                    try analysis.clusterReviewDispositions(jobID: jobID)
+                )
             }
-            applyLibrarySlimmingJobSnapshot(snapshot, forceSelect: forceSelect)
+            if forceSelect, librarySlimmingAnalysisJobID != jobID {
+                librarySlimmingClusterQueueScope = .pending
+            }
+            librarySlimmingClusterReviewDispositions = loaded.1
+            librarySlimmingClusterReviewPendingIDs = []
+            applyLibrarySlimmingJobSnapshot(loaded.0, forceSelect: forceSelect)
+            ensureLibrarySlimmingClusterSelection()
         } catch {
             librarySlimmingStatusMessage = "无法打开分析记录：\(error.localizedDescription)"
         }
@@ -2006,15 +2144,12 @@ final class LibraryWorkspaceModel: ObservableObject {
 
     func selectLibrarySlimmingWorkspaceTab(_ tab: LibrarySlimmingWorkspaceTab) {
         librarySlimmingWorkspaceTab = tab
-        if tab == .recycleBin {
-            Task { await refreshLibrarySlimmingRecycleEntries() }
-        }
     }
 
     func openLibrarySlimmingRecycleBin(for sourceID: UUID) {
         librarySlimmingRecycleSourceFilterID = sourceID
         librarySlimmingRecycleSearchText = ""
-        librarySlimmingWorkspaceTab = .recycleBin
+        selectLibrarySlimmingWorkspaceTab(.recycleBin)
         librarySlimmingNavigationNonce = UUID()
     }
 
@@ -2078,6 +2213,19 @@ final class LibraryWorkspaceModel: ObservableObject {
         librarySlimmingRecycleSearchText = text
     }
 
+    func refreshLibrarySlimmingRecycleSource(_ sourceID: UUID) async {
+        guard sources.contains(where: { $0.id == sourceID && $0.state == .active }) else {
+            librarySlimmingStatusMessage =
+                "来源当前不可用；请先在左侧来源列表恢复访问权限。"
+            return
+        }
+        await refreshLibrarySlimmingCatalog(
+            preferredSourceIDs: [sourceID],
+            reportsStatus: true,
+            successMessage: "正在刷新这个来源；完成后请重新分析，再重试清理。"
+        )
+    }
+
     var skipsLibrarySlimmingMoveToRecycleConfirmation: Bool {
         librarySlimmingRecycleConfirmationPreferences.skipsMoveConfirmation
     }
@@ -2087,15 +2235,23 @@ final class LibraryWorkspaceModel: ObservableObject {
     }
 
     var shouldConfirmSelectedLibrarySlimmingMoveToRecycle: Bool {
-        LibrarySlimmingMoveConfirmationPolicy.requiresConfirmation(
+        selectedLibrarySlimmingFavoriteProtectionCount > 0
+            || LibrarySlimmingMoveConfirmationPolicy.requiresConfirmation(
             assetCount: selectedLibrarySlimmingMemberIDs.count,
             skipsSmallMoveConfirmation: skipsLibrarySlimmingMoveToRecycleConfirmation,
             isIdenticalCleanup: false
         )
     }
 
+    var selectedLibrarySlimmingFavoriteProtectionCount: Int {
+        selectedLibrarySlimmingMemberIDs.lazy.filter {
+            self.favoriteState(for: $0).isDeletionProtected
+        }.count
+    }
+
     var canPersistentlySkipSelectedLibrarySlimmingMoveConfirmation: Bool {
-        LibrarySlimmingMoveConfirmationPolicy.canPersistentlySkip(
+        selectedLibrarySlimmingFavoriteProtectionCount == 0
+            && LibrarySlimmingMoveConfirmationPolicy.canPersistentlySkip(
             assetCount: selectedLibrarySlimmingMemberIDs.count
         )
     }
@@ -2105,7 +2261,17 @@ final class LibraryWorkspaceModel: ObservableObject {
     }
 
     var librarySlimmingIdenticalGroupCount: Int {
-        librarySlimmingClusters.filter { $0.kind == .byteIdentical }.count
+        actionablePendingLibrarySlimmingClusters.filter { $0.kind == .byteIdentical }.count
+    }
+
+    private var actionablePendingLibrarySlimmingClusters:
+        [LibrarySlimmingClusterPresentation]
+    {
+        librarySlimmingClusters.filter {
+            librarySlimmingClusterReviewDispositions[$0.id] == nil
+                && !$0.isHistoricalProcessedRecord
+                && ($0.isSeedOnlyResult || $0.memberAssetIDs.count >= 2)
+        }
     }
 
     var isRunningLibrarySlimmingIdenticalCleanup: Bool {
@@ -2187,7 +2353,7 @@ final class LibraryWorkspaceModel: ObservableObject {
         librarySlimmingIdenticalCleanupPostDeleteReport = nil
         defer { isPreparingLibrarySlimmingIdenticalCleanup = false }
         do {
-            let clusters = librarySlimmingClusters.map(\.cluster)
+            let clusters = actionablePendingLibrarySlimmingClusters.map(\.cluster)
             let plan = try await Self.offMain {
                 try recycle.makeIdenticalCleanupPlan(clusters: clusters)
             }
@@ -2251,7 +2417,7 @@ final class LibraryWorkspaceModel: ObservableObject {
             finishLibrarySlimmingIdenticalCleanupExecution(executionID: executionID)
         }
         do {
-            let clusters = librarySlimmingClusters.map(\.cluster)
+            let clusters = actionablePendingLibrarySlimmingClusters.map(\.cluster)
             let refreshedPlan = try await Self.offMain {
                 try recycle.makeIdenticalCleanupPlan(clusters: clusters)
             }
@@ -2770,6 +2936,7 @@ final class LibraryWorkspaceModel: ObservableObject {
             selectedClusterID: selectedLibrarySlimmingClusterID,
             selectedMemberIDs: selectedLibrarySlimmingMemberIDs,
             selectionAnchorID: librarySlimmingSelectionAnchorID,
+            previewAssetID: librarySlimmingPreviewAssetID,
             attemptedAssetIDs: assetIDs
         )
         librarySlimmingClusters = filterLibrarySlimmingClustersRemoving(
@@ -2793,6 +2960,10 @@ final class LibraryWorkspaceModel: ObservableObject {
             selectedLibrarySlimmingMemberIDs = []
             librarySlimmingSelectionAnchorID = nil
         }
+        updateLibrarySlimmingPreviewAfterRecycle(
+            snapshot: snapshot,
+            remainingClusters: librarySlimmingClusters
+        )
         refreshSelectedLibrarySlimmingMemberSources()
         return snapshot
     }
@@ -2804,31 +2975,13 @@ final class LibraryWorkspaceModel: ObservableObject {
         let failedAssetIDs = snapshot.attemptedAssetIDs.subtracting(recycledAssetIDs)
         librarySlimmingClusters = snapshot.clusters.compactMap { cluster in
             let remaining = cluster.memberAssetIDs.filter { !recycledAssetIDs.contains($0) }
-            guard !remaining.isEmpty else { return nil }
             let minimumMemberCount = cluster.isSeedOnlyResult ? 1 : 2
             // A failed optimistic item must visibly return even when it was the
             // only selected seed or the only member left after a partial move.
-            guard remaining.count >= minimumMemberCount
-                || !failedAssetIDs.isDisjoint(with: remaining)
-            else { return nil }
-            if cluster.isSeedOnlyResult {
-                return LibrarySlimmingClusterPresentation(
-                    seedAssetIDs: remaining,
-                    mediaKind: cluster.mediaKind
-                )
-            }
-            return LibrarySlimmingClusterPresentation(
-                SlimmingCluster(
-                    id: cluster.id,
-                    kind: cluster.kind,
-                    memberAssetIDs: remaining,
-                    representativeAssetID: remaining.contains(cluster.representativeAssetID)
-                        ? cluster.representativeAssetID
-                        : remaining[0],
-                    score: cluster.score,
-                    modelIdentity: cluster.modelIdentity
-                ),
-                mediaKind: cluster.mediaKind
+            return cluster.retainingMemberAssetIDs(
+                remaining,
+                allowBelowMinimum: remaining.count < minimumMemberCount
+                    && !failedAssetIDs.isDisjoint(with: remaining)
             )
         }
         if let previous = snapshot.selectedClusterID,
@@ -2855,7 +3008,63 @@ final class LibraryWorkspaceModel: ObservableObject {
             selectedLibrarySlimmingMemberIDs = []
             librarySlimmingSelectionAnchorID = nil
         }
+        updateLibrarySlimmingPreviewAfterRecycle(
+            snapshot: snapshot,
+            remainingClusters: librarySlimmingClusters
+        )
         refreshSelectedLibrarySlimmingMemberSources()
+    }
+
+    private func updateLibrarySlimmingPreviewAfterRecycle(
+        snapshot: LibrarySlimmingOptimisticRecycleSnapshot,
+        remainingClusters: [LibrarySlimmingClusterPresentation]
+    ) {
+        guard let previewAssetID = snapshot.previewAssetID else { return }
+        let replacement = Self.replacementLibrarySlimmingPreviewAssetID(
+            previewAssetID: previewAssetID,
+            selectedClusterID: snapshot.selectedClusterID,
+            previousClusters: snapshot.clusters,
+            remainingClusters: remainingClusters
+        )
+        librarySlimmingPreviewAssetID = replacement
+        if let replacement {
+            selectedLibrarySlimmingMemberIDs = [replacement]
+            librarySlimmingSelectionAnchorID = replacement
+        }
+    }
+
+    private static func replacementLibrarySlimmingPreviewAssetID(
+        previewAssetID: UUID,
+        selectedClusterID: UUID?,
+        previousClusters: [LibrarySlimmingClusterPresentation],
+        remainingClusters: [LibrarySlimmingClusterPresentation]
+    ) -> UUID? {
+        guard let selectedClusterID,
+              let previousCluster = previousClusters.first(where: {
+                  $0.id == selectedClusterID
+              }),
+              let remainingCluster = remainingClusters.first(where: {
+                  $0.id == selectedClusterID
+              })
+        else { return nil }
+        if remainingCluster.memberAssetIDs.contains(previewAssetID) {
+            return previewAssetID
+        }
+        guard let previousIndex = previousCluster.memberAssetIDs.firstIndex(
+            of: previewAssetID
+        ) else { return nil }
+
+        let remainingMemberIDs = Set(remainingCluster.memberAssetIDs)
+        if let next = previousCluster.memberAssetIDs
+            .dropFirst(previousIndex + 1)
+            .first(where: { remainingMemberIDs.contains($0) })
+        {
+            return next
+        }
+        return previousCluster.memberAssetIDs
+            .prefix(previousIndex)
+            .reversed()
+            .first(where: { remainingMemberIDs.contains($0) })
     }
 
     private static func nearestRemainingLibrarySlimmingClusterID(
@@ -3169,9 +3378,30 @@ final class LibraryWorkspaceModel: ObservableObject {
     func explainUnresolvedLibrarySlimmingRecycleEntry(_ entryID: UUID) {
         guard let entry = librarySlimmingRecycleEntries.first(where: { $0.id == entryID })
         else { return }
-        let code = entry.errorCode ?? entry.state.rawValue
-        librarySlimmingStatusMessage =
-            "该项目状态（\(code)）无法证明文件只在原位置或隔离区；ImageAll 会继续保留并阻止来源删除，请先重新检查或恢复文件位置。"
+        librarySlimmingStatusMessage = switch entry.problem {
+        case .sourceAuthorizationRequired:
+            "文件操作尚未开始，原文件没有修改。请更新来源回收权限后回到分析结果重试；也可以移除这条失败记录。"
+        case .sourceAuthorizationInvalid:
+            "已保存的来源回收权限失效。请重新选择原来源更新权限，再回到分析结果重试。"
+        case .sourceChanged:
+            "目录中的文件与分析时记录不一致，ImageAll 已停止删除以避免误删。请刷新来源、等待完成、重新分析后再试。"
+        case .photosAuthorizationRequired:
+            "尚未取得 Apple Photos 完整读写权限，因此没有提交移入“最近删除”。授权后可回到分析结果重试。"
+        case .photosAssetNotFound:
+            "执行前已无法用同一 Photos 标识找到该媒体，因此没有提交删除。请刷新 Photos 来源并重新分析。"
+        case .photosUserCancelled:
+            "系统的删除确认已取消，媒体没有被 ImageAll 视为已移入“最近删除”。可回到分析结果重新发起。"
+        case .photosMutationFailed:
+            "Apple Photos 没有确认完成本次删除，ImageAll 因此保留当前媒体状态。可回到分析结果重试。"
+        case .fileIO:
+            "文件操作没有得到可证明的完整结果。若原位置和隔离区都已登记，可重新检查两处位置；否则请回到分析结果重试。"
+        case .locationConflict:
+            "原位置与 ImageAll 隔离区同时存在内容。为避免覆盖或误删，ImageAll 会保留两份并等待人工处理。"
+        case .locationMissing:
+            "ImageAll 无法在原位置或隔离区确认唯一内容，因此不会继续删除。请先核对来源磁盘和文件位置。"
+        case .unknown, nil:
+            "本次操作没有形成可证明的完成状态。ImageAll 不会继续删除；请回到分析结果重新检查后再试。"
+        }
     }
 
     private func refreshActiveWorkspaceAfterRecycleRestore() async {
@@ -3379,6 +3609,9 @@ final class LibraryWorkspaceModel: ObservableObject {
                 )
             }
             await refreshLibrarySlimmingAnalysisJobs()
+            librarySlimmingClusterQueueScope = .pending
+            librarySlimmingClusterReviewDispositions = [:]
+            librarySlimmingClusterReviewPendingIDs = []
             applyLibrarySlimmingJobSnapshot(snapshot, forceSelect: true)
             librarySlimmingStatusMessage = "后台自动补全内容指纹与相似度向量…"
             librarySlimmingAnalysisJobState = .running
@@ -3519,9 +3752,53 @@ final class LibraryWorkspaceModel: ObservableObject {
         let previousClusterID = selectedLibrarySlimmingClusterID
         let previousMemberIDs = selectedLibrarySlimmingMemberIDs
         let resolvedClusters = resolveRestoredLibrarySlimmingMembers(result.clusters)
-        let filteredClusters = filterLibrarySlimmingClustersForHiddenAssets(resolvedClusters)
-        var presentations = filteredClusters.map {
-            LibrarySlimmingClusterPresentation($0, mediaKind: selectedMediaKind)
+        let hiddenAssetIDs = librarySlimmingHiddenAssetIDs(in: resolvedClusters)
+        let originalMemberCounts = Dictionary(
+            uniqueKeysWithValues: result.clusters.map { ($0.id, $0.memberAssetIDs.count) }
+        )
+        var filteredClusters: [SlimmingCluster] = []
+        var presentations = resolvedClusters.compactMap { cluster in
+            let availableMembers = cluster.memberAssetIDs.filter {
+                !hiddenAssetIDs.contains($0)
+            }
+            let originalMemberCount = originalMemberCounts[cluster.id]
+                ?? cluster.memberAssetIDs.count
+            if availableMembers.count >= 2 {
+                let availableCluster = SlimmingCluster(
+                    id: cluster.id,
+                    kind: cluster.kind,
+                    memberAssetIDs: availableMembers,
+                    representativeAssetID: availableMembers.contains(cluster.representativeAssetID)
+                        ? cluster.representativeAssetID
+                        : availableMembers[0],
+                    score: cluster.score,
+                    modelIdentity: cluster.modelIdentity
+                )
+                filteredClusters.append(availableCluster)
+                if librarySlimmingClusterReviewDispositions[cluster.id] != nil,
+                   availableMembers.count < originalMemberCount
+                {
+                    return LibrarySlimmingClusterPresentation(
+                        historical: cluster,
+                        availableMemberAssetIDs: availableMembers,
+                        originalMemberCount: originalMemberCount,
+                        mediaKind: selectedMediaKind
+                    )
+                }
+                return LibrarySlimmingClusterPresentation(
+                    availableCluster,
+                    mediaKind: selectedMediaKind
+                )
+            }
+            guard librarySlimmingClusterReviewDispositions[cluster.id] != nil else {
+                return nil
+            }
+            return LibrarySlimmingClusterPresentation(
+                historical: cluster,
+                availableMemberAssetIDs: availableMembers,
+                originalMemberCount: originalMemberCount,
+                mediaKind: selectedMediaKind
+            )
         }
         let clusteredAssetIDs = Set(filteredClusters.flatMap(\.memberAssetIDs))
         let seedOnlyAssetIDs = filteredClusters.isEmpty
@@ -3627,7 +3904,7 @@ final class LibraryWorkspaceModel: ObservableObject {
                 let resolved = replacements[assetID] ?? assetID
                 return seen.insert(resolved).inserted ? resolved : nil
             }
-            guard members.count >= 2 else { return nil }
+            guard !members.isEmpty else { return nil }
             let representative = replacements[cluster.representativeAssetID]
                 ?? cluster.representativeAssetID
             return SlimmingCluster(
@@ -3643,39 +3920,18 @@ final class LibraryWorkspaceModel: ObservableObject {
         }
     }
 
-    private func filterLibrarySlimmingClustersForHiddenAssets(
-        _ clusters: [SlimmingCluster]
-    ) -> [SlimmingCluster] {
+    private func librarySlimmingHiddenAssetIDs(
+        in clusters: [SlimmingCluster]
+    ) -> Set<UUID> {
         let memberIDs = clusters.flatMap(\.memberAssetIDs)
-        guard !memberIDs.isEmpty else { return clusters }
+        guard !memberIDs.isEmpty else { return [] }
         var hidden = librarySlimmingRecyclePendingAssetIDs
         if let recycle = librarySlimmingRecycle {
             hidden.formUnion(
                 (try? recycle.slimmingHiddenAssetIDs(from: memberIDs)) ?? []
             )
         }
-        guard !hidden.isEmpty else { return clusters }
-        return filterLibrarySlimmingClustersRemoving(assetIDs: hidden, from: clusters)
-    }
-
-    private func filterLibrarySlimmingClustersRemoving(
-        assetIDs hidden: Set<UUID>,
-        from clusters: [SlimmingCluster]
-    ) -> [SlimmingCluster] {
-        clusters.compactMap { cluster in
-            let remaining = cluster.memberAssetIDs.filter { !hidden.contains($0) }
-            guard remaining.count >= 2 else { return nil }
-            return SlimmingCluster(
-                id: cluster.id,
-                kind: cluster.kind,
-                memberAssetIDs: remaining,
-                representativeAssetID: remaining.contains(cluster.representativeAssetID)
-                    ? cluster.representativeAssetID
-                    : remaining[0],
-                score: cluster.score,
-                modelIdentity: cluster.modelIdentity
-            )
-        }
+        return hidden
     }
 
     private func filterLibrarySlimmingClustersRemoving(
@@ -3684,27 +3940,7 @@ final class LibraryWorkspaceModel: ObservableObject {
     ) -> [LibrarySlimmingClusterPresentation] {
         clusters.compactMap { cluster in
             let remaining = cluster.memberAssetIDs.filter { !hidden.contains($0) }
-            let minimumMemberCount = cluster.isSeedOnlyResult ? 1 : 2
-            guard remaining.count >= minimumMemberCount else { return nil }
-            if cluster.isSeedOnlyResult {
-                return LibrarySlimmingClusterPresentation(
-                    seedAssetIDs: remaining,
-                    mediaKind: cluster.mediaKind
-                )
-            }
-            return LibrarySlimmingClusterPresentation(
-                SlimmingCluster(
-                    id: cluster.id,
-                    kind: cluster.kind,
-                    memberAssetIDs: remaining,
-                    representativeAssetID: remaining.contains(cluster.representativeAssetID)
-                        ? cluster.representativeAssetID
-                        : remaining[0],
-                    score: cluster.score,
-                    modelIdentity: cluster.modelIdentity
-                ),
-                mediaKind: cluster.mediaKind
-            )
+            return cluster.retainingMemberAssetIDs(remaining)
         }
     }
 
@@ -3902,6 +4138,9 @@ final class LibraryWorkspaceModel: ObservableObject {
         selectedLibrarySlimmingMemberIDs = []
         librarySlimmingAnalysisJobID = nil
         librarySlimmingClusters = []
+        librarySlimmingClusterQueueScope = .pending
+        librarySlimmingClusterReviewDispositions = [:]
+        librarySlimmingClusterReviewPendingIDs = []
         librarySlimmingPendingCount = 0
         await refreshLibrarySlimmingAnalysisJobs()
         ensureLibrarySlimmingAnalysisMonitoring()
@@ -4289,6 +4528,9 @@ final class LibraryWorkspaceModel: ObservableObject {
         if tagPresence == .untagged {
             return selectedMediaKind == .image ? "无标签照片" : "无标签视频"
         }
+        if isBrowsingFavorites {
+            return selectedMediaKind == .image ? "红心照片" : "红心视频"
+        }
         return selectedMediaKind == .image ? "全部照片" : "全部视频"
     }
 
@@ -4454,6 +4696,10 @@ final class LibraryWorkspaceModel: ObservableObject {
         await reload(runPendingJobs: false)
         await runLibrarySlimmingMaintenance()
         await restoreDefaultSourceAuthorizations()
+        let favoriteService = service
+        _ = try? await Self.offMain(priority: .utility) {
+            try favoriteService.retryPendingFavoriteSync(sourceIDs: nil)
+        }
         for source in sources where source.kind == .photos && source.state == .active {
             await ensurePhotosLibraryIndexed(sourceID: source.id)
         }
@@ -4530,7 +4776,8 @@ final class LibraryWorkspaceModel: ObservableObject {
 
     private func refreshLibrarySlimmingCatalog(
         preferredSourceIDs: Set<UUID>,
-        reportsStatus: Bool
+        reportsStatus: Bool,
+        successMessage: String? = nil
     ) async {
         let activeSourceIDs = Set(
             sources.lazy
@@ -4559,7 +4806,7 @@ final class LibraryWorkspaceModel: ObservableObject {
             librarySlimmingCatalogRefreshPendingAfterExit = false
             librarySlimmingCatalogRefreshSourceIDs = []
             if reportsStatus {
-                librarySlimmingStatusMessage = "正在刷新照片来源…"
+                librarySlimmingStatusMessage = successMessage ?? "正在刷新照片来源…"
                 reportsLibrarySlimmingCatalogRefreshCompletion = true
             }
             startCatalogReconcileRunnerIfNeeded(
@@ -4665,6 +4912,11 @@ final class LibraryWorkspaceModel: ObservableObject {
     }
 
     private func runIdleThumbnailPrewarm(generation: Int) async {
+        if librarySlimmingWorkspaceTab == .recycleBin {
+            await runIdleRecycleThumbnailBackfill(generation: generation)
+            guard idlePrewarmIsCurrentGeneration(generation), !Task.isCancelled else { return }
+        }
+
         let gridItems = items
         for item in gridItems {
             if Task.isCancelled { return }
@@ -4681,6 +4933,42 @@ final class LibraryWorkspaceModel: ObservableObject {
                 contentRevision: item.contentRevision,
                 generation: generation
             )
+        }
+    }
+
+    /// Missing recycle thumbnails are historical presentation debt. Repair
+    /// them one at a time while idle, strictly from ImageAll's quarantine.
+    private func runIdleRecycleThumbnailBackfill(generation: Int) async {
+        let entries = librarySlimmingRecycleEntries.filter {
+            $0.sourceKind == .file
+                && $0.state == .recycled
+                && !idleRecycleThumbnailBackfillSkippedAssetIDs.contains($0.assetID)
+        }
+        let service = service
+        for entry in entries {
+            guard idlePrewarmIsCurrentGeneration(generation), !Task.isCancelled else { return }
+            if cachedThumbnailData(for: entry.assetID) != nil {
+                continue
+            }
+            do {
+                try Task.checkCancellation()
+                let data: Data
+                if let cached = try await service.loadThumbnailIfCached(assetID: entry.assetID) {
+                    data = cached
+                } else {
+                    data = try await service.prewarmRecycledFileThumbnail(
+                        assetID: entry.assetID
+                    )
+                }
+                guard idlePrewarmIsCurrentGeneration(generation), !Task.isCancelled else { return }
+                rememberThumbnailData(data, for: entry.assetID)
+                markLibrarySlimmingThumbnailForReload(entry.assetID)
+            } catch is CancellationError {
+                return
+            } catch {
+                idleRecycleThumbnailBackfillSkippedAssetIDs.insert(entry.assetID)
+            }
+            await Task.yield()
         }
     }
 
@@ -5915,11 +6203,13 @@ final class LibraryWorkspaceModel: ObservableObject {
 
         switch destination {
         case .galleryOverview, .worldMap:
+            isBrowsingFavorites = false
             cancelPendingLibrarySlimmingSeedAnalyze()
             clearReviewModeState()
             worldMapGalleryScope = nil
             guard browsingNavigationRequestID == requestID else { return }
         case .reviewSuggestions:
+            isBrowsingFavorites = false
             cancelPendingLibrarySlimmingSeedAnalyze()
             worldMapGalleryScope = nil
             // Re-check before mutating: a newer sidebar selection may have
@@ -5928,12 +6218,14 @@ final class LibraryWorkspaceModel: ObservableObject {
             await enterReviewOverview()
             guard browsingNavigationRequestID == requestID else { return }
         case .trainingWorkspace:
+            isBrowsingFavorites = false
             cancelPendingLibrarySlimmingSeedAnalyze()
             clearReviewModeState()
             worldMapGalleryScope = nil
             guard browsingNavigationRequestID == requestID else { return }
             await refreshTrainingWorkspace(presentation: .automatic)
         case .librarySlimming:
+            isBrowsingFavorites = false
             clearReviewModeState()
             worldMapGalleryScope = nil
             guard browsingNavigationRequestID == requestID else { return }
@@ -5945,7 +6237,7 @@ final class LibraryWorkspaceModel: ObservableObject {
                 navigationRequestID: requestID
             )
 
-        case .all, .untagged, .source, .worldMapGallery:
+        case .all, .favorites, .untagged, .source, .worldMapGallery:
             cancelPendingLibrarySlimmingSeedAnalyze()
             clearReviewModeState()
             applyGalleryBrowsingFilters(for: destination)
@@ -5970,10 +6262,14 @@ final class LibraryWorkspaceModel: ObservableObject {
         let sort = sort
         let requestID = assetPageRequestID
         do {
-            let page = try await Self.offMain {
-                try service.fetchAssetPage(filter: filter, sort: sort, cursor: cursor)
+            let result = try await Self.offMain {
+                let page = try service.fetchAssetPage(filter: filter, sort: sort, cursor: cursor)
+                let favorites = try service.fetchFavoriteStates(assetIDs: page.items.map(\.assetID))
+                return (page, favorites)
             }
+            let page = result.0
             guard assetPageRequestID == requestID else { return }
+            favoriteStates.merge(result.1) { _, newest in newest }
             items.append(contentsOf: page.items)
             nextCursor = page.nextCursor
         } catch {
@@ -6140,6 +6436,44 @@ final class LibraryWorkspaceModel: ObservableObject {
                     return .cancelled
                 }
             }
+        }
+    }
+
+    /// Recycle-bin previews are presentation-only and never justify reading the
+    /// original source again. A cache miss settles immediately as unavailable.
+    func loadRecycleThumbnailResult(
+        assetID: UUID,
+        aspectMode: LibraryThumbnailAspectMode
+    ) async -> AssetThumbnailLoadResult {
+        let service = service
+        let loadEpoch = thumbnailLoadEpoch
+        do {
+            if aspectMode == .original,
+               let original = try await thumbnailLoadGate.withPermit({
+                   try Task.checkCancellation()
+                   return try await service.loadOriginalAspectThumbnailIfCached(
+                       assetID: assetID
+                   )
+               })
+            {
+                guard loadEpoch == thumbnailLoadEpoch else { return .cancelled }
+                return .loaded(original)
+            }
+            if let cached = cachedThumbnailData(for: assetID) {
+                return .loaded(cached)
+            }
+            let square = try await thumbnailLoadGate.withPermit {
+                try Task.checkCancellation()
+                return try await service.loadThumbnailIfCached(assetID: assetID)
+            }
+            guard loadEpoch == thumbnailLoadEpoch else { return .cancelled }
+            guard let square else { return .unavailable }
+            rememberThumbnailData(square, for: assetID)
+            return .loaded(square)
+        } catch is CancellationError {
+            return .cancelled
+        } catch {
+            return .unavailable
         }
     }
 
@@ -8306,10 +8640,14 @@ final class LibraryWorkspaceModel: ObservableObject {
         let filter = currentFilter
         let sort = sort
         do {
-            let page = try await Self.offMain {
-                try service.fetchAssetPage(filter: filter, sort: sort, cursor: nil)
+            let result = try await Self.offMain {
+                let page = try service.fetchAssetPage(filter: filter, sort: sort, cursor: nil)
+                let favorites = try service.fetchFavoriteStates(assetIDs: page.items.map(\.assetID))
+                return (page, favorites)
             }
+            let page = result.0
             guard assetPageRequestID == requestID else { return }
+            favoriteStates.merge(result.1) { _, newest in newest }
             let visibleItems = page.items.filter {
                 !hiddenRecycledAssetIDs.contains($0.assetID)
             }
@@ -8664,6 +9002,7 @@ final class LibraryWorkspaceModel: ObservableObject {
             mediaKinds: [selectedMediaKind],
             mediaTypes: selectedMediaTypes,
             tagPresence: tagPresence,
+            favorite: isBrowsingFavorites ? .favorited : .any,
             searchText: searchText,
             worldMapSelection: worldMapGalleryScope?.selectionQuery
         )
@@ -8671,6 +9010,129 @@ final class LibraryWorkspaceModel: ObservableObject {
 
     func dismissNotice() {
         notice = nil
+    }
+
+    func favoriteState(for assetID: UUID) -> MediaFavoriteState {
+        favoriteStates[assetID] ?? .none(assetID: assetID)
+    }
+
+    var favoritePendingSyncCount: Int {
+        favoriteStates.values.lazy.filter { $0.syncStatus == .pending }.count
+    }
+
+    var favoriteFailedSyncCount: Int {
+        favoriteStates.values.lazy.filter { $0.syncStatus == .failed }.count
+    }
+
+    func ensureFavoriteStatesLoaded(assetIDs: [UUID]) async {
+        let missingIDs = Array(Set(assetIDs)).filter { favoriteStates[$0] == nil }
+        guard !missingIDs.isEmpty else { return }
+        let service = service
+        do {
+            let fetched = try await Self.offMain {
+                try service.fetchFavoriteStates(assetIDs: missingIDs)
+            }
+            favoriteStates.merge(fetched) { _, newest in newest }
+        } catch {
+            favoriteStatusMessage = "无法读取红心状态。"
+        }
+    }
+
+    func toggleFavorite(assetID: UUID) async {
+        await ensureFavoriteStatesLoaded(assetIDs: [assetID])
+        let target = !favoriteState(for: assetID).isFavorite
+        await setFavorite(assetIDs: [assetID], isFavorite: target)
+    }
+
+    func setFavorite(assetIDs: [UUID], isFavorite: Bool) async {
+        let uniqueIDs = Array(Set(assetIDs))
+        guard !uniqueIDs.isEmpty else { return }
+        await ensureFavoriteStatesLoaded(assetIDs: uniqueIDs)
+        let previous = uniqueIDs.reduce(into: [UUID: MediaFavoriteState]()) {
+            $0[$1] = favoriteState(for: $1)
+        }
+        for assetID in uniqueIDs {
+            let old = favoriteState(for: assetID)
+            favoriteStates[assetID] = MediaFavoriteState(
+                assetID: assetID,
+                isFavorite: isFavorite,
+                photosObservedValue: old.photosObservedValue,
+                syncStatus: old.photosObservedValue == nil ? .localOnly : .pending,
+                intentRevision: old.intentRevision + 1,
+                requestedAtMs: clock.nowMs,
+                photosObservedModifiedAtMs: old.photosObservedModifiedAtMs,
+                lastErrorCode: nil
+            )
+        }
+        if isBrowsingFavorites, !isFavorite {
+            removeUnfavoritedItemsFromLoadedWindow(Set(uniqueIDs))
+        }
+
+        let service = service
+        do {
+            let summary = try await Self.offMain {
+                try service.setFavorite(assetIDs: uniqueIDs, isFavorite: isFavorite)
+            }
+            let refreshed = try await Self.offMain {
+                try service.fetchFavoriteStates(assetIDs: uniqueIDs)
+            }
+            favoriteStates.merge(refreshed) { _, newest in newest }
+            let action = isFavorite ? "已加入红心" : "已取消红心"
+            if summary.failedCount > 0 {
+                favoriteStatusMessage = "\(action) \(summary.changedCount) 项；\(summary.failedCount) 项 Photos 同步失败，可重试。"
+            } else if summary.pendingCount > 0 {
+                favoriteStatusMessage = "\(action) \(summary.changedCount) 项；\(summary.pendingCount) 项等待 Photos 同步。"
+            } else {
+                favoriteStatusMessage = "\(action) \(summary.changedCount) 项。"
+            }
+        } catch {
+            favoriteStates.merge(previous) { _, old in old }
+            if isBrowsingFavorites, !isFavorite {
+                await reloadLoadedAssetWindow()
+            }
+            favoriteStatusMessage = "红心操作失败，原状态已恢复。"
+        }
+    }
+
+    func retryPendingFavoriteSync() async {
+        let service = service
+        do {
+            let summary = try await Self.offMain {
+                try service.retryPendingFavoriteSync(sourceIDs: nil)
+            }
+            let visibleIDs = items.map(\.assetID)
+            let refreshed = try await Self.offMain {
+                try service.fetchFavoriteStates(assetIDs: visibleIDs)
+            }
+            favoriteStates.merge(refreshed) { _, newest in newest }
+            favoriteStatusMessage = summary.failedCount == 0 && summary.pendingCount == 0
+                ? "Photos 红心同步已完成。"
+                : "仍有 \(summary.pendingCount) 项待同步、\(summary.failedCount) 项失败。"
+        } catch {
+            favoriteStatusMessage = "重试 Photos 红心同步失败。"
+        }
+    }
+
+    func requestFavoriteNavigation() {
+        favoriteNavigationNonce = UUID()
+    }
+
+    private func removeUnfavoritedItemsFromLoadedWindow(_ removedIDs: Set<UUID>) {
+        guard !removedIDs.isEmpty else { return }
+        let oldItems = items
+        let primaryIndex = primarySelectedAssetID.flatMap { selectedID in
+            oldItems.firstIndex(where: { $0.assetID == selectedID })
+        }
+        items.removeAll { removedIDs.contains($0.assetID) }
+        selectedAssetIDs.subtract(removedIDs)
+        if selectedAssetIDs.isEmpty,
+           let primaryIndex,
+           !items.isEmpty
+        {
+            let replacementIndex = min(primaryIndex, items.count - 1)
+            selectedAssetIDs = [items[replacementIndex].assetID]
+            Task { _ = await refreshInspector() }
+        }
     }
 
     private func tagNotice(for error: Error) -> LibraryWorkspaceNotice {
@@ -9111,6 +9573,7 @@ extension LibraryWorkspaceModel {
         setLibrarySlimmingWorkspaceActive(destination == .librarySlimming)
         switch destination {
         case .galleryOverview, .worldMap:
+            isBrowsingFavorites = false
             clearReviewModeState()
             worldMapGalleryScope = nil
             items = []
@@ -9120,15 +9583,17 @@ extension LibraryWorkspaceModel {
             inspectorDetail = nil
             inspectorTags = []
         case .reviewSuggestions:
+            isBrowsingFavorites = false
             selectedMediaKind = .image
             worldMapGalleryScope = nil
             applyReviewOverviewPresentation()
         case .trainingWorkspace, .librarySlimming:
+            isBrowsingFavorites = false
             selectedMediaKind = .image
             worldMapGalleryScope = nil
             clearReviewModeState()
             isSinglePhotoPresented = false
-        case .all, .untagged, .source, .worldMapGallery:
+        case .all, .favorites, .untagged, .source, .worldMapGallery:
             clearReviewModeState()
             applyGalleryBrowsingFilters(for: destination)
             // Drop stale gallery rows so the previous filter cannot paint under
@@ -9160,6 +9625,7 @@ extension LibraryWorkspaceModel {
         case .galleryOverview, .worldMap:
             break
         case let .worldMapGallery(scope):
+            isBrowsingFavorites = false
             searchDebounceTask?.cancel()
             searchDebounceTask = nil
             selectedMediaKind = .image
@@ -9173,10 +9639,20 @@ extension LibraryWorkspaceModel {
             searchText = ""
             worldMapGalleryScope = scope
         case .all:
+            isBrowsingFavorites = false
             worldMapGalleryScope = nil
             selectedSourceID = nil
             tagPresence = .any
+        case .favorites:
+            isBrowsingFavorites = true
+            worldMapGalleryScope = nil
+            selectedSourceID = nil
+            tagPresence = .any
+            selectedTagFilterDecisions = [:]
+            selectedTagFilterIDs = []
+            excludedTagFilterIDs = []
         case .untagged:
+            isBrowsingFavorites = false
             worldMapGalleryScope = nil
             selectedSourceID = nil
             tagPresence = .untagged
@@ -9184,10 +9660,12 @@ extension LibraryWorkspaceModel {
             selectedTagFilterIDs = []
             excludedTagFilterIDs = []
         case let .source(sourceID):
+            isBrowsingFavorites = false
             worldMapGalleryScope = nil
             selectedSourceID = sourceID
             tagPresence = .any
         case .reviewSuggestions, .trainingWorkspace, .librarySlimming:
+            isBrowsingFavorites = false
             worldMapGalleryScope = nil
             break
         }
@@ -9873,6 +10351,7 @@ private enum LibrarySidebarSelection: Hashable {
     case worldMap
     case worldMapGallery
     case all
+    case favorites
     case untagged
     case reviewSuggestions
     case trainingWorkspace
@@ -10987,6 +11466,8 @@ struct LibraryWorkspaceView: View {
                 worldMapGalleryScope.map(LibraryBrowsingDestination.worldMapGallery) ?? .all
             case .all, .none:
                 .all
+            case .favorites:
+                .favorites
             case .untagged:
                 .untagged
             case .reviewSuggestions:
@@ -11022,6 +11503,9 @@ struct LibraryWorkspaceView: View {
             } else {
                 Task { await model.consumePendingLibrarySlimmingSeedAnalyzeIfNeeded() }
             }
+        }
+        .onChange(of: model.favoriteNavigationNonce) { _, _ in
+            selection = .favorites
         }
     }
 
@@ -11259,6 +11743,9 @@ struct LibraryWorkspaceView: View {
                     .tag(LibrarySidebarSelection.worldMap)
                 Label("全部照片", systemImage: "photo.on.rectangle.angled")
                     .tag(LibrarySidebarSelection.all)
+                Label("红心收藏", systemImage: "heart.fill")
+                    .foregroundStyle(selection == .favorites ? .red : .primary)
+                    .tag(LibrarySidebarSelection.favorites)
                 Label("无标签", systemImage: "tag.slash")
                     .tag(LibrarySidebarSelection.untagged)
                 HStack {
@@ -12443,6 +12930,28 @@ struct LibraryWorkspaceView: View {
                     Text(model.selectionSummaryTitle)
                         .font(.headline)
 
+                    HStack(spacing: 8) {
+                        Button("加入红心", systemImage: "heart.fill") {
+                            Task {
+                                await model.setFavorite(
+                                    assetIDs: Array(model.selectedAssetIDs),
+                                    isFavorite: true
+                                )
+                            }
+                        }
+                        .tint(.red)
+                        Button("取消红心", systemImage: "heart.slash") {
+                            Task {
+                                await model.setFavorite(
+                                    assetIDs: Array(model.selectedAssetIDs),
+                                    isFavorite: false
+                                )
+                            }
+                        }
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+
                     if let detail = model.inspectorDetail {
                         InspectorPreview(assetID: detail.assetID, model: model)
                         if model.reviewMode == nil {
@@ -13022,6 +13531,59 @@ struct LibraryWorkspaceView: View {
             )
         }
 
+        if !model.selectedAssetIDs.isEmpty {
+            Button {
+                Task {
+                    await model.setFavorite(
+                        assetIDs: Array(model.selectedAssetIDs),
+                        isFavorite: true
+                    )
+                }
+            } label: {
+                LibraryToolbarLabel(
+                    title: "加入红心",
+                    systemImage: "heart.fill",
+                    displayMode: toolbarDisplayModeSettings.displayMode
+                )
+            }
+            .tint(.red)
+            .libraryToolbarHelp("加入红心", detail: "把当前所选照片或视频加入全 App 共享的红心收藏。")
+
+            Button {
+                Task {
+                    await model.setFavorite(
+                        assetIDs: Array(model.selectedAssetIDs),
+                        isFavorite: false
+                    )
+                }
+            } label: {
+                LibraryToolbarLabel(
+                    title: "取消红心",
+                    systemImage: "heart.slash",
+                    displayMode: toolbarDisplayModeSettings.displayMode
+                )
+            }
+            .libraryToolbarHelp("取消红心", detail: "从全 App 共享的红心收藏中移除当前所选项目。")
+        }
+
+        if model.favoritePendingSyncCount > 0 || model.favoriteFailedSyncCount > 0 {
+            Button {
+                Task { await model.retryPendingFavoriteSync() }
+            } label: {
+                LibraryToolbarLabel(
+                    title: "重试红心同步",
+                    systemImage: model.favoriteFailedSyncCount > 0
+                        ? "heart.slash.fill"
+                        : "heart.circle",
+                    displayMode: toolbarDisplayModeSettings.displayMode
+                )
+            }
+            .libraryToolbarHelp(
+                "重试红心同步",
+                detail: "待同步 \(model.favoritePendingSyncCount) 项，失败 \(model.favoriteFailedSyncCount) 项。不会在后台弹出权限框；需要时请检查照片权限。"
+            )
+        }
+
         Button {
             Task { await model.undoLastTagMutation() }
         } label: {
@@ -13463,7 +14025,7 @@ struct LibraryWorkspaceView: View {
                     model.openLibrarySlimmingRecycleBin(for: sourceID)
                 }
                 .buttonStyle(.plain)
-                .persistentHelp("打开图库瘦身回收站，并只显示阻止该来源删除的项目。")
+                .persistentHelp("打开图库瘦身回收站，并查看该来源当前的回收和待处理项目。")
                 Button("关闭") { model.dismissNotice() }
                     .buttonStyle(.plain)
                     .persistentHelp("关闭这条状态提示；删除不会在后台继续。")
@@ -14117,6 +14679,15 @@ private struct SinglePhotoNavigationBar: View {
 
                 Spacer()
 
+                if let assetID = model.primarySelectedAssetID {
+                    MediaFavoriteButton(
+                        state: model.favoriteState(for: assetID),
+                        isVisible: true
+                    ) {
+                        Task { await model.toggleFavorite(assetID: assetID) }
+                    }
+                }
+
                 Button("上一张", systemImage: "chevron.left") {
                     Task { await model.moveSinglePhotoSelection(by: -1) }
                 }
@@ -14137,6 +14708,56 @@ private struct SinglePhotoNavigationBar: View {
     }
 }
 
+struct MediaFavoriteButton: View {
+    let state: MediaFavoriteState
+    let isVisible: Bool
+    let action: () -> Void
+
+    var body: some View {
+        if state.isFavorite || isVisible {
+            Button(action: action) {
+                ZStack(alignment: .topTrailing) {
+                    Image(systemName: state.isFavorite ? "heart.fill" : "heart")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(state.isFavorite ? Color.red : Color.white)
+                        .shadow(color: .black.opacity(0.45), radius: 2)
+                        .frame(width: 28, height: 28)
+                        .background(.black.opacity(0.28), in: Circle())
+                    if state.syncStatus == .pending {
+                        Image(systemName: "clock.fill")
+                            .font(.system(size: 8))
+                            .foregroundStyle(.orange)
+                            .background(.black, in: Circle())
+                    } else if state.syncStatus == .failed {
+                        Image(systemName: "exclamationmark.circle.fill")
+                            .font(.system(size: 9))
+                            .foregroundStyle(.yellow)
+                            .background(.black, in: Circle())
+                    }
+                }
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(state.isFavorite ? "取消红心" : "加入红心")
+            .accessibilityValue(syncAccessibilityValue)
+            .persistentHelp(helpText)
+        }
+    }
+
+    private var syncAccessibilityValue: String {
+        switch state.syncStatus {
+        case .localOnly: "仅保存在 ImageAll"
+        case .synced: "已与 Apple Photos 同步"
+        case .pending: "等待与 Apple Photos 同步"
+        case .failed: "Apple Photos 同步失败"
+        }
+    }
+
+    private var helpText: String {
+        let actionText = state.isFavorite ? "取消红心" : "加入红心"
+        return "\(actionText)；\(syncAccessibilityValue)。"
+    }
+}
+
 private struct AssetThumbnailView: View {
     let item: AssetGridItemProjection
     @ObservedObject var model: LibraryWorkspaceModel
@@ -14145,6 +14766,7 @@ private struct AssetThumbnailView: View {
     let onOpen: () -> Void
     @State private var image: NSImage?
     @State private var isCloudOnly = false
+    @State private var isHovered = false
 
     var body: some View {
         GeometryReader { proxy in
@@ -14203,6 +14825,15 @@ private struct AssetThumbnailView: View {
                     .padding(6)
                 }
             }
+            .overlay(alignment: .topTrailing) {
+                MediaFavoriteButton(
+                    state: model.favoriteState(for: item.assetID),
+                    isVisible: isHovered || isSelected
+                ) {
+                    Task { await model.toggleFavorite(assetID: item.assetID) }
+                }
+                .padding(6)
+            }
             .accessibilityLabel(item.fileName ?? item.mediaKind.displayName)
             .accessibilityAddTraits(isSelected ? .isSelected : [])
         }
@@ -14231,10 +14862,17 @@ private struct AssetThumbnailView: View {
         .accessibilityAction(named: "打开单图预览") {
             onOpen()
         }
+        .contextMenu {
+            let state = model.favoriteState(for: item.assetID)
+            Button(state.isFavorite ? "取消红心" : "加入红心") {
+                Task { await model.toggleFavorite(assetID: item.assetID) }
+            }
+        }
         .task(id: thumbnailLoadID) {
             await loadGridThumbnailWhileVisible()
         }
         .onHover { isInside in
+            isHovered = isInside
             if isInside {
                 model.beginVideoHover(assetID: item.assetID)
             } else {

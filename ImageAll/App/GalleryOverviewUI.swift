@@ -149,6 +149,19 @@ struct GalleryOverviewView: View {
                 systemImage: "tag.fill",
                 tint: .teal
             )
+            Button {
+                model.requestFavoriteNavigation()
+            } label: {
+                OverviewMetricCard(
+                    eyebrow: "红心收藏",
+                    value: snapshot.favoriteCount,
+                    caption: "照片 \(snapshot.favoriteCount(for: .image)) · 视频 \(snapshot.favoriteCount(for: .video))",
+                    systemImage: "heart.fill",
+                    tint: .red
+                )
+            }
+            .buttonStyle(.plain)
+            .persistentHelp("打开红心收藏，并保持当前照片或视频页签。")
         }
     }
 

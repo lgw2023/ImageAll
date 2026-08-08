@@ -3,6 +3,105 @@ import XCTest
 @testable import ImageAll
 
 final class CatalogMigrationTests: XCTestCase {
+    func testV035AddsIndependentFavoriteStateAndFavoritePageFilter() throws {
+        let database = try CatalogDatabase.open(at: makeTempDatabaseURL())
+        let repository = CatalogRepository(database: database)
+        let sourceID = UUID()
+        let ordinarySourceID = UUID()
+        let favoriteAssetID = UUID()
+        let ordinaryAssetID = UUID()
+        try DatabaseTestSupport.makeFolderSourceWithFileAsset(
+            repository: repository,
+            sourceID: sourceID,
+            assetID: favoriteAssetID
+        )
+        try DatabaseTestSupport.makeFolderSourceWithFileAsset(
+            repository: repository,
+            sourceID: ordinarySourceID,
+            assetID: ordinaryAssetID
+        )
+        try database.pool.write { db in
+            try db.execute(
+                sql: """
+                INSERT INTO asset_favorite_state (
+                    asset_id, desired_value, photos_observed_value,
+                    sync_status, intent_revision, requested_at_ms, updated_at_ms
+                ) VALUES (?, 1, NULL, 'localOnly', 1, 10, 10)
+                """,
+                arguments: [favoriteAssetID.uuidString.lowercased()]
+            )
+            try db.execute(
+                sql: "UPDATE asset SET content_revision = content_revision + 1 WHERE id = ?",
+                arguments: [favoriteAssetID.uuidString.lowercased()]
+            )
+        }
+
+        let page = try GRDBAssetCatalogQueryRepository(database: database).fetchAssetPage(
+            AssetPageRequest(
+                filter: AssetPageFilter(favorite: .favorited),
+                sort: .newest,
+                cursor: nil,
+                limit: 100
+            )
+        )
+        XCTAssertEqual(page.items.map(\.assetID), [favoriteAssetID])
+        let persisted = try database.pool.read { db in
+            try Int.fetchOne(
+                db,
+                sql: "SELECT desired_value FROM asset_favorite_state WHERE asset_id = ?",
+                arguments: [favoriteAssetID.uuidString.lowercased()]
+            )
+        }
+        XCTAssertEqual(persisted, 1)
+        XCTAssertThrowsError(
+            try database.pool.write { db in
+                try db.execute(
+                    sql: """
+                    INSERT INTO asset_favorite_state (
+                        asset_id, desired_value, sync_status,
+                        intent_revision, requested_at_ms, updated_at_ms
+                    ) VALUES (?, 1, 'unknown', 1, 10, 10)
+                    """,
+                    arguments: [ordinaryAssetID.uuidString.lowercased()]
+                )
+            }
+        )
+        try database.pool.write { db in
+            try db.execute(
+                sql: "UPDATE asset SET availability = 'recycled' WHERE id = ?",
+                arguments: [favoriteAssetID.uuidString.lowercased()]
+            )
+        }
+        XCTAssertEqual(
+            try database.pool.read { db in
+                try Int.fetchOne(
+                    db,
+                    sql: "SELECT COUNT(*) FROM asset_favorite_state WHERE asset_id = ?",
+                    arguments: [favoriteAssetID.uuidString.lowercased()]
+                )
+            },
+            1,
+            "permanent media cleanup must retain the favorite tombstone while the Asset remains"
+        )
+        try database.pool.write { db in
+            try db.execute(
+                sql: "DELETE FROM asset WHERE id = ?",
+                arguments: [favoriteAssetID.uuidString.lowercased()]
+            )
+        }
+        XCTAssertEqual(
+            try database.pool.read { db in
+                try Int.fetchOne(
+                    db,
+                    sql: "SELECT COUNT(*) FROM asset_favorite_state WHERE asset_id = ?",
+                    arguments: [favoriteAssetID.uuidString.lowercased()]
+                )
+            },
+            0,
+            "deleting the owning Asset during source removal must cascade its favorite fact"
+        )
+    }
+
     func testV026AddsMediaDomainColumnsWithImageBackfill() throws {
         let url = try makeTempDatabaseURL()
         let database = try CatalogDatabase.open(at: url)
@@ -73,6 +172,167 @@ final class CatalogMigrationTests: XCTestCase {
         XCTAssertEqual(count, 1)
     }
 
+    func testV034BackfillsOnlyResolvedHistoricalClustersWithoutOverwritingReviewState() throws {
+        let url = try makeTempDatabaseURL()
+        let seeded = try CatalogDatabase.open(at: url)
+        let repository = CatalogRepository(database: seeded)
+        let assetIDs = (0 ..< 7).map { _ in UUID() }
+        for assetID in assetIDs {
+            try DatabaseTestSupport.makeFolderSourceWithFileAsset(
+                repository: repository,
+                sourceID: UUID(),
+                assetID: assetID
+            )
+        }
+
+        let confirmedCluster = SlimmingCluster(
+            id: UUID(),
+            kind: .perceptualDuplicate,
+            memberAssetIDs: Array(assetIDs[0 ... 1]),
+            representativeAssetID: assetIDs[0],
+            score: 0.95,
+            modelIdentity: .featurePrintOnly
+        )
+        let explicitlyIgnoredCluster = SlimmingCluster(
+            id: UUID(),
+            kind: .perceptualDuplicate,
+            memberAssetIDs: Array(assetIDs[2 ... 3]),
+            representativeAssetID: assetIDs[2],
+            score: 0.94,
+            modelIdentity: .featurePrintOnly
+        )
+        let stillActionableCluster = SlimmingCluster(
+            id: UUID(),
+            kind: .perceptualDuplicate,
+            memberAssetIDs: Array(assetIDs[4 ... 6]),
+            representativeAssetID: assetIDs[4],
+            score: 0.93,
+            modelIdentity: .featurePrintOnly
+        )
+        let result = LibrarySlimmingScanResult(
+            clusters: [confirmedCluster, explicitlyIgnoredCluster, stillActionableCluster],
+            pendingAnalysisAssetIDs: [],
+            analyzedAssetCount: assetIDs.count,
+            policyVersion: NearDuplicateScenePolicy.policyVersion
+        )
+        let resultData = try JSONEncoder().encode(result)
+        let jobID = UUID()
+        let resultAtMs = DatabaseTestSupport.timestampMs + 100
+        let handledAtMs = resultAtMs + 100
+
+        try seeded.pool.write { db in
+            try db.execute(
+                sql: """
+                INSERT INTO job (
+                    id, kind, payload_version, payload, state, control_request, priority,
+                    attempts, max_attempts, not_before_ms, progress_completed,
+                    progress_total, created_at_ms, updated_at_ms
+                ) VALUES (?, ?, 1, ?, 'completed', 'none', 10, 1, 10, ?, 7, 7, ?, ?)
+                """,
+                arguments: [
+                    jobID.uuidString.lowercased(),
+                    LibrarySlimmingAnalysisJobFactory.kind,
+                    Data("{}".utf8),
+                    DatabaseTestSupport.timestampMs,
+                    DatabaseTestSupport.timestampMs,
+                    resultAtMs,
+                ]
+            )
+            for (ordinal, assetID) in assetIDs.enumerated() {
+                try db.execute(
+                    sql: """
+                    INSERT INTO library_slimming_scan_member (
+                        job_id, asset_id, ordinal, is_seed
+                    ) VALUES (?, ?, ?, 0)
+                    """,
+                    arguments: [
+                        jobID.uuidString.lowercased(),
+                        assetID.uuidString.lowercased(),
+                        ordinal,
+                    ]
+                )
+            }
+            try db.execute(
+                sql: """
+                INSERT INTO library_slimming_scan_result (job_id, result_json, updated_at_ms)
+                VALUES (?, ?, ?)
+                """,
+                arguments: [jobID.uuidString.lowercased(), resultData, resultAtMs]
+            )
+            try db.execute(
+                sql: """
+                INSERT INTO library_slimming_cluster_review (
+                    job_id, cluster_id, disposition, updated_at_ms
+                ) VALUES (?, ?, 'ignored', ?)
+                """,
+                arguments: [
+                    jobID.uuidString.lowercased(),
+                    explicitlyIgnoredCluster.id.uuidString.lowercased(),
+                    handledAtMs,
+                ]
+            )
+            for assetID in [assetIDs[0], assetIDs[2], assetIDs[4]] {
+                try db.execute(
+                    sql: "UPDATE asset SET availability = 'recycled' WHERE id = ?",
+                    arguments: [assetID.uuidString.lowercased()]
+                )
+                try db.execute(
+                    sql: """
+                    INSERT INTO recycle_entry (
+                        id, asset_id, source_kind, trashed_at_ms, purge_after_ms, state,
+                        quarantine_relative_path, original_relative_path,
+                        created_at_ms, updated_at_ms
+                    ) VALUES (?, ?, 'file', ?, ?, 'recycled', ?, 'album/photo.jpg', ?, ?)
+                    """,
+                    arguments: [
+                        UUID().uuidString.lowercased(),
+                        assetID.uuidString.lowercased(),
+                        handledAtMs,
+                        handledAtMs + 1_000,
+                        "objects/\(assetID.uuidString.lowercased()).jpg",
+                        handledAtMs,
+                        handledAtMs,
+                    ]
+                )
+            }
+            try Self.dropV035Tables(db)
+            try db.execute(
+                sql: "DELETE FROM grdb_migrations WHERE identifier IN (?, ?)",
+                arguments: [
+                    CatalogMigrationID.v034BackfillSlimmingConfirmedHistory,
+                    CatalogMigrationID.v035AddAssetFavoriteState,
+                ]
+            )
+        }
+        try seeded.pool.close()
+
+        let migrated = try CatalogDatabase.open(at: url)
+        let rows = try migrated.pool.read { db in
+            try Row.fetchAll(
+                db,
+                sql: """
+                SELECT cluster_id, disposition
+                FROM library_slimming_cluster_review
+                WHERE job_id = ?
+                ORDER BY cluster_id
+                """,
+                arguments: [jobID.uuidString.lowercased()]
+            )
+        }
+        let dispositions = Dictionary(uniqueKeysWithValues: rows.map { row in
+            (row["cluster_id"] as String, row["disposition"] as String)
+        })
+        XCTAssertEqual(
+            dispositions[confirmedCluster.id.uuidString.lowercased()],
+            LibrarySlimmingClusterReviewDisposition.confirmed.rawValue
+        )
+        XCTAssertEqual(
+            dispositions[explicitlyIgnoredCluster.id.uuidString.lowercased()],
+            LibrarySlimmingClusterReviewDisposition.ignored.rawValue
+        )
+        XCTAssertNil(dispositions[stillActionableCluster.id.uuidString.lowercased()])
+    }
+
     func testV020MovesWritableBookmarkOutOfSourceWithoutLosingAuthorization() throws {
         let url = try makeTempDatabaseURL()
         let sourceID = UUID()
@@ -95,9 +355,11 @@ final class CatalogMigrationTests: XCTestCase {
             try Self.dropV022Tables(db)
             try Self.dropV023Tables(db)
             try Self.dropV032Tables(db)
+            try Self.dropV033Tables(db)
+            try Self.dropV035Tables(db)
             try db.execute(sql: "DROP TABLE IF EXISTS asset_location")
             try db.execute(
-                sql: "DELETE FROM grdb_migrations WHERE identifier IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                sql: "DELETE FROM grdb_migrations WHERE identifier IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 arguments: [
                     CatalogMigrationID.v020HardenLibrarySlimmingRecycle,
                     CatalogMigrationID.v021AddPhotosRecycleIdentifier,
@@ -112,6 +374,9 @@ final class CatalogMigrationTests: XCTestCase {
                     CatalogMigrationID.v030AddSimilarityDigestProvenance,
                     CatalogMigrationID.v031AddAssetLocation,
                     CatalogMigrationID.v032AddPlaceTagResolution,
+                    CatalogMigrationID.v033AddSlimmingClusterReviewQueue,
+                    CatalogMigrationID.v034BackfillSlimmingConfirmedHistory,
+                    CatalogMigrationID.v035AddAssetFavoriteState,
                 ]
             )
         }
@@ -157,9 +422,11 @@ final class CatalogMigrationTests: XCTestCase {
             )
             try Self.stripV030FingerprintProvenance(db)
             try Self.dropV032Tables(db)
+            try Self.dropV033Tables(db)
+            try Self.dropV035Tables(db)
             try db.execute(sql: "DROP TABLE IF EXISTS asset_location")
             try db.execute(
-                sql: "DELETE FROM grdb_migrations WHERE identifier IN (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                sql: "DELETE FROM grdb_migrations WHERE identifier IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 arguments: [
                     CatalogMigrationID.v024RepairSourceMutationAuthorization,
                     CatalogMigrationID.v025RetainPurgedAssetKnowledge,
@@ -170,6 +437,9 @@ final class CatalogMigrationTests: XCTestCase {
                     CatalogMigrationID.v030AddSimilarityDigestProvenance,
                     CatalogMigrationID.v031AddAssetLocation,
                     CatalogMigrationID.v032AddPlaceTagResolution,
+                    CatalogMigrationID.v033AddSlimmingClusterReviewQueue,
+                    CatalogMigrationID.v034BackfillSlimmingConfirmedHistory,
+                    CatalogMigrationID.v035AddAssetFavoriteState,
                 ]
             )
             XCTAssertFalse(try db.tableExists("source_mutation_authorization"))
@@ -234,9 +504,11 @@ final class CatalogMigrationTests: XCTestCase {
             try Self.dropV022Tables(db)
             try Self.dropV023Tables(db)
             try Self.dropV032Tables(db)
+            try Self.dropV033Tables(db)
+            try Self.dropV035Tables(db)
             try db.execute(sql: "DROP TABLE IF EXISTS asset_location")
             try db.execute(
-                sql: "DELETE FROM grdb_migrations WHERE identifier IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                sql: "DELETE FROM grdb_migrations WHERE identifier IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 arguments: [
                     CatalogMigrationID.v012RepairStandardTagBinding,
                     CatalogMigrationID.v013PhotosMissingAssetRepair,
@@ -259,6 +531,9 @@ final class CatalogMigrationTests: XCTestCase {
                     CatalogMigrationID.v030AddSimilarityDigestProvenance,
                     CatalogMigrationID.v031AddAssetLocation,
                     CatalogMigrationID.v032AddPlaceTagResolution,
+                    CatalogMigrationID.v033AddSlimmingClusterReviewQueue,
+                    CatalogMigrationID.v034BackfillSlimmingConfirmedHistory,
+                    CatalogMigrationID.v035AddAssetFavoriteState,
                 ]
             )
             try db.execute(sql: "PRAGMA foreign_keys = ON")
@@ -326,9 +601,11 @@ final class CatalogMigrationTests: XCTestCase {
             try Self.dropV022Tables(db)
             try Self.dropV023Tables(db)
             try Self.dropV032Tables(db)
+            try Self.dropV033Tables(db)
+            try Self.dropV035Tables(db)
             try db.execute(sql: "DROP TABLE IF EXISTS asset_location")
             try db.execute(
-                sql: "DELETE FROM grdb_migrations WHERE identifier IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                sql: "DELETE FROM grdb_migrations WHERE identifier IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 arguments: [
                     CatalogMigrationID.v013PhotosMissingAssetRepair,
                     CatalogMigrationID.v014AddTrainingRunsAndPersonalMultiSlot,
@@ -350,6 +627,9 @@ final class CatalogMigrationTests: XCTestCase {
                     CatalogMigrationID.v030AddSimilarityDigestProvenance,
                     CatalogMigrationID.v031AddAssetLocation,
                     CatalogMigrationID.v032AddPlaceTagResolution,
+                    CatalogMigrationID.v033AddSlimmingClusterReviewQueue,
+                    CatalogMigrationID.v034BackfillSlimmingConfirmedHistory,
+                    CatalogMigrationID.v035AddAssetFavoriteState,
                 ]
             )
             try db.execute(sql: "PRAGMA foreign_keys = ON")
@@ -384,9 +664,11 @@ final class CatalogMigrationTests: XCTestCase {
             try Self.dropV022Tables(db)
             try Self.dropV023Tables(db)
             try Self.dropV032Tables(db)
+            try Self.dropV033Tables(db)
+            try Self.dropV035Tables(db)
             try db.execute(sql: "DROP TABLE IF EXISTS asset_location")
             try db.execute(
-                sql: "DELETE FROM grdb_migrations WHERE identifier IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                sql: "DELETE FROM grdb_migrations WHERE identifier IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 arguments: [
                     CatalogMigrationID.v016AddTagGroups,
                     CatalogMigrationID.v017PerTagPersonalSuggestionModels,
@@ -405,6 +687,9 @@ final class CatalogMigrationTests: XCTestCase {
                     CatalogMigrationID.v030AddSimilarityDigestProvenance,
                     CatalogMigrationID.v031AddAssetLocation,
                     CatalogMigrationID.v032AddPlaceTagResolution,
+                    CatalogMigrationID.v033AddSlimmingClusterReviewQueue,
+                    CatalogMigrationID.v034BackfillSlimmingConfirmedHistory,
+                    CatalogMigrationID.v035AddAssetFavoriteState,
                 ]
             )
             try db.execute(
@@ -911,6 +1196,14 @@ final class CatalogMigrationTests: XCTestCase {
         try db.execute(sql: "DROP TABLE IF EXISTS tag_place_candidate")
         try db.execute(sql: "DROP TABLE IF EXISTS tag_place_binding")
         try db.execute(sql: "DROP TABLE IF EXISTS place")
+    }
+
+    private static func dropV033Tables(_ db: Database) throws {
+        try db.execute(sql: "DROP TABLE IF EXISTS library_slimming_cluster_review")
+    }
+
+    private static func dropV035Tables(_ db: Database) throws {
+        try db.execute(sql: "DROP TABLE IF EXISTS asset_favorite_state")
     }
 
     /// Rebuild `asset_similarity_fingerprint` back to its pre-v022 (v018) shape so v022 can

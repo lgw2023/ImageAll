@@ -624,6 +624,68 @@ final class IdenticalDuplicateDetectionTests: XCTestCase {
         XCTAssertEqual(finished.result?.pendingAnalysisAssetIDs, [])
     }
 
+    func testLibrarySlimmingClusterReviewQueuePersistsMovesAndClears() throws {
+        let env = try SimilarityTestSupport.Environment(label: #function)
+        defer { env.cleanup() }
+        let asset = try env.seedAsset(
+            relativePath: "review-queue.jpg",
+            contents: Data([1, 2, 3]),
+            mediaType: "public.jpeg"
+        )
+        let completion = env.makeCompletionService()
+        let featureLoader = DictionarySlimmingFeatureLoader(vectors: [:])
+        let embeddingLoader = DictionarySlimmingEmbeddingLoader(vectors: [:])
+        let scanner = LibrarySlimmingScanService(
+            database: env.database,
+            identicalScan: IdenticalDuplicateClusterService(database: env.database),
+            fingerprintCompletion: completion,
+            featureLoader: featureLoader,
+            embeddingLoader: embeddingLoader
+        )
+        let analysis = LibrarySlimmingAnalysisService(
+            database: env.database,
+            queue: JobTestSupport.makeQueue(database: env.database),
+            fingerprintCompletion: completion,
+            featureLoader: featureLoader,
+            embeddingLoader: embeddingLoader,
+            scanner: scanner,
+            clock: FixedJobClock(nowMs: JobTestSupport.baseTimeMs)
+        )
+        let job = try analysis.enqueue(
+            mode: .catalog,
+            assetIDs: [asset.assetID],
+            seedAssetIDs: []
+        )
+        let clusterID = UUID()
+
+        try analysis.setClusterReviewDisposition(
+            jobID: job.jobID,
+            clusterID: clusterID,
+            disposition: .confirmed
+        )
+        XCTAssertEqual(
+            try analysis.clusterReviewDispositions(jobID: job.jobID),
+            [clusterID: .confirmed]
+        )
+
+        try analysis.setClusterReviewDisposition(
+            jobID: job.jobID,
+            clusterID: clusterID,
+            disposition: .ignored
+        )
+        XCTAssertEqual(
+            try analysis.clusterReviewDispositions(jobID: job.jobID),
+            [clusterID: .ignored]
+        )
+
+        try analysis.setClusterReviewDisposition(
+            jobID: job.jobID,
+            clusterID: clusterID,
+            disposition: nil
+        )
+        XCTAssertTrue(try analysis.clusterReviewDispositions(jobID: job.jobID).isEmpty)
+    }
+
     func testLibraryAnalysisResumeKeepsAlreadyPendingJobClaimable() throws {
         let env = try SimilarityTestSupport.Environment(label: #function)
         defer { env.cleanup() }

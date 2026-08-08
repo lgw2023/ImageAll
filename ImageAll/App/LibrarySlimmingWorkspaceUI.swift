@@ -11,6 +11,15 @@ struct LibrarySlimmingClusterPresentation: Identifiable, Equatable, Sendable {
     let score: Double
     let modelIdentity: SlimmingVectorModelIdentity
     let isSeedOnlyResult: Bool
+    let originalMemberCount: Int
+    let isHistoricalProcessedRecord: Bool
+
+    var memberCountCaption: String {
+        if isHistoricalProcessedRecord {
+            return "原 \(originalMemberCount) 张 · 现 \(memberAssetIDs.count) 张可查看"
+        }
+        return "\(memberAssetIDs.count) 张"
+    }
 
     var kindTitle: String {
         if isSeedOnlyResult {
@@ -96,6 +105,28 @@ struct LibrarySlimmingClusterPresentation: Identifiable, Equatable, Sendable {
         score = cluster.score
         modelIdentity = cluster.modelIdentity
         isSeedOnlyResult = false
+        originalMemberCount = cluster.memberAssetIDs.count
+        isHistoricalProcessedRecord = false
+    }
+
+    init(
+        historical cluster: SlimmingCluster,
+        availableMemberAssetIDs: [UUID],
+        originalMemberCount: Int,
+        mediaKind: MediaKind = .image
+    ) {
+        id = cluster.id
+        self.mediaKind = mediaKind
+        kind = cluster.kind
+        memberAssetIDs = availableMemberAssetIDs
+        representativeAssetID = availableMemberAssetIDs.contains(cluster.representativeAssetID)
+            ? cluster.representativeAssetID
+            : availableMemberAssetIDs.first ?? cluster.representativeAssetID
+        score = cluster.score
+        modelIdentity = cluster.modelIdentity
+        isSeedOnlyResult = false
+        self.originalMemberCount = max(originalMemberCount, availableMemberAssetIDs.count)
+        isHistoricalProcessedRecord = true
     }
 
     init(seedAssetIDs: [UUID], mediaKind: MediaKind) {
@@ -114,6 +145,45 @@ struct LibrarySlimmingClusterPresentation: Identifiable, Equatable, Sendable {
         score = 1
         modelIdentity = .featurePrintOnly
         isSeedOnlyResult = true
+        originalMemberCount = members.count
+        isHistoricalProcessedRecord = false
+    }
+
+    func retainingMemberAssetIDs(
+        _ members: [UUID],
+        allowBelowMinimum: Bool = false
+    ) -> LibrarySlimmingClusterPresentation? {
+        if isSeedOnlyResult {
+            guard !members.isEmpty else { return nil }
+            return LibrarySlimmingClusterPresentation(
+                seedAssetIDs: members,
+                mediaKind: mediaKind
+            )
+        }
+        if isHistoricalProcessedRecord {
+            return LibrarySlimmingClusterPresentation(
+                historical: cluster,
+                availableMemberAssetIDs: members,
+                originalMemberCount: originalMemberCount,
+                mediaKind: mediaKind
+            )
+        }
+        guard members.count >= 2 || (allowBelowMinimum && !members.isEmpty) else {
+            return nil
+        }
+        return LibrarySlimmingClusterPresentation(
+            SlimmingCluster(
+                id: id,
+                kind: kind,
+                memberAssetIDs: members,
+                representativeAssetID: members.contains(representativeAssetID)
+                    ? representativeAssetID
+                    : members[0],
+                score: score,
+                modelIdentity: modelIdentity
+            ),
+            mediaKind: mediaKind
+        )
     }
 }
 
@@ -273,6 +343,38 @@ enum LibrarySlimmingClusterPagination {
     }
 }
 
+enum LibrarySlimmingClusterQueueScope: String, CaseIterable, Identifiable, Sendable {
+    case pending
+    case confirmed
+    case ignored
+
+    var id: Self { self }
+
+    var title: String {
+        switch self {
+        case .pending: "待处理"
+        case .confirmed: "已确认"
+        case .ignored: "已忽略"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .pending: "tray"
+        case .confirmed: "checkmark.circle"
+        case .ignored: "eye.slash"
+        }
+    }
+
+    func matches(_ disposition: LibrarySlimmingClusterReviewDisposition?) -> Bool {
+        switch self {
+        case .pending: disposition == nil
+        case .confirmed: disposition == .confirmed
+        case .ignored: disposition == .ignored
+        }
+    }
+}
+
 enum LibrarySlimmingRecyclePagination {
     static let initialLimit = 100
     static let pageSize = 100
@@ -338,10 +440,13 @@ private struct LibrarySlimmingClusterListRefreshModifier: ViewModifier {
 
     func body(content: Content) -> some View {
         content
-            .onChange(of: model.librarySlimmingClusters.map(\.id)) { _, _ in
+            .onChange(of: model.visibleLibrarySlimmingClusters.map(\.id)) { _, _ in
                 model.ensureLibrarySlimmingClusterSelection()
             }
             .onChange(of: model.librarySlimmingAnalysisJobID) { _, _ in
+                clusterLimit = LibrarySlimmingClusterPagination.initialLimit
+            }
+            .onChange(of: model.librarySlimmingClusterQueueScope) { _, _ in
                 clusterLimit = LibrarySlimmingClusterPagination.initialLimit
             }
     }
@@ -465,6 +570,7 @@ struct LibrarySlimmingWorkspaceView: View {
             LibrarySlimmingMoveToRecycleConfirmationSheet(
                 selectedCount: model.selectedLibrarySlimmingMemberIDs.count,
                 mediaKind: model.selectedMediaKind,
+                favoriteCount: model.selectedLibrarySlimmingFavoriteProtectionCount,
                 allowsSuppressingFutureConfirmation:
                     model.canPersistentlySkipSelectedLibrarySlimmingMoveConfirmation,
                 suppressFutureConfirmation: $suppressMoveToRecycleConfirmation,
@@ -491,6 +597,7 @@ struct LibrarySlimmingWorkspaceView: View {
             LibrarySlimmingFastDeleteConfirmationSheet(
                 selectedCount: model.selectedLibrarySlimmingMemberIDs.count,
                 mediaKind: model.selectedMediaKind,
+                favoriteCount: model.selectedLibrarySlimmingFavoriteProtectionCount,
                 onConfirm: {
                     confirmFastDelete = false
                     Task { await model.deleteSelectedLibrarySlimmingMembersImmediately() }
@@ -574,7 +681,14 @@ struct LibrarySlimmingWorkspaceView: View {
             }
             .persistentHelp("关闭确认窗口并保留回收站中的媒体。")
         } message: {
-            Text("此操作不可撤销，将删除回收站中的原始媒体文件。")
+            if let entryID = confirmPurgeEntryID,
+               let entry = model.librarySlimmingRecycleEntries.first(where: { $0.id == entryID }),
+               model.favoriteState(for: entry.assetID).isDeletionProtected
+            {
+                Text("此项目有红心保护。再次确认仍会永久删除原始媒体文件，且不可撤销。")
+            } else {
+                Text("此操作不可撤销，将删除回收站中的原始媒体文件。")
+            }
         }
     }
 
@@ -990,7 +1104,8 @@ struct LibrarySlimmingWorkspaceView: View {
     }
 
     private var analysisHistoryAndClusters: some View {
-        List(selection: Binding(
+        let visibleClusters = model.visibleLibrarySlimmingClusters
+        return List(selection: Binding(
             get: { model.librarySlimmingAnalysisJobID },
             set: { model.selectLibrarySlimmingAnalysisJob($0) }
         )) {
@@ -1043,6 +1158,47 @@ struct LibrarySlimmingWorkspaceView: View {
             }
 
             Section {
+                ForEach(LibrarySlimmingClusterQueueScope.allCases) { scope in
+                    Button {
+                        model.selectLibrarySlimmingClusterQueueScope(scope)
+                    } label: {
+                        HStack(spacing: 8) {
+                            Image(systemName: scope.systemImage)
+                                .frame(width: 16)
+                                .foregroundStyle(
+                                    model.librarySlimmingClusterQueueScope == scope
+                                        ? Color.accentColor
+                                        : Color.secondary
+                                )
+                            Text(scope.title)
+                                .font(.subheadline.weight(
+                                    model.librarySlimmingClusterQueueScope == scope
+                                        ? .semibold
+                                        : .regular
+                                ))
+                            Spacer()
+                            Text(model.librarySlimmingClusterCount(in: scope).formatted())
+                                .font(.caption.monospacedDigit())
+                                .foregroundStyle(.secondary)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .listRowBackground(
+                        model.librarySlimmingClusterQueueScope == scope
+                            ? Color.accentColor.opacity(0.09)
+                            : Color.clear
+                    )
+                    .accessibilityLabel(
+                        "\(scope.title)，\(model.librarySlimmingClusterCount(in: scope)) 组"
+                    )
+                }
+            } header: {
+                Text("审阅队列")
+            }
+
+            Section {
                 if model.librarySlimmingAnalysisJobID == nil {
                     Text("请先选择一条分析记录。")
                         .font(.caption)
@@ -1065,50 +1221,39 @@ struct LibrarySlimmingWorkspaceView: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
+                } else if visibleClusters.isEmpty {
+                    Text("“\(model.librarySlimmingClusterQueueScope.title)”队列为空。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 } else {
                     ForEach(
-                        model.librarySlimmingClusters.prefix(
+                        visibleClusters.prefix(
                             LibrarySlimmingClusterPagination.visibleCount(
-                                totalCount: model.librarySlimmingClusters.count,
+                                totalCount: visibleClusters.count,
                                 limit: librarySlimmingClusterLimit
                             )
                         )
                     ) { cluster in
-                        Button {
-                            model.selectLibrarySlimmingCluster(cluster.id)
-                        } label: {
-                            VStack(alignment: .leading, spacing: 4) {
-                                HStack {
-                                    Text(cluster.kindTitle)
-                                        .font(.body.weight(.semibold))
-                                    Spacer()
-                                    Text("\(cluster.memberAssetIDs.count) 张")
-                                        .foregroundStyle(.secondary)
-                                        .font(.caption)
-                                }
-                                Text(cluster.scoreCaption)
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
+                        librarySlimmingClusterReviewRow(cluster)
+                        // This List's native selection belongs exclusively to analysis jobs.
+                        // Cluster rows manage a separate model selection and contain their own
+                        // review buttons, so allowing AppKit to select the row can leave a blue
+                        // native highlight on one cluster while the detail still shows another.
+                        .selectionDisabled()
                         .listRowBackground(
                             model.selectedLibrarySlimmingClusterID == cluster.id
                                 ? Color.accentColor.opacity(0.12)
                                 : Color.clear
                         )
-                        .accessibilityLabel("\(cluster.kindTitle)，\(cluster.memberAssetIDs.count) 张")
                     }
-                    if librarySlimmingClusterLimit < model.librarySlimmingClusters.count {
-                        let remaining = model.librarySlimmingClusters.count
+                    if librarySlimmingClusterLimit < visibleClusters.count {
+                        let remaining = visibleClusters.count
                             - librarySlimmingClusterLimit
                         Button {
                             librarySlimmingClusterLimit =
                                 LibrarySlimmingClusterPagination.nextLimit(
                                     currentLimit: librarySlimmingClusterLimit,
-                                    totalCount: model.librarySlimmingClusters.count
+                                    totalCount: visibleClusters.count
                                 )
                         } label: {
                             Text(
@@ -1123,10 +1268,10 @@ struct LibrarySlimmingWorkspaceView: View {
                 }
             } header: {
                 HStack {
-                    Text("结果分组")
+                    Text(model.librarySlimmingClusterQueueScope.title)
                     Spacer()
-                    if !model.librarySlimmingClusters.isEmpty {
-                        Text("\(model.librarySlimmingClusters.count) 组")
+                    if !visibleClusters.isEmpty {
+                        Text("\(visibleClusters.count) 组")
                             .foregroundStyle(.secondary)
                     }
                 }
@@ -1137,6 +1282,96 @@ struct LibrarySlimmingWorkspaceView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
+    private func librarySlimmingClusterReviewRow(
+        _ cluster: LibrarySlimmingClusterPresentation
+    ) -> some View {
+        let disposition = model.librarySlimmingClusterReviewDisposition(for: cluster.id)
+        let isSaving = model.librarySlimmingClusterReviewPendingIDs.contains(cluster.id)
+        return HStack(alignment: .center, spacing: 8) {
+            Button {
+                model.selectLibrarySlimmingCluster(cluster.id)
+            } label: {
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack {
+                        Text(cluster.kindTitle)
+                            .font(.body.weight(.semibold))
+                        Spacer()
+                        Text(cluster.memberCountCaption)
+                            .foregroundStyle(.secondary)
+                            .font(.caption)
+                    }
+                    Text(cluster.scoreCaption)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .layoutPriority(1)
+
+            VStack(alignment: .trailing, spacing: 5) {
+                librarySlimmingDispositionButton(
+                    title: "已确认",
+                    systemImage: "checkmark",
+                    disposition: .confirmed,
+                    current: disposition,
+                    clusterID: cluster.id,
+                    isSaving: isSaving
+                )
+                librarySlimmingDispositionButton(
+                    title: "忽略",
+                    systemImage: "eye.slash",
+                    disposition: .ignored,
+                    current: disposition,
+                    clusterID: cluster.id,
+                    isSaving: isSaving
+                )
+                if isSaving {
+                    ProgressView()
+                        .controlSize(.mini)
+                        .accessibilityLabel("正在保存分组状态")
+                }
+            }
+            .fixedSize(horizontal: true, vertical: false)
+        }
+        .padding(.vertical, 2)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("\(cluster.kindTitle)，\(cluster.memberCountCaption)")
+    }
+
+    private func librarySlimmingDispositionButton(
+        title: String,
+        systemImage: String,
+        disposition: LibrarySlimmingClusterReviewDisposition,
+        current: LibrarySlimmingClusterReviewDisposition?,
+        clusterID: UUID,
+        isSaving: Bool
+    ) -> some View {
+        let isActive = current == disposition
+        return Button {
+            Task {
+                await model.setLibrarySlimmingClusterReviewDisposition(
+                    clusterID: clusterID,
+                    disposition: disposition
+                )
+            }
+        } label: {
+            Label(title, systemImage: systemImage)
+                .font(.caption2.weight(.medium))
+                .padding(.horizontal, 7)
+                .padding(.vertical, 3)
+                .foregroundStyle(isActive ? Color.white : Color.secondary)
+                .background {
+                    Capsule(style: .continuous)
+                        .fill(isActive ? Color.accentColor : Color.secondary.opacity(0.1))
+                }
+        }
+        .buttonStyle(.borderless)
+        .disabled(isSaving || isActive)
+        .accessibilityLabel(isActive ? "当前为\(title)" : "设为\(title)")
+    }
+
     private var clusterDetail: some View {
         Group {
             if let cluster = model.selectedLibrarySlimmingCluster {
@@ -1145,7 +1380,7 @@ struct LibrarySlimmingWorkspaceView: View {
                         Text(cluster.kindTitle)
                             .font(.headline)
 
-                        Text("\(cluster.memberAssetIDs.count) 张")
+                        Text(cluster.memberCountCaption)
                             .foregroundStyle(.secondary)
 
                         if !model.selectedLibrarySlimmingMemberIDs.isEmpty {
@@ -1165,6 +1400,33 @@ struct LibrarySlimmingWorkspaceView: View {
 
                         Spacer()
 
+                        if let disposition = model.librarySlimmingClusterReviewDisposition(
+                            for: cluster.id
+                        ) {
+                            Label(
+                                disposition == .confirmed ? "已确认" : "已忽略",
+                                systemImage: disposition == .confirmed
+                                    ? "checkmark.circle.fill"
+                                    : "eye.slash.fill"
+                            )
+                            .foregroundStyle(
+                                disposition == .confirmed ? Color.accentColor : Color.secondary
+                            )
+                            Button("重新处理") {
+                                Task {
+                                    await model.setLibrarySlimmingClusterReviewDisposition(
+                                        clusterID: cluster.id,
+                                        disposition: nil
+                                    )
+                                }
+                            }
+                            .buttonStyle(.borderless)
+                            .disabled(
+                                model.librarySlimmingClusterReviewPendingIDs.contains(cluster.id)
+                            )
+                            .persistentHelp("移回待处理队列；不会修改任何照片。")
+                        }
+
                         Text(cluster.scoreCaption)
                             .foregroundStyle(.secondary)
                     }
@@ -1174,64 +1436,86 @@ struct LibrarySlimmingWorkspaceView: View {
                     .fixedSize(horizontal: false, vertical: true)
                     Divider()
 
-                    GeometryReader { proxy in
-                        let layoutWidth = LibraryGridLayout.layoutWidth(
-                            containerWidth: proxy.size.width
-                        )
-                        ScrollView {
-                            LibraryGridMarqueeContainer(
-                                cellFrames: slimmingGridCellFrames,
-                                isMarqueeSelecting: $isSlimmingMarqueeSelecting,
-                                viewportHeight: proxy.size.height,
-                                contentWidth: layoutWidth,
-                                currentSelection: model.selectedLibrarySlimmingMemberIDs,
-                                onSelectionChange: { assetIDs, _ in
-                                    keyboardFocused = true
-                                    model.selectLibrarySlimmingMembers(assetIDs)
-                                }
-                            ) {
-                                LazyVGrid(
-                                    columns: LibraryGridLayout.gridItems(
-                                        containerWidth: proxy.size.width,
-                                        density: model.gridDensity
-                                    ),
-                                    spacing: LibraryGridLayout.spacing
+                    if cluster.memberAssetIDs.isEmpty,
+                       cluster.isHistoricalProcessedRecord
+                    {
+                        ContentUnavailableView {
+                            Label("历史处理记录", systemImage: "checkmark.circle")
+                        } description: {
+                            Text("原分组仍有审阅记录，但成员当前均已回收、清理或不再可查看。")
+                        }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    } else {
+                        GeometryReader { proxy in
+                            let layoutWidth = LibraryGridLayout.layoutWidth(
+                                containerWidth: proxy.size.width
+                            )
+                            ScrollView {
+                                LibraryGridMarqueeContainer(
+                                    cellFrames: slimmingGridCellFrames,
+                                    isMarqueeSelecting: $isSlimmingMarqueeSelecting,
+                                    viewportHeight: proxy.size.height,
+                                    contentWidth: layoutWidth,
+                                    currentSelection: model.selectedLibrarySlimmingMemberIDs,
+                                    onSelectionChange: { assetIDs, _ in
+                                        keyboardFocused = true
+                                        model.selectLibrarySlimmingMembers(assetIDs)
+                                    }
                                 ) {
-                                    ForEach(cluster.memberAssetIDs, id: \.self) { assetID in
-                                        SlimmingThumbnailCell(
-                                            model: model,
-                                            assetID: assetID,
-                                            isSelected: model.selectedLibrarySlimmingMemberIDs.contains(assetID)
-                                        )
-                                        .libraryGridCellFrameReporter(assetID: assetID)
-                                        .onTapGesture {
-                                            guard !isSlimmingMarqueeSelecting else { return }
-                                            guard !model.librarySlimmingRecyclePendingAssetIDs
-                                                .contains(assetID)
-                                            else { return }
-                                            keyboardFocused = true
-                                            let flags = NSEvent.modifierFlags.intersection(
-                                                .deviceIndependentFlagsMask
+                                    LazyVGrid(
+                                        columns: LibraryGridLayout.gridItems(
+                                            containerWidth: proxy.size.width,
+                                            density: model.gridDensity
+                                        ),
+                                        spacing: LibraryGridLayout.spacing
+                                    ) {
+                                        ForEach(cluster.memberAssetIDs, id: \.self) { assetID in
+                                            SlimmingThumbnailCell(
+                                                model: model,
+                                                assetID: assetID,
+                                                isSelected: model.selectedLibrarySlimmingMemberIDs.contains(assetID)
                                             )
-                                            model.selectLibrarySlimmingMember(
-                                                assetID,
-                                                additive: flags.contains(.command),
-                                                extendRange: flags.contains(.shift)
-                                            )
-                                        }
-                                        .contextMenu {
-                                            moveToRecycleContextMenu(for: assetID)
+                                            .libraryGridCellFrameReporter(assetID: assetID)
+                                            .onTapGesture {
+                                                guard !isSlimmingMarqueeSelecting else { return }
+                                                guard !model.librarySlimmingRecyclePendingAssetIDs
+                                                    .contains(assetID)
+                                                else { return }
+                                                keyboardFocused = true
+                                                let flags = NSEvent.modifierFlags.intersection(
+                                                    .deviceIndependentFlagsMask
+                                                )
+                                                model.selectLibrarySlimmingMember(
+                                                    assetID,
+                                                    additive: flags.contains(.command),
+                                                    extendRange: flags.contains(.shift)
+                                                )
+                                            }
+                                            .contextMenu {
+                                                slimmingMemberContextMenu(for: assetID)
+                                            }
                                         }
                                     }
+                                    .padding(LibraryGridLayout.horizontalPadding)
                                 }
-                                .padding(LibraryGridLayout.horizontalPadding)
                             }
+                            .scrollDisabled(isSlimmingMarqueeSelecting)
                         }
-                        .scrollDisabled(isSlimmingMarqueeSelecting)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                     }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            } else if !model.librarySlimmingClusters.isEmpty,
+                      model.visibleLibrarySlimmingClusters.isEmpty
+            {
+                ContentUnavailableView {
+                    Label(
+                        "\(model.librarySlimmingClusterQueueScope.title)队列为空",
+                        systemImage: model.librarySlimmingClusterQueueScope.systemImage
+                    )
+                } description: {
+                    Text("可从左侧切换到其他审阅队列。")
+                }
             } else if model.librarySlimmingClusters.isEmpty, model.hasCompletedLibrarySlimmingScan {
                 ContentUnavailableView {
                     Label("无相似结果", systemImage: "checkmark.circle")
@@ -1262,10 +1546,15 @@ struct LibrarySlimmingWorkspaceView: View {
     }
 
     @ViewBuilder
-    private func moveToRecycleContextMenu(for assetID: UUID) -> some View {
+    private func slimmingMemberContextMenu(for assetID: UUID) -> some View {
         let moveCount = model.selectedLibrarySlimmingMemberIDs.contains(assetID)
             ? model.selectedLibrarySlimmingMemberIDs.count
             : 1
+        let favoriteState = model.favoriteState(for: assetID)
+        Button(favoriteState.isFavorite ? "取消红心" : "加入红心") {
+            Task { await model.toggleFavorite(assetID: assetID) }
+        }
+        Divider()
         Button("快速删除并释放空间 (\(moveCount))", role: .destructive) {
             if !model.selectedLibrarySlimmingMemberIDs.contains(assetID) {
                 model.selectLibrarySlimmingMember(assetID, additive: false)
@@ -1326,7 +1615,7 @@ struct LibrarySlimmingWorkspaceView: View {
             if let sourceTitle = model.librarySlimmingRecycleSourceFilterTitle {
                 HStack(spacing: 8) {
                     Label(
-                        "正在查看阻止“\(sourceTitle)”删除的项目",
+                        "正在查看“\(sourceTitle)”来源的回收记录",
                         systemImage: "line.3.horizontal.decrease.circle.fill"
                     )
                     .font(.callout.weight(.medium))
@@ -1375,8 +1664,14 @@ struct LibrarySlimmingWorkspaceView: View {
 
     private var recycleBinSummaryCaption: String {
         let count = model.librarySlimmingRecycleEntries.count.formatted()
-        let unit = model.selectedMediaKind == .video ? "个视频" : "张照片"
-        return "集中查看 \(count) \(unit)的恢复期限、来源和处理状态"
+        let unit = model.selectedMediaKind == .video ? "个视频项目" : "张照片项目"
+        let attention = LibrarySlimmingRecycleScope.attention.count(
+            in: model.librarySlimmingRecycleEntries
+        )
+        if attention > 0 {
+            return "当前 \(count) \(unit)，其中 \(attention.formatted()) 项需要关注"
+        }
+        return "当前 \(count) \(unit)，均处于可恢复或系统管理状态"
     }
 
     private func recycleBinScopeControls(entries: [RecycleEntryRecord]) -> some View {
@@ -1491,7 +1786,7 @@ struct LibrarySlimmingWorkspaceView: View {
                     if let sourceTitle = model.librarySlimmingRecycleSourceFilterTitle,
                        model.trimmedLibrarySlimmingRecycleSearchText.isEmpty
                     {
-                        Text("“\(sourceTitle)”当前没有未解决的回收站项目。")
+                        Text("“\(sourceTitle)”当前没有回收或待处理项目。")
                     } else {
                         Text(
                             "没有文件名包含“\(model.trimmedLibrarySlimmingRecycleSearchText)”"
@@ -1580,10 +1875,9 @@ struct LibrarySlimmingWorkspaceView: View {
     private func recycleEntryCard(_ entry: RecycleEntryRecord) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .top, spacing: 13) {
-                SlimmingThumbnailCell(
+                RecycleThumbnailCell(
                     model: model,
-                    assetID: entry.assetID,
-                    isSelected: false
+                    entry: entry
                 )
                 .frame(width: 96, height: 84)
 
@@ -1629,7 +1923,11 @@ struct LibrarySlimmingWorkspaceView: View {
         .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 12))
         .overlay {
             RoundedRectangle(cornerRadius: 12)
-                .strokeBorder(Color.secondary.opacity(0.16))
+                .strokeBorder(
+                    entry.state == .recycled
+                        ? Color.secondary.opacity(0.16)
+                        : recycleEntryLifecycleTint(entry).opacity(0.28)
+                )
         }
         .shadow(color: .black.opacity(0.035), radius: 5, y: 2)
         .accessibilityElement(children: .contain)
@@ -1644,24 +1942,34 @@ struct LibrarySlimmingWorkspaceView: View {
 
     private func recycleEntryMovedCaption(_ entry: RecycleEntryRecord) -> String {
         let date = Date(timeIntervalSince1970: TimeInterval(entry.trashedAtMs) / 1_000)
-        return "\(date.formatted(date: .abbreviated, time: .omitted)) 移入"
+        let action = switch entry.state {
+        case .recycled: "移入"
+        case .pending: "开始处理"
+        case .restoring: "开始恢复"
+        case .purging: "开始清理"
+        case .failed: "尝试处理"
+        case .restored: "恢复"
+        case .purged: "清理"
+        }
+        return "\(date.formatted(date: .abbreviated, time: .omitted)) \(action)"
     }
 
     @ViewBuilder
     private func recycleEntryLifecycle(_ entry: RecycleEntryRecord) -> some View {
         if entry.state != .recycled {
+            let tint = recycleEntryLifecycleTint(entry)
             Label(
                 recycleEntryStateText(entry),
                 systemImage: recycleEntryStateIcon(entry)
             )
             .font(.caption.weight(.medium))
-            .foregroundStyle(entry.isDiscardablePreflightFailure ? Color.orange : Color.red)
+            .foregroundStyle(tint)
             .lineLimit(2)
             .fixedSize(horizontal: false, vertical: true)
             .padding(.horizontal, 8)
             .padding(.vertical, 5)
             .background(
-                (entry.isDiscardablePreflightFailure ? Color.orange : Color.red).opacity(0.09),
+                tint.opacity(0.09),
                 in: RoundedRectangle(cornerRadius: 7)
             )
         } else if entry.sourceKind == .photos {
@@ -1689,10 +1997,8 @@ struct LibrarySlimmingWorkspaceView: View {
 
     private func recycleEntryPolicyCaption(_ entry: RecycleEntryRecord) -> some View {
         Label(
-            entry.sourceKind == .photos
-                ? "恢复与永久删除由「照片」App 管理"
-                : "可恢复到原位置",
-            systemImage: entry.sourceKind == .photos ? "info.circle" : "arrow.uturn.backward.circle"
+            recycleEntryPolicyText(entry),
+            systemImage: recycleEntryPolicyIcon(entry)
         )
         .font(.caption)
         .foregroundStyle(.secondary)
@@ -1735,7 +2041,17 @@ struct LibrarySlimmingWorkspaceView: View {
                 .persistentHelp("打开永久删除确认；确认后这个原始媒体将不可恢复。")
             }
         case .discardPreflightFailure:
-            Button("撤销失败记录", systemImage: "xmark.circle") {
+            Button("更新回收权限", systemImage: "lock.open") {
+                Task {
+                    await model.refreshFolderMutationAuthorization(entry.sourceID)
+                }
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.small)
+            .disabled(model.isMutatingLibrarySlimmingRecycle)
+            .persistentHelp("重新选择原文件夹，更新这个来源的回收与恢复权限；不会立即修改媒体。")
+
+            Button("移除记录", systemImage: "xmark.circle") {
                 Task {
                     await model.discardLibrarySlimmingPreflightFailure(entry.id)
                 }
@@ -1743,8 +2059,21 @@ struct LibrarySlimmingWorkspaceView: View {
             .buttonStyle(.bordered)
             .controlSize(.small)
             .disabled(model.isMutatingLibrarySlimmingRecycle)
-            .persistentHelp("仅撤销在文件操作开始前失败的回收意图；不会读写、移动或删除原文件。")
+            .persistentHelp("只移除这条未开始文件操作的失败记录；不会读写、移动或删除原文件。")
         case .retryInterruptedOperation:
+            Button(
+                entry.state == .purging ? "继续清理" : "继续协调",
+                systemImage: "arrow.clockwise"
+            ) {
+                Task {
+                    await model.retryInterruptedLibrarySlimmingRecycleEntry(entry.id)
+                }
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.small)
+            .disabled(model.isMutatingLibrarySlimmingRecycle)
+            .persistentHelp("根据已登记的事务继续安全恢复；不会重复提交已经完成的来源删除。")
+        case .reinspectFileLocations:
             Button("重新检查", systemImage: "arrow.clockwise") {
                 Task {
                     await model.retryInterruptedLibrarySlimmingRecycleEntry(entry.id)
@@ -1753,37 +2082,78 @@ struct LibrarySlimmingWorkspaceView: View {
             .buttonStyle(.borderedProminent)
             .controlSize(.small)
             .disabled(model.isMutatingLibrarySlimmingRecycle)
-            .persistentHelp("重新检查原位置与隔离区，并按确定结果继续恢复状态。")
-        case .inspect:
-            Button("重新检查", systemImage: "arrow.clockwise") {
-                Task {
-                    await model.retryInterruptedLibrarySlimmingRecycleEntry(entry.id)
-                }
-            }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.small)
-            .disabled(model.isMutatingLibrarySlimmingRecycle)
-            .persistentHelp("仅检查原位置与隔离区；只有位置结果唯一时才更新记录。")
+            .persistentHelp("只检查原位置与隔离区；只有结果唯一时才更新记录。")
 
-            Button("说明", systemImage: "info.circle") {
-                model.explainUnresolvedLibrarySlimmingRecycleEntry(entry.id)
+            recycleEntryExplanationButton(entry)
+        case .updateFolderAuthorization:
+            Button("更新回收权限", systemImage: "lock.open") {
+                Task {
+                    await model.refreshFolderMutationAuthorization(entry.sourceID)
+                }
             }
-            .buttonStyle(.bordered)
+            .buttonStyle(.borderedProminent)
             .controlSize(.small)
-            .persistentHelp("说明为什么此项目仍需保留并阻止来源删除。")
+            .disabled(model.isMutatingLibrarySlimmingRecycle)
+            .persistentHelp("重新选择原文件夹更新权限；不会立即删除、移动或恢复媒体。")
+
+            recycleEntryExplanationButton(entry)
+        case .refreshSourceBeforeRetry:
+            Button("刷新来源", systemImage: "arrow.triangle.2.circlepath") {
+                Task {
+                    await model.refreshLibrarySlimmingRecycleSource(entry.sourceID)
+                }
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.small)
+            .disabled(model.isMutatingLibrarySlimmingRecycle)
+            .persistentHelp("重新读取这个来源的目录状态；完成后需重新分析，再重试清理。")
+
+            recycleEntryExplanationButton(entry)
+        case .requestPhotosAuthorization:
+            Button("请求照片权限", systemImage: "photo.badge.checkmark") {
+                Task {
+                    await model.requestPhotosLibraryWriteAuthorization(for: entry.sourceID)
+                }
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.small)
+            .disabled(model.isMutatingLibrarySlimmingRecycle)
+            .persistentHelp("请求 Apple Photos 完整读写授权；不会立即删除媒体。")
+
+            recycleEntryExplanationButton(entry)
+        case .retryFromAnalysis:
+            Button("返回分析结果", systemImage: "rectangle.grid.2x2") {
+                model.selectLibrarySlimmingWorkspaceTab(.clusters)
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.small)
+            .disabled(model.isMutatingLibrarySlimmingRecycle)
+            .persistentHelp("返回当前分析结果；核对媒体状态后可重新发起清理。")
+
+            recycleEntryExplanationButton(entry)
         }
+    }
+
+    private func recycleEntryExplanationButton(
+        _ entry: RecycleEntryRecord
+    ) -> some View {
+        Button("说明", systemImage: "info.circle") {
+            model.explainUnresolvedLibrarySlimmingRecycleEntry(entry.id)
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+        .persistentHelp("说明本次操作为何未完成，以及下一步如何处理。")
     }
 
     private func recycleEntryStateText(_ entry: RecycleEntryRecord) -> String {
         if entry.isDiscardablePreflightFailure {
-            return "未执行：缺少来源写入授权，可安全撤销此失败意图"
+            return "尚未开始：需要更新文件夹回收权限"
         }
         return switch entry.state {
-        case .pending: "转移结果待确认，需重新检查原位置与隔离区"
-        case .restoring: "恢复被中断，需重新检查"
-        case .purging: "永久清理被中断，需重新检查"
-        case .failed:
-            "位置或持久化状态不明确（\(entry.errorCode ?? "未知错误")）"
+        case .pending: "处理尚未完成，正在等待安全协调"
+        case .restoring: "恢复尚未完成，可继续协调"
+        case .purging: "永久清理尚未完成，可安全继续"
+        case .failed: recycleEntryProblemText(entry.problem)
         case .recycled: "可恢复"
         case .restored: "已恢复"
         case .purged: "已永久清理"
@@ -1791,9 +2161,96 @@ struct LibrarySlimmingWorkspaceView: View {
     }
 
     private func recycleEntryStateIcon(_ entry: RecycleEntryRecord) -> String {
-        entry.isDiscardablePreflightFailure
-            ? "exclamationmark.circle"
-            : "exclamationmark.triangle.fill"
+        switch entry.state {
+        case .pending: "clock.arrow.circlepath"
+        case .restoring: "arrow.uturn.backward.circle"
+        case .purging: "trash.circle"
+        case .failed:
+            entry.problem == .photosUserCancelled
+                ? "xmark.circle"
+                : "exclamationmark.circle.fill"
+        case .recycled: "checkmark.circle"
+        case .restored: "arrow.uturn.backward.circle.fill"
+        case .purged: "trash.circle.fill"
+        }
+    }
+
+    private func recycleEntryLifecycleTint(_ entry: RecycleEntryRecord) -> Color {
+        switch entry.state {
+        case .pending, .restoring: .blue
+        case .purging: .orange
+        case .failed:
+            switch entry.problem {
+            case .locationConflict, .locationMissing: .red
+            default: .orange
+            }
+        case .recycled, .restored, .purged: .secondary
+        }
+    }
+
+    private func recycleEntryProblemText(_ problem: RecycleEntryProblem?) -> String {
+        switch problem {
+        case .sourceAuthorizationRequired: "需要文件夹回收权限"
+        case .sourceAuthorizationInvalid: "原有文件夹回收权限已失效"
+        case .sourceChanged: "来源文件已变化，已停止处理以避免误删"
+        case .photosAuthorizationRequired: "需要 Apple Photos 完整读写权限"
+        case .photosAssetNotFound: "Photos 中已找不到同一媒体，未提交删除"
+        case .photosUserCancelled: "已取消系统删除确认，媒体未被删除"
+        case .photosMutationFailed: "Apple Photos 未确认完成删除"
+        case .fileIO: "文件操作没有形成可确认的完整结果"
+        case .locationConflict: "原位置与隔离区同时存在内容，需要核对"
+        case .locationMissing: "无法确认媒体当前的唯一位置"
+        case .unknown, nil: "本次处理未完成，需要重新核对"
+        }
+    }
+
+    private func recycleEntryPolicyText(_ entry: RecycleEntryRecord) -> String {
+        switch entry.state {
+        case .recycled:
+            return entry.sourceKind == .photos
+                ? "恢复与永久删除由「照片」App 管理"
+                : "可恢复到原位置"
+        case .pending:
+            return "ImageAll 会先确认实际位置，不会重复删除"
+        case .restoring:
+            return "正在协调原位置与 ImageAll 隔离区"
+        case .purging:
+            return "永久清理已经开始，完成后不可恢复"
+        case .failed:
+            return switch entry.problem {
+            case .sourceAuthorizationRequired, .sourceAuthorizationInvalid:
+                "原文件未因本次失败而被修改"
+            case .sourceChanged:
+                "原文件未删除；刷新来源并重新分析后再试"
+            case .photosAuthorizationRequired,
+                 .photosAssetNotFound,
+                 .photosUserCancelled,
+                 .photosMutationFailed:
+                "未确认移入「最近删除」；可修正原因后重试"
+            case .locationConflict:
+                "两处内容均会保留，ImageAll 不会覆盖或删除"
+            case .locationMissing:
+                "位置未确认前，ImageAll 不会继续删除"
+            case .fileIO, .unknown, nil:
+                "未确认删除完成；现有内容会继续受到保护"
+            }
+        case .restored:
+            return "媒体已经恢复"
+        case .purged:
+            return "媒体已经永久清理"
+        }
+    }
+
+    private func recycleEntryPolicyIcon(_ entry: RecycleEntryRecord) -> String {
+        switch entry.state {
+        case .recycled:
+            entry.sourceKind == .photos ? "info.circle" : "arrow.uturn.backward.circle"
+        case .pending, .restoring: "shield.lefthalf.filled"
+        case .purging: "trash.circle"
+        case .failed: "shield"
+        case .restored: "checkmark.circle"
+        case .purged: "trash.circle.fill"
+        }
     }
 }
 
@@ -1982,6 +2439,12 @@ private struct LibrarySlimmingQuickLookView: View {
                 }
             }
             Spacer()
+            MediaFavoriteButton(
+                state: model.favoriteState(for: navigation.assetID),
+                isVisible: true
+            ) {
+                Task { await model.toggleFavorite(assetID: navigation.assetID) }
+            }
             Text("\(zoomPercentage)%")
                 .font(.caption.monospacedDigit())
                 .foregroundStyle(.white.opacity(0.78))
@@ -1994,7 +2457,7 @@ private struct LibrarySlimmingQuickLookView: View {
             }
             .buttonStyle(.bordered)
             .tint(.red)
-            .accessibilityHint("退出预览并打开当前照片的快速删除确认")
+            .accessibilityHint("保持预览并打开当前照片的快速删除确认")
             Button {
                 model.closeLibrarySlimmingPreview()
             } label: {
@@ -2225,7 +2688,7 @@ struct LibrarySlimmingInspectorView: View {
                 if let cluster = model.selectedLibrarySlimmingCluster {
                     Divider()
                     LabeledContent("类型", value: cluster.kindTitle)
-                    LabeledContent("成员", value: "\(cluster.memberAssetIDs.count)")
+                    LabeledContent("成员", value: cluster.memberCountCaption)
                     LabeledContent("已选", value: "\(model.selectedLibrarySlimmingMemberIDs.count)")
                     LabeledContent(
                         "来源",
@@ -2257,12 +2720,117 @@ struct LibrarySlimmingInspectorView: View {
     }
 }
 
+private struct RecycleThumbnailCell: View {
+    @ObservedObject var model: LibraryWorkspaceModel
+    let entry: RecycleEntryRecord
+    @State private var image: NSImage?
+    @State private var isLoading = true
+    @State private var isHovered = false
+
+    var body: some View {
+        GeometryReader { proxy in
+            ZStack {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(Color.secondary.opacity(0.09))
+                if let image {
+                    Image(nsImage: image)
+                        .resizable()
+                        .aspectRatio(contentMode: model.thumbnailAspectMode.imageContentMode)
+                        .frame(width: proxy.size.width, height: proxy.size.height)
+                } else if isLoading {
+                    ProgressView()
+                        .controlSize(.small)
+                } else {
+                    VStack(spacing: 5) {
+                        Image(systemName: entry.mediaKind == .video ? "video" : "photo")
+                            .font(.title3)
+                        Text(entry.state == .purging ? "预览已清理" : "暂无预览")
+                            .font(.caption2.weight(.medium))
+                    }
+                    .foregroundStyle(.tertiary)
+                }
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .strokeBorder(Color.secondary.opacity(0.12))
+            }
+            .overlay(alignment: .topLeading) {
+                if entry.mediaKind == .video {
+                    Image(systemName: "play.fill")
+                        .font(.caption2.weight(.bold))
+                        .foregroundStyle(.white)
+                        .padding(5)
+                        .background(.black.opacity(0.58), in: Circle())
+                        .padding(6)
+                }
+            }
+            .overlay(alignment: .topTrailing) {
+                MediaFavoriteButton(
+                    state: model.favoriteState(for: entry.assetID),
+                    isVisible: isHovered
+                ) {
+                    Task { await model.toggleFavorite(assetID: entry.assetID) }
+                }
+                .padding(6)
+            }
+        }
+        .aspectRatio(
+            model.thumbnailAspectMode.frameAspectRatio(imageSize: image?.size),
+            contentMode: .fit
+        )
+        .task(id: loadID) {
+            image = nil
+            isLoading = true
+            let result = await model.loadRecycleThumbnailResult(
+                assetID: entry.assetID,
+                aspectMode: model.thumbnailAspectMode
+            )
+            guard !Task.isCancelled else { return }
+            if case let .loaded(data) = result,
+               let decoded = LibraryGridThumbnailImageFactory.image(from: data)
+            {
+                image = decoded
+            }
+            isLoading = false
+        }
+        .task(id: entry.assetID) {
+            await model.ensureFavoriteStatesLoaded(assetIDs: [entry.assetID])
+        }
+        .onHover { isHovered = $0 }
+        .contextMenu {
+            let state = model.favoriteState(for: entry.assetID)
+            Button(state.isFavorite ? "取消红心" : "加入红心") {
+                Task { await model.toggleFavorite(assetID: entry.assetID) }
+            }
+            if entry.sourceKind == .photos {
+                Text("Apple Photos 的“最近删除”由系统管理，红心不能暂停系统永久删除。")
+            }
+        }
+        .accessibilityLabel(
+            image == nil
+                ? "\(entry.fileName ?? "媒体")，暂无缓存预览"
+                : "\(entry.fileName ?? "媒体")预览"
+        )
+    }
+
+    private var loadID: SlimmingThumbnailLoadID {
+        SlimmingThumbnailLoadID(
+            assetID: entry.assetID,
+            restoreVersion: model.librarySlimmingThumbnailReloadVersion(for: entry.assetID),
+            aspectMode: model.thumbnailAspectMode,
+            originalAspectCacheGeneration: model.originalAspectThumbnailCacheGeneration
+        )
+    }
+}
+
 private struct SlimmingThumbnailCell: View {
     @ObservedObject var model: LibraryWorkspaceModel
     let assetID: UUID
     var isSelected: Bool = false
     @State private var image: NSImage?
     @State private var loadState: SlimmingThumbnailLoadState = .loading
+    @State private var isHovered = false
 
     private var isPendingRecycle: Bool {
         model.librarySlimmingRecyclePendingAssetIDs.contains(assetID)
@@ -2310,7 +2878,7 @@ private struct SlimmingThumbnailCell: View {
                         .accessibilityLabel("来源：\(sourceName)")
                 }
             }
-            .overlay(alignment: .topTrailing) {
+            .overlay(alignment: .topLeading) {
                 if model.selectedMediaKind == .video {
                     Image(systemName: "play.fill")
                         .font(.caption.weight(.bold))
@@ -2320,6 +2888,15 @@ private struct SlimmingThumbnailCell: View {
                         .padding(7)
                         .accessibilityLabel("视频代表缩略图")
                 }
+            }
+            .overlay(alignment: .topTrailing) {
+                MediaFavoriteButton(
+                    state: model.favoriteState(for: assetID),
+                    isVisible: isHovered || isSelected
+                ) {
+                    Task { await model.toggleFavorite(assetID: assetID) }
+                }
+                .padding(7)
             }
             .overlay {
                 if isPendingRecycle {
@@ -2372,6 +2949,10 @@ private struct SlimmingThumbnailCell: View {
                 )
             }
         }
+        .task(id: assetID) {
+            await model.ensureFavoriteStatesLoaded(assetIDs: [assetID])
+        }
+        .onHover { isHovered = $0 }
     }
 
     private var loadID: SlimmingThumbnailLoadID {
@@ -2399,6 +2980,7 @@ private struct SlimmingThumbnailLoadID: Hashable {
 private struct LibrarySlimmingMoveToRecycleConfirmationSheet: View {
     let selectedCount: Int
     let mediaKind: MediaKind
+    let favoriteCount: Int
     let allowsSuppressingFutureConfirmation: Bool
     @Binding var suppressFutureConfirmation: Bool
     let onConfirm: () -> Void
@@ -2415,6 +2997,14 @@ private struct LibrarySlimmingMoveToRecycleConfirmationSheet: View {
             .font(.callout)
             .foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
+            if favoriteCount > 0 {
+                Label(
+                    "其中 \(favoriteCount) 项带红心。自动清理不会删除红心项，但你正在手动确认回收它们。",
+                    systemImage: "heart.fill"
+                )
+                .foregroundStyle(.red)
+                .font(.callout.weight(.semibold))
+            }
             if allowsSuppressingFutureConfirmation {
                 Toggle(
                     "不再确认单张或 5 张以内的普通回收",
@@ -2454,9 +3044,11 @@ private struct LibrarySlimmingMoveToRecycleConfirmationSheet: View {
 private struct LibrarySlimmingFastDeleteConfirmationSheet: View {
     let selectedCount: Int
     let mediaKind: MediaKind
+    let favoriteCount: Int
     let onConfirm: () -> Void
     let onCancel: () -> Void
     @Environment(\.dismiss) private var dismiss
+    @FocusState private var deleteButtonFocused: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -2468,6 +3060,14 @@ private struct LibrarySlimmingFastDeleteConfirmationSheet: View {
             )
             .font(.callout)
             .fixedSize(horizontal: false, vertical: true)
+            if favoriteCount > 0 {
+                Label(
+                    "其中 \(favoriteCount) 项带红心。继续会绕过红心自动保护并执行手动删除。",
+                    systemImage: "heart.fill"
+                )
+                .foregroundStyle(.red)
+                .font(.callout.weight(.semibold))
+            }
             Text("此确认每次都会显示，不能设置为不再提醒。")
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -2487,12 +3087,14 @@ private struct LibrarySlimmingFastDeleteConfirmationSheet: View {
                     onConfirm()
                     dismiss()
                 }
+                .focused($deleteButtonFocused)
                 .keyboardShortcut(.defaultAction)
                 .persistentHelp("永久删除文件夹原始媒体并释放来源空间；此操作不可撤销。")
             }
         }
         .padding(20)
         .frame(width: 460)
+        .defaultFocus($deleteButtonFocused, true, priority: .userInitiated)
     }
 }
 
@@ -2581,6 +3183,12 @@ private struct LibrarySlimmingIdenticalCleanupConfirmationSheet: View {
                     tint: .green
                 )
                 CleanupMetricCard(
+                    title: "红心保留",
+                    value: plan.favoriteRetainedAssetCount,
+                    systemImage: "heart.fill",
+                    tint: .red
+                )
+                CleanupMetricCard(
                     title: "将清理",
                     value: plan.assetIDsToRecycle.count,
                     systemImage: "trash",
@@ -2593,7 +3201,11 @@ private struct LibrarySlimmingIdenticalCleanupConfirmationSheet: View {
                     tint: .indigo
                 )
             }
-            Text("统计由本次预览中逐组核验通过的实际资产 ID 汇总；安全跳过的分组不计入以上数字。")
+            Text(
+                "普通保留 \(plan.ordinaryRetainedAssetCount) 项；"
+                    + "全组红心而安全跳过 \(plan.protectedSkippedAssetCount) 项。"
+                    + "红心资产不会进入自动删除计划。"
+            )
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -2899,8 +3511,8 @@ private struct LibrarySlimmingIdenticalCleanupVerificationSheet: View {
                 Text("组完全相同媒体已完成去重")
                     .font(.title3.weight(.medium))
                 Text(
-                    "目标是每组保留 1 张，共 \(verification.targetRetainedAssetCount.formatted()) 张；"
-                        + "只把删除后确实仅剩 1 张的分组计入已完成。"
+                    "目标是保留全部红心资产；没有红心时每组保留 1 张，"
+                        + "共 \(verification.targetRetainedAssetCount.formatted()) 张。"
                 )
                     .font(.caption)
                     .foregroundStyle(.secondary)

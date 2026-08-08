@@ -18,13 +18,41 @@ enum RecycleSourceKind: String, Sendable, Equatable {
 enum RecycleFailureCode {
     /// FolderMutationAccessService emits this before it invokes the file-I/O closure.
     static let mutationAuthorizationRequired = "mutationAuthorizationRequired"
+    static let mutationAuthorizationInvalid = "mutationAuthorizationInvalid"
+    static let sourceChanged = "sourceChanged"
+    static let ioFailure = "ioFailure"
+    static let photosAuthorizationRequired = "photosAuthorizationRequired"
+    static let photosAssetNotFound = "photosAssetNotFound"
+    static let photosMutationFailed = "photosMutationFailed"
+    static let photosMutationUserCancelledPrefix =
+        "photosMutationFailed.userCancelled."
+    static let spaceFirstSourceDeletionPending = "spaceFirstSourceDeletionPending"
+    static let spaceFirstAppCacheCleanupPending = "spaceFirstAppCacheCleanupPending"
+}
+
+enum RecycleEntryProblem: Sendable, Equatable, Hashable {
+    case sourceAuthorizationRequired
+    case sourceAuthorizationInvalid
+    case sourceChanged
+    case photosAuthorizationRequired
+    case photosAssetNotFound
+    case photosUserCancelled
+    case photosMutationFailed
+    case fileIO
+    case locationConflict
+    case locationMissing
+    case unknown
 }
 
 enum RecycleEntryResolution: Sendable, Equatable, Hashable {
     case restoreOrPurge
     case discardPreflightFailure
     case retryInterruptedOperation
-    case inspect
+    case reinspectFileLocations
+    case updateFolderAuthorization
+    case refreshSourceBeforeRetry
+    case requestPhotosAuthorization
+    case retryFromAnalysis
 }
 
 enum LibrarySlimmingRemovalMode: Sendable, Equatable {
@@ -88,6 +116,42 @@ struct RecycleEntryRecord: Identifiable, Sendable, Equatable {
             && photosLocalIdentifier == nil
     }
 
+    var problem: RecycleEntryProblem? {
+        guard state == .failed else { return nil }
+        switch errorCode {
+        case RecycleFailureCode.mutationAuthorizationRequired:
+            return .sourceAuthorizationRequired
+        case RecycleFailureCode.mutationAuthorizationInvalid:
+            return .sourceAuthorizationInvalid
+        case RecycleFailureCode.sourceChanged:
+            return .sourceChanged
+        case RecycleFailureCode.photosAuthorizationRequired:
+            return .photosAuthorizationRequired
+        case RecycleFailureCode.photosAssetNotFound:
+            return .photosAssetNotFound
+        case let code? where code.hasPrefix(
+            RecycleFailureCode.photosMutationUserCancelledPrefix
+        ):
+            return .photosUserCancelled
+        case let code? where code == RecycleFailureCode.photosMutationFailed
+            || code.hasPrefix("\(RecycleFailureCode.photosMutationFailed)."):
+            return .photosMutationFailed
+        case RecycleFailureCode.ioFailure,
+             "restoreIOFailure",
+             "purgeIOFailure":
+            return .fileIO
+        case "interruptedConflict", "restoreConflict":
+            return .locationConflict
+        case "interruptedBeforeMove",
+             "interruptedMissingBoth",
+             "interruptedRestoreMissingPath",
+             "interruptedBeforeRestore":
+            return .locationMissing
+        default:
+            return .unknown
+        }
+    }
+
     var resolution: RecycleEntryResolution {
         if state == .recycled {
             return .restoreOrPurge
@@ -98,7 +162,23 @@ struct RecycleEntryRecord: Identifiable, Sendable, Equatable {
         if state == .pending || state == .restoring || state == .purging {
             return .retryInterruptedOperation
         }
-        return .inspect
+        switch problem {
+        case .sourceAuthorizationInvalid:
+            return .updateFolderAuthorization
+        case .sourceChanged, .photosAssetNotFound:
+            return .refreshSourceBeforeRetry
+        case .photosAuthorizationRequired:
+            return .requestPhotosAuthorization
+        default:
+            if state == .failed,
+               sourceKind == .file,
+               quarantineRelativePath != nil,
+               originalRelativePath != nil
+            {
+                return .reinspectFileLocations
+            }
+            return .retryFromAnalysis
+        }
     }
 }
 
@@ -190,6 +270,7 @@ struct LibrarySlimmingIdenticalCleanupCandidate: Sendable, Equatable {
     let sourceID: UUID
     let sourceKind: RecycleSourceKind
     let sourceDisplayName: String
+    var isFavoriteProtected: Bool = false
 }
 
 struct LibrarySlimmingIdenticalCleanupAssetProof: Sendable, Equatable {
@@ -205,6 +286,12 @@ struct LibrarySlimmingIdenticalCleanupDecision: Sendable, Equatable {
     let clusterID: UUID
     let survivorAssetID: UUID
     let assetIDsToRecycle: [UUID]
+    var additionalRetainedAssetIDs: [UUID] = []
+    var favoriteRetainedAssetIDs: [UUID] = []
+
+    var retainedAssetIDs: [UUID] {
+        [survivorAssetID] + additionalRetainedAssetIDs
+    }
 }
 
 struct LibrarySlimmingIdenticalCleanupPlan: Sendable, Equatable {
@@ -213,19 +300,22 @@ struct LibrarySlimmingIdenticalCleanupPlan: Sendable, Equatable {
     let photosAssetCount: Int
     let fileAssetCount: Int
     let assetProofs: [LibrarySlimmingIdenticalCleanupAssetProof]
+    let protectedSkippedAssetCount: Int
 
     init(
         decisions: [LibrarySlimmingIdenticalCleanupDecision],
         skippedGroupCount: Int,
         photosAssetCount: Int,
         fileAssetCount: Int,
-        assetProofs: [LibrarySlimmingIdenticalCleanupAssetProof] = []
+        assetProofs: [LibrarySlimmingIdenticalCleanupAssetProof] = [],
+        protectedSkippedAssetCount: Int = 0
     ) {
         self.decisions = decisions
         self.skippedGroupCount = skippedGroupCount
         self.photosAssetCount = photosAssetCount
         self.fileAssetCount = fileAssetCount
         self.assetProofs = assetProofs
+        self.protectedSkippedAssetCount = protectedSkippedAssetCount
     }
 
     var groupCount: Int {
@@ -237,7 +327,19 @@ struct LibrarySlimmingIdenticalCleanupPlan: Sendable, Equatable {
     }
 
     var survivorAssetIDs: [UUID] {
-        decisions.map(\.survivorAssetID)
+        decisions.flatMap(\.retainedAssetIDs)
+    }
+
+    var favoriteRetainedAssetIDs: [UUID] {
+        decisions.flatMap(\.favoriteRetainedAssetIDs)
+    }
+
+    var favoriteRetainedAssetCount: Int {
+        Set(favoriteRetainedAssetIDs).count
+    }
+
+    var ordinaryRetainedAssetCount: Int {
+        max(0, retainedAssetCount - favoriteRetainedAssetCount)
     }
 
     /// Exact count of distinct survivor asset IDs selected by the runtime plan.
@@ -254,7 +356,7 @@ struct LibrarySlimmingIdenticalCleanupPlan: Sendable, Equatable {
     var groupSizeHistogram: [Int: Int] {
         decisions.reduce(into: [:]) { histogram, decision in
             let memberCount = Set(
-                decision.assetIDsToRecycle + [decision.survivorAssetID]
+                decision.assetIDsToRecycle + decision.retainedAssetIDs
             ).count
             histogram[memberCount, default: 0] += 1
         }
@@ -319,10 +421,8 @@ struct LibrarySlimmingIdenticalCleanupVerification: Sendable, Equatable {
         Set(verifiedGroupIDs).union(unresolvedGroupIDs).count
     }
 
-    /// The runtime cleanup target keeps exactly one canonical photo per group.
-    /// This is a labeled target, not a claim that every group completed cleanup.
     var targetRetainedAssetCount: Int {
-        targetGroupCount
+        retainedNonredundantAssetCount + unresolvedGroupIDs.count
     }
 
     var isComplete: Bool {
@@ -351,6 +451,7 @@ enum LibrarySlimmingIdenticalCleanupPlanner {
         var skippedGroupCount = 0
         var photosAssetCount = 0
         var fileAssetCount = 0
+        var protectedSkippedAssetCount = 0
 
         for cluster in clusters where cluster.kind == .byteIdentical {
             var seen = Set<UUID>()
@@ -363,6 +464,27 @@ enum LibrarySlimmingIdenticalCleanupPlanner {
             }
 
             let deletionOrder = resolved.sorted(by: shouldDeleteBefore)
+            let protected = deletionOrder.filter(\.isFavoriteProtected)
+            if !protected.isEmpty {
+                let redundant = deletionOrder.filter { !$0.isFavoriteProtected }
+                guard !redundant.isEmpty, let survivor = protected.last else {
+                    skippedGroupCount += 1
+                    protectedSkippedAssetCount += protected.count
+                    continue
+                }
+                photosAssetCount += redundant.filter { $0.sourceKind == .photos }.count
+                fileAssetCount += redundant.filter { $0.sourceKind == .file }.count
+                decisions.append(
+                    LibrarySlimmingIdenticalCleanupDecision(
+                        clusterID: cluster.id,
+                        survivorAssetID: survivor.assetID,
+                        assetIDsToRecycle: redundant.map(\.assetID),
+                        additionalRetainedAssetIDs: protected.dropLast().map(\.assetID),
+                        favoriteRetainedAssetIDs: protected.map(\.assetID)
+                    )
+                )
+                continue
+            }
             guard let survivor = deletionOrder.last else {
                 skippedGroupCount += 1
                 continue
@@ -383,7 +505,8 @@ enum LibrarySlimmingIdenticalCleanupPlanner {
             decisions: decisions,
             skippedGroupCount: skippedGroupCount,
             photosAssetCount: photosAssetCount,
-            fileAssetCount: fileAssetCount
+            fileAssetCount: fileAssetCount,
+            protectedSkippedAssetCount: protectedSkippedAssetCount
         )
     }
 

@@ -576,14 +576,9 @@ struct WorldMapWorkspaceView: View {
                 ScrollView(.horizontal) {
                     LazyHStack(spacing: 8) {
                         ForEach(selection.assets) { asset in
-                            Button {
+                            WorldMapPhotoCard(asset: asset, model: model) {
                                 previewAsset = asset
-                            } label: {
-                                WorldMapPhotoThumbnail(asset: asset, model: model)
                             }
-                            .buttonStyle(.plain)
-                            .help(asset.fileName ?? "打开照片预览")
-                            .accessibilityLabel(asset.fileName ?? "打开照片预览")
                         }
                     }
                 }
@@ -1566,6 +1561,37 @@ private struct WorldMapPlaceResolutionSheet: View {
 }
 
 @MainActor
+private struct WorldMapPhotoCard: View {
+    let asset: WorldMapCatalogAsset
+    let model: LibraryWorkspaceModel
+    let onOpen: () -> Void
+
+    @State private var isHovered = false
+
+    var body: some View {
+        ZStack(alignment: .topTrailing) {
+            Button(action: onOpen) {
+                WorldMapPhotoThumbnail(asset: asset, model: model)
+            }
+            .buttonStyle(.plain)
+            MediaFavoriteButton(
+                state: model.favoriteState(for: asset.assetID),
+                isVisible: isHovered
+            ) {
+                Task { await model.toggleFavorite(assetID: asset.assetID) }
+            }
+            .padding(4)
+        }
+        .onHover { isHovered = $0 }
+        .task(id: asset.assetID) {
+            await model.ensureFavoriteStatesLoaded(assetIDs: [asset.assetID])
+        }
+        .help(asset.fileName ?? "打开照片预览")
+        .accessibilityLabel(asset.fileName ?? "打开照片预览")
+    }
+}
+
+@MainActor
 private struct WorldMapPhotoThumbnail: View {
     let asset: WorldMapCatalogAsset
     let model: LibraryWorkspaceModel
@@ -1639,6 +1665,12 @@ private struct WorldMapPhotoPreview: View {
                         .font(.headline)
                         .lineLimit(1)
                     Spacer()
+                    MediaFavoriteButton(
+                        state: model.favoriteState(for: asset.assetID),
+                        isVisible: true
+                    ) {
+                        Task { await model.toggleFavorite(assetID: asset.assetID) }
+                    }
                     Button {
                         dismiss()
                     } label: {
@@ -1656,6 +1688,7 @@ private struct WorldMapPhotoPreview: View {
         }
         .frame(minWidth: 720, minHeight: 520)
         .task(id: asset.assetID) {
+            await model.ensureFavoriteStatesLoaded(assetIDs: [asset.assetID])
             defer { loadFinished = true }
             guard let data = await model.previewData(assetID: asset.assetID) else { return }
             image = NSImage(data: data)

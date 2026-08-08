@@ -1103,6 +1103,8 @@ final class RemoteCatalogFacadeTests: XCTestCase {
 
     func testLibrarySlimmingRecycleMapsSafeProjectionAndMacApprovalRequest() async throws {
         let entryID = UUID()
+        let photosEntryID = UUID()
+        let refreshOnlyEntryID = UUID()
         let assetID = UUID()
         let sourceID = UUID()
         let operationID = UUID()
@@ -1146,8 +1148,38 @@ final class RemoteCatalogFacadeTests: XCTestCase {
                         errorCode: nil,
                         fileName: "IMG_0001.HEIC"
                     ),
+                    RecycleEntryRecord(
+                        id: photosEntryID,
+                        assetID: UUID(),
+                        sourceID: sourceID,
+                        sourceKind: .photos,
+                        mediaKind: .image,
+                        trashedAtMs: 100,
+                        purgeAfterMs: 200,
+                        state: .recycled,
+                        quarantineRelativePath: nil,
+                        originalRelativePath: nil,
+                        photosLocalIdentifier: "private-photos-identifier",
+                        errorCode: nil,
+                        fileName: "IMG_0002.HEIC"
+                    ),
+                    RecycleEntryRecord(
+                        id: refreshOnlyEntryID,
+                        assetID: UUID(),
+                        sourceID: sourceID,
+                        sourceKind: .file,
+                        mediaKind: .image,
+                        trashedAtMs: 100,
+                        purgeAfterMs: 200,
+                        state: .failed,
+                        quarantineRelativePath: nil,
+                        originalRelativePath: "private/changed/path",
+                        photosLocalIdentifier: nil,
+                        errorCode: RecycleFailureCode.sourceChanged,
+                        fileName: "IMG_0003.HEIC"
+                    ),
                 ],
-                totalCount: 1,
+                totalCount: 3,
                 sourceNames: [sourceID: "Archive"],
                 requests: [requestSnapshot]
             ),
@@ -1164,12 +1196,17 @@ final class RemoteCatalogFacadeTests: XCTestCase {
             searchText: nil,
             limit: 60
         )
-        XCTAssertEqual(snapshot.entries.first?.sourceDisplayName, "Archive")
-        XCTAssertEqual(snapshot.entries.first?.availableActions, [.restore, .purge])
+        let entriesByID = Dictionary(uniqueKeysWithValues: snapshot.entries.map { ($0.id, $0) })
+        XCTAssertEqual(entriesByID[entryID]?.sourceDisplayName, "Archive")
+        XCTAssertEqual(entriesByID[entryID]?.availableActions, [.restore, .purge])
+        XCTAssertEqual(entriesByID[photosEntryID]?.availableActions, [])
+        XCTAssertEqual(entriesByID[refreshOnlyEntryID]?.availableActions, [])
         let encoded = try JSONEncoder().encode(snapshot)
         let json = try XCTUnwrap(String(data: encoded, encoding: .utf8))
         XCTAssertFalse(json.contains("private/original/path"))
         XCTAssertFalse(json.contains("private/quarantine/path"))
+        XCTAssertFalse(json.contains("private/changed/path"))
+        XCTAssertFalse(json.contains("private-photos-identifier"))
 
         let response = try await facade.submitLibrarySlimmingRecycle(
             RemoteLibrarySlimmingRecycleSubmitRequest(

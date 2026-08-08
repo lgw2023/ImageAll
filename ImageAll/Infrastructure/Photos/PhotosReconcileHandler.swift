@@ -617,14 +617,32 @@ struct PhotosReconcileHandler: LeaseBoundJobHandler, Sendable {
                 || storedMediaType != metadata.mediaType
             let dimensionsChanged = storedWidth != metadata.width
                 || storedHeight != metadata.height
-            let timestampsChanged = storedCreatedAtMs != metadata.createdAtMs
-                || storedModifiedAtMs != metadata.modifiedAtMs
+            let createdTimestampChanged = storedCreatedAtMs != metadata.createdAtMs
+            let modifiedTimestampChanged = storedModifiedAtMs != metadata.modifiedAtMs
             let videoMetadataChanged = storedMediaKind != metadata.mediaKind.rawValue
                 || storedDurationMs != metadata.durationMs
             let availabilityChanged = storedAvailability != AssetAvailability.available.rawValue
+            let favoriteRow = try Row.fetchOne(
+                db,
+                sql: """
+                SELECT desired_value, photos_observed_value, sync_status,
+                       photos_write_modified_at_ms
+                FROM asset_favorite_state WHERE asset_id = ?
+                """,
+                arguments: [row["id"] as String]
+            )
+            let desiredFavorite: Int? = favoriteRow?["desired_value"]
+            let observedFavorite: Int? = favoriteRow?["photos_observed_value"]
+            let favoriteChanged = observedFavorite != (metadata.isFavorite ? 1 : 0)
+            let writeModifiedAtMs: Int64? = favoriteRow?["photos_write_modified_at_ms"]
+            let isVerifiedFavoriteWriteObservation = favoriteChanged
+                && desiredFavorite == (metadata.isFavorite ? 1 : 0)
+                && writeModifiedAtMs != nil
+                && writeModifiedAtMs == metadata.modifiedAtMs
             let changed = fileIdentityChanged
                 || dimensionsChanged
-                || timestampsChanged
+                || createdTimestampChanged
+                || (modifiedTimestampChanged && !isVerifiedFavoriteWriteObservation)
                 || videoMetadataChanged
                 || availabilityChanged
             try db.execute(
@@ -650,6 +668,12 @@ struct PhotosReconcileHandler: LeaseBoundJobHandler, Sendable {
                 assetID: row["id"] as String,
                 db: db
             )
+            try reconcileFavorite(
+                metadata,
+                assetID: row["id"] as String,
+                existingRow: favoriteRow,
+                db: db
+            )
         } else {
             let assetID = idGenerator().uuidString.lowercased()
             try db.execute(
@@ -670,6 +694,73 @@ struct PhotosReconcileHandler: LeaseBoundJobHandler, Sendable {
                 ]
             )
             try upsertLocation(metadata.location, assetID: assetID, db: db)
+            try reconcileFavorite(
+                metadata,
+                assetID: assetID,
+                existingRow: nil,
+                db: db
+            )
+        }
+    }
+
+    private func reconcileFavorite(
+        _ metadata: PhotosAssetMetadata,
+        assetID: String,
+        existingRow: Row?,
+        db: Database
+    ) throws {
+        let observed = metadata.isFavorite ? 1 : 0
+        guard let existingRow else {
+            try db.execute(
+                sql: """
+                INSERT INTO asset_favorite_state (
+                    asset_id, desired_value, photos_observed_value,
+                    sync_status, intent_revision, requested_at_ms,
+                    photos_observed_modified_at_ms,
+                    photos_write_modified_at_ms, last_error_code, updated_at_ms
+                ) VALUES (?, ?, ?, 'synced', 0, ?, ?, NULL, NULL, ?)
+                """,
+                arguments: [
+                    assetID, observed, observed, clock.nowMs,
+                    metadata.modifiedAtMs, clock.nowMs,
+                ]
+            )
+            return
+        }
+
+        let desired: Int = existingRow["desired_value"]
+        let statusRaw: String = existingRow["sync_status"]
+        let hasLocalIntent = statusRaw == FavoriteSyncStatus.pending.rawValue
+            || statusRaw == FavoriteSyncStatus.failed.rawValue
+        if hasLocalIntent, desired != observed {
+            // The user's latest local target wins. Record the Photos fact for
+            // protection/conflict UI, but do not overwrite the intent.
+            try db.execute(
+                sql: """
+                UPDATE asset_favorite_state
+                SET photos_observed_value = ?,
+                    photos_observed_modified_at_ms = ?, updated_at_ms = ?
+                WHERE asset_id = ?
+                """,
+                arguments: [observed, metadata.modifiedAtMs, clock.nowMs, assetID]
+            )
+        } else {
+            // No outstanding intent, or PhotoKit has converged to it.
+            try db.execute(
+                sql: """
+                UPDATE asset_favorite_state
+                SET desired_value = ?, photos_observed_value = ?,
+                    sync_status = 'synced',
+                    photos_observed_modified_at_ms = ?,
+                    photos_write_modified_at_ms = NULL,
+                    last_error_code = NULL, updated_at_ms = ?
+                WHERE asset_id = ?
+                """,
+                arguments: [
+                    observed, observed, metadata.modifiedAtMs,
+                    clock.nowMs, assetID,
+                ]
+            )
         }
     }
 

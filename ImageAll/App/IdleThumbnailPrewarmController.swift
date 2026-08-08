@@ -140,7 +140,7 @@ final class IdleThumbnailPrewarmController {
         guard prewarmTask == nil else { return }
         prewarmGeneration &+= 1
         let generation = prewarmGeneration
-        prewarmTask = Task { [weak self] in
+        prewarmTask = Task(priority: .background) { [weak self] in
             guard let self else { return }
             await self.onPrewarm(generation)
             await MainActor.run {

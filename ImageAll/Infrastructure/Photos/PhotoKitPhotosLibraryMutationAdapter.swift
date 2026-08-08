@@ -57,6 +57,53 @@ final class PhotoKitPhotosLibraryMutationAdapter: PhotosLibraryMutationPort, @un
         return identifiers
     }
 
+    func setFavorite(
+        localIdentifiers: [String],
+        isFavorite: Bool
+    ) throws -> [String: PhotosFavoriteObservation] {
+        try requireAuthorized()
+        let identifiers = normalized(localIdentifiers)
+        guard !identifiers.isEmpty else { return [:] }
+        let fetch = PHAsset.fetchAssets(withLocalIdentifiers: identifiers, options: nil)
+        var assets: [PHAsset] = []
+        assets.reserveCapacity(fetch.count)
+        fetch.enumerateObjects { asset, _, _ in assets.append(asset) }
+        guard Set(assets.map(\.localIdentifier)) == Set(identifiers) else {
+            throw PhotosLibraryMutationError.assetNotFound
+        }
+        do {
+            try PHPhotoLibrary.shared().performChangesAndWait {
+                for asset in assets {
+                    PHAssetChangeRequest(for: asset).isFavorite = isFavorite
+                }
+            }
+        } catch {
+            let diagnostic = Self.mapMutationFailure(error as NSError)
+            Self.logger.error(
+                "PhotoKit favorite mutation failed category=\(diagnostic.category.rawValue, privacy: .public) domain=\(diagnostic.domain, privacy: .public) code=\(diagnostic.code, privacy: .public)"
+            )
+            throw PhotosLibraryMutationError.systemChangeFailed(diagnostic)
+        }
+
+        let verified = PHAsset.fetchAssets(withLocalIdentifiers: identifiers, options: nil)
+        var observations: [String: PhotosFavoriteObservation] = [:]
+        observations.reserveCapacity(verified.count)
+        verified.enumerateObjects { asset, _, _ in
+            observations[asset.localIdentifier] = PhotosFavoriteObservation(
+                isFavorite: asset.isFavorite,
+                modifiedAtMs: asset.modificationDate.map {
+                    Int64($0.timeIntervalSince1970 * 1_000)
+                }
+            )
+        }
+        guard observations.count == identifiers.count,
+              observations.values.allSatisfy({ $0.isFavorite == isFavorite })
+        else {
+            throw PhotosLibraryMutationError.changeFailed
+        }
+        return observations
+    }
+
     func presence(localIdentifier: String) throws -> PhotosAssetPresence {
         let identifier = localIdentifier.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !identifier.isEmpty else { return .missing }

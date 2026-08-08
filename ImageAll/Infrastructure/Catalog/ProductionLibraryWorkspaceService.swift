@@ -1938,6 +1938,16 @@ struct LibrarySourceDeletionService: Sendable {
         guard let row = try Row.fetchOne(
             db,
             sql: """
+            WITH latest_attempt AS (
+                SELECT
+                    recycle.*,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY recycle.asset_id
+                        ORDER BY recycle.created_at_ms DESC, recycle.rowid DESC
+                    ) AS lifecycle_rank
+                FROM recycle_entry AS recycle
+                WHERE recycle.asset_id IS NOT NULL
+            )
             SELECT
                 COALESCE(SUM(CASE WHEN recycle.state = 'recycled' THEN 1 ELSE 0 END), 0)
                     AS recycled_count,
@@ -1949,14 +1959,22 @@ struct LibrarySourceDeletionService: Sendable {
                      AND recycle.photos_local_identifier IS NULL
                     THEN 1 ELSE 0 END), 0) AS discardable_authorization_count,
                 COUNT(*) AS total_count
-            FROM recycle_entry AS recycle
+            FROM latest_attempt AS recycle
             JOIN asset ON asset.id = recycle.asset_id
             WHERE asset.source_id = ?
+              AND recycle.lifecycle_rank = 1
               AND recycle.state NOT IN ('restored', 'purged')
+              AND (
+                  recycle.source_kind <> 'file'
+                  OR recycle.error_code IS NULL
+                  OR recycle.error_code NOT IN (?, ?)
+              )
             """,
             arguments: [
                 RecycleFailureCode.mutationAuthorizationRequired,
                 sourceToken,
+                RecycleFailureCode.spaceFirstSourceDeletionPending,
+                RecycleFailureCode.spaceFirstAppCacheCleanupPending,
             ]
         ) else {
             throw DeleteLibrarySourceError.persistenceFailure
@@ -2103,6 +2121,7 @@ struct ProductionLibraryWorkspaceService:
     let photosSourceMonitor: PhotosLibraryChangeObserverCoordinator
     let authorization: any FolderAuthorizationCommandPort
     let photosConnection: PhotosLibraryConnectionService
+    let photosMutation: any PhotosLibraryMutationPort
     let queue: GRDBJobQueue
     let executionCoordinator: JobExecutionCoordinator
     let query: GRDBAssetCatalogQueryRepository
@@ -2110,6 +2129,7 @@ struct ProductionLibraryWorkspaceService:
     let assetImages: LibraryAssetImageLoader
     let personalizationReview: PersonalizationReviewService
     let derivedImageCache: DerivedImageCacheService
+    let quarantineRootURL: URL
     let photosOriginalCache: PhotosOriginalCacheService
     let sourceDeletion: LibrarySourceDeletionService
     let interactiveIOGate: InteractiveIOPriorityGate?
@@ -2569,6 +2589,308 @@ struct ProductionLibraryWorkspaceService:
         )
     }
 
+    func fetchFavoriteStates(assetIDs: [UUID]) throws -> [UUID: MediaFavoriteState] {
+        let uniqueIDs = Array(Set(assetIDs))
+        guard !uniqueIDs.isEmpty else { return [:] }
+        var states = Dictionary(
+            uniqueKeysWithValues: uniqueIDs.map { ($0, MediaFavoriteState.none(assetID: $0)) }
+        )
+        try query.database.pool.read { db in
+            for chunk in uniqueIDs.favoriteChunks(size: 400) {
+                let placeholders = Array(repeating: "?", count: chunk.count).joined(separator: ", ")
+                let rows = try Row.fetchAll(
+                    db,
+                    sql: """
+                    SELECT asset_id, desired_value, photos_observed_value,
+                           sync_status, intent_revision, requested_at_ms,
+                           photos_observed_modified_at_ms, last_error_code
+                    FROM asset_favorite_state
+                    WHERE asset_id IN (\(placeholders))
+                    """,
+                    arguments: StatementArguments(
+                        chunk.map { $0.uuidString.lowercased() }
+                    )
+                )
+                for row in rows {
+                    guard let assetID = UUID(uuidString: row["asset_id"]),
+                          let syncStatus = FavoriteSyncStatus(rawValue: row["sync_status"])
+                    else { continue }
+                    let observed: Int? = row["photos_observed_value"]
+                    states[assetID] = MediaFavoriteState(
+                        assetID: assetID,
+                        isFavorite: (row["desired_value"] as Int) == 1,
+                        photosObservedValue: observed.map { $0 == 1 },
+                        syncStatus: syncStatus,
+                        intentRevision: row["intent_revision"],
+                        requestedAtMs: row["requested_at_ms"],
+                        photosObservedModifiedAtMs: row["photos_observed_modified_at_ms"],
+                        lastErrorCode: row["last_error_code"]
+                    )
+                }
+            }
+        }
+        return states
+    }
+
+    func setFavorite(
+        assetIDs: [UUID],
+        isFavorite: Bool
+    ) throws -> FavoriteMutationSummary {
+        let uniqueIDs = Array(Set(assetIDs))
+        guard !uniqueIDs.isEmpty else { return .zero }
+        let nowMs = clock.nowMs
+        var changedCount = 0
+        var photosSourceIDs = Set<UUID>()
+        try query.database.pool.write { db in
+            for chunk in uniqueIDs.favoriteChunks(size: 400) {
+                let placeholders = Array(repeating: "?", count: chunk.count).joined(separator: ", ")
+                let rows = try Row.fetchAll(
+                    db,
+                    sql: """
+                    SELECT asset.id, asset.source_id, asset.locator_kind,
+                           favorite.desired_value, favorite.photos_observed_value,
+                           favorite.sync_status, favorite.intent_revision
+                    FROM asset
+                    LEFT JOIN asset_favorite_state AS favorite
+                      ON favorite.asset_id = asset.id
+                    WHERE asset.id IN (\(placeholders))
+                    """,
+                    arguments: StatementArguments(
+                        chunk.map { $0.uuidString.lowercased() }
+                    )
+                )
+                for row in rows {
+                    let assetID: String = row["id"]
+                    let sourceIDRaw: String = row["source_id"]
+                    let locatorKind: String = row["locator_kind"]
+                    let existingDesired: Int? = row["desired_value"]
+                    let observed: Int? = row["photos_observed_value"]
+                    let oldProtected = existingDesired == 1 || observed == 1
+                    let newDesired = isFavorite ? 1 : 0
+                    let isPhotos = locatorKind == "photos"
+                    let existingStatus: String? = row["sync_status"]
+                    let needsNewIntent = existingDesired != newDesired
+                        || (isPhotos && existingStatus == nil)
+                    guard needsNewIntent else {
+                        if isPhotos,
+                           existingStatus == FavoriteSyncStatus.pending.rawValue
+                                || existingStatus == FavoriteSyncStatus.failed.rawValue,
+                           let sourceID = UUID(uuidString: sourceIDRaw)
+                        {
+                            photosSourceIDs.insert(sourceID)
+                        }
+                        continue
+                    }
+                    let oldRevision: Int = row["intent_revision"] ?? 0
+                    let syncStatus: FavoriteSyncStatus = isPhotos ? .pending : .localOnly
+                    try db.execute(
+                        sql: """
+                        INSERT INTO asset_favorite_state (
+                            asset_id, desired_value, photos_observed_value,
+                            sync_status, intent_revision, requested_at_ms,
+                            photos_observed_modified_at_ms,
+                            photos_write_modified_at_ms, last_error_code, updated_at_ms
+                        ) VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?)
+                        ON CONFLICT(asset_id) DO UPDATE SET
+                            desired_value = excluded.desired_value,
+                            sync_status = excluded.sync_status,
+                            intent_revision = excluded.intent_revision,
+                            requested_at_ms = excluded.requested_at_ms,
+                            photos_write_modified_at_ms = NULL,
+                            last_error_code = NULL,
+                            updated_at_ms = excluded.updated_at_ms
+                        """,
+                        arguments: [
+                            assetID, newDesired, observed, syncStatus.rawValue,
+                            oldRevision + 1, nowMs, nowMs,
+                        ]
+                    )
+                    changedCount += 1
+                    if isPhotos, let sourceID = UUID(uuidString: sourceIDRaw) {
+                        photosSourceIDs.insert(sourceID)
+                    } else if oldProtected, !isFavorite {
+                        let resetPurgeAfterMs = nowMs + 30 * 24 * 60 * 60 * 1_000
+                        try db.execute(
+                            sql: """
+                            UPDATE recycle_entry
+                            SET trashed_at_ms = ?, purge_after_ms = ?, updated_at_ms = ?
+                            WHERE asset_id = ? AND source_kind = 'file' AND state = 'recycled'
+                            """,
+                            arguments: [nowMs, resetPurgeAfterMs, nowMs, assetID]
+                        )
+                    }
+                }
+            }
+        }
+        if !photosSourceIDs.isEmpty {
+            _ = try synchronizePendingFavorites(sourceIDs: photosSourceIDs)
+        }
+        let summary = try favoriteMutationSummary(assetIDs: uniqueIDs)
+        return FavoriteMutationSummary(
+            changedCount: changedCount,
+            localOnlyCount: summary.localOnlyCount,
+            syncedCount: summary.syncedCount,
+            pendingCount: summary.pendingCount,
+            failedCount: summary.failedCount
+        )
+    }
+
+    func retryPendingFavoriteSync(
+        sourceIDs: Set<UUID>?
+    ) throws -> FavoriteMutationSummary {
+        try synchronizePendingFavorites(sourceIDs: sourceIDs)
+    }
+
+    private func synchronizePendingFavorites(
+        sourceIDs: Set<UUID>?
+    ) throws -> FavoriteMutationSummary {
+        struct PendingFavoriteIntent {
+            let assetID: UUID
+            let localIdentifier: String
+            let desiredValue: Bool
+            let intentRevision: Int
+        }
+
+        let intents: [PendingFavoriteIntent] = try query.database.pool.read { db in
+            var arguments = StatementArguments()
+            var sourceClause = ""
+            if let sourceIDs, !sourceIDs.isEmpty {
+                sourceClause = "AND asset.source_id IN (\(Array(repeating: "?", count: sourceIDs.count).joined(separator: ", ")))"
+                for sourceID in sourceIDs.sorted(by: { $0.uuidString < $1.uuidString }) {
+                    arguments += [sourceID.uuidString.lowercased()]
+                }
+            }
+            let rows = try Row.fetchAll(
+                db,
+                sql: """
+                SELECT favorite.asset_id, asset.photos_local_identifier,
+                       favorite.desired_value, favorite.intent_revision
+                FROM asset_favorite_state AS favorite
+                JOIN asset ON asset.id = favorite.asset_id
+                WHERE asset.locator_kind = 'photos'
+                  AND asset.locator_state = 'current'
+                  AND favorite.sync_status IN ('pending', 'failed')
+                  \(sourceClause)
+                ORDER BY favorite.requested_at_ms, favorite.asset_id
+                """,
+                arguments: arguments
+            )
+            return rows.compactMap { row in
+                guard let assetID = UUID(uuidString: row["asset_id"]),
+                      let localIdentifier: String = row["photos_local_identifier"]
+                else { return nil }
+                return PendingFavoriteIntent(
+                    assetID: assetID,
+                    localIdentifier: localIdentifier,
+                    desiredValue: (row["desired_value"] as Int) == 1,
+                    intentRevision: row["intent_revision"]
+                )
+            }
+        }
+        guard !intents.isEmpty else { return .zero }
+
+        for desiredValue in [false, true] {
+            let matching = intents.filter { $0.desiredValue == desiredValue }
+            for batch in matching.favoriteChunks(size: 50) {
+                do {
+                    let observations = try photosMutation.setFavorite(
+                        localIdentifiers: batch.map(\.localIdentifier),
+                        isFavorite: desiredValue
+                    )
+                    try query.database.pool.write { db in
+                        for intent in batch {
+                            guard let observation = observations[intent.localIdentifier] else {
+                                continue
+                            }
+                            try db.execute(
+                                sql: """
+                                UPDATE asset_favorite_state
+                                SET photos_observed_value = ?, sync_status = 'synced',
+                                    photos_observed_modified_at_ms = ?,
+                                    photos_write_modified_at_ms = ?,
+                                    last_error_code = NULL, updated_at_ms = ?
+                                WHERE asset_id = ? AND intent_revision = ?
+                                  AND desired_value = ?
+                                """,
+                                arguments: [
+                                    observation.isFavorite ? 1 : 0,
+                                    observation.modifiedAtMs,
+                                    observation.modifiedAtMs,
+                                    clock.nowMs,
+                                    intent.assetID.uuidString.lowercased(),
+                                    intent.intentRevision,
+                                    desiredValue ? 1 : 0,
+                                ]
+                            )
+                        }
+                    }
+                } catch {
+                    let failure = favoriteSyncFailure(error)
+                    try query.database.pool.write { db in
+                        for intent in batch {
+                            try db.execute(
+                                sql: """
+                                UPDATE asset_favorite_state
+                                SET sync_status = ?, last_error_code = ?, updated_at_ms = ?
+                                WHERE asset_id = ? AND intent_revision = ?
+                                  AND desired_value = ?
+                                """,
+                                arguments: [
+                                    failure.keepPending ? FavoriteSyncStatus.pending.rawValue
+                                        : FavoriteSyncStatus.failed.rawValue,
+                                    failure.code,
+                                    clock.nowMs,
+                                    intent.assetID.uuidString.lowercased(),
+                                    intent.intentRevision,
+                                    desiredValue ? 1 : 0,
+                                ]
+                            )
+                        }
+                    }
+                }
+            }
+        }
+        return try favoriteMutationSummary(assetIDs: intents.map(\.assetID))
+    }
+
+    private func favoriteMutationSummary(
+        assetIDs: [UUID]
+    ) throws -> FavoriteMutationSummary {
+        let states = try fetchFavoriteStates(assetIDs: assetIDs).values
+        return FavoriteMutationSummary(
+            changedCount: assetIDs.count,
+            localOnlyCount: states.filter { $0.syncStatus == .localOnly }.count,
+            syncedCount: states.filter { $0.syncStatus == .synced }.count,
+            pendingCount: states.filter { $0.syncStatus == .pending }.count,
+            failedCount: states.filter { $0.syncStatus == .failed }.count
+        )
+    }
+
+    private func favoriteSyncFailure(
+        _ error: Error
+    ) -> (code: String, keepPending: Bool) {
+        guard let mutationError = error as? PhotosLibraryMutationError else {
+            return ("photosFavorite.persistenceFailure", true)
+        }
+        switch mutationError {
+        case .authorizationDenied:
+            return ("photosFavorite.authorizationDenied", false)
+        case .authorizationRestricted:
+            return ("photosFavorite.authorizationRestricted", false)
+        case .notDetermined:
+            return ("photosFavorite.authorizationNotDetermined", false)
+        case .assetNotFound:
+            return ("photosFavorite.assetNotFound", false)
+        case .changeFailed:
+            return ("photosFavorite.changeFailed", true)
+        case let .systemChangeFailed(diagnostic):
+            return (
+                diagnostic.persistenceCode,
+                diagnostic.category == .libraryUnavailable
+            )
+        }
+    }
+
     func fetchAssetPage(
         filter: AssetPageFilter,
         sort: AssetPageSort,
@@ -2587,6 +2909,10 @@ struct ProductionLibraryWorkspaceService:
 
     func loadThumbnail(assetID: UUID) async throws -> Data {
         try await assetImages.load(assetID: assetID, variant: .grid)
+    }
+
+    func loadThumbnailIfCached(assetID: UUID) async throws -> Data? {
+        try await assetImages.loadThumbnailIfCached(assetID: assetID)
     }
 
     func loadOriginalAspectThumbnailIfCached(assetID: UUID) async throws -> Data? {
@@ -2635,6 +2961,13 @@ struct ProductionLibraryWorkspaceService:
 
     func prewarmOriginalAspectThumbnail(assetID: UUID) async throws -> Data {
         try await assetImages.prewarmOriginalAspectThumbnail(assetID: assetID)
+    }
+
+    func prewarmRecycledFileThumbnail(assetID: UUID) async throws -> Data {
+        try await derivedImageCache.loadOrGenerateRecycledFileThumbnail(
+            assetID: assetID,
+            quarantineRootURL: quarantineRootURL
+        )
     }
 
     func loadPreview(assetID: UUID) async throws -> Data {
@@ -2923,5 +3256,19 @@ private func fetchLibraryOriginalAssetLocator(
             photosLocalIdentifier: row["photos_local_identifier"],
             availability: availability
         )
+    }
+}
+
+private extension Array {
+    func favoriteChunks(size: Int) -> [[Element]] {
+        guard size > 0, !isEmpty else { return isEmpty ? [] : [self] }
+        var result: [[Element]] = []
+        var index = startIndex
+        while index < endIndex {
+            let end = self.index(index, offsetBy: size, limitedBy: endIndex) ?? endIndex
+            result.append(Array(self[index ..< end]))
+            index = end
+        }
+        return result
     }
 }

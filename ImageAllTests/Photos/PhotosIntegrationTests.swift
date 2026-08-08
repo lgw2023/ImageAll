@@ -230,7 +230,8 @@ final class PhotosIntegrationTests: XCTestCase {
             height: 800,
             createdAtMs: DatabaseTestSupport.timestampMs,
             modifiedAtMs: DatabaseTestSupport.timestampMs,
-            location: AssetLocationCoordinate(latitude: 35.6895, longitude: 139.6917)
+            location: AssetLocationCoordinate(latitude: 35.6895, longitude: 139.6917),
+            isFavorite: true
         )
         let second = metadata("photos-b", name: "B.PNG", type: "public.png")
         let database = try FolderAuthorizationTestSupport.makeDatabase()
@@ -297,6 +298,66 @@ final class PhotosIntegrationTests: XCTestCase {
         XCTAssertEqual(storedLocation?["latitude"] as Double?, 35.6895)
         XCTAssertEqual(storedLocation?["longitude"] as Double?, 139.6917)
         XCTAssertEqual(storedLocation?["source_kind"] as String?, "photosGPS")
+        let favorite = try await database.pool.read { db in
+            try Row.fetchOne(
+                db,
+                sql: """
+                SELECT favorite.desired_value, favorite.photos_observed_value,
+                       favorite.sync_status, favorite.intent_revision
+                FROM asset_favorite_state AS favorite
+                JOIN asset ON asset.id = favorite.asset_id
+                WHERE asset.photos_local_identifier = 'photos-a'
+                """
+            )
+        }
+        XCTAssertEqual(favorite?["desired_value"] as Int?, 1)
+        XCTAssertEqual(favorite?["photos_observed_value"] as Int?, 1)
+        XCTAssertEqual(favorite?["sync_status"] as String?, FavoriteSyncStatus.synced.rawValue)
+        XCTAssertEqual(favorite?["intent_revision"] as Int?, 0)
+    }
+
+    func testExternalPhotosFavoriteBecomesSyncedImageAllFavorite() async throws {
+        let evidence = try await reconcileFavoriteChange(
+            initialFavorite: false,
+            updatedFavorite: true,
+            pendingDesiredValue: nil,
+            recordedWriteModifiedAtMs: nil
+        )
+
+        XCTAssertEqual(evidence["desired_value"] as Int?, 1)
+        XCTAssertEqual(evidence["photos_observed_value"] as Int?, 1)
+        XCTAssertEqual(evidence["sync_status"] as String?, FavoriteSyncStatus.synced.rawValue)
+        XCTAssertEqual(evidence["intent_revision"] as Int?, 0)
+    }
+
+    func testPendingImageAllFavoriteIntentWinsExternalConflict() async throws {
+        let evidence = try await reconcileFavoriteChange(
+            initialFavorite: false,
+            updatedFavorite: false,
+            pendingDesiredValue: true,
+            recordedWriteModifiedAtMs: nil
+        )
+
+        XCTAssertEqual(evidence["desired_value"] as Int?, 1)
+        XCTAssertEqual(evidence["photos_observed_value"] as Int?, 0)
+        XCTAssertEqual(evidence["sync_status"] as String?, FavoriteSyncStatus.pending.rawValue)
+        XCTAssertEqual(evidence["intent_revision"] as Int?, 9)
+    }
+
+    func testVerifiedImageAllFavoriteWriteConvergesWithoutInvalidatingContentRevision() async throws {
+        let writeModifiedAtMs = DatabaseTestSupport.timestampMs + 100
+        let evidence = try await reconcileFavoriteChange(
+            initialFavorite: false,
+            updatedFavorite: true,
+            pendingDesiredValue: true,
+            recordedWriteModifiedAtMs: writeModifiedAtMs
+        )
+
+        XCTAssertEqual(evidence["desired_value"] as Int?, 1)
+        XCTAssertEqual(evidence["photos_observed_value"] as Int?, 1)
+        XCTAssertEqual(evidence["sync_status"] as String?, FavoriteSyncStatus.synced.rawValue)
+        XCTAssertEqual(evidence["intent_revision"] as Int?, 9)
+        XCTAssertEqual(evidence["content_revision"] as Int?, 1)
     }
 
     func testIncrementalUpdateWithoutUpsertDoesNotMarkExistingAssetMissing() async throws {
@@ -2388,6 +2449,145 @@ final class PhotosIntegrationTests: XCTestCase {
                 else { return nil }
                 return (name, availability)
             })
+        }
+    }
+
+    private func reconcileFavoriteChange(
+        initialFavorite: Bool,
+        updatedFavorite: Bool,
+        pendingDesiredValue: Bool?,
+        recordedWriteModifiedAtMs: Int64?
+    ) async throws -> Row {
+        let database = try FolderAuthorizationTestSupport.makeDatabase()
+        let sourceID = UUID()
+        let firstJobID = UUID()
+        let secondJobID = UUID()
+        let oldToken = Data("favorite-token-1".utf8)
+        let newToken = Data("favorite-token-2".utf8)
+        let initial = PhotosAssetMetadata(
+            localIdentifier: "favorite-asset",
+            fileName: "Favorite.HEIC",
+            mediaType: "public.heic",
+            width: 1_200,
+            height: 800,
+            createdAtMs: DatabaseTestSupport.timestampMs,
+            modifiedAtMs: DatabaseTestSupport.timestampMs,
+            isFavorite: initialFavorite
+        )
+        let updated = PhotosAssetMetadata(
+            localIdentifier: "favorite-asset",
+            fileName: "Favorite.HEIC",
+            mediaType: "public.heic",
+            width: 1_200,
+            height: 800,
+            createdAtMs: DatabaseTestSupport.timestampMs,
+            modifiedAtMs: DatabaseTestSupport.timestampMs + 100,
+            isFavorite: updatedFavorite
+        )
+        let access = FakePhotosLibraryAccess(
+            state: .authorized,
+            batches: [[initial]],
+            persistentChanges: [
+                PhotosPersistentChangeBatch(
+                    upsertedAssets: [updated],
+                    deletedLocalIdentifiers: [],
+                    changeToken: newToken
+                ),
+            ]
+        )
+        let clock = FixedJobClock(nowMs: DatabaseTestSupport.timestampMs)
+        let connection = PhotosLibraryConnectionService(
+            database: database,
+            access: access,
+            clock: clock,
+            idGenerator: IDSequence([sourceID, firstJobID]).next
+        )
+        _ = try await connection.connect()
+        let queue = GRDBJobQueue(
+            database: database,
+            clock: clock,
+            retryPolicy: FixedDelayRetryPolicy(delayMs: 1_000)
+        )
+        let fullHandler = PhotosReconcileHandler(
+            database: database,
+            queue: queue,
+            access: access,
+            clock: clock
+        )
+        let fullCoordinator = JobExecutionCoordinator(
+            queue: queue,
+            registry: MultiJobHandlerRegistry(handlers: [fullHandler]),
+            leaseContextProvider: GRDBJobLeaseContextProvider(queue: queue)
+        )
+        let claim = ClaimNextInput(
+            owner: "favorite-reconcile-test",
+            leaseDurationMs: 60_000,
+            allowedKinds: [PhotosReconcileJobFactory.kind]
+        )
+        XCTAssertEqual(try fullCoordinator.claimAndExecuteOnce(claim)?.snapshot.state, .completed)
+
+        try await database.pool.write { db in
+            try db.execute(
+                sql: "UPDATE source SET sync_cursor = ? WHERE id = ?",
+                arguments: [oldToken, sourceID.uuidString.lowercased()]
+            )
+            if let pendingDesiredValue {
+                try db.execute(
+                    sql: """
+                    UPDATE asset_favorite_state
+                    SET desired_value = ?, sync_status = 'pending', intent_revision = 9,
+                        requested_at_ms = ?, photos_write_modified_at_ms = ?, updated_at_ms = ?
+                    WHERE asset_id = (
+                        SELECT id FROM asset
+                        WHERE source_id = ? AND photos_local_identifier = 'favorite-asset'
+                    )
+                    """,
+                    arguments: [
+                        pendingDesiredValue ? 1 : 0,
+                        DatabaseTestSupport.timestampMs,
+                        recordedWriteModifiedAtMs,
+                        DatabaseTestSupport.timestampMs,
+                        sourceID.uuidString.lowercased(),
+                    ]
+                )
+            }
+        }
+        _ = try queue.enqueue(
+            PhotosReconcileJobFactory.makeEnqueueCommand(
+                jobID: secondJobID,
+                sourceID: sourceID,
+                notBeforeMs: clock.nowMs
+            )
+        )
+        let incrementalHandler = PhotosReconcileHandler(
+            database: database,
+            queue: queue,
+            access: access,
+            changeHistory: access,
+            clock: clock
+        )
+        let incrementalCoordinator = JobExecutionCoordinator(
+            queue: queue,
+            registry: MultiJobHandlerRegistry(handlers: [incrementalHandler]),
+            leaseContextProvider: GRDBJobLeaseContextProvider(queue: queue)
+        )
+        XCTAssertEqual(try incrementalCoordinator.claimAndExecuteOnce(claim)?.snapshot.state, .completed)
+
+        return try database.pool.read { db in
+            try XCTUnwrap(
+                Row.fetchOne(
+                    db,
+                    sql: """
+                    SELECT favorite.desired_value, favorite.photos_observed_value,
+                           favorite.sync_status, favorite.intent_revision, asset.content_revision
+                    FROM asset_favorite_state AS favorite
+                    JOIN asset ON asset.id = favorite.asset_id
+                    WHERE asset.source_id = ?
+                      AND asset.photos_local_identifier = 'favorite-asset'
+                    """,
+                    arguments: [sourceID.uuidString.lowercased()]
+                )
+            )
         }
     }
 

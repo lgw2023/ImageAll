@@ -115,6 +115,20 @@ struct LibraryAssetImageLoader: Sendable {
         )?.encodedBytes
     }
 
+    func loadThumbnailIfCached(assetID: UUID) async throws -> Data? {
+        let locator = try await locator(assetID: assetID)
+        if locator.kind == AssetLocatorKind.photos.rawValue {
+            return try photoThumbnails?.loadPhotoThumbnail(assetID: assetID)
+        }
+        return try await fileImages.loadCached(
+            DerivedImageRequest(
+                assetID: assetID,
+                variant: .gridRegular,
+                persistence: .required
+            )
+        )?.encodedBytes
+    }
+
     func prewarmOriginalAspectThumbnail(assetID: UUID) async throws -> Data {
         try await load(assetID: assetID, variant: .originalAspectThumbnail)
     }

@@ -51,6 +51,12 @@ enum CatalogMigrationID {
         "v031_add_asset_location"
     static let v032AddPlaceTagResolution =
         "v032_add_place_tag_resolution"
+    static let v033AddSlimmingClusterReviewQueue =
+        "v033_add_slimming_cluster_review_queue"
+    static let v034BackfillSlimmingConfirmedHistory =
+        "v034_backfill_slimming_confirmed_history"
+    static let v035AddAssetFavoriteState =
+        "v035_add_asset_favorite_state"
 
     static let knownOrdered: [String] = [
         v001CreateCatalogCore,
@@ -85,5 +91,8 @@ enum CatalogMigrationID {
         v030AddSimilarityDigestProvenance,
         v031AddAssetLocation,
         v032AddPlaceTagResolution,
+        v033AddSlimmingClusterReviewQueue,
+        v034BackfillSlimmingConfirmedHistory,
+        v035AddAssetFavoriteState,
     ]
 }

@@ -7,11 +7,6 @@ private let librarySlimmingRecyclePerformanceLogger = Logger(
     category: "RecyclePerformance"
 )
 
-private enum SpaceFirstDeleteMarker {
-    static let sourceDeletionPending = "spaceFirstSourceDeletionPending"
-    static let appCacheCleanupPending = "spaceFirstAppCacheCleanupPending"
-}
-
 private final class RecycleMoveProgressReporter: @unchecked Sendable {
     private let lock = NSLock()
     private let totalAssetCount: Int
@@ -214,7 +209,8 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
             skippedGroupCount: basePlan.skippedGroupCount + invalidGroupCount,
             photosAssetCount: basePlan.photosAssetCount,
             fileAssetCount: basePlan.fileAssetCount,
-            assetProofs: proofs
+            assetProofs: proofs,
+            protectedSkippedAssetCount: basePlan.protectedSkippedAssetCount
         )
     }
 
@@ -246,12 +242,17 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
                         COALESCE(a.relative_path, a.photos_local_identifier) AS locator_identity,
                         a.content_revision AS content_revision,
                         s.display_name AS source_display_name,
-                        sf.content_sha256 AS content_sha256
+                        sf.content_sha256 AS content_sha256,
+                        CASE WHEN favorite.desired_value = 1
+                                   OR favorite.photos_observed_value = 1
+                             THEN 1 ELSE 0 END AS is_favorite_protected
                     FROM asset a
                     JOIN source s ON s.id = a.source_id
                     JOIN asset_similarity_fingerprint sf
                       ON sf.asset_id = a.id
                      AND sf.content_revision = a.content_revision
+                    LEFT JOIN asset_favorite_state favorite
+                      ON favorite.asset_id = a.id
                     WHERE a.id IN (\(placeholders))
                       AND a.locator_state = 'current'
                       AND a.availability = 'available'
@@ -290,7 +291,8 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
                                 assetID: assetID,
                                 sourceID: sourceID,
                                 sourceKind: sourceKind,
-                                sourceDisplayName: row["source_display_name"]
+                                sourceDisplayName: row["source_display_name"],
+                                isFavoriteProtected: (row["is_favorite_protected"] as Int) == 1
                             ),
                             proof: LibrarySlimmingIdenticalCleanupAssetProof(
                                 assetID: assetID,
@@ -383,7 +385,8 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
 
         for decision in plan.decisions {
             let redundantIDs = Set(decision.assetIDsToRecycle)
-            let groupIDs = redundantIDs.union([decision.survivorAssetID])
+            let retainedIDs = Set(decision.retainedAssetIDs)
+            let groupIDs = redundantIDs.union(retainedIDs)
             let availableInGroup = groupIDs.intersection(currentAvailable)
             let recycledInGroup = Set(redundantIDs.filter {
                 statesByAssetID[$0] == .recycled
@@ -399,12 +402,12 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
             unresolved.formUnion(unresolvedInGroup)
 
             let groupIsVerified =
-                availableInGroup == Set([decision.survivorAssetID])
+                availableInGroup == retainedIDs
                 && recycledInGroup == redundantIDs
                 && unresolvedInGroup.isEmpty
             if groupIsVerified {
                 verifiedGroups.insert(decision.clusterID)
-                retainedNonredundant.insert(decision.survivorAssetID)
+                retainedNonredundant.formUnion(retainedIDs)
             } else {
                 unresolvedGroups.insert(decision.clusterID)
             }
@@ -755,11 +758,11 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
         }
         var assignedAssetIDs = Set<UUID>()
         for decision in plan.decisions {
-            let groupIDs = Set(decision.assetIDsToRecycle + [decision.survivorAssetID])
+            let groupIDs = Set(decision.assetIDsToRecycle + decision.retainedAssetIDs)
             let hashes = Set(groupIDs.compactMap {
                 currentProofs[$0]?.verifiedOriginalSHA256
             })
-            guard !decision.assetIDsToRecycle.contains(decision.survivorAssetID),
+            guard Set(decision.assetIDsToRecycle).isDisjoint(with: decision.retainedAssetIDs),
                   Set(decision.assetIDsToRecycle).count == decision.assetIDsToRecycle.count,
                   hashes.count == 1,
                   groupIDs.count >= 2,
@@ -779,15 +782,36 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
             let rows = try Row.fetchAll(
                 db,
                 sql: """
+                WITH latest_attempt AS (
+                    SELECT
+                        r.*,
+                        r.rowid AS recycle_rowid,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY r.asset_id
+                            ORDER BY r.created_at_ms DESC, r.rowid DESC
+                        ) AS lifecycle_rank
+                    FROM recycle_entry AS r
+                    WHERE r.asset_id IS NOT NULL
+                )
                 SELECT
                     r.id, r.asset_id, a.source_id, r.source_kind, r.trashed_at_ms, r.purge_after_ms,
                     r.state, r.quarantine_relative_path, r.original_relative_path,
                     r.photos_local_identifier, r.error_code, a.file_name, a.media_kind
-                FROM recycle_entry r
+                FROM latest_attempt AS r
                 JOIN asset a ON a.id = r.asset_id
-                WHERE r.state NOT IN ('restored', 'purged')
-                ORDER BY r.trashed_at_ms DESC, r.id ASC
-                """
+                WHERE r.lifecycle_rank = 1
+                  AND r.state NOT IN ('restored', 'purged')
+                  AND (
+                      r.source_kind <> 'file'
+                      OR r.error_code IS NULL
+                      OR r.error_code NOT IN (?, ?)
+                  )
+                ORDER BY r.created_at_ms DESC, r.recycle_rowid DESC
+                """,
+                arguments: [
+                    RecycleFailureCode.spaceFirstSourceDeletionPending,
+                    RecycleFailureCode.spaceFirstAppCacheCleanupPending,
+                ]
             )
             return rows.compactMap(Self.mapRecycleEntryRecord)
         }
@@ -907,6 +931,14 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
                 sql: """
                 SELECT id FROM recycle_entry
                 WHERE state = 'recycled' AND purge_after_ms <= ?
+                  AND NOT EXISTS (
+                      SELECT 1 FROM asset_favorite_state favorite
+                      WHERE favorite.asset_id = recycle_entry.asset_id
+                        AND (
+                            favorite.desired_value = 1
+                            OR favorite.photos_observed_value = 1
+                        )
+                  )
                 ORDER BY purge_after_ms ASC, id ASC
                 """,
                 arguments: [nowMs]
@@ -934,7 +966,18 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
                     CASE WHEN state = 'purging' THEN updated_at_ms ELSE purge_after_ms END
                 )
                 FROM recycle_entry
-                WHERE state IN ('recycled', 'purging')
+                WHERE state = 'purging'
+                   OR (
+                        state = 'recycled'
+                        AND NOT EXISTS (
+                            SELECT 1 FROM asset_favorite_state favorite
+                            WHERE favorite.asset_id = recycle_entry.asset_id
+                              AND (
+                                  favorite.desired_value = 1
+                                  OR favorite.photos_observed_value = 1
+                              )
+                        )
+                   )
                 """
             )
         }) else {
@@ -1088,8 +1131,8 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
         for start in stride(from: 0, to: normalized.count, by: 400) {
             let chunk = Array(normalized[start ..< min(start + 400, normalized.count)])
             let placeholders = Array(repeating: "?", count: chunk.count).joined(separator: ", ")
-            let rows = try database.pool.read { db in
-                try Row.fetchAll(
+            let rows = try database.pool.write { db in
+                let rows = try Row.fetchAll(
                     db,
                     sql: """
                     SELECT historical.id AS historical_id, current.id AS current_id
@@ -1134,6 +1177,47 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
                     """,
                     arguments: StatementArguments(chunk)
                 )
+                for row in rows {
+                    let historicalID: String = row["historical_id"]
+                    let currentID: String = row["current_id"]
+                    try db.execute(
+                        sql: """
+                        INSERT INTO asset_favorite_state (
+                            asset_id, desired_value, photos_observed_value,
+                            sync_status, intent_revision, requested_at_ms,
+                            photos_observed_modified_at_ms,
+                            photos_write_modified_at_ms, last_error_code, updated_at_ms
+                        )
+                        SELECT ?, desired_value, photos_observed_value,
+                               sync_status, intent_revision, requested_at_ms,
+                               photos_observed_modified_at_ms,
+                               photos_write_modified_at_ms, last_error_code, updated_at_ms
+                        FROM asset_favorite_state WHERE asset_id = ?
+                        ON CONFLICT(asset_id) DO UPDATE SET
+                            desired_value = excluded.desired_value,
+                            photos_observed_value = excluded.photos_observed_value,
+                            sync_status = excluded.sync_status,
+                            intent_revision = MAX(
+                                asset_favorite_state.intent_revision,
+                                excluded.intent_revision
+                            ),
+                            requested_at_ms = excluded.requested_at_ms,
+                            photos_observed_modified_at_ms = excluded.photos_observed_modified_at_ms,
+                            photos_write_modified_at_ms = excluded.photos_write_modified_at_ms,
+                            last_error_code = excluded.last_error_code,
+                            updated_at_ms = MAX(
+                                asset_favorite_state.updated_at_ms,
+                                excluded.updated_at_ms
+                            )
+                        """,
+                        arguments: [currentID, historicalID]
+                    )
+                    try db.execute(
+                        sql: "DELETE FROM asset_favorite_state WHERE asset_id = ?",
+                        arguments: [historicalID]
+                    )
+                }
+                return rows
             }
             for row in rows {
                 guard let historical = UUID(uuidString: row["historical_id"]),
@@ -1272,17 +1356,20 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
             )
             throw LibrarySlimmingRecycleError.mutationAuthorizationRequired
         } catch LibrarySlimmingRecycleError.mutationAuthorizationInvalid {
-            try markFailed(entryID: entryID, code: "mutationAuthorizationInvalid")
+            try markFailed(
+                entryID: entryID,
+                code: RecycleFailureCode.mutationAuthorizationInvalid
+            )
             throw LibrarySlimmingRecycleError.mutationAuthorizationInvalid
         } catch FolderQuarantineIOError.verificationFailed {
-            try markFailed(entryID: entryID, code: "sourceChanged")
+            try markFailed(entryID: entryID, code: RecycleFailureCode.sourceChanged)
             throw LibrarySlimmingRecycleError.sourceChanged
         } catch FolderQuarantineIOError.durabilityUncertain {
             // Keep `pending`: recovery compares both namespace locations and
             // converges to recycled without risking a second destructive move.
             throw LibrarySlimmingRecycleError.ioFailure
         } catch {
-            try markFailed(entryID: entryID, code: "ioFailure")
+            try markFailed(entryID: entryID, code: RecycleFailureCode.ioFailure)
             throw LibrarySlimmingRecycleError.ioFailure
         }
 
@@ -1361,7 +1448,7 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
                     now,
                     now,
                     relativePath,
-                    SpaceFirstDeleteMarker.sourceDeletionPending,
+                    RecycleFailureCode.spaceFirstSourceDeletionPending,
                     now,
                     now,
                     asset.assetID.uuidString.lowercased(),
@@ -1398,17 +1485,20 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
             )
             throw LibrarySlimmingRecycleError.mutationAuthorizationRequired
         } catch LibrarySlimmingRecycleError.mutationAuthorizationInvalid {
-            try markFailed(entryID: entryID, code: "mutationAuthorizationInvalid")
+            try markFailed(
+                entryID: entryID,
+                code: RecycleFailureCode.mutationAuthorizationInvalid
+            )
             throw LibrarySlimmingRecycleError.mutationAuthorizationInvalid
         } catch FolderQuarantineIOError.verificationFailed {
-            try markFailed(entryID: entryID, code: "sourceChanged")
+            try markFailed(entryID: entryID, code: RecycleFailureCode.sourceChanged)
             throw LibrarySlimmingRecycleError.sourceChanged
         } catch FolderQuarantineIOError.durabilityUncertain {
             // The unlink committed in the current namespace. Keep the pending
             // intent so recovery can observe whether the source path exists.
             throw LibrarySlimmingRecycleError.durabilityPending
         } catch {
-            try markFailed(entryID: entryID, code: "ioFailure")
+            try markFailed(entryID: entryID, code: RecycleFailureCode.ioFailure)
             throw LibrarySlimmingRecycleError.ioFailure
         }
 
@@ -1446,11 +1536,11 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
                   AND error_code = ?
                 """,
                 arguments: [
-                    SpaceFirstDeleteMarker.appCacheCleanupPending,
+                    RecycleFailureCode.spaceFirstAppCacheCleanupPending,
                     clock.nowMs,
                     entryID.uuidString.lowercased(),
                     assetID.uuidString.lowercased(),
-                    SpaceFirstDeleteMarker.sourceDeletionPending,
+                    RecycleFailureCode.spaceFirstSourceDeletionPending,
                 ]
             )
             guard db.changesCount == 1 else {
@@ -1598,13 +1688,16 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
             for pending in pendingEntries {
                 try markFailed(
                     entryID: pending.entryID,
-                    code: "photosAuthorizationRequired"
+                    code: RecycleFailureCode.photosAuthorizationRequired
                 )
             }
             throw LibrarySlimmingRecycleError.photosAuthorizationRequired
         } catch PhotosLibraryMutationError.assetNotFound {
             for pending in pendingEntries {
-                try markFailed(entryID: pending.entryID, code: "photosAssetNotFound")
+                try markFailed(
+                    entryID: pending.entryID,
+                    code: RecycleFailureCode.photosAssetNotFound
+                )
             }
             throw LibrarySlimmingRecycleError.sourceChanged
         } catch let PhotosLibraryMutationError.systemChangeFailed(diagnostic) {
@@ -1727,7 +1820,7 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
                 entryID: snapshot.id,
                 from: .restoring,
                 to: .recycled,
-                errorCode: "mutationAuthorizationInvalid"
+                errorCode: RecycleFailureCode.mutationAuthorizationInvalid
             )
             throw LibrarySlimmingRecycleError.mutationAuthorizationInvalid
         } catch FolderQuarantineIOError.durabilityUncertain {
@@ -1859,7 +1952,7 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
             }
             return true
         }
-        if entry.errorCode == SpaceFirstDeleteMarker.sourceDeletionPending {
+        if entry.errorCode == RecycleFailureCode.spaceFirstSourceDeletionPending {
             guard let originalRelativePath = entry.originalRelativePath else {
                 try markFailed(entryID: entry.id, code: "interruptedFastDeleteMissingPath")
                 return true
@@ -1889,7 +1982,7 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
                         quarantineRelativePath: nil,
                         originalRelativePath: nil,
                         photosLocalIdentifier: nil,
-                        errorCode: SpaceFirstDeleteMarker.appCacheCleanupPending,
+                        errorCode: RecycleFailureCode.spaceFirstAppCacheCleanupPending,
                         trashedAtMs: entry.trashedAtMs,
                         purgeAfterMs: entry.purgeAfterMs
                     )

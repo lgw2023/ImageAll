@@ -24,6 +24,7 @@ struct PhotosAssetMetadata: Equatable, Sendable {
     let mediaKind: MediaKind
     let durationMs: Int64?
     let location: AssetLocationCoordinate?
+    let isFavorite: Bool
 
     init(
         localIdentifier: String,
@@ -35,7 +36,8 @@ struct PhotosAssetMetadata: Equatable, Sendable {
         modifiedAtMs: Int64?,
         mediaKind: MediaKind = .image,
         durationMs: Int64? = nil,
-        location: AssetLocationCoordinate? = nil
+        location: AssetLocationCoordinate? = nil,
+        isFavorite: Bool = false
     ) {
         self.localIdentifier = localIdentifier
         self.fileName = fileName
@@ -47,7 +49,13 @@ struct PhotosAssetMetadata: Equatable, Sendable {
         self.mediaKind = mediaKind
         self.durationMs = durationMs
         self.location = location
+        self.isFavorite = isFavorite
     }
+}
+
+struct PhotosFavoriteObservation: Equatable, Sendable {
+    let isFavorite: Bool
+    let modifiedAtMs: Int64?
 }
 
 struct PhotosAssetEnumerationBatch: Equatable, Sendable {
@@ -207,6 +215,13 @@ protocol PhotosLibraryMutationPort: Sendable {
     /// Returns the exact normalized identifiers included in the completed
     /// PhotoKit mutation. Partial resolution must fail before mutation.
     func moveToRecentlyDeleted(localIdentifiers: [String]) throws -> [String]
+    /// Updates only PhotoKit's public favorite metadata. The adapter must
+    /// resolve every identifier before mutation and verify the result by
+    /// reading the assets back without requesting pixels or iCloud downloads.
+    func setFavorite(
+        localIdentifiers: [String],
+        isFavorite: Bool
+    ) throws -> [String: PhotosFavoriteObservation]
     func presence(localIdentifier: String) throws -> PhotosAssetPresence
     func presences(
         localIdentifiers: [String]
@@ -214,6 +229,13 @@ protocol PhotosLibraryMutationPort: Sendable {
 }
 
 extension PhotosLibraryMutationPort {
+    func setFavorite(
+        localIdentifiers _: [String],
+        isFavorite _: Bool
+    ) throws -> [String: PhotosFavoriteObservation] {
+        throw PhotosLibraryMutationError.changeFailed
+    }
+
     func presences(
         localIdentifiers: [String]
     ) throws -> [String: PhotosAssetPresence] {

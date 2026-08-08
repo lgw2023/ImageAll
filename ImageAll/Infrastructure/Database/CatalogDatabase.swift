@@ -38,6 +38,9 @@ struct CatalogDatabase: Sendable {
         V030AddSimilarityDigestProvenanceMigration.register(on: &migrator)
         V031AddAssetLocationMigration.register(on: &migrator)
         V032AddPlaceTagResolutionMigration.register(on: &migrator)
+        V033AddSlimmingClusterReviewQueueMigration.register(on: &migrator)
+        V034BackfillSlimmingConfirmedHistoryMigration.register(on: &migrator)
+        V035AddAssetFavoriteStateMigration.register(on: &migrator)
         return migrator
     }
 
@@ -808,6 +811,206 @@ enum V032AddPlaceTagResolutionMigration {
                 sql: """
                 CREATE INDEX tag_place_binding_status_idx
                 ON tag_place_binding(status, tag_id)
+                """
+            )
+        }
+    }
+}
+
+enum V033AddSlimmingClusterReviewQueueMigration {
+    static func register(on migrator: inout DatabaseMigrator) {
+        migrator.registerMigration(CatalogMigrationID.v033AddSlimmingClusterReviewQueue) { db in
+            try db.execute(
+                sql: """
+                CREATE TABLE library_slimming_cluster_review (
+                    job_id TEXT NOT NULL REFERENCES job(id) ON DELETE CASCADE,
+                    cluster_id TEXT NOT NULL,
+                    disposition TEXT NOT NULL CHECK(
+                        disposition IN ('confirmed', 'ignored')
+                    ),
+                    updated_at_ms INTEGER NOT NULL CHECK(updated_at_ms >= 0),
+                    PRIMARY KEY (job_id, cluster_id)
+                ) STRICT
+                """
+            )
+            try db.execute(
+                sql: """
+                CREATE INDEX library_slimming_cluster_review_queue_idx
+                ON library_slimming_cluster_review(disposition, updated_at_ms DESC, job_id, cluster_id)
+                """
+            )
+        }
+    }
+}
+
+/// Projects pre-review-queue user handling into the new confirmed queue.
+///
+/// A cluster is backfilled only when one of its persisted members has a
+/// non-failed recycle lifecycle created after that analysis result was saved
+/// and fewer than two members remain viewable. Existing explicit review state
+/// always wins via `INSERT OR IGNORE`.
+enum V034BackfillSlimmingConfirmedHistoryMigration {
+    static func register(on migrator: inout DatabaseMigrator) {
+        migrator.registerMigration(CatalogMigrationID.v034BackfillSlimmingConfirmedHistory) { db in
+            let resultRows = try Row.fetchAll(
+                db,
+                sql: """
+                SELECT result.job_id, result.result_json, result.updated_at_ms
+                FROM library_slimming_scan_result AS result
+                JOIN job ON job.id = result.job_id
+                WHERE job.kind = ?
+                ORDER BY result.job_id
+                """,
+                arguments: [LibrarySlimmingAnalysisJobFactory.kind]
+            )
+            let decoder = JSONDecoder()
+            let handledRows = try Row.fetchAll(
+                db,
+                sql: """
+                SELECT asset_id, created_at_ms, updated_at_ms
+                FROM recycle_entry
+                WHERE asset_id IS NOT NULL
+                  AND state IN (
+                      'pending', 'recycled', 'restoring', 'purging',
+                      'restored', 'purged'
+                  )
+                ORDER BY asset_id, created_at_ms
+                """
+            )
+            var handledLifecyclesByAssetID:
+                [UUID: [(createdAtMs: Int64, updatedAtMs: Int64)]] = [:]
+            for handledRow in handledRows {
+                let rawAssetID: String = handledRow["asset_id"]
+                guard let assetID = UUID(uuidString: rawAssetID) else { continue }
+                handledLifecyclesByAssetID[assetID, default: []].append(
+                    (
+                        createdAtMs: handledRow["created_at_ms"],
+                        updatedAtMs: handledRow["updated_at_ms"]
+                    )
+                )
+            }
+
+            for resultRow in resultRows {
+                let rawJobID: String = resultRow["job_id"]
+                let resultData: Data = resultRow["result_json"]
+                let resultUpdatedAtMs: Int64 = resultRow["updated_at_ms"]
+                // Scan results are derived data. A malformed legacy blob must
+                // not prevent the catalog from opening; it simply cannot prove
+                // a historical review decision.
+                guard let result = try? decoder.decode(
+                    LibrarySlimmingScanResult.self,
+                    from: resultData
+                ) else { continue }
+
+                var handledAtByAssetID: [UUID: Int64] = [:]
+                let resultMemberIDs = Set(result.clusters.flatMap(\.memberAssetIDs))
+                for assetID in resultMemberIDs {
+                    let handledAtMs = handledLifecyclesByAssetID[assetID]?.lazy
+                        .filter { $0.createdAtMs >= resultUpdatedAtMs }
+                        .map { $0.updatedAtMs }
+                        .max()
+                    if let handledAtMs {
+                        handledAtByAssetID[assetID] = handledAtMs
+                    }
+                }
+                guard !handledAtByAssetID.isEmpty else { continue }
+
+                let viewableRows = try String.fetchAll(
+                    db,
+                    sql: """
+                    SELECT member.asset_id
+                    FROM library_slimming_scan_member AS member
+                    JOIN asset ON asset.id = member.asset_id
+                    WHERE member.job_id = ?
+                      AND asset.availability != 'recycled'
+                      AND NOT EXISTS (
+                          SELECT 1
+                          FROM recycle_entry AS active_recycle
+                          WHERE active_recycle.asset_id = member.asset_id
+                            AND active_recycle.state IN ('pending', 'recycled')
+                      )
+                    """,
+                    arguments: [rawJobID]
+                )
+                let viewableAssetIDs = Set(viewableRows.compactMap(UUID.init(uuidString:)))
+
+                for cluster in result.clusters {
+                    let handledAtMs = cluster.memberAssetIDs.compactMap {
+                        handledAtByAssetID[$0]
+                    }.max()
+                    guard let handledAtMs else { continue }
+                    let currentViewableCount = cluster.memberAssetIDs.lazy.filter {
+                        viewableAssetIDs.contains($0)
+                    }.count
+                    // Partial cleanup that still leaves a duplicate group is
+                    // still actionable and must remain pending. The backfill is
+                    // for groups the old UI already considered handled and hid.
+                    guard currentViewableCount < 2 else { continue }
+                    try db.execute(
+                        sql: """
+                        INSERT OR IGNORE INTO library_slimming_cluster_review (
+                            job_id, cluster_id, disposition, updated_at_ms
+                        ) VALUES (?, ?, 'confirmed', ?)
+                        """,
+                        arguments: [
+                            rawJobID,
+                            cluster.id.uuidString.lowercased(),
+                            handledAtMs,
+                        ]
+                    )
+                }
+            }
+        }
+    }
+}
+
+enum V035AddAssetFavoriteStateMigration {
+    static func register(on migrator: inout DatabaseMigrator) {
+        migrator.registerMigration(CatalogMigrationID.v035AddAssetFavoriteState) { db in
+            try db.execute(
+                sql: """
+                CREATE TABLE asset_favorite_state (
+                    asset_id TEXT NOT NULL PRIMARY KEY
+                        REFERENCES asset(id) ON DELETE CASCADE,
+                    desired_value INTEGER NOT NULL
+                        CHECK(desired_value IN (0, 1)),
+                    photos_observed_value INTEGER
+                        CHECK(photos_observed_value IS NULL OR photos_observed_value IN (0, 1)),
+                    sync_status TEXT NOT NULL
+                        CHECK(sync_status IN ('localOnly', 'synced', 'pending', 'failed')),
+                    intent_revision INTEGER NOT NULL DEFAULT 0
+                        CHECK(intent_revision >= 0),
+                    requested_at_ms INTEGER NOT NULL
+                        CHECK(requested_at_ms >= 0),
+                    photos_observed_modified_at_ms INTEGER
+                        CHECK(
+                            photos_observed_modified_at_ms IS NULL
+                            OR photos_observed_modified_at_ms >= 0
+                        ),
+                    photos_write_modified_at_ms INTEGER
+                        CHECK(
+                            photos_write_modified_at_ms IS NULL
+                            OR photos_write_modified_at_ms >= 0
+                        ),
+                    last_error_code TEXT
+                        CHECK(last_error_code IS NULL OR length(last_error_code) > 0),
+                    updated_at_ms INTEGER NOT NULL
+                        CHECK(updated_at_ms >= 0)
+                ) STRICT
+                """
+            )
+            try db.execute(
+                sql: """
+                CREATE INDEX asset_favorite_state_favorite_idx
+                ON asset_favorite_state(asset_id)
+                WHERE desired_value = 1 OR photos_observed_value = 1
+                """
+            )
+            try db.execute(
+                sql: """
+                CREATE INDEX asset_favorite_state_pending_idx
+                ON asset_favorite_state(sync_status, requested_at_ms, asset_id)
+                WHERE sync_status IN ('pending', 'failed')
                 """
             )
         }

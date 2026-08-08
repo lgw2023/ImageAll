@@ -12,7 +12,7 @@ ImageAll 是一款本地优先的原生 macOS 图片管理与个性化多标签�
 1. 用户选择的普通文件夹，包括外置磁盘上的多 TB 图片档案；
 2. 当前 Mac 的 Apple Photos 照片库。
 
-除 ADR-044 图库瘦身中由用户明确确认的受限回收路径外，应用不搬运、不修改原图。它在自己的 SQLite 目录库中保存资产索引、标签定义、人工确认/拒绝记录、视觉特征版本和模型预测。标签能力分为两条并行轨道：公开世界知识对应版本化的标准标签及公共模型，可以在用户尚未积累标注时提供带来源的自动标签；个人关系、用途和偏好对应用户自定义标签，只能随用户正负反馈逐步学习。人工决定永远优先，任何模型结果都不得伪装或覆盖人工事实。
+除 ADR-044 图库瘦身中由用户明确确认的受限回收路径外，应用不搬运、不修改原图。ADR-055 另允许只通过公开 PhotoKit 双向同步资产红心元数据，不读取或改写原图字节。应用在自己的 SQLite 目录库中保存资产索引、独立红心事实、标签定义、人工确认/拒绝记录、视觉特征版本和模型预测。标签能力分为两条并行轨道：公开世界知识对应版本化的标准标签及公共模型，可以在用户尚未积累标注时提供带来源的自动标签；个人关系、用途和偏好对应用户自定义标签，只能随用户正负反馈逐步学习。人工决定永远优先，任何模型结果都不得伪装或覆盖人工事实。
 
 MVP 的核心闭环是：
 
@@ -28,7 +28,7 @@ MVP 的核心闭环是：
 公共模型的准确率、标准标签覆盖率和本地部署成本必须按 provider 与版本独立评测，不能把某个
 模型的输出当作无版本的世界事实。现有 Vision Feature Print 继续作为个性化轻量基线。
 
-首版不做云端服务、不写回 Apple Photos 关键词、不训练端到端神经网络。原图在索引/分析/导出路径上保持只读；**唯一**允许移动/删除原图的产品路径是「图库瘦身」用户确认后的回收站流程（见 ADR-044），不包含静默去重或其它功能顺带删图。
+首版不做云端服务、不写回 Apple Photos 关键词、不训练端到端神经网络。原图在索引/分析/导出路径上保持只读；**唯一**允许移动/删除原图的产品路径是「图库瘦身」用户确认后的回收站流程（见 ADR-044），不包含静默去重或其它功能顺带删图。红心同步是 ADR-055 批准的独立 PhotoKit 元数据写回，不扩大原图写权限。
 
 ## 2. 背景与问题定义
 
@@ -78,6 +78,7 @@ MVP 的核心闭环是：
 - 除 ADR-044「图库瘦身」用户确认的文件夹回收/清理或 Photos 系统软删除路径外，不修改、移动或删除来源中的原图；
 - 不直接读取 `.photoslibrary` 包内部文件；
 - 不向 Apple Photos 写入任意关键词；仅图库瘦身可在用户确认后经公开 PhotoKit 把资产移入系统「最近删除」，恢复与永久删除由 macOS「照片」App 管理；
+- 除 ADR-055 的 `PHAsset.isFavorite` 双向同步外，不写入 Apple Photos 的相册、关键词或其它元数据；
 - MVP 主产品仍为原生 macOS；iPhone/iPad Companion 按 ADR-043 作为辅助客户端分切片推进，不阻塞 Mac 主路径；
 - 不在 MVP 中实现人脸身份识别、OCR、GPS 语义或相册关系推理；
 - 不自动合并或静默删除重复图片；相同/相似仅供用户确认后的瘦身处置（ADR-044）；
@@ -189,6 +190,7 @@ flowchart TB
 - 待确认建议；
 - 后台任务与错误；
 - 数据导出和修复。
+- 红心收藏（复用照片/视频域、分页、排序、选择和预览）。
 
 ### 6.2 应用服务层
 
@@ -205,6 +207,8 @@ flowchart TB
 - `GenerateSuggestions`
 - `AcceptSuggestion`
 - `ExportUserData`
+- `SetAssetFavorite`
+- `RetryPhotosFavoriteSync`
 
 应用服务负责事务边界和任务编排，不包含图像算法细节。
 
@@ -221,10 +225,12 @@ flowchart TB
 - 标签归档后停止产生新建议，但保留历史关系；
 - 资产暂时不可访问时标记为 `unavailable`，不删除其标签；
 - 资产内容发生变化时，仅使派生数据失效，人工标签仍保留并提示复核。
+- 红心是独立资产事实，不参与标签计数或训练；内容变化不清除红心。
+- 删除保护同时接受 ImageAll 目标和 Photos 最近观测，任一仍为红心即保护自动清理。
 
 ### 6.4 基础设施层
 
-- PhotoKit：获取 Photos 元数据、缩略图和变化历史；
+- PhotoKit：获取 Photos 元数据、缩略图和变化历史，并按 ADR-055 精确批量读写收藏属性；
 - FileManager / URL：枚举用户授权目录；
 - security-scoped bookmark：跨启动恢复目录只读权限；
 - ImageIO / Core Image：解码、方向校正和缩放；
@@ -341,6 +347,7 @@ Photos 的 `localIdentifier` 只在当前本地照片库上下文中使用。跨
 |---|---|---|
 | `source` | `id`, `kind`, `display_name`, `bookmark`, `sync_cursor`, `scan_generation`, `dirty_epoch`, `state` | 文件夹或 Photos 来源 |
 | `asset` | `id`, `source_id`, `locator`, `locator_state`, `media_type`, `width`, `height`, `created_at`, `modified_at`, `content_revision`, `last_seen_generation`, `availability` | 统一资产元数据；当前定位与来源可用性分离 |
+| `asset_favorite_state` | `asset_id`, `desired_value`, `photos_observed_value`, `sync_status`, `intent_revision`, 请求/观测/写回时间, `last_error_code` | v035 独立红心事实和可恢复 Photos 同步意图；不属于标签/模型语义 |
 | `asset_location` | `asset_id`, `latitude`, `longitude`, `source_kind`, `place_id`, `updated_at_ms` | v031/v032 每张照片唯一 canonical location；GPS 优先，已确认地点标签仅补全无 GPS 资产 |
 | `place` | `id`, `canonical_name`, `latitude`, `longitude`, `kind` | v032 MapKit 候选与已确认地点的规范化缓存 |
 | `tag_place_binding` | `tag_id`, `place_id`, `status`, `resolver_version` | v032 标签解析状态；resolved 必须引用 place，ambiguous 不静默选择 |
@@ -379,6 +386,7 @@ v011 沿精确 ontology revision 展开祖先并记录 direct concept 来源；�
 - 标准本地身份以 `ontology_id + concept_id` 唯一，绑定同时记录精确 ontology revision；当前 installer 对 revision/identity 冲突 fail closed，不迁移旧人工事实；
 - `ontology_edge` 必须引用同一 ontology revision，安装时拒绝环；DAG 允许一个子概念拥有多个父概念；
 - `asset_tag_decision(asset_id, tag_id)` 唯一；
+- `asset_favorite_state.asset_id` 唯一并随 Asset 级联；内容 revision 变化不删除，未完成 Photos 意图由局部索引恢复；
 - `standard_prediction(asset_id, tag_id, content_revision)` 唯一；
 - `feature(asset_id, provider, revision, content_revision)` 唯一；
 - `tag_model_revision(tag_id, revision)` 唯一，`tag_model_sample(tag_id, model_revision, asset_id)` 唯一；`tag_model(tag_id, current_revision)` 必须引用已存在的 revision；
@@ -396,6 +404,7 @@ v011 沿精确 ontology revision 展开祖先并记录 direct concept 来源；�
 - 来源定义和授权书签；
 - 自定义标签；
 - 人工接受与拒绝；
+- 红心目标、Photos 最近观测和未完成同步意图；
 - 用户配置的阈值；
 - 必要的模型训练元数据；
 - 用户对标准标签的本地别名、启用状态和人工覆盖决定。
@@ -405,7 +414,7 @@ v011 沿精确 ontology revision 展开祖先并记录 direct concept 来源；�
 内部快照使用 SQLite online backup API 从一致性读视图生成：先写入 `Backups/<snapshot-id>.tmp/` 中的数据库文件，执行 `PRAGMA quick_check` 并生成带 schema version 与校验和的 manifest，再把整个临时目录原子重命名为 `Backups/<snapshot-id>/`。每次 schema migration 前必须生成一份；事实数据发生变化时每天至多生成一份，并至少保留最近三份成功快照。恢复时关闭当前数据库、保留故障副本、校验快照后再替换，绝不在失败后静默创建空库。快照与主库在同一设备上，只防操作或迁移故障，不构成磁盘灾难备份；用户仍需把可移植导出纳入外部备份。
 
 可移植用户导出必须带 schema version，并包含来源的稳定内部 ID、种类和显示名，文件相对路径与已有
-指纹、标签、人工决定、用户阈值和必要训练元数据。双轨 schema 生效后，标签记录还必须包含 `kind`；
+指纹、标签、人工决定、独立红心状态及未完成同步意图、用户阈值和必要训练元数据。双轨 schema 生效后，标签记录还必须包含 `kind`；
 标准标签包含 ontology/concept/revision 绑定和本地别名，导出只记录标准包 identity，不复制可重新安装的
 公共模型权重。它不导出 security-scoped bookmark。MVP 只生成并校验导出，不实现自动导入；未来恢复
 工具必须要求用户重新授权来源。Photos 的 local identifier 只能用于同一照片库的最佳努力重连，不能承诺
@@ -460,10 +469,11 @@ Photos 适配器只使用 PhotoKit，不遍历 `.photoslibrary` 包。它负责�
 - 请求适合视觉分析的缩放图，而不是默认下载原图；
 - 保存并消费 persistent change token；
 - token 失效或变化记录不完整时执行可恢复的全量校验。
+- 读取 `PHAsset.isFavorite`，并仅在用户红心意图下通过公开 `PHAssetChangeRequest.isFavorite` 精确批量写回和回读验证。
 
 首次同步在枚举前保存起始 `PHPersistentChangeToken`，完成全量枚举后重放该 token 之后的变化，再发布“同步完成”状态。变化批次、对应 Asset 事实和新 token 在同一 SQLite 事务提交；若崩溃，旧 token 会导致安全重放，唯一约束保证幂等。全量校验同样使用 generation，只有完整枚举并完成增量重放后，才允许把未见 Photos Asset 标为源端删除。
 
-PhotoKit 报告资产更新，或其 `modificationDate`、像素尺寸、媒体子类型等参与指纹的字段变化时，递增 `content_revision` 并使派生数据失效。照片库暂时不可用或权限撤销时保留既有 Asset 事实与标签，不能被解释为批量删除。当前 MVP 不保存独立的照片库身份，因而不能自动区分 System Photo Library 切换与大规模合法变化。图库 unavailable 时当前 Source 先 fail-closed；用户显式确认重绑定后，为当前系统图库新建 active Source，旧 unavailable Source/Asset 作为历史事实保留。系统最多存在一个 active Photos Source，但可存在多个历史 Photos Source；新旧 local identifier 始终按 Source 隔离，不自动合并、迁移或删除。
+PhotoKit 报告资产更新，或其 `modificationDate`、像素尺寸、媒体子类型等参与指纹的字段变化时，递增 `content_revision` 并使派生数据失效。ADR-055 的红心写回同时记录回读修改时间；随后对账能证明只是本次收藏元数据收敛时不推进内容 revision，无法证明原因的复合更新仍保守失效一次。没有本地未完成红心意图时 Photos 观测更新 ImageAll；存在 `pending / failed` 意图时本地目标优先，旧 intent revision 不得覆盖新点击。照片库暂时不可用或权限撤销时保留既有 Asset、标签和本地红心目标，不能被解释为批量删除或同步成功。当前 MVP 不保存独立的照片库身份，因而不能自动区分 System Photo Library 切换与大规模合法变化。图库 unavailable 时当前 Source 先 fail-closed；用户显式确认重绑定后，为当前系统图库新建 active Source，旧 unavailable Source/Asset 作为历史事实保留。系统最多存在一个 active Photos Source，但可存在多个历史 Photos Source；新旧 local identifier 始终按 Source 隔离，不自动合并、迁移或删除。
 
 MVP 已冻结为 macOS 15+ 并采用 persistent change history；change token 无效或无法证明连续历史时，回退为可恢复的完整 generation。PhotoKit change observer 与启动追赶只负责合并并触发 reconcile，不直接写 Asset 事实。
 
@@ -476,7 +486,7 @@ ADR-044 增加一个窄例外：Photos「相同」检测遇到 iCloud-only 资�
 长期对象不进入派生预览 LRU，索引绑定 asset、content revision、Photos local identifier、字节数和
 SHA-256；内容摘要另记录 `verifiedOriginalBytes` / `visualDerivative` / `unverifiedLegacy` provenance，
 只有第一类可以生成删除级 `byteIdentical`。身份或校验不一致即 fail closed。该授权不扩展到普通建议、批量预览或其它分析任务，也不授权
-写回 Photos。长期对象默认无限期保留，不按 TTL 或容量自动淘汰；用户可在存储面板查看独立用量并经
+写回 Photos 原图或其它元数据；ADR-055 的红心属性除外。长期对象默认无限期保留，不按 TTL 或容量自动淘汰；用户可在存储面板查看独立用量并经
 二次确认清除全部，运行中或待运行分析拒绝清理。清理只删除安全校验通过的 App 副本与索引，不删除
 Photos 资产、人工标签、指纹或分析结果；以后分析可重新下载。受保护真实图库上的云下载 smoke 仍需
 `LOCAL-TEST-DATA-SAFETY.md` 规定的单次授权。
@@ -824,7 +834,7 @@ cancelled/terminalFailed 重试创建新 job。覆盖率与地图共享 current/
 
 - 启用 App Sandbox；
 - 文件夹权限由系统选择器和只读 security-scoped bookmark 获得；
-- Photos 权限只在用户添加该来源时请求，并提供明确的 `NSPhotoLibraryUsageDescription`；PhotoKit 使用 `.readWrite` access level；除 ADR-044 图库瘦身中用户确认的系统软删除外，禁止调用任何 Photos 写入 / mutation API；禁止私有「最近删除」探测与 ImageAll 发起的 Photos 永久删除；
+- Photos 权限只在用户添加该来源时请求，并提供明确的 `NSPhotoLibraryUsageDescription`；PhotoKit 使用 `.readWrite` access level；写入仅限 ADR-044 用户确认的系统软删除与 ADR-055 用户红心意图下的公开收藏属性，禁止其它 Photos mutation、私有「最近删除」探测与 ImageAll 发起的 Photos 永久删除；
 - 所有图片分析默认在本机完成；
 - 默认不收集遥测，不上传图片、特征或标签；
 - 日志不得记录图片内容、完整路径、书签数据或 Photos 标识符；
@@ -1219,7 +1229,7 @@ revision 门；cache-only 自动个人重训和独立服务启动已经验收，
 | ADR-013 | 阶段 1 继续本地开发/自用签名 | 已决定 | 先验证只读文件夹闭环；Developer ID 与 Mac App Store 约束留到发布阶段 |
 | ADR-014 | 阶段 1 后半程改为端到端纵切片优先 | 已决定 | 先交付可运行的连接、扫描、浏览与标注闭环；FSEvents 与活动控制曾按顺序延后，现已分别由切片 W 与阶段 4 关闭，广泛边界测试和辅助设施继续按价值排序 |
 | ADR-015 | 阶段 3 后端原型先于阶段 2 PhotoKit | 已决定 | 先用已完成的文件夹闭环验证自定义标签学习这一核心差异化能力；来源无关 Ports 保留后续 Photos 接入边界 |
-| ADR-016 | 阶段 2 使用最多一个 active Photos Source、保留历史 Source、统一网格和显式单图标准预览 | 已决定 | 默认请求本地限定；只有 Inspector 当前单资产动作可联网，结果进入 512 MiB LRU 下载预览子配额并供个性化链路复用；图库切换后经用户确认新建 active Source，旧事实不迁移、不合并、不删除，Photos 源端保持零写入 |
+| ADR-016 | 阶段 2 使用最多一个 active Photos Source、保留历史 Source、统一网格和显式单图标准预览 | 已决定；Photos 零写入由 ADR-055 窄化 | 默认请求本地限定；只有 Inspector 当前单资产动作可联网，结果进入 512 MiB LRU 下载预览子配额并供个性化链路复用；图库切换后经用户确认新建 active Source，旧事实不迁移、不合并、不删除；ADR-055 只允许红心属性写回 |
 | ADR-017 | 可移植导出采用版本化 JSONL 数据包与 manifest | 已决定 | 保持百万级记录流式写出、人工可检查和格式可演进；MVP 只导出并校验，不实现自动导入 |
 | ADR-018 | 为可移植导出保留 app-wide user-selected 读写能力，同时以只读来源 bookmark 和导出目标隔离保护来源树 | 已决定 | macOS 的 user-selected entitlement 作用于整个 target；导出必须写用户选择位置，但来源访问与持久授权仍须只读，重叠或关系不确定时保守拒绝 |
 | ADR-019 | 百万资产文件名与相对路径搜索使用 FTS5 trigram 候选索引，并以原 LIKE 复核字面子串语义 | 已决定 | 保持现有结果契约，同时把最坏路径从全 Asset 线性扫描收敛为候选验证；短输入回退 LIKE，来源和标签仍以各自事实表预解析 |
@@ -1249,6 +1259,7 @@ revision 门；cache-only 自动个人重训和独立服务启动已经验收，
 | ADR-044 | 图库瘦身双轨回收、跨来源相同检测、Photos 原图长期保存与可恢复大库分析 | S0–S8 已交付；授权真实云下载 smoke 已通过（2026-07-27） | 用户确认后才回收；iCloud-only 相同检测可隐式下载原始内容；长期副本默认无限期保留并可手动全量清理；分析冻结成员集并支持暂停、续跑、启动恢复和最多 3 轮自动补全 |
 | ADR-049 | 删除来源即删除其 ImageAll 目录事实 | 已决定（2026-08-02） | 删除来源、关联 Asset/标签决定/任务和 App 缓存，不修改原照片；未完成回收项目必须先恢复或清理 |
 | ADR-053 | 来源区提供安全的全部来源批量操作 | 已决定并实施（2026-08-06） | 全部来源刷新与两类缩略图缓存可一键排队；权限逐个显示系统窗口且取消即停；删除仍逐来源预检确认 |
+| ADR-055 | 红心是跨全 App 生命周期的独立资产事实，并与 Apple Photos 收藏双向同步 | 已决定并实施（2026-08-08） | desired/observed 与单调 intent revision 解决离线和并发；自动清理保护任一仍为红心的状态；Photos 只写公开收藏属性且不读取原图 |
 
 ## 20. 尚待确认的问题
 
@@ -1271,7 +1282,7 @@ MVP 只有同时满足以下条件才算完成：
 
 - 文件夹与 Photos 两类来源均能稳定恢复访问；
 - 原图来源全程默认只读；唯一长期副本例外是 ADR-044 中 Photos「相同」检测下载到 Application Support
-  的 App 拥有对象，且不得写回来源；
+  的 App 拥有对象；ADR-055 只允许写回公开 Photos 红心元数据，不扩大原图写权限；
 - 手工多标签、显式拒绝和筛选可用；
 - 少样本建议闭环可运行并进入 Review Queue；当前阶段不要求统一准确率、样本完整性或标签覆盖率；
 - 人工决定在重建特征、切换模型版本后仍保持；

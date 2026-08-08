@@ -272,6 +272,50 @@ final class DerivedImageCacheService: DerivedImageCachePort, DownloadedPreviewCa
         }
     }
 
+    /// Repairs a missing square thumbnail from an App-owned quarantine object.
+    /// This path never resolves the original folder bookmark and is valid only
+    /// while the latest lifecycle row still describes a recycled file.
+    func loadOrGenerateRecycledFileThumbnail(
+        assetID: UUID,
+        quarantineRootURL: URL
+    ) async throws -> Data {
+        operationGate.beginAccess()
+        defer { operationGate.endAccess() }
+        do {
+            guard let context = try repository.fetchRecycledFileThumbnailGenerationContext(
+                assetID: assetID
+            ), context.isEligibleForGeneration else {
+                throw DerivedImageError.derivedAssetIneligible
+            }
+            let request = DerivedImageRequest(
+                assetID: assetID,
+                variant: .gridRegular,
+                persistence: .required
+            )
+            let key = DerivedImageInFlightCoordinator.DerivedImageCacheKey(
+                assetID: assetID,
+                contentRevision: context.contentRevision,
+                representationVersion: DerivedImageRepresentationVersion.production,
+                variant: request.variant,
+                persistence: request.persistence
+            )
+            let payload = try await inFlight.run(key: key) { [self] in
+                try await loadOrGenerateRecycledFileThumbnailInternal(
+                    request: request,
+                    context: context,
+                    quarantineRootURL: quarantineRootURL
+                )
+            }
+            return payload.encodedBytes
+        } catch let error as DerivedImageError {
+            throw error
+        } catch DerivedImageSecureIOError.unsafePath {
+            throw DerivedImageError.derivedCacheUnsafePath
+        } catch {
+            throw DerivedImageError.derivedCachePersistenceFailed
+        }
+    }
+
     func loadCached(_ request: DerivedImageRequest) async throws -> DerivedImagePayload? {
         operationGate.beginAccess()
         defer { operationGate.endAccess() }
@@ -499,6 +543,38 @@ final class DerivedImageCacheService: DerivedImageCachePort, DownloadedPreviewCa
         )
     }
 
+    private func loadOrGenerateRecycledFileThumbnailInternal(
+        request: DerivedImageRequest,
+        context: RecycledFileThumbnailGenerationContext,
+        quarantineRootURL: URL
+    ) async throws -> DerivedImagePayload {
+        let session = try store.ensureLayout()
+        defer { session.closeHandles() }
+
+        var replacementCandidate: DerivedImageCacheEntryRow?
+        if let entry = try repository.fetchEntry(
+            assetID: context.assetID,
+            contentRevision: context.contentRevision,
+            representationVersion: DerivedImageRepresentationVersion.production,
+            variant: request.variant
+        ) {
+            switch try validateHit(entry: entry, session: session) {
+            case let .valid(payload):
+                return payload
+            case let .invalid(candidate):
+                replacementCandidate = candidate
+            }
+        }
+
+        return try await generateRecycledFileThumbnail(
+            request: request,
+            context: context,
+            quarantineRootURL: quarantineRootURL,
+            session: session,
+            replacementCandidate: replacementCandidate
+        )
+    }
+
     /// Builds a smaller grid variant from a larger cached derived image without
     /// touching the original source file (no security-scope / HDD read).
     private func materializeFromCachedLargerVariantIfPossible(
@@ -647,14 +723,14 @@ final class DerivedImageCacheService: DerivedImageCachePort, DownloadedPreviewCa
         )
         switch outcome {
         case .sourceChanged:
-            try? store.deleteObjectDuringEviction(
+            _ = try? store.deleteObjectDuringEviction(
                 entryID: entryID,
                 format: artifact.storageFormat,
                 session: session
             )
             throw DerivedImageError.derivedSourceChanged
         case let .lostRaceToExisting(winner):
-            try? store.deleteObjectDuringEviction(
+            _ = try? store.deleteObjectDuringEviction(
                 entryID: entryID,
                 format: artifact.storageFormat,
                 session: session
@@ -859,6 +935,191 @@ final class DerivedImageCacheService: DerivedImageCachePort, DownloadedPreviewCa
                 origin: .cacheHit
             )
         )
+    }
+
+    private func generateRecycledFileThumbnail(
+        request: DerivedImageRequest,
+        context: RecycledFileThumbnailGenerationContext,
+        quarantineRootURL: URL,
+        session: DerivedImageAnchoredCacheSession,
+        replacementCandidate: DerivedImageCacheEntryRow? = nil
+    ) async throws -> DerivedImagePayload {
+        let stagingName = DerivedImageCachePathLayout.stagingFileName()
+        operationGate.beginGeneration(stagingName: stagingName)
+        defer { operationGate.endGeneration(stagingName: stagingName) }
+
+        let artifact: DerivedImageEncodedArtifact
+        do {
+            let generateFromQuarantine = {
+                switch context.mediaKind {
+                case .image:
+                    let initial = try self.sourceReader.readSourceBytes(
+                        rootURL: quarantineRootURL,
+                        relativePath: context.quarantineRelativePath
+                    )
+                    guard context.matchesHandleFacts(initial.initialFingerprint),
+                          initial.preHandleFstat.sizeBytes == initial.postHandleFstat.sizeBytes,
+                          initial.preHandleFstat.modifiedAtNs
+                            == initial.postHandleFstat.modifiedAtNs,
+                          initial.initialFingerprint.resourceID == initial.postResourceID
+                    else {
+                        throw DerivedImageError.derivedSourceChanged
+                    }
+                    if let source = CGImageSourceCreateWithData(initial.bytes as CFData, nil),
+                       let actualUTI = CGImageSourceGetType(source) as String?,
+                       actualUTI != context.mediaType
+                    {
+                        throw DerivedImageError.derivedSourceChanged
+                    }
+                    let rendered = try self.renderer.render(
+                        sourceBytes: initial.bytes,
+                        variant: request.variant
+                    )
+                    let reopened = try self.sourceReader.reopenedLocatorFingerprint(
+                        rootURL: quarantineRootURL,
+                        relativePath: context.quarantineRelativePath
+                    )
+                    guard context.matchesHandleFacts(reopened) else {
+                        throw DerivedImageError.derivedSourceChanged
+                    }
+                    return rendered
+                case .video:
+                    guard let durationMs = context.durationMs, durationMs > 0 else {
+                        throw DerivedImageError.derivedAssetIneligible
+                    }
+                    return try self.sourceReader.withOpenSourceFileDescriptorURL(
+                        rootURL: quarantineRootURL,
+                        relativePath: context.quarantineRelativePath
+                    ) { sourceURL, initialFingerprint in
+                        guard context.matchesHandleFacts(initialFingerprint) else {
+                            throw DerivedImageError.derivedSourceChanged
+                        }
+                        let posterBytes = try self.videoPosterGenerator.makePosterBytes(
+                            sourceFileDescriptorURL: sourceURL,
+                            mediaType: context.mediaType,
+                            durationMs: durationMs,
+                            maximumPixelSize: DerivedImageRenderer.thumbnailMaxPixelSize(
+                                for: request.variant
+                            )
+                        )
+                        return try self.renderer.render(
+                            sourceBytes: posterBytes,
+                            variant: request.variant,
+                            expectedMediaType: UTType.png.identifier
+                        )
+                    }
+                }
+            }
+            if let interactiveIOGate {
+                artifact = try interactiveIOGate.withBackgroundWork(generateFromQuarantine)
+            } else {
+                artifact = try generateFromQuarantine()
+            }
+        } catch DerivedImageSecureIOError.ioFailure {
+            throw DerivedImageError.derivedSourceUnavailable
+        } catch DerivedImageSecureIOError.unsafePath {
+            throw DerivedImageError.derivedSourceChanged
+        } catch let error as DerivedImageError {
+            throw error
+        } catch {
+            throw DerivedImageError.derivedCachePersistenceFailed
+        }
+
+        guard artifact.byteSize > 0 else {
+            throw DerivedImageError.derivedEncodeFailed
+        }
+        guard let incomingBytes = UInt64(exactly: artifact.byteSize),
+              incomingBytes <= DerivedImageQuotaPolicy.publishedQuotaBytes
+        else {
+            throw DerivedImageError.derivedInsufficientSpace
+        }
+        try await evictIfNeeded(incomingBytes: incomingBytes, session: session)
+
+        if faultInjector.shouldFault(at: .dbPublish) {
+            throw DerivedImageError.derivedCachePersistenceFailed
+        }
+        let entryID = UUID()
+        _ = try store.publish(
+            artifact: artifact,
+            entryID: entryID,
+            format: artifact.storageFormat,
+            stagingName: stagingName,
+            session: session
+        )
+        finalPublishCheckpoint.blockAfterFinalObjectPublished(
+            entryID: entryID,
+            storageFormat: artifact.storageFormat,
+            stagingName: stagingName
+        )
+
+        let nowMs = clock.nowMs
+        let entry = DerivedImageCacheEntryRow(
+            id: entryID,
+            assetID: context.assetID,
+            contentRevision: context.contentRevision,
+            representationVersion: DerivedImageRepresentationVersion.production,
+            variant: request.variant,
+            storageFormat: artifact.storageFormat,
+            pixelWidth: artifact.pixelWidth,
+            pixelHeight: artifact.pixelHeight,
+            byteSize: artifact.byteSize,
+            encodedSHA256: artifact.sha256,
+            createdAtMs: nowMs,
+            lastAccessedAtMs: nowMs
+        )
+        let outcome = try repository.publishEntryReplacingKey(
+            entry: entry,
+            expected: context,
+            replacementCandidateID: replacementCandidate?.id
+        )
+        switch outcome {
+        case .sourceChanged:
+            _ = try? store.deleteObjectDuringEviction(
+                entryID: entryID,
+                format: artifact.storageFormat,
+                session: session
+            )
+            throw DerivedImageError.derivedSourceChanged
+        case let .lostRaceToExisting(winner):
+            _ = try? store.deleteObjectDuringEviction(
+                entryID: entryID,
+                format: artifact.storageFormat,
+                session: session
+            )
+            switch try validateHit(entry: winner, session: session) {
+            case let .valid(payload):
+                return payload
+            case let .invalid(candidate):
+                return try await generateRecycledFileThumbnail(
+                    request: request,
+                    context: context,
+                    quarantineRootURL: quarantineRootURL,
+                    session: session,
+                    replacementCandidate: candidate
+                )
+            }
+        case let .published(replacedEntry):
+            if let replacedEntry,
+               !faultInjector.shouldFault(at: .oldObjectDelete)
+            {
+                _ = try? session.deleteObject(
+                    entryID: replacedEntry.id,
+                    format: replacedEntry.storageFormat
+                )
+            }
+            return DerivedImagePayload(
+                entryID: entry.id,
+                assetID: entry.assetID,
+                contentRevision: entry.contentRevision,
+                representationVersion: entry.representationVersion,
+                variant: entry.variant,
+                storageFormat: entry.storageFormat,
+                pixelWidth: entry.pixelWidth,
+                pixelHeight: entry.pixelHeight,
+                encodedBytes: artifact.bytes,
+                origin: .generated
+            )
+        }
     }
 
     private func generateFresh(

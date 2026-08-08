@@ -68,6 +68,62 @@ enum TagPresenceFilter: String, Sendable, Equatable {
     case untagged
 }
 
+enum FavoriteFilter: String, Sendable, Equatable, Codable {
+    case any
+    case favorited
+}
+
+enum FavoriteSyncStatus: String, Sendable, Equatable, Codable {
+    case localOnly
+    case synced
+    case pending
+    case failed
+}
+
+struct MediaFavoriteState: Sendable, Equatable, Codable {
+    let assetID: UUID
+    let isFavorite: Bool
+    let photosObservedValue: Bool?
+    let syncStatus: FavoriteSyncStatus
+    let intentRevision: Int
+    let requestedAtMs: Int64
+    let photosObservedModifiedAtMs: Int64?
+    let lastErrorCode: String?
+
+    var isDeletionProtected: Bool {
+        isFavorite || photosObservedValue == true
+    }
+
+    static func none(assetID: UUID) -> MediaFavoriteState {
+        MediaFavoriteState(
+            assetID: assetID,
+            isFavorite: false,
+            photosObservedValue: nil,
+            syncStatus: .localOnly,
+            intentRevision: 0,
+            requestedAtMs: 0,
+            photosObservedModifiedAtMs: nil,
+            lastErrorCode: nil
+        )
+    }
+}
+
+struct FavoriteMutationSummary: Sendable, Equatable {
+    let changedCount: Int
+    let localOnlyCount: Int
+    let syncedCount: Int
+    let pendingCount: Int
+    let failedCount: Int
+
+    static let zero = FavoriteMutationSummary(
+        changedCount: 0,
+        localOnlyCount: 0,
+        syncedCount: 0,
+        pendingCount: 0,
+        failedCount: 0
+    )
+}
+
 struct TagDecisionFilter: Sendable, Equatable {
     let tagID: UUID
     let decision: PersistableTagDecision
@@ -82,6 +138,7 @@ struct AssetPageFilter: Sendable, Equatable {
     var mediaKinds: [MediaKind] = []
     var mediaTypes: [String] = []
     var tagPresence: TagPresenceFilter = .any
+    var favorite: FavoriteFilter = .any
     var searchText: String?
     var worldMapSelection: WorldMapCatalogSelectionQuery?
 
@@ -94,6 +151,7 @@ struct AssetPageFilter: Sendable, Equatable {
         mediaKinds: [MediaKind] = [],
         mediaTypes: [String] = [],
         tagPresence: TagPresenceFilter = .any,
+        favorite: FavoriteFilter = .any,
         searchText: String? = nil,
         worldMapSelection: WorldMapCatalogSelectionQuery? = nil
     ) {
@@ -105,6 +163,7 @@ struct AssetPageFilter: Sendable, Equatable {
         self.mediaKinds = mediaKinds
         self.mediaTypes = mediaTypes
         self.tagPresence = tagPresence
+        self.favorite = favorite
         self.searchText = searchText
         self.worldMapSelection = worldMapSelection
     }
@@ -240,6 +299,12 @@ struct GalleryOverviewAvailabilitySummary: Sendable, Equatable, Identifiable {
     let videoCount: Int
 }
 
+struct GalleryOverviewFavoriteSummary: Sendable, Equatable, Identifiable {
+    var id: MediaKind { mediaKind }
+    let mediaKind: MediaKind
+    let count: Int
+}
+
 struct GalleryOverviewSnapshot: Sendable, Equatable {
     let media: [GalleryOverviewMediaSummary]
     let sources: [GalleryOverviewSourceSummary]
@@ -249,11 +314,17 @@ struct GalleryOverviewSnapshot: Sendable, Equatable {
     let undatedCount: Int
     let positiveLabeledAssetCount: Int
     let acceptedDecisionCount: Int
+    var favorites: [GalleryOverviewFavoriteSummary] = []
 
     var totalCount: Int { media.reduce(0) { $0 + $1.totalCount } }
     var exactUniqueCount: Int { media.reduce(0) { $0 + $1.exactUniqueCount } }
     var exactRedundantCount: Int { media.reduce(0) { $0 + $1.exactRedundantCount } }
     var exactFingerprintCount: Int { media.reduce(0) { $0 + $1.exactFingerprintCount } }
+    var favoriteCount: Int { favorites.reduce(0) { $0 + $1.count } }
+
+    func favoriteCount(for mediaKind: MediaKind) -> Int {
+        favorites.first(where: { $0.mediaKind == mediaKind })?.count ?? 0
+    }
 
     func summary(for mediaKind: MediaKind) -> GalleryOverviewMediaSummary {
         media.first(where: { $0.mediaKind == mediaKind })

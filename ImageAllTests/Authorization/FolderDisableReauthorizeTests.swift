@@ -554,7 +554,7 @@ final class FolderDisableReauthorizeTests: XCTestCase {
         }
     }
 
-    func testDeleteLibrarySourceRejectsUnresolvedRecycleEntryWithoutChangingCatalog() throws {
+    func testDeleteLibrarySourceCountsOnlyLatestRecycleLifecyclePerAsset() throws {
         let database = try FolderAuthorizationTestSupport.makeDatabase()
         let sourceID = UUID(uuidString: "24242424-2424-2424-2424-242424242424")!
         let assetID = UUID(uuidString: "25252525-2525-2525-2525-252525252525")!
@@ -619,7 +619,7 @@ final class FolderDisableReauthorizeTests: XCTestCase {
                 .unresolvedRecycleEntries(
                     blockers: LibrarySourceDeletionBlockers(
                         recycledItemCount: 1,
-                        discardableAuthorizationFailureCount: 1,
+                        discardableAuthorizationFailureCount: 0,
                         inspectionRequiredCount: 0
                     )
                 )
@@ -776,7 +776,7 @@ final class FolderDisableReauthorizeTests: XCTestCase {
         }
     }
 
-    func testIndeterminateFailedAndPendingEntriesRemainVisibleAndBlockWithoutCacheCleanup() throws {
+    func testLatestPendingLifecycleRemainsVisibleAndBlocksWithoutCacheCleanup() throws {
         let database = try FolderAuthorizationTestSupport.makeDatabase()
         let sourceID = UUID(uuidString: "32323232-3232-3232-3232-323232323232")!
         let assetID = UUID(uuidString: "33333333-3333-3333-3333-333333333333")!
@@ -854,7 +854,7 @@ final class FolderDisableReauthorizeTests: XCTestCase {
                     blockers: LibrarySourceDeletionBlockers(
                         recycledItemCount: 0,
                         discardableAuthorizationFailureCount: 0,
-                        inspectionRequiredCount: 2
+                        inspectionRequiredCount: 1
                     )
                 )
             )
@@ -865,11 +865,16 @@ final class FolderDisableReauthorizeTests: XCTestCase {
             XCTAssertEqual(error as? LibrarySlimmingRecycleError, .invalidState)
         }
         let visible = try recycle.listRecycleBinEntries()
-        XCTAssertEqual(Set(visible.map(\.id)), Set([failedID, pendingID]))
-        XCTAssertEqual(
-            Set(visible.map(\.resolution)),
-            Set([.inspect, .retryInterruptedOperation])
-        )
+        XCTAssertEqual(visible.map(\.id), [pendingID])
+        XCTAssertEqual(visible.map(\.resolution), [.retryInterruptedOperation])
+        let retainedHistoryCount = try database.pool.read { db in
+            try Int.fetchOne(
+                db,
+                sql: "SELECT COUNT(*) FROM recycle_entry WHERE asset_id = ?",
+                arguments: [assetID.uuidString.lowercased()]
+            ) ?? 0
+        }
+        XCTAssertEqual(retainedHistoryCount, 2)
         XCTAssertTrue(purger.assetIDs.isEmpty)
         XCTAssertEqual(try Data(contentsOf: originalURL), originalBytes)
         XCTAssertEqual(try Data(contentsOf: quarantineURL), quarantineBytes)

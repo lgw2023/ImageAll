@@ -80,6 +80,7 @@ enum CatalogSchemaExpectations {
 
     static let businessTables = [
         "asset",
+        "asset_favorite_state",
         "asset_location",
         "asset_similarity_fingerprint",
         "asset_tag_decision",
@@ -88,6 +89,7 @@ enum CatalogSchemaExpectations {
         "feature",
         "file_fingerprint",
         "job",
+        "library_slimming_cluster_review",
         "library_slimming_scan_member",
         "library_slimming_scan_result",
         "ontology_concept",
@@ -128,6 +130,8 @@ enum CatalogSchemaExpectations {
         "asset_current_source_time_idx",
         "asset_current_time_desc_idx",
         "asset_current_time_idx",
+        "asset_favorite_state_favorite_idx",
+        "asset_favorite_state_pending_idx",
         "asset_generation_missing_idx",
         "asset_current_media_kind_idx",
         "asset_location_coordinate_idx",
@@ -142,6 +146,7 @@ enum CatalogSchemaExpectations {
         "file_fingerprint_sha256_idx",
         "job_active_coalescing_uq",
         "job_queue_idx",
+        "library_slimming_cluster_review_queue_idx",
         "personal_prediction_review_rank_idx",
         "prediction_review_rank_idx",
         "recycle_entry_active_asset_uq",
@@ -161,6 +166,18 @@ enum CatalogSchemaExpectations {
     ]
 
     static let columnsByTable: [String: [ColumnExpectation]] = [
+        "asset_favorite_state": [
+            .init(name: "asset_id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 1),
+            .init(name: "desired_value", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "photos_observed_value", type: "INTEGER", notNull: false, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "sync_status", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "intent_revision", type: "INTEGER", notNull: true, defaultValue: "0", primaryKeyOrder: 0),
+            .init(name: "requested_at_ms", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "photos_observed_modified_at_ms", type: "INTEGER", notNull: false, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "photos_write_modified_at_ms", type: "INTEGER", notNull: false, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "last_error_code", type: "TEXT", notNull: false, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "updated_at_ms", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+        ],
         "catalog_scope": [
             .init(name: "singleton", type: "INTEGER", notNull: false, defaultValue: nil, primaryKeyOrder: 1),
             .init(name: "scope_id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
@@ -399,6 +416,12 @@ enum CatalogSchemaExpectations {
             .init(name: "result_json", type: "BLOB", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
             .init(name: "updated_at_ms", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
         ],
+        "library_slimming_cluster_review": [
+            .init(name: "job_id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 1),
+            .init(name: "cluster_id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 2),
+            .init(name: "disposition", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "updated_at_ms", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+        ],
         "source_similarity_index": [
             .init(name: "source_id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 1),
             .init(name: "media_kind", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 2),
@@ -562,6 +585,9 @@ enum CatalogSchemaExpectations {
     ]
 
     static let foreignKeysByTable: [String: [ForeignKeyExpectation]] = [
+        "asset_favorite_state": [
+            .init(from: "asset_id", toTable: "asset", to: "id", onDelete: "CASCADE"),
+        ],
         "source": [],
         "source_mutation_authorization": [
             .init(from: "source_id", toTable: "source", to: "id", onDelete: "CASCADE"),
@@ -698,6 +724,9 @@ enum CatalogSchemaExpectations {
         "library_slimming_scan_result": [
             .init(from: "job_id", toTable: "job", to: "id", onDelete: "CASCADE"),
         ],
+        "library_slimming_cluster_review": [
+            .init(from: "job_id", toTable: "job", to: "id", onDelete: "CASCADE"),
+        ],
         "source_similarity_index": [
             .init(from: "source_id", toTable: "source", to: "id", onDelete: "CASCADE"),
             .init(from: "job_id", toTable: "job", to: "id", onDelete: "SET NULL"),
@@ -710,6 +739,8 @@ enum CatalogSchemaExpectations {
     ]
 
     static let indexTableByName: [String: String] = [
+        "asset_favorite_state_favorite_idx": "asset_favorite_state",
+        "asset_favorite_state_pending_idx": "asset_favorite_state",
         "asset_current_file_locator_uq": "asset",
         "asset_current_file_name_idx": "asset",
         "asset_current_file_name_all_idx": "asset",
@@ -737,6 +768,7 @@ enum CatalogSchemaExpectations {
         "file_fingerprint_sha256_idx": "file_fingerprint",
         "job_queue_idx": "job",
         "job_active_coalescing_uq": "job",
+        "library_slimming_cluster_review_queue_idx": "library_slimming_cluster_review",
         "personal_prediction_review_rank_idx": "personal_prediction",
         "prediction_review_rank_idx": "prediction",
         "training_run_method_created_idx": "training_run",
@@ -751,6 +783,24 @@ enum CatalogSchemaExpectations {
     ]
 
     static let indexes: [IndexExpectation] = [
+        .init(
+            name: "asset_favorite_state_favorite_idx",
+            keyColumns: [
+                .init(name: "asset_id", descending: false, collation: "BINARY"),
+            ],
+            unique: false,
+            partialPredicateSQL: "desired_value = 1 OR photos_observed_value = 1"
+        ),
+        .init(
+            name: "asset_favorite_state_pending_idx",
+            keyColumns: [
+                .init(name: "sync_status", descending: false, collation: "BINARY"),
+                .init(name: "requested_at_ms", descending: false, collation: "BINARY"),
+                .init(name: "asset_id", descending: false, collation: "BINARY"),
+            ],
+            unique: false,
+            partialPredicateSQL: "sync_status IN ('pending', 'failed')"
+        ),
         .init(
             name: "asset_current_file_locator_uq",
             keyColumns: [
@@ -948,6 +998,16 @@ enum CatalogSchemaExpectations {
             keyColumns: [
                 .init(name: "status", descending: false, collation: "BINARY"),
                 .init(name: "tag_id", descending: false, collation: "BINARY"),
+            ],
+            unique: false
+        ),
+        .init(
+            name: "library_slimming_cluster_review_queue_idx",
+            keyColumns: [
+                .init(name: "disposition", descending: false, collation: "BINARY"),
+                .init(name: "updated_at_ms", descending: true, collation: "BINARY"),
+                .init(name: "job_id", descending: false, collation: "BINARY"),
+                .init(name: "cluster_id", descending: false, collation: "BINARY"),
             ],
             unique: false
         ),

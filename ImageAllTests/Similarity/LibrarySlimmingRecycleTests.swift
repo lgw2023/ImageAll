@@ -6,6 +6,52 @@ import XCTest
 @testable import ImageAll
 
 final class LibrarySlimmingRecycleTests: XCTestCase {
+    func testIdenticalCleanupRetainsEveryFavoriteAndDeletesOnlyOrdinaryCopies() {
+        let favoriteA = UUID()
+        let favoriteB = UUID()
+        let ordinary = UUID()
+        let cluster = SlimmingCluster(
+            id: UUID(),
+            kind: .byteIdentical,
+            memberAssetIDs: [favoriteA, ordinary, favoriteB],
+            representativeAssetID: favoriteA,
+            score: 1,
+            modelIdentity: .featurePrintOnly
+        )
+        let candidates = [
+            LibrarySlimmingIdenticalCleanupCandidate(
+                assetID: favoriteA,
+                sourceID: UUID(),
+                sourceKind: .file,
+                sourceDisplayName: "A",
+                isFavoriteProtected: true
+            ),
+            LibrarySlimmingIdenticalCleanupCandidate(
+                assetID: favoriteB,
+                sourceID: UUID(),
+                sourceKind: .photos,
+                sourceDisplayName: "B",
+                isFavoriteProtected: true
+            ),
+            LibrarySlimmingIdenticalCleanupCandidate(
+                assetID: ordinary,
+                sourceID: UUID(),
+                sourceKind: .file,
+                sourceDisplayName: "C"
+            ),
+        ]
+
+        let plan = LibrarySlimmingIdenticalCleanupPlanner.makePlan(
+            clusters: [cluster],
+            candidates: candidates
+        )
+
+        XCTAssertEqual(Set(plan.favoriteRetainedAssetIDs), Set([favoriteA, favoriteB]))
+        XCTAssertEqual(Set(plan.assetIDsToRecycle), [ordinary])
+        XCTAssertEqual(plan.favoriteRetainedAssetCount, 2)
+        XCTAssertEqual(plan.ordinaryRetainedAssetCount, 0)
+    }
+
     func testAsyncInteractiveIOPriorityGateKeepsExclusiveLifecycleWindow() async {
         let gate = InteractiveIOPriorityGate()
         let interactiveStarted = DispatchSemaphore(value: 0)
@@ -680,6 +726,42 @@ final class LibrarySlimmingRecycleTests: XCTestCase {
             ),
             []
         )
+    }
+
+    func testRecycleBinProjectsOnlyLatestLifecycleAttemptPerAsset() throws {
+        let env = try RecycleTestEnv(label: #function)
+        defer { env.cleanup() }
+        let seeded = try env.seedAsset(
+            relativePath: "history/retry.jpg",
+            contents: Data("retry-after-failure".utf8)
+        )
+        let blocked = env.makeRecycleService(
+            mutationAccess: DirectFolderMutationAccess(rootsBySourceID: [:])
+        )
+        let failedOutcome = try blocked.moveAssetsToRecycle(assetIDs: [seeded.assetID])
+        XCTAssertEqual(failedOutcome.failedAssetIDs, [seeded.assetID])
+        let failedEntry = try XCTUnwrap(try blocked.listRecycleBinEntries().first)
+        XCTAssertEqual(failedEntry.state, .failed)
+
+        let recovered = env.makeRecycleService()
+        let successfulOutcome = try recovered.moveAssetsToRecycle(assetIDs: [seeded.assetID])
+        let successfulEntryID = try XCTUnwrap(successfulOutcome.recycledEntryIDs.first)
+        let current = try recovered.listRecycleBinEntries()
+
+        XCTAssertEqual(current.map(\.id), [successfulEntryID])
+        XCTAssertEqual(current.first?.state, .recycled)
+        XCTAssertFalse(current.contains(where: { $0.id == failedEntry.id }))
+
+        try recovered.restore(entryID: successfulEntryID)
+        XCTAssertTrue(try recovered.listRecycleBinEntries().isEmpty)
+        let historyCount = try env.database.pool.read { db in
+            try Int.fetchOne(
+                db,
+                sql: "SELECT COUNT(*) FROM recycle_entry WHERE asset_id = ?",
+                arguments: [seeded.assetID.uuidString.lowercased()]
+            ) ?? 0
+        }
+        XCTAssertEqual(historyCount, 2, "latest projection must not delete audit history")
     }
 
     func testMutationAccessAllowsExplicitRestoreAccessForDisabledSource() throws {
@@ -1537,6 +1619,10 @@ final class LibrarySlimmingRecycleTests: XCTestCase {
         }
         XCTAssertEqual(pendingCleanupState, RecycleEntryState.purging.rawValue)
         XCTAssertTrue(try instrumented.listRecycledEntries().isEmpty)
+        XCTAssertTrue(
+            try instrumented.listRecycleBinEntries().isEmpty,
+            "fast-delete cache cleanup must not masquerade as recoverable recycle"
+        )
 
         XCTAssertEqual(
             try instrumented.purgeExpired(nowMs: FolderReconcileTestSupport.baseTimeMs),
@@ -2501,6 +2587,62 @@ final class LibrarySlimmingRecycleTests: XCTestCase {
         let purged = try service.purgeExpired(nowMs: clock.nowMs)
         XCTAssertEqual(purged, 1)
         XCTAssertTrue(try service.listRecycledEntries().isEmpty)
+    }
+
+    func testPurgeExpiredSkipsImageAllOrPhotosFavoriteProtection() throws {
+        let env = try RecycleTestEnv(label: #function)
+        defer { env.cleanup() }
+        let imageAllFavorite = try env.seedAsset(
+            relativePath: "imageall-favorite.jpg",
+            contents: Data("imageall".utf8)
+        )
+        let photosObservedFavorite = try env.seedAsset(
+            relativePath: "photos-favorite.jpg",
+            contents: Data("photos".utf8)
+        )
+        let clock = FixedJobClock(nowMs: FolderReconcileTestSupport.baseTimeMs)
+        let service = env.makeRecycleService(clock: clock)
+        _ = try service.moveFolderAssetsToRecycle(
+            assetIDs: [imageAllFavorite.assetID, photosObservedFavorite.assetID]
+        )
+        try env.database.pool.write { db in
+            try db.execute(
+                sql: """
+                UPDATE recycle_entry
+                SET trashed_at_ms = ?, purge_after_ms = ?
+                WHERE asset_id IN (?, ?)
+                """,
+                arguments: [
+                    clock.nowMs - 2,
+                    clock.nowMs - 1,
+                    imageAllFavorite.assetID.uuidString.lowercased(),
+                    photosObservedFavorite.assetID.uuidString.lowercased(),
+                ]
+            )
+            try db.execute(
+                sql: """
+                INSERT INTO asset_favorite_state (
+                    asset_id, desired_value, photos_observed_value, sync_status,
+                    intent_revision, requested_at_ms, updated_at_ms
+                ) VALUES (?, 1, NULL, 'localOnly', 1, ?, ?),
+                         (?, 0, 1, 'pending', 1, ?, ?)
+                """,
+                arguments: [
+                    imageAllFavorite.assetID.uuidString.lowercased(),
+                    clock.nowMs,
+                    clock.nowMs,
+                    photosObservedFavorite.assetID.uuidString.lowercased(),
+                    clock.nowMs,
+                    clock.nowMs,
+                ]
+            )
+        }
+
+        XCTAssertEqual(try service.purgeExpired(nowMs: clock.nowMs), 0)
+        XCTAssertEqual(Set(try service.listRecycledEntries().map(\.assetID)), Set([
+            imageAllFavorite.assetID,
+            photosObservedFavorite.assetID,
+        ]))
     }
 
     func testPurgeJobIsScheduledForEarliestRecycleExpiry() throws {

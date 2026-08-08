@@ -1406,6 +1406,7 @@ private struct ReviewThumbnailView: View {
     let onOpen: () -> Void
     @State private var image: NSImage?
     @State private var isCloudOnly = false
+    @State private var isHovered = false
 
     var body: some View {
         GeometryReader { proxy in
@@ -1448,6 +1449,15 @@ private struct ReviewThumbnailView: View {
                 RoundedRectangle(cornerRadius: 5)
                     .stroke(isSelected ? Color.accentColor : Color.clear, lineWidth: 3)
             }
+            .overlay(alignment: .topTrailing) {
+                MediaFavoriteButton(
+                    state: model.favoriteState(for: item.assetID),
+                    isVisible: isHovered || isSelected
+                ) {
+                    Task { await model.toggleFavorite(assetID: item.assetID) }
+                }
+                .padding(6)
+            }
         }
         .aspectRatio(
             model.thumbnailAspectMode.frameAspectRatio(imageSize: image?.size),
@@ -1476,6 +1486,16 @@ private struct ReviewThumbnailView: View {
         .accessibilityAction(named: "打开单图预览") {
             onOpen()
         }
+        .contextMenu {
+            let state = model.favoriteState(for: item.assetID)
+            Button(state.isFavorite ? "取消红心" : "加入红心") {
+                Task { await model.toggleFavorite(assetID: item.assetID) }
+            }
+        }
+        .task(id: item.assetID) {
+            await model.ensureFavoriteStatesLoaded(assetIDs: [item.assetID])
+        }
+        .onHover { isHovered = $0 }
         .task(id: ReviewThumbnailLoadID(
             assetID: item.assetID,
             aspectMode: model.thumbnailAspectMode,

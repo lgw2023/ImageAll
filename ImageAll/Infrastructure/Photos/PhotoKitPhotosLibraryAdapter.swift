@@ -702,7 +702,8 @@ final class PhotoKitPhotosLibraryAdapter: NSObject, PhotosLibraryAccessPort, Pho
             modifiedAtMs: milliseconds(asset.modificationDate),
             mediaKind: mediaKind,
             durationMs: durationMs,
-            location: location
+            location: location,
+            isFavorite: asset.isFavorite
         )
     }
 
