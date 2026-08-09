@@ -119,11 +119,28 @@ def main():
     source_actions = []
     source_requests = []
     media_requests = []
+    favorite_mutations = []
+    favorite_states = {
+        asset_id: False
+        for asset_id in IMAGE_IDS + REVIEW_IDS + [VIDEO_ID]
+    }
     prewarm_poll_count = [0]
     cloud_preview_downloads = []
     page_errors = []
     console_errors = []
     review_items = [review_item(asset_id, index + 1) for index, asset_id in enumerate(REVIEW_IDS)]
+
+    def projected_review_items():
+        return [{
+            **item,
+            "favorite": {
+                "assetID": item["assetID"],
+                "isFavorite": favorite_states[item["assetID"]],
+                "photosObservedValue": favorite_states[item["assetID"]],
+                "syncStatus": "synced",
+                "lastErrorCode": None,
+            },
+        } for item in review_items]
 
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(
@@ -172,7 +189,7 @@ def main():
                     "hostID": "dddddddd-1111-2222-3333-dddddddddddd",
                     "hostDisplayName": "Synthetic Mac",
                     "hostAppVersion": "test",
-                    "capabilities": ["sourceManagement"],
+                    "capabilities": ["sourceManagement", "favorites"],
                 },
             ),
         )
@@ -275,6 +292,14 @@ def main():
                     asset_summary(IMAGE_IDS[0], "CAT_0001.JPG"),
                     asset_summary(IMAGE_IDS[1], "TRIP_0002.JPG"),
                 ]
+            for item in items:
+                item["favorite"] = {
+                    "assetID": item["id"],
+                    "isFavorite": favorite_states[item["id"]],
+                    "photosObservedValue": favorite_states[item["id"]],
+                    "syncStatus": "synced",
+                    "lastErrorCode": None,
+                }
             fulfill_json(route, {"items": items, "nextCursor": None})
 
         page.route("**/v1/assets?**", route_assets)
@@ -282,12 +307,47 @@ def main():
         def route_asset_detail(route):
             asset_id = urlparse(route.request.url).path.rsplit("/", 1)[-1]
             if asset_id == VIDEO_ID:
-                fulfill_json(route, asset_detail(asset_id, "CLIP_0001.MP4", "public.mpeg-4"))
+                detail = asset_detail(asset_id, "CLIP_0001.MP4", "public.mpeg-4")
             else:
                 index = (IMAGE_IDS + REVIEW_IDS).index(asset_id) + 1
-                fulfill_json(route, asset_detail(asset_id, f"PHOTO_{index:04d}.JPG"))
+                detail = asset_detail(asset_id, f"PHOTO_{index:04d}.JPG")
+            detail["favorite"] = {
+                "assetID": asset_id,
+                "isFavorite": favorite_states[asset_id],
+                "photosObservedValue": favorite_states[asset_id],
+                "syncStatus": "synced",
+                "lastErrorCode": None,
+            }
+            fulfill_json(route, detail)
 
         page.route(re.compile(r".*/v1/assets/[0-9a-f-]+$"), route_asset_detail)
+
+        def route_favorite_mutation(route):
+            payload = route.request.post_data_json
+            favorite_mutations.append(payload)
+            for asset_id in payload["assetIDs"]:
+                favorite_states[asset_id] = payload["isFavorite"]
+            fulfill_json(
+                route,
+                {
+                    "operationID": payload["operationID"],
+                    "changedCount": len(payload["assetIDs"]),
+                    "localOnlyCount": 0,
+                    "syncedCount": len(payload["assetIDs"]),
+                    "pendingCount": 0,
+                    "failedCount": 0,
+                    "states": [{
+                        "assetID": asset_id,
+                        "isFavorite": favorite_states[asset_id],
+                        "photosObservedValue": favorite_states[asset_id],
+                        "syncStatus": "synced",
+                        "lastErrorCode": None,
+                    } for asset_id in payload["assetIDs"]],
+                    "replayed": False,
+                },
+            )
+
+        page.route("**/v1/favorites", route_favorite_mutation)
         def route_asset_image(route):
             path = urlparse(route.request.url).path
             asset_id = path.split("/")[-2]
@@ -382,7 +442,10 @@ def main():
         )
         page.route(
             "**/v1/review/queue?**",
-            lambda route: fulfill_json(route, {"items": list(review_items), "nextCursor": None}),
+            lambda route: fulfill_json(
+                route,
+                {"items": projected_review_items(), "nextCursor": None},
+            ),
         )
 
         def route_review_decision(route):
@@ -565,8 +628,54 @@ def main():
         page.locator("#reviewNavigationButton").click()
         page.locator(f'[data-review-overview-tag-id="{CAT_TAG_ID}"]').click()
         page.locator("#reviewQueueLayout:not(.hidden)").wait_for()
+        first_review_card = page.locator(f'[data-review-index="0"]')
+        first_review_main = first_review_card.locator(":scope > .review-card-main")
+        first_review_favorite = first_review_card.locator(":scope > .review-card-favorite")
+        assert first_review_main.get_attribute("aria-pressed") == "true"
+        review_scroll_top = page.locator("#reviewQueuePane").evaluate("element => element.scrollTop")
+        first_review_card.hover()
+        first_review_favorite.click()
+        page.wait_for_function(
+            "() => document.querySelector('[data-review-index=\"0\"] > .review-card-favorite')"
+            "?.dataset.favorite === 'true'"
+        )
+        assert favorite_mutations[-1]["assetIDs"] == [REVIEW_IDS[0]]
+        assert favorite_mutations[-1]["isFavorite"] is True
+        assert first_review_main.get_attribute("aria-pressed") == "true"
+        assert page.locator("#lightbox").is_hidden()
+        assert page.locator("#reviewQueuePane").evaluate("element => element.scrollTop") == review_scroll_top
+        first_review_favorite.press("Enter")
+        page.wait_for_function(
+            "() => document.querySelector('[data-review-index=\"0\"] > .review-card-favorite')"
+            "?.dataset.favorite === 'false'"
+        )
+        assert favorite_mutations[-1]["isFavorite"] is False
+        assert first_review_main.get_attribute("aria-pressed") == "true"
+        assert page.locator("#lightbox").is_hidden()
+        assert page.locator("#reviewQueuePane").evaluate("element => element.scrollTop") == review_scroll_top
+
+        page.set_viewport_size({"width": 390, "height": 844})
+        assert first_review_favorite.is_visible()
+        review_dimensions = page.evaluate(
+            "() => ({ viewport: innerWidth, scroll: document.documentElement.scrollWidth })"
+        )
+        assert review_dimensions["scroll"] <= review_dimensions["viewport"], review_dimensions
+        page.screenshot(path="/tmp/imageall-review-card-favorite-390.png", full_page=True)
+        page.set_viewport_size({"width": 1440, "height": 960})
+
         page.locator("#reviewOpenLightboxButton").click()
         page.locator("#lightboxReviewActions:not(.hidden)").wait_for()
+        assert "REVIEW_1.JPG" in page.locator("#lightboxTitle").inner_text()
+        page.wait_for_function(
+            "() => !document.querySelector('#lightboxFavoriteButton').disabled"
+        )
+        assert page.locator("#lightboxFavoriteButton").is_visible()
+        page.locator("#lightboxFavoriteButton").click()
+        page.wait_for_function(
+            "() => document.querySelector('#lightboxFavoriteButton')?.dataset.favorite === 'true'"
+        )
+        assert favorite_mutations[-1]["assetIDs"] == [REVIEW_IDS[0]]
+        assert favorite_mutations[-1]["isFavorite"] is True
         assert "REVIEW_1.JPG" in page.locator("#lightboxTitle").inner_text()
         page.screenshot(path="/tmp/imageall-review-lightbox-synthetic.png", full_page=True)
         page.locator('#lightboxReviewActions [data-action="accept"]').click()
@@ -584,8 +693,9 @@ def main():
         page.locator('[data-media-kind="video"]').click()
         video_card = page.locator(f'[data-asset-id="{VIDEO_ID}"]')
         video_card.wait_for()
+        video_card_main = video_card.locator(":scope > .asset-card-main")
         assert video_card.locator(".asset-video-badge").inner_text() == "▶ 0:12"
-        assert "视频" in video_card.get_attribute("aria-label")
+        assert "视频" in video_card_main.get_attribute("aria-label")
         initial_scroll_top = page.locator("#libraryScroll").evaluate("element => element.scrollTop")
         video_card.hover()
         hover_video = video_card.locator(".asset-hover-video")
@@ -598,7 +708,7 @@ def main():
             "video => ({ muted: video.muted, loop: video.loop, controls: video.controls })"
         )
         assert hover_state == {"muted": True, "loop": True, "controls": False}, hover_state
-        assert video_card.get_attribute("aria-pressed") == "false"
+        assert video_card_main.get_attribute("aria-pressed") == "false"
         assert page.locator("#libraryScroll").evaluate("element => element.scrollTop") == initial_scroll_top
         page.screenshot(path="/tmp/imageall-video-hover-synthetic.png", full_page=True)
         page.locator("#searchInput").hover()
@@ -637,7 +747,7 @@ def main():
         "filter/review/lightbox browser flow passed; "
         f"asset queries={len(asset_queries)}; tag decisions={len(tag_decisions)}; "
         f"review decisions={len(review_decisions)}; source actions={len(source_actions)}; "
-        f"media requests={len(media_requests)}"
+        f"media requests={len(media_requests)}; favorites={len(favorite_mutations)}"
     )
 
 

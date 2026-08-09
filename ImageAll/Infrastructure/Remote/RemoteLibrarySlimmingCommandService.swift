@@ -74,6 +74,12 @@ private extension RemoteLibrarySlimmingNativeApproval {
 }
 
 actor RemoteLibrarySlimmingCommandService: RemoteLibrarySlimmingCommandPort {
+    struct RecyclePageProjection: Equatable, Sendable {
+        let entries: [RecycleEntryRecord]
+        let totalCount: Int
+        let scopeCounts: LibrarySlimmingRecycleCommandScopeCounts
+    }
+
     private struct AcceptedOperation: Sendable {
         let command: LibrarySlimmingLaunchCommand
         let receipt: LibrarySlimmingLaunchReceipt
@@ -260,19 +266,85 @@ actor RemoteLibrarySlimmingCommandService: RemoteLibrarySlimmingCommandPort {
         return thresholds.thresholds()
     }
 
+    func setClusterReviewDisposition(
+        jobID: UUID,
+        clusterID: UUID,
+        disposition: LibrarySlimmingClusterReviewDisposition?
+    ) throws -> LibrarySlimmingClusterReviewDisposition? {
+        let snapshot: LibrarySlimmingAnalysisJobSnapshot
+        do {
+            snapshot = try analysis.snapshot(jobID: jobID)
+        } catch {
+            throw Self.mapAnalysisError(error)
+        }
+        let resultClusterIDs = Set(snapshot.result?.clusters.map(\.id) ?? [])
+        let seedOnlyClusterID: UUID? = if resultClusterIDs.isEmpty,
+                                         !snapshot.seedAssetIDs.isEmpty
+        {
+            NearDuplicateSceneClusterService.stableClusterID(
+                kind: .nearDuplicateScene,
+                members: snapshot.seedAssetIDs
+            )
+        } else {
+            nil
+        }
+        guard resultClusterIDs.contains(clusterID) || seedOnlyClusterID == clusterID else {
+            throw LibrarySlimmingCommandError.invalidSelection
+        }
+        do {
+            try analysis.setClusterReviewDisposition(
+                jobID: jobID,
+                clusterID: clusterID,
+                disposition: disposition
+            )
+            return disposition
+        } catch {
+            throw Self.mapAnalysisError(error)
+        }
+    }
+
     func recycleSnapshot(
         mediaKind: MediaKind,
         sourceID: UUID?,
         searchText: String?,
+        scope: LibrarySlimmingRecycleCommandScope,
         limit: Int
     ) throws -> LibrarySlimmingRecycleCommandSnapshot {
         let sourceNames = Dictionary(
             uniqueKeysWithValues: try catalog.fetchSources().map { ($0.id, $0.displayName) }
         )
+        let projection = Self.recyclePageProjection(
+            entries: try recycle.listRecycleBinEntries(),
+            mediaKind: mediaKind,
+            sourceID: sourceID,
+            searchText: searchText,
+            scope: scope,
+            limit: limit
+        )
+        return LibrarySlimmingRecycleCommandSnapshot(
+            entries: projection.entries,
+            totalCount: projection.totalCount,
+            sourceNames: sourceNames,
+            requests: recycleRequestsByID.values.sorted { lhs, rhs in
+                if lhs.updatedAtMs != rhs.updatedAtMs { return lhs.updatedAtMs > rhs.updatedAtMs }
+                return lhs.id.uuidString < rhs.id.uuidString
+            },
+            scopeCounts: projection.scopeCounts
+        )
+    }
+
+    nonisolated static func recyclePageProjection(
+        entries: [RecycleEntryRecord],
+        mediaKind: MediaKind,
+        sourceID: UUID?,
+        searchText: String?,
+        scope: LibrarySlimmingRecycleCommandScope,
+        limit: Int
+    ) -> RecyclePageProjection {
         let foldedQuery = searchText?
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
-        let filtered = try recycle.listRecycleBinEntries().filter { entry in
+        let matchingContext = entries.filter { entry in
             guard entry.mediaKind == mediaKind else { return false }
             if let sourceID, entry.sourceID != sourceID { return false }
             guard let foldedQuery, !foldedQuery.isEmpty else { return true }
@@ -280,15 +352,25 @@ actor RemoteLibrarySlimmingCommandService: RemoteLibrarySlimmingCommandPort {
                 .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
                 .contains(foldedQuery) == true
         }
+        let scopeCounts = LibrarySlimmingRecycleCommandScopeCounts(
+            all: matchingContext.count,
+            photos: matchingContext.lazy.filter { $0.sourceKind == .photos }.count,
+            files: matchingContext.lazy.filter { $0.sourceKind == .file }.count,
+            attention: matchingContext.lazy.filter { $0.state != .recycled }.count
+        )
+        let filtered = matchingContext.filter { entry in
+            switch scope {
+            case .all: true
+            case .photos: entry.sourceKind == .photos
+            case .files: entry.sourceKind == .file
+            case .attention: entry.state != .recycled
+            }
+        }
         let safeLimit = max(1, min(limit, 5_000))
-        return LibrarySlimmingRecycleCommandSnapshot(
+        return RecyclePageProjection(
             entries: Array(filtered.prefix(safeLimit)),
             totalCount: filtered.count,
-            sourceNames: sourceNames,
-            requests: recycleRequestsByID.values.sorted { lhs, rhs in
-                if lhs.updatedAtMs != rhs.updatedAtMs { return lhs.updatedAtMs > rhs.updatedAtMs }
-                return lhs.id.uuidString < rhs.id.uuidString
-            }
+            scopeCounts: scopeCounts
         )
     }
 

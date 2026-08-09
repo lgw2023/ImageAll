@@ -57,6 +57,7 @@ enum GeneralSettingsSuggestionMutationAction: String, Equatable, Sendable {
     case setDefault
     case setOverride
     case clearOverride
+    case prune
 }
 
 struct GeneralSettingsSuggestionMutation: Equatable, Sendable {
@@ -80,19 +81,22 @@ struct GeneralSettingsSnapshot: Equatable, Sendable {
     let idleThresholdSeconds: Int
     let toolbarDisplayMode: GeneralSettingsToolbarDisplayMode
     let suggestionThresholds: GeneralSettingsSuggestionThresholds?
+    let maxPendingSuggestionsPerTag: Int
 
     init(
         localModel: GeneralSettingsLocalModelSummary,
         idleThumbnailPrewarmEnabled: Bool,
         idleThresholdSeconds: Int,
         toolbarDisplayMode: GeneralSettingsToolbarDisplayMode,
-        suggestionThresholds: GeneralSettingsSuggestionThresholds? = nil
+        suggestionThresholds: GeneralSettingsSuggestionThresholds? = nil,
+        maxPendingSuggestionsPerTag: Int = PendingSuggestionGenerationLimits.defaultMaxCount
     ) {
         self.localModel = localModel
         self.idleThumbnailPrewarmEnabled = idleThumbnailPrewarmEnabled
         self.idleThresholdSeconds = idleThresholdSeconds
         self.toolbarDisplayMode = toolbarDisplayMode
         self.suggestionThresholds = suggestionThresholds
+        self.maxPendingSuggestionsPerTag = maxPendingSuggestionsPerTag
     }
 }
 
@@ -101,17 +105,20 @@ struct GeneralSettingsUpdate: Equatable, Sendable {
     let idleThumbnailPrewarmEnabled: Bool?
     let toolbarDisplayMode: GeneralSettingsToolbarDisplayMode?
     let suggestionThresholdMutation: GeneralSettingsSuggestionMutation?
+    let maxPendingSuggestionsPerTag: Int?
 
     init(
         modelEnabled: Bool?,
         idleThumbnailPrewarmEnabled: Bool?,
         toolbarDisplayMode: GeneralSettingsToolbarDisplayMode?,
-        suggestionThresholdMutation: GeneralSettingsSuggestionMutation? = nil
+        suggestionThresholdMutation: GeneralSettingsSuggestionMutation? = nil,
+        maxPendingSuggestionsPerTag: Int? = nil
     ) {
         self.modelEnabled = modelEnabled
         self.idleThumbnailPrewarmEnabled = idleThumbnailPrewarmEnabled
         self.toolbarDisplayMode = toolbarDisplayMode
         self.suggestionThresholdMutation = suggestionThresholdMutation
+        self.maxPendingSuggestionsPerTag = maxPendingSuggestionsPerTag
     }
 
     var isEmpty: Bool {
@@ -119,6 +126,7 @@ struct GeneralSettingsUpdate: Equatable, Sendable {
             && idleThumbnailPrewarmEnabled == nil
             && toolbarDisplayMode == nil
             && suggestionThresholdMutation == nil
+            && maxPendingSuggestionsPerTag == nil
     }
 }
 

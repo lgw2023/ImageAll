@@ -71,6 +71,10 @@ def main():
         "undatedCount": 3,
         "positiveLabeledAssetCount": 20,
         "acceptedDecisionCount": 24,
+        "favorites": [
+            {"mediaKind": "image", "count": 17},
+            {"mediaKind": "video", "count": 3},
+        ],
     }
 
     with sync_playwright() as playwright:
@@ -121,6 +125,7 @@ def main():
                     "hostID": "cccccccc-1111-2222-3333-cccccccccccc",
                     "hostDisplayName": "Synthetic Mac",
                     "hostAppVersion": "test",
+                    "capabilities": ["favorites"],
                 },
             ),
         )
@@ -177,8 +182,18 @@ def main():
         assert page.locator("#galleryOverviewTotalMetric").inner_text() == "150"
         assert page.locator("#galleryOverviewUniqueMetric").inner_text() == "139"
         assert page.locator("#galleryOverviewPositiveMetric").inner_text() == "20"
+        assert page.locator("#galleryOverviewFavoriteMetric").inner_text() == "20"
+        assert page.locator("#galleryOverviewFavoriteImageMetric").inner_text() == "17"
+        assert page.locator("#galleryOverviewFavoriteVideoMetric").inner_text() == "3"
         assert page.locator("[data-gallery-overview-source-id]").count() == 1
         assert page.locator("[data-gallery-overview-tag-id]").inner_text().startswith("猫")
+
+        page.locator("#galleryOverviewFavoritesMetric").click()
+        page.locator("#galleryOverviewWorkspace").wait_for(state="hidden")
+        page.wait_for_timeout(100)
+        assert any(query.get("favorite") == ["favorited"] for query in asset_queries)
+
+        page.locator("#galleryOverviewNavigationButton").click()
 
         page.locator(f'[data-gallery-overview-source-id="{SOURCE_ID}"]').click()
         page.locator("#galleryOverviewWorkspace").wait_for(state="hidden")

@@ -584,6 +584,9 @@ def main():
         assert "猫" in page.locator("#reviewOverviewGrid").inner_text()
         assert page.locator("#closeReviewButton").get_attribute("aria-label") == "返回训练记录"
         page.locator(
+            f'[data-review-control-tag-id="{TAG_ID}"] > summary'
+        ).click()
+        page.locator(
             f'[data-review-training-job-id="{JOB_ID}"]'
         ).click()
         page.locator("#trainingWorkspace:not(.hidden)").wait_for(state="visible")

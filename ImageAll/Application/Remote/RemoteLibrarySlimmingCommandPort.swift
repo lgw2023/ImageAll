@@ -80,11 +80,26 @@ struct LibrarySlimmingRecycleCommandRequestSnapshot: Equatable, Sendable {
     let updatedAtMs: Int64
 }
 
+enum LibrarySlimmingRecycleCommandScope: String, Equatable, Sendable {
+    case all
+    case photos
+    case files
+    case attention
+}
+
+struct LibrarySlimmingRecycleCommandScopeCounts: Equatable, Sendable {
+    let all: Int
+    let photos: Int
+    let files: Int
+    let attention: Int
+}
+
 struct LibrarySlimmingRecycleCommandSnapshot: Equatable, Sendable {
     let entries: [RecycleEntryRecord]
     let totalCount: Int
     let sourceNames: [UUID: String]
     let requests: [LibrarySlimmingRecycleCommandRequestSnapshot]
+    let scopeCounts: LibrarySlimmingRecycleCommandScopeCounts
 }
 
 enum LibrarySlimmingRemovalCommandMode: String, Equatable, Sendable {
@@ -227,10 +242,16 @@ protocol RemoteLibrarySlimmingCommandPort: Sendable {
     ) async throws -> LibrarySlimmingJobCommandResult
     func updateThresholds(_ thresholds: NearDuplicateSceneThresholds) async throws
         -> NearDuplicateSceneThresholds
+    func setClusterReviewDisposition(
+        jobID: UUID,
+        clusterID: UUID,
+        disposition: LibrarySlimmingClusterReviewDisposition?
+    ) async throws -> LibrarySlimmingClusterReviewDisposition?
     func recycleSnapshot(
         mediaKind: MediaKind,
         sourceID: UUID?,
         searchText: String?,
+        scope: LibrarySlimmingRecycleCommandScope,
         limit: Int
     ) async throws -> LibrarySlimmingRecycleCommandSnapshot
     func submitRecycle(
@@ -256,10 +277,19 @@ protocol RemoteLibrarySlimmingCommandPort: Sendable {
 }
 
 extension RemoteLibrarySlimmingCommandPort {
+    func setClusterReviewDisposition(
+        jobID _: UUID,
+        clusterID _: UUID,
+        disposition _: LibrarySlimmingClusterReviewDisposition?
+    ) async throws -> LibrarySlimmingClusterReviewDisposition? {
+        throw LibrarySlimmingCommandError.unavailable
+    }
+
     func recycleSnapshot(
         mediaKind _: MediaKind,
         sourceID _: UUID?,
         searchText _: String?,
+        scope _: LibrarySlimmingRecycleCommandScope,
         limit _: Int
     ) async throws -> LibrarySlimmingRecycleCommandSnapshot {
         throw LibrarySlimmingCommandError.unavailable

@@ -21,8 +21,10 @@ def fulfill_json(route, payload, status=200):
 
 def main():
     updates = []
+    sample_requests = []
     source_actions = []
     source_requests = []
+    review_pending_count = 7
     settings = {
         "localModel": {
             "isEnabled": False,
@@ -34,6 +36,7 @@ def main():
         "idleThumbnailPrewarmEnabled": True,
         "idleThresholdSeconds": 180,
         "toolbarDisplayMode": "iconOnly",
+        "maxPendingSuggestionsPerTag": 500,
         "suggestionThresholds": {
             "defaults": [
                 {"method": "featureKnn", "minScore": 0.1},
@@ -157,6 +160,25 @@ def main():
             "**/v1/sample-suggestions?**",
             lambda route: fulfill_json(route, {"mediaKind": "image", "isAvailable": True, "maximumSampleCount": 500, "activities": []}),
         )
+        def route_sample_suggestion_request(route):
+            payload = route.request.post_data_json
+            sample_requests.append(payload)
+            fulfill_json(route, {
+                "activity": {
+                    "operationID": payload["operationID"],
+                    "mediaKind": payload["mediaKind"],
+                    "phase": "completed",
+                    "completedUnitCount": 12,
+                    "totalUnitCount": 12,
+                    "suggestedCount": 4,
+                    "skippedCount": 1,
+                    "errorCode": None,
+                    "availableActions": [],
+                },
+                "replayed": False,
+            })
+
+        page.route("**/v1/sample-suggestions/requests", route_sample_suggestion_request)
         page.route(
             "**/v1/tag-library-suggestions?**",
             lambda route: fulfill_json(route, {"mediaKind": "image", "maximumPendingCount": 500, "personalCentroidAvailable": False, "personalAdamWAvailable": False, "tags": [], "activities": []}),
@@ -165,9 +187,42 @@ def main():
             "**/v1/assets?**",
             lambda route: fulfill_json(route, {"items": [], "nextCursor": None}),
         )
+        def route_review_overview(route):
+            fulfill_json(route, {
+                "totalPendingSuggestionCount": review_pending_count,
+                "tags": [{
+                    "id": CAT_TAG_ID,
+                    "displayName": "猫",
+                    "acceptedSampleCount": 8,
+                    "rejectedSampleCount": 7,
+                    "pendingSuggestionCount": review_pending_count,
+                    "pendingSuggestionCounts": {
+                        "featurePrint": review_pending_count,
+                        "standardModel": 0,
+                        "personalModel": 0,
+                        "personalAdamW": 0,
+                    },
+                    "taskStatus": "completed",
+                    "checkedCount": 40,
+                    "totalCount": 40,
+                    "skippedCount": 0,
+                    "missingPositiveCount": 0,
+                    "missingNegativeCount": 0,
+                    "canGenerate": True,
+                    "canUpdate": True,
+                    "canGeneratePersonalModel": True,
+                    "canReview": True,
+                    "canPause": False,
+                    "canResume": False,
+                    "canCancel": False,
+                    "activeJobID": None,
+                }],
+            })
+
+        page.route("**/v1/review/overview?**", route_review_overview)
 
         def route_settings(route):
-            nonlocal settings
+            nonlocal settings, review_pending_count
             if route.request.method == "GET":
                 fulfill_json(route, settings)
                 return
@@ -186,6 +241,10 @@ def main():
                     "detail": "模型已在 App 内完成校验并可供本地推理。" if enabled
                     else "模型不会初始化或运行。",
                 }
+            if "maxPendingSuggestionsPerTag" in payload:
+                settings["maxPendingSuggestionsPerTag"] = payload[
+                    "maxPendingSuggestionsPerTag"
+                ]
             mutation = payload.get("suggestionThresholdMutation")
             if mutation:
                 thresholds = settings["suggestionThresholds"]
@@ -210,6 +269,8 @@ def main():
                             item["minScore"] for item in thresholds["defaults"]
                             if item["method"] == method_name
                         )
+                    elif mutation["action"] == "prune":
+                        review_pending_count = 3
             fulfill_json(route, {"settings": settings, "replayed": False})
 
         page.route("**/v1/settings/general", route_settings)
@@ -349,6 +410,150 @@ def main():
         page.keyboard.press("Escape")
         assert page.locator("#generalSettingsDialog").is_hidden()
         assert page.evaluate("() => document.activeElement?.id") == "settingsButton"
+
+        page.locator("#reviewButton").click()
+        page.locator("#reviewWorkspace:not(.hidden)").wait_for()
+        page.locator("#reviewLocalModelPanel").wait_for()
+        assert page.locator("#reviewLocalModelStateBadge").inner_text() == "模型已就绪"
+        assert "DINOv2 Small" in page.locator("#reviewLocalModelStatus").inner_text()
+        wide_model_layout = page.evaluate(
+            """() => {
+              const panel = document.querySelector('#reviewLocalModelPanel').getBoundingClientRect();
+              const content = document.querySelector('.review-overview-content').getBoundingClientRect();
+              return { panelRight: panel.right, contentLeft: content.left };
+            }"""
+        )
+        assert wide_model_layout["panelRight"] <= wide_model_layout["contentLeft"] + 1
+        page.locator("#refreshReviewModelStatusButton:not(:disabled)").click()
+        page.wait_for_function(
+            "() => document.activeElement?.id === 'refreshReviewModelStatusButton'"
+        )
+
+        page.locator("#reviewSourceFilterButton").click()
+        page.locator(
+            f'[data-review-source-id="{FOLDER_SOURCE_ID}"]'
+        ).click()
+        page.locator(
+            f'[data-review-source-id="{SOURCE_ID}"]'
+        ).click()
+        page.wait_for_function(
+            "() => document.querySelector('#generateLibrarySuggestionsButton').disabled"
+        )
+        assert "没有选择审核来源" in page.locator("#sampleSuggestionReviewStatus").inner_text()
+        page.locator(
+            f'[data-review-source-id="{SOURCE_ID}"]'
+        ).click()
+        page.wait_for_function(
+            "() => !document.querySelector('#generateLibrarySuggestionsButton').disabled"
+        )
+        page.keyboard.press("Escape")
+        with page.expect_response(
+            lambda response: response.url.endswith("/v1/sample-suggestions/requests")
+            and response.request.method == "POST"
+        ) as sample_response:
+            page.locator("#generateLibrarySuggestionsButton").click()
+        assert sample_response.value.status == 200
+        assert sample_requests[-1]["assetIDs"] == []
+        assert sample_requests[-1]["sourceIDs"] == [SOURCE_ID]
+
+        review_controls = page.locator(
+            f'[data-review-control-tag-id="{CAT_TAG_ID}"]'
+        )
+        review_controls.locator("summary").click()
+        assert review_controls.get_attribute("open") is not None
+        assert review_controls.locator(".review-threshold-row").count() == 3
+
+        personal_increase = review_controls.locator(
+            f'[data-threshold-focus="increase"][data-threshold-tag-id="{CAT_TAG_ID}"]'
+            '[data-threshold-method="personalCentroid"]'
+        )
+        personal_increase.click()
+        page.wait_for_function(
+            f"() => document.querySelector('[data-review-control-tag-id=\"{CAT_TAG_ID}\"]'"
+            " + ' [data-threshold-method=\"personalCentroid\"][data-threshold-focus=\"input\"]')?.value === '0.25'"
+        )
+        assert updates[-1]["suggestionThresholdMutation"]["minScore"] == 0.25
+        assert page.evaluate(
+            "() => document.activeElement?.dataset.thresholdFocus"
+        ) == "increase"
+
+        review_controls.locator(
+            f'[data-threshold-focus="adopt"][data-threshold-tag-id="{CAT_TAG_ID}"]'
+            '[data-threshold-method="featureKnn"]'
+        ).click()
+        page.wait_for_function(
+            f"() => document.querySelector('[data-review-control-tag-id=\"{CAT_TAG_ID}\"]'"
+            " + ' [data-threshold-method=\"featureKnn\"][data-threshold-focus=\"input\"]')?.value === '0.55'"
+        )
+        assert updates[-1]["suggestionThresholdMutation"]["action"] == "setOverride"
+
+        review_controls.locator(
+            f'[data-threshold-focus="inherit"][data-threshold-tag-id="{CAT_TAG_ID}"]'
+            '[data-threshold-method="featureKnn"]'
+        ).click()
+        page.wait_for_function(
+            f"() => document.querySelector('[data-review-control-tag-id=\"{CAT_TAG_ID}\"]'"
+            " + ' [data-threshold-method=\"featureKnn\"][data-threshold-focus=\"input\"]')?.value === '0.15'"
+        )
+        assert updates[-1]["suggestionThresholdMutation"]["action"] == "clearOverride"
+        assert page.evaluate(
+            "() => document.activeElement?.dataset.thresholdFocus"
+        ) == "input"
+
+        review_controls.locator(
+            f'[data-threshold-focus="prune"][data-threshold-tag-id="{CAT_TAG_ID}"]'
+            '[data-threshold-method="featureKnn"]'
+        ).click()
+        page.wait_for_function(
+            f"() => document.querySelector('[data-review-overview-tag-id=\"{CAT_TAG_ID}\"]'"
+            " + ' .review-pending-count')?.textContent === '3'"
+        )
+        assert updates[-1]["suggestionThresholdMutation"] == {
+            "action": "prune",
+            "method": "featureKnn",
+            "tagID": CAT_TAG_ID,
+        }
+        assert page.evaluate(
+            "() => document.activeElement?.dataset.thresholdFocus"
+        ) == "prune"
+        assert review_controls.get_attribute("open") is not None
+
+        personal_method = next(
+            method for method in settings["suggestionThresholds"]["tags"][0]["methods"]
+            if method["method"] == "personalCentroid"
+        )
+        personal_method["effectiveMinScore"] = 0.35
+        personal_method["overrideMinScore"] = 0.35
+        page.locator("#refreshReviewButton").click()
+        page.wait_for_function(
+            f"() => document.querySelector('[data-review-control-tag-id=\"{CAT_TAG_ID}\"]'"
+            " + ' [data-threshold-method=\"personalCentroid\"][data-threshold-focus=\"input\"]')?.value === '0.35'"
+        )
+        assert review_controls.get_attribute("open") is not None
+        page.screenshot(path="/tmp/imageall-review-thresholds-wide.png", full_page=True)
+
+        assert page.locator("#reviewSuggestionLimitValue").inner_text() == "500"
+        page.locator("#increaseReviewSuggestionLimitButton").click()
+        page.wait_for_function(
+            "() => document.querySelector('#reviewSuggestionLimitValue')?.textContent === '550'"
+        )
+        assert updates[-1]["maxPendingSuggestionsPerTag"] == 550
+        page.wait_for_function(
+            "() => document.activeElement?.id === 'increaseReviewSuggestionLimitButton'"
+        )
+        page.set_viewport_size({"width": 390, "height": 844})
+        review_dimensions = page.evaluate(
+            "() => ({ viewport: innerWidth, scroll: document.documentElement.scrollWidth })"
+        )
+        assert review_dimensions["scroll"] <= review_dimensions["viewport"], review_dimensions
+        assert page.locator("#reviewLocalModelPanel").is_visible()
+        assert page.evaluate(
+            "() => getComputedStyle(document.querySelector('#reviewLocalModelPanel')).gridTemplateColumns"
+        ) != "none"
+        assert review_controls.locator(".review-threshold-editor").first.is_visible()
+        page.screenshot(path="/tmp/imageall-review-thresholds-390.png", full_page=True)
+        page.set_viewport_size({"width": 1440, "height": 960})
+        page.locator("#closeReviewButton").click()
 
         page.keyboard.press("Meta+,")
         assert page.locator("#generalSettingsDialog").is_visible()
@@ -546,7 +751,7 @@ def main():
         assert not failed_resources, failed_resources
         browser.close()
 
-    assert len(updates) == 7, updates
+    assert len(updates) == 12, updates
     print(f"general-settings-keyboard-browser: ok; updates={len(updates)}")
 
 

@@ -7,6 +7,7 @@ protocol RemoteCatalogServing: Sendable {
     func listTags() throws -> [TagListItem]
     func listTagsIncludingArchived() throws -> [TagListItem]
     func listTagGroups() throws -> [TagGroupListItem]
+    func installStandardOntologyPackage(_ package: StandardOntologyPackageInput) throws
     func installPresetTags() throws -> TagPresetInstallResult
     func fetchGalleryOverview() throws -> GalleryOverviewSnapshot
     func fetchAssetPage(
@@ -22,6 +23,9 @@ protocol RemoteCatalogServing: Sendable {
         onProgress: @escaping @Sendable (Double) -> Void
     ) async throws -> Data
     func fetchInspectorDetail(assetID: UUID) throws -> AssetInspectorDetail
+    func fetchFavoriteStates(assetIDs: [UUID]) throws -> [UUID: MediaFavoriteState]
+    func setFavorite(assetIDs: [UUID], isFavorite: Bool) throws -> FavoriteMutationSummary
+    func retryPendingFavoriteSync(sourceIDs: Set<UUID>?) throws -> FavoriteMutationSummary
     func selectionAggregate(tagIDs: [UUID], assetIDs: [UUID]) throws -> [TagSelectionAggregate]
     func mutateTag(
         tagID: UUID,
@@ -69,6 +73,24 @@ extension RemoteCatalogServing {
     func listTagsIncludingArchived() throws -> [TagListItem] { try listTags() }
 
     func listTagGroups() throws -> [TagGroupListItem] { [] }
+
+    func installStandardOntologyPackage(_: StandardOntologyPackageInput) throws {
+        throw CatalogQueryError.notFound
+    }
+
+    func fetchFavoriteStates(assetIDs: [UUID]) throws -> [UUID: MediaFavoriteState] {
+        Dictionary(uniqueKeysWithValues: assetIDs.map {
+            ($0, MediaFavoriteState.none(assetID: $0))
+        })
+    }
+
+    func setFavorite(assetIDs _: [UUID], isFavorite _: Bool) throws -> FavoriteMutationSummary {
+        .zero
+    }
+
+    func retryPendingFavoriteSync(sourceIDs _: Set<UUID>?) throws -> FavoriteMutationSummary {
+        .zero
+    }
 
     func installPresetTags() throws -> TagPresetInstallResult {
         TagPresetInstallResult(createdTags: [])

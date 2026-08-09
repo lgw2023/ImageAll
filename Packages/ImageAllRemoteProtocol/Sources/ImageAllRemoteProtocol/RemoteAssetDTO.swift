@@ -44,6 +44,40 @@ public enum RemoteAssetTagPresence: String, Codable, Sendable, Equatable {
     case untagged
 }
 
+public enum RemoteAssetFavoriteFilter: String, Codable, Sendable, Equatable {
+    case favorited
+}
+
+public enum RemoteFavoriteSyncStatus: String, Codable, Sendable, Equatable {
+    case localOnly
+    case synced
+    case pending
+    case failed
+}
+
+public struct RemoteAssetFavoriteState: Codable, Sendable, Equatable, Identifiable {
+    public var id: UUID { assetID }
+    public let assetID: UUID
+    public let isFavorite: Bool
+    public let photosObservedValue: Bool?
+    public let syncStatus: RemoteFavoriteSyncStatus
+    public let lastErrorCode: String?
+
+    public init(
+        assetID: UUID,
+        isFavorite: Bool,
+        photosObservedValue: Bool? = nil,
+        syncStatus: RemoteFavoriteSyncStatus,
+        lastErrorCode: String? = nil
+    ) {
+        self.assetID = assetID
+        self.isFavorite = isFavorite
+        self.photosObservedValue = photosObservedValue
+        self.syncStatus = syncStatus
+        self.lastErrorCode = lastErrorCode
+    }
+}
+
 public struct RemoteAssetSummary: Codable, Sendable, Equatable, Identifiable {
     public let id: UUID
     public let sourceID: UUID
@@ -57,6 +91,8 @@ public struct RemoteAssetSummary: Codable, Sendable, Equatable, Identifiable {
     public let mediaCreatedAtMs: Int64?
     public let width: Int?
     public let height: Int?
+    /// `nil` when decoded from an older Host without the favorites capability.
+    public let favorite: RemoteAssetFavoriteState?
 
     public init(
         id: UUID,
@@ -70,7 +106,8 @@ public struct RemoteAssetSummary: Codable, Sendable, Equatable, Identifiable {
         rejectedTagCount: Int,
         mediaCreatedAtMs: Int64?,
         width: Int?,
-        height: Int?
+        height: Int?,
+        favorite: RemoteAssetFavoriteState? = nil
     ) {
         self.id = id
         self.sourceID = sourceID
@@ -84,6 +121,7 @@ public struct RemoteAssetSummary: Codable, Sendable, Equatable, Identifiable {
         self.mediaCreatedAtMs = mediaCreatedAtMs
         self.width = width
         self.height = height
+        self.favorite = favorite
     }
 }
 
@@ -100,6 +138,8 @@ public struct RemoteAssetPageRequest: Codable, Sendable, Equatable {
     public var mediaKinds: [RemoteAssetMediaKind]
     public var mediaTypes: [String]
     public var tagPresence: RemoteAssetTagPresence
+    /// `nil` means no favorite constraint and remains compatible with older clients.
+    public var favorite: RemoteAssetFavoriteFilter?
 
     public init(
         sourceIDs: [UUID] = [],
@@ -113,7 +153,8 @@ public struct RemoteAssetPageRequest: Codable, Sendable, Equatable {
         availabilities: [RemoteAssetAvailability] = [],
         mediaKinds: [RemoteAssetMediaKind] = [],
         mediaTypes: [String] = [],
-        tagPresence: RemoteAssetTagPresence = .any
+        tagPresence: RemoteAssetTagPresence = .any,
+        favorite: RemoteAssetFavoriteFilter? = nil
     ) {
         self.sourceIDs = sourceIDs
         self.searchText = searchText
@@ -127,6 +168,83 @@ public struct RemoteAssetPageRequest: Codable, Sendable, Equatable {
         self.mediaKinds = mediaKinds
         self.mediaTypes = mediaTypes
         self.tagPresence = tagPresence
+        self.favorite = favorite
+    }
+}
+
+public struct RemoteFavoriteMutationRequest: Codable, Sendable, Equatable {
+    public let operationID: UUID
+    public let assetIDs: [UUID]
+    public let isFavorite: Bool
+
+    public init(operationID: UUID, assetIDs: [UUID], isFavorite: Bool) {
+        self.operationID = operationID
+        self.assetIDs = assetIDs
+        self.isFavorite = isFavorite
+    }
+}
+
+public struct RemoteFavoriteMutationResponse: Codable, Sendable, Equatable {
+    public let operationID: UUID
+    public let changedCount: Int
+    public let localOnlyCount: Int
+    public let syncedCount: Int
+    public let pendingCount: Int
+    public let failedCount: Int
+    public let states: [RemoteAssetFavoriteState]
+    public let replayed: Bool
+
+    public init(
+        operationID: UUID,
+        changedCount: Int,
+        localOnlyCount: Int,
+        syncedCount: Int,
+        pendingCount: Int,
+        failedCount: Int,
+        states: [RemoteAssetFavoriteState],
+        replayed: Bool
+    ) {
+        self.operationID = operationID
+        self.changedCount = changedCount
+        self.localOnlyCount = localOnlyCount
+        self.syncedCount = syncedCount
+        self.pendingCount = pendingCount
+        self.failedCount = failedCount
+        self.states = states
+        self.replayed = replayed
+    }
+}
+
+public struct RemoteFavoriteSyncRetryRequest: Codable, Sendable, Equatable {
+    public let operationID: UUID
+
+    public init(operationID: UUID) {
+        self.operationID = operationID
+    }
+}
+
+public struct RemoteFavoriteSyncRetryResponse: Codable, Sendable, Equatable {
+    public let operationID: UUID
+    public let localOnlyCount: Int
+    public let syncedCount: Int
+    public let pendingCount: Int
+    public let failedCount: Int
+    public let replayed: Bool
+
+    public init(
+        operationID: UUID,
+        localOnlyCount: Int,
+        syncedCount: Int,
+        pendingCount: Int,
+        failedCount: Int,
+        replayed: Bool
+    ) {
+        self.operationID = operationID
+        self.localOnlyCount = localOnlyCount
+        self.syncedCount = syncedCount
+        self.pendingCount = pendingCount
+        self.failedCount = failedCount
+        self.replayed = replayed
     }
 }
 

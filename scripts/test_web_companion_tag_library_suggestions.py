@@ -255,9 +255,22 @@ def main():
 
         page.goto(BASE_URL, wait_until="networkidle")
         page.locator("#reviewButton").click()
+        page.locator(
+            f'[data-review-control-tag-id="{TAG_ID}"] > summary'
+        ).click()
         centroid_button = page.get_by_role("button", name="个人模型 Top 25")
         centroid_button.wait_for(state="visible")
         assert review_queue_reads == 0, "生成入口不应提前打开审核队列"
+        page.locator("#reviewSourceFilterButton").click()
+        second_review_source = page.locator(
+            f'[data-review-source-id="{SOURCE_IDS[1]}"]'
+        )
+        second_review_source.click()
+        page.wait_for_function(
+            "() => document.querySelector('#reviewSourceFilterSummary')?.textContent"
+            " === '仅显示：Apple Photos'"
+        )
+        second_review_source.press("Escape")
         centroid_button.click()
 
         dialog = page.locator("#tagSuggestionDialog")
@@ -265,14 +278,16 @@ def main():
         assert "猫" in page.locator("#tagSuggestionDialogTitle").inner_text()
         assert page.locator("#tagSuggestionThresholdSummary").inner_text() == "0.420"
         assert page.locator("#tagSuggestionLimitSummary").inner_text() == "Top 25"
-        assert page.locator("#tagSuggestionSourceOptions input:checked").count() == 2
+        assert page.locator("#tagSuggestionSourceOptions input:checked").count() == 1
+        assert page.locator(
+            f'#tagSuggestionSourceOptions input[value="{SOURCE_IDS[0]}"]'
+        ).is_checked()
 
         page.set_viewport_size({"width": 390, "height": 844})
         assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
         dialog_width = dialog.evaluate("element => element.getBoundingClientRect().width")
         assert dialog_width <= 370.5
 
-        page.locator(f'#tagSuggestionSourceOptions input[value="{SOURCE_IDS[1]}"]').uncheck()
         assert page.locator("#tagSuggestionSelectionSummary").inner_text() == "已选择 1 个来源"
         page.locator("#launchTagSuggestionButton").click()
         page.wait_for_function("() => !document.querySelector('#tagSuggestionDialog').open")

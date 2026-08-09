@@ -345,7 +345,7 @@ def main():
         )
         assert page.locator("#lightboxPosition").inner_text() == "73 / 74"
         assert page.locator(
-            f'#assetGrid > .asset-card[data-asset-id="{asset_id(73)}"]'
+            f'#assetGrid > .asset-card[data-asset-id="{asset_id(73)}"] > .asset-card-main'
         ).get_attribute("aria-pressed") == "true"
         assert page.locator("#assetGrid > .asset-card").count() == 74
         page.screenshot(path="/tmp/imageall-single-photo-pagination-synthetic.png", full_page=True)
@@ -353,10 +353,11 @@ def main():
         page.locator("#lightboxBackButton").click()
         page.locator("#lightbox").wait_for(state="hidden")
         page.wait_for_function(
-            f"() => document.activeElement?.dataset.assetId === '{asset_id(73)}'"
+            f"() => document.activeElement?.closest('.asset-card')?.dataset.assetId === "
+            f"'{asset_id(73)}'"
         )
         assert page.locator(
-            f'#assetGrid > .asset-card[data-asset-id="{asset_id(73)}"]'
+            f'#assetGrid > .asset-card[data-asset-id="{asset_id(73)}"] > .asset-card-main'
         ).get_attribute("aria-pressed") == "true"
         assert page.locator("#libraryScroll").evaluate("element => element.scrollTop") > 0
 
@@ -374,7 +375,8 @@ def main():
         page.keyboard.press("Space")
         page.locator("#lightbox").wait_for(state="hidden")
         page.wait_for_function(
-            f"() => document.activeElement?.dataset.assetId === '{asset_id(73)}'"
+            f"() => document.activeElement?.closest('.asset-card')?.dataset.assetId === "
+            f"'{asset_id(73)}'"
         )
 
         page.set_viewport_size({"width": 390, "height": 844})
@@ -408,17 +410,25 @@ def main():
             steps=6,
         )
         page.mouse.up()
-        assert page.locator('#reviewGrid > .review-card[aria-pressed="true"]').count() >= 2
+        assert page.locator(
+            '#reviewGrid > .review-card > .review-card-main[aria-pressed="true"]'
+        ).count() >= 2
         assert page.locator("#reviewSelectionSummary").inner_text().startswith("已选择")
 
         page.locator('[data-review-index="0"]').click()
         page.locator('[data-review-index="1"]').click(modifiers=["Meta"])
         page.locator('[data-review-index="3"]').click(modifiers=["Shift"])
-        assert page.locator('#reviewGrid > .review-card[aria-pressed="true"]').count() == 3
+        assert page.locator(
+            '#reviewGrid > .review-card > .review-card-main[aria-pressed="true"]'
+        ).count() == 3
         assert "已选择 3 张照片" in page.locator("#reviewSelectionSummary").inner_text()
         assert page.locator("#reviewFileName").inner_text() == "REVIEW_004.JPG"
         page.locator('#reviewDetail .review-action[data-action="reject"]').click()
-        page.wait_for_function("() => document.querySelectorAll('#reviewGrid > .review-card[aria-pressed=\"true\"]').length === 1")
+        page.wait_for_function(
+            "() => document.querySelectorAll("
+            "'#reviewGrid > .review-card > .review-card-main[aria-pressed=\"true\"]'"
+            ").length === 1"
+        )
         assert review_decisions[-1]["action"] == "reject"
         assert review_decisions[-1]["assetIDs"] == [
             asset_id(2), asset_id(3), asset_id(4),
@@ -456,7 +466,9 @@ def main():
         assert page.locator('[data-review-index="0"]').get_attribute("data-review-key").startswith(asset_id(1))
 
         page.keyboard.press("Meta+a")
-        assert page.locator('#reviewGrid > .review-card[aria-pressed="true"]').count() == 48
+        assert page.locator(
+            '#reviewGrid > .review-card > .review-card-main[aria-pressed="true"]'
+        ).count() == 48
         assert "已选择 48 项" in page.locator("#reviewSummary").inner_text()
         page.screenshot(path="/tmp/imageall-review-multiselection-synthetic.png", full_page=True)
         page.set_viewport_size({"width": 390, "height": 844})
@@ -488,11 +500,15 @@ def main():
             " && document.querySelector('#reviewFileName')?.textContent === 'REVIEW_049.JPG'"
         )
         assert page.locator("#lightboxPosition").inner_text() == "49 / 49"
-        assert page.locator('[data-review-index="48"]').get_attribute("aria-pressed") == "true"
+        assert page.locator(
+            '[data-review-index="48"] > .review-card-main'
+        ).get_attribute("aria-pressed") == "true"
         page.screenshot(path="/tmp/imageall-review-single-photo-pagination.png", full_page=True)
         page.locator("#lightboxBackButton").click()
         page.locator("#lightbox").wait_for(state="hidden")
-        assert page.locator('[data-review-index="48"]').get_attribute("aria-pressed") == "true"
+        assert page.locator(
+            '[data-review-index="48"] > .review-card-main'
+        ).get_attribute("aria-pressed") == "true"
         page.locator("#closeReviewButton").click()
 
         assert not page_errors, page_errors

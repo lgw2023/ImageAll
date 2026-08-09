@@ -12,10 +12,12 @@ public enum RemoteCapability: String, Codable, Sendable, Hashable, CaseIterable 
     case assetDetail
     case thumbnails
     case previews
+    case favorites
     case tagDecisions
     case tagSelection
     case reviewQueue
     case reviewDecisions
+    case librarySuggestions
     case librarySlimming
     case sourceManagement
     case generalSettings

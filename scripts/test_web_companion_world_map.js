@@ -72,6 +72,8 @@ let browser;
   let placeTagStatus = "unresolved";
   let confirmedPlaceID = null;
   const placeTagCommands = [];
+  const favoriteMutations = [];
+  let favoriteState = false;
   page.on("console", (message) => {
     if (message.type() === "error") consoleErrors.push(message.text());
   });
@@ -119,6 +121,7 @@ let browser;
     hostID: "aaaaaaaa-1111-2222-3333-aaaaaaaaaaaa",
     hostDisplayName: "Synthetic Mac",
     hostAppVersion: "test",
+    capabilities: ["favorites"],
   }));
   await page.route(`${baseURL}/v1/sources`, (route) => json(route, []));
   await page.route(`${baseURL}/v1/tags`, (route) => json(route, []));
@@ -160,8 +163,37 @@ let browser;
         fileName: "IMG_0001.HEIC",
         availability: "available",
         contentRevision: 7,
+        favorite: {
+          assetID,
+          isFavorite: favoriteState,
+          photosObservedValue: favoriteState,
+          syncStatus: "synced",
+          lastErrorCode: null,
+        },
       }],
       totalPhotoCount: 42,
+    });
+  });
+  await page.route(`${baseURL}/v1/favorites`, (route) => {
+    const body = route.request().postDataJSON();
+    favoriteMutations.push(body);
+    assert.deepEqual(body.assetIDs, [assetID]);
+    favoriteState = body.isFavorite;
+    return json(route, {
+      operationID: body.operationID,
+      changedCount: 1,
+      localOnlyCount: 0,
+      syncedCount: 1,
+      pendingCount: 0,
+      failedCount: 0,
+      states: [{
+        assetID,
+        isFavorite: favoriteState,
+        photosObservedValue: favoriteState,
+        syncStatus: "synced",
+        lastErrorCode: null,
+      }],
+      replayed: false,
     });
   });
   const locationBackfillSnapshots = () => [{
@@ -284,6 +316,36 @@ let browser;
   await page.locator("#worldMapDetail:not(.hidden)").waitFor();
   assert.equal(await page.locator("#worldMapDetailName").textContent(), "上海");
   assert.match(await page.locator("#worldMapDetailCount").textContent(), /42/);
+
+  const worldMapCard = page.locator(`.world-map-photo-card[data-world-map-card-asset-id="${assetID}"]`);
+  const worldMapFavorite = worldMapCard.locator(":scope > .world-map-photo-favorite");
+  const stripScrollLeft = await page.locator("#worldMapPhotoStrip").evaluate(
+    (element) => element.scrollLeft
+  );
+  await worldMapCard.hover();
+  await worldMapFavorite.click();
+  await page.waitForFunction(() => (
+    document.querySelector(".world-map-photo-favorite")?.dataset.favorite === "true"
+  ));
+  assert.equal(favoriteMutations.length, 1);
+  assert.equal(favoriteMutations[0].isFavorite, true);
+  assert.equal(await page.locator("#lightbox").isHidden(), true);
+  assert.equal(await page.locator("#worldMapDetail").isVisible(), true);
+  assert.equal(await page.locator("#worldMapPhotoStrip").evaluate((element) => element.scrollLeft), stripScrollLeft);
+  await worldMapFavorite.press("Enter");
+  await page.waitForFunction(() => (
+    document.querySelector(".world-map-photo-favorite")?.dataset.favorite === "false"
+  ));
+  assert.equal(favoriteMutations.length, 2);
+  assert.equal(favoriteMutations[1].isFavorite, false);
+  assert.equal(await page.locator("#lightbox").isHidden(), true);
+  assert.equal(await page.locator("#worldMapPhotoStrip").evaluate((element) => element.scrollLeft), stripScrollLeft);
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  assert.equal(await worldMapFavorite.isVisible(), true);
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+  await page.screenshot({ path: "/tmp/imageall-world-map-photo-favorite-mobile.png" });
+  await page.setViewportSize({ width: 1440, height: 960 });
 
   await page.locator(`[data-world-map-asset-id="${assetID}"]`).click();
   await page.locator("#lightbox:not(.hidden)").waitFor();
@@ -452,7 +514,8 @@ let browser;
   await browser.close();
   browser = null;
   process.stdout.write(
-    `world-map browser flow passed; snapshot requests=${snapshotRequestCount}; place commands=${placeTagCommands.length}\n`
+    `world-map browser flow passed; snapshot requests=${snapshotRequestCount}; `
+      + `place commands=${placeTagCommands.length}; favorites=${favoriteMutations.length}\n`
   );
 })().catch((error) => {
   console.error(error);

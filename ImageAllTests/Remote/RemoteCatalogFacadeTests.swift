@@ -88,14 +88,16 @@ final class RemoteCatalogFacadeTests: XCTestCase {
             idleThumbnailPrewarmEnabled: true,
             idleThresholdSeconds: 180,
             toolbarDisplayMode: .iconOnly,
-            suggestionThresholds: initialThresholds
+            suggestionThresholds: initialThresholds,
+            maxPendingSuggestionsPerTag: 500
         )
         let updated = GeneralSettingsSnapshot(
             localModel: initial.localModel,
             idleThumbnailPrewarmEnabled: true,
             idleThresholdSeconds: 180,
             toolbarDisplayMode: .iconAndTitle,
-            suggestionThresholds: initialThresholds
+            suggestionThresholds: initialThresholds,
+            maxPendingSuggestionsPerTag: 550
         )
         let port = RemoteGeneralSettingsCommandPortStub(
             snapshot: initial,
@@ -110,6 +112,7 @@ final class RemoteCatalogFacadeTests: XCTestCase {
         XCTAssertEqual(fetched.toolbarDisplayMode, .iconOnly)
         XCTAssertEqual(fetched.localModel.state, .disabled)
         XCTAssertEqual(fetched.idleThresholdSeconds, 180)
+        XCTAssertEqual(fetched.maxPendingSuggestionsPerTag, 500)
         XCTAssertEqual(fetched.suggestionThresholds?.tags.first?.displayName, "猫")
         XCTAssertEqual(
             fetched.suggestionThresholds?.tags.first?.methods.first?.reference?.minScore,
@@ -125,7 +128,8 @@ final class RemoteCatalogFacadeTests: XCTestCase {
                 method: .featureKnn,
                 tagID: tagID,
                 minScore: 0.55
-            )
+            ),
+            maxPendingSuggestionsPerTag: 550
         )
         let first = try await facade.updateGeneralSettings(request)
         let replay = try await facade.updateGeneralSettings(request)
@@ -134,8 +138,27 @@ final class RemoteCatalogFacadeTests: XCTestCase {
         XCTAssertTrue(replay.replayed)
         XCTAssertEqual(port.updateCount, 1)
         XCTAssertEqual(port.lastUpdate?.toolbarDisplayMode, .iconAndTitle)
+        XCTAssertEqual(port.lastUpdate?.maxPendingSuggestionsPerTag, 550)
         XCTAssertEqual(port.lastUpdate?.suggestionThresholdMutation?.tagID, tagID)
         XCTAssertEqual(port.lastUpdate?.suggestionThresholdMutation?.minScore, 0.55)
+
+        let pruneOperationID = UUID()
+        let pruneRequest = RemoteGeneralSettingsUpdateRequest(
+            operationID: pruneOperationID,
+            suggestionThresholdMutation: .init(
+                action: .prune,
+                method: .featureKnn,
+                tagID: tagID
+            )
+        )
+        let prune = try await facade.updateGeneralSettings(pruneRequest)
+        let pruneReplay = try await facade.updateGeneralSettings(pruneRequest)
+        XCTAssertFalse(prune.replayed)
+        XCTAssertTrue(pruneReplay.replayed)
+        XCTAssertEqual(port.updateCount, 2)
+        XCTAssertEqual(port.lastUpdate?.suggestionThresholdMutation?.action, .prune)
+        XCTAssertEqual(port.lastUpdate?.suggestionThresholdMutation?.tagID, tagID)
+        XCTAssertNil(port.lastUpdate?.suggestionThresholdMutation?.minScore)
     }
 
     func testMapsSourcesAndAssets() async throws {
@@ -208,6 +231,89 @@ final class RemoteCatalogFacadeTests: XCTestCase {
         XCTAssertEqual(page.items.count, 1)
         XCTAssertEqual(page.items[0].id, assetID)
         XCTAssertEqual(page.items[0].acceptedTagCount, 1)
+    }
+
+    func testFavoritesUseCatalogFilterAndIdempotentMacMutation() async throws {
+        let sourceID = UUID()
+        let assetID = UUID()
+        let catalog = RemoteCatalogServingStub(
+            items: [
+                AssetGridItemProjection(
+                    assetID: assetID,
+                    sourceID: sourceID,
+                    sourceDisplayName: "Apple Photos",
+                    sourceState: .active,
+                    relativePath: nil,
+                    fileName: "favorite.heic",
+                    mediaType: "public.heic",
+                    mediaCreatedAtMs: 100,
+                    mediaModifiedAtMs: 100,
+                    width: 10,
+                    height: 20,
+                    availability: .available,
+                    contentRevision: 1,
+                    acceptedTagCount: 0,
+                    rejectedTagCount: 0
+                ),
+            ],
+            favoriteStates: [
+                assetID: MediaFavoriteState(
+                    assetID: assetID,
+                    isFavorite: true,
+                    photosObservedValue: true,
+                    syncStatus: .synced,
+                    intentRevision: 1,
+                    requestedAtMs: 100,
+                    photosObservedModifiedAtMs: 100,
+                    lastErrorCode: nil
+                ),
+            ],
+            favoriteMutationSummary: FavoriteMutationSummary(
+                changedCount: 1,
+                localOnlyCount: 0,
+                syncedCount: 1,
+                pendingCount: 0,
+                failedCount: 0
+            ),
+            favoriteRetrySummary: FavoriteMutationSummary(
+                changedCount: 0,
+                localOnlyCount: 0,
+                syncedCount: 1,
+                pendingCount: 0,
+                failedCount: 0
+            )
+        )
+        let facade = makeFacade(catalog: catalog)
+
+        let page = try await facade.fetchAssets(RemoteAssetPageRequest(
+            mediaKinds: [.image],
+            favorite: .favorited
+        ))
+        XCTAssertEqual(catalog.lastRequestedFilter?.favorite, .favorited)
+        XCTAssertTrue(page.items.first?.favorite?.isFavorite == true)
+        XCTAssertEqual(page.items.first?.favorite?.syncStatus, .synced)
+
+        let operationID = UUID()
+        let request = RemoteFavoriteMutationRequest(
+            operationID: operationID,
+            assetIDs: [assetID],
+            isFavorite: false
+        )
+        let first = try await facade.setFavorite(request)
+        let replay = try await facade.setFavorite(request)
+        XCTAssertEqual(first.changedCount, 1)
+        XCTAssertFalse(first.states[0].isFavorite)
+        XCTAssertFalse(first.replayed)
+        XCTAssertTrue(replay.replayed)
+        XCTAssertEqual(catalog.favoriteMutationCallCount, 1)
+
+        let retryRequest = RemoteFavoriteSyncRetryRequest(operationID: UUID())
+        let firstRetry = try await facade.retryFavoriteSync(retryRequest)
+        let replayedRetry = try await facade.retryFavoriteSync(retryRequest)
+        XCTAssertEqual(firstRetry.syncedCount, 1)
+        XCTAssertFalse(firstRetry.replayed)
+        XCTAssertTrue(replayedRetry.replayed)
+        XCTAssertEqual(catalog.favoriteRetryCallCount, 1)
     }
 
     func testSourceManagementMapsPrewarmProgressAndSubmission() async throws {
@@ -794,6 +900,210 @@ final class RemoteCatalogFacadeTests: XCTestCase {
         XCTAssertEqual(cache.callCount, 1)
     }
 
+    func testLibrarySuggestionServiceLaunchesValidatedStandardJobAndReplays() async throws {
+        let operationID = UUID(uuidString: "99611111-1111-1111-1111-111111111111")!
+        let sourceID = UUID(uuidString: "99622222-2222-2222-2222-222222222222")!
+        let jobID = UUID(uuidString: "99633333-3333-3333-3333-333333333333")!
+        let package = StandardOntologyCatalog.bundledSceneFixture
+        let client = RemoteLibrarySuggestionClientStub(
+            standardCapability: StandardModelSuggestionCapability(
+                target: StandardModelSuggestionTarget(
+                    standardPackID: package.standardPackID,
+                    standardPackRevision: package.standardPackRevision
+                ),
+                manifestSHA256: package.manifestSHA256,
+                ontologyID: package.ontologyID,
+                ontologyRevision: package.ontologyRevision,
+                provider: package.provider,
+                modelID: package.modelID,
+                modelRevision: package.modelRevision,
+                preprocessingRevision: package.preprocessingRevision,
+                mappingRevision: package.mappingRevision,
+                policyRevision: package.policyRevision,
+                weightsSHA256: package.weightsSHA256
+            )
+        )
+        let review = RemoteReviewPortStub(
+            page: ReviewQueuePage(items: [], nextCursor: nil),
+            standardSuggestionJobID: jobID
+        )
+        let catalog = RemoteCatalogServingStub(
+            sources: [
+                LibrarySourceSummary(
+                    id: sourceID,
+                    kind: .folder,
+                    displayName: "Archive",
+                    state: .active
+                ),
+            ],
+            jobs: [
+                JobActivityItem(
+                    id: jobID,
+                    kind: .standardSuggestions,
+                    state: .pending,
+                    controlRequest: .none,
+                    progress: JobProgress(completed: 0, total: nil)
+                ),
+            ]
+        )
+        let service = RemoteTrainingCommandService(
+            catalog: catalog,
+            review: review,
+            centroidRebuilder: nil,
+            adamWRebuilder: nil,
+            embeddingCache: nil,
+            localModelSuggestions: LocalModelSuggestionRuntime(
+                client: client,
+                catalogScopeID: "fixture-scope"
+            )
+        )
+        let facade = makeFacade(catalog: catalog, review: review, trainingCommands: service)
+        let request = RemoteLibrarySuggestionRequest(
+            operationID: operationID,
+            mediaKind: .image,
+            track: .standard,
+            sourceIDs: [sourceID]
+        )
+
+        let first = try await facade.submitLibrarySuggestions(request)
+        let replay = try await facade.submitLibrarySuggestions(request)
+        let snapshot = try await facade.fetchLibrarySuggestions(
+            mediaKind: .image,
+            refreshServiceHealth: true
+        )
+
+        XCTAssertEqual(first.jobID, jobID)
+        XCTAssertFalse(first.replayed)
+        XCTAssertTrue(replay.replayed)
+        XCTAssertEqual(review.standardSuggestionEnqueueCount, 1)
+        XCTAssertEqual(review.standardSuggestionSourceIDs, [sourceID])
+        XCTAssertEqual(catalog.standardOntologyInstallCount, 1)
+        XCTAssertEqual(client.standardCapabilityCount, 1)
+        XCTAssertEqual(client.healthCount, 1)
+        XCTAssertEqual(snapshot.service.state, .ready)
+        XCTAssertTrue(snapshot.standardAvailable)
+        XCTAssertEqual(snapshot.personalMode, .fullLibrary)
+        XCTAssertEqual(snapshot.standardJob?.jobID, jobID)
+        XCTAssertEqual(snapshot.standardJob?.availableActions, [.pause, .cancel])
+    }
+
+    func testLibrarySuggestionServiceLaunchesValidatedPersonalJobInSourceScope() async throws {
+        let operationID = UUID(uuidString: "99644444-4444-4444-4444-444444444444")!
+        let sourceID = UUID(uuidString: "99655555-5555-5555-5555-555555555555")!
+        let tagID = UUID(uuidString: "99666666-6666-6666-6666-666666666666")!
+        let jobID = UUID(uuidString: "99677777-7777-7777-7777-777777777777")!
+        let hash = String(repeating: "a", count: 64)
+        let capability = PersonalModelSuggestionCapability(
+            target: PersonalModelSuggestionTarget(
+                catalogScopeID: "fixture-scope",
+                bundleID: "personal.bundle",
+                bundleRevision: "1",
+                provider: "coreml",
+                modelID: "personal-v1",
+                modelRevision: "1",
+                preprocessingRevision: "1",
+                elementCount: 16,
+                labelVocabularyRevision: hash,
+                weightsSHA256: hash,
+                policyRevision: "1"
+            ),
+            tagIDs: [tagID]
+        )
+        let client = RemoteLibrarySuggestionClientStub(personalCapability: capability)
+        let review = RemoteReviewPortStub(
+            page: ReviewQueuePage(items: [], nextCursor: nil),
+            personalSuggestionJobID: jobID
+        )
+        let catalog = RemoteCatalogServingStub(
+            sources: [
+                LibrarySourceSummary(
+                    id: sourceID,
+                    kind: .photos,
+                    displayName: "Apple Photos",
+                    state: .active
+                ),
+            ],
+            tags: [
+                TagListItem(id: tagID, displayName: "猫", state: .active),
+            ]
+        )
+        let service = RemoteTrainingCommandService(
+            catalog: catalog,
+            review: review,
+            centroidRebuilder: nil,
+            adamWRebuilder: nil,
+            embeddingCache: nil,
+            localModelSuggestions: LocalModelSuggestionRuntime(
+                client: client,
+                catalogScopeID: "fixture-scope"
+            )
+        )
+
+        let receipt = try await service.generateLibrarySuggestions(
+            LibrarySuggestionCommand(
+                operationID: operationID,
+                mediaKind: .image,
+                track: .personal,
+                sourceIDs: [sourceID]
+            )
+        )
+
+        XCTAssertEqual(receipt.jobID, jobID)
+        XCTAssertFalse(receipt.replayed)
+        XCTAssertEqual(review.personalSuggestionEnqueueCount, 1)
+        XCTAssertEqual(review.personalSuggestionSourceIDs, [sourceID])
+        XCTAssertEqual(client.personalCapabilityCount, 1)
+    }
+
+    func testSampleSuggestionServiceUsesReviewSourceFilterForLibrarySample() async throws {
+        let operationID = UUID(uuidString: "99888888-8888-8888-8888-888888888888")!
+        let sourceID = UUID(uuidString: "99899999-9999-9999-9999-999999999999")!
+        let assetID = UUID(uuidString: "99877777-7777-7777-7777-777777777777")!
+        let candidate = PersonalSuggestionCandidate(assetID: assetID, contentRevision: 3)
+        let review = RemoteReviewPortStub(
+            page: ReviewQueuePage(items: [], nextCursor: nil),
+            personalCandidates: [candidate]
+        )
+        let catalog = RemoteCatalogServingStub(
+            sources: [
+                LibrarySourceSummary(
+                    id: sourceID,
+                    kind: .folder,
+                    displayName: "Archive",
+                    state: .active
+                ),
+            ],
+            previewData: Data([1, 2, 3])
+        )
+        let service = RemoteTrainingCommandService(
+            catalog: catalog,
+            review: review,
+            centroidRebuilder: nil,
+            adamWRebuilder: nil,
+            embeddingCache: RemoteEmbeddingCacheStub(),
+            sampleSuggester: RemoteSampleSuggesterStub(),
+            sampleSuggestionLimit: { 12 }
+        )
+
+        let receipt = try await service.generateSampleSuggestions(
+            SampleSuggestionCommand(
+                operationID: operationID,
+                mediaKind: .image,
+                assetIDs: [],
+                sourceIDs: [sourceID]
+            )
+        )
+
+        XCTAssertFalse(receipt.replayed)
+        XCTAssertEqual(review.candidateSourceIDs, [sourceID])
+        var activities = await service.sampleSuggestionActivities(mediaKind: .image)
+        for _ in 0..<50 where activities.first?.phase == .running {
+            try await Task.sleep(for: .milliseconds(10))
+            activities = await service.sampleSuggestionActivities(mediaKind: .image)
+        }
+        XCTAssertEqual(activities.first?.phase, .completed)
+    }
+
     func testTagLibrarySuggestionServiceScansSelectedSourcesPublishesAndReplays() async throws {
         let operationID = UUID(uuidString: "99911111-1111-1111-1111-111111111111")!
         let tagID = UUID(uuidString: "99922222-2222-2222-2222-222222222222")!
@@ -989,6 +1299,18 @@ final class RemoteCatalogFacadeTests: XCTestCase {
                     controlRequest: .pause,
                     progress: JobProgress(completed: 1, total: 3)
                 ),
+            ],
+            favoriteStates: [
+                assetID: MediaFavoriteState(
+                    assetID: assetID,
+                    isFavorite: true,
+                    photosObservedValue: true,
+                    syncStatus: .synced,
+                    intentRevision: 1,
+                    requestedAtMs: 100,
+                    photosObservedModifiedAtMs: 100,
+                    lastErrorCode: nil
+                ),
             ]
         )
         let facade = makeFacade(catalog: catalog, librarySlimmingAnalysis: analysis)
@@ -1006,7 +1328,12 @@ final class RemoteCatalogFacadeTests: XCTestCase {
         XCTAssertEqual(snapshot.clusters.first?.kind, .nearDuplicateScene)
         XCTAssertEqual(snapshot.members.first?.fileName, "IMG_0001.HEIC")
         XCTAssertEqual(snapshot.members.first?.sourceName, "Apple Photos")
+        XCTAssertEqual(snapshot.members.first?.favorite?.isFavorite, true)
+        XCTAssertEqual(snapshot.members.first?.favorite?.syncStatus, .synced)
         XCTAssertEqual(snapshot.policyVersion, "librarySlimming.v1")
+        XCTAssertEqual(snapshot.clusterScopeCounts?.pending, 1)
+        XCTAssertEqual(snapshot.clusterScopeCounts?.confirmed, 0)
+        XCTAssertNil(snapshot.clusters.first?.reviewDisposition)
         XCTAssertEqual(snapshot.jobs.first?.controlRequest, .pause)
         XCTAssertEqual(snapshot.jobs.first?.scanProgress?.phase, .loadingFeaturePrints)
         XCTAssertEqual(snapshot.jobs.first?.scanProgress?.completedUnitCount, 0)
@@ -1022,6 +1349,217 @@ final class RemoteCatalogFacadeTests: XCTestCase {
         XCTAssertEqual(activities.first?.navigationTarget?.workspace, .librarySlimming)
         XCTAssertEqual(activities.first?.navigationTarget?.recordID, jobID)
         XCTAssertEqual(activities.first?.navigationTarget?.mediaKind, .image)
+    }
+
+    func testLibrarySlimmingWorkspacePagesCompleteJobHistoryAndExpandsDeepLinks() async throws {
+        let jobIDs = (0..<102).map { index in
+            UUID(uuidString: String(format: "71000000-0000-0000-0000-%012d", index))!
+        }
+        let summaries = jobIDs.enumerated().map { index, jobID in
+            LibrarySlimmingAnalysisJobSummary(
+                jobID: jobID,
+                mode: .catalog,
+                mediaKind: .image,
+                state: .completed,
+                controlRequest: .none,
+                progress: JobProgress(completed: 1, total: 1),
+                attempts: 1,
+                maxAttempts: 10,
+                memberCount: 1,
+                seedCount: 0,
+                clusterCount: 0,
+                hasResult: true,
+                createdAtMs: Int64(10_000 - index),
+                updatedAtMs: Int64(10_000 - index),
+                sourceNames: ["Apple Photos"]
+            )
+        }
+        let analysis = RemoteLibrarySlimmingAnalysisPortStub(
+            summaries: summaries,
+            snapshot: LibrarySlimmingAnalysisJobSnapshot(
+                jobID: jobIDs[0],
+                state: .completed,
+                controlRequest: .none,
+                progress: JobProgress(completed: 1, total: 1),
+                result: LibrarySlimmingScanResult(
+                    clusters: [],
+                    pendingAnalysisAssetIDs: [],
+                    analyzedAssetCount: 1,
+                    policyVersion: "librarySlimming.v1"
+                )
+            )
+        )
+        let facade = makeFacade(
+            catalog: RemoteCatalogServingStub(),
+            librarySlimmingAnalysis: analysis
+        )
+
+        let firstPage = try await facade.fetchLibrarySlimmingWorkspace(
+            mediaKind: .image,
+            jobID: nil,
+            clusterID: nil,
+            jobLimit: 2
+        )
+        XCTAssertEqual(firstPage.jobs.map(\.id), Array(jobIDs.prefix(2)))
+        XCTAssertEqual(firstPage.totalJobCount, 102)
+        XCTAssertEqual(firstPage.selectedJobID, jobIDs[0])
+
+        let deepLink = try await facade.fetchLibrarySlimmingWorkspace(
+            mediaKind: .image,
+            jobID: jobIDs[101],
+            clusterID: nil,
+            jobLimit: 2
+        )
+        XCTAssertEqual(deepLink.jobs.count, 102)
+        XCTAssertEqual(deepLink.jobs.last?.id, jobIDs[101])
+        XCTAssertEqual(deepLink.selectedJobID, jobIDs[101])
+        XCTAssertEqual(deepLink.totalJobCount, 102)
+    }
+
+    func testLibrarySlimmingClusterScopesAndReviewMutationUseHostAuthority() async throws {
+        let jobID = UUID()
+        let pendingClusterID = UUID()
+        let confirmedClusterID = UUID()
+        let ignoredClusterID = UUID()
+        let pendingAssetID = UUID()
+        let pendingAssetID2 = UUID()
+        let confirmedAssetID = UUID()
+        let confirmedAssetID2 = UUID()
+        let ignoredAssetID = UUID()
+        let ignoredAssetID2 = UUID()
+        let result = LibrarySlimmingScanResult(
+            clusters: [
+                SlimmingCluster(
+                    id: pendingClusterID,
+                    kind: .byteIdentical,
+                    memberAssetIDs: [pendingAssetID, pendingAssetID2],
+                    representativeAssetID: pendingAssetID,
+                    score: 1,
+                    modelIdentity: .featurePrintOnly
+                ),
+                SlimmingCluster(
+                    id: confirmedClusterID,
+                    kind: .perceptualDuplicate,
+                    memberAssetIDs: [confirmedAssetID, confirmedAssetID2],
+                    representativeAssetID: confirmedAssetID,
+                    score: 0.95,
+                    modelIdentity: .featurePrintOnly
+                ),
+                SlimmingCluster(
+                    id: ignoredClusterID,
+                    kind: .nearDuplicateScene,
+                    memberAssetIDs: [ignoredAssetID, ignoredAssetID2],
+                    representativeAssetID: ignoredAssetID,
+                    score: 0.9,
+                    modelIdentity: .featurePrintOnly
+                ),
+            ],
+            pendingAnalysisAssetIDs: [],
+            analyzedAssetCount: 6,
+            policyVersion: "librarySlimming.v1"
+        )
+        let analysis = RemoteLibrarySlimmingAnalysisPortStub(
+            summaries: [
+                LibrarySlimmingAnalysisJobSummary(
+                    jobID: jobID,
+                    mode: .catalog,
+                    mediaKind: .image,
+                    state: .completed,
+                    controlRequest: .none,
+                    progress: JobProgress(completed: 6, total: 6),
+                    attempts: 1,
+                    maxAttempts: 10,
+                    memberCount: 6,
+                    seedCount: 0,
+                    clusterCount: 3,
+                    hasResult: true,
+                    createdAtMs: 100,
+                    updatedAtMs: 200,
+                    sourceNames: ["Apple Photos"]
+                ),
+            ],
+            snapshot: LibrarySlimmingAnalysisJobSnapshot(
+                jobID: jobID,
+                state: .completed,
+                controlRequest: .none,
+                progress: JobProgress(completed: 6, total: 6),
+                result: result
+            ),
+            reviewDispositions: [
+                confirmedClusterID: .confirmed,
+                ignoredClusterID: .ignored,
+            ]
+        )
+        let commands = RemoteLibrarySlimmingCommandPortStub(
+            setup: LibrarySlimmingCommandSetupSnapshot(
+                mediaKind: .image,
+                sources: [],
+                thresholds: .factory,
+                factoryThresholds: .factory
+            ),
+            receipt: LibrarySlimmingLaunchReceipt(
+                operationID: UUID(),
+                jobID: jobID,
+                acceptedAtMs: 0,
+                memberCount: 0
+            ),
+            hiddenAssetIDs: [confirmedAssetID, confirmedAssetID2, ignoredAssetID]
+        )
+        let facade = makeFacade(
+            catalog: RemoteCatalogServingStub(),
+            librarySlimmingAnalysis: analysis,
+            librarySlimmingCommands: commands
+        )
+
+        let confirmed = try await facade.fetchLibrarySlimmingWorkspace(
+            mediaKind: .image,
+            jobID: jobID,
+            clusterID: nil,
+            clusterScope: .confirmed,
+            clusterLimit: 1,
+            memberLimit: 1
+        )
+        XCTAssertEqual(confirmed.clusters.map(\.id), [confirmedClusterID])
+        XCTAssertEqual(confirmed.selectedClusterID, confirmedClusterID)
+        XCTAssertEqual(confirmed.clusters.first?.reviewDisposition, .confirmed)
+        XCTAssertEqual(confirmed.clusters.first?.memberCount, 0)
+        XCTAssertEqual(confirmed.clusters.first?.originalMemberCount, 2)
+        XCTAssertEqual(confirmed.clusters.first?.isHistoricalProcessedRecord, true)
+        XCTAssertTrue(confirmed.members.isEmpty)
+        XCTAssertEqual(
+            confirmed.clusterScopeCounts,
+            RemoteLibrarySlimmingClusterScopeCounts(pending: 1, confirmed: 1, ignored: 1)
+        )
+
+        let ignored = try await facade.fetchLibrarySlimmingWorkspace(
+            mediaKind: .image,
+            jobID: jobID,
+            clusterID: ignoredClusterID,
+            clusterScope: .ignored,
+            clusterLimit: 1,
+            memberLimit: 1
+        )
+        XCTAssertEqual(ignored.clusters.first?.memberCount, 1)
+        XCTAssertEqual(ignored.clusters.first?.originalMemberCount, 2)
+        XCTAssertEqual(ignored.clusters.first?.isHistoricalProcessedRecord, true)
+        XCTAssertEqual(ignored.members.map(\.id), [ignoredAssetID2])
+
+        let operationID = UUID()
+        let request = RemoteLibrarySlimmingClusterReviewRequest(
+            operationID: operationID,
+            jobID: jobID,
+            clusterID: pendingClusterID,
+            disposition: .ignored
+        )
+        let first = try await facade.updateLibrarySlimmingClusterReview(request)
+        let replay = try await facade.updateLibrarySlimmingClusterReview(request)
+        XCTAssertEqual(first.disposition, .ignored)
+        XCTAssertFalse(first.replayed)
+        XCTAssertTrue(replay.replayed)
+        XCTAssertEqual(commands.clusterReviewUpdateCount, 1)
+        XCTAssertEqual(commands.lastClusterReviewJobID, jobID)
+        XCTAssertEqual(commands.lastClusterReviewClusterID, pendingClusterID)
+        XCTAssertEqual(commands.lastClusterReviewDisposition, .ignored)
     }
 
     func testLibrarySlimmingSetupLaunchActionsAndThresholdsAreMappedIdempotently() async throws {
@@ -1106,6 +1644,8 @@ final class RemoteCatalogFacadeTests: XCTestCase {
         let photosEntryID = UUID()
         let refreshOnlyEntryID = UUID()
         let assetID = UUID()
+        let photosAssetID = UUID()
+        let refreshOnlyAssetID = UUID()
         let sourceID = UUID()
         let operationID = UUID()
         let requestSnapshot = LibrarySlimmingRecycleCommandRequestSnapshot(
@@ -1150,7 +1690,7 @@ final class RemoteCatalogFacadeTests: XCTestCase {
                     ),
                     RecycleEntryRecord(
                         id: photosEntryID,
-                        assetID: UUID(),
+                        assetID: photosAssetID,
                         sourceID: sourceID,
                         sourceKind: .photos,
                         mediaKind: .image,
@@ -1165,7 +1705,7 @@ final class RemoteCatalogFacadeTests: XCTestCase {
                     ),
                     RecycleEntryRecord(
                         id: refreshOnlyEntryID,
-                        assetID: UUID(),
+                        assetID: refreshOnlyAssetID,
                         sourceID: sourceID,
                         sourceKind: .file,
                         mediaKind: .image,
@@ -1181,12 +1721,41 @@ final class RemoteCatalogFacadeTests: XCTestCase {
                 ],
                 totalCount: 3,
                 sourceNames: [sourceID: "Archive"],
-                requests: [requestSnapshot]
+                requests: [requestSnapshot],
+                scopeCounts: LibrarySlimmingRecycleCommandScopeCounts(
+                    all: 3,
+                    photos: 1,
+                    files: 2,
+                    attention: 1
+                )
             ),
             recycleReceipt: requestSnapshot
         )
         let facade = makeFacade(
-            catalog: RemoteCatalogServingStub(),
+            catalog: RemoteCatalogServingStub(
+                favoriteStates: [
+                    assetID: MediaFavoriteState(
+                        assetID: assetID,
+                        isFavorite: true,
+                        photosObservedValue: nil,
+                        syncStatus: .localOnly,
+                        intentRevision: 1,
+                        requestedAtMs: 100,
+                        photosObservedModifiedAtMs: nil,
+                        lastErrorCode: nil
+                    ),
+                    photosAssetID: MediaFavoriteState(
+                        assetID: photosAssetID,
+                        isFavorite: false,
+                        photosObservedValue: false,
+                        syncStatus: .synced,
+                        intentRevision: 1,
+                        requestedAtMs: 100,
+                        photosObservedModifiedAtMs: 100,
+                        lastErrorCode: nil
+                    ),
+                ]
+            ),
             librarySlimmingCommands: commands
         )
 
@@ -1194,6 +1763,7 @@ final class RemoteCatalogFacadeTests: XCTestCase {
             mediaKind: .image,
             sourceID: nil,
             searchText: nil,
+            scope: .all,
             limit: 60
         )
         let entriesByID = Dictionary(uniqueKeysWithValues: snapshot.entries.map { ($0.id, $0) })
@@ -1201,6 +1771,14 @@ final class RemoteCatalogFacadeTests: XCTestCase {
         XCTAssertEqual(entriesByID[entryID]?.availableActions, [.restore, .purge])
         XCTAssertEqual(entriesByID[photosEntryID]?.availableActions, [])
         XCTAssertEqual(entriesByID[refreshOnlyEntryID]?.availableActions, [])
+        XCTAssertEqual(entriesByID[entryID]?.favorite?.isFavorite, true)
+        XCTAssertEqual(entriesByID[photosEntryID]?.favorite?.syncStatus, .synced)
+        XCTAssertEqual(entriesByID[refreshOnlyEntryID]?.favorite?.isFavorite, false)
+        XCTAssertEqual(entriesByID[refreshOnlyEntryID]?.favorite?.syncStatus, .localOnly)
+        XCTAssertEqual(snapshot.scopeCounts?.all, 3)
+        XCTAssertEqual(snapshot.scopeCounts?.photos, 1)
+        XCTAssertEqual(snapshot.scopeCounts?.files, 2)
+        XCTAssertEqual(snapshot.scopeCounts?.attention, 1)
         let encoded = try JSONEncoder().encode(snapshot)
         let json = try XCTUnwrap(String(data: encoded, encoding: .utf8))
         XCTAssertFalse(json.contains("private/original/path"))
@@ -1218,6 +1796,121 @@ final class RemoteCatalogFacadeTests: XCTestCase {
         XCTAssertEqual(response.phase, .awaitingMac)
         XCTAssertEqual(commands.lastRecycleCommand?.action, .restore)
         XCTAssertEqual(commands.lastRecycleCommand?.entryID, entryID)
+    }
+
+    func testLibrarySlimmingRecycleScopeFiltersBeforePaginationAndCountsContext() {
+        let firstSourceID = UUID()
+        let secondSourceID = UUID()
+        let photosEntry = RecycleEntryRecord(
+            id: UUID(),
+            assetID: UUID(),
+            sourceID: firstSourceID,
+            sourceKind: .photos,
+            trashedAtMs: 1,
+            purgeAfterMs: 2,
+            state: .recycled,
+            quarantineRelativePath: nil,
+            originalRelativePath: nil,
+            photosLocalIdentifier: "photos-1",
+            errorCode: nil,
+            fileName: "Trip 01.HEIC"
+        )
+        let firstFileEntry = RecycleEntryRecord(
+            id: UUID(),
+            assetID: UUID(),
+            sourceID: firstSourceID,
+            sourceKind: .file,
+            trashedAtMs: 2,
+            purgeAfterMs: 3,
+            state: .recycled,
+            quarantineRelativePath: "quarantine/trip-02",
+            originalRelativePath: "Trip 02.HEIC",
+            photosLocalIdentifier: nil,
+            errorCode: nil,
+            fileName: "Trip 02.HEIC"
+        )
+        let attentionFileEntry = RecycleEntryRecord(
+            id: UUID(),
+            assetID: UUID(),
+            sourceID: firstSourceID,
+            sourceKind: .file,
+            trashedAtMs: 3,
+            purgeAfterMs: 4,
+            state: .failed,
+            quarantineRelativePath: nil,
+            originalRelativePath: "Trip 03.HEIC",
+            photosLocalIdentifier: nil,
+            errorCode: RecycleFailureCode.sourceChanged,
+            fileName: "Trip 03.HEIC"
+        )
+        let otherSourceEntry = RecycleEntryRecord(
+            id: UUID(),
+            assetID: UUID(),
+            sourceID: secondSourceID,
+            sourceKind: .file,
+            trashedAtMs: 4,
+            purgeAfterMs: 5,
+            state: .pending,
+            quarantineRelativePath: nil,
+            originalRelativePath: "Trip 04.HEIC",
+            photosLocalIdentifier: nil,
+            errorCode: nil,
+            fileName: "Trip 04.HEIC"
+        )
+        let videoEntry = RecycleEntryRecord(
+            id: UUID(),
+            assetID: UUID(),
+            sourceID: firstSourceID,
+            sourceKind: .file,
+            mediaKind: .video,
+            trashedAtMs: 5,
+            purgeAfterMs: 6,
+            state: .failed,
+            quarantineRelativePath: nil,
+            originalRelativePath: "Trip 05.MOV",
+            photosLocalIdentifier: nil,
+            errorCode: RecycleFailureCode.sourceChanged,
+            fileName: "Trip 05.MOV"
+        )
+        let entries = [
+            photosEntry,
+            firstFileEntry,
+            attentionFileEntry,
+            otherSourceEntry,
+            videoEntry,
+        ]
+
+        let filesPage = RemoteLibrarySlimmingCommandService.recyclePageProjection(
+            entries: entries,
+            mediaKind: .image,
+            sourceID: nil,
+            searchText: " trip ",
+            scope: .files,
+            limit: 1
+        )
+        XCTAssertEqual(filesPage.entries.map(\.id), [firstFileEntry.id])
+        XCTAssertEqual(filesPage.totalCount, 3)
+        XCTAssertEqual(
+            filesPage.scopeCounts,
+            LibrarySlimmingRecycleCommandScopeCounts(
+                all: 4,
+                photos: 1,
+                files: 3,
+                attention: 2
+            )
+        )
+
+        let attentionPage = RemoteLibrarySlimmingCommandService.recyclePageProjection(
+            entries: entries,
+            mediaKind: .image,
+            sourceID: firstSourceID,
+            searchText: "TRIP",
+            scope: .attention,
+            limit: 60
+        )
+        XCTAssertEqual(attentionPage.entries.map(\.id), [attentionFileEntry.id])
+        XCTAssertEqual(attentionPage.totalCount, 1)
+        XCTAssertEqual(attentionPage.scopeCounts.all, 3)
     }
 
     func testLibrarySlimmingBatchRemovalMapsFrozenSelectionProgressAndAudit() async throws {
@@ -1816,12 +2509,28 @@ final class RemoteCatalogFacadeTests: XCTestCase {
                 nextCursor: nil
             )
         )
-        let facade = makeFacade(catalog: RemoteCatalogServingStub(), review: review)
+        let catalog = RemoteCatalogServingStub(
+            favoriteStates: [
+                assetID: MediaFavoriteState(
+                    assetID: assetID,
+                    isFavorite: true,
+                    photosObservedValue: true,
+                    syncStatus: .synced,
+                    intentRevision: 1,
+                    requestedAtMs: 100,
+                    photosObservedModifiedAtMs: 100,
+                    lastErrorCode: nil
+                ),
+            ]
+        )
+        let facade = makeFacade(catalog: catalog, review: review)
 
         let page = try await facade.fetchReviewQueue(RemoteReviewQueueRequest(tagID: tagID, limit: 10))
         XCTAssertEqual(page.items.count, 1)
         XCTAssertEqual(page.items[0].assetID, assetID)
         XCTAssertEqual(page.items[0].suggestionOrigin, .personalModel)
+        XCTAssertEqual(page.items[0].favorite?.isFavorite, true)
+        XCTAssertEqual(page.items[0].favorite?.syncStatus, .synced)
         XCTAssertEqual(review.lastRequestedTagID, tagID)
     }
 
@@ -1921,7 +2630,19 @@ final class RemoteCatalogFacadeTests: XCTestCase {
             worldMapSelection: WorldMapCatalogSelection(
                 assets: [WorldMapCatalogAsset(assetID: assetID, fileName: "IMG_0001.HEIC")],
                 totalPhotoCount: 42
-            )
+            ),
+            favoriteStates: [
+                assetID: MediaFavoriteState(
+                    assetID: assetID,
+                    isFavorite: true,
+                    photosObservedValue: true,
+                    syncStatus: .synced,
+                    intentRevision: 1,
+                    requestedAtMs: 100,
+                    photosObservedModifiedAtMs: 100,
+                    lastErrorCode: nil
+                ),
+            ]
         )
         let facade = makeFacade(catalog: catalog)
 
@@ -1937,6 +2658,8 @@ final class RemoteCatalogFacadeTests: XCTestCase {
         XCTAssertEqual(selection.totalPhotoCount, 42)
         XCTAssertEqual(selection.assets.first?.availability, .available)
         XCTAssertEqual(selection.assets.first?.contentRevision, 7)
+        XCTAssertEqual(selection.assets.first?.favorite?.isFavorite, true)
+        XCTAssertEqual(selection.assets.first?.favorite?.syncStatus, .synced)
     }
 
     func testGalleryOverviewMapsCatalogProjectionWithoutPhotoLocators() async throws {
@@ -1981,7 +2704,11 @@ final class RemoteCatalogFacadeTests: XCTestCase {
                 ],
                 undatedCount: 1,
                 positiveLabeledAssetCount: 4,
-                acceptedDecisionCount: 5
+                acceptedDecisionCount: 5,
+                favorites: [
+                    GalleryOverviewFavoriteSummary(mediaKind: .image, count: 3),
+                    GalleryOverviewFavoriteSummary(mediaKind: .video, count: 1),
+                ]
             )
         )
 
@@ -1993,6 +2720,8 @@ final class RemoteCatalogFacadeTests: XCTestCase {
         XCTAssertEqual(result.sources.first?.state, .authorizationRequired)
         XCTAssertEqual(result.positiveTags.first?.id, tagID)
         XCTAssertEqual(result.acceptedDecisionCount, 5)
+        XCTAssertEqual(result.favorites?.first?.mediaKind, .image)
+        XCTAssertEqual(result.favorites?.first?.count, 3)
     }
 
     func testWorldMapLocationBackfillMapsProgressAndMakesCommandsIdempotent() async throws {
@@ -2318,6 +3047,9 @@ private final class RemoteCatalogServingStub: RemoteCatalogServing, @unchecked S
     private let worldMapPlaceSearchResult: WorldMapPlaceTagResolution?
     private let worldMapPlaceConfirmResult: WorldMapPlaceTagResolution?
     private let galleryOverview: GalleryOverviewSnapshot
+    private let favoriteMutationSummary: FavoriteMutationSummary
+    private let favoriteRetrySummary: FavoriteMutationSummary
+    private var storedFavoriteStates: [UUID: MediaFavoriteState]
     private var storedMutateCallCount = 0
     private var storedCreateTagCallCount = 0
     private var storedPresetInstallCallCount = 0
@@ -2335,6 +3067,9 @@ private final class RemoteCatalogServingStub: RemoteCatalogServing, @unchecked S
     private var storedWorldMapPlaceConfirmCount = 0
     private var storedLastWorldMapPlaceQuery: String?
     private var storedLastWorldMapPlaceID: String?
+    private var storedFavoriteMutationCallCount = 0
+    private var storedFavoriteRetryCallCount = 0
+    private var storedStandardOntologyInstallCount = 0
 
     var worldMapLocationBackfillStartCount: Int {
         lock.withLock { storedWorldMapLocationBackfillStartCount }
@@ -2362,6 +3097,18 @@ private final class RemoteCatalogServingStub: RemoteCatalogServing, @unchecked S
 
     var lastWorldMapPlaceID: String? {
         lock.withLock { storedLastWorldMapPlaceID }
+    }
+
+    var favoriteMutationCallCount: Int {
+        lock.withLock { storedFavoriteMutationCallCount }
+    }
+
+    var favoriteRetryCallCount: Int {
+        lock.withLock { storedFavoriteRetryCallCount }
+    }
+
+    var standardOntologyInstallCount: Int {
+        lock.withLock { storedStandardOntologyInstallCount }
     }
 
     var mutateCallCount: Int {
@@ -2471,7 +3218,10 @@ private final class RemoteCatalogServingStub: RemoteCatalogServing, @unchecked S
         worldMapLocationBackfills: [WorldMapLocationBackfillSnapshot] = [],
         worldMapPlaceResolutions: [WorldMapPlaceTagResolution] = [],
         worldMapPlaceSearchResult: WorldMapPlaceTagResolution? = nil,
-        worldMapPlaceConfirmResult: WorldMapPlaceTagResolution? = nil
+        worldMapPlaceConfirmResult: WorldMapPlaceTagResolution? = nil,
+        favoriteStates: [UUID: MediaFavoriteState] = [:],
+        favoriteMutationSummary: FavoriteMutationSummary = .zero,
+        favoriteRetrySummary: FavoriteMutationSummary = .zero
     ) {
         self.sources = sources
         self.tags = tags
@@ -2491,6 +3241,9 @@ private final class RemoteCatalogServingStub: RemoteCatalogServing, @unchecked S
         self.worldMapPlaceResolutions = worldMapPlaceResolutions
         self.worldMapPlaceSearchResult = worldMapPlaceSearchResult
         self.worldMapPlaceConfirmResult = worldMapPlaceConfirmResult
+        storedFavoriteStates = favoriteStates
+        self.favoriteMutationSummary = favoriteMutationSummary
+        self.favoriteRetrySummary = favoriteRetrySummary
     }
 
     func fetchSources() throws -> [LibrarySourceSummary] {
@@ -2499,6 +3252,10 @@ private final class RemoteCatalogServingStub: RemoteCatalogServing, @unchecked S
 
     func listTags() throws -> [TagListItem] {
         tags
+    }
+
+    func installStandardOntologyPackage(_: StandardOntologyPackageInput) throws {
+        lock.withLock { storedStandardOntologyInstallCount += 1 }
     }
 
     func installPresetTags() throws -> TagPresetInstallResult {
@@ -2546,6 +3303,45 @@ private final class RemoteCatalogServingStub: RemoteCatalogServing, @unchecked S
     func fetchInspectorDetail(assetID: UUID) throws -> AssetInspectorDetail {
         _ = assetID
         return detail
+    }
+
+    func fetchFavoriteStates(assetIDs: [UUID]) throws -> [UUID: MediaFavoriteState] {
+        lock.withLock {
+            Dictionary(uniqueKeysWithValues: assetIDs.map {
+                ($0, storedFavoriteStates[$0] ?? .none(assetID: $0))
+            })
+        }
+    }
+
+    func setFavorite(
+        assetIDs: [UUID],
+        isFavorite: Bool
+    ) throws -> FavoriteMutationSummary {
+        lock.withLock {
+            storedFavoriteMutationCallCount += 1
+            for assetID in assetIDs {
+                let previous = storedFavoriteStates[assetID] ?? .none(assetID: assetID)
+                storedFavoriteStates[assetID] = MediaFavoriteState(
+                    assetID: assetID,
+                    isFavorite: isFavorite,
+                    photosObservedValue: previous.photosObservedValue,
+                    syncStatus: previous.syncStatus,
+                    intentRevision: previous.intentRevision + 1,
+                    requestedAtMs: previous.requestedAtMs,
+                    photosObservedModifiedAtMs: previous.photosObservedModifiedAtMs,
+                    lastErrorCode: previous.lastErrorCode
+                )
+            }
+            return favoriteMutationSummary
+        }
+    }
+
+    func retryPendingFavoriteSync(sourceIDs: Set<UUID>?) throws -> FavoriteMutationSummary {
+        XCTAssertNil(sourceIDs)
+        return lock.withLock {
+            storedFavoriteRetryCallCount += 1
+            return favoriteRetrySummary
+        }
     }
 
     func fetchWorldMapSnapshot(query: WorldMapCatalogQuery) throws -> WorldMapCatalogSnapshot {
@@ -2679,6 +3475,8 @@ private final class RemoteReviewPortStub: PersonalizationReviewPort, @unchecked 
     private let personalTagInsertedCount: Int
     private let personalSnapshotsByTagID: [UUID: PersonalTrainingSnapshot]
     private let pendingSuggestions: [AssetPendingSuggestion]
+    private let standardSuggestionJobID: UUID?
+    private let personalSuggestionJobID: UUID?
     private var storedLastRequestedTagID: UUID?
     private var storedLastResumedJobID: UUID?
     private var storedCandidateSourceIDs: [UUID]?
@@ -2686,6 +3484,12 @@ private final class RemoteReviewPortStub: PersonalizationReviewPort, @unchecked 
     private var storedActivatedCapability: PersonalModelSuggestionCapability?
     private var storedPublishedTagID: UUID?
     private var storedPublishedHits: [AppPersonalTagLibrarySuggestionHit] = []
+    private var storedStandardSuggestionJob: StandardLibrarySuggestionJobProjection?
+    private var storedPersonalSuggestionJob: PersonalLibrarySuggestionJobProjection?
+    private var storedStandardSuggestionSourceIDs: [UUID]?
+    private var storedPersonalSuggestionSourceIDs: [UUID]?
+    private var storedStandardSuggestionEnqueueCount = 0
+    private var storedPersonalSuggestionEnqueueCount = 0
 
     var lastRequestedTagID: UUID? {
         lock.lock()
@@ -2703,6 +3507,18 @@ private final class RemoteReviewPortStub: PersonalizationReviewPort, @unchecked 
     var publishedHits: [AppPersonalTagLibrarySuggestionHit] {
         lock.withLock { storedPublishedHits }
     }
+    var standardSuggestionSourceIDs: [UUID]? {
+        lock.withLock { storedStandardSuggestionSourceIDs }
+    }
+    var personalSuggestionSourceIDs: [UUID]? {
+        lock.withLock { storedPersonalSuggestionSourceIDs }
+    }
+    var standardSuggestionEnqueueCount: Int {
+        lock.withLock { storedStandardSuggestionEnqueueCount }
+    }
+    var personalSuggestionEnqueueCount: Int {
+        lock.withLock { storedPersonalSuggestionEnqueueCount }
+    }
 
     init(
         page: ReviewQueuePage,
@@ -2711,7 +3527,9 @@ private final class RemoteReviewPortStub: PersonalizationReviewPort, @unchecked 
         personalCandidates: [PersonalSuggestionCandidate] = [],
         personalTagInsertedCount: Int = 0,
         personalSnapshotsByTagID: [UUID: PersonalTrainingSnapshot] = [:],
-        pendingSuggestions: [AssetPendingSuggestion] = []
+        pendingSuggestions: [AssetPendingSuggestion] = [],
+        standardSuggestionJobID: UUID? = nil,
+        personalSuggestionJobID: UUID? = nil
     ) {
         self.page = page
         self.totalPendingCount = totalPendingCount
@@ -2720,6 +3538,8 @@ private final class RemoteReviewPortStub: PersonalizationReviewPort, @unchecked 
         self.personalTagInsertedCount = personalTagInsertedCount
         self.personalSnapshotsByTagID = personalSnapshotsByTagID
         self.pendingSuggestions = pendingSuggestions
+        self.standardSuggestionJobID = standardSuggestionJobID
+        self.personalSuggestionJobID = personalSuggestionJobID
     }
 
     func totalPendingSuggestionCount(sourceIDs: [UUID]?) throws -> Int { totalPendingCount }
@@ -2809,13 +3629,51 @@ private final class RemoteReviewPortStub: PersonalizationReviewPort, @unchecked 
     func enqueuePersonalLibrarySuggestions(
         capability: PersonalModelSuggestionCapability,
         sourceIDs: [UUID]?
-    ) throws -> UUID { UUID() }
-    func personalLibrarySuggestionJob() throws -> PersonalLibrarySuggestionJobProjection? { nil }
+    ) throws -> UUID {
+        _ = capability
+        let jobID = personalSuggestionJobID ?? UUID()
+        lock.withLock {
+            storedPersonalSuggestionSourceIDs = sourceIDs
+            storedPersonalSuggestionEnqueueCount += 1
+            storedPersonalSuggestionJob = PersonalLibrarySuggestionJobProjection(
+                id: jobID,
+                state: .pending,
+                checkedCount: 0,
+                totalCount: nil,
+                suggestedCount: 0,
+                skippedCount: 0,
+                lastErrorCode: nil
+            )
+        }
+        return jobID
+    }
+    func personalLibrarySuggestionJob() throws -> PersonalLibrarySuggestionJobProjection? {
+        lock.withLock { storedPersonalSuggestionJob }
+    }
     func enqueueStandardLibrarySuggestions(
         target: StandardModelSuggestionTarget,
         sourceIDs: [UUID]?
-    ) throws -> UUID { UUID() }
-    func standardLibrarySuggestionJob() throws -> StandardLibrarySuggestionJobProjection? { nil }
+    ) throws -> UUID {
+        _ = target
+        let jobID = standardSuggestionJobID ?? UUID()
+        lock.withLock {
+            storedStandardSuggestionSourceIDs = sourceIDs
+            storedStandardSuggestionEnqueueCount += 1
+            storedStandardSuggestionJob = StandardLibrarySuggestionJobProjection(
+                id: jobID,
+                state: .pending,
+                checkedCount: 0,
+                totalCount: nil,
+                suggestedCount: 0,
+                skippedCount: 0,
+                lastErrorCode: nil
+            )
+        }
+        return jobID
+    }
+    func standardLibrarySuggestionJob() throws -> StandardLibrarySuggestionJobProjection? {
+        lock.withLock { storedStandardSuggestionJob }
+    }
     func pauseSuggestionJob(jobID: UUID) throws {}
     func resumeSuggestionJob(jobID: UUID) throws {
         lock.withLock { storedLastResumedJobID = jobID }
@@ -2824,6 +3682,66 @@ private final class RemoteReviewPortStub: PersonalizationReviewPort, @unchecked 
     func runPendingSuggestionJobs(maxSteps: Int?) throws -> Bool { false }
     func runPendingSuggestionJobsAsync(maxSteps: Int?) async throws -> Bool { false }
     func nextSuggestionRetryDelayNanoseconds() throws -> UInt64? { nil }
+}
+
+private final class RemoteLibrarySuggestionClientStub:
+    LocalModelSuggestionClient,
+    @unchecked Sendable
+{
+    private let lock = NSLock()
+    private let storedStandardCapability: StandardModelSuggestionCapability?
+    private let storedPersonalCapability: PersonalModelSuggestionCapability?
+    private var storedHealthCount = 0
+    private var storedStandardCapabilityCount = 0
+    private var storedPersonalCapabilityCount = 0
+
+    var healthCount: Int { lock.withLock { storedHealthCount } }
+    var standardCapabilityCount: Int { lock.withLock { storedStandardCapabilityCount } }
+    var personalCapabilityCount: Int { lock.withLock { storedPersonalCapabilityCount } }
+
+    init(
+        standardCapability: StandardModelSuggestionCapability? = nil,
+        personalCapability: PersonalModelSuggestionCapability? = nil
+    ) {
+        storedStandardCapability = standardCapability
+        storedPersonalCapability = personalCapability
+    }
+
+    func serviceHealth() async throws -> LocalModelServiceHealth {
+        lock.withLock { storedHealthCount += 1 }
+        return .ready(
+            serviceVersion: "1.2.3",
+            provider: PersonalTrainingEncoderIdentity(
+                provider: "coreml",
+                modelID: "scene-personal-v1",
+                modelRevision: "1",
+                preprocessingRevision: "1",
+                elementCount: 16
+            )
+        )
+    }
+
+    func standardCapability() async throws -> StandardModelSuggestionCapabilityAvailability {
+        lock.withLock { storedStandardCapabilityCount += 1 }
+        return storedStandardCapability.map {
+            StandardModelSuggestionCapabilityAvailability.available($0)
+        } ?? .unavailable
+    }
+
+    func personalCapability() async throws -> PersonalModelSuggestionCapabilityAvailability {
+        lock.withLock { storedPersonalCapabilityCount += 1 }
+        return storedPersonalCapability.map {
+            PersonalModelSuggestionCapabilityAvailability.available($0)
+        } ?? .unavailable
+    }
+
+    func suggestions(
+        imageData _: Data,
+        requestID _: String,
+        target _: ModelSuggestionTarget
+    ) async throws -> [LocalModelSuggestion] {
+        []
+    }
 }
 
 private final class RemoteTrainingWorkspacePortStub: TrainingWorkspacePort, @unchecked Sendable {
@@ -3145,16 +4063,19 @@ private final class RemoteLibrarySlimmingAnalysisPortStub:
     private let storedSnapshot: LibrarySlimmingAnalysisJobSnapshot
     private var storedLastMediaKind: MediaKind?
     private var storedLastSnapshotJobID: UUID?
+    private var storedReviewDispositions: [UUID: LibrarySlimmingClusterReviewDisposition]
 
     var lastMediaKind: MediaKind? { lock.withLock { storedLastMediaKind } }
     var lastSnapshotJobID: UUID? { lock.withLock { storedLastSnapshotJobID } }
 
     init(
         summaries: [LibrarySlimmingAnalysisJobSummary],
-        snapshot: LibrarySlimmingAnalysisJobSnapshot
+        snapshot: LibrarySlimmingAnalysisJobSnapshot,
+        reviewDispositions: [UUID: LibrarySlimmingClusterReviewDisposition] = [:]
     ) {
         self.summaries = summaries
         storedSnapshot = snapshot
+        storedReviewDispositions = reviewDispositions
     }
 
     func enqueue(
@@ -3185,6 +4106,26 @@ private final class RemoteLibrarySlimmingAnalysisPortStub:
         return summaries.filter { $0.mediaKind == mediaKind }
     }
 
+    func clusterReviewDispositions(
+        jobID _: UUID
+    ) throws -> [UUID: LibrarySlimmingClusterReviewDisposition] {
+        lock.withLock { storedReviewDispositions }
+    }
+
+    func setClusterReviewDisposition(
+        jobID _: UUID,
+        clusterID: UUID,
+        disposition: LibrarySlimmingClusterReviewDisposition?
+    ) throws {
+        lock.withLock {
+            if let disposition {
+                storedReviewDispositions[clusterID] = disposition
+            } else {
+                storedReviewDispositions.removeValue(forKey: clusterID)
+            }
+        }
+    }
+
     func delete(jobID _: UUID) throws {}
 }
 
@@ -3206,6 +4147,10 @@ private final class RemoteLibrarySlimmingCommandPortStub:
     private var storedLastAction: LibrarySlimmingJobCommandAction?
     private var storedLastRecycleCommand: LibrarySlimmingRecycleCommandRequest?
     private var storedLastRemovalCommand: LibrarySlimmingRemovalCommand?
+    private var storedClusterReviewUpdateCount = 0
+    private var storedLastClusterReviewJobID: UUID?
+    private var storedLastClusterReviewClusterID: UUID?
+    private var storedLastClusterReviewDisposition: LibrarySlimmingClusterReviewDisposition?
 
     var launchCount: Int { lock.withLock { storedLaunchCount } }
     var thresholdUpdateCount: Int { lock.withLock { storedThresholdUpdateCount } }
@@ -3216,6 +4161,12 @@ private final class RemoteLibrarySlimmingCommandPortStub:
     }
     var lastRemovalCommand: LibrarySlimmingRemovalCommand? {
         lock.withLock { storedLastRemovalCommand }
+    }
+    var clusterReviewUpdateCount: Int { lock.withLock { storedClusterReviewUpdateCount } }
+    var lastClusterReviewJobID: UUID? { lock.withLock { storedLastClusterReviewJobID } }
+    var lastClusterReviewClusterID: UUID? { lock.withLock { storedLastClusterReviewClusterID } }
+    var lastClusterReviewDisposition: LibrarySlimmingClusterReviewDisposition? {
+        lock.withLock { storedLastClusterReviewDisposition }
     }
 
     init(
@@ -3267,10 +4218,25 @@ private final class RemoteLibrarySlimmingCommandPortStub:
         return thresholds
     }
 
+    func setClusterReviewDisposition(
+        jobID: UUID,
+        clusterID: UUID,
+        disposition: LibrarySlimmingClusterReviewDisposition?
+    ) async throws -> LibrarySlimmingClusterReviewDisposition? {
+        lock.withLock {
+            storedClusterReviewUpdateCount += 1
+            storedLastClusterReviewJobID = jobID
+            storedLastClusterReviewClusterID = clusterID
+            storedLastClusterReviewDisposition = disposition
+        }
+        return disposition
+    }
+
     func recycleSnapshot(
         mediaKind _: MediaKind,
         sourceID _: UUID?,
         searchText _: String?,
+        scope _: LibrarySlimmingRecycleCommandScope,
         limit _: Int
     ) async throws -> LibrarySlimmingRecycleCommandSnapshot {
         try XCTUnwrap(storedRecycleSnapshot)

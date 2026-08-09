@@ -12,6 +12,29 @@ public enum RemoteLibrarySlimmingClusterKind: String, Codable, Sendable, Equatab
     case nearDuplicateScene
 }
 
+public enum RemoteLibrarySlimmingClusterScope: String, Codable, Sendable, Equatable {
+    case pending
+    case confirmed
+    case ignored
+}
+
+public enum RemoteLibrarySlimmingClusterReviewDisposition: String, Codable, Sendable, Equatable {
+    case confirmed
+    case ignored
+}
+
+public struct RemoteLibrarySlimmingClusterScopeCounts: Codable, Sendable, Equatable {
+    public let pending: Int
+    public let confirmed: Int
+    public let ignored: Int
+
+    public init(pending: Int, confirmed: Int, ignored: Int) {
+        self.pending = pending
+        self.confirmed = confirmed
+        self.ignored = ignored
+    }
+}
+
 public enum RemoteLibrarySlimmingJobControlRequest: String, Codable, Sendable, Equatable {
     case none
     case pause
@@ -110,6 +133,11 @@ public struct RemoteLibrarySlimmingCluster: Codable, Sendable, Equatable, Identi
     public let score: Double
     public let isSeedOnlyResult: Bool
     public let technicalSummary: String?
+    public let reviewDisposition: RemoteLibrarySlimmingClusterReviewDisposition?
+    /// Original scan size. Present for new Hosts so historical reviewed records
+    /// can remain auditable after members are recycled or become unavailable.
+    public let originalMemberCount: Int?
+    public let isHistoricalProcessedRecord: Bool?
 
     public init(
         id: UUID,
@@ -118,7 +146,10 @@ public struct RemoteLibrarySlimmingCluster: Codable, Sendable, Equatable, Identi
         representativeAssetID: UUID,
         score: Double,
         isSeedOnlyResult: Bool = false,
-        technicalSummary: String? = nil
+        technicalSummary: String? = nil,
+        reviewDisposition: RemoteLibrarySlimmingClusterReviewDisposition? = nil,
+        originalMemberCount: Int? = nil,
+        isHistoricalProcessedRecord: Bool? = nil
     ) {
         self.id = id
         self.kind = kind
@@ -127,6 +158,9 @@ public struct RemoteLibrarySlimmingCluster: Codable, Sendable, Equatable, Identi
         self.score = score
         self.isSeedOnlyResult = isSeedOnlyResult
         self.technicalSummary = technicalSummary
+        self.reviewDisposition = reviewDisposition
+        self.originalMemberCount = originalMemberCount
+        self.isHistoricalProcessedRecord = isHistoricalProcessedRecord
     }
 }
 
@@ -141,6 +175,7 @@ public struct RemoteLibrarySlimmingMember: Codable, Sendable, Equatable, Identif
     public let width: Int?
     public let height: Int?
     public let durationMs: Int64?
+    public let favorite: RemoteAssetFavoriteState?
 
     public init(
         id: UUID,
@@ -152,7 +187,8 @@ public struct RemoteLibrarySlimmingMember: Codable, Sendable, Equatable, Identif
         contentRevision: Int = 0,
         width: Int? = nil,
         height: Int? = nil,
-        durationMs: Int64? = nil
+        durationMs: Int64? = nil,
+        favorite: RemoteAssetFavoriteState? = nil
     ) {
         self.id = id
         self.sourceID = sourceID
@@ -164,12 +200,16 @@ public struct RemoteLibrarySlimmingMember: Codable, Sendable, Equatable, Identif
         self.width = width
         self.height = height
         self.durationMs = durationMs
+        self.favorite = favorite
     }
 }
 
 public struct RemoteLibrarySlimmingWorkspaceSnapshot: Codable, Sendable, Equatable {
     public let mediaKind: RemoteAssetMediaKind
     public let jobs: [RemoteLibrarySlimmingJob]
+    /// Total Host-side history count. Older Hosts omit this and the client falls
+    /// back to the number of returned summaries.
+    public let totalJobCount: Int?
     public let selectedJobID: UUID?
     public let clusters: [RemoteLibrarySlimmingCluster]
     public let selectedClusterID: UUID?
@@ -177,6 +217,7 @@ public struct RemoteLibrarySlimmingWorkspaceSnapshot: Codable, Sendable, Equatab
     public let pendingAnalysisCount: Int
     public let analyzedAssetCount: Int
     public let policyVersion: String?
+    public let clusterScopeCounts: RemoteLibrarySlimmingClusterScopeCounts?
 
     public init(
         mediaKind: RemoteAssetMediaKind,
@@ -187,10 +228,13 @@ public struct RemoteLibrarySlimmingWorkspaceSnapshot: Codable, Sendable, Equatab
         members: [RemoteLibrarySlimmingMember],
         pendingAnalysisCount: Int,
         analyzedAssetCount: Int,
-        policyVersion: String?
+        policyVersion: String?,
+        clusterScopeCounts: RemoteLibrarySlimmingClusterScopeCounts? = nil,
+        totalJobCount: Int? = nil
     ) {
         self.mediaKind = mediaKind
         self.jobs = jobs
+        self.totalJobCount = totalJobCount
         self.selectedJobID = selectedJobID
         self.clusters = clusters
         self.selectedClusterID = selectedClusterID
@@ -198,6 +242,48 @@ public struct RemoteLibrarySlimmingWorkspaceSnapshot: Codable, Sendable, Equatab
         self.pendingAnalysisCount = pendingAnalysisCount
         self.analyzedAssetCount = analyzedAssetCount
         self.policyVersion = policyVersion
+        self.clusterScopeCounts = clusterScopeCounts
+    }
+}
+
+public struct RemoteLibrarySlimmingClusterReviewRequest: Codable, Sendable, Equatable {
+    public let operationID: UUID
+    public let jobID: UUID
+    public let clusterID: UUID
+    public let disposition: RemoteLibrarySlimmingClusterReviewDisposition?
+
+    public init(
+        operationID: UUID,
+        jobID: UUID,
+        clusterID: UUID,
+        disposition: RemoteLibrarySlimmingClusterReviewDisposition?
+    ) {
+        self.operationID = operationID
+        self.jobID = jobID
+        self.clusterID = clusterID
+        self.disposition = disposition
+    }
+}
+
+public struct RemoteLibrarySlimmingClusterReviewResponse: Codable, Sendable, Equatable {
+    public let operationID: UUID
+    public let jobID: UUID
+    public let clusterID: UUID
+    public let disposition: RemoteLibrarySlimmingClusterReviewDisposition?
+    public let replayed: Bool
+
+    public init(
+        operationID: UUID,
+        jobID: UUID,
+        clusterID: UUID,
+        disposition: RemoteLibrarySlimmingClusterReviewDisposition?,
+        replayed: Bool
+    ) {
+        self.operationID = operationID
+        self.jobID = jobID
+        self.clusterID = clusterID
+        self.disposition = disposition
+        self.replayed = replayed
     }
 }
 
@@ -418,6 +504,27 @@ public enum RemoteLibrarySlimmingRecycleRequestPhase: String, Codable, Sendable,
     case failed
 }
 
+public enum RemoteLibrarySlimmingRecycleScope: String, Codable, Sendable, Equatable {
+    case all
+    case photos
+    case files
+    case attention
+}
+
+public struct RemoteLibrarySlimmingRecycleScopeCounts: Codable, Sendable, Equatable {
+    public let all: Int
+    public let photos: Int
+    public let files: Int
+    public let attention: Int
+
+    public init(all: Int, photos: Int, files: Int, attention: Int) {
+        self.all = all
+        self.photos = photos
+        self.files = files
+        self.attention = attention
+    }
+}
+
 public struct RemoteLibrarySlimmingRecycleEntry: Codable, Sendable, Equatable, Identifiable {
     public let id: UUID
     public let assetID: UUID
@@ -432,6 +539,7 @@ public struct RemoteLibrarySlimmingRecycleEntry: Codable, Sendable, Equatable, I
     public let errorCode: String?
     public let resolution: RemoteLibrarySlimmingRecycleResolution
     public let availableActions: [RemoteLibrarySlimmingRecycleAction]
+    public let favorite: RemoteAssetFavoriteState?
 
     public init(
         id: UUID,
@@ -446,7 +554,8 @@ public struct RemoteLibrarySlimmingRecycleEntry: Codable, Sendable, Equatable, I
         state: RemoteLibrarySlimmingRecycleEntryState,
         errorCode: String?,
         resolution: RemoteLibrarySlimmingRecycleResolution,
-        availableActions: [RemoteLibrarySlimmingRecycleAction]
+        availableActions: [RemoteLibrarySlimmingRecycleAction],
+        favorite: RemoteAssetFavoriteState? = nil
     ) {
         self.id = id
         self.assetID = assetID
@@ -461,6 +570,7 @@ public struct RemoteLibrarySlimmingRecycleEntry: Codable, Sendable, Equatable, I
         self.errorCode = errorCode
         self.resolution = resolution
         self.availableActions = availableActions
+        self.favorite = favorite
     }
 }
 
@@ -500,17 +610,20 @@ public struct RemoteLibrarySlimmingRecycleSnapshot: Codable, Sendable, Equatable
     public let entries: [RemoteLibrarySlimmingRecycleEntry]
     public let totalCount: Int
     public let requests: [RemoteLibrarySlimmingRecycleRequestSnapshot]
+    public let scopeCounts: RemoteLibrarySlimmingRecycleScopeCounts?
 
     public init(
         mediaKind: RemoteAssetMediaKind,
         entries: [RemoteLibrarySlimmingRecycleEntry],
         totalCount: Int,
-        requests: [RemoteLibrarySlimmingRecycleRequestSnapshot]
+        requests: [RemoteLibrarySlimmingRecycleRequestSnapshot],
+        scopeCounts: RemoteLibrarySlimmingRecycleScopeCounts? = nil
     ) {
         self.mediaKind = mediaKind
         self.entries = entries
         self.totalCount = totalCount
         self.requests = requests
+        self.scopeCounts = scopeCounts
     }
 }
 

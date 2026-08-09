@@ -782,6 +782,28 @@ actor RemoteHTTPServer {
                 let request = Self.parseAssetPageRequest(query: query)
                 let payload = try await facade.fetchAssets(request)
                 await respondJSON(connection, status: 200, value: payload, timeoutTask: timeoutTask)
+            case ("POST", RemoteHTTPPaths.favorites):
+                let request = try jsonDecoder.decode(
+                    RemoteFavoriteMutationRequest.self,
+                    from: body
+                )
+                let payload = try await facade.setFavorite(request)
+                await eventBroker.publish(.init(
+                    kind: .assetsChanged,
+                    emittedAtMs: Int64((Date().timeIntervalSince1970 * 1_000).rounded())
+                ))
+                await respondJSON(connection, status: 200, value: payload, timeoutTask: timeoutTask)
+            case ("POST", RemoteHTTPPaths.favoriteSyncRetry):
+                let request = try jsonDecoder.decode(
+                    RemoteFavoriteSyncRetryRequest.self,
+                    from: body
+                )
+                let payload = try await facade.retryFavoriteSync(request)
+                await eventBroker.publish(.init(
+                    kind: .assetsChanged,
+                    emittedAtMs: Int64((Date().timeIntervalSince1970 * 1_000).rounded())
+                ))
+                await respondJSON(connection, status: 200, value: payload, timeoutTask: timeoutTask)
             case ("POST", RemoteHTTPPaths.tagDecisionsBatch):
                 let request = try jsonDecoder.decode(RemoteBatchTagDecisionRequest.self, from: body)
                 let payload = try await facade.applyTagDecision(request)
@@ -812,6 +834,25 @@ actor RemoteHTTPServer {
                     sourceIDs: sourceIDs
                 )
                 await respondJSON(connection, status: 200, value: payload, timeoutTask: timeoutTask)
+            case ("GET", RemoteHTTPPaths.librarySuggestions):
+                let mediaKind = RemoteAssetMediaKind(rawValue: query["mediaKind"] ?? "") ?? .image
+                let refreshServiceHealth = query["refreshServiceHealth"] == "1"
+                let payload = try await facade.fetchLibrarySuggestions(
+                    mediaKind: mediaKind,
+                    refreshServiceHealth: refreshServiceHealth
+                )
+                await respondJSON(connection, status: 200, value: payload, timeoutTask: timeoutTask)
+            case ("POST", RemoteHTTPPaths.librarySuggestionRequests):
+                let request = try jsonDecoder.decode(
+                    RemoteLibrarySuggestionRequest.self,
+                    from: body
+                )
+                let payload = try await facade.submitLibrarySuggestions(request)
+                await eventBroker.publish(.init(
+                    kind: .jobsChanged,
+                    emittedAtMs: Int64((Date().timeIntervalSince1970 * 1_000).rounded())
+                ))
+                await respondJSON(connection, status: 202, value: payload, timeoutTask: timeoutTask)
             case ("POST", RemoteHTTPPaths.reviewDecisionsBatch):
                 let request = try jsonDecoder.decode(RemoteBatchReviewDecisionRequest.self, from: body)
                 let payload = try await facade.applyReviewDecision(request)
@@ -883,9 +924,24 @@ actor RemoteHTTPServer {
                     mediaKind: mediaKind,
                     jobID: query["jobID"].flatMap(UUID.init(uuidString:)),
                     clusterID: query["clusterID"].flatMap(UUID.init(uuidString:)),
+                    clusterScope: RemoteLibrarySlimmingClusterScope(
+                        rawValue: query["clusterScope"] ?? ""
+                    ) ?? .pending,
+                    jobLimit: Int(query["jobLimit"] ?? "") ?? 100,
                     clusterLimit: Int(query["clusterLimit"] ?? "") ?? 80,
                     memberLimit: Int(query["memberLimit"] ?? "") ?? 200
                 )
+                await respondJSON(connection, status: 200, value: payload, timeoutTask: timeoutTask)
+            case ("POST", RemoteHTTPPaths.librarySlimmingClusterReview):
+                let request = try jsonDecoder.decode(
+                    RemoteLibrarySlimmingClusterReviewRequest.self,
+                    from: body
+                )
+                let payload = try await facade.updateLibrarySlimmingClusterReview(request)
+                await eventBroker.publish(.init(
+                    kind: .jobsChanged,
+                    emittedAtMs: Int64((Date().timeIntervalSince1970 * 1_000).rounded())
+                ))
                 await respondJSON(connection, status: 200, value: payload, timeoutTask: timeoutTask)
             case ("GET", RemoteHTTPPaths.librarySlimmingSetup):
                 let mediaKind = RemoteAssetMediaKind(rawValue: query["mediaKind"] ?? "") ?? .image
@@ -915,6 +971,9 @@ actor RemoteHTTPServer {
                     mediaKind: mediaKind,
                     sourceID: query["sourceID"].flatMap(UUID.init(uuidString:)),
                     searchText: query["search"],
+                    scope: RemoteLibrarySlimmingRecycleScope(
+                        rawValue: query["scope"] ?? ""
+                    ) ?? .all,
                     limit: Int(query["limit"] ?? "") ?? 60
                 )
                 await respondJSON(connection, status: 200, value: payload, timeoutTask: timeoutTask)
@@ -1617,7 +1676,8 @@ actor RemoteHTTPServer {
             mediaTypes: (query["mediaTypes"] ?? "")
                 .split(separator: ",")
                 .map(String.init),
-            tagPresence: RemoteAssetTagPresence(rawValue: query["tagPresence"] ?? "") ?? .any
+            tagPresence: RemoteAssetTagPresence(rawValue: query["tagPresence"] ?? "") ?? .any,
+            favorite: RemoteAssetFavoriteFilter(rawValue: query["favorite"] ?? "")
         )
     }
 

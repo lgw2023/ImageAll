@@ -1,6 +1,8 @@
 "use strict";
 
 const $ = (selector) => document.querySelector(selector);
+const SLIMMING_JOB_PAGE_SIZE = 100;
+const SLIMMING_JOB_LIMIT_MAX = 10_000;
 const SLIMMING_CLUSTER_LIMIT_MAX = 10_000;
 const SLIMMING_MEMBER_LIMIT_MAX = 5_000;
 const elements = {
@@ -87,6 +89,10 @@ const elements = {
   allMediaLabel: $("#allMediaLabel"),
   galleryOverviewNavigationButton: $("#galleryOverviewNavigationButton"),
   galleryOverviewNavigationCount: $("#galleryOverviewNavigationCount"),
+  favoritesNavigationButton: $("#favoritesNavigationButton"),
+  favoritesNavigationCount: $("#favoritesNavigationCount"),
+  retryFavoriteSyncButton: $("#retryFavoriteSyncButton"),
+  retryFavoriteSyncCount: $("#retryFavoriteSyncCount"),
   untaggedNavigationButton: $("#untaggedNavigationButton"),
   reviewNavigationButton: $("#reviewNavigationButton"),
   reviewNavigationCount: $("#reviewNavigationCount"),
@@ -110,6 +116,10 @@ const elements = {
   galleryOverviewRedundantMetric: $("#galleryOverviewRedundantMetric"),
   galleryOverviewPositiveMetric: $("#galleryOverviewPositiveMetric"),
   galleryOverviewAcceptedMetric: $("#galleryOverviewAcceptedMetric"),
+  galleryOverviewFavoritesMetric: $("#galleryOverviewFavoritesMetric"),
+  galleryOverviewFavoriteMetric: $("#galleryOverviewFavoriteMetric"),
+  galleryOverviewFavoriteImageMetric: $("#galleryOverviewFavoriteImageMetric"),
+  galleryOverviewFavoriteVideoMetric: $("#galleryOverviewFavoriteVideoMetric"),
   galleryOverviewMediaLedger: $("#galleryOverviewMediaLedger"),
   galleryOverviewSourceSubtitle: $("#galleryOverviewSourceSubtitle"),
   galleryOverviewSources: $("#galleryOverviewSources"),
@@ -159,6 +169,8 @@ const elements = {
   selectionInspectorTitle: $("#selectionInspectorTitle"),
   selectionInspectorTags: $("#selectionInspectorTags"),
   selectionInspectorNewTagButton: $("#selectionInspectorNewTagButton"),
+  selectionInspectorFavoriteButton: $("#selectionInspectorFavoriteButton"),
+  selectionInspectorUnfavoriteButton: $("#selectionInspectorUnfavoriteButton"),
   selectionInspectorPrepareFeaturesButton: $("#selectionInspectorPrepareFeaturesButton"),
   selectionInspectorGenerateSuggestionsButton: $("#selectionInspectorGenerateSuggestionsButton"),
   selectionInspectorFindSimilarButton: $("#selectionInspectorFindSimilarButton"),
@@ -184,6 +196,9 @@ const elements = {
   assetFileName: $("#assetFileName"),
   assetMetadata: $("#assetMetadata"),
   openOriginalButton: $("#openOriginalButton"),
+  inspectorFavoriteButton: $("#inspectorFavoriteButton"),
+  inspectorFavoriteButtonIcon: $("#inspectorFavoriteButtonIcon"),
+  inspectorFavoriteButtonLabel: $("#inspectorFavoriteButtonLabel"),
   openOriginalButtonIcon: $("#openOriginalButtonIcon"),
   openOriginalButtonLabel: $("#openOriginalButtonLabel"),
   openOriginalHint: $("#openOriginalHint"),
@@ -246,6 +261,8 @@ const elements = {
   prepareSelectedFeaturesButton: $("#prepareSelectedFeaturesButton"),
   generateSelectedSuggestionsButton: $("#generateSelectedSuggestionsButton"),
   findSimilarSelectionButton: $("#findSimilarSelectionButton"),
+  favoriteSelectedButton: $("#favoriteSelectedButton"),
+  unfavoriteSelectedButton: $("#unfavoriteSelectedButton"),
   embeddingPreparationStatus: $("#embeddingPreparationStatus"),
   cancelEmbeddingPreparationButton: $("#cancelEmbeddingPreparationButton"),
   cancelSelectionButton: $("#cancelSelectionButton"),
@@ -264,12 +281,35 @@ const elements = {
   reviewSummary: $("#reviewSummary"),
   reviewTagControl: $("#reviewTagControl"),
   reviewTagSelect: $("#reviewTagSelect"),
-  reviewCurrentSourceOnly: $("#reviewCurrentSourceOnly"),
+  reviewSourceFilter: $("#reviewSourceFilter"),
+  reviewSourceFilterButton: $("#reviewSourceFilterButton"),
+  reviewSourceFilterSummary: $("#reviewSourceFilterSummary"),
+  reviewSourceFilterPopover: $("#reviewSourceFilterPopover"),
+  selectAllReviewSourcesButton: $("#selectAllReviewSourcesButton"),
+  reviewSourceFilterOptions: $("#reviewSourceFilterOptions"),
+  reviewSuggestionLimitControl: $("#reviewSuggestionLimitControl"),
+  decreaseReviewSuggestionLimitButton: $("#decreaseReviewSuggestionLimitButton"),
+  reviewSuggestionLimitValue: $("#reviewSuggestionLimitValue"),
+  increaseReviewSuggestionLimitButton: $("#increaseReviewSuggestionLimitButton"),
   refreshReviewButton: $("#refreshReviewButton"),
   reviewUndoButton: $("#reviewUndoButton"),
+  standardLibrarySuggestionCard: $("#standardLibrarySuggestionCard"),
+  standardLibrarySuggestionStatus: $("#standardLibrarySuggestionStatus"),
+  standardLibrarySuggestionProgress: $("#standardLibrarySuggestionProgress"),
+  standardLibrarySuggestionProgressBar: $("#standardLibrarySuggestionProgressBar"),
+  standardLibrarySuggestionActions: $("#standardLibrarySuggestionActions"),
+  generateStandardLibrarySuggestionsButton: $("#generateStandardLibrarySuggestionsButton"),
   generateLibrarySuggestionsButton: $("#generateLibrarySuggestionsButton"),
+  personalLibrarySuggestionPath: $("#personalLibrarySuggestionPath"),
+  personalLibrarySuggestionActions: $("#personalLibrarySuggestionActions"),
   cancelSampleSuggestionsButton: $("#cancelSampleSuggestionsButton"),
   sampleSuggestionReviewStatus: $("#sampleSuggestionReviewStatus"),
+  sampleSuggestionReviewProgress: $("#sampleSuggestionReviewProgress"),
+  sampleSuggestionReviewProgressBar: $("#sampleSuggestionReviewProgressBar"),
+  reviewLocalModelStateBadge: $("#reviewLocalModelStateBadge"),
+  reviewLocalModelStatus: $("#reviewLocalModelStatus"),
+  reviewLocalModelDetail: $("#reviewLocalModelDetail"),
+  refreshReviewModelStatusButton: $("#refreshReviewModelStatusButton"),
   reviewOverview: $("#reviewOverview"),
   reviewOverviewGrid: $("#reviewOverviewGrid"),
   reviewOverviewEmpty: $("#reviewOverviewEmpty"),
@@ -362,6 +402,10 @@ const elements = {
   slimmingSummary: $("#slimmingSummary"),
   slimmingWorkspaceTabs: $("#slimmingWorkspaceTabs"),
   slimmingMediaKindTabs: $("#slimmingMediaKindTabs"),
+  slimmingThumbnailLayoutControls: $("#slimmingThumbnailLayoutControls"),
+  slimmingThumbnailAspectButton: $("#slimmingThumbnailAspectButton"),
+  slimmingGridDensitySlider: $("#slimmingGridDensitySlider"),
+  slimmingNavigatorButton: $("#slimmingNavigatorButton"),
   slimmingNoticeText: $("#slimmingNoticeText"),
   newSlimmingAnalysisButton: $("#newSlimmingAnalysisButton"),
   slimmingIdenticalCleanupButton: $("#slimmingIdenticalCleanupButton"),
@@ -373,13 +417,18 @@ const elements = {
   nextSlimmingJobButton: $("#nextSlimmingJobButton"),
   slimmingJobActions: $("#slimmingJobActions"),
   slimmingJobList: $("#slimmingJobList"),
+  slimmingLoadMoreJobsButton: $("#slimmingLoadMoreJobsButton"),
   slimmingEmpty: $("#slimmingEmpty"),
   slimmingClusterCount: $("#slimmingClusterCount"),
+  slimmingClusterScopes: $("#slimmingClusterScopes"),
   slimmingClusterList: $("#slimmingClusterList"),
   slimmingLoadMoreClustersButton: $("#slimmingLoadMoreClustersButton"),
   slimmingClusterEmpty: $("#slimmingClusterEmpty"),
   slimmingMemberTitle: $("#slimmingMemberTitle"),
   slimmingMemberSummary: $("#slimmingMemberSummary"),
+  slimmingSelectedClusterReview: $("#slimmingSelectedClusterReview"),
+  slimmingSelectedClusterReviewStatus: $("#slimmingSelectedClusterReviewStatus"),
+  slimmingReprocessClusterButton: $("#slimmingReprocessClusterButton"),
   slimmingJobStatus: $("#slimmingJobStatus"),
   slimmingInspector: $("#slimmingInspector"),
   slimmingInspectorSummary: $("#slimmingInspectorSummary"),
@@ -391,9 +440,11 @@ const elements = {
   slimmingReleaseSpaceButton: $("#slimmingReleaseSpaceButton"),
   slimmingRemovalStatus: $("#slimmingRemovalStatus"),
   slimmingMemberGrid: $("#slimmingMemberGrid"),
+  slimmingMarqueeSelection: $("#slimmingMarqueeSelection"),
   slimmingLoadMoreMembersButton: $("#slimmingLoadMoreMembersButton"),
   slimmingMemberEmpty: $("#slimmingMemberEmpty"),
   slimmingRecycleBody: $("#slimmingRecycleBody"),
+  slimmingRecycleScopes: $("#slimmingRecycleScopes"),
   slimmingRecycleSearchInput: $("#slimmingRecycleSearchInput"),
   slimmingRecycleSourceSelect: $("#slimmingRecycleSourceSelect"),
   slimmingRecycleCount: $("#slimmingRecycleCount"),
@@ -401,6 +452,8 @@ const elements = {
   slimmingRecycleList: $("#slimmingRecycleList"),
   slimmingRecycleLoadMoreButton: $("#slimmingRecycleLoadMoreButton"),
   slimmingRecycleEmpty: $("#slimmingRecycleEmpty"),
+  slimmingRecycleEmptyTitle: $("#slimmingRecycleEmptyTitle"),
+  slimmingRecycleEmptyMessage: $("#slimmingRecycleEmptyMessage"),
   slimmingSetupDialog: $("#slimmingSetupDialog"),
   slimmingSetupForm: $("#slimmingSetupForm"),
   closeSlimmingSetupButton: $("#closeSlimmingSetupButton"),
@@ -488,6 +541,9 @@ const elements = {
   lightboxPosition: $("#lightboxPosition"),
   lightboxBackButton: $("#lightboxBackButton"),
   lightboxBackLabel: $("#lightboxBackLabel"),
+  lightboxFavoriteButton: $("#lightboxFavoriteButton"),
+  lightboxFavoriteButtonIcon: $("#lightboxFavoriteButtonIcon"),
+  lightboxFavoriteSyncBadge: $("#lightboxFavoriteSyncBadge"),
   closeLightboxButton: $("#closeLightboxButton"),
   commandButton: $("#commandButton"),
   shortcutButton: $("#shortcutButton"),
@@ -499,12 +555,19 @@ const elements = {
   shortcutDialog: $("#shortcutDialog"),
   closeShortcutButton: $("#closeShortcutButton"),
   assetContextMenu: $("#assetContextMenu"),
+  assetFavoriteContextAction: $("#assetFavoriteContextAction"),
   sourceContextMenu: $("#sourceContextMenu"),
   sourceContextMenuTitle: $("#sourceContextMenuTitle"),
   sourceContextMenuActions: $("#sourceContextMenuActions"),
   tagContextMenu: $("#tagContextMenu"),
   tagContextMenuTitle: $("#tagContextMenuTitle"),
   tagContextMenuActions: $("#tagContextMenuActions"),
+  slimmingMemberContextMenu: $("#slimmingMemberContextMenu"),
+  slimmingMemberContextMenuTitle: $("#slimmingMemberContextMenuTitle"),
+  slimmingMemberContextMenuActions: $("#slimmingMemberContextMenuActions"),
+  slimmingJobContextMenu: $("#slimmingJobContextMenu"),
+  slimmingJobContextMenuTitle: $("#slimmingJobContextMenuTitle"),
+  slimmingJobContextMenuActions: $("#slimmingJobContextMenuActions"),
   toast: $("#toast"),
   toastMessage: $("#toastMessage"),
   undoToastButton: $("#undoToastButton"),
@@ -582,6 +645,7 @@ const state = {
   assets: [],
   nextCursor: null,
   selectedSourceID: "",
+  libraryScope: "all",
   selectedAssetID: null,
   selectedDetail: null,
   cloudPreview: {
@@ -624,6 +688,14 @@ const state = {
     pollTimer: null,
     seenTerminalOperationIDs: new Set(),
   },
+  librarySuggestions: {
+    snapshot: null,
+    loading: false,
+    launchingTrack: null,
+    requestGeneration: 0,
+    pollTimer: null,
+    terminalJobIDs: new Set(),
+  },
   tagLibrarySuggestions: {
     snapshot: null,
     loading: false,
@@ -648,6 +720,8 @@ const state = {
   selectionAggregates: [],
   aggregateGeneration: 0,
   tagMutating: false,
+  favoriteMutating: false,
+  favoriteRetrying: false,
   tagManagementMutating: false,
   installingPresetTags: false,
   presetTagOperationID: null,
@@ -658,6 +732,8 @@ const state = {
   selectionTagSearchText: "",
   review: {
     mode: "overview",
+    sourceFilterIDs: null,
+    sourceFilterFocusSelector: null,
     overview: [],
     overviewTotal: 0,
     overviewLoading: false,
@@ -674,6 +750,8 @@ const state = {
     loadedScopeKey: null,
     returnTarget: null,
     pendingFocusTrainingJobID: null,
+    expandedControlTagIDs: new Set(),
+    pendingThresholdFocus: null,
   },
   training: {
     mediaKind: "image",
@@ -711,20 +789,30 @@ const state = {
     view: "analysis",
     mediaKind: "image",
     jobs: [],
+    totalJobCount: 0,
+    jobLimit: SLIMMING_JOB_PAGE_SIZE,
     selectedJobID: null,
     clusters: [],
     selectedClusterID: null,
+    clusterScope: "pending",
+    clusterScopeCounts: { pending: 0, confirmed: 0, ignored: 0 },
+    clusterScopeSupported: null,
+    clusterReviewPendingIDs: new Set(),
     members: [],
     pendingAnalysisCount: 0,
     analyzedAssetCount: 0,
     policyVersion: null,
     selectedMemberIDs: new Set(),
     selectionAnchorID: null,
+    contextMemberID: null,
+    contextJobID: null,
+    marquee: null,
     loading: false,
     requestGeneration: 0,
     clusterLimit: 48,
     memberLimit: 96,
     inspectorCompactInitialized: false,
+    navigatorVisible: true,
     jobMutatingIDs: new Set(),
     removal: {
       requests: [],
@@ -733,6 +821,7 @@ const state = {
       requestGeneration: 0,
       pollTimer: null,
       lastTerminalRequestID: null,
+      previewContexts: new Map(),
     },
     identicalCleanup: {
       plan: null,
@@ -747,6 +836,9 @@ const state = {
     recycle: {
       entries: [],
       totalCount: 0,
+      scope: "all",
+      scopeCounts: { all: 0, photos: 0, files: 0, attention: 0 },
+      scopeSupported: null,
       requests: [],
       sourceID: "",
       searchText: "",
@@ -820,6 +912,9 @@ const state = {
   lightboxContext: null,
   lightboxAssetID: null,
   lightboxRequestGeneration: 0,
+  lightboxFavoriteRequestGeneration: 0,
+  lightboxFavoriteLoadingAssetID: null,
+  lightboxFavoriteStates: new Map(),
   lightboxNavigating: false,
   lightboxPendingDirection: 0,
   socket: null,
@@ -1179,6 +1274,7 @@ function closeOverlays() {
   elements.filterButton.setAttribute("aria-expanded", "false");
   closePersonalModelPopover({ restoreFocus: false });
   closeJobsPopover({ restoreFocus: false });
+  closeReviewSourceFilter({ restoreFocus: false });
   elements.sourceSidebar.classList.remove("open");
   hideContextMenus();
   if (elements.commandPalette.open) elements.commandPalette.close();
@@ -1216,6 +1312,9 @@ function closeOverlays() {
   elements.lightboxReviewActions.classList.add("hidden");
   state.lightboxContext = null;
   state.lightboxAssetID = null;
+  state.lightboxFavoriteRequestGeneration += 1;
+  state.lightboxFavoriteLoadingAssetID = null;
+  renderLightboxFavorite();
   state.reviewReturnFocus = null;
   state.trainingReturnFocus = null;
   state.training.setup.returnFocus = null;
@@ -1278,13 +1377,14 @@ function closeInspectorOverlay() {
     : state.selectedAssetID;
   restoreOverlayFocus(
     assetID
-      ? elements.assetGrid.querySelector(`[data-asset-id="${assetID}"]`)
+      ? assetCardMainButton(elements.assetGrid.querySelector(`[data-asset-id="${assetID}"]`))
       : elements.selectionModeButton
   );
 }
 
 function closeReviewWorkspace() {
   if (elements.tagSuggestionDialog.open) closeTagSuggestionDialog();
+  closeReviewSourceFilter({ restoreFocus: false });
   finishReviewMarqueeSelection();
   elements.reviewWorkspace.classList.add("hidden");
   elements.reviewWorkspace.inert = false;
@@ -1387,6 +1487,8 @@ function syncTrainingClosePresentation() {
 }
 
 function closeSlimmingWorkspace() {
+  finishSlimmingMarqueeSelection();
+  hideContextMenus();
   if (elements.slimmingIdenticalCleanupDialog.open) {
     closeSlimmingIdenticalCleanupDialog();
   }
@@ -1634,6 +1736,19 @@ function renderGalleryOverview() {
   elements.galleryOverviewRedundantMetric.textContent = galleryOverviewCount(exactRedundantCount);
   elements.galleryOverviewPositiveMetric.textContent = galleryOverviewCount(snapshot.positiveLabeledAssetCount);
   elements.galleryOverviewAcceptedMetric.textContent = `${galleryOverviewCount(snapshot.acceptedDecisionCount)} 条人工接受标签`;
+  const favoriteSummaries = snapshot.favorites || [];
+  const favoriteImageCount = Number(
+    favoriteSummaries.find((item) => item.mediaKind === "image")?.count || 0
+  );
+  const favoriteVideoCount = Number(
+    favoriteSummaries.find((item) => item.mediaKind === "video")?.count || 0
+  );
+  elements.galleryOverviewFavoritesMetric.classList.toggle("hidden", !supportsFavorites());
+  elements.galleryOverviewFavoriteMetric.textContent = galleryOverviewCount(
+    favoriteImageCount + favoriteVideoCount
+  );
+  elements.galleryOverviewFavoriteImageMetric.textContent = galleryOverviewCount(favoriteImageCount);
+  elements.galleryOverviewFavoriteVideoMetric.textContent = galleryOverviewCount(favoriteVideoCount);
 
   clearElement(elements.galleryOverviewMediaLedger);
   elements.galleryOverviewMediaLedger.append(
@@ -1753,6 +1868,44 @@ function worldMapCount(value) {
   return Number(value || 0).toLocaleString("zh-CN");
 }
 
+function syncWorldMapPhotoFavoriteButton(card, asset) {
+  let button = card.querySelector(":scope > .world-map-photo-favorite");
+  if (!supportsFavorites() || !asset.favorite) {
+    button?.remove();
+    return;
+  }
+  if (!button) {
+    button = document.createElement("button");
+    button.type = "button";
+    button.className = "world-map-photo-favorite write-action";
+    button.dataset.worldMapPhotoFavorite = "true";
+    const icon = document.createElement("span");
+    icon.className = "world-map-photo-favorite-icon media-favorite-icon";
+    icon.setAttribute("aria-hidden", "true");
+    const badge = document.createElement("span");
+    badge.className = "world-map-photo-favorite-sync media-favorite-sync hidden";
+    badge.setAttribute("aria-hidden", "true");
+    button.append(icon, badge);
+    card.append(button);
+  }
+  syncMediaFavoriteButton(button, {
+    assetID: asset.id,
+    fileName: asset.fileName,
+    favorite: asset.favorite,
+  });
+}
+
+async function toggleWorldMapPhotoFavorite(button) {
+  const assetID = button?.dataset.mediaFavoriteAssetId
+    || button?.closest(".world-map-photo-card")?.dataset.worldMapCardAssetId;
+  const favorite = favoriteStateForAssetID(assetID);
+  if (!assetID || !favorite || state.favoriteMutating) return;
+  const scrollLeft = elements.worldMapPhotoStrip.scrollLeft;
+  await applyFavoriteMutation([assetID], favorite.isFavorite !== true);
+  elements.worldMapPhotoStrip.scrollLeft = scrollLeft;
+  if (button.isConnected) button.focus({ preventScroll: true });
+}
+
 function renderWorldMapDetail() {
   const cluster = selectedWorldMapCluster();
   const selection = state.worldMap.selection;
@@ -1789,6 +1942,9 @@ function renderWorldMapDetail() {
   }
 
   for (const asset of assets) {
+    const card = document.createElement("div");
+    card.className = "world-map-photo-card";
+    card.dataset.worldMapCardAssetId = asset.id;
     const button = document.createElement("button");
     button.type = "button";
     button.className = "world-map-photo-button";
@@ -1805,7 +1961,9 @@ function renderWorldMapDetail() {
     const label = document.createElement("span");
     label.textContent = asset.fileName || "未命名照片";
     button.append(image, label);
-    elements.worldMapPhotoStrip.append(button);
+    card.append(button);
+    syncWorldMapPhotoFavoriteButton(card, asset);
+    elements.worldMapPhotoStrip.append(card);
   }
 }
 
@@ -2670,11 +2828,14 @@ function closeLightbox() {
   state.lightboxNavigating = false;
   state.lightboxPendingDirection = 0;
   ++state.lightboxRequestGeneration;
+  ++state.lightboxFavoriteRequestGeneration;
+  state.lightboxFavoriteLoadingAssetID = null;
   clearProtectedImageSource(elements.lightboxImage);
   stopLightboxVideo();
   elements.lightboxReviewActions.classList.add("hidden");
   state.lightboxContext = null;
   state.lightboxAssetID = null;
+  renderLightboxFavorite();
   elements.reviewWorkspace.inert = false;
   elements.slimmingWorkspace.inert = false;
   elements.worldMapWorkspace.inert = false;
@@ -2761,6 +2922,7 @@ function setConnection(online, label) {
   renderEmbeddingPreparation();
   renderSampleSuggestions();
   renderReviewOverview();
+  renderFavoriteControls();
   renderSourcePrewarmStatus();
   if (elements.generalSettingsDialog.open) renderGeneralSettings();
   if (elements.tagSuggestionDialog.open) renderTagSuggestionDialog();
@@ -2853,6 +3015,14 @@ function syncWriteActionControls() {
       && !canLaunchTrainingSetup();
     const trainingActivityUnavailable = Boolean(button.dataset.trainingActivityId)
       && state.training.activityMutatingIDs.has(button.dataset.trainingActivityId);
+    const favoriteUnavailable = button.matches(
+      "#favoriteSelectedButton, #unfavoriteSelectedButton, "
+        + "#selectionInspectorFavoriteButton, #selectionInspectorUnfavoriteButton, "
+        + "#inspectorFavoriteButton, #retryFavoriteSyncButton, #lightboxFavoriteButton, "
+        + ".asset-card-favorite, .review-card-favorite, .world-map-photo-favorite, "
+        + ".slimming-member-favorite, .slimming-recycle-favorite"
+    )
+      && (!supportsFavorites() || state.favoriteMutating || state.favoriteRetrying);
     const slimmingLaunchUnavailable = button === elements.launchSlimmingButton
       && !canLaunchSlimmingSetup();
     const slimmingSaveUnavailable = button === elements.saveSlimmingThresholdsButton
@@ -2869,6 +3039,7 @@ function syncWriteActionControls() {
       || aggregateUnavailable
       || trainingLaunchUnavailable
       || trainingActivityUnavailable
+      || favoriteUnavailable
       || slimmingLaunchUnavailable
       || slimmingSaveUnavailable
       || slimmingJobUnavailable
@@ -2876,6 +3047,7 @@ function syncWriteActionControls() {
   });
   if (elements.sourceManagerDialog.open) renderSourceManagement();
   if (elements.storageDialog.open) renderStorageMaintenance();
+  renderFavoriteControls();
   renderUndoControls();
   elements.openOriginalButton.disabled = !state.online
     || state.selectedDetail?.availability !== "available"
@@ -2982,13 +3154,28 @@ function renderLayoutPreferences() {
     "--asset-min-width",
     `${densityWidths[state.layout.density]}px`
   );
+  elements.slimmingGridDensitySlider.value = String(state.layout.density);
+  document.documentElement.style.setProperty(
+    "--slimming-member-min-width",
+    `${densityWidths[state.layout.density]}px`
+  );
   const originalAspect = state.layout.aspectMode === "original";
   elements.assetGrid.classList.toggle("original-aspect", originalAspect);
+  elements.slimmingMemberGrid.classList.toggle("original-aspect", originalAspect);
+  elements.slimmingRecycleList.classList.toggle("original-aspect", originalAspect);
   elements.thumbnailAspectButton.setAttribute("aria-pressed", String(originalAspect));
   elements.thumbnailAspectButton.textContent = originalAspect ? "填充" : "适应";
   elements.thumbnailAspectButton.title = originalAspect
     ? "裁切为方形缩略图"
     : "完整显示照片宽高比";
+  elements.slimmingThumbnailAspectButton.setAttribute(
+    "aria-pressed",
+    String(originalAspect)
+  );
+  elements.slimmingThumbnailAspectButton.textContent = originalAspect ? "填充" : "适应";
+  elements.slimmingThumbnailAspectButton.title = originalAspect
+    ? "裁切为填充缩略图"
+    : "完整显示媒体宽高比";
 }
 
 function setSidebarVisible(visible) {
@@ -3008,6 +3195,7 @@ function captureMediaSession() {
     assets: state.assets.map((asset) => ({ ...asset })),
     nextCursor: state.nextCursor,
     selectedSourceID: state.selectedSourceID,
+    libraryScope: state.libraryScope,
     selectedAssetID: state.selectedAssetID,
     selectedDetail: state.selectedDetail,
     searchText: state.searchText,
@@ -3065,6 +3253,9 @@ function renderLibraryEmptyState() {
   } else if (noSources) {
     elements.emptyStateTitle.textContent = "ImageAll 在原位置读取照片";
     elements.emptyStateCopy.textContent = "连接照片文件夹或 Apple Photos 后即可开始；ImageAll 不会导入、移动或重命名原图。";
+  } else if (state.libraryScope === "favorites") {
+    elements.emptyStateTitle.textContent = `还没有红心${noun}`;
+    elements.emptyStateCopy.textContent = "在网格菜单、检查器或多选工具栏中加入红心后，会集中显示在这里。";
   } else if (constrained) {
     elements.emptyStateTitle.textContent = `没有找到${noun}`;
     elements.emptyStateCopy.textContent = `尝试选择其他来源或清除${noun}筛选条件。`;
@@ -3145,6 +3336,7 @@ async function switchMediaKind(mediaKind) {
     state.assets = saved.assets.map((asset) => ({ ...asset }));
     state.nextCursor = saved.nextCursor;
     state.selectedSourceID = saved.selectedSourceID;
+    state.libraryScope = saved.libraryScope || "all";
     state.selectedAssetID = saved.selectedAssetID;
     state.selectedDetail = saved.selectedDetail;
     state.searchText = saved.searchText;
@@ -3159,6 +3351,7 @@ async function switchMediaKind(mediaKind) {
     state.assets = [];
     state.nextCursor = null;
     state.selectedSourceID = "";
+    state.libraryScope = "all";
     state.selectedAssetID = null;
     state.selectedDetail = null;
     state.searchText = "";
@@ -3787,7 +3980,7 @@ function renderTagNavigation() {
   }
   elements.untaggedNavigationButton.classList.toggle(
     "selected",
-    state.filters.tagPresence === "untagged"
+    state.libraryScope === "all" && state.filters.tagPresence === "untagged"
   );
 }
 
@@ -3798,8 +3991,10 @@ async function applyQuickTagFilter(tagID) {
     ? []
     : [{ tagID, decision: "accepted" }];
   state.filters.tagPresence = "any";
+  state.libraryScope = "all";
   state.filters.tagMatchMode = "all";
   state.filterDraft = null;
+  renderSources();
   renderTagNavigation();
   syncFilterControlsFromState();
   await loadAssets();
@@ -3808,8 +4003,10 @@ async function applyQuickTagFilter(tagID) {
 async function filterToSingleSidebarTag(tagID) {
   state.filters.tagConditions = [{ tagID, decision: "accepted" }];
   state.filters.tagPresence = "any";
+  state.libraryScope = "all";
   state.filters.tagMatchMode = "all";
   state.filterDraft = null;
+  renderSources();
   renderTagNavigation();
   syncFilterControlsFromState();
   await loadAssets();
@@ -3832,7 +4029,9 @@ async function toggleSidebarTagFilter(tagID, { matchMode = "any", excluded = fal
     state.filters.tagPresence = "any";
     if (!excluded) state.filters.tagMatchMode = matchMode;
   }
+  state.libraryScope = "all";
   state.filterDraft = null;
+  renderSources();
   renderTagNavigation();
   syncFilterControlsFromState();
   await loadAssets();
@@ -3840,12 +4039,39 @@ async function toggleSidebarTagFilter(tagID, { matchMode = "any", excluded = fal
 }
 
 async function applyUntaggedFilter() {
-  const clearing = state.filters.tagPresence === "untagged";
+  const clearing = state.libraryScope === "all"
+    && state.filters.tagPresence === "untagged";
+  state.libraryScope = "all";
   state.filters.tagPresence = clearing ? "any" : "untagged";
   state.filters.tagConditions = [];
   state.filterDraft = null;
+  renderSources();
   renderTagNavigation();
   syncFilterControlsFromState();
+  await loadAssets();
+}
+
+async function applyFavoritesFilter() {
+  if (!supportsFavorites()) {
+    toast("请先更新并重启 Mac Host 后再使用红心收藏");
+    return;
+  }
+  if (state.selectionMode) setSelectionMode(false);
+  state.libraryScope = "favorites";
+  state.selectedSourceID = "";
+  state.filters.tagPresence = "any";
+  state.filters.tagConditions = [];
+  state.filterDraft = null;
+  state.selectedAssetID = null;
+  state.selectedDetail = null;
+  state.inspectorDismissed = false;
+  elements.inspector.classList.remove("open");
+  renderInspectorSurface();
+  renderSources();
+  renderTagNavigation();
+  syncFilterControlsFromState();
+  updateLibraryTitle();
+  elements.sourceSidebar.classList.remove("open");
   await loadAssets();
 }
 
@@ -4261,7 +4487,13 @@ function renderSources() {
     button.setAttribute("aria-keyshortcuts", "Alt+ArrowUp Alt+ArrowDown");
     button.setAttribute("aria-haspopup", "menu");
     button.title = "拖动可调整顺序；右键或 Shift-F10 查看来源操作";
-    button.classList.toggle("selected", state.selectedSourceID === source.id);
+    button.classList.toggle(
+      "selected",
+      state.libraryScope === "all" && state.selectedSourceID === source.id
+    );
+    if (state.libraryScope === "all" && state.selectedSourceID === source.id) {
+      button.setAttribute("aria-current", "page");
+    }
     button.classList.toggle("unavailable", source.state !== "active");
 
     const icon = document.createElement("span");
@@ -4277,8 +4509,21 @@ function renderSources() {
     elements.sourceList.append(button);
   }
 
-  document.querySelector('[data-source-id=""]')
-    ?.classList.toggle("selected", state.selectedSourceID === "");
+  const allMediaButton = document.querySelector('[data-source-id=""]');
+  const allMediaSelected = state.libraryScope === "all" && state.selectedSourceID === "";
+  allMediaButton?.classList.toggle("selected", allMediaSelected);
+  if (allMediaSelected) allMediaButton?.setAttribute("aria-current", "page");
+  else allMediaButton?.removeAttribute("aria-current");
+  elements.favoritesNavigationButton.classList.toggle("hidden", !supportsFavorites());
+  elements.favoritesNavigationButton.classList.toggle(
+    "selected",
+    state.libraryScope === "favorites"
+  );
+  if (state.libraryScope === "favorites") {
+    elements.favoritesNavigationButton.setAttribute("aria-current", "page");
+  } else {
+    elements.favoritesNavigationButton.removeAttribute("aria-current");
+  }
 }
 
 function focusSidebarSource(sourceID) {
@@ -4511,6 +4756,14 @@ function supportsGeneralSettings() {
   return state.capabilities?.capabilities?.includes("generalSettings") === true;
 }
 
+function supportsFavorites() {
+  return state.capabilities?.capabilities?.includes("favorites") === true;
+}
+
+function supportsLibrarySuggestions() {
+  return state.capabilities?.capabilities?.includes("librarySuggestions") === true;
+}
+
 function supportsSourceManagement() {
   return state.capabilities?.capabilities?.includes("sourceManagement") === true;
 }
@@ -4601,6 +4854,141 @@ function restoreThresholdFocus(key) {
     + `[data-threshold-tag-id="${CSS.escape(tagID)}"]`
     + `[data-threshold-method="${CSS.escape(method)}"]`;
   restoreOverlayFocus(elements.suggestionThresholdList.querySelector(selector));
+}
+
+function suggestionThresholdTagRow(tagID) {
+  return suggestionThresholdSnapshot()?.tags?.find((tag) => tag.tagID === tagID) || null;
+}
+
+function reviewThresholdFocusTarget(key) {
+  if (!key) return null;
+  const [kind, tagID, method] = key;
+  const exact = elements.reviewOverviewGrid.querySelector(
+    `[data-threshold-focus="${CSS.escape(kind)}"]`
+      + `[data-threshold-tag-id="${CSS.escape(tagID)}"]`
+      + `[data-threshold-method="${CSS.escape(method)}"]`
+  );
+  if (exact) return exact;
+  return elements.reviewOverviewGrid.querySelector(
+    `[data-threshold-focus="input"]`
+      + `[data-threshold-tag-id="${CSS.escape(tagID)}"]`
+      + `[data-threshold-method="${CSS.escape(method)}"]`
+  ) || elements.reviewOverviewGrid.querySelector(
+    `[data-review-control-tag-id="${CSS.escape(tagID)}"] > summary`
+  );
+}
+
+function decorateReviewThresholdControl(control, kind, tagID, method) {
+  control.dataset.thresholdFocus = kind;
+  control.dataset.thresholdTagId = tagID;
+  control.dataset.thresholdMethod = method;
+  return control;
+}
+
+function renderReviewThresholdControls(overview) {
+  const tag = suggestionThresholdTagRow(overview.id);
+  if (!tag) return null;
+  const unavailable = state.generalSettings.loading
+    || state.generalSettings.submitting
+    || !state.online;
+  const section = document.createElement("section");
+  section.className = "review-thresholds";
+  const heading = document.createElement("div");
+  heading.className = "review-thresholds-heading";
+  const title = document.createElement("strong");
+  title.textContent = "生效门槛";
+  const hint = document.createElement("span");
+  hint.textContent = "每条建议轨道独立设置";
+  heading.append(title, hint);
+  section.append(heading);
+
+  for (const method of tag.methods || []) {
+    const row = document.createElement("div");
+    row.className = "review-threshold-row";
+    const methodLabel = suggestionThresholdMethodLabels[method.method] || method.method;
+    const label = document.createElement("span");
+    label.className = "review-threshold-label";
+    label.textContent = methodLabel;
+
+    const editor = document.createElement("div");
+    editor.className = "review-threshold-editor";
+    const decrease = decorateReviewThresholdControl(
+      document.createElement("button"), "decrease", tag.tagID, method.method
+    );
+    decrease.type = "button";
+    decrease.textContent = "−";
+    decrease.disabled = unavailable;
+    decrease.dataset.reviewThresholdStep = "-0.05";
+    decrease.setAttribute("aria-label", `${overview.displayName} ${methodLabel}门槛减少 0.05`);
+
+    const input = decorateReviewThresholdControl(
+      document.createElement("input"), "input", tag.tagID, method.method
+    );
+    input.type = "number";
+    input.inputMode = "decimal";
+    input.step = "0.05";
+    input.value = formatSuggestionThreshold(method.effectiveMinScore);
+    input.dataset.persistedValue = input.value;
+    input.disabled = unavailable;
+    input.dataset.reviewThresholdInput = "true";
+    input.setAttribute("aria-label", `${overview.displayName} ${methodLabel}最低门槛`);
+
+    const increase = decorateReviewThresholdControl(
+      document.createElement("button"), "increase", tag.tagID, method.method
+    );
+    increase.type = "button";
+    increase.textContent = "+";
+    increase.disabled = unavailable;
+    increase.dataset.reviewThresholdStep = "0.05";
+    increase.setAttribute("aria-label", `${overview.displayName} ${methodLabel}门槛增加 0.05`);
+
+    const prune = decorateReviewThresholdControl(
+      document.createElement("button"), "prune", tag.tagID, method.method
+    );
+    prune.type = "button";
+    prune.className = "button button-plain review-threshold-prune";
+    prune.textContent = "刷新";
+    prune.disabled = unavailable;
+    prune.dataset.reviewThresholdAction = "prune";
+    prune.title = "按当前门槛移除分数过低的待审建议；不会重新扫描图库";
+    editor.append(decrease, input, increase, prune);
+
+    const meta = document.createElement("div");
+    meta.className = "review-threshold-meta";
+    const badge = document.createElement("span");
+    badge.className = `threshold-source-badge${method.overrideMinScore == null ? " inherited" : ""}`;
+    badge.textContent = method.overrideMinScore == null ? "继承默认" : "单独设置";
+    meta.append(badge);
+    if (method.reference) {
+      const reference = document.createElement("span");
+      reference.textContent = `参考 ${formatSuggestionThreshold(method.reference.minScore)}`;
+      reference.title = suggestionReferenceText(method.reference);
+      const adopt = decorateReviewThresholdControl(
+        document.createElement("button"), "adopt", tag.tagID, method.method
+      );
+      adopt.type = "button";
+      adopt.className = "button button-plain";
+      adopt.textContent = "采用";
+      adopt.disabled = unavailable;
+      adopt.dataset.reviewThresholdAction = "setOverride";
+      adopt.dataset.thresholdScore = String(method.reference.minScore);
+      meta.append(reference, adopt);
+    }
+    if (method.overrideMinScore != null) {
+      const inherit = decorateReviewThresholdControl(
+        document.createElement("button"), "inherit", tag.tagID, method.method
+      );
+      inherit.type = "button";
+      inherit.className = "button button-plain";
+      inherit.textContent = "继承";
+      inherit.disabled = unavailable;
+      inherit.dataset.reviewThresholdAction = "clearOverride";
+      meta.append(inherit);
+    }
+    row.append(label, editor, meta);
+    section.append(row);
+  }
+  return section;
 }
 
 function renderSuggestionThresholdDialog() {
@@ -4700,6 +5088,7 @@ function renderGeneralSettings() {
   const manager = state.generalSettings;
   const snapshot = manager.snapshot;
   const unavailable = manager.loading || !state.online || !snapshot;
+  renderReviewSuggestionLimit();
   elements.generalSettingsDialog.setAttribute("aria-busy", String(manager.submitting));
   elements.generalSettingsLoading.classList.toggle("hidden", Boolean(snapshot) || !manager.loading);
   elements.generalSettingsContent.classList.toggle("hidden", !snapshot);
@@ -4709,7 +5098,10 @@ function renderGeneralSettings() {
   elements.generalSettingsModelToggle.disabled = unavailable;
   elements.generalSettingsPrewarmToggle.disabled = unavailable;
   renderSuggestionThresholdDefaults(unavailable);
-  if (!snapshot) return;
+  if (!snapshot) {
+    renderReviewLocalModelStatus();
+    return;
+  }
 
   applyToolbarDisplayMode(snapshot.toolbarDisplayMode);
   const model = snapshot.localModel;
@@ -4726,6 +5118,7 @@ function renderGeneralSettings() {
   elements.generalSettingsPrewarmDetail.textContent =
     `连续 ${minutes} 分钟无操作后，会在后台预热缩略图、特征向量与本地模型嵌入缓存；任意操作立即让路给浏览。`;
   renderSuggestionThresholdDialog();
+  renderReviewLocalModelStatus();
 }
 
 async function loadGeneralSettings({ quiet = false } = {}) {
@@ -4757,14 +5150,18 @@ async function loadGeneralSettings({ quiet = false } = {}) {
 
 async function submitGeneralSettingsPatch(patch) {
   const manager = state.generalSettings;
-  if (!state.online || manager.loading || manager.submitting || !manager.snapshot) return;
+  if (!state.online || manager.loading || manager.submitting || !manager.snapshot) return false;
   const activeDefault = document.activeElement?.closest?.("[data-suggestion-default]");
   manager.pendingDefaultFocus = activeDefault?.dataset.suggestionDefault || null;
   manager.pendingThresholdFocus = thresholdFocusSelector(document.activeElement);
+  if (elements.reviewOverviewGrid.contains(document.activeElement)) {
+    state.review.pendingThresholdFocus = manager.pendingThresholdFocus;
+  }
   manager.submitting = true;
   elements.generalSettingsError.classList.add("hidden");
   elements.suggestionThresholdError.classList.add("hidden");
   renderGeneralSettings();
+  let succeeded = false;
   try {
     const response = await api("/v1/settings/general", {
       method: "PUT",
@@ -4772,6 +5169,7 @@ async function submitGeneralSettingsPatch(patch) {
     });
     manager.snapshot = response.settings;
     applyToolbarDisplayMode(response.settings.toolbarDisplayMode);
+    succeeded = true;
   } catch (error) {
     const message = error.message || "Mac 未能保存通用设置";
     elements.generalSettingsError.textContent = message;
@@ -4791,6 +5189,7 @@ async function submitGeneralSettingsPatch(patch) {
     manager.pendingDefaultFocus = null;
     manager.pendingThresholdFocus = null;
   }
+  return succeeded;
 }
 
 function commitSuggestionDefault(input) {
@@ -4826,6 +5225,72 @@ function commitSuggestionOverride(input) {
       minScore,
     },
   });
+}
+
+async function submitReviewThresholdMutation(mutation, successMessage) {
+  const succeeded = await submitGeneralSettingsPatch({
+    suggestionThresholdMutation: mutation,
+  });
+  if (!succeeded) {
+    renderReviewOverview();
+    toast("Mac 未能更新这个标签的建议门槛");
+    return false;
+  }
+  if (mutation.action === "prune") {
+    await loadReviewOverview();
+  } else {
+    renderReviewOverview();
+  }
+  if (successMessage) toast(successMessage);
+  return true;
+}
+
+async function commitReviewThresholdInput(input) {
+  const minScore = Number(input.value);
+  if (!Number.isFinite(minScore)) {
+    input.value = input.dataset.persistedValue || "0.00";
+    return false;
+  }
+  input.value = formatSuggestionThreshold(minScore);
+  if (input.value === input.dataset.persistedValue) return true;
+  return submitReviewThresholdMutation({
+    action: "setOverride",
+    method: input.dataset.thresholdMethod,
+    tagID: input.dataset.thresholdTagId,
+    minScore,
+  });
+}
+
+async function applyReviewThresholdAction(button) {
+  const row = button.closest(".review-threshold-row");
+  const input = row?.querySelector("[data-review-threshold-input]");
+  if (button.dataset.reviewThresholdStep != null) {
+    const current = Number(input?.value);
+    const step = Number(button.dataset.reviewThresholdStep);
+    if (!input || !Number.isFinite(current) || !Number.isFinite(step)) return;
+    input.value = formatSuggestionThreshold(current + step);
+    await commitReviewThresholdInput(input);
+    return;
+  }
+  const action = button.dataset.reviewThresholdAction;
+  if (!action) return;
+  if (action === "prune" && input && input.value !== input.dataset.persistedValue) {
+    const saved = await commitReviewThresholdInput(input);
+    if (!saved) return;
+  }
+  const mutation = {
+    action,
+    method: button.dataset.thresholdMethod,
+    tagID: button.dataset.thresholdTagId,
+  };
+  if (button.dataset.thresholdScore != null) {
+    mutation.minScore = Number(button.dataset.thresholdScore);
+  }
+  const methodName = suggestionThresholdMethodLabels[mutation.method] || "建议";
+  await submitReviewThresholdMutation(
+    mutation,
+    action === "prune" ? `已按当前${methodName}门槛刷新待审项` : null
+  );
 }
 
 function openSuggestionThresholdDialog() {
@@ -5532,40 +5997,109 @@ function syncAssetCardMediaBadge(button, asset) {
   badge.textContent = `▶${asset.durationMs == null ? "" : ` ${formatDuration(asset.durationMs)}`}`;
 }
 
-function syncAssetCard(button, asset) {
+function favoriteSyncText(favorite) {
+  return {
+    localOnly: "仅保存在 ImageAll",
+    synced: "已与 Apple Photos 同步",
+    pending: "等待与 Apple Photos 同步",
+    failed: "Apple Photos 同步失败",
+  }[favorite?.syncStatus] || "";
+}
+
+function assetCardMainButton(card, { create = false } = {}) {
+  let button = card?.querySelector(":scope > .asset-card-main") || null;
+  if (!button && create && card) {
+    button = document.createElement("button");
+    button.type = "button";
+    button.className = "asset-card-main";
+    card.append(button);
+  }
+  return button;
+}
+
+function syncMediaFavoriteButton(button, { assetID, fileName, favorite }) {
+  const isFavorite = favorite?.isFavorite === true;
+  const syncStatus = favorite?.syncStatus || "";
+  const syncText = favoriteSyncText(favorite);
+  const actionText = isFavorite ? "取消红心" : "加入红心";
+  const title = syncText ? `${actionText}；${syncText}` : actionText;
+  button.dataset.mediaFavoriteAssetId = assetID;
+  button.dataset.favorite = String(isFavorite);
+  button.dataset.syncStatus = syncStatus;
+  button.disabled = !state.online || state.favoriteMutating || state.favoriteRetrying;
+  button.title = title;
+  button.setAttribute("aria-label", `${fileName || "当前项目"}：${title}`);
+  button.setAttribute("aria-pressed", String(isFavorite));
+  button.querySelector(":scope > .media-favorite-icon").textContent = isFavorite ? "♥" : "♡";
+  const badge = button.querySelector(":scope > .media-favorite-sync");
+  const showBadge = syncStatus === "pending" || syncStatus === "failed";
+  badge.classList.toggle("hidden", !showBadge);
+  badge.dataset.syncStatus = syncStatus;
+  badge.textContent = syncStatus === "failed" ? "!" : "";
+}
+
+function syncAssetCardFavoriteButton(card, asset) {
+  let button = card.querySelector(":scope > .asset-card-favorite");
+  if (!supportsFavorites()) {
+    button?.remove();
+    return;
+  }
+  if (!button) {
+    button = document.createElement("button");
+    button.type = "button";
+    button.className = "asset-card-favorite write-action";
+    button.dataset.assetCardFavorite = "true";
+    const icon = document.createElement("span");
+    icon.className = "asset-card-favorite-icon media-favorite-icon";
+    icon.setAttribute("aria-hidden", "true");
+    const badge = document.createElement("span");
+    badge.className = "asset-card-favorite-sync media-favorite-sync hidden";
+    badge.setAttribute("aria-hidden", "true");
+    button.append(icon, badge);
+    card.append(button);
+  }
+  syncMediaFavoriteButton(button, {
+    assetID: asset.id,
+    fileName: asset.fileName,
+    favorite: asset.favorite || null,
+  });
+}
+
+function syncAssetCard(card, asset) {
   const mediaKind = asset.mediaKind || state.mediaKind;
   const nextHoverKey = `${asset.id}:${asset.contentRevision ?? ""}`;
-  if (activeAssetHoverCard === button && button.dataset.hoverVideoKey !== nextHoverKey) {
-    stopAssetHoverVideo(button);
+  if (activeAssetHoverCard === card && card.dataset.hoverVideoKey !== nextHoverKey) {
+    stopAssetHoverVideo(card);
   }
-  button.type = "button";
-  button.className = "asset-card";
-  if (activeAssetHoverCard === button) {
-    const hoverVideo = button.querySelector(":scope > .asset-hover-video");
-    button.classList.add(hoverVideo?.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA
+  card.className = "asset-card";
+  if (activeAssetHoverCard === card) {
+    const hoverVideo = card.querySelector(":scope > .asset-hover-video");
+    card.classList.add(hoverVideo?.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA
       ? "hover-video-ready"
       : "hover-video-loading");
   }
-  button.dataset.assetId = asset.id;
-  button.dataset.mediaKind = mediaKind;
-  button.classList.toggle("selected", state.selectedAssetID === asset.id && !state.selectionMode);
-  button.classList.toggle("batch-selected", state.selectedAssetIDs.has(asset.id));
-  button.setAttribute(
+  card.dataset.assetId = asset.id;
+  card.dataset.mediaKind = mediaKind;
+  card.classList.toggle("selected", state.selectedAssetID === asset.id && !state.selectionMode);
+  card.classList.toggle("batch-selected", state.selectedAssetIDs.has(asset.id));
+  const mainButton = assetCardMainButton(card, { create: true });
+  mainButton.setAttribute(
     "aria-label",
     `${asset.fileName || (mediaKind === "video" ? "未命名视频" : "未命名照片")}，`
       + `${mediaKind === "video" ? "视频" : "照片"}，${asset.sourceName}，`
       + (mediaKind === "video" && asset.durationMs != null
         ? `时长 ${formatDuration(asset.durationMs)}，`
         : "")
+      + `${asset.favorite?.isFavorite ? "已加入红心，" : ""}`
       + `已确认 ${asset.acceptedTagCount} 个标签`
   );
-  button.setAttribute(
+  mainButton.setAttribute(
     "aria-pressed",
     String(state.selectionMode
       ? state.selectedAssetIDs.has(asset.id)
       : state.selectedAssetID === asset.id)
   );
-  button.title = [
+  mainButton.title = [
     asset.fileName || (mediaKind === "video" ? "未命名视频" : "未命名照片"),
     `来源：${asset.sourceName}`,
     `媒体：${mediaKind === "video" ? "视频" : "照片"}`,
@@ -5575,11 +6109,13 @@ function syncAssetCard(button, asset) {
     mediaKind === "video" ? "悬停静音播放；双击打开单图" : "双击打开单图",
     asset.width && asset.height ? `尺寸：${asset.width} × ${asset.height}` : "",
     `标签：已确认 ${asset.acceptedTagCount} · 已拒绝 ${asset.rejectedTagCount}`,
+    asset.favorite?.isFavorite ? `红心：${favoriteSyncText(asset.favorite)}` : "",
   ].filter(Boolean).join("\n");
-  syncAssetCardImage(button, asset);
-  syncAssetCardSelectionMark(button);
-  syncAssetCardMeta(button, asset);
-  syncAssetCardMediaBadge(button, asset);
+  syncAssetCardImage(card, asset);
+  syncAssetCardSelectionMark(card);
+  syncAssetCardMeta(card, asset);
+  syncAssetCardMediaBadge(card, asset);
+  syncAssetCardFavoriteButton(card, asset);
 }
 
 function syncAssetCardPosition(button, index) {
@@ -5599,6 +6135,9 @@ function renderAssets() {
   elements.allAssetCount.title = state.assets.length
     ? `当前已载入 ${state.assets.length} 项${state.nextCursor ? "，还有更多" : ""}`
     : "";
+  elements.favoritesNavigationCount.textContent = state.libraryScope === "favorites"
+    ? `${state.assets.length}${state.nextCursor ? "+" : ""}`
+    : "";
   elements.assetSummary.textContent = state.assets.length
     ? `已载入 ${state.assets.length} 项${state.nextCursor ? " · 还有更多" : ""}`
     : "";
@@ -5609,7 +6148,7 @@ function renderAssets() {
   );
   const visibleIDs = new Set();
   for (const [index, asset] of state.assets.entries()) {
-    const button = existing.get(asset.id) || document.createElement("button");
+    const button = existing.get(asset.id) || document.createElement("div");
     visibleIDs.add(asset.id);
     syncAssetCard(button, asset);
     syncAssetCardPosition(button, index);
@@ -5622,6 +6161,7 @@ function renderAssets() {
     }
   }
   updateInspectorNavigation();
+  renderFavoriteControls();
 }
 
 function metadataRow(label, value) {
@@ -6079,6 +6619,7 @@ function renderInspector(detail) {
   elements.openOriginalButton.disabled = !state.online
     || detail.availability !== "available"
     || state.openingOriginal;
+  renderFavoriteControls();
 
   clearElement(elements.inspectorTags);
   const tagQuery = state.inspectorTagSearchText.toLocaleLowerCase("zh-CN");
@@ -6163,6 +6704,7 @@ function renderSelectionInspector() {
   }
   state.sidebarDrag.pendingSelectionRender = false;
   const total = state.selectedAssetIDs.size;
+  renderFavoriteControls();
   elements.selectionInspectorTitle.textContent = `已选择 ${mediaItemCountText(total)}`;
   clearElement(elements.selectionInspectorTags);
   const aggregates = new Map(
@@ -6246,7 +6788,9 @@ function renderInspectorSurface() {
 function updateLibraryTitle() {
   const source = state.sources.find((item) => item.id === state.selectedSourceID);
   const mediaTitle = state.mediaKind === "video" ? "视频" : "照片";
-  elements.libraryTitle.textContent = source
+  elements.libraryTitle.textContent = state.libraryScope === "favorites"
+    ? `红心收藏 · ${mediaTitle}`
+    : source
     ? `${source.displayName} · ${mediaTitle}`
     : `全部${mediaTitle}`;
 }
@@ -6497,6 +7041,8 @@ function assetPageFingerprint(items, nextCursor) {
       asset.mediaCreatedAtMs,
       asset.width,
       asset.height,
+      asset.favorite?.isFavorite ?? null,
+      asset.favorite?.syncStatus ?? null,
     ]),
   ]);
 }
@@ -6505,6 +7051,7 @@ function assetQuerySnapshot() {
   return {
     workspaceGeneration: state.workspaceGeneration,
     selectedSourceID: state.selectedSourceID,
+    libraryScope: state.libraryScope,
     searchText: state.searchText,
     sort: state.sort,
     filters: cloneFilters(state.filters),
@@ -6525,6 +7072,7 @@ function assetPageQuery({
     limit: String(limit),
   });
   if (snapshot.selectedSourceID) query.set("sourceIDs", snapshot.selectedSourceID);
+  if (snapshot.libraryScope === "favorites") query.set("favorite", "favorited");
   if (snapshot.searchText) query.set("q", snapshot.searchText);
   if (cursor) query.set("cursor", cursor);
   appendAdvancedFilterQuery(query, snapshot.filters);
@@ -6763,6 +7311,370 @@ async function mutateTag(tagID, action) {
   }
 }
 
+function favoriteStateForAssetID(assetID) {
+  if (!assetID) return null;
+  if (state.selectedDetail?.assetID === assetID && state.selectedDetail.favorite) {
+    return state.selectedDetail.favorite;
+  }
+  if (state.lightboxFavoriteStates.has(assetID)) {
+    return state.lightboxFavoriteStates.get(assetID);
+  }
+  return state.assets.find((asset) => asset.id === assetID)?.favorite
+    || state.review.items.find((item) => item.assetID === assetID)?.favorite
+    || state.worldMap.selection?.assets?.find((asset) => asset.id === assetID)?.favorite
+    || state.slimming.members.find((member) => member.id === assetID)?.favorite
+    || state.slimming.recycle.entries.find((entry) => entry.assetID === assetID)?.favorite
+    || null;
+}
+
+function renderLightboxFavorite() {
+  const assetID = state.lightboxAssetID;
+  const open = !elements.lightbox.classList.contains("hidden");
+  const supported = supportsFavorites();
+  elements.lightboxFavoriteButton.classList.toggle(
+    "hidden",
+    !open || !supported || !assetID
+  );
+  if (!open || !supported || !assetID) return;
+
+  const favorite = favoriteStateForAssetID(assetID);
+  const isFavorite = favorite?.isFavorite === true;
+  const loading = state.lightboxFavoriteLoadingAssetID === assetID && !favorite;
+  elements.lightboxFavoriteButton.disabled = !state.online
+    || state.favoriteMutating
+    || state.favoriteRetrying
+    || loading
+    || !favorite;
+  elements.lightboxFavoriteButton.dataset.favorite = String(isFavorite);
+  elements.lightboxFavoriteButtonIcon.textContent = isFavorite ? "♥" : "♡";
+  const syncText = favoriteSyncText(favorite);
+  const actionText = isFavorite ? "取消红心" : "加入红心";
+  const title = loading
+    ? "正在读取红心状态"
+    : (syncText ? `${actionText}；${syncText}` : actionText);
+  elements.lightboxFavoriteButton.title = title;
+  elements.lightboxFavoriteButton.setAttribute("aria-label", title);
+  const syncStatus = favorite?.syncStatus || "";
+  const showBadge = syncStatus === "pending" || syncStatus === "failed";
+  elements.lightboxFavoriteSyncBadge.classList.toggle("hidden", !showBadge);
+  elements.lightboxFavoriteSyncBadge.dataset.syncStatus = syncStatus;
+  elements.lightboxFavoriteSyncBadge.textContent = syncStatus === "failed" ? "!" : "";
+}
+
+async function loadLightboxFavorite(assetID) {
+  if (!assetID || !supportsFavorites() || favoriteStateForAssetID(assetID)) return;
+  if (state.lightboxFavoriteLoadingAssetID === assetID) return;
+  const workspaceGeneration = state.workspaceGeneration;
+  const requestGeneration = ++state.lightboxFavoriteRequestGeneration;
+  let failed = false;
+  state.lightboxFavoriteLoadingAssetID = assetID;
+  renderLightboxFavorite();
+  try {
+    const detail = await api(`/v1/assets/${assetID}`);
+    if (workspaceGeneration !== state.workspaceGeneration
+      || requestGeneration !== state.lightboxFavoriteRequestGeneration
+      || state.lightboxAssetID !== assetID) return;
+    if (detail.favorite) {
+      state.lightboxFavoriteStates.set(assetID, detail.favorite);
+    }
+  } catch {
+    failed = workspaceGeneration === state.workspaceGeneration
+      && requestGeneration === state.lightboxFavoriteRequestGeneration
+      && state.lightboxAssetID === assetID;
+  } finally {
+    if (requestGeneration === state.lightboxFavoriteRequestGeneration) {
+      state.lightboxFavoriteLoadingAssetID = null;
+      renderLightboxFavorite();
+      if (failed) {
+        elements.lightboxFavoriteButton.title = "无法读取红心状态";
+        elements.lightboxFavoriteButton.setAttribute("aria-label", "无法读取红心状态");
+      }
+    }
+  }
+}
+
+async function toggleLightboxFavorite() {
+  const assetID = state.lightboxAssetID;
+  const favorite = favoriteStateForAssetID(assetID);
+  if (!assetID || !favorite || state.favoriteMutating) return;
+  await applyFavoriteMutation([assetID], favorite.isFavorite !== true);
+  if (elements.lightbox.classList.contains("hidden")) return;
+
+  if (!lightboxItems().some((item) => item.id === state.lightboxAssetID)) {
+    const fallbackID = state.selectedAssetID
+      && lightboxItems().some((item) => item.id === state.selectedAssetID)
+      ? state.selectedAssetID
+      : lightboxItems()[0]?.id;
+    if (!fallbackID) {
+      closeLightbox();
+      return;
+    }
+    state.lightboxAssetID = fallbackID;
+  }
+  renderLightbox();
+}
+
+function visibleFavoriteSyncCounts() {
+  return state.assets.reduce((counts, asset) => {
+    if (asset.favorite?.syncStatus === "pending") counts.pending += 1;
+    if (asset.favorite?.syncStatus === "failed") counts.failed += 1;
+    return counts;
+  }, { pending: 0, failed: 0 });
+}
+
+function renderFavoriteControls() {
+  const supported = supportsFavorites();
+  for (const card of elements.assetGrid.querySelectorAll(":scope > .asset-card")) {
+    const asset = state.assets.find((item) => item.id === card.dataset.assetId);
+    if (asset) syncAssetCardFavoriteButton(card, asset);
+  }
+  for (const card of elements.reviewGrid.querySelectorAll(":scope > .review-card")) {
+    const item = state.review.items.find(
+      (candidate) => candidate.assetID === card.dataset.reviewAssetId
+    );
+    if (item) syncReviewCardFavoriteButton(card, item);
+  }
+  for (const card of elements.worldMapPhotoStrip.querySelectorAll(
+    ":scope > .world-map-photo-card"
+  )) {
+    const asset = state.worldMap.selection?.assets?.find(
+      (candidate) => candidate.id === card.dataset.worldMapCardAssetId
+    );
+    if (asset) syncWorldMapPhotoFavoriteButton(card, asset);
+  }
+  for (const card of elements.slimmingMemberGrid.querySelectorAll(
+    ":scope > .slimming-member-card"
+  )) {
+    const member = state.slimming.members.find(
+      (candidate) => candidate.id === card.dataset.slimmingMemberId
+    );
+    if (member) syncSlimmingMemberFavoriteButton(card, member);
+  }
+  for (const card of elements.slimmingRecycleList.querySelectorAll(
+    ".slimming-recycle-thumbnail-card"
+  )) {
+    const entry = state.slimming.recycle.entries.find(
+      (candidate) => candidate.id === card.dataset.slimmingRecycleThumbnailEntryId
+    );
+    if (entry) syncSlimmingRecycleFavoriteButton(card, entry);
+  }
+  const selectedCount = state.selectedAssetIDs.size;
+  const batchDisabled = !supported
+    || !state.online
+    || state.favoriteMutating
+    || selectedCount === 0;
+  for (const button of [
+    elements.favoriteSelectedButton,
+    elements.unfavoriteSelectedButton,
+    elements.selectionInspectorFavoriteButton,
+    elements.selectionInspectorUnfavoriteButton,
+  ]) {
+    button.classList.toggle("hidden", !supported);
+    button.disabled = batchDisabled;
+  }
+
+  const detail = state.selectedDetail;
+  const favorite = detail?.favorite || null;
+  const isFavorite = favorite?.isFavorite === true;
+  elements.inspectorFavoriteButton.classList.toggle("hidden", !supported);
+  elements.inspectorFavoriteButton.disabled = !supported
+    || !state.online
+    || state.favoriteMutating
+    || !detail;
+  elements.inspectorFavoriteButton.dataset.favorite = String(isFavorite);
+  elements.inspectorFavoriteButtonIcon.textContent = isFavorite ? "♥" : "♡";
+  elements.inspectorFavoriteButtonLabel.textContent = isFavorite ? "取消红心" : "加入红心";
+  const syncText = favoriteSyncText(favorite);
+  elements.inspectorFavoriteButton.title = syncText
+    ? `${elements.inspectorFavoriteButtonLabel.textContent}；${syncText}`
+    : elements.inspectorFavoriteButtonLabel.textContent;
+  elements.inspectorFavoriteButton.setAttribute(
+    "aria-label",
+    elements.inspectorFavoriteButton.title
+  );
+
+  const syncCounts = visibleFavoriteSyncCounts();
+  const retryCount = syncCounts.pending + syncCounts.failed;
+  elements.retryFavoriteSyncButton.classList.toggle(
+    "hidden",
+    !supported || retryCount === 0
+  );
+  elements.retryFavoriteSyncButton.disabled = !supported
+    || !state.online
+    || state.favoriteMutating
+    || state.favoriteRetrying
+    || retryCount === 0;
+  elements.retryFavoriteSyncCount.textContent = String(retryCount);
+  elements.retryFavoriteSyncButton.title = `重试红心同步：待同步 ${syncCounts.pending} 项，失败 ${syncCounts.failed} 项。不会弹出照片权限框。`;
+  renderLightboxFavorite();
+}
+
+async function retryFavoriteSync() {
+  const syncCounts = visibleFavoriteSyncCounts();
+  if (!supportsFavorites()
+    || !state.online
+    || state.favoriteMutating
+    || state.favoriteRetrying
+    || syncCounts.pending + syncCounts.failed === 0) return;
+  const generation = state.workspaceGeneration;
+  state.favoriteRetrying = true;
+  renderFavoriteControls();
+  try {
+    const result = await api("/v1/favorites/retry", {
+      method: "POST",
+      body: JSON.stringify({ operationID: crypto.randomUUID() }),
+    });
+    if (generation !== state.workspaceGeneration) return;
+    await refreshWorkspace({ quiet: true, kinds: ["assetsChanged"] });
+    if (generation !== state.workspaceGeneration) return;
+    if (result.pendingCount || result.failedCount) {
+      toast(`仍有 ${result.pendingCount} 项待同步、${result.failedCount} 项失败`);
+    } else {
+      toast("Photos 红心同步已完成");
+    }
+  } catch (error) {
+    if (generation === state.workspaceGeneration) {
+      toast(error.message || "重试 Photos 红心同步失败");
+    }
+  } finally {
+    if (generation === state.workspaceGeneration) {
+      state.favoriteRetrying = false;
+      renderFavoriteControls();
+    }
+  }
+}
+
+async function applyFavoriteMutation(assetIDs, isFavorite) {
+  const uniqueIDs = [...new Set(assetIDs)].filter(Boolean);
+  if (!supportsFavorites() || !state.online || state.favoriteMutating || !uniqueIDs.length) return;
+  const generation = state.workspaceGeneration;
+  const previousAssets = state.assets;
+  const previousSelectedIndex = previousAssets.findIndex(
+    (asset) => asset.id === state.selectedAssetID
+  );
+  state.favoriteMutating = true;
+  renderFavoriteControls();
+  syncWriteActionControls();
+  try {
+    const result = await api("/v1/favorites", {
+      method: "POST",
+      body: JSON.stringify({
+        operationID: crypto.randomUUID(),
+        assetIDs: uniqueIDs,
+        isFavorite,
+      }),
+    });
+    if (generation !== state.workspaceGeneration) return;
+    const statesByID = new Map((result.states || []).map((item) => [item.assetID, item]));
+    for (const [assetID, favorite] of statesByID) {
+      state.lightboxFavoriteStates.set(assetID, favorite);
+    }
+    state.assets = state.assets.map((asset) => (
+      statesByID.has(asset.id) ? { ...asset, favorite: statesByID.get(asset.id) } : asset
+    ));
+    state.review.items = state.review.items.map((item) => (
+      statesByID.has(item.assetID)
+        ? { ...item, favorite: statesByID.get(item.assetID) }
+        : item
+    ));
+    if (state.worldMap.selection) {
+      state.worldMap.selection = {
+        ...state.worldMap.selection,
+        assets: (state.worldMap.selection.assets || []).map((asset) => (
+          statesByID.has(asset.id)
+            ? { ...asset, favorite: statesByID.get(asset.id) }
+            : asset
+        )),
+      };
+    }
+    state.slimming.members = state.slimming.members.map((member) => (
+      statesByID.has(member.id)
+        ? { ...member, favorite: statesByID.get(member.id) }
+        : member
+    ));
+    state.slimming.recycle.entries = state.slimming.recycle.entries.map((entry) => (
+      statesByID.has(entry.assetID)
+        ? { ...entry, favorite: statesByID.get(entry.assetID) }
+        : entry
+    ));
+    if (state.selectedDetail && statesByID.has(state.selectedDetail.assetID)) {
+      state.selectedDetail = {
+        ...state.selectedDetail,
+        favorite: statesByID.get(state.selectedDetail.assetID),
+      };
+    }
+
+    let nextSelectedAssetID = state.selectedAssetID;
+    if (state.libraryScope === "favorites" && !isFavorite) {
+      const removed = new Set(uniqueIDs);
+      state.assets = state.assets.filter((asset) => !removed.has(asset.id));
+      state.selectedAssetIDs = new Set(
+        [...state.selectedAssetIDs].filter((assetID) => !removed.has(assetID))
+      );
+      if (state.selectionAnchorID && removed.has(state.selectionAnchorID)) {
+        state.selectionAnchorID = null;
+      }
+      if (nextSelectedAssetID && removed.has(nextSelectedAssetID)) {
+        nextSelectedAssetID = state.assets.length
+          ? state.assets[Math.max(0, Math.min(previousSelectedIndex, state.assets.length - 1))].id
+          : null;
+        state.selectedAssetID = nextSelectedAssetID;
+        state.selectedDetail = null;
+      }
+    }
+
+    renderAssets();
+    renderSelectionBar();
+    renderFavoriteControls();
+    if (!state.selectionMode && nextSelectedAssetID && !state.selectedDetail) {
+      await loadInspector(nextSelectedAssetID, { reveal: true, quiet: true });
+    } else if (!nextSelectedAssetID) {
+      renderInspectorSurface();
+    } else if (state.selectedDetail) {
+      renderInspector(state.selectedDetail);
+    }
+    const syncParts = [
+      result.pendingCount ? `${result.pendingCount} 项等待 Photos 同步` : "",
+      result.failedCount ? `${result.failedCount} 项 Photos 同步失败` : "",
+    ].filter(Boolean);
+    toast(
+      `${isFavorite ? "已加入" : "已取消"}红心 ${result.changedCount} 项`
+        + (syncParts.length ? `；${syncParts.join("，")}` : "")
+    );
+  } catch (error) {
+    if (generation === state.workspaceGeneration) {
+      toast(error.message || "红心操作失败");
+    }
+  } finally {
+    if (generation === state.workspaceGeneration) {
+      state.favoriteMutating = false;
+      renderFavoriteControls();
+      syncWriteActionControls();
+    }
+  }
+}
+
+async function toggleAssetCardFavorite(button) {
+  const assetID = button?.dataset.mediaFavoriteAssetId
+    || button?.closest(".asset-card")?.dataset.assetId;
+  const assetIndex = state.assets.findIndex((asset) => asset.id === assetID);
+  const favorite = favoriteStateForAssetID(assetID);
+  if (!assetID || assetIndex < 0 || state.favoriteMutating) return;
+  const scrollTop = elements.libraryScroll.scrollTop;
+  await applyFavoriteMutation([assetID], favorite?.isFavorite !== true);
+  elements.libraryScroll.scrollTop = scrollTop;
+
+  if (button.isConnected) {
+    button.focus({ preventScroll: true });
+    return;
+  }
+  const fallback = state.assets[Math.min(assetIndex, Math.max(0, state.assets.length - 1))];
+  const fallbackCard = fallback
+    ? elements.assetGrid.querySelector(`[data-asset-id="${CSS.escape(fallback.id)}"]`)
+    : null;
+  assetCardMainButton(fallbackCard)?.focus({ preventScroll: true });
+}
+
 function setSelectionMode(enabled, { seedCurrent = false } = {}) {
   if (enabled && seedCurrent && state.selectedAssetID
     && state.assets.some((asset) => asset.id === state.selectedAssetID)) {
@@ -6949,6 +7861,7 @@ function renderSelectionBar({ updateInspector = true } = {}) {
       || !elements.batchTagSelect.value;
   });
   if (!count) elements.batchAggregate.textContent = `选择${currentMediaNoun()}后可查看标签汇总`;
+  renderFavoriteControls();
   renderPersonalModelControls();
   renderEmbeddingPreparation();
   renderSampleSuggestions();
@@ -7132,13 +8045,215 @@ function sampleSuggestionTerminalText(activity) {
     + (activity.skippedCount ? ` · 跳过 ${activity.skippedCount}` : "");
 }
 
+function renderReviewLocalModelStatus() {
+  const library = state.librarySuggestions;
+  const snapshot = library.snapshot;
+  const manager = state.generalSettings;
+  const model = manager.snapshot?.localModel || null;
+  const badge = elements.reviewLocalModelStateBadge;
+  const status = elements.reviewLocalModelStatus;
+  const detail = elements.reviewLocalModelDetail;
+  const refresh = elements.refreshReviewModelStatusButton;
+  const refreshing = library.loading || manager.loading || state.sampleSuggestions.loading;
+  refresh.disabled = !state.online || refreshing;
+  refresh.textContent = refreshing ? "正在刷新…" : "↻ 刷新模型状态";
+
+  if (supportsLibrarySuggestions()) {
+    if (!snapshot) {
+      badge.textContent = library.loading ? "读取中" : "尚未读取";
+      badge.dataset.state = library.loading ? "validating" : "unchecked";
+      status.textContent = library.loading ? "正在检查本地模型服务…" : "模型状态尚未读取。";
+      detail.textContent = "模型只在这台 Mac 内运行，网页不会下载模型或读取原始照片。";
+    } else {
+      const service = snapshot.service || { state: "unavailable" };
+      badge.textContent = {
+        unchecked: "尚未检查",
+        ready: "服务已就绪",
+        degraded: "模型未加载",
+        unavailable: "服务未运行",
+      }[service.state] || "状态未知";
+      badge.dataset.state = service.state === "degraded" ? "validating" : service.state;
+      status.textContent = {
+        unchecked: "本地模型服务尚未检查。",
+        ready: `已就绪 · ${service.provider || "本地模型"} / ${service.modelID || "默认模型"}`,
+        degraded: "已连接，但模型尚未加载。",
+        unavailable: `服务未运行；现有${currentMediaNoun()}、标签和 Feature Print 不受影响。`,
+      }[service.state] || "模型服务状态未知。";
+      detail.textContent = service.serviceVersion
+        ? `服务版本 ${service.serviceVersion} · 所有模型计算仅在这台 Mac 上执行。`
+        : "所有模型计算仅在这台 Mac 上执行；网页只读取任务状态。";
+    }
+    renderLibrarySuggestionCards();
+    return;
+  }
+
+  if (!supportsGeneralSettings()) {
+    badge.textContent = "Host 不支持";
+    badge.dataset.state = "unavailable";
+    status.textContent = "当前 Mac Host 无法提供 App 内模型状态。";
+    detail.textContent = "个人建议任务仍以 Host 返回的实际可用性为准。";
+    return;
+  }
+  if (!model) {
+    badge.textContent = manager.loading ? "读取中" : "尚未读取";
+    badge.dataset.state = manager.loading ? "validating" : "unchecked";
+    status.textContent = manager.loading ? "正在读取 Mac 模型状态…" : "模型状态尚未读取。";
+    detail.textContent = "模型只在这台 Mac 内运行，网页不会下载模型或读取原始照片。";
+    return;
+  }
+
+  badge.textContent = generalSettingsModelStateText(model);
+  badge.dataset.state = model.state;
+  status.textContent = {
+    disabled: "App 内模型已关闭。",
+    validating: "正在校验 App 内模型…",
+    ready: `已就绪 · ${model.modelName}`,
+    unavailable: `${model.modelName} 当前不可用。`,
+  }[model.state] || "模型状态未知。";
+  detail.textContent = `${model.runtimeName} · ${model.detail}`;
+  elements.standardLibrarySuggestionCard.classList.add("hidden");
+  elements.personalLibrarySuggestionPath.textContent = "App 内抽检";
+}
+
+function activeLibrarySuggestionJob(job) {
+  return Boolean(job && ["pending", "running", "paused", "retryableFailed"].includes(job.state));
+}
+
+function librarySuggestionJobStatus(job, idleText) {
+  if (!job) return idleText;
+  const counts = `已检 ${job.checkedCount || 0}`
+    + (job.totalCount == null ? "" : ` / ${job.totalCount}`)
+    + ` · 建议 ${job.suggestedCount || 0}`
+    + (job.skippedCount ? ` · 跳过 ${job.skippedCount}` : "");
+  return {
+    pending: `等待 · ${counts}`,
+    running: counts,
+    paused: `已暂停 · ${counts}`,
+    retryableFailed: `将重试 · ${counts}`,
+    completed: `完成 · ${counts}`,
+    cancelled: `已取消 · ${counts}`,
+    terminalFailed: `结果未通过校验，已安全忽略 · ${counts}`,
+  }[job.state] || counts;
+}
+
+function renderLibrarySuggestionProgress(progress, bar, job) {
+  const visible = activeLibrarySuggestionJob(job);
+  progress.classList.toggle("hidden", !visible);
+  const total = Math.max(0, Number(job?.totalCount) || 0);
+  const checked = Math.max(0, Number(job?.checkedCount) || 0);
+  const percent = total > 0 ? Math.min(100, Math.round((checked / total) * 100)) : 0;
+  progress.setAttribute("aria-valuenow", String(percent));
+  progress.dataset.state = job?.state || "idle";
+  bar.style.width = `${percent}%`;
+}
+
+function renderLibrarySuggestionJobActions(container, job) {
+  for (const button of container.querySelectorAll(".review-local-model-job-action")) {
+    button.remove();
+  }
+  if (!job?.availableActions?.length) return;
+  for (const action of job.availableActions) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "button button-plain review-local-model-job-action job-action write-action";
+    button.dataset.librarySuggestionJobId = job.jobID;
+    button.dataset.jobId = job.jobID;
+    button.dataset.action = action;
+    button.disabled = !state.online || state.jobMutatingIDs.has(job.jobID);
+    button.textContent = jobActionText(action);
+    container.append(button);
+  }
+}
+
+function renderLibrarySuggestionCards() {
+  const library = state.librarySuggestions;
+  const snapshot = library.snapshot;
+  const sourceIDs = resolvedReviewSourceFilter();
+  const hasReviewSource = sourceIDs == null || sourceIDs.length > 0;
+  const standardJob = snapshot?.standardJob || null;
+  const personalJob = snapshot?.personalJob || null;
+  const anyJobActive = activeLibrarySuggestionJob(standardJob)
+    || activeLibrarySuggestionJob(personalJob);
+
+  const showStandard = Boolean(snapshot?.standardAvailable || standardJob);
+  elements.standardLibrarySuggestionCard.classList.toggle("hidden", !showStandard);
+  elements.standardLibrarySuggestionStatus.textContent = librarySuggestionJobStatus(
+    standardJob,
+    snapshot?.standardAvailable
+      ? "把标准模型建议加入审核队列。"
+      : "当前 Mac 未提供标准模型全库建议。"
+  );
+  renderLibrarySuggestionProgress(
+    elements.standardLibrarySuggestionProgress,
+    elements.standardLibrarySuggestionProgressBar,
+    standardJob
+  );
+  elements.generateStandardLibrarySuggestionsButton.disabled = !state.online
+    || library.loading
+    || library.launchingTrack != null
+    || !snapshot?.standardAvailable
+    || !hasReviewSource
+    || anyJobActive;
+  elements.generateStandardLibrarySuggestionsButton.textContent =
+    library.launchingTrack === "standard"
+      ? "正在交给 Mac…"
+      : (activeLibrarySuggestionJob(standardJob) ? "正在扫描全库" : "扫描全库");
+  elements.generateStandardLibrarySuggestionsButton.title = hasReviewSource
+    ? "按顶部审核来源范围使用 Mac 本地标准模型扫描全库"
+    : "请先在顶部选择至少一个审核来源";
+  renderLibrarySuggestionJobActions(elements.standardLibrarySuggestionActions, standardJob);
+
+  const personalMode = snapshot?.personalMode || "unavailable";
+  if (personalMode === "sample") {
+    elements.personalLibrarySuggestionPath.textContent = "App 内抽检";
+    renderLibrarySuggestionJobActions(elements.personalLibrarySuggestionActions, null);
+    return;
+  }
+
+  elements.personalLibrarySuggestionPath.textContent = personalMode === "fullLibrary"
+    ? "全库建议"
+    : "当前不可用";
+  elements.cancelSampleSuggestionsButton.classList.add("hidden");
+  elements.sampleSuggestionReviewStatus.textContent = librarySuggestionJobStatus(
+    personalJob,
+    personalMode === "fullLibrary"
+      ? "把当前个人模型建议加入审核队列。"
+      : "当前 Mac 没有可用的个人模型建议路径。"
+  );
+  renderLibrarySuggestionProgress(
+    elements.sampleSuggestionReviewProgress,
+    elements.sampleSuggestionReviewProgressBar,
+    personalJob
+  );
+  elements.generateLibrarySuggestionsButton.disabled = !state.online
+    || library.loading
+    || library.launchingTrack != null
+    || personalMode !== "fullLibrary"
+    || !hasReviewSource
+    || anyJobActive;
+  elements.generateLibrarySuggestionsButton.textContent = library.launchingTrack === "personal"
+    ? "正在交给 Mac…"
+    : (activeLibrarySuggestionJob(personalJob) ? "正在扫描全库" : "扫描全库");
+  elements.generateLibrarySuggestionsButton.setAttribute(
+    "aria-label",
+    "使用个人模型扫描全库"
+  );
+  elements.generateLibrarySuggestionsButton.title = hasReviewSource
+    ? "按顶部审核来源范围使用 Mac 本地个人模型扫描全库"
+    : "请先在顶部选择至少一个审核来源";
+  renderLibrarySuggestionJobActions(elements.personalLibrarySuggestionActions, personalJob);
+}
+
 function renderSampleSuggestions() {
   const suggestions = state.sampleSuggestions;
   const activity = activeSampleSuggestion();
   const selectedCount = state.selectedAssetIDs.size;
+  const sourceIDs = resolvedReviewSourceFilter();
+  const hasReviewSource = sourceIDs == null || sourceIDs.length > 0;
   const available = state.online
     && state.mediaKind === "image"
-    && suggestions.isAvailable;
+    && suggestions.isAvailable
+    && hasReviewSource;
   const locked = suggestions.loading || suggestions.submitting || Boolean(activity);
   elements.generateSelectedSuggestionsButton.disabled = !available || locked || selectedCount === 0;
   elements.selectionInspectorGenerateSuggestionsButton.disabled =
@@ -7152,22 +8267,50 @@ function renderSampleSuggestions() {
   elements.generateLibrarySuggestionsButton.textContent = suggestions.submitting
     ? "正在开始抽检…"
     : `抽 ${suggestions.maximumSampleCount} 张生成建议`;
+  elements.generateLibrarySuggestionsButton.setAttribute(
+    "aria-label",
+    "抽取样本并生成建议"
+  );
+  elements.generateLibrarySuggestionsButton.title = hasReviewSource
+    ? "按顶部来源筛选抽取照片，并使用 Mac 的 App 内个人模型生成建议"
+    : "请先在顶部选择至少一个审核来源";
   elements.cancelSampleSuggestionsButton.classList.toggle("hidden", !activity);
   elements.cancelSampleSuggestionsButton.disabled = !state.online || suggestions.cancelling;
   elements.cancelSampleSuggestionsButton.textContent = suggestions.cancelling
     ? "正在停止…"
     : "停止抽检";
-  elements.sampleSuggestionReviewStatus.classList.toggle("hidden", !activity);
   if (activity) {
-    const status = `Mac 正在抽检 ${activity.completedUnitCount}/${activity.totalUnitCount}`;
+    const total = Math.max(0, Number(activity.totalUnitCount) || 0);
+    const completed = Math.max(0, Number(activity.completedUnitCount) || 0);
+    const percent = total > 0 ? Math.min(100, Math.round((completed / total) * 100)) : 0;
+    const status = `已检 ${completed} / ${total} · 建议 ${activity.suggestedCount || 0}`
+      + (activity.skippedCount ? ` · 跳过 ${activity.skippedCount}` : "");
     elements.sampleSuggestionReviewStatus.textContent = status;
+    elements.sampleSuggestionReviewProgress.classList.remove("hidden");
+    elements.sampleSuggestionReviewProgress.setAttribute("aria-valuenow", String(percent));
+    elements.sampleSuggestionReviewProgressBar.style.width = `${percent}%`;
     if (!activeEmbeddingPreparation()) {
       elements.embeddingPreparationStatus.classList.remove("hidden");
-      elements.embeddingPreparationStatus.textContent = status;
+      elements.embeddingPreparationStatus.textContent = `Mac 正在抽检 ${completed}/${total}`;
       elements.selectionInspectorToolStatus.classList.remove("hidden");
-      elements.selectionInspectorToolStatus.textContent = status;
+      elements.selectionInspectorToolStatus.textContent = `Mac 正在抽检 ${completed}/${total}`;
+    }
+  } else {
+    elements.sampleSuggestionReviewProgress.classList.add("hidden");
+    elements.sampleSuggestionReviewProgress.setAttribute("aria-valuenow", "0");
+    elements.sampleSuggestionReviewProgressBar.style.width = "0%";
+    if (!hasReviewSource) {
+      elements.sampleSuggestionReviewStatus.textContent = "没有选择审核来源，暂不能抽检。";
+    } else if (suggestions.loading) {
+      elements.sampleSuggestionReviewStatus.textContent = "正在读取个人建议任务…";
+    } else if (!suggestions.isAvailable || state.mediaKind !== "image") {
+      elements.sampleSuggestionReviewStatus.textContent = "当前媒体类型暂无可用的个人模型抽检。";
+    } else {
+      elements.sampleSuggestionReviewStatus.textContent =
+        `抽检最多 ${suggestions.maximumSampleCount} 张加入审核队列。`;
     }
   }
+  renderReviewLocalModelStatus();
 }
 
 function scheduleSampleSuggestionPoll() {
@@ -7232,10 +8375,12 @@ function selectedAssetIDsInGridOrder(limit) {
 
 async function generateSampleSuggestions({ useSelection = false } = {}) {
   const suggestions = state.sampleSuggestions;
+  const sourceIDs = useSelection ? null : resolvedReviewSourceFilter();
   const assetIDs = useSelection
     ? selectedAssetIDsInGridOrder(suggestions.maximumSampleCount)
     : [];
   if ((useSelection && !assetIDs.length)
+    || (!useSelection && Array.isArray(sourceIDs) && sourceIDs.length === 0)
     || suggestions.submitting
     || activeSampleSuggestion()) return;
   suggestions.submitting = true;
@@ -7247,6 +8392,7 @@ async function generateSampleSuggestions({ useSelection = false } = {}) {
         operationID: crypto.randomUUID(),
         mediaKind: state.mediaKind,
         assetIDs,
+        sourceIDs,
       }),
     });
     suggestions.activities = [
@@ -7257,7 +8403,8 @@ async function generateSampleSuggestions({ useSelection = false } = {}) {
     ];
     toast(useSelection
       ? `已交给 Mac 为 ${assetIDs.length} 项生成建议`
-      : `已交给 Mac 抽取最多 ${suggestions.maximumSampleCount} 张生成建议`);
+      : `已交给 Mac${sourceIDs == null ? "从全部来源" : `从 ${sourceIDs.length} 个来源`}`
+        + `抽取最多 ${suggestions.maximumSampleCount} 张生成建议`);
     await openReviewWorkspace();
   } catch (error) {
     toast(error.message || "无法开始个人建议抽检");
@@ -7265,6 +8412,118 @@ async function generateSampleSuggestions({ useSelection = false } = {}) {
     suggestions.submitting = false;
     renderSampleSuggestions();
     scheduleSampleSuggestionPoll();
+  }
+}
+
+function activeLibrarySuggestionJobs() {
+  const snapshot = state.librarySuggestions.snapshot;
+  return [snapshot?.standardJob, snapshot?.personalJob].filter(activeLibrarySuggestionJob);
+}
+
+function scheduleLibrarySuggestionPoll() {
+  clearTimeout(state.librarySuggestions.pollTimer);
+  state.librarySuggestions.pollTimer = null;
+  if (!activeLibrarySuggestionJobs().length) return;
+  state.librarySuggestions.pollTimer = setTimeout(
+    () => loadLibrarySuggestions({ quiet: true }),
+    900
+  );
+}
+
+async function loadLibrarySuggestions({ quiet = false, refreshServiceHealth = false } = {}) {
+  if (!supportsLibrarySuggestions()) {
+    state.librarySuggestions.snapshot = null;
+    renderReviewLocalModelStatus();
+    return;
+  }
+  const library = state.librarySuggestions;
+  const generation = ++library.requestGeneration;
+  const previouslyActive = new Set(activeLibrarySuggestionJobs().map((job) => job.jobID));
+  library.loading = true;
+  renderReviewLocalModelStatus();
+  try {
+    const query = new URLSearchParams({ mediaKind: state.mediaKind });
+    if (refreshServiceHealth) query.set("refreshServiceHealth", "1");
+    const snapshot = await api(`/v1/library-suggestions?${query}`);
+    if (generation !== library.requestGeneration) return;
+    library.snapshot = snapshot;
+    const jobs = [snapshot.standardJob, snapshot.personalJob].filter(Boolean);
+    const terminal = jobs.find((job) => previouslyActive.has(job.jobID)
+      && !activeLibrarySuggestionJob(job)
+      && !library.terminalJobIDs.has(job.jobID));
+    if (terminal) {
+      library.terminalJobIDs.add(terminal.jobID);
+      const label = terminal.jobID === snapshot.standardJob?.jobID ? "标准模型" : "个人模型";
+      toast(`${label}${librarySuggestionJobStatus(terminal, "任务已更新")}`);
+      if (!elements.reviewWorkspace.classList.contains("hidden")) {
+        await loadReviewOverview();
+        await loadLibrarySuggestions({ quiet: true });
+      }
+    }
+  } catch (error) {
+    if (generation === library.requestGeneration && !quiet) {
+      toast(error.message || "无法读取全库模型建议状态");
+    }
+  } finally {
+    if (generation === library.requestGeneration) {
+      library.loading = false;
+      renderReviewLocalModelStatus();
+      scheduleLibrarySuggestionPoll();
+    }
+  }
+}
+
+async function submitLibrarySuggestions(track) {
+  const library = state.librarySuggestions;
+  const sourceIDs = resolvedReviewSourceFilter();
+  if (!supportsLibrarySuggestions()
+    || !state.online
+    || library.launchingTrack != null
+    || (Array.isArray(sourceIDs) && sourceIDs.length === 0)) return;
+  library.launchingTrack = track;
+  renderReviewLocalModelStatus();
+  try {
+    const response = await api("/v1/library-suggestions/requests", {
+      method: "POST",
+      body: JSON.stringify({
+        operationID: crypto.randomUUID(),
+        mediaKind: state.mediaKind,
+        track,
+        sourceIDs,
+      }),
+    });
+    toast(`${track === "standard" ? "标准" : "个人"}模型任务已交给 Mac`
+      + (sourceIDs == null ? "，范围为全部来源" : `，范围为 ${sourceIDs.length} 个来源`));
+    await Promise.all([
+      loadLibrarySuggestions({ quiet: true }),
+      api("/v1/jobs").then((jobs) => {
+        state.jobs = jobs;
+        renderJobs();
+      }),
+    ]);
+    state.focusedActivityJobID = response.jobID;
+  } catch (error) {
+    toast(error.message || "无法开始全库模型建议");
+  } finally {
+    library.launchingTrack = null;
+    renderReviewLocalModelStatus();
+    scheduleLibrarySuggestionPoll();
+  }
+}
+
+async function refreshReviewLocalModelStatus() {
+  if (!state.online) return;
+  const returnFocus = document.activeElement === elements.refreshReviewModelStatusButton;
+  await Promise.all([
+    supportsGeneralSettings() ? loadGeneralSettings({ quiet: true }) : Promise.resolve(),
+    loadSampleSuggestions({ quiet: true }),
+    loadLibrarySuggestions({ quiet: true, refreshServiceHealth: true }),
+  ]);
+  renderReviewLocalModelStatus();
+  if (returnFocus) {
+    requestAnimationFrame(() => {
+      elements.refreshReviewModelStatusButton.focus({ preventScroll: true });
+    });
   }
 }
 
@@ -7358,6 +8617,222 @@ function activeTagSuggestionSources() {
   return state.sources.filter((source) => source.state === "active");
 }
 
+function activeReviewSources() {
+  return state.sources.filter((source) => source.state === "active");
+}
+
+function sanitizeReviewSourceFilter() {
+  if (state.review.sourceFilterIDs === null) return;
+  const activeIDs = new Set(activeReviewSources().map((source) => source.id));
+  const selected = new Set(
+    [...state.review.sourceFilterIDs].filter((sourceID) => activeIDs.has(sourceID))
+  );
+  state.review.sourceFilterIDs = selected.size === activeIDs.size
+    ? null
+    : selected;
+}
+
+function resolvedReviewSourceFilter() {
+  sanitizeReviewSourceFilter();
+  if (state.review.sourceFilterIDs === null) return null;
+  return activeReviewSources()
+    .filter((source) => state.review.sourceFilterIDs.has(source.id))
+    .map((source) => source.id);
+}
+
+function reviewSourceFilterSummaryText() {
+  const active = activeReviewSources();
+  const selectedIDs = resolvedReviewSourceFilter();
+  if (selectedIDs === null) {
+    return `显示全部 ${active.length} 个来源的待审核建议`;
+  }
+  const selected = new Set(selectedIDs);
+  const names = active.filter((source) => selected.has(source.id))
+    .map((source) => source.displayName);
+  if (!names.length) return "未选择来源，待审核列表为空";
+  if (names.length === active.length) {
+    return `显示全部 ${active.length} 个来源的待审核建议`;
+  }
+  return `仅显示：${names.join("、")}`;
+}
+
+function renderReviewSourceFilter() {
+  const focusedSource = document.activeElement?.closest?.("[data-review-source-id]");
+  if (focusedSource && elements.reviewSourceFilterPopover.contains(focusedSource)) {
+    state.review.sourceFilterFocusSelector =
+      `[data-review-source-id="${CSS.escape(focusedSource.dataset.reviewSourceId)}"]`;
+  } else if (document.activeElement === elements.selectAllReviewSourcesButton) {
+    state.review.sourceFilterFocusSelector = "#selectAllReviewSourcesButton";
+  }
+  const sources = activeReviewSources();
+  const selectedIDs = resolvedReviewSourceFilter();
+  const selected = selectedIDs === null
+    ? new Set(sources.map((source) => source.id))
+    : new Set(selectedIDs);
+  const summary = reviewSourceFilterSummaryText();
+  const locked = state.review.loading
+    || state.review.overviewLoading
+    || state.review.mutating;
+  elements.reviewSourceFilterSummary.textContent = summary;
+  elements.reviewSourceFilterButton.title = `${summary}。选择建议生成和待审列表覆盖的来源；不会改变图库侧栏当前浏览位置。`;
+  elements.reviewSourceFilterButton.setAttribute("aria-label", `审核来源：${summary}`);
+  elements.reviewSourceFilterButton.disabled = locked || sources.length === 0;
+  elements.selectAllReviewSourcesButton.disabled = locked || selectedIDs === null;
+
+  clearElement(elements.reviewSourceFilterOptions);
+  if (!sources.length) {
+    const empty = document.createElement("p");
+    empty.className = "popover-empty";
+    empty.textContent = "没有已启用来源";
+    elements.reviewSourceFilterOptions.append(empty);
+    return;
+  }
+  for (const source of sources) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "review-source-option";
+    button.dataset.reviewSourceId = source.id;
+    button.setAttribute("role", "menuitemcheckbox");
+    button.setAttribute("aria-checked", String(selected.has(source.id)));
+    button.disabled = locked;
+    const check = document.createElement("span");
+    check.className = "review-source-check";
+    check.setAttribute("aria-hidden", "true");
+    check.textContent = "✓";
+    const name = document.createElement("span");
+    name.textContent = source.displayName;
+    button.append(check, name);
+    elements.reviewSourceFilterOptions.append(button);
+  }
+  if (!locked
+    && !elements.reviewSourceFilterPopover.classList.contains("hidden")
+    && state.review.sourceFilterFocusSelector) {
+    requestAnimationFrame(() => {
+      elements.reviewSourceFilterPopover
+        .querySelector(state.review.sourceFilterFocusSelector)
+        ?.focus({ preventScroll: true });
+    });
+  }
+}
+
+function closeReviewSourceFilter({ restoreFocus = true } = {}) {
+  const wasOpen = !elements.reviewSourceFilterPopover.classList.contains("hidden");
+  elements.reviewSourceFilterPopover.classList.add("hidden");
+  elements.reviewSourceFilterButton.setAttribute("aria-expanded", "false");
+  state.review.sourceFilterFocusSelector = null;
+  if (restoreFocus && wasOpen) {
+    restoreOverlayFocus(elements.reviewSourceFilterButton);
+  }
+}
+
+function toggleReviewSourceFilter() {
+  const willOpen = elements.reviewSourceFilterPopover.classList.contains("hidden");
+  if (!willOpen) {
+    closeReviewSourceFilter();
+    return;
+  }
+  renderReviewSourceFilter();
+  elements.reviewSourceFilterPopover.classList.remove("hidden");
+  elements.reviewSourceFilterButton.setAttribute("aria-expanded", "true");
+  requestAnimationFrame(() => {
+    const target = elements.reviewSourceFilterPopover.querySelector("button:not(:disabled)");
+    target?.focus({ preventScroll: true });
+    state.review.sourceFilterFocusSelector = target?.dataset.reviewSourceId
+      ? `[data-review-source-id="${CSS.escape(target.dataset.reviewSourceId)}"]`
+      : "#selectAllReviewSourcesButton";
+  });
+}
+
+async function reloadReviewSourceScope(focusSelector) {
+  state.review.sourceFilterFocusSelector = focusSelector;
+  renderReviewSourceFilter();
+  renderSampleSuggestions();
+  await loadReviewOverview();
+  if (state.review.mode === "queue") await loadReviewQueue();
+  renderReviewSourceFilter();
+  if (!elements.reviewSourceFilterPopover.classList.contains("hidden")) {
+    requestAnimationFrame(() => {
+      elements.reviewSourceFilterPopover.querySelector(focusSelector)
+        ?.focus({ preventScroll: true });
+    });
+  }
+}
+
+async function setReviewSourceIncluded(sourceID, included) {
+  const activeIDs = new Set(activeReviewSources().map((source) => source.id));
+  if (!activeIDs.has(sourceID)) return;
+  const selected = state.review.sourceFilterIDs === null
+    ? new Set(activeIDs)
+    : new Set(state.review.sourceFilterIDs);
+  if (included) selected.add(sourceID);
+  else selected.delete(sourceID);
+  for (const selectedID of [...selected]) {
+    if (!activeIDs.has(selectedID)) selected.delete(selectedID);
+  }
+  state.review.sourceFilterIDs = selected.size === activeIDs.size ? null : selected;
+  await reloadReviewSourceScope(
+    `[data-review-source-id="${CSS.escape(sourceID)}"]`
+  );
+}
+
+async function selectAllReviewSources() {
+  state.review.sourceFilterIDs = null;
+  const firstSourceID = activeReviewSources()[0]?.id;
+  await reloadReviewSourceScope(
+    firstSourceID
+      ? `[data-review-source-id="${CSS.escape(firstSourceID)}"]`
+      : "#selectAllReviewSourcesButton"
+  );
+}
+
+const reviewSuggestionLimitBounds = { minimum: 1, maximum: 10_000, step: 50 };
+
+function currentReviewSuggestionLimit() {
+  const configured = state.generalSettings.snapshot?.maxPendingSuggestionsPerTag;
+  if (Number.isInteger(configured)) return configured;
+  const projected = state.tagLibrarySuggestions.snapshot?.maximumPendingCount;
+  return Number.isInteger(projected) ? projected : 500;
+}
+
+function renderReviewSuggestionLimit() {
+  const value = currentReviewSuggestionLimit();
+  const writable = Number.isInteger(
+    state.generalSettings.snapshot?.maxPendingSuggestionsPerTag
+  );
+  const locked = state.generalSettings.loading
+    || state.generalSettings.submitting
+    || !state.online
+    || !writable;
+  elements.reviewSuggestionLimitValue.textContent = String(value);
+  elements.decreaseReviewSuggestionLimitButton.disabled = locked
+    || value <= reviewSuggestionLimitBounds.minimum;
+  elements.increaseReviewSuggestionLimitButton.disabled = locked
+    || value >= reviewSuggestionLimitBounds.maximum;
+  elements.reviewSuggestionLimitControl.title = writable
+    ? "调整每个标签最多保留的待审核建议数；四种建议生成路径共用。"
+    : "当前 Mac Host 只能读取每标签上限；升级 Host 后可在网页修改。";
+}
+
+async function adjustReviewSuggestionLimit(delta) {
+  const configured = state.generalSettings.snapshot?.maxPendingSuggestionsPerTag;
+  if (!Number.isInteger(configured)
+    || state.generalSettings.loading
+    || state.generalSettings.submitting) return;
+  const next = Math.min(
+    reviewSuggestionLimitBounds.maximum,
+    Math.max(reviewSuggestionLimitBounds.minimum, configured + delta)
+  );
+  if (next === configured) return;
+  const returnFocus = delta < 0
+    ? elements.decreaseReviewSuggestionLimitButton
+    : elements.increaseReviewSuggestionLimitButton;
+  await submitGeneralSettingsPatch({ maxPendingSuggestionsPerTag: next });
+  if (state.generalSettings.snapshot?.maxPendingSuggestionsPerTag === next) {
+    await loadTagLibrarySuggestions({ quiet: true });
+  }
+  restoreOverlayFocus(returnFocus);
+}
+
 function renderTagSuggestionDialog() {
   const suggestions = state.tagLibrarySuggestions;
   const dialog = suggestions.dialog;
@@ -7429,8 +8904,9 @@ function openTagSuggestionDialog(tagID, method, returnFocus = null) {
     ? suggestions.snapshot?.personalAdamWAvailable
     : suggestions.snapshot?.personalCentroidAvailable;
   if (!option?.personalEligible || !available || activeTagLibrarySuggestion()) return;
-  const selectedSourceIDs = elements.reviewCurrentSourceOnly.checked && state.selectedSourceID
-    ? new Set([state.selectedSourceID])
+  const reviewSourceIDs = resolvedReviewSourceFilter();
+  const selectedSourceIDs = reviewSourceIDs?.length
+    ? new Set(reviewSourceIDs)
     : new Set(activeTagSuggestionSources().map((source) => source.id));
   suggestions.dialog.tagID = tagID;
   suggestions.dialog.method = method;
@@ -7590,7 +9066,7 @@ function renderAssetSelectionState() {
   for (const button of elements.assetGrid.querySelectorAll(":scope > .asset-card")) {
     const selected = state.selectedAssetIDs.has(button.dataset.assetId);
     button.classList.toggle("batch-selected", selected);
-    button.setAttribute("aria-pressed", String(selected));
+    assetCardMainButton(button)?.setAttribute("aria-pressed", String(selected));
     syncAssetCardSelectionMark(button);
   }
 }
@@ -8037,9 +9513,10 @@ function syncReviewControls() {
   const hasSelection = state.review.selectedAssetIDs.size > 0;
   elements.loadMoreReviewButton.disabled = controlsLocked;
   elements.reviewTagSelect.disabled = controlsLocked || activeTags().length === 0;
-  elements.reviewCurrentSourceOnly.disabled = controlsLocked || !state.selectedSourceID;
   elements.refreshReviewButton.disabled = controlsLocked;
   elements.reviewBackButton.disabled = controlsLocked;
+  renderReviewSourceFilter();
+  renderReviewSuggestionLimit();
   document.querySelectorAll(".review-action").forEach((button) => {
     button.disabled = !state.online || controlsLocked || !hasSelection;
   });
@@ -8136,13 +9613,15 @@ function renderReviewOverview() {
   const activeControl = elements.reviewOverviewGrid.contains(document.activeElement)
     ? document.activeElement
     : null;
-  const focusedTrainingJobID = state.review.pendingFocusTrainingJobID
+  const focusedThreshold = thresholdFocusSelector(activeControl)
+    || state.review.pendingThresholdFocus;
+  const focusedTrainingJobID = !focusedThreshold && (state.review.pendingFocusTrainingJobID
     || activeControl?.dataset?.reviewTrainingJobId
-    || null;
-  const focusedTagID = !focusedTrainingJobID
+    || null);
+  const focusedTagID = !focusedThreshold && !focusedTrainingJobID
     ? (activeControl?.dataset?.reviewOverviewTagId || null)
     : null;
-  const focusedGroupID = !focusedTrainingJobID && !focusedTagID
+  const focusedGroupID = !focusedThreshold && !focusedTrainingJobID && !focusedTagID
     ? (activeControl?.dataset?.reviewOverviewGroupToggle || null)
     : null;
   const loading = state.review.overviewLoading;
@@ -8206,6 +9685,11 @@ function renderReviewOverview() {
     openButton.append(status);
     card.append(openButton);
 
+    const controlBody = document.createElement("div");
+    controlBody.className = "review-card-control-body";
+    const thresholdControls = renderReviewThresholdControls(overview);
+    if (thresholdControls) controlBody.append(thresholdControls);
+
     const hasFeatureAction = Boolean(overview.canGenerate || overview.canUpdate);
     const hasFeatureJob = Boolean(overview.activeJobID);
     if (hasFeatureAction || hasFeatureJob) {
@@ -8264,7 +9748,7 @@ function renderReviewOverview() {
         }
         feature.append(jobRow);
       }
-      card.append(feature);
+      controlBody.append(feature);
     }
 
     const option = tagLibrarySuggestionOption(overview.id);
@@ -8326,14 +9810,33 @@ function renderReviewOverview() {
         }
         if (actions.childElementCount) generation.append(actions);
       }
-      if (generation.childElementCount > 1) card.append(generation);
+      if (generation.childElementCount > 1) controlBody.append(generation);
+    }
+    if (controlBody.childElementCount) {
+      const details = document.createElement("details");
+      details.className = "review-card-controls";
+      details.dataset.reviewControlTagId = overview.id;
+      details.open = state.review.expandedControlTagIDs.has(overview.id);
+      const summary = document.createElement("summary");
+      const disclosure = document.createElement("span");
+      disclosure.className = "review-card-controls-chevron";
+      disclosure.setAttribute("aria-hidden", "true");
+      disclosure.textContent = "›";
+      const summaryLabel = document.createElement("span");
+      summaryLabel.textContent = "门槛与生成";
+      const summaryHint = document.createElement("span");
+      summaryHint.textContent = thresholdControls ? "3 条建议轨道" : "生成选项";
+      summary.append(disclosure, summaryLabel, summaryHint);
+      details.append(summary, controlBody);
+      card.append(details);
     }
     elements.reviewOverviewGrid.append(card);
   }
   organizeReviewOverviewGroups();
   syncReviewControls();
   const focusAfterRender = () => {
-    const target = focusedTrainingJobID
+    const thresholdTarget = reviewThresholdFocusTarget(focusedThreshold);
+    const target = thresholdTarget || (focusedTrainingJobID
       ? elements.reviewOverviewGrid.querySelector(
         `[data-review-training-job-id="${CSS.escape(focusedTrainingJobID)}"]`
       )
@@ -8345,9 +9848,10 @@ function renderReviewOverview() {
           ? elements.reviewOverviewGrid.querySelector(
             `[data-review-overview-group-toggle="${CSS.escape(focusedGroupID)}"]`
           )
-          : null));
+          : null)));
     if (!(target instanceof HTMLElement) || target.disabled) return;
     target.focus({ preventScroll: true });
+    if (thresholdTarget) state.review.pendingThresholdFocus = null;
     if (focusedTrainingJobID && !state.review.overviewLoading) {
       state.review.pendingFocusTrainingJobID = null;
     }
@@ -8375,9 +9879,15 @@ async function loadReviewOverview({ throwOnError = false } = {}) {
   state.review.overviewLoading = true;
   renderReviewOverview();
   const query = new URLSearchParams({ mediaKind: state.mediaKind });
-  if (elements.reviewCurrentSourceOnly.checked && state.selectedSourceID) {
-    query.set("sourceIDs", state.selectedSourceID);
+  const sourceIDs = resolvedReviewSourceFilter();
+  if (sourceIDs?.length === 0) {
+    state.review.overview = [];
+    state.review.overviewTotal = 0;
+    state.review.overviewLoading = false;
+    renderReviewOverview();
+    return true;
   }
+  if (sourceIDs) query.set("sourceIDs", sourceIDs.join(","));
   try {
     const overview = await api(`/v1/review/overview?${query}`);
     if (generation !== state.review.overviewGeneration
@@ -8438,25 +9948,96 @@ function selectedReviewItems() {
   return state.review.items.filter((item) => state.review.selectedAssetIDs.has(item.assetID));
 }
 
-function syncReviewCardSelection(button, item, index) {
+function reviewCardMainButton(card, { create = false } = {}) {
+  let button = card?.querySelector(":scope > .review-card-main") || null;
+  if (!button && create && card) {
+    button = document.createElement("button");
+    button.type = "button";
+    button.className = "review-card-main";
+    card.append(button);
+  }
+  return button;
+}
+
+function syncReviewCardFavoriteButton(card, item) {
+  let button = card.querySelector(":scope > .review-card-favorite");
+  if (!supportsFavorites() || !item.favorite) {
+    button?.remove();
+    return;
+  }
+  if (!button) {
+    button = document.createElement("button");
+    button.type = "button";
+    button.className = "review-card-favorite write-action";
+    button.dataset.reviewCardFavorite = "true";
+    const icon = document.createElement("span");
+    icon.className = "review-card-favorite-icon media-favorite-icon";
+    icon.setAttribute("aria-hidden", "true");
+    const badge = document.createElement("span");
+    badge.className = "review-card-favorite-sync media-favorite-sync hidden";
+    badge.setAttribute("aria-hidden", "true");
+    button.append(icon, badge);
+    card.append(button);
+  }
+  syncMediaFavoriteButton(button, {
+    assetID: item.assetID,
+    fileName: item.fileName,
+    favorite: item.favorite,
+  });
+}
+
+async function toggleReviewCardFavorite(button) {
+  const assetID = button?.dataset.mediaFavoriteAssetId
+    || button?.closest(".review-card")?.dataset.reviewAssetId;
+  const itemIndex = state.review.items.findIndex((item) => item.assetID === assetID);
+  const favorite = favoriteStateForAssetID(assetID);
+  if (!assetID || itemIndex < 0 || !favorite || state.favoriteMutating) return;
+
+  const scrollTop = elements.reviewQueuePane.scrollTop;
+  const selectedAssetIDs = new Set(state.review.selectedAssetIDs);
+  const selectedIndex = state.review.selectedIndex;
+  const anchorIndex = state.review.selectionAnchorIndex;
+  await applyFavoriteMutation([assetID], favorite.isFavorite !== true);
+  elements.reviewQueuePane.scrollTop = scrollTop;
+
+  // Favorite is orthogonal to review selection. Keep the frozen P/X/U target,
+  // primary detail, range anchor and viewport exactly where the user left them.
+  state.review.selectedAssetIDs = selectedAssetIDs;
+  state.review.selectedIndex = selectedIndex;
+  state.review.selectionAnchorIndex = anchorIndex;
+  renderReviewSelectionState({ renderDetail: false });
+  elements.reviewQueuePane.scrollTop = scrollTop;
+
+  if (button.isConnected) {
+    button.focus({ preventScroll: true });
+    return;
+  }
+  const fallbackCard = elements.reviewGrid.querySelector(
+    `[data-review-index="${Math.min(itemIndex, Math.max(0, state.review.items.length - 1))}"]`
+  );
+  reviewCardMainButton(fallbackCard)?.focus({ preventScroll: true });
+}
+
+function syncReviewCardSelection(card, item, index) {
   const selected = state.review.selectedAssetIDs.has(item.assetID);
   const primary = selected && index === state.review.selectedIndex;
-  button.classList.toggle("selected", selected);
-  button.classList.toggle("primary", primary);
-  button.setAttribute("aria-pressed", String(selected));
+  card.classList.toggle("selected", selected);
+  card.classList.toggle("primary", primary);
+  const mainButton = reviewCardMainButton(card, { create: true });
+  mainButton.setAttribute("aria-pressed", String(selected));
   if (primary) {
-    button.setAttribute("aria-current", "true");
+    mainButton.setAttribute("aria-current", "true");
   } else {
-    button.removeAttribute("aria-current");
+    mainButton.removeAttribute("aria-current");
   }
-  let mark = button.querySelector(".review-selection-mark");
+  let mark = card.querySelector(".review-selection-mark");
   if (selected) {
     if (!mark) {
       mark = document.createElement("span");
       mark.className = "review-selection-mark";
       mark.setAttribute("aria-hidden", "true");
       mark.textContent = "✓";
-      button.append(mark);
+      card.append(mark);
     }
   } else {
     mark?.remove();
@@ -8482,8 +10063,9 @@ function selectAllReviewItems() {
   if (state.review.selectedIndex < 0) state.review.selectedIndex = 0;
   state.review.selectionAnchorIndex = state.review.selectedIndex;
   renderReviewSelectionState();
-  elements.reviewGrid.querySelector(`[data-review-index="${state.review.selectedIndex}"]`)
-    ?.focus({ preventScroll: true });
+  reviewCardMainButton(
+    elements.reviewGrid.querySelector(`[data-review-index="${state.review.selectedIndex}"]`)
+  )?.focus({ preventScroll: true });
 }
 
 function renderReview() {
@@ -8503,15 +10085,18 @@ function renderReview() {
   );
   state.review.items.forEach((item, index) => {
     const key = reviewItemKey(item);
-    const button = existing.get(key) || document.createElement("button");
+    const button = existing.get(key) || document.createElement("div");
     existing.delete(key);
-    button.type = "button";
     button.className = "review-card";
     button.dataset.reviewKey = key;
     button.dataset.reviewIndex = String(index);
-    button.setAttribute("aria-label", `${item.fileName || "未命名照片"}，${reviewOriginText(item.suggestionOrigin)}`);
+    button.dataset.reviewAssetId = item.assetID;
+    const mainButton = reviewCardMainButton(button, { create: true });
+    mainButton.setAttribute("aria-label", `${item.fileName || "未命名照片"}，${reviewOriginText(item.suggestionOrigin)}`);
+    mainButton.title = "单击选择；双击打开单图；P 属于、X 不属于、U 稍后";
     syncAssetCardImage(button, item);
     syncReviewCardSelection(button, item, index);
+    syncReviewCardFavoriteButton(button, item);
     let origin = button.querySelector(".review-origin-badge");
     if (!origin) {
       origin = document.createElement("span");
@@ -8636,6 +10221,10 @@ function reviewPageFingerprint(items, nextCursor) {
       item.rejectedTagCount,
       item.suggestionOrigin,
       item.score,
+      item.favorite?.isFavorite ?? null,
+      item.favorite?.photosObservedValue ?? null,
+      item.favorite?.syncStatus ?? null,
+      item.favorite?.lastErrorCode ?? null,
     ]),
   ]);
 }
@@ -8645,12 +10234,11 @@ function reviewItemKey(item) {
 }
 
 function currentReviewScopeKey() {
+  const sourceIDs = resolvedReviewSourceFilter();
   return JSON.stringify({
     tagID: elements.reviewTagSelect.value,
     mediaKind: state.mediaKind,
-    sourceID: elements.reviewCurrentSourceOnly.checked
-      ? state.selectedSourceID
-      : "",
+    sourceIDs,
   });
 }
 
@@ -8686,6 +10274,18 @@ async function loadReviewQueue({
     renderReview();
     return true;
   }
+  const sourceIDs = resolvedReviewSourceFilter();
+  if (sourceIDs?.length === 0) {
+    state.review.items = [];
+    state.review.nextCursor = null;
+    state.review.selectedIndex = -1;
+    state.review.selectedAssetIDs.clear();
+    state.review.selectionAnchorIndex = -1;
+    state.review.loadedScopeKey = scopeKey;
+    state.review.loading = false;
+    renderReview();
+    return true;
+  }
 
   state.review.loading = true;
   let shouldRender = !preserveUnchangedGrid;
@@ -8701,12 +10301,9 @@ async function loadReviewQueue({
   } else {
     syncReviewControls();
   }
-  const sourceID = elements.reviewCurrentSourceOnly.checked
-    ? state.selectedSourceID
-    : "";
   const fetchPage = (cursor = null) => {
     const query = new URLSearchParams({ tagID, mediaKind: state.mediaKind, limit: "48" });
-    if (sourceID) query.set("sourceIDs", sourceID);
+    if (sourceIDs) query.set("sourceIDs", sourceIDs.join(","));
     if (cursor) query.set("cursor", cursor);
     return api(`/v1/review/queue?${query}`);
   };
@@ -8783,6 +10380,7 @@ async function loadReviewQueue({
 
 async function openReviewWorkspace({ returnToTrainingRunID = null } = {}) {
   if (elements.trainingSetupDialog.open) closeTrainingSetupDialog();
+  closeReviewSourceFilter({ restoreFocus: false });
   elements.trainingWorkspace.classList.add("hidden");
   if (returnToTrainingRunID) {
     state.review.returnTarget = {
@@ -8814,6 +10412,9 @@ async function openReviewWorkspace({ returnToTrainingRunID = null } = {}) {
   await Promise.all([
     loadReviewOverview(),
     loadTagLibrarySuggestions({ quiet: true }),
+    loadSampleSuggestions({ quiet: true }),
+    loadLibrarySuggestions({ quiet: true, refreshServiceHealth: true }),
+    supportsGeneralSettings() ? loadGeneralSettings({ quiet: true }) : Promise.resolve(),
   ]);
 }
 
@@ -9986,8 +11587,8 @@ async function openReviewFromTrainingRun(runID) {
   if (run.mediaKind !== state.mediaKind) await switchMediaKind(run.mediaKind);
   await openReviewWorkspace({ returnToTrainingRunID: run.id });
   let overview = state.review.overview.find((item) => item.id === run.tagID);
-  if (!overview && elements.reviewCurrentSourceOnly.checked) {
-    elements.reviewCurrentSourceOnly.checked = false;
+  if (!overview && state.review.sourceFilterIDs !== null) {
+    state.review.sourceFilterIDs = null;
     await loadReviewOverview();
     overview = state.review.overview.find((item) => item.id === run.tagID);
   }
@@ -10279,6 +11880,31 @@ function selectedSlimmingJobIndex() {
   return state.slimming.jobs.findIndex((job) => job.id === state.slimming.selectedJobID);
 }
 
+function totalSlimmingJobCount() {
+  return Math.max(state.slimming.jobs.length, Number(state.slimming.totalJobCount || 0));
+}
+
+function hasMoreSlimmingJobs() {
+  return state.slimming.jobLimit < totalSlimmingJobCount()
+    && state.slimming.jobLimit < SLIMMING_JOB_LIMIT_MAX;
+}
+
+async function expandSlimmingJobWindow({ all = false } = {}) {
+  if (state.slimming.loading || !hasMoreSlimmingJobs()) return false;
+  const previousLimit = state.slimming.jobLimit;
+  const target = all
+    ? totalSlimmingJobCount()
+    : previousLimit + SLIMMING_JOB_PAGE_SIZE;
+  state.slimming.jobLimit = Math.min(SLIMMING_JOB_LIMIT_MAX, target);
+  const loaded = await loadSlimmingWorkspace({ quiet: true });
+  if (!loaded) {
+    state.slimming.jobLimit = previousLimit;
+    renderSlimmingWorkspace();
+    return false;
+  }
+  return state.slimming.jobLimit > previousLimit;
+}
+
 function focusSelectedSlimmingJob() {
   requestAnimationFrame(() => {
     const selected = elements.slimmingJobList.querySelector('[aria-selected="true"]');
@@ -10287,9 +11913,36 @@ function focusSelectedSlimmingJob() {
   });
 }
 
+function focusSelectedSlimmingCluster({ fallbackToScope = true } = {}) {
+  requestAnimationFrame(() => {
+    const selected = elements.slimmingClusterList.querySelector(
+      '[data-slimming-cluster-id][aria-pressed="true"]'
+    );
+    if (selected) {
+      selected.focus({ preventScroll: true });
+      selected.scrollIntoView({ block: "nearest", inline: "nearest" });
+      return;
+    }
+    if (fallbackToScope) {
+      elements.slimmingClusterScopes.querySelector(
+        `[data-slimming-cluster-scope="${CSS.escape(state.slimming.clusterScope)}"]`
+      )?.focus({ preventScroll: true });
+    }
+  });
+}
+
+function slimmingClusterScopeText(scope) {
+  return { pending: "待处理", confirmed: "已确认", ignored: "已忽略" }[scope] || "待处理";
+}
+
 async function navigateSlimmingJob(target) {
   if (!state.slimming.jobs.length || state.slimming.loading) return;
-  const current = Math.max(0, selectedSlimmingJobIndex());
+  let current = Math.max(0, selectedSlimmingJobIndex());
+  if ((target === "last" || (Number(target) > 0 && current >= state.slimming.jobs.length - 1))
+    && hasMoreSlimmingJobs()) {
+    await expandSlimmingJobWindow({ all: target === "last" });
+    current = Math.max(0, selectedSlimmingJobIndex());
+  }
   const index = target === "first"
     ? 0
     : target === "last"
@@ -10326,6 +11979,11 @@ function appendSlimmingScanProgress(container, job, compact = false) {
 }
 
 function slimmingClusterPresentation(cluster) {
+  const currentMemberCount = Number(cluster.memberCount || 0);
+  const originalMemberCount = Number(cluster.originalMemberCount || currentMemberCount);
+  const historicalDetail = cluster.isHistoricalProcessedRecord
+    ? `原 ${originalMemberCount} 项 · 现 ${currentMemberCount} 项可查看`
+    : null;
   if (cluster.isSeedOnlyResult) {
     return {
       title: state.slimming.mediaKind === "video" ? "种子视频" : "种子照片",
@@ -10341,7 +11999,7 @@ function slimmingClusterPresentation(cluster) {
   const detail = cluster.kind === "byteIdentical"
     ? (video ? "完整视频文件一致" : "内容完全一致")
     : `${cluster.kind === "nearDuplicateScene" ? "相似度" : "匹配度"} ${Math.round(cluster.score * 100)}%`;
-  return { title, detail };
+  return { title, detail, historicalDetail };
 }
 
 function renderSlimmingJobActions() {
@@ -10375,15 +12033,26 @@ function renderSlimmingJobActions() {
 
 function renderSlimmingJobs() {
   clearElement(elements.slimmingJobList);
-  elements.slimmingJobCount.textContent = `${state.slimming.jobs.length} 条`;
+  const totalCount = totalSlimmingJobCount();
+  const loadedCount = state.slimming.jobs.length;
+  const hasMore = hasMoreSlimmingJobs();
+  elements.slimmingJobCount.textContent = `${totalCount} 条`;
+  elements.slimmingJobCount.title = hasMore
+    ? `已载入 ${loadedCount} / ${totalCount} 条分析记录`
+    : `已载入全部 ${totalCount} 条分析记录`;
   const selectedIndex = selectedSlimmingJobIndex();
   elements.slimmingJobPosition.textContent = state.slimming.jobs.length
-    ? `${Math.max(0, selectedIndex) + 1} / ${state.slimming.jobs.length}`
+    ? `${Math.max(0, selectedIndex) + 1} / ${totalCount}`
     : "0 / 0";
   elements.previousSlimmingJobButton.disabled = state.slimming.loading || selectedIndex <= 0;
   elements.nextSlimmingJobButton.disabled = state.slimming.loading
     || selectedIndex < 0
-    || selectedIndex >= state.slimming.jobs.length - 1;
+    || (selectedIndex >= state.slimming.jobs.length - 1 && !hasMore);
+  elements.slimmingLoadMoreJobsButton.classList.toggle("hidden", !hasMore);
+  elements.slimmingLoadMoreJobsButton.disabled = state.slimming.loading;
+  elements.slimmingLoadMoreJobsButton.textContent = hasMore
+    ? `载入更多记录（剩余 ${Math.max(0, totalCount - loadedCount)}）`
+    : "已载入全部记录";
   elements.slimmingEmpty.classList.toggle(
     "hidden",
     state.slimming.loading || state.slimming.jobs.length > 0
@@ -10511,7 +12180,7 @@ function renderSlimmingInspector() {
   elements.slimmingInspectorSummary.textContent = clusterCopy?.title
     || (job ? `${slimmingModeText(job.mode)} · ${slimmingJobStateText(job)}` : "分析概览");
 
-  appendSlimmingInspectorField("分析记录", `${state.slimming.jobs.length} 条`);
+  appendSlimmingInspectorField("分析记录", `${totalSlimmingJobCount()} 条`);
   appendSlimmingInspectorField("当前任务", job ? slimmingModeText(job.mode) : "未选择");
   appendSlimmingInspectorField("状态", job ? slimmingJobStateText(job) : "—");
   appendSlimmingInspectorField(
@@ -10533,7 +12202,10 @@ function renderSlimmingInspector() {
 
   if (cluster) {
     appendSlimmingInspectorField("类型", clusterCopy.title);
-    appendSlimmingInspectorField("成员", `${cluster.memberCount} 项`);
+    appendSlimmingInspectorField(
+      "成员",
+      clusterCopy.historicalDetail || `${cluster.memberCount} 项`
+    );
     appendSlimmingInspectorField("已选", `${state.slimming.selectedMemberIDs.size} 项`);
     appendSlimmingInspectorField("来源", sourceNames.join("、") || "正在读取…");
     appendSlimmingInspectorField("结果", clusterCopy.detail, "technical");
@@ -10545,10 +12217,72 @@ function renderSlimmingInspector() {
   }
 }
 
+function renderSlimmingClusterScopes() {
+  const supported = state.slimming.clusterScopeSupported;
+  for (const button of elements.slimmingClusterScopes.querySelectorAll(
+    "[data-slimming-cluster-scope]"
+  )) {
+    const scope = button.dataset.slimmingClusterScope;
+    const advancedUnavailable = supported === false && scope !== "pending";
+    const count = supported === false && scope !== "pending"
+      ? "—"
+      : Number(state.slimming.clusterScopeCounts?.[scope] || 0).toLocaleString();
+    button.setAttribute("aria-pressed", String(scope === state.slimming.clusterScope));
+    button.disabled = state.slimming.loading || advancedUnavailable;
+    button.title = advancedUnavailable
+      ? "需要新版 Mac Host 才能读取此审阅队列"
+      : `${slimmingClusterScopeText(scope)}，${count} 组`;
+    button.querySelector("[data-slimming-cluster-scope-count]").textContent = count;
+  }
+}
+
+function appendSlimmingClusterReviewButton(container, cluster, disposition, label, symbol) {
+  const active = cluster.reviewDisposition === disposition;
+  const pending = state.slimming.clusterReviewPendingIDs.has(cluster.id);
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "slimming-cluster-review-button write-action";
+  button.dataset.slimmingClusterReview = disposition;
+  button.dataset.slimmingClusterReviewId = cluster.id;
+  button.setAttribute("aria-pressed", String(active));
+  button.setAttribute("aria-label", active ? `当前为${label}` : `设为${label}`);
+  button.title = active ? `当前为${label}` : `将分组移入${label}队列`;
+  button.disabled = !state.online || pending || active;
+  const icon = document.createElement("span");
+  icon.setAttribute("aria-hidden", "true");
+  icon.textContent = pending ? "…" : symbol;
+  const copy = document.createElement("span");
+  copy.textContent = label;
+  button.append(icon, copy);
+  container.append(button);
+}
+
+function renderSlimmingSelectedClusterReview(cluster) {
+  const supported = state.slimming.clusterScopeSupported === true;
+  const disposition = cluster?.reviewDisposition || null;
+  const pending = cluster && state.slimming.clusterReviewPendingIDs.has(cluster.id);
+  const visible = Boolean(supported && cluster && disposition);
+  elements.slimmingSelectedClusterReview.classList.toggle("hidden", !visible);
+  if (!visible) {
+    elements.slimmingSelectedClusterReviewStatus.textContent = "";
+    elements.slimmingSelectedClusterReviewStatus.removeAttribute("data-disposition");
+    return;
+  }
+  elements.slimmingSelectedClusterReviewStatus.dataset.disposition = disposition;
+  elements.slimmingSelectedClusterReviewStatus.textContent = disposition === "confirmed"
+    ? "✓ 已确认"
+    : "⊘ 已忽略";
+  elements.slimmingReprocessClusterButton.disabled = !state.online || pending;
+  elements.slimmingReprocessClusterButton.dataset.slimmingClusterReviewId = cluster.id;
+  elements.slimmingReprocessClusterButton.textContent = pending ? "正在保存…" : "重新处理";
+}
+
 function renderSlimmingClusters() {
+  renderSlimmingClusterScopes();
   clearElement(elements.slimmingClusterList);
-  const selectedJob = state.slimming.jobs.find((job) => job.id === state.slimming.selectedJobID);
-  const totalClusterCount = selectedJob?.clusterCount ?? state.slimming.clusters.length;
+  const totalClusterCount = state.slimming.clusterScopeSupported === true
+    ? Number(state.slimming.clusterScopeCounts?.[state.slimming.clusterScope] || 0)
+    : state.slimming.clusters.length;
   elements.slimmingClusterCount.textContent = totalClusterCount > state.slimming.clusters.length
     ? `${state.slimming.clusters.length} / ${totalClusterCount} 组`
     : `${state.slimming.clusters.length} 组`;
@@ -10560,40 +12294,79 @@ function renderSlimmingClusters() {
     "hidden",
     state.slimming.loading || !state.slimming.selectedJobID || state.slimming.clusters.length > 0
   );
+  const emptyTitle = elements.slimmingClusterEmpty.querySelector("strong");
+  const emptyMessage = elements.slimmingClusterEmpty.querySelector("p");
+  if (state.slimming.selectedJobID && state.slimming.clusterScopeSupported === true) {
+    emptyTitle.textContent = `${slimmingClusterScopeText(state.slimming.clusterScope)}队列为空`;
+    emptyMessage.textContent = state.slimming.clusterScope === "pending"
+      ? "此记录没有尚待处理的重复或相似分组。"
+      : `此记录没有${slimmingClusterScopeText(state.slimming.clusterScope)}的分组。`;
+  } else {
+    emptyTitle.textContent = "没有候选分组";
+    emptyMessage.textContent = "此记录未发现重复或相似项目。";
+  }
   for (const cluster of state.slimming.clusters) {
     const copy = slimmingClusterPresentation(cluster);
-    const row = document.createElement("button");
-    row.type = "button";
+    const row = document.createElement("div");
     row.className = "slimming-cluster-row";
-    row.dataset.slimmingClusterId = cluster.id;
+    row.dataset.slimmingClusterRowId = cluster.id;
     row.classList.toggle("selected", cluster.id === state.slimming.selectedClusterID);
-    row.setAttribute("role", "option");
-    row.setAttribute("aria-selected", String(cluster.id === state.slimming.selectedClusterID));
-    const image = document.createElement("img");
-    image.loading = "lazy";
-    image.alt = "";
-    image.setAttribute("aria-hidden", "true");
-    setProtectedImageSource(
-      image,
-      `/v1/assets/${cluster.representativeAssetID}/thumbnail?w=180&rev=0`
-    );
+    row.setAttribute("role", "listitem");
+    const main = document.createElement("button");
+    main.type = "button";
+    main.className = "slimming-cluster-main";
+    main.dataset.slimmingClusterId = cluster.id;
+    main.setAttribute("aria-pressed", String(cluster.id === state.slimming.selectedClusterID));
+    main.setAttribute("aria-label", `${copy.title}，${cluster.memberCount} 项，${copy.detail}`);
+    const image = cluster.isHistoricalProcessedRecord && Number(cluster.memberCount || 0) === 0
+      ? document.createElement("span")
+      : document.createElement("img");
+    if (image instanceof HTMLImageElement) {
+      image.loading = "lazy";
+      image.alt = "";
+      image.setAttribute("aria-hidden", "true");
+      setProtectedImageSource(
+        image,
+        `/v1/assets/${cluster.representativeAssetID}/thumbnail?w=180&rev=0`
+      );
+    } else {
+      image.className = "slimming-cluster-history-mark";
+      image.setAttribute("aria-hidden", "true");
+      image.textContent = "✓";
+    }
     const text = document.createElement("span");
     text.className = "slimming-cluster-copy";
     const title = document.createElement("strong");
-    title.textContent = `${copy.title} · ${cluster.memberCount} 项`;
+    title.textContent = cluster.isHistoricalProcessedRecord
+      ? `${copy.title} · ${copy.historicalDetail}`
+      : `${copy.title} · ${cluster.memberCount} 项`;
     const detail = document.createElement("span");
-    detail.textContent = copy.detail;
+    detail.textContent = cluster.isHistoricalProcessedRecord
+      ? `历史处理记录 · ${copy.detail}`
+      : copy.detail;
     text.append(title, detail);
-    row.append(image, text);
+    main.append(image, text);
+    row.append(main);
+    if (state.slimming.clusterScopeSupported === true) {
+      const actions = document.createElement("span");
+      actions.className = "slimming-cluster-review-actions";
+      appendSlimmingClusterReviewButton(actions, cluster, "confirmed", "已确认", "✓");
+      appendSlimmingClusterReviewButton(actions, cluster, "ignored", "忽略", "⊘");
+      row.append(actions);
+    }
     elements.slimmingClusterList.append(row);
   }
 }
 
-function renderSlimmingMemberSelection() {
+function renderSlimmingMemberSelection({ renderInspector = true } = {}) {
   for (const card of elements.slimmingMemberGrid.querySelectorAll("[data-slimming-member-id]")) {
     const selected = state.slimming.selectedMemberIDs.has(card.dataset.slimmingMemberId);
     card.classList.toggle("selected", selected);
-    card.setAttribute("aria-pressed", String(selected));
+    slimmingMemberMainButton(card)?.setAttribute("aria-pressed", String(selected));
+    syncSlimmingMemberFavoriteButton(
+      card,
+      state.slimming.members.find((member) => member.id === card.dataset.slimmingMemberId)
+    );
   }
   const selectedCount = state.slimming.selectedMemberIDs.size;
   elements.slimmingSelectionSummary.textContent = selectedCount
@@ -10610,7 +12383,137 @@ function renderSlimmingMemberSelection() {
     || identicalActive === "running";
   elements.slimmingMoveToRecycleButton.disabled = unavailable || selectedCount === 0;
   elements.slimmingReleaseSpaceButton.disabled = unavailable || selectedCount === 0;
-  renderSlimmingInspector();
+  if (renderInspector) renderSlimmingInspector();
+}
+
+function slimmingMemberMainButton(card, { create = false } = {}) {
+  let button = card?.querySelector(":scope > .slimming-member-main") || null;
+  if (!button && create && card) {
+    button = document.createElement("button");
+    button.type = "button";
+    button.className = "slimming-member-main";
+    card.append(button);
+  }
+  return button;
+}
+
+function activeSlimmingRemovalPhase(assetID) {
+  const request = state.slimming.removal.requests.find((candidate) =>
+    ["awaitingMac", "running"].includes(candidate.phase)
+      && candidate.jobID === state.slimming.selectedJobID
+      && candidate.clusterID === state.slimming.selectedClusterID
+      && (candidate.assetIDs || []).includes(assetID)
+  );
+  return request?.phase || null;
+}
+
+function syncSlimmingMemberFavoriteButton(card, member) {
+  let button = card?.querySelector(":scope > .slimming-member-favorite") || null;
+  if (!card || !supportsFavorites() || !member?.favorite) {
+    button?.remove();
+    return;
+  }
+  if (!button) {
+    button = document.createElement("button");
+    button.type = "button";
+    button.className = "slimming-member-favorite write-action";
+    button.dataset.slimmingMemberFavorite = "true";
+    const icon = document.createElement("span");
+    icon.className = "slimming-member-favorite-icon media-favorite-icon";
+    icon.setAttribute("aria-hidden", "true");
+    const badge = document.createElement("span");
+    badge.className = "slimming-member-favorite-sync media-favorite-sync hidden";
+    badge.setAttribute("aria-hidden", "true");
+    button.append(icon, badge);
+    card.append(button);
+  }
+  syncMediaFavoriteButton(button, {
+    assetID: member.id,
+    fileName: member.fileName,
+    favorite: member.favorite,
+  });
+  const removalPhase = activeSlimmingRemovalPhase(member.id);
+  if (removalPhase) {
+    button.disabled = true;
+    const reason = removalPhase === "awaitingMac"
+      ? "等待 Mac 确认回收时不能更改红心"
+      : "正在处理回收时不能更改红心";
+    button.title = reason;
+    button.setAttribute("aria-label", `${member.fileName || "当前项目"}：${reason}`);
+  }
+}
+
+function syncSlimmingRecycleFavoriteButton(card, entry) {
+  let button = card?.querySelector(":scope > .slimming-recycle-favorite") || null;
+  if (!card || !supportsFavorites() || !entry?.favorite) {
+    button?.remove();
+    return;
+  }
+  if (!button) {
+    button = document.createElement("button");
+    button.type = "button";
+    button.className = "slimming-recycle-favorite write-action";
+    button.dataset.slimmingRecycleFavorite = "true";
+    const icon = document.createElement("span");
+    icon.className = "slimming-recycle-favorite-icon media-favorite-icon";
+    icon.setAttribute("aria-hidden", "true");
+    const badge = document.createElement("span");
+    badge.className = "slimming-recycle-favorite-sync media-favorite-sync hidden";
+    badge.setAttribute("aria-hidden", "true");
+    button.append(icon, badge);
+    card.append(button);
+  }
+  syncMediaFavoriteButton(button, {
+    assetID: entry.assetID,
+    fileName: entry.fileName,
+    favorite: entry.favorite,
+  });
+  const warning = entry.sourceKind === "photos"
+    ? "红心只用于整理，不会暂停系统“照片”的永久删除"
+    : "红心只用于整理，不会阻止恢复、回收或永久删除";
+  button.title = `${button.title}；${warning}`;
+  button.setAttribute("aria-label", `${entry.fileName || "当前项目"}：${button.title}`);
+}
+
+async function toggleSlimmingMemberFavorite(button) {
+  const card = button?.closest(".slimming-member-card");
+  const assetID = button?.dataset.mediaFavoriteAssetId || card?.dataset.slimmingMemberId;
+  const memberIndex = state.slimming.members.findIndex((member) => member.id === assetID);
+  const favorite = favoriteStateForAssetID(assetID);
+  if (!assetID || memberIndex < 0 || !favorite || state.favoriteMutating
+    || activeSlimmingRemovalPhase(assetID)) return;
+
+  const scrollTop = elements.slimmingMemberGrid.scrollTop;
+  const selectedMemberIDs = new Set(state.slimming.selectedMemberIDs);
+  const selectionAnchorID = state.slimming.selectionAnchorID;
+  await applyFavoriteMutation([assetID], favorite.isFavorite !== true);
+  state.slimming.selectedMemberIDs = selectedMemberIDs;
+  state.slimming.selectionAnchorID = selectionAnchorID;
+  renderSlimmingMemberSelection();
+  elements.slimmingMemberGrid.scrollTop = scrollTop;
+
+  if (button.isConnected) {
+    button.focus({ preventScroll: true });
+    return;
+  }
+  const fallback = elements.slimmingMemberGrid.querySelector(
+    `[data-slimming-member-id="${CSS.escape(state.slimming.members[memberIndex]?.id || "")}"]`
+  );
+  slimmingMemberMainButton(fallback)?.focus({ preventScroll: true });
+}
+
+async function toggleSlimmingRecycleFavorite(button) {
+  const card = button?.closest(".slimming-recycle-thumbnail-card");
+  const entry = state.slimming.recycle.entries.find(
+    (candidate) => candidate.id === card?.dataset.slimmingRecycleThumbnailEntryId
+  );
+  const assetID = button?.dataset.mediaFavoriteAssetId || entry?.assetID;
+  const favorite = favoriteStateForAssetID(assetID);
+  if (!entry || !assetID || !favorite || state.favoriteMutating) return;
+  const scrollTop = elements.slimmingRecycleBody.scrollTop;
+  await applyFavoriteMutation([assetID], favorite.isFavorite !== true);
+  elements.slimmingRecycleBody.scrollTop = scrollTop;
+  if (button.isConnected) button.focus({ preventScroll: true });
 }
 
 function currentSlimmingRemovalRequest() {
@@ -10756,24 +12659,50 @@ function renderSlimmingMembers() {
   const cluster = state.slimming.clusters.find(
     (item) => item.id === state.slimming.selectedClusterID
   );
+  renderSlimmingSelectedClusterReview(cluster);
   const copy = cluster ? slimmingClusterPresentation(cluster) : null;
-  elements.slimmingMemberEmpty.classList.toggle("hidden", Boolean(cluster));
-  elements.slimmingMemberGrid.classList.toggle("hidden", !cluster);
+  const historicalEmpty = Boolean(
+    cluster?.isHistoricalProcessedRecord && state.slimming.members.length === 0
+  );
+  elements.slimmingMemberEmpty.classList.toggle("hidden", Boolean(cluster) && !historicalEmpty);
+  elements.slimmingMemberGrid.classList.toggle("hidden", !cluster || historicalEmpty);
+  const emptyIcon = elements.slimmingMemberEmpty.querySelector("[aria-hidden='true']");
+  const emptyTitle = elements.slimmingMemberEmpty.querySelector("strong");
+  const emptyMessage = elements.slimmingMemberEmpty.querySelector("p");
+  if (historicalEmpty) {
+    emptyIcon.textContent = "✓";
+    emptyTitle.textContent = "历史处理记录";
+    emptyMessage.textContent = "原分组仍有审阅记录，但成员当前均已回收、清理或不再可查看。";
+  } else {
+    emptyIcon.textContent = "▧";
+    emptyTitle.textContent = "选择一个候选分组";
+    emptyMessage.textContent = "可使用普通点击、⌘ 点击、Shift 点击、⌘A 和拖拽空白框选成员；双击或按空格预览。";
+  }
   elements.slimmingMemberTitle.textContent = copy?.title || "选择一个候选分组";
   const sourceNames = [...new Set(state.slimming.members.map((item) => item.sourceName).filter(Boolean))];
   elements.slimmingMemberSummary.textContent = cluster
-    ? `${copy.detail} · ${state.slimming.members.length}/${cluster.memberCount} 项 · ${sourceNames.join(" · ") || "来源信息不可用"}`
+    ? `${copy.detail} · ${copy.historicalDetail || `${state.slimming.members.length}/${cluster.memberCount} 项`} · ${sourceNames.join(" · ") || (historicalEmpty ? "成员当前不可查看" : "来源信息不可用")}`
     : "分组中的照片会在这里显示";
   elements.slimmingLoadMoreMembersButton.classList.toggle(
     "hidden",
     !cluster || state.slimming.loading || state.slimming.members.length >= cluster.memberCount
   );
   for (const member of state.slimming.members) {
-    const card = document.createElement("button");
-    card.type = "button";
+    const card = document.createElement("div");
     card.className = "slimming-member-card";
     card.dataset.slimmingMemberId = member.id;
-    card.setAttribute("aria-label", `${member.fileName || "未命名项目"}，${member.sourceName || "来源未知"}`);
+    if (Number(member.width) > 0 && Number(member.height) > 0) {
+      card.style.setProperty(
+        "--slimming-member-aspect",
+        `${Number(member.width)} / ${Number(member.height)}`
+      );
+    }
+    const main = slimmingMemberMainButton(card, { create: true });
+    main.dataset.slimmingMemberMain = "true";
+    main.setAttribute(
+      "aria-label",
+      `${member.fileName || "未命名项目"}，${member.sourceName || "来源未知"}`
+    );
     const image = document.createElement("img");
     image.loading = "lazy";
     image.alt = "";
@@ -10789,7 +12718,33 @@ function renderSlimmingMembers() {
     const source = document.createElement("span");
     source.textContent = member.sourceName || availabilityText(member.availability);
     footer.append(name, source);
-    card.append(image, footer);
+    main.append(image, footer);
+    if (state.slimming.mediaKind === "video") {
+      const video = document.createElement("span");
+      video.className = "slimming-member-video-badge";
+      video.setAttribute("aria-hidden", "true");
+      video.textContent = `▶${member.durationMs == null ? "" : ` ${formatDuration(member.durationMs)}`}`;
+      main.append(video);
+    }
+    syncSlimmingMemberFavoriteButton(card, member);
+    const removalPhase = activeSlimmingRemovalPhase(member.id);
+    card.classList.toggle("pending-removal", Boolean(removalPhase));
+    if (removalPhase) {
+      main.disabled = true;
+      const overlay = document.createElement("span");
+      overlay.className = "slimming-member-pending-overlay";
+      overlay.setAttribute("role", "status");
+      overlay.setAttribute("aria-label", removalPhase === "awaitingMac"
+        ? "等待 Mac 确认安全回收"
+        : "正在安全处理回收");
+      const spinner = document.createElement("span");
+      spinner.className = "spinner";
+      spinner.setAttribute("aria-hidden", "true");
+      const copy = document.createElement("strong");
+      copy.textContent = removalPhase === "awaitingMac" ? "等待 Mac 确认" : "正在移动";
+      overlay.append(spinner, copy);
+      card.append(overlay);
+    }
     elements.slimmingMemberGrid.append(card);
   }
   renderSlimmingMemberSelection();
@@ -10839,6 +12794,32 @@ function renderSlimmingRecycleSourceOptions() {
   }
 }
 
+function renderSlimmingRecycleScopes() {
+  const recycle = state.slimming.recycle;
+  const labels = {
+    all: "全部",
+    photos: "Photos",
+    files: "文件夹",
+    attention: "待处理",
+  };
+  for (const button of elements.slimmingRecycleScopes.querySelectorAll(
+    "[data-slimming-recycle-scope]"
+  )) {
+    const scope = button.dataset.slimmingRecycleScope;
+    const count = recycle.scopeSupported === false && scope !== "all"
+      ? "—"
+      : Number(recycle.scopeCounts?.[scope] || 0).toLocaleString();
+    button.setAttribute("aria-pressed", String(scope === recycle.scope));
+    button.disabled = recycle.scopeSupported === false && scope !== "all";
+    button.title = button.disabled
+      ? "需要新版 Mac Host 才能按状态范围筛选"
+      : `只显示${labels[scope]}范围内的回收站项目`;
+    button.setAttribute("aria-label", `${labels[scope]}，${count} 项`);
+    const countLabel = button.querySelector("[data-slimming-recycle-scope-count]");
+    if (countLabel) countLabel.textContent = count;
+  }
+}
+
 function renderSlimmingRecycleRequest() {
   const requests = state.slimming.recycle.requests || [];
   const active = requests.find((request) => ["awaitingMac", "running"].includes(request.phase));
@@ -10858,6 +12839,7 @@ function renderSlimmingRecycle() {
   const recycle = state.slimming.recycle;
   elements.slimmingRecycleSearchInput.value = recycle.searchText;
   renderSlimmingRecycleSourceOptions();
+  renderSlimmingRecycleScopes();
   elements.slimmingRecycleCount.textContent = recycle.totalCount > recycle.entries.length
     ? `${recycle.entries.length} / ${recycle.totalCount} 项`
     : `${recycle.totalCount} 项`;
@@ -10869,17 +12851,55 @@ function renderSlimmingRecycle() {
     "hidden",
     recycle.loading || recycle.entries.length > 0
   );
+  const allEmpty = Number(recycle.scopeCounts?.all || 0) === 0;
+  const emptyPresentation = allEmpty
+    ? {
+      title: "回收站为空",
+      message: "文件夹媒体在 ImageAll 中保留 30 天；Photos 项遵循系统“照片”App 的恢复规则。",
+    }
+    : {
+      photos: {
+        title: "没有 Photos 项目",
+        message: "当前来源和文件名范围中仍有其他回收站项目。",
+      },
+      files: {
+        title: "没有文件夹项目",
+        message: "当前来源和文件名范围中仍有 Photos 回收项目。",
+      },
+      attention: {
+        title: "没有待处理项目",
+        message: "当前范围内的回收项目均处于稳定回收状态。",
+      },
+      all: {
+        title: "没有匹配的媒体",
+        message: "调整来源或清除文件名搜索以查看其他回收站项目。",
+      },
+    }[recycle.scope];
+  elements.slimmingRecycleEmptyTitle.textContent = emptyPresentation.title;
+  elements.slimmingRecycleEmptyMessage.textContent = emptyPresentation.message;
   clearElement(elements.slimmingRecycleList);
   elements.slimmingRecycleList.classList.toggle("hidden", recycle.entries.length === 0);
   for (const entry of recycle.entries) {
     const row = document.createElement("article");
     row.className = "slimming-recycle-row";
     row.dataset.slimmingRecycleRowId = entry.id;
+    const thumbnail = document.createElement("div");
+    thumbnail.className = "slimming-recycle-thumbnail-card";
+    thumbnail.dataset.slimmingRecycleThumbnailEntryId = entry.id;
     const image = document.createElement("img");
     image.className = "slimming-recycle-thumbnail";
     image.alt = "";
     image.setAttribute("aria-hidden", "true");
     setProtectedImageSource(image, `/v1/assets/${entry.assetID}/thumbnail?w=180`);
+    thumbnail.append(image);
+    if (entry.mediaKind === "video") {
+      const video = document.createElement("span");
+      video.className = "slimming-recycle-video-badge";
+      video.textContent = "▶";
+      video.setAttribute("aria-label", "视频代表缩略图");
+      thumbnail.append(video);
+    }
+    syncSlimmingRecycleFavoriteButton(thumbnail, entry);
     const copy = document.createElement("div");
     copy.className = "slimming-recycle-copy";
     const title = document.createElement("strong");
@@ -10918,7 +12938,7 @@ function renderSlimmingRecycle() {
       }[action];
       actions.append(button);
     }
-    row.append(image, copy, actions);
+    row.append(thumbnail, copy, actions);
     elements.slimmingRecycleList.append(row);
   }
   renderSlimmingRecycleRequest();
@@ -10946,6 +12966,7 @@ async function loadSlimmingRecycle({ quiet = false } = {}) {
   renderSlimmingWorkspace();
   const query = new URLSearchParams({
     mediaKind: state.slimming.mediaKind,
+    scope: recycle.scope,
     limit: String(recycle.limit),
   });
   if (recycle.sourceID) query.set("sourceID", recycle.sourceID);
@@ -10956,6 +12977,24 @@ async function loadSlimmingRecycle({ quiet = false } = {}) {
     recycle.entries = snapshot.entries || [];
     recycle.totalCount = snapshot.totalCount || 0;
     recycle.requests = snapshot.requests || [];
+    if (snapshot.scopeCounts) {
+      recycle.scopeSupported = true;
+      recycle.scopeCounts = {
+        all: Number(snapshot.scopeCounts.all || 0),
+        photos: Number(snapshot.scopeCounts.photos || 0),
+        files: Number(snapshot.scopeCounts.files || 0),
+        attention: Number(snapshot.scopeCounts.attention || 0),
+      };
+    } else {
+      recycle.scopeSupported = false;
+      recycle.scope = "all";
+      recycle.scopeCounts = {
+        all: recycle.totalCount,
+        photos: 0,
+        files: 0,
+        attention: 0,
+      };
+    }
   } catch (error) {
     if (generation === recycle.requestGeneration && !quiet) {
       toast(error.message || "回收站载入失败");
@@ -11001,6 +13040,8 @@ async function submitSlimmingRecycleAction(entryID, action) {
 
 async function setSlimmingView(view) {
   if (!['analysis', 'recycle'].includes(view) || view === state.slimming.view) return;
+  finishSlimmingMarqueeSelection();
+  hideContextMenus();
   state.slimming.view = view;
   renderSlimmingWorkspace();
   if (view === "recycle") await loadSlimmingRecycle();
@@ -11011,8 +13052,31 @@ async function setSlimmingView(view) {
   }
 }
 
+function renderSlimmingNavigator() {
+  const analysisView = state.slimming.view === "analysis";
+  const visible = state.slimming.navigatorVisible;
+  elements.slimmingNavigatorButton.classList.toggle("hidden", !analysisView);
+  elements.slimmingNavigatorButton.setAttribute("aria-pressed", String(visible));
+  elements.slimmingNavigatorButton.setAttribute(
+    "aria-label",
+    visible ? "隐藏分析记录" : "显示分析记录"
+  );
+  elements.slimmingNavigatorButton.title = visible
+    ? "隐藏分析记录与候选分组，让媒体网格使用全部宽度"
+    : "显示分析记录与候选分组";
+  elements.slimmingAnalysisBody.classList.toggle("navigator-hidden", !visible);
+}
+
+function toggleSlimmingNavigator() {
+  state.slimming.navigatorVisible = !state.slimming.navigatorVisible;
+  renderSlimmingNavigator();
+  elements.slimmingNavigatorButton.focus({ preventScroll: true });
+}
+
 function renderSlimmingWorkspace() {
   const recycleView = state.slimming.view === "recycle";
+  renderSlimmingNavigator();
+  elements.slimmingThumbnailLayoutControls.classList.toggle("recycle-view", recycleView);
   for (const button of elements.slimmingWorkspaceTabs.querySelectorAll("[data-slimming-view]")) {
     button.setAttribute("aria-pressed", String(button.dataset.slimmingView === state.slimming.view));
   }
@@ -11113,8 +13177,8 @@ async function loadSlimmingRemovals({ quiet = false } = {}) {
     );
     if (terminal && terminal.id !== state.slimming.removal.lastTerminalRequestID) {
       state.slimming.removal.lastTerminalRequestID = terminal.id;
-      if (terminal.audit?.hiddenAssetIDs?.length) {
-        const hidden = new Set(terminal.audit.hiddenAssetIDs);
+      const hidden = new Set(terminal.audit?.hiddenAssetIDs || []);
+      if (hidden.size) {
         state.slimming.members = state.slimming.members.filter((member) => !hidden.has(member.id));
         state.slimming.selectedMemberIDs = new Set(
           [...state.slimming.selectedMemberIDs].filter((id) => !hidden.has(id))
@@ -11124,6 +13188,7 @@ async function loadSlimmingRemovals({ quiet = false } = {}) {
       if (terminal.phase === "completed") {
         await loadSlimmingWorkspace({ quiet: true });
       }
+      reconcileSlimmingPreviewAfterRemoval(terminal, hidden);
     }
   } catch (error) {
     if (generation === state.slimming.removal.requestGeneration && !quiet) {
@@ -11138,19 +13203,70 @@ async function loadSlimmingRemovals({ quiet = false } = {}) {
   }
 }
 
-async function submitSlimmingRemoval(mode) {
-  const assetIDs = [...state.slimming.selectedMemberIDs];
+function replacementSlimmingPreviewAssetID(previousIDs, remainingIDs, previewAssetID) {
+  if (remainingIDs.includes(previewAssetID)) return previewAssetID;
+  const previousIndex = previousIDs.indexOf(previewAssetID);
+  if (previousIndex < 0) return null;
+  const remaining = new Set(remainingIDs);
+  for (let index = previousIndex + 1; index < previousIDs.length; index += 1) {
+    if (remaining.has(previousIDs[index])) return previousIDs[index];
+  }
+  for (let index = previousIndex - 1; index >= 0; index -= 1) {
+    if (remaining.has(previousIDs[index])) return previousIDs[index];
+  }
+  return null;
+}
+
+function reconcileSlimmingPreviewAfterRemoval(request, hiddenAssetIDs) {
+  const context = state.slimming.removal.previewContexts.get(request.id);
+  if (!context) return;
+  state.slimming.removal.previewContexts.delete(request.id);
+  if (!hiddenAssetIDs.has(context.assetID)) return;
+  const remainingIDs = state.slimming.selectedClusterID === context.clusterID
+    ? state.slimming.members.map((member) => member.id)
+    : [];
+  const replacementID = replacementSlimmingPreviewAssetID(
+    context.memberIDs,
+    remainingIDs,
+    context.assetID
+  );
+  state.slimming.selectedMemberIDs = replacementID ? new Set([replacementID]) : new Set();
+  state.slimming.selectionAnchorID = replacementID;
+  if (state.lightboxContext !== "slimming"
+    || state.lightboxAssetID !== context.assetID
+    || elements.lightbox.classList.contains("hidden")) return;
+  if (!replacementID) {
+    closeLightbox();
+    return;
+  }
+  state.lightboxAssetID = replacementID;
+  const card = elements.slimmingMemberGrid.querySelector(
+    `[data-slimming-member-id="${CSS.escape(replacementID)}"]`
+  );
+  state.lightboxReturnFocus = slimmingMemberMainButton(card) || state.lightboxReturnFocus;
+  renderSlimmingMemberSelection();
+  renderLightbox();
+}
+
+async function submitSlimmingRemoval(
+  mode,
+  { assetIDs: requestedAssetIDs = null, previewAssetID = null } = {}
+) {
+  const memberIDs = new Set(state.slimming.members.map((member) => member.id));
+  const assetIDs = (requestedAssetIDs || [...state.slimming.selectedMemberIDs])
+    .filter((id) => memberIDs.has(id) && !activeSlimmingRemovalPhase(id));
   if (!assetIDs.length || !state.slimming.selectedJobID || !state.slimming.selectedClusterID) {
     toast("请先在一个候选分组中选择项目");
     return;
   }
   const noun = state.slimming.mediaKind === "video" ? "段视频" : "张照片";
+  const targetCopy = previewAssetID ? "当前预览" : "选中的";
   const confirmed = mode === "releaseSourceSpace"
     ? window.confirm(
-      `立即处理选中的 ${assetIDs.length} ${noun}？\n\n文件夹来源会在身份核验后永久删除，无法从 ImageAll 恢复；Apple Photos 项只会进入系统“最近删除”。提交后还需要在 Mac 原生窗口再次确认。`
+      `立即处理${targetCopy} ${assetIDs.length} ${noun}？\n\n文件夹来源会在身份核验后永久删除，无法从 ImageAll 恢复；Apple Photos 项只会进入系统“最近删除”。提交后还需要在 Mac 原生窗口再次确认。`
     )
     : window.confirm(
-      `将选中的 ${assetIDs.length} ${noun}移入可恢复回收站？\n\n文件夹来源会先复制并校验，保留 30 天；Apple Photos 项会进入系统“最近删除”。提交后还需要在 Mac 原生窗口再次确认。`
+      `将${targetCopy} ${assetIDs.length} ${noun}移入可恢复回收站？\n\n文件夹来源会先复制并校验，保留 30 天；Apple Photos 项会进入系统“最近删除”。提交后还需要在 Mac 原生窗口再次确认。`
     );
   if (!confirmed) return;
   state.slimming.removal.submitting = true;
@@ -11172,6 +13288,13 @@ async function submitSlimmingRemoval(mode) {
       request,
       ...state.slimming.removal.requests.filter((item) => item.id !== request.id),
     ];
+    if (previewAssetID) {
+      state.slimming.removal.previewContexts.set(request.id, {
+        assetID: previewAssetID,
+        clusterID: state.slimming.selectedClusterID,
+        memberIDs: state.slimming.members.map((member) => member.id),
+      });
+    }
     toast("已冻结本次选区，请回到 Mac 核对并确认");
   } catch (error) {
     toast(error.message || "批量操作提交失败");
@@ -11367,6 +13490,8 @@ async function loadSlimmingWorkspace({ jobID = null, clusterID = null, quiet = f
   state.slimming.loading = true;
   renderSlimmingWorkspace();
   const query = new URLSearchParams({ mediaKind: state.slimming.mediaKind });
+  query.set("clusterScope", state.slimming.clusterScope);
+  query.set("jobLimit", String(state.slimming.jobLimit));
   query.set("clusterLimit", String(state.slimming.clusterLimit));
   query.set("memberLimit", String(state.slimming.memberLimit));
   if (jobID || state.slimming.selectedJobID) query.set("jobID", jobID || state.slimming.selectedJobID);
@@ -11375,12 +13500,35 @@ async function loadSlimmingWorkspace({ jobID = null, clusterID = null, quiet = f
   }
   try {
     const snapshot = await api(`/v1/library-slimming/workspace?${query}`);
-    if (generation !== state.slimming.requestGeneration) return;
+    if (generation !== state.slimming.requestGeneration) return false;
     state.slimming.jobs = snapshot.jobs || [];
+    state.slimming.totalJobCount = Number(snapshot.totalJobCount ?? state.slimming.jobs.length);
+    // Deep links may cause the Host to grow the prefix through the requested job.
+    // Preserve that authoritative window on later refreshes.
+    state.slimming.jobLimit = Math.max(state.slimming.jobLimit, state.slimming.jobs.length);
     state.slimming.selectedJobID = snapshot.selectedJobID || null;
     state.slimming.clusters = snapshot.clusters || [];
     state.slimming.selectedClusterID = snapshot.selectedClusterID || null;
     state.slimming.members = snapshot.members || [];
+    if (snapshot.clusterScopeCounts) {
+      state.slimming.clusterScopeSupported = true;
+      state.slimming.clusterScopeCounts = {
+        pending: Number(snapshot.clusterScopeCounts.pending || 0),
+        confirmed: Number(snapshot.clusterScopeCounts.confirmed || 0),
+        ignored: Number(snapshot.clusterScopeCounts.ignored || 0),
+      };
+    } else {
+      state.slimming.clusterScopeSupported = false;
+      state.slimming.clusterScope = "pending";
+      const selectedJob = state.slimming.jobs.find(
+        (candidate) => candidate.id === state.slimming.selectedJobID
+      );
+      state.slimming.clusterScopeCounts = {
+        pending: Number(selectedJob?.clusterCount || state.slimming.clusters.length),
+        confirmed: 0,
+        ignored: 0,
+      };
+    }
     state.slimming.pendingAnalysisCount = snapshot.pendingAnalysisCount || 0;
     state.slimming.analyzedAssetCount = snapshot.analyzedAssetCount || 0;
     state.slimming.policyVersion = snapshot.policyVersion || null;
@@ -11391,15 +13539,87 @@ async function loadSlimmingWorkspace({ jobID = null, clusterID = null, quiet = f
     state.slimming.selectionAnchorID = state.slimming.selectedMemberIDs.has(
       previousSelectionAnchorID
     ) ? previousSelectionAnchorID : null;
+    return true;
   } catch (error) {
     if (generation === state.slimming.requestGeneration && !quiet) {
       toast(error.message || "图库瘦身结果载入失败");
     }
+    return false;
   } finally {
     if (generation === state.slimming.requestGeneration) {
       state.slimming.loading = false;
       renderSlimmingWorkspace();
     }
+  }
+}
+
+async function selectSlimmingClusterScope(scope, { focus = true } = {}) {
+  if (!["pending", "confirmed", "ignored"].includes(scope)
+    || state.slimming.loading
+    || (state.slimming.clusterScopeSupported === false && scope !== "pending")) return;
+  if (scope === state.slimming.clusterScope) {
+    if (focus) {
+      elements.slimmingClusterScopes.querySelector(
+        `[data-slimming-cluster-scope="${CSS.escape(scope)}"]`
+      )?.focus({ preventScroll: true });
+    }
+    return;
+  }
+  state.slimming.clusterScope = scope;
+  state.slimming.selectedClusterID = null;
+  state.slimming.selectedMemberIDs.clear();
+  state.slimming.selectionAnchorID = null;
+  state.slimming.clusterLimit = 48;
+  state.slimming.memberLimit = 96;
+  await loadSlimmingWorkspace({ quiet: true });
+  if (focus) {
+    elements.slimmingClusterScopes.querySelector(
+      `[data-slimming-cluster-scope="${CSS.escape(state.slimming.clusterScope)}"]`
+    )?.focus({ preventScroll: true });
+  }
+}
+
+async function setSlimmingClusterReviewDisposition(clusterID, disposition) {
+  if (!state.online
+    || state.slimming.clusterScopeSupported !== true
+    || !state.slimming.selectedJobID
+    || !clusterID
+    || state.slimming.clusterReviewPendingIDs.has(clusterID)) return;
+  const cluster = state.slimming.clusters.find((candidate) => candidate.id === clusterID);
+  if (!cluster) return;
+  state.slimming.clusterReviewPendingIDs.add(clusterID);
+  renderSlimmingClusters();
+  renderSlimmingSelectedClusterReview(cluster);
+  try {
+    await api("/v1/library-slimming/cluster-review", {
+      method: "POST",
+      body: JSON.stringify({
+        operationID: crypto.randomUUID(),
+        jobID: state.slimming.selectedJobID,
+        clusterID,
+        disposition,
+      }),
+    });
+    const removesResolvedHistoricalRecord = disposition == null
+      && cluster.isHistoricalProcessedRecord
+      && Number(cluster.memberCount || 0) < 2;
+    toast(disposition === "confirmed"
+      ? "已收进确认队列，可随时打开重新处理"
+      : disposition === "ignored"
+        ? "已收进忽略队列，可随时打开重新处理"
+        : removesResolvedHistoricalRecord
+          ? "历史记录已移出审阅队列；当前不足两项，无需返回待处理"
+          : "已移回待处理队列");
+    state.slimming.selectedClusterID = null;
+    state.slimming.selectedMemberIDs.clear();
+    state.slimming.selectionAnchorID = null;
+    await loadSlimmingWorkspace({ quiet: true });
+    focusSelectedSlimmingCluster();
+  } catch (error) {
+    toast(error.message || "分组状态保存失败");
+  } finally {
+    state.slimming.clusterReviewPendingIDs.delete(clusterID);
+    renderSlimmingWorkspace();
   }
 }
 
@@ -11829,10 +14049,18 @@ async function submitSlimmingSetup() {
   }
 }
 
-async function applySlimmingJobAction(jobID, action) {
+async function applySlimmingJobAction(jobID, action, { returnFocus = false } = {}) {
   if (!state.online || state.slimming.jobMutatingIDs.has(jobID)) return;
   if (action === "deleteRecord"
-    && !window.confirm("永久删除这条分析任务记录和结果？不会删除任何原始媒体。")) return;
+    && !window.confirm("永久删除这条分析任务记录和结果？不会删除任何原始媒体。")) {
+    if (returnFocus) {
+      restoreOverlayFocus(elements.slimmingJobList.querySelector(
+        `[data-slimming-job-id="${CSS.escape(jobID)}"]`
+      ));
+    }
+    return;
+  }
+  const selectedBefore = state.slimming.selectedJobID;
   state.slimming.jobMutatingIDs.add(jobID);
   renderSlimmingJobs();
   try {
@@ -11841,13 +14069,23 @@ async function applySlimmingJobAction(jobID, action) {
       body: JSON.stringify({ operationID: crypto.randomUUID(), action }),
     });
     toast({ pause: "分析已暂停", resume: "分析已继续", deleteRecord: "分析记录已删除" }[action]);
-    if (action === "deleteRecord" && state.slimming.selectedJobID === jobID) {
+    if (action === "deleteRecord" && selectedBefore === jobID) {
       state.slimming.selectedJobID = null;
       state.slimming.selectedClusterID = null;
+      state.slimming.selectedMemberIDs.clear();
+      state.slimming.selectionAnchorID = null;
+    } else if (action === "deleteRecord") {
+      state.slimming.selectedJobID = selectedBefore;
     }
     await loadSlimmingWorkspace({ quiet: true });
+    if (returnFocus || action === "deleteRecord") focusSelectedSlimmingJob();
   } catch (error) {
     toast(error.message || "分析任务操作失败");
+    if (returnFocus) {
+      restoreOverlayFocus(elements.slimmingJobList.querySelector(
+        `[data-slimming-job-id="${CSS.escape(jobID)}"]`
+      ));
+    }
   } finally {
     state.slimming.jobMutatingIDs.delete(jobID);
     renderSlimmingJobs();
@@ -11947,8 +14185,9 @@ function deferReviewSelection() {
   }
   if (nextIndex < 0) nextIndex = 0;
   selectReviewIndex(nextIndex);
-  elements.reviewGrid.querySelector(`[data-review-index="${nextIndex}"]`)
-    ?.focus({ preventScroll: true });
+  reviewCardMainButton(
+    elements.reviewGrid.querySelector(`[data-review-index="${nextIndex}"]`)
+  )?.focus({ preventScroll: true });
   toast(selectedIDs.size > 1
     ? `已跳过 ${mediaItemCountText(selectedIDs.size)}，没有修改标签决定`
     : "已跳到下一项，没有修改标签决定");
@@ -12081,6 +14320,8 @@ function renderLightbox() {
     state.lightboxContext !== "review"
   );
   elements.lightbox.classList.toggle("reviewing", state.lightboxContext === "review");
+  renderLightboxFavorite();
+  if (!favoriteStateForAssetID(item.id)) void loadLightboxFavorite(item.id);
   syncReviewControls();
 }
 
@@ -12133,7 +14374,7 @@ async function syncLibraryLightboxSelection(assetID) {
   renderSelectionBar();
   const card = elements.assetGrid.querySelector(`[data-asset-id="${CSS.escape(assetID)}"]`);
   card?.scrollIntoView({ block: "nearest", inline: "nearest" });
-  if (card) state.lightboxReturnFocus = card;
+  if (card) state.lightboxReturnFocus = assetCardMainButton(card);
   if (state.selectionMode) {
     scheduleSelectionAggregate();
     return;
@@ -12226,7 +14467,7 @@ async function selectLibraryAssetByIndex(index, { focusGrid = false } = {}) {
   }
   const card = elements.assetGrid.querySelector(`[data-asset-id="${assetID}"]`);
   card?.scrollIntoView({ block: "nearest", inline: "nearest" });
-  if (focusGrid) card?.focus({ preventScroll: true });
+  if (focusGrid) assetCardMainButton(card)?.focus({ preventScroll: true });
   if (!state.selectionMode) {
     await loadInspector(assetID, {
       reveal: true,
@@ -12275,6 +14516,7 @@ async function loadWorkspace() {
     embeddingPreparation,
     sampleSuggestions,
     tagLibrarySuggestions,
+    librarySuggestions,
   ] = await Promise.all([
     api("/v1/sources"),
     api("/v1/tags"),
@@ -12284,6 +14526,9 @@ async function loadWorkspace() {
     api(`/v1/embedding-preparation?${new URLSearchParams({ mediaKind: state.mediaKind })}`),
     api(`/v1/sample-suggestions?${new URLSearchParams({ mediaKind: state.mediaKind })}`),
     api(`/v1/tag-library-suggestions?${new URLSearchParams({ mediaKind: state.mediaKind })}`),
+    supportsLibrarySuggestions()
+      ? api(`/v1/library-suggestions?${new URLSearchParams({ mediaKind: state.mediaKind })}`)
+      : Promise.resolve(null),
   ]);
   if (generation !== state.workspaceGeneration) return;
   state.sources = sources;
@@ -12301,6 +14546,7 @@ async function loadWorkspace() {
   state.sampleSuggestions.maximumSampleCount = sampleSuggestions.maximumSampleCount || 500;
   state.sampleSuggestions.activities = sampleSuggestions.activities || [];
   state.tagLibrarySuggestions.snapshot = tagLibrarySuggestions;
+  state.librarySuggestions.snapshot = librarySuggestions;
   elements.hostVersion.textContent = `Mac Host ${capabilities.hostAppVersion}`;
   elements.settingsButton.disabled = !supportsGeneralSettings();
   elements.settingsButton.title = supportsGeneralSettings()
@@ -12309,6 +14555,7 @@ async function loadWorkspace() {
   if (supportsGeneralSettings()) await loadGeneralSettings({ quiet: true });
   if (generation !== state.workspaceGeneration) return;
   renderSources();
+  renderReviewSourceFilter();
   renderTagSelects();
   renderJobs();
   renderSourcePrewarmStatus();
@@ -12324,6 +14571,7 @@ async function loadWorkspace() {
   connectEvents();
   scheduleEmbeddingPreparationPoll();
   scheduleSampleSuggestionPoll();
+  scheduleLibrarySuggestionPoll();
   scheduleTagLibrarySuggestionPoll();
   scheduleSourceManagementPoll();
 }
@@ -12409,6 +14657,9 @@ async function refreshWorkspace({ quiet = false, kinds = null } = {}) {
           state.selectedDetail = null;
         }
         renderSources();
+        sanitizeReviewSourceFilter();
+        renderReviewSourceFilter();
+        renderReviewLocalModelStatus();
         updateLibraryTitle();
         renderLibraryEmptyState();
       }
@@ -12430,6 +14681,9 @@ async function refreshWorkspace({ quiet = false, kinds = null } = {}) {
       if (jobsChanged) {
         state.jobs = jobs;
         renderJobs();
+        if (supportsLibrarySuggestions()) {
+          await loadLibrarySuggestions({ quiet: true });
+        }
       }
 
       let assetsChanged = false;
@@ -12458,7 +14712,10 @@ async function refreshWorkspace({ quiet = false, kinds = null } = {}) {
       }
       if (
         !elements.reviewWorkspace.classList.contains("hidden")
-        && (batch.has("reviewChanged") || batch.has("assetsChanged") || batch.has("tagsChanged"))
+        && (batch.has("reviewChanged")
+          || batch.has("assetsChanged")
+          || batch.has("tagsChanged")
+          || sourcesChanged)
       ) {
         await loadReviewOverview({ throwOnError: true });
         if (state.review.mode === "queue") {
@@ -12751,6 +15008,7 @@ function resetWorkspaceSessionState() {
   state.assets = [];
   state.nextCursor = null;
   state.selectedSourceID = "";
+  state.libraryScope = "all";
   state.selectedAssetID = null;
   state.selectedDetail = null;
   state.searchText = "";
@@ -12782,6 +15040,13 @@ function resetWorkspaceSessionState() {
   state.sampleSuggestions.cancelling = false;
   state.sampleSuggestions.requestGeneration += 1;
   state.sampleSuggestions.seenTerminalOperationIDs.clear();
+  clearTimeout(state.librarySuggestions.pollTimer);
+  state.librarySuggestions.pollTimer = null;
+  state.librarySuggestions.snapshot = null;
+  state.librarySuggestions.loading = false;
+  state.librarySuggestions.launchingTrack = null;
+  state.librarySuggestions.requestGeneration += 1;
+  state.librarySuggestions.terminalJobIDs.clear();
   clearTimeout(state.tagLibrarySuggestions.pollTimer);
   state.tagLibrarySuggestions.pollTimer = null;
   state.tagLibrarySuggestions.snapshot = null;
@@ -12799,6 +15064,8 @@ function resetWorkspaceSessionState() {
   state.selectionAggregates = [];
   state.aggregateGeneration += 1;
   state.tagMutating = false;
+  state.favoriteMutating = false;
+  state.favoriteRetrying = false;
   state.tagManagementMutating = false;
   state.openingOriginal = false;
   state.undo.tag = { id: null, operationID: null, mutating: false };
@@ -12807,6 +15074,8 @@ function resetWorkspaceSessionState() {
   state.jobMutatingIDs.clear();
   state.review.items = [];
   state.review.mode = "overview";
+  state.review.sourceFilterIDs = null;
+  state.review.sourceFilterFocusSelector = null;
   state.review.overview = [];
   state.review.overviewTotal = 0;
   state.review.overviewLoading = false;
@@ -12820,6 +15089,8 @@ function resetWorkspaceSessionState() {
   state.review.mutating = false;
   state.review.requestGeneration += 1;
   state.review.loadedScopeKey = null;
+  state.review.expandedControlTagIDs.clear();
+  state.review.pendingThresholdFocus = null;
   state.training.mediaKind = "image";
   state.training.method = "";
   state.training.runs = [];
@@ -12849,6 +15120,11 @@ function resetWorkspaceSessionState() {
   state.galleryOverview.requestGeneration += 1;
   state.galleryOverviewReturnFocus = null;
   state.lightboxReturnFocus = null;
+  state.lightboxContext = null;
+  state.lightboxAssetID = null;
+  state.lightboxFavoriteRequestGeneration += 1;
+  state.lightboxFavoriteLoadingAssetID = null;
+  state.lightboxFavoriteStates.clear();
   state.pendingRefreshKinds.clear();
   state.pendingInspectorRefresh = false;
   state.refreshRetryAttempt = 0;
@@ -12879,6 +15155,7 @@ function resetWorkspaceSessionState() {
   elements.galleryOverviewWorkspace.classList.add("hidden");
   elements.lightbox.classList.add("hidden");
   elements.lightbox.classList.remove("reviewing");
+  renderLightboxFavorite();
   elements.inspector.classList.remove("open");
   syncSelectionModeControls();
   renderMediaKindTabs();
@@ -12895,6 +15172,7 @@ async function logout() {
 
 async function selectSource(sourceID) {
   if (state.selectionMode) setSelectionMode(false);
+  state.libraryScope = "all";
   state.selectedSourceID = sourceID;
   state.selectedAssetID = null;
   state.selectedDetail = null;
@@ -12905,11 +15183,6 @@ async function selectSource(sourceID) {
   updateLibraryTitle();
   elements.sourceSidebar.classList.remove("open");
   await loadAssets();
-  if (!elements.reviewWorkspace.classList.contains("hidden")
-    && elements.reviewCurrentSourceOnly.checked) {
-    await loadReviewOverview();
-    if (state.review.mode === "queue") await loadReviewQueue();
-  }
 }
 
 function togglePopover(popover) {
@@ -12940,7 +15213,7 @@ function isInteractiveControlTarget(target) {
   const control = target.closest(
     "button, a, [role=\"button\"], [role=\"option\"], [role=\"menuitem\"]"
   );
-  return Boolean(control && !control.matches(".asset-card, .review-card"));
+  return Boolean(control && !control.matches(".asset-card-main, .review-card-main"));
 }
 
 function availableCommands() {
@@ -12962,15 +15235,25 @@ function availableCommands() {
     { id: "openGalleryOverview", icon: "▥", title: "打开图库总览", hint: "" },
     { id: "openWorldMap", icon: "◎", title: "打开世界地图", hint: "" },
     { id: "openReview", icon: "✦", title: "打开待审核建议", hint: "" },
+    ...(state.librarySuggestions.snapshot?.standardAvailable ? [{
+      id: "generateStandardLibrarySuggestions",
+      icon: "✦",
+      title: "使用标准模型扫描全库",
+      hint: "进入审核",
+      disabled: !state.online || activeLibrarySuggestionJobs().length > 0,
+    }] : []),
     {
       id: "generateLibrarySuggestions",
       icon: "✦",
-      title: `抽 ${state.sampleSuggestions.maximumSampleCount} 张生成个人建议`,
+      title: state.librarySuggestions.snapshot?.personalMode === "fullLibrary"
+        ? "使用个人模型扫描全库"
+        : `抽 ${state.sampleSuggestions.maximumSampleCount} 张生成个人建议`,
       hint: "进入审核",
-      disabled: !state.online
-        || state.mediaKind !== "image"
-        || !state.sampleSuggestions.isAvailable
-        || Boolean(activeSampleSuggestion()),
+      disabled: !state.online || state.mediaKind !== "image" || (
+        state.librarySuggestions.snapshot?.personalMode === "fullLibrary"
+          ? activeLibrarySuggestionJobs().length > 0
+          : (!state.sampleSuggestions.isAvailable || Boolean(activeSampleSuggestion()))
+      ),
     },
     { id: "openTraining", icon: "⌁", title: "打开训练工程", hint: "" },
     {
@@ -13011,6 +15294,24 @@ function availableCommands() {
     { id: "refresh", icon: "↻", title: "刷新图库", hint: "" },
     { id: "shortcuts", icon: "?", title: "查看快捷键", hint: "" },
   ];
+  if (supportsFavorites()) {
+    commands.splice(1, 0, {
+      id: "showFavorites",
+      icon: "♥",
+      title: `显示红心收藏${state.mediaKind === "video" ? "视频" : "照片"}`,
+      hint: "",
+    });
+  }
+  const favoriteSyncCounts = visibleFavoriteSyncCounts();
+  if (supportsFavorites() && favoriteSyncCounts.pending + favoriteSyncCounts.failed > 0) {
+    commands.splice(2, 0, {
+      id: "retryFavoriteSync",
+      icon: favoriteSyncCounts.failed > 0 ? "♥!" : "↻♥",
+      title: "重试红心同步",
+      hint: `待同步 ${favoriteSyncCounts.pending} · 失败 ${favoriteSyncCounts.failed}`,
+      disabled: !state.online || state.favoriteMutating || state.favoriteRetrying,
+    });
+  }
   if (state.undo.review.id) {
     commands.splice(8, 0, {
       id: "undoReview",
@@ -13023,6 +15324,20 @@ function availableCommands() {
   if (currentTagTargetAssetIDs().length) {
     commands.splice(5, 0,
       { id: "previewSelection", icon: "⛶", title: `预览所选${currentMediaNoun()}`, hint: "Space" },
+      {
+        id: "favoriteSelection",
+        icon: "♥",
+        title: `将所选${currentMediaNoun()}加入红心`,
+        hint: "",
+        disabled: !supportsFavorites() || !state.online || state.favoriteMutating,
+      },
+      {
+        id: "unfavoriteSelection",
+        icon: "♡",
+        title: `取消所选${currentMediaNoun()}的红心`,
+        hint: "",
+        disabled: !supportsFavorites() || !state.online || state.favoriteMutating,
+      },
       { id: "newTag", icon: "＋", title: `为所选${currentMediaNoun()}新增标签`, hint: "" },
       {
         id: "prepareSelectedFeatures",
@@ -13214,6 +15529,12 @@ async function executeCommand(commandID) {
     renderTagNavigation();
     await selectSource("");
     break;
+  case "showFavorites":
+    await applyFavoritesFilter();
+    break;
+  case "retryFavoriteSync":
+    await retryFavoriteSync();
+    break;
   case "showUntagged":
     if (state.filters.tagPresence !== "untagged") await applyUntaggedFilter();
     break;
@@ -13226,6 +15547,12 @@ async function executeCommand(commandID) {
     break;
   case "selectAll":
     selectAllLoadedAssets();
+    break;
+  case "favoriteSelection":
+    await applyFavoriteMutation(currentTagTargetAssetIDs(), true);
+    break;
+  case "unfavoriteSelection":
+    await applyFavoriteMutation(currentTagTargetAssetIDs(), false);
     break;
   case "undoTag":
     await undoLatestDecision("tag");
@@ -13250,7 +15577,16 @@ async function executeCommand(commandID) {
     await generateSampleSuggestions({ useSelection: true });
     break;
   case "generateLibrarySuggestions":
-    await generateSampleSuggestions();
+    if (state.librarySuggestions.snapshot?.personalMode === "fullLibrary") {
+      await openReviewWorkspace();
+      await submitLibrarySuggestions("personal");
+    } else {
+      await generateSampleSuggestions();
+    }
+    break;
+  case "generateStandardLibrarySuggestions":
+    await openReviewWorkspace();
+    await submitLibrarySuggestions("standard");
     break;
   case "findSimilarSelection":
     await findSimilarFromSelection();
@@ -13330,6 +15666,10 @@ function hideContextMenu() {
   elements.tagContextMenu.classList.add("hidden");
   state.contextTagID = null;
   state.contextTagGroupID = null;
+  elements.slimmingMemberContextMenu.classList.add("hidden");
+  state.slimming.contextMemberID = null;
+  elements.slimmingJobContextMenu.classList.add("hidden");
+  state.slimming.contextJobID = null;
 }
 
 function hideContextMenus() {
@@ -13347,8 +15687,88 @@ function positionContextMenu(menu, clientX, clientY) {
 function showAssetContextMenu(event, assetID) {
   hideContextMenus();
   state.contextAssetID = assetID;
+  const favorite = favoriteStateForAssetID(assetID);
+  elements.assetFavoriteContextAction.textContent = favorite?.isFavorite
+    ? "取消红心"
+    : "加入红心";
+  elements.assetFavoriteContextAction.classList.toggle("hidden", !supportsFavorites());
+  elements.assetFavoriteContextAction.disabled = !state.online || state.favoriteMutating;
+  elements.assetFavoriteContextAction.dataset.favorite = String(favorite?.isFavorite === true);
   elements.assetContextMenu.classList.remove("hidden");
   positionContextMenu(elements.assetContextMenu, event.clientX, event.clientY);
+}
+
+function showSlimmingMemberContextMenu(clientX, clientY, memberID) {
+  const member = state.slimming.members.find((candidate) => candidate.id === memberID);
+  if (!member || activeSlimmingRemovalPhase(memberID)) return;
+  hideContextMenus();
+  state.slimming.contextMemberID = memberID;
+  const usesSelection = state.slimming.selectedMemberIDs.has(memberID);
+  const actionCount = usesSelection ? state.slimming.selectedMemberIDs.size : 1;
+  const favorite = favoriteStateForAssetID(memberID);
+  const removalPhase = currentSlimmingRemovalRequest()?.phase;
+  const identicalPhase = currentSlimmingIdenticalCleanupRequest()?.phase;
+  const removalUnavailable = state.slimming.removal.submitting
+    || ["awaitingMac", "running"].includes(removalPhase)
+    || ["awaitingMac", "running"].includes(identicalPhase);
+
+  elements.slimmingMemberContextMenuTitle.textContent = member.fileName || "未命名项目";
+  elements.slimmingMemberContextMenuActions.replaceChildren();
+  const actions = [
+    {
+      action: "favorite",
+      label: favorite?.isFavorite ? "取消红心" : "加入红心",
+      disabled: !supportsFavorites() || !favorite || state.favoriteMutating,
+    },
+    {
+      action: "recoverableRecycle",
+      label: `移入可恢复回收站 (${actionCount})`,
+      disabled: removalUnavailable,
+    },
+    {
+      action: "releaseSourceSpace",
+      label: `快速删除并释放空间 (${actionCount})`,
+      disabled: removalUnavailable,
+      destructive: true,
+    },
+  ];
+  for (const item of actions) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.setAttribute("role", "menuitem");
+    button.dataset.slimmingMemberContextAction = item.action;
+    button.textContent = item.label;
+    button.disabled = !state.online || item.disabled;
+    button.classList.toggle("danger", Boolean(item.destructive));
+    elements.slimmingMemberContextMenuActions.append(button);
+  }
+  elements.slimmingMemberContextMenu.classList.remove("hidden");
+  positionContextMenu(elements.slimmingMemberContextMenu, clientX, clientY);
+  restoreOverlayFocus(
+    elements.slimmingMemberContextMenuActions.querySelector("button:not(:disabled)")
+  );
+}
+
+function showSlimmingJobContextMenu(clientX, clientY, jobID) {
+  const job = state.slimming.jobs.find((candidate) => candidate.id === jobID);
+  if (!job || job.state === "running") return;
+  hideContextMenus();
+  state.slimming.contextJobID = jobID;
+  elements.slimmingJobContextMenuTitle.textContent =
+    `${slimmingModeText(job.mode)} · ${slimmingJobStateText(job)}`;
+  elements.slimmingJobContextMenuActions.replaceChildren();
+  const remove = document.createElement("button");
+  remove.type = "button";
+  remove.setAttribute("role", "menuitem");
+  remove.className = "danger";
+  remove.dataset.slimmingJobContextAction = "deleteRecord";
+  remove.textContent = "删除记录";
+  remove.title = "永久删除这条分析任务记录和结果；不会删除任何原始媒体";
+  remove.disabled = !state.online || state.slimming.jobMutatingIDs.has(jobID);
+  elements.slimmingJobContextMenuActions.append(remove);
+  elements.slimmingJobContextMenu.classList.remove("hidden");
+  positionContextMenu(elements.slimmingJobContextMenu, clientX, clientY);
+  restoreOverlayFocus(remove);
 }
 
 function showSourceContextMenu(clientX, clientY, sourceID) {
@@ -13613,6 +16033,87 @@ function finishReviewMarqueeSelection(event = null) {
     card.classList.remove("marquee-candidate");
   });
   if (moved) renderReviewSelectionState();
+}
+
+function startSlimmingMarqueeSelection(event) {
+  if (state.slimming.view !== "analysis"
+    || elements.slimmingWorkspace.classList.contains("hidden")
+    || event.button !== 0
+    || event.target.closest(
+      ".slimming-member-card, button, input, select, textarea, a, [role=\"button\"]"
+    )) return;
+  const additive = event.metaKey || event.ctrlKey;
+  state.slimming.marquee = {
+    pointerID: event.pointerId,
+    startX: event.clientX,
+    startY: event.clientY,
+    base: additive ? new Set(state.slimming.selectedMemberIDs) : new Set(),
+    moved: false,
+  };
+  try {
+    elements.slimmingMemberGrid.setPointerCapture(event.pointerId);
+  } catch {
+    // Document-level listeners remain the fallback when pointer capture is unavailable.
+  }
+}
+
+function updateSlimmingMarqueeSelection(event) {
+  const marquee = state.slimming.marquee;
+  if (!marquee || event.pointerId !== marquee.pointerID) return;
+  const dx = event.clientX - marquee.startX;
+  const dy = event.clientY - marquee.startY;
+  if (!marquee.moved && Math.hypot(dx, dy) < 5) return;
+  if (!marquee.moved) {
+    marquee.moved = true;
+    elements.slimmingMarqueeSelection.classList.remove("hidden");
+    elements.slimmingMemberGrid.classList.add("marquee-active");
+  }
+  event.preventDefault();
+  const left = Math.min(marquee.startX, event.clientX);
+  const top = Math.min(marquee.startY, event.clientY);
+  const right = Math.max(marquee.startX, event.clientX);
+  const bottom = Math.max(marquee.startY, event.clientY);
+  Object.assign(elements.slimmingMarqueeSelection.style, {
+    left: `${left}px`,
+    top: `${top}px`,
+    width: `${right - left}px`,
+    height: `${bottom - top}px`,
+  });
+  const selected = new Set(marquee.base);
+  let lastIntersectedID = null;
+  for (const card of elements.slimmingMemberGrid.querySelectorAll(
+    ":scope > .slimming-member-card"
+  )) {
+    const rect = card.getBoundingClientRect();
+    const intersects = rect.right >= left && rect.left <= right
+      && rect.bottom >= top && rect.top <= bottom;
+    card.classList.toggle("marquee-candidate", intersects);
+    if (!intersects || card.classList.contains("pending-removal")) continue;
+    selected.add(card.dataset.slimmingMemberId);
+    lastIntersectedID = card.dataset.slimmingMemberId;
+  }
+  state.slimming.selectedMemberIDs = selected;
+  state.slimming.selectionAnchorID = lastIntersectedID
+    || [...selected].at(-1)
+    || null;
+  renderSlimmingMemberSelection({ renderInspector: false });
+}
+
+function finishSlimmingMarqueeSelection(event = null) {
+  const marquee = state.slimming.marquee;
+  if (event?.pointerId != null && event.pointerId !== marquee?.pointerID) return;
+  const moved = marquee?.moved;
+  const pointerID = marquee?.pointerID;
+  state.slimming.marquee = null;
+  if (pointerID != null && elements.slimmingMemberGrid.hasPointerCapture(pointerID)) {
+    elements.slimmingMemberGrid.releasePointerCapture(pointerID);
+  }
+  elements.slimmingMarqueeSelection.classList.add("hidden");
+  elements.slimmingMemberGrid.classList.remove("marquee-active");
+  elements.slimmingMemberGrid.querySelectorAll(".marquee-candidate").forEach((card) => {
+    card.classList.remove("marquee-candidate");
+  });
+  if (moved) renderSlimmingMemberSelection();
 }
 
 async function autoPaginateIfNeeded() {
@@ -13985,6 +16486,8 @@ function bindEvents() {
     moveDialogButtonFocus(event, elements.storageDialog);
   });
   document.querySelector('[data-source-id=""]').addEventListener("click", () => selectSource(""));
+  elements.favoritesNavigationButton.addEventListener("click", applyFavoritesFilter);
+  elements.retryFavoriteSyncButton.addEventListener("click", retryFavoriteSync);
   elements.untaggedNavigationButton.addEventListener("click", applyUntaggedFilter);
   elements.galleryOverviewNavigationButton.addEventListener("click", openGalleryOverviewWorkspace);
   elements.worldMapNavigationButton.addEventListener("click", openWorldMapWorkspace);
@@ -14036,6 +16539,10 @@ function bindEvents() {
     const button = event.target.closest("[data-gallery-overview-tag-id]");
     if (button) drillDownFromGalleryOverview({ tagID: button.dataset.galleryOverviewTagId });
   });
+  elements.galleryOverviewFavoritesMetric.addEventListener("click", async () => {
+    closeGalleryOverviewWorkspace();
+    await applyFavoritesFilter();
+  });
   elements.sidebarNewTagButton.addEventListener("click", openNewTagDialog);
   elements.sidebarInstallPresetTagsButton.addEventListener("click", () => {
     installPresetTags(elements.sidebarInstallPresetTagsButton);
@@ -14080,6 +16587,13 @@ function bindEvents() {
     if (button) switchMediaKind(button.dataset.mediaKind);
   });
   elements.assetGrid.addEventListener("click", (event) => {
+    const favoriteButton = event.target.closest("[data-asset-card-favorite]");
+    if (favoriteButton) {
+      event.preventDefault();
+      event.stopPropagation();
+      void toggleAssetCardFavorite(favoriteButton);
+      return;
+    }
     const card = event.target.closest("[data-asset-id]");
     if (!card) return;
     handleAssetSelection(card.dataset.assetId, {
@@ -14088,6 +16602,7 @@ function bindEvents() {
     });
   });
   elements.assetGrid.addEventListener("dblclick", (event) => {
+    if (event.target.closest("[data-asset-card-favorite]")) return;
     const card = event.target.closest("[data-asset-id]");
     if (card && !state.selectionMode) openLightbox("library", card.dataset.assetId);
   });
@@ -14115,16 +16630,21 @@ function bindEvents() {
   }, { passive: true });
   elements.libraryScroll.addEventListener("pointerdown", startMarqueeSelection);
   elements.reviewQueuePane.addEventListener("pointerdown", startReviewMarqueeSelection);
+  elements.slimmingMemberGrid.addEventListener("pointerdown", startSlimmingMarqueeSelection);
   document.addEventListener("pointermove", updateMarqueeSelection);
   document.addEventListener("pointermove", updateReviewMarqueeSelection);
+  document.addEventListener("pointermove", updateSlimmingMarqueeSelection);
   document.addEventListener("pointerup", finishMarqueeSelection);
   document.addEventListener("pointerup", finishReviewMarqueeSelection);
+  document.addEventListener("pointerup", finishSlimmingMarqueeSelection);
   document.addEventListener("pointercancel", finishMarqueeSelection);
   document.addEventListener("pointercancel", finishReviewMarqueeSelection);
+  document.addEventListener("pointercancel", finishSlimmingMarqueeSelection);
   globalThis.addEventListener("blur", () => {
     stopAssetHoverVideo();
     finishMarqueeSelection();
     finishReviewMarqueeSelection();
+    finishSlimmingMarqueeSelection();
   });
   setupInspectorTagInteractions(elements.inspectorTags, "single", false);
   setupInspectorTagInteractions(elements.selectionInspectorTags, "selection", true);
@@ -14241,7 +16761,17 @@ function bindEvents() {
     renderLayoutPreferences();
     persistWorkspacePreferences();
   });
+  elements.slimmingGridDensitySlider.addEventListener("input", () => {
+    state.layout.density = Number(elements.slimmingGridDensitySlider.value);
+    renderLayoutPreferences();
+    persistWorkspacePreferences();
+  });
   elements.thumbnailAspectButton.addEventListener("click", () => {
+    state.layout.aspectMode = state.layout.aspectMode === "original" ? "square" : "original";
+    renderLayoutPreferences();
+    persistWorkspacePreferences();
+  });
+  elements.slimmingThumbnailAspectButton.addEventListener("click", () => {
     state.layout.aspectMode = state.layout.aspectMode === "original" ? "square" : "original";
     renderLayoutPreferences();
     persistWorkspacePreferences();
@@ -14262,6 +16792,30 @@ function bindEvents() {
   elements.inspectorPreviousButton.addEventListener("click", () => navigateLibrarySelection(-1));
   elements.inspectorNextButton.addEventListener("click", () => navigateLibrarySelection(1));
   elements.openOriginalButton.addEventListener("click", openSelectedOriginalOnMac);
+  elements.inspectorFavoriteButton.addEventListener("click", () => {
+    const assetID = state.selectedDetail?.assetID;
+    if (!assetID) return;
+    applyFavoriteMutation(
+      [assetID],
+      favoriteStateForAssetID(assetID)?.isFavorite !== true
+    );
+  });
+  for (const button of [
+    elements.favoriteSelectedButton,
+    elements.selectionInspectorFavoriteButton,
+  ]) {
+    button.addEventListener("click", () => {
+      applyFavoriteMutation([...state.selectedAssetIDs], true);
+    });
+  }
+  for (const button of [
+    elements.unfavoriteSelectedButton,
+    elements.selectionInspectorUnfavoriteButton,
+  ]) {
+    button.addEventListener("click", () => {
+      applyFavoriteMutation([...state.selectedAssetIDs], false);
+    });
+  }
 
   elements.filterButton.addEventListener("click", () => {
     togglePopover(elements.filterPopover);
@@ -14541,6 +17095,13 @@ function bindEvents() {
   });
   elements.closeWorldMapDetailButton.addEventListener("click", clearWorldMapSelection);
   elements.worldMapPhotoStrip.addEventListener("click", (event) => {
+    const favoriteButton = event.target.closest("[data-world-map-photo-favorite]");
+    if (favoriteButton) {
+      event.preventDefault();
+      event.stopPropagation();
+      void toggleWorldMapPhotoFavorite(favoriteButton);
+      return;
+    }
     const button = event.target.closest("[data-world-map-asset-id]");
     if (button) openLightbox("worldMap", button.dataset.worldMapAssetId);
   });
@@ -14665,12 +17226,25 @@ function bindEvents() {
   elements.slimmingReleaseSpaceButton.addEventListener("click", () => {
     submitSlimmingRemoval("releaseSourceSpace");
   });
+  elements.slimmingNavigatorButton.addEventListener("click", toggleSlimmingNavigator);
   elements.slimmingLoadMoreClustersButton.addEventListener("click", () => {
     state.slimming.clusterLimit = Math.min(
       SLIMMING_CLUSTER_LIMIT_MAX,
       state.slimming.clusterLimit + 48
     );
     loadSlimmingWorkspace({ quiet: true });
+  });
+  elements.slimmingLoadMoreJobsButton.addEventListener("click", async () => {
+    const scrollTop = elements.slimmingJobList.parentElement?.scrollTop || 0;
+    await expandSlimmingJobWindow();
+    if (elements.slimmingJobList.parentElement) {
+      elements.slimmingJobList.parentElement.scrollTop = scrollTop;
+    }
+    if (!elements.slimmingLoadMoreJobsButton.classList.contains("hidden")) {
+      elements.slimmingLoadMoreJobsButton.focus({ preventScroll: true });
+    } else {
+      focusSelectedSlimmingJob();
+    }
   });
   elements.slimmingLoadMoreMembersButton.addEventListener("click", () => {
     state.slimming.memberLimit = Math.min(
@@ -14682,6 +17256,31 @@ function bindEvents() {
   elements.slimmingRecycleLoadMoreButton.addEventListener("click", () => {
     state.slimming.recycle.limit = Math.min(5000, state.slimming.recycle.limit + 60);
     loadSlimmingRecycle({ quiet: true });
+  });
+  elements.slimmingRecycleScopes.addEventListener("click", async (event) => {
+    const button = event.target.closest("[data-slimming-recycle-scope]");
+    if (!button || button.disabled
+      || button.dataset.slimmingRecycleScope === state.slimming.recycle.scope) return;
+    state.slimming.recycle.scope = button.dataset.slimmingRecycleScope;
+    state.slimming.recycle.limit = 60;
+    await loadSlimmingRecycle();
+    elements.slimmingRecycleBody.scrollTop = 0;
+    button.focus({ preventScroll: true });
+  });
+  elements.slimmingRecycleScopes.addEventListener("keydown", (event) => {
+    if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+    const buttons = [
+      ...elements.slimmingRecycleScopes.querySelectorAll(
+        "[data-slimming-recycle-scope]:not(:disabled)"
+      ),
+    ];
+    if (!buttons.length) return;
+    event.preventDefault();
+    const current = Math.max(0, buttons.indexOf(document.activeElement));
+    const next = event.key === "Home" ? 0
+      : event.key === "End" ? buttons.length - 1
+        : (current + (event.key === "ArrowLeft" ? -1 : 1) + buttons.length) % buttons.length;
+    buttons[next].click();
   });
   elements.slimmingRecycleSourceSelect.addEventListener("change", () => {
     state.slimming.recycle.sourceID = elements.slimmingRecycleSourceSelect.value;
@@ -14695,6 +17294,11 @@ function bindEvents() {
     state.slimming.recycle.searchTimer = setTimeout(() => loadSlimmingRecycle({ quiet: true }), 240);
   });
   elements.slimmingRecycleList.addEventListener("click", (event) => {
+    const favorite = event.target.closest("[data-slimming-recycle-favorite]");
+    if (favorite) {
+      void toggleSlimmingRecycleFavorite(favorite);
+      return;
+    }
     const info = event.target.closest("[data-slimming-recycle-info='photos']");
     if (info) {
       toast("请在系统“照片”App 的“最近删除”中恢复；恢复后 ImageAll 会自动对账。永久删除也由系统管理。");
@@ -14709,7 +17313,10 @@ function bindEvents() {
   elements.slimmingMediaKindTabs.addEventListener("click", (event) => {
     const button = event.target.closest("[data-slimming-media-kind]");
     if (!button || button.dataset.slimmingMediaKind === state.slimming.mediaKind) return;
+    finishSlimmingMarqueeSelection();
     state.slimming.mediaKind = button.dataset.slimmingMediaKind;
+    state.slimming.jobLimit = SLIMMING_JOB_PAGE_SIZE;
+    state.slimming.totalJobCount = 0;
     state.slimming.selectedJobID = null;
     state.slimming.selectedClusterID = null;
     state.slimming.selectedMemberIDs.clear();
@@ -14741,9 +17348,26 @@ function bindEvents() {
     await loadSlimmingWorkspace({ jobID: row.dataset.slimmingJobId });
     focusSelectedSlimmingJob();
   });
+  elements.slimmingJobList.addEventListener("contextmenu", (event) => {
+    const row = event.target.closest("[data-slimming-job-id]");
+    if (!row) return;
+    event.preventDefault();
+    showSlimmingJobContextMenu(event.clientX, event.clientY, row.dataset.slimmingJobId);
+  });
   elements.previousSlimmingJobButton.addEventListener("click", () => navigateSlimmingJob(-1));
   elements.nextSlimmingJobButton.addEventListener("click", () => navigateSlimmingJob(1));
   elements.slimmingJobList.addEventListener("keydown", (event) => {
+    const row = event.target.closest("[data-slimming-job-id]");
+    if (row && (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10"))) {
+      event.preventDefault();
+      const rect = row.getBoundingClientRect();
+      showSlimmingJobContextMenu(
+        rect.left + Math.min(28, rect.width),
+        rect.top + Math.min(34, rect.height),
+        row.dataset.slimmingJobId
+      );
+      return;
+    }
     const navigation = {
       ArrowUp: -1,
       ArrowLeft: -1,
@@ -14756,19 +17380,85 @@ function bindEvents() {
     event.preventDefault();
     navigateSlimmingJob(navigation);
   });
+  elements.slimmingClusterScopes.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-slimming-cluster-scope]");
+    if (button && !button.disabled) {
+      void selectSlimmingClusterScope(button.dataset.slimmingClusterScope);
+    }
+  });
+  elements.slimmingClusterScopes.addEventListener("keydown", (event) => {
+    if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) {
+      return;
+    }
+    const buttons = [...elements.slimmingClusterScopes.querySelectorAll(
+      "[data-slimming-cluster-scope]:not(:disabled)"
+    )];
+    if (!buttons.length) return;
+    event.preventDefault();
+    const current = Math.max(0, buttons.indexOf(document.activeElement));
+    const backwards = event.key === "ArrowLeft" || event.key === "ArrowUp";
+    const next = event.key === "Home" ? 0
+      : event.key === "End" ? buttons.length - 1
+        : (current + (backwards ? -1 : 1) + buttons.length) % buttons.length;
+    void selectSlimmingClusterScope(buttons[next].dataset.slimmingClusterScope);
+  });
   elements.slimmingClusterList.addEventListener("click", (event) => {
+    const review = event.target.closest("[data-slimming-cluster-review]");
+    if (review && !review.disabled) {
+      void setSlimmingClusterReviewDisposition(
+        review.dataset.slimmingClusterReviewId,
+        review.dataset.slimmingClusterReview
+      );
+      return;
+    }
     const row = event.target.closest("[data-slimming-cluster-id]");
     if (!row || row.dataset.slimmingClusterId === state.slimming.selectedClusterID) return;
     state.slimming.selectedClusterID = row.dataset.slimmingClusterId;
     state.slimming.memberLimit = 96;
     loadSlimmingWorkspace({ clusterID: row.dataset.slimmingClusterId });
   });
+  elements.slimmingReprocessClusterButton.addEventListener("click", () => {
+    const clusterID = elements.slimmingReprocessClusterButton.dataset.slimmingClusterReviewId;
+    if (clusterID) void setSlimmingClusterReviewDisposition(clusterID, null);
+  });
   elements.slimmingMemberGrid.addEventListener("click", (event) => {
-    const card = event.target.closest("[data-slimming-member-id]");
+    const favorite = event.target.closest("[data-slimming-member-favorite]");
+    if (favorite) {
+      void toggleSlimmingMemberFavorite(favorite);
+      return;
+    }
+    const main = event.target.closest("[data-slimming-member-main]");
+    const card = main?.closest("[data-slimming-member-id]");
     if (card) selectSlimmingMember(card.dataset.slimmingMemberId, event);
   });
-  elements.slimmingMemberGrid.addEventListener("dblclick", (event) => {
+  elements.slimmingMemberGrid.addEventListener("contextmenu", (event) => {
     const card = event.target.closest("[data-slimming-member-id]");
+    if (!card) return;
+    event.preventDefault();
+    showSlimmingMemberContextMenu(
+      event.clientX,
+      event.clientY,
+      card.dataset.slimmingMemberId
+    );
+  });
+  elements.slimmingMemberGrid.addEventListener("keydown", (event) => {
+    const main = event.target.closest("[data-slimming-member-main]");
+    if (!main
+      || !(event.key === "ContextMenu" || (event.shiftKey && event.key === "F10"))) {
+      return;
+    }
+    event.preventDefault();
+    const card = main.closest("[data-slimming-member-id]");
+    const rect = main.getBoundingClientRect();
+    showSlimmingMemberContextMenu(
+      rect.left + Math.min(28, rect.width),
+      rect.top + Math.min(32, rect.height),
+      card?.dataset.slimmingMemberId
+    );
+  });
+  elements.slimmingMemberGrid.addEventListener("dblclick", (event) => {
+    const main = event.target.closest("[data-slimming-member-main]");
+    const card = main?.closest("[data-slimming-member-id]");
     if (card) openLightbox("slimming", card.dataset.slimmingMemberId);
   });
   elements.slimmingRemovalStatus.addEventListener("click", (event) => {
@@ -14917,6 +17607,19 @@ function bindEvents() {
   });
   elements.closeReviewButton.addEventListener("click", closeReviewWorkspace);
   elements.reviewBackButton.addEventListener("click", returnToReviewOverview);
+  elements.reviewOverviewGrid.addEventListener("toggle", (event) => {
+    const details = event.target.closest?.("[data-review-control-tag-id]");
+    if (!details) return;
+    if (details.open) {
+      state.review.expandedControlTagIDs.add(details.dataset.reviewControlTagId);
+    } else {
+      state.review.expandedControlTagIDs.delete(details.dataset.reviewControlTagId);
+    }
+  }, true);
+  elements.reviewOverviewGrid.addEventListener("change", (event) => {
+    const input = event.target.closest("[data-review-threshold-input]");
+    if (input) void commitReviewThresholdInput(input);
+  });
   elements.reviewOverviewGrid.addEventListener("click", (event) => {
     const groupToggle = event.target.closest("[data-review-overview-group-toggle]");
     if (groupToggle) {
@@ -14928,6 +17631,13 @@ function bindEvents() {
       }
       persistWorkspacePreferences();
       renderReviewOverview();
+      return;
+    }
+    const thresholdControl = event.target.closest(
+      "[data-review-threshold-step], [data-review-threshold-action]"
+    );
+    if (thresholdControl && !thresholdControl.disabled) {
+      void applyReviewThresholdAction(thresholdControl);
       return;
     }
     const jobAction = event.target.closest("[data-job-id][data-action]");
@@ -14950,13 +17660,13 @@ function bindEvents() {
     );
     if (featureButton && !featureButton.disabled) {
       state.training.mediaKind = state.mediaKind;
-      const sourceIDs = elements.reviewCurrentSourceOnly.checked && state.selectedSourceID
-        ? [state.selectedSourceID]
-        : [];
+      const sourceIDs = resolvedReviewSourceFilter();
       openTrainingSetupDialog({
         method: "featureKnn",
         tagIDs: [featureButton.dataset.reviewFeatureTagId],
-        sourceIDs,
+        ...(sourceIDs === null
+          ? {}
+          : { sourceScope: "selectedSources", sourceIDs }),
       });
       return;
     }
@@ -14978,6 +17688,12 @@ function bindEvents() {
     if (card && !card.disabled) enterReviewQueue(card.dataset.reviewOverviewTagId);
   });
   elements.reviewOverviewGrid.addEventListener("keydown", (event) => {
+    const thresholdInput = event.target.closest("[data-review-threshold-input]");
+    if (thresholdInput && event.key === "Enter") {
+      event.preventDefault();
+      void commitReviewThresholdInput(thresholdInput);
+      return;
+    }
     const groupToggle = event.target.closest("[data-review-overview-group-toggle]");
     if (!groupToggle || !["ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) return;
     const toggles = [...elements.reviewOverviewGrid.querySelectorAll(
@@ -15033,22 +17749,103 @@ function bindEvents() {
   elements.reviewTagSelect.addEventListener("change", () => {
     loadReviewQueue();
   });
-  elements.reviewCurrentSourceOnly.addEventListener("change", async () => {
-    await loadReviewOverview();
-    if (state.review.mode === "queue") await loadReviewQueue();
+  elements.reviewSourceFilterButton.addEventListener("click", toggleReviewSourceFilter);
+  elements.decreaseReviewSuggestionLimitButton.addEventListener("click", () => {
+    adjustReviewSuggestionLimit(-reviewSuggestionLimitBounds.step);
+  });
+  elements.increaseReviewSuggestionLimitButton.addEventListener("click", () => {
+    adjustReviewSuggestionLimit(reviewSuggestionLimitBounds.step);
+  });
+  elements.reviewSourceFilterPopover.addEventListener("focusin", (event) => {
+    const source = event.target.closest?.("[data-review-source-id]");
+    state.review.sourceFilterFocusSelector = source
+      ? `[data-review-source-id="${CSS.escape(source.dataset.reviewSourceId)}"]`
+      : (event.target === elements.selectAllReviewSourcesButton
+        ? "#selectAllReviewSourcesButton"
+        : state.review.sourceFilterFocusSelector);
+  });
+  elements.reviewSourceFilterPopover.addEventListener("click", async (event) => {
+    const source = event.target.closest("[data-review-source-id]");
+    if (source) {
+      await setReviewSourceIncluded(
+        source.dataset.reviewSourceId,
+        source.getAttribute("aria-checked") !== "true"
+      );
+      return;
+    }
+    if (event.target.closest("#selectAllReviewSourcesButton")) {
+      await selectAllReviewSources();
+    }
+  });
+  elements.reviewSourceFilterPopover.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeReviewSourceFilter();
+      return;
+    }
+    if (!["ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) return;
+    const buttons = [...elements.reviewSourceFilterPopover.querySelectorAll(
+      "button:not(:disabled)"
+    )];
+    if (!buttons.length) return;
+    event.preventDefault();
+    const current = Math.max(0, buttons.indexOf(document.activeElement));
+    const next = event.key === "Home"
+      ? 0
+      : event.key === "End"
+        ? buttons.length - 1
+        : (current + (event.key === "ArrowUp" ? -1 : 1) + buttons.length) % buttons.length;
+    buttons[next].focus({ preventScroll: true });
   });
   elements.refreshReviewButton.addEventListener("click", async () => {
+    await Promise.all([
+      supportsGeneralSettings() ? loadGeneralSettings({ quiet: true }) : Promise.resolve(),
+      loadTagLibrarySuggestions({ quiet: true }),
+      loadSampleSuggestions({ quiet: true }),
+      loadLibrarySuggestions({ quiet: true }),
+    ]);
     await loadReviewOverview();
     if (state.review.mode === "queue") {
       await loadReviewQueue({ preserveLoadedWindow: true });
     }
   });
-  elements.generateLibrarySuggestionsButton.addEventListener("click", () => {
-    generateSampleSuggestions();
+  elements.generateStandardLibrarySuggestionsButton.addEventListener("click", () => {
+    submitLibrarySuggestions("standard");
   });
+  elements.generateLibrarySuggestionsButton.addEventListener("click", () => {
+    if (state.librarySuggestions.snapshot?.personalMode === "fullLibrary") {
+      submitLibrarySuggestions("personal");
+    } else {
+      generateSampleSuggestions();
+    }
+  });
+  const handleLibrarySuggestionJobAction = (event) => {
+    const button = event.target.closest("[data-library-suggestion-job-id]");
+    if (!button) return;
+    void applyJobAction(button.dataset.librarySuggestionJobId, button.dataset.action);
+  };
+  elements.standardLibrarySuggestionActions.addEventListener(
+    "click",
+    handleLibrarySuggestionJobAction
+  );
+  elements.personalLibrarySuggestionActions.addEventListener(
+    "click",
+    handleLibrarySuggestionJobAction
+  );
+  elements.refreshReviewModelStatusButton.addEventListener(
+    "click",
+    refreshReviewLocalModelStatus
+  );
   elements.cancelSampleSuggestionsButton.addEventListener("click", cancelSampleSuggestions);
   elements.loadMoreReviewButton.addEventListener("click", () => loadReviewQueue({ append: true }));
   elements.reviewGrid.addEventListener("click", (event) => {
+    const favoriteButton = event.target.closest("[data-review-card-favorite]");
+    if (favoriteButton) {
+      event.preventDefault();
+      event.stopPropagation();
+      void toggleReviewCardFavorite(favoriteButton);
+      return;
+    }
     const card = event.target.closest("[data-review-index]");
     if (card) {
       selectReviewIndex(Number(card.dataset.reviewIndex), {
@@ -15056,6 +17853,15 @@ function bindEvents() {
         extendRange: event.shiftKey,
       });
     }
+  });
+  elements.reviewGrid.addEventListener("dblclick", (event) => {
+    if (event.target.closest("[data-review-card-favorite]")) return;
+    const card = event.target.closest("[data-review-index]");
+    const index = Number(card?.dataset.reviewIndex);
+    const item = Number.isInteger(index) ? state.review.items[index] : null;
+    if (!item) return;
+    selectReviewIndex(index);
+    openLightbox("review", item.assetID);
   });
   elements.previousReviewButton.addEventListener("click", () => {
     selectReviewIndex(state.review.selectedIndex - 1);
@@ -15088,6 +17894,9 @@ function bindEvents() {
   });
 
   elements.lightboxBackButton.addEventListener("click", closeLightbox);
+  elements.lightboxFavoriteButton.addEventListener("click", () => {
+    void toggleLightboxFavorite();
+  });
   elements.closeLightboxButton.addEventListener("click", closeLightbox);
   elements.lightboxPreviousButton.addEventListener("click", () => void navigateLightbox(-1));
   elements.lightboxNextButton.addEventListener("click", () => void navigateLightbox(1));
@@ -15135,10 +17944,92 @@ function bindEvents() {
       if (!state.selectionMode) setSelectionMode(true);
       toggleAssetSelection(assetID);
       state.selectionAnchorID = assetID;
+    } else if (button.dataset.contextAction === "favorite") {
+      const isFavorite = favoriteStateForAssetID(assetID)?.isFavorite === true;
+      await applyFavoriteMutation([assetID], !isFavorite);
     } else if (button.dataset.contextAction === "filterSource") {
       const asset = state.assets.find((item) => item.id === assetID);
       if (asset) await selectSource(asset.sourceID);
     }
+  });
+  elements.slimmingMemberContextMenu.addEventListener("click", async (event) => {
+    const button = event.target.closest("[data-slimming-member-context-action]");
+    const memberID = state.slimming.contextMemberID;
+    if (!button || !memberID || button.disabled) return;
+    const action = button.dataset.slimmingMemberContextAction;
+    hideContextMenus();
+    if (action === "favorite") {
+      const favoriteButton = elements.slimmingMemberGrid.querySelector(
+        `[data-slimming-member-id="${CSS.escape(memberID)}"] [data-slimming-member-favorite]`
+      );
+      if (favoriteButton) await toggleSlimmingMemberFavorite(favoriteButton);
+    } else if (["recoverableRecycle", "releaseSourceSpace"].includes(action)) {
+      if (!state.slimming.selectedMemberIDs.has(memberID)) {
+        state.slimming.selectedMemberIDs = new Set([memberID]);
+        state.slimming.selectionAnchorID = memberID;
+        renderSlimmingMemberSelection();
+      }
+      await submitSlimmingRemoval(action);
+    }
+    restoreOverlayFocus(slimmingMemberMainButton(
+      elements.slimmingMemberGrid.querySelector(
+        `[data-slimming-member-id="${CSS.escape(memberID)}"]`
+      )
+    ));
+  });
+  elements.slimmingMemberContextMenu.addEventListener("keydown", (event) => {
+    const buttons = [
+      ...elements.slimmingMemberContextMenu.querySelectorAll("button:not(:disabled)"),
+    ];
+    if (!buttons.length) return;
+    if (event.key === "Escape") {
+      event.preventDefault();
+      const memberID = state.slimming.contextMemberID;
+      hideContextMenus();
+      restoreOverlayFocus(slimmingMemberMainButton(
+        elements.slimmingMemberGrid.querySelector(
+          `[data-slimming-member-id="${CSS.escape(memberID || "")}"]`
+        )
+      ));
+      return;
+    }
+    if (!['ArrowUp', 'ArrowDown', 'Home', 'End'].includes(event.key)) return;
+    event.preventDefault();
+    const current = Math.max(0, buttons.indexOf(document.activeElement));
+    const next = event.key === "Home" ? 0
+      : event.key === "End" ? buttons.length - 1
+        : (current + (event.key === "ArrowUp" ? -1 : 1) + buttons.length) % buttons.length;
+    buttons[next].focus({ preventScroll: true });
+  });
+  elements.slimmingJobContextMenu.addEventListener("click", async (event) => {
+    const button = event.target.closest("[data-slimming-job-context-action]");
+    const jobID = state.slimming.contextJobID;
+    if (!button || !jobID || button.disabled) return;
+    const action = button.dataset.slimmingJobContextAction;
+    hideContextMenus();
+    await applySlimmingJobAction(jobID, action, { returnFocus: true });
+  });
+  elements.slimmingJobContextMenu.addEventListener("keydown", (event) => {
+    const buttons = [
+      ...elements.slimmingJobContextMenu.querySelectorAll("button:not(:disabled)"),
+    ];
+    if (!buttons.length) return;
+    if (event.key === "Escape") {
+      event.preventDefault();
+      const jobID = state.slimming.contextJobID;
+      hideContextMenus();
+      restoreOverlayFocus(elements.slimmingJobList.querySelector(
+        `[data-slimming-job-id="${CSS.escape(jobID || "")}"]`
+      ));
+      return;
+    }
+    if (!["ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) return;
+    event.preventDefault();
+    const current = Math.max(0, buttons.indexOf(document.activeElement));
+    const next = event.key === "Home" ? 0
+      : event.key === "End" ? buttons.length - 1
+        : (current + (event.key === "ArrowUp" ? -1 : 1) + buttons.length) % buttons.length;
+    buttons[next].focus({ preventScroll: true });
   });
   elements.sourceContextMenu.addEventListener("click", async (event) => {
     const button = event.target.closest("[data-source-context-action]");
@@ -15231,9 +18122,12 @@ function bindEvents() {
   });
 
   document.addEventListener("click", (event) => {
+    const eventPath = event.composedPath();
     if (!elements.assetContextMenu.contains(event.target)
       && !elements.sourceContextMenu.contains(event.target)
-      && !elements.tagContextMenu.contains(event.target)) hideContextMenus();
+      && !elements.tagContextMenu.contains(event.target)
+      && !elements.slimmingMemberContextMenu.contains(event.target)
+      && !elements.slimmingJobContextMenu.contains(event.target)) hideContextMenus();
     if (!elements.filterPopover.classList.contains("hidden")
       && !elements.filterPopover.contains(event.target)
       && !elements.filterButton.contains(event.target)) {
@@ -15250,6 +18144,11 @@ function bindEvents() {
       && !elements.personalModelPopover.contains(event.target)
       && !elements.personalModelButton.contains(event.target)) {
       closePersonalModelPopover({ restoreFocus: false });
+    }
+    if (!elements.reviewSourceFilterPopover.classList.contains("hidden")
+      && !eventPath.includes(elements.reviewSourceFilterPopover)
+      && !eventPath.includes(elements.reviewSourceFilterButton)) {
+      closeReviewSourceFilter({ restoreFocus: false });
     }
   });
   document.addEventListener("keydown", (event) => {
@@ -15313,8 +18212,30 @@ function bindEvents() {
     }
     if (event.key === "Escape") {
       event.preventDefault();
+      if (!elements.slimmingJobContextMenu.classList.contains("hidden")) {
+        const jobID = state.slimming.contextJobID;
+        hideContextMenus();
+        restoreOverlayFocus(elements.slimmingJobList.querySelector(
+          `[data-slimming-job-id="${CSS.escape(jobID || "")}"]`
+        ));
+        return;
+      }
+      if (!elements.slimmingMemberContextMenu.classList.contains("hidden")) {
+        const memberID = state.slimming.contextMemberID;
+        hideContextMenus();
+        restoreOverlayFocus(slimmingMemberMainButton(
+          elements.slimmingMemberGrid.querySelector(
+            `[data-slimming-member-id="${CSS.escape(memberID || "")}"]`
+          )
+        ));
+        return;
+      }
       if (!elements.personalModelPopover.classList.contains("hidden")) {
         closePersonalModelPopover();
+        return;
+      }
+      if (!elements.reviewSourceFilterPopover.classList.contains("hidden")) {
+        closeReviewSourceFilter();
         return;
       }
       if (elements.suggestionThresholdDialog.open) {
@@ -15450,6 +18371,19 @@ function bindEvents() {
     }
     if (isTextInputTarget(event.target)) return;
     if (lightboxOpen) {
+      if (state.lightboxContext === "slimming"
+        && !event.repeat
+        && !event.metaKey
+        && !event.ctrlKey
+        && !event.altKey
+        && ["Backspace", "Delete"].includes(event.key)) {
+        event.preventDefault();
+        void submitSlimmingRemoval("releaseSourceSpace", {
+          assetIDs: [state.lightboxAssetID],
+          previewAssetID: state.lightboxAssetID,
+        });
+        return;
+      }
       if (event.key === "ArrowLeft") {
         event.preventDefault();
         void navigateLightbox(-1);
@@ -15568,6 +18502,17 @@ function bindEvents() {
       return;
     }
     if (slimmingOpen) {
+      if (state.slimming.view === "analysis"
+        && !event.repeat
+        && !event.metaKey
+        && !event.ctrlKey
+        && !event.altKey
+        && ["Backspace", "Delete"].includes(event.key)
+        && state.slimming.selectedMemberIDs.size > 0) {
+        event.preventDefault();
+        void submitSlimmingRemoval("releaseSourceSpace");
+        return;
+      }
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "a") {
         event.preventDefault();
         state.slimming.selectedMemberIDs = new Set(

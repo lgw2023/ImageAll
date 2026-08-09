@@ -8,6 +8,66 @@ enum TrainingCommandError: Error, Equatable, Sendable {
     case activityNotFound
 }
 
+enum LibrarySuggestionTrack: String, Equatable, Sendable {
+    case standard
+    case personal
+}
+
+enum LibrarySuggestionPersonalMode: String, Equatable, Sendable {
+    case unavailable
+    case sample
+    case fullLibrary
+}
+
+enum LibrarySuggestionServiceState: String, Equatable, Sendable {
+    case unchecked
+    case ready
+    case degraded
+    case unavailable
+}
+
+struct LibrarySuggestionServiceSnapshot: Equatable, Sendable {
+    let state: LibrarySuggestionServiceState
+    let serviceVersion: String?
+    let provider: String?
+    let modelID: String?
+}
+
+struct LibrarySuggestionJobSnapshot: Equatable, Sendable {
+    let jobID: UUID
+    let state: JobState
+    let checkedCount: Int
+    let totalCount: Int?
+    let suggestedCount: Int
+    let skippedCount: Int
+    let lastErrorCode: JobSafeErrorCode?
+    let availableActions: [JobActivityAction]
+}
+
+struct LibrarySuggestionWorkspaceSnapshot: Equatable, Sendable {
+    let mediaKind: MediaKind
+    let service: LibrarySuggestionServiceSnapshot
+    let standardAvailable: Bool
+    let personalMode: LibrarySuggestionPersonalMode
+    let standardJob: LibrarySuggestionJobSnapshot?
+    let personalJob: LibrarySuggestionJobSnapshot?
+}
+
+struct LibrarySuggestionCommand: Equatable, Sendable {
+    let operationID: UUID
+    let mediaKind: MediaKind
+    let track: LibrarySuggestionTrack
+    /// `nil` means all active sources; empty is invalid and must not broaden to all.
+    let sourceIDs: [UUID]?
+}
+
+struct LibrarySuggestionReceipt: Equatable, Sendable {
+    let operationID: UUID
+    let track: LibrarySuggestionTrack
+    let jobID: UUID
+    let replayed: Bool
+}
+
 enum TrainingCommandFeatureMode: String, Equatable, Sendable {
     case generate
     case update
@@ -188,6 +248,21 @@ struct SampleSuggestionCommand: Equatable, Sendable {
     let mediaKind: MediaKind
     /// Empty means “sample from the whole library”, matching the Mac toolbar.
     let assetIDs: [UUID]
+    /// `nil` means all active sources; empty intentionally matches nothing.
+    /// Ignored when explicit assets are supplied.
+    let sourceIDs: [UUID]?
+
+    init(
+        operationID: UUID,
+        mediaKind: MediaKind,
+        assetIDs: [UUID],
+        sourceIDs: [UUID]? = nil
+    ) {
+        self.operationID = operationID
+        self.mediaKind = mediaKind
+        self.assetIDs = assetIDs
+        self.sourceIDs = sourceIDs
+    }
 }
 
 struct SampleSuggestionActivitySnapshot: Equatable, Sendable {
@@ -270,6 +345,13 @@ struct TagLibrarySuggestionTagOption: Equatable, Sendable {
 }
 
 protocol RemoteTrainingCommandPort: Sendable {
+    func librarySuggestions(
+        mediaKind: MediaKind,
+        refreshServiceHealth: Bool
+    ) async throws -> LibrarySuggestionWorkspaceSnapshot
+    func generateLibrarySuggestions(
+        _ command: LibrarySuggestionCommand
+    ) async throws -> LibrarySuggestionReceipt
     func setup(mediaKind: MediaKind) async throws -> TrainingCommandSetupSnapshot
     func launch(_ command: TrainingLaunchCommand) async throws -> TrainingLaunchReceipt
     func activities(mediaKind: MediaKind) async -> [TrainingCommandActivitySnapshot]
@@ -315,6 +397,31 @@ protocol RemoteTrainingCommandPort: Sendable {
 }
 
 extension RemoteTrainingCommandPort {
+    func librarySuggestions(
+        mediaKind: MediaKind,
+        refreshServiceHealth _: Bool
+    ) async throws -> LibrarySuggestionWorkspaceSnapshot {
+        LibrarySuggestionWorkspaceSnapshot(
+            mediaKind: mediaKind,
+            service: LibrarySuggestionServiceSnapshot(
+                state: .unavailable,
+                serviceVersion: nil,
+                provider: nil,
+                modelID: nil
+            ),
+            standardAvailable: false,
+            personalMode: .unavailable,
+            standardJob: nil,
+            personalJob: nil
+        )
+    }
+
+    func generateLibrarySuggestions(
+        _: LibrarySuggestionCommand
+    ) async throws -> LibrarySuggestionReceipt {
+        throw TrainingCommandError.unavailable
+    }
+
     func embeddingPreparationAvailable() async -> Bool { false }
 
     func prepareEmbeddings(

@@ -92,6 +92,9 @@ public enum RemoteSuggestionThresholdMutationAction: String, Codable, Sendable, 
     case setDefault
     case setOverride
     case clearOverride
+    /// Removes pending rows at or below the currently effective tag threshold.
+    /// This does not rescan the library or change the stored threshold.
+    case prune
 }
 
 public struct RemoteSuggestionThresholdMutation: Codable, Sendable, Equatable {
@@ -141,19 +144,22 @@ public struct RemoteGeneralSettingsSnapshot: Codable, Sendable, Equatable {
     public let idleThresholdSeconds: Int
     public let toolbarDisplayMode: RemoteToolbarDisplayMode
     public let suggestionThresholds: RemoteSuggestionThresholdSnapshot?
+    public let maxPendingSuggestionsPerTag: Int?
 
     public init(
         localModel: RemoteLocalModelSettings,
         idleThumbnailPrewarmEnabled: Bool,
         idleThresholdSeconds: Int,
         toolbarDisplayMode: RemoteToolbarDisplayMode,
-        suggestionThresholds: RemoteSuggestionThresholdSnapshot? = nil
+        suggestionThresholds: RemoteSuggestionThresholdSnapshot? = nil,
+        maxPendingSuggestionsPerTag: Int? = nil
     ) {
         self.localModel = localModel
         self.idleThumbnailPrewarmEnabled = idleThumbnailPrewarmEnabled
         self.idleThresholdSeconds = idleThresholdSeconds
         self.toolbarDisplayMode = toolbarDisplayMode
         self.suggestionThresholds = suggestionThresholds
+        self.maxPendingSuggestionsPerTag = maxPendingSuggestionsPerTag
     }
 }
 
@@ -166,19 +172,22 @@ public struct RemoteGeneralSettingsUpdateRequest: Codable, Sendable, Equatable {
     public let idleThumbnailPrewarmEnabled: Bool?
     public let toolbarDisplayMode: RemoteToolbarDisplayMode?
     public let suggestionThresholdMutation: RemoteSuggestionThresholdMutation?
+    public let maxPendingSuggestionsPerTag: Int?
 
     public init(
         operationID: UUID,
         modelEnabled: Bool? = nil,
         idleThumbnailPrewarmEnabled: Bool? = nil,
         toolbarDisplayMode: RemoteToolbarDisplayMode? = nil,
-        suggestionThresholdMutation: RemoteSuggestionThresholdMutation? = nil
+        suggestionThresholdMutation: RemoteSuggestionThresholdMutation? = nil,
+        maxPendingSuggestionsPerTag: Int? = nil
     ) {
         self.operationID = operationID
         self.modelEnabled = modelEnabled
         self.idleThumbnailPrewarmEnabled = idleThumbnailPrewarmEnabled
         self.toolbarDisplayMode = toolbarDisplayMode
         self.suggestionThresholdMutation = suggestionThresholdMutation
+        self.maxPendingSuggestionsPerTag = maxPendingSuggestionsPerTag
     }
 }
 

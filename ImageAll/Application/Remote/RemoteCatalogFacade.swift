@@ -85,6 +85,7 @@ actor RemoteCatalogFacade {
         subjectParts.append(request.modelEnabled.map { String($0) } ?? "-")
         subjectParts.append(request.idleThumbnailPrewarmEnabled.map { String($0) } ?? "-")
         subjectParts.append(request.toolbarDisplayMode?.rawValue ?? "-")
+        subjectParts.append(request.maxPendingSuggestionsPerTag.map(String.init) ?? "-")
         let thresholdMutation = request.suggestionThresholdMutation
         subjectParts.append(thresholdMutation?.action.rawValue ?? "-")
         subjectParts.append(thresholdMutation?.method.rawValue ?? "-")
@@ -121,7 +122,8 @@ actor RemoteCatalogFacade {
                             tagID: $0.tagID,
                             minScore: $0.minScore
                         )
-                    }
+                    },
+                    maxPendingSuggestionsPerTag: request.maxPendingSuggestionsPerTag
                 )
             )
             let response = RemoteGeneralSettingsUpdateResponse(
@@ -311,7 +313,13 @@ actor RemoteCatalogFacade {
             },
             undatedCount: snapshot.undatedCount,
             positiveLabeledAssetCount: snapshot.positiveLabeledAssetCount,
-            acceptedDecisionCount: snapshot.acceptedDecisionCount
+            acceptedDecisionCount: snapshot.acceptedDecisionCount,
+            favorites: snapshot.favorites.map {
+                RemoteGalleryOverviewFavoriteSummary(
+                    mediaKind: $0.mediaKind == .video ? .video : .image,
+                    count: $0.count
+                )
+            }
         )
     }
 
@@ -324,8 +332,17 @@ actor RemoteCatalogFacade {
             cursor: cursor,
             limit: limit
         )
+        let favoriteStates = try catalog.fetchFavoriteStates(
+            assetIDs: page.items.map(\.assetID)
+        )
         return RemoteAssetPage(
-            items: page.items.map(Self.mapAsset),
+            items: page.items.map {
+                Self.mapAsset(
+                    $0,
+                    favorite: favoriteStates[$0.assetID]
+                        ?? .none(assetID: $0.assetID)
+                )
+            },
             nextCursor: try Self.encodeCursor(page.nextCursor)
         )
     }
@@ -377,7 +394,112 @@ actor RemoteCatalogFacade {
     func fetchInspectorDetail(assetID: UUID) throws -> RemoteAssetDetail {
         let detail = try catalog.fetchInspectorDetail(assetID: assetID)
         let pendingSuggestions = try review.pendingSuggestionsForAsset(assetID: assetID)
-        return Self.mapDetail(detail, pendingSuggestions: pendingSuggestions)
+        let favorite = try catalog.fetchFavoriteStates(assetIDs: [assetID])[assetID]
+            ?? .none(assetID: assetID)
+        return Self.mapDetail(
+            detail,
+            pendingSuggestions: pendingSuggestions,
+            favorite: favorite
+        )
+    }
+
+    func setFavorite(
+        _ request: RemoteFavoriteMutationRequest
+    ) async throws -> RemoteFavoriteMutationResponse {
+        guard !request.assetIDs.isEmpty else {
+            throw RemoteAPIError(code: .badRequest, message: "assetIDs must not be empty")
+        }
+        guard Set(request.assetIDs).count == request.assetIDs.count else {
+            throw RemoteAPIError(code: .badRequest, message: "assetIDs must not contain duplicates")
+        }
+        let key = RemoteIdempotencyStore.MutationKey(
+            kind: "favoriteMutation",
+            subject: "favorites",
+            assetIDs: request.assetIDs,
+            action: request.isFavorite ? "favorite" : "unfavorite"
+        )
+        let catalog = self.catalog
+        do {
+            let (stored, replayed): (RemoteFavoriteMutationResponse, Bool) =
+                try await idempotency.perform(
+                    operationID: request.operationID,
+                    key: key
+                ) {
+                    let summary = try catalog.setFavorite(
+                        assetIDs: request.assetIDs,
+                        isFavorite: request.isFavorite
+                    )
+                    let states = try catalog.fetchFavoriteStates(assetIDs: request.assetIDs)
+                    return RemoteFavoriteMutationResponse(
+                        operationID: request.operationID,
+                        changedCount: summary.changedCount,
+                        localOnlyCount: summary.localOnlyCount,
+                        syncedCount: summary.syncedCount,
+                        pendingCount: summary.pendingCount,
+                        failedCount: summary.failedCount,
+                        states: request.assetIDs.map {
+                            Self.mapFavorite(
+                                states[$0] ?? .none(assetID: $0)
+                            )
+                        },
+                        replayed: false
+                    )
+                }
+            return RemoteFavoriteMutationResponse(
+                operationID: stored.operationID,
+                changedCount: stored.changedCount,
+                localOnlyCount: stored.localOnlyCount,
+                syncedCount: stored.syncedCount,
+                pendingCount: stored.pendingCount,
+                failedCount: stored.failedCount,
+                states: stored.states,
+                replayed: replayed
+            )
+        } catch is RemoteIdempotencyStore.IdempotencyError {
+            throw RemoteAPIError(
+                code: .conflict,
+                message: "operationID was already used for a different mutation"
+            )
+        }
+    }
+
+    func retryFavoriteSync(
+        _ request: RemoteFavoriteSyncRetryRequest
+    ) async throws -> RemoteFavoriteSyncRetryResponse {
+        let key = RemoteIdempotencyStore.MutationKey(
+            kind: "favoriteSyncRetry",
+            subject: "favorites",
+            assetIDs: [],
+            action: "retry"
+        )
+        let catalog = self.catalog
+        do {
+            let (stored, replayed): (RemoteFavoriteSyncRetryResponse, Bool) =
+                try await idempotency.perform(operationID: request.operationID, key: key) {
+                    let summary = try catalog.retryPendingFavoriteSync(sourceIDs: nil)
+                    return RemoteFavoriteSyncRetryResponse(
+                        operationID: request.operationID,
+                        localOnlyCount: summary.localOnlyCount,
+                        syncedCount: summary.syncedCount,
+                        pendingCount: summary.pendingCount,
+                        failedCount: summary.failedCount,
+                        replayed: false
+                    )
+                }
+            return RemoteFavoriteSyncRetryResponse(
+                operationID: stored.operationID,
+                localOnlyCount: stored.localOnlyCount,
+                syncedCount: stored.syncedCount,
+                pendingCount: stored.pendingCount,
+                failedCount: stored.failedCount,
+                replayed: replayed
+            )
+        } catch is RemoteIdempotencyStore.IdempotencyError {
+            throw RemoteAPIError(
+                code: .conflict,
+                message: "operationID was already used for a different mutation"
+            )
+        }
     }
 
     func selectionAggregate(_ request: RemoteTagSelectionRequest) throws -> [RemoteTagSelectionAggregate] {
@@ -426,6 +548,9 @@ actor RemoteCatalogFacade {
             let selection = try catalog.fetchWorldMapSelection(
                 query: Self.mapWorldMapSelectionQuery(request.query)
             )
+            let favoriteStates = try catalog.fetchFavoriteStates(
+                assetIDs: selection.assets.map(\.assetID)
+            )
             let assets = selection.assets.map { asset -> RemoteWorldMapAsset in
                 do {
                     let detail = try catalog.fetchInspectorDetail(assetID: asset.assetID)
@@ -433,14 +558,16 @@ actor RemoteCatalogFacade {
                         id: asset.assetID,
                         fileName: asset.fileName,
                         availability: Self.mapAvailability(detail.availability),
-                        contentRevision: detail.contentRevision
+                        contentRevision: detail.contentRevision,
+                        favorite: favoriteStates[asset.assetID].map(Self.mapFavorite)
                     )
                 } catch {
                     return RemoteWorldMapAsset(
                         id: asset.assetID,
                         fileName: asset.fileName,
                         availability: .missing,
-                        contentRevision: 0
+                        contentRevision: 0,
+                        favorite: favoriteStates[asset.assetID].map(Self.mapFavorite)
                     )
                 }
             }
@@ -705,6 +832,8 @@ actor RemoteCatalogFacade {
         mediaKind: RemoteAssetMediaKind,
         jobID: UUID?,
         clusterID: UUID?,
+        clusterScope: RemoteLibrarySlimmingClusterScope = .pending,
+        jobLimit: Int = 100,
         clusterLimit: Int = 80,
         memberLimit: Int = 200
     ) async throws -> RemoteLibrarySlimmingWorkspaceSnapshot {
@@ -713,10 +842,18 @@ actor RemoteCatalogFacade {
         }
         let mappedMediaKind = Self.mapMediaKind(mediaKind)
         let summaries = try librarySlimmingAnalysis.listJobs(mediaKind: mappedMediaKind)
-        let jobs = summaries.prefix(100).map(Self.mapLibrarySlimmingJob)
         let selectedSummary = jobID.flatMap { requested in
             summaries.first(where: { $0.jobID == requested })
         } ?? summaries.first
+        let safeJobLimit = max(1, min(jobLimit, 10_000))
+        // A task/activity deep link may target a record beyond the currently loaded
+        // prefix. Grow the prefix through that record so ordering and next/previous
+        // navigation remain truthful instead of appending an out-of-order singleton.
+        let selectedJobPosition = selectedSummary.flatMap { selected in
+            summaries.firstIndex(where: { $0.jobID == selected.jobID })
+        }
+        let effectiveJobLimit = max(safeJobLimit, selectedJobPosition.map { $0 + 1 } ?? 0)
+        let jobs = summaries.prefix(effectiveJobLimit).map(Self.mapLibrarySlimmingJob)
         guard let selectedSummary else {
             return RemoteLibrarySlimmingWorkspaceSnapshot(
                 mediaKind: mediaKind,
@@ -727,11 +864,20 @@ actor RemoteCatalogFacade {
                 members: [],
                 pendingAnalysisCount: 0,
                 analyzedAssetCount: 0,
-                policyVersion: nil
+                policyVersion: nil,
+                clusterScopeCounts: RemoteLibrarySlimmingClusterScopeCounts(
+                    pending: 0,
+                    confirmed: 0,
+                    ignored: 0
+                ),
+                totalJobCount: summaries.count
             )
         }
 
         let snapshot = try librarySlimmingAnalysis.snapshot(jobID: selectedSummary.jobID)
+        let reviewDispositions = try librarySlimmingAnalysis.clusterReviewDispositions(
+            jobID: selectedSummary.jobID
+        )
         let resultClusters = snapshot.result?.clusters ?? []
         let seedOnlyCluster: SlimmingCluster? = if resultClusters.isEmpty,
                                                    !snapshot.seedAssetIDs.isEmpty
@@ -759,42 +905,84 @@ actor RemoteCatalogFacade {
         } else {
             hiddenAssetIDs = []
         }
-        let resolvedClusters = hiddenAssetIDs.isEmpty ? rawClusters : rawClusters.compactMap {
-            cluster in
+        let resolvedClusters: [(
+            cluster: SlimmingCluster,
+            originalMemberCount: Int,
+            isHistoricalProcessedRecord: Bool
+        )] = rawClusters.compactMap { cluster in
+            let originalMemberCount = cluster.memberAssetIDs.count
             let remaining = cluster.memberAssetIDs.filter { !hiddenAssetIDs.contains($0) }
-            guard remaining.count >= 2 else { return nil }
-            return SlimmingCluster(
+            let isSeedOnlyResult = cluster.id == seedOnlyCluster?.id
+            let minimumMemberCount = isSeedOnlyResult ? 1 : 2
+            let disposition = reviewDispositions[cluster.id]
+            guard remaining.count >= minimumMemberCount || disposition != nil else {
+                return nil
+            }
+            let projected = SlimmingCluster(
                 id: cluster.id,
                 kind: cluster.kind,
                 memberAssetIDs: remaining,
                 representativeAssetID: remaining.contains(cluster.representativeAssetID)
                     ? cluster.representativeAssetID
-                    : remaining[0],
+                    : (remaining.first ?? cluster.representativeAssetID),
                 score: cluster.score,
                 modelIdentity: cluster.modelIdentity
             )
+            return (
+                projected,
+                originalMemberCount,
+                disposition != nil && remaining.count < originalMemberCount
+            )
+        }
+        let clusterScopeCounts = RemoteLibrarySlimmingClusterScopeCounts(
+            pending: resolvedClusters.lazy.filter {
+                reviewDispositions[$0.cluster.id] == nil
+            }.count,
+            confirmed: resolvedClusters.lazy.filter {
+                reviewDispositions[$0.cluster.id] == .confirmed
+            }.count,
+            ignored: resolvedClusters.lazy.filter {
+                reviewDispositions[$0.cluster.id] == .ignored
+            }.count
+        )
+        let scopedClusters = resolvedClusters.filter { projection in
+            switch clusterScope {
+            case .pending: reviewDispositions[projection.cluster.id] == nil
+            case .confirmed: reviewDispositions[projection.cluster.id] == .confirmed
+            case .ignored: reviewDispositions[projection.cluster.id] == .ignored
+            }
         }
         let selectedCluster = clusterID.flatMap { requested in
-            resolvedClusters.first(where: { $0.id == requested })
-        } ?? resolvedClusters.first
+            scopedClusters.first(where: { $0.cluster.id == requested })
+        } ?? scopedClusters.first
         // Keep the initial web payload bounded while still allowing the user to
         // progressively reveal every cluster/member in an authoritative result.
         // The client grows these limits in small steps; these caps only protect
         // the Host from an accidentally unbounded query.
         let safeClusterLimit = max(1, min(clusterLimit, 10_000))
         let safeMemberLimit = max(1, min(memberLimit, 5_000))
-        var visibleClusters = Array(resolvedClusters.prefix(safeClusterLimit))
+        var visibleClusters = Array(scopedClusters.prefix(safeClusterLimit))
         if let selectedCluster,
-           !visibleClusters.contains(where: { $0.id == selectedCluster.id })
+           !visibleClusters.contains(where: {
+               $0.cluster.id == selectedCluster.cluster.id
+           })
         {
             visibleClusters.append(selectedCluster)
         }
-        let clusters = visibleClusters.map {
-            Self.mapLibrarySlimmingCluster($0, isSeedOnlyResult: $0.id == seedOnlyCluster?.id)
+        let clusters = visibleClusters.map { projection in
+            Self.mapLibrarySlimmingCluster(
+                projection.cluster,
+                isSeedOnlyResult: projection.cluster.id == seedOnlyCluster?.id,
+                reviewDisposition: reviewDispositions[projection.cluster.id],
+                originalMemberCount: projection.originalMemberCount,
+                isHistoricalProcessedRecord: projection.isHistoricalProcessedRecord
+            )
         }
-        let members: [RemoteLibrarySlimmingMember] = selectedCluster?.memberAssetIDs
-            .prefix(safeMemberLimit)
-            .map { assetID in
+        let memberAssetIDs = selectedCluster.map {
+            Array($0.cluster.memberAssetIDs.prefix(safeMemberLimit))
+        } ?? []
+        let favoriteStates = try catalog.fetchFavoriteStates(assetIDs: memberAssetIDs)
+        let members: [RemoteLibrarySlimmingMember] = memberAssetIDs.map { assetID in
             do {
                 let detail = try catalog.fetchInspectorDetail(assetID: assetID)
                 return RemoteLibrarySlimmingMember(
@@ -807,25 +995,29 @@ actor RemoteCatalogFacade {
                     contentRevision: detail.contentRevision,
                     width: detail.width,
                     height: detail.height,
-                    durationMs: detail.durationMs
+                    durationMs: detail.durationMs,
+                    favorite: favoriteStates[assetID].map(Self.mapFavorite)
                 )
             } catch {
                 return RemoteLibrarySlimmingMember(
                     id: assetID,
-                    availability: .missing
+                    availability: .missing,
+                    favorite: favoriteStates[assetID].map(Self.mapFavorite)
                 )
             }
-        } ?? []
+        }
         return RemoteLibrarySlimmingWorkspaceSnapshot(
             mediaKind: mediaKind,
             jobs: jobs,
             selectedJobID: selectedSummary.jobID,
             clusters: clusters,
-            selectedClusterID: selectedCluster?.id,
+            selectedClusterID: selectedCluster?.cluster.id,
             members: members,
             pendingAnalysisCount: snapshot.result?.pendingAnalysisAssetIDs.count ?? 0,
             analyzedAssetCount: snapshot.result?.analyzedAssetCount ?? 0,
-            policyVersion: snapshot.result?.policyVersion
+            policyVersion: snapshot.result?.policyVersion,
+            clusterScopeCounts: clusterScopeCounts,
+            totalJobCount: summaries.count
         )
     }
 
@@ -982,6 +1174,66 @@ actor RemoteCatalogFacade {
         }
     }
 
+    func updateLibrarySlimmingClusterReview(
+        _ request: RemoteLibrarySlimmingClusterReviewRequest
+    ) async throws -> RemoteLibrarySlimmingClusterReviewResponse {
+        guard let librarySlimmingCommands else {
+            throw RemoteAPIError(code: .notFound, message: "图库瘦身审阅当前不可用")
+        }
+        let key = RemoteIdempotencyStore.MutationKey(
+            kind: "librarySlimmingClusterReview",
+            subject: "\(request.jobID.uuidString.lowercased()):\(request.clusterID.uuidString.lowercased())",
+            assetIDs: [],
+            action: request.disposition?.rawValue ?? "pending"
+        )
+        do {
+            if let prior: RemoteLibrarySlimmingClusterReviewResponse = try await idempotency.replay(
+                operationID: request.operationID,
+                key: key
+            ) {
+                return RemoteLibrarySlimmingClusterReviewResponse(
+                    operationID: prior.operationID,
+                    jobID: prior.jobID,
+                    clusterID: prior.clusterID,
+                    disposition: prior.disposition,
+                    replayed: true
+                )
+            }
+            let disposition = try await librarySlimmingCommands.setClusterReviewDisposition(
+                jobID: request.jobID,
+                clusterID: request.clusterID,
+                disposition: {
+                    switch request.disposition {
+                    case .confirmed: .confirmed
+                    case .ignored: .ignored
+                    case nil: nil
+                    }
+                }()
+            )
+            let response = RemoteLibrarySlimmingClusterReviewResponse(
+                operationID: request.operationID,
+                jobID: request.jobID,
+                clusterID: request.clusterID,
+                disposition: {
+                    switch disposition {
+                    case .confirmed: .confirmed
+                    case .ignored: .ignored
+                    case nil: nil
+                    }
+                }(),
+                replayed: false
+            )
+            try await idempotency.record(
+                operationID: request.operationID,
+                key: key,
+                response: response
+            )
+            return response
+        } catch {
+            throw Self.mapLibrarySlimmingCommandError(error)
+        }
+    }
+
     func updateLibrarySlimmingThresholds(
         _ request: RemoteLibrarySlimmingThresholdUpdateRequest
     ) async throws -> RemoteLibrarySlimmingThresholdUpdateResponse {
@@ -1027,6 +1279,7 @@ actor RemoteCatalogFacade {
         mediaKind: RemoteAssetMediaKind,
         sourceID: UUID?,
         searchText: String?,
+        scope: RemoteLibrarySlimmingRecycleScope,
         limit: Int
     ) async throws -> RemoteLibrarySlimmingRecycleSnapshot {
         guard let librarySlimmingCommands else {
@@ -1037,18 +1290,36 @@ actor RemoteCatalogFacade {
                 mediaKind: Self.mapMediaKind(mediaKind),
                 sourceID: sourceID,
                 searchText: searchText,
+                scope: {
+                    switch scope {
+                    case .all: .all
+                    case .photos: .photos
+                    case .files: .files
+                    case .attention: .attention
+                    }
+                }(),
                 limit: limit
+            )
+            let favoriteStates = try catalog.fetchFavoriteStates(
+                assetIDs: snapshot.entries.map(\.assetID)
             )
             return RemoteLibrarySlimmingRecycleSnapshot(
                 mediaKind: mediaKind,
                 entries: snapshot.entries.map { entry in
                     Self.mapLibrarySlimmingRecycleEntry(
                         entry,
-                        sourceDisplayName: snapshot.sourceNames[entry.sourceID] ?? "已移除来源"
+                        sourceDisplayName: snapshot.sourceNames[entry.sourceID] ?? "已移除来源",
+                        favorite: favoriteStates[entry.assetID]
                     )
                 },
                 totalCount: snapshot.totalCount,
-                requests: snapshot.requests.map(Self.mapLibrarySlimmingRecycleRequest)
+                requests: snapshot.requests.map(Self.mapLibrarySlimmingRecycleRequest),
+                scopeCounts: RemoteLibrarySlimmingRecycleScopeCounts(
+                    all: snapshot.scopeCounts.all,
+                    photos: snapshot.scopeCounts.photos,
+                    files: snapshot.scopeCounts.files,
+                    attention: snapshot.scopeCounts.attention
+                )
             )
         } catch {
             throw Self.mapLibrarySlimmingCommandError(error)
@@ -1332,6 +1603,56 @@ actor RemoteCatalogFacade {
         }
     }
 
+    func fetchLibrarySuggestions(
+        mediaKind: RemoteAssetMediaKind,
+        refreshServiceHealth: Bool
+    ) async throws -> RemoteLibrarySuggestionSnapshot {
+        guard let trainingCommands else {
+            throw RemoteAPIError(code: .notFound, message: "全库模型建议当前不可用")
+        }
+        do {
+            return Self.mapLibrarySuggestionSnapshot(
+                try await trainingCommands.librarySuggestions(
+                    mediaKind: Self.mapMediaKind(mediaKind),
+                    refreshServiceHealth: refreshServiceHealth
+                )
+            )
+        } catch {
+            throw Self.mapLibrarySuggestionError(error)
+        }
+    }
+
+    func submitLibrarySuggestions(
+        _ request: RemoteLibrarySuggestionRequest
+    ) async throws -> RemoteLibrarySuggestionResponse {
+        guard let trainingCommands else {
+            throw RemoteAPIError(code: .notFound, message: "全库模型建议当前不可用")
+        }
+        if let sourceIDs = request.sourceIDs,
+           sourceIDs.isEmpty || Set(sourceIDs).count != sourceIDs.count
+        {
+            throw RemoteAPIError(code: .badRequest, message: "请至少选择一个且不重复的审核来源")
+        }
+        do {
+            let receipt = try await trainingCommands.generateLibrarySuggestions(
+                LibrarySuggestionCommand(
+                    operationID: request.operationID,
+                    mediaKind: Self.mapMediaKind(request.mediaKind),
+                    track: request.track == .standard ? .standard : .personal,
+                    sourceIDs: request.sourceIDs
+                )
+            )
+            return RemoteLibrarySuggestionResponse(
+                operationID: receipt.operationID,
+                track: receipt.track == .standard ? .standard : .personal,
+                jobID: receipt.jobID,
+                replayed: receipt.replayed
+            )
+        } catch {
+            throw Self.mapLibrarySuggestionError(error)
+        }
+    }
+
     func fetchSampleSuggestions(
         mediaKind: RemoteAssetMediaKind
     ) async throws -> RemoteSampleSuggestionSnapshot {
@@ -1359,12 +1680,21 @@ actor RemoteCatalogFacade {
         guard Set(request.assetIDs).count == request.assetIDs.count else {
             throw RemoteAPIError(code: .badRequest, message: "所选项目包含重复项")
         }
+        if let sourceIDs = request.sourceIDs {
+            guard Set(sourceIDs).count == sourceIDs.count else {
+                throw RemoteAPIError(code: .badRequest, message: "审核来源包含重复项")
+            }
+            guard request.assetIDs.isEmpty else {
+                throw RemoteAPIError(code: .badRequest, message: "所选项目与审核来源不能同时提交")
+            }
+        }
         do {
             let receipt = try await trainingCommands.generateSampleSuggestions(
                 SampleSuggestionCommand(
                     operationID: request.operationID,
                     mediaKind: Self.mapMediaKind(request.mediaKind),
-                    assetIDs: request.assetIDs
+                    assetIDs: request.assetIDs,
+                    sourceIDs: request.sourceIDs
                 )
             )
             return RemoteSampleSuggestionResponse(
@@ -1546,8 +1876,13 @@ actor RemoteCatalogFacade {
             cursor: cursor,
             limit: max(1, min(request.limit, 200))
         )
+        let favoriteStates = try catalog.fetchFavoriteStates(
+            assetIDs: page.items.map(\.assetID)
+        )
         return RemoteReviewQueuePage(
-            items: page.items.map(Self.mapReviewItem),
+            items: page.items.map {
+                Self.mapReviewItem($0, favorite: favoriteStates[$0.assetID])
+            },
             nextCursor: Self.encodeReviewCursor(page.nextCursor)
         )
     }
@@ -2173,7 +2508,31 @@ actor RemoteCatalogFacade {
         }
     }
 
-    private static func mapAsset(_ item: AssetGridItemProjection) -> RemoteAssetSummary {
+    private static func mapFavorite(_ state: MediaFavoriteState) -> RemoteAssetFavoriteState {
+        let syncStatus: RemoteFavoriteSyncStatus
+        switch state.syncStatus {
+        case .localOnly:
+            syncStatus = .localOnly
+        case .synced:
+            syncStatus = .synced
+        case .pending:
+            syncStatus = .pending
+        case .failed:
+            syncStatus = .failed
+        }
+        return RemoteAssetFavoriteState(
+            assetID: state.assetID,
+            isFavorite: state.isFavorite,
+            photosObservedValue: state.photosObservedValue,
+            syncStatus: syncStatus,
+            lastErrorCode: state.lastErrorCode
+        )
+    }
+
+    private static func mapAsset(
+        _ item: AssetGridItemProjection,
+        favorite: MediaFavoriteState
+    ) -> RemoteAssetSummary {
         RemoteAssetSummary(
             id: item.assetID,
             sourceID: item.sourceID,
@@ -2186,13 +2545,15 @@ actor RemoteCatalogFacade {
             rejectedTagCount: item.rejectedTagCount,
             mediaCreatedAtMs: item.mediaCreatedAtMs,
             width: item.width,
-            height: item.height
+            height: item.height,
+            favorite: mapFavorite(favorite)
         )
     }
 
     private static func mapDetail(
         _ detail: AssetInspectorDetail,
-        pendingSuggestions: [AssetPendingSuggestion]
+        pendingSuggestions: [AssetPendingSuggestion],
+        favorite: MediaFavoriteState
     ) -> RemoteAssetDetail {
         RemoteAssetDetail(
             assetID: detail.assetID,
@@ -2211,6 +2572,7 @@ actor RemoteCatalogFacade {
             height: detail.height,
             durationMs: detail.durationMs,
             fingerprintSizeBytes: detail.fingerprintSizeBytes,
+            favorite: mapFavorite(favorite),
             tags: detail.tags.map(mapInspectorTagState),
             pendingSuggestions: pendingSuggestions.map { suggestion in
                 RemoteAssetPendingSuggestion(
@@ -2346,6 +2708,7 @@ actor RemoteCatalogFacade {
                 case .untagged: .untagged
                 }
             }(),
+            favorite: request.favorite == .favorited ? .favorited : .any,
             searchText: request.searchText
         )
     }
@@ -2594,7 +2957,8 @@ actor RemoteCatalogFacade {
 
     private static func mapLibrarySlimmingRecycleEntry(
         _ entry: RecycleEntryRecord,
-        sourceDisplayName: String
+        sourceDisplayName: String,
+        favorite: MediaFavoriteState?
     ) -> RemoteLibrarySlimmingRecycleEntry {
         let resolution: RemoteLibrarySlimmingRecycleResolution = if entry.sourceKind == .photos,
                                                                     entry.state == .recycled
@@ -2648,7 +3012,8 @@ actor RemoteCatalogFacade {
             }(),
             errorCode: entry.errorCode,
             resolution: resolution,
-            availableActions: actions
+            availableActions: actions,
+            favorite: favorite.map(Self.mapFavorite)
         )
     }
 
@@ -2859,7 +3224,10 @@ actor RemoteCatalogFacade {
 
     private static func mapLibrarySlimmingCluster(
         _ cluster: SlimmingCluster,
-        isSeedOnlyResult: Bool
+        isSeedOnlyResult: Bool,
+        reviewDisposition: LibrarySlimmingClusterReviewDisposition?,
+        originalMemberCount: Int,
+        isHistoricalProcessedRecord: Bool
     ) -> RemoteLibrarySlimmingCluster {
         RemoteLibrarySlimmingCluster(
             id: cluster.id,
@@ -2894,7 +3262,16 @@ actor RemoteCatalogFacade {
                         cluster.modelIdentity.revisionCaption
                     )
                 }
-            }()
+            }(),
+            reviewDisposition: {
+                switch reviewDisposition {
+                case .confirmed: .confirmed
+                case .ignored: .ignored
+                case nil: nil
+                }
+            }(),
+            originalMemberCount: originalMemberCount,
+            isHistoricalProcessedRecord: isHistoricalProcessedRecord
         )
     }
 
@@ -3205,6 +3582,68 @@ actor RemoteCatalogFacade {
         )
     }
 
+    private static func mapLibrarySuggestionSnapshot(
+        _ snapshot: LibrarySuggestionWorkspaceSnapshot
+    ) -> RemoteLibrarySuggestionSnapshot {
+        RemoteLibrarySuggestionSnapshot(
+            mediaKind: snapshot.mediaKind == .video ? .video : .image,
+            service: RemoteLibrarySuggestionService(
+                state: {
+                    switch snapshot.service.state {
+                    case .unchecked: .unchecked
+                    case .ready: .ready
+                    case .degraded: .degraded
+                    case .unavailable: .unavailable
+                    }
+                }(),
+                serviceVersion: snapshot.service.serviceVersion,
+                provider: snapshot.service.provider,
+                modelID: snapshot.service.modelID
+            ),
+            standardAvailable: snapshot.standardAvailable,
+            personalMode: {
+                switch snapshot.personalMode {
+                case .unavailable: .unavailable
+                case .sample: .sample
+                case .fullLibrary: .fullLibrary
+                }
+            }(),
+            standardJob: snapshot.standardJob.map(Self.mapLibrarySuggestionJob),
+            personalJob: snapshot.personalJob.map(Self.mapLibrarySuggestionJob)
+        )
+    }
+
+    private static func mapLibrarySuggestionJob(
+        _ job: LibrarySuggestionJobSnapshot
+    ) -> RemoteLibrarySuggestionJob {
+        RemoteLibrarySuggestionJob(
+            jobID: job.jobID,
+            state: {
+                switch job.state {
+                case .pending: .pending
+                case .running: .running
+                case .paused: .paused
+                case .retryableFailed: .retryableFailed
+                case .completed: .completed
+                case .terminalFailed: .terminalFailed
+                case .cancelled: .cancelled
+                }
+            }(),
+            checkedCount: job.checkedCount,
+            totalCount: job.totalCount,
+            suggestedCount: job.suggestedCount,
+            skippedCount: job.skippedCount,
+            lastErrorCode: job.lastErrorCode?.rawValue,
+            availableActions: job.availableActions.map {
+                switch $0 {
+                case .pause: .pause
+                case .resume: .resume
+                case .cancel: .cancel
+                }
+            }
+        )
+    }
+
     private static func mapSampleSuggestionActivity(
         _ activity: SampleSuggestionActivitySnapshot
     ) -> RemoteSampleSuggestionActivity {
@@ -3319,6 +3758,23 @@ actor RemoteCatalogFacade {
         }
     }
 
+    private static func mapLibrarySuggestionError(_ error: Error) -> Error {
+        if let apiError = error as? RemoteAPIError { return apiError }
+        guard let commandError = error as? TrainingCommandError else {
+            return RemoteAPIError(code: .internalError, message: "全库模型建议处理失败")
+        }
+        switch commandError {
+        case .unavailable:
+            return RemoteAPIError(code: .notFound, message: "本地模型服务或当前建议能力不可用")
+        case .invalidSelection, .insufficientSamples:
+            return RemoteAPIError(code: .badRequest, message: "模型身份、媒体类型或来源范围无效")
+        case .activeConflict:
+            return RemoteAPIError(code: .conflict, message: "已有标准或个人模型建议任务正在运行")
+        case .activityNotFound:
+            return RemoteAPIError(code: .notFound, message: "模型建议任务不存在或已结束")
+        }
+    }
+
     private static func mapSampleSuggestionError(_ error: Error) -> Error {
         if let apiError = error as? RemoteAPIError { return apiError }
         guard let commandError = error as? TrainingCommandError else {
@@ -3402,7 +3858,10 @@ actor RemoteCatalogFacade {
         return value
     }
 
-    private static func mapReviewItem(_ item: ReviewQueueItemProjection) -> RemoteReviewQueueItem {
+    private static func mapReviewItem(
+        _ item: ReviewQueueItemProjection,
+        favorite: MediaFavoriteState?
+    ) -> RemoteReviewQueueItem {
         RemoteReviewQueueItem(
             assetID: item.assetID,
             fileName: item.fileName,
@@ -3410,7 +3869,8 @@ actor RemoteCatalogFacade {
             acceptedTagCount: item.acceptedTagCount,
             rejectedTagCount: item.rejectedTagCount,
             suggestionOrigin: mapSuggestionOrigin(item.suggestionOrigin),
-            score: item.score
+            score: item.score,
+            favorite: favorite.map(mapFavorite)
         )
     }
 
@@ -3517,7 +3977,8 @@ actor RemoteCatalogFacade {
                         )
                     }
                 )
-            }
+            },
+            maxPendingSuggestionsPerTag: snapshot.maxPendingSuggestionsPerTag
         )
     }
 
@@ -3548,6 +4009,7 @@ actor RemoteCatalogFacade {
         case .setDefault: .setDefault
         case .setOverride: .setOverride
         case .clearOverride: .clearOverride
+        case .prune: .prune
         }
     }
 

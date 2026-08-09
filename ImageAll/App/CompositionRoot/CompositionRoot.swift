@@ -407,6 +407,7 @@ struct CompositionRoot {
             sampleSuggester: appPersonalSampleSuggester,
             centroidTagSuggester: appPersonalTagLibrarySuggester,
             adamWTagSuggester: appPersonalAdamWTagLibrarySuggester,
+            localModelSuggestions: localModelSuggestions,
             sampleSuggestionLimit: {
                 pendingSuggestionCountPreferences.maxPendingSuggestionsPerTag
             },

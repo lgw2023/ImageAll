@@ -172,6 +172,8 @@ public struct RemoteReviewQueueItem: Codable, Sendable, Equatable, Identifiable 
     public let rejectedTagCount: Int
     public let suggestionOrigin: RemoteReviewSuggestionOrigin
     public let score: Double?
+    /// `nil` when decoded from a Host predating favorite projection on review cards.
+    public let favorite: RemoteAssetFavoriteState?
 
     public init(
         assetID: UUID,
@@ -180,7 +182,8 @@ public struct RemoteReviewQueueItem: Codable, Sendable, Equatable, Identifiable 
         acceptedTagCount: Int,
         rejectedTagCount: Int,
         suggestionOrigin: RemoteReviewSuggestionOrigin,
-        score: Double?
+        score: Double?,
+        favorite: RemoteAssetFavoriteState? = nil
     ) {
         self.assetID = assetID
         self.fileName = fileName
@@ -189,6 +192,7 @@ public struct RemoteReviewQueueItem: Codable, Sendable, Equatable, Identifiable 
         self.rejectedTagCount = rejectedTagCount
         self.suggestionOrigin = suggestionOrigin
         self.score = score
+        self.favorite = favorite
     }
 }
 

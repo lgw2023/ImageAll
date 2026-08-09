@@ -47,6 +47,9 @@ final class RemoteGeneralSettingsCommandService:
         if let mutation = update.suggestionThresholdMutation {
             try applySuggestionThresholdMutation(mutation)
         }
+        if let maximumPendingCount = update.maxPendingSuggestionsPerTag {
+            workspace.setMaxPendingSuggestionsPerTag(maximumPendingCount)
+        }
         return makeSnapshot()
     }
 
@@ -83,6 +86,14 @@ final class RemoteGeneralSettingsCommandService:
                     tagID: tagID,
                     method: method
                 )
+            case .prune:
+                guard let tagID = mutation.tagID, mutation.minScore == nil else {
+                    throw GeneralSettingsCommandError.invalidSuggestionMutation
+                }
+                _ = try modelSettings.prunePendingSuggestionsBelowThreshold(
+                    tagID: tagID,
+                    method: method
+                )
             }
         } catch AppModelSettingsMutationError.suggestionThresholdsUnavailable {
             throw GeneralSettingsCommandError.unavailable
@@ -103,7 +114,8 @@ final class RemoteGeneralSettingsCommandService:
             idleThumbnailPrewarmEnabled: idlePrewarmSettings.isEnabled,
             idleThresholdSeconds: Int(IdleThumbnailPrewarmDefaults.idleThresholdSeconds),
             toolbarDisplayMode: Self.mapToolbarMode(toolbarDisplayModeSettings.displayMode),
-            suggestionThresholds: makeSuggestionThresholdSnapshot()
+            suggestionThresholds: makeSuggestionThresholdSnapshot(),
+            maxPendingSuggestionsPerTag: workspace.maxPendingSuggestionsPerTag
         )
     }
 

@@ -95,6 +95,18 @@ public struct RemoteGalleryOverviewAvailabilitySummary: Codable, Sendable, Equat
     }
 }
 
+public struct RemoteGalleryOverviewFavoriteSummary: Codable, Sendable, Equatable, Identifiable {
+    public var id: RemoteAssetMediaKind { mediaKind }
+
+    public let mediaKind: RemoteAssetMediaKind
+    public let count: Int
+
+    public init(mediaKind: RemoteAssetMediaKind, count: Int) {
+        self.mediaKind = mediaKind
+        self.count = count
+    }
+}
+
 public struct RemoteGalleryOverviewSnapshot: Codable, Sendable, Equatable {
     public let media: [RemoteGalleryOverviewMediaSummary]
     public let sources: [RemoteGalleryOverviewSourceSummary]
@@ -104,6 +116,8 @@ public struct RemoteGalleryOverviewSnapshot: Codable, Sendable, Equatable {
     public let undatedCount: Int
     public let positiveLabeledAssetCount: Int
     public let acceptedDecisionCount: Int
+    /// Missing when decoded from a Host predating the favorites capability.
+    public let favorites: [RemoteGalleryOverviewFavoriteSummary]?
 
     public init(
         media: [RemoteGalleryOverviewMediaSummary],
@@ -113,7 +127,8 @@ public struct RemoteGalleryOverviewSnapshot: Codable, Sendable, Equatable {
         availability: [RemoteGalleryOverviewAvailabilitySummary],
         undatedCount: Int,
         positiveLabeledAssetCount: Int,
-        acceptedDecisionCount: Int
+        acceptedDecisionCount: Int,
+        favorites: [RemoteGalleryOverviewFavoriteSummary]? = nil
     ) {
         self.media = media
         self.sources = sources
@@ -123,5 +138,6 @@ public struct RemoteGalleryOverviewSnapshot: Codable, Sendable, Equatable {
         self.undatedCount = undatedCount
         self.positiveLabeledAssetCount = positiveLabeledAssetCount
         self.acceptedDecisionCount = acceptedDecisionCount
+        self.favorites = favorites
     }
 }

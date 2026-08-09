@@ -143,6 +143,7 @@ actor RemoteTrainingCommandService: RemoteTrainingCommandPort {
     private let sampleSuggester: (any AppPersonalSampleSuggesting)?
     private let centroidTagSuggester: (any AppPersonalTagLibrarySuggesting)?
     private let adamWTagSuggester: (any AppPersonalTagLibrarySuggesting)?
+    private let localModelSuggestions: LocalModelSuggestionRuntime?
     private let sampleSuggestionLimit: @Sendable () -> Int
     private let tagSuggestionMinimumScore:
         @Sendable (UUID, TagLibrarySuggestionMethod) throws -> Double
@@ -166,6 +167,14 @@ actor RemoteTrainingCommandService: RemoteTrainingCommandPort {
     private var tagSuggestionActivitiesByID: [UUID: TagLibrarySuggestionActivitySnapshot] = [:]
     private var tagSuggestionTasks: [UUID: Task<Void, Never>] = [:]
     private var activeTagSuggestionOperationID: UUID?
+    private var acceptedLibrarySuggestionCommands: [UUID: LibrarySuggestionCommand] = [:]
+    private var librarySuggestionReceipts: [UUID: LibrarySuggestionReceipt] = [:]
+    private var librarySuggestionService = LibrarySuggestionServiceSnapshot(
+        state: .unchecked,
+        serviceVersion: nil,
+        provider: nil,
+        modelID: nil
+    )
 
     init(
         catalog: any RemoteCatalogServing,
@@ -176,6 +185,7 @@ actor RemoteTrainingCommandService: RemoteTrainingCommandPort {
         sampleSuggester: (any AppPersonalSampleSuggesting)? = nil,
         centroidTagSuggester: (any AppPersonalTagLibrarySuggesting)? = nil,
         adamWTagSuggester: (any AppPersonalTagLibrarySuggesting)? = nil,
+        localModelSuggestions: LocalModelSuggestionRuntime? = nil,
         sampleSuggestionLimit: @escaping @Sendable () -> Int = {
             AppPersonalSampleSuggestionLimits.defaultSampleCount
         },
@@ -192,6 +202,7 @@ actor RemoteTrainingCommandService: RemoteTrainingCommandPort {
         self.sampleSuggester = sampleSuggester
         self.centroidTagSuggester = centroidTagSuggester
         self.adamWTagSuggester = adamWTagSuggester
+        self.localModelSuggestions = localModelSuggestions
         self.sampleSuggestionLimit = sampleSuggestionLimit
         self.tagSuggestionMinimumScore = tagSuggestionMinimumScore
         self.trainingActivityStore = trainingActivityStore
@@ -201,6 +212,263 @@ actor RemoteTrainingCommandService: RemoteTrainingCommandPort {
         ) ?? []
         activitiesByOperationID = restoredActivities.reduce(into: [:]) {
             $0[$1.operationID] = $1
+        }
+    }
+
+    func librarySuggestions(
+        mediaKind: MediaKind,
+        refreshServiceHealth: Bool
+    ) async throws -> LibrarySuggestionWorkspaceSnapshot {
+        if refreshServiceHealth || librarySuggestionService.state == .unchecked {
+            librarySuggestionService = await refreshLibrarySuggestionServiceHealth()
+        }
+        let activities = try catalog.fetchJobActivity()
+        let activitiesByID = Dictionary(uniqueKeysWithValues: activities.map { ($0.id, $0) })
+        let standardProjection = try review.standardLibrarySuggestionJob(mediaKind: mediaKind)
+        let personalProjection = try review.personalLibrarySuggestionJob(mediaKind: mediaKind)
+        return LibrarySuggestionWorkspaceSnapshot(
+            mediaKind: mediaKind,
+            service: librarySuggestionService,
+            standardAvailable: mediaKind == .image && localModelSuggestions != nil,
+            personalMode: {
+                if mediaKind != .image { return .unavailable }
+                if localModelSuggestions != nil { return .fullLibrary }
+                if sampleSuggester != nil, embeddingCache != nil { return .sample }
+                return .unavailable
+            }(),
+            standardJob: standardProjection.map {
+                Self.mapLibrarySuggestionJob($0, activity: activitiesByID[$0.id])
+            },
+            personalJob: personalProjection.map {
+                Self.mapLibrarySuggestionJob($0, activity: activitiesByID[$0.id])
+            }
+        )
+    }
+
+    func generateLibrarySuggestions(
+        _ command: LibrarySuggestionCommand
+    ) async throws -> LibrarySuggestionReceipt {
+        if let accepted = acceptedLibrarySuggestionCommands[command.operationID] {
+            guard accepted == command,
+                  let receipt = librarySuggestionReceipts[command.operationID]
+            else {
+                throw TrainingCommandError.activeConflict
+            }
+            return LibrarySuggestionReceipt(
+                operationID: receipt.operationID,
+                track: receipt.track,
+                jobID: receipt.jobID,
+                replayed: true
+            )
+        }
+        guard command.mediaKind == .image, let runtime = localModelSuggestions else {
+            throw TrainingCommandError.unavailable
+        }
+        let sourceIDs = try validatedLibrarySuggestionSourceIDs(command.sourceIDs)
+        let existingStandard = try review.standardLibrarySuggestionJob(mediaKind: command.mediaKind)
+        let existingPersonal = try review.personalLibrarySuggestionJob(mediaKind: command.mediaKind)
+        guard !Self.isActiveLibrarySuggestionJob(existingStandard?.state),
+              !Self.isActiveLibrarySuggestionJob(existingPersonal?.state),
+              activeSampleSuggestionOperationID == nil,
+              activeTagSuggestionOperationID == nil,
+              activePersonalMethods.isEmpty
+        else {
+            throw TrainingCommandError.activeConflict
+        }
+
+        let jobID: UUID
+        do {
+            switch command.track {
+            case .standard:
+                let availability = try await runtime.client.standardCapability()
+                guard case let .available(capability) = availability else {
+                    throw TrainingCommandError.unavailable
+                }
+                let package = try Self.approvedStandardPackage(for: capability)
+                try catalog.installStandardOntologyPackage(package)
+                jobID = try review.enqueueStandardLibrarySuggestions(
+                    mediaKind: command.mediaKind,
+                    target: capability.target,
+                    sourceIDs: sourceIDs
+                )
+            case .personal:
+                let availability = try await runtime.client.personalCapability()
+                guard case let .available(capability) = availability else {
+                    throw TrainingCommandError.unavailable
+                }
+                try Self.validatePersonalCapability(
+                    capability,
+                    catalogScopeID: runtime.catalogScopeID,
+                    mediaKind: command.mediaKind,
+                    activeTagIDs: Set(
+                        try catalog.listTags().filter { $0.state == .active }.map(\.id)
+                    )
+                )
+                jobID = try review.enqueuePersonalLibrarySuggestions(
+                    capability: capability,
+                    sourceIDs: sourceIDs
+                )
+            }
+        } catch PersonalizationReviewError.activeJobConflict {
+            throw TrainingCommandError.activeConflict
+        } catch LocalModelSuggestionClientError.serviceUnavailable {
+            throw TrainingCommandError.unavailable
+        } catch LocalModelSuggestionClientError.identityMismatch {
+            throw TrainingCommandError.invalidSelection
+        } catch let LocalModelSuggestionClientError.rejected(statusCode, _)
+            where statusCode == 503
+        {
+            throw TrainingCommandError.unavailable
+        }
+
+        let receipt = LibrarySuggestionReceipt(
+            operationID: command.operationID,
+            track: command.track,
+            jobID: jobID,
+            replayed: false
+        )
+        acceptedLibrarySuggestionCommands[command.operationID] = command
+        librarySuggestionReceipts[command.operationID] = receipt
+        await ensureSuggestionRunnerRunning()
+        return receipt
+    }
+
+    private func refreshLibrarySuggestionServiceHealth() async -> LibrarySuggestionServiceSnapshot {
+        guard let client = localModelSuggestions?.client else {
+            return LibrarySuggestionServiceSnapshot(
+                state: .unavailable,
+                serviceVersion: nil,
+                provider: nil,
+                modelID: nil
+            )
+        }
+        do {
+            switch try await client.serviceHealth() {
+            case let .ready(serviceVersion, provider):
+                return LibrarySuggestionServiceSnapshot(
+                    state: .ready,
+                    serviceVersion: serviceVersion,
+                    provider: provider.provider,
+                    modelID: provider.modelID
+                )
+            case let .degraded(serviceVersion):
+                return LibrarySuggestionServiceSnapshot(
+                    state: .degraded,
+                    serviceVersion: serviceVersion,
+                    provider: nil,
+                    modelID: nil
+                )
+            }
+        } catch {
+            return LibrarySuggestionServiceSnapshot(
+                state: .unavailable,
+                serviceVersion: nil,
+                provider: nil,
+                modelID: nil
+            )
+        }
+    }
+
+    private func validatedLibrarySuggestionSourceIDs(_ requested: [UUID]?) throws -> [UUID]? {
+        guard let requested else { return nil }
+        guard !requested.isEmpty, Set(requested).count == requested.count else {
+            throw TrainingCommandError.invalidSelection
+        }
+        let activeSourceIDs = Set(try setup(mediaKind: .image).sources.map(\.id))
+        guard Set(requested).isSubset(of: activeSourceIDs) else {
+            throw TrainingCommandError.invalidSelection
+        }
+        return requested.sorted { $0.uuidString.lowercased() < $1.uuidString.lowercased() }
+    }
+
+    private static func isActiveLibrarySuggestionJob(_ state: JobState?) -> Bool {
+        guard let state else { return false }
+        return [.pending, .running, .paused, .retryableFailed].contains(state)
+    }
+
+    private static func mapLibrarySuggestionJob(
+        _ projection: StandardLibrarySuggestionJobProjection,
+        activity: JobActivityItem?
+    ) -> LibrarySuggestionJobSnapshot {
+        LibrarySuggestionJobSnapshot(
+            jobID: projection.id,
+            state: projection.state,
+            checkedCount: projection.checkedCount,
+            totalCount: projection.totalCount,
+            suggestedCount: projection.suggestedCount,
+            skippedCount: projection.skippedCount,
+            lastErrorCode: projection.lastErrorCode,
+            availableActions: activity?.availableActions ?? []
+        )
+    }
+
+    private static func mapLibrarySuggestionJob(
+        _ projection: PersonalLibrarySuggestionJobProjection,
+        activity: JobActivityItem?
+    ) -> LibrarySuggestionJobSnapshot {
+        LibrarySuggestionJobSnapshot(
+            jobID: projection.id,
+            state: projection.state,
+            checkedCount: projection.checkedCount,
+            totalCount: projection.totalCount,
+            suggestedCount: projection.suggestedCount,
+            skippedCount: projection.skippedCount,
+            lastErrorCode: projection.lastErrorCode,
+            availableActions: activity?.availableActions ?? []
+        )
+    }
+
+    private static func validatePersonalCapability(
+        _ capability: PersonalModelSuggestionCapability,
+        catalogScopeID: String,
+        mediaKind: MediaKind,
+        activeTagIDs: Set<UUID>
+    ) throws {
+        let target = capability.target
+        guard target.catalogScopeID == catalogScopeID,
+              target.mediaKind == mediaKind,
+              !target.bundleID.isEmpty,
+              !target.bundleRevision.isEmpty,
+              !target.provider.isEmpty,
+              !target.modelID.isEmpty,
+              !target.modelRevision.isEmpty,
+              !target.preprocessingRevision.isEmpty,
+              target.elementCount > 0,
+              isLowercaseSHA256(target.labelVocabularyRevision),
+              isLowercaseSHA256(target.weightsSHA256),
+              !target.policyRevision.isEmpty,
+              capability.tagIDs.count == 1,
+              Set(capability.tagIDs).isSubset(of: activeTagIDs)
+        else {
+            throw LocalModelSuggestionClientError.identityMismatch
+        }
+    }
+
+    private static func approvedStandardPackage(
+        for capability: StandardModelSuggestionCapability
+    ) throws -> StandardOntologyPackageInput {
+        let package = StandardOntologyCatalog.bundledSceneFixture
+        guard capability.target.standardPackID == package.standardPackID,
+              capability.target.standardPackRevision == package.standardPackRevision,
+              capability.manifestSHA256 == package.manifestSHA256,
+              capability.ontologyID == package.ontologyID,
+              capability.ontologyRevision == package.ontologyRevision,
+              capability.provider == package.provider,
+              capability.modelID == package.modelID,
+              capability.modelRevision == package.modelRevision,
+              capability.preprocessingRevision == package.preprocessingRevision,
+              capability.mappingRevision == package.mappingRevision,
+              capability.policyRevision == package.policyRevision,
+              capability.weightsSHA256 == package.weightsSHA256
+        else {
+            throw LocalModelSuggestionClientError.identityMismatch
+        }
+        return package
+    }
+
+    private static func isLowercaseSHA256(_ value: String) -> Bool {
+        value.count == 64 && value.allSatisfy {
+            ("0" ... "9").contains(String($0)) || ("a" ... "f").contains(String($0))
         }
     }
 
@@ -459,6 +727,20 @@ actor RemoteTrainingCommandService: RemoteTrainingCommandPort {
         else {
             throw TrainingCommandError.invalidSelection
         }
+        if let sourceIDs = command.sourceIDs {
+            guard command.assetIDs.isEmpty,
+                  !sourceIDs.isEmpty,
+                  Set(sourceIDs).count == sourceIDs.count
+            else {
+                throw TrainingCommandError.invalidSelection
+            }
+            let availableSourceIDs = Set(
+                try setup(mediaKind: command.mediaKind).sources.map(\.id)
+            )
+            guard Set(sourceIDs).isSubset(of: availableSourceIDs) else {
+                throw TrainingCommandError.invalidSelection
+            }
+        }
 
         let candidates: [PersonalSuggestionCandidate]
         if command.assetIDs.isEmpty {
@@ -466,7 +748,7 @@ actor RemoteTrainingCommandService: RemoteTrainingCommandPort {
                 mediaKind: command.mediaKind,
                 afterAssetID: nil,
                 limit: limit,
-                sourceIDs: nil,
+                sourceIDs: command.sourceIDs,
                 excludingDecisionsForTagID: nil
             )
         } else {

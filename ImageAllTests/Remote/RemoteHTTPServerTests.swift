@@ -182,6 +182,33 @@ final class RemoteHTTPServerTests: XCTestCase {
             from: actionData
         ).deleted)
         XCTAssertEqual(commands.lastAction, .deleteRecord)
+
+        let clusterID = UUID()
+        let reviewOperationID = UUID()
+        var review = authorizedRequest(
+            path: RemoteHTTPPaths.librarySlimmingClusterReview,
+            method: "POST"
+        )
+        review.httpBody = try JSONEncoder().encode(
+            RemoteLibrarySlimmingClusterReviewRequest(
+                operationID: reviewOperationID,
+                jobID: jobID,
+                clusterID: clusterID,
+                disposition: .confirmed
+            )
+        )
+        let (reviewData, reviewResponse) = try await URLSession.shared.data(for: review)
+        XCTAssertEqual(try XCTUnwrap(reviewResponse as? HTTPURLResponse).statusCode, 200)
+        let reviewResult = try JSONDecoder().decode(
+            RemoteLibrarySlimmingClusterReviewResponse.self,
+            from: reviewData
+        )
+        XCTAssertEqual(reviewResult.operationID, reviewOperationID)
+        XCTAssertEqual(reviewResult.clusterID, clusterID)
+        XCTAssertEqual(reviewResult.disposition, .confirmed)
+        XCTAssertEqual(commands.lastClusterReviewJobID, jobID)
+        XCTAssertEqual(commands.lastClusterReviewClusterID, clusterID)
+        XCTAssertEqual(commands.lastClusterReviewDisposition, .confirmed)
     }
 
     func testLibrarySlimmingRecycleRoutesReturnSafeProjectionAndMacApprovalReceipt() async throws {
@@ -205,7 +232,7 @@ final class RemoteHTTPServerTests: XCTestCase {
 
         let (snapshotData, snapshotResponse) = try await URLSession.shared.data(
             for: authorizedRequest(
-                path: "\(RemoteHTTPPaths.librarySlimmingRecycle)?mediaKind=image&limit=60"
+                path: "\(RemoteHTTPPaths.librarySlimmingRecycle)?mediaKind=image&scope=files&limit=60"
             )
         )
         XCTAssertEqual(try XCTUnwrap(snapshotResponse as? HTTPURLResponse).statusCode, 200)
@@ -215,6 +242,7 @@ final class RemoteHTTPServerTests: XCTestCase {
         )
         XCTAssertEqual(snapshot.entries.first?.id, commands.recycleEntryID)
         XCTAssertEqual(snapshot.entries.first?.availableActions, [.restore, .purge])
+        XCTAssertEqual(snapshot.scopeCounts?.files, 1)
         let json = try XCTUnwrap(String(data: snapshotData, encoding: .utf8))
         XCTAssertFalse(json.contains("private/original"))
         XCTAssertFalse(json.contains("private/quarantine"))
@@ -1112,6 +1140,114 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertEqual(commands.cancelCallCount, 1)
     }
 
+    func testLibrarySuggestionRoutesExposeHostSnapshotAndLaunchScope() async throws {
+        let port = UInt16.random(in: 19_000...29_000)
+        let sourceID = UUID()
+        let jobID = UUID()
+        let commands = RemoteHTTPTrainingCommandStub(
+            setupSnapshot: TrainingCommandSetupSnapshot(
+                mediaKind: .image,
+                tags: [],
+                sources: [],
+                supportsPersonalCentroid: false,
+                supportsPersonalAdamW: false
+            ),
+            receipt: TrainingLaunchReceipt(
+                operationID: UUID(),
+                method: .featureKnn,
+                acceptedAtMs: 0,
+                scheduledTagCount: 0,
+                jobID: nil
+            ),
+            librarySuggestionSnapshot: LibrarySuggestionWorkspaceSnapshot(
+                mediaKind: .video,
+                service: LibrarySuggestionServiceSnapshot(
+                    state: .ready,
+                    serviceVersion: "1.2.3",
+                    provider: "coreml",
+                    modelID: "scene-personal-v1"
+                ),
+                standardAvailable: true,
+                personalMode: .fullLibrary,
+                standardJob: LibrarySuggestionJobSnapshot(
+                    jobID: jobID,
+                    state: .running,
+                    checkedCount: 12,
+                    totalCount: 30,
+                    suggestedCount: 4,
+                    skippedCount: 1,
+                    lastErrorCode: nil,
+                    availableActions: [.pause, .cancel]
+                ),
+                personalJob: nil
+            ),
+            librarySuggestionReceipt: LibrarySuggestionReceipt(
+                operationID: UUID(),
+                track: .personal,
+                jobID: jobID,
+                replayed: false
+            )
+        )
+        let (server, _) = makeServer(port: port, trainingCommands: commands)
+        try await server.start()
+        try await Task.sleep(nanoseconds: 150_000_000)
+        defer { Task { await server.stop() } }
+
+        func authorizedRequest(path: String, method: String = "GET") -> URLRequest {
+            var request = URLRequest(url: URL(string: "http://127.0.0.1:\(port)\(path)")!)
+            request.httpMethod = method
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.setValue(
+                "Bearer \(Self.legacyDebugToken)",
+                forHTTPHeaderField: "Authorization"
+            )
+            return request
+        }
+
+        let (snapshotData, snapshotResponse) = try await URLSession.shared.data(
+            for: authorizedRequest(
+                path: "\(RemoteHTTPPaths.librarySuggestions)?mediaKind=video&refreshServiceHealth=1"
+            )
+        )
+        XCTAssertEqual(try XCTUnwrap(snapshotResponse as? HTTPURLResponse).statusCode, 200)
+        let snapshot = try JSONDecoder().decode(
+            RemoteLibrarySuggestionSnapshot.self,
+            from: snapshotData
+        )
+        XCTAssertEqual(snapshot.mediaKind, .video)
+        XCTAssertEqual(snapshot.service.state, .ready)
+        XCTAssertEqual(snapshot.standardJob?.availableActions, [.pause, .cancel])
+        XCTAssertEqual(commands.librarySuggestionSnapshotCallCount, 1)
+        XCTAssertEqual(commands.lastLibrarySuggestionMediaKind, .video)
+        XCTAssertTrue(commands.lastLibrarySuggestionRefreshHealth)
+
+        let operationID = UUID()
+        var launch = authorizedRequest(
+            path: RemoteHTTPPaths.librarySuggestionRequests,
+            method: "POST"
+        )
+        launch.httpBody = try JSONEncoder().encode(
+            RemoteLibrarySuggestionRequest(
+                operationID: operationID,
+                mediaKind: .video,
+                track: .personal,
+                sourceIDs: [sourceID]
+            )
+        )
+        let (launchData, launchResponse) = try await URLSession.shared.data(for: launch)
+        XCTAssertEqual(try XCTUnwrap(launchResponse as? HTTPURLResponse).statusCode, 202)
+        let response = try JSONDecoder().decode(
+            RemoteLibrarySuggestionResponse.self,
+            from: launchData
+        )
+        XCTAssertEqual(response.operationID, operationID)
+        XCTAssertEqual(response.track, .personal)
+        XCTAssertEqual(response.jobID, jobID)
+        XCTAssertFalse(response.replayed)
+        XCTAssertEqual(commands.librarySuggestionLaunchCallCount, 1)
+        XCTAssertEqual(commands.lastLibrarySuggestionCommand?.sourceIDs, [sourceID])
+    }
+
     func testEmbeddingPreparationRoutesExposeProgressSubmitAndCancel() async throws {
         let port = UInt16.random(in: 19_000...29_000)
         let operationID = UUID()
@@ -1501,6 +1637,72 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertEqual(catalog.createTagCallCount, 1)
     }
 
+    func testFavoriteRouteUsesCatalogMutationOnceAcrossReplay() async throws {
+        let port = UInt16.random(in: 19_000...29_000)
+        let assetIDs = [UUID(), UUID()]
+        let catalog = RemoteHTTPServerTestCatalog()
+        let (server, _) = makeServer(port: port, catalog: catalog)
+        try await server.start()
+        try await Task.sleep(nanoseconds: 150_000_000)
+        defer { Task { await server.stop() } }
+
+        var request = URLRequest(
+            url: URL(string: "http://127.0.0.1:\(port)\(RemoteHTTPPaths.favorites)")!
+        )
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue(
+            "Bearer \(Self.legacyDebugToken)",
+            forHTTPHeaderField: "Authorization"
+        )
+        request.httpBody = try JSONEncoder().encode(
+            RemoteFavoriteMutationRequest(
+                operationID: UUID(),
+                assetIDs: assetIDs,
+                isFavorite: true
+            )
+        )
+
+        let (firstData, firstResponse) = try await URLSession.shared.data(for: request)
+        let (secondData, secondResponse) = try await URLSession.shared.data(for: request)
+
+        XCTAssertEqual(try XCTUnwrap(firstResponse as? HTTPURLResponse).statusCode, 200)
+        XCTAssertEqual(try XCTUnwrap(secondResponse as? HTTPURLResponse).statusCode, 200)
+        let first = try JSONDecoder().decode(RemoteFavoriteMutationResponse.self, from: firstData)
+        let second = try JSONDecoder().decode(RemoteFavoriteMutationResponse.self, from: secondData)
+        XCTAssertEqual(first.changedCount, 2)
+        XCTAssertEqual(first.localOnlyCount, 2)
+        XCTAssertEqual(first.states.map(\.assetID), assetIDs)
+        XCTAssertTrue(first.states.allSatisfy(\.isFavorite))
+        XCTAssertFalse(first.replayed)
+        XCTAssertTrue(second.replayed)
+        XCTAssertEqual(catalog.favoriteMutationCallCount, 1)
+
+        var retryRequest = URLRequest(
+            url: URL(string: "http://127.0.0.1:\(port)\(RemoteHTTPPaths.favoriteSyncRetry)")!
+        )
+        retryRequest.httpMethod = "POST"
+        retryRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        retryRequest.setValue(
+            "Bearer \(Self.legacyDebugToken)",
+            forHTTPHeaderField: "Authorization"
+        )
+        retryRequest.httpBody = try JSONEncoder().encode(
+            RemoteFavoriteSyncRetryRequest(operationID: UUID())
+        )
+        let (retryData, retryResponse) = try await URLSession.shared.data(for: retryRequest)
+        let (replayData, replayResponse) = try await URLSession.shared.data(for: retryRequest)
+        XCTAssertEqual(try XCTUnwrap(retryResponse as? HTTPURLResponse).statusCode, 200)
+        XCTAssertEqual(try XCTUnwrap(replayResponse as? HTTPURLResponse).statusCode, 200)
+        XCTAssertFalse(
+            try JSONDecoder().decode(RemoteFavoriteSyncRetryResponse.self, from: retryData).replayed
+        )
+        XCTAssertTrue(
+            try JSONDecoder().decode(RemoteFavoriteSyncRetryResponse.self, from: replayData).replayed
+        )
+        XCTAssertEqual(catalog.favoriteRetryCallCount, 1)
+    }
+
     func testInstallPresetTagsRouteUsesCatalogOnceAcrossReplay() async throws {
         let port = UInt16.random(in: 19_000...29_000)
         let createdTag = TagListItem(
@@ -1806,6 +2008,10 @@ final class RemoteHTTPServerTests: XCTestCase {
             decoding: try XCTUnwrap(store.asset(for: "/app.js")?.body),
             as: UTF8.self
         )
+        let stylesheet = String(
+            decoding: try XCTUnwrap(store.asset(for: "/app.css")?.body),
+            as: UTF8.self
+        )
         let mediaWorker = String(
             decoding: try XCTUnwrap(store.asset(for: "/service-worker.js")?.body),
             as: UTF8.self
@@ -1876,6 +2082,11 @@ final class RemoteHTTPServerTests: XCTestCase {
             "generateLibrarySuggestionsButton",
             "cancelSampleSuggestionsButton",
             "sampleSuggestionReviewStatus",
+            "reviewLocalModelPanel",
+            "reviewLocalModelStatus",
+            "standardLibrarySuggestionCard",
+            "generateStandardLibrarySuggestionsButton",
+            "personalLibrarySuggestionCard",
             "tagSuggestionDialog",
             "tagSuggestionForm",
             "tagSuggestionSourceOptions",
@@ -1902,6 +2113,7 @@ final class RemoteHTTPServerTests: XCTestCase {
             "slimmingWorkspaceTabs",
             "slimmingMediaKindTabs",
             "slimmingJobList",
+            "slimmingLoadMoreJobsButton",
             "previousSlimmingJobButton",
             "slimmingJobPosition",
             "nextSlimmingJobButton",
@@ -1909,8 +2121,16 @@ final class RemoteHTTPServerTests: XCTestCase {
             "slimmingInspector",
             "slimmingInspectorSummary",
             "slimmingInspectorContent",
+            "slimmingClusterScopes",
             "slimmingClusterList",
+            "slimmingSelectedClusterReview",
+            "slimmingSelectedClusterReviewStatus",
+            "slimmingReprocessClusterButton",
             "slimmingMemberGrid",
+            "slimmingThumbnailLayoutControls",
+            "slimmingThumbnailAspectButton",
+            "slimmingGridDensitySlider",
+            "slimmingNavigatorButton",
             "slimmingSelectionSummary",
             "slimmingSelectionBar",
             "slimmingMoveToRecycleButton",
@@ -1937,11 +2157,20 @@ final class RemoteHTTPServerTests: XCTestCase {
             "resetSlimmingThresholdsButton",
             "launchSlimmingButton",
             "slimmingRecycleBody",
+            "slimmingRecycleScopes",
             "slimmingRecycleSearchInput",
             "slimmingRecycleSourceSelect",
             "slimmingRecycleRequestStatus",
             "slimmingRecycleList",
             "slimmingRecycleLoadMoreButton",
+            "slimmingRecycleEmptyTitle",
+            "slimmingRecycleEmptyMessage",
+            "slimmingMemberContextMenu",
+            "slimmingMemberContextMenuTitle",
+            "slimmingMemberContextMenuActions",
+            "slimmingJobContextMenu",
+            "slimmingJobContextMenuTitle",
+            "slimmingJobContextMenuActions",
             "sourceManagerButton",
             "sourceManagerDialog",
             "sourceConnectFolderButton",
@@ -1983,6 +2212,7 @@ final class RemoteHTTPServerTests: XCTestCase {
             "galleryOverviewTags",
             "galleryOverviewTimeline",
             "lightboxVideo",
+            "lightboxFavoriteButton",
             "lightboxReviewActions",
             "undoTagButton",
             "undoReviewButton",
@@ -2010,10 +2240,13 @@ final class RemoteHTTPServerTests: XCTestCase {
             "/v1/sample-suggestions",
             "/v1/sample-suggestions/requests",
             "/v1/sample-suggestions/requests/${activity.operationID}/actions",
+            "/v1/library-suggestions",
+            "/v1/library-suggestions/requests",
             "/v1/tag-library-suggestions",
             "/v1/tag-library-suggestions/requests",
             "/v1/tag-library-suggestions/requests/${operationID}/actions",
             "/v1/library-slimming/workspace",
+            "/v1/library-slimming/cluster-review",
             "/v1/library-slimming/setup",
             "/v1/library-slimming/launch",
             "/v1/library-slimming/thresholds",
@@ -2050,6 +2283,11 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertTrue(script.contains("function renderWorldMapPlaceTags"))
         XCTAssertTrue(script.contains("function submitWorldMapPlaceTagSearch"))
         XCTAssertTrue(script.contains("function confirmWorldMapPlaceTag"))
+        XCTAssertTrue(script.contains("function syncWorldMapPhotoFavoriteButton"))
+        XCTAssertTrue(script.contains("async function toggleWorldMapPhotoFavorite"))
+        XCTAssertTrue(script.contains("button.dataset.worldMapPhotoFavorite = \"true\""))
+        XCTAssertTrue(stylesheet.contains(".world-map-photo-card"))
+        XCTAssertTrue(stylesheet.contains(".world-map-photo-favorite"))
         XCTAssertTrue(script.contains("function renderGalleryOverview"))
         XCTAssertTrue(script.contains("function drillDownFromGalleryOverview"))
         XCTAssertTrue(script.contains("function renderActiveFilterBar"))
@@ -2075,6 +2313,35 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertTrue(script.contains("preserveUnchangedGrid: true"))
         XCTAssertTrue(script.contains("preserveLoadedWindow: true"))
         XCTAssertTrue(script.contains("syncAssetCardImage"))
+        XCTAssertTrue(script.contains("function assetCardMainButton"))
+        XCTAssertTrue(script.contains("function syncAssetCardFavoriteButton"))
+        XCTAssertTrue(script.contains("async function toggleAssetCardFavorite"))
+        XCTAssertTrue(script.contains("button.dataset.assetCardFavorite = \"true\""))
+        XCTAssertTrue(script.contains("existing.get(asset.id) || document.createElement(\"div\")"))
+        XCTAssertFalse(script.contains("existing.get(asset.id) || document.createElement(\"button\")"))
+        XCTAssertTrue(stylesheet.contains(".asset-card-main"))
+        XCTAssertTrue(stylesheet.contains(".asset-card-favorite"))
+        XCTAssertTrue(script.contains("function reviewCardMainButton"))
+        XCTAssertTrue(script.contains("function syncReviewCardFavoriteButton"))
+        XCTAssertTrue(script.contains("async function toggleReviewCardFavorite"))
+        XCTAssertTrue(script.contains("button.dataset.reviewCardFavorite = \"true\""))
+        XCTAssertTrue(script.contains("existing.get(key) || document.createElement(\"div\")"))
+        XCTAssertTrue(stylesheet.contains(".review-card-main"))
+        XCTAssertTrue(stylesheet.contains(".review-card-favorite"))
+        XCTAssertTrue(script.contains("function slimmingMemberMainButton"))
+        XCTAssertTrue(script.contains("function syncSlimmingMemberFavoriteButton"))
+        XCTAssertTrue(script.contains("async function toggleSlimmingMemberFavorite"))
+        XCTAssertTrue(script.contains("function syncSlimmingRecycleFavoriteButton"))
+        XCTAssertTrue(script.contains("async function toggleSlimmingRecycleFavorite"))
+        XCTAssertTrue(script.contains("function startSlimmingMarqueeSelection"))
+        XCTAssertTrue(script.contains("button.dataset.slimmingMemberFavorite = \"true\""))
+        XCTAssertTrue(script.contains("button.dataset.slimmingRecycleFavorite = \"true\""))
+        XCTAssertTrue(script.contains("红心只用于整理，不会阻止恢复、回收或永久删除"))
+        XCTAssertTrue(stylesheet.contains(".slimming-member-main"))
+        XCTAssertTrue(stylesheet.contains(".slimming-member-favorite"))
+        XCTAssertTrue(stylesheet.contains(".slimming-recycle-favorite"))
+        XCTAssertTrue(stylesheet.contains(".slimming-member-pending-overlay"))
+        XCTAssertTrue(stylesheet.contains("@media (hover: none), (pointer: coarse), (max-width: 640px)"))
         XCTAssertTrue(script.contains("button.dataset.imageKey === imageKey"))
         XCTAssertTrue(script.contains("syncAssetCardPosition(button, index)"))
         XCTAssertFalse(script.contains("elements.assetGrid.append(button);"))
@@ -2127,6 +2394,27 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertTrue(script.contains("submitTrainingSetup"))
         XCTAssertTrue(script.contains("renderSlimmingWorkspace"))
         XCTAssertTrue(script.contains("selectSlimmingMember"))
+        XCTAssertTrue(script.contains("showSlimmingMemberContextMenu"))
+        XCTAssertTrue(script.contains("data-slimming-member-context-action"))
+        XCTAssertTrue(script.contains("renderSlimmingClusterScopes"))
+        XCTAssertTrue(script.contains("query.set(\"jobLimit\""))
+        XCTAssertTrue(script.contains("expandSlimmingJobWindow"))
+        XCTAssertTrue(script.contains("totalJobCount"))
+        XCTAssertTrue(script.contains("setSlimmingClusterReviewDisposition"))
+        XCTAssertTrue(script.contains("isHistoricalProcessedRecord"))
+        XCTAssertTrue(script.contains("历史处理记录"))
+        XCTAssertTrue(script.contains("showSlimmingJobContextMenu"))
+        XCTAssertTrue(script.contains("data-slimming-job-context-action"))
+        XCTAssertTrue(stylesheet.contains(".slimming-cluster-scopes"))
+        XCTAssertTrue(stylesheet.contains(".slimming-cluster-review-button"))
+        XCTAssertTrue(stylesheet.contains(".slimming-cluster-history-mark"))
+        XCTAssertTrue(script.contains("renderSlimmingRecycleScopes"))
+        XCTAssertTrue(script.contains("toggleSlimmingNavigator"))
+        XCTAssertTrue(script.contains("replacementSlimmingPreviewAssetID"))
+        XCTAssertTrue(script.contains("[\"Backspace\", \"Delete\"].includes(event.key)"))
+        XCTAssertTrue(script.contains("scope: recycle.scope"))
+        XCTAssertTrue(script.contains("state.layout.density"))
+        XCTAssertTrue(script.contains("state.layout.aspectMode"))
         XCTAssertTrue(script.contains("openSlimmingSetupDialog"))
         XCTAssertTrue(script.contains("submitSlimmingSetup"))
         XCTAssertTrue(script.contains("saveSlimmingThresholds"))
@@ -2662,6 +2950,7 @@ final class RemoteHTTPServerTests: XCTestCase {
             URLQueryItem(name: "mediaKinds", value: "video"),
             URLQueryItem(name: "mediaTypes", value: "public.mpeg-4"),
             URLQueryItem(name: "tagPresence", value: "tagged"),
+            URLQueryItem(name: "favorite", value: "favorited"),
         ]
         var request = URLRequest(url: try XCTUnwrap(components.url))
         request.setValue(
@@ -2687,6 +2976,7 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertEqual(filter.mediaKinds, [.video])
         XCTAssertEqual(filter.mediaTypes, ["public.mpeg-4"])
         XCTAssertEqual(filter.tagPresence, .tagged)
+        XCTAssertEqual(filter.favorite, .favorited)
         XCTAssertEqual(catalog.lastRequestedSort, .fileNameAscending)
     }
 
@@ -2817,6 +3107,8 @@ private final class RemoteHTTPTrainingCommandStub: RemoteTrainingCommandPort, @u
     private let sampleActivity: SampleSuggestionActivitySnapshot?
     private let tagSuggestionActivity: TagLibrarySuggestionActivitySnapshot?
     private let tagSuggestionOption: TagLibrarySuggestionTagOption?
+    private let librarySuggestionSnapshot: LibrarySuggestionWorkspaceSnapshot?
+    private let librarySuggestionReceipt: LibrarySuggestionReceipt?
     private var storedLaunchCallCount = 0
     private var storedCancelCallCount = 0
     private var storedLastCommand: TrainingLaunchCommand?
@@ -2826,6 +3118,11 @@ private final class RemoteHTTPTrainingCommandStub: RemoteTrainingCommandPort, @u
     private var storedSampleSuggestionCancelCallCount = 0
     private var storedTagSuggestionSubmitCallCount = 0
     private var storedTagSuggestionCancelCallCount = 0
+    private var storedLibrarySuggestionSnapshotCallCount = 0
+    private var storedLibrarySuggestionLaunchCallCount = 0
+    private var storedLastLibrarySuggestionMediaKind: MediaKind?
+    private var storedLastLibrarySuggestionRefreshHealth = false
+    private var storedLastLibrarySuggestionCommand: LibrarySuggestionCommand?
 
     var launchCallCount: Int { lock.withLock { storedLaunchCallCount } }
     var cancelCallCount: Int { lock.withLock { storedCancelCallCount } }
@@ -2844,6 +3141,21 @@ private final class RemoteHTTPTrainingCommandStub: RemoteTrainingCommandPort, @u
     var tagSuggestionCancelCallCount: Int {
         lock.withLock { storedTagSuggestionCancelCallCount }
     }
+    var librarySuggestionSnapshotCallCount: Int {
+        lock.withLock { storedLibrarySuggestionSnapshotCallCount }
+    }
+    var librarySuggestionLaunchCallCount: Int {
+        lock.withLock { storedLibrarySuggestionLaunchCallCount }
+    }
+    var lastLibrarySuggestionMediaKind: MediaKind? {
+        lock.withLock { storedLastLibrarySuggestionMediaKind }
+    }
+    var lastLibrarySuggestionRefreshHealth: Bool {
+        lock.withLock { storedLastLibrarySuggestionRefreshHealth }
+    }
+    var lastLibrarySuggestionCommand: LibrarySuggestionCommand? {
+        lock.withLock { storedLastLibrarySuggestionCommand }
+    }
 
     init(
         setupSnapshot: TrainingCommandSetupSnapshot,
@@ -2851,7 +3163,9 @@ private final class RemoteHTTPTrainingCommandStub: RemoteTrainingCommandPort, @u
         embeddingActivity: EmbeddingPreparationActivitySnapshot? = nil,
         sampleActivity: SampleSuggestionActivitySnapshot? = nil,
         tagSuggestionActivity: TagLibrarySuggestionActivitySnapshot? = nil,
-        tagSuggestionOption: TagLibrarySuggestionTagOption? = nil
+        tagSuggestionOption: TagLibrarySuggestionTagOption? = nil,
+        librarySuggestionSnapshot: LibrarySuggestionWorkspaceSnapshot? = nil,
+        librarySuggestionReceipt: LibrarySuggestionReceipt? = nil
     ) {
         self.setupSnapshot = setupSnapshot
         self.receipt = receipt
@@ -2859,6 +3173,8 @@ private final class RemoteHTTPTrainingCommandStub: RemoteTrainingCommandPort, @u
         self.sampleActivity = sampleActivity
         self.tagSuggestionActivity = tagSuggestionActivity
         self.tagSuggestionOption = tagSuggestionOption
+        self.librarySuggestionSnapshot = librarySuggestionSnapshot
+        self.librarySuggestionReceipt = librarySuggestionReceipt
     }
 
     func setup(mediaKind: MediaKind) async throws -> TrainingCommandSetupSnapshot {
@@ -3038,6 +3354,39 @@ private final class RemoteHTTPTrainingCommandStub: RemoteTrainingCommandPort, @u
             errorCode: nil
         )
     }
+
+    func librarySuggestions(
+        mediaKind: MediaKind,
+        refreshServiceHealth: Bool
+    ) async throws -> LibrarySuggestionWorkspaceSnapshot {
+        guard let librarySuggestionSnapshot else {
+            throw TrainingCommandError.unavailable
+        }
+        lock.withLock {
+            storedLibrarySuggestionSnapshotCallCount += 1
+            storedLastLibrarySuggestionMediaKind = mediaKind
+            storedLastLibrarySuggestionRefreshHealth = refreshServiceHealth
+        }
+        return librarySuggestionSnapshot
+    }
+
+    func generateLibrarySuggestions(
+        _ command: LibrarySuggestionCommand
+    ) async throws -> LibrarySuggestionReceipt {
+        guard let librarySuggestionReceipt else {
+            throw TrainingCommandError.unavailable
+        }
+        lock.withLock {
+            storedLibrarySuggestionLaunchCallCount += 1
+            storedLastLibrarySuggestionCommand = command
+        }
+        return LibrarySuggestionReceipt(
+            operationID: command.operationID,
+            track: librarySuggestionReceipt.track,
+            jobID: librarySuggestionReceipt.jobID,
+            replayed: librarySuggestionReceipt.replayed
+        )
+    }
 }
 
 @MainActor
@@ -3067,6 +3416,9 @@ private final class RemoteHTTPServerTestCatalog: RemoteCatalogServing, @unchecke
     private var storedPresetInstallCallCount = 0
     private var storedWorldMapLocationBackfillStartCount = 0
     private var storedWorldMapPlaceSearchCount = 0
+    private var storedFavoriteMutationCallCount = 0
+    private var storedFavoriteRetryCallCount = 0
+    private var storedFavoriteStates: [UUID: MediaFavoriteState] = [:]
 
     init(
         previewData: Data = Data(),
@@ -3128,6 +3480,14 @@ private final class RemoteHTTPServerTestCatalog: RemoteCatalogServing, @unchecke
         lock.withLock { storedWorldMapPlaceSearchCount }
     }
 
+    var favoriteMutationCallCount: Int {
+        lock.withLock { storedFavoriteMutationCallCount }
+    }
+
+    var favoriteRetryCallCount: Int {
+        lock.withLock { storedFavoriteRetryCallCount }
+    }
+
     func fetchSources() throws -> [LibrarySourceSummary] { [] }
 
     func listTags() throws -> [TagListItem] { [] }
@@ -3152,6 +3512,56 @@ private final class RemoteHTTPServerTestCatalog: RemoteCatalogServing, @unchecke
         storedLastRequestedSort = sort
         lock.unlock()
         return AssetPageResult(items: [], nextCursor: nil)
+    }
+
+    func fetchFavoriteStates(assetIDs: [UUID]) throws -> [UUID: MediaFavoriteState] {
+        lock.withLock {
+            Dictionary(uniqueKeysWithValues: assetIDs.map { assetID in
+                (assetID, storedFavoriteStates[assetID] ?? .none(assetID: assetID))
+            })
+        }
+    }
+
+    func setFavorite(assetIDs: [UUID], isFavorite: Bool) throws -> FavoriteMutationSummary {
+        lock.withLock {
+            storedFavoriteMutationCallCount += 1
+            var changedCount = 0
+            for assetID in assetIDs {
+                let previous = storedFavoriteStates[assetID] ?? .none(assetID: assetID)
+                if previous.isFavorite != isFavorite { changedCount += 1 }
+                storedFavoriteStates[assetID] = MediaFavoriteState(
+                    assetID: assetID,
+                    isFavorite: isFavorite,
+                    photosObservedValue: nil,
+                    syncStatus: .localOnly,
+                    intentRevision: 1,
+                    requestedAtMs: 123,
+                    photosObservedModifiedAtMs: nil,
+                    lastErrorCode: nil
+                )
+            }
+            return FavoriteMutationSummary(
+                changedCount: changedCount,
+                localOnlyCount: assetIDs.count,
+                syncedCount: 0,
+                pendingCount: 0,
+                failedCount: 0
+            )
+        }
+    }
+
+    func retryPendingFavoriteSync(sourceIDs: Set<UUID>?) throws -> FavoriteMutationSummary {
+        XCTAssertNil(sourceIDs)
+        return lock.withLock {
+            storedFavoriteRetryCallCount += 1
+            return FavoriteMutationSummary(
+                changedCount: 0,
+                localOnlyCount: 0,
+                syncedCount: storedFavoriteStates.count,
+                pendingCount: 0,
+                failedCount: 0
+            )
+        }
     }
 
     func loadThumbnail(assetID: UUID) async throws -> Data {
@@ -3317,6 +3727,9 @@ private final class RemoteHTTPSlimmingCommandStub:
     let recycleAssetID = UUID()
     private var storedLaunchCount = 0
     private var storedLastAction: LibrarySlimmingJobCommandAction?
+    private var storedLastClusterReviewJobID: UUID?
+    private var storedLastClusterReviewClusterID: UUID?
+    private var storedLastClusterReviewDisposition: LibrarySlimmingClusterReviewDisposition?
     private var storedLastRecycleCommand: LibrarySlimmingRecycleCommandRequest?
     private var storedLastRemovalCommand: LibrarySlimmingRemovalCommand?
     private var storedLastIdenticalCleanupCommand: LibrarySlimmingIdenticalCleanupCommand?
@@ -3324,6 +3737,11 @@ private final class RemoteHTTPSlimmingCommandStub:
 
     var launchCount: Int { lock.withLock { storedLaunchCount } }
     var lastAction: LibrarySlimmingJobCommandAction? { lock.withLock { storedLastAction } }
+    var lastClusterReviewJobID: UUID? { lock.withLock { storedLastClusterReviewJobID } }
+    var lastClusterReviewClusterID: UUID? { lock.withLock { storedLastClusterReviewClusterID } }
+    var lastClusterReviewDisposition: LibrarySlimmingClusterReviewDisposition? {
+        lock.withLock { storedLastClusterReviewDisposition }
+    }
     var lastRecycleCommand: LibrarySlimmingRecycleCommandRequest? {
         lock.withLock { storedLastRecycleCommand }
     }
@@ -3395,13 +3813,28 @@ private final class RemoteHTTPSlimmingCommandStub:
         thresholds
     }
 
+    func setClusterReviewDisposition(
+        jobID: UUID,
+        clusterID: UUID,
+        disposition: LibrarySlimmingClusterReviewDisposition?
+    ) async throws -> LibrarySlimmingClusterReviewDisposition? {
+        lock.withLock {
+            storedLastClusterReviewJobID = jobID
+            storedLastClusterReviewClusterID = clusterID
+            storedLastClusterReviewDisposition = disposition
+        }
+        return disposition
+    }
+
     func recycleSnapshot(
         mediaKind: MediaKind,
         sourceID _: UUID?,
         searchText _: String?,
+        scope: LibrarySlimmingRecycleCommandScope,
         limit _: Int
     ) async throws -> LibrarySlimmingRecycleCommandSnapshot {
-        LibrarySlimmingRecycleCommandSnapshot(
+        XCTAssertEqual(scope, .files)
+        return LibrarySlimmingRecycleCommandSnapshot(
             entries: [
                 RecycleEntryRecord(
                     id: recycleEntryID,
@@ -3421,7 +3854,13 @@ private final class RemoteHTTPSlimmingCommandStub:
             ],
             totalCount: 1,
             sourceNames: [sourceID: "Archive"],
-            requests: []
+            requests: [],
+            scopeCounts: LibrarySlimmingRecycleCommandScopeCounts(
+                all: 1,
+                photos: 0,
+                files: 1,
+                attention: 0
+            )
         )
     }
 

@@ -339,6 +339,41 @@ final class AppModelActivationCoordinatorTests: XCTestCase {
         XCTAssertEqual(model.suggestionOverrides.first?.overrides[.featureKnn], 0.42)
     }
 
+    @MainActor
+    func testSettingsPrunesPendingSuggestionsUsingEffectiveThreshold() throws {
+        let tagID = UUID()
+        let thresholds = FakeSuggestionThresholdPort(
+            rows: [
+                SuggestionTagThresholdOverrideRow(
+                    tagID: tagID,
+                    displayName: "猫",
+                    overrides: [.featureKnn: 0.42]
+                ),
+            ],
+            references: [:],
+            pruneResult: 3
+        )
+        let model = AppModelSettingsModel(
+            coordinator: AppModelActivationCoordinator(
+                preferenceStore: UserDefaultsModelEnablementPreferenceStore(
+                    defaults: makeIsolatedUserDefaults()
+                ),
+                serviceFactory: ModelServiceFactoryRecorder().makeMissingService
+            )
+        )
+        model.attachSuggestionThresholds(thresholds)
+
+        let deleted = try model.prunePendingSuggestionsBelowThreshold(
+            tagID: tagID,
+            method: .featureKnn
+        )
+
+        XCTAssertEqual(deleted, 3)
+        XCTAssertEqual(thresholds.lastPrunedTagID, tagID)
+        XCTAssertEqual(thresholds.lastPrunedMethod, .featureKnn)
+        XCTAssertEqual(thresholds.lastPrunedMinScore, 0.42)
+    }
+
     private func makeIsolatedUserDefaults() -> UserDefaults {
         let suiteName = "AppModelActivationCoordinatorTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
@@ -434,13 +469,25 @@ private final class FakeSuggestionThresholdPort: SuggestionThresholdPort, @unche
     private let lock = NSLock()
     private var rows: [SuggestionTagThresholdOverrideRow]
     private let references: [UUID: [SuggestionScoreThresholdMethod: SuggestionThresholdReference]]
+    private let pruneResult: Int
+    private var storedLastPrunedTagID: UUID?
+    private var storedLastPrunedMethod: SuggestionScoreThresholdMethod?
+    private var storedLastPrunedMinScore: Double?
+
+    var lastPrunedTagID: UUID? { lock.withLock { storedLastPrunedTagID } }
+    var lastPrunedMethod: SuggestionScoreThresholdMethod? {
+        lock.withLock { storedLastPrunedMethod }
+    }
+    var lastPrunedMinScore: Double? { lock.withLock { storedLastPrunedMinScore } }
 
     init(
         rows: [SuggestionTagThresholdOverrideRow],
-        references: [UUID: [SuggestionScoreThresholdMethod: SuggestionThresholdReference]]
+        references: [UUID: [SuggestionScoreThresholdMethod: SuggestionThresholdReference]],
+        pruneResult: Int = 0
     ) {
         self.rows = rows
         self.references = references
+        self.pruneResult = pruneResult
     }
 
     func defaults() throws -> SuggestionThresholdDefaults { .factory }
@@ -511,11 +558,16 @@ private final class FakeSuggestionThresholdPort: SuggestionThresholdPort, @unche
     }
 
     func prunePendingBelowThreshold(
-        tagID _: UUID,
-        method _: SuggestionScoreThresholdMethod,
-        minScore _: Double
+        tagID: UUID,
+        method: SuggestionScoreThresholdMethod,
+        minScore: Double
     ) throws -> Int {
-        0
+        lock.withLock {
+            storedLastPrunedTagID = tagID
+            storedLastPrunedMethod = method
+            storedLastPrunedMinScore = minScore
+        }
+        return pruneResult
     }
 
     func overrideValue(

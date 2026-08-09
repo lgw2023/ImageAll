@@ -99,17 +99,20 @@ public struct RemoteWorldMapAsset: Codable, Sendable, Equatable, Identifiable {
     public let fileName: String?
     public let availability: RemoteAssetAvailability
     public let contentRevision: Int
+    public let favorite: RemoteAssetFavoriteState?
 
     public init(
         id: UUID,
         fileName: String?,
         availability: RemoteAssetAvailability,
-        contentRevision: Int
+        contentRevision: Int,
+        favorite: RemoteAssetFavoriteState? = nil
     ) {
         self.id = id
         self.fileName = fileName
         self.availability = availability
         self.contentRevision = contentRevision
+        self.favorite = favorite
     }
 }
 

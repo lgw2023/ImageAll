@@ -666,11 +666,20 @@ public struct RemoteSampleSuggestionRequest: Codable, Equatable, Sendable {
     public let mediaKind: RemoteAssetMediaKind
     /// Empty requests the Mac-style whole-library sample.
     public let assetIDs: [UUID]
+    /// `nil` uses every active source. A non-empty list mirrors the Mac review source filter.
+    /// Selected assets are authoritative and do not use this field.
+    public let sourceIDs: [UUID]?
 
-    public init(operationID: UUID, mediaKind: RemoteAssetMediaKind, assetIDs: [UUID]) {
+    public init(
+        operationID: UUID,
+        mediaKind: RemoteAssetMediaKind,
+        assetIDs: [UUID],
+        sourceIDs: [UUID]? = nil
+    ) {
         self.operationID = operationID
         self.mediaKind = mediaKind
         self.assetIDs = assetIDs
+        self.sourceIDs = sourceIDs
     }
 }
 
@@ -752,6 +761,140 @@ public struct RemoteSampleSuggestionActionResponse: Codable, Equatable, Sendable
 
     public init(activity: RemoteSampleSuggestionActivity) {
         self.activity = activity
+    }
+}
+
+public enum RemoteLibrarySuggestionTrack: String, Codable, Sendable, Equatable {
+    case standard
+    case personal
+}
+
+public enum RemoteLibrarySuggestionPersonalMode: String, Codable, Sendable, Equatable {
+    case unavailable
+    case sample
+    case fullLibrary
+}
+
+public enum RemoteLibrarySuggestionServiceState: String, Codable, Sendable, Equatable {
+    case unchecked
+    case ready
+    case degraded
+    case unavailable
+}
+
+public struct RemoteLibrarySuggestionService: Codable, Sendable, Equatable {
+    public let state: RemoteLibrarySuggestionServiceState
+    public let serviceVersion: String?
+    public let provider: String?
+    public let modelID: String?
+
+    public init(
+        state: RemoteLibrarySuggestionServiceState,
+        serviceVersion: String? = nil,
+        provider: String? = nil,
+        modelID: String? = nil
+    ) {
+        self.state = state
+        self.serviceVersion = serviceVersion
+        self.provider = provider
+        self.modelID = modelID
+    }
+}
+
+public struct RemoteLibrarySuggestionJob: Codable, Sendable, Equatable, Identifiable {
+    public let jobID: UUID
+    public let state: RemoteJobState
+    public let checkedCount: Int
+    public let totalCount: Int?
+    public let suggestedCount: Int
+    public let skippedCount: Int
+    public let lastErrorCode: String?
+    public let availableActions: [RemoteJobAction]
+
+    public var id: UUID { jobID }
+
+    public init(
+        jobID: UUID,
+        state: RemoteJobState,
+        checkedCount: Int,
+        totalCount: Int?,
+        suggestedCount: Int,
+        skippedCount: Int,
+        lastErrorCode: String? = nil,
+        availableActions: [RemoteJobAction] = []
+    ) {
+        self.jobID = jobID
+        self.state = state
+        self.checkedCount = checkedCount
+        self.totalCount = totalCount
+        self.suggestedCount = suggestedCount
+        self.skippedCount = skippedCount
+        self.lastErrorCode = lastErrorCode
+        self.availableActions = availableActions
+    }
+}
+
+public struct RemoteLibrarySuggestionSnapshot: Codable, Sendable, Equatable {
+    public let mediaKind: RemoteAssetMediaKind
+    public let service: RemoteLibrarySuggestionService
+    public let standardAvailable: Bool
+    public let personalMode: RemoteLibrarySuggestionPersonalMode
+    public let standardJob: RemoteLibrarySuggestionJob?
+    public let personalJob: RemoteLibrarySuggestionJob?
+
+    public init(
+        mediaKind: RemoteAssetMediaKind,
+        service: RemoteLibrarySuggestionService,
+        standardAvailable: Bool,
+        personalMode: RemoteLibrarySuggestionPersonalMode,
+        standardJob: RemoteLibrarySuggestionJob? = nil,
+        personalJob: RemoteLibrarySuggestionJob? = nil
+    ) {
+        self.mediaKind = mediaKind
+        self.service = service
+        self.standardAvailable = standardAvailable
+        self.personalMode = personalMode
+        self.standardJob = standardJob
+        self.personalJob = personalJob
+    }
+}
+
+public struct RemoteLibrarySuggestionRequest: Codable, Sendable, Equatable {
+    public let operationID: UUID
+    public let mediaKind: RemoteAssetMediaKind
+    public let track: RemoteLibrarySuggestionTrack
+    /// `nil` means all active sources. Empty is rejected instead of broadening scope.
+    public let sourceIDs: [UUID]?
+
+    public init(
+        operationID: UUID,
+        mediaKind: RemoteAssetMediaKind,
+        track: RemoteLibrarySuggestionTrack,
+        sourceIDs: [UUID]? = nil
+    ) {
+        self.operationID = operationID
+        self.mediaKind = mediaKind
+        self.track = track
+        self.sourceIDs = sourceIDs
+    }
+}
+
+public struct RemoteLibrarySuggestionResponse: Codable, Sendable, Equatable {
+    public let operationID: UUID
+    public let track: RemoteLibrarySuggestionTrack
+    public let jobID: UUID
+    public let replayed: Bool
+
+    public init(
+        operationID: UUID,
+        track: RemoteLibrarySuggestionTrack,
+        jobID: UUID,
+        replayed: Bool
+    ) {
+        self.operationID = operationID
+        self.track = track
+        self.jobID = jobID
+        self.replayed = replayed
     }
 }
 

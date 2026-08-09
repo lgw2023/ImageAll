@@ -155,6 +155,26 @@ final class AppModelSettingsModel: ObservableObject {
         refreshSuggestionThresholds()
     }
 
+    /// Applies the same explicit low-score cleanup used by the native review card.
+    /// The threshold itself is not changed and no library scan is started.
+    func prunePendingSuggestionsBelowThreshold(
+        tagID: UUID,
+        method: SuggestionScoreThresholdMethod
+    ) throws -> Int {
+        guard let suggestionThresholds else {
+            throw AppModelSettingsMutationError.suggestionThresholdsUnavailable
+        }
+        let minScore = try suggestionThresholds.effectiveMinScore(
+            tagID: tagID,
+            method: method
+        )
+        return try suggestionThresholds.prunePendingBelowThreshold(
+            tagID: tagID,
+            method: method,
+            minScore: minScore
+        )
+    }
+
     func suggestionReference(
         tagID: UUID,
         method: SuggestionScoreThresholdMethod

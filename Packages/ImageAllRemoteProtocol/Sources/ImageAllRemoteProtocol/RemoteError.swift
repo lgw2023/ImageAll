@@ -34,6 +34,8 @@ public enum RemoteHTTPPaths {
     public static let tagGroups = "/v1/tag-groups"
     public static let galleryOverview = "/v1/gallery-overview"
     public static let assets = "/v1/assets"
+    public static let favorites = "/v1/favorites"
+    public static let favoriteSyncRetry = "/v1/favorites/retry"
     public static let tagDecisionsBatch = "/v1/tag-decisions/batch"
     public static let tagDecisionsUndo = "/v1/tag-decisions/undo"
     public static let tagsCreateAndApply = "/v1/tags/create-and-apply"
@@ -42,6 +44,8 @@ public enum RemoteHTTPPaths {
     public static let reviewQueue = "/v1/review/queue"
     public static let reviewDecisionsBatch = "/v1/review/decisions/batch"
     public static let reviewDecisionsUndo = "/v1/review/decisions/undo"
+    public static let librarySuggestions = "/v1/library-suggestions"
+    public static let librarySuggestionRequests = "/v1/library-suggestions/requests"
     public static let trainingWorkspace = "/v1/training/workspace"
     public static let trainingSetup = "/v1/training/setup"
     public static let trainingLaunch = "/v1/training/launch"
@@ -59,6 +63,7 @@ public enum RemoteHTTPPaths {
     public static let librarySlimmingRecycle = "/v1/library-slimming/recycle"
     public static let librarySlimmingRecycleRequests = "/v1/library-slimming/recycle/requests"
     public static let librarySlimmingRemovals = "/v1/library-slimming/removals"
+    public static let librarySlimmingClusterReview = "/v1/library-slimming/cluster-review"
     public static let librarySlimmingIdenticalCleanupPlans =
         "/v1/library-slimming/identical-cleanup/plans"
     public static let librarySlimmingIdenticalCleanupRequests =

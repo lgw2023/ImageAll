@@ -207,6 +207,11 @@
               <span id="allMediaLabel">全部照片</span>
               <span id="allAssetCount" class="sidebar-count"></span>
             </button>
+            <button id="favoritesNavigationButton" class="sidebar-row favorite-row hidden" type="button">
+              <span class="sidebar-icon" aria-hidden="true">♥</span>
+              <span>红心收藏</span>
+              <span id="favoritesNavigationCount" class="sidebar-count"></span>
+            </button>
             <button id="untaggedNavigationButton" class="sidebar-row" type="button">
               <span class="sidebar-icon" aria-hidden="true">⊘</span>
               <span>无标签</span>
@@ -310,6 +315,10 @@
               aria-label="缩略图大小">
             <span aria-hidden="true">▦</span>
           </label>
+          <button id="retryFavoriteSyncButton" class="button toolbar-button favorite-action hidden write-action"
+            type="button" title="重试等待中或失败的 Apple Photos 红心同步">
+            <span aria-hidden="true">↻♥</span><span>重试同步</span><span id="retryFavoriteSyncCount" class="count-badge"></span>
+          </button>
           <span id="assetSummary" class="toolbar-summary secondary"></span>
         </div>
 
@@ -428,6 +437,10 @@
           <strong id="selectionSummary">已选择 0 项</strong>
           <button id="selectAllLoadedButton" class="button button-plain" type="button">全选已载入</button>
           <div class="selection-tool-actions" role="group" aria-label="所选项目工具">
+            <button id="favoriteSelectedButton" class="button favorite-action write-action" type="button"
+              title="把所选照片或视频加入红心收藏">♥ 加入红心</button>
+            <button id="unfavoriteSelectedButton" class="button write-action" type="button"
+              title="从红心收藏中移除所选照片或视频">♡ 取消红心</button>
             <button id="prepareSelectedFeaturesButton" class="button" type="button"
               title="在 Mac 上准备所选项目的个人模型特征">准备特征</button>
             <button id="generateSelectedSuggestionsButton" class="button" type="button"
@@ -499,6 +512,12 @@
             </button>
           </header>
           <div class="selection-inspector-tools" role="group" aria-label="所选项目工具">
+            <button id="selectionInspectorFavoriteButton" class="button favorite-action write-action" type="button">
+              ♥ 加入红心
+            </button>
+            <button id="selectionInspectorUnfavoriteButton" class="button write-action" type="button">
+              ♡ 取消红心
+            </button>
             <button id="selectionInspectorPrepareFeaturesButton" class="button" type="button">
               准备特征
             </button>
@@ -558,6 +577,10 @@
               <h2 id="assetFileName">未命名照片</h2>
               <dl id="assetMetadata" class="metadata-list"></dl>
               <div class="inspector-source-actions">
+                <button id="inspectorFavoriteButton" class="button favorite-action write-action" type="button">
+                  <span id="inspectorFavoriteButtonIcon" aria-hidden="true">♡</span>
+                  <span id="inspectorFavoriteButtonLabel">加入红心</span>
+                </button>
                 <button id="openOriginalButton" class="button button-primary source-action" type="button">
                   <span id="openOriginalButtonIcon" aria-hidden="true">↗</span>
                   <span id="openOriginalButtonLabel">在 Mac 上打开原图</span>
@@ -639,6 +662,11 @@
             <article class="green"><span>保守去重后</span><strong id="galleryOverviewUniqueMetric">0</strong><small>只扣除绝对相同副本</small></article>
             <article class="orange"><span>确认冗余</span><strong id="galleryOverviewRedundantMetric">0</strong><small>视觉相似不计入</small></article>
             <article class="teal"><span>已有正样本</span><strong id="galleryOverviewPositiveMetric">0</strong><small id="galleryOverviewAcceptedMetric">0 条人工接受标签</small></article>
+            <button id="galleryOverviewFavoritesMetric" class="gallery-overview-metric favorite hidden" type="button"
+              title="打开红心收藏，并保持当前照片或视频页签">
+              <span>红心收藏</span><strong id="galleryOverviewFavoriteMetric">0</strong>
+              <small>照片 <b id="galleryOverviewFavoriteImageMetric">0</b> · 视频 <b id="galleryOverviewFavoriteVideoMetric">0</b></small>
+            </button>
           </section>
 
           <section class="gallery-overview-panel">
@@ -825,30 +853,126 @@
         </div>
       </div>
       <div class="review-controls">
-        <span id="sampleSuggestionReviewStatus" class="secondary hidden" role="status"></span>
-        <button id="cancelSampleSuggestionsButton" class="button button-plain hidden" type="button">
-          停止抽检
-        </button>
-        <button id="generateLibrarySuggestionsButton" class="button button-primary" type="button"
-          title="像 Mac 端一样从图库抽取照片并生成个人建议">抽取样本并生成建议</button>
         <label id="reviewTagControl" class="hidden">
           <span class="visually-hidden">审核标签</span>
           <select id="reviewTagSelect"></select>
         </label>
-        <label class="checkbox-control">
-          <input id="reviewCurrentSourceOnly" type="checkbox">
-          <span>仅当前来源</span>
-        </label>
+        <div id="reviewSourceFilter" class="review-source-filter">
+          <button id="reviewSourceFilterButton" class="button button-plain review-source-filter-button"
+            type="button" aria-haspopup="menu" aria-expanded="false"
+            title="选择建议生成和待审列表覆盖的来源；不会改变图库侧栏当前浏览位置">
+            <span class="review-source-filter-icon" aria-hidden="true">▤</span>
+            <span id="reviewSourceFilterSummary">显示全部来源的待审核建议</span>
+            <span class="review-source-filter-chevron" aria-hidden="true">⌄</span>
+          </button>
+          <section id="reviewSourceFilterPopover" class="review-source-filter-popover hidden"
+            role="menu" aria-label="审核来源">
+            <div class="review-source-filter-heading">
+              <div>
+                <strong>审核来源</strong>
+                <span>同时用于建议生成和待审列表，不改变图库位置。</span>
+              </div>
+            </div>
+            <button id="selectAllReviewSourcesButton" class="review-source-option review-source-select-all"
+              type="button" role="menuitem">
+              <span class="review-source-check" aria-hidden="true">✓</span>
+              <span>全选来源</span>
+            </button>
+            <div class="review-source-divider" aria-hidden="true"></div>
+            <div id="reviewSourceFilterOptions" class="review-source-filter-options"></div>
+          </section>
+        </div>
+        <div id="reviewSuggestionLimitControl" class="review-suggestion-limit" role="group"
+          aria-label="每标签上限" title="调整每个标签最多保留的待审核建议数；四种建议生成路径共用">
+          <span class="review-suggestion-limit-label">每标签上限</span>
+          <button id="decreaseReviewSuggestionLimitButton" type="button" aria-label="减少每标签上限">−</button>
+          <output id="reviewSuggestionLimitValue" aria-live="polite">500</output>
+          <button id="increaseReviewSuggestionLimitButton" type="button" aria-label="增加每标签上限">＋</button>
+        </div>
         <button id="refreshReviewButton" class="icon-button" type="button" title="刷新审核队列" aria-label="刷新审核队列">↻</button>
       </div>
     </header>
     <section id="reviewOverview" class="review-overview">
-      <div id="reviewOverviewEmpty" class="review-overview-empty hidden">
-        <span aria-hidden="true">✦</span>
-        <strong>暂无待审核标签</strong>
-        <p>先在图库中积累确认与拒绝样本，或等待 Mac 端生成新建议。</p>
+      <div class="review-overview-layout">
+        <aside id="reviewLocalModelPanel" class="review-local-model-panel" aria-label="本地模型">
+          <header class="review-local-model-heading">
+            <span class="review-local-model-mark" aria-hidden="true">⌘</span>
+            <strong>本地模型</strong>
+          </header>
+          <section class="review-local-model-card review-local-model-service-card">
+            <div class="review-local-model-card-heading">
+              <strong>本地模型服务</strong>
+              <span id="reviewLocalModelStateBadge" class="review-local-model-badge">尚未读取</span>
+            </div>
+            <p id="reviewLocalModelStatus" class="review-local-model-status" role="status">
+              正在读取 Mac 模型状态…
+            </p>
+            <p id="reviewLocalModelDetail" class="review-local-model-detail">
+              模型只在这台 Mac 内运行，网页不会下载模型或读取原始照片。
+            </p>
+            <button id="refreshReviewModelStatusButton" class="button button-plain" type="button"
+              title="重新读取 Mac 的 App 内模型和建议任务状态；不会启动服务或下载模型">
+              ↻ 刷新模型状态
+            </button>
+          </section>
+          <section id="standardLibrarySuggestionCard"
+            class="review-local-model-card review-local-model-standard-card hidden">
+            <div class="review-local-model-card-heading">
+              <strong>标准模型</strong>
+              <span class="review-local-model-path">全库建议</span>
+            </div>
+            <p id="standardLibrarySuggestionStatus" class="review-local-model-status" role="status">
+              把标准模型建议加入审核队列。
+            </p>
+            <div class="review-local-model-progress hidden" id="standardLibrarySuggestionProgress"
+              role="progressbar" aria-label="标准模型全库建议进度" aria-valuemin="0" aria-valuemax="100"
+              aria-valuenow="0">
+              <span id="standardLibrarySuggestionProgressBar"></span>
+            </div>
+            <div id="standardLibrarySuggestionActions" class="review-local-model-actions">
+              <button id="generateStandardLibrarySuggestionsButton" class="button button-primary write-action"
+                type="button" title="按顶部来源范围使用 Mac 本地标准模型扫描全库">扫描全库</button>
+            </div>
+            <p class="review-local-model-boundary">
+              按顶部来源筛选；只分析 Mac 可读取的本机预览，云端未下载照片会跳过。
+            </p>
+          </section>
+          <section id="personalLibrarySuggestionCard"
+            class="review-local-model-card review-local-model-personal-card">
+            <div class="review-local-model-card-heading">
+              <strong>个人模型</strong>
+              <span id="personalLibrarySuggestionPath" class="review-local-model-path">App 内抽检</span>
+            </div>
+            <p id="sampleSuggestionReviewStatus" class="review-local-model-status" role="status">
+              最多抽取 500 张照片加入审核队列。
+            </p>
+            <div class="review-local-model-progress hidden" id="sampleSuggestionReviewProgress"
+              role="progressbar" aria-label="个人建议抽检进度" aria-valuemin="0" aria-valuemax="100"
+              aria-valuenow="0">
+              <span id="sampleSuggestionReviewProgressBar"></span>
+            </div>
+            <div id="personalLibrarySuggestionActions" class="review-local-model-actions">
+              <button id="generateLibrarySuggestionsButton" class="button button-primary" type="button"
+                title="按顶部来源筛选，像 Mac 端一样抽取照片并生成个人建议"
+                aria-label="抽取样本并生成建议">抽取样本并生成建议</button>
+              <button id="cancelSampleSuggestionsButton" class="button button-plain hidden" type="button">
+                停止抽检
+              </button>
+            </div>
+            <p class="review-local-model-boundary">
+              按顶部来源筛选抽样；仅使用 Mac 可读取的本机预览，云端未下载照片会跳过。
+            </p>
+          </section>
+        </aside>
+        <div class="review-overview-content">
+          <div id="reviewOverviewEmpty" class="review-overview-empty hidden">
+            <span aria-hidden="true">✦</span>
+            <strong>暂无待审核标签</strong>
+            <p>先在图库中积累确认与拒绝样本，或使用左侧个人模型生成新建议。</p>
+          </div>
+          <div id="reviewOverviewGrid" class="review-overview-grid"></div>
+        </div>
       </div>
-      <div id="reviewOverviewGrid" class="review-overview-grid"></div>
     </section>
     <div id="reviewQueueLayout" class="review-body hidden">
       <aside id="reviewQueuePane" class="review-queue-pane">
@@ -1076,6 +1200,22 @@
           <button type="button" data-slimming-media-kind="image" aria-pressed="true">照片</button>
           <button type="button" data-slimming-media-kind="video" aria-pressed="false">视频</button>
         </div>
+        <div id="slimmingThumbnailLayoutControls" class="slimming-thumbnail-layout-controls"
+          role="group" aria-label="瘦身缩略图显示">
+          <button id="slimmingThumbnailAspectButton" class="button button-compact" type="button"
+            aria-pressed="false" title="完整显示媒体宽高比">适应</button>
+          <label class="slimming-grid-density-control" title="调整瘦身缩略图大小">
+            <span aria-hidden="true">▦</span>
+            <input id="slimmingGridDensitySlider" type="range" min="0" max="8" step="1" value="4"
+              aria-label="瘦身缩略图大小">
+            <span aria-hidden="true">▦</span>
+          </label>
+        </div>
+        <button id="slimmingNavigatorButton" class="icon-button slimming-navigator-button"
+          type="button" aria-pressed="true" aria-label="隐藏分析记录"
+          title="隐藏分析记录与候选分组，让媒体网格使用全部宽度">
+          <span aria-hidden="true">▤</span>
+        </button>
         <button id="newSlimmingAnalysisButton" class="button button-primary write-action" type="button">
           新分析…
         </button>
@@ -1108,6 +1248,9 @@
           </span>
         </div>
         <div id="slimmingJobList" class="slimming-job-list" role="listbox" aria-label="图库瘦身分析记录"></div>
+        <button id="slimmingLoadMoreJobsButton" class="button slimming-load-more hidden" type="button">
+          载入更多记录
+        </button>
         <div id="slimmingEmpty" class="slimming-empty hidden">
           <span aria-hidden="true">◫</span>
           <strong>暂无分析记录</strong>
@@ -1119,7 +1262,22 @@
           <strong>候选分组</strong>
           <span id="slimmingClusterCount" class="secondary">0 组</span>
         </div>
-        <div id="slimmingClusterList" class="slimming-cluster-list" role="listbox"
+        <div id="slimmingClusterScopes" class="slimming-cluster-scopes" role="group"
+          aria-label="候选分组审阅队列">
+          <button type="button" data-slimming-cluster-scope="pending" aria-pressed="true">
+            <span aria-hidden="true">◌</span><span>待处理</span>
+            <span class="slimming-cluster-scope-count" data-slimming-cluster-scope-count="pending">0</span>
+          </button>
+          <button type="button" data-slimming-cluster-scope="confirmed" aria-pressed="false">
+            <span aria-hidden="true">✓</span><span>已确认</span>
+            <span class="slimming-cluster-scope-count" data-slimming-cluster-scope-count="confirmed">0</span>
+          </button>
+          <button type="button" data-slimming-cluster-scope="ignored" aria-pressed="false">
+            <span aria-hidden="true">⊘</span><span>已忽略</span>
+            <span class="slimming-cluster-scope-count" data-slimming-cluster-scope-count="ignored">0</span>
+          </button>
+        </div>
+        <div id="slimmingClusterList" class="slimming-cluster-list" role="list"
           aria-label="相似照片候选分组"></div>
         <button id="slimmingLoadMoreClustersButton" class="button slimming-load-more hidden" type="button">
           显示更多分组
@@ -1132,11 +1290,18 @@
       </aside>
       <main class="slimming-member-pane">
         <header class="slimming-member-heading">
-          <div>
+          <div class="slimming-member-heading-copy">
             <h2 id="slimmingMemberTitle">选择一个候选分组</h2>
             <p id="slimmingMemberSummary" class="secondary">分组中的照片会在这里显示</p>
           </div>
-          <span id="slimmingSelectionSummary" class="secondary"></span>
+          <div class="slimming-member-heading-actions">
+            <span id="slimmingSelectedClusterReview" class="slimming-selected-cluster-review hidden">
+              <span id="slimmingSelectedClusterReviewStatus"></span>
+              <button id="slimmingReprocessClusterButton" class="button button-compact write-action"
+                type="button" title="移回待处理队列；不会修改任何照片">重新处理</button>
+            </span>
+            <span id="slimmingSelectionSummary" class="secondary"></span>
+          </div>
         </header>
         <div id="slimmingJobStatus" class="slimming-job-status hidden" role="status"></div>
         <details id="slimmingInspector" class="slimming-inspector" open>
@@ -1159,18 +1324,34 @@
         </div>
         <div id="slimmingRemovalStatus" class="slimming-removal-status hidden" role="status"></div>
         <div id="slimmingMemberGrid" class="slimming-member-grid" aria-live="polite"></div>
+        <div id="slimmingMarqueeSelection" class="marquee-selection hidden" aria-hidden="true"></div>
         <button id="slimmingLoadMoreMembersButton" class="button slimming-load-more hidden" type="button">
           显示更多成员
         </button>
         <div id="slimmingMemberEmpty" class="slimming-detail-placeholder">
           <span aria-hidden="true">▧</span>
           <strong>选择一个候选分组</strong>
-          <p>可使用普通点击、⌘ 点击、Shift 点击和 ⌘A 选择成员；双击或按空格预览。</p>
+          <p>可使用普通点击、⌘ 点击、Shift 点击、⌘A 和拖拽空白框选成员；双击或按空格预览。</p>
         </div>
       </main>
     </div>
     <section id="slimmingRecycleBody" class="slimming-recycle-body hidden" aria-label="图库瘦身回收站">
       <header class="slimming-recycle-toolbar">
+        <div id="slimmingRecycleScopes" class="slimming-recycle-scopes" role="group"
+          aria-label="回收站状态范围">
+          <button type="button" data-slimming-recycle-scope="all" aria-pressed="true">
+            <span>全部</span><span class="slimming-recycle-scope-count" data-slimming-recycle-scope-count="all">0</span>
+          </button>
+          <button type="button" data-slimming-recycle-scope="photos" aria-pressed="false">
+            <span>Photos</span><span class="slimming-recycle-scope-count" data-slimming-recycle-scope-count="photos">0</span>
+          </button>
+          <button type="button" data-slimming-recycle-scope="files" aria-pressed="false">
+            <span>文件夹</span><span class="slimming-recycle-scope-count" data-slimming-recycle-scope-count="files">0</span>
+          </button>
+          <button type="button" data-slimming-recycle-scope="attention" aria-pressed="false">
+            <span>待处理</span><span class="slimming-recycle-scope-count" data-slimming-recycle-scope-count="attention">0</span>
+          </button>
+        </div>
         <label class="slimming-recycle-search">
           <span aria-hidden="true">⌕</span>
           <input id="slimmingRecycleSearchInput" type="search" placeholder="按文件名搜索" autocomplete="off">
@@ -1190,8 +1371,8 @@
       </button>
       <div id="slimmingRecycleEmpty" class="slimming-empty hidden">
         <span aria-hidden="true">♲</span>
-        <strong>回收站为空</strong>
-        <p>文件夹媒体在 ImageAll 中保留 30 天；Photos 项遵循系统“照片”App 的恢复规则。</p>
+        <strong id="slimmingRecycleEmptyTitle">回收站为空</strong>
+        <p id="slimmingRecycleEmptyMessage">文件夹媒体在 ImageAll 中保留 30 天；Photos 项遵循系统“照片”App 的恢复规则。</p>
       </div>
     </section>
   </section>
@@ -1605,7 +1786,16 @@
         <span aria-hidden="true">‹</span><span id="lightboxBackLabel">返回网格</span>
       </button>
       <span id="lightboxTitle">照片预览</span>
-      <button id="closeLightboxButton" class="icon-button" type="button" aria-label="关闭全屏预览">×</button>
+      <div class="lightbox-toolbar-actions">
+        <button id="lightboxFavoriteButton"
+          class="lightbox-favorite-button write-action hidden" type="button"
+          aria-label="加入红心" title="加入红心">
+          <span id="lightboxFavoriteButtonIcon" aria-hidden="true">♡</span>
+          <span id="lightboxFavoriteSyncBadge" class="lightbox-favorite-sync-badge hidden"
+            aria-hidden="true"></span>
+        </button>
+        <button id="closeLightboxButton" class="icon-button" type="button" aria-label="关闭全屏预览">×</button>
+      </div>
     </header>
     <button id="lightboxPreviousButton" class="lightbox-nav previous" type="button" aria-label="上一张">‹</button>
     <img id="lightboxImage" alt="">
@@ -1754,6 +1944,8 @@
 
   <div id="assetContextMenu" class="context-menu hidden" role="menu" aria-label="项目操作">
     <button type="button" role="menuitem" data-context-action="preview">单图查看 <kbd>Space</kbd></button>
+    <button id="assetFavoriteContextAction" class="favorite-context-action" type="button" role="menuitem"
+      data-context-action="favorite">加入红心</button>
     <button type="button" role="menuitem" data-context-action="toggleSelection">加入或移出选择</button>
     <button type="button" role="menuitem" data-context-action="filterSource">只看此来源</button>
   </div>
@@ -1766,6 +1958,18 @@
   <div id="tagContextMenu" class="context-menu hidden" role="menu" aria-label="标签操作">
     <div id="tagContextMenuTitle" class="context-menu-title"></div>
     <div id="tagContextMenuActions" class="context-menu-actions"></div>
+  </div>
+
+  <div id="slimmingMemberContextMenu" class="context-menu hidden" role="menu"
+    aria-label="图库瘦身成员操作">
+    <div id="slimmingMemberContextMenuTitle" class="context-menu-title"></div>
+    <div id="slimmingMemberContextMenuActions" class="context-menu-actions"></div>
+  </div>
+
+  <div id="slimmingJobContextMenu" class="context-menu hidden" role="menu"
+    aria-label="图库瘦身分析记录操作">
+    <div id="slimmingJobContextMenuTitle" class="context-menu-title"></div>
+    <div id="slimmingJobContextMenuActions" class="context-menu-actions"></div>
   </div>
 
   <div id="toast" class="toast hidden" role="status">

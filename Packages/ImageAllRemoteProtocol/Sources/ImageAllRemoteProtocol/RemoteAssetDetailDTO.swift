@@ -18,6 +18,8 @@ public struct RemoteAssetDetail: Codable, Sendable, Equatable, Identifiable {
     public let height: Int?
     public let durationMs: Int64?
     public let fingerprintSizeBytes: Int64?
+    /// `nil` when decoded from an older Host without the favorites capability.
+    public let favorite: RemoteAssetFavoriteState?
     public let tags: [RemoteInspectorTagState]
     /// `nil` when decoded from an older Host that did not project inspector suggestions.
     public let pendingSuggestions: [RemoteAssetPendingSuggestion]?
@@ -39,6 +41,7 @@ public struct RemoteAssetDetail: Codable, Sendable, Equatable, Identifiable {
         height: Int?,
         durationMs: Int64? = nil,
         fingerprintSizeBytes: Int64? = nil,
+        favorite: RemoteAssetFavoriteState? = nil,
         tags: [RemoteInspectorTagState],
         pendingSuggestions: [RemoteAssetPendingSuggestion]? = nil
     ) {
@@ -58,6 +61,7 @@ public struct RemoteAssetDetail: Codable, Sendable, Equatable, Identifiable {
         self.height = height
         self.durationMs = durationMs
         self.fingerprintSizeBytes = fingerprintSizeBytes
+        self.favorite = favorite
         self.tags = tags
         self.pendingSuggestions = pendingSuggestions
     }
