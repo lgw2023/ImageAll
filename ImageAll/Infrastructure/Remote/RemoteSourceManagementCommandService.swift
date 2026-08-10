@@ -67,6 +67,7 @@ actor RemoteSourceManagementCommandService: RemoteSourceManagementCommandPort {
     private let workspace: any RemoteSourceManagementWorkspacePort
     private let mutationAuthorization: (any FolderMutationAuthorizationPort)?
     private let photosMutation: (any PhotosLibraryMutationPort)?
+    private let workspaceNoticeRecorder: (any RemoteWorkspaceNoticeRecording)?
     private let approvalPresenter: any RemoteSourceNativeApprovalPresenting
     private let clock: any JobClock
     private var requestsByID: [UUID: SourceManagementCommandRequestSnapshot] = [:]
@@ -77,6 +78,7 @@ actor RemoteSourceManagementCommandService: RemoteSourceManagementCommandPort {
         workspace: any RemoteSourceManagementWorkspacePort,
         mutationAuthorization: (any FolderMutationAuthorizationPort)? = nil,
         photosMutation: (any PhotosLibraryMutationPort)? = nil,
+        workspaceNoticeRecorder: (any RemoteWorkspaceNoticeRecording)? = nil,
         approvalPresenter: any RemoteSourceNativeApprovalPresenting =
             AppKitRemoteSourceNativeApprovalPresenter(),
         clock: any JobClock = SystemJobClock()
@@ -84,6 +86,7 @@ actor RemoteSourceManagementCommandService: RemoteSourceManagementCommandPort {
         self.workspace = workspace
         self.mutationAuthorization = mutationAuthorization
         self.photosMutation = photosMutation
+        self.workspaceNoticeRecorder = workspaceNoticeRecorder
         self.approvalPresenter = approvalPresenter
         self.clock = clock
     }
@@ -124,12 +127,22 @@ actor RemoteSourceManagementCommandService: RemoteSourceManagementCommandPort {
         let sources = try workspace.fetchSources()
         let source = try validate(command, sources: sources)
         let requestID = UUID()
+        let sourceDisplayName = switch command.action {
+        case .refreshAll,
+             .prewarmAllThumbnails,
+             .prewarmAllOriginalAspect,
+             .reauthorizeAll,
+             .refreshAllFolderMutationAuthorizations:
+            "全部来源"
+        default:
+            source?.displayName
+        }
         let initial = SourceManagementCommandRequestSnapshot(
             id: requestID,
             operationID: command.operationID,
             action: command.action,
             sourceID: source?.id,
-            sourceDisplayName: source?.displayName,
+            sourceDisplayName: sourceDisplayName,
             phase: command.action.requiresMacInteraction ? .awaitingMac : .running,
             message: command.action.initialMessage,
             updatedAtMs: clock.nowMs
@@ -148,11 +161,13 @@ actor RemoteSourceManagementCommandService: RemoteSourceManagementCommandPort {
     private func cancelActivePrewarm(
         _ command: SourceManagementCommandRequest
     ) throws -> SourceManagementCommandRequestSnapshot {
-        guard let sourceID = command.sourceID,
-              try workspace.fetchSources().contains(where: { $0.id == sourceID })
-        else { throw SourceManagementCommandError.sourceNotFound }
+        if let sourceID = command.sourceID,
+           try !workspace.fetchSources().contains(where: { $0.id == sourceID })
+        {
+            throw SourceManagementCommandError.sourceNotFound
+        }
         guard let active = requestsByID.values.first(where: {
-            $0.sourceID == sourceID
+            $0.sourceID == command.sourceID
                 && $0.action.isPrewarm
                 && [.awaitingMac, .running].contains($0.phase)
         }) else { throw SourceManagementCommandError.invalidAction }
@@ -162,10 +177,16 @@ actor RemoteSourceManagementCommandService: RemoteSourceManagementCommandPort {
             requestID: active.id
         )
         tasksByID[active.id]?.cancel()
+        let message: String
+        if active.action.isAllSourcePrewarm {
+            message = "已取消全部来源缓存任务；已完成 \(active.completedSourceCount ?? 0)/\(active.totalSourceCount ?? 0) 个来源，已生成的缓存仍会保留"
+        } else {
+            message = "已取消“\(active.sourceDisplayName ?? "来源")”的缩略图预热；已生成的缓存仍会保留"
+        }
         finish(
             active.id,
             phase: .cancelled,
-            message: "已取消“\(active.sourceDisplayName ?? "来源")”的缩略图预热"
+            message: message
         )
         return requestsByID[active.id] ?? active
     }
@@ -183,11 +204,36 @@ actor RemoteSourceManagementCommandService: RemoteSourceManagementCommandPort {
                   !sources.contains(where: { $0.kind == .photos })
             else { throw SourceManagementCommandError.invalidAction }
             return nil
+        case .refreshAll:
+            guard command.sourceID == nil,
+                  sources.contains(where: { $0.state == .active })
+            else { throw SourceManagementCommandError.invalidAction }
+            return nil
+        case .prewarmAllThumbnails, .prewarmAllOriginalAspect:
+            guard command.sourceID == nil,
+                  sources.contains(where: {
+                      $0.state == .active || $0.state == .unavailable
+                  })
+            else { throw SourceManagementCommandError.invalidAction }
+            return nil
+        case .reauthorizeAll:
+            guard command.sourceID == nil,
+                  sources.contains(where: Self.requiresAccessAuthorization)
+            else { throw SourceManagementCommandError.invalidAction }
+            return nil
+        case .refreshAllFolderMutationAuthorizations:
+            guard command.sourceID == nil,
+                  sources.contains(where: {
+                      $0.kind == .folder && $0.state == .active
+                  })
+            else { throw SourceManagementCommandError.invalidAction }
+            return nil
         case .rebindPhotos,
              .reauthorize,
              .rescan,
              .syncPhotos,
              .fullRepair,
+             .openPhotosPrivacySettings,
              .requestPhotosWriteAuthorization,
              .refreshFolderMutationAuthorization,
              .prewarmThumbnails,
@@ -208,6 +254,8 @@ actor RemoteSourceManagementCommandService: RemoteSourceManagementCommandPort {
                 source.kind == .folder && source.state == .active
             case .syncPhotos, .fullRepair:
                 source.kind == .photos && source.state == .active
+            case .openPhotosPrivacySettings:
+                source.kind == .photos
             case .requestPhotosWriteAuthorization:
                 source.kind == .photos && source.state == .active
             case .refreshFolderMutationAuthorization:
@@ -219,6 +267,13 @@ actor RemoteSourceManagementCommandService: RemoteSourceManagementCommandPort {
             case .delete:
                 true
             case .connectFolder, .connectPhotos:
+                false
+            case .refreshAll:
+                false
+            case .prewarmAllThumbnails,
+                 .prewarmAllOriginalAspect,
+                 .reauthorizeAll,
+                 .refreshAllFolderMutationAuthorizations:
                 false
             }
             guard valid else { throw SourceManagementCommandError.invalidAction }
@@ -252,6 +307,45 @@ actor RemoteSourceManagementCommandService: RemoteSourceManagementCommandPort {
                 case let .connected(sourceID), let .alreadyConnected(sourceID): sourceID
                 }
                 startPhotosRunner(sourceIDs: [sourceID])
+            case .refreshAll:
+                let activeSources = try workspace.fetchSources().filter { $0.state == .active }
+                guard !activeSources.isEmpty else {
+                    throw SourceManagementCommandError.invalidAction
+                }
+                let folderSourceIDs = Set(
+                    activeSources.lazy.filter { $0.kind == .folder }.map(\.id)
+                )
+                let photosSourceIDs = Set(
+                    activeSources.lazy.filter { $0.kind == .photos }.map(\.id)
+                )
+                if !folderSourceIDs.isEmpty {
+                    try workspace.enqueueReconcile(sourceIDs: Array(folderSourceIDs))
+                    startFolderRunner(sourceIDs: folderSourceIDs)
+                }
+                for sourceID in photosSourceIDs {
+                    try await workspace.syncPhotosLibrary(sourceID: sourceID)
+                }
+                if !photosSourceIDs.isEmpty {
+                    startPhotosRunner(sourceIDs: photosSourceIDs)
+                }
+                finish(
+                    requestID,
+                    phase: .completed,
+                    message: "已为 \(activeSources.count) 个活跃来源排入更新任务"
+                )
+                return
+            case .prewarmAllThumbnails, .prewarmAllOriginalAspect:
+                await runAllSourcePrewarm(
+                    requestID: requestID,
+                    originalAspect: command.action == .prewarmAllOriginalAspect
+                )
+                return
+            case .reauthorizeAll:
+                await runAllSourceReauthorization(requestID: requestID)
+                return
+            case .refreshAllFolderMutationAuthorizations:
+                await runAllFolderMutationAuthorization(requestID: requestID)
+                return
             case .rebindPhotos:
                 guard let source,
                       await approvalPresenter.confirm(.rebindPhotos(sourceName: source.displayName))
@@ -296,6 +390,16 @@ actor RemoteSourceManagementCommandService: RemoteSourceManagementCommandPort {
                 markRunning(requestID, message: "正在排入 Apple Photos 完整修复扫描…")
                 try await workspace.requestPhotosFullRepair(sourceID: source.id)
                 startPhotosRunner(sourceIDs: [source.id])
+            case .openPhotosPrivacySettings:
+                guard await workspace.openPhotosPrivacySettings() else {
+                    throw SourceManagementCommandError.unavailable
+                }
+                finish(
+                    requestID,
+                    phase: .completed,
+                    message: "已在 Mac 上打开照片权限设置"
+                )
+                return
             case .requestPhotosWriteAuthorization:
                 guard let source,
                       await approvalPresenter.confirm(
@@ -383,6 +487,15 @@ actor RemoteSourceManagementCommandService: RemoteSourceManagementCommandPort {
                 message: "未获得 Apple Photos 权限，请在系统设置中允许 ImageAll 访问照片后重试"
             )
         } catch let error as DeleteLibrarySourceError {
+            if case let .unresolvedRecycleEntries(blockers) = error,
+               let source
+            {
+                await workspaceNoticeRecorder?.recordSourceDeletionBlocked(
+                    sourceID: source.id,
+                    displayName: source.displayName,
+                    blockers: blockers
+                )
+            }
             let message = switch error {
             case let .unresolvedRecycleEntries(blockers):
                 "来源仍有 \(blockers.totalCount) 条回收记录需要先在 Mac 端处理"
@@ -400,27 +513,329 @@ actor RemoteSourceManagementCommandService: RemoteSourceManagementCommandPort {
         finish(requestID, phase: .running, message: message, clearTask: false)
     }
 
+    private static func requiresAccessAuthorization(_ source: LibrarySourceSummary) -> Bool {
+        switch source.kind {
+        case .folder:
+            source.state == .unavailable || source.state == .authorizationRequired
+        case .photos:
+            source.state == .authorizationRequired || source.state == .disabled
+        }
+    }
+
+    private func runAllSourceReauthorization(requestID: UUID) async {
+        let targets: [LibrarySourceSummary]
+        do {
+            targets = try workspace.fetchSources().filter(Self.requiresAccessAuthorization)
+        } catch {
+            finish(requestID, phase: .failed, message: "无法读取需要重新授权的来源")
+            return
+        }
+        guard !targets.isEmpty else {
+            finish(requestID, phase: .failed, message: "当前没有需要重新授权的来源")
+            return
+        }
+
+        for (index, source) in targets.enumerated() {
+            updateBatchAuthorizationProgress(
+                requestID,
+                source: source,
+                completedSourceCount: index,
+                totalSourceCount: targets.count,
+                message: "请在 Mac 上重新授权“\(source.displayName)”（来源 \(index + 1)/\(targets.count)）"
+            )
+            do {
+                switch source.kind {
+                case .folder:
+                    switch try await workspace.reauthorizeFolder(sourceID: source.id) {
+                    case .cancelled:
+                        finish(
+                            requestID,
+                            phase: .cancelled,
+                            message: "已停止批量访问授权；完成 \(index)/\(targets.count) 个来源，之前完成的授权仍然有效"
+                        )
+                        return
+                    case .reauthorized:
+                        startFolderRunner(sourceIDs: [source.id])
+                    }
+                case .photos:
+                    try await workspace.reactivatePhotosLibrary(sourceID: source.id)
+                    startPhotosRunner(sourceIDs: [source.id])
+                }
+            } catch {
+                finish(
+                    requestID,
+                    phase: .failed,
+                    message: "“\(source.displayName)”授权失败；已完成 \(index)/\(targets.count) 个来源"
+                )
+                return
+            }
+        }
+
+        updateBatchAuthorizationProgress(
+            requestID,
+            source: targets[targets.count - 1],
+            completedSourceCount: targets.count,
+            totalSourceCount: targets.count,
+            message: "正在完成全部来源访问授权…"
+        )
+        finish(
+            requestID,
+            phase: .completed,
+            message: "已依次完成 \(targets.count) 个来源的访问授权"
+        )
+    }
+
+    private func runAllFolderMutationAuthorization(requestID: UUID) async {
+        guard let mutationAuthorization else {
+            finish(requestID, phase: .failed, message: "当前无法更新文件夹回收权限")
+            return
+        }
+        let targets: [LibrarySourceSummary]
+        do {
+            targets = try workspace.fetchSources().filter {
+                $0.kind == .folder && $0.state == .active
+            }
+        } catch {
+            finish(requestID, phase: .failed, message: "无法读取需要更新回收权限的文件夹来源")
+            return
+        }
+        guard !targets.isEmpty else {
+            finish(requestID, phase: .failed, message: "当前没有可更新回收权限的文件夹来源")
+            return
+        }
+
+        for (index, source) in targets.enumerated() {
+            updateBatchAuthorizationProgress(
+                requestID,
+                source: source,
+                completedSourceCount: index,
+                totalSourceCount: targets.count,
+                message: "请在 Mac 上选择“\(source.displayName)”原文件夹以更新回收权限（来源 \(index + 1)/\(targets.count)）"
+            )
+            do {
+                switch try await mutationAuthorization.authorizeMutation(sourceID: source.id) {
+                case .authorized:
+                    break
+                case .cancelled:
+                    finish(
+                        requestID,
+                        phase: .cancelled,
+                        message: "已停止批量回收权限更新；完成 \(index)/\(targets.count) 个来源，没有立即修改任何照片"
+                    )
+                    return
+                }
+            } catch {
+                finish(
+                    requestID,
+                    phase: .failed,
+                    message: "“\(source.displayName)”回收权限更新失败；已完成 \(index)/\(targets.count) 个来源"
+                )
+                return
+            }
+        }
+
+        updateBatchAuthorizationProgress(
+            requestID,
+            source: targets[targets.count - 1],
+            completedSourceCount: targets.count,
+            totalSourceCount: targets.count,
+            message: "正在完成全部文件夹回收权限更新…"
+        )
+        finish(
+            requestID,
+            phase: .completed,
+            message: "已依次更新 \(targets.count) 个文件夹来源的回收权限；没有立即修改任何照片"
+        )
+    }
+
+    private func updateBatchAuthorizationProgress(
+        _ requestID: UUID,
+        source: LibrarySourceSummary,
+        completedSourceCount: Int,
+        totalSourceCount: Int,
+        message: String
+    ) {
+        guard let current = requestsByID[requestID],
+              [.awaitingMac, .running].contains(current.phase)
+        else { return }
+        requestsByID[requestID] = SourceManagementCommandRequestSnapshot(
+            id: current.id,
+            operationID: current.operationID,
+            action: current.action,
+            sourceID: nil,
+            sourceDisplayName: source.displayName,
+            phase: .awaitingMac,
+            message: message,
+            completedSourceCount: completedSourceCount,
+            totalSourceCount: totalSourceCount,
+            updatedAtMs: clock.nowMs
+        )
+    }
+
+    private struct SourcePrewarmResult {
+        let total: Int
+        let warmed: Int
+        let reused: Int
+        let ineligible: Int
+        let failed: Int
+    }
+
     private func runSourcePrewarm(
         requestID: UUID,
         source: LibrarySourceSummary,
         originalAspect: Bool
     ) async {
-        let kindName = originalAspect ? "原比例缓存" : "网格缩略图"
-        markRunning(requestID, message: "正在统计“\(source.displayName)”需要预热的项目…")
-
-        var assetIDs: [UUID] = []
-        var seenAssetIDs = Set<UUID>()
-        var cursor: AssetPageCursor?
-        var pageCount = 0
-        repeat {
-            guard !Task.isCancelled else {
+        guard let result = await warmSource(
+            requestID: requestID,
+            source: source,
+            originalAspect: originalAspect,
+            completedSourceCount: nil,
+            totalSourceCount: nil
+        ) else {
+            if Task.isCancelled {
                 finishIfActive(
                     requestID,
                     phase: .cancelled,
                     message: "已取消“\(source.displayName)”的缩略图预热"
                 )
+            } else {
+                finish(
+                    requestID,
+                    phase: .failed,
+                    message: "无法读取“\(source.displayName)”的资产清单"
+                )
+            }
+            return
+        }
+        let kindName = originalAspect ? "原比例缓存" : "网格缩略图"
+        finish(
+            requestID,
+            phase: .completed,
+            message: "已完成“\(source.displayName)”的\(kindName)：生成 \(result.warmed)，复用 \(result.reused)，不可处理跳过 \(result.ineligible)，失败 \(result.failed)，共 \(result.total) 项"
+        )
+    }
+
+    private func runAllSourcePrewarm(
+        requestID: UUID,
+        originalAspect: Bool
+    ) async {
+        let sources: [LibrarySourceSummary]
+        do {
+            sources = try workspace.fetchSources().filter {
+                $0.state == .active || $0.state == .unavailable
+            }
+        } catch {
+            finish(requestID, phase: .failed, message: "无法读取全部来源")
+            return
+        }
+        guard !sources.isEmpty else {
+            finish(requestID, phase: .failed, message: "没有可预热的来源")
+            return
+        }
+
+        var totalAssets = 0
+        var totalWarmed = 0
+        var totalReused = 0
+        var totalIneligible = 0
+        var totalFailed = 0
+        var failedSourceCount = 0
+        for (index, source) in sources.enumerated() {
+            guard !Task.isCancelled else {
+                finishIfActive(
+                    requestID,
+                    phase: .cancelled,
+                    message: "已取消全部来源缩略图预热（完成 \(index)/\(sources.count) 个来源）"
+                )
                 return
             }
+            guard let result = await warmSource(
+                requestID: requestID,
+                source: source,
+                originalAspect: originalAspect,
+                completedSourceCount: index,
+                totalSourceCount: sources.count
+            ) else {
+                guard !Task.isCancelled else {
+                    finishIfActive(
+                        requestID,
+                        phase: .cancelled,
+                        message: "已取消全部来源缩略图预热（完成 \(index)/\(sources.count) 个来源）"
+                    )
+                    return
+                }
+                failedSourceCount += 1
+                continue
+            }
+            totalAssets += result.total
+            totalWarmed += result.warmed
+            totalReused += result.reused
+            totalIneligible += result.ineligible
+            totalFailed += result.failed
+            updatePrewarmProgress(
+                requestID,
+                completed: result.total,
+                total: result.total,
+                warmed: result.warmed,
+                reused: result.reused,
+                ineligible: result.ineligible,
+                failed: result.failed,
+                completedSourceCount: index + 1,
+                totalSourceCount: sources.count,
+                message: "已完成“\(source.displayName)”（来源 \(index + 1)/\(sources.count)）"
+            )
+        }
+
+        let kindName = originalAspect ? "原比例缓存" : "网格缩略图"
+        updatePrewarmProgress(
+            requestID,
+            completed: totalAssets,
+            total: totalAssets,
+            warmed: totalWarmed,
+            reused: totalReused,
+            ineligible: totalIneligible,
+            failed: totalFailed,
+            completedSourceCount: sources.count,
+            totalSourceCount: sources.count,
+            message: "正在完成全部来源\(kindName)…"
+        )
+        finish(
+            requestID,
+            phase: .completed,
+            message: "已完成 \(sources.count) 个来源的\(kindName)：共 \(totalAssets) 项，生成 \(totalWarmed)，复用 \(totalReused)，不可处理跳过 \(totalIneligible)，失败 \(totalFailed)，来源失败 \(failedSourceCount)"
+        )
+    }
+
+    private func warmSource(
+        requestID: UUID,
+        source: LibrarySourceSummary,
+        originalAspect: Bool,
+        completedSourceCount: Int?,
+        totalSourceCount: Int?
+    ) async -> SourcePrewarmResult? {
+        let kindName = originalAspect ? "原比例缓存" : "网格缩略图"
+        let sourcePosition = completedSourceCount.flatMap { completed in
+            totalSourceCount.map { "（来源 \(completed + 1)/\($0)）" }
+        } ?? ""
+        updatePrewarmProgress(
+            requestID,
+            completed: 0,
+            total: 0,
+            warmed: 0,
+            reused: 0,
+            ineligible: 0,
+            failed: 0,
+            completedSourceCount: completedSourceCount,
+            totalSourceCount: totalSourceCount,
+            sourceDisplayName: source.displayName,
+            message: "正在统计“\(source.displayName)”需要预热的项目…\(sourcePosition)"
+        )
+
+        var assets: [AssetGridItemProjection] = []
+        var seenAssetIDs = Set<UUID>()
+        var cursor: AssetPageCursor?
+        var pageCount = 0
+        repeat {
+            guard !Task.isCancelled else { return nil }
             pageCount += 1
             guard pageCount <= 100_000 else { break }
             do {
@@ -431,84 +846,71 @@ actor RemoteSourceManagementCommandService: RemoteSourceManagementCommandPort {
                 )
                 guard !page.items.isEmpty else { break }
                 for item in page.items where seenAssetIDs.insert(item.assetID).inserted {
-                    assetIDs.append(item.assetID)
+                    assets.append(item)
                 }
                 let next = page.nextCursor
                 guard next != cursor else { break }
                 cursor = next
             } catch {
-                finish(
-                    requestID,
-                    phase: .failed,
-                    message: "无法读取“\(source.displayName)”的资产清单"
-                )
-                return
+                return nil
             }
         } while cursor != nil
 
-        var assetIDsToWarm = assetIDs
+        var cachedAssetIDs = Set<UUID>()
         if originalAspect {
             do {
-                let cached = try await workspace.cachedOriginalAspectThumbnailAssetIDs(
+                cachedAssetIDs = try await workspace.cachedOriginalAspectThumbnailAssetIDs(
                     sourceID: source.id
                 )
-                assetIDsToWarm.removeAll(where: cached.contains)
             } catch {
-                var uncachedAssetIDs: [UUID] = []
-                uncachedAssetIDs.reserveCapacity(assetIDs.count)
-                for assetID in assetIDs {
-                    guard !Task.isCancelled else {
-                        finishIfActive(
-                            requestID,
-                            phase: .cancelled,
-                            message: "已取消“\(source.displayName)”的缩略图预热"
-                        )
-                        return
-                    }
+                for asset in assets {
+                    guard !Task.isCancelled else { return nil }
                     do {
                         if try await workspace.loadOriginalAspectThumbnailIfCached(
-                            assetID: assetID
-                        ) == nil {
-                            uncachedAssetIDs.append(assetID)
+                            assetID: asset.assetID
+                        ) != nil {
+                            cachedAssetIDs.insert(asset.assetID)
                         }
                     } catch is CancellationError {
-                        finishIfActive(
-                            requestID,
-                            phase: .cancelled,
-                            message: "已取消“\(source.displayName)”的缩略图预热"
-                        )
-                        return
-                    } catch {
-                        // Match the Mac workflow: a failed probe must not block repair.
-                        uncachedAssetIDs.append(assetID)
-                    }
+                        return nil
+                    } catch {}
                 }
-                assetIDsToWarm = uncachedAssetIDs
             }
+        } else {
+            cachedAssetIDs = (try? await workspace.cachedSquareThumbnailAssetIDs(
+                sourceID: source.id
+            )) ?? []
         }
+
+        let listedAssetIDs = Set(assets.map(\.assetID))
+        cachedAssetIDs.formIntersection(listedAssetIDs)
+        let assetsToWarm = assets.filter {
+            !cachedAssetIDs.contains($0.assetID) && Self.canGenerateThumbnail(for: $0)
+        }
+        let reused = cachedAssetIDs.count
+        let ineligible = max(0, assets.count - reused - assetsToWarm.count)
+        let assetIDsToWarm = assetsToWarm.map(\.assetID)
 
         updatePrewarmProgress(
             requestID,
             completed: 0,
             total: assetIDsToWarm.count,
             warmed: 0,
+            reused: reused,
+            ineligible: ineligible,
             failed: 0,
+            completedSourceCount: completedSourceCount,
+            totalSourceCount: totalSourceCount,
+            sourceDisplayName: source.displayName,
             message: assetIDsToWarm.isEmpty
-                ? "“\(source.displayName)”无需生成新的\(kindName)"
-                : "正在预热“\(source.displayName)”的\(kindName) 0 / \(assetIDsToWarm.count)"
+                ? "“\(source.displayName)”无需生成新的\(kindName)\(sourcePosition)"
+                : "正在预热“\(source.displayName)”的\(kindName) 0 / \(assetIDsToWarm.count)\(sourcePosition)"
         )
 
         var warmed = 0
         var failed = 0
         for (index, assetID) in assetIDsToWarm.enumerated() {
-            guard !Task.isCancelled else {
-                finishIfActive(
-                    requestID,
-                    phase: .cancelled,
-                    message: "已取消“\(source.displayName)”的缩略图预热"
-                )
-                return
-            }
+            guard !Task.isCancelled else { return nil }
             do {
                 if originalAspect {
                     _ = try await workspace.prewarmOriginalAspectThumbnail(assetID: assetID)
@@ -517,12 +919,7 @@ actor RemoteSourceManagementCommandService: RemoteSourceManagementCommandPort {
                 }
                 warmed += 1
             } catch is CancellationError {
-                finishIfActive(
-                    requestID,
-                    phase: .cancelled,
-                    message: "已取消“\(source.displayName)”的缩略图预热"
-                )
-                return
+                return nil
             } catch {
                 failed += 1
             }
@@ -532,16 +929,35 @@ actor RemoteSourceManagementCommandService: RemoteSourceManagementCommandPort {
                 completed: completed,
                 total: assetIDsToWarm.count,
                 warmed: warmed,
+                reused: reused,
+                ineligible: ineligible,
                 failed: failed,
-                message: "正在预热“\(source.displayName)”的\(kindName) \(completed) / \(assetIDsToWarm.count)"
+                completedSourceCount: completedSourceCount,
+                totalSourceCount: totalSourceCount,
+                sourceDisplayName: source.displayName,
+                message: "正在预热“\(source.displayName)”的\(kindName) \(completed) / \(assetIDsToWarm.count)\(sourcePosition)"
             )
         }
-
-        finish(
-            requestID,
-            phase: .completed,
-            message: "已完成“\(source.displayName)”的\(kindName)：成功 \(warmed)，失败 \(failed)"
+        return SourcePrewarmResult(
+            total: assets.count,
+            warmed: warmed,
+            reused: reused,
+            ineligible: ineligible,
+            failed: failed
         )
+    }
+
+    private static func canGenerateThumbnail(for asset: AssetGridItemProjection) -> Bool {
+        guard asset.sourceState == .active, asset.availability == .available else {
+            return false
+        }
+        return switch asset.mediaKind {
+        case .image:
+            ApprovedSourceMediaTypes.contains(asset.mediaType)
+        case .video:
+            ApprovedSourceMediaTypes.isVideoMediaType(asset.mediaType)
+                && (asset.durationMs ?? 0) > 0
+        }
     }
 
     private func updatePrewarmProgress(
@@ -549,7 +965,12 @@ actor RemoteSourceManagementCommandService: RemoteSourceManagementCommandPort {
         completed: Int,
         total: Int,
         warmed: Int,
+        reused: Int = 0,
+        ineligible: Int = 0,
         failed: Int,
+        completedSourceCount: Int? = nil,
+        totalSourceCount: Int? = nil,
+        sourceDisplayName: String? = nil,
         message: String
     ) {
         guard let current = requestsByID[requestID],
@@ -560,13 +981,17 @@ actor RemoteSourceManagementCommandService: RemoteSourceManagementCommandPort {
             operationID: current.operationID,
             action: current.action,
             sourceID: current.sourceID,
-            sourceDisplayName: current.sourceDisplayName,
+            sourceDisplayName: sourceDisplayName ?? current.sourceDisplayName,
             phase: .running,
             message: message,
             completedCount: completed,
             totalCount: total,
             warmedCount: warmed,
             failedCount: failed,
+            reusedCount: reused,
+            ineligibleCount: ineligible,
+            completedSourceCount: completedSourceCount,
+            totalSourceCount: totalSourceCount,
             updatedAtMs: clock.nowMs
         )
     }
@@ -601,6 +1026,10 @@ actor RemoteSourceManagementCommandService: RemoteSourceManagementCommandPort {
             totalCount: current.totalCount,
             warmedCount: current.warmedCount,
             failedCount: current.failedCount,
+            reusedCount: current.reusedCount,
+            ineligibleCount: current.ineligibleCount,
+            completedSourceCount: current.completedSourceCount,
+            totalSourceCount: current.totalSourceCount,
             updatedAtMs: clock.nowMs
         )
         if clearTask { tasksByID[requestID] = nil }
@@ -639,15 +1068,21 @@ private extension SourceManagementCommandAction {
         switch self {
         case .connectFolder,
              .connectPhotos,
+             .reauthorizeAll,
+             .refreshAllFolderMutationAuthorizations,
              .rebindPhotos,
              .reauthorize,
              .fullRepair,
+             .openPhotosPrivacySettings,
              .requestPhotosWriteAuthorization,
              .refreshFolderMutationAuthorization,
              .delete:
             true
         case .rescan,
              .syncPhotos,
+             .refreshAll,
+             .prewarmAllThumbnails,
+             .prewarmAllOriginalAspect,
              .prewarmThumbnails,
              .prewarmOriginalAspect,
              .cancelPrewarm:
@@ -656,7 +1091,14 @@ private extension SourceManagementCommandAction {
     }
 
     var isPrewarm: Bool {
-        self == .prewarmThumbnails || self == .prewarmOriginalAspect
+        self == .prewarmThumbnails
+            || self == .prewarmOriginalAspect
+            || self == .prewarmAllThumbnails
+            || self == .prewarmAllOriginalAspect
+    }
+
+    var isAllSourcePrewarm: Bool {
+        self == .prewarmAllThumbnails || self == .prewarmAllOriginalAspect
     }
 
     var initialMessage: String {
@@ -669,11 +1111,17 @@ private extension SourceManagementCommandAction {
         switch self {
         case .connectFolder: "已连接文件夹，后台扫描已开始"
         case .connectPhotos: "已连接 Apple Photos，后台同步已开始"
+        case .refreshAll: "全部活跃来源已排入更新任务"
+        case .prewarmAllThumbnails: "全部来源缩略图预热已完成"
+        case .prewarmAllOriginalAspect: "全部来源原比例缓存预热已完成"
+        case .reauthorizeAll: "已完成全部需要访问权限的来源授权"
+        case .refreshAllFolderMutationAuthorizations: "已更新全部文件夹回收权限"
         case .rebindPhotos: "已保留旧历史并连接当前系统图库"
         case .reauthorize: "来源授权已恢复，后台同步已开始"
         case .rescan: "文件夹重扫已排入后台任务"
         case .syncPhotos: "Apple Photos 同步已排入后台任务"
         case .fullRepair: "Apple Photos 完整修复扫描已排入后台任务"
+        case .openPhotosPrivacySettings: "已在 Mac 上打开照片权限设置"
         case .requestPhotosWriteAuthorization: "已更新照片库写入授权"
         case .refreshFolderMutationAuthorization: "已更新文件夹回收权限"
         case .prewarmThumbnails: "来源缩略图预热已完成"

@@ -26,6 +26,42 @@ enum LibrarySuggestionServiceState: String, Equatable, Sendable {
     case unavailable
 }
 
+enum AssetLocalSuggestionTrack: String, Equatable, Sendable {
+    case standard
+    case personal
+}
+
+enum AssetLocalSuggestionState: String, Equatable, Sendable {
+    case results
+    case previewUnavailable
+    case personalUnavailable
+    case serviceUnavailable
+    case failed
+}
+
+struct AssetLocalSuggestionItem: Equatable, Sendable {
+    let id: String
+    let track: AssetLocalSuggestionTrack
+    let tagID: UUID?
+    let displayName: String
+    let recommendation: ModelSuggestionRecommendedState
+}
+
+struct AssetLocalSuggestionCommand: Equatable, Sendable {
+    let operationID: UUID
+    let assetID: UUID
+    let track: AssetLocalSuggestionTrack
+}
+
+struct AssetLocalSuggestionSnapshot: Equatable, Sendable {
+    let operationID: UUID
+    let assetID: UUID
+    let track: AssetLocalSuggestionTrack
+    let state: AssetLocalSuggestionState
+    let suggestions: [AssetLocalSuggestionItem]
+    let replayed: Bool
+}
+
 struct LibrarySuggestionServiceSnapshot: Equatable, Sendable {
     let state: LibrarySuggestionServiceState
     let serviceVersion: String?
@@ -345,6 +381,9 @@ struct TagLibrarySuggestionTagOption: Equatable, Sendable {
 }
 
 protocol RemoteTrainingCommandPort: Sendable {
+    func assetLocalSuggestions(
+        _ command: AssetLocalSuggestionCommand
+    ) async throws -> AssetLocalSuggestionSnapshot
     func librarySuggestions(
         mediaKind: MediaKind,
         refreshServiceHealth: Bool
@@ -397,6 +436,19 @@ protocol RemoteTrainingCommandPort: Sendable {
 }
 
 extension RemoteTrainingCommandPort {
+    func assetLocalSuggestions(
+        _ command: AssetLocalSuggestionCommand
+    ) async throws -> AssetLocalSuggestionSnapshot {
+        AssetLocalSuggestionSnapshot(
+            operationID: command.operationID,
+            assetID: command.assetID,
+            track: command.track,
+            state: .serviceUnavailable,
+            suggestions: [],
+            replayed: false
+        )
+    }
+
     func librarySuggestions(
         mediaKind: MediaKind,
         refreshServiceHealth _: Bool

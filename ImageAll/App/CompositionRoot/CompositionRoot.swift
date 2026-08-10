@@ -491,15 +491,11 @@ struct CompositionRoot {
         )
         let librarySlimmingCommands = RemoteLibrarySlimmingCommandService(
             catalog: service,
+            workspace: service,
             analysis: librarySlimmingAnalysis,
             thresholds: slimmingThresholdStore,
+            sourceSimilarityIndex: sourceSimilarityIndex,
             recycle: librarySlimmingRecycle,
-            mutationAuthorization: librarySlimmingMutationAuthorization,
-            photosMutation: photosMutation,
-            clock: clock
-        )
-        let sourceManagementCommands = RemoteSourceManagementCommandService(
-            workspace: service,
             mutationAuthorization: librarySlimmingMutationAuthorization,
             photosMutation: photosMutation,
             clock: clock
@@ -553,6 +549,13 @@ struct CompositionRoot {
                 workspace: workspaceModel
             )
         }()
+        let sourceManagementCommands = RemoteSourceManagementCommandService(
+            workspace: service,
+            mutationAuthorization: librarySlimmingMutationAuthorization,
+            photosMutation: photosMutation,
+            workspaceNoticeRecorder: workspaceModel,
+            clock: clock
+        )
         RemoteHostProcessHolder.attach(
             catalog: service,
             review: personalizationReview,
@@ -563,6 +566,7 @@ struct CompositionRoot {
             sourceManagementCommands: sourceManagementCommands,
             storageMaintenanceCommands: storageMaintenanceCommands,
             generalSettingsCommands: generalSettingsCommands,
+            workspaceNotices: workspaceModel,
             mediaResources: ProductionRemoteMediaResourceProvider(
                 database: runtime.database,
                 folderAuthorization: authorization,

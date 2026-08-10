@@ -17,6 +17,7 @@ protocol RemoteCatalogServing: Sendable {
         limit: Int
     ) throws -> AssetPageResult
     func loadThumbnail(assetID: UUID) async throws -> Data
+    func loadOriginalAspectThumbnailIfCached(assetID: UUID) async throws -> Data?
     func loadPreview(assetID: UUID) async throws -> Data
     func downloadCloudPreview(
         assetID: UUID,
@@ -63,6 +64,10 @@ protocol RemoteCatalogServing: Sendable {
 }
 
 extension RemoteCatalogServing {
+    func loadOriginalAspectThumbnailIfCached(assetID _: UUID) async throws -> Data? {
+        nil
+    }
+
     func downloadCloudPreview(
         assetID _: UUID,
         onProgress _: @escaping @Sendable (Double) -> Void

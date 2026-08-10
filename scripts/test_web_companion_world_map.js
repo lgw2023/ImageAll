@@ -12,6 +12,7 @@ const selectionQuery = {
   cellDegrees: 0.25,
   longitudeBucket: 1205,
   latitudeBucket: 485,
+  bounds: { west: 118, south: 30, east: 123, north: 33 },
   maximumAssets: 36,
 };
 const cluster = {
@@ -74,6 +75,9 @@ let browser;
   const placeTagCommands = [];
   const favoriteMutations = [];
   let favoriteState = false;
+  const worldMapGalleryRequests = [];
+  let selectionShouldFail = false;
+  let selectionRequestCount = 0;
   page.on("console", (message) => {
     if (message.type() === "error") consoleErrors.push(message.text());
   });
@@ -142,9 +146,47 @@ let browser;
     new RegExp(`/v1/assets/${assetID}/(thumbnail|preview)(\\?.*)?$`),
     (route) => route.fulfill({ status: 200, contentType: "image/png", body: onePixelPNG })
   );
-  await page.route(`${baseURL}/v1/assets?**`, (route) => (
-    json(route, { items: [], nextCursor: null })
-  ));
+  await page.route(`${baseURL}/v1/assets?**`, (route) => {
+    const requestURL = new URL(route.request().url());
+    const query = requestURL.searchParams;
+    if (query.has("worldMapCellDegrees")) {
+      worldMapGalleryRequests.push(Object.fromEntries(query.entries()));
+      assert.equal(query.get("worldMapCellDegrees"), "0.25");
+      assert.equal(query.get("worldMapLongitudeBucket"), "1205");
+      assert.equal(query.get("worldMapLatitudeBucket"), "485");
+      assert.equal(query.get("worldMapMaximumAssets"), "36");
+      assert.equal(query.get("worldMapWest"), "118");
+      assert.equal(query.get("worldMapSouth"), "30");
+      assert.equal(query.get("worldMapEast"), "123");
+      assert.equal(query.get("worldMapNorth"), "33");
+      assert.equal(query.get("mediaKinds"), "image");
+      return json(route, {
+        items: [{
+          id: assetID,
+          sourceID: photosSourceID,
+          sourceName: "Apple Photos",
+          fileName: "IMG_0001.HEIC",
+          mediaType: "public.heic",
+          availability: "available",
+          contentRevision: 7,
+          acceptedTagCount: 1,
+          rejectedTagCount: 0,
+          mediaCreatedAtMs: 1_700_000_000_000,
+          width: 4032,
+          height: 3024,
+          favorite: {
+            assetID,
+            isFavorite: favoriteState,
+            photosObservedValue: favoriteState,
+            syncStatus: "synced",
+            lastErrorCode: null,
+          },
+        }],
+        nextCursor: null,
+      });
+    }
+    return json(route, { items: [], nextCursor: null });
+  });
   await page.route(`${baseURL}/v1/world-map/snapshot**`, (route) => {
     snapshotRequestCount += 1;
     return json(route, {
@@ -155,8 +197,15 @@ let browser;
     });
   });
   await page.route(`${baseURL}/v1/world-map/selection`, async (route) => {
+    selectionRequestCount += 1;
     const requestBody = route.request().postDataJSON();
     assert.deepEqual(requestBody.query, selectionQuery);
+    if (selectionShouldFail) {
+      return json(route, {
+        code: "internalError",
+        message: "synthetic place selection failure",
+      }, 500);
+    }
     return json(route, {
       assets: [{
         id: assetID,
@@ -310,6 +359,25 @@ let browser;
   assert.equal(await page.locator("#worldMapLocatedMetric").textContent(), "70");
   assert.equal(await page.locator("#worldMapUnlocatedMetric").textContent(), "30");
   await page.locator("#worldMapRendererMetric").getByText("已就绪", { exact: true }).waitFor();
+  assert.equal(await page.locator("#closeWorldMapButton").getAttribute("aria-label"), "返回图库");
+  assert.equal(await page.evaluate(() => history.state?.imageAllWorkspace?.route), "worldMap");
+  await page.locator("#refreshWorldMapButton").focus();
+  await page.keyboard.press("Meta+K");
+  await page.locator("#commandPalette[open]").waitFor();
+  assert.equal(await page.locator("#commandContextLabel").textContent(), "当前：照片世界");
+  assert.equal(await page.locator('[data-command-id="media:video"]').count(), 0);
+  assert.match(await page.locator('[data-command-id="returnWorkspace"]').textContent(), /返回图库/);
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => document.activeElement?.id === "refreshWorldMapButton");
+  await page.keyboard.press("Meta+K");
+  await page.locator('[data-command-id="returnWorkspace"]').click();
+  await page.locator("#worldMapWorkspace").waitFor({ state: "hidden" });
+  await page.waitForFunction(() => history.state?.imageAllWorkspace?.route === "gallery");
+  await page.waitForFunction(() => document.activeElement?.id === "worldMapButton");
+  await page.evaluate(() => history.forward());
+  await page.locator("#worldMapWorkspace:not(.hidden)").waitFor();
+  await page.locator("#worldMapClusterMetric").getByText("1", { exact: true }).waitFor();
+  assert.equal(await page.evaluate(() => history.state?.imageAllWorkspace?.route), "worldMap");
 
   const mapFrame = page.frameLocator("#worldMapFrame");
   await mapFrame.locator("#syntheticCluster:not([hidden])").click();
@@ -343,6 +411,7 @@ let browser;
 
   await page.setViewportSize({ width: 390, height: 844 });
   assert.equal(await worldMapFavorite.isVisible(), true);
+  assert.equal(await page.locator("#closeWorldMapButton").isVisible(), true);
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
   await page.screenshot({ path: "/tmp/imageall-world-map-photo-favorite-mobile.png" });
   await page.setViewportSize({ width: 1440, height: 960 });
@@ -353,6 +422,67 @@ let browser;
   await page.locator("#closeLightboxButton").click();
   assert.equal(await page.locator("#worldMapWorkspace").getAttribute("inert"), null);
   assert.equal(await page.locator("#worldMapDetail").isVisible(), true);
+
+  await page.locator("#worldMapBrowseClusterButton").click();
+  await page.locator("#worldMapWorkspace").waitFor({ state: "hidden" });
+  await page.locator("#worldMapGalleryBanner:not(.hidden)").waitFor();
+  await page.locator(`.asset-card[data-asset-id="${assetID}"]`).waitFor();
+  assert.ok(worldMapGalleryRequests.length >= 1);
+  assert.equal(await page.locator("#libraryTitle").textContent(), "上海 · 照片世界");
+  assert.match(await page.locator("#worldMapGallerySummary").textContent(), /精确地点范围.*42 张/);
+  assert.equal(await page.locator("#mediaKindTabs").isHidden(), true);
+  assert.equal(await page.evaluate(() => history.state?.imageAllWorkspace?.route), "gallery");
+
+  await page.evaluate(() => history.back());
+  await page.locator("#worldMapWorkspace:not(.hidden)").waitFor();
+  assert.equal(await page.locator("#worldMapDetail").isVisible(), true);
+  await page.evaluate(() => history.forward());
+  await page.locator("#worldMapGalleryBanner:not(.hidden)").waitFor();
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.waitForTimeout(260);
+  assert.equal(await page.locator("#returnToWorldMapButton").isVisible(), true);
+  assert.equal(await page.locator("#clearWorldMapGalleryButton").isVisible(), true);
+  for (const selector of [
+    "#worldMapGalleryBanner",
+    "#returnToWorldMapButton",
+    "#clearWorldMapGalleryButton",
+  ]) {
+    const box = await page.locator(selector).boundingBox();
+    assert.ok(box && box.x >= 0 && box.y >= 0, `${selector} must remain inside the viewport`);
+    assert.ok(box.x + box.width <= 390.5, `${selector} must not overflow at 390px`);
+  }
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+  await page.screenshot({ path: "/tmp/imageall-world-map-gallery-scope-mobile.png" });
+  await page.setViewportSize({ width: 1440, height: 960 });
+
+  await page.locator("#returnToWorldMapButton").click();
+  await page.locator("#worldMapWorkspace:not(.hidden)").waitFor();
+  await page.evaluate(() => history.back());
+  await page.locator("#worldMapGalleryBanner:not(.hidden)").waitFor();
+  await page.locator("#clearWorldMapGalleryButton").click();
+  await page.locator("#worldMapGalleryBanner").waitFor({ state: "hidden" });
+  assert.equal(await page.locator("#libraryTitle").textContent(), "全部照片");
+  assert.equal(await page.locator("#mediaKindTabs").isVisible(), true);
+  await page.locator("#worldMapButton").click();
+  await page.locator("#worldMapWorkspace:not(.hidden)").waitFor();
+  assert.equal(await page.locator("#worldMapDetail").isVisible(), true);
+
+  selectionShouldFail = true;
+  await page.evaluate(() => loadWorldMapSelection("shanghai"));
+  await page.locator(".world-map-photo-error").waitFor();
+  assert.match(await page.locator(".world-map-photo-error").textContent(), /synthetic place selection failure.*重试/s);
+  assert.equal(await page.locator("#worldMapBrowseClusterButton").isHidden(), true);
+  assert.doesNotMatch(await page.locator("#worldMapPhotoStrip").textContent(), /没有可预览照片/);
+  const expectedSelectionFailure = consoleErrors.findIndex(
+    (message) => message.includes("Failed to load resource") && message.includes("500")
+  );
+  assert.ok(expectedSelectionFailure >= 0, "the synthetic HTTP failure should reach Chromium");
+  consoleErrors.splice(expectedSelectionFailure, 1);
+  selectionShouldFail = false;
+  await page.locator("[data-retry-world-map-selection=shanghai]").click();
+  await page.locator(`.world-map-photo-card[data-world-map-card-asset-id="${assetID}"]`).waitFor();
+  assert.equal(await page.locator(".world-map-photo-error").count(), 0);
+  assert.equal(await page.locator("#worldMapBrowseClusterButton").isVisible(), true);
 
   await page.locator("#openWorldMapLocationBackfillButton").click();
   await page.locator("#worldMapLocationBackfillDialog[open]").waitFor();
@@ -509,13 +639,15 @@ let browser;
   assert.match(await page.locator("#worldMapStatus strong").textContent(), /暂时无法读取/);
 
   await page.keyboard.press("Escape");
-  assert.equal(await page.locator("#worldMapWorkspace").isHidden(), true);
+  await page.locator("#worldMapWorkspace").waitFor({ state: "hidden" });
+  assert.equal(await page.evaluate(() => history.state?.imageAllWorkspace?.route), "gallery");
   assert.equal(await page.locator("#appView").getAttribute("inert"), null);
   await browser.close();
   browser = null;
   process.stdout.write(
     `world-map browser flow passed; snapshot requests=${snapshotRequestCount}; `
-      + `place commands=${placeTagCommands.length}; favorites=${favoriteMutations.length}\n`
+      + `place commands=${placeTagCommands.length}; favorites=${favoriteMutations.length}; `
+      + `gallery scopes=${worldMapGalleryRequests.length}; selections=${selectionRequestCount}\n`
   );
 })().catch((error) => {
   console.error(error);

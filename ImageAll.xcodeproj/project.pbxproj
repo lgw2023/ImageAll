@@ -14,6 +14,7 @@
 		LSC000010000000000000001 /* RemoteLibrarySlimmingCommandPort.swift in Sources */ = {isa = PBXBuildFile; fileRef = LSC000020000000000000001 /* RemoteLibrarySlimmingCommandPort.swift */; };
 		LSC000010000000000000002 /* RemoteLibrarySlimmingCommandService.swift in Sources */ = {isa = PBXBuildFile; fileRef = LSC000020000000000000002 /* RemoteLibrarySlimmingCommandService.swift */; };
 		SMC000010000000000000001 /* RemoteSourceManagementCommandPort.swift in Sources */ = {isa = PBXBuildFile; fileRef = SMC000020000000000000001 /* RemoteSourceManagementCommandPort.swift */; };
+		WSN000010000000000000001 /* RemoteWorkspaceNoticePort.swift in Sources */ = {isa = PBXBuildFile; fileRef = WSN000020000000000000001 /* RemoteWorkspaceNoticePort.swift */; };
 		SMC000010000000000000002 /* RemoteSourceManagementCommandService.swift in Sources */ = {isa = PBXBuildFile; fileRef = SMC000020000000000000002 /* RemoteSourceManagementCommandService.swift */; };
 		STG000010000000000000001 /* RemoteStorageMaintenanceCommandPort.swift in Sources */ = {isa = PBXBuildFile; fileRef = STG000020000000000000001 /* RemoteStorageMaintenanceCommandPort.swift */; };
 		STG000010000000000000002 /* RemoteStorageMaintenanceCommandService.swift in Sources */ = {isa = PBXBuildFile; fileRef = STG000020000000000000002 /* RemoteStorageMaintenanceCommandService.swift */; };
@@ -559,6 +560,7 @@
 		LSC000020000000000000001 /* RemoteLibrarySlimmingCommandPort.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteLibrarySlimmingCommandPort.swift; sourceTree = "<group>"; };
 		LSC000020000000000000002 /* RemoteLibrarySlimmingCommandService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteLibrarySlimmingCommandService.swift; sourceTree = "<group>"; };
 		SMC000020000000000000001 /* RemoteSourceManagementCommandPort.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteSourceManagementCommandPort.swift; sourceTree = "<group>"; };
+		WSN000020000000000000001 /* RemoteWorkspaceNoticePort.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteWorkspaceNoticePort.swift; sourceTree = "<group>"; };
 		SMC000020000000000000002 /* RemoteSourceManagementCommandService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteSourceManagementCommandService.swift; sourceTree = "<group>"; };
 		STG000020000000000000001 /* RemoteStorageMaintenanceCommandPort.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteStorageMaintenanceCommandPort.swift; sourceTree = "<group>"; };
 		STG000020000000000000002 /* RemoteStorageMaintenanceCommandService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteStorageMaintenanceCommandService.swift; sourceTree = "<group>"; };
@@ -1340,6 +1342,7 @@
 				TRC000020000000000000001 /* RemoteTrainingCommandPort.swift */,
 				LSC000020000000000000001 /* RemoteLibrarySlimmingCommandPort.swift */,
 				SMC000020000000000000001 /* RemoteSourceManagementCommandPort.swift */,
+				WSN000020000000000000001 /* RemoteWorkspaceNoticePort.swift */,
 				STG000020000000000000001 /* RemoteStorageMaintenanceCommandPort.swift */,
 				GST000020000000000000001 /* RemoteGeneralSettingsCommandPort.swift */,
 				RH0001010000000000000002 /* RemoteCatalogFacade.swift */,
@@ -1569,6 +1572,7 @@
 				LSC000010000000000000001 /* RemoteLibrarySlimmingCommandPort.swift in Sources */,
 				LSC000010000000000000002 /* RemoteLibrarySlimmingCommandService.swift in Sources */,
 				SMC000010000000000000001 /* RemoteSourceManagementCommandPort.swift in Sources */,
+				WSN000010000000000000001 /* RemoteWorkspaceNoticePort.swift in Sources */,
 				SMC000010000000000000002 /* RemoteSourceManagementCommandService.swift in Sources */,
 				STG000010000000000000001 /* RemoteStorageMaintenanceCommandPort.swift in Sources */,
 				STG000010000000000000002 /* RemoteStorageMaintenanceCommandService.swift in Sources */,

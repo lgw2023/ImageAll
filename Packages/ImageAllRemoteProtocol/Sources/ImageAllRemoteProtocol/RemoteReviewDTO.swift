@@ -172,6 +172,9 @@ public struct RemoteReviewQueueItem: Codable, Sendable, Equatable, Identifiable 
     public let rejectedTagCount: Int
     public let suggestionOrigin: RemoteReviewSuggestionOrigin
     public let score: Double?
+    /// Optional to preserve compatibility with Hosts predating original-aspect review layout.
+    public let width: Int?
+    public let height: Int?
     /// `nil` when decoded from a Host predating favorite projection on review cards.
     public let favorite: RemoteAssetFavoriteState?
 
@@ -183,6 +186,8 @@ public struct RemoteReviewQueueItem: Codable, Sendable, Equatable, Identifiable 
         rejectedTagCount: Int,
         suggestionOrigin: RemoteReviewSuggestionOrigin,
         score: Double?,
+        width: Int? = nil,
+        height: Int? = nil,
         favorite: RemoteAssetFavoriteState? = nil
     ) {
         self.assetID = assetID
@@ -192,6 +197,8 @@ public struct RemoteReviewQueueItem: Codable, Sendable, Equatable, Identifiable 
         self.rejectedTagCount = rejectedTagCount
         self.suggestionOrigin = suggestionOrigin
         self.score = score
+        self.width = width
+        self.height = height
         self.favorite = favorite
     }
 }

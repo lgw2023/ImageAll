@@ -55,7 +55,8 @@ struct GRDBJobQueue: JobQueue, Sendable {
             let rows = try Row.fetchAll(
                 db,
                 sql: """
-                SELECT id, kind, state, control_request, progress_completed, progress_total
+                SELECT id, source_id, kind, state, control_request,
+                       progress_completed, progress_total
                 FROM job
                 ORDER BY
                     CASE
@@ -72,8 +73,10 @@ struct GRDBJobQueue: JobQueue, Sendable {
                 guard let id = UUID(uuidString: rawID) else {
                     throw JobQueueError.unknownPersistedRawValue(field: "id", value: rawID)
                 }
+                let rawSourceID: String? = row["source_id"]
                 return JobActivityItem(
                     id: id,
+                    sourceID: rawSourceID.flatMap(UUID.init(uuidString:)),
                     kind: JobActivityKind(persistedKind: row["kind"]),
                     state: try JobPersistenceMapping.jobState(from: row["state"]),
                     controlRequest: try JobPersistenceMapping.controlRequest(from: row["control_request"]),

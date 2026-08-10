@@ -172,10 +172,27 @@ enum JobActivityAction: Sendable, Equatable, Hashable {
 
 struct JobActivityItem: Identifiable, Sendable, Equatable {
     let id: UUID
+    let sourceID: UUID?
     let kind: JobActivityKind
     let state: JobState
     let controlRequest: JobControlRequest
     let progress: JobProgress
+
+    init(
+        id: UUID,
+        sourceID: UUID? = nil,
+        kind: JobActivityKind,
+        state: JobState,
+        controlRequest: JobControlRequest,
+        progress: JobProgress
+    ) {
+        self.id = id
+        self.sourceID = sourceID
+        self.kind = kind
+        self.state = state
+        self.controlRequest = controlRequest
+        self.progress = progress
+    }
 
     var availableActions: [JobActivityAction] {
         switch state {

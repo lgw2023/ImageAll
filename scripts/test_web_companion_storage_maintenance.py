@@ -125,11 +125,22 @@ def main():
             nonlocal storage_reads_after_submit, active_request
             if active_request is not None:
                 storage_reads_after_submit += 1
-                if storage_reads_after_submit >= 1:
+                completion_threshold = (
+                    2 if active_request["action"] == "exportPortableData" else 1
+                )
+                if storage_reads_after_submit >= completion_threshold:
+                    completed_messages = {
+                        "exportPortableData": "已导出 42 条记录到“ImageAll-Export-Test”",
+                        "clearPreviewCache": "已清理 24 条可重建预览缓存",
+                        "clearPhotosOriginals": "已清理 3 条 ImageAll Photos 原图副本",
+                    }
                     active_request = {
                         **active_request,
                         "phase": "completed",
-                        "message": "已导出 42 条记录到“ImageAll-Export-Test”",
+                        "message": completed_messages.get(
+                            active_request["action"],
+                            "Mac 存储操作已完成",
+                        ),
                         "updatedAtMs": 1_700_000_001_000,
                         "result": {
                             "bundleName": "ImageAll-Export-Test",
@@ -143,12 +154,17 @@ def main():
             payload = route.request.post_data_json
             submitted_actions.append(payload)
             storage_reads_after_submit = 0
+            awaiting_messages = {
+                "exportPortableData": "请回到 Mac 选择用户数据导出位置",
+                "clearPreviewCache": "等待 Mac 最终确认清理预览缓存",
+                "clearPhotosOriginals": "等待 Mac 最终确认清理长期原图副本",
+            }
             active_request = {
                 "id": REQUEST_ID,
                 "operationID": payload["operationID"],
                 "action": payload["action"],
                 "phase": "awaitingMac",
-                "message": "请回到 Mac 选择用户数据导出位置",
+                "message": awaiting_messages.get(payload["action"], "等待 Mac 完成操作"),
                 "updatedAtMs": 1_700_000_000_000,
             }
             fulfill_json(route, active_request, status=202)
@@ -169,11 +185,96 @@ def main():
         page.locator("#exportPortableDataButton").click()
         page.locator("#storagePending:not(.hidden)").wait_for()
         assert submitted_actions[-1]["action"] == "exportPortableData"
+        assert page.locator("#storageStatusLabel").inner_text() == "等待 Mac"
+        assert page.locator("#storageButton").get_attribute("aria-busy") == "true"
+        page.locator("#storageCloseButton").click()
+        page.locator("#storageDialog").wait_for(state="hidden")
+        page.wait_for_function("() => document.activeElement?.id === 'storageButton'")
+        assert page.locator("#storageStatusLabel").inner_text() == "等待 Mac"
+        page.screenshot(
+            path="/tmp/imageall-storage-background-status.png",
+            full_page=True,
+        )
         page.wait_for_function(
-            "() => document.querySelector('#storageHistory').textContent.includes('已导出 42 条记录')",
+            "() => document.querySelector('#toastMessage').textContent.includes('已导出 42 条记录')",
             timeout=5_000,
         )
+        assert page.locator("#storageStatusLabel").inner_text() == "存储"
+        assert page.locator("#storageButton").get_attribute("aria-busy") == "false"
+        page.locator("#storageButton").click()
+        assert page.locator("#storageContent").is_visible()
+        assert page.locator("#storageHistory").get_by_text("已导出 42 条记录").is_visible()
+        page.locator("#storageContent:not(.hidden)").wait_for()
+        page.wait_for_function(
+            "() => document.querySelector('#storageHistory').textContent.includes('已导出 42 条记录')"
+        )
         assert page.locator("#storagePending").is_hidden()
+
+        preview_request_count = len(submitted_actions)
+        page.locator("#clearPreviewCacheButton").click()
+        page.locator("#confirmDialog[open]").wait_for()
+        assert page.locator("#confirmDialogTitle").inner_text() == "清理预览缓存？"
+        assert "不会删除原照片、人工标签" in page.locator(
+            "#confirmDialogMessage"
+        ).inner_text()
+        assert page.locator("#confirmActionButton").inner_text() == "清理预览缓存"
+        page.keyboard.press("Escape")
+        page.locator("#confirmDialog").wait_for(state="hidden")
+        assert page.locator("#storageDialog").is_visible()
+        assert len(submitted_actions) == preview_request_count
+        page.wait_for_function(
+            "() => document.activeElement?.id === 'clearPreviewCacheButton'"
+        )
+        page.locator("#clearPreviewCacheButton").click()
+        page.locator("#confirmDialog[open]").wait_for()
+        with page.expect_response(
+            lambda response: response.url.endswith("/v1/storage-maintenance/requests")
+            and response.request.method == "POST"
+        ) as clear_preview:
+            page.locator("#confirmActionButton").click()
+        assert clear_preview.value.status == 202
+        assert submitted_actions[-1]["action"] == "clearPreviewCache"
+        page.wait_for_function(
+            "() => document.querySelector('#storageHistory').textContent.includes('已清理 24 条')",
+            timeout=5_000,
+        )
+        page.wait_for_function(
+            "() => document.activeElement?.id === 'clearPreviewCacheButton'"
+        )
+
+        originals_request_count = len(submitted_actions)
+        page.locator("#clearPhotosOriginalsButton").click()
+        page.locator("#confirmDialog[open]").wait_for()
+        assert page.locator("#confirmDialogTitle").inner_text() == "清理全部长期原图副本？"
+        assert "不会修改 Apple Photos、人工标签" in page.locator(
+            "#confirmDialogMessage"
+        ).inner_text()
+        assert page.locator("#confirmActionButton").inner_text() == "清理全部长期原图副本"
+        page.screenshot(
+            path="/tmp/imageall-storage-originals-confirmation.png",
+            full_page=True,
+        )
+        page.locator("#cancelConfirmButton").click()
+        assert len(submitted_actions) == originals_request_count
+        page.wait_for_function(
+            "() => document.activeElement?.id === 'clearPhotosOriginalsButton'"
+        )
+        page.locator("#clearPhotosOriginalsButton").click()
+        page.locator("#confirmDialog[open]").wait_for()
+        with page.expect_response(
+            lambda response: response.url.endswith("/v1/storage-maintenance/requests")
+            and response.request.method == "POST"
+        ) as clear_originals:
+            page.locator("#confirmActionButton").click()
+        assert clear_originals.value.status == 202
+        assert submitted_actions[-1]["action"] == "clearPhotosOriginals"
+        page.wait_for_function(
+            "() => document.querySelector('#storageHistory').textContent.includes('已清理 3 条')",
+            timeout=5_000,
+        )
+        page.wait_for_function(
+            "() => document.activeElement?.id === 'clearPhotosOriginalsButton'"
+        )
 
         page.set_viewport_size({"width": 390, "height": 844})
         page.wait_for_timeout(100)

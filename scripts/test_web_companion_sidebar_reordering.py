@@ -77,6 +77,11 @@ def main():
             f'#tagNavigation [data-sidebar-tag-group-toggle="{group_id}"]'
         )
 
+    def inspector_group_toggle(page, container, group_id):
+        return page.locator(
+            f'#{container} [data-inspector-tag-group-toggle="{group_id}"]'
+        )
+
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(
             headless=True,
@@ -378,6 +383,53 @@ def main():
         page.locator("#inspectorContent:not(.hidden)").wait_for()
         assert inspector_group_names(page, "inspectorTags", GROUP_SUBJECT) == ["狗", "猫"]
 
+        subject_toggle = sidebar_group_toggle(page, GROUP_SUBJECT)
+        page.wait_for_timeout(300)
+        subject_toggle.click()
+        page.wait_for_function(
+            "groupID => document.querySelector("
+            "`#tagNavigation [data-sidebar-tag-group-toggle=\"${groupID}\"]`"
+            ")?.getAttribute('aria-expanded') === 'false' "
+            "&& document.querySelector("
+            "`#inspectorTags [data-inspector-tag-group-toggle=\"${groupID}\"]`"
+            ")?.getAttribute('aria-expanded') === 'false'",
+            arg=GROUP_SUBJECT,
+        )
+        assert subject_toggle.get_attribute("aria-expanded") == "false"
+        single_subject_toggle = inspector_group_toggle(
+            page, "inspectorTags", GROUP_SUBJECT
+        )
+        assert single_subject_toggle.get_attribute("aria-expanded") == "false"
+        assert not page.locator(
+            f'#inspectorTags [data-tag-chip-action][data-tag-id="{TAG_CAT}"]'
+        ).is_visible()
+        shared_preferences = page.evaluate(
+            "() => JSON.parse(localStorage.getItem('imageall.web.workspace-preferences'))"
+        )
+        assert GROUP_SUBJECT in shared_preferences["collapsedTagGroupIDs"]
+        assert GROUP_SUBJECT in shared_preferences["collapsedSidebarTagGroupIDs"]
+        assert GROUP_SUBJECT in shared_preferences["collapsedInspectorTagGroupIDs"]
+        page.screenshot(
+            path="/tmp/imageall-shared-tag-group-collapse.png",
+            full_page=True,
+        )
+
+        page.reload(wait_until="networkidle")
+        subject_toggle = sidebar_group_toggle(page, GROUP_SUBJECT)
+        assert subject_toggle.get_attribute("aria-expanded") == "false"
+        page.locator("#assetGrid > .asset-card").click()
+        page.locator("#inspectorContent:not(.hidden)").wait_for()
+        single_subject_toggle = inspector_group_toggle(
+            page, "inspectorTags", GROUP_SUBJECT
+        )
+        assert single_subject_toggle.get_attribute("aria-expanded") == "false"
+        single_subject_toggle.click()
+        assert single_subject_toggle.get_attribute("aria-expanded") == "true"
+        assert sidebar_group_toggle(page, GROUP_SUBJECT).get_attribute(
+            "aria-expanded"
+        ) == "true"
+        assert inspector_group_names(page, "inspectorTags", GROUP_SUBJECT) == ["狗", "猫"]
+
         page.locator(f'[data-quick-tag-id="{TAG_DOG}"]').drag_to(
             page.locator(f'[data-quick-tag-id="{TAG_TRAVEL}"]')
         )
@@ -501,6 +553,33 @@ def main():
         assert selection_subject_order == ["狗", "猫"], selection_subject_order
         assert sidebar_group_names(page, GROUP_SUBJECT) == ["狗", "猫"]
         assert len(tag_moves) == 3
+
+        page.set_viewport_size({"width": 390, "height": 844})
+        page.locator("#sidebarToggle").click()
+        page.locator("#sourceSidebar.open").wait_for()
+        scene_toggle = sidebar_group_toggle(page, GROUP_SCENE)
+        scene_toggle.scroll_into_view_if_needed()
+        scene_toggle.click()
+        assert scene_toggle.get_attribute("aria-expanded") == "false"
+        assert inspector_group_toggle(
+            page, "selectionInspectorTags", GROUP_SCENE
+        ).get_attribute("aria-expanded") == "false"
+        page.locator("#sidebarToggle").click()
+        page.wait_for_timeout(250)
+        page.screenshot(
+            path="/tmp/imageall-shared-tag-group-collapse-390.png",
+            full_page=False,
+        )
+        page.set_viewport_size({"width": 1440, "height": 960})
+        page.wait_for_timeout(100)
+        selection_scene_toggle = inspector_group_toggle(
+            page, "selectionInspectorTags", GROUP_SCENE
+        )
+        selection_scene_toggle.click()
+        assert selection_scene_toggle.get_attribute("aria-expanded") == "true"
+        assert sidebar_group_toggle(page, GROUP_SCENE).get_attribute(
+            "aria-expanded"
+        ) == "true"
 
         page.wait_for_timeout(300)
         dog_chip = page.locator(f'[data-quick-tag-id="{TAG_DOG}"]')

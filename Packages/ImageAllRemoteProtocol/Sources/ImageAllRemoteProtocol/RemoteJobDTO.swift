@@ -65,6 +65,8 @@ public struct RemoteJobProgress: Codable, Sendable, Equatable {
 
 public struct RemoteJobSummary: Codable, Sendable, Equatable, Identifiable {
     public let id: UUID
+    public let sourceID: UUID?
+    public let sourceDisplayName: String?
     public let kind: RemoteJobKind
     public let state: RemoteJobState
     public let progress: RemoteJobProgress
@@ -77,6 +79,8 @@ public struct RemoteJobSummary: Codable, Sendable, Equatable, Identifiable {
 
     public init(
         id: UUID,
+        sourceID: UUID? = nil,
+        sourceDisplayName: String? = nil,
         kind: RemoteJobKind,
         state: RemoteJobState,
         progress: RemoteJobProgress,
@@ -88,6 +92,8 @@ public struct RemoteJobSummary: Codable, Sendable, Equatable, Identifiable {
         navigationTarget: RemoteJobNavigationTarget? = nil
     ) {
         self.id = id
+        self.sourceID = sourceID
+        self.sourceDisplayName = sourceDisplayName
         self.kind = kind
         self.state = state
         self.progress = progress

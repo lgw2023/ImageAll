@@ -63,7 +63,11 @@ def asset_detail(index):
         "height": 1200,
         "durationMs": None,
         "fingerprintSizeBytes": 800_000 + index,
-        "tags": [],
+        "tags": [{
+            "tagID": REVIEW_TAG_ID,
+            "displayName": "猫",
+            "decision": "unknown",
+        }],
         "pendingSuggestions": [],
     }
 
@@ -82,6 +86,7 @@ def review_item(index):
 
 def main():
     asset_queries = []
+    review_queries = []
     review_decisions = []
     review_undos = []
     page_errors = []
@@ -263,6 +268,7 @@ def main():
 
         def route_review_queue(route):
             query = parse_qs(urlparse(route.request.url).query)
+            review_queries.append(query)
             if query.get("cursor") == ["review-page-2"]:
                 fulfill_json(route, {"items": second_review_page, "nextCursor": None})
             else:
@@ -328,6 +334,56 @@ def main():
         last_first_page.dispatch_event("click")
         last_first_page.dispatch_event("dblclick")
         page.locator("#lightbox:not(.hidden)").wait_for()
+        page.wait_for_function(
+            "() => document.querySelector('#assetFileName')?.textContent === 'ITEM_072.JPG'"
+        )
+        docked = page.evaluate("""() => {
+          const lightbox = document.querySelector('#lightbox');
+          const library = document.querySelector('#libraryPane');
+          const inspector = document.querySelector('#inspector');
+          const lightboxBounds = lightbox.getBoundingClientRect();
+          const libraryBounds = library.getBoundingClientRect();
+          const inspectorBounds = inspector.getBoundingClientRect();
+          return {
+            docked: lightbox.classList.contains('library-docked'),
+            modal: lightbox.getAttribute('aria-modal'),
+            appInert: document.querySelector('#appView').inert,
+            libraryInert: library.inert,
+            inspectorInert: inspector.inert,
+            frameMatches: Math.abs(lightboxBounds.left - libraryBounds.left) < 1
+              && Math.abs(lightboxBounds.top - libraryBounds.top) < 1
+              && Math.abs(lightboxBounds.right - libraryBounds.right) < 1
+              && Math.abs(lightboxBounds.bottom - libraryBounds.bottom) < 1,
+            inspectorClear: lightboxBounds.right <= inspectorBounds.left + 1,
+          };
+        }""")
+        assert docked == {
+            "docked": True,
+            "modal": "false",
+            "appInert": False,
+            "libraryInert": True,
+            "inspectorInert": False,
+            "frameMatches": True,
+            "inspectorClear": True,
+        }, docked
+        page.locator("#inspectorTagSearch").focus()
+        assert page.locator("#inspectorTagSearch").evaluate("element => document.activeElement === element")
+        page.locator("#inspectorTagSearch").fill("猫")
+        page.locator(
+            f'#inspectorTags [data-tag-chip-action][data-tag-id="{REVIEW_TAG_ID}"]'
+        ).wait_for()
+        page.locator("#inspectorTagSearch").fill("")
+        page.evaluate("""() => {
+          const focusable = [...document.querySelector('#inspector').querySelectorAll(
+            'button:not([disabled]), input:not([disabled]), select:not([disabled]), '
+              + 'textarea:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])'
+          )].filter((element) => element.getClientRects().length > 0);
+          focusable.at(-1)?.focus({ preventScroll: true });
+        }""")
+        page.keyboard.press("Tab")
+        assert page.locator("#lightboxBackButton").evaluate(
+            "element => document.activeElement === element"
+        )
         assert page.locator("#lightboxTitle").inner_text() == "ITEM_072.JPG"
         assert page.locator("#lightboxPosition").inner_text() == "72 / 72 · 还有更多"
         assert page.locator("#lightboxBackLabel").inner_text() == "返回网格"
@@ -383,6 +439,11 @@ def main():
         page.keyboard.press("Space")
         page.locator("#lightbox:not(.hidden)").wait_for()
         assert page.locator("#lightboxBackButton").is_visible()
+        assert not page.locator("#lightbox").evaluate(
+            "element => element.classList.contains('library-docked')"
+        )
+        assert page.locator("#lightbox").get_attribute("aria-modal") == "true"
+        assert page.locator("#appView").evaluate("element => element.inert")
         dimensions = page.evaluate(
             "() => ({ viewport: innerWidth, scroll: document.documentElement.scrollWidth })"
         )
@@ -487,14 +548,24 @@ def main():
         )
         page.locator("#reviewOpenLightboxButton").click()
         page.locator("#lightbox:not(.hidden)").wait_for()
-        assert page.locator("#lightboxPosition").inner_text() == "48 / 48 · 还有更多"
+        review_page_two_loaded = any(
+            query.get("cursor") == ["review-page-2"] for query in review_queries
+        )
+        loaded_review_count = page.locator("#reviewGrid > .review-card").count()
+        expected_review_position = f"48 / {loaded_review_count}"
+        if not review_page_two_loaded:
+            expected_review_position += " · 还有更多"
+        assert page.locator("#lightboxPosition").inner_text() == expected_review_position
         assert page.locator("#lightboxBackLabel").inner_text() == "返回审核"
-        with page.expect_response(
-            lambda response: "/v1/review/queue?" in response.url
-            and parse_qs(urlparse(response.url).query).get("cursor") == ["review-page-2"]
-        ) as review_page_two_response:
+        if review_page_two_loaded:
             page.locator("#lightboxNextButton").click()
-        assert review_page_two_response.value.status == 200
+        else:
+            with page.expect_response(
+                lambda response: "/v1/review/queue?" in response.url
+                and parse_qs(urlparse(response.url).query).get("cursor") == ["review-page-2"]
+            ) as review_page_two_response:
+                page.locator("#lightboxNextButton").click()
+            assert review_page_two_response.value.status == 200
         page.wait_for_function(
             "() => document.querySelector('#lightboxTitle')?.textContent === 'REVIEW_049.JPG'"
             " && document.querySelector('#reviewFileName')?.textContent === 'REVIEW_049.JPG'"
@@ -510,6 +581,7 @@ def main():
             '[data-review-index="48"] > .review-card-main'
         ).get_attribute("aria-pressed") == "true"
         page.locator("#closeReviewButton").click()
+        page.locator("#reviewWorkspace").wait_for(state="hidden")
 
         assert not page_errors, page_errors
         assert not console_errors, console_errors

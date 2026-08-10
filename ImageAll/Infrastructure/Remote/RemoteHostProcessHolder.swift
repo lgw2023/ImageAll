@@ -256,6 +256,7 @@ enum RemoteHostProcessHolder {
         let sourceManagementCommands: any RemoteSourceManagementCommandPort
         let storageMaintenanceCommands: any RemoteStorageMaintenanceCommandPort
         let generalSettingsCommands: (any RemoteGeneralSettingsCommandPort)?
+        let workspaceNotices: any RemoteWorkspaceNoticePort
         let mediaResources: any RemoteMediaResourceProviding
         let originalAssetOpener: any LibraryOriginalAssetOpening
         let hostAppVersion: String
@@ -366,6 +367,7 @@ enum RemoteHostProcessHolder {
         sourceManagementCommands: any RemoteSourceManagementCommandPort,
         storageMaintenanceCommands: any RemoteStorageMaintenanceCommandPort,
         generalSettingsCommands: (any RemoteGeneralSettingsCommandPort)? = nil,
+        workspaceNotices: any RemoteWorkspaceNoticePort,
         mediaResources: any RemoteMediaResourceProviding = UnavailableRemoteMediaResourceProvider(),
         originalAssetOpener: any LibraryOriginalAssetOpening,
         hostAppVersion: String
@@ -380,6 +382,7 @@ enum RemoteHostProcessHolder {
             sourceManagementCommands: sourceManagementCommands,
             storageMaintenanceCommands: storageMaintenanceCommands,
             generalSettingsCommands: generalSettingsCommands,
+            workspaceNotices: workspaceNotices,
             mediaResources: mediaResources,
             originalAssetOpener: originalAssetOpener,
             hostAppVersion: hostAppVersion,
@@ -556,6 +559,7 @@ enum RemoteHostProcessHolder {
             sourceManagementCommands: attachment.sourceManagementCommands,
             storageMaintenanceCommands: attachment.storageMaintenanceCommands,
             generalSettingsCommands: attachment.generalSettingsCommands,
+            workspaceNotices: attachment.workspaceNotices,
             idempotency: idempotency,
             hostAppVersion: attachment.hostAppVersion,
             listenPort: Int(port),

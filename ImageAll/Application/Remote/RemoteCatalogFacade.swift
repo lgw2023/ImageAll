@@ -15,6 +15,7 @@ actor RemoteCatalogFacade {
     private let sourceManagementCommands: (any RemoteSourceManagementCommandPort)?
     private let storageMaintenanceCommands: (any RemoteStorageMaintenanceCommandPort)?
     private let generalSettingsCommands: (any RemoteGeneralSettingsCommandPort)?
+    private let workspaceNotices: (any RemoteWorkspaceNoticePort)?
     private let idempotency: RemoteIdempotencyStore
     private let hostAppVersion: String
     private let listenPort: Int
@@ -34,6 +35,7 @@ actor RemoteCatalogFacade {
         sourceManagementCommands: (any RemoteSourceManagementCommandPort)? = nil,
         storageMaintenanceCommands: (any RemoteStorageMaintenanceCommandPort)? = nil,
         generalSettingsCommands: (any RemoteGeneralSettingsCommandPort)? = nil,
+        workspaceNotices: (any RemoteWorkspaceNoticePort)? = nil,
         idempotency: RemoteIdempotencyStore,
         hostAppVersion: String,
         listenPort: Int,
@@ -50,6 +52,7 @@ actor RemoteCatalogFacade {
         self.sourceManagementCommands = sourceManagementCommands
         self.storageMaintenanceCommands = storageMaintenanceCommands
         self.generalSettingsCommands = generalSettingsCommands
+        self.workspaceNotices = workspaceNotices
         self.idempotency = idempotency
         self.hostAppVersion = hostAppVersion
         self.listenPort = listenPort
@@ -65,6 +68,61 @@ actor RemoteCatalogFacade {
             usesTLS: usesTLS,
             hostID: hostID,
             certificateFingerprintSHA256: certificateFingerprintSHA256
+        )
+    }
+
+    func fetchWorkspaceNotice() async -> RemoteWorkspaceNoticeSnapshot {
+        let notice = await workspaceNotices?.currentWorkspaceNotice()
+        return RemoteWorkspaceNoticeSnapshot(notice: notice.map(Self.mapWorkspaceNotice))
+    }
+
+    func dismissWorkspaceNotice(
+        _ request: RemoteWorkspaceNoticeDismissRequest
+    ) async -> RemoteWorkspaceNoticeDismissResponse {
+        let dismissed = await workspaceNotices?.dismissWorkspaceNotice(
+            noticeID: request.noticeID
+        ) ?? false
+        let notice = await workspaceNotices?.currentWorkspaceNotice()
+        return RemoteWorkspaceNoticeDismissResponse(
+            dismissed: dismissed,
+            notice: notice.map(Self.mapWorkspaceNotice)
+        )
+    }
+
+    func performWorkspaceNoticeAction(
+        _ request: RemoteWorkspaceNoticeActionRequest
+    ) async -> RemoteWorkspaceNoticeActionResponse {
+        let performed = await workspaceNotices?.performWorkspaceNoticeAction(
+            noticeID: request.noticeID,
+            actionID: request.actionID
+        ) ?? false
+        let notice = await workspaceNotices?.currentWorkspaceNotice()
+        return RemoteWorkspaceNoticeActionResponse(
+            performed: performed,
+            notice: notice.map(Self.mapWorkspaceNotice)
+        )
+    }
+
+    private static func mapWorkspaceNotice(
+        _ notice: WorkspaceNoticeProjection
+    ) -> RemoteWorkspaceNotice {
+        RemoteWorkspaceNotice(
+            id: notice.id,
+            severity: RemoteWorkspaceNoticeSeverity(rawValue: notice.severity.rawValue) ?? .warning,
+            message: notice.message,
+            actions: notice.actions.map { action in
+                let kind: RemoteWorkspaceNoticeActionKind
+                switch action.kind {
+                case .undoTagMutation: kind = .undoTagMutation
+                case .openRecycleBin: kind = .openRecycleBin
+                }
+                return RemoteWorkspaceNoticeAction(
+                    id: action.id,
+                    kind: kind,
+                    title: action.title,
+                    sourceID: action.sourceID
+                )
+            }
         )
     }
 
@@ -326,12 +384,17 @@ actor RemoteCatalogFacade {
     func fetchAssets(_ request: RemoteAssetPageRequest) throws -> RemoteAssetPage {
         let limit = max(1, min(request.limit, 200))
         let cursor = try Self.decodeCursor(request.cursor)
-        let page = try catalog.fetchAssetPage(
-            filter: Self.mapAssetFilter(request),
-            sort: Self.mapSort(request.sort),
-            cursor: cursor,
-            limit: limit
-        )
+        let page: AssetPageResult
+        do {
+            page = try catalog.fetchAssetPage(
+                filter: Self.mapAssetFilter(request),
+                sort: Self.mapSort(request.sort),
+                cursor: cursor,
+                limit: limit
+            )
+        } catch CatalogQueryError.invalidSpatialFilter {
+            throw RemoteAPIError(code: .badRequest, message: "地点图库范围无效")
+        }
         let favoriteStates = try catalog.fetchFavoriteStates(
             assetIDs: page.items.map(\.assetID)
         )
@@ -347,8 +410,17 @@ actor RemoteCatalogFacade {
         )
     }
 
-    func loadThumbnail(assetID: UUID, targetPixelWidth: Int) async throws -> Data {
+    func loadThumbnail(
+        assetID: UUID,
+        targetPixelWidth: Int,
+        originalAspect: Bool = false
+    ) async throws -> Data {
         _ = targetPixelWidth // R0: advisory only; existing port has no size parameter.
+        if originalAspect,
+           let cached = try? await catalog.loadOriginalAspectThumbnailIfCached(assetID: assetID)
+        {
+            return cached
+        }
         return try await catalog.loadThumbnail(assetID: assetID)
     }
 
@@ -368,10 +440,17 @@ actor RemoteCatalogFacade {
     }
 
     func downloadCloudPreview(assetID: UUID) async throws -> Data {
+        try await downloadCloudPreview(assetID: assetID, onProgress: { _ in })
+    }
+
+    func downloadCloudPreview(
+        assetID: UUID,
+        onProgress: @escaping @Sendable (Double) -> Void
+    ) async throws -> Data {
         do {
             return try await catalog.downloadCloudPreview(
                 assetID: assetID,
-                onProgress: { _ in }
+                onProgress: onProgress
             )
         } catch is CancellationError {
             throw CancellationError()
@@ -401,6 +480,52 @@ actor RemoteCatalogFacade {
             pendingSuggestions: pendingSuggestions,
             favorite: favorite
         )
+    }
+
+    func analyzeAssetLocalSuggestions(
+        assetID: UUID,
+        request: RemoteAssetLocalSuggestionRequest
+    ) async throws -> RemoteAssetLocalSuggestionResponse {
+        guard let trainingCommands else {
+            throw RemoteAPIError(code: .notFound, message: "当前 Mac 未提供单张本地模型预览")
+        }
+        do {
+            let snapshot = try await trainingCommands.assetLocalSuggestions(
+                AssetLocalSuggestionCommand(
+                    operationID: request.operationID,
+                    assetID: assetID,
+                    track: request.track == .standard ? .standard : .personal
+                )
+            )
+            return RemoteAssetLocalSuggestionResponse(
+                operationID: snapshot.operationID,
+                assetID: snapshot.assetID,
+                track: snapshot.track == .standard ? .standard : .personal,
+                state: {
+                    switch snapshot.state {
+                    case .results: .results
+                    case .previewUnavailable: .previewUnavailable
+                    case .personalUnavailable: .personalUnavailable
+                    case .serviceUnavailable: .serviceUnavailable
+                    case .failed: .failed
+                    }
+                }(),
+                suggestions: snapshot.suggestions.map { suggestion in
+                    RemoteAssetLocalSuggestion(
+                        id: suggestion.id,
+                        track: suggestion.track == .standard ? .standard : .personal,
+                        tagID: suggestion.tagID,
+                        displayName: suggestion.displayName,
+                        recommendation: suggestion.recommendation == .autoAssigned
+                            ? .autoAssigned
+                            : .suggested
+                    )
+                },
+                replayed: snapshot.replayed
+            )
+        } catch {
+            throw Self.mapAssetLocalSuggestionError(error)
+        }
     }
 
     func setFavorite(
@@ -513,8 +638,15 @@ actor RemoteCatalogFacade {
         let slimmingByID = Dictionary(
             uniqueKeysWithValues: slimmingSummaries.map { ($0.jobID, $0) }
         )
+        let sourcesByID = Dictionary(
+            uniqueKeysWithValues: ((try? catalog.fetchSources()) ?? []).map { ($0.id, $0) }
+        )
         return try catalog.fetchJobActivity().map {
-            Self.mapJob($0, librarySlimmingSummary: slimmingByID[$0.id])
+            Self.mapJob(
+                $0,
+                source: $0.sourceID.flatMap { sourcesByID[$0] },
+                librarySlimmingSummary: slimmingByID[$0.id]
+            )
         }
     }
 
@@ -1031,18 +1163,62 @@ actor RemoteCatalogFacade {
             let setup = try await librarySlimmingCommands.setup(
                 mediaKind: Self.mapMediaKind(mediaKind)
             )
-            return RemoteLibrarySlimmingSetupSnapshot(
-                mediaKind: mediaKind,
-                sources: setup.sources.map {
-                    RemoteLibrarySlimmingSourceOption(
-                        id: $0.id,
-                        displayName: $0.displayName,
-                        kind: $0.kind == .photos ? .photos : .folder
-                    )
-                },
-                thresholds: Self.mapLibrarySlimmingThresholds(setup.thresholds),
-                factoryThresholds: Self.mapLibrarySlimmingThresholds(setup.factoryThresholds)
+            return Self.mapLibrarySlimmingSetup(setup, mediaKind: mediaKind)
+        } catch {
+            throw Self.mapLibrarySlimmingCommandError(error)
+        }
+    }
+
+    func maintainLibrarySlimmingSources(
+        _ request: RemoteLibrarySlimmingSourceMaintenanceRequest
+    ) async throws -> RemoteLibrarySlimmingSourceMaintenanceResponse {
+        guard let librarySlimmingCommands else {
+            throw RemoteAPIError(code: .notFound, message: "图库瘦身来源维护当前不可用")
+        }
+        let sourceIDs = Array(Set(request.sourceIDs)).sorted(by: Self.uuidLessThan)
+        let key = RemoteIdempotencyStore.MutationKey(
+            kind: "librarySlimmingSourceMaintenance",
+            subject: [request.mediaKind.rawValue, sourceIDs.map(\.uuidString).joined(separator: ",")]
+                .joined(separator: "|"),
+            assetIDs: [],
+            action: request.action.rawValue
+        )
+        do {
+            if let prior: RemoteLibrarySlimmingSourceMaintenanceResponse = try await idempotency.replay(
+                operationID: request.operationID,
+                key: key
+            ) {
+                return RemoteLibrarySlimmingSourceMaintenanceResponse(
+                    operationID: prior.operationID,
+                    action: prior.action,
+                    mediaKind: prior.mediaKind,
+                    sourceIDs: prior.sourceIDs,
+                    setup: prior.setup,
+                    replayed: true
+                )
+            }
+            let setup = try await librarySlimmingCommands.maintainSources(
+                LibrarySlimmingSourceMaintenanceCommand(
+                    action: request.action == .refreshCatalog
+                        ? .refreshCatalog : .initializeSimilarityIndex,
+                    mediaKind: Self.mapMediaKind(request.mediaKind),
+                    sourceIDs: sourceIDs
+                )
             )
+            let response = RemoteLibrarySlimmingSourceMaintenanceResponse(
+                operationID: request.operationID,
+                action: request.action,
+                mediaKind: request.mediaKind,
+                sourceIDs: sourceIDs,
+                setup: Self.mapLibrarySlimmingSetup(setup, mediaKind: request.mediaKind),
+                replayed: false
+            )
+            try await idempotency.record(
+                operationID: request.operationID,
+                key: key,
+                response: response
+            )
+            return response
         } catch {
             throw Self.mapLibrarySlimmingCommandError(error)
         }
@@ -1415,6 +1591,9 @@ actor RemoteCatalogFacade {
                 groupCount: snapshot.groupCount,
                 verifiedAssetCount: snapshot.verifiedAssetCount,
                 retainedAssetCount: snapshot.retainedAssetCount,
+                favoriteRetainedAssetCount: snapshot.favoriteRetainedAssetCount,
+                ordinaryRetainedAssetCount: snapshot.ordinaryRetainedAssetCount,
+                protectedSkippedAssetCount: snapshot.protectedSkippedAssetCount,
                 removalAssetCount: snapshot.removalAssetCount,
                 skippedGroupCount: snapshot.skippedGroupCount,
                 photosAssetCount: snapshot.photosAssetCount,
@@ -2344,11 +2523,17 @@ actor RemoteCatalogFacade {
         switch action {
         case .connectFolder: .connectFolder
         case .connectPhotos: .connectPhotos
+        case .refreshAll: .refreshAll
+        case .prewarmAllThumbnails: .prewarmAllThumbnails
+        case .prewarmAllOriginalAspect: .prewarmAllOriginalAspect
+        case .reauthorizeAll: .reauthorizeAll
+        case .refreshAllFolderMutationAuthorizations: .refreshAllFolderMutationAuthorizations
         case .rebindPhotos: .rebindPhotos
         case .reauthorize: .reauthorize
         case .rescan: .rescan
         case .syncPhotos: .syncPhotos
         case .fullRepair: .fullRepair
+        case .openPhotosPrivacySettings: .openPhotosPrivacySettings
         case .requestPhotosWriteAuthorization: .requestPhotosWriteAuthorization
         case .refreshFolderMutationAuthorization: .refreshFolderMutationAuthorization
         case .prewarmThumbnails: .prewarmThumbnails
@@ -2364,11 +2549,17 @@ actor RemoteCatalogFacade {
         switch action {
         case .connectFolder: .connectFolder
         case .connectPhotos: .connectPhotos
+        case .refreshAll: .refreshAll
+        case .prewarmAllThumbnails: .prewarmAllThumbnails
+        case .prewarmAllOriginalAspect: .prewarmAllOriginalAspect
+        case .reauthorizeAll: .reauthorizeAll
+        case .refreshAllFolderMutationAuthorizations: .refreshAllFolderMutationAuthorizations
         case .rebindPhotos: .rebindPhotos
         case .reauthorize: .reauthorize
         case .rescan: .rescan
         case .syncPhotos: .syncPhotos
         case .fullRepair: .fullRepair
+        case .openPhotosPrivacySettings: .openPhotosPrivacySettings
         case .requestPhotosWriteAuthorization: .requestPhotosWriteAuthorization
         case .refreshFolderMutationAuthorization: .refreshFolderMutationAuthorization
         case .prewarmThumbnails: .prewarmThumbnails
@@ -2401,6 +2592,10 @@ actor RemoteCatalogFacade {
             totalCount: request.totalCount,
             warmedCount: request.warmedCount,
             failedCount: request.failedCount,
+            reusedCount: request.reusedCount,
+            ineligibleCount: request.ineligibleCount,
+            completedSourceCount: request.completedSourceCount,
+            totalSourceCount: request.totalSourceCount,
             updatedAtMs: request.updatedAtMs
         )
     }
@@ -2546,7 +2741,10 @@ actor RemoteCatalogFacade {
             mediaCreatedAtMs: item.mediaCreatedAtMs,
             width: item.width,
             height: item.height,
-            favorite: mapFavorite(favorite)
+            favorite: mapFavorite(favorite),
+            relativePath: item.relativePath,
+            mediaModifiedAtMs: item.mediaModifiedAtMs,
+            durationMs: item.durationMs
         )
     }
 
@@ -2620,10 +2818,13 @@ actor RemoteCatalogFacade {
 
     private static func mapJob(
         _ item: JobActivityItem,
+        source: LibrarySourceSummary? = nil,
         librarySlimmingSummary: LibrarySlimmingAnalysisJobSummary? = nil
     ) -> RemoteJobSummary {
         RemoteJobSummary(
             id: item.id,
+            sourceID: item.sourceID,
+            sourceDisplayName: source?.displayName,
             kind: {
                 switch item.kind {
                 case .folderReconcile: .folderReconcile
@@ -2709,7 +2910,8 @@ actor RemoteCatalogFacade {
                 }
             }(),
             favorite: request.favorite == .favorited ? .favorited : .any,
-            searchText: request.searchText
+            searchText: request.searchText,
+            worldMapSelection: request.worldMapSelection.map(mapWorldMapSelectionQuery)
         )
     }
 
@@ -2861,6 +3063,42 @@ actor RemoteCatalogFacade {
         }
     }
 
+    private static func mapLibrarySlimmingSetup(
+        _ setup: LibrarySlimmingCommandSetupSnapshot,
+        mediaKind: RemoteAssetMediaKind
+    ) -> RemoteLibrarySlimmingSetupSnapshot {
+        RemoteLibrarySlimmingSetupSnapshot(
+            mediaKind: mediaKind,
+            sources: setup.sources.map { source in
+                RemoteLibrarySlimmingSourceOption(
+                    id: source.id,
+                    displayName: source.displayName,
+                    kind: source.kind == .photos ? .photos : .folder,
+                    similarityIndex: setup.sourceSimilarityIndexStatuses[source.id].map { status in
+                        RemoteLibrarySlimmingSourceIndexStatus(
+                            state: {
+                                switch status.state {
+                                case .building: .building
+                                case .ready: .ready
+                                case .stale: .stale
+                                case .failed: .failed
+                                }
+                            }(),
+                            assetCount: status.assetCount,
+                            indexedCount: status.indexedCount,
+                            clusterCount: status.clusterCount,
+                            pendingCount: status.pendingCount,
+                            updatedAtMs: status.updatedAtMs
+                        )
+                    }
+                )
+            },
+            thresholds: mapLibrarySlimmingThresholds(setup.thresholds),
+            factoryThresholds: mapLibrarySlimmingThresholds(setup.factoryThresholds),
+            sourceSimilarityIndexAvailable: setup.sourceSimilarityIndexAvailable
+        )
+    }
+
     private static func mapLibrarySlimmingThresholds(
         _ thresholds: NearDuplicateSceneThresholds
     ) -> RemoteLibrarySlimmingThresholds {
@@ -2969,12 +3207,11 @@ actor RemoteCatalogFacade {
             case .restoreOrPurge: .restoreOrPurge
             case .discardPreflightFailure: .discardPreflightFailure
             case .retryInterruptedOperation: .retryInterruptedOperation
-            case .reinspectFileLocations,
-                 .updateFolderAuthorization,
-                 .refreshSourceBeforeRetry,
-                 .requestPhotosAuthorization,
-                 .retryFromAnalysis:
-                .inspect
+            case .reinspectFileLocations: .reinspectFileLocations
+            case .updateFolderAuthorization: .updateFolderAuthorization
+            case .refreshSourceBeforeRetry: .refreshSourceBeforeRetry
+            case .requestPhotosAuthorization: .requestPhotosAuthorization
+            case .retryFromAnalysis: .retryFromAnalysis
             }
         }
         let actions: [RemoteLibrarySlimmingRecycleAction] = switch entry.resolution {
@@ -3011,10 +3248,140 @@ actor RemoteCatalogFacade {
                 }
             }(),
             errorCode: entry.errorCode,
+            problem: mapLibrarySlimmingRecycleProblem(entry.problem),
             resolution: resolution,
             availableActions: actions,
+            stateMessage: librarySlimmingRecycleStateMessage(entry),
+            policyMessage: librarySlimmingRecyclePolicyMessage(entry),
+            explanationMessage: librarySlimmingRecycleExplanationMessage(entry),
             favorite: favorite.map(Self.mapFavorite)
         )
+    }
+
+    private static func mapLibrarySlimmingRecycleProblem(
+        _ problem: RecycleEntryProblem?
+    ) -> RemoteLibrarySlimmingRecycleProblem? {
+        switch problem {
+        case .sourceAuthorizationRequired: .sourceAuthorizationRequired
+        case .sourceAuthorizationInvalid: .sourceAuthorizationInvalid
+        case .sourceChanged: .sourceChanged
+        case .photosAuthorizationRequired: .photosAuthorizationRequired
+        case .photosAssetNotFound: .photosAssetNotFound
+        case .photosUserCancelled: .photosUserCancelled
+        case .photosMutationFailed: .photosMutationFailed
+        case .fileIO: .fileIO
+        case .locationConflict: .locationConflict
+        case .locationMissing: .locationMissing
+        case .unknown: .unknown
+        case nil: nil
+        }
+    }
+
+    private static func librarySlimmingRecycleStateMessage(
+        _ entry: RecycleEntryRecord
+    ) -> String {
+        if entry.isDiscardablePreflightFailure {
+            return "尚未开始：需要更新文件夹回收权限"
+        }
+        return switch entry.state {
+        case .pending: "处理尚未完成，正在等待安全协调"
+        case .restoring: "恢复尚未完成，可继续协调"
+        case .purging: "永久清理尚未完成，可安全继续"
+        case .failed: librarySlimmingRecycleProblemMessage(entry.problem)
+        case .recycled: "可恢复"
+        case .restored: "已恢复"
+        case .purged: "已永久清理"
+        }
+    }
+
+    private static func librarySlimmingRecycleProblemMessage(
+        _ problem: RecycleEntryProblem?
+    ) -> String {
+        switch problem {
+        case .sourceAuthorizationRequired: "需要文件夹回收权限"
+        case .sourceAuthorizationInvalid: "原有文件夹回收权限已失效"
+        case .sourceChanged: "来源文件已变化，已停止处理以避免误删"
+        case .photosAuthorizationRequired: "需要 Apple Photos 完整读写权限"
+        case .photosAssetNotFound: "Photos 中已找不到同一媒体，未提交删除"
+        case .photosUserCancelled: "已取消系统删除确认，媒体未被删除"
+        case .photosMutationFailed: "Apple Photos 未确认完成删除"
+        case .fileIO: "文件操作没有形成可确认的完整结果"
+        case .locationConflict: "原位置与隔离区同时存在内容，需要核对"
+        case .locationMissing: "无法确认媒体当前的唯一位置"
+        case .unknown, nil: "本次处理未完成，需要重新核对"
+        }
+    }
+
+    private static func librarySlimmingRecyclePolicyMessage(
+        _ entry: RecycleEntryRecord
+    ) -> String {
+        switch entry.state {
+        case .recycled:
+            return entry.sourceKind == .photos
+                ? "恢复与永久删除由“照片”App 管理"
+                : "可恢复到原位置"
+        case .pending:
+            return "ImageAll 会先确认实际位置，不会重复删除"
+        case .restoring:
+            return "正在协调原位置与 ImageAll 隔离区"
+        case .purging:
+            return "永久清理已经开始，完成后不可恢复"
+        case .failed:
+            return switch entry.problem {
+            case .sourceAuthorizationRequired, .sourceAuthorizationInvalid:
+                "原文件未因本次失败而被修改"
+            case .sourceChanged:
+                "原文件未删除；刷新来源并重新分析后再试"
+            case .photosAuthorizationRequired,
+                 .photosAssetNotFound,
+                 .photosUserCancelled,
+                 .photosMutationFailed:
+                "未确认移入“最近删除”；可修正原因后重试"
+            case .locationConflict:
+                "两处内容均会保留，ImageAll 不会覆盖或删除"
+            case .locationMissing:
+                "位置未确认前，ImageAll 不会继续删除"
+            case .fileIO, .unknown, nil:
+                "未确认删除完成；现有内容会继续受到保护"
+            }
+        case .restored:
+            return "媒体已经恢复"
+        case .purged:
+            return "媒体已经永久清理"
+        }
+    }
+
+    private static func librarySlimmingRecycleExplanationMessage(
+        _ entry: RecycleEntryRecord
+    ) -> String? {
+        if entry.sourceKind == .photos, entry.state == .recycled {
+            return "请在系统“照片”App 的“最近删除”中恢复；恢复后 ImageAll 会自动对账。永久删除也由系统管理。"
+        }
+        guard entry.state == .failed else { return nil }
+        return switch entry.problem {
+        case .sourceAuthorizationRequired:
+            "文件操作尚未开始，原文件没有修改。请更新来源回收权限后回到分析结果重试；也可以移除这条失败记录。"
+        case .sourceAuthorizationInvalid:
+            "已保存的来源回收权限失效。请重新选择原来源更新权限，再回到分析结果重试。"
+        case .sourceChanged:
+            "目录中的文件与分析时记录不一致，ImageAll 已停止删除以避免误删。请刷新来源、等待完成、重新分析后再试。"
+        case .photosAuthorizationRequired:
+            "尚未取得 Apple Photos 完整读写权限，因此没有提交移入“最近删除”。授权后可回到分析结果重试。"
+        case .photosAssetNotFound:
+            "执行前已无法用同一 Photos 标识找到该媒体，因此没有提交删除。请刷新 Photos 来源并重新分析。"
+        case .photosUserCancelled:
+            "系统的删除确认已取消，媒体没有被 ImageAll 视为已移入“最近删除”。可回到分析结果重新发起。"
+        case .photosMutationFailed:
+            "Apple Photos 没有确认完成本次删除，ImageAll 因此保留当前媒体状态。可回到分析结果重试。"
+        case .fileIO:
+            "文件操作没有得到可证明的完整结果。若原位置和隔离区都已登记，可重新检查两处位置；否则请回到分析结果重试。"
+        case .locationConflict:
+            "原位置与 ImageAll 隔离区同时存在内容。为避免覆盖或误删，ImageAll 会保留两份并等待人工处理。"
+        case .locationMissing:
+            "ImageAll 无法在原位置或隔离区确认唯一内容，因此不会继续删除。请先核对来源磁盘和文件位置。"
+        case .unknown, nil:
+            "本次操作没有形成可证明的完成状态。ImageAll 不会继续删除；请回到分析结果重新检查后再试。"
+        }
     }
 
     private static func mapLibrarySlimmingRecycleRequest(
@@ -3132,6 +3499,9 @@ actor RemoteCatalogFacade {
                 ? .releaseSourceSpace
                 : .recoverableRecycle,
             phase: mapped.phase,
+            executionStage: request.executionStage.flatMap {
+                RemoteLibrarySlimmingIdenticalCleanupExecutionStage(rawValue: $0.rawValue)
+            },
             progress: mapped.progress,
             audit: mapped.audit,
             verification: request.verification.map {
@@ -3741,6 +4111,23 @@ actor RemoteCatalogFacade {
         }
     }
 
+    private static func mapAssetLocalSuggestionError(_ error: Error) -> Error {
+        if let apiError = error as? RemoteAPIError { return apiError }
+        guard let commandError = error as? TrainingCommandError else {
+            return RemoteAPIError(code: .internalError, message: "本地模型预览处理失败")
+        }
+        switch commandError {
+        case .unavailable:
+            return RemoteAPIError(code: .notFound, message: "当前 Mac 未提供单张本地模型预览")
+        case .invalidSelection, .insufficientSamples:
+            return RemoteAPIError(code: .badRequest, message: "当前媒体无法进行本地模型预览")
+        case .activeConflict:
+            return RemoteAPIError(code: .conflict, message: "同一模型预览请求仍在运行")
+        case .activityNotFound:
+            return RemoteAPIError(code: .notFound, message: "本地模型预览请求不存在")
+        }
+    }
+
     private static func mapEmbeddingPreparationError(_ error: Error) -> Error {
         if let apiError = error as? RemoteAPIError { return apiError }
         guard let commandError = error as? TrainingCommandError else {
@@ -3870,6 +4257,8 @@ actor RemoteCatalogFacade {
             rejectedTagCount: item.rejectedTagCount,
             suggestionOrigin: mapSuggestionOrigin(item.suggestionOrigin),
             score: item.score,
+            width: item.width,
+            height: item.height,
             favorite: favorite.map(mapFavorite)
         )
     }

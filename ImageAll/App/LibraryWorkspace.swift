@@ -1108,7 +1108,14 @@ final class LibraryWorkspaceModel: ObservableObject {
     @Published private(set) var sort: AssetPageSort = .fileNameAscending
     @Published private(set) var gridDensity: LibraryGridDensity = .default
     @Published private(set) var thumbnailAspectMode: LibraryThumbnailAspectMode = .default
-    @Published private(set) var notice: LibraryWorkspaceNotice?
+    @Published private(set) var notice: LibraryWorkspaceNotice? {
+        didSet {
+            if oldValue != notice {
+                noticeRevision &+= 1
+            }
+        }
+    }
+    private var noticeRevision: UInt64 = 0
     @Published private(set) var pendingSuggestionTotal = 0
     @Published private(set) var isCatalogScanning = false
     @Published private(set) var catalogReconcileProgress: CatalogReconcileProgress?
@@ -9361,6 +9368,112 @@ final class LibraryWorkspaceModel: ObservableObject {
         cloudPreviewTask = nil
         if resetToAvailable, let assetID {
             cloudPreviewState = .available(assetID: assetID)
+        }
+    }
+}
+
+extension LibraryWorkspaceModel: RemoteWorkspaceNoticePort, RemoteWorkspaceNoticeRecording {
+    func recordSourceDeletionBlocked(
+        sourceID: UUID,
+        displayName: String,
+        blockers: LibrarySourceDeletionBlockers
+    ) async {
+        notice = .sourceDeletionBlockedByRecycle(
+            sourceID: sourceID,
+            displayName: displayName,
+            blockers: blockers
+        )
+    }
+
+    func currentWorkspaceNotice() async -> WorkspaceNoticeProjection? {
+        guard let notice else { return nil }
+        return WorkspaceNoticeProjection(
+            id: String(noticeRevision),
+            severity: Self.remoteNoticeSeverity(notice),
+            message: LibraryWorkspaceView.noticeText(notice),
+            actions: remoteNoticeActions(notice)
+        )
+    }
+
+    func dismissWorkspaceNotice(noticeID: String) async -> Bool {
+        guard notice != nil, noticeID == String(noticeRevision) else { return false }
+        dismissNotice()
+        return true
+    }
+
+    func performWorkspaceNoticeAction(noticeID: String, actionID: String) async -> Bool {
+        guard let notice, noticeID == String(noticeRevision) else { return false }
+        switch notice {
+        case .tagBatchMutationApplied:
+            guard actionID == "undoTagMutation", canUndoTagMutation else { return false }
+            await undoLastTagMutation()
+            return true
+        case .sourceDeletionBlockedByRecycle:
+            guard actionID == "openRecycleBin" else { return false }
+            // Web owns its own navigation state. Validating the notice revision here prevents
+            // a stale browser action from opening the wrong source after Mac state changes.
+            return true
+        default:
+            return false
+        }
+    }
+
+    private func remoteNoticeActions(
+        _ notice: LibraryWorkspaceNotice
+    ) -> [WorkspaceNoticeActionProjection] {
+        switch notice {
+        case .tagBatchMutationApplied where canUndoTagMutation:
+            [WorkspaceNoticeActionProjection(
+                id: "undoTagMutation",
+                kind: .undoTagMutation,
+                title: "撤销",
+                sourceID: nil
+            )]
+        case let .sourceDeletionBlockedByRecycle(sourceID, _, _):
+            [WorkspaceNoticeActionProjection(
+                id: "openRecycleBin",
+                kind: .openRecycleBin,
+                title: "前往回收站",
+                sourceID: sourceID
+            )]
+        default:
+            []
+        }
+    }
+
+    private static func remoteNoticeSeverity(
+        _ notice: LibraryWorkspaceNotice
+    ) -> WorkspaceNoticeSeverity {
+        switch notice {
+        case .selectionHiddenByFilter:
+            .information
+        case .presetTagsInstalled, .presetTagsAlreadyAvailable,
+             .portableExportCompleted, .previewCacheCleared,
+             .photosOriginalStorageCleared,
+             .sourceThumbnailPrewarmCompleted,
+             .sourceThumbnailPrewarmCancelled,
+             .sourceOriginalAspectThumbnailPrewarmCompleted,
+             .sourceOriginalAspectThumbnailPrewarmCancelled,
+             .allSourceThumbnailPrewarmCompleted,
+             .allSourceOriginalAspectThumbnailPrewarmCompleted,
+             .allSourcesRefreshQueued,
+             .sourceAccessAuthorizationBatchCompleted,
+             .sourceMutationAuthorizationBatchCompleted,
+             .appStorageLocationRequiresRestart,
+             .personalModelRebuildCompleted, .personalAdamWRebuildCompleted,
+             .selectedAssetEmbeddingCached,
+             .selectedAssetEmbeddingBatchCompleted,
+             .personalSampleSuggestionsCompleted,
+             .featureKnnSuggestionsCompleted,
+             .personalTagLibrarySuggestionsCompleted,
+             .personalAdamWTagLibrarySuggestionsCompleted,
+             .suggestionThresholdPruned,
+             .tagBatchMutationApplied, .photosAlreadyConnected,
+             .photosSyncQueued, .photosFullRepairQueued,
+             .sourceDeleted:
+            .success
+        default:
+            .warning
         }
     }
 }

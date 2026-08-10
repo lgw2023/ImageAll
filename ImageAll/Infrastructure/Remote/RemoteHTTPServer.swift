@@ -36,6 +36,173 @@ enum RemoteHTTPRangeSelection: Sendable, Equatable {
     case unsatisfiable
 }
 
+private actor RemoteCloudPreviewDownloadCoordinator {
+    private struct Entry {
+        var snapshot: RemoteCloudPreviewSnapshot
+        var task: Task<Void, Never>?
+    }
+
+    private let facade: RemoteCatalogFacade
+    private var entries: [UUID: Entry] = [:]
+
+    init(facade: RemoteCatalogFacade) {
+        self.facade = facade
+    }
+
+    func start(assetID: UUID, operationID: UUID) throws -> RemoteCloudPreviewSnapshot {
+        if let existing = entries[assetID] {
+            if existing.snapshot.operationID == operationID {
+                return existing.snapshot
+            }
+            if existing.snapshot.phase == .downloading {
+                throw RemoteAPIError(
+                    code: .conflict,
+                    message: "cloud preview download already active"
+                )
+            }
+        }
+
+        let snapshot = RemoteCloudPreviewSnapshot(
+            operationID: operationID,
+            assetID: assetID,
+            phase: .downloading,
+            progress: 0,
+            message: nil,
+            updatedAtMs: Self.nowMilliseconds()
+        )
+        entries[assetID] = Entry(snapshot: snapshot, task: nil)
+        let facade = facade
+        let task = Task { [weak self] in
+            guard let coordinator = self else { return }
+            do {
+                _ = try await facade.downloadCloudPreview(
+                    assetID: assetID,
+                    onProgress: { progress in
+                        Task {
+                            await coordinator.recordProgress(
+                                progress,
+                                assetID: assetID,
+                                operationID: operationID
+                            )
+                        }
+                    }
+                )
+                try Task.checkCancellation()
+                await coordinator.finish(
+                    assetID: assetID,
+                    operationID: operationID,
+                    phase: .completed,
+                    progress: 1,
+                    message: "iCloud preview ready"
+                )
+            } catch is CancellationError {
+                await coordinator.finish(
+                    assetID: assetID,
+                    operationID: operationID,
+                    phase: .cancelled,
+                    progress: nil,
+                    message: "iCloud preview download cancelled"
+                )
+            } catch {
+                await coordinator.finish(
+                    assetID: assetID,
+                    operationID: operationID,
+                    phase: .failed,
+                    progress: nil,
+                    message: "iCloud preview download failed"
+                )
+            }
+        }
+        entries[assetID]?.task = task
+        return snapshot
+    }
+
+    func snapshot(assetID: UUID) -> RemoteCloudPreviewSnapshot? {
+        entries[assetID]?.snapshot
+    }
+
+    func cancel(
+        assetID: UUID,
+        operationID: UUID
+    ) throws -> RemoteCloudPreviewSnapshot {
+        guard var entry = entries[assetID] else {
+            throw RemoteAPIError(code: .notFound, message: "cloud preview download not found")
+        }
+        guard entry.snapshot.operationID == operationID else {
+            throw RemoteAPIError(code: .conflict, message: "cloud preview operation changed")
+        }
+        guard entry.snapshot.phase == .downloading else {
+            return entry.snapshot
+        }
+        entry.task?.cancel()
+        entry.task = nil
+        entry.snapshot = RemoteCloudPreviewSnapshot(
+            operationID: operationID,
+            assetID: assetID,
+            phase: .cancelled,
+            progress: entry.snapshot.progress,
+            message: "iCloud preview download cancelled",
+            updatedAtMs: Self.nowMilliseconds()
+        )
+        entries[assetID] = entry
+        return entry.snapshot
+    }
+
+    func cancelAll() {
+        for entry in entries.values {
+            entry.task?.cancel()
+        }
+        entries.removeAll()
+    }
+
+    private func recordProgress(
+        _ progress: Double,
+        assetID: UUID,
+        operationID: UUID
+    ) {
+        guard var entry = entries[assetID],
+              entry.snapshot.operationID == operationID,
+              entry.snapshot.phase == .downloading
+        else { return }
+        entry.snapshot = RemoteCloudPreviewSnapshot(
+            operationID: operationID,
+            assetID: assetID,
+            phase: .downloading,
+            progress: max(entry.snapshot.progress, progress),
+            message: nil,
+            updatedAtMs: Self.nowMilliseconds()
+        )
+        entries[assetID] = entry
+    }
+
+    private func finish(
+        assetID: UUID,
+        operationID: UUID,
+        phase: RemoteCloudPreviewPhase,
+        progress: Double?,
+        message: String
+    ) {
+        guard var entry = entries[assetID],
+              entry.snapshot.operationID == operationID,
+              entry.snapshot.phase == .downloading
+        else { return }
+        entry.task = nil
+        entry.snapshot = RemoteCloudPreviewSnapshot(
+            operationID: operationID,
+            assetID: assetID,
+            phase: phase,
+            progress: progress ?? entry.snapshot.progress,
+            message: message,
+            updatedAtMs: Self.nowMilliseconds()
+        )
+        entries[assetID] = entry
+    }
+
+    private static func nowMilliseconds() -> Int64 {
+        Int64((Date().timeIntervalSince1970 * 1_000).rounded())
+    }
+}
+
 /// HTTP/1.1 (+ WebSocket upgrade) listener for the auxiliary iOS companion. Default off;
 /// serves TLS when a `SecIdentity` is available, cleartext otherwise (Debug emergency path
 /// per ADR-044). Pairing completion/refresh are intentionally reachable without a bearer
@@ -50,6 +217,7 @@ actor RemoteHTTPServer {
     private static let webSocketGUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
     private let facade: RemoteCatalogFacade
+    private let cloudPreviewDownloads: RemoteCloudPreviewDownloadCoordinator
     private let pairingStore: RemotePairingStore
     private let accessAccountStore: RemoteAccessAccountStore
     private let eventBroker: RemoteEventBroker
@@ -85,6 +253,7 @@ actor RemoteHTTPServer {
         hostID: UUID? = nil
     ) {
         self.facade = facade
+        cloudPreviewDownloads = RemoteCloudPreviewDownloadCoordinator(facade: facade)
         self.pairingStore = pairingStore
         self.accessAccountStore = accessAccountStore
         self.eventBroker = eventBroker
@@ -146,6 +315,7 @@ actor RemoteHTTPServer {
             connection.cancel()
         }
         webSocketConnections.removeAll()
+        Task { await cloudPreviewDownloads.cancelAll() }
         Task { await eventBroker.stopPingLoop() }
     }
 
@@ -676,6 +846,23 @@ actor RemoteHTTPServer {
             case ("GET", RemoteHTTPPaths.capabilities):
                 let payload = await facade.capabilities()
                 await respondJSON(connection, status: 200, value: payload, timeoutTask: timeoutTask)
+            case ("GET", RemoteHTTPPaths.workspaceNotice):
+                let payload = await facade.fetchWorkspaceNotice()
+                await respondJSON(connection, status: 200, value: payload, timeoutTask: timeoutTask)
+            case ("POST", RemoteHTTPPaths.workspaceNoticeDismiss):
+                let request = try jsonDecoder.decode(
+                    RemoteWorkspaceNoticeDismissRequest.self,
+                    from: body
+                )
+                let payload = await facade.dismissWorkspaceNotice(request)
+                await respondJSON(connection, status: 200, value: payload, timeoutTask: timeoutTask)
+            case ("POST", RemoteHTTPPaths.workspaceNoticeAction):
+                let request = try jsonDecoder.decode(
+                    RemoteWorkspaceNoticeActionRequest.self,
+                    from: body
+                )
+                let payload = await facade.performWorkspaceNoticeAction(request)
+                await respondJSON(connection, status: 200, value: payload, timeoutTask: timeoutTask)
             case ("GET", RemoteHTTPPaths.generalSettings):
                 let payload = try await facade.fetchGeneralSettings()
                 await respondJSON(connection, status: 200, value: payload, timeoutTask: timeoutTask)
@@ -779,7 +966,7 @@ actor RemoteHTTPServer {
                 let payload = try await facade.createTagGroup(request)
                 await respondJSON(connection, status: 200, value: payload, timeoutTask: timeoutTask)
             case ("GET", RemoteHTTPPaths.assets):
-                let request = Self.parseAssetPageRequest(query: query)
+                let request = try Self.parseAssetPageRequest(query: query)
                 let payload = try await facade.fetchAssets(request)
                 await respondJSON(connection, status: 200, value: payload, timeoutTask: timeoutTask)
             case ("POST", RemoteHTTPPaths.favorites):
@@ -947,6 +1134,17 @@ actor RemoteHTTPServer {
                 let mediaKind = RemoteAssetMediaKind(rawValue: query["mediaKind"] ?? "") ?? .image
                 let payload = try await facade.fetchLibrarySlimmingSetup(mediaKind: mediaKind)
                 await respondJSON(connection, status: 200, value: payload, timeoutTask: timeoutTask)
+            case ("POST", RemoteHTTPPaths.librarySlimmingSourceMaintenance):
+                let request = try jsonDecoder.decode(
+                    RemoteLibrarySlimmingSourceMaintenanceRequest.self,
+                    from: body
+                )
+                let payload = try await facade.maintainLibrarySlimmingSources(request)
+                await eventBroker.publish(.init(
+                    kind: request.action == .refreshCatalog ? .assetsChanged : .jobsChanged,
+                    emittedAtMs: Int64((Date().timeIntervalSince1970 * 1_000).rounded())
+                ))
+                await respondJSON(connection, status: 202, value: payload, timeoutTask: timeoutTask)
             case ("POST", RemoteHTTPPaths.librarySlimmingLaunch):
                 let request = try jsonDecoder.decode(
                     RemoteLibrarySlimmingLaunchRequest.self,
@@ -1067,13 +1265,66 @@ actor RemoteHTTPServer {
                     )
                 } else if method == "GET", let assetID = Self.thumbnailAssetID(from: path) {
                     let width = Int(query["w"] ?? query["width"] ?? "320") ?? 320
-                    let data = try await facade.loadThumbnail(assetID: assetID, targetPixelWidth: width)
+                    let data = try await facade.loadThumbnail(
+                        assetID: assetID,
+                        targetPixelWidth: width,
+                        originalAspect: query["aspect"] == "original"
+                    )
                     let image = try Self.browserImageResponse(data)
                     await respond(connection, status: 200, contentType: image.contentType, body: image.body, timeoutTask: timeoutTask)
                 } else if method == "GET", let assetID = Self.previewAssetID(from: path) {
                     let data = try await facade.loadPreview(assetID: assetID)
                     let image = try Self.browserImageResponse(data)
                     await respond(connection, status: 200, contentType: image.contentType, body: image.body, timeoutTask: timeoutTask)
+                } else if method == "GET",
+                          let assetID = Self.cloudPreviewRequestAssetID(from: path)
+                {
+                    guard let snapshot = await cloudPreviewDownloads.snapshot(assetID: assetID) else {
+                        throw RemoteAPIError(
+                            code: .notFound,
+                            message: "cloud preview download not found"
+                        )
+                    }
+                    await respondJSON(
+                        connection,
+                        status: 200,
+                        value: snapshot,
+                        timeoutTask: timeoutTask
+                    )
+                } else if method == "POST",
+                          let assetID = Self.cloudPreviewCancelAssetID(from: path)
+                {
+                    let request = try jsonDecoder.decode(
+                        RemoteCloudPreviewCancelRequest.self,
+                        from: body
+                    )
+                    let snapshot = try await cloudPreviewDownloads.cancel(
+                        assetID: assetID,
+                        operationID: request.operationID
+                    )
+                    await respondJSON(
+                        connection,
+                        status: 200,
+                        value: snapshot,
+                        timeoutTask: timeoutTask
+                    )
+                } else if method == "POST",
+                          let assetID = Self.cloudPreviewRequestAssetID(from: path)
+                {
+                    let request = try jsonDecoder.decode(
+                        RemoteCloudPreviewStartRequest.self,
+                        from: body
+                    )
+                    let snapshot = try await cloudPreviewDownloads.start(
+                        assetID: assetID,
+                        operationID: request.operationID
+                    )
+                    await respondJSON(
+                        connection,
+                        status: 202,
+                        value: snapshot,
+                        timeoutTask: timeoutTask
+                    )
                 } else if method == "POST", let assetID = Self.cloudPreviewAssetID(from: path) {
                     let data = try await facade.downloadCloudPreview(assetID: assetID)
                     let image = try Self.browserImageResponse(data)
@@ -1082,6 +1333,36 @@ actor RemoteHTTPServer {
                         status: 200,
                         contentType: image.contentType,
                         body: image.body,
+                        timeoutTask: timeoutTask
+                    )
+                } else if method == "POST",
+                          let assetID = Self.assetLocalSuggestionsID(from: path)
+                {
+                    let request = try jsonDecoder.decode(
+                        RemoteAssetLocalSuggestionRequest.self,
+                        from: body
+                    )
+                    let payload = try await facade.analyzeAssetLocalSuggestions(
+                        assetID: assetID,
+                        request: request
+                    )
+                    if request.track == .standard, payload.state == .results {
+                        let emittedAtMs = Int64(
+                            (Date().timeIntervalSince1970 * 1_000).rounded()
+                        )
+                        await eventBroker.publish(.init(
+                            kind: .tagsChanged,
+                            emittedAtMs: emittedAtMs
+                        ))
+                        await eventBroker.publish(.init(
+                            kind: .reviewChanged,
+                            emittedAtMs: emittedAtMs
+                        ))
+                    }
+                    await respondJSON(
+                        connection,
+                        status: 200,
+                        value: payload,
                         timeoutTask: timeoutTask
                     )
                 } else if method == "GET", let assetID = Self.assetDetailID(from: path) {
@@ -1639,7 +1920,9 @@ actor RemoteHTTPServer {
         return (path, query)
     }
 
-    private static func parseAssetPageRequest(query: [String: String]) -> RemoteAssetPageRequest {
+    private static func parseAssetPageRequest(
+        query: [String: String]
+    ) throws -> RemoteAssetPageRequest {
         let sourceIDs = (query["sourceIDs"] ?? "")
             .split(separator: ",")
             .compactMap { UUID(uuidString: String($0)) }
@@ -1677,7 +1960,45 @@ actor RemoteHTTPServer {
                 .split(separator: ",")
                 .map(String.init),
             tagPresence: RemoteAssetTagPresence(rawValue: query["tagPresence"] ?? "") ?? .any,
-            favorite: RemoteAssetFavoriteFilter(rawValue: query["favorite"] ?? "")
+            favorite: RemoteAssetFavoriteFilter(rawValue: query["favorite"] ?? ""),
+            worldMapSelection: try parseAssetWorldMapSelection(query: query)
+        )
+    }
+
+    private static func parseAssetWorldMapSelection(
+        query: [String: String]
+    ) throws -> RemoteWorldMapSelectionQuery? {
+        let keys = [
+            "worldMapCellDegrees",
+            "worldMapLongitudeBucket",
+            "worldMapLatitudeBucket",
+        ]
+        let supplied = keys.compactMap { query[$0] }
+        guard !supplied.isEmpty else { return nil }
+        guard supplied.count == keys.count,
+              let cellDegrees = Double(query["worldMapCellDegrees"] ?? ""),
+              cellDegrees.isFinite,
+              let longitudeBucket = Int(query["worldMapLongitudeBucket"] ?? ""),
+              let latitudeBucket = Int(query["worldMapLatitudeBucket"] ?? "")
+        else {
+            throw RemoteAPIError(code: .badRequest, message: "地点图库范围不完整")
+        }
+
+        let bounds = try parseWorldMapBounds(
+            query: [
+                "west": query["worldMapWest"],
+                "south": query["worldMapSouth"],
+                "east": query["worldMapEast"],
+                "north": query["worldMapNorth"],
+            ].compactMapValues { $0 }
+        )
+        return RemoteWorldMapSelectionQuery(
+            cellDegrees: cellDegrees,
+            longitudeBucket: longitudeBucket,
+            latitudeBucket: latitudeBucket,
+            bounds: bounds,
+            maximumAssets: Int(query["worldMapMaximumAssets"] ?? "")
+                ?? WorldMapCatalogSelectionQuery.defaultAssetLimit
         )
     }
 
@@ -1765,6 +2086,27 @@ actor RemoteHTTPServer {
     private static func cloudPreviewAssetID(from path: String) -> UUID? {
         // /v1/assets/{uuid}/cloud-preview
         pathParameter(path, expectedSegments: ["v1", "assets", nil, "cloud-preview"])
+    }
+
+    private static func cloudPreviewRequestAssetID(from path: String) -> UUID? {
+        // /v1/assets/{uuid}/cloud-preview-requests
+        pathParameter(
+            path,
+            expectedSegments: ["v1", "assets", nil, "cloud-preview-requests"]
+        )
+    }
+
+    private static func cloudPreviewCancelAssetID(from path: String) -> UUID? {
+        // /v1/assets/{uuid}/cloud-preview-requests/cancel
+        pathParameter(
+            path,
+            expectedSegments: ["v1", "assets", nil, "cloud-preview-requests", "cancel"]
+        )
+    }
+
+    private static func assetLocalSuggestionsID(from path: String) -> UUID? {
+        // /v1/assets/{uuid}/local-suggestions
+        pathParameter(path, expectedSegments: ["v1", "assets", nil, "local-suggestions"])
     }
 
     private static func mediaAssetID(from path: String) -> UUID? {

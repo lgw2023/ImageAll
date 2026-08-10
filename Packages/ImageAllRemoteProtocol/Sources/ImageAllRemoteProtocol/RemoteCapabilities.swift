@@ -10,6 +10,8 @@ public enum RemoteCapability: String, Codable, Sendable, Hashable, CaseIterable 
     case tags
     case assetPages
     case assetDetail
+    case assetLocalSuggestions
+    case cloudPreviewLifecycle
     case thumbnails
     case previews
     case favorites
@@ -21,6 +23,7 @@ public enum RemoteCapability: String, Codable, Sendable, Hashable, CaseIterable 
     case librarySlimming
     case sourceManagement
     case generalSettings
+    case workspaceNotices
     case jobs
     case pairing
     case events

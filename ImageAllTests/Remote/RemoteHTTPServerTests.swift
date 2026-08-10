@@ -66,6 +66,189 @@ final class RemoteHTTPServerTests: XCTestCase {
         )
     }
 
+    func testAssetLocalSuggestionRouteReturnsOnlyRedactedHostProjection() async throws {
+        let port = UInt16.random(in: 19_000...29_000)
+        let operationID = UUID()
+        let assetID = UUID()
+        let tagID = UUID()
+        let commands = RemoteHTTPTrainingCommandStub(
+            setupSnapshot: TrainingCommandSetupSnapshot(
+                mediaKind: .image,
+                tags: [],
+                sources: [],
+                supportsPersonalCentroid: false,
+                supportsPersonalAdamW: false
+            ),
+            receipt: TrainingLaunchReceipt(
+                operationID: UUID(),
+                method: .personalCentroid,
+                acceptedAtMs: 0,
+                scheduledTagCount: 0,
+                jobID: UUID()
+            ),
+            assetLocalSuggestionSnapshot: AssetLocalSuggestionSnapshot(
+                operationID: operationID,
+                assetID: assetID,
+                track: .personal,
+                state: .results,
+                suggestions: [
+                    AssetLocalSuggestionItem(
+                        id: "personal|\(tagID.uuidString.lowercased())",
+                        track: .personal,
+                        tagID: tagID,
+                        displayName: "猫",
+                        recommendation: .suggested
+                    ),
+                ],
+                replayed: false
+            )
+        )
+        let (server, _) = makeServer(port: port, trainingCommands: commands)
+        try await server.start()
+        try await Task.sleep(nanoseconds: 150_000_000)
+        defer { Task { await server.stop() } }
+
+        var request = URLRequest(
+            url: URL(
+                string: "http://127.0.0.1:\(port)/v1/assets/\(assetID.uuidString)/local-suggestions"
+            )!
+        )
+        request.httpMethod = "POST"
+        request.httpBody = try JSONEncoder().encode(RemoteAssetLocalSuggestionRequest(
+            operationID: operationID,
+            track: .personal
+        ))
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue(
+            "Bearer \(Self.legacyDebugToken)",
+            forHTTPHeaderField: "Authorization"
+        )
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+
+        XCTAssertEqual(try XCTUnwrap(response as? HTTPURLResponse).statusCode, 200)
+        let payload = try JSONDecoder().decode(RemoteAssetLocalSuggestionResponse.self, from: data)
+        XCTAssertEqual(payload.assetID, assetID)
+        XCTAssertEqual(payload.suggestions.first?.tagID, tagID)
+        XCTAssertEqual(payload.suggestions.first?.displayName, "猫")
+        XCTAssertEqual(commands.assetLocalSuggestionCallCount, 1)
+        XCTAssertEqual(commands.lastAssetLocalSuggestionCommand?.assetID, assetID)
+        let json = try XCTUnwrap(String(data: data, encoding: .utf8))
+        XCTAssertFalse(json.contains("score"))
+        XCTAssertFalse(json.contains("modelID"))
+        XCTAssertFalse(json.contains("weightsSHA256"))
+    }
+
+    func testWorkspaceNoticeRoutesPreserveNewerNoticeDuringStaleDismissal() async throws {
+        let port = UInt16.random(in: 19_000...29_000)
+        let sourceID = UUID()
+        let notices = RemoteHTTPWorkspaceNoticePortStub(notice: WorkspaceNoticeProjection(
+            id: "7",
+            severity: .warning,
+            message: "后台扫描未完成，已索引的照片仍可继续浏览。",
+            actions: [WorkspaceNoticeActionProjection(
+                id: "openRecycleBin",
+                kind: .openRecycleBin,
+                title: "前往回收站",
+                sourceID: sourceID
+            )]
+        ))
+        let (server, _) = makeServer(port: port, workspaceNotices: notices)
+        try await server.start()
+        try await Task.sleep(nanoseconds: 150_000_000)
+        defer { Task { await server.stop() } }
+
+        func request(path: String, method: String = "GET", body: Data? = nil) -> URLRequest {
+            var request = URLRequest(url: URL(string: "http://127.0.0.1:\(port)\(path)")!)
+            request.httpMethod = method
+            request.httpBody = body
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.setValue(
+                "Bearer \(Self.legacyDebugToken)",
+                forHTTPHeaderField: "Authorization"
+            )
+            return request
+        }
+
+        let (initialData, initialResponse) = try await URLSession.shared.data(
+            for: request(path: RemoteHTTPPaths.workspaceNotice)
+        )
+        XCTAssertEqual(try XCTUnwrap(initialResponse as? HTTPURLResponse).statusCode, 200)
+        let initial = try JSONDecoder().decode(
+            RemoteWorkspaceNoticeSnapshot.self,
+            from: initialData
+        )
+        XCTAssertEqual(initial.notice?.id, "7")
+        XCTAssertEqual(initial.notice?.severity, .warning)
+        XCTAssertEqual(initial.notice?.actions.first?.sourceID, sourceID)
+
+        let actionBody = try JSONEncoder().encode(RemoteWorkspaceNoticeActionRequest(
+            noticeID: "7",
+            actionID: "openRecycleBin"
+        ))
+        let (actionData, actionResponse) = try await URLSession.shared.data(for: request(
+            path: RemoteHTTPPaths.workspaceNoticeAction,
+            method: "POST",
+            body: actionBody
+        ))
+        XCTAssertEqual(try XCTUnwrap(actionResponse as? HTTPURLResponse).statusCode, 200)
+        let action = try JSONDecoder().decode(
+            RemoteWorkspaceNoticeActionResponse.self,
+            from: actionData
+        )
+        XCTAssertTrue(action.performed)
+        XCTAssertEqual(action.notice?.id, "7")
+
+        await notices.replace(with: WorkspaceNoticeProjection(
+            id: "8",
+            severity: .success,
+            message: "已开始增量同步 Apple Photos。",
+            actions: []
+        ))
+        let (staleActionData, _) = try await URLSession.shared.data(for: request(
+            path: RemoteHTTPPaths.workspaceNoticeAction,
+            method: "POST",
+            body: actionBody
+        ))
+        let staleAction = try JSONDecoder().decode(
+            RemoteWorkspaceNoticeActionResponse.self,
+            from: staleActionData
+        )
+        XCTAssertFalse(staleAction.performed)
+        XCTAssertEqual(staleAction.notice?.id, "8")
+        let staleBody = try JSONEncoder().encode(
+            RemoteWorkspaceNoticeDismissRequest(noticeID: "7")
+        )
+        let (staleData, staleResponse) = try await URLSession.shared.data(for: request(
+            path: RemoteHTTPPaths.workspaceNoticeDismiss,
+            method: "POST",
+            body: staleBody
+        ))
+        XCTAssertEqual(try XCTUnwrap(staleResponse as? HTTPURLResponse).statusCode, 200)
+        let stale = try JSONDecoder().decode(
+            RemoteWorkspaceNoticeDismissResponse.self,
+            from: staleData
+        )
+        XCTAssertFalse(stale.dismissed)
+        XCTAssertEqual(stale.notice?.id, "8")
+
+        let currentBody = try JSONEncoder().encode(
+            RemoteWorkspaceNoticeDismissRequest(noticeID: "8")
+        )
+        let (currentData, currentResponse) = try await URLSession.shared.data(for: request(
+            path: RemoteHTTPPaths.workspaceNoticeDismiss,
+            method: "POST",
+            body: currentBody
+        ))
+        XCTAssertEqual(try XCTUnwrap(currentResponse as? HTTPURLResponse).statusCode, 200)
+        let current = try JSONDecoder().decode(
+            RemoteWorkspaceNoticeDismissResponse.self,
+            from: currentData
+        )
+        XCTAssertTrue(current.dismissed)
+        XCTAssertNil(current.notice)
+    }
+
     func testLibrarySlimmingWorkspaceRouteReturnsReadOnlyProjection() async throws {
         let port = UInt16.random(in: 19_000...29_000)
         let analysis = RemoteHTTPServerSlimmingAnalysisStub()
@@ -124,6 +307,31 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertEqual(try XCTUnwrap(setupResponse as? HTTPURLResponse).statusCode, 200)
         let setup = try JSONDecoder().decode(RemoteLibrarySlimmingSetupSnapshot.self, from: setupData)
         XCTAssertEqual(setup.sources.map(\.id), [sourceID])
+        XCTAssertEqual(setup.sourceSimilarityIndexAvailable, true)
+
+        var maintenance = authorizedRequest(
+            path: RemoteHTTPPaths.librarySlimmingSourceMaintenance,
+            method: "POST"
+        )
+        maintenance.httpBody = try JSONEncoder().encode(
+            RemoteLibrarySlimmingSourceMaintenanceRequest(
+                operationID: UUID(),
+                action: .initializeSimilarityIndex,
+                mediaKind: .image,
+                sourceIDs: [sourceID]
+            )
+        )
+        let (maintenanceData, maintenanceResponse) = try await URLSession.shared.data(
+            for: maintenance
+        )
+        XCTAssertEqual(try XCTUnwrap(maintenanceResponse as? HTTPURLResponse).statusCode, 202)
+        let maintenanceResult = try JSONDecoder().decode(
+            RemoteLibrarySlimmingSourceMaintenanceResponse.self,
+            from: maintenanceData
+        )
+        XCTAssertEqual(maintenanceResult.action, .initializeSimilarityIndex)
+        XCTAssertEqual(maintenanceResult.sourceIDs, [sourceID])
+        XCTAssertEqual(commands.sourceMaintenanceCount, 1)
 
         let operationID = UUID()
         var launch = authorizedRequest(path: RemoteHTTPPaths.librarySlimmingLaunch, method: "POST")
@@ -364,6 +572,9 @@ final class RemoteHTTPServerTests: XCTestCase {
             from: planData
         )
         XCTAssertEqual(plan.groupCount, 2)
+        XCTAssertEqual(plan.favoriteRetainedAssetCount, 1)
+        XCTAssertEqual(plan.ordinaryRetainedAssetCount, 1)
+        XCTAssertEqual(plan.protectedSkippedAssetCount, 2)
         XCTAssertEqual(plan.removalAssetCount, 3)
 
         let operationID = UUID()
@@ -401,6 +612,7 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertEqual(status.requests.first?.verification?.targetRetainedAssetCount, 2)
         XCTAssertEqual(status.requests.first?.verification?.observedAssetCount, 5)
         XCTAssertEqual(status.requests.first?.verification?.currentAvailableAssetCount, 2)
+        XCTAssertEqual(status.requests.first?.executionStage, .verifyingResult)
     }
 
     func testSourceManagementRoutesReturnAsyncMacApprovalReceipt() async throws {
@@ -552,6 +764,7 @@ final class RemoteHTTPServerTests: XCTestCase {
         librarySlimmingCommands: (any RemoteLibrarySlimmingCommandPort)? = nil,
         sourceManagementCommands: (any RemoteSourceManagementCommandPort)? = nil,
         storageMaintenanceCommands: (any RemoteStorageMaintenanceCommandPort)? = nil,
+        workspaceNotices: (any RemoteWorkspaceNoticePort)? = nil,
         hostAppVersion: String = "1.0.0",
         webAssetStore: RemoteWebCompanionAssetStore = RemoteWebCompanionAssetStore(),
         mediaResources: any RemoteMediaResourceProviding = UnavailableRemoteMediaResourceProvider(),
@@ -567,6 +780,7 @@ final class RemoteHTTPServerTests: XCTestCase {
             librarySlimmingCommands: librarySlimmingCommands,
             sourceManagementCommands: sourceManagementCommands,
             storageMaintenanceCommands: storageMaintenanceCommands,
+            workspaceNotices: workspaceNotices,
             idempotency: makeIdempotencyStore(),
             hostAppVersion: hostAppVersion,
             listenPort: Int(port)
@@ -2025,15 +2239,58 @@ final class RemoteHTTPServerTests: XCTestCase {
             "reviewMarqueeSelection",
             "reviewSelectionSummary",
             "jobsPopover",
+            "refreshJobsButton",
+            "currentSourceRefreshButton",
+            "currentSourceRefreshLabel",
+            "catalogProgressStatusButton",
+            "catalogProgressStatusLabel",
+            "catalogProgressStatusFill",
+            "compactToolbarMenuButton",
+            "compactToolbarActivityDot",
+            "compactToolbarMenu",
+            "compactToolbarConnectionSummary",
+            "compactToolbarHostSummary",
+            "compactToolbarMenuContent",
+            "inspectorLocalModelSection",
+            "inspectorStandardModelButton",
+            "inspectorPersonalModelButton",
+            "inspectorLocalModelBody",
             "lightbox",
             "lightboxBackButton",
+            "lightboxStage",
+            "lightboxZoomControls",
+            "lightboxZoomOutButton",
+            "lightboxZoomResetButton",
+            "lightboxZoomPercentage",
+            "lightboxZoomInButton",
+            "lightboxDeleteButton",
             "accountLoginForm",
             "accountUsername",
             "accountPassword",
+            "workspaceNoticeBanner",
+            "workspaceNoticeMessage",
+            "workspaceNoticeActions",
+            "dismissWorkspaceNoticeButton",
+            "worldMapBrowseClusterButton",
+            "worldMapGalleryBanner",
+            "returnToWorldMapButton",
+            "clearWorldMapGalleryButton",
+            "sourceRefreshAllButton",
+            "sidebarSourceActions",
+            "sidebarConnectFolderButton",
+            "sidebarConnectPhotosButton",
+            "sidebarPhotosConnectedStatus",
+            "sourcePrewarmAllButton",
+            "sourcePrewarmAllOriginalButton",
+            "sourceBatchAuthorizationPanel",
+            "sourceReauthorizeAllButton",
+            "sourceRefreshAllMutationAuthorizationButton",
+            "sourceRequestPhotosWriteAuthorizationButton",
             "newTagDialog",
             "newTagForm",
             "newTagName",
             "batchNewTagButton",
+            "generatePersonalSuggestionsButton",
             "prepareSelectedFeaturesButton",
             "generateSelectedSuggestionsButton",
             "findSimilarSelectionButton",
@@ -2044,10 +2301,22 @@ final class RemoteHTTPServerTests: XCTestCase {
             "selectionInspectorFindSimilarButton",
             "selectionInspectorToolStatus",
             "selectionInspectorCancelPreparationButton",
+            "selectionInspectorInlineTagForm",
+            "selectionInspectorInlineTagName",
+            "selectionInspectorInlineTagError",
+            "selectionInspectorNewTagButton",
+            "inspectorInlineTagForm",
+            "inspectorInlineTagName",
+            "inspectorInlineTagError",
             "inspectorNewTagButton",
             "mediaKindTabs",
             "gridDensitySlider",
             "thumbnailAspectButton",
+            "reviewThumbnailLayoutControls",
+            "reviewGridDensitySlider",
+            "reviewThumbnailAspectButton",
+            "reviewSelectAllButton",
+            "reviewSelectionModeButton",
             "activeFilterBar",
             "activeFilterSummary",
             "activeFilterRelation",
@@ -2059,6 +2328,7 @@ final class RemoteHTTPServerTests: XCTestCase {
             "emptyConnectPhotosButton",
             "emptyInstallPresetTagsButton",
             "commandPalette",
+            "commandContextLabel",
             "shortcutDialog",
             "inspectorPreviousButton",
             "inspectorNextButton",
@@ -2066,6 +2336,7 @@ final class RemoteHTTPServerTests: XCTestCase {
             "previewVideo",
             "cloudPreviewRecovery",
             "cloudPreviewButton",
+            "cloudPreviewProgress",
             "openOriginalButton",
             "openOriginalButtonLabel",
             "openOriginalHint",
@@ -2073,10 +2344,15 @@ final class RemoteHTTPServerTests: XCTestCase {
             "assetContextMenu",
             "sidebarVisibilityButton",
             "inspectorVisibilityButton",
+            "sidebarResizeHandle",
+            "inspectorResizeHandle",
+            "reviewOverviewResizeHandle",
+            "reviewQueueResizeHandle",
             "tagManagerDialog",
             "tagManagerButton",
             "installPresetTagsButton",
             "reviewOverview",
+            "reviewOverviewLayout",
             "reviewOverviewGrid",
             "reviewBackButton",
             "generateLibrarySuggestionsButton",
@@ -2099,7 +2375,9 @@ final class RemoteHTTPServerTests: XCTestCase {
             "trainingMediaKindTabs",
             "trainingMethodFilter",
             "trainingSlotStrip",
+            "trainingRunPane",
             "trainingRunList",
+            "trainingDetailPane",
             "trainingDetail",
             "trainingDetailActions",
             "trainingSetupDialog",
@@ -2112,6 +2390,7 @@ final class RemoteHTTPServerTests: XCTestCase {
             "slimmingWorkspace",
             "slimmingWorkspaceTabs",
             "slimmingMediaKindTabs",
+            "slimmingNavigatorPane",
             "slimmingJobList",
             "slimmingLoadMoreJobsButton",
             "previousSlimmingJobButton",
@@ -2122,6 +2401,7 @@ final class RemoteHTTPServerTests: XCTestCase {
             "slimmingInspectorSummary",
             "slimmingInspectorContent",
             "slimmingClusterScopes",
+            "slimmingClusterScopeTitle",
             "slimmingClusterList",
             "slimmingSelectedClusterReview",
             "slimmingSelectedClusterReviewStatus",
@@ -2131,7 +2411,24 @@ final class RemoteHTTPServerTests: XCTestCase {
             "slimmingThumbnailAspectButton",
             "slimmingGridDensitySlider",
             "slimmingNavigatorButton",
+            "slimmingAnalysisOptionsButton",
+            "openSlimmingThresholdEditorButton",
+            "slimmingThresholdDialog",
+            "slimmingThresholdForm",
+            "slimmingThresholdDialogContent",
+            "slimmingThresholdRecallMode",
+            "slimmingThresholdRecallTopK",
+            "slimmingThresholdL2Mode",
+            "slimmingThresholdL2Distance",
+            "slimmingThresholdDINOMode",
+            "slimmingThresholdDINOSimilarity",
+            "slimmingThresholdBucketingMode",
+            "slimmingThresholdBucketActivationCount",
+            "resetSlimmingThresholdDialogButton",
+            "applySlimmingThresholdDialogButton",
             "slimmingSelectionSummary",
+            "slimmingSelectAllButton",
+            "slimmingSelectionModeButton",
             "slimmingSelectionBar",
             "slimmingMoveToRecycleButton",
             "slimmingReleaseSpaceButton",
@@ -2139,8 +2436,19 @@ final class RemoteHTTPServerTests: XCTestCase {
             "slimmingIdenticalCleanupButton",
             "slimmingIdenticalCleanupDialog",
             "slimmingIdenticalCleanupMetrics",
+            "slimmingIdenticalCleanupRetentionSummary",
+            "slimmingIdenticalCleanupDispositionChart",
+            "slimmingIdenticalCleanupGroupHistogram",
+            "slimmingIdenticalCleanupSources",
+            "slimmingIdenticalCleanupNotice",
             "recoverableSlimmingIdenticalCleanupButton",
             "fastSlimmingIdenticalCleanupButton",
+            "identicalCleanupBlockingDialog",
+            "identicalCleanupBlockingCard",
+            "identicalCleanupBlockingTitle",
+            "identicalCleanupBlockingDetail",
+            "identicalCleanupBlockingProgressBar",
+            "identicalCleanupBlockingProgressLabel",
             "slimmingVerificationDialog",
             "slimmingVerificationMetrics",
             "slimmingVerificationResult",
@@ -2157,14 +2465,28 @@ final class RemoteHTTPServerTests: XCTestCase {
             "resetSlimmingThresholdsButton",
             "launchSlimmingButton",
             "slimmingRecycleBody",
+            "slimmingRecycleSummary",
+            "slimmingRecycleMutationStatus",
+            "slimmingRecycleSourceBanner",
+            "slimmingRecycleSourceBannerName",
+            "clearSlimmingRecycleSourceButton",
             "slimmingRecycleScopes",
             "slimmingRecycleSearchInput",
+            "slimmingRecycleSearchResultCount",
+            "clearSlimmingRecycleSearchButton",
             "slimmingRecycleSourceSelect",
             "slimmingRecycleRequestStatus",
             "slimmingRecycleList",
             "slimmingRecycleLoadMoreButton",
             "slimmingRecycleEmptyTitle",
             "slimmingRecycleEmptyMessage",
+            "slimmingRecycleEmptyAction",
+            "slimmingRecycleExplanationDialog",
+            "slimmingRecycleExplanationTitle",
+            "slimmingRecycleExplanationState",
+            "slimmingRecycleExplanationPolicy",
+            "slimmingRecycleExplanationMessage",
+            "closeSlimmingRecycleExplanationButton",
             "slimmingMemberContextMenu",
             "slimmingMemberContextMenuTitle",
             "slimmingMemberContextMenuActions",
@@ -2175,11 +2497,18 @@ final class RemoteHTTPServerTests: XCTestCase {
             "sourceManagerDialog",
             "sourceConnectFolderButton",
             "sourceConnectPhotosButton",
+            "sourceAllActionsPanel",
+            "sourceAllActionsSummary",
             "sourceManagerPending",
+            "sourceManagerListSummary",
             "sourceManagerList",
             "emptySourceRecoveryButton",
             "emptyOpenSourceManagerButton",
             "storageButton",
+            "storageStatusLabel",
+            "selectionInspectorPrimary",
+            "selectionInspectorPrimaryPreview",
+            "selectionInspectorPrimaryMetadata",
             "storageDialog",
             "storagePending",
             "previewCacheSize",
@@ -2212,11 +2541,18 @@ final class RemoteHTTPServerTests: XCTestCase {
             "galleryOverviewTags",
             "galleryOverviewTimeline",
             "lightboxVideo",
+            "lightboxOpenOriginalButton",
             "lightboxFavoriteButton",
             "lightboxReviewActions",
             "undoTagButton",
             "undoReviewButton",
             "reviewUndoButton",
+            "confirmDialog",
+            "confirmDialogIcon",
+            "confirmDialogEyebrow",
+            "confirmDialogMessage",
+            "cancelConfirmButton",
+            "confirmActionButton",
         ] {
             XCTAssertTrue(html.contains("id=\"\(controlID)\""))
         }
@@ -2260,6 +2596,9 @@ final class RemoteHTTPServerTests: XCTestCase {
             "/v1/source-management/requests",
             "/v1/storage-maintenance",
             "/v1/storage-maintenance/requests",
+            "/v1/workspace-notice",
+            "/v1/workspace-notice/dismiss",
+            "/v1/workspace-notice/action",
             "/v1/world-map/snapshot",
             "/v1/world-map/selection",
             "/v1/world-map/location-backfill",
@@ -2271,12 +2610,33 @@ final class RemoteHTTPServerTests: XCTestCase {
             "/web/account/login",
             "/v1/tags/create-and-apply",
             "/v1/assets/${assetID}/media",
-            "/v1/assets/${detail.assetID}/open-original",
+            "/v1/assets/${assetID}/open-original",
+            "/v1/assets/${assetID}/local-suggestions",
         ] {
             XCTAssertTrue(script.contains(endpoint))
         }
         XCTAssertFalse(script.contains("/v1/review-queue"))
         XCTAssertFalse(script.contains("/v1/review-decisions/batch"))
+        XCTAssertTrue(script.contains("function performCreateTagAndApply"))
+        XCTAssertTrue(script.contains("function createInlineTagAndApply"))
+        XCTAssertTrue(script.contains("state.inlineTagOperations"))
+        XCTAssertTrue(stylesheet.contains(".inspector-inline-tag-form"))
+        XCTAssertTrue(script.contains("state.contextTagReturnFocus"))
+        XCTAssertTrue(script.contains("toggle.dataset.helpDetail"))
+        XCTAssertTrue(script.contains("chip.dataset.helpDetail"))
+        XCTAssertTrue(script.contains("button.dataset.helpDetail"))
+        XCTAssertTrue(script.contains("Shift+F10 ContextMenu"))
+        XCTAssertTrue(stylesheet.contains(".persistent-help[data-kind=\"tag\"]"))
+        XCTAssertTrue(
+            script.contains(
+                "showTagGroupContextMenu(event.clientX, event.clientY, groupID, groupToggle)"
+            )
+        )
+        XCTAssertFalse(
+            script.contains(
+                "elements.inspectorNewTagButton.addEventListener(\"click\", openNewTagDialog)"
+            )
+        )
         XCTAssertTrue(script.contains("function handleWorldMapMessage"))
         XCTAssertTrue(script.contains("function renderWorldMapLocationBackfill"))
         XCTAssertTrue(script.contains("function submitWorldMapLocationBackfill"))
@@ -2285,14 +2645,78 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertTrue(script.contains("function confirmWorldMapPlaceTag"))
         XCTAssertTrue(script.contains("function syncWorldMapPhotoFavoriteButton"))
         XCTAssertTrue(script.contains("async function toggleWorldMapPhotoFavorite"))
+        XCTAssertTrue(script.contains("async function openWorldMapClusterInGallery"))
+        XCTAssertTrue(script.contains("function appendWorldMapSelectionQuery"))
+        XCTAssertTrue(script.contains("async function clearWorldMapGalleryScope"))
+        XCTAssertTrue(script.contains("data-retry-world-map-selection"))
         XCTAssertTrue(script.contains("button.dataset.worldMapPhotoFavorite = \"true\""))
         XCTAssertTrue(stylesheet.contains(".world-map-photo-card"))
         XCTAssertTrue(stylesheet.contains(".world-map-photo-favorite"))
+        XCTAssertTrue(stylesheet.contains(".world-map-gallery-banner"))
+        XCTAssertTrue(stylesheet.contains(".world-map-browse-cluster"))
+        XCTAssertTrue(stylesheet.contains(".world-map-photo-error"))
         XCTAssertTrue(script.contains("function renderGalleryOverview"))
+        XCTAssertTrue(script.contains("async function refreshJobs"))
+        XCTAssertTrue(script.contains("async function refreshCurrentSource"))
+        XCTAssertTrue(script.contains("function syncCatalogProgressStatus"))
+        XCTAssertTrue(script.contains("function scheduleCatalogProgressPoll"))
+        XCTAssertTrue(script.contains("function catalogJobProgressLabel"))
         XCTAssertTrue(script.contains("function drillDownFromGalleryOverview"))
         XCTAssertTrue(script.contains("function renderActiveFilterBar"))
+        XCTAssertTrue(script.contains("async function openLightboxOriginalOnMac"))
+        XCTAssertTrue(script.contains("async function requestAssetLocalSuggestions"))
+        XCTAssertTrue(script.contains("async function applyAssetLocalSuggestionDecision"))
+        XCTAssertTrue(script.contains("function syncLightboxWorkspaceFrame"))
+        XCTAssertTrue(script.contains("function trapLibraryLightboxFocus"))
+        XCTAssertTrue(script.contains("function bindPersistentHelp"))
+        XCTAssertTrue(script.contains("function schedulePersistentHelp"))
+        XCTAssertTrue(script.contains("document.addEventListener(\"pointerover\""))
+        XCTAssertFalse(script.contains("elements.appView.addEventListener(\"pointerover\""))
+        XCTAssertTrue(script.contains("function configurePersistentHelp"))
+        XCTAssertTrue(script.contains("kind: \"training\""))
+        XCTAssertTrue(script.contains("function configureReviewWorkspacePersistentHelp"))
+        XCTAssertTrue(script.contains("kind: \"review\""))
+        XCTAssertTrue(script.contains("P 属于、X 不属于、U 稍后"))
+        XCTAssertTrue(script.contains("不会替换已载入项目、清空选择或跳回顶部"))
+        XCTAssertTrue(script.contains("ArrowUp ArrowDown Home End Meta+K"))
+        XCTAssertTrue(script.contains("点击查看数据、配置、过程、产物和失败恢复"))
+        XCTAssertTrue(script.contains("function assetCardHelpDetail"))
+        XCTAssertTrue(script.contains("mainButton.dataset.helpDetail = assetCardHelpDetail(asset)"))
+        XCTAssertTrue(script.contains("mainButton.dataset.helpKind = \"asset\""))
+        XCTAssertTrue(script.contains("delete mainButton.dataset.helpDetail"))
+        XCTAssertTrue(script.contains("async function openSlimmingThresholdEditor"))
+        XCTAssertTrue(script.contains("async function saveSlimmingThresholdEditor"))
+        XCTAssertTrue(html.contains("id=\"persistentHelp\""))
+        XCTAssertTrue(html.contains("data-help-detail="))
+        XCTAssertTrue(stylesheet.contains(".inspector-local-model"))
+        XCTAssertTrue(stylesheet.contains(".lightbox.library-docked"))
+        XCTAssertTrue(stylesheet.contains(".persistent-help"))
+        XCTAssertTrue(stylesheet.contains("white-space: pre-line"))
+        XCTAssertTrue(stylesheet.contains(".persistent-help[data-kind=\"asset\"]"))
+        XCTAssertTrue(stylesheet.contains(".persistent-help[data-kind=\"training\"]"))
+        XCTAssertTrue(stylesheet.contains(".persistent-help[data-kind=\"review\"]"))
+        XCTAssertTrue(stylesheet.contains(".lightbox-open-original-button"))
         XCTAssertTrue(script.contains("function activeFilterSummaryText"))
+        XCTAssertTrue(script.contains("function renderWorkspaceNotice"))
+        XCTAssertTrue(script.contains("async function dismissWorkspaceNotice"))
+        XCTAssertTrue(script.contains("async function performWorkspaceNoticeAction"))
+        XCTAssertTrue(stylesheet.contains(".workspace-notice-banner"))
+        XCTAssertTrue(stylesheet.contains(".workspace-notice-actions"))
+        XCTAssertTrue(script.contains("function generateGalleryPersonalSuggestions"))
+        XCTAssertTrue(script.contains("搜索文件名、路径、标签或来源"))
         XCTAssertTrue(script.contains("function renderLightboxMedia"))
+        XCTAssertTrue(script.contains("submitSourceManagementAction(\"refreshAll\")"))
+        XCTAssertTrue(script.contains("submitSourceManagementAction(\"prewarmAllThumbnails\")"))
+        XCTAssertTrue(script.contains("submitSourceManagementAction(\"prewarmAllOriginalAspect\")"))
+        XCTAssertTrue(script.contains("submitSourceManagementAction(\"reauthorizeAll\")"))
+        XCTAssertTrue(script.contains("submitSourceManagementAction(\"refreshAllFolderMutationAuthorizations\")"))
+        XCTAssertTrue(script.contains("function constrainedLightboxOffset"))
+        XCTAssertTrue(script.contains("function syncLightboxViewport"))
+        XCTAssertTrue(script.contains("function handleLightboxWheel"))
+        XCTAssertTrue(script.contains("function beginLightboxPan"))
+        XCTAssertTrue(stylesheet.contains(".lightbox-zoom-controls"))
+        XCTAssertTrue(stylesheet.contains(".lightbox-stage"))
+        XCTAssertTrue(stylesheet.contains(".lightbox-delete-button"))
         XCTAssertTrue(script.contains("function loadMoreLightboxItems"))
         XCTAssertTrue(script.contains("function syncLibraryLightboxSelection"))
         XCTAssertTrue(script.contains("lightboxPendingDirection"))
@@ -2333,6 +2757,12 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertTrue(script.contains("async function toggleSlimmingMemberFavorite"))
         XCTAssertTrue(script.contains("function syncSlimmingRecycleFavoriteButton"))
         XCTAssertTrue(script.contains("async function toggleSlimmingRecycleFavorite"))
+        XCTAssertTrue(script.contains("function slimmingRecycleRecoveryDescriptor"))
+        XCTAssertTrue(script.contains("async function submitSlimmingRecycleRecoveryAction"))
+        XCTAssertTrue(script.contains("function openSlimmingRecycleExplanation"))
+        XCTAssertTrue(script.contains("refreshSourceBeforeRetry"))
+        XCTAssertTrue(script.contains("requestPhotosAuthorization"))
+        XCTAssertTrue(script.contains("retryFromAnalysis"))
         XCTAssertTrue(script.contains("function startSlimmingMarqueeSelection"))
         XCTAssertTrue(script.contains("button.dataset.slimmingMemberFavorite = \"true\""))
         XCTAssertTrue(script.contains("button.dataset.slimmingRecycleFavorite = \"true\""))
@@ -2347,17 +2777,71 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertFalse(script.contains("elements.assetGrid.append(button);"))
         XCTAssertTrue(script.contains("async function applyBatchTagDecision"))
         XCTAssertTrue(script.contains("submitSourceManagementAction"))
+        XCTAssertTrue(script.contains("renderSidebarSourceActions"))
+        XCTAssertTrue(script.contains("openSourceManagerForAction"))
+        XCTAssertTrue(script.contains("moveSidebarPrimaryNavigation"))
+        XCTAssertTrue(script.contains("focusCurrentSidebarPrimaryNavigation"))
         XCTAssertTrue(script.contains("scheduleSourceManagementPoll"))
+        XCTAssertTrue(script.contains("function selectSourceManagerSource"))
+        XCTAssertTrue(script.contains("function handleSourceManagerKeyboardNavigation"))
+        XCTAssertTrue(script.contains("function handleSourceManagerAllActionsKeyboard"))
+        XCTAssertTrue(script.contains("function closeSourceManagerAllActions"))
+        XCTAssertTrue(script.contains("viewButton.dataset.sourceManagerView = selectedSource.id"))
+        XCTAssertTrue(script.contains("source-manager-action-group-${group}"))
+        XCTAssertTrue(stylesheet.contains(".source-manager-source-list"))
+        XCTAssertTrue(stylesheet.contains(".source-manager-detail"))
+        XCTAssertTrue(stylesheet.contains(".source-manager-all-actions-menu"))
         XCTAssertTrue(script.contains("prewarmThumbnails"))
         XCTAssertTrue(script.contains("prewarmOriginalAspect"))
         XCTAssertTrue(script.contains("cancelPrewarm"))
         XCTAssertTrue(script.contains("requestPhotosWriteAuthorization"))
         XCTAssertTrue(script.contains("refreshFolderMutationAuthorization"))
         XCTAssertTrue(script.contains("sourcePrewarmStatusButton"))
+        XCTAssertTrue(script.contains("emptyOpenPhotosSettingsButton"))
+        XCTAssertTrue(script.contains("openPhotosPrivacySettings"))
+        XCTAssertTrue(script.contains("重新检查并同步"))
+        XCTAssertTrue(script.contains("重新启用…"))
+        XCTAssertTrue(script.contains("sourcePrewarmCancelButton"))
+        XCTAssertTrue(script.contains("function cancelActiveSourcePrewarm"))
+        XCTAssertTrue(stylesheet.contains(".source-prewarm-cancel"))
         XCTAssertTrue(script.contains("renderStorageMaintenance"))
         XCTAssertTrue(script.contains("submitStorageMaintenanceAction"))
+        XCTAssertTrue(script.contains("requestStorageMaintenanceAction"))
+        XCTAssertTrue(script.contains("清理预览缓存？"))
+        XCTAssertTrue(script.contains("清理全部长期原图副本？"))
+        XCTAssertTrue(script.contains("returnFocus: { storageAction: action }"))
         XCTAssertTrue(script.contains("scheduleStorageMaintenancePoll"))
         XCTAssertTrue(script.contains("submitSlimmingRecycleAction"))
+        XCTAssertTrue(script.contains("function requestConfirmation"))
+        XCTAssertTrue(script.contains("elements.slimmingRecycleExplanationDialog.open"))
+        XCTAssertTrue(script.contains("function requestSourceManagementAction"))
+        XCTAssertTrue(script.contains("继续并请求照片权限"))
+        XCTAssertTrue(script.contains("保留历史并连接"))
+        XCTAssertTrue(script.contains("开始完整修复扫描"))
+        XCTAssertTrue(script.contains("交给 Mac 确认"))
+        XCTAssertTrue(script.contains("returnFocus: { sourceID: sourceID || null, sourceAction: action }"))
+        XCTAssertTrue(script.contains("trainingOperationID"))
+        XCTAssertTrue(script.contains("recycleEntryID"))
+        XCTAssertTrue(script.contains("slimmingJobID"))
+        XCTAssertFalse(script.contains("window.confirm"))
+        XCTAssertTrue(stylesheet.contains(".confirm-dialog-mark"))
+        XCTAssertTrue(stylesheet.contains(".confirm-dialog[data-tone=\"warning\"]"))
+        XCTAssertTrue(script.contains("function commandContextSnapshot"))
+        XCTAssertTrue(script.contains("function closeCommandPalette"))
+        XCTAssertTrue(script.contains("async function openWorkspaceFromCommand"))
+        XCTAssertTrue(script.contains("async function refreshCommandContext"))
+        XCTAssertTrue(script.contains("async function switchCommandMediaKind"))
+        XCTAssertTrue(script.contains("function commandSelectionContext"))
+        XCTAssertTrue(script.contains("function selectAllCommandContext"))
+        XCTAssertTrue(script.contains("function previewCommandContext"))
+        XCTAssertTrue(script.contains("id: \"reviewAcceptSelection\""))
+        XCTAssertTrue(script.contains("id: \"reviewRejectSelection\""))
+        XCTAssertTrue(script.contains("id: \"reviewDeferSelection\""))
+        XCTAssertTrue(script.contains("id: \"recycleSlimmingSelection\""))
+        XCTAssertTrue(script.contains("id: \"releaseSlimmingSelection\""))
+        XCTAssertTrue(script.contains("currentWorkspaceHistoryContext"))
+        XCTAssertTrue(script.contains("id: \"openSlimming\""))
+        XCTAssertTrue(stylesheet.contains(".command-palette footer span:first-child"))
         XCTAssertTrue(script.contains("scheduleSlimmingRecyclePoll"))
         XCTAssertTrue(script.contains("navigateSlimmingJob"))
         XCTAssertTrue(script.contains("renderSlimmingJobStatus"))
@@ -2378,8 +2862,26 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertTrue(script.contains("selectAllLoadedAssets"))
         XCTAssertTrue(script.contains("renderTagNavigation"))
         XCTAssertTrue(script.contains("applyQuickTagFilter"))
-        XCTAssertTrue(script.contains("moveLibrarySelection"))
+        XCTAssertTrue(script.contains("function moveLibrarySelection(key, { extendRange = false } = {})"))
+        XCTAssertTrue(script.contains("selectLibraryAssetByIndex(nextIndex, { focusGrid: true, extendRange })"))
+        XCTAssertTrue(script.contains("ArrowLeft ArrowRight ArrowUp ArrowDown Home End PageUp PageDown Space"))
+        XCTAssertTrue(html.contains("扩展连续选择"))
         XCTAssertTrue(script.contains("startMarqueeSelection"))
+        XCTAssertTrue(script.contains("function marqueeAutoScrollStep"))
+        XCTAssertTrue(script.contains("function marqueeSelectionBounds"))
+        XCTAssertTrue(script.contains("function cardIntersectsMarquee"))
+        XCTAssertTrue(script.contains("function scheduleMarqueeAutoScroll"))
+        XCTAssertTrue(script.contains("function stopMarqueeAutoScroll"))
+        XCTAssertTrue(script.contains("function renderLibraryMarqueeSelection"))
+        XCTAssertTrue(script.contains("function renderReviewMarqueeSelection"))
+        XCTAssertTrue(script.contains("function deferReviewQueueRefreshUntilMarqueeEnds"))
+        XCTAssertTrue(script.contains("function reviewMarqueeBlocksQueueRefresh"))
+        XCTAssertTrue(script.contains("function flushDeferredReviewQueueRefresh"))
+        XCTAssertTrue(script.contains("state.review.deferredQueueRefresh"))
+        XCTAssertTrue(script.contains("function renderSlimmingMarqueeSelection"))
+        XCTAssertTrue(script.contains("function slimmingMemberScrollContainer"))
+        XCTAssertTrue(script.contains("function autoPaginateReviewQueueIfNeeded"))
+        XCTAssertTrue(script.contains("function scheduleReviewAutoPagination"))
         XCTAssertTrue(script.contains("renderAssetSelectionState"))
         XCTAssertTrue(script.contains("openCommandPalette"))
         XCTAssertTrue(script.contains("persistWorkspacePreferences"))
@@ -2387,12 +2889,21 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertTrue(script.contains("expandedRefreshKinds"))
         XCTAssertTrue(script.contains("loadTrainingWorkspace"))
         XCTAssertTrue(script.contains("renderTrainingDetail"))
+        XCTAssertTrue(script.contains("storageMaintenanceActiveRequest"))
+        XCTAssertTrue(script.contains("可继续浏览，点击查看"))
+        XCTAssertTrue(script.contains("selectionPrimaryAssetID"))
+        XCTAssertTrue(script.contains("loadSelectionPrimaryDetail"))
+        XCTAssertTrue(script.contains("trainingRunListContextKey"))
+        XCTAssertTrue(script.contains("captureTrainingRunListScroll"))
+        XCTAssertTrue(script.contains("currentActiveTrainingActivity"))
         XCTAssertTrue(script.contains("openTrainingSetupDialog"))
         XCTAssertTrue(script.contains("openTrainingSetupForRun"))
         XCTAssertTrue(script.contains("openAssociatedJob"))
         XCTAssertTrue(script.contains("renderTrainingDetailActions"))
         XCTAssertTrue(script.contains("submitTrainingSetup"))
         XCTAssertTrue(script.contains("renderSlimmingWorkspace"))
+        XCTAssertTrue(script.contains("renderIdenticalCleanupBlockingOverlay"))
+        XCTAssertTrue(script.contains("identicalCleanupExecutionPresentation"))
         XCTAssertTrue(script.contains("selectSlimmingMember"))
         XCTAssertTrue(script.contains("showSlimmingMemberContextMenu"))
         XCTAssertTrue(script.contains("data-slimming-member-context-action"))
@@ -2408,6 +2919,15 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertTrue(stylesheet.contains(".slimming-cluster-scopes"))
         XCTAssertTrue(stylesheet.contains(".slimming-cluster-review-button"))
         XCTAssertTrue(stylesheet.contains(".slimming-cluster-history-mark"))
+        XCTAssertTrue(stylesheet.contains(".slimming-navigator-pane"))
+        XCTAssertTrue(stylesheet.contains("clamp(196px, 22vw, 244px)"))
+        XCTAssertTrue(stylesheet.contains(".slimming-inspector:not([open])"))
+        XCTAssertTrue(stylesheet.contains(".slimming-recycle-heading"))
+        XCTAssertTrue(stylesheet.contains("minmax(min(380px, 100%), 640px)"))
+        XCTAssertTrue(script.contains("elements.slimmingNavigatorPane.scrollTop"))
+        XCTAssertTrue(script.contains("elements.slimmingInspector.open = false"))
+        XCTAssertTrue(script.contains("function renderSlimmingRecycleHeader"))
+        XCTAssertTrue(script.contains("elements.slimmingRecycleEmptyAction.dataset.action"))
         XCTAssertTrue(script.contains("renderSlimmingRecycleScopes"))
         XCTAssertTrue(script.contains("toggleSlimmingNavigator"))
         XCTAssertTrue(script.contains("replacementSlimmingPreviewAssetID"))
@@ -2415,6 +2935,21 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertTrue(script.contains("scope: recycle.scope"))
         XCTAssertTrue(script.contains("state.layout.density"))
         XCTAssertTrue(script.contains("state.layout.aspectMode"))
+        XCTAssertTrue(script.contains("function beginSplitResize"))
+        XCTAssertTrue(script.contains("function adjustSplitWidthFromKeyboard"))
+        XCTAssertTrue(script.contains("sidebarWidth: state.layout.sidebarWidth"))
+        XCTAssertTrue(script.contains("inspectorWidth: state.layout.inspectorWidth"))
+        XCTAssertTrue(script.contains("reviewModelWidth: state.layout.reviewModelWidth"))
+        XCTAssertTrue(script.contains("reviewInspectorWidth: state.layout.reviewInspectorWidth"))
+        XCTAssertTrue(script.contains("REVIEW_MODEL_WIDTH"))
+        XCTAssertTrue(script.contains("REVIEW_INSPECTOR_WIDTH"))
+        XCTAssertTrue(stylesheet.contains(".split-resize-handle"))
+        XCTAssertTrue(stylesheet.contains("--sidebar-width"))
+        XCTAssertTrue(stylesheet.contains("--inspector-width"))
+        XCTAssertTrue(stylesheet.contains("--review-model-width"))
+        XCTAssertTrue(stylesheet.contains(".review-overview-resize-handle"))
+        XCTAssertTrue(stylesheet.contains("--review-inspector-width"))
+        XCTAssertTrue(stylesheet.contains(".review-queue-resize-handle"))
         XCTAssertTrue(script.contains("openSlimmingSetupDialog"))
         XCTAssertTrue(script.contains("submitSlimmingSetup"))
         XCTAssertTrue(script.contains("saveSlimmingThresholds"))
@@ -2430,9 +2965,20 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertTrue(script.contains("/v1/tags/install-presets"))
         XCTAssertTrue(script.contains("开始建立你的照片资料库"))
         XCTAssertTrue(script.contains("setupSidebarReordering"))
+        XCTAssertTrue(script.contains("sourceSidebarHelpDetail"))
+        XCTAssertTrue(script.contains("button.dataset.helpKind = \"source\""))
+        XCTAssertTrue(script.contains("button.dataset.helpTitle = tag.displayName"))
+        XCTAssertTrue(script.contains("当前：${stateLabel}"))
+        XCTAssertTrue(script.contains("Shift+F10 ContextMenu"))
+        XCTAssertTrue(stylesheet.contains(".persistent-help[data-kind=\"source\"]"))
         XCTAssertTrue(script.contains("sourceOrderIDs"))
         XCTAssertTrue(script.contains("tagOrderIDsByGroup"))
         XCTAssertTrue(script.contains("collapsedSidebarTagGroupIDs"))
+        XCTAssertTrue(script.contains("collapsedTagGroupIDs"))
+        XCTAssertTrue(script.contains("toggleSharedTagGroupCollapsed"))
+        XCTAssertTrue(script.contains("tagReturnFocusDescriptor"))
+        XCTAssertTrue(script.contains("resolveTagReturnFocusTarget"))
+        XCTAssertTrue(script.contains("renderTagNavigation();"))
         XCTAssertTrue(script.contains("data-sidebar-tag-group-toggle"))
         XCTAssertTrue(script.contains("data-tag-reorder-surface"))
         XCTAssertTrue(script.contains("configureInspectorTagReordering"))
@@ -2459,6 +3005,9 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertTrue(script.contains("cloud preview required"))
         XCTAssertTrue(script.contains("downloadSelectedCloudPreview"))
         XCTAssertTrue(script.contains("/cloud-preview"))
+        XCTAssertTrue(script.contains("supportsCloudPreviewLifecycle"))
+        XCTAssertTrue(script.contains("/cloud-preview-requests"))
+        XCTAssertTrue(script.contains("cancelSelectedCloudPreview"))
         XCTAssertTrue(script.contains("forceFetch: true"))
         XCTAssertTrue(script.contains("showInspectorVideo"))
         XCTAssertTrue(script.contains("function beginAssetHoverVideo"))
@@ -2496,8 +3045,20 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertTrue(script.contains("state.inspectorDismissed"))
         XCTAssertTrue(script.contains("state.pendingInspectorRefresh"))
         XCTAssertTrue(script.contains("preserveExisting: true"))
-        XCTAssertTrue(script.contains("function closeReviewWorkspace()"))
-        XCTAssertTrue(script.contains("function closeLightbox()"))
+        XCTAssertTrue(script.contains("function closeReviewWorkspace({ restoreFocus = true } = {})"))
+        XCTAssertTrue(script.contains("function closeLightbox({ restoreFocus = true } = {})"))
+        XCTAssertTrue(script.contains("function compactToolbarSections()"))
+        XCTAssertTrue(script.contains("function renderCompactToolbarMenu()"))
+        XCTAssertTrue(script.contains("function closeCompactToolbarMenu({ restoreFocus = true } = {})"))
+        XCTAssertTrue(script.contains("function syncCompactToolbarMenu()"))
+        XCTAssertTrue(script.contains("function fullToolbarRequiredWidth()"))
+        XCTAssertTrue(script.contains("function syncAdaptiveToolbar()"))
+        XCTAssertTrue(script.contains("function scheduleAdaptiveToolbarSync()"))
+        XCTAssertTrue(script.contains("new ResizeObserver(scheduleAdaptiveToolbarSync)"))
+        XCTAssertTrue(stylesheet.contains(".compact-toolbar-menu-button"))
+        XCTAssertTrue(stylesheet.contains(".compact-toolbar-menu-item"))
+        XCTAssertTrue(stylesheet.contains(".app-shell.compact-toolbar-active"))
+        XCTAssertTrue(stylesheet.contains("#catalogProgressStatusButton"))
         XCTAssertTrue(script.contains("function trapOverlayFocus"))
         XCTAssertTrue(script.contains("state.review.mutating"))
         XCTAssertTrue(script.contains("state.tagMutating"))
@@ -2505,6 +3066,16 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertTrue(script.contains("界面同步暂时失败，正在重试"))
         XCTAssertTrue(script.contains("applyReviewDecision(\"accept\")"))
         XCTAssertTrue(script.contains("deferReviewSelection"))
+        XCTAssertTrue(script.contains("function setReviewSelectionMode"))
+        XCTAssertTrue(script.contains("function setSlimmingSelectionMode"))
+        XCTAssertTrue(script.contains("function renderedGridColumnCount"))
+        XCTAssertTrue(script.contains("function renderedGridPageItemCount"))
+        XCTAssertTrue(script.contains("function moveReviewSelection"))
+        XCTAssertTrue(script.contains("function moveSlimmingMemberSelection"))
+        XCTAssertTrue(script.contains("state.review.selectionMode"))
+        XCTAssertTrue(script.contains("state.slimming.selectionMode"))
+        XCTAssertTrue(stylesheet.contains(".workspace-selection-mode-button"))
+        XCTAssertTrue(stylesheet.contains(".touch-selection-mode"))
         XCTAssertFalse(script.contains("applyReviewDecision(\"clear\")"))
         XCTAssertTrue(script.contains("event.key.toLowerCase() === \"p\""))
         XCTAssertTrue(script.contains("event.key.toLowerCase() === \"x\""))
@@ -2951,6 +3522,14 @@ final class RemoteHTTPServerTests: XCTestCase {
             URLQueryItem(name: "mediaTypes", value: "public.mpeg-4"),
             URLQueryItem(name: "tagPresence", value: "tagged"),
             URLQueryItem(name: "favorite", value: "favorited"),
+            URLQueryItem(name: "worldMapCellDegrees", value: "0.25"),
+            URLQueryItem(name: "worldMapLongitudeBucket", value: "1205"),
+            URLQueryItem(name: "worldMapLatitudeBucket", value: "485"),
+            URLQueryItem(name: "worldMapWest", value: "118"),
+            URLQueryItem(name: "worldMapSouth", value: "30"),
+            URLQueryItem(name: "worldMapEast", value: "123"),
+            URLQueryItem(name: "worldMapNorth", value: "33"),
+            URLQueryItem(name: "worldMapMaximumAssets", value: "36"),
         ]
         var request = URLRequest(url: try XCTUnwrap(components.url))
         request.setValue(
@@ -2977,7 +3556,37 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertEqual(filter.mediaTypes, ["public.mpeg-4"])
         XCTAssertEqual(filter.tagPresence, .tagged)
         XCTAssertEqual(filter.favorite, .favorited)
+        XCTAssertEqual(
+            filter.worldMapSelection,
+            WorldMapCatalogSelectionQuery(
+                cellDegrees: 0.25,
+                longitudeBucket: 1_205,
+                latitudeBucket: 485,
+                bounds: WorldMapCatalogBounds(
+                    west: 118,
+                    south: 30,
+                    east: 123,
+                    north: 33
+                ),
+                maximumAssets: 36
+            )
+        )
         XCTAssertEqual(catalog.lastRequestedSort, .fileNameAscending)
+
+        var invalidRequest = URLRequest(
+            url: URL(
+                string: "http://127.0.0.1:\(port)/v1/assets?worldMapCellDegrees=0.25"
+            )!
+        )
+        invalidRequest.setValue(
+            "Bearer \(Self.legacyDebugToken)",
+            forHTTPHeaderField: "Authorization"
+        )
+        let (_, invalidResponse) = try await URLSession.shared.data(for: invalidRequest)
+        XCTAssertEqual(
+            try XCTUnwrap(invalidResponse as? HTTPURLResponse).statusCode,
+            400
+        )
     }
 
     func testPreviewRouteConvertsPhotoKitTIFFIntoBrowserCompatibleImage() async throws {
@@ -3011,6 +3620,46 @@ final class RemoteHTTPServerTests: XCTestCase {
             http.value(forHTTPHeaderField: "Content-Type"),
             outputType == UTType.png.identifier ? "image/png" : "image/jpeg"
         )
+    }
+
+    func testThumbnailRouteSelectsCachedOriginalAspectVariant() async throws {
+        let assetID = UUID()
+        let sourceTIFF = try XCTUnwrap(FolderReconcileTestSupport.minimalTIFFData())
+        let catalog = RemoteHTTPServerTestCatalog(
+            thumbnailData: sourceTIFF,
+            originalAspectThumbnailData: sourceTIFF
+        )
+        let port = UInt16.random(in: 19_000...29_000)
+        let (server, _) = makeServer(port: port, catalog: catalog)
+        try await server.start()
+        try await Task.sleep(nanoseconds: 150_000_000)
+        defer { Task { await server.stop() } }
+
+        func request(aspect: String?) async throws -> HTTPURLResponse {
+            var components = URLComponents(
+                string: "http://127.0.0.1:\(port)/v1/assets/\(assetID.uuidString)/thumbnail"
+            )!
+            components.queryItems = [URLQueryItem(name: "w", value: "420")]
+            if let aspect {
+                components.queryItems?.append(URLQueryItem(name: "aspect", value: aspect))
+            }
+            var request = URLRequest(url: try XCTUnwrap(components.url))
+            request.setValue(
+                "Bearer \(Self.legacyDebugToken)",
+                forHTTPHeaderField: "Authorization"
+            )
+            let (_, response) = try await URLSession.shared.data(for: request)
+            return try XCTUnwrap(response as? HTTPURLResponse)
+        }
+
+        let originalResponse = try await request(aspect: "original")
+        XCTAssertEqual(originalResponse.statusCode, 200)
+        XCTAssertEqual(catalog.originalAspectThumbnailCallCount, 1)
+        XCTAssertEqual(catalog.thumbnailCallCount, 0)
+
+        let squareResponse = try await request(aspect: nil)
+        XCTAssertEqual(squareResponse.statusCode, 200)
+        XCTAssertEqual(catalog.thumbnailCallCount, 1)
     }
 
     func testCloudOnlyPreviewRequiresExplicitPostAndReturnsBrowserImage() async throws {
@@ -3065,10 +3714,149 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertTrue([UTType.jpeg.identifier, UTType.png.identifier].contains(outputType))
     }
 
+    func testCloudPreviewLifecyclePublishesProgressCancelsAndCompletes() async throws {
+        let assetID = UUID()
+        let catalog = RemoteHTTPServerTestCatalog(
+            cloudPreviewData: Data([0x01]),
+            cloudPreviewProgress: [0.2, 0.6, 1],
+            cloudPreviewDelayNanoseconds: 160_000_000
+        )
+        let port = UInt16.random(in: 19_000...29_000)
+        let (server, _) = makeServer(port: port, catalog: catalog)
+        try await server.start()
+        try await Task.sleep(nanoseconds: 150_000_000)
+        defer { Task { await server.stop() } }
+
+        let baseURL = try XCTUnwrap(URL(
+            string: "http://127.0.0.1:\(port)/v1/assets/\(assetID.uuidString)/cloud-preview-requests"
+        ))
+        let encoder = JSONEncoder()
+        let decoder = JSONDecoder()
+
+        func send<T: Encodable>(
+            method: String,
+            url: URL,
+            body: T
+        ) async throws -> (Data, HTTPURLResponse) {
+            var request = URLRequest(url: url)
+            request.httpMethod = method
+            request.httpBody = try encoder.encode(body)
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.setValue(
+                "Bearer \(Self.legacyDebugToken)",
+                forHTTPHeaderField: "Authorization"
+            )
+            let (data, response) = try await URLSession.shared.data(for: request)
+            return (data, try XCTUnwrap(response as? HTTPURLResponse))
+        }
+
+        func readSnapshot() async throws -> (RemoteCloudPreviewSnapshot, HTTPURLResponse) {
+            var request = URLRequest(url: baseURL)
+            request.setValue(
+                "Bearer \(Self.legacyDebugToken)",
+                forHTTPHeaderField: "Authorization"
+            )
+            let (data, response) = try await URLSession.shared.data(for: request)
+            return (
+                try decoder.decode(RemoteCloudPreviewSnapshot.self, from: data),
+                try XCTUnwrap(response as? HTTPURLResponse)
+            )
+        }
+
+        let firstOperationID = UUID()
+        let (startData, startResponse) = try await send(
+            method: "POST",
+            url: baseURL,
+            body: RemoteCloudPreviewStartRequest(operationID: firstOperationID)
+        )
+        XCTAssertEqual(startResponse.statusCode, 202)
+        XCTAssertEqual(
+            try decoder.decode(RemoteCloudPreviewSnapshot.self, from: startData).phase,
+            .downloading
+        )
+
+        var progressSnapshot = (try await readSnapshot()).0
+        for _ in 0 ..< 20 where progressSnapshot.progress < 0.2 {
+            try await Task.sleep(nanoseconds: 30_000_000)
+            progressSnapshot = (try await readSnapshot()).0
+        }
+        XCTAssertEqual(progressSnapshot.operationID, firstOperationID)
+        XCTAssertGreaterThanOrEqual(progressSnapshot.progress, 0.2)
+
+        let cancelURL = baseURL.appending(path: "cancel")
+        let (cancelData, cancelResponse) = try await send(
+            method: "POST",
+            url: cancelURL,
+            body: RemoteCloudPreviewCancelRequest(operationID: firstOperationID)
+        )
+        XCTAssertEqual(cancelResponse.statusCode, 200)
+        XCTAssertEqual(
+            try decoder.decode(RemoteCloudPreviewSnapshot.self, from: cancelData).phase,
+            .cancelled
+        )
+        for _ in 0 ..< 20 where catalog.cloudPreviewCancellationCount == 0 {
+            try await Task.sleep(nanoseconds: 30_000_000)
+        }
+        XCTAssertEqual(catalog.cloudPreviewCancellationCount, 1)
+        let cancelledSnapshot = (try await readSnapshot()).0
+        XCTAssertEqual(cancelledSnapshot.phase, .cancelled)
+
+        let secondOperationID = UUID()
+        let (_, secondStartResponse) = try await send(
+            method: "POST",
+            url: baseURL,
+            body: RemoteCloudPreviewStartRequest(operationID: secondOperationID)
+        )
+        XCTAssertEqual(secondStartResponse.statusCode, 202)
+        let (_, replayResponse) = try await send(
+            method: "POST",
+            url: baseURL,
+            body: RemoteCloudPreviewStartRequest(operationID: secondOperationID)
+        )
+        XCTAssertEqual(replayResponse.statusCode, 202)
+
+        var completedSnapshot = (try await readSnapshot()).0
+        for _ in 0 ..< 30 where completedSnapshot.phase != .completed {
+            try await Task.sleep(nanoseconds: 40_000_000)
+            completedSnapshot = (try await readSnapshot()).0
+        }
+        XCTAssertEqual(completedSnapshot.operationID, secondOperationID)
+        XCTAssertEqual(completedSnapshot.phase, .completed)
+        XCTAssertEqual(completedSnapshot.progress, 1)
+        XCTAssertEqual(catalog.cloudPreviewCallCount, 2)
+    }
+
     func testWebSocketAcceptValueMatchesRFC6455Example() {
         // RFC 6455 §1.3 canonical example.
         let accept = RemoteHTTPServer.webSocketAcceptValue(secWebSocketKey: "dGhlIHNhbXBsZSBub25jZQ==")
         XCTAssertEqual(accept, "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=")
+    }
+}
+
+private actor RemoteHTTPWorkspaceNoticePortStub: RemoteWorkspaceNoticePort {
+    private var notice: WorkspaceNoticeProjection?
+
+    init(notice: WorkspaceNoticeProjection?) {
+        self.notice = notice
+    }
+
+    func currentWorkspaceNotice() async -> WorkspaceNoticeProjection? {
+        notice
+    }
+
+    func dismissWorkspaceNotice(noticeID: String) async -> Bool {
+        guard notice?.id == noticeID else { return false }
+        notice = nil
+        return true
+    }
+
+    func performWorkspaceNoticeAction(noticeID: String, actionID: String) async -> Bool {
+        guard let notice, notice.id == noticeID else { return false }
+        return notice.actions.contains(where: { $0.id == actionID })
+    }
+
+    func replace(with notice: WorkspaceNoticeProjection?) {
+        self.notice = notice
     }
 }
 
@@ -3109,6 +3897,7 @@ private final class RemoteHTTPTrainingCommandStub: RemoteTrainingCommandPort, @u
     private let tagSuggestionOption: TagLibrarySuggestionTagOption?
     private let librarySuggestionSnapshot: LibrarySuggestionWorkspaceSnapshot?
     private let librarySuggestionReceipt: LibrarySuggestionReceipt?
+    private let assetLocalSuggestionSnapshot: AssetLocalSuggestionSnapshot?
     private var storedLaunchCallCount = 0
     private var storedCancelCallCount = 0
     private var storedLastCommand: TrainingLaunchCommand?
@@ -3123,6 +3912,8 @@ private final class RemoteHTTPTrainingCommandStub: RemoteTrainingCommandPort, @u
     private var storedLastLibrarySuggestionMediaKind: MediaKind?
     private var storedLastLibrarySuggestionRefreshHealth = false
     private var storedLastLibrarySuggestionCommand: LibrarySuggestionCommand?
+    private var storedAssetLocalSuggestionCallCount = 0
+    private var storedLastAssetLocalSuggestionCommand: AssetLocalSuggestionCommand?
 
     var launchCallCount: Int { lock.withLock { storedLaunchCallCount } }
     var cancelCallCount: Int { lock.withLock { storedCancelCallCount } }
@@ -3156,6 +3947,12 @@ private final class RemoteHTTPTrainingCommandStub: RemoteTrainingCommandPort, @u
     var lastLibrarySuggestionCommand: LibrarySuggestionCommand? {
         lock.withLock { storedLastLibrarySuggestionCommand }
     }
+    var assetLocalSuggestionCallCount: Int {
+        lock.withLock { storedAssetLocalSuggestionCallCount }
+    }
+    var lastAssetLocalSuggestionCommand: AssetLocalSuggestionCommand? {
+        lock.withLock { storedLastAssetLocalSuggestionCommand }
+    }
 
     init(
         setupSnapshot: TrainingCommandSetupSnapshot,
@@ -3165,7 +3962,8 @@ private final class RemoteHTTPTrainingCommandStub: RemoteTrainingCommandPort, @u
         tagSuggestionActivity: TagLibrarySuggestionActivitySnapshot? = nil,
         tagSuggestionOption: TagLibrarySuggestionTagOption? = nil,
         librarySuggestionSnapshot: LibrarySuggestionWorkspaceSnapshot? = nil,
-        librarySuggestionReceipt: LibrarySuggestionReceipt? = nil
+        librarySuggestionReceipt: LibrarySuggestionReceipt? = nil,
+        assetLocalSuggestionSnapshot: AssetLocalSuggestionSnapshot? = nil
     ) {
         self.setupSnapshot = setupSnapshot
         self.receipt = receipt
@@ -3175,6 +3973,27 @@ private final class RemoteHTTPTrainingCommandStub: RemoteTrainingCommandPort, @u
         self.tagSuggestionOption = tagSuggestionOption
         self.librarySuggestionSnapshot = librarySuggestionSnapshot
         self.librarySuggestionReceipt = librarySuggestionReceipt
+        self.assetLocalSuggestionSnapshot = assetLocalSuggestionSnapshot
+    }
+
+    func assetLocalSuggestions(
+        _ command: AssetLocalSuggestionCommand
+    ) async throws -> AssetLocalSuggestionSnapshot {
+        guard let snapshot = assetLocalSuggestionSnapshot else {
+            throw TrainingCommandError.unavailable
+        }
+        lock.withLock {
+            storedAssetLocalSuggestionCallCount += 1
+            storedLastAssetLocalSuggestionCommand = command
+        }
+        return AssetLocalSuggestionSnapshot(
+            operationID: command.operationID,
+            assetID: command.assetID,
+            track: command.track,
+            state: snapshot.state,
+            suggestions: snapshot.suggestions,
+            replayed: snapshot.replayed
+        )
     }
 
     func setup(mediaKind: MediaKind) async throws -> TrainingCommandSetupSnapshot {
@@ -3403,8 +4222,12 @@ private final class RemoteHTTPServerTestCatalog: RemoteCatalogServing, @unchecke
     private var storedLastRequestedFilter: AssetPageFilter?
     private var storedLastRequestedSort: AssetPageSort?
     private let previewData: Data
+    private let thumbnailData: Data
+    private let originalAspectThumbnailData: Data?
     private let previewError: PhotosLibraryError?
     private let cloudPreviewData: Data
+    private let cloudPreviewProgress: [Double]
+    private let cloudPreviewDelayNanoseconds: UInt64
     private let createTagResult: TagCreateAndApplyResult?
     private let presetInstallResult: TagPresetInstallResult?
     private let worldMapLocationBackfills: [WorldMapLocationBackfillSnapshot]
@@ -3413,6 +4236,9 @@ private final class RemoteHTTPServerTestCatalog: RemoteCatalogServing, @unchecke
     private let worldMapPlaceConfirmResult: WorldMapPlaceTagResolution?
     private var storedCreateTagCallCount = 0
     private var storedCloudPreviewCallCount = 0
+    private var storedCloudPreviewCancellationCount = 0
+    private var storedThumbnailCallCount = 0
+    private var storedOriginalAspectThumbnailCallCount = 0
     private var storedPresetInstallCallCount = 0
     private var storedWorldMapLocationBackfillStartCount = 0
     private var storedWorldMapPlaceSearchCount = 0
@@ -3421,9 +4247,13 @@ private final class RemoteHTTPServerTestCatalog: RemoteCatalogServing, @unchecke
     private var storedFavoriteStates: [UUID: MediaFavoriteState] = [:]
 
     init(
+        thumbnailData: Data = Data(),
+        originalAspectThumbnailData: Data? = nil,
         previewData: Data = Data(),
         previewError: PhotosLibraryError? = nil,
         cloudPreviewData: Data = Data(),
+        cloudPreviewProgress: [Double] = [],
+        cloudPreviewDelayNanoseconds: UInt64 = 0,
         createTagResult: TagCreateAndApplyResult? = nil,
         presetInstallResult: TagPresetInstallResult? = nil,
         worldMapLocationBackfills: [WorldMapLocationBackfillSnapshot] = [],
@@ -3431,9 +4261,13 @@ private final class RemoteHTTPServerTestCatalog: RemoteCatalogServing, @unchecke
         worldMapPlaceSearchResult: WorldMapPlaceTagResolution? = nil,
         worldMapPlaceConfirmResult: WorldMapPlaceTagResolution? = nil
     ) {
+        self.thumbnailData = thumbnailData
+        self.originalAspectThumbnailData = originalAspectThumbnailData
         self.previewData = previewData
         self.previewError = previewError
         self.cloudPreviewData = cloudPreviewData
+        self.cloudPreviewProgress = cloudPreviewProgress
+        self.cloudPreviewDelayNanoseconds = cloudPreviewDelayNanoseconds
         self.createTagResult = createTagResult
         self.presetInstallResult = presetInstallResult
         self.worldMapLocationBackfills = worldMapLocationBackfills
@@ -3446,6 +4280,18 @@ private final class RemoteHTTPServerTestCatalog: RemoteCatalogServing, @unchecke
         lock.lock()
         defer { lock.unlock() }
         return storedCloudPreviewCallCount
+    }
+
+    var cloudPreviewCancellationCount: Int {
+        lock.withLock { storedCloudPreviewCancellationCount }
+    }
+
+    var thumbnailCallCount: Int {
+        lock.withLock { storedThumbnailCallCount }
+    }
+
+    var originalAspectThumbnailCallCount: Int {
+        lock.withLock { storedOriginalAspectThumbnailCallCount }
     }
 
     var lastRequestedFilter: AssetPageFilter? {
@@ -3565,7 +4411,19 @@ private final class RemoteHTTPServerTestCatalog: RemoteCatalogServing, @unchecke
     }
 
     func loadThumbnail(assetID: UUID) async throws -> Data {
-        Data()
+        _ = assetID
+        return lock.withLock {
+            storedThumbnailCallCount += 1
+            return thumbnailData
+        }
+    }
+
+    func loadOriginalAspectThumbnailIfCached(assetID: UUID) async throws -> Data? {
+        _ = assetID
+        return lock.withLock {
+            storedOriginalAspectThumbnailCallCount += 1
+            return originalAspectThumbnailData
+        }
     }
 
     func loadPreview(assetID: UUID) async throws -> Data {
@@ -3581,8 +4439,23 @@ private final class RemoteHTTPServerTestCatalog: RemoteCatalogServing, @unchecke
         lock.withLock {
             storedCloudPreviewCallCount += 1
         }
-        onProgress(1)
-        return cloudPreviewData
+        do {
+            let progressValues = cloudPreviewProgress.isEmpty ? [1] : cloudPreviewProgress
+            for progress in progressValues {
+                try Task.checkCancellation()
+                onProgress(progress)
+                if cloudPreviewDelayNanoseconds > 0 {
+                    try await Task.sleep(nanoseconds: cloudPreviewDelayNanoseconds)
+                }
+            }
+            try Task.checkCancellation()
+            return cloudPreviewData
+        } catch is CancellationError {
+            lock.withLock {
+                storedCloudPreviewCancellationCount += 1
+            }
+            throw CancellationError()
+        }
     }
 
     func fetchInspectorDetail(assetID: UUID) throws -> AssetInspectorDetail {
@@ -3726,6 +4599,7 @@ private final class RemoteHTTPSlimmingCommandStub:
     let recycleEntryID = UUID()
     let recycleAssetID = UUID()
     private var storedLaunchCount = 0
+    private var storedSourceMaintenanceCount = 0
     private var storedLastAction: LibrarySlimmingJobCommandAction?
     private var storedLastClusterReviewJobID: UUID?
     private var storedLastClusterReviewClusterID: UUID?
@@ -3736,6 +4610,7 @@ private final class RemoteHTTPSlimmingCommandStub:
     private let identicalCleanupPlanID = UUID()
 
     var launchCount: Int { lock.withLock { storedLaunchCount } }
+    var sourceMaintenanceCount: Int { lock.withLock { storedSourceMaintenanceCount } }
     var lastAction: LibrarySlimmingJobCommandAction? { lock.withLock { storedLastAction } }
     var lastClusterReviewJobID: UUID? { lock.withLock { storedLastClusterReviewJobID } }
     var lastClusterReviewClusterID: UUID? { lock.withLock { storedLastClusterReviewClusterID } }
@@ -3782,8 +4657,29 @@ private final class RemoteHTTPSlimmingCommandStub:
                 ),
             ],
             thresholds: thresholds,
-            factoryThresholds: .factory
+            factoryThresholds: .factory,
+            sourceSimilarityIndexAvailable: true,
+            sourceSimilarityIndexStatuses: [
+                sourceID: SourceSimilarityIndexStatus(
+                    sourceID: sourceID,
+                    mediaKind: mediaKind,
+                    state: .ready,
+                    assetCount: 12,
+                    indexedCount: 12,
+                    clusterCount: 3,
+                    pendingCount: 0,
+                    updatedAtMs: 123,
+                    lastError: nil
+                ),
+            ]
         )
+    }
+
+    func maintainSources(
+        _ command: LibrarySlimmingSourceMaintenanceCommand
+    ) async throws -> LibrarySlimmingCommandSetupSnapshot {
+        lock.withLock { storedSourceMaintenanceCount += 1 }
+        return try await setup(mediaKind: command.mediaKind)
     }
 
     func launch(_ command: LibrarySlimmingLaunchCommand) async throws
@@ -3940,6 +4836,9 @@ private final class RemoteHTTPSlimmingCommandStub:
             groupCount: 2,
             verifiedAssetCount: 5,
             retainedAssetCount: 2,
+            favoriteRetainedAssetCount: 1,
+            ordinaryRetainedAssetCount: 1,
+            protectedSkippedAssetCount: 2,
             removalAssetCount: 3,
             skippedGroupCount: 1,
             photosAssetCount: 1,
@@ -3961,6 +4860,7 @@ private final class RemoteHTTPSlimmingCommandStub:
                 mediaKind: mediaKind,
                 mode: .recoverableRecycle,
                 phase: .completed,
+                executionStage: .verifyingResult,
                 progress: nil,
                 audit: nil,
                 verification: LibrarySlimmingIdenticalCleanupVerificationSnapshot(

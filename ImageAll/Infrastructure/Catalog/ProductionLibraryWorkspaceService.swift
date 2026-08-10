@@ -2141,6 +2141,14 @@ struct ProductionLibraryWorkspaceService:
     let appVersion: String
     let clock: any JobClock
 
+    @MainActor
+    func openPhotosPrivacySettings() -> Bool {
+        guard let url = URL(
+            string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Photos"
+        ) else { return false }
+        return NSWorkspace.shared.open(url)
+    }
+
     func startCatalogSourceMonitoring(onChange: @escaping @Sendable () -> Void) throws {
         // Startup restores event streams only. A full reconcile for every active
         // external source would monopolize mechanical disks before the user asks

@@ -93,6 +93,11 @@ public struct RemoteAssetSummary: Codable, Sendable, Equatable, Identifiable {
     public let height: Int?
     /// `nil` when decoded from an older Host without the favorites capability.
     public let favorite: RemoteAssetFavoriteState?
+    /// Optional grid-hover facts added after the initial companion protocol.
+    /// Missing values remain compatible with older Hosts.
+    public let relativePath: String?
+    public let mediaModifiedAtMs: Int64?
+    public let durationMs: Int64?
 
     public init(
         id: UUID,
@@ -107,7 +112,10 @@ public struct RemoteAssetSummary: Codable, Sendable, Equatable, Identifiable {
         mediaCreatedAtMs: Int64?,
         width: Int?,
         height: Int?,
-        favorite: RemoteAssetFavoriteState? = nil
+        favorite: RemoteAssetFavoriteState? = nil,
+        relativePath: String? = nil,
+        mediaModifiedAtMs: Int64? = nil,
+        durationMs: Int64? = nil
     ) {
         self.id = id
         self.sourceID = sourceID
@@ -122,6 +130,9 @@ public struct RemoteAssetSummary: Codable, Sendable, Equatable, Identifiable {
         self.width = width
         self.height = height
         self.favorite = favorite
+        self.relativePath = relativePath
+        self.mediaModifiedAtMs = mediaModifiedAtMs
+        self.durationMs = durationMs
     }
 }
 
@@ -140,6 +151,9 @@ public struct RemoteAssetPageRequest: Codable, Sendable, Equatable {
     public var tagPresence: RemoteAssetTagPresence
     /// `nil` means no favorite constraint and remains compatible with older clients.
     public var favorite: RemoteAssetFavoriteFilter?
+    /// Exact Host-issued spatial scope used when a photo tower opens in the gallery.
+    /// `nil` keeps the ordinary all/source/favorite gallery behavior.
+    public var worldMapSelection: RemoteWorldMapSelectionQuery?
 
     public init(
         sourceIDs: [UUID] = [],
@@ -154,7 +168,8 @@ public struct RemoteAssetPageRequest: Codable, Sendable, Equatable {
         mediaKinds: [RemoteAssetMediaKind] = [],
         mediaTypes: [String] = [],
         tagPresence: RemoteAssetTagPresence = .any,
-        favorite: RemoteAssetFavoriteFilter? = nil
+        favorite: RemoteAssetFavoriteFilter? = nil,
+        worldMapSelection: RemoteWorldMapSelectionQuery? = nil
     ) {
         self.sourceIDs = sourceIDs
         self.searchText = searchText
@@ -169,6 +184,7 @@ public struct RemoteAssetPageRequest: Codable, Sendable, Equatable {
         self.mediaTypes = mediaTypes
         self.tagPresence = tagPresence
         self.favorite = favorite
+        self.worldMapSelection = worldMapSelection
     }
 }
 

@@ -30,11 +30,17 @@ def fulfill_json(route, payload, status=200):
 
 def main():
     launches = []
+    sample_requests = []
     workspace_requests = []
+    jobs_requests = []
+    training_activity_actions = []
+    jobs_fail_next = [False]
     page_errors = []
     console_errors = []
     failed_resources = []
+    unexpected_dialogs = []
     activity_updated_at_ms = [int(time.time() * 1000)]
+    activity_phase = ["completed"]
 
     runs = [
         {
@@ -121,6 +127,36 @@ def main():
         },
     ]
 
+    jobs_payload = [
+        {
+            "id": JOB_ID,
+            "kind": "personalizationSuggestions",
+            "state": "retryableFailed",
+            "progress": {"completedUnitCount": 3, "totalUnitCount": 12},
+            "availableActions": ["resume"],
+            "controlRequest": "none",
+            "attempts": 1,
+            "maxAttempts": 3,
+            "lastErrorCode": "staleSnapshot",
+        },
+        {
+            "id": SECOND_JOB_ID,
+            "kind": "background",
+            "state": "completed",
+            "progress": {"completedUnitCount": 1, "totalUnitCount": 1},
+            "availableActions": [],
+            "controlRequest": "none",
+        },
+    ]
+    jobs_payload.extend({
+        "id": f"88888888-aaaa-bbbb-cccc-{index:012d}",
+        "kind": "background",
+        "state": "completed",
+        "progress": {"completedUnitCount": index, "totalUnitCount": index},
+        "availableActions": [],
+        "controlRequest": "none",
+    } for index in range(3, 20))
+
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(
             headless=True,
@@ -137,6 +173,10 @@ def main():
             """
         )
         page = context.new_page()
+        page.on(
+            "dialog",
+            lambda dialog: (unexpected_dialogs.append(dialog.message), dialog.dismiss()),
+        )
         page.on(
             "console",
             lambda message: console_errors.append(message.text)
@@ -195,27 +235,15 @@ def main():
             {"id": THIRD_TAG_ID, "displayName": "家人", "state": "active", "groupID": None},
         ]))
         page.route("**/v1/tag-groups", lambda route: fulfill_json(route, []))
-        page.route("**/v1/jobs", lambda route: fulfill_json(route, [
-            {
-                "id": JOB_ID,
-                "kind": "personalizationSuggestions",
-                "state": "retryableFailed",
-                "progress": {"completedUnitCount": 3, "totalUnitCount": 12},
-                "availableActions": ["resume"],
-                "controlRequest": "none",
-                "attempts": 1,
-                "maxAttempts": 3,
-                "lastErrorCode": "staleSnapshot",
-            },
-            {
-                "id": SECOND_JOB_ID,
-                "kind": "background",
-                "state": "completed",
-                "progress": {"completedUnitCount": 1, "totalUnitCount": 1},
-                "availableActions": [],
-                "controlRequest": "none",
-            },
-        ]))
+        def route_jobs(route):
+            jobs_requests.append(route.request.url)
+            if jobs_fail_next[0]:
+                jobs_fail_next[0] = False
+                fulfill_json(route, {"error": {"message": "活动暂时不可用"}}, status=503)
+                return
+            fulfill_json(route, jobs_payload)
+
+        page.route("**/v1/jobs", route_jobs)
         page.route("**/v1/assets?**", lambda route: fulfill_json(route, {"items": [], "nextCursor": None}))
         page.route(
             "**/v1/embedding-preparation?**",
@@ -228,9 +256,28 @@ def main():
             "**/v1/sample-suggestions?**",
             lambda route: fulfill_json(
                 route,
-                {"mediaKind": "image", "isAvailable": False, "maximumSampleCount": 0, "activities": []},
+                {"mediaKind": "image", "isAvailable": True, "maximumSampleCount": 500, "activities": []},
             ),
         )
+
+        def route_sample_suggestion_request(route):
+            payload = route.request.post_data_json
+            sample_requests.append(payload)
+            fulfill_json(route, {
+                "activity": {
+                    "operationID": payload["operationID"],
+                    "phase": "completed",
+                    "completedUnitCount": 0,
+                    "totalUnitCount": 0,
+                    "suggestedCount": 0,
+                    "skippedCount": 0,
+                    "errorCode": None,
+                    "availableActions": [],
+                },
+                "replayed": False,
+            }, status=202)
+
+        page.route("**/v1/sample-suggestions/requests", route_sample_suggestion_request)
         page.route(
             "**/v1/tag-library-suggestions?**",
             lambda route: fulfill_json(
@@ -275,12 +322,14 @@ def main():
                         "operationID": BATCH_ID,
                         "mediaKind": "image",
                         "method": "personalCentroid",
-                        "phase": "completed",
+                        "phase": activity_phase[0],
                         "completedUnitCount": 3,
                         "totalUnitCount": 3,
                         "sampleCount": None,
                         "errorCode": "staleSnapshot",
-                        "availableActions": [],
+                        "availableActions": ["cancel"] if activity_phase[0] not in {
+                            "completed", "failed", "cancelled"
+                        } else [],
                         "acceptedAtMs": activity_updated_at_ms[0] - 2_000,
                         "updatedAtMs": activity_updated_at_ms[0],
                         "tagActivities": [
@@ -350,6 +399,34 @@ def main():
             )
 
         page.route("**/v1/training/launch", route_training_launch)
+
+        def route_training_activity_action(route):
+            payload = route.request.post_data_json
+            training_activity_actions.append(payload)
+            activity_phase[0] = "cancelled"
+            activity_updated_at_ms[0] = int(time.time() * 1000)
+            fulfill_json(route, {
+                "activity": {
+                    "operationID": BATCH_ID,
+                    "mediaKind": "image",
+                    "method": "personalCentroid",
+                    "phase": "cancelled",
+                    "completedUnitCount": 3,
+                    "totalUnitCount": 3,
+                    "sampleCount": None,
+                    "errorCode": None,
+                    "availableActions": [],
+                    "acceptedAtMs": activity_updated_at_ms[0] - 2_000,
+                    "updatedAtMs": activity_updated_at_ms[0],
+                    "tagActivities": [
+                        {"tagID": TAG_ID, "displayName": "猫", "phase": "succeeded", "sampleCount": 12},
+                        {"tagID": SECOND_TAG_ID, "displayName": "旅行", "phase": "failed", "sampleCount": 8, "errorCode": "staleSnapshot"},
+                        {"tagID": THIRD_TAG_ID, "displayName": "家人", "phase": "skipped", "errorCode": "insufficientSamples"},
+                    ],
+                }
+            })
+
+        page.route("**/v1/training/activities/*/actions", route_training_activity_action)
         page.route(
             "**/v1/review/overview?**",
             lambda route: fulfill_json(route, {
@@ -395,9 +472,30 @@ def main():
         page.wait_for_function(
             "() => document.activeElement?.id === 'rebuildPersonalAdamWButton'"
         )
-        page.keyboard.press("Escape")
-        assert page.locator("#personalModelPopover").is_hidden()
-        page.wait_for_function("() => document.activeElement?.id === 'personalModelButton'")
+        page.keyboard.press("ArrowDown")
+        page.wait_for_function(
+            "() => document.activeElement?.id === 'generatePersonalSuggestionsButton'"
+        )
+        assert page.locator("#generatePersonalSuggestionsTitle").inner_text() == "抽 500 张生成建议"
+        assert page.locator("#searchInput").get_attribute("placeholder") == "搜索文件名、路径、标签或来源"
+        with page.expect_response(
+            lambda response: response.url.endswith("/v1/sample-suggestions/requests")
+            and response.request.method == "POST"
+        ) as sample_response:
+            page.keyboard.press("Enter")
+        assert sample_response.value.status == 202
+        assert sample_requests[-1]["assetIDs"] == []
+        assert sample_requests[-1]["sourceIDs"] is None
+        page.locator("#reviewWorkspace:not(.hidden)").wait_for(state="visible")
+        assert page.locator("#closeReviewButton").get_attribute("aria-label") == "返回图库"
+        assert page.evaluate(
+            "() => history.state?.imageAllWorkspace?.route"
+        ) == "review"
+        page.locator("#closeReviewButton").click()
+        page.locator("#reviewWorkspace").wait_for(state="hidden")
+        page.wait_for_function(
+            "() => history.state?.imageAllWorkspace?.route === 'gallery'"
+        )
 
         page.locator("#personalModelButton").click()
         page.locator("#rebuildPersonalModelButton").click()
@@ -449,10 +547,104 @@ def main():
 
         page.locator("#trainingButton").click()
         page.locator("#trainingWorkspace:not(.hidden)").wait_for(state="visible")
+        assert page.locator("#closeTrainingButton").get_attribute("aria-label") == "返回图库"
+        assert page.evaluate(
+            "() => history.state?.imageAllWorkspace?.route"
+        ) == "training"
         page.wait_for_function(
             "runID => document.querySelector(`[data-training-run-id='${runID}']`)?.getAttribute('aria-selected') === 'true'",
             arg=FAILED_RUN_ID,
         )
+        assert page.locator("#newTrainingButton").get_attribute(
+            "data-help-kind"
+        ) == "training"
+        assert "目标标签、训练方法" in page.locator(
+            "#newTrainingButton"
+        ).get_attribute("data-help-detail")
+        assert page.locator("#trainingMethodFilter").get_attribute(
+            "data-help-title"
+        ) == "筛选训练方法"
+        assert page.locator("#trainingRecordScopeFilter").get_attribute(
+            "data-help-title"
+        ) == "筛选记录类型"
+        failed_run_row = page.locator(
+            f'[data-training-run-id="{FAILED_RUN_ID}"]'
+        )
+        assert failed_run_row.get_attribute(
+            "aria-keyshortcuts"
+        ) == "ArrowUp ArrowDown Home End Meta+K"
+        assert "点击查看数据、配置、过程、产物和失败恢复" in failed_run_row.get_attribute(
+            "data-help-detail"
+        )
+        failed_run_row.hover()
+        page.locator("#persistentHelp:not(.hidden)").wait_for(timeout=1_500)
+        assert "相似照片 · 猫" in page.locator("#persistentHelpTitle").inner_text()
+        assert "上/下或 Home/End" in page.locator("#persistentHelpDetail").inner_text()
+        page.screenshot(
+            path="/tmp/imageall-training-persistent-help.png",
+            full_page=True,
+        )
+        page.mouse.move(8, 8)
+        page.locator("#persistentHelp").wait_for(state="hidden")
+        page.locator(f'[data-training-run-id="{FAILED_RUN_ID}"]').focus()
+        page.keyboard.press("Meta+K")
+        page.locator("#commandPalette[open]").wait_for()
+        assert page.locator("#commandContextLabel").inner_text() == "当前：训练工程"
+        assert page.locator('[data-command-id="selectAll"]').count() == 0
+        assert page.locator('[data-command-id="media:video"]').count() == 1
+        page.keyboard.press("Escape")
+        page.wait_for_function(
+            "runID => document.activeElement?.dataset.trainingRunId === runID",
+            arg=FAILED_RUN_ID,
+        )
+        page.keyboard.press("Meta+K")
+        page.locator('[data-command-id="media:video"]').click()
+        page.wait_for_function(
+            "() => state.training.mediaKind === 'video' && !state.training.loading"
+        )
+        assert "mediaKind=video" in workspace_requests[-1]
+        assert page.locator("#trainingWorkspace").is_visible()
+        page.keyboard.press("Meta+K")
+        assert page.locator("#commandContextLabel").inner_text() == "当前：训练工程"
+        page.locator('[data-command-id="media:image"]').click()
+        page.wait_for_function(
+            "() => state.training.mediaKind === 'image' && !state.training.loading"
+        )
+        assert "mediaKind=image" in workspace_requests[-1]
+        page.wait_for_function(
+            "runID => document.querySelector(`[data-training-run-id='${runID}']`)?.getAttribute('aria-selected') === 'true'",
+            arg=FAILED_RUN_ID,
+        )
+        training_refresh_count = len(workspace_requests)
+        training_refresh_generation = page.evaluate(
+            "() => state.training.requestGeneration"
+        )
+        page.keyboard.press("Meta+K")
+        assert "刷新训练工程" in page.locator(
+            '[data-command-id="refresh"]'
+        ).inner_text()
+        page.locator('[data-command-id="refresh"]').click()
+        page.wait_for_function(
+            "generation => state.training.requestGeneration > generation && !state.training.loading",
+            arg=training_refresh_generation,
+        )
+        assert len(workspace_requests) == training_refresh_count + 1
+        assert page.locator("#trainingWorkspace").is_visible()
+        page.keyboard.press("Meta+K")
+        page.locator('[data-command-id="openReview"]').click()
+        page.locator("#reviewWorkspace:not(.hidden)").wait_for()
+        assert page.evaluate(
+            "() => history.state?.imageAllWorkspace?.route"
+        ) == "review"
+        page.evaluate("() => history.back()")
+        page.locator("#trainingWorkspace:not(.hidden)").wait_for()
+        page.wait_for_function(
+            "runID => document.querySelector(`[data-training-run-id='${runID}']`)?.getAttribute('aria-selected') === 'true'",
+            arg=FAILED_RUN_ID,
+        )
+        assert page.evaluate(
+            "() => history.state?.imageAllWorkspace?.route"
+        ) == "training"
 
         assert page.locator("#trainingErrorTitle").inner_text() == "训练数据已经变化"
         assert "旧快照不能继续使用" in page.locator("#trainingErrorMessage").inner_text()
@@ -512,6 +704,41 @@ def main():
         assert "部分完成" in page.locator(".training-batch-card").inner_text()
         assert "完成 1" in page.locator(".training-batch-card").inner_text()
 
+        activity_phase[0] = "preparingEmbeddings"
+        activity_updated_at_ms[0] = int(time.time() * 1000)
+        page.evaluate("loadTrainingWorkspace({ quiet: true })")
+        assert page.locator("#newTrainingButton").is_disabled()
+        assert "正在运行" in page.locator("#newTrainingButton").get_attribute("title")
+        page.keyboard.press("n")
+        assert not page.locator("#trainingSetupDialog").evaluate("element => element.open")
+        assert "当前已有个人模型训练正在运行" in page.locator("#toastMessage").inner_text()
+
+        cancel_training = page.locator(
+            f'[data-training-activity-id="{BATCH_ID}"][data-action="cancel"]'
+        )
+        cancel_training.click()
+        page.locator("#confirmDialog[open]").wait_for()
+        assert page.locator("#confirmDialog").get_attribute("data-tone") == "warning"
+        assert "已经训练并发布成功的标签会继续保留" in page.locator(
+            "#confirmDialogMessage"
+        ).inner_text()
+        page.locator("#cancelConfirmButton").click()
+        assert not training_activity_actions
+        page.wait_for_function(
+            "operationID => document.activeElement?.dataset.trainingActivityId === operationID",
+            arg=BATCH_ID,
+        )
+        cancel_training.click()
+        page.locator("#confirmDialog[open]").wait_for()
+        page.locator("#confirmActionButton").click()
+        page.wait_for_function("() => !document.querySelector('#confirmDialog').open")
+        assert training_activity_actions == [{"action": "cancel"}]
+        page.wait_for_function("() => document.activeElement?.id === 'refreshTrainingButton'")
+
+        activity_phase[0] = "completed"
+        page.evaluate("loadTrainingWorkspace({ quiet: true })")
+        assert not page.locator("#newTrainingButton").is_disabled()
+
         page.locator(".training-activity-summary").get_by_role(
             "button", name="重新处理未完成标签"
         ).click()
@@ -539,6 +766,135 @@ def main():
         assert "8 个样本" in page.locator("#trainingDetailContext").inner_text()
         page.locator(".training-technical-details > summary").click()
         assert BATCH_ID in page.locator("#trainingTechnicalBlocks").inner_text()
+
+        original_runs = list(runs)
+        scroll_run_ids = []
+        for index in range(36):
+            run_id = f"77777777-aaaa-bbbb-cccc-{index:012d}"
+            scroll_run_ids.append(run_id)
+            runs.append({
+                "id": run_id,
+                "mediaKind": "image",
+                "method": "featureKnn",
+                "state": "succeeded",
+                "createdAtMs": 1_699_999_999_000 - index,
+                "startedAtMs": 1_699_999_999_100 - index,
+                "finishedAtMs": 1_699_999_999_900 - index,
+                "catalogScopeID": "scope-v1",
+                "tagID": TAG_ID,
+                "tagDisplayName": f"猫 · 历史 {index + 1}",
+                "batchID": None,
+                "sampleCount": 20 + index,
+                "positiveSampleCount": 12,
+                "negativeSampleCount": 8,
+                "sampleSummaryJSON": json.dumps({
+                    "samples": [f"asset-{index}-{sample}" for sample in range(80)]
+                }),
+                "configJSON": "{}",
+                "metricsJSON": "{}",
+                "resultSummaryJSON": "{}",
+                "errorCode": None,
+            })
+        page.evaluate("loadTrainingWorkspace({ quiet: true })")
+        page.wait_for_function(
+            "() => document.querySelectorAll('[data-training-run-id]').length === 39"
+        )
+
+        long_detail_run = page.locator(
+            f'[data-training-run-id="{scroll_run_ids[18]}"]'
+        )
+        long_detail_run.scroll_into_view_if_needed()
+        long_detail_run.click()
+        if not page.locator(".training-technical-details").evaluate("element => element.open"):
+            page.locator(".training-technical-details > summary").click()
+        page.locator("#trainingDetailPane").evaluate(
+            "element => { element.scrollTop = element.scrollHeight; }"
+        )
+        assert page.locator("#trainingDetailPane").evaluate(
+            "element => element.scrollTop > 100"
+        )
+
+        target_run = page.locator(
+            f'[data-training-run-id="{scroll_run_ids[32]}"]'
+        )
+        target_run.scroll_into_view_if_needed()
+        run_scroll_before_selection = page.locator("#trainingRunPane").evaluate(
+            "element => element.scrollTop"
+        )
+        assert run_scroll_before_selection > 100
+        target_run.click()
+        page.wait_for_function(
+            "runID => document.activeElement?.dataset.trainingRunId === runID",
+            arg=scroll_run_ids[32],
+        )
+        assert abs(page.locator("#trainingRunPane").evaluate(
+            "element => element.scrollTop"
+        ) - run_scroll_before_selection) <= 1
+        assert page.locator("#trainingDetailPane").evaluate(
+            "element => element.scrollTop === 0"
+        )
+
+        page.locator("#trainingDetailPane").evaluate(
+            "element => { element.scrollTop = 160; }"
+        )
+        detail_scroll_before_refresh = page.locator("#trainingDetailPane").evaluate(
+            "element => element.scrollTop"
+        )
+        assert detail_scroll_before_refresh > 80
+        page.evaluate("loadTrainingWorkspace({ quiet: true })")
+        page.wait_for_function(
+            "runID => document.activeElement?.dataset.trainingRunId === runID",
+            arg=scroll_run_ids[32],
+        )
+        assert abs(page.locator("#trainingRunPane").evaluate(
+            "element => element.scrollTop"
+        ) - run_scroll_before_selection) <= 1
+        detail_scroll_after_refresh = page.locator("#trainingDetailPane").evaluate(
+            "element => element.scrollTop"
+        )
+        assert detail_scroll_after_refresh == detail_scroll_before_refresh, (
+            detail_scroll_before_refresh,
+            detail_scroll_after_refresh,
+        )
+
+        page.evaluate("setTrainingRunScope('batch')")
+        assert page.locator("#trainingRunPane").evaluate(
+            "element => element.scrollTop === 0"
+        )
+        page.evaluate(
+            "runID => { state.training.selectedRunID = runID; setTrainingRunScope('all'); }",
+            scroll_run_ids[32],
+        )
+        assert abs(page.locator("#trainingRunPane").evaluate(
+            "element => element.scrollTop"
+        ) - run_scroll_before_selection) <= 1
+
+        page.evaluate("() => history.back()")
+        page.locator("#trainingWorkspace").wait_for(state="hidden")
+        page.wait_for_function(
+            "() => history.state?.imageAllWorkspace?.route === 'gallery'"
+        )
+        page.evaluate("() => history.forward()")
+        page.locator("#trainingWorkspace:not(.hidden)").wait_for(state="visible")
+        page.wait_for_function(
+            "runID => document.querySelector(`[data-training-run-id='${runID}']`)?.getAttribute('aria-selected') === 'true'",
+            arg=scroll_run_ids[32],
+        )
+        assert abs(page.locator("#trainingRunPane").evaluate(
+            "element => element.scrollTop"
+        ) - run_scroll_before_selection) <= 1
+        page.locator("#closeTrainingButton").click()
+        page.locator("#trainingWorkspace").wait_for(state="hidden")
+        page.locator("#trainingButton").click()
+        page.locator("#trainingWorkspace:not(.hidden)").wait_for(state="visible")
+
+        runs[:] = original_runs
+        page.evaluate("loadTrainingWorkspace({ quiet: true })")
+        page.wait_for_function(
+            "runID => document.querySelector(`[data-training-run-id='${runID}']`)?.getAttribute('aria-selected') === 'true'",
+            arg=FAILED_RUN_ID,
+        )
+        assert page.locator("[data-training-run-id]").count() == 3
 
         page.keyboard.press("l")
         assert page.locator("#trainingWorkspace").evaluate(
@@ -591,11 +947,17 @@ def main():
         ).click()
         page.locator("#trainingWorkspace:not(.hidden)").wait_for(state="visible")
         assert page.locator("#closeTrainingButton").get_attribute("aria-label") == "返回建议审核"
+        assert page.evaluate(
+            "() => history.state?.imageAllWorkspace?.route"
+        ) == "training"
         assert page.locator(
             f'[data-training-run-id="{FAILED_RUN_ID}"]'
         ).get_attribute("aria-selected") == "true"
-        page.keyboard.press("Escape")
+        page.evaluate("() => history.back()")
         page.locator("#reviewWorkspace:not(.hidden)").wait_for(state="visible")
+        assert page.evaluate(
+            "() => history.state?.imageAllWorkspace?.route"
+        ) == "review"
         page.wait_for_function(
             "jobID => document.activeElement?.dataset.reviewTrainingJobId === jobID",
             arg=JOB_ID,
@@ -607,10 +969,26 @@ def main():
             "runID => document.activeElement?.dataset.trainingRunId === runID",
             FAILED_RUN_ID,
         )
+        page.evaluate("() => history.forward()")
+        page.locator("#reviewWorkspace:not(.hidden)").wait_for(state="visible")
+        assert page.locator("#closeReviewButton").get_attribute("aria-label") == "返回训练记录"
+        page.locator("#closeReviewButton").click()
+        page.locator("#trainingWorkspace:not(.hidden)").wait_for(state="visible")
+        page.wait_for_function(
+            "runID => document.activeElement?.dataset.trainingRunId === runID",
+            arg=FAILED_RUN_ID,
+        )
         page.locator(f'[data-training-run-id="{FAILED_RUN_ID}"]').focus()
 
+        before_open_jobs = len(jobs_requests)
         page.keyboard.press("j")
         page.locator("#jobsPopover:not(.hidden)").wait_for(state="visible")
+        page.wait_for_timeout(100)
+        assert len(jobs_requests) == before_open_jobs + 1
+        assert page.locator("#jobsPopover h2").inner_text() == "活动"
+        assert page.locator("#jobsPopover").get_attribute("aria-label") == "活动"
+        assert page.locator("#refreshJobsButton").is_visible()
+        assert page.locator("#refreshJobsButton").get_attribute("aria-keyshortcuts") == "R"
         page.wait_for_function(
             "jobID => document.activeElement?.dataset.jobRowId === jobID",
             arg=JOB_ID,
@@ -620,6 +998,65 @@ def main():
             "jobID => document.activeElement?.dataset.jobRowId === jobID",
             arg=SECOND_JOB_ID,
         )
+        page.locator("#jobsList").evaluate("element => { element.scrollTop = 120; }")
+        preserved_scroll_top = page.locator("#jobsList").evaluate("element => element.scrollTop")
+        assert preserved_scroll_top > 0
+        before_jobs_refresh = len(jobs_requests)
+        page.keyboard.press("r")
+        page.wait_for_timeout(100)
+        assert len(jobs_requests) == before_jobs_refresh + 1
+        page.wait_for_function(
+            "jobID => document.activeElement?.dataset.jobRowId === jobID",
+            arg=SECOND_JOB_ID,
+        )
+        assert abs(
+            page.locator("#jobsList").evaluate("element => element.scrollTop")
+            - preserved_scroll_top
+        ) <= 1
+
+        page.locator("#jobsList").evaluate("element => { element.scrollTop = 160; }")
+        preserved_scroll_top = page.locator("#jobsList").evaluate("element => element.scrollTop")
+        before_jobs_refresh = len(jobs_requests)
+        page.locator("#refreshJobsButton").click()
+        page.wait_for_timeout(100)
+        assert len(jobs_requests) == before_jobs_refresh + 1
+        assert page.evaluate("() => document.activeElement?.id") == "refreshJobsButton"
+        assert abs(
+            page.locator("#jobsList").evaluate("element => element.scrollTop")
+            - preserved_scroll_top
+        ) <= 1
+
+        failed_resource_count = len(failed_resources)
+        jobs_fail_next[0] = True
+        before_jobs_refresh = len(jobs_requests)
+        page.locator("#refreshJobsButton").click()
+        page.wait_for_timeout(100)
+        assert len(jobs_requests) == before_jobs_refresh + 1
+        assert page.locator("[data-job-row-id]").count() == len(jobs_payload)
+        assert page.locator("#refreshJobsButton").is_enabled()
+        assert page.locator("#refreshJobsButton").get_attribute("aria-label") == "重试刷新活动"
+        assert page.evaluate("() => document.activeElement?.id") == "refreshJobsButton"
+        assert len(failed_resources) == failed_resource_count + 1
+        assert failed_resources[-1][0] == 503
+        failed_resources.pop()
+        assert console_errors and "503" in console_errors[-1]
+        console_errors.pop()
+
+        original_jobs = list(jobs_payload)
+        jobs_payload.clear()
+        page.locator("#refreshJobsButton").click()
+        page.wait_for_timeout(100)
+        assert page.locator("[data-job-row-id]").count() == 0
+        assert page.locator("#refreshJobsButton").get_attribute("aria-label") == "刷新活动"
+        assert page.locator("#jobsEmpty").is_visible()
+        assert "暂无活动" in page.locator("#jobsEmpty").inner_text()
+        assert page.evaluate("() => document.activeElement?.id") == "refreshJobsButton"
+        jobs_payload.extend(original_jobs)
+        page.locator("#refreshJobsButton").click()
+        page.wait_for_timeout(100)
+        assert page.locator("[data-job-row-id]").count() == len(original_jobs)
+
+        page.locator(f'[data-job-row-id="{SECOND_JOB_ID}"]').focus()
         page.keyboard.press("Home")
         page.wait_for_function(
             "jobID => document.activeElement?.dataset.jobRowId === jobID",
@@ -664,9 +1101,36 @@ def main():
 
         page.set_viewport_size({"width": 390, "height": 844})
         assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
+        page.locator(f'[data-training-run-id="{FAILED_RUN_ID}"]').focus()
+        page.keyboard.press("ArrowDown")
+        page.wait_for_timeout(220)
+        page.locator("#persistentHelp:not(.hidden)").wait_for()
+        help_bounds = page.locator("#persistentHelp").bounding_box()
+        assert help_bounds is not None
+        assert help_bounds["x"] >= 8
+        assert help_bounds["x"] + help_bounds["width"] <= 382
+        page.screenshot(
+            path="/tmp/imageall-training-persistent-help-390.png",
+            full_page=True,
+        )
+        page.keyboard.press("Escape")
+        page.keyboard.press("j")
+        page.locator("#jobsPopover:not(.hidden)").wait_for(state="visible")
+        popover_bounds = page.locator("#jobsPopover").bounding_box()
+        assert popover_bounds is not None
+        assert popover_bounds["x"] >= 0
+        assert popover_bounds["x"] + popover_bounds["width"] <= 390
+        for selector in ["#refreshJobsButton", "#closeJobsButton"]:
+            bounds = page.locator(selector).bounding_box()
+            assert bounds is not None
+            assert bounds["x"] >= popover_bounds["x"]
+            assert bounds["x"] + bounds["width"] <= popover_bounds["x"] + popover_bounds["width"]
+        page.screenshot(path="/tmp/imageall-jobs-activity-390.png", full_page=True)
+        page.locator("#closeJobsButton").click()
         assert not page_errors, page_errors
         assert not failed_resources, failed_resources
         assert not console_errors, console_errors
+        assert not unexpected_dialogs, unexpected_dialogs
         context.close()
         browser.close()
 

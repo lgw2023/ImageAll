@@ -29,6 +29,9 @@ public enum RemoteHTTPPaths {
     public static let sourceManagementRequests = "/v1/source-management/requests"
     public static let storageMaintenance = "/v1/storage-maintenance"
     public static let storageMaintenanceRequests = "/v1/storage-maintenance/requests"
+    public static let workspaceNotice = "/v1/workspace-notice"
+    public static let workspaceNoticeDismiss = "/v1/workspace-notice/dismiss"
+    public static let workspaceNoticeAction = "/v1/workspace-notice/action"
     public static let tags = "/v1/tags"
     public static let tagsInstallPresets = "/v1/tags/install-presets"
     public static let tagGroups = "/v1/tag-groups"
@@ -58,6 +61,8 @@ public enum RemoteHTTPPaths {
     public static let tagLibrarySuggestionRequests = "/v1/tag-library-suggestions/requests"
     public static let librarySlimmingWorkspace = "/v1/library-slimming/workspace"
     public static let librarySlimmingSetup = "/v1/library-slimming/setup"
+    public static let librarySlimmingSourceMaintenance =
+        "/v1/library-slimming/source-maintenance"
     public static let librarySlimmingLaunch = "/v1/library-slimming/launch"
     public static let librarySlimmingThresholds = "/v1/library-slimming/thresholds"
     public static let librarySlimmingRecycle = "/v1/library-slimming/recycle"

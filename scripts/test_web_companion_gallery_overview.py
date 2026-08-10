@@ -179,6 +179,59 @@ def main():
         page.locator("#galleryOverviewNavigationButton").click()
         page.locator("#galleryOverviewWorkspace:not(.hidden)").wait_for()
         page.locator("#galleryOverviewBody:not(.hidden)").wait_for()
+        assert page.locator("#closeGalleryOverviewButton").get_attribute("aria-label") == "返回图库"
+        assert page.evaluate(
+            "() => history.state?.imageAllWorkspace?.route"
+        ) == "galleryOverview"
+        page.locator("#refreshGalleryOverviewButton").focus()
+        page.keyboard.press("Meta+K")
+        page.locator("#commandPalette[open]").wait_for()
+        assert page.locator("#commandContextLabel").inner_text() == "当前：图库总览"
+        assert "返回图库" in page.locator('[data-command-id="returnWorkspace"]').inner_text()
+        assert page.locator('[data-command-id="openSlimming"]').count() == 1
+        assert page.locator('[data-command-id="selectAll"]').count() == 0
+        page.keyboard.press("Escape")
+        page.wait_for_function(
+            "() => document.activeElement?.id === 'refreshGalleryOverviewButton'"
+        )
+        page.keyboard.press("Meta+K")
+        page.keyboard.press("Meta+K")
+        page.wait_for_function(
+            "() => !document.querySelector('#commandPalette').open "
+            "&& document.activeElement?.id === 'refreshGalleryOverviewButton'"
+        )
+        page.keyboard.press("Meta+K")
+        page.locator('[data-command-id="showAll"]').click()
+        page.locator("#galleryOverviewWorkspace").wait_for(state="hidden")
+        page.wait_for_function(
+            "() => history.state?.imageAllWorkspace?.route === 'gallery'"
+        )
+        page.evaluate("() => history.back()")
+        page.locator("#galleryOverviewWorkspace:not(.hidden)").wait_for()
+        page.wait_for_function(
+            "() => history.state?.imageAllWorkspace?.route === 'galleryOverview'"
+        )
+        page.evaluate("() => history.back()")
+        page.locator("#galleryOverviewWorkspace").wait_for(state="hidden")
+        page.wait_for_function(
+            "() => history.state?.imageAllWorkspace?.route === 'gallery'"
+        )
+        page.wait_for_function(
+            "() => document.activeElement?.id === 'galleryOverviewNavigationButton'"
+        )
+        page.evaluate("() => history.forward()")
+        page.locator("#galleryOverviewWorkspace:not(.hidden)").wait_for()
+        page.locator("#galleryOverviewBody:not(.hidden)").wait_for()
+        assert page.evaluate(
+            "() => history.state?.imageAllWorkspace?.route"
+        ) == "galleryOverview"
+        page.locator("#closeGalleryOverviewButton").click()
+        page.locator("#galleryOverviewWorkspace").wait_for(state="hidden")
+        page.wait_for_function(
+            "() => history.state?.imageAllWorkspace?.route === 'gallery'"
+        )
+        page.locator("#galleryOverviewNavigationButton").click()
+        page.locator("#galleryOverviewWorkspace:not(.hidden)").wait_for()
         assert page.locator("#galleryOverviewTotalMetric").inner_text() == "150"
         assert page.locator("#galleryOverviewUniqueMetric").inner_text() == "139"
         assert page.locator("#galleryOverviewPositiveMetric").inner_text() == "20"
@@ -224,10 +277,22 @@ def main():
         )
         assert dimensions["scroll"] <= dimensions["viewport"], dimensions
         assert page.locator("#galleryOverviewTimeline").is_visible()
+        page.locator("#refreshGalleryOverviewButton").focus()
+        page.keyboard.press("Meta+K")
+        command_bounds = page.locator("#commandPalette").bounding_box()
+        assert command_bounds is not None
+        assert command_bounds["x"] >= 0
+        assert command_bounds["x"] + command_bounds["width"] <= 390
+        assert page.locator("#commandContextLabel").inner_text() == "当前：图库总览"
+        page.screenshot(path="/tmp/imageall-command-palette-overview-390.png", full_page=True)
+        page.keyboard.press("Escape")
         page.screenshot(path="/tmp/imageall-gallery-overview-synthetic.png", full_page=True)
 
         page.keyboard.press("Escape")
-        assert page.locator("#galleryOverviewWorkspace").is_hidden()
+        page.locator("#galleryOverviewWorkspace").wait_for(state="hidden")
+        assert page.evaluate(
+            "() => history.state?.imageAllWorkspace?.route"
+        ) == "gallery"
         assert page.locator("#appView").get_attribute("inert") is None
         assert not page_errors, page_errors
         assert not console_errors, console_errors

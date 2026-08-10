@@ -106,8 +106,10 @@ actor RemoteLibrarySlimmingCommandService: RemoteLibrarySlimmingCommandPort {
     }
 
     private let catalog: any RemoteCatalogServing
+    private let workspace: (any RemoteSourceManagementWorkspacePort)?
     private let analysis: any LibrarySlimmingAnalysisJobPort
     private let thresholds: any NearDuplicateSceneThresholdWriting
+    private let sourceSimilarityIndex: (any SourceSimilarityIndexPort)?
     private let recycle: any LibrarySlimmingRecyclePort
     private let mutationAuthorization: any FolderMutationAuthorizationPort
     private let photosMutation: any PhotosLibraryMutationPort
@@ -127,11 +129,14 @@ actor RemoteLibrarySlimmingCommandService: RemoteLibrarySlimmingCommandPort {
         [UUID: AcceptedIdenticalCleanupOperation] = [:]
     private var identicalCleanupTasksByID: [UUID: Task<Void, Never>] = [:]
     private var runnerTask: Task<Void, Never>?
+    private var sourceSimilarityIndexRunnerActive = false
 
     init(
         catalog: any RemoteCatalogServing,
+        workspace: (any RemoteSourceManagementWorkspacePort)? = nil,
         analysis: any LibrarySlimmingAnalysisJobPort,
         thresholds: any NearDuplicateSceneThresholdWriting,
+        sourceSimilarityIndex: (any SourceSimilarityIndexPort)? = nil,
         recycle: any LibrarySlimmingRecyclePort,
         mutationAuthorization: any FolderMutationAuthorizationPort,
         photosMutation: any PhotosLibraryMutationPort,
@@ -140,8 +145,10 @@ actor RemoteLibrarySlimmingCommandService: RemoteLibrarySlimmingCommandPort {
         clock: any JobClock = SystemJobClock()
     ) {
         self.catalog = catalog
+        self.workspace = workspace
         self.analysis = analysis
         self.thresholds = thresholds
+        self.sourceSimilarityIndex = sourceSimilarityIndex
         self.recycle = recycle
         self.mutationAuthorization = mutationAuthorization
         self.photosMutation = photosMutation
@@ -150,12 +157,67 @@ actor RemoteLibrarySlimmingCommandService: RemoteLibrarySlimmingCommandPort {
     }
 
     func setup(mediaKind: MediaKind) throws -> LibrarySlimmingCommandSetupSnapshot {
-        LibrarySlimmingCommandSetupSnapshot(
+        let sources = try catalog.fetchSources().filter { $0.state == .active }
+        let indexStatuses: [UUID: SourceSimilarityIndexStatus]
+        if let sourceSimilarityIndex {
+            indexStatuses = try Dictionary(
+                uniqueKeysWithValues: sources.compactMap { source in
+                    try sourceSimilarityIndex.status(
+                        sourceID: source.id,
+                        mediaKind: mediaKind
+                    ).map { (source.id, $0) }
+                }
+            )
+        } else {
+            indexStatuses = [:]
+        }
+        return LibrarySlimmingCommandSetupSnapshot(
             mediaKind: mediaKind,
-            sources: try catalog.fetchSources().filter { $0.state == .active },
+            sources: sources,
             thresholds: thresholds.thresholds(),
-            factoryThresholds: .factory
+            factoryThresholds: .factory,
+            sourceSimilarityIndexAvailable: sourceSimilarityIndex != nil,
+            sourceSimilarityIndexStatuses: indexStatuses
         )
+    }
+
+    func maintainSources(
+        _ command: LibrarySlimmingSourceMaintenanceCommand
+    ) async throws -> LibrarySlimmingCommandSetupSnapshot {
+        let current = try setup(mediaKind: command.mediaKind)
+        let activeSourceIDs = Set(current.sources.map(\.id))
+        let sourceIDs = Array(Set(command.sourceIDs)).sorted(by: Self.uuidLessThan)
+        guard !sourceIDs.isEmpty, Set(sourceIDs).isSubset(of: activeSourceIDs) else {
+            throw LibrarySlimmingCommandError.invalidSelection
+        }
+
+        switch command.action {
+        case .refreshCatalog:
+            guard let workspace else { throw LibrarySlimmingCommandError.unavailable }
+            try workspace.enqueueReconcile(sourceIDs: sourceIDs)
+            startCatalogRefreshRunner(workspace: workspace, sourceIDs: Set(sourceIDs))
+        case .initializeSimilarityIndex:
+            guard sourceIDs.count == 1, let sourceSimilarityIndex else {
+                throw LibrarySlimmingCommandError.invalidSelection
+            }
+            let sourceID = sourceIDs[0]
+            if try sourceSimilarityIndex.status(
+                sourceID: sourceID,
+                mediaKind: command.mediaKind
+            )?.state == .building {
+                throw LibrarySlimmingCommandError.activeConflict
+            }
+            _ = try sourceSimilarityIndex.enqueueBuild(
+                sourceID: sourceID,
+                mediaKind: command.mediaKind
+            )
+            startSourceSimilarityIndexRunner(
+                sourceIndex: sourceSimilarityIndex,
+                sourceID: sourceID,
+                mediaKind: command.mediaKind
+            )
+        }
+        return try setup(mediaKind: command.mediaKind)
     }
 
     func launch(
@@ -560,6 +622,9 @@ actor RemoteLibrarySlimmingCommandService: RemoteLibrarySlimmingCommandPort {
             groupCount: plan.groupCount,
             verifiedAssetCount: plan.verifiedAssetCount,
             retainedAssetCount: plan.retainedAssetCount,
+            favoriteRetainedAssetCount: plan.favoriteRetainedAssetCount,
+            ordinaryRetainedAssetCount: plan.ordinaryRetainedAssetCount,
+            protectedSkippedAssetCount: plan.protectedSkippedAssetCount,
             removalAssetCount: plan.assetIDsToRecycle.count,
             skippedGroupCount: plan.skippedGroupCount,
             photosAssetCount: plan.photosAssetCount,
@@ -696,6 +761,7 @@ actor RemoteLibrarySlimmingCommandService: RemoteLibrarySlimmingCommandPort {
 
             markIdenticalCleanupRunning(
                 requestID,
+                stage: .recyclingAssets,
                 message: command.mode == .releaseSourceSpace
                     ? "正在逐组保留一项并释放空间…"
                     : "正在逐组保留一项并移入可恢复回收站…"
@@ -712,6 +778,7 @@ actor RemoteLibrarySlimmingCommandService: RemoteLibrarySlimmingCommandPort {
                 for sourceID in outcome.authorizationRequiredSourceIDs {
                     markIdenticalCleanupRunning(
                         requestID,
+                        stage: .requestingAuthorization,
                         message: "请在 Mac 系统窗口中确认来源写入权限…"
                     )
                     do {
@@ -726,6 +793,7 @@ actor RemoteLibrarySlimmingCommandService: RemoteLibrarySlimmingCommandPort {
                 if !outcome.authorizationDeniedPhotosAssetIDs.isEmpty {
                     markIdenticalCleanupRunning(
                         requestID,
+                        stage: .requestingAuthorization,
                         message: "请在系统对话框中允许 ImageAll 访问照片库…"
                     )
                     if await photosMutation.requestAuthorization() != .authorized {
@@ -741,8 +809,18 @@ actor RemoteLibrarySlimmingCommandService: RemoteLibrarySlimmingCommandPort {
                 }
             }
 
+            markIdenticalCleanupRunning(
+                requestID,
+                stage: .refreshingState,
+                message: "正在刷新删除状态…"
+            )
             let hidden = try await slimmingHiddenAssetIDs(
                 from: prepared.plan.assetIDsToRecycle
+            )
+            markIdenticalCleanupRunning(
+                requestID,
+                stage: .verifyingResult,
+                message: "正在进行删除后核验…"
             )
             let verification = try await Task.detached(priority: .utility) { [recycle] in
                 try recycle.verifyIdenticalCleanup(plan: prepared.plan)
@@ -827,6 +905,7 @@ actor RemoteLibrarySlimmingCommandService: RemoteLibrarySlimmingCommandPort {
                 mediaKind: current.mediaKind,
                 mode: current.mode,
                 phase: .running,
+                executionStage: .recyclingAssets,
                 progress: LibrarySlimmingRemovalCommandProgress(
                     phase: progress.phase,
                     completedAssetCount: min(
@@ -844,10 +923,15 @@ actor RemoteLibrarySlimmingCommandService: RemoteLibrarySlimmingCommandPort {
             )
     }
 
-    private func markIdenticalCleanupRunning(_ requestID: UUID, message: String) {
+    private func markIdenticalCleanupRunning(
+        _ requestID: UUID,
+        stage: LibrarySlimmingIdenticalCleanupExecutionStage = .validatingPlan,
+        message: String
+    ) {
         finishIdenticalCleanup(
             requestID,
             phase: .running,
+            executionStage: stage,
             message: message,
             clearTask: false
         )
@@ -856,6 +940,7 @@ actor RemoteLibrarySlimmingCommandService: RemoteLibrarySlimmingCommandPort {
     private func finishIdenticalCleanup(
         _ requestID: UUID,
         phase: LibrarySlimmingRecycleCommandPhase,
+        executionStage: LibrarySlimmingIdenticalCleanupExecutionStage? = nil,
         audit: LibrarySlimmingRemovalCommandAudit? = nil,
         verification: LibrarySlimmingIdenticalCleanupVerificationSnapshot? = nil,
         message: String,
@@ -871,6 +956,7 @@ actor RemoteLibrarySlimmingCommandService: RemoteLibrarySlimmingCommandPort {
                 mediaKind: current.mediaKind,
                 mode: current.mode,
                 phase: phase,
+                executionStage: executionStage ?? current.executionStage,
                 progress: current.progress,
                 audit: audit ?? current.audit,
                 verification: verification ?? current.verification,
@@ -1307,6 +1393,41 @@ actor RemoteLibrarySlimmingCommandService: RemoteLibrarySlimmingCommandPort {
             recycleRequestsByID[request.id] = nil
             acceptedRecycleOperations[request.operationID] = nil
         }
+    }
+
+    private func startCatalogRefreshRunner(
+        workspace: any RemoteSourceManagementWorkspacePort,
+        sourceIDs: Set<UUID>
+    ) {
+        Task.detached(priority: .utility) {
+            try? workspace.runPendingReconcileJobs(sourceIDs: sourceIDs)
+            try? workspace.runPendingPhotosReconcileJobs(sourceIDs: sourceIDs)
+        }
+    }
+
+    private func startSourceSimilarityIndexRunner(
+        sourceIndex: any SourceSimilarityIndexPort,
+        sourceID: UUID,
+        mediaKind: MediaKind
+    ) {
+        guard !sourceSimilarityIndexRunnerActive else { return }
+        sourceSimilarityIndexRunnerActive = true
+        Task.detached(priority: .utility) { [weak self] in
+            while !Task.isCancelled {
+                try? sourceIndex.runPending()
+                let state = try? sourceIndex.status(
+                    sourceID: sourceID,
+                    mediaKind: mediaKind
+                )?.state
+                guard state == .building else { break }
+                try? await Task.sleep(for: .seconds(5))
+            }
+            await self?.sourceSimilarityIndexRunnerFinished()
+        }
+    }
+
+    private func sourceSimilarityIndexRunnerFinished() {
+        sourceSimilarityIndexRunnerActive = false
     }
 
     private func startRunnerIfNeeded() {

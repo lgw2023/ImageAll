@@ -339,15 +339,55 @@ public struct RemoteLibrarySlimmingThresholds: Codable, Sendable, Equatable {
     }
 }
 
+public enum RemoteLibrarySlimmingSourceIndexState: String, Codable, Sendable, Equatable {
+    case building
+    case ready
+    case stale
+    case failed
+}
+
+public struct RemoteLibrarySlimmingSourceIndexStatus: Codable, Sendable, Equatable {
+    public let state: RemoteLibrarySlimmingSourceIndexState
+    public let assetCount: Int
+    public let indexedCount: Int
+    public let clusterCount: Int
+    public let pendingCount: Int
+    public let updatedAtMs: Int64
+
+    public init(
+        state: RemoteLibrarySlimmingSourceIndexState,
+        assetCount: Int,
+        indexedCount: Int,
+        clusterCount: Int,
+        pendingCount: Int,
+        updatedAtMs: Int64
+    ) {
+        self.state = state
+        self.assetCount = assetCount
+        self.indexedCount = indexedCount
+        self.clusterCount = clusterCount
+        self.pendingCount = pendingCount
+        self.updatedAtMs = updatedAtMs
+    }
+}
+
 public struct RemoteLibrarySlimmingSourceOption: Codable, Sendable, Equatable, Identifiable {
     public let id: UUID
     public let displayName: String
     public let kind: RemoteSourceKind
+    /// Host-authoritative, media-specific index state. Missing on older Hosts.
+    public let similarityIndex: RemoteLibrarySlimmingSourceIndexStatus?
 
-    public init(id: UUID, displayName: String, kind: RemoteSourceKind) {
+    public init(
+        id: UUID,
+        displayName: String,
+        kind: RemoteSourceKind,
+        similarityIndex: RemoteLibrarySlimmingSourceIndexStatus? = nil
+    ) {
         self.id = id
         self.displayName = displayName
         self.kind = kind
+        self.similarityIndex = similarityIndex
     }
 }
 
@@ -356,17 +396,75 @@ public struct RemoteLibrarySlimmingSetupSnapshot: Codable, Sendable, Equatable {
     public let sources: [RemoteLibrarySlimmingSourceOption]
     public let thresholds: RemoteLibrarySlimmingThresholds
     public let factoryThresholds: RemoteLibrarySlimmingThresholds
+    /// `nil` preserves compatibility with Hosts predating source-index maintenance.
+    public let sourceSimilarityIndexAvailable: Bool?
 
     public init(
         mediaKind: RemoteAssetMediaKind,
         sources: [RemoteLibrarySlimmingSourceOption],
         thresholds: RemoteLibrarySlimmingThresholds,
-        factoryThresholds: RemoteLibrarySlimmingThresholds
+        factoryThresholds: RemoteLibrarySlimmingThresholds,
+        sourceSimilarityIndexAvailable: Bool? = nil
     ) {
         self.mediaKind = mediaKind
         self.sources = sources
         self.thresholds = thresholds
         self.factoryThresholds = factoryThresholds
+        self.sourceSimilarityIndexAvailable = sourceSimilarityIndexAvailable
+    }
+}
+
+public enum RemoteLibrarySlimmingSourceMaintenanceAction:
+    String,
+    Codable,
+    Sendable,
+    Equatable
+{
+    case refreshCatalog
+    case initializeSimilarityIndex
+}
+
+public struct RemoteLibrarySlimmingSourceMaintenanceRequest: Codable, Sendable, Equatable {
+    public let operationID: UUID
+    public let action: RemoteLibrarySlimmingSourceMaintenanceAction
+    public let mediaKind: RemoteAssetMediaKind
+    public let sourceIDs: [UUID]
+
+    public init(
+        operationID: UUID,
+        action: RemoteLibrarySlimmingSourceMaintenanceAction,
+        mediaKind: RemoteAssetMediaKind,
+        sourceIDs: [UUID]
+    ) {
+        self.operationID = operationID
+        self.action = action
+        self.mediaKind = mediaKind
+        self.sourceIDs = sourceIDs
+    }
+}
+
+public struct RemoteLibrarySlimmingSourceMaintenanceResponse: Codable, Sendable, Equatable {
+    public let operationID: UUID
+    public let action: RemoteLibrarySlimmingSourceMaintenanceAction
+    public let mediaKind: RemoteAssetMediaKind
+    public let sourceIDs: [UUID]
+    public let setup: RemoteLibrarySlimmingSetupSnapshot
+    public let replayed: Bool
+
+    public init(
+        operationID: UUID,
+        action: RemoteLibrarySlimmingSourceMaintenanceAction,
+        mediaKind: RemoteAssetMediaKind,
+        sourceIDs: [UUID],
+        setup: RemoteLibrarySlimmingSetupSnapshot,
+        replayed: Bool
+    ) {
+        self.operationID = operationID
+        self.action = action
+        self.mediaKind = mediaKind
+        self.sourceIDs = sourceIDs
+        self.setup = setup
+        self.replayed = replayed
     }
 }
 
@@ -485,8 +583,28 @@ public enum RemoteLibrarySlimmingRecycleResolution: String, Codable, Sendable, E
     case restoreOrPurge
     case discardPreflightFailure
     case retryInterruptedOperation
+    case reinspectFileLocations
+    case updateFolderAuthorization
+    case refreshSourceBeforeRetry
+    case requestPhotosAuthorization
+    case retryFromAnalysis
+    /// Kept for decoding snapshots produced by older hosts.
     case inspect
     case photosManagedBySystem
+}
+
+public enum RemoteLibrarySlimmingRecycleProblem: String, Codable, Sendable, Equatable {
+    case sourceAuthorizationRequired
+    case sourceAuthorizationInvalid
+    case sourceChanged
+    case photosAuthorizationRequired
+    case photosAssetNotFound
+    case photosUserCancelled
+    case photosMutationFailed
+    case fileIO
+    case locationConflict
+    case locationMissing
+    case unknown
 }
 
 public enum RemoteLibrarySlimmingRecycleAction: String, Codable, Sendable, Equatable {
@@ -537,8 +655,14 @@ public struct RemoteLibrarySlimmingRecycleEntry: Codable, Sendable, Equatable, I
     public let purgeAfterMs: Int64
     public let state: RemoteLibrarySlimmingRecycleEntryState
     public let errorCode: String?
+    public let problem: RemoteLibrarySlimmingRecycleProblem?
     public let resolution: RemoteLibrarySlimmingRecycleResolution
     public let availableActions: [RemoteLibrarySlimmingRecycleAction]
+    /// Host-authored copies shared with the Mac recovery presentation. Optional
+    /// so newer clients can still decode snapshots from an older host.
+    public let stateMessage: String?
+    public let policyMessage: String?
+    public let explanationMessage: String?
     public let favorite: RemoteAssetFavoriteState?
 
     public init(
@@ -553,8 +677,12 @@ public struct RemoteLibrarySlimmingRecycleEntry: Codable, Sendable, Equatable, I
         purgeAfterMs: Int64,
         state: RemoteLibrarySlimmingRecycleEntryState,
         errorCode: String?,
+        problem: RemoteLibrarySlimmingRecycleProblem? = nil,
         resolution: RemoteLibrarySlimmingRecycleResolution,
         availableActions: [RemoteLibrarySlimmingRecycleAction],
+        stateMessage: String? = nil,
+        policyMessage: String? = nil,
+        explanationMessage: String? = nil,
         favorite: RemoteAssetFavoriteState? = nil
     ) {
         self.id = id
@@ -568,8 +696,12 @@ public struct RemoteLibrarySlimmingRecycleEntry: Codable, Sendable, Equatable, I
         self.purgeAfterMs = purgeAfterMs
         self.state = state
         self.errorCode = errorCode
+        self.problem = problem
         self.resolution = resolution
         self.availableActions = availableActions
+        self.stateMessage = stateMessage
+        self.policyMessage = policyMessage
+        self.explanationMessage = explanationMessage
         self.favorite = favorite
     }
 }
@@ -840,6 +972,13 @@ public struct RemoteLibrarySlimmingIdenticalCleanupPlanSnapshot:
     public let groupCount: Int
     public let verifiedAssetCount: Int
     public let retainedAssetCount: Int
+    /// Exact number of retained assets protected by a red-heart favorite.
+    /// Optional so a new client can still decode plans from an older Host.
+    public let favoriteRetainedAssetCount: Int?
+    /// Exact number of retained assets that are not red-heart protected.
+    public let ordinaryRetainedAssetCount: Int?
+    /// Assets skipped because every member in their identical group is protected.
+    public let protectedSkippedAssetCount: Int?
     public let removalAssetCount: Int
     public let skippedGroupCount: Int
     public let photosAssetCount: Int
@@ -854,6 +993,9 @@ public struct RemoteLibrarySlimmingIdenticalCleanupPlanSnapshot:
         groupCount: Int,
         verifiedAssetCount: Int,
         retainedAssetCount: Int,
+        favoriteRetainedAssetCount: Int? = nil,
+        ordinaryRetainedAssetCount: Int? = nil,
+        protectedSkippedAssetCount: Int? = nil,
         removalAssetCount: Int,
         skippedGroupCount: Int,
         photosAssetCount: Int,
@@ -867,6 +1009,9 @@ public struct RemoteLibrarySlimmingIdenticalCleanupPlanSnapshot:
         self.groupCount = groupCount
         self.verifiedAssetCount = verifiedAssetCount
         self.retainedAssetCount = retainedAssetCount
+        self.favoriteRetainedAssetCount = favoriteRetainedAssetCount
+        self.ordinaryRetainedAssetCount = ordinaryRetainedAssetCount
+        self.protectedSkippedAssetCount = protectedSkippedAssetCount
         self.removalAssetCount = removalAssetCount
         self.skippedGroupCount = skippedGroupCount
         self.photosAssetCount = photosAssetCount
@@ -936,6 +1081,16 @@ public struct RemoteLibrarySlimmingIdenticalCleanupVerification:
     }
 }
 
+public enum RemoteLibrarySlimmingIdenticalCleanupExecutionStage:
+    String, Codable, Sendable, Equatable
+{
+    case validatingPlan
+    case recyclingAssets
+    case requestingAuthorization
+    case refreshingState
+    case verifyingResult
+}
+
 public struct RemoteLibrarySlimmingIdenticalCleanupRequestSnapshot:
     Codable, Sendable, Equatable, Identifiable
 {
@@ -946,6 +1101,9 @@ public struct RemoteLibrarySlimmingIdenticalCleanupRequestSnapshot:
     public let mediaKind: RemoteAssetMediaKind
     public let mode: RemoteLibrarySlimmingRemovalMode
     public let phase: RemoteLibrarySlimmingRemovalRequestPhase
+    /// Fine-grained execution state used by clients to mirror the Mac blocking
+    /// progress surface. Optional so newer clients can decode older Hosts.
+    public let executionStage: RemoteLibrarySlimmingIdenticalCleanupExecutionStage?
     public let progress: RemoteLibrarySlimmingRemovalProgress?
     public let audit: RemoteLibrarySlimmingRemovalAudit?
     public let verification: RemoteLibrarySlimmingIdenticalCleanupVerification?
@@ -960,6 +1118,7 @@ public struct RemoteLibrarySlimmingIdenticalCleanupRequestSnapshot:
         mediaKind: RemoteAssetMediaKind,
         mode: RemoteLibrarySlimmingRemovalMode,
         phase: RemoteLibrarySlimmingRemovalRequestPhase,
+        executionStage: RemoteLibrarySlimmingIdenticalCleanupExecutionStage? = nil,
         progress: RemoteLibrarySlimmingRemovalProgress?,
         audit: RemoteLibrarySlimmingRemovalAudit?,
         verification: RemoteLibrarySlimmingIdenticalCleanupVerification?,
@@ -973,6 +1132,7 @@ public struct RemoteLibrarySlimmingIdenticalCleanupRequestSnapshot:
         self.mediaKind = mediaKind
         self.mode = mode
         self.phase = phase
+        self.executionStage = executionStage
         self.progress = progress
         self.audit = audit
         self.verification = verification

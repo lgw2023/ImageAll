@@ -1070,6 +1070,8 @@ final class FullLibrarySuggestionsJobTests: XCTestCase {
         let page = try service.fetchReviewQueue(tagID: fixture.tagID, cursor: nil, limit: 10)
         let item = try XCTUnwrap(page.items.first(where: { $0.assetID == candidate.assetID }))
         XCTAssertEqual(item.suggestionOrigin, .personalModel)
+        XCTAssertEqual(item.width, 1_200)
+        XCTAssertEqual(item.height, 900)
     }
 
     func testPersonalTagLibrarySuggestionsSkipDecidedAssetsWhenSelectingTopN() throws {
@@ -4612,8 +4614,9 @@ private func makeLargeLibraryFixture(
                 INSERT INTO asset (
                     id, source_id, locator_kind, relative_path, photos_local_identifier,
                     locator_state, media_type, media_created_at_ms, media_modified_at_ms,
-                    file_name, content_revision, availability, record_created_at_ms, record_updated_at_ms
-                ) VALUES (?, ?, 'file', ?, NULL, 'current', 'public.jpeg', ?, ?, ?, 1, 'available', ?, ?)
+                    file_name, width, height, content_revision, availability,
+                    record_created_at_ms, record_updated_at_ms
+                ) VALUES (?, ?, 'file', ?, NULL, 'current', 'public.jpeg', ?, ?, ?, 1200, 900, 1, 'available', ?, ?)
                 """,
                 arguments: [
                     assetID.uuidString.lowercased(),

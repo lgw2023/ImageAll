@@ -10,11 +10,17 @@ enum SourceManagementCommandError: Error, Equatable, Sendable {
 enum SourceManagementCommandAction: String, Equatable, Sendable {
     case connectFolder
     case connectPhotos
+    case refreshAll
+    case prewarmAllThumbnails
+    case prewarmAllOriginalAspect
+    case reauthorizeAll
+    case refreshAllFolderMutationAuthorizations
     case rebindPhotos
     case reauthorize
     case rescan
     case syncPhotos
     case fullRepair
+    case openPhotosPrivacySettings
     case requestPhotosWriteAuthorization
     case refreshFolderMutationAuthorization
     case prewarmThumbnails
@@ -49,6 +55,10 @@ struct SourceManagementCommandRequestSnapshot: Equatable, Sendable {
     let totalCount: Int?
     let warmedCount: Int?
     let failedCount: Int?
+    let reusedCount: Int?
+    let ineligibleCount: Int?
+    let completedSourceCount: Int?
+    let totalSourceCount: Int?
     let updatedAtMs: Int64
 
     init(
@@ -63,6 +73,10 @@ struct SourceManagementCommandRequestSnapshot: Equatable, Sendable {
         totalCount: Int? = nil,
         warmedCount: Int? = nil,
         failedCount: Int? = nil,
+        reusedCount: Int? = nil,
+        ineligibleCount: Int? = nil,
+        completedSourceCount: Int? = nil,
+        totalSourceCount: Int? = nil,
         updatedAtMs: Int64
     ) {
         self.id = id
@@ -76,6 +90,10 @@ struct SourceManagementCommandRequestSnapshot: Equatable, Sendable {
         self.totalCount = totalCount
         self.warmedCount = warmedCount
         self.failedCount = failedCount
+        self.reusedCount = reusedCount
+        self.ineligibleCount = ineligibleCount
+        self.completedSourceCount = completedSourceCount
+        self.totalSourceCount = totalSourceCount
         self.updatedAtMs = updatedAtMs
     }
 }
@@ -105,6 +123,7 @@ protocol RemoteSourceManagementWorkspacePort: Sendable {
     func enqueueReconcile(sourceIDs: [UUID]) throws
     func syncPhotosLibrary(sourceID: UUID) async throws
     func requestPhotosFullRepair(sourceID: UUID) async throws
+    @MainActor func openPhotosPrivacySettings() -> Bool
     func deleteLibrarySource(sourceID: UUID) async throws -> DeleteLibrarySourceOutcome
     func runPendingReconcileJobs(sourceIDs: Set<UUID>?) throws
     func runPendingPhotosReconcileJobs(sourceIDs: Set<UUID>?) throws
@@ -114,6 +133,7 @@ protocol RemoteSourceManagementWorkspacePort: Sendable {
         cursor: AssetPageCursor?
     ) throws -> AssetPageResult
     func loadThumbnail(assetID: UUID) async throws -> Data
+    func cachedSquareThumbnailAssetIDs(sourceID: UUID) async throws -> Set<UUID>
     func cachedOriginalAspectThumbnailAssetIDs(sourceID: UUID) async throws -> Set<UUID>
     func loadOriginalAspectThumbnailIfCached(assetID: UUID) async throws -> Data?
     func prewarmOriginalAspectThumbnail(assetID: UUID) async throws -> Data
@@ -152,6 +172,9 @@ extension RemoteSourceManagementWorkspacePort {
         throw SourceManagementCommandError.unavailable
     }
 
+    @MainActor
+    func openPhotosPrivacySettings() -> Bool { false }
+
     func deleteLibrarySource(sourceID _: UUID) async throws -> DeleteLibrarySourceOutcome {
         throw SourceManagementCommandError.unavailable
     }
@@ -169,6 +192,10 @@ extension RemoteSourceManagementWorkspacePort {
 
     func loadThumbnail(assetID _: UUID) async throws -> Data {
         throw SourceManagementCommandError.unavailable
+    }
+
+    func cachedSquareThumbnailAssetIDs(sourceID _: UUID) async throws -> Set<UUID> {
+        []
     }
 
     func cachedOriginalAspectThumbnailAssetIDs(sourceID _: UUID) async throws -> Set<UUID> {

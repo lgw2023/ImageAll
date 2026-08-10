@@ -17,6 +17,35 @@ struct LibrarySlimmingCommandSetupSnapshot: Equatable, Sendable {
     let sources: [LibrarySourceSummary]
     let thresholds: NearDuplicateSceneThresholds
     let factoryThresholds: NearDuplicateSceneThresholds
+    let sourceSimilarityIndexAvailable: Bool
+    let sourceSimilarityIndexStatuses: [UUID: SourceSimilarityIndexStatus]
+
+    init(
+        mediaKind: MediaKind,
+        sources: [LibrarySourceSummary],
+        thresholds: NearDuplicateSceneThresholds,
+        factoryThresholds: NearDuplicateSceneThresholds,
+        sourceSimilarityIndexAvailable: Bool = false,
+        sourceSimilarityIndexStatuses: [UUID: SourceSimilarityIndexStatus] = [:]
+    ) {
+        self.mediaKind = mediaKind
+        self.sources = sources
+        self.thresholds = thresholds
+        self.factoryThresholds = factoryThresholds
+        self.sourceSimilarityIndexAvailable = sourceSimilarityIndexAvailable
+        self.sourceSimilarityIndexStatuses = sourceSimilarityIndexStatuses
+    }
+}
+
+enum LibrarySlimmingSourceMaintenanceAction: String, Equatable, Sendable {
+    case refreshCatalog
+    case initializeSimilarityIndex
+}
+
+struct LibrarySlimmingSourceMaintenanceCommand: Equatable, Sendable {
+    let action: LibrarySlimmingSourceMaintenanceAction
+    let mediaKind: MediaKind
+    let sourceIDs: [UUID]
 }
 
 struct LibrarySlimmingLaunchCommand: Equatable, Sendable {
@@ -166,6 +195,9 @@ struct LibrarySlimmingIdenticalCleanupPlanSnapshot: Equatable, Sendable {
     let groupCount: Int
     let verifiedAssetCount: Int
     let retainedAssetCount: Int
+    let favoriteRetainedAssetCount: Int
+    let ordinaryRetainedAssetCount: Int
+    let protectedSkippedAssetCount: Int
     let removalAssetCount: Int
     let skippedGroupCount: Int
     let photosAssetCount: Int
@@ -194,6 +226,14 @@ struct LibrarySlimmingIdenticalCleanupVerificationSnapshot: Equatable, Sendable 
     let isComplete: Bool
 }
 
+enum LibrarySlimmingIdenticalCleanupExecutionStage: String, Equatable, Sendable {
+    case validatingPlan
+    case recyclingAssets
+    case requestingAuthorization
+    case refreshingState
+    case verifyingResult
+}
+
 struct LibrarySlimmingIdenticalCleanupRequestSnapshot: Equatable, Sendable {
     let id: UUID
     let operationID: UUID
@@ -202,11 +242,42 @@ struct LibrarySlimmingIdenticalCleanupRequestSnapshot: Equatable, Sendable {
     let mediaKind: MediaKind
     let mode: LibrarySlimmingRemovalCommandMode
     let phase: LibrarySlimmingRecycleCommandPhase
+    let executionStage: LibrarySlimmingIdenticalCleanupExecutionStage?
     let progress: LibrarySlimmingRemovalCommandProgress?
     let audit: LibrarySlimmingRemovalCommandAudit?
     let verification: LibrarySlimmingIdenticalCleanupVerificationSnapshot?
     let message: String
     let updatedAtMs: Int64
+
+    init(
+        id: UUID,
+        operationID: UUID,
+        planID: UUID,
+        jobID: UUID,
+        mediaKind: MediaKind,
+        mode: LibrarySlimmingRemovalCommandMode,
+        phase: LibrarySlimmingRecycleCommandPhase,
+        executionStage: LibrarySlimmingIdenticalCleanupExecutionStage? = nil,
+        progress: LibrarySlimmingRemovalCommandProgress?,
+        audit: LibrarySlimmingRemovalCommandAudit?,
+        verification: LibrarySlimmingIdenticalCleanupVerificationSnapshot?,
+        message: String,
+        updatedAtMs: Int64
+    ) {
+        self.id = id
+        self.operationID = operationID
+        self.planID = planID
+        self.jobID = jobID
+        self.mediaKind = mediaKind
+        self.mode = mode
+        self.phase = phase
+        self.executionStage = executionStage
+        self.progress = progress
+        self.audit = audit
+        self.verification = verification
+        self.message = message
+        self.updatedAtMs = updatedAtMs
+    }
 }
 
 struct LibrarySlimmingIdenticalCleanupSnapshot: Equatable, Sendable {
@@ -234,6 +305,9 @@ protocol RemoteLibrarySlimmingNativeApprovalPresenting: Sendable {
 
 protocol RemoteLibrarySlimmingCommandPort: Sendable {
     func setup(mediaKind: MediaKind) async throws -> LibrarySlimmingCommandSetupSnapshot
+    func maintainSources(
+        _ command: LibrarySlimmingSourceMaintenanceCommand
+    ) async throws -> LibrarySlimmingCommandSetupSnapshot
     func launch(_ command: LibrarySlimmingLaunchCommand) async throws
         -> LibrarySlimmingLaunchReceipt
     func apply(
@@ -277,6 +351,12 @@ protocol RemoteLibrarySlimmingCommandPort: Sendable {
 }
 
 extension RemoteLibrarySlimmingCommandPort {
+    func maintainSources(
+        _ command: LibrarySlimmingSourceMaintenanceCommand
+    ) async throws -> LibrarySlimmingCommandSetupSnapshot {
+        throw LibrarySlimmingCommandError.unavailable
+    }
+
     func setClusterReviewDisposition(
         jobID _: UUID,
         clusterID _: UUID,

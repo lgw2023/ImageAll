@@ -664,7 +664,7 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         )
     }
 
-    func testRefreshAllSourcesQueuesFoldersAndSyncsPhotosRegardlessOfCurrentSelection() async {
+    func testRefreshAllSourcesQueuesFoldersAndSyncsPhotosRegardlessOfCurrentSelection() async throws {
         let folderSourceID = UUID()
         let photosSourceID = UUID()
         let service = FakeLibraryWorkspaceService(
@@ -699,6 +699,34 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertEqual(service.enqueueReconcileCalls, [[folderSourceID]])
         XCTAssertEqual(service.photosSyncCallCount, 1)
         XCTAssertEqual(model.notice, .allSourcesRefreshQueued(sourceCount: 2))
+
+        let firstRemoteNotice = await model.currentWorkspaceNotice()
+        XCTAssertEqual(firstRemoteNotice?.severity, .success)
+        XCTAssertEqual(
+            firstRemoteNotice?.message,
+            "已为全部 2 个活跃来源排队更新。扫描期间仍可浏览已有索引。"
+        )
+        let firstRemoteNoticeID = try XCTUnwrap(firstRemoteNotice?.id)
+        model.dismissNotice()
+        await waitForCatalogScanToFinish(model)
+        await model.refreshAllSources()
+        let secondRemoteNotice = await model.currentWorkspaceNotice()
+        XCTAssertNotEqual(secondRemoteNotice?.id, firstRemoteNotice?.id)
+        let secondRemoteNoticeID = try XCTUnwrap(secondRemoteNotice?.id)
+
+        let staleDismissed = await model.dismissWorkspaceNotice(
+            noticeID: firstRemoteNoticeID
+        )
+        XCTAssertFalse(staleDismissed)
+        let noticeAfterStaleDismiss = await model.currentWorkspaceNotice()
+        XCTAssertEqual(noticeAfterStaleDismiss, secondRemoteNotice)
+
+        let currentDismissed = await model.dismissWorkspaceNotice(
+            noticeID: secondRemoteNoticeID
+        )
+        XCTAssertTrue(currentDismissed)
+        let noticeAfterCurrentDismiss = await model.currentWorkspaceNotice()
+        XCTAssertNil(noticeAfterCurrentDismiss)
     }
 
     func testBatchAccessAuthorizationProcessesEveryEligibleFolderSource() async {
@@ -8001,6 +8029,23 @@ final class LibraryWorkspaceModelTests: XCTestCase {
                 )
             )
         )
+        let remoteNotice = await model.currentWorkspaceNotice()
+        XCTAssertEqual(remoteNotice?.actions, [WorkspaceNoticeActionProjection(
+            id: "openRecycleBin",
+            kind: .openRecycleBin,
+            title: "前往回收站",
+            sourceID: sourceID
+        )])
+        let staleActionPerformed = await model.performWorkspaceNoticeAction(
+            noticeID: "stale",
+            actionID: "openRecycleBin"
+        )
+        XCTAssertFalse(staleActionPerformed)
+        let currentActionPerformed = await model.performWorkspaceNoticeAction(
+            noticeID: remoteNotice?.id ?? "",
+            actionID: "openRecycleBin"
+        )
+        XCTAssertTrue(currentActionPerformed)
     }
 
     func testSourceDeletionBlockedNoticeNamesEveryActionableClassAndStops() {
@@ -8291,6 +8336,17 @@ final class LibraryWorkspaceModelTests: XCTestCase {
             .tagBatchMutationApplied(count: 2, tagDisplayName: "Family", action: .accepted)
         )
         XCTAssertTrue(model.canUndoTagMutation)
+        let projectedNotice = await model.currentWorkspaceNotice()
+        let remoteNotice = try XCTUnwrap(projectedNotice)
+        XCTAssertEqual(remoteNotice.actions.map(\.kind), [.undoTagMutation])
+        let actionPerformed = await model.performWorkspaceNoticeAction(
+            noticeID: remoteNotice.id,
+            actionID: "undoTagMutation"
+        )
+        XCTAssertTrue(actionPerformed)
+        XCTAssertFalse(model.canUndoTagMutation)
+        let noticeAfterUndo = await model.currentWorkspaceNotice()
+        XCTAssertNil(noticeAfterUndo)
     }
 
     func testTypingSearchDebouncesToLatestText() async {

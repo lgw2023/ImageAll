@@ -84,6 +84,8 @@ struct ReviewQueueItemProjection: Identifiable, Equatable, Sendable {
     let rejectedTagCount: Int
     let suggestionOrigin: ReviewQueueSuggestionOrigin
     let score: Double
+    let width: Int?
+    let height: Int?
 
     init(
         assetID: UUID,
@@ -92,7 +94,9 @@ struct ReviewQueueItemProjection: Identifiable, Equatable, Sendable {
         acceptedTagCount: Int,
         rejectedTagCount: Int,
         suggestionOrigin: ReviewQueueSuggestionOrigin = .featurePrint,
-        score: Double = 0
+        score: Double = 0,
+        width: Int? = nil,
+        height: Int? = nil
     ) {
         self.assetID = assetID
         self.fileName = fileName
@@ -101,6 +105,8 @@ struct ReviewQueueItemProjection: Identifiable, Equatable, Sendable {
         self.rejectedTagCount = rejectedTagCount
         self.suggestionOrigin = suggestionOrigin
         self.score = score
+        self.width = width
+        self.height = height
     }
 
     var id: ReviewQueueItemID {

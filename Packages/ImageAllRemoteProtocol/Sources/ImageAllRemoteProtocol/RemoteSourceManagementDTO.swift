@@ -3,11 +3,17 @@ import Foundation
 public enum RemoteSourceManagementAction: String, Codable, Sendable, Equatable {
     case connectFolder
     case connectPhotos
+    case refreshAll
+    case prewarmAllThumbnails
+    case prewarmAllOriginalAspect
+    case reauthorizeAll
+    case refreshAllFolderMutationAuthorizations
     case rebindPhotos
     case reauthorize
     case rescan
     case syncPhotos
     case fullRepair
+    case openPhotosPrivacySettings
     case requestPhotosWriteAuthorization
     case refreshFolderMutationAuthorization
     case prewarmThumbnails
@@ -36,6 +42,10 @@ public struct RemoteSourceManagementRequestSnapshot: Codable, Sendable, Equatabl
     public let totalCount: Int?
     public let warmedCount: Int?
     public let failedCount: Int?
+    public let reusedCount: Int?
+    public let ineligibleCount: Int?
+    public let completedSourceCount: Int?
+    public let totalSourceCount: Int?
     public let updatedAtMs: Int64
 
     public init(
@@ -50,6 +60,10 @@ public struct RemoteSourceManagementRequestSnapshot: Codable, Sendable, Equatabl
         totalCount: Int? = nil,
         warmedCount: Int? = nil,
         failedCount: Int? = nil,
+        reusedCount: Int? = nil,
+        ineligibleCount: Int? = nil,
+        completedSourceCount: Int? = nil,
+        totalSourceCount: Int? = nil,
         updatedAtMs: Int64
     ) {
         self.id = id
@@ -63,6 +77,10 @@ public struct RemoteSourceManagementRequestSnapshot: Codable, Sendable, Equatabl
         self.totalCount = totalCount
         self.warmedCount = warmedCount
         self.failedCount = failedCount
+        self.reusedCount = reusedCount
+        self.ineligibleCount = ineligibleCount
+        self.completedSourceCount = completedSourceCount
+        self.totalSourceCount = totalSourceCount
         self.updatedAtMs = updatedAtMs
     }
 }

@@ -1717,7 +1717,7 @@ struct GRDBPersonalizationReviewRepository: Sendable {
         var sql = """
         WITH raw_suggestions AS (
             SELECT p.asset_id, p.score, 1 AS origin_rank, 'featurePrint' AS suggestion_origin,
-                a.file_name, a.availability
+                a.file_name, a.availability, a.width, a.height
             FROM prediction p
             JOIN tag_model m
                 ON m.media_kind = p.media_kind
@@ -1738,7 +1738,7 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                 AND d.asset_id IS NULL\(sourceClause)
             UNION ALL
             SELECT p.asset_id, p.score, 0 AS origin_rank, 'standardModel' AS suggestion_origin,
-                a.file_name, a.availability
+                a.file_name, a.availability, a.width, a.height
             FROM standard_prediction p
             JOIN ontology_pack pack
                 ON pack.standard_pack_id = p.standard_pack_id
@@ -1770,7 +1770,7 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                     WHEN p.method = 'personalAdamW' THEN 'personalAdamW'
                     ELSE 'personalModel'
                 END AS suggestion_origin,
-                a.file_name, a.availability
+                a.file_name, a.availability, a.width, a.height
             FROM personal_prediction p
             JOIN personal_suggestion_model m
                 ON m.media_kind = p.media_kind
@@ -1793,7 +1793,7 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                 AND d.asset_id IS NULL\(sourceClause)
         )
         SELECT r.asset_id, r.score, r.origin_rank, r.suggestion_origin,
-            r.file_name, r.availability,
+            r.file_name, r.availability, r.width, r.height,
             (
                 SELECT COUNT(*) FROM asset_tag_decision d
                 WHERE d.asset_id = r.asset_id AND d.decision = 'accepted'
@@ -1843,7 +1843,9 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                     suggestionOrigin: ReviewQueueSuggestionOrigin(
                         rawValue: row["suggestion_origin"]
                     ) ?? .featurePrint,
-                    score: row["score"]
+                    score: row["score"],
+                    width: row["width"],
+                    height: row["height"]
                 )
             }
             let items = Array(mapped.prefix(limit))

@@ -84,6 +84,83 @@ public struct RemoteAssetPendingSuggestion: Codable, Sendable, Equatable, Identi
     }
 }
 
+public enum RemoteAssetLocalSuggestionTrack: String, Codable, Sendable, Equatable {
+    case standard
+    case personal
+}
+
+public enum RemoteAssetLocalSuggestionState: String, Codable, Sendable, Equatable {
+    case results
+    case previewUnavailable
+    case personalUnavailable
+    case serviceUnavailable
+    case failed
+}
+
+public enum RemoteAssetLocalSuggestionRecommendation: String, Codable, Sendable, Equatable {
+    case suggested
+    case autoAssigned
+}
+
+/// A deliberately redacted local-model result for one asset. Scores, embeddings,
+/// model identities, paths, and catalog identifiers stay on the Mac Host.
+public struct RemoteAssetLocalSuggestion: Codable, Sendable, Equatable, Identifiable {
+    public let id: String
+    public let track: RemoteAssetLocalSuggestionTrack
+    public let tagID: UUID?
+    public let displayName: String
+    public let recommendation: RemoteAssetLocalSuggestionRecommendation
+
+    public init(
+        id: String,
+        track: RemoteAssetLocalSuggestionTrack,
+        tagID: UUID?,
+        displayName: String,
+        recommendation: RemoteAssetLocalSuggestionRecommendation
+    ) {
+        self.id = id
+        self.track = track
+        self.tagID = tagID
+        self.displayName = displayName
+        self.recommendation = recommendation
+    }
+}
+
+public struct RemoteAssetLocalSuggestionRequest: Codable, Sendable, Equatable {
+    public let operationID: UUID
+    public let track: RemoteAssetLocalSuggestionTrack
+
+    public init(operationID: UUID, track: RemoteAssetLocalSuggestionTrack) {
+        self.operationID = operationID
+        self.track = track
+    }
+}
+
+public struct RemoteAssetLocalSuggestionResponse: Codable, Sendable, Equatable {
+    public let operationID: UUID
+    public let assetID: UUID
+    public let track: RemoteAssetLocalSuggestionTrack
+    public let state: RemoteAssetLocalSuggestionState
+    public let suggestions: [RemoteAssetLocalSuggestion]
+    public let replayed: Bool
+
+    public init(
+        operationID: UUID,
+        assetID: UUID,
+        track: RemoteAssetLocalSuggestionTrack,
+        state: RemoteAssetLocalSuggestionState,
+        suggestions: [RemoteAssetLocalSuggestion],
+        replayed: Bool
+    ) {
+        self.operationID = operationID
+        self.assetID = assetID
+        self.track = track
+        self.state = state
+        self.suggestions = suggestions
+        self.replayed = replayed
+    }
+}
+
 public enum RemoteInspectorTagDecision: String, Codable, Sendable, Equatable {
     case unknown
     case accepted

@@ -347,6 +347,30 @@ final class JobStateTransitionTests: XCTestCase {
         XCTAssertEqual(item.kind, .librarySlimmingPurge)
     }
 
+    func testActivityProjectionPreservesSourceIdentity() throws {
+        let database = try CatalogDatabase.open(at: makeTempDatabaseURL())
+        let repository = CatalogRepository(database: database)
+        let queue = JobTestSupport.makeQueue(database: database)
+        let jobID = UUID()
+        let sourceID = UUID()
+
+        try DatabaseTestSupport.makeFolderSourceWithFileAsset(
+            repository: repository,
+            sourceID: sourceID
+        )
+
+        _ = try JobTestSupport.enqueueDefault(
+            queue: queue,
+            id: jobID,
+            kind: FolderReconcileJobFactory.kind,
+            sourceID: sourceID
+        )
+
+        let item = try XCTUnwrap(queue.fetchActivityItems().first { $0.id == jobID })
+        XCTAssertEqual(item.sourceID, sourceID)
+        XCTAssertEqual(item.kind, .folderReconcile)
+    }
+
     func testPendingRecycleExpiryActivityExplainsWhyItIsWaiting() {
         let item = JobActivityItem(
             id: UUID(),

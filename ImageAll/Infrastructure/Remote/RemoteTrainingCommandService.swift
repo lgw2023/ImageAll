@@ -120,6 +120,8 @@ final class RemoteTrainingActivityStore: @unchecked Sendable {
 }
 
 actor RemoteTrainingCommandService: RemoteTrainingCommandPort {
+    private static let assetLocalSuggestionReplayLimit = 64
+
     private struct SampleRevision: Hashable, Sendable {
         let assetID: UUID
         let contentRevision: Int
@@ -128,6 +130,11 @@ actor RemoteTrainingCommandService: RemoteTrainingCommandPort {
     private struct AcceptedOperation: Sendable {
         let command: TrainingLaunchCommand
         let receipt: TrainingLaunchReceipt
+    }
+
+    private struct AcceptedAssetLocalSuggestionOperation: Sendable {
+        let command: AssetLocalSuggestionCommand
+        let snapshot: AssetLocalSuggestionSnapshot
     }
 
     private struct EmbeddingRevision: Sendable {
@@ -151,6 +158,10 @@ actor RemoteTrainingCommandService: RemoteTrainingCommandPort {
     private let trainingActivityStore: RemoteTrainingActivityStore?
 
     private var acceptedOperations: [UUID: AcceptedOperation] = [:]
+    private var acceptedAssetLocalSuggestionCommands: [UUID: AssetLocalSuggestionCommand] = [:]
+    private var acceptedAssetLocalSuggestionOperations:
+        [UUID: AcceptedAssetLocalSuggestionOperation] = [:]
+    private var acceptedAssetLocalSuggestionOperationOrder: [UUID] = []
     private var activitiesByOperationID: [UUID: TrainingCommandActivitySnapshot] = [:]
     private var personalTasks: [UUID: Task<Void, Never>] = [:]
     private var activePersonalMethods: Set<TrainingRunMethod> = []
@@ -213,6 +224,199 @@ actor RemoteTrainingCommandService: RemoteTrainingCommandPort {
         activitiesByOperationID = restoredActivities.reduce(into: [:]) {
             $0[$1.operationID] = $1
         }
+    }
+
+    func assetLocalSuggestions(
+        _ command: AssetLocalSuggestionCommand
+    ) async throws -> AssetLocalSuggestionSnapshot {
+        if let accepted = acceptedAssetLocalSuggestionOperations[command.operationID] {
+            guard accepted.command == command else {
+                throw TrainingCommandError.activeConflict
+            }
+            return AssetLocalSuggestionSnapshot(
+                operationID: accepted.snapshot.operationID,
+                assetID: accepted.snapshot.assetID,
+                track: accepted.snapshot.track,
+                state: accepted.snapshot.state,
+                suggestions: accepted.snapshot.suggestions,
+                replayed: true
+            )
+        }
+        if let acceptedCommand = acceptedAssetLocalSuggestionCommands[command.operationID] {
+            guard acceptedCommand == command else {
+                throw TrainingCommandError.activeConflict
+            }
+            // The same request is still awaiting the local model. Do not invoke it twice.
+            throw TrainingCommandError.activeConflict
+        }
+        acceptedAssetLocalSuggestionCommands[command.operationID] = command
+        do {
+            let snapshot = try await generateAssetLocalSuggestions(command)
+            acceptedAssetLocalSuggestionCommands.removeValue(forKey: command.operationID)
+            retainAssetLocalSuggestionOperation(
+                AcceptedAssetLocalSuggestionOperation(command: command, snapshot: snapshot)
+            )
+            return snapshot
+        } catch {
+            acceptedAssetLocalSuggestionCommands.removeValue(forKey: command.operationID)
+            throw error
+        }
+    }
+
+    private func retainAssetLocalSuggestionOperation(
+        _ accepted: AcceptedAssetLocalSuggestionOperation
+    ) {
+        let operationID = accepted.command.operationID
+        acceptedAssetLocalSuggestionOperations[operationID] = accepted
+        acceptedAssetLocalSuggestionOperationOrder.removeAll { $0 == operationID }
+        acceptedAssetLocalSuggestionOperationOrder.append(operationID)
+
+        let overflow = acceptedAssetLocalSuggestionOperationOrder.count
+            - Self.assetLocalSuggestionReplayLimit
+        guard overflow > 0 else { return }
+        for expiredOperationID in acceptedAssetLocalSuggestionOperationOrder.prefix(overflow) {
+            acceptedAssetLocalSuggestionOperations.removeValue(forKey: expiredOperationID)
+        }
+        acceptedAssetLocalSuggestionOperationOrder.removeFirst(overflow)
+    }
+
+    private func generateAssetLocalSuggestions(
+        _ command: AssetLocalSuggestionCommand
+    ) async throws -> AssetLocalSuggestionSnapshot {
+        guard let runtime = localModelSuggestions else {
+            return assetLocalSuggestionSnapshot(command, state: .serviceUnavailable)
+        }
+
+        do {
+            let requestedDetail = try catalog.fetchInspectorDetail(assetID: command.assetID)
+            guard requestedDetail.assetID == command.assetID,
+                  requestedDetail.mediaKind == .image,
+                  requestedDetail.contentRevision > 0
+            else {
+                throw TrainingCommandError.invalidSelection
+            }
+
+            let imageData: Data
+            let suggestions: [LocalModelSuggestion]
+            switch command.track {
+            case .standard:
+                let availability = try await runtime.client.standardCapability()
+                guard case let .available(capability) = availability else {
+                    return assetLocalSuggestionSnapshot(command, state: .serviceUnavailable)
+                }
+                let package = try Self.approvedStandardPackage(for: capability)
+                try catalog.installStandardOntologyPackage(package)
+                imageData = try await catalog.loadPreview(assetID: command.assetID)
+                suggestions = try await runtime.client.suggestions(
+                    imageData: imageData,
+                    requestID: command.operationID.uuidString.lowercased(),
+                    target: .standard(capability.target)
+                )
+                let currentDetail = try catalog.fetchInspectorDetail(assetID: command.assetID)
+                guard currentDetail.assetID == command.assetID,
+                      currentDetail.contentRevision == requestedDetail.contentRevision
+                else {
+                    throw LocalModelSuggestionClientError.identityMismatch
+                }
+                _ = try review.replaceStandardSuggestions(
+                    assetID: command.assetID,
+                    contentRevision: requestedDetail.contentRevision,
+                    suggestions: suggestions,
+                    expectedTarget: capability.target
+                )
+                let namesByConceptID = Dictionary(uniqueKeysWithValues: package.concepts.map {
+                    ($0.conceptID, $0.canonicalName)
+                })
+                let items = try suggestions.map { suggestion in
+                    guard suggestion.track == .standard,
+                          suggestion.score.isFinite,
+                          suggestion.tagID == nil,
+                          let conceptID = suggestion.conceptID,
+                          let displayName = namesByConceptID[conceptID]
+                    else {
+                        throw LocalModelSuggestionClientError.identityMismatch
+                    }
+                    return AssetLocalSuggestionItem(
+                        id: "standard|\(conceptID)",
+                        track: .standard,
+                        tagID: nil,
+                        displayName: displayName,
+                        recommendation: suggestion.recommendedState
+                    )
+                }
+                return assetLocalSuggestionSnapshot(command, suggestions: items)
+
+            case .personal:
+                let availability = try await runtime.client.personalCapability()
+                guard case let .available(capability) = availability else {
+                    return assetLocalSuggestionSnapshot(command, state: .personalUnavailable)
+                }
+                let activeTags = try catalog.listTags().filter { $0.state == .active }
+                let activeTagIDs = Set(activeTags.map(\.id))
+                try Self.validatePersonalCapability(
+                    capability,
+                    catalogScopeID: runtime.catalogScopeID,
+                    mediaKind: .image,
+                    activeTagIDs: activeTagIDs
+                )
+                imageData = try await catalog.loadPreview(assetID: command.assetID)
+                suggestions = try await runtime.client.suggestions(
+                    imageData: imageData,
+                    requestID: command.operationID.uuidString.lowercased(),
+                    target: .personal(capability.target)
+                )
+                _ = try Self.personalPredictions(
+                    suggestions,
+                    capability: capability,
+                    activeTagIDs: activeTagIDs
+                )
+                let namesByTagID = Dictionary(uniqueKeysWithValues: activeTags.map {
+                    ($0.id, $0.displayName)
+                })
+                let items = try suggestions.map { suggestion in
+                    guard let tagID = suggestion.tagID,
+                          let displayName = namesByTagID[tagID]
+                    else {
+                        throw LocalModelSuggestionClientError.identityMismatch
+                    }
+                    return AssetLocalSuggestionItem(
+                        id: "personal|\(tagID.uuidString.lowercased())",
+                        track: .personal,
+                        tagID: tagID,
+                        displayName: displayName,
+                        recommendation: suggestion.recommendedState
+                    )
+                }
+                return assetLocalSuggestionSnapshot(command, suggestions: items)
+            }
+        } catch PhotosLibraryError.cloudOnly {
+            return assetLocalSuggestionSnapshot(command, state: .previewUnavailable)
+        } catch LocalModelSuggestionClientError.serviceUnavailable {
+            return assetLocalSuggestionSnapshot(command, state: .serviceUnavailable)
+        } catch let LocalModelSuggestionClientError.rejected(statusCode, _)
+            where statusCode == 503
+        {
+            return assetLocalSuggestionSnapshot(command, state: .serviceUnavailable)
+        } catch TrainingCommandError.invalidSelection {
+            throw TrainingCommandError.invalidSelection
+        } catch {
+            return assetLocalSuggestionSnapshot(command, state: .failed)
+        }
+    }
+
+    private func assetLocalSuggestionSnapshot(
+        _ command: AssetLocalSuggestionCommand,
+        state: AssetLocalSuggestionState = .results,
+        suggestions: [AssetLocalSuggestionItem] = []
+    ) -> AssetLocalSuggestionSnapshot {
+        AssetLocalSuggestionSnapshot(
+            operationID: command.operationID,
+            assetID: command.assetID,
+            track: command.track,
+            state: state,
+            suggestions: suggestions,
+            replayed: false
+        )
     }
 
     func librarySuggestions(
@@ -441,6 +645,47 @@ actor RemoteTrainingCommandService: RemoteTrainingCommandPort {
               Set(capability.tagIDs).isSubset(of: activeTagIDs)
         else {
             throw LocalModelSuggestionClientError.identityMismatch
+        }
+    }
+
+    private static func personalPredictions(
+        _ suggestions: [LocalModelSuggestion],
+        capability: PersonalModelSuggestionCapability,
+        activeTagIDs: Set<UUID>
+    ) throws -> [PersonalSuggestionPrediction] {
+        let tagIDs = suggestions.compactMap(\.tagID)
+        guard tagIDs.count == suggestions.count,
+              Set(tagIDs).count == tagIDs.count,
+              suggestions.allSatisfy({ suggestion in
+                  guard let tagID = suggestion.tagID else { return false }
+                  return suggestion.score.isFinite
+                      && suggestion.track == .personal
+                      && suggestion.conceptID == nil
+                      && suggestion.recommendedState == .suggested
+                      && capability.tagIDs.contains(tagID)
+                      && activeTagIDs.contains(tagID)
+                      && suggestion.catalogScopeID == capability.target.catalogScopeID
+                      && suggestion.bundleID == capability.target.bundleID
+                      && suggestion.bundleRevision == capability.target.bundleRevision
+                      && suggestion.provider == capability.target.provider
+                      && suggestion.modelID == capability.target.modelID
+                      && suggestion.modelRevision == capability.target.modelRevision
+                      && suggestion.preprocessingRevision == capability.target.preprocessingRevision
+                      && suggestion.elementCount == capability.target.elementCount
+                      && suggestion.labelVocabularyRevision
+                          == capability.target.labelVocabularyRevision
+                      && suggestion.weightsSHA256 == capability.target.weightsSHA256
+                      && suggestion.policyRevision == capability.target.policyRevision
+                      && suggestion.standardPackID == nil
+                      && suggestion.standardPackRevision == nil
+              })
+        else {
+            throw LocalModelSuggestionClientError.identityMismatch
+        }
+        return suggestions.compactMap { suggestion in
+            suggestion.tagID.map {
+                PersonalSuggestionPrediction(tagID: $0, score: suggestion.score)
+            }
         }
     }
 

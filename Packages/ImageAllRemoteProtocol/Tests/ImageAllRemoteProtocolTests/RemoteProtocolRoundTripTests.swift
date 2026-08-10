@@ -122,6 +122,7 @@ final class RemoteProtocolRoundTripTests: XCTestCase {
             RemoteAssetPageRequest().sort,
             .fileNameAscending
         )
+        XCTAssertNil(RemoteAssetPageRequest().worldMapSelection)
     }
 
     private let encoder: JSONEncoder = {
@@ -142,6 +143,32 @@ final class RemoteProtocolRoundTripTests: XCTestCase {
             certificateFingerprintSHA256: "deadbeef"
         )
         try assertRoundTrip(original)
+    }
+
+    func testCloudPreviewLifecycleRoundTrip() throws {
+        let operationID = UUID()
+        let assetID = UUID()
+        try assertRoundTrip(RemoteCloudPreviewStartRequest(operationID: operationID))
+        try assertRoundTrip(RemoteCloudPreviewCancelRequest(operationID: operationID))
+        try assertRoundTrip(RemoteCloudPreviewSnapshot(
+            operationID: operationID,
+            assetID: assetID,
+            phase: .downloading,
+            progress: 0.42,
+            message: nil,
+            updatedAtMs: 1_700_000_000_000
+        ))
+        XCTAssertTrue(RemoteCapability.allCases.contains(.cloudPreviewLifecycle))
+        XCTAssertEqual(
+            RemoteCloudPreviewSnapshot(
+                operationID: operationID,
+                assetID: assetID,
+                phase: .completed,
+                progress: 2,
+                updatedAtMs: 1_700_000_000_001
+            ).progress,
+            1
+        )
     }
 
     func testCreateTagAndApplyRoundTrip() throws {
@@ -170,9 +197,12 @@ final class RemoteProtocolRoundTripTests: XCTestCase {
 
     func testJobNavigationAndFailureSummaryRoundTrip() throws {
         let jobID = UUID()
+        let sourceID = UUID()
         try assertRoundTrip(
             RemoteJobSummary(
                 id: jobID,
+                sourceID: sourceID,
+                sourceDisplayName: "旅行照片",
                 kind: .librarySlimmingAnalysis,
                 state: .retryableFailed,
                 progress: RemoteJobProgress(completedUnitCount: 8, totalUnitCount: 12),
@@ -188,6 +218,24 @@ final class RemoteProtocolRoundTripTests: XCTestCase {
                 )
             )
         )
+
+        let legacyJSON = try XCTUnwrap(
+            """
+            {
+              "id":"\(jobID.uuidString)",
+              "kind":"folderReconcile",
+              "state":"running",
+              "progress":{"completedUnitCount":12,"totalUnitCount":20},
+              "availableActions":["cancel"],
+              "controlRequest":"none",
+              "attempts":1,
+              "maxAttempts":3
+            }
+            """.data(using: .utf8)
+        )
+        let legacy = try decoder.decode(RemoteJobSummary.self, from: legacyJSON)
+        XCTAssertNil(legacy.sourceID)
+        XCTAssertNil(legacy.sourceDisplayName)
     }
 
     func testTagManagementAndUndoRoundTrip() throws {
@@ -448,7 +496,7 @@ final class RemoteProtocolRoundTripTests: XCTestCase {
         XCTAssertEqual(request.mediaKind, .image)
     }
 
-    func testReviewQueueItemFavoriteRoundTripAndLegacyFallback() throws {
+    func testReviewQueueItemLayoutAndFavoriteRoundTripWithLegacyFallback() throws {
         let assetID = UUID(uuidString: "33333333-3333-3333-3333-333333333333")!
         let item = RemoteReviewQueueItem(
             assetID: assetID,
@@ -458,6 +506,8 @@ final class RemoteProtocolRoundTripTests: XCTestCase {
             rejectedTagCount: 0,
             suggestionOrigin: .personalModel,
             score: 0.82,
+            width: 4_032,
+            height: 3_024,
             favorite: RemoteAssetFavoriteState(
                 assetID: assetID,
                 isFavorite: true,
@@ -483,6 +533,8 @@ final class RemoteProtocolRoundTripTests: XCTestCase {
                 """.utf8
             )
         )
+        XCTAssertNil(legacy.width)
+        XCTAssertNil(legacy.height)
         XCTAssertNil(legacy.favorite)
     }
 
@@ -526,11 +578,40 @@ final class RemoteProtocolRoundTripTests: XCTestCase {
                 isFavorite: true,
                 photosObservedValue: true,
                 syncStatus: .synced
-            )
+            ),
+            relativePath: "Trips/CAT_0001.JPG",
+            mediaModifiedAtMs: 1_700_000_100_000,
+            durationMs: 12_345
         )
         let original = RemoteAssetPage(items: [item], nextCursor: "cursor-1")
         try assertRoundTrip(original)
         XCTAssertEqual(original.items.first?.favorite?.syncStatus, .synced)
+    }
+
+    func testLegacyAssetSummaryDecodesWithoutHoverFacts() throws {
+        let payload = Data(
+            #"""
+            {
+              "id": "22222222-2222-2222-2222-222222222222",
+              "sourceID": "11111111-1111-1111-1111-111111111111",
+              "sourceName": "Archive",
+              "fileName": "a.jpg",
+              "mediaType": "image",
+              "availability": "available",
+              "contentRevision": 3,
+              "acceptedTagCount": 1,
+              "rejectedTagCount": 0,
+              "mediaCreatedAtMs": 1700000000000,
+              "width": 4000,
+              "height": 3000
+            }
+            """#.utf8
+        )
+
+        let legacy = try decoder.decode(RemoteAssetSummary.self, from: payload)
+        XCTAssertNil(legacy.relativePath)
+        XCTAssertNil(legacy.mediaModifiedAtMs)
+        XCTAssertNil(legacy.durationMs)
     }
 
     func testAdvancedAssetPageRequestRoundTrip() throws {
@@ -548,7 +629,19 @@ final class RemoteProtocolRoundTripTests: XCTestCase {
             mediaKinds: [.image],
             mediaTypes: ["public.jpeg"],
             tagPresence: .tagged,
-            favorite: .favorited
+            favorite: .favorited,
+            worldMapSelection: RemoteWorldMapSelectionQuery(
+                cellDegrees: 0.25,
+                longitudeBucket: 1_205,
+                latitudeBucket: 485,
+                bounds: RemoteWorldMapBounds(
+                    west: 118,
+                    south: 30,
+                    east: 123,
+                    north: 33
+                ),
+                maximumAssets: 36
+            )
         )
         try assertRoundTrip(original)
     }
@@ -639,6 +732,43 @@ final class RemoteProtocolRoundTripTests: XCTestCase {
         )
         XCTAssertNil(legacy.pendingSuggestions)
         XCTAssertNil(legacy.favorite)
+    }
+
+    func testAssetLocalSuggestionRoundTripKeepsModelInternalsRedacted() throws {
+        let operationID = UUID(uuidString: "24444444-4444-4444-4444-444444444444")!
+        let assetID = UUID(uuidString: "25555555-5555-5555-5555-555555555555")!
+        let tagID = UUID(uuidString: "26666666-6666-6666-6666-666666666666")!
+        let request = RemoteAssetLocalSuggestionRequest(
+            operationID: operationID,
+            track: .personal
+        )
+        let response = RemoteAssetLocalSuggestionResponse(
+            operationID: operationID,
+            assetID: assetID,
+            track: .personal,
+            state: .results,
+            suggestions: [
+                RemoteAssetLocalSuggestion(
+                    id: "personal|\(tagID.uuidString.lowercased())",
+                    track: .personal,
+                    tagID: tagID,
+                    displayName: "猫",
+                    recommendation: .suggested
+                ),
+            ],
+            replayed: false
+        )
+
+        try assertRoundTrip(request)
+        try assertRoundTrip(response)
+
+        let json = try XCTUnwrap(String(data: encoder.encode(response), encoding: .utf8))
+        for forbiddenField in [
+            "score", "embedding", "weightsSHA256", "modelID", "relativePath", "catalogScopeID",
+        ] {
+            XCTAssertFalse(json.contains(forbiddenField))
+        }
+        XCTAssertTrue(json.contains("\"displayName\":\"猫\""))
     }
 
     func testTrainingWorkspaceRoundTripPreservesRunLedgerAndSlots() throws {
@@ -1126,12 +1256,78 @@ final class RemoteProtocolRoundTripTests: XCTestCase {
                 RemoteLibrarySlimmingSourceOption(
                     id: sourceID,
                     displayName: "Apple Photos",
-                    kind: .photos
+                    kind: .photos,
+                    similarityIndex: RemoteLibrarySlimmingSourceIndexStatus(
+                        state: .ready,
+                        assetCount: 640,
+                        indexedCount: 640,
+                        clusterCount: 48,
+                        pendingCount: 0,
+                        updatedAtMs: 1_700_000_003_000
+                    )
                 ),
             ],
             thresholds: thresholds,
-            factoryThresholds: thresholds
+            factoryThresholds: thresholds,
+            sourceSimilarityIndexAvailable: true
         ))
+        let maintenanceSetup = RemoteLibrarySlimmingSetupSnapshot(
+            mediaKind: .image,
+            sources: [
+                RemoteLibrarySlimmingSourceOption(
+                    id: sourceID,
+                    displayName: "Apple Photos",
+                    kind: .photos,
+                    similarityIndex: RemoteLibrarySlimmingSourceIndexStatus(
+                        state: .building,
+                        assetCount: 640,
+                        indexedCount: 96,
+                        clusterCount: 0,
+                        pendingCount: 544,
+                        updatedAtMs: 1_700_000_003_500
+                    )
+                ),
+            ],
+            thresholds: thresholds,
+            factoryThresholds: thresholds,
+            sourceSimilarityIndexAvailable: true
+        )
+        try assertRoundTrip(RemoteLibrarySlimmingSourceMaintenanceRequest(
+            operationID: operationID,
+            action: .initializeSimilarityIndex,
+            mediaKind: .image,
+            sourceIDs: [sourceID]
+        ))
+        try assertRoundTrip(RemoteLibrarySlimmingSourceMaintenanceResponse(
+            operationID: operationID,
+            action: .initializeSimilarityIndex,
+            mediaKind: .image,
+            sourceIDs: [sourceID],
+            setup: maintenanceSetup,
+            replayed: false
+        ))
+        let legacySource = try JSONDecoder().decode(
+            RemoteLibrarySlimmingSourceOption.self,
+            from: Data(
+                """
+                {"id":"\(sourceID.uuidString)","displayName":"Legacy","kind":"folder"}
+                """.utf8
+            )
+        )
+        XCTAssertNil(legacySource.similarityIndex)
+        let legacySetupData = try JSONEncoder().encode(
+            RemoteLibrarySlimmingSetupSnapshot(
+                mediaKind: .image,
+                sources: [legacySource],
+                thresholds: thresholds,
+                factoryThresholds: thresholds
+            )
+        )
+        let legacySetup = try JSONDecoder().decode(
+            RemoteLibrarySlimmingSetupSnapshot.self,
+            from: legacySetupData
+        )
+        XCTAssertNil(legacySetup.sourceSimilarityIndexAvailable)
         let filter = RemoteAssetPageRequest(
             sourceIDs: [sourceID],
             searchText: "猫",
@@ -1176,6 +1372,8 @@ final class RemoteProtocolRoundTripTests: XCTestCase {
         try assertRoundTrip(RemoteLibrarySlimmingRecycleScope.attention)
         let entryID = UUID(uuidString: "88888888-bbbb-cccc-dddd-888888888888")!
         let assetID = UUID(uuidString: "99999999-bbbb-cccc-dddd-999999999999")!
+        let recoveryEntryID = UUID(uuidString: "77777777-bbbb-cccc-dddd-777777777777")!
+        let recoveryAssetID = UUID(uuidString: "66666666-bbbb-cccc-dddd-666666666666")!
         let sourceID = UUID(uuidString: "aaaaaaaa-bbbb-cccc-dddd-aaaaaaaaaaaa")!
         let operationID = UUID(uuidString: "bbbbbbbb-bbbb-cccc-dddd-bbbbbbbbbbbb")!
         let request = RemoteLibrarySlimmingRecycleRequestSnapshot(
@@ -1205,14 +1403,35 @@ final class RemoteProtocolRoundTripTests: XCTestCase {
                     errorCode: nil,
                     resolution: .restoreOrPurge,
                     availableActions: [.restore, .purge],
+                    stateMessage: "可恢复",
+                    policyMessage: "可恢复到原位置",
                     favorite: RemoteAssetFavoriteState(
                         assetID: assetID,
                         isFavorite: false,
                         syncStatus: .localOnly
                     )
                 ),
+                RemoteLibrarySlimmingRecycleEntry(
+                    id: recoveryEntryID,
+                    assetID: recoveryAssetID,
+                    sourceID: sourceID,
+                    sourceDisplayName: "Archive",
+                    sourceKind: .file,
+                    mediaKind: .image,
+                    fileName: "CHANGED.JPG",
+                    trashedAtMs: 1_700_000_000_000,
+                    purgeAfterMs: 1_702_592_000_000,
+                    state: .failed,
+                    errorCode: "sourceChanged",
+                    problem: .sourceChanged,
+                    resolution: .refreshSourceBeforeRetry,
+                    availableActions: [],
+                    stateMessage: "来源文件已变化，已停止处理以避免误删",
+                    policyMessage: "原文件未删除；刷新来源并重新分析后再试",
+                    explanationMessage: "请刷新来源、等待完成、重新分析后再试。"
+                ),
             ],
-            totalCount: 1,
+            totalCount: 2,
             requests: [request],
             scopeCounts: RemoteLibrarySlimmingRecycleScopeCounts(
                 all: 4,
@@ -1239,6 +1458,10 @@ final class RemoteProtocolRoundTripTests: XCTestCase {
             )
         )
         XCTAssertNil(legacyEntry.favorite)
+        XCTAssertNil(legacyEntry.problem)
+        XCTAssertNil(legacyEntry.stateMessage)
+        XCTAssertNil(legacyEntry.policyMessage)
+        XCTAssertNil(legacyEntry.explanationMessage)
         try assertRoundTrip(RemoteLibrarySlimmingRecycleSubmitRequest(
             operationID: operationID,
             entryID: entryID,
@@ -1308,20 +1531,37 @@ final class RemoteProtocolRoundTripTests: XCTestCase {
             jobID: jobID,
             mediaKind: .image
         ))
-        try assertRoundTrip(RemoteLibrarySlimmingIdenticalCleanupPlanSnapshot(
+        let plan = RemoteLibrarySlimmingIdenticalCleanupPlanSnapshot(
             id: planID,
             jobID: jobID,
             mediaKind: .image,
             groupCount: 3,
             verifiedAssetCount: 8,
             retainedAssetCount: 3,
+            favoriteRetainedAssetCount: 1,
+            ordinaryRetainedAssetCount: 2,
+            protectedSkippedAssetCount: 2,
             removalAssetCount: 5,
             skippedGroupCount: 1,
             photosAssetCount: 2,
             fileAssetCount: 3,
             groupSizeHistogram: [2: 2, 4: 1],
             preparedAtMs: 1_700_000_007_000
-        ))
+        )
+        try assertRoundTrip(plan)
+        var legacyPlanObject = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: JSONEncoder().encode(plan)) as? [String: Any]
+        )
+        legacyPlanObject.removeValue(forKey: "favoriteRetainedAssetCount")
+        legacyPlanObject.removeValue(forKey: "ordinaryRetainedAssetCount")
+        legacyPlanObject.removeValue(forKey: "protectedSkippedAssetCount")
+        let legacyPlan = try JSONDecoder().decode(
+            RemoteLibrarySlimmingIdenticalCleanupPlanSnapshot.self,
+            from: JSONSerialization.data(withJSONObject: legacyPlanObject)
+        )
+        XCTAssertNil(legacyPlan.favoriteRetainedAssetCount)
+        XCTAssertNil(legacyPlan.ordinaryRetainedAssetCount)
+        XCTAssertNil(legacyPlan.protectedSkippedAssetCount)
         try assertRoundTrip(RemoteLibrarySlimmingIdenticalCleanupSubmitRequest(
             operationID: operationID,
             planID: planID,
@@ -1335,6 +1575,7 @@ final class RemoteProtocolRoundTripTests: XCTestCase {
             mediaKind: .image,
             mode: .releaseSourceSpace,
             phase: .completed,
+            executionStage: .verifyingResult,
             progress: RemoteLibrarySlimmingRemovalProgress(
                 phase: .completedAsset,
                 completedAssetCount: 5,
@@ -1363,6 +1604,15 @@ final class RemoteProtocolRoundTripTests: XCTestCase {
             mediaKind: .image,
             requests: [request]
         ))
+        var legacyRequestObject = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: JSONEncoder().encode(request)) as? [String: Any]
+        )
+        legacyRequestObject.removeValue(forKey: "executionStage")
+        let legacyRequest = try JSONDecoder().decode(
+            RemoteLibrarySlimmingIdenticalCleanupRequestSnapshot.self,
+            from: JSONSerialization.data(withJSONObject: legacyRequestObject)
+        )
+        XCTAssertNil(legacyRequest.executionStage)
     }
 
     func testAPIErrorRoundTrip() throws {
@@ -1387,6 +1637,10 @@ final class RemoteProtocolRoundTripTests: XCTestCase {
             totalCount: 20,
             warmedCount: 7,
             failedCount: 1,
+            reusedCount: 5,
+            ineligibleCount: 2,
+            completedSourceCount: 1,
+            totalSourceCount: 3,
             updatedAtMs: 1_700_000_005_000
         )
         try assertRoundTrip(RemoteSourceManagementSnapshot(
@@ -1408,7 +1662,37 @@ final class RemoteProtocolRoundTripTests: XCTestCase {
         ))
         try assertRoundTrip(RemoteSourceManagementSubmitRequest(
             operationID: UUID(),
+            action: .refreshAll,
+            sourceID: nil
+        ))
+        try assertRoundTrip(RemoteSourceManagementSubmitRequest(
+            operationID: UUID(),
+            action: .prewarmAllThumbnails,
+            sourceID: nil
+        ))
+        try assertRoundTrip(RemoteSourceManagementSubmitRequest(
+            operationID: UUID(),
+            action: .prewarmAllOriginalAspect,
+            sourceID: nil
+        ))
+        try assertRoundTrip(RemoteSourceManagementSubmitRequest(
+            operationID: UUID(),
+            action: .reauthorizeAll,
+            sourceID: nil
+        ))
+        try assertRoundTrip(RemoteSourceManagementSubmitRequest(
+            operationID: UUID(),
+            action: .refreshAllFolderMutationAuthorizations,
+            sourceID: nil
+        ))
+        try assertRoundTrip(RemoteSourceManagementSubmitRequest(
+            operationID: UUID(),
             action: .cancelPrewarm,
+            sourceID: sourceID
+        ))
+        try assertRoundTrip(RemoteSourceManagementSubmitRequest(
+            operationID: UUID(),
+            action: .openPhotosPrivacySettings,
             sourceID: sourceID
         ))
         try assertRoundTrip(RemoteSourceManagementSubmitRequest(
@@ -1633,6 +1917,51 @@ final class RemoteProtocolRoundTripTests: XCTestCase {
             operationID: operationID,
             action: .exportPortableData
         ))
+    }
+
+    func testWorkspaceNoticeProjectionAndDismissRoundTrip() throws {
+        let sourceID = UUID()
+        let notice = RemoteWorkspaceNotice(
+            id: "42",
+            severity: .warning,
+            message: "后台扫描未完成，已索引的照片仍可继续浏览。",
+            actions: [RemoteWorkspaceNoticeAction(
+                id: "openRecycleBin",
+                kind: .openRecycleBin,
+                title: "前往回收站",
+                sourceID: sourceID
+            )]
+        )
+        try assertRoundTrip(RemoteWorkspaceNoticeSnapshot(notice: notice))
+        try assertRoundTrip(RemoteWorkspaceNoticeSnapshot(notice: nil))
+        try assertRoundTrip(RemoteWorkspaceNoticeDismissRequest(noticeID: notice.id))
+        try assertRoundTrip(RemoteWorkspaceNoticeDismissResponse(
+            dismissed: true,
+            notice: nil
+        ))
+        try assertRoundTrip(RemoteWorkspaceNoticeActionRequest(
+            noticeID: notice.id,
+            actionID: "openRecycleBin"
+        ))
+        try assertRoundTrip(RemoteWorkspaceNoticeActionResponse(
+            performed: true,
+            notice: notice
+        ))
+        let legacyNotice = try decoder.decode(
+            RemoteWorkspaceNotice.self,
+            from: Data(#"{"id":"legacy","severity":"information","message":"旧版提示"}"#.utf8)
+        )
+        XCTAssertEqual(legacyNotice.actions, [])
+        XCTAssertTrue(RemoteCapability.allCases.contains(.workspaceNotices))
+        XCTAssertEqual(RemoteHTTPPaths.workspaceNotice, "/v1/workspace-notice")
+        XCTAssertEqual(
+            RemoteHTTPPaths.workspaceNoticeDismiss,
+            "/v1/workspace-notice/dismiss"
+        )
+        XCTAssertEqual(
+            RemoteHTTPPaths.workspaceNoticeAction,
+            "/v1/workspace-notice/action"
+        )
     }
 
     private func assertRoundTrip<T: Codable & Equatable>(_ value: T) throws {

@@ -28,6 +28,12 @@ def main():
     tags = []
     preset_requests = []
     source_requests = []
+    notice_dismissals = []
+    workspace_notice = [{
+        "id": "notice-1",
+        "severity": "warning",
+        "message": "后台扫描未完成，已索引的照片仍可继续浏览。",
+    }]
     console_errors = []
     page_errors = []
 
@@ -78,8 +84,43 @@ def main():
                     "hostID": "cccccccc-1111-2222-3333-cccccccccccc",
                     "hostDisplayName": "Synthetic Mac",
                     "hostAppVersion": "test",
+                    "capabilities": ["workspaceNotices"],
                 },
             ),
+        )
+
+        page.route(
+            "**/v1/workspace-notice",
+            lambda route: fulfill_json(route, {"notice": workspace_notice[0]}),
+        )
+
+        def route_workspace_notice_dismiss(route):
+            payload = route.request.post_data_json
+            notice_dismissals.append(payload)
+            if len(notice_dismissals) == 1:
+                workspace_notice[0] = {
+                    "id": "notice-2",
+                    "severity": "success",
+                    "message": "已开始增量同步 Apple Photos。",
+                }
+                fulfill_json(route, {
+                    "dismissed": False,
+                    "notice": workspace_notice[0],
+                })
+                return
+            dismissed = workspace_notice[0] is not None and (
+                workspace_notice[0]["id"] == payload["noticeID"]
+            )
+            if dismissed:
+                workspace_notice[0] = None
+            fulfill_json(route, {
+                "dismissed": dismissed,
+                "notice": workspace_notice[0],
+            })
+
+        page.route(
+            "**/v1/workspace-notice/dismiss",
+            route_workspace_notice_dismiss,
         )
         page.route("**/v1/sources", lambda route: fulfill_json(route, []))
         page.route("**/v1/tags", lambda route: fulfill_json(route, list(tags)))
@@ -194,19 +235,83 @@ def main():
 
         page.goto(BASE_URL, wait_until="networkidle")
         page.locator("#emptyState:not(.hidden)").wait_for()
+        page.locator("#workspaceNoticeBanner:not(.hidden)").wait_for(state="visible")
+        assert page.locator("#workspaceNoticeBanner").get_attribute("data-severity") == "warning"
+        assert page.locator("#workspaceNoticeMessage").inner_text() == (
+            "后台扫描未完成，已索引的照片仍可继续浏览。"
+        )
+        page.locator("#dismissWorkspaceNoticeButton").click()
+        page.wait_for_function(
+            "() => document.querySelector('#workspaceNoticeMessage').textContent.includes('增量同步')"
+        )
+        assert notice_dismissals[-1]["noticeID"] == "notice-1"
+        assert page.locator("#workspaceNoticeBanner").get_attribute("data-severity") == "success"
+        page.locator("#dismissWorkspaceNoticeButton").click()
+        page.locator("#workspaceNoticeBanner.hidden").wait_for(state="attached")
+        assert notice_dismissals[-1]["noticeID"] == "notice-2"
         assert page.locator("#emptyStateTitle").inner_text() == "开始建立你的照片资料库"
         assert page.locator("#emptyStateActions:not(.hidden) button:not(.hidden)").count() == 3
         assert page.locator("#sidebarInstallPresetTagsButton").is_visible()
+        assert page.locator("#sidebarConnectFolderButton").is_visible()
+        assert page.locator("#sidebarConnectPhotosButton").is_visible()
+        assert page.locator("#sidebarPhotosConnectedStatus").is_hidden()
+        assert page.locator("#libraryNavigation .sidebar-row").evaluate_all(
+            "rows => rows.slice(0, 5).map(row => row.children[1].textContent.trim())"
+        ) == ["图库总览", "照片世界", "全部照片", "红心收藏", "无标签"]
+        page.locator("#galleryOverviewNavigationButton").focus()
+        page.keyboard.press("ArrowDown")
+        assert page.evaluate("document.activeElement?.id") == "worldMapNavigationButton"
+        page.keyboard.press("End")
+        assert page.evaluate("document.activeElement?.id") == "sidebarConnectPhotosButton"
+        page.keyboard.press("ArrowUp")
+        assert page.evaluate("document.activeElement?.id") == "sidebarConnectFolderButton"
+        page.keyboard.press("Home")
+        assert page.evaluate("document.activeElement?.id") == "galleryOverviewNavigationButton"
         assert not preset_requests
         page.screenshot(
             path="/tmp/imageall-onboarding-presets-wide.png",
             full_page=True,
         )
 
+        page.locator("#sidebarConnectFolderButton").click()
+        page.locator("#sourceManagerPending").wait_for()
+        assert source_requests[-1]["action"] == "connectFolder"
+        page.locator("#sourceManagerCloseButton").click()
+        page.wait_for_function(
+            "() => document.activeElement?.id === 'sourceManagerButton'"
+        )
+        page.evaluate(
+            "state.sourceManagement.snapshot.requests = []; renderSourceManagement()"
+        )
+
+        page.locator("#sidebarConnectPhotosButton").click()
+        page.locator("#confirmDialog[open]").wait_for()
+        assert "连接 Apple Photos" in page.locator("#confirmDialogTitle").inner_text()
+        assert "平时只读访问" in page.locator("#confirmDialogMessage").inner_text()
+        assert page.locator("#confirmActionButton").inner_text() == "继续并请求照片权限"
+        photos_request_count = len(source_requests)
+        page.locator("#cancelConfirmButton").click()
+        assert len(source_requests) == photos_request_count
+        page.locator("#sourceConnectPhotosButton").click()
+        page.locator("#confirmDialog[open]").wait_for()
+        page.locator("#confirmActionButton").click()
+        page.locator("#sourceManagerPending").wait_for()
+        assert source_requests[-1]["action"] == "connectPhotos"
+        page.locator("#sourceManagerCloseButton").click()
+        page.wait_for_function(
+            "() => document.activeElement?.id === 'sourceManagerButton'"
+        )
+        page.evaluate(
+            "state.sourceManagement.snapshot.requests = []; renderSourceManagement()"
+        )
+
         page.locator("#emptyConnectFolderButton").click()
         page.locator("#sourceManagerPending").wait_for()
         assert source_requests[-1]["action"] == "connectFolder"
         page.locator("#sourceManagerCloseButton").click()
+        page.evaluate(
+            "state.sourceManagement.snapshot.requests = []; renderSourceManagement()"
+        )
 
         page.locator("#emptyInstallPresetTagsButton").click()
         page.wait_for_function(
@@ -235,8 +340,54 @@ def main():
         assert page.locator('[data-command-id="installPresetTags"]').count() == 1
         page.keyboard.press("Escape")
 
+        page.evaluate(
+            """
+            () => {
+              const photos = {
+                id: '11111111-2222-3333-4444-555555555555',
+                kind: 'photos',
+                displayName: 'Apple Photos',
+                state: 'active',
+              };
+              state.sources = [photos];
+              state.sourceManagement.snapshot = {
+                sources: [photos],
+                canConnectPhotos: false,
+                requests: [],
+              };
+              renderSources();
+            }
+            """
+        )
+        assert page.locator("#sidebarConnectFolderButton").is_visible()
+        assert page.locator("#sidebarConnectPhotosButton").is_hidden()
+        assert page.locator("#sidebarPhotosConnectedStatus").is_visible()
+        assert "已连接 Apple Photos" in page.locator(
+            "#sidebarPhotosConnectedStatus"
+        ).inner_text()
+        page.evaluate(
+            """
+            () => {
+              state.sources = [];
+              state.sourceManagement.snapshot = {
+                sources: [],
+                canConnectPhotos: true,
+                requests: [],
+              };
+              renderSources();
+            }
+            """
+        )
+
         page.set_viewport_size({"width": 390, "height": 844})
         page.wait_for_timeout(100)
+        page.locator("#sidebarToggle").click()
+        page.wait_for_timeout(250)
+        assert page.evaluate("document.activeElement?.dataset.sourceId") == ""
+        sidebar_source_bounds = page.locator("#sidebarSourceActions").bounding_box()
+        assert sidebar_source_bounds is not None
+        assert sidebar_source_bounds["x"] >= 0
+        assert sidebar_source_bounds["x"] + sidebar_source_bounds["width"] <= 390
         dimensions = page.evaluate(
             "() => ({ viewport: innerWidth, scroll: document.documentElement.scrollWidth })"
         )
