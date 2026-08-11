@@ -62,6 +62,14 @@ struct GRDBFolderReconcileRepository: FolderReconcileBatchPort, Sendable {
             else {
                 return nil
             }
+            let mediaType: String = row["media_type"]
+            if availability != .available,
+               ApprovedSourceMediaTypes.isVectorDocumentMediaType(mediaType) {
+                // A newly supported vector decoder must get a chance to
+                // replace legacy unsupported/unreadable catalog rows even
+                // when the source file fingerprint has not changed.
+                return nil
+            }
             let locationObservationAssetID: String? = row["location_observation_asset_id"]
             if mediaKind == .image, locationObservationAssetID == nil {
                 // v031 intentionally leaves existing assets without a row so
@@ -85,7 +93,7 @@ struct GRDBFolderReconcileRepository: FolderReconcileBatchPort, Sendable {
                 relativePath: relativePath,
                 fileName: fileName,
                 mediaKind: mediaKind,
-                mediaType: row["media_type"],
+                mediaType: mediaType,
                 durationMs: row["duration_ms"],
                 width: row["width"],
                 height: row["height"],

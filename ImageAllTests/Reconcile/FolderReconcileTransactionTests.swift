@@ -4,6 +4,74 @@ import XCTest
 @testable import ImageAll
 
 final class FolderReconcileTransactionTests: XCTestCase {
+    func testUnchangedFailedVectorObservationIsNotReusedSoRescanCanRetryDecode() throws {
+        let database = try CatalogDatabase.open(at: makeTempDatabaseURL())
+        let queue = FolderReconcileTestSupport.makeQueue(database: database)
+        let repository = GRDBFolderReconcileRepository(queue: queue)
+        let sourceID = UUID()
+        let assetID = UUID()
+        try FolderReconcileTestSupport.seedActiveFolderSource(
+            database: database,
+            sourceID: sourceID,
+            bookmark: Data("bookmark".utf8)
+        )
+        try CatalogRepository(database: database).insertAsset(
+            NewAssetInput(
+                assetID: assetID,
+                sourceID: sourceID,
+                locatorKind: .file,
+                relativePath: "retry.svg",
+                photosLocalIdentifier: nil,
+                mediaType: ApprovedSourceMediaTypes.svgIdentifier,
+                timestampMs: FolderReconcileTestSupport.baseTimeMs
+            )
+        )
+        try CatalogRepository(database: database).upsertFileFingerprint(
+            FileFingerprintInput(
+                assetID: assetID,
+                sizeBytes: 8_329,
+                modifiedAtNs: 1_746_888_123_000_000_000,
+                resourceID: Data("vector-resource-id".utf8),
+                sha256: nil
+            )
+        )
+        try database.pool.write { db in
+            try db.execute(
+                sql: """
+                UPDATE asset SET
+                    file_name = 'retry.svg',
+                    media_kind = 'image',
+                    availability = 'unreadable'
+                WHERE id = ?
+                """,
+                arguments: [assetID.uuidString.lowercased()]
+            )
+            try db.execute(
+                sql: """
+                INSERT INTO asset_location (
+                    asset_id, latitude, longitude, altitude_m,
+                    source_kind, updated_at_ms, place_id
+                ) VALUES (?, NULL, NULL, NULL, 'none', ?, NULL)
+                """,
+                arguments: [
+                    assetID.uuidString.lowercased(),
+                    FolderReconcileTestSupport.baseTimeMs,
+                ]
+            )
+        }
+
+        let reused = try repository.lookupReusableObservation(
+            sourceID: sourceID,
+            relativePath: "retry.svg",
+            fileName: "retry.svg",
+            sizeBytes: 8_329,
+            modifiedAtNs: 1_746_888_123_000_000_000,
+            resourceID: Data("vector-resource-id".utf8)
+        )
+
+        XCTAssertNil(reused)
+    }
+
     func testReusableObservationSkipsMetadataDecodeOnlyForAnUnchangedCurrentAsset() throws {
         let database = try CatalogDatabase.open(at: makeTempDatabaseURL())
         let queue = FolderReconcileTestSupport.makeQueue(database: database)
